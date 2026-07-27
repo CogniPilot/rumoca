@@ -1,0 +1,215 @@
+name: Nightly
+
+# Long-budget lanes that must not sit on the PR critical path:
+#   * the event/friction cohort, which needs minutes-per-model budgets rather
+#     than the 10s PR budget (these models time out, they do not fail);
+#   * the cross-backend MSL suites (`msl-external-tests`), which are declared in
+#     `crates/rumoca-test-msl/Cargo.toml` but were never wired to any workflow;
+#   * a real fuzzing budget for the parser.
+#
+# Every job here is diagnostic. None of them gates a merge, and none of them
+# writes to the committed quality baseline.
+on:
+  schedule:
+    - cron: '0 7 * * *'
+  workflow_dispatch: {}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref_name }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  event-cohort-parity:
+    name: Event Cohort Parity (long budget)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          token: ${{ github.token }}
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev zstd
+
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain "$(awk -F'"' '/^channel/ { print $2 }' rust-toolchain.toml)"
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Rust cache (nightly-event-cohort)
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: msl-gate
+          cache-on-failure: true
+          cache-targets: false
+          save-if: false
+
+      - name: Cache MSL
+        uses: actions/cache@v5
+        continue-on-error: true
+        with:
+          path: target/msl/ModelicaStandardLibrary-4.1.0
+          key: msl-v4.1.0-release-zip-layout-v2
+
+      - name: Ensure MSL
+        shell: bash
+        run: |
+          set -euo pipefail
+          msl_dir=target/msl/ModelicaStandardLibrary-4.1.0
+          if [[ -f "$msl_dir/Complex.mo" && -f "$msl_dir/Modelica 4.1.0/package.mo" ]]; then
+            echo "MSL cache is valid at $msl_dir"
+            exit 0
+          fi
+          rm -rf "$msl_dir"
+          mkdir -p "$msl_dir"
+          curl -L -o target/msl/msl-v4.1.0.zip \
+            https://github.com/modelica/ModelicaStandardLibrary/releases/download/v4.1.0/ModelicaStandardLibrary_v4.1.0.zip
+          unzip -q target/msl/msl-v4.1.0.zip -d "$msl_dir"
+          rm target/msl/msl-v4.1.0.zip
+          test -f "$msl_dir/Complex.mo"
+          test -f "$msl_dir/Modelica 4.1.0/package.mo"
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          determinate: false
+
+      - name: Build OpenModelica
+        shell: bash
+        run: |
+          set -euo pipefail
+          nix build .#openmodelica-cli --out-link result-openmodelica
+          echo "$PWD/result-openmodelica/bin" >> "$GITHUB_PATH"
+          result-openmodelica/bin/omc --version
+
+      # No `--require-selected-targets-success`: the whole point of this lane is
+      # that the cohort does not pass yet. Passing an explicit target file also
+      # skips the baseline-relative quality gate, so the run is purely
+      # diagnostic. `--all-omc-targets` is required because these models are not
+      # `sim_ok`, and the default OMC selection would produce no reference to
+      # compare against.
+      - name: Run event-cohort parity with long budgets
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf target/msl/event-cohort
+          cargo xtask verify msl-parity \
+            --results-dir target/msl/event-cohort \
+            --sim-targets-file crates/rumoca-test-msl/tests/msl_tests/event_cohort_targets_nightly.json \
+            --sim-set full \
+            --sim-timeout-secs 300 \
+            --ir-solve-timeout-secs 60 \
+            --model-attempt-timeout-secs 420 \
+            --all-omc-targets
+
+      - name: Triage event-cohort results
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo run --release -p rumoca-test-msl --bin rumoca-msl-tools -- triage \
+            --results target/msl/event-cohort/msl_results.json \
+            --out target/msl/event-cohort/triage.md
+
+      - name: Upload event-cohort artifacts
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: nightly-event-cohort
+          path: |
+            target/msl/event-cohort/msl_results.json
+            target/msl/event-cohort/triage.md
+            target/msl/event-cohort/sim_traces
+          if-no-files-found: warn
+
+  cross-backend-msl:
+    name: Cross-backend MSL suites
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          token: ${{ github.token }}
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          determinate: false
+
+      - name: Cache MSL
+        uses: actions/cache@v5
+        continue-on-error: true
+        with:
+          path: target/msl/ModelicaStandardLibrary-4.1.0
+          key: msl-v4.1.0-release-zip-layout-v2
+
+      - name: Ensure MSL
+        shell: bash
+        run: |
+          set -euo pipefail
+          msl_dir=target/msl/ModelicaStandardLibrary-4.1.0
+          if [[ -f "$msl_dir/Complex.mo" && -f "$msl_dir/Modelica 4.1.0/package.mo" ]]; then
+            exit 0
+          fi
+          rm -rf "$msl_dir"
+          mkdir -p "$msl_dir"
+          curl -L -o target/msl/msl-v4.1.0.zip \
+            https://github.com/modelica/ModelicaStandardLibrary/releases/download/v4.1.0/ModelicaStandardLibrary_v4.1.0.zip
+          unzip -q target/msl/msl-v4.1.0.zip -d "$msl_dir"
+          rm target/msl/msl-v4.1.0.zip
+
+      # `msl-external-tests` is declared in crates/rumoca-test-msl/Cargo.toml but
+      # was not referenced by any workflow, so the FMI3 and CasADi backends had
+      # no scheduled MSL coverage at all. The flake's dev shell supplies the
+      # `cc` toolchain and the CasADi Python package these suites need.
+      - name: FMI3 MSL suite
+        continue-on-error: true
+        run: nix develop --command cargo test --release -p rumoca-test-msl --features msl-external-tests --test fmi3_msl_test -- --nocapture
+
+      - name: CasADi MSL suite
+        continue-on-error: true
+        run: nix develop --command cargo test --release -p rumoca-test-msl --features msl-external-tests --test casadi_msl_test -- --nocapture
+
+  parser-fuzz:
+    name: Parser fuzzing
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          token: ${{ github.token }}
+
+      - name: Install Rust nightly (cargo-fuzz needs the sanitizer flags)
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain nightly
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+
+      - name: Fuzz the Modelica parser
+        run: cargo xtask verify fuzz --max-total-secs 900
+
+      - name: Upload fuzz reproducers
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: nightly-fuzz-artifacts
+          path: fuzz/artifacts
+          if-no-files-found: ignore

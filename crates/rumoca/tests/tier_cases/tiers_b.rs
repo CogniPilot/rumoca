@@ -752,12 +752,20 @@ end ConstBindingRelational;
         );
     }
 
-    /// Same pattern with output variables (like StateGraphRoot.suspend = false).
+    /// Same pattern with output variables. The motivating model is
+    /// `Modelica.StateGraph.Interfaces.CompositeStepState`, which declares
+    /// `output Boolean suspend = false;`; this case keeps the Real domain that
+    /// the binding-retention rule under test is stated over and only supplies a
+    /// Real constant. Writing `output Real suspend = false;` here would be
+    /// invalid Modelica: MLS 3.7 §4.7 requires a declaration equation to be
+    /// type compatible with the declared component, and §6.7 admits exactly one
+    /// implicit conversion between builtin types (Integer to Real), never
+    /// Boolean to Real. That form is correctly rejected with ET002.
     #[test]
     fn t10c_05_output_constant_binding_with_relational_explicit_eq() {
         let source = r#"
 model OutputConstBindingRelational
-    output Real suspend = false;
+    output Real suspend = 0.0;
     Real subport_suspend;
 equation
     suspend = subport_suspend;
@@ -833,11 +841,10 @@ end ThreePortJunction;
         );
     }
 
-    /// Three-port stream connector (like TeeJunctionIdeal pattern).
-    /// Stream connection equations (N-1 equalities) should not be double-counted
-    /// with the interface stream variable count.
+    /// Three-port stream connectors use the MLS §15.2 regularized weighted
+    /// mixing equations implemented during connection expansion.
     #[test]
-    fn t10d_03_three_port_stream_connector() {
+    fn t10d_03_three_port_stream_connector_compiles() {
         let source = r#"
 connector FluidPort
     Real p;
@@ -855,18 +862,9 @@ equation
 end ThreePortJunction;
 "#;
         let r = assert_compiles(source, "ThreePortJunction");
-        // 9 scalar unknowns (3 ports x {p, m_flow, h_outflow})
-        // Connection equations in f_x:
-        //   2 potential equalities (p1=p2, p2=p3)
-        //   1 flow sum (0 = m1+m2+m3)
-        //   2 stream equalities (h1=h2, h2=h3) -- N-1 for N=3
-        //   3 unconnected flow (0=m1, 0=m2, 0=m3)
-        // = 8 f_x equations
-        // Interface: 3 stream vars - 2 stream connection eqs = 1
-        // Total: 8 + 1 = 9 equations, 9 unknowns
         assert_eq!(
             r.balance, 0,
-            "Three-port stream connector: stream connection eqs should not be double-counted"
+            "three-port stream mixing should produce a balanced DAE"
         );
     }
 }

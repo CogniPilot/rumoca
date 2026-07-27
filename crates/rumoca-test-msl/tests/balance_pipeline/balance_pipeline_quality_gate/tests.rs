@@ -125,7 +125,9 @@ fn baseline_quality_template() -> MslQualityBaseline {
         sim_success_rate: 0.8,
         runtime_context: None,
         runtime_ratio_stats: None,
+        runtime_ratio_cohort_models: None,
         trace_accuracy_stats: None,
+        tensor_preservation: None,
     }
 }
 
@@ -150,6 +152,11 @@ fn gate_input_with_sim_rate(sim_ok: usize, sim_attempted: usize) -> MslQualityGa
         ic_ok: sim_ok,
         ic_solver_fail: sim_attempted.saturating_sub(sim_ok),
         sim_ok,
+        tensor_models_reported: 0,
+        tensor_family_bodies: 0,
+        tensor_preserved_family_bodies: 0,
+        tensor_scalarized_family_rows: 0,
+        tensor_report_errors: 0,
     }
 }
 
@@ -254,6 +261,7 @@ fn current_quality_snapshot_records_parity_omc_version() {
         omc_version: Some("OpenModelica 1.26.1".to_string()),
         runtime_context: None,
         runtime_ratio_stats: None,
+        runtime_model_ratios: IndexMap::new(),
         trace_accuracy_stats: None,
         omc_assertion_failure_models: 0,
         omc_assertion_failure_examples: Vec::new(),
@@ -278,6 +286,7 @@ fn current_quality_snapshot_records_runtime_ratio_stats() {
             omc_threads: Some(1),
         }),
         runtime_ratio_stats: Some(runtime_ratio_stats(5.0, 4.0)),
+        runtime_model_ratios: IndexMap::new(),
         trace_accuracy_stats: None,
         omc_assertion_failure_models: 0,
         omc_assertion_failure_examples: Vec::new(),
@@ -314,6 +323,7 @@ fn quality_context_reports_omc_version_mismatch_for_pinned_baseline() {
         omc_version: Some("OpenModelica 1.27.0".to_string()),
         runtime_context: None,
         runtime_ratio_stats: None,
+        runtime_model_ratios: IndexMap::new(),
         trace_accuracy_stats: None,
         omc_assertion_failure_models: 0,
         omc_assertion_failure_examples: Vec::new(),
@@ -338,6 +348,7 @@ fn quality_context_accepts_omc_package_rebuild_suffix_drift() {
         omc_version: Some("OpenModelica 1.26.7~2-ge74480f".to_string()),
         runtime_context: None,
         runtime_ratio_stats: None,
+        runtime_model_ratios: IndexMap::new(),
         trace_accuracy_stats: None,
         omc_assertion_failure_models: 0,
         omc_assertion_failure_examples: Vec::new(),
@@ -680,6 +691,37 @@ fn cumulative_stage_gate_allows_early_stage_improvement() {
 }
 
 #[test]
+fn tensor_preservation_gate_rejects_family_body_scalarization() {
+    let baseline = MslQualityBaseline {
+        tensor_preservation: Some(MslTensorPreservationBaseline {
+            models_reported: 10,
+            family_bodies: 100,
+            preserved_family_bodies: 80,
+            scalarized_family_rows: 20,
+            report_errors: 0,
+            preservation_percent: Some(80.0),
+        }),
+        ..baseline_quality_template()
+    };
+    let gate_input = MslQualityGateInput {
+        tensor_models_reported: 10,
+        tensor_family_bodies: 100,
+        tensor_preserved_family_bodies: 79,
+        tensor_scalarized_family_rows: 21,
+        ..gate_input_with_sim_rate(8, 10)
+    };
+
+    let mut reasons = Vec::new();
+    push_tensor_preservation_regression_reasons(&mut reasons, gate_input, &baseline);
+    assert!(
+        reasons
+            .iter()
+            .any(|reason| reason.contains("tensor preservation regressed")),
+        "one native family body becoming scalar must fail the KPI gate: {reasons:?}"
+    );
+}
+
+#[test]
 fn cumulative_stage_gate_rejects_stage_count_drop() {
     let baseline = MslQualityBaseline {
         simulatable_attempted: 10,
@@ -1017,6 +1059,7 @@ fn runtime_ratio_regression_reason_triggers_on_large_drop() {
         omc_version: Some("OpenModelica 1.26.1".to_string()),
         runtime_context: None,
         runtime_ratio_stats: Some(runtime_ratio_stats(1.0, 0.5)),
+        runtime_model_ratios: IndexMap::new(),
         trace_accuracy_stats: None,
         omc_assertion_failure_models: 0,
         omc_assertion_failure_examples: Vec::new(),
@@ -1047,6 +1090,7 @@ fn msl_quality_regression_reasons_include_runtime_ratio_drop() {
         omc_version: Some("OpenModelica 1.26.1".to_string()),
         runtime_context: None,
         runtime_ratio_stats: Some(runtime_ratio_stats(1.0, 1.5)),
+        runtime_model_ratios: IndexMap::new(),
         trace_accuracy_stats: Some(trace_accuracy_baseline()),
         omc_assertion_failure_models: 0,
         omc_assertion_failure_examples: Vec::new(),
@@ -1073,6 +1117,7 @@ fn runtime_ratio_gate_allows_observed_ci_runner_delta() {
         omc_version: Some("OpenModelica 1.26.8".to_string()),
         runtime_context: None,
         runtime_ratio_stats: Some(runtime_ratio_stats(0.887_313_1, 0.887_313_1)),
+        runtime_model_ratios: IndexMap::new(),
         trace_accuracy_stats: None,
         omc_assertion_failure_models: 0,
         omc_assertion_failure_examples: Vec::new(),
@@ -1087,6 +1132,92 @@ fn runtime_ratio_gate_allows_observed_ci_runner_delta() {
 }
 
 #[test]
+fn runtime_ratio_gate_uses_stable_baseline_cohort_when_successes_expand() {
+    let mut cohort = IndexSet::new();
+    cohort.insert("baseline_a".to_string());
+    cohort.insert("baseline_b".to_string());
+    let baseline = MslQualityBaseline {
+        runtime_ratio_stats: Some(runtime_ratio_stats(10.0, 10.0)),
+        runtime_ratio_cohort_models: Some(cohort),
+        ..baseline_quality_template()
+    };
+    let parity = MslParityGateInput {
+        total_models: Some(3),
+        omc_version: Some("OpenModelica 1.26.8".to_string()),
+        runtime_context: None,
+        runtime_ratio_stats: Some(runtime_ratio_stats(1.0, 1.0)),
+        runtime_model_ratios: IndexMap::from([
+            (
+                "baseline_a".to_string(),
+                MslRuntimeModelRatio {
+                    system: 10.0,
+                    wall: 10.0,
+                },
+            ),
+            (
+                "baseline_b".to_string(),
+                MslRuntimeModelRatio {
+                    system: 10.0,
+                    wall: 10.0,
+                },
+            ),
+            (
+                "new_slow_success".to_string(),
+                MslRuntimeModelRatio {
+                    system: 0.1,
+                    wall: 0.1,
+                },
+            ),
+        ]),
+        trace_accuracy_stats: None,
+        omc_assertion_failure_models: 0,
+        omc_assertion_failure_examples: Vec::new(),
+    };
+
+    let mut reasons = Vec::new();
+    push_runtime_ratio_regression_reasons(&mut reasons, &baseline, Some(&parity));
+    assert!(
+        reasons.is_empty(),
+        "new successes outside the committed runtime cohort must not lower its median: {reasons:?}"
+    );
+}
+
+#[test]
+fn runtime_ratio_gate_requires_baseline_cohort_coverage() {
+    let cohort = IndexSet::from(["baseline_a".to_string(), "baseline_b".to_string()]);
+    let baseline = MslQualityBaseline {
+        runtime_ratio_stats: Some(runtime_ratio_stats(10.0, 10.0)),
+        runtime_ratio_cohort_models: Some(cohort),
+        ..baseline_quality_template()
+    };
+    let parity = MslParityGateInput {
+        total_models: Some(2),
+        omc_version: Some("OpenModelica 1.26.8".to_string()),
+        runtime_context: None,
+        runtime_ratio_stats: Some(runtime_ratio_stats(10.0, 10.0)),
+        runtime_model_ratios: IndexMap::from([(
+            "baseline_a".to_string(),
+            MslRuntimeModelRatio {
+                system: 10.0,
+                wall: 10.0,
+            },
+        )]),
+        trace_accuracy_stats: None,
+        omc_assertion_failure_models: 0,
+        omc_assertion_failure_examples: Vec::new(),
+    };
+
+    let mut reasons = Vec::new();
+    push_runtime_ratio_regression_reasons(&mut reasons, &baseline, Some(&parity));
+    assert!(
+        reasons
+            .iter()
+            .any(|reason| reason.contains("runtime baseline cohort coverage")),
+        "missing baseline models must not silently shrink the runtime cohort: {reasons:?}"
+    );
+}
+
+#[test]
 fn trace_bucket_and_channel_regression_reasons_trigger_when_thresholds_are_exceeded() {
     let baseline = MslQualityBaseline {
         trace_accuracy_stats: Some(trace_accuracy_baseline()),
@@ -1097,6 +1228,7 @@ fn trace_bucket_and_channel_regression_reasons_trigger_when_thresholds_are_excee
         omc_version: Some("OpenModelica 1.26.1".to_string()),
         runtime_context: None,
         runtime_ratio_stats: None,
+        runtime_model_ratios: IndexMap::new(),
         trace_accuracy_stats: Some(trace_accuracy_regressed()),
         omc_assertion_failure_models: 0,
         omc_assertion_failure_examples: Vec::new(),
@@ -1129,6 +1261,7 @@ fn trace_channel_share_tolerances_allow_small_runner_drift() {
         omc_version: Some("OpenModelica 1.26.1".to_string()),
         runtime_context: None,
         runtime_ratio_stats: None,
+        runtime_model_ratios: IndexMap::new(),
         trace_accuracy_stats: Some(trace_accuracy_small_channel_drift()),
         omc_assertion_failure_models: 0,
         omc_assertion_failure_examples: Vec::new(),
@@ -1161,6 +1294,7 @@ fn trace_near_to_high_promotion_does_not_trigger_regression() {
         omc_version: Some("OpenModelica 1.26.1".to_string()),
         runtime_context: None,
         runtime_ratio_stats: None,
+        runtime_model_ratios: IndexMap::new(),
         trace_accuracy_stats: Some(trace_accuracy_near_promoted_to_high()),
         omc_assertion_failure_models: 0,
         omc_assertion_failure_examples: Vec::new(),
@@ -1187,6 +1321,7 @@ fn trace_deviation_to_near_migration_does_not_trigger_regression() {
         omc_version: Some("OpenModelica 1.26.1".to_string()),
         runtime_context: None,
         runtime_ratio_stats: None,
+        runtime_model_ratios: IndexMap::new(),
         trace_accuracy_stats: Some(trace_accuracy_deviation_migrated_to_near()),
         omc_assertion_failure_models: 0,
         omc_assertion_failure_examples: Vec::new(),
@@ -1211,6 +1346,7 @@ fn trace_acceptable_band_regression_reason_triggers_on_real_drop() {
         omc_version: Some("OpenModelica 1.26.1".to_string()),
         runtime_context: None,
         runtime_ratio_stats: None,
+        runtime_model_ratios: IndexMap::new(),
         trace_accuracy_stats: Some(trace_accuracy_acceptable_band_regressed()),
         omc_assertion_failure_models: 0,
         omc_assertion_failure_examples: Vec::new(),
@@ -1258,6 +1394,7 @@ fn trace_fixed_denominator_gate_accepts_current_ci_delta() {
         omc_version: Some("OpenModelica 1.26.1".to_string()),
         runtime_context: None,
         runtime_ratio_stats: None,
+        runtime_model_ratios: IndexMap::new(),
         trace_accuracy_stats: Some(current_trace),
         omc_assertion_failure_models: 0,
         omc_assertion_failure_examples: Vec::new(),
@@ -1505,6 +1642,7 @@ fn parity_total_models_guard_checks_stale_and_matching_counts() {
         omc_version: Some("OpenModelica 1.26.1".to_string()),
         runtime_context: None,
         runtime_ratio_stats: None,
+        runtime_model_ratios: IndexMap::new(),
         trace_accuracy_stats: None,
         omc_assertion_failure_models: 0,
         omc_assertion_failure_examples: Vec::new(),
@@ -1519,6 +1657,7 @@ fn parity_total_models_guard_checks_stale_and_matching_counts() {
         omc_version: Some("OpenModelica 1.26.1".to_string()),
         runtime_context: None,
         runtime_ratio_stats: None,
+        runtime_model_ratios: IndexMap::new(),
         trace_accuracy_stats: None,
         omc_assertion_failure_models: 0,
         omc_assertion_failure_examples: Vec::new(),
@@ -1671,4 +1810,55 @@ fn simulation_parity_cache_matches_rejects_mismatched_policy() {
         .expect("mismatched override should parse"),
         "stop-time policy drift should invalidate cache entry"
     );
+}
+
+/// `flatten_models` is a *cumulative pass* count: it must include exactly the
+/// models that got past flattening, derived from the pipeline phase order.
+///
+/// Pinning the derivation matters because it moved once already: while the
+/// worker attributed every marker-free compile summary to `ToDae`, resolve
+/// failures were counted as "flattened". Restating the phase set by hand is
+/// what let that mis-attribution inflate a gated metric, so the order is the
+/// single source of truth and this test is its contract.
+#[test]
+fn completed_compile_phase_follows_the_pipeline_order() {
+    // Failing later than Flatten (or succeeding) means flattening completed.
+    assert!(completed_compile_phase("ToDae", "Flatten"));
+    assert!(completed_compile_phase("Success", "Flatten"));
+    // Failing in Flatten means flattening did *not* complete.
+    assert!(!completed_compile_phase("Flatten", "Flatten"));
+    // Everything before Flatten never reached it. `Resolve` is the case the
+    // corrected worker attribution produces for `ER0xx` failures that used to
+    // fall through to `ToDae`.
+    assert!(!completed_compile_phase("Resolve", "Flatten"));
+    assert!(!completed_compile_phase("NeedsInner", "Flatten"));
+    assert!(!completed_compile_phase("Instantiate", "Flatten"));
+    assert!(!completed_compile_phase("Typecheck", "Flatten"));
+    assert!(!completed_compile_phase("Parse", "Flatten"));
+    // Unknown phase strings (e.g. `NonSim`) never count towards a floor.
+    assert!(!completed_compile_phase("NonSim", "Flatten"));
+    // `dae_models` uses the same predicate against ToDae.
+    assert!(completed_compile_phase("Success", "ToDae"));
+    assert!(!completed_compile_phase("ToDae", "ToDae"));
+}
+
+/// The stage counts the gate ratchets must be derived from the row set, not
+/// restated: a resolve failure is not a flattened model, and a `ToDae` failure
+/// is not a compiled one.
+#[test]
+fn gate_input_stage_counts_are_derived_from_phase_reached() {
+    let mut summary = valid_summary_template();
+    summary.model_results = vec![
+        phase_error_result("Modelica.A".to_string(), "Success", None, None),
+        phase_error_result("Modelica.B".to_string(), "ToDae", None, None),
+        phase_error_result("Modelica.C".to_string(), "Flatten", None, None),
+        phase_error_result("Modelica.D".to_string(), "Typecheck", None, None),
+        // Was mis-attributed to `ToDae` before the worker reported the real
+        // failing phase; it never reached flatten.
+        phase_error_result("Modelica.E".to_string(), "Resolve", None, None),
+    ];
+
+    let gate_input = MslQualityGateInput::from(&summary);
+    assert_eq!(gate_input.flatten_models, 2, "Success + ToDae");
+    assert_eq!(gate_input.dae_models, 1, "Success only");
 }

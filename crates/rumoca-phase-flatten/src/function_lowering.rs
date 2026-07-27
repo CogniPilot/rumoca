@@ -747,7 +747,11 @@ impl StatementRewriter for RecordCallArgDecomposer<'_> {
             args,
             outputs: outputs
                 .iter()
-                .map(|output| self.rewrite_component_reference(output))
+                .map(|output| {
+                    output
+                        .as_ref()
+                        .map(|output| self.rewrite_component_reference(output))
+                })
                 .collect(),
             span: *span,
         }

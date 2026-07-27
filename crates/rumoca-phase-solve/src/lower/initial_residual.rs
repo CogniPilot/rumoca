@@ -52,28 +52,44 @@ pub fn initial_residual_equations<'a>(
         .initialization
         .equations
         .iter()
-        .filter(|eq| initial_equation_constrains_solver_unknown(layout, eq))
+        .filter(|eq| initial_equation_constrains_solver_unknown(dae_model, layout, eq))
         .enumerate()
         .map(move |(offset, eq)| (continuous_len + offset, eq));
     Ok(continuous.chain(initial).collect())
 }
 
 fn initial_equation_constrains_solver_unknown(
+    dae_model: &dae::Dae,
     layout: &VarLayout,
     equation: &dae::Equation,
 ) -> bool {
-    equation
+    if rumoca_eval_dae::initial_assignment_from_equation(equation).is_some_and(|assignment| {
+        !assignment.is_pre_target
+            && super::discrete_updates::is_initial_update_assignment_target(
+                dae_model,
+                layout,
+                assignment.target.as_str(),
+            )
+    }) {
+        // Solve's initialization update partition owns direct assignments to
+        // runtime P slots, including residual-form `p - rhs = 0` equations.
+        return false;
+    }
+    match equation
         .lhs
         .as_ref()
-        .is_some_and(|lhs| is_initialization_unknown(layout.binding(lhs.as_str())))
-        || expression_references_solver_unknown(layout, &equation.rhs)
+        .and_then(|lhs| layout.binding(lhs.as_str()))
+    {
+        Some(ScalarSlot::Y { .. } | ScalarSlot::P { .. }) => true,
+        _ => expression_references_initialization_unknown(layout, &equation.rhs),
+    }
 }
 
 fn is_initialization_unknown(slot: Option<ScalarSlot>) -> bool {
     matches!(slot, Some(ScalarSlot::Y { .. } | ScalarSlot::P { .. }))
 }
 
-fn expression_references_solver_unknown(layout: &VarLayout, expr: &Expression) -> bool {
+fn expression_references_initialization_unknown(layout: &VarLayout, expr: &Expression) -> bool {
     let mut checker = SolverUnknownReferenceChecker {
         layout,
         found: false,

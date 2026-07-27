@@ -1086,7 +1086,7 @@ fn emit_binary_op(
         BinaryOp::Add => fb.ins().fadd(lhs, rhs),
         BinaryOp::Sub => fb.ins().fsub(lhs, rhs),
         BinaryOp::Mul => fb.ins().fmul(lhs, rhs),
-        BinaryOp::Div => guarded_division(fb, lhs, rhs),
+        BinaryOp::Div => fb.ins().fdiv(lhs, rhs),
         BinaryOp::Pow => call_binary_math(fb, module, math, BinaryMathFn::Pow, lhs, rhs)?,
         BinaryOp::And => {
             let zero = fb.ins().f64const(0.0);
@@ -1123,20 +1123,6 @@ fn emit_compare_op(
         CompareOp::Eq => fb.ins().fcmp(FloatCC::Equal, lhs, rhs),
         CompareOp::Ne => fb.ins().fcmp(FloatCC::NotEqual, lhs, rhs),
     }
-}
-
-fn guarded_division(
-    fb: &mut FunctionBuilder<'_>,
-    lhs: cranelift_codegen::ir::Value,
-    rhs: cranelift_codegen::ir::Value,
-) -> cranelift_codegen::ir::Value {
-    let zero = fb.ins().f64const(0.0);
-    let inf = fb.ins().f64const(f64::INFINITY);
-    let rhs_zero = fb.ins().fcmp(FloatCC::Equal, rhs, zero);
-    let lhs_zero = fb.ins().fcmp(FloatCC::Equal, lhs, zero);
-    let safe = fb.ins().fdiv(lhs, rhs);
-    let rhs_zero_value = fb.ins().select(lhs_zero, zero, inf);
-    fb.ins().select(rhs_zero, rhs_zero_value, safe)
 }
 
 fn emit_dense_linear_solve(

@@ -17,6 +17,18 @@ type Expression = ast::Expression;
 type ScopeKind = ast::ScopeKind;
 type StoredDefinition = ast::StoredDefinition;
 
+/// True when `expr` is a component reference whose first path element is
+/// `name` — the shape that makes a modification value name the very element the
+/// modification targets.
+fn expression_leads_with_name(expr: &Expression, name: &str) -> bool {
+    let Expression::ComponentReference(comp) = expr else {
+        return false;
+    };
+    comp.parts
+        .first()
+        .is_some_and(|part| &*part.ident.text == name)
+}
+
 impl ResolveTraversalCallbacks for Resolver {
     fn create_loop_scope(&mut self, enclosing: ScopeId) -> ScopeId {
         self.scope_tree.create_scope(enclosing, ScopeKind::ForLoop)
@@ -62,7 +74,7 @@ impl Resolver {
     pub(crate) fn resolve_contents_class(
         &mut self,
         class: &mut ClassDef,
-        _enclosing_scope: ScopeId,
+        enclosing_scope: ScopeId,
         qualified_name: &str,
     ) {
         let class_scope = class
@@ -77,7 +89,12 @@ impl Resolver {
 
         for ext in class.extends.iter_mut() {
             for modification in ext.modifications.iter_mut() {
-                self.resolve_expression(&mut modification.expr, class_scope);
+                Self::resolve_extend_modification(
+                    self,
+                    &mut modification.expr,
+                    class_scope,
+                    enclosing_scope,
+                );
             }
         }
 
@@ -149,6 +166,42 @@ impl Resolver {
         }
     }
 
+    /// Resolve one modification of an `extends` clause.
+    ///
+    /// MLS §5.3.1 / §4.5: a modifier of the form `x = x` cannot mean "the
+    /// modified element modifies itself" — the right-hand side names something
+    /// visible where the modification is written. This is how a short class
+    /// definition such as
+    /// `function f = base(arg = arg)` passes an enclosing component down into
+    /// the partially applied function. Resolving the value in the modified
+    /// class's own scope would bind it to the element being modified, which is
+    /// circular. Such self-named values are therefore resolved in the enclosing
+    /// scope; every other modification value keeps the class scope.
+    fn resolve_extend_modification(
+        &mut self,
+        expr: &mut Expression,
+        class_scope: ScopeId,
+        enclosing_scope: ScopeId,
+    ) {
+        match expr {
+            Expression::NamedArgument { name, value, .. }
+                if expression_leads_with_name(value, &name.text) =>
+            {
+                self.resolve_expression(std::sync::Arc::make_mut(value), enclosing_scope);
+            }
+            Expression::Modification { target, value, .. }
+                if target
+                    .parts
+                    .first()
+                    .is_some_and(|part| expression_leads_with_name(value, &part.ident.text)) =>
+            {
+                self.resolve_component_reference(target, class_scope);
+                self.resolve_expression(std::sync::Arc::make_mut(value), enclosing_scope);
+            }
+            other => self.resolve_expression(other, class_scope),
+        }
+    }
+
     /// Try partial type resolution for qualified names (MLS §7.3).
     ///
     /// For types like `Medium.AbsolutePressure` where `Medium` is a replaceable
@@ -191,20 +244,31 @@ impl Resolver {
             .push((comp.type_name.to_string(), qualified_name.to_string()));
     }
 
-    /// Qualified names of the classes enclosing `scope`, innermost first,
-    /// walked through the scope tree (never re-parsed from rendered names).
-    pub(crate) fn enclosing_class_names_from(&self, scope: ScopeId) -> impl Iterator<Item = &str> {
+    /// DefIds of the classes enclosing `scope`, innermost first, walked through
+    /// the scope tree (MLS §5.3: name lookup proceeds through enclosing scopes,
+    /// which are structure — never re-derived from rendered names).
+    pub(crate) fn enclosing_class_def_ids(&self, scope: ScopeId) -> impl Iterator<Item = DefId> {
         std::iter::successors(Some(scope), |current| self.scope_tree.parent(*current))
-            .filter_map(|current| self.scope_to_class_def.get(&current))
-            .filter_map(|class_def_id| self.def_names.get(class_def_id))
-            .map(String::as_str)
+            .filter_map(|current| self.scope_to_class_def.get(&current).copied())
+    }
+
+    /// The class that lexically encloses the class declared as `class_def_id`.
+    ///
+    /// MLS §5.3.2 looks a simple name up in the enclosing class after the class
+    /// itself; that enclosing class is the parent scope's owner in the scope
+    /// tree (SPEC_0002), which is the container's own `DefId` (SPEC_0001), not
+    /// the leading segments of a rendered qualified name.
+    pub(crate) fn enclosing_class_def_id(&self, class_def_id: DefId) -> Option<DefId> {
+        let class_scope = *self.class_def_scopes.get(&class_def_id)?;
+        let enclosing_scope = self.scope_tree.parent(class_scope)?;
+        self.enclosing_class_def_ids(enclosing_scope).next()
     }
 
     /// Find an inherited type by searching the class at `scope` and every
     /// enclosing class.
     fn find_inherited_type(&self, scope: ScopeId, type_name: &str) -> Option<rumoca_core::DefId> {
-        self.enclosing_class_names_from(scope)
-            .find_map(|container| self.lookup_inherited_member(container, type_name))
+        self.enclosing_class_def_ids(scope)
+            .find_map(|container| self.lookup_inherited_member_of(container, type_name))
     }
 
     /// Resolve references in a list of expressions.
@@ -306,8 +370,8 @@ impl Resolver {
             return Some(def_id);
         }
 
-        self.enclosing_class_names_from(scope)
-            .find_map(|container| self.lookup_inherited_member(container, first_part))
+        self.enclosing_class_def_ids(scope)
+            .find_map(|container| self.lookup_inherited_member_of(container, first_part))
     }
 
     fn resolve_component_reference_full_path(
@@ -330,7 +394,7 @@ impl Resolver {
                 continue;
             }
 
-            let inherited_def_id = self.lookup_inherited_member(&current_qualified, member)?;
+            let inherited_def_id = self.lookup_inherited_member_of(current_def_id, member)?;
             current_def_id = inherited_def_id;
             current_qualified = self.def_names.get(&inherited_def_id)?.clone();
         }
@@ -362,7 +426,7 @@ impl Resolver {
                 continue;
             }
 
-            let inherited_def_id = self.lookup_inherited_member(&current_qualified, member)?;
+            let inherited_def_id = self.lookup_inherited_member_of(current_def_id, member)?;
             current_def_id = inherited_def_id;
             current_qualified = self.def_names.get(&inherited_def_id)?.clone();
         }

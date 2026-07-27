@@ -931,10 +931,7 @@ end GalecFacadeDemo;
         // text itself is the template's job (SPEC_0034 D3 amended), exercised
         // black-box by the CLI tests.
         let mut checksums = BTreeMap::new();
-        checksums.insert(
-            "alg_sha1".to_string(),
-            Sha1Hex::of_bytes(b"alg").as_str().to_string(),
-        );
+        checksums.insert("alg_sha1".to_string(), Sha1Hex::of_bytes(b"alg").to_hex());
         plan.template_ctx("ac_manifest.xml.jinja", &checksums)
             .expect("AC manifest context assembles from the injected checksum");
     }

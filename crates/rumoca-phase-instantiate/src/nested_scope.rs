@@ -278,6 +278,13 @@ pub(super) fn resolve_component_nested_type_overrides(
     }
 
     let mut nested_type_overrides = type_overrides.clone();
+    if let Some(type_prefix) = comp.type_name.name.first()
+        && comp.type_name.name.len() > 1
+        && let Some(effective_package_def_id) =
+            type_overrides.target_for_alias_name(type_prefix.text.as_ref())
+    {
+        nested_type_overrides.specialize_inherited_nested_types(tree, effective_package_def_id);
+    }
     for class_override in class_overrides.values() {
         nested_type_overrides.insert_class_override(class_override);
     }

@@ -8,13 +8,22 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, ClapArgs)]
 pub struct Args {
-    /// Optional OMC reference JSON (default: `CACHE_DIR/results/omc_reference.json`)
+    /// Optional OMC reference JSON
+    /// (default: `CACHE_DIR/results/omc_simulation_reference.json`).
+    ///
+    /// The former default (`omc_reference.json`) is not produced by anything in
+    /// the workspace, so the tool always bailed with "missing input file".
     #[arg(long)]
     omc_reference_file: Option<PathBuf>,
     /// Optional rumoca balance JSON (default: `CACHE_DIR/results/msl_balance_results.json`)
     #[arg(long)]
     rumoca_balance_file: Option<PathBuf>,
 }
+
+/// OMC reference artifact produced by `omc-simulation-reference`.
+const DEFAULT_OMC_REFERENCE_FILE: &str = "omc_simulation_reference.json";
+/// Rumoca MSL results artifact produced by the MSL parity run.
+const DEFAULT_RUMOCA_BALANCE_FILE: &str = "msl_results.json";
 
 #[derive(Debug, Clone, Serialize, Default)]
 struct RumocaModelInfo {
@@ -50,12 +59,12 @@ pub fn run(args: Args) -> Result<()> {
     let omc_file = resolve_path(
         &paths.repo_root,
         args.omc_reference_file
-            .unwrap_or_else(|| paths.results_dir.join("omc_reference.json")),
+            .unwrap_or_else(|| paths.results_dir.join(DEFAULT_OMC_REFERENCE_FILE)),
     );
     let rumoca_file = resolve_path(
         &paths.repo_root,
         args.rumoca_balance_file
-            .unwrap_or_else(|| paths.results_dir.join("msl_balance_results.json")),
+            .unwrap_or_else(|| paths.results_dir.join(DEFAULT_RUMOCA_BALANCE_FILE)),
     );
     let omc_payload = read_json(&omc_file)?;
     let rumoca_payload = read_json(&rumoca_file)?;
@@ -176,10 +185,29 @@ fn derive_rumoca_status(result: &Value, phase: &str, error_code: Option<&str>) -
             "unbalanced".to_string()
         };
     }
-    if phase == "NonSim" || (phase == "Typecheck" && error_code == Some("ET004")) {
-        "non_sim".to_string()
-    } else {
-        "failed".to_string()
+    // Codes arrive namespaced (`rumoca::typecheck::ET004`) from miette and bare
+    // from the MSL artifacts, so compare on the normalized short form.
+    let code = error_code.map(short_error_code);
+    if phase == "NonSim" || (phase == "Typecheck" && code == Some("ET004")) {
+        return "non_sim".to_string();
+    }
+    // A strict ToDae rejection for an unbalanced model is a balance verdict,
+    // not an opaque compile failure: reporting it as `failed` is exactly what
+    // hid the balance cohort from this comparison.
+    if code == Some(BALANCE_ERROR_CODE) {
+        return "unbalanced".to_string();
+    }
+    "failed".to_string()
+}
+
+/// SPEC_0008 code for an unbalanced model.
+const BALANCE_ERROR_CODE: &str = "ED001";
+
+/// Normalize `rumoca::todae::ED001` to `ED001`; bare codes pass through.
+fn short_error_code(code: &str) -> &str {
+    match code.rsplit("::").next() {
+        Some(short) if !short.is_empty() => short,
+        _ => code,
     }
 }
 

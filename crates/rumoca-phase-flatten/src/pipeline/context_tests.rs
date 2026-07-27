@@ -19,7 +19,7 @@ mod tests {
             end_column: 2,
             start: 0,
             end: 1,
-            file_name: TEST_FILE.to_string(),
+            source: rumoca_core::SourceId::from_source_name(TEST_FILE),
         }
     }
 
@@ -121,14 +121,14 @@ mod tests {
     fn int_lit(value: i64) -> Expression {
         Expression::Literal {
             value: rumoca_core::Literal::Integer(value),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }
     }
 
     fn real_lit(value: f64) -> Expression {
         Expression::Literal {
             value: rumoca_core::Literal::Real(value),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }
     }
 
@@ -136,7 +136,7 @@ mod tests {
         Expression::VarRef {
             name: rumoca_core::Reference::new(name),
             subscripts: Vec::new(),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }
     }
 
@@ -145,7 +145,7 @@ mod tests {
             op: rumoca_core::OpBinary::Div,
             lhs: Box::new(lhs),
             rhs: Box::new(rhs),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }
     }
 
@@ -154,7 +154,7 @@ mod tests {
             op: rumoca_core::OpBinary::Mul,
             lhs: Box::new(lhs),
             rhs: Box::new(rhs),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }
     }
 
@@ -162,7 +162,7 @@ mod tests {
         Expression::BuiltinCall {
             function: rumoca_core::BuiltinFunction::Sqrt,
             args: vec![arg],
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }
     }
 
@@ -170,7 +170,7 @@ mod tests {
         Expression::Array {
             elements: values.iter().copied().map(int_lit).collect(),
             is_matrix: false,
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }
     }
 
@@ -180,7 +180,7 @@ mod tests {
         Expression::BuiltinCall {
             function: rumoca_core::BuiltinFunction::Fill,
             args,
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }
     }
 
@@ -191,11 +191,11 @@ mod tests {
                 Expression::VarRef {
                     name: rumoca_core::Reference::new(name),
                     subscripts: vec![],
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 },
                 int_lit(dim),
             ],
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }
     }
 
@@ -246,10 +246,10 @@ mod tests {
         let expr = Expression::Array {
             elements: vec![Expression::Literal {
                 value: rumoca_core::Literal::Integer(0),
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             }],
             is_matrix: false,
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         };
         assert_eq!(infer_array_dimensions(&expr), Some(vec![1]));
 
@@ -258,19 +258,19 @@ mod tests {
             elements: vec![
                 Expression::Literal {
                     value: rumoca_core::Literal::Integer(1),
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 },
                 Expression::Literal {
                     value: rumoca_core::Literal::Integer(2),
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 },
                 Expression::Literal {
                     value: rumoca_core::Literal::Integer(3),
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 },
             ],
             is_matrix: false,
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         };
         assert_eq!(infer_array_dimensions(&expr), Some(vec![3]));
 
@@ -278,7 +278,7 @@ mod tests {
         let expr = Expression::Array {
             elements: vec![],
             is_matrix: false,
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         };
         assert_eq!(infer_array_dimensions(&expr), Some(vec![0]));
     }
@@ -292,33 +292,33 @@ mod tests {
                     elements: vec![
                         Expression::Literal {
                             value: rumoca_core::Literal::Integer(1),
-                            span: rumoca_core::Span::DUMMY,
+                            span: test_span(),
                         },
                         Expression::Literal {
                             value: rumoca_core::Literal::Integer(2),
-                            span: rumoca_core::Span::DUMMY,
+                            span: test_span(),
                         },
                     ],
                     is_matrix: false,
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 },
                 Expression::Array {
                     elements: vec![
                         Expression::Literal {
                             value: rumoca_core::Literal::Integer(3),
-                            span: rumoca_core::Span::DUMMY,
+                            span: test_span(),
                         },
                         Expression::Literal {
                             value: rumoca_core::Literal::Integer(4),
-                            span: rumoca_core::Span::DUMMY,
+                            span: test_span(),
                         },
                     ],
                     is_matrix: false,
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 },
             ],
             is_matrix: true,
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         };
         assert_eq!(infer_array_dimensions(&expr), Some(vec![2, 2]));
     }
@@ -330,15 +330,15 @@ mod tests {
             elements: vec![
                 Expression::Literal {
                     value: rumoca_core::Literal::Integer(1),
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 },
                 Expression::Literal {
                     value: rumoca_core::Literal::Integer(2),
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 },
             ],
             is_matrix: true,
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         };
         assert_eq!(infer_array_dimensions(&expr), Some(vec![1, 2]));
     }
@@ -348,7 +348,7 @@ mod tests {
         // Scalar literal -> None
         let expr = Expression::Literal {
             value: rumoca_core::Literal::Integer(5),
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         };
         assert_eq!(infer_array_dimensions(&expr), None);
 
@@ -356,7 +356,7 @@ mod tests {
         let expr = Expression::VarRef {
             name: rumoca_core::Reference::new("x"),
             subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         };
         assert_eq!(infer_array_dimensions(&expr), None);
     }
@@ -384,13 +384,13 @@ mod tests {
                 lhs: Box::new(Expression::VarRef {
                     name: rumoca_core::Reference::new("pipe.n"),
                     subscripts: vec![],
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 }),
                 rhs: Box::new(Expression::Literal {
                     value: rumoca_core::Literal::Integer(1),
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 }),
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             },
         )];
 
@@ -413,7 +413,7 @@ mod tests {
             Expression::VarRef {
                 name: rumoca_core::Reference::new("order"),
                 subscripts: vec![],
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             },
         )];
 
@@ -821,34 +821,34 @@ mod tests {
                         Expression::VarRef {
                             name: rumoca_core::Reference::new("a"),
                             subscripts: vec![],
-                            span: rumoca_core::Span::DUMMY,
+                            span: test_span(),
                         },
                         Expression::VarRef {
                             name: rumoca_core::Reference::new("b"),
                             subscripts: vec![],
-                            span: rumoca_core::Span::DUMMY,
+                            span: test_span(),
                         },
                     ],
                     is_matrix: false,
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 }),
                 start: Some(Expression::Array {
                     elements: vec![
                         Expression::Literal {
                             value: rumoca_core::Literal::Integer(1),
-                            span: rumoca_core::Span::DUMMY,
+                            span: test_span(),
                         },
                         Expression::Literal {
                             value: rumoca_core::Literal::Integer(0),
-                            span: rumoca_core::Span::DUMMY,
+                            span: test_span(),
                         },
                         Expression::Literal {
                             value: rumoca_core::Literal::Integer(0),
-                            span: rumoca_core::Span::DUMMY,
+                            span: test_span(),
                         },
                     ],
                     is_matrix: false,
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 }),
                 ..flat::Variable::empty_with_span(test_span())
             },
@@ -890,7 +890,7 @@ mod tests {
                 variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
                 binding: Some(Expression::Literal {
                     value: rumoca_core::Literal::Integer(401),
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 }),
                 is_discrete_type: true,
                 is_primitive: true,
@@ -931,6 +931,69 @@ mod tests {
             vec![401]
         );
         assert_eq!(ctx.array_dimensions.get("realFFT.abs"), Some(&vec![401]));
+    }
+
+    #[test]
+    fn symbolic_record_field_dimensions_keep_unexpanded_parent_shape() {
+        let mut ctx = Context::new();
+        let tree = source_backed_tree();
+        let mut flat = flat::Model::default();
+        let n_name = rumoca_core::VarName::new("model.n");
+        flat.add_variable(
+            n_name.clone(),
+            flat::Variable {
+                name: n_name,
+                variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
+                binding: Some(int_lit(2)),
+                is_discrete_type: true,
+                is_primitive: true,
+                ..flat::Variable::empty_with_span(test_span())
+            },
+        );
+        let field_name = rumoca_core::VarName::new("model.records.values");
+        flat.add_variable(
+            field_name.clone(),
+            flat::Variable {
+                name: field_name.clone(),
+                dims: vec![2],
+                is_primitive: true,
+                ..flat::Variable::empty_with_span(test_span())
+            },
+        );
+
+        let mut overlay = InstanceOverlay::default();
+        let mut record_parent = symbolic_instance(InstanceId::new(1), "model.records", Vec::new());
+        record_parent.is_primitive = false;
+        record_parent.dims = vec![7];
+        overlay
+            .components
+            .insert(record_parent.instance_id, record_parent);
+        overlay.components.insert(
+            InstanceId::new(2),
+            symbolic_instance(
+                InstanceId::new(2),
+                "model.records.values",
+                vec![ast::Subscript::Expression(component_ref_expr("model.n"))],
+            ),
+        );
+
+        ctx.build_parameter_lookup(&flat, &tree);
+        let changed = ctx
+            .recompute_symbolic_component_dimensions(&mut flat, &overlay, &tree)
+            .expect("record field dimensions should resolve");
+
+        assert!(changed);
+        assert_eq!(
+            flat.variables
+                .get(&field_name)
+                .expect("record field variable")
+                .dims,
+            vec![7, 2]
+        );
+        assert_eq!(
+            ctx.array_dimensions.get("model.records.values"),
+            Some(&vec![7, 2])
+        );
     }
 
     #[test]
@@ -982,7 +1045,7 @@ mod tests {
                                 subs: None,
                             }],
                             def_id: Some(logic_def_id),
-                            span: rumoca_core::Span::DUMMY,
+                            span: test_span(),
                         },
                     )),
                     ast::Subscript::Expression(ast::Expression::ComponentReference(
@@ -993,7 +1056,7 @@ mod tests {
                                 subs: None,
                             }],
                             def_id: Some(logic_def_id),
-                            span: rumoca_core::Span::DUMMY,
+                            span: test_span(),
                         },
                     )),
                 ],
@@ -1045,16 +1108,16 @@ mod tests {
         let enum_ref = |literal: &str| {
             let component_ref = rumoca_core::ComponentReference {
                 local: false,
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
                 parts: vec![
                     rumoca_core::ComponentRefPart {
                         ident: "Logic".to_string(),
-                        span: rumoca_core::Span::DUMMY,
+                        span: test_span(),
                         subs: Vec::new(),
                     },
                     rumoca_core::ComponentRefPart {
                         ident: literal.to_string(),
-                        span: rumoca_core::Span::DUMMY,
+                        span: test_span(),
                         subs: Vec::new(),
                     },
                 ],
@@ -1063,7 +1126,7 @@ mod tests {
             Expression::VarRef {
                 name: rumoca_core::Reference::from_component_reference(component_ref),
                 subscripts: Vec::new(),
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             }
         };
 
@@ -1078,7 +1141,7 @@ mod tests {
                     start: Box::new(enum_ref("U")),
                     step: None,
                     end: Box::new(enum_ref("-")),
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 }),
                 is_primitive: true,
                 ..flat::Variable::empty_with_span(test_span())
@@ -1132,23 +1195,23 @@ mod tests {
                     elements: vec![
                         Expression::Literal {
                             value: rumoca_core::Literal::Integer(1),
-                            span: rumoca_core::Span::DUMMY,
+                            span: test_span(),
                         },
                         Expression::Literal {
                             value: rumoca_core::Literal::Integer(0),
-                            span: rumoca_core::Span::DUMMY,
+                            span: test_span(),
                         },
                         Expression::Literal {
                             value: rumoca_core::Literal::Integer(1),
-                            span: rumoca_core::Span::DUMMY,
+                            span: test_span(),
                         },
                         Expression::Literal {
                             value: rumoca_core::Literal::Integer(0),
-                            span: rumoca_core::Span::DUMMY,
+                            span: test_span(),
                         },
                     ],
                     is_matrix: false,
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 }),
                 is_primitive: true,
                 ..flat::Variable::empty_with_span(test_span())
@@ -1338,7 +1401,7 @@ mod tests {
                     op: rumoca_core::OpBinary::Sub,
                     lhs: Box::new(size_dim_expr("a", 1)),
                     rhs: Box::new(int_lit(1)),
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 }),
                 is_primitive: true,
                 ..flat::Variable::empty_with_span(test_span())
@@ -1412,7 +1475,7 @@ mod tests {
                         "Modelica.Fluid.Types.Dynamics.SteadyStateInitial",
                     ),
                     subscripts: vec![],
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 },
             ),
             (
@@ -1420,7 +1483,7 @@ mod tests {
                 Expression::VarRef {
                     name: rumoca_core::Reference::new("pipe1.system.energyDynamics"),
                     subscripts: vec![],
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 },
             ),
         ];
@@ -1445,7 +1508,7 @@ mod tests {
                         "Modelica.Fluid.Types.Dynamics.SteadyStateInitial",
                     ),
                     subscripts: vec![],
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 },
             ),
             (
@@ -1453,13 +1516,23 @@ mod tests {
                 Expression::VarRef {
                     name: rumoca_core::Reference::new("pipe1.system.energyDynamics"),
                     subscripts: vec![],
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 },
             ),
         ];
 
         ctx.eval_enum_params(&params);
 
+        // Non-vacuity guard: the enclosing declaration really is resolvable in
+        // this same context, so the rejection below is about name lookup and
+        // not about evaluation having failed outright.
+        assert_eq!(
+            ctx.get_enum_param("system.energyDynamics"),
+            Some("Modelica.Fluid.Types.Dynamics.SteadyStateInitial".to_string())
+        );
+        // MLS 3.7 §5.3.2: every identifier after the first must name an element
+        // of the instance found so far, so `pipe1.system.energyDynamics` cannot
+        // silently degrade to the top-level `system.energyDynamics`.
         assert_eq!(ctx.get_enum_param("pipe1.energyDynamics"), None);
     }
 
@@ -1479,7 +1552,7 @@ mod tests {
                         "Modelica.Fluid.Types.Dynamics.SteadyStateInitial",
                     ),
                     subscripts: vec![],
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 },
             ),
             (
@@ -1487,7 +1560,7 @@ mod tests {
                 Expression::VarRef {
                     name: rumoca_core::Reference::new("HEX.system.energyDynamics"),
                     subscripts: vec![],
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 },
             ),
         ];
@@ -1512,7 +1585,7 @@ mod tests {
                         "Modelica.Fluid.Types.Dynamics.SteadyStateInitial",
                     ),
                     subscripts: vec![],
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 },
             ),
             (
@@ -1520,7 +1593,7 @@ mod tests {
                 Expression::VarRef {
                     name: rumoca_core::Reference::new("system.energyDynamics"),
                     subscripts: vec![],
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 },
             ),
             (
@@ -1528,7 +1601,7 @@ mod tests {
                 Expression::VarRef {
                     name: rumoca_core::Reference::new("pipe.energyDynamics"),
                     subscripts: vec![],
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 },
             ),
         ];

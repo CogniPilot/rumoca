@@ -14,7 +14,6 @@ use super::{
 
 const MAX_INLINE_WHILE_ITERS: usize = 128;
 
-/// Symbolic iteration candidates: `(index value, runtime membership guard)`.
 type SymbolicIterValues = Vec<(f64, Option<Reg>)>;
 
 struct DynamicSliceAssignment<'a> {
@@ -26,7 +25,6 @@ struct DynamicSliceAssignment<'a> {
     span: rumoca_core::Span,
 }
 
-/// Bounded candidate count of a symbolic for-loop interval domain.
 fn checked_symbolic_domain_count(
     domain_start: i64,
     domain_end: i64,
@@ -112,7 +110,6 @@ fn propagate_loop_body_constants(
 }
 
 impl<'a> LowerBuilder<'a> {
-    /// Returns `true` when lowering should stop due to `return`.
     pub(super) fn lower_statements(
         &mut self,
         statements: &[rumoca_core::Statement],
@@ -1083,10 +1080,10 @@ impl<'a> LowerBuilder<'a> {
             )?,
         };
         for (key, slot) in self.layout.bindings() {
-            if let Some(suffix) = key.strip_prefix(source_prefix.as_str()) {
+            if let Some(suffix) = key.as_str().strip_prefix(source_prefix.as_str()) {
                 components
                     .layout
-                    .push((key.clone(), suffix.to_string(), *slot));
+                    .push((key.to_string(), suffix.to_string(), *slot));
             }
         }
         for key in self.direct_assignments.keys() {
@@ -1331,7 +1328,7 @@ impl<'a> LowerBuilder<'a> {
         &mut self,
         comp: &rumoca_core::ComponentReference,
         args: &[rumoca_core::Expression],
-        outputs: &[rumoca_core::ComponentReference],
+        outputs: &[Option<rumoca_core::ComponentReference>],
         span: rumoca_core::Span,
         scope: &mut Scope,
         call_depth: usize,
@@ -1344,7 +1341,7 @@ impl<'a> LowerBuilder<'a> {
         if let Some(reg) =
             self.lower_runtime_string_special_intrinsic(function_name.as_str(), args, span)?
         {
-            for output in outputs {
+            for output in outputs.iter().flatten() {
                 self.bind_statement_output_values(scope, output, &[reg])?;
             }
             return Ok(false);
@@ -1371,6 +1368,9 @@ impl<'a> LowerBuilder<'a> {
         }
 
         if outputs.len() == 1 {
+            let Some(output) = &outputs[0] else {
+                return Ok(false);
+            };
             let expr = rumoca_core::Expression::FunctionCall {
                 name: function_name.into(),
                 args: copy_statement_call_args(args, span)?,
@@ -1378,7 +1378,7 @@ impl<'a> LowerBuilder<'a> {
                 span,
             };
             let values = self.lower_array_like_values(&expr, scope, call_depth + 1)?;
-            self.bind_statement_output_values(scope, &outputs[0], &values)?;
+            self.bind_statement_output_values(scope, output, &values)?;
             return Ok(false);
         }
 
@@ -1430,6 +1430,9 @@ impl<'a> LowerBuilder<'a> {
         })?;
 
         for (target, values) in outputs.iter().zip(output_values.iter()) {
+            let Some(target) = target else {
+                continue;
+            };
             self.bind_statement_output_values(scope, target, values)?;
         }
         Ok(false)
@@ -1439,7 +1442,7 @@ impl<'a> LowerBuilder<'a> {
         &mut self,
         function_name: &str,
         args: &[rumoca_core::Expression],
-        outputs: &[rumoca_core::ComponentReference],
+        outputs: &[Option<rumoca_core::ComponentReference>],
         call_span: rumoca_core::Span,
         scope: &mut Scope,
         call_depth: usize,
@@ -1466,16 +1469,24 @@ impl<'a> LowerBuilder<'a> {
         let span = self.statement_expr_or_context_span(input, call_span)?;
         if samples.is_empty() || samples.len() % 2 != 0 {
             let one = self.emit_const_at(1.0, span)?;
-            self.bind_statement_output_values(scope, info, &[one])?;
+            if let Some(info) = info {
+                self.bind_statement_output_values(scope, info, &[one])?;
+            }
             return Ok(true);
         }
 
         let info_ok = self.emit_const_at(0.0, span)?;
-        self.bind_statement_output_values(scope, info, &[info_ok])?;
+        if let Some(info) = info {
+            self.bind_statement_output_values(scope, info, &[info_ok])?;
+        }
         let (amplitude_values, phase_values) =
             self.lower_raw_real_fft_values(&samples, false, span)?;
-        self.bind_statement_output_values(scope, amplitudes, &amplitude_values)?;
-        self.bind_statement_output_values(scope, phases, &phase_values)?;
+        if let Some(amplitudes) = amplitudes {
+            self.bind_statement_output_values(scope, amplitudes, &amplitude_values)?;
+        }
+        if let Some(phases) = phases {
+            self.bind_statement_output_values(scope, phases, &phase_values)?;
+        }
         Ok(true)
     }
 
@@ -1483,7 +1494,7 @@ impl<'a> LowerBuilder<'a> {
         &mut self,
         function_name: &str,
         args: &[rumoca_core::Expression],
-        outputs: &[rumoca_core::ComponentReference],
+        outputs: &[Option<rumoca_core::ComponentReference>],
         call_span: rumoca_core::Span,
         scope: &mut Scope,
         call_depth: usize,
@@ -1511,10 +1522,15 @@ impl<'a> LowerBuilder<'a> {
         let span = self.statement_expr_or_context_span(samples_expr, call_span)?;
         if samples.is_empty() || samples.len() % 2 != 0 {
             let one = self.emit_const_at(1.0, span)?;
-            self.bind_statement_output_values(scope, &outputs[0], &[one])?;
+            if let Some(info) = &outputs[0] {
+                self.bind_statement_output_values(scope, info, &[one])?;
+            }
             return Ok(true);
         }
-        let nfi = if let Some(width) = self.statement_output_width(&outputs[1]) {
+        let nfi = if let Some(width) = outputs[1]
+            .as_ref()
+            .and_then(|output| self.statement_output_width(output))
+        {
             width
         } else if let Some(count) = checked_real_fft_frequency_count_arg(
             self,
@@ -1546,9 +1562,13 @@ impl<'a> LowerBuilder<'a> {
         self.zero_noise_phases(&amplitudes, &mut phases, span)?;
 
         let zero = self.emit_const_at(0.0, span)?;
-        self.bind_statement_output_values(scope, &outputs[0], &[zero])?;
-        self.bind_statement_output_values(scope, &outputs[1], &amplitudes)?;
-        if let Some(phases_output) = outputs.get(2) {
+        if let Some(info) = &outputs[0] {
+            self.bind_statement_output_values(scope, info, &[zero])?;
+        }
+        if let Some(amplitudes_output) = &outputs[1] {
+            self.bind_statement_output_values(scope, amplitudes_output, &amplitudes)?;
+        }
+        if let Some(phases_output) = outputs.get(2).and_then(Option::as_ref) {
             self.bind_statement_output_values(scope, phases_output, &phases)?;
         }
         Ok(true)

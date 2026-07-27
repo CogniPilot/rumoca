@@ -1,5 +1,5 @@
 {
-  "schema_version": 17,
+  "schema_version": 22,
   "layout": {
     "bindings": {
       "x": {
@@ -91,6 +91,8 @@
       1
     ],
     "initial_event_parameter_index": 1,
+    "terminal_event_parameter_index": null,
+    "initial_homotopy_parameter_index": null,
     "pre_param_bindings": [
       {
         "dest_p_index": 1,
@@ -98,7 +100,8 @@
           "Y": {
             "index": 2
           }
-        }
+        },
+        "clock_schedule": null
       }
     ]
   },
@@ -162,7 +165,7 @@
       "blocks": [
         {
           "rows": [
-            1
+            0
           ],
           "y_indices": [
             1
@@ -287,7 +290,7 @@
         }
       }
     ],
-    "projection_indices": [],
+    "projection_unknowns": [],
     "projection_plan": {
       "blocks": []
     },
@@ -452,7 +455,27 @@
       "program_spans": [],
       "output_indices": []
     },
-    "actions": []
+    "actions": [],
+    "has_terminal_event": false,
+    "delays": {
+      "source_rhs": {
+        "programs": [],
+        "program_spans": [],
+        "output_indices": []
+      },
+      "delay_time_rhs": {
+        "programs": [],
+        "program_spans": [],
+        "output_indices": []
+      },
+      "delay_max_rhs": {
+        "programs": [],
+        "program_spans": [],
+        "output_indices": []
+      },
+      "value_parameter_indices": [],
+      "source_is_discrete": []
+    }
   },
   "clocks": {
     "periodic_event_schedules": [

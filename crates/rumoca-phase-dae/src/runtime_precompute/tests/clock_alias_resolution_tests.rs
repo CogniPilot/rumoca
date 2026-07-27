@@ -1,5 +1,11 @@
 use super::*;
 
+/// MSL 4.1.0 `PeriodicExactClock` emits `subSample(Clock(factor), resolutionFactor)`
+/// for resolutions coarser than a second, which MLS §16.5.2 Operator 16.9 makes
+/// `factor * resolutionFactor` seconds. These fixtures use
+/// `factor = 20, resolution = Resolution.min (resolutionFactor = 60)`.
+const PERIODIC_EXACT_CLOCK_PERIOD_SECONDS: f64 = 20.0 * 60.0;
+
 #[test]
 // SPEC_0021: Exception - single regression fixture for shiftSample alias-chain lowering.
 #[allow(clippy::too_many_lines)]
@@ -14,7 +20,7 @@ fn test_runtime_precompute_resolves_shift_sample_via_sample_clock_alias_chain() 
         p.start = Some(if name == "factor" {
             lit(20.0)
         } else {
-            lit(1000.0)
+            lit(60.0)
         });
         dae_model
             .variables
@@ -107,8 +113,8 @@ fn test_runtime_precompute_resolves_shift_sample_via_sample_clock_alias_chain() 
     populate_runtime_precompute(&mut dae_model).expect("runtime precompute should succeed");
     assert!(
         dae_model.clocks.schedules.iter().any(|sched| {
-            (sched.period_seconds - 0.02).abs() <= 1e-12
-                && (sched.phase_seconds - 0.02).abs() <= 1e-12
+            (sched.period_seconds - PERIODIC_EXACT_CLOCK_PERIOD_SECONDS).abs() <= 1e-9
+                && (sched.phase_seconds - PERIODIC_EXACT_CLOCK_PERIOD_SECONDS).abs() <= 1e-9
         }),
         "expected shifted periodic schedule resolved through sample clock aliases"
     );
@@ -118,7 +124,7 @@ fn test_runtime_precompute_resolves_shift_sample_via_sample_clock_alias_chain() 
 fn test_runtime_precompute_resolves_shift_sample_with_reversed_clock_alias_equation() {
     let mut dae_model = dae::Dae::default();
 
-    for (name, value) in [("factor", 20.0), ("resolutionFactor", 1000.0)] {
+    for (name, value) in [("factor", 20.0), ("resolutionFactor", 60.0)] {
         let mut p = dae::Variable::new(
             rumoca_core::VarName::new(name),
             rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
@@ -212,8 +218,8 @@ fn test_runtime_precompute_resolves_shift_sample_with_reversed_clock_alias_equat
     );
     assert!(
         dae_model.clocks.schedules.iter().any(|sched| {
-            (sched.period_seconds - 0.02).abs() <= 1e-12
-                && (sched.phase_seconds - 0.02).abs() <= 1e-12
+            (sched.period_seconds - PERIODIC_EXACT_CLOCK_PERIOD_SECONDS).abs() <= 1e-9
+                && (sched.phase_seconds - PERIODIC_EXACT_CLOCK_PERIOD_SECONDS).abs() <= 1e-9
         }),
         "expected shifted periodic schedule resolved through reversed connection alias equation"
     );
@@ -224,10 +230,10 @@ fn test_runtime_precompute_prunes_dead_clock_constructor_branch_from_const_relat
     let mut dae_model = dae::Dae::default();
 
     for (name, value) in [
-        ("resolution", 1.0),
-        ("threshold", 2.0),
+        ("resolution", 4.0),
+        ("threshold", 5.0),
         ("factor", 20.0),
-        ("resolutionFactor", 1000.0),
+        ("resolutionFactor", 60.0),
     ] {
         let mut p = dae::Variable::new(
             rumoca_core::VarName::new(name),
@@ -291,7 +297,9 @@ fn test_runtime_precompute_prunes_dead_clock_constructor_branch_from_const_relat
             .clocks
             .schedules
             .iter()
-            .any(|sched| (sched.period_seconds - 0.02).abs() <= 1e-12),
+            .any(
+                |sched| (sched.period_seconds - PERIODIC_EXACT_CLOCK_PERIOD_SECONDS).abs() <= 1e-9
+            ),
         "expected resolved subSample schedule from live branch only"
     );
 }

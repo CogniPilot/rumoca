@@ -261,7 +261,9 @@ fn insertion_column_for_missing_semicolon(line: &str) -> Option<u32> {
     if trimmed.is_empty() || trimmed.ends_with(';') {
         return None;
     }
-    Some(trimmed.chars().count() as u32)
+    // LSP columns are UTF-16 code units, not Unicode scalars: an astral
+    // character earlier on the line counts twice.
+    Some(trimmed.chars().map(|ch| ch.len_utf16() as u32).sum::<u32>())
 }
 
 fn quick_fix_missing_semicolon(

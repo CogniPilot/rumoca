@@ -1188,6 +1188,9 @@ fn algorithm_assignment_to_target_expr(
             let [output] = outputs.as_slice() else {
                 return Ok(None);
             };
+            let Some(output) = output else {
+                return Ok(None);
+            };
             Ok(algorithm_output_target_name(output).map(|target| {
                 (
                     target,
@@ -1390,6 +1393,7 @@ fn collect_statement_targets(
             ..
         } if outputs.len() > 1 => outputs
             .iter()
+            .flatten()
             .map(|output| {
                 algorithm_output_target_name(output)
                     .ok_or_else(|| "FunctionCallMultiOutputTarget".to_string())
@@ -1591,6 +1595,9 @@ fn lower_statement_assignments_with_context(
                 resolve_multi_output_selection_names(flat, &function_name, outputs.len())?;
             let mut lowered = Vec::with_capacity(outputs.len());
             for (output_expr, selection_name) in outputs.iter().zip(selection_names.iter()) {
+                let Some(output_expr) = output_expr else {
+                    continue;
+                };
                 let Some(target) = algorithm_output_target_name(output_expr) else {
                     return Err("FunctionCallMultiOutputTarget".to_string());
                 };
@@ -1971,11 +1978,8 @@ pub(super) fn lower_algorithms_to_equations(dae: &mut Dae, flat: &Model) -> Resu
         match lower_algorithm_to_equations(dae, flat, algorithm, true) {
             Ok(lowered) => {
                 dae.initialization.equations.extend(lowered.main);
-                // MLS §8.6 and §11.1: initial algorithms contribute equations
-                // to the initialization problem. Discrete targets still use
-                // the same Appendix B solved forms as model algorithms, but
-                // they must initialize here rather than populate runtime event
-                // update partitions.
+                // Initial algorithms contribute equations to initialization.
+                // Discrete targets use the normal Appendix B solved forms.
                 dae.initialization.equations.extend(lowered.f_z);
                 dae.initialization.equations.extend(lowered.f_m);
             }

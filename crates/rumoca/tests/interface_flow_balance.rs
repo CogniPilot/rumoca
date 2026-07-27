@@ -115,6 +115,21 @@ end BoundaryWithDelta;
         effective_iflow, 0,
         "effective interface-flow contribution must not double-count flows already closed by explicit flow=0 equations"
     );
+    // The clamp instrumentation must agree with the arithmetic above: every
+    // raw interface flow was discarded, and no other clamp fired.
+    let clamps = detail.clamps();
+    assert_eq!(
+        clamps.interface_flow_dropped, detail.interface_flow_count,
+        "all raw interface flows are surplus in this reproducer"
+    );
+    assert_eq!(clamps.aggregate_candidates_dropped, 0);
+    assert_eq!(clamps.oc_interface_dropped, 0);
+    assert_eq!(clamps.break_edge_dropped, 0);
+    assert_eq!(
+        clamps.exercised(),
+        vec!["interface_flow"],
+        "interface_flow is the only clamp this fixture depends on"
+    );
     assert_eq!(
         rumoca_phase_dae::balance::balance(dae).expect("valid DAE balance fixture"),
         0,

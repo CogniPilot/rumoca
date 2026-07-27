@@ -1213,6 +1213,41 @@ fn test_function_array_input_binds_builtin_zeros_shape() {
 }
 
 #[test]
+fn test_function_matrix_input_interleaves_vector_columns() {
+    let mut env = VarEnv::<f64>::new();
+    for (name, values) in [
+        ("c1", [1.0, 2.0, 3.0]),
+        ("c2", [4.0, 5.0, 6.0]),
+        ("c3", [7.0, 8.0, 9.0]),
+    ] {
+        set_array_entries(&mut env, name, &[3], &values);
+        Arc::make_mut(&mut env.dims).insert(name.to_string(), vec![3]);
+    }
+
+    let mut matrix = Function::new("Pkg.matrix", rumoca_core::Span::DUMMY);
+    matrix.add_input(
+        FunctionParam::new("A", "Real", rumoca_core::Span::source_free_serde_default())
+            .with_dims(vec![3, 3]),
+    );
+    matrix.add_output(
+        FunctionParam::new("Y", "Real", rumoca_core::Span::source_free_serde_default())
+            .with_dims(vec![3, 3]),
+    );
+    matrix.body = vec![Statement::Assignment {
+        comp: comp_ref("Y"),
+        value: var("A"),
+        span: rumoca_core::Span::DUMMY,
+    }];
+    env.functions = Arc::new(IndexMap::from([("Pkg.matrix".to_string(), matrix)]));
+
+    let columns = arr(vec![var("c1"), var("c2"), var("c3")], true);
+    assert_eq!(
+        eval_array_values::<f64>(&fn_call("Pkg.matrix", vec![columns]), &env),
+        Ok(vec![1.0, 4.0, 7.0, 2.0, 5.0, 8.0, 3.0, 6.0, 9.0])
+    );
+}
+
+#[test]
 fn test_function_array_input_rejects_wrong_shape() {
     let mut env = VarEnv::<f64>::new();
     let mut funcs = IndexMap::new();

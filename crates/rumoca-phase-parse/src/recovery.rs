@@ -1,4 +1,4 @@
-use rumoca_core::{ClassType, Location, Token};
+use rumoca_core::{ClassType, Location, SourceId, Token};
 use rumoca_ir_ast::AstIndexMap as IndexMap;
 use rumoca_ir_ast::{ClassDef, Name, StoredDefinition};
 use std::sync::Arc;
@@ -24,7 +24,9 @@ struct LexedSource {
 
 struct Lexer<'a> {
     source: &'a str,
-    file_name: &'a str,
+    /// Source identity for this file, hashed once in `Lexer::new` so recovery
+    /// tokens carry the same `SourceId` a normal parse would stamp.
+    source_id: SourceId,
     offset: usize,
     line: u32,
     column: u32,
@@ -34,7 +36,7 @@ impl<'a> Lexer<'a> {
     fn new(source: &'a str, file_name: &'a str) -> Self {
         Self {
             source,
-            file_name,
+            source_id: SourceId::from_source_name(file_name),
             offset: 0,
             line: 1,
             column: 1,
@@ -69,7 +71,7 @@ impl<'a> Lexer<'a> {
             end_column: self.column,
             start: self.offset as u32,
             end: self.offset as u32,
-            file_name: self.file_name.to_string(),
+            source: self.source_id,
         };
         LexedSource { tokens, eof }
     }
@@ -181,7 +183,7 @@ impl<'a> Lexer<'a> {
             end_column: self.column,
             start: start as u32,
             end: self.offset as u32,
-            file_name: self.file_name.to_string(),
+            source: self.source_id,
         };
         LexToken {
             kind,
@@ -517,15 +519,7 @@ fn find_short_class_terminator(tokens: &[LexToken], start: usize) -> Option<usiz
 }
 
 fn combine_locations(start: &Location, end: &Location) -> Location {
-    Location {
-        start_line: start.start_line,
-        start_column: start.start_column,
-        end_line: end.end_line,
-        end_column: end.end_column,
-        start: start.start,
-        end: end.end,
-        file_name: start.file_name.clone(),
-    }
+    start.merged_with(end)
 }
 
 pub fn parse_to_recovered_ast(source: &str, file_name: &str) -> StoredDefinition {

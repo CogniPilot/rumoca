@@ -603,6 +603,7 @@ pub(super) fn eval_binary_array_values<T: SimFloat>(
             | OpBinary::SubElem
             | OpBinary::Div
             | OpBinary::DivElem
+            | OpBinary::ExpElem
     ) {
         return Ok(None);
     }
@@ -626,6 +627,7 @@ fn try_eval_binary_array_values<T: SimFloat>(
             | OpBinary::SubElem
             | OpBinary::Div
             | OpBinary::DivElem
+            | OpBinary::ExpElem
     ) {
         return Ok(eval_shaped_binary_operand(op, lhs, rhs, env)?.values);
     }
@@ -1021,6 +1023,7 @@ fn eval_shaped_operand<T: SimFloat>(
                 | OpBinary::SubElem
                 | OpBinary::Div
                 | OpBinary::DivElem
+                | OpBinary::ExpElem
         )
     {
         return eval_shaped_binary_operand(op, lhs, rhs, env);
@@ -1063,6 +1066,9 @@ pub(super) fn eval_shaped_binary_operand<T: SimFloat>(
         OpBinary::AddElem => combine_elementwise_operands(lhs, rhs, |l, r| l + r),
         OpBinary::SubElem => combine_elementwise_operands(lhs, rhs, |l, r| l - r),
         OpBinary::DivElem => combine_elementwise_operands(lhs, rhs, |l, r| l / r),
+        // MLS §10.6: dot exponentiation is element-wise and permits a
+        // scalar operand to be broadcast over the array operand.
+        OpBinary::ExpElem => combine_elementwise_operands(lhs, rhs, |l, r| l.powf(r)),
         _ => Err(EvalError::UnsupportedExpression {
             kind: "binary array operator",
         }),
@@ -1311,6 +1317,23 @@ pub(super) fn try_infer_runtime_expr_dims<T: SimFloat>(
     if let rumoca_core::Expression::Tuple { elements, .. } = expr {
         return Ok(runtime_vector_dims(elements.len()));
     }
+    // MLS §10.3.1: `fill(s, n1, n2, ...)` has dimensions `n1, n2, ...` whatever
+    // `s` is. Reading the shape from the size arguments keeps `size(fill(s, n),
+    // 1)` answerable when `s` has no numeric value — MSL's
+    // `Medium.extraPropertiesNames = fill("", 0)` is exactly that shape, and it
+    // sizes every `C_start`/`mC_scaled` array in `Modelica.Fluid`.
+    if let rumoca_core::Expression::BuiltinCall {
+        function: rumoca_core::BuiltinFunction::Fill,
+        args,
+        ..
+    } = expr
+        && args.len() >= 2
+    {
+        return args[1..]
+            .iter()
+            .map(|arg| constructor_dim(arg, env))
+            .collect();
+    }
     if let Some(dims) = indexed_runtime_expr_dims(expr, env)? {
         return Ok(dims);
     }
@@ -1553,24 +1576,20 @@ fn try_runtime_matrix_literal_dims<T: SimFloat>(
     if elements.is_empty() {
         return Ok(Vec::new());
     }
-    let rows = elements.len();
-    let cols = elements
-        .iter()
-        .map(|element| match element {
-            rumoca_core::Expression::Array { elements, .. }
-            | rumoca_core::Expression::Tuple { elements, .. } => Ok(elements.len()),
-            _ => eval_array_like_values::<T>(element, env).map(|values| values.len()),
-        })
-        .collect::<Result<Vec<_>, EvalError>>()?
-        .into_iter()
-        .max()
-        .ok_or(EvalError::UnsupportedExpression {
-            kind: "matrix shape",
-        })?;
+    // MLS §10.4.2: a matrix construction concatenates operands PROMOTED to two
+    // dimensions, so a vector operand contributes an `n x 1` block and a row of
+    // vectors is `n` rows tall — not one row with `n` columns. Counting the
+    // syntactic rows and entries instead describes the source layout, not the
+    // concatenated matrix, and disagrees with the values the row construction
+    // below actually produces (e.g. a `[zeros(8), zeros(8), v1; ...]` colour map
+    // is 64x3, not 5x3). Deriving the shape from that same construction keeps
+    // the reported dimensions and the produced values consistent by definition.
+    let rows = eval_matrix_literal_rows(elements, env)?;
+    let cols = rectangular_matrix_cols(&rows, "matrix literal")?;
     if cols == 0 {
         Ok(Vec::new())
     } else {
-        Ok(vec![rows, cols])
+        Ok(vec![rows.len(), cols])
     }
 }
 

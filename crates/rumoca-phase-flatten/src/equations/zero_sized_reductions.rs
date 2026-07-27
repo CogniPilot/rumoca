@@ -8,7 +8,12 @@ pub(super) fn simplify_zero_sized_reductions(
     prefix: &ast::QualifiedName,
 ) -> ast::Expression {
     match expr {
-        ast::Expression::FunctionCall { comp, args, span } => {
+        ast::Expression::FunctionCall {
+            comp,
+            args,
+            is_partial_application,
+            span,
+        } => {
             if args.len() == 1
                 && expression_is_statically_zero_sized(ctx, &args[0], prefix)
                 && let Some(neutral) = zero_sized_reduction_neutral(comp, *span)
@@ -22,6 +27,7 @@ pub(super) fn simplify_zero_sized_reductions(
                     .iter()
                     .map(|arg| simplify_zero_sized_reductions(ctx, arg, prefix))
                     .collect(),
+                is_partial_application: *is_partial_application,
                 span: *span,
             }
         }
@@ -330,6 +336,7 @@ mod tests {
         ast::Expression::FunctionCall {
             comp: component_ref(&[name]),
             args,
+            is_partial_application: false,
             span: rumoca_core::Span::DUMMY,
         }
     }
@@ -338,6 +345,7 @@ mod tests {
         ast::Expression::FunctionCall {
             comp: component_ref(path),
             args,
+            is_partial_application: false,
             span: rumoca_core::Span::DUMMY,
         }
     }
@@ -393,7 +401,10 @@ mod tests {
             .insert("tank.topPorts".to_string(), vec![2]);
 
         let expr = call("sum", vec![var_ref(&["topPorts", "m_flow"])]);
-        let ast::Expression::FunctionCall { comp, args, span } = expr else {
+        let ast::Expression::FunctionCall {
+            comp, args, span, ..
+        } = expr
+        else {
             panic!("expected function call");
         };
         let expanded = expand_reduction_over_array_ref(
@@ -420,7 +431,10 @@ mod tests {
             .insert("tank.topPorts".to_string(), vec![2]);
 
         let expr = call("product", vec![var_ref(&["topPorts", "m_flow"])]);
-        let ast::Expression::FunctionCall { comp, args, span } = expr else {
+        let ast::Expression::FunctionCall {
+            comp, args, span, ..
+        } = expr
+        else {
             panic!("expected function call");
         };
         let expanded = expand_reduction_over_array_ref(

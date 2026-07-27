@@ -146,11 +146,13 @@ impl ModelicaLanguageServer {
                 return;
             }
             let diagnostics_started = Instant::now();
+            let tool_options = self.tool_options_for_document(&file_name).await;
             let mut session = self.session.write().await;
-            let mut diagnostics = handlers::compute_diagnostics_with_mode(
+            let mut diagnostics = handlers::compute_diagnostics_with_options(
                 text,
                 &file_name,
                 Some(&mut session),
+                &tool_options.lint,
                 rumoca_compile::compile::SemanticDiagnosticsMode::Save,
             );
             drop(session);
@@ -169,7 +171,14 @@ impl ModelicaLanguageServer {
             return;
         }
         let diagnostics_started = Instant::now();
-        let mut diagnostics = handlers::compute_diagnostics(text, &file_name, None);
+        let tool_options = self.tool_options_for_document(&file_name).await;
+        let mut diagnostics = handlers::compute_diagnostics_with_options(
+            text,
+            &file_name,
+            None,
+            &tool_options.lint,
+            rumoca_compile::compile::SemanticDiagnosticsMode::Standard,
+        );
         let diagnostics_compute_ms = diagnostics_started.elapsed().as_millis() as u64;
         if self.analysis_request_is_stale(request_token).await {
             publish_diagnostics_timing(true, false, 0, false, diagnostics_compute_ms);

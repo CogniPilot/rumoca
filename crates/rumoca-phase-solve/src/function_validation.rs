@@ -107,13 +107,13 @@ fn resolve_projected_dae_function<'a>(
     dae: &'a Dae,
     name: &rumoca_core::Reference,
 ) -> Option<&'a rumoca_core::Function> {
-    let (_, function) = resolve_function_reference(&dae.symbols.functions, name)?;
+    let (key, function) = resolve_function_reference(&dae.symbols.functions, name)?;
     if let Some(resolved) = name.resolved_function() {
         if name.component_ref()?.parts.len() == resolved.base_part_count {
             return Some(function);
         }
-    } else {
-        return None;
+    } else if key.as_str() == name.as_str() {
+        return Some(function);
     }
     let suffix = output_projection_suffix(function, name)?;
     projection_matches_output(&dae.symbols.functions, function, suffix).then_some(function)
@@ -827,7 +827,7 @@ pub(super) fn validate_statement_function_call(
     dae: &Dae,
     comp: &ComponentReference,
     args: &[Expression],
-    _outputs: &[ComponentReference],
+    _outputs: &[Option<ComponentReference>],
     validated_functions: &mut HashSet<VarName>,
     active_stack: &mut HashSet<VarName>,
     function_param_aliases: &HashSet<VarName>,

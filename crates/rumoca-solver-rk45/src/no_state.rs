@@ -1,23 +1,19 @@
 use indexmap::IndexMap;
-use rumoca_eval_solve::{
-    EventUpdateRowFilter, ProjectedEventUpdateInput, ProjectedInitialEventInput, SolveRuntime,
-    apply_discrete_slot_values,
-};
 use rumoca_ir_solve as solve;
 use rumoca_solver::{
-    EventActionOutcome, EventPreMode, NoStateEventStep, NoStateOrchestrationBackend,
-    NoStateScheduledStop, RuntimeEventBoundary, RuntimeEventBoundaryHandler, RuntimeEventStop,
-    RuntimeSolveError, SimOptions, SimTermination, SolveStopSchedule,
-    commit_pre_params_after_event, process_runtime_event_boundary, run_no_state_output_schedule,
-    runtime_event_horizon, runtime_root_event_application_time,
-    timeline::{event_left_limit_time, sample_time_match_with_tol},
+    EventActionOutcome, EventPreMode, EventUpdateRowFilter, NoStateEventStep,
+    NoStateOrchestrationBackend, NoStateRootSearchScratch, NoStateScheduledStop,
+    ProjectedEventUpdateInput, ProjectedInitialEventInput, RuntimeEventBoundary,
+    RuntimeEventBoundaryHandler, RuntimeEventStop, RuntimeSolveError, SimOptions, SimTermination,
+    SolveRuntime, SolveStopSchedule, apply_discrete_slot_values, commit_pre_params_after_event_at,
+    first_no_state_root_crossing, process_runtime_event_boundary, run_no_state_output_schedule,
+    runtime_event_horizon, runtime_root_event_application_time, runtime_values_changed,
+    timeline::{event_left_probe_time, sample_time_match_with_tol},
 };
 
 use crate::{SessionState, SimError};
 
 const NO_STATE_EVENT_UPDATE_MAX_ITERS: usize = 256;
-const ROOT_BISECTION_ITERS: usize = 64;
-
 pub(crate) struct NoStateSession {
     model: solve::SolveModel,
     opts: SimOptions,
@@ -33,6 +29,8 @@ struct NoStateRuntime {
     last_event_t: Option<f64>,
     termination: Option<SimTermination>,
     stop_schedule: SolveStopSchedule,
+    root_params_scratch: Vec<f64>,
+    root_search_scratch: NoStateRootSearchScratch,
 }
 
 impl NoStateSession {
@@ -60,6 +58,19 @@ impl NoStateSession {
         if let Some(slot) = self.runtime.params.get_mut(param_idx) {
             *slot = value;
         }
+        let tol = self.tol();
+        refresh_observation_rows_and_relation_memory(
+            &self.runtime.runtime,
+            &mut self.runtime.current_y,
+            &mut self.runtime.params,
+            self.runtime.current_t,
+            tol,
+        )?;
+        self.runtime.runtime.commit_delay_history(
+            self.runtime.current_t,
+            &self.runtime.current_y,
+            &self.runtime.params,
+        )?;
         Ok(())
     }
 
@@ -198,6 +209,10 @@ impl NoStateOrchestrationBackend for Rk45NoStateOrchestration<'_> {
         self.runtime.current_t = time;
     }
 
+    fn max_accepted_step_size(&self) -> Option<f64> {
+        self.runtime.runtime.delay_step_limit()
+    }
+
     fn next_scheduled_stop(&mut self, target: f64) -> Result<NoStateScheduledStop, Self::Error> {
         let (stop_time, event_stop) = self.runtime.runtime.next_runtime_event_stop(
             &self.runtime.current_y,
@@ -214,9 +229,13 @@ impl NoStateOrchestrationBackend for Rk45NoStateOrchestration<'_> {
 
     fn next_root_event_time(&mut self, target: f64, tol: f64) -> Result<Option<f64>, Self::Error> {
         next_no_state_root_event_time(
-            &self.runtime.runtime,
-            &self.runtime.current_y,
-            &self.runtime.params,
+            NoStateRootEvaluation {
+                runtime: &self.runtime.runtime,
+                y: &self.runtime.current_y,
+                p: &self.runtime.params,
+                params_scratch: &mut self.runtime.root_params_scratch,
+                root_scratch: &mut self.runtime.root_search_scratch,
+            },
             self.runtime.current_t,
             target,
             tol,
@@ -227,14 +246,24 @@ impl NoStateOrchestrationBackend for Rk45NoStateOrchestration<'_> {
         apply_no_state_event_step(self.model, self.opts, self.runtime, step)
     }
 
-    fn settle_and_record_output(&mut self) -> Result<(), Self::Error> {
+    fn settle_accepted_step(&mut self) -> Result<(), Self::Error> {
         refresh_observation_rows_and_relation_memory(
             &self.runtime.runtime,
             &mut self.runtime.current_y,
             &mut self.runtime.params,
             self.runtime.current_t,
             self.opts.atol.max(1.0e-10),
-        )
+        )?;
+        self.runtime.runtime.commit_delay_history(
+            self.runtime.current_t,
+            &self.runtime.current_y,
+            &self.runtime.params,
+        )?;
+        Ok(())
+    }
+
+    fn record_output(&mut self) -> Result<(), Self::Error> {
+        Ok(())
     }
 }
 
@@ -247,11 +276,22 @@ fn initialize_no_state_runtime(
     let mut current_y = model.initial_y.clone();
     let mut current_t = opts.t_start;
     let tol = opts.atol.max(1.0e-10);
+    runtime.initialize_delay_history(current_t, &current_y, &mut params)?;
     runtime.set_initial_event_flag(&mut params, true);
-    settle_algebraics_and_relation_memory(&runtime, &mut current_y, &mut params, current_t, tol)?;
-    let dynamic_event = runtime.current_dynamic_time_event_stop(&current_y, &params, current_t)?;
+    // Preserve declared/start values for `pre()` throughout initial event
+    // iteration. Initialization projection is allowed to change current
+    // values, but not the frozen initial-event snapshot.
     let event_pre_y = current_y.clone();
     let event_pre_p = params.clone();
+    runtime.settle_initialization_system(
+        &mut current_y,
+        &mut params,
+        current_t,
+        tol,
+        NO_STATE_EVENT_UPDATE_MAX_ITERS,
+    )?;
+    settle_algebraics_and_relation_memory(&runtime, &mut current_y, &mut params, current_t, tol)?;
+    let dynamic_event = runtime.current_dynamic_time_event_stop(&current_y, &params, current_t)?;
     let outcome = runtime.apply_projected_initial_event_boundary(
         ProjectedInitialEventInput {
             y: &mut current_y,
@@ -279,7 +319,8 @@ fn initialize_no_state_runtime(
             tol,
         )?;
     }
-    commit_pre_params_after_event(model, &current_y, &mut params, tol);
+    runtime.commit_delay_history(current_t, &current_y, &params)?;
+    let root_count = runtime.root_condition_count();
     Ok(NoStateRuntime {
         runtime,
         params,
@@ -288,6 +329,8 @@ fn initialize_no_state_runtime(
         last_event_t: None,
         termination,
         stop_schedule: SolveStopSchedule::new(&model.problem, opts.t_start, opts.t_end),
+        root_params_scratch: vec![0.0; model.parameters.len()],
+        root_search_scratch: NoStateRootSearchScratch::new(root_count),
     })
 }
 
@@ -305,6 +348,7 @@ fn apply_no_state_event_step(
         step.event_stop.unwrap_or(RuntimeEventStop {
             pre_mode: step.pre_mode(),
             observe_right_limit: false,
+            terminal: false,
         })
     };
     let outcome = {
@@ -317,6 +361,7 @@ fn apply_no_state_event_step(
             event_pre_p: Vec::new(),
             termination: &mut runtime.termination,
             root_event: step.root_event,
+            terminal_p_index: model.problem.solve_layout.terminal_event_parameter_index,
         };
         process_runtime_event_boundary(
             RuntimeEventBoundary {
@@ -326,17 +371,27 @@ fn apply_no_state_event_step(
                 } else {
                     runtime_event_horizon(event, step.target, opts.t_end)
                 },
+                tolerance: step.tol,
                 event,
             },
             &mut handler,
         )?
     };
     runtime.current_t = if step.root_event {
-        runtime_root_event_application_time(outcome.final_t, step.target)
+        runtime_root_event_application_time(outcome.final_t, step.target, step.tol)
     } else {
         outcome.final_t
     };
-    commit_pre_params_after_event(model, &runtime.current_y, &mut runtime.params, step.tol);
+    commit_pre_params_after_event_at(
+        model,
+        &runtime.current_y,
+        &mut runtime.params,
+        Some(event_t),
+        step.tol,
+    );
+    runtime
+        .runtime
+        .commit_delay_history(event_t, &runtime.current_y, &runtime.params)?;
     runtime.stop_schedule.advance_past(runtime.current_t);
     Ok(())
 }
@@ -350,19 +405,26 @@ struct NoStateEventBoundary<'a> {
     event_pre_p: Vec<f64>,
     termination: &'a mut Option<SimTermination>,
     root_event: bool,
+    terminal_p_index: Option<usize>,
 }
 
 impl RuntimeEventBoundaryHandler for NoStateEventBoundary<'_> {
     type Error = SimError;
 
     fn on_event_time(&mut self, event_t: f64, event: RuntimeEventStop) -> Result<(), Self::Error> {
-        if !self.root_event
+        if event.terminal
+            && let Some(index) = self.terminal_p_index
+            && let Some(slot) = self.p.get_mut(index)
+        {
+            *slot = 1.0;
+        }
+        let prepared_left_limit = !self.root_event
             && matches!(
                 event.pre_mode,
                 EventPreMode::EventEntry | EventPreMode::Fixed
-            )
-        {
-            let left_t = event_left_limit_time(event_t);
+            );
+        if prepared_left_limit {
+            let left_t = event_left_probe_time(event_t, self.tol);
             refresh_observation_rows_and_relation_memory(
                 self.runtime,
                 self.y,
@@ -370,6 +432,27 @@ impl RuntimeEventBoundaryHandler for NoStateEventBoundary<'_> {
                 left_t,
                 self.tol,
             )?;
+        } else {
+            refresh_observation_rows_and_relation_memory(
+                self.runtime,
+                self.y,
+                self.p,
+                event_t,
+                self.tol,
+            )?;
+        }
+        // Commit the accepted left limit before applying event updates. The
+        // post-event commit in apply_no_state_event_step records the matching
+        // right limit at the same source time.
+        if prepared_left_limit {
+            self.runtime.commit_delay_history_evaluated_at(
+                event_t,
+                event_left_probe_time(event_t, self.tol),
+                self.y,
+                self.p,
+            )?;
+        } else {
+            self.runtime.commit_delay_history(event_t, self.y, self.p)?;
         }
         self.event_pre_y = self.y.to_vec();
         self.event_pre_p = self.p.to_vec();
@@ -451,7 +534,16 @@ fn apply_no_state_deadline_tick(
         target,
         tol,
     )?;
-    commit_pre_params_after_event(model, &runtime.current_y, &mut runtime.params, tol);
+    commit_pre_params_after_event_at(
+        model,
+        &runtime.current_y,
+        &mut runtime.params,
+        Some(target),
+        tol,
+    );
+    runtime
+        .runtime
+        .commit_delay_history(target, &runtime.current_y, &runtime.params)?;
     Ok(())
 }
 
@@ -495,8 +587,9 @@ fn refresh_algebraics_and_detect_changes(
     tol: f64,
 ) -> Result<bool, RuntimeSolveError> {
     let before = y.to_vec();
+    runtime.refresh_delay_values(t, y, p)?;
     runtime.refresh_algebraic_and_output_slots(t, y, p, tol, NO_STATE_EVENT_UPDATE_MAX_ITERS)?;
-    Ok(values_changed(&before, y, tol))
+    Ok(runtime_values_changed(&before, y, tol))
 }
 
 fn apply_event_action_outcome(
@@ -520,95 +613,71 @@ fn apply_event_action_outcome(
     }
 }
 
+struct NoStateRootEvaluation<'a> {
+    runtime: &'a SolveRuntime,
+    y: &'a [f64],
+    p: &'a [f64],
+    params_scratch: &'a mut Vec<f64>,
+    root_scratch: &'a mut NoStateRootSearchScratch,
+}
+
 fn next_no_state_root_event_time(
-    runtime: &SolveRuntime,
-    y: &[f64],
-    p: &[f64],
+    input: NoStateRootEvaluation<'_>,
     current_t: f64,
     target: f64,
     tol: f64,
 ) -> Result<Option<f64>, SimError> {
-    if let Some(root_time) = runtime.next_planned_time_root(p, current_t, target, tol)? {
-        return Ok(Some(root_time));
-    }
-    let Some(root_time) = first_root_crossing_time(runtime, y, p, current_t, target, tol)? else {
-        return Ok(None);
+    let NoStateRootEvaluation {
+        runtime,
+        y,
+        p,
+        params_scratch,
+        root_scratch,
+    } = input;
+    let planned_root = runtime.next_planned_time_root(p, current_t, target, tol)?;
+    let search_target = planned_root.unwrap_or(target);
+    let root_count = runtime.root_condition_count();
+    let Some(root_time) = first_no_state_root_crossing(
+        root_scratch,
+        root_count,
+        current_t,
+        search_target,
+        tol,
+        |t, out| eval_refreshed_roots(runtime, y, p, params_scratch, t, tol, out),
+    )?
+    else {
+        return Ok(planned_root);
     };
     if root_time > current_t + tol
         && (root_time < target || sample_time_match_with_tol(root_time, target))
     {
         Ok(Some(root_time))
     } else {
-        Ok(None)
+        Ok(planned_root)
     }
-}
-
-fn first_root_crossing_time(
-    runtime: &SolveRuntime,
-    y: &[f64],
-    p: &[f64],
-    t_start: f64,
-    t_end: f64,
-    tol: f64,
-) -> Result<Option<f64>, SimError> {
-    if runtime.model.problem.events.root_conditions.is_empty() {
-        return Ok(None);
-    }
-    let root_count = runtime.model.problem.events.root_conditions.len();
-    let mut start = vec![0.0; root_count];
-    let mut end = vec![0.0; root_count];
-    eval_refreshed_roots(runtime, y, p, t_start, tol, &mut start)?;
-    eval_refreshed_roots(runtime, y, p, t_end, tol, &mut end)?;
-
-    let mut crossing = None;
-    for (a, b) in start.iter().zip(end.iter()) {
-        if root_surface_crossed_or_near(*a, *b, tol) {
-            let root = bisect_first_root(runtime, y, p, t_start, t_end, tol, root_count)?;
-            crossing = Some(crossing.map_or(root, |current: f64| current.min(root)));
-        }
-    }
-    Ok(crossing)
 }
 
 fn eval_refreshed_roots(
     runtime: &SolveRuntime,
     y: &[f64],
     p: &[f64],
+    params: &mut Vec<f64>,
     t: f64,
     tol: f64,
     out: &mut [f64],
 ) -> Result<(), SimError> {
-    runtime.eval_root_search_conditions_into(t, y, p, tol, NO_STATE_EVENT_UPDATE_MAX_ITERS, out)?;
+    params.clear();
+    params.extend_from_slice(p);
+    runtime.refresh_delay_values(t, y, params)?;
+    runtime.eval_root_search_conditions_into(
+        t,
+        y,
+        params,
+        tol,
+        NO_STATE_EVENT_UPDATE_MAX_ITERS,
+        out,
+    )?;
     Ok(())
-}
-
-fn bisect_first_root(
-    runtime: &SolveRuntime,
-    y: &[f64],
-    p: &[f64],
-    mut lo: f64,
-    mut hi: f64,
-    tol: f64,
-    root_count: usize,
-) -> Result<f64, SimError> {
-    let mut lo_roots = vec![0.0; root_count];
-    eval_refreshed_roots(runtime, y, p, lo, tol, &mut lo_roots)?;
-    for _ in 0..ROOT_BISECTION_ITERS {
-        let mid = lo + 0.5 * (hi - lo);
-        let mut mid_roots = vec![0.0; root_count];
-        eval_refreshed_roots(runtime, y, p, mid, tol, &mut mid_roots)?;
-        if lo_roots
-            .iter()
-            .zip(mid_roots.iter())
-            .any(|(a, b)| a.signum() != b.signum() || root_surface_near_zero(*b, tol))
-        {
-            hi = mid;
-        } else {
-            lo = mid;
-            lo_roots = mid_roots;
-        }
-    }
-    Ok(hi)
 }
 
 fn collect_visible_values(
@@ -625,20 +694,4 @@ fn collect_visible_values(
         });
     }
     Ok(names.iter().cloned().zip(values).collect())
-}
-
-fn root_surface_crossed_or_near(a: f64, b: f64, tol: f64) -> bool {
-    root_surface_near_zero(a, tol) || root_surface_near_zero(b, tol) || a.signum() != b.signum()
-}
-
-fn root_surface_near_zero(value: f64, tol: f64) -> bool {
-    value.abs() <= tol
-}
-
-fn values_changed(before: &[f64], after: &[f64], tol: f64) -> bool {
-    before.len() != after.len()
-        || before
-            .iter()
-            .zip(after.iter())
-            .any(|(before, after)| (*before - *after).abs() > tol)
 }

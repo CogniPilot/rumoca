@@ -118,7 +118,7 @@ struct FunctionProjectionScope {
 struct ProcedureCallProjection<'a> {
     comp: &'a rumoca_core::ComponentReference,
     args: &'a [rumoca_core::Expression],
-    targets: &'a [rumoca_core::ComponentReference],
+    targets: &'a [Option<rumoca_core::ComponentReference>],
     depth: usize,
     span: rumoca_core::Span,
 }
@@ -627,6 +627,9 @@ impl<'a> FunctionProjectionAnalysis<'a> {
                 )
             })?;
         for (formal, target) in callee.outputs.iter().zip(targets) {
+            let Some(target) = target else {
+                continue;
+            };
             self.bind_projected_procedure_output(formal, target, &projected, scope, span)?;
         }
         Ok(())

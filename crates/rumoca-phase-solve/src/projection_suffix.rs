@@ -15,7 +15,45 @@ pub(crate) fn resolve_function_reference<'a>(
                 .ok()?;
         return Some((&function.name, function));
     }
-    None
+    resolve_flat_name_function(functions, name.as_str())
+}
+
+/// MLS §12.4.3: a multi-output call projected onto a single output can reach
+/// Solve as a flat `<function>.<output>` name without a resolved function
+/// instance (for example the `(a, b, nextEvent, last) = f(...)` selections
+/// produced when a `when`-algorithm is lowered). Resolve those against the DAE
+/// symbol table by their longest known-function prefix so the projection is
+/// still a *resolved* reference, never a guessed one.
+fn resolve_flat_name_function<'a>(
+    functions: &'a indexmap::IndexMap<rumoca_core::VarName, rumoca_core::Function>,
+    text: &str,
+) -> Option<(&'a rumoca_core::VarName, &'a rumoca_core::Function)> {
+    // Runtime-special projections (the random generators' `.stateOut`/`.result`
+    // tails) keep their dedicated lowering path and must not be re-routed
+    // through the generic output projection.
+    if rumoca_eval_dae::is_runtime_special_function_name(&rumoca_core::VarName::new(text)) {
+        return None;
+    }
+    let mut best: Option<(&'a rumoca_core::VarName, &'a rumoca_core::Function)> = None;
+    for (key, function) in functions {
+        let candidate = key.as_str();
+        if candidate == text {
+            return Some((key, function));
+        }
+        if !flat_name_has_prefix(text, candidate) {
+            continue;
+        }
+        if best.is_none_or(|(best_key, _)| best_key.as_str().len() < candidate.len()) {
+            best = Some((key, function));
+        }
+    }
+    best
+}
+
+fn flat_name_has_prefix(text: &str, prefix: &str) -> bool {
+    text.len() > prefix.len()
+        && text.starts_with(prefix)
+        && text.as_bytes().get(prefix.len()) == Some(&b'.')
 }
 
 pub(crate) fn output_projection_suffix(
@@ -30,7 +68,55 @@ pub(crate) fn output_projection_suffix(
             .get(resolved.base_part_count..)?;
         return parse_output_projection_suffix(suffix);
     }
-    None
+    let text = name.as_str();
+    let prefix = function.name.as_str();
+    flat_name_has_prefix(text, prefix).then_some(())?;
+    parse_flat_output_projection_suffix(&text[prefix.len() + 1..])
+}
+
+/// Parse the rendered `<output>[.<field>...][\[i, j\]]` tail of a flat
+/// projected function name. Only the final segment may carry subscripts, and
+/// every subscript must already be a positive literal index.
+fn parse_flat_output_projection_suffix(rest: &str) -> Option<OutputProjectionSuffix> {
+    let segments: Vec<&str> = rest.split('.').collect();
+    let (last, leading) = segments.split_last()?;
+    if leading
+        .iter()
+        .any(|segment| segment.is_empty() || segment.contains('[') || segment.contains(']'))
+    {
+        return None;
+    }
+    let (last_ident, indices) = match last.split_once('[') {
+        Some((ident, raw)) => (ident, parse_flat_projection_indices(raw)?),
+        None => (*last, Vec::new()),
+    };
+    if last_ident.is_empty() {
+        return None;
+    }
+    let mut idents: Vec<String> = leading
+        .iter()
+        .map(|segment| (*segment).to_string())
+        .collect();
+    idents.push(last_ident.to_string());
+    let (output_name, output_fields) = idents.split_first()?;
+    Some(OutputProjectionSuffix {
+        output_name: output_name.clone(),
+        output_fields: output_fields.to_vec(),
+        indices,
+    })
+}
+
+fn parse_flat_projection_indices(raw: &str) -> Option<Vec<usize>> {
+    raw.strip_suffix(']')?
+        .split(',')
+        .map(|index| {
+            index
+                .trim()
+                .parse::<usize>()
+                .ok()
+                .filter(|index| *index > 0)
+        })
+        .collect()
 }
 
 fn parse_output_projection_suffix(
@@ -238,5 +324,74 @@ mod tests {
             });
 
         assert!(resolve_function_reference(&functions, &name).is_none());
+    }
+
+    fn flat_multi_output_functions()
+    -> indexmap::IndexMap<rumoca_core::VarName, rumoca_core::Function> {
+        let span = rumoca_core::Span::DUMMY;
+        let mut functions = indexmap::IndexMap::new();
+        let mut function = rumoca_core::Function::new("Pkg.Table.coefficients", span);
+        function
+            .outputs
+            .push(rumoca_core::FunctionParam::new("a", "Real", span));
+        function
+            .outputs
+            .push(rumoca_core::FunctionParam::new("b", "Real", span));
+        function.body.push(rumoca_core::Statement::Return { span });
+        functions.insert(function.name.clone(), function);
+        functions
+    }
+
+    #[test]
+    fn flat_projected_call_name_resolves_to_its_longest_function_prefix() {
+        let functions = flat_multi_output_functions();
+        let name = rumoca_core::Reference::from("Pkg.Table.coefficients.b");
+
+        let (key, function) =
+            resolve_function_reference(&functions, &name).expect("flat projected call resolves");
+
+        assert_eq!(key.as_str(), "Pkg.Table.coefficients");
+        assert_eq!(
+            output_projection_suffix(function, &name),
+            Some(OutputProjectionSuffix {
+                output_name: "b".to_string(),
+                output_fields: Vec::new(),
+                indices: Vec::new(),
+            })
+        );
+    }
+
+    #[test]
+    fn flat_projected_call_name_keeps_trailing_literal_indices() {
+        let functions = flat_multi_output_functions();
+        let name = rumoca_core::Reference::from("Pkg.Table.coefficients.a[2, 3]");
+
+        let (_, function) =
+            resolve_function_reference(&functions, &name).expect("flat projected call resolves");
+
+        assert_eq!(
+            output_projection_suffix(function, &name),
+            Some(OutputProjectionSuffix {
+                output_name: "a".to_string(),
+                output_fields: Vec::new(),
+                indices: vec![2, 3],
+            })
+        );
+    }
+
+    #[test]
+    fn flat_name_that_is_not_a_function_prefix_stays_unresolved() {
+        let functions = flat_multi_output_functions();
+        let name = rumoca_core::Reference::from("Pkg.Other.coefficients.a");
+
+        assert!(resolve_function_reference(&functions, &name).is_none());
+    }
+
+    #[test]
+    fn parse_flat_output_projection_suffix_rejects_non_literal_indices() {
+        assert!(parse_flat_output_projection_suffix("a[i]").is_none());
+        assert!(parse_flat_output_projection_suffix("a[0]").is_none());
+        assert!(parse_flat_output_projection_suffix("a[1].b").is_none());
+        assert!(parse_flat_output_projection_suffix("").is_none());
     }
 }

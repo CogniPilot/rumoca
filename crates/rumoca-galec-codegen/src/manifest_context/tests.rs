@@ -167,7 +167,7 @@ fn content_view_serializes_representations() {
     assert!(value["active_fmu"].is_null());
     let rep = &value["representations"][0];
     assert_eq!(rep["kind"], "AlgorithmCode");
-    assert_eq!(rep["checksum"], Sha1Hex::of_bytes(b"ac-bytes").as_str());
+    assert_eq!(rep["checksum"], Sha1Hex::of_bytes(b"ac-bytes").to_hex());
 }
 
 #[test]

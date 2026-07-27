@@ -966,11 +966,14 @@ impl<'a> LowerBuilder<'a> {
                 call_span,
             );
         }
-        if is_stream_passthrough_intrinsic(name.as_str()) {
-            return match args.first() {
-                Some(arg) => self.lower_array_like_values(arg, scope, call_depth),
-                None => Ok(Vec::new()),
-            };
+        if is_unlowered_stream_intrinsic(name.as_str()) {
+            return Err(unsupported_at(
+                format!(
+                    "{} must be lowered during Flat connection expansion before Solve-IR lowering",
+                    intrinsic_short_name(name.as_str())
+                ),
+                call_span,
+            ));
         }
         if is_modelica_array_constructor_function(name) {
             return self.lower_array_constructor_values(args, false, scope, call_depth);

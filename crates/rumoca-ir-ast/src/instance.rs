@@ -53,10 +53,36 @@ impl std::fmt::Display for InstanceId {
 ///
 /// Example: `"body.position[1].x"` would be represented as:
 /// `[("body", []), ("position", [1]), ("x", [])]`
-#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QualifiedName {
     /// Sequence of (name, subscripts) pairs.
     pub parts: Vec<(String, Vec<i64>)>,
+}
+
+/// Hashes the path's *shape* — segment count, per-segment subscripts, and
+/// per-segment identifier length — never the identifier bytes.
+///
+/// `QualifiedName` is a live map key (`ModificationEnvironment::active`), and a
+/// derived `Hash` over `Vec<(String, Vec<i64>)>` walked every identifier on
+/// every probe. Hashing the shape is a strict subset of what the derived
+/// `PartialEq` compares, so equal names still hash equal and the map stays
+/// correct; unequal names of the same shape share a bucket and are separated by
+/// the equality check. Modification environments hold one entry per modifier of
+/// one instance, so those buckets stay small.
+///
+/// The alternative — interning each segment inside `hash` — would pay a global
+/// interner probe (which hashes the identifier anyway) per map probe, i.e. more
+/// work than the derive it replaces. Interning belongs at construction; that
+/// means holding `VarName` segments here, which is a wider IR change than this
+/// type can make on its own.
+impl std::hash::Hash for QualifiedName {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.parts.len().hash(state);
+        for (ident, subscripts) in &self.parts {
+            ident.len().hash(state);
+            subscripts.hash(state);
+        }
+    }
 }
 
 impl QualifiedName {
@@ -772,6 +798,14 @@ pub struct ClassInstanceData {
     /// Resolved lexical scope of the class declaration that produced this instance.
     #[serde(default)]
     pub source_scope_id: Option<ScopeId>,
+    /// Effective replaceable class/package selections in this concrete class instance.
+    ///
+    /// Instantiation owns this context because it is the first phase where the
+    /// complete modification environment and enclosing redeclares are known.
+    /// Downstream phases must consume it directly instead of reconstructing
+    /// virtual class identity from instance paths.
+    #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
+    pub class_overrides: ClassOverrideMap,
     /// Equations from this instance (not inherited).
     pub equations: Vec<InstanceEquation>,
     /// Initial equations from this instance.
@@ -838,6 +872,56 @@ pub struct InstanceConnection {
     /// Used to determine the correct hierarchy level for flow sum equations.
     /// Empty string means root level.
     pub scope: String,
+    /// Compact authoritative form for a regular vectorized connection.
+    ///
+    /// `a` and `b` above are the domain's first scalar member for diagnostic
+    /// and compatibility views. Flattening derives all scalar members from
+    /// this family at its input boundary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub family: Option<InstanceConnectionFamily>,
+}
+
+/// A qualified connection endpoint whose subscripts are affine in a structured
+/// connection family's binders.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstanceConnectionEndpoint {
+    pub parts: Vec<(String, Vec<rumoca_core::AffineForm>)>,
+}
+
+/// Compact instance-IR representation of a regular vectorized `connect`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstanceConnectionFamily {
+    pub domain: rumoca_core::StructuredIndexDomain,
+    pub a: InstanceConnectionEndpoint,
+    pub b: InstanceConnectionEndpoint,
+}
+
+/// Descriptor for an array of structured components that instantiation derived
+/// from a single template (SPEC_0032 §1).
+///
+/// An array component such as `Cell c[3]` whose elements differ only by their
+/// own subscripts is instantiated once, and this records how the remaining
+/// domain points were derived from that template. It is a record of what
+/// happened, not an owner: the per-element `components`/`classes` entries are
+/// the array's representation and are what every later phase reads. The
+/// descriptor is kept so a future phase can consume the compact domain without
+/// re-deriving it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InstanceComponentFamily {
+    /// Row-major domain over the array component's own dimensions.
+    pub domain: rumoca_core::StructuredIndexDomain,
+    /// Path of the array component itself, without the family subscripts
+    /// (`plug_p.pin` for `plug_p.pin[3]`).
+    pub root: ComponentPath,
+    /// Zero-based position of the family-subscripted part inside member
+    /// qualified names (equal to `root.parts().len() - 1`).
+    pub subscript_depth: usize,
+    /// Component instances of the first domain point, in overlay order.
+    pub template_components: Vec<InstanceId>,
+    /// Class instances of the first domain point, in overlay order.
+    pub template_classes: Vec<InstanceId>,
+    /// Declaration span of the array component.
+    pub span: Span,
 }
 
 // =============================================================================
@@ -873,8 +957,17 @@ pub struct InstanceOverlay {
     /// Component bindings introduced by an `each` modifier (MLS §7.2.5).
     ///
     /// This remains structured instantiation metadata so flattening can preserve
-    /// element-wise modifier semantics when an array component stays compact.
+    /// element-wise modifier semantics when an array component stays compact
+    /// (see `component_families` for the compact owners themselves).
     pub each_modifier_bindings: IndexSet<ComponentPath>,
+    /// Descriptors for arrays of structured components that instantiation
+    /// derived from a single template (SPEC_0032 §1). Each entry describes a
+    /// domain whose members were derived by reindexing rather than resolved
+    /// element by element. The per-element entries in `components`/`classes`
+    /// remain the array's representation; these descriptors currently have no
+    /// readers.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub component_families: Vec<InstanceComponentFamily>,
     /// Array parent dimensions for expanded array components.
     /// When an array component like `plug_p.pin[3]` is expanded to indexed instances
     /// (`plug_p.pin[1]`, `plug_p.pin[2]`, `plug_p.pin[3]`), this map stores the parent
@@ -915,6 +1008,14 @@ impl InstanceOverlay {
         id
     }
 
+    /// Number of `InstanceId`s allocated so far.
+    ///
+    /// Callers that snapshot a subtree use this to check that every id they
+    /// allocated is still reachable through `components`/`classes`.
+    pub fn allocated_instance_count(&self) -> u32 {
+        self.next_id
+    }
+
     /// Add instance data for a component.
     ///
     /// The component is keyed by its InstanceId to ensure uniqueness,
@@ -930,6 +1031,11 @@ impl InstanceOverlay {
     pub fn add_class(&mut self, data: ClassInstanceData) {
         let key = data.instance_id;
         self.classes.insert(key, data);
+    }
+
+    /// Record a compact owner for a homogeneous component array (SPEC_0032 §1).
+    pub fn add_component_family(&mut self, family: InstanceComponentFamily) {
+        self.component_families.push(family);
     }
 
     /// Get instance data for a component by InstanceId.

@@ -26,15 +26,12 @@ impl<'a> LowerBuilder<'a> {
         self.layout.binding(display_key).is_some()
             || self.indexed_bindings.contains_key(generated_key)
             || self.direct_assignments.contains_key(display_key)
-            || self
-                .direct_assignments
-                .keys()
-                .any(|candidate| test_fixture_scalarized_path_match(display_key, candidate))
-            || self
-                .layout
-                .bindings()
-                .keys()
-                .any(|candidate| test_fixture_scalarized_path_match(display_key, candidate))
+            || self.direct_assignments.keys().any(|candidate| {
+                test_fixture_scalarized_path_match(display_key, candidate.as_str())
+            })
+            || self.layout.bindings().keys().any(|candidate| {
+                test_fixture_scalarized_path_match(display_key, candidate.as_str())
+            })
     }
 }
 

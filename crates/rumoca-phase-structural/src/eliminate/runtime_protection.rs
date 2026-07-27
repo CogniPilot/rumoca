@@ -4,14 +4,153 @@ use indexmap::IndexSet;
 use rumoca_core::{BuiltinFunction, Expression, ExpressionVisitor, OpBinary, VarName};
 use rumoca_ir_dae::{self as dae, Dae};
 
-use super::{equation_analysis_expr, expr_contains_var};
+use super::{StructuralError, equation_analysis_expr, expr_contains_var};
 
-pub(super) fn runtime_protected_unknown_names(dae: &Dae) -> IndexSet<String> {
+pub(super) fn runtime_protected_unknown_names(
+    dae: &Dae,
+) -> Result<IndexSet<String>, StructuralError> {
     let mut protected = crate::runtime_defined::runtime_defined_continuous_unknown_names(dae);
     protected.extend(pre_source_protected_unknown_names(dae));
     protected.extend(branch_local_analog_protected_unknown_names(dae));
     protected.extend(clocked_value_source_protected_unknown_names(dae));
+    protected.extend(delay_channel_input_protected_unknown_names(dae));
+    protected.extend(compact_family_protected_unknown_names(dae)?);
+    Ok(protected)
+}
+
+fn compact_family_protected_unknown_names(dae: &Dae) -> Result<HashSet<String>, StructuralError> {
+    let mut protected = HashSet::new();
+    for family in &dae.continuous.structured_equations {
+        if family.interiors_materialized {
+            continue;
+        }
+        if let Some(template) = &family.template {
+            for expression in &template.body {
+                protect_structured_expression_unknowns(dae, &mut protected, expression);
+            }
+        }
+        let row_count = family.scalar_view_row_count().map_err(|error| {
+            structured_family_contract_error(
+                family.span,
+                format!("invalid compact family scalar view: {error}"),
+            )
+        })?;
+        let row_end = family
+            .first_equation_index
+            .checked_add(row_count)
+            .ok_or_else(|| {
+                structured_family_contract_error(
+                    family.span,
+                    "compact family row range overflows host index space".to_string(),
+                )
+            })?;
+        let equations = dae
+            .continuous
+            .equations
+            .get(family.first_equation_index..row_end)
+            .ok_or_else(|| {
+                structured_family_contract_error(
+                    family.span,
+                    format!(
+                        "compact family row range {}..{} exceeds {} continuous equations",
+                        family.first_equation_index,
+                        row_end,
+                        dae.continuous.equations.len()
+                    ),
+                )
+            })?;
+        for equation in equations {
+            protect_structured_expression_unknowns(
+                dae,
+                &mut protected,
+                &equation_analysis_expr(equation),
+            );
+        }
+    }
+    Ok(protected)
+}
+
+fn structured_family_contract_error(span: rumoca_core::Span, reason: String) -> StructuralError {
+    if span.is_dummy() {
+        StructuralError::UnspannedContractViolation { reason }
+    } else {
+        StructuralError::ContractViolation { reason, span }
+    }
+}
+
+fn protect_structured_expression_unknowns(
+    dae: &Dae,
+    protected: &mut HashSet<String>,
+    expression: &Expression,
+) {
+    let mut references = HashSet::new();
+    expression.collect_var_refs(&mut references);
+    for name in references {
+        maybe_protect_structured_unknown(dae, protected, &name);
+    }
+}
+
+fn maybe_protect_structured_unknown(dae: &Dae, protected: &mut HashSet<String>, name: &VarName) {
+    if dae.variables.states.contains_key(name)
+        || dae.variables.algebraics.contains_key(name)
+        || dae.variables.outputs.contains_key(name)
+    {
+        protected.insert(name.as_str().to_string());
+    }
+
+    let Some(base) = dae::component_base_name(name.as_str()) else {
+        return;
+    };
+    let base_name = VarName::new(&base);
+    if dae.variables.states.contains_key(&base_name)
+        || dae.variables.algebraics.contains_key(&base_name)
+        || dae.variables.outputs.contains_key(&base_name)
+        || continuous_unknown_has_component_base(dae, &base)
+    {
+        protected.insert(base);
+    }
+}
+
+fn continuous_unknown_has_component_base(dae: &Dae, expected_base: &str) -> bool {
+    dae.variables
+        .states
+        .keys()
+        .chain(dae.variables.algebraics.keys())
+        .chain(dae.variables.outputs.keys())
+        .any(|candidate| {
+            dae::component_base_name(candidate.as_str())
+                .is_some_and(|candidate_base| candidate_base == expected_base)
+        })
+}
+
+fn delay_channel_input_protected_unknown_names(dae: &Dae) -> HashSet<String> {
+    let mut protected = HashSet::new();
+    for channel in &dae.events.delay_channels {
+        let mut refs = HashSet::new();
+        channel.source.collect_var_refs(&mut refs);
+        for name in refs {
+            if continuous_definition_references_delay_value(dae, &name) {
+                // A delay source whose defining row reads a delay value closes
+                // a runtime-memory feedback loop. Keep that carrier named so
+                // symbolic elimination cannot hide the loop from structural
+                // incidence behind runtime parameter slots.
+                maybe_protect_continuous_unknown(dae, &mut protected, &name);
+            }
+        }
+    }
     protected
+}
+
+fn continuous_definition_references_delay_value(dae: &Dae, name: &VarName) -> bool {
+    dae.continuous.equations.iter().any(|equation| {
+        let expression = equation_analysis_expr(equation);
+        assignment_target_name(&expression).as_ref() == Some(name)
+            && dae
+                .events
+                .delay_channels
+                .iter()
+                .any(|channel| expr_contains_var(&expression, &channel.value_parameter))
+    })
 }
 
 fn pre_source_protected_unknown_names(dae: &Dae) -> HashSet<String> {
@@ -44,6 +183,7 @@ pub(super) fn runtime_defined_discrete_target_names(dae: &Dae) -> HashSet<String
 
 pub(super) fn is_runtime_protected_unknown(name: &VarName, protected: &IndexSet<String>) -> bool {
     protected.contains(name.as_str())
+        || dae::component_base_name(name.as_str()).is_some_and(|base| protected.contains(&base))
 }
 
 fn branch_local_analog_protected_unknown_names(dae: &Dae) -> HashSet<String> {

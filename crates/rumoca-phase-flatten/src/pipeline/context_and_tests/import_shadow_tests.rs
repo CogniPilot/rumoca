@@ -126,6 +126,7 @@ fn instance_component_member_shadows_import_alias_during_equation_qualification(
         args: vec![ast::Expression::ComponentReference(comp_ref_parts(&[
             "medium", "state",
         ]))],
+        is_partial_application: false,
         span: test_span(),
     };
     let prefix = QualifiedName::from_dotted("tank");

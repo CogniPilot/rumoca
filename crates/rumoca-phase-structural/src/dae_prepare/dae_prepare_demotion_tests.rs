@@ -130,6 +130,36 @@ fn gt(lhs: Expression, rhs: Expression) -> Expression {
     }
 }
 
+#[test]
+fn scalar_projection_does_not_define_its_aggregate_owner() {
+    let mut dae = Dae::new();
+    let mut vector = test_variable("vector");
+    vector.dims = vec![3];
+    dae.variables
+        .algebraics
+        .insert(VarName::new("vector"), vector);
+    dae.variables
+        .outputs
+        .insert(VarName::new("scalar"), test_variable("scalar"));
+    dae.continuous
+        .equations
+        .push(eq(sub(var("scalar"), var_idx("vector", 2))));
+
+    let definitions = collect_residual_defining_expr_index(&dae);
+
+    assert!(
+        definitions.get("vector").is_none(),
+        "a scalar projection must not be indexed as a definition of its aggregate owner"
+    );
+    assert_eq!(
+        definitions
+            .get("scalar")
+            .and_then(|candidates| candidates.first())
+            .map(|candidate| &candidate.expr),
+        Some(&var_idx("vector", 2))
+    );
+}
+
 fn no_event(expr: Expression) -> Expression {
     Expression::BuiltinCall {
         function: BuiltinFunction::NoEvent,
@@ -283,6 +313,68 @@ fn compound_derivative_expansion_keeps_algebraic_derivative_path() {
 }
 
 #[test]
+fn compound_derivative_expansion_has_no_alias_depth_limit() {
+    let mut dae = Dae::new();
+    dae.variables
+        .states
+        .insert(VarName::new("x"), test_variable("x"));
+    for index in 0..25 {
+        let name = format!("alias{index}");
+        dae.variables
+            .algebraics
+            .insert(VarName::new(&name), test_variable(&name));
+        let source = if index == 24 {
+            "x".to_string()
+        } else {
+            format!("alias{}", index + 1)
+        };
+        dae.continuous
+            .equations
+            .push(eq(sub(var(&name), var(&source))));
+    }
+    dae.continuous.equations.push(eq(sub(der("x"), int(1))));
+    dae.continuous
+        .equations
+        .push(eq(sub(der("alias0"), int(0))));
+
+    expand_compound_derivatives(&mut dae);
+
+    assert!(
+        dae.continuous
+            .equations
+            .iter()
+            .all(|equation| !expr_contains_der_of(&equation.rhs, &VarName::new("alias0"))),
+        "valid connector/alias chains must not be truncated at an arbitrary depth"
+    );
+}
+
+#[test]
+fn compound_derivative_expansion_rewrites_initial_algebraic_derivatives() {
+    let mut dae = Dae::new();
+    dae.variables
+        .states
+        .insert(VarName::new("x"), test_variable("x"));
+    dae.variables
+        .algebraics
+        .insert(VarName::new("y"), test_variable("y"));
+    dae.continuous.equations.push(eq(sub(var("y"), var("x"))));
+    dae.continuous.equations.push(eq(sub(der("x"), int(1))));
+    dae.initialization.equations.push(eq(sub(der("y"), int(0))));
+
+    assert!(needs_compound_derivative_expansion(&dae));
+
+    expand_compound_derivatives(&mut dae);
+
+    assert!(
+        dae.initialization
+            .equations
+            .iter()
+            .all(|eq| !expr_contains_der_of(&eq.rhs, &VarName::new("y"))),
+        "initial der(y) should expand through the continuous definition y = x"
+    );
+}
+
+#[test]
 fn test_split_linear_target_zero_remainder_uses_context_span() {
     let span = Span::from_offsets(
         rumoca_core::SourceId::from_source_name(
@@ -309,7 +401,8 @@ fn test_assignable_derivative_rows_keep_rows_with_non_state_rhs_aliases() {
 
     dae.continuous.equations.push(eq(sub(var("dx"), der("x"))));
 
-    let demoted = demote_states_without_assignable_derivative_rows(&mut dae);
+    let demoted = demote_states_without_assignable_derivative_rows(&mut dae)
+        .expect("the derivative row is assignable");
     assert_eq!(demoted, 0);
     assert!(dae.variables.states.contains_key(&VarName::new("x")));
 }
@@ -417,7 +510,7 @@ fn test_demote_states_keeps_derivatives_in_static_active_if_branch() {
 }
 
 #[test]
-fn test_assignable_derivative_rows_reject_non_state_derivatives() {
+fn test_assignable_derivative_rows_reject_unresolved_non_state_derivatives() {
     let mut dae = Dae::new();
     dae.variables
         .states
@@ -428,11 +521,99 @@ fn test_assignable_derivative_rows_reject_non_state_derivatives() {
 
     dae.continuous.equations.push(eq(sub(der("x"), der("a"))));
 
-    let demoted = demote_states_without_assignable_derivative_rows(&mut dae);
+    let err = demote_states_without_assignable_derivative_rows(&mut dae)
+        .expect_err("unresolved algebraic derivatives must not cascade state demotion");
+
+    assert!(
+        err.to_string()
+            .contains("derivative reference `der(x)` survived")
+    );
+    assert!(dae.variables.states.contains_key(&VarName::new("x")));
+    assert!(!dae.variables.algebraics.contains_key(&VarName::new("x")));
+}
+
+#[test]
+fn retained_derivative_cleanup_rejects_derivatives_of_demoted_states() {
+    let mut dae = Dae::new();
+    dae.variables
+        .states
+        .insert(VarName::new("x"), test_variable("x"));
+    dae.variables
+        .algebraics
+        .insert(VarName::new("a"), test_variable("a"));
+    dae.continuous.equations.push(eq(sub(der("x"), der("a"))));
+
+    let err = demote_states_without_retained_derivative_rows(&mut dae)
+        .expect_err("a surviving der() of a demoted state must be rejected");
+
+    assert!(matches!(
+        err,
+        StructuralError::ContractViolation { span, .. } if span == test_span()
+    ));
+    assert!(
+        err.to_string()
+            .contains("derivative reference `der(x)` survived")
+    );
+}
+
+#[test]
+fn assignable_derivative_demotion_normalizes_before_the_next_matching_round() {
+    let mut dae = Dae::new();
+    dae.variables
+        .states
+        .insert(VarName::new("x"), test_variable("x"));
+    dae.variables
+        .states
+        .insert(VarName::new("y"), test_variable("y"));
+    dae.continuous.equations.push(eq(sub(var("y"), var("x"))));
+    dae.continuous.equations.push(eq(add(der("x"), der("y"))));
+
+    let demoted = demote_states_without_assignable_derivative_rows(&mut dae)
+        .expect("the retained state remains assignable after dummy-state normalization");
 
     assert_eq!(demoted, 1);
-    assert!(!dae.variables.states.contains_key(&VarName::new("x")));
-    assert!(dae.variables.algebraics.contains_key(&VarName::new("x")));
+    assert!(dae.variables.states.contains_key(&VarName::new("x")));
+    assert!(dae.variables.algebraics.contains_key(&VarName::new("y")));
+    assert!(
+        dae.continuous
+            .equations
+            .iter()
+            .all(|equation| !expr_contains_der_of(&equation.rhs, &VarName::new("y")))
+    );
+}
+
+#[test]
+fn retained_derivative_cleanup_normalizes_derivatives_after_earlier_demotion() {
+    let mut dae = Dae::new();
+    dae.variables
+        .states
+        .insert(VarName::new("y"), test_variable("y"));
+    dae.variables
+        .algebraics
+        .insert(VarName::new("x"), test_variable("x"));
+    dae.variables
+        .algebraics
+        .insert(VarName::new("q"), test_variable("q"));
+    dae.continuous.equations.push(eq(sub(var("x"), var("y"))));
+    dae.continuous.equations.push(eq(sub(var("q"), der("x"))));
+    dae.continuous.equations.push(eq(sub(der("y"), int(1))));
+
+    let demoted = demote_states_without_retained_derivative_rows(&mut dae)
+        .expect("an algebraic derivative with a retained definition should normalize");
+
+    assert_eq!(demoted, (0, 0));
+    assert!(
+        dae.continuous
+            .equations
+            .iter()
+            .all(|equation| !expr_contains_der_of(&equation.rhs, &VarName::new("x")))
+    );
+    assert!(
+        dae.continuous
+            .equations
+            .iter()
+            .any(|equation| expr_contains_der_of(&equation.rhs, &VarName::new("y")))
+    );
 }
 
 #[test]
@@ -1508,6 +1689,15 @@ fn test_index_reduction_differentiates_vector_function_constraint_with_structure
     );
 }
 
+fn assert_derivative_references_all_q_components(derivative: &Expression) {
+    assert!(
+        (1..=4).all(|index| {
+            expr_contains_der_of(derivative, &VarName::new(format!("Q[{index}]")))
+        }),
+        "the projected derivative must retain every state dependency"
+    );
+}
+
 #[test]
 fn test_symbolic_derivative_resolves_projected_single_function_output() {
     let constraint_span = Span::from_offsets(
@@ -1589,10 +1779,25 @@ fn test_symbolic_derivative_resolves_projected_single_function_output() {
     )
     .expect("projected single-output function call should be differentiable");
 
-    assert!(
-        (1..=4)
-            .all(|idx| { expr_contains_der_of(&derivative, &VarName::new(format!("Q[{idx}]"))) })
-    );
+    assert_derivative_references_all_q_components(&derivative);
+
+    let indexed_call = Expression::Index {
+        base: Box::new(resolved_call_with_span(
+            "orientationConstraint",
+            vec![var("Q")],
+            constraint_span,
+            4_102,
+        )),
+        subscripts: vec![Subscript::generated_index(1, constraint_span)],
+        span: constraint_span,
+    };
+    let indexed_derivative = symbolic_time_derivative(
+        &indexed_call,
+        &dae,
+        &build_relaxed_derivative_map(&dae).expect("relaxed derivative map should build"),
+    )
+    .expect("a static projection of a function result should be differentiable");
+    assert_derivative_references_all_q_components(&indexed_derivative);
 }
 
 #[test]
@@ -1691,3 +1896,5 @@ fn test_expand_derivative_preserves_initial_condition_span() {
 }
 
 mod vector_constraint_tests;
+
+mod power_coefficient_tests;

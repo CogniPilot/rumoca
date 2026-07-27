@@ -55,7 +55,8 @@ fn real(value: f64) -> serde_json::Value {
 fn residual(lhs: serde_json::Value, rhs: serde_json::Value) -> serde_json::Value {
     serde_json::json!({
         "rhs": {"Binary": {"op": "Sub", "lhs": lhs, "rhs": rhs}},
-        "origin": "test"
+        "origin": "test",
+        "scalar_count": 1
     })
 }
 
@@ -96,6 +97,33 @@ fn dae_modelica_renders_structured_vector_equation_as_slice() {
     let rendered = render_template_with_dae_json(&dae_json, &template).unwrap();
 
     assert_eq!(rendered.trim(), "der(u[1:3]) = w[1:3];");
+}
+
+#[test]
+fn dae_modelica_renders_compact_array_owner_without_claiming_following_rows() {
+    let mut owner = residual(der(var_ref("u", vec![])), var_ref("w", vec![]));
+    owner["scalar_count"] = serde_json::json!(3);
+    let mut compact_family = family(0, 1, 1, 3);
+    compact_family["template"] = serde_json::json!({
+        "body": [binop(
+            "Sub",
+            der(var_ref("u", vec![])),
+            var_ref("w", vec![])
+        )],
+        "scalar_view": "RowMajorProjection"
+    });
+    let dae_json = serde_json::json!({
+        "f_x": [
+            owner,
+            residual(var_ref("z", vec![]), real(2.0))
+        ],
+        "structured_equations": [compact_family]
+    });
+    let template = cfg_template(r#"{{ render_dae_equations(dae, "f_x", cfg) }}"#);
+
+    let rendered = render_template_with_dae_json(&dae_json, &template).unwrap();
+
+    assert_eq!(rendered.trim(), "der(u) = w;\n  z = 2.0;");
 }
 
 #[test]

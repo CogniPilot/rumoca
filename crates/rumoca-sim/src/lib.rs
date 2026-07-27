@@ -564,7 +564,7 @@ pub fn build_tunable_parameter_meta(
             let solve::ScalarSlot::P { index, .. } = *slot else {
                 return None;
             };
-            let source = lookup_variable_source(dae_model, name)?;
+            let source = lookup_variable_source(dae_model, name.as_str())?;
             if source.role != "parameter" || !source.var.is_tunable {
                 return None;
             }
@@ -631,7 +631,7 @@ pub fn compiled_layout_related_bindings_debug(
         .bindings()
         .iter()
         .filter(|(binding_name, _)| {
-            binding_name.starts_with(prefix) && binding_name.as_str() != prefix
+            binding_name.as_str().starts_with(prefix) && binding_name.as_str() != prefix
         })
         .map(|(binding_name, slot)| (binding_name.to_string(), format!("{slot:?}")))
         .collect())

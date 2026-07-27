@@ -1,15 +1,4 @@
-//! Code generation implementation.
-//!
-//! This module provides a simple template rendering function. The DAE is
-//! serialized and passed directly to minijinja templates, which can then
-//! walk the expression tree and generate code as needed.
-//!
-//! For common cases, templates can use the built-in `render_expr` function
-//! which handles the recursive tree walking with configurable operator syntax.
-//!
-//! SPEC_0021 file-size exception: codegen still owns target registration,
-//! template environment setup, and shared render helpers. split plan: move
-//! target registration and template environment construction into submodules.
+//! Template-driven code generation and shared render helpers.
 
 use crate::errors::{CodegenError, render_err};
 use indexmap::{IndexMap, IndexSet};
@@ -778,16 +767,24 @@ fn solve_template_compute_block_json(block: &solve::ComputeBlock) -> Result<Valu
     let nodes = solve_lazy::nodes_value(std::sync::Arc::new(block.clone()))?;
     let output_count = block.len()?;
     let scalar_programs = Value::from_object(LazyScalarProgramsValue::new(block.clone()));
+    let fallback_programs = Value::from_object(render_solve::SolveRowsValue::new(
+        partition.fallback_programs,
+    ));
     let scalar_fallback_rows = Value::from_object(render_solve::SolveScalarFallbackRowsValue::new(
         partition.scalar_fallback_rows,
     ));
     let native_families = Value::from_object(render_solve::SolveNativeFamiliesValue::new(
         partition.families,
     ));
+    let native_dense_nodes = Value::from_object(render_solve::SolveNativeDenseNodesValue::new(
+        partition.native_dense_nodes,
+    ));
     Ok(minijinja::context! {
         nodes => nodes,
         scalar_programs => scalar_programs,
+        fallback_programs => fallback_programs,
         native_families => native_families,
+        native_dense_nodes => native_dense_nodes,
         scalar_fallback_rows => scalar_fallback_rows,
         output_count => output_count,
         tensor_node_count => block.tensor_node_count(),
@@ -1242,6 +1239,10 @@ fn create_environment() -> Environment<'static> {
     env.add_function(
         "render_solve_native_family_wgsl",
         render_solve::render_solve_native_family_wgsl_function,
+    );
+    env.add_function(
+        "render_solve_native_family_mlir",
+        render_solve::render_solve_native_family_mlir_function,
     );
     env.add_function(
         "render_solve_native_family_output_index_wgsl",

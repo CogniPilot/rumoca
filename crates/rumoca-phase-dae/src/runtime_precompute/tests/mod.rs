@@ -8,6 +8,7 @@ use super::*;
 
 mod clock_alias_resolution_tests;
 mod clock_alias_tests;
+mod clock_lattice_tests;
 mod clock_phase_tests;
 mod dynamic_clock_tests;
 

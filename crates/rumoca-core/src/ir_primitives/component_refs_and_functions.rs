@@ -1,6 +1,5 @@
 use super::*;
 use crate::strip_array_index;
-use std::borrow::Borrow;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ComprehensionIndex {
@@ -146,6 +145,10 @@ impl<'a> ComponentReferenceScope<'a> {
 /// This type keeps path segmentation centralized so phases do not recover
 /// scope by ad hoc string splitting. Its textual rendering is still the flat
 /// IR spelling because Flat/DAE maps are serialized by name.
+///
+/// **Invariant:** `name` is the interned form of `parts.join(".")`, maintained
+/// by every constructor. `name` is the path's identity (see the `PartialEq` and
+/// `Hash` impls below); `parts` is the segmentation payload.
 #[derive(Debug, Clone)]
 pub struct ComponentPath {
     name: VarName,
@@ -296,6 +299,15 @@ impl ComponentPath {
     pub fn as_str(&self) -> &str {
         self.name.as_str()
     }
+
+    /// Interned identity of this path, computed once at construction.
+    ///
+    /// Callers that key a map on a path prefix should hold this rather than a
+    /// `&[String]` slice: comparing the id is one `u32` compare, comparing the
+    /// slice walks every segment.
+    pub fn var_name(&self) -> &VarName {
+        &self.name
+    }
 }
 
 impl Default for ComponentPath {
@@ -304,9 +316,21 @@ impl Default for ComponentPath {
     }
 }
 
+// Identity is the interned `name`, not the `parts` vector. Both constructors
+// keep `name == parts.join(".")` (`from_parts` joins; `from_flat_path` splits
+// on the interner's own segmentation and falls back to `from_parts` whenever
+// re-joining would not reproduce the input), so the two are the same partition
+// — but `parts` is a `Vec<String>`, and comparing or hashing it walks every
+// segment of a flattened component path on every map probe. `name` is a
+// `VarName`, whose identity is a `VarNameId(u32)` the interner assigned once.
+//
+// `parts` therefore stays as the *segmentation payload* (rendering, prefixing,
+// scope walks) and is no longer identity. Interning the parts individually was
+// the alternative, and is worse on both counts: it would intern N segments per
+// path instead of one whole path, and callers ask for `&[String]` slices.
 impl PartialEq for ComponentPath {
     fn eq(&self, other: &Self) -> bool {
-        self.parts == other.parts
+        self.name == other.name
     }
 }
 
@@ -314,13 +338,7 @@ impl Eq for ComponentPath {}
 
 impl Hash for ComponentPath {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.parts.hash(state);
-    }
-}
-
-impl Borrow<[String]> for ComponentPath {
-    fn borrow(&self) -> &[String] {
-        &self.parts
+        self.name.hash(state);
     }
 }
 
@@ -456,7 +474,9 @@ pub enum Statement {
     FunctionCall {
         comp: ComponentReference,
         args: Vec<Expression>,
-        outputs: Vec<ComponentReference>,
+        /// Positional output targets. `None` preserves an MLS skipped output
+        /// slot such as the middle entry in `(x, , z) := f()`.
+        outputs: Vec<Option<ComponentReference>>,
         #[serde(
             default = "Span::source_free_serde_default",
             skip_serializing_if = "Span::is_dummy"
@@ -639,7 +659,7 @@ fn collect_statement_outputs(statement: &Statement, outputs: &mut Vec<Reference>
         Statement::FunctionCall {
             outputs: values, ..
         } => {
-            for output in values {
+            for output in values.iter().flatten() {
                 insert_unique(outputs, component_ref_to_base_reference(output));
             }
         }

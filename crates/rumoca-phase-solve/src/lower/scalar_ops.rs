@@ -121,7 +121,7 @@ impl<'a> LowerBuilder<'a> {
             }
             rumoca_core::BuiltinFunction::NoEvent => arg(self, 0),
             rumoca_core::BuiltinFunction::Homotopy => {
-                arg(self, usize::from(self.is_initial_mode && args.len() > 1))
+                self.lower_homotopy_builtin(args, scope, call_depth, span)
             }
             rumoca_core::BuiltinFunction::Smooth => arg(self, 1),
             rumoca_core::BuiltinFunction::Zeros => self.emit_const_at(0.0, span),
@@ -157,6 +157,39 @@ impl<'a> LowerBuilder<'a> {
             _ => return None,
         };
         Some(result)
+    }
+
+    fn lower_homotopy_builtin(
+        &mut self,
+        args: &[rumoca_core::Expression],
+        scope: &Scope,
+        call_depth: usize,
+        span: rumoca_core::Span,
+    ) -> Result<Reg, LowerError> {
+        let [actual, simplified] = args else {
+            return Err(LowerError::contract_violation(
+                format!(
+                    "homotopy() requires exactly 2 arguments, got {}",
+                    args.len()
+                ),
+                span,
+            ));
+        };
+        let actual = self.lower_expr(actual, scope, call_depth)?;
+        if !self.is_initial_mode {
+            return Ok(actual);
+        }
+        let simplified = self.lower_expr(simplified, scope, call_depth)?;
+        let lambda_slot = self
+            .layout
+            .binding(crate::layout::HOMOTOPY_LAMBDA_PARAMETER_NAME)
+            .ok_or_else(|| LowerError::MissingBinding {
+                name: crate::layout::HOMOTOPY_LAMBDA_PARAMETER_NAME.to_string(),
+            })?;
+        let lambda = self.emit_slot_load(lambda_slot, span)?;
+        let difference = self.emit_binary_at(BinaryOp::Sub, actual, simplified, span)?;
+        let continuation = self.emit_binary_at(BinaryOp::Mul, lambda, difference, span)?;
+        self.emit_binary_at(BinaryOp::Add, simplified, continuation, span)
     }
 
     pub(super) fn lower_div_builtin(
@@ -248,18 +281,11 @@ impl<'a> LowerBuilder<'a> {
                 BinaryOp::Max,
                 f64::NEG_INFINITY,
             ),
-            // MLS §3.7.2: delay(expr, delayTime) reads expr at a previous
-            // time instant. During event iteration it must not feed the
-            // current unknown value back into the same discrete solve.
-            rumoca_core::BuiltinFunction::Delay => {
-                if args.is_empty() {
-                    return Err(LowerError::contract_violation(
-                        "delay() requires at least 1 argument",
-                        span,
-                    ));
-                }
-                self.lower_expr_in_mode(&args[0], scope, call_depth, ValueMode::Pre)
-            }
+            rumoca_core::BuiltinFunction::Delay => Err(LowerError::contract_violation(
+                "delay() reached generic Solve lowering; DAE runtime-operator lowering must \
+                 replace it with a history-backed parameter slot",
+                span,
+            )),
             rumoca_core::BuiltinFunction::SemiLinear => {
                 let x = arg(self, 0)?;
                 let k1 = arg(self, 1)?;
@@ -270,7 +296,11 @@ impl<'a> LowerBuilder<'a> {
                 let neg = self.emit_binary_at(BinaryOp::Mul, k2, x, span)?;
                 self.emit_select_at(cond, pos, neg, span)
             }
-            rumoca_core::BuiltinFunction::Der => self.emit_const_at(0.0, span),
+            rumoca_core::BuiltinFunction::Der => Err(LowerError::contract_violation(
+                "der() reached generic Solve-IR expression lowering; derivative expressions must \
+                 be resolved through the state-derivative lowering path",
+                span,
+            )),
             rumoca_core::BuiltinFunction::Pre => Err(unsupported_at(
                 format!(
                     "pre() must be lowered to {} parameters before Solve-IR lowering",
@@ -285,10 +315,11 @@ impl<'a> LowerBuilder<'a> {
                 self.lower_change_builtin(args, span, scope, call_depth)
             }
             rumoca_core::BuiltinFunction::Initial => self.lower_initial_builtin(span),
-            // MLS §8.6: terminal() is false during ordinary simulation
-            // evaluation; terminal-event handling can override this phase
-            // marker explicitly when that event is implemented.
-            rumoca_core::BuiltinFunction::Terminal => self.emit_const_at(0.0, span),
+            rumoca_core::BuiltinFunction::Terminal => Err(LowerError::contract_violation(
+                "terminal() reached generic Solve lowering; DAE runtime-operator lowering must \
+                 replace it with the terminal-event parameter slot",
+                span,
+            )),
             rumoca_core::BuiltinFunction::Sum => {
                 self.lower_sum_builtin(args, span, scope, call_depth)
             }

@@ -46,9 +46,8 @@ use rumoca_compile::compile::{
     compile_phase_timing_stats, reset_compile_phase_timing_stats, session_cache_stats,
 };
 use rumoca_compile::parsing::{
-    Causality, ClassDef, DefId, Expression, Location as CoreLocation, OpBinary, ParseError, Span,
-    StoredDefinition, Variability, collect_model_names, parse_source_to_ast,
-    parse_source_to_ast_with_errors,
+    Causality, ClassDef, DefId, Expression, OpBinary, ParseError, Span, StoredDefinition,
+    Variability, collect_model_names, parse_source_to_ast, parse_source_to_ast_with_errors,
 };
 use rumoca_tool_lint::{LintOptions, lint as lint_source};
 use rumoca_tool_lsp::completion_metrics::{
@@ -1385,9 +1384,17 @@ fn class_target_definition(
     fallback_uri: &Url,
 ) -> lsp_types::GotoDefinitionResponse {
     let target_uri = resolve_session_target_uri(session, &info.target_uri, fallback_uri);
+    // LSP columns are UTF-16 code units, so the range has to be measured
+    // against the *target* file's text.
+    let target_source = session
+        .get_document(&info.target_uri)
+        .map(|doc| &doc.content);
     lsp_types::GotoDefinitionResponse::Scalar(lsp_types::Location {
         uri: target_uri,
-        range: rumoca_tool_lsp::helpers::location_to_range(&info.declaration_location),
+        range: rumoca_tool_lsp::helpers::location_to_range_in_optional_source(
+            target_source.map(|content| content.as_ref()),
+            &info.declaration_location,
+        ),
     })
 }
 
@@ -1412,11 +1419,15 @@ fn parsed_source_root_class_definition(
 
 fn local_component_definition(
     info: &rumoca_compile::compile::LocalComponentInfo,
+    source: &str,
     uri: &Url,
 ) -> lsp_types::GotoDefinitionResponse {
     lsp_types::GotoDefinitionResponse::Scalar(lsp_types::Location {
         uri: uri.clone(),
-        range: rumoca_tool_lsp::helpers::location_to_range(&info.declaration_location),
+        range: rumoca_tool_lsp::helpers::location_to_range_in_source(
+            source,
+            &info.declaration_location,
+        ),
     })
 }
 
@@ -1454,23 +1465,34 @@ fn goto_response_for_def_id(
 ) -> Option<lsp_types::GotoDefinitionResponse> {
     let class = tree.get_class_by_def_id(def_id)?;
     let loc = &class.name.location;
-    let target_uri = target_uri_for_location(session, loc, fallback_uri);
+    // Locations identify their file by `SourceId`; the tree's source map is the
+    // only place the real path and text still live, and the text is what makes
+    // the emitted range UTF-16-correct.
+    let target = tree.source_map.get_source(loc.source);
+    let target_uri = target_uri_for_location(session, target.map(|(name, _)| name), fallback_uri);
     Some(lsp_types::GotoDefinitionResponse::Scalar(
         lsp_types::Location {
             uri: target_uri,
-            range: rumoca_tool_lsp::helpers::location_to_range(loc),
+            range: rumoca_tool_lsp::helpers::location_to_range_in_optional_source(
+                target.map(|(_, content)| content),
+                loc,
+            ),
         },
     ))
 }
 
-fn target_uri_for_location(session: &Session, loc: &CoreLocation, fallback_uri: &Url) -> Url {
-    if loc.file_name.is_empty() {
+fn target_uri_for_location(
+    session: &Session,
+    target_file_name: Option<&str>,
+    fallback_uri: &Url,
+) -> Url {
+    let Some(file_name) = target_file_name.filter(|name| !name.is_empty()) else {
         return fallback_uri.clone();
+    };
+    if !Path::new(file_name).is_absolute() {
+        return resolve_session_target_uri(session, file_name, fallback_uri);
     }
-    if !Path::new(loc.file_name.as_str()).is_absolute() {
-        return resolve_session_target_uri(session, &loc.file_name, fallback_uri);
-    }
-    let path = Path::new(loc.file_name.as_str());
+    let path = Path::new(file_name);
     if path.is_absolute()
         && let Some(uri) = url_from_file_path(path)
     {
@@ -1638,7 +1660,7 @@ pub fn lsp_definition(source: &str, line: u32, character: u32) -> Result<String,
             .or_else(|| {
                 session
                     .local_component_info_query("input.mo", line, character)
-                    .map(|info| local_component_definition(&info, &uri))
+                    .map(|info| local_component_definition(&info, &doc.content, &uri))
             })
             .or_else(|| {
                 let resolved = resolved_tree_for_navigation(session, Some(ast), line);
@@ -1676,7 +1698,7 @@ pub fn lsp_document_symbols(source: &str) -> Result<String, JsValue> {
         session.update_document("input.mo", source);
         let symbols = session
             .document_symbol_query("input.mo")
-            .map(rumoca_tool_lsp::handle_document_symbols);
+            .map(|symbols| rumoca_tool_lsp::handle_document_symbols(symbols, source));
         serde_json::to_string(&symbols)
             .map_err(|e| JsValue::from_str(&format!("JSON error: {}", e)))
     })
@@ -1715,7 +1737,7 @@ pub fn lsp_code_actions(
 pub fn lsp_semantic_tokens(source: &str) -> Result<String, JsValue> {
     let ast = parse_source_to_ast(source, "input.mo")
         .map_err(|e| JsValue::from_str(&format!("Parse error: {}", e)))?;
-    let tokens = rumoca_tool_lsp::handle_semantic_tokens(&ast);
+    let tokens = rumoca_tool_lsp::handle_semantic_tokens(&ast, source);
     serde_json::to_string(&tokens).map_err(|e| JsValue::from_str(&format!("JSON error: {}", e)))
 }
 

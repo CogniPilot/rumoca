@@ -608,6 +608,40 @@ pub(super) fn collect_simulation_parsed_docs_snapshot(
     Ok(parsed_docs)
 }
 
+/// Memoized per-URI document text for one request.
+///
+/// Range-producing surfaces (navigation, workspace symbols) span every file
+/// that mentions a symbol, and each emitted range must be measured in UTF-16
+/// columns of *its own* file. Cloning a document per hit would be quadratic on
+/// a rename that touches one file many times, so resolved texts are cached for
+/// the lifetime of a single request.
+pub(super) struct SnapshotSourceTexts<'a> {
+    snapshot: &'a SessionSnapshot,
+    cache: HashMap<String, Option<Arc<str>>>,
+}
+
+impl<'a> SnapshotSourceTexts<'a> {
+    pub(super) fn new(snapshot: &'a SessionSnapshot) -> Self {
+        Self {
+            snapshot,
+            cache: HashMap::new(),
+        }
+    }
+
+    /// Text of `uri`, where `uri` is a session document key (a filesystem path).
+    pub(super) fn source_for(&mut self, uri: &str) -> Option<Arc<str>> {
+        if let Some(cached) = self.cache.get(uri) {
+            return cached.clone();
+        }
+        let source = self
+            .snapshot
+            .get_document(uri)
+            .map(|document| document.content);
+        self.cache.insert(uri.to_string(), source.clone());
+        source
+    }
+}
+
 pub(super) fn is_scenario_config_uri(uri: &Url) -> bool {
     // Rumoca task-file naming convention (`rumoca-scenario.toml` / `rumoca-scenario.<profile>.toml`) is
     // the discovery hook; the `[rumoca]` marker section stays authoritative.

@@ -180,6 +180,50 @@ fn simulation_timeout_preserves_successful_compile_result() {
 }
 
 #[test]
+fn simulation_memory_limit_preserves_successful_compile_result() {
+    let model_name = "Modelica.Electrical.Spice3.Examples.Spice3BenchmarkFourBitBinaryAdder";
+    let temp = tempfile::tempdir().expect("temp dir");
+    let mut partial = WorkerModelResult::phase_failure(model_name.to_string(), "Success", "", None);
+    partial.error = None;
+    partial.compile_seconds = Some(68.49);
+    partial.flatten_seconds = Some(1.5);
+    partial.dae_seconds = Some(2.0);
+    rumoca_worker::write_model_worker_response_file(
+        &temp.path().join(MODEL_WORKER_PARTIAL_RESULT_FILE),
+        &rumoca_worker::ModelWorkerResponse {
+            protocol_version: MODEL_WORKER_PROTOCOL_VERSION,
+            elapsed_secs: 68.49,
+            result: partial,
+        },
+    )
+    .expect("partial result should write");
+
+    let result = simulation_memory_limit_model_result(
+        model_name,
+        temp.path(),
+        341.0,
+        6144,
+        Some(WorkerProgressPhase::Solve),
+    )
+    .expect("Solve memory limit after compile should use partial compile result");
+
+    assert_eq!(result.phase_reached, "Success");
+    assert_eq!(result.error, None);
+    assert_eq!(result.error_code, None);
+    assert_eq!(result.timeout_phase, None);
+    assert_eq!(result.timeout_seconds, None);
+    assert_eq!(result.sim_status.as_deref(), Some("sim_solver_fail"));
+    assert!(
+        result
+            .ir_solve_error
+            .as_deref()
+            .is_some_and(|error| error.contains("6144 MB resident-plus-swap limit"))
+    );
+    assert_eq!(result.flatten_seconds, Some(1.5));
+    assert_eq!(result.dae_seconds, Some(2.0));
+}
+
+#[test]
 fn compile_perf_retention_keeps_slow_profiles_and_deletes_fast_successes() {
     let temp = tempfile::tempdir().expect("temp dir");
     let slow_profile = temp.path().join("slow.perf.data");

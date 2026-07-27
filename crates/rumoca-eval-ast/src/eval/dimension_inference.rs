@@ -162,28 +162,7 @@ fn apply_subscript_to_dims(
 }
 
 fn extract_simple_component_path(expr: &Expression) -> Option<String> {
-    match expr {
-        Expression::ComponentReference(cr) => (!cr.parts.is_empty()).then(|| cr.to_string()),
-        Expression::FieldAccess { base, field, .. } => {
-            let base_path = extract_simple_component_path(base)?;
-            Some(format!("{base_path}.{field}"))
-        }
-        Expression::ArrayIndex {
-            base, subscripts, ..
-        } => {
-            let base_path = extract_simple_component_path(base)?;
-            let rendered_subs: Vec<String> = subscripts
-                .iter()
-                .map(|sub| match sub {
-                    rumoca_ir_ast::Subscript::Expression(sub_expr) => sub_expr.to_string(),
-                    rumoca_ir_ast::Subscript::Range { token } => token.text.to_string(),
-                    rumoca_ir_ast::Subscript::Empty => ":".to_string(),
-                })
-                .collect();
-            Some(format!("{base_path}[{}]", rendered_subs.join(",")))
-        }
-        _ => None,
-    }
+    rumoca_ir_ast::expression_component_path(expr).map(|path| path.to_flat_string())
 }
 
 fn infer_dims_from_array_comprehension(

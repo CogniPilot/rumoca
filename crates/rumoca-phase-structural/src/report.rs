@@ -42,6 +42,17 @@ pub enum BlockReport {
         /// Tearing of the block, when one could be computed.
         tearing: Option<TearingReport>,
     },
+    /// A whole regular equation family whose rows are each their own scalar
+    /// block. Reported compactly rather than expanded into one line per array
+    /// element, which for a 2048-element array would bury the rest of the dump.
+    StructuredScalar {
+        /// Origin description of the family (e.g. `f_x[12] (der(x) = -x)`).
+        origin: String,
+        /// Number of domain points the family covers.
+        point_count: usize,
+        /// Scalar equations emitted per domain point.
+        equations_per_point: usize,
+    },
 }
 
 impl BlockReport {
@@ -51,6 +62,11 @@ impl BlockReport {
         match self {
             Self::Scalar { .. } => 1,
             Self::Coupled { unknowns, .. } => unknowns.len(),
+            Self::StructuredScalar {
+                point_count,
+                equations_per_point,
+                ..
+            } => point_count.saturating_mul(*equations_per_point),
         }
     }
 
@@ -142,6 +158,15 @@ impl BlockReport {
                     None => writeln!(f, "           tearing:   <none found> (dense solve)"),
                 }
             }
+            Self::StructuredScalar {
+                origin,
+                point_count,
+                equations_per_point,
+            } => writeln!(
+                f,
+                "  [{index:>4}] family   {} scalar block(s) ({point_count} point(s) x {equations_per_point}) <- {origin}",
+                point_count.saturating_mul(*equations_per_point)
+            ),
         }
     }
 }
@@ -163,5 +188,75 @@ impl fmt::Display for StructuralReport {
             block.fmt_block(f, index)?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn family_report() -> BlockReport {
+        BlockReport::StructuredScalar {
+            origin: "f_x[12] (der(x[i]) = -x[i])".to_string(),
+            point_count: 512,
+            equations_per_point: 2,
+        }
+    }
+
+    #[test]
+    fn structured_scalar_report_counts_every_scalar_row_it_stands_for() {
+        assert_eq!(family_report().size(), 1_024);
+        assert!(
+            !family_report().is_coupled(),
+            "a family of singleton SCCs is not a coupled block"
+        );
+    }
+
+    /// A family block must render on ONE line naming the row count it replaces.
+    /// Rendering it per element is what the compact representation exists to
+    /// avoid; rendering it without the count would hide those rows entirely.
+    #[test]
+    fn structured_scalar_report_renders_one_line_carrying_the_scalar_count() {
+        let report = StructuralReport {
+            n_equations: 1_025,
+            n_unknowns: 1_025,
+            matching: Vec::new(),
+            blocks: vec![
+                family_report(),
+                BlockReport::Scalar {
+                    equation: "f_x[0]".to_string(),
+                    unknown: "der(y)".to_string(),
+                },
+            ],
+        };
+
+        let rendered = report.to_string();
+        let block_lines: Vec<&str> = rendered
+            .lines()
+            .filter(|line| line.trim_start().starts_with('['))
+            .collect();
+        assert_eq!(
+            block_lines,
+            vec![
+                "  [   0] family   1024 scalar block(s) (512 point(s) x 2) <- f_x[12] (der(x[i]) = -x[i])",
+                "  [   1] scalar   der(y) <- f_x[0]",
+            ]
+        );
+    }
+
+    /// A report made only of family blocks is fully sequential: no coupled
+    /// block, and the largest-coupled-block probe stays at its "sequential"
+    /// answer instead of reading a family's row count as a loop dimension.
+    #[test]
+    fn a_family_only_report_has_no_coupled_blocks() {
+        let report = StructuralReport {
+            n_equations: 1_024,
+            n_unknowns: 1_024,
+            matching: Vec::new(),
+            blocks: vec![family_report()],
+        };
+
+        assert_eq!(report.coupled_block_count(), 0);
+        assert_eq!(report.largest_coupled_block(), 1);
     }
 }

@@ -13,6 +13,10 @@
 //! `Aᵀμ = λ·e_c`). Table lookups, random generators, and runtime-indexed loads
 //! are still deferred and raise an explicit error here rather than silently
 //! returning a wrong gradient.
+//!
+//! The reverse-sweep types are `pub` only so that
+//! `rumoca_solver::runtime::solve_runtime` (the runtime state machine that owns
+//! the scratch buffers) can drive them; they are not a general-purpose API.
 
 use rumoca_ir_solve::{BinaryOp, LinearOp, Reg, ScalarProgramBlock, UnaryOp};
 
@@ -24,7 +28,7 @@ use crate::{
 /// slot. Any slice may be empty if the caller does not need that input space
 /// (e.g. a primal program has no `seed`; a forward-JVP program's `y`/`p` are the
 /// fixed linearization point).
-pub(crate) struct ReverseCotangents<'a> {
+pub struct ReverseCotangents<'a> {
     pub y: &'a mut [f64],
     pub p: &'a mut [f64],
     pub seed: &'a mut [f64],
@@ -33,14 +37,14 @@ pub(crate) struct ReverseCotangents<'a> {
 /// A scalar program plus the per-row register counts and cached input
 /// requirements a reverse sweep needs from a
 /// [`crate::prepared::PreparedScalarProgramBlock`].
-pub(crate) struct ScalarVjpProgram<'a> {
+pub struct ScalarVjpProgram<'a> {
     pub block: &'a ScalarProgramBlock,
     pub row_registers: &'a [usize],
     pub requirements: RowInputRequirements,
 }
 
 /// Primal evaluation point for the forward tape pass.
-pub(crate) struct ReverseInputs<'a> {
+pub struct ReverseInputs<'a> {
     pub y: &'a [f64],
     pub p: &'a [f64],
     pub t: f64,
@@ -52,7 +56,7 @@ pub(crate) struct ReverseInputs<'a> {
 /// `clear` + `resize` retains capacity. Mirrors how `SolveRuntime` reuses its
 /// forward `StateDerivativeScratch`.
 #[derive(Default, Clone)]
-pub(crate) struct ReverseScratch {
+pub struct ReverseScratch {
     regs: Vec<f64>,
     adj: Vec<f64>,
 }
@@ -60,7 +64,7 @@ pub(crate) struct ReverseScratch {
 /// Reverse-accumulate `Jᵀ · output_cotangents` of a scalar program block into
 /// `cot`. Each row is an independent program; its contribution is summed into the
 /// shared input cotangents.
-pub(crate) fn reverse_scalar_block_vjp(
+pub fn reverse_scalar_block_vjp(
     program: &ScalarVjpProgram<'_>,
     inputs: &ReverseInputs<'_>,
     output_cotangents: &[f64],
@@ -109,6 +113,73 @@ pub(crate) fn reverse_scalar_block_vjp(
     Ok(())
 }
 
+/// Reverse one scalar-output row into its complete solver-`y` gradient.
+///
+/// A scalar residual row has one output, so reverse mode obtains every
+/// `d(row)/d(y[i])` in one forward/reverse sweep. Returning `false` preserves a
+/// precise fallback for rows containing operations whose reverse rule is not
+/// implemented yet.
+pub fn reverse_scalar_row_y_gradient(
+    program: &ScalarVjpProgram<'_>,
+    row_idx: usize,
+    inputs: &ReverseInputs<'_>,
+    y_gradient: &mut [f64],
+    scratch: &mut ReverseScratch,
+) -> Result<bool, EvalSolveError> {
+    let Some(row) = program.block.programs.get(row_idx) else {
+        return Ok(false);
+    };
+    let mut output_sources = row.iter().filter_map(|op| match op {
+        LinearOp::StoreOutput { src } => Some(*src),
+        _ => None,
+    });
+    let Some(output_source) = output_sources.next() else {
+        return Ok(false);
+    };
+    if output_sources.next().is_some() || row.iter().any(|op| !reverse_row_op_supported(op)) {
+        return Ok(false);
+    }
+
+    scratch.regs.clear();
+    scratch.regs.resize(program.row_registers[row_idx], 0.0);
+    scratch.adj.clear();
+    scratch.adj.resize(program.row_registers[row_idx], 0.0);
+    forward_row_tape(row, inputs, &mut scratch.regs)
+        .map_err(|error| error.with_source_span(program.block.program_span(row_idx)))?;
+    add_adj(&mut scratch.adj, output_source, 1.0);
+    y_gradient.fill(0.0);
+    reverse_row_adjoints(
+        row,
+        &scratch.regs,
+        &mut scratch.adj,
+        &mut ReverseCotangents {
+            y: y_gradient,
+            p: &mut [],
+            seed: &mut [],
+        },
+    )
+    .map_err(|error| error.with_source_span(program.block.program_span(row_idx)))?;
+    Ok(true)
+}
+
+pub fn reverse_row_op_supported(op: &LinearOp) -> bool {
+    matches!(
+        op,
+        LinearOp::Const { .. }
+            | LinearOp::LoadTime { .. }
+            | LinearOp::LoadY { .. }
+            | LinearOp::LoadP { .. }
+            | LinearOp::LoadIndexedP { .. }
+            | LinearOp::Move { .. }
+            | LinearOp::LinearSolveComponent { .. }
+            | LinearOp::Unary { .. }
+            | LinearOp::Binary { .. }
+            | LinearOp::Compare { .. }
+            | LinearOp::Select { .. }
+            | LinearOp::StoreOutput { .. }
+    )
+}
+
 /// Seed the row's `StoreOutput` register adjoints with the matching output
 /// cotangents. `StoreOutput`s are visited in output-ordinal order — the same
 /// order the forward sink stores them — so the running `ordinal` maps each to its
@@ -146,6 +217,15 @@ fn forward_row_tape(
             LinearOp::LoadTime { dst } => set(regs, dst, inputs.t),
             LinearOp::LoadY { dst, index } => set(regs, dst, load(inputs.y, "y", index)?),
             LinearOp::LoadP { dst, index } => set(regs, dst, load(inputs.p, "p", index)?),
+            LinearOp::LoadIndexedP {
+                dst,
+                base,
+                count,
+                index,
+            } => {
+                let slot = rumoca_ir_solve::resolve_indexed_slot(reg(regs, index), base, count);
+                set(regs, dst, load(inputs.p, "p", slot)?);
+            }
             LinearOp::LoadSeed { dst, index } => {
                 let seed = inputs
                     .context
@@ -220,6 +300,7 @@ fn reverse_row_adjoints(
             // derivative). Consume the adjoint without redistributing it.
             LinearOp::Const { dst, .. }
             | LinearOp::LoadTime { dst }
+            | LinearOp::LoadIndexedP { dst, .. }
             | LinearOp::Compare { dst, .. } => {
                 take_adj(adj, dst);
             }
@@ -385,7 +466,8 @@ fn binary_partials(op: BinaryOp, lhs: f64, rhs: f64) -> (f64, f64) {
         BinaryOp::Add => (1.0, 1.0),
         BinaryOp::Sub => (1.0, -1.0),
         BinaryOp::Mul => (rhs, lhs),
-        // Mirrors `guarded_division`: a zero denominator contributes no gradient.
+        // Division has no finite derivative at a zero denominator. Keep the
+        // existing AD boundary policy of contributing no gradient there.
         BinaryOp::Div => {
             if rhs == 0.0 {
                 (0.0, 0.0)

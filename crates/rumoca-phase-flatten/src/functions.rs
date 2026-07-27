@@ -30,7 +30,10 @@ mod function_param_alias;
 mod tests;
 pub(crate) use call_args::validate_flat_function_call_args;
 use constant_overrides::active_constant_def_overrides;
-use constructor_signature::{convert_constructor_signature, normalize_function_local_references};
+use constructor_signature::{
+    convert_constructor_signature, inherit_operator_constructor_defaults,
+    normalize_function_local_references,
+};
 use function_metadata::*;
 pub(crate) use function_metadata::{
     lower_record_function_params, specialize_static_function_params,
@@ -426,7 +429,7 @@ impl rumoca_ir_flat::visitor::StatementVisitor for FunctionCallCollector<'_> {
         &mut self,
         comp: &rumoca_core::ComponentReference,
         args: &[rumoca_core::Expression],
-        outputs: &[rumoca_core::ComponentReference],
+        outputs: &[Option<rumoca_core::ComponentReference>],
     ) {
         self.calls
             .insert(FunctionRequest::from_component_reference(comp));
@@ -434,7 +437,7 @@ impl rumoca_ir_flat::visitor::StatementVisitor for FunctionCallCollector<'_> {
         for arg in args {
             self.visit_expression(arg);
         }
-        for output in outputs {
+        for output in outputs.iter().flatten() {
             self.visit_component_reference(output);
         }
     }
@@ -837,6 +840,9 @@ impl CollectedFunctionCallCanonicalizer {
             .canonical_functions
             .iter()
             .find(|function| function.name == reference.var_name().as_str());
+        if exact.is_some() {
+            return exact;
+        }
         if let Some(def_id) = reference.target_def_id() {
             let mut matches = self
                 .canonical_functions
@@ -844,12 +850,9 @@ impl CollectedFunctionCallCanonicalizer {
                 .filter(|function| function.def_id == Some(def_id));
             let first = matches.next()?;
             let second = matches.next();
-            if let Some(exact) = exact {
-                return (exact.def_id == Some(def_id)).then_some(exact);
-            }
             return second.is_none().then_some(first);
         }
-        exact
+        None
     }
 }
 
@@ -1682,6 +1685,15 @@ fn convert_callable<'tree>(
                 class_index,
                 qualified_name,
                 &mut constructor,
+            )?;
+            inherit_operator_constructor_defaults(
+                tree,
+                class_index,
+                class_def,
+                &mut constructor,
+                source_map,
+                def_map,
+                member_cache,
             )?;
             Ok(Some(constructor))
         }

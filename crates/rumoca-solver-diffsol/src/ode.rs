@@ -1,18 +1,22 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicU64, Ordering},
-};
 use std::time::Instant;
+use std::{
+    cell::RefCell,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+};
 
-use diffsol::{MatrixCommon, OdeBuilder, OdeEquationsImplicit, OdeSolverProblem, VectorHost};
+use diffsol::{
+    MatrixCommon, OdeBuilder, OdeEquationsImplicit, OdeSolverProblem, Vector as _, VectorHost,
+};
 use rumoca_eval_solve::{
     self as solve_eval, PreparedComputeBlock, PreparedScalarProgramBlock, RowEvalContext,
-    SolveRuntime,
 };
 use rumoca_ir_solve as solve;
 use rumoca_solver::{
     AlgebraicProjectionModel, ImplicitProjectionModel, PreparedMassMatrix, RuntimeSolveError,
-    SimOptions,
+    SimOptions, SolveRuntime,
 };
 
 use crate::{
@@ -159,6 +163,7 @@ fn trace_bdf_eval_counts() -> bool {
 
 pub(crate) struct OdeModel {
     state_count: usize,
+    mass_matrix: PreparedMassMatrix,
     implicit_rhs: PreparedComputeBlock,
     implicit_scalar_rhs: PreparedScalarProgramBlock,
     initial_residual: PreparedComputeBlock,
@@ -166,10 +171,12 @@ pub(crate) struct OdeModel {
     initial_scalar_residual: PreparedScalarProgramBlock,
     pub(crate) initial_targets: Vec<Option<solve::ScalarSlot>>,
     implicit_jacobian_v: PreparedComputeBlock,
+    implicit_scalar_jacobian_v: PreparedScalarProgramBlock,
     pub(crate) root_conditions: PreparedScalarProgramBlock,
     pub(crate) implicit_targets: Vec<Option<solve::ScalarSlot>>,
     algebraic_projection_plan: solve::AlgebraicProjectionPlan,
     solver_names: Vec<String>,
+    solver_scales: Vec<f64>,
     pub(crate) external_tables: solve::ExternalTables,
     pub(crate) runtime_state: solve_eval::SimulationRuntimeState,
 }
@@ -178,6 +185,10 @@ impl OdeModel {
     pub(crate) fn new(model: &solve::SolveModel) -> Result<Self, SimError> {
         Ok(Self {
             state_count: model.state_scalar_count(),
+            mass_matrix: PreparedMassMatrix::new(
+                &model.artifacts.continuous.mass_matrix,
+                model.state_scalar_count(),
+            )?,
             implicit_rhs: PreparedComputeBlock::new_with_label(
                 &model.problem.continuous.implicit_rhs,
                 "ode_implicit_rhs",
@@ -201,12 +212,20 @@ impl OdeModel {
                 &model.artifacts.continuous.implicit_jacobian_v,
                 "ode_implicit_jacobian_v",
             )?,
+            implicit_scalar_jacobian_v: PreparedScalarProgramBlock::new(
+                solve_eval::to_scalar_program_block(
+                    &model.artifacts.continuous.implicit_jacobian_v,
+                )?,
+            )?,
             root_conditions: PreparedScalarProgramBlock::new(
                 model.problem.events.root_conditions.clone(),
             )?,
             implicit_targets: model.problem.continuous.implicit_row_targets.clone(),
             algebraic_projection_plan: model.problem.continuous.algebraic_projection_plan.clone(),
             solver_names: model.problem.solve_layout.solver_maps.names.clone(),
+            solver_scales: (0..model.solver_scalar_count())
+                .map(|index| model.solver_variable_scale(index))
+                .collect(),
             external_tables: model.external_tables.clone(),
             runtime_state: solve_eval::SimulationRuntimeState::new(),
         })
@@ -214,6 +233,14 @@ impl OdeModel {
 
     pub(crate) fn state_count_for_projection(&self) -> usize {
         self.state_count
+    }
+
+    pub(crate) fn solve_state_mass(&self, rhs: &[f64]) -> Result<Vec<f64>, RuntimeSolveError> {
+        self.mass_matrix.solve(rhs)
+    }
+
+    fn prepared_mass_matrix(&self) -> &PreparedMassMatrix {
+        &self.mass_matrix
     }
 
     pub(crate) fn eval_initial_residual(
@@ -348,6 +375,26 @@ impl ImplicitProjectionModel for OdeModel {
             .map_err(|err| RuntimeSolveError::solve_ir(err.to_string()))
     }
 
+    fn eval_implicit_jacobian_v_row(
+        &self,
+        row_idx: usize,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        v: &[f64],
+    ) -> Result<Option<f64>, RuntimeSolveError> {
+        let Some(program_idx) = self
+            .implicit_scalar_jacobian_v
+            .single_output_row_for_output_index(row_idx)
+        else {
+            return Ok(None);
+        };
+        self.implicit_scalar_jacobian_v
+            .eval_row_unchecked_with_context(program_idx, y, p, t, self.row_eval_context(Some(v)))
+            .map(Some)
+            .map_err(|err| RuntimeSolveError::solve_ir(err.to_string()))
+    }
+
     fn eval_implicit_target_value(
         &self,
         row_idx: usize,
@@ -384,6 +431,14 @@ impl ImplicitProjectionModel for OdeModel {
 
     fn target_name_for_row(&self, row_idx: usize) -> Option<&str> {
         OdeModel::target_name_for_row(self, row_idx)
+    }
+
+    fn variable_name_for_y_index(&self, y_index: usize) -> Option<&str> {
+        self.solver_names.get(y_index).map(String::as_str)
+    }
+
+    fn variable_scale_for_y_index(&self, y_index: usize) -> f64 {
+        self.solver_scales.get(y_index).copied().unwrap_or(1.0)
     }
 }
 
@@ -543,7 +598,7 @@ pub(crate) fn build_state_ode_problem_with_runtime_params_and_initial(
 > {
     let state_count = model.state_scalar_count();
     let params = model.parameters.clone();
-    let atol = vec![opts.atol; state_count.max(1)];
+    let atol = solver_absolute_tolerances(model, opts.atol, state_count.max(1));
     let jac_runtime = input.rhs_runtime.clone();
     let root_runtime = input.rhs_runtime.clone();
     let rhs_counters = input.eval_counters.clone();
@@ -554,25 +609,35 @@ pub(crate) fn build_state_ode_problem_with_runtime_params_and_initial(
     let root_params = Some(input.runtime_params);
     let rhs_warm_start = input.algebraic_warm_start.clone();
     let jac_warm_start = input.algebraic_warm_start;
+    let rhs_delay_params = RefCell::new(Vec::new());
+    let jac_delay_params = RefCell::new(Vec::new());
     let tol = opts.atol.max(1.0e-10);
 
     let rhs_fn = move |y: &Vector, p: &Vector, t: Scalar, out: &mut Vector| {
         let start = rhs_counters.as_ref().map(|_| Instant::now());
         with_runtime_params(&rhs_params, p.as_slice(), |params| {
             let mut solver_y = rhs_warm_start.speculative();
-            if input
-                .rhs_runtime
-                .eval_state_derivatives_with_guess_into(
-                    t,
-                    y.as_slice(),
-                    params,
-                    &mut solver_y,
-                    tol,
-                    256,
-                    out.as_mut_slice(),
-                )
-                .is_err()
-            {
+            let state_len = y.len().min(solver_y.len());
+            solver_y[..state_len].copy_from_slice(&y.as_slice()[..state_len]);
+            let result = with_delay_adjusted_params_mut(
+                input.rhs_runtime.as_ref(),
+                &mut solver_y,
+                params,
+                t,
+                &rhs_delay_params,
+                |solver_y, params| {
+                    input.rhs_runtime.eval_state_derivatives_with_guess_into(
+                        t,
+                        y.as_slice(),
+                        params,
+                        solver_y,
+                        tol,
+                        256,
+                        out.as_mut_slice(),
+                    )
+                },
+            );
+            if !matches!(result, Ok(Ok(()))) {
                 fill_eval_error(out.as_mut_slice());
             }
         });
@@ -584,20 +649,29 @@ pub(crate) fn build_state_ode_problem_with_runtime_params_and_initial(
         let start = jac_counters.as_ref().map(|_| Instant::now());
         with_runtime_params(&jac_params, p.as_slice(), |params| {
             let mut solver_y = jac_warm_start.speculative();
-            if jac_runtime
-                .eval_state_jacobian_v_ad_with_guess_into(
-                    solve_eval::AlgebraicLinearization {
-                        t,
-                        params,
-                        settle: bdf_algebraic_settle(tol),
-                    },
-                    y.as_slice(),
-                    v.as_slice(),
-                    &mut solver_y,
-                    out.as_mut_slice(),
-                )
-                .is_err()
-            {
+            let state_len = y.len().min(solver_y.len());
+            solver_y[..state_len].copy_from_slice(&y.as_slice()[..state_len]);
+            let result = with_delay_adjusted_params_mut(
+                jac_runtime.as_ref(),
+                &mut solver_y,
+                params,
+                t,
+                &jac_delay_params,
+                |solver_y, params| {
+                    jac_runtime.eval_state_jacobian_v_ad_with_guess_into(
+                        rumoca_solver::AlgebraicLinearization {
+                            t,
+                            params,
+                            settle: bdf_algebraic_settle(tol),
+                        },
+                        y.as_slice(),
+                        v.as_slice(),
+                        solver_y,
+                        out.as_mut_slice(),
+                    )
+                },
+            );
+            if !matches!(result, Ok(Ok(()))) {
                 fill_eval_error(out.as_mut_slice());
             }
         });
@@ -605,27 +679,8 @@ pub(crate) fn build_state_ode_problem_with_runtime_params_and_initial(
             counters.jacobian_vector(elapsed_nanos_u64(start));
         }
     };
-    let root_fn = move |y: &Vector, p: &Vector, t: Scalar, out: &mut Vector| {
-        let start = root_counters.as_ref().map(|_| Instant::now());
-        with_runtime_params(&root_params, p.as_slice(), |params| {
-            if root_runtime
-                .eval_root_search_conditions_into(
-                    t,
-                    y.as_slice(),
-                    params,
-                    tol,
-                    EVENT_UPDATE_MAX_ITERS,
-                    out.as_mut_slice(),
-                )
-                .is_err()
-            {
-                fill_eval_error(out.as_mut_slice());
-            }
-        });
-        if let (Some(counters), Some(start)) = (root_counters.as_ref(), start) {
-            counters.root(elapsed_nanos_u64(start));
-        }
-    };
+    let root_count = root_runtime.root_condition_count().max(1);
+    let root_fn = state_root_evaluator(root_runtime, root_params, root_counters, tol);
 
     OdeBuilder::<Matrix>::new()
         .t0(input.t_start)
@@ -640,16 +695,70 @@ pub(crate) fn build_state_ode_problem_with_runtime_params_and_initial(
             },
             state_count.max(1),
         )
-        .root(root_fn, model.problem.events.root_conditions.len().max(1))
+        .root(root_fn, root_count)
         .build()
         .map_err(|err| SimError::SolverError(format!("ODE problem builder failed: {err}")))
 }
 
-fn bdf_algebraic_settle(tol: f64) -> solve_eval::AlgebraicSettle {
-    solve_eval::AlgebraicSettle {
+fn state_root_evaluator(
+    runtime: Arc<SolveRuntime>,
+    runtime_params: Option<RuntimeParameters>,
+    counters: Option<Arc<BdfEvalCounters>>,
+    tolerance: f64,
+) -> impl Fn(&Vector, &Vector, Scalar, &mut Vector) {
+    let delay_params = RefCell::new(Vec::new());
+    move |y: &Vector, p: &Vector, t: Scalar, out: &mut Vector| {
+        let start = counters.as_ref().map(|_| Instant::now());
+        with_runtime_params(&runtime_params, p.as_slice(), |params| {
+            let mut solver_y = runtime.model.initial_y.clone();
+            let state_len = y.len().min(solver_y.len());
+            solver_y[..state_len].copy_from_slice(&y.as_slice()[..state_len]);
+            let result = with_delay_adjusted_params(
+                runtime.as_ref(),
+                &solver_y,
+                params,
+                t,
+                &delay_params,
+                |params| {
+                    runtime.eval_root_search_conditions_into(
+                        t,
+                        y.as_slice(),
+                        params,
+                        tolerance,
+                        EVENT_UPDATE_MAX_ITERS,
+                        out.as_mut_slice(),
+                    )
+                },
+            );
+            if !matches!(result, Ok(Ok(()))) {
+                fill_eval_error(out.as_mut_slice());
+            }
+        });
+        if let (Some(counters), Some(start)) = (counters.as_ref(), start) {
+            counters.root(elapsed_nanos_u64(start));
+        }
+    }
+}
+
+fn bdf_algebraic_settle(tol: f64) -> rumoca_solver::AlgebraicSettle {
+    rumoca_solver::AlgebraicSettle {
         tol,
         max_iters: 256,
     }
+}
+
+fn ode_problem_storage(
+    model: &solve::SolveModel,
+    opts: &SimOptions,
+    ode_model: &OdeModel,
+) -> (usize, Vec<f64>, MassOperator) {
+    let solver_count = model.solver_scalar_count();
+    let atol = solver_absolute_tolerances(model, opts.atol, solver_count.max(1));
+    let mass = MassOperator {
+        solver_count,
+        matrix: ode_model.prepared_mass_matrix().clone(),
+    };
+    (solver_count, atol, mass)
 }
 
 fn build_ode_problem_with_initial(
@@ -668,44 +777,62 @@ fn build_ode_problem_with_initial(
     SimError,
 > {
     let params = model.parameters.clone();
-    let n_total = model.solver_scalar_count();
-    let atol = vec![opts.atol; n_total.max(1)];
-    let mass = MassOperator {
-        solver_count: n_total,
-        matrix: PreparedMassMatrix::new(
-            &model.artifacts.continuous.mass_matrix,
-            model.state_scalar_count(),
-        )?,
-    };
+    let (n_total, atol, mass) = ode_problem_storage(model, opts, &ode_model);
 
     let rhs_runtime_params = runtime_params.clone();
     let jac_runtime_params = runtime_params.clone();
     let root_runtime_params = runtime_params.clone();
     let jac_model = ode_model.clone();
+    let jac_delay_runtime = root_runtime.clone();
+    let rhs_delay_runtime = root_runtime.clone();
+    let jac_delay_params = RefCell::new(Vec::new());
+    let root_delay_params = RefCell::new(Vec::new());
+    let rhs_delay_params = RefCell::new(Vec::new());
     let tol = opts.atol.max(1.0e-10);
+    let root_count = root_runtime.root_condition_count().max(1);
     let jac_fn = move |y: &Vector, p: &Vector, t: Scalar, v: &Vector, out: &mut Vector| {
         with_runtime_params(&jac_runtime_params, p.as_slice(), |params| {
-            if jac_model
-                .eval_jacobian_v(y.as_slice(), params, t, v.as_slice(), out.as_mut_slice())
-                .is_err()
-            {
+            let result = with_delay_adjusted_params(
+                jac_delay_runtime.as_ref(),
+                y.as_slice(),
+                params,
+                t,
+                &jac_delay_params,
+                |params| {
+                    jac_model.eval_jacobian_v(
+                        y.as_slice(),
+                        params,
+                        t,
+                        v.as_slice(),
+                        out.as_mut_slice(),
+                    )
+                },
+            );
+            if !matches!(result, Ok(Ok(()))) {
                 fill_eval_error(out.as_mut_slice());
             }
         });
     };
     let root_fn = move |y: &Vector, p: &Vector, t: Scalar, out: &mut Vector| {
         with_runtime_params(&root_runtime_params, p.as_slice(), |params| {
-            if root_runtime
-                .eval_root_search_conditions_into(
-                    t,
-                    y.as_slice(),
-                    params,
-                    tol,
-                    EVENT_UPDATE_MAX_ITERS,
-                    out.as_mut_slice(),
-                )
-                .is_err()
-            {
+            let result = with_delay_adjusted_params(
+                root_runtime.as_ref(),
+                y.as_slice(),
+                params,
+                t,
+                &root_delay_params,
+                |params| {
+                    root_runtime.eval_root_search_conditions_into(
+                        t,
+                        y.as_slice(),
+                        params,
+                        tol,
+                        EVENT_UPDATE_MAX_ITERS,
+                        out.as_mut_slice(),
+                    )
+                },
+            );
+            if !matches!(result, Ok(Ok(()))) {
                 fill_eval_error(out.as_mut_slice());
             }
         });
@@ -720,10 +847,17 @@ fn build_ode_problem_with_initial(
         .rhs_implicit(
             move |y: &Vector, p: &Vector, t: Scalar, out: &mut Vector| {
                 with_runtime_params(&rhs_runtime_params, p.as_slice(), |params| {
-                    if ode_model
-                        .eval_residual(y.as_slice(), params, t, out.as_mut_slice())
-                        .is_err()
-                    {
+                    let result = with_delay_adjusted_params(
+                        rhs_delay_runtime.as_ref(),
+                        y.as_slice(),
+                        params,
+                        t,
+                        &rhs_delay_params,
+                        |params| {
+                            ode_model.eval_residual(y.as_slice(), params, t, out.as_mut_slice())
+                        },
+                    );
+                    if !matches!(result, Ok(Ok(()))) {
                         fill_eval_error(out.as_mut_slice());
                     }
                 });
@@ -741,9 +875,27 @@ fn build_ode_problem_with_initial(
             },
             n_total.max(1),
         )
-        .root(root_fn, model.problem.events.root_conditions.len().max(1))
+        .root(root_fn, root_count)
         .build()
         .map_err(|err| SimError::SolverError(format!("ODE problem builder failed: {err}")))
+}
+
+fn solver_absolute_tolerances(
+    model: &solve::SolveModel,
+    base_tolerance: f64,
+    count: usize,
+) -> Vec<f64> {
+    let base = base_tolerance.abs().max(f64::MIN_POSITIVE);
+    (0..count)
+        .map(|index| {
+            let tolerance = base * model.solver_variable_scale(index);
+            if tolerance.is_finite() {
+                tolerance.max(f64::MIN_POSITIVE)
+            } else {
+                f64::MAX
+            }
+        })
+        .collect()
 }
 
 fn fill_eval_error(out: &mut [f64]) {
@@ -763,6 +915,42 @@ fn with_runtime_params(
     }
 }
 
+fn with_delay_adjusted_params<R>(
+    runtime: &SolveRuntime,
+    solver_y: &[f64],
+    params: &[f64],
+    time: f64,
+    scratch: &RefCell<Vec<f64>>,
+    f: impl FnOnce(&[f64]) -> R,
+) -> Result<R, RuntimeSolveError> {
+    if !runtime.has_delay_channels() {
+        return Ok(f(params));
+    }
+    let mut adjusted = scratch.borrow_mut();
+    adjusted.resize(params.len(), 0.0);
+    adjusted.copy_from_slice(params);
+    runtime.refresh_delay_values(time, solver_y, &mut adjusted)?;
+    Ok(f(&adjusted))
+}
+
+fn with_delay_adjusted_params_mut<R>(
+    runtime: &SolveRuntime,
+    solver_y: &mut [f64],
+    params: &[f64],
+    time: f64,
+    scratch: &RefCell<Vec<f64>>,
+    f: impl FnOnce(&mut [f64], &[f64]) -> R,
+) -> Result<R, RuntimeSolveError> {
+    if !runtime.has_delay_channels() {
+        return Ok(f(solver_y, params));
+    }
+    let mut adjusted = scratch.borrow_mut();
+    adjusted.resize(params.len(), 0.0);
+    adjusted.copy_from_slice(params);
+    runtime.refresh_delay_values(time, solver_y, &mut adjusted)?;
+    Ok(f(solver_y, &adjusted))
+}
+
 #[derive(Clone)]
 struct MassOperator {
     solver_count: usize,
@@ -773,5 +961,25 @@ impl MassOperator {
     fn apply(&self, v: &[f64], beta: f64, out: &mut [f64]) {
         self.matrix
             .apply_solver_mass_with_beta(v, beta, out, self.solver_count);
+    }
+}
+
+#[cfg(test)]
+mod tolerance_tests {
+    use super::solver_absolute_tolerances;
+    use rumoca_ir_solve as solve;
+
+    #[test]
+    fn bdf_absolute_tolerances_follow_solver_variable_scales() {
+        let model = solve::SolveModel {
+            initial_y: vec![0.0, 1.0e6],
+            solver_nominals: vec![1.0e-9, 1.0],
+            ..solve::SolveModel::default()
+        };
+
+        assert_eq!(
+            solver_absolute_tolerances(&model, 1.0e-6, 2),
+            vec![1.0e-15, 1.0]
+        );
     }
 }

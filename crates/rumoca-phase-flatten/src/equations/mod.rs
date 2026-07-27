@@ -7,7 +7,8 @@ use std::{collections::HashSet, sync::Arc};
 
 mod shape_inference;
 pub(crate) use shape_inference::{
-    ExpressionShape, infer_component_ref_shape, infer_simple_equation_scalar_count,
+    ExpressionShape, infer_component_ref_shape, infer_simple_equation_dims,
+    infer_simple_equation_scalar_count,
 };
 
 // Conditional tracing support (SPEC_0024)
@@ -26,8 +27,11 @@ use crate::static_subscripts::try_constant_integer;
 use crate::{Context, qualify_expression_imports_with_def_map_ctx};
 
 pub(crate) mod affine;
+pub(crate) mod array_family;
 mod assert_equations;
 mod conditional_and_eval;
+mod der_divergent_branches;
+use der_divergent_branches::{branches_differ_in_der_targets, try_select_parameter_branch};
 mod connections_graph;
 mod flattened_equations;
 mod structured_domain;
@@ -468,15 +472,23 @@ pub(crate) fn flatten_equation_with_def_map(
             if scalar_count == 0 {
                 return Ok(FlattenedEquations::default());
             }
+            let equation_dims = infer_simple_equation_dims(&lhs, &rhs, prefix, ctx, scalar_count);
 
             let equation = if scalar_count == 1 {
                 flat::Equation::new(residual, span, origin)
             } else {
                 flat::Equation::new_array(residual, span, origin, scalar_count)
             };
+            let structured_equations = array_family::structured_array_equation_family(
+                0,
+                &equation,
+                equation_dims.as_deref(),
+            )?
+            .into_iter()
+            .collect();
             Ok(FlattenedEquations {
                 equations: vec![equation],
-                structured_equations: vec![],
+                structured_equations,
                 assert_equations: vec![],
                 when_clauses: vec![],
                 definite_roots: vec![],
@@ -615,7 +627,12 @@ fn expand_array_comprehensions_in_expression(
             )?),
             span: *span,
         }),
-        ast::Expression::FunctionCall { comp, args, span } => {
+        ast::Expression::FunctionCall {
+            comp,
+            args,
+            is_partial_application,
+            span,
+        } => {
             if let Some(expanded) = expand_reduction_over_array_ref(ctx, comp, args, prefix, *span)?
             {
                 return Ok(expanded);
@@ -623,6 +640,7 @@ fn expand_array_comprehensions_in_expression(
             Ok(ast::Expression::FunctionCall {
                 comp: comp.clone(),
                 args: expand_expression_list(ctx, args, prefix, *span)?,
+                is_partial_application: *is_partial_application,
                 span: *span,
             })
         }
@@ -1114,6 +1132,14 @@ fn expand_for_equation(
         }
         return Ok(result);
     };
+    // A template is an optional compact rendering/evaluation aid; the emitted
+    // scalar rows remain authoritative.  Some source bodies contain equations
+    // (notably empty-range members) that are discarded while each concrete
+    // iteration is flattened.  In that case the symbolic capture can contain
+    // more residuals than the rows that actually exist at each point.  Do not
+    // attach a misleading template to the family: downstream code must fall
+    // back to the materialized rows rather than rendering the wrong kernel.
+    let template = template.filter(|candidate| candidate.body.len() == equations_per_point);
     result
         .structured_equations
         .push(flat::StructuredEquationFamily {
@@ -1152,7 +1178,10 @@ fn capture_comprehension_template(
         .map(|index| index.ident.text.to_string())
         .collect::<HashSet<_>>();
     collect_template_residuals(ctx, equations, prefix, def_map, &locals, &mut body)?;
-    (!body.is_empty()).then_some(rumoca_core::ComprehensionTemplate { body })
+    (!body.is_empty()).then_some(rumoca_core::ComprehensionTemplate {
+        body,
+        scalar_view: rumoca_core::ComprehensionScalarView::BinderSubstitution,
+    })
 }
 
 /// Append the symbolic residual of every leaf `lhs = rhs` equation in `equations`
@@ -1366,6 +1395,17 @@ fn expand_if_equation(
     // This handles cases like "if false then ... else ... end if"
     // and parameter-dependent conditions that can be resolved
     if let Some(selected_branch) = try_select_constant_branch(ctx, cond_blocks, else_block, prefix)
+    {
+        return flatten_equations_list(ctx, &selected_branch, prefix, span, origin, def_map);
+    }
+
+    // MLS §8.3.4: branches that differ in which variables they differentiate
+    // describe different DAEs, so the condition has to be resolved before state
+    // selection. Keeping such an if as a conditional expression would make every
+    // `der()` target a state even when the taken branch never assigns it.
+    if branches_differ_in_der_targets(cond_blocks, else_block)
+        && let Some(selected_branch) =
+            try_select_parameter_branch(cond_blocks, else_block, ctx, prefix)
     {
         return flatten_equations_list(ctx, &selected_branch, prefix, span, origin, def_map);
     }

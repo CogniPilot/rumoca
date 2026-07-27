@@ -5,6 +5,9 @@ description = "CasADi explicit ODE rhs(x, u, p) from the solve IR"
 execution_mode = "symbolic"
 deployment_class = "symbolic"
 
+[capabilities]
+runtime_events = false
+
 [[files]]
 path = "{{ model_name }}_casadi_solve.py"
 template = "casadi_solve.py.jinja"

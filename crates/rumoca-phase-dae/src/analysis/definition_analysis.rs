@@ -76,7 +76,11 @@ fn collect_continuous_algorithm_statement_targets(
                 insert_algorithm_defined_target(defined, &target, prefix_children);
             }
             rumoca_core::Statement::FunctionCall { outputs, .. } => {
-                for output in outputs.iter().filter_map(algorithm_output_target_name) {
+                for output in outputs
+                    .iter()
+                    .flatten()
+                    .filter_map(algorithm_output_target_name)
+                {
                     insert_algorithm_defined_target(defined, &output, prefix_children);
                 }
             }

@@ -6,6 +6,14 @@ use rumoca_sim::sim_trace_compare::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
+mod timeout_classification;
+
+use timeout_classification::{
+    MslTimeoutClassificationRow, build_timeout_classification_rows,
+    format_timeout_classification_markdown, format_timeout_classification_text,
+    slow_failure_counts_by_package,
+};
+
 // =============================================================================
 // Result JSON write + balance summary printing
 // =============================================================================
@@ -60,6 +68,12 @@ struct MslPackagePassRateRow {
     solve_avg_seconds: Option<f64>,
     ic_avg_seconds: Option<f64>,
     sim_avg_seconds: Option<f64>,
+    /// Models still reported as `sim_timeout` — genuinely out of time.
+    too_slow: usize,
+    /// Models the phase monitor killed whose larger-budget re-check reached a
+    /// real diagnostic. They are reported under that failure, not as timeouts,
+    /// and this is what keeps the two readable apart per package.
+    failed_slowly: usize,
 }
 
 #[derive(Serialize)]
@@ -71,6 +85,10 @@ struct MslPackagePassRateReport {
     model_count: usize,
     rows: Vec<MslPackagePassRateRow>,
     overall: MslPackagePassRateRow,
+    /// Every model the per-phase monitor killed, with what a larger budget then
+    /// established. Empty when no model was killed.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    timeout_classification: Vec<MslTimeoutClassificationRow>,
 }
 
 #[derive(Default)]
@@ -92,6 +110,7 @@ struct MslPackagePassRateCounts {
     ic_timed: usize,
     sim_seconds: f64,
     sim_timed: usize,
+    too_slow: usize,
 }
 
 #[derive(Default)]
@@ -390,7 +409,17 @@ pub(super) fn build_mls_contract_coverage(
         if result.sim_status.as_deref() == Some("sim_ok") {
             entry.sim_ok += 1;
         }
-        if let Some(error_code) = result.error_code.as_deref() {
+        // Compile, solve and sim stages all contribute their stable SPEC_0008
+        // code: a model that compiles but fails to lower or to integrate is
+        // still a coded defect and must be visible in the coverage table.
+        for error_code in [
+            result.error_code.as_deref(),
+            result.ir_solve_error_code.as_deref(),
+            result.sim_error_code.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
             *entry
                 .error_code_counts
                 .entry(error_code.to_string())
@@ -504,8 +533,11 @@ fn pass_rate_row(
     package: String,
     counts: MslPackagePassRateCounts,
     parse_avg_seconds: Option<f64>,
+    failed_slowly: usize,
 ) -> MslPackagePassRateRow {
     MslPackagePassRateRow {
+        too_slow: counts.too_slow,
+        failed_slowly,
         package,
         n: counts.n,
         parse_passed: counts.parse_passed,
@@ -560,14 +592,28 @@ fn build_msl_package_pass_rate_report_with_parity(
     }
 
     let parse_avg_seconds = avg_seconds(summary.timings.parse_seconds, overall_counts.n);
+    let timeout_classification = build_timeout_classification_rows(summary);
+    let slow_failures = slow_failure_counts_by_package(&timeout_classification);
+    let overall_slow_failures = slow_failures.values().sum();
 
     let rows = by_package
         .into_iter()
-        .map(|(package, counts)| pass_rate_row(package, counts, parse_avg_seconds))
+        .map(|(package, counts)| {
+            // A package with no entry has no slow failures, by construction of
+            // the map: absence here is a measured zero, not a fallback.
+            let failed_slowly = slow_failures.get(package.as_str()).copied().unwrap_or(0);
+            pass_rate_row(package, counts, parse_avg_seconds, failed_slowly)
+        })
         .collect::<Vec<_>>();
-    let overall = pass_rate_row("Overall".to_string(), overall_counts, parse_avg_seconds);
+    let overall = pass_rate_row(
+        "Overall".to_string(),
+        overall_counts,
+        parse_avg_seconds,
+        overall_slow_failures,
+    );
 
     MslPackagePassRateReport {
+        timeout_classification,
         git_commit: summary.git_commit.clone(),
         msl_version: summary.msl_version.clone(),
         selection_kind: msl_target_scope().as_str().to_string(),
@@ -651,6 +697,9 @@ fn add_result_to_pass_rate_counts(
 ) {
     counts.n += 1;
     counts.parse_passed += 1;
+    if result.sim_status.as_deref() == Some("sim_timeout") {
+        counts.too_slow += 1;
+    }
     let parity_model = parity.and_then(|parity| parity.models.get(&result.model_name));
     let ic_passed = parity_model
         .and_then(|model| model.ic_matches)
@@ -759,11 +808,15 @@ fn write_msl_package_pass_rate_report(
     let mut json_file = File::create(results_dir.join("msl_package_pass_rates.json"))?;
     json_file.write_all(json.as_bytes())?;
 
-    let markdown = format_msl_package_pass_rate_markdown(report);
+    let classification_markdown =
+        format_timeout_classification_markdown(&report.timeout_classification);
+    let classification_text = format_timeout_classification_text(&report.timeout_classification);
+
+    let markdown = format_msl_package_pass_rate_markdown(report) + &classification_markdown;
     let mut markdown_file = File::create(results_dir.join("msl_package_pass_rates.md"))?;
     markdown_file.write_all(markdown.as_bytes())?;
 
-    let terminal_table = format_msl_package_pass_rate_terminal_table(report);
+    let terminal_table = format_msl_package_pass_rate_terminal_table(report) + &classification_text;
     let mut text_file = File::create(results_dir.join("msl_package_pass_rates.txt"))?;
     text_file.write_all(terminal_table.as_bytes())?;
 

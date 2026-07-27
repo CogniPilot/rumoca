@@ -21,9 +21,9 @@ Rust compiler. See [Dependency Tiers](#dependency-tiers).
 
 ### 3. IR Crates Are Pure Data
 
-`rumoca-ir-ast`, `rumoca-ir-flat`, and `rumoca-ir-dae` contain only data types,
-display/debug implementations, and serde serialization. No evaluation logic,
-phase logic, or side effects.
+`rumoca-ir-ast`, `rumoca-ir-flat`, `rumoca-ir-dae`, and `rumoca-ir-solve`
+contain only data types, display/debug implementations, and serde
+serialization. No evaluation logic, phase logic, or side effects.
 
 Allowed exception: IR crates MAY provide read-only traversal/query helpers over
 their own data when those helpers have no side effects, do not evaluate
@@ -74,31 +74,32 @@ and phase crates.
 
 ### 3b. Single-Source Helpers Across the Pipeline
 
-Helpers referenced from multiple crates **must** have one designated
-implementation.
+Shared helpers **must** have one designated implementation.
 
 | Helper(s) | Owner | Notes |
 |---|---|---|
 | `balance`, `balance_detail` | `rumoca-phase-dae::balance` | DAE equation/unknown balance arithmetic |
 | `runtime_defined_unknown_names`, `runtime_defined_continuous_unknown_names` | `rumoca-phase-structural::runtime_defined` | Single implementation; phase-structural is the authoritative caller. |
 | `expressions_semantically_equal`, `Expression::semantically_eq_ignoring_spans` | `rumoca-core` | Shared Flat/DAE expression identity. This is structural identity only; evaluation stays in `rumoca-eval-*`. |
+| `modelica_sign`, `escape_modelica_string` | `rumoca-core` | MLS `sign` and source-string escaping. |
 | `INTERNAL_SAMPLE_FUNCTION_NAME`, `source_temporal_function_name`, `source_temporal_function_short_name`, `source_temporal_builtin_name` | `rumoca-core` | Single source for source temporal operator vocabulary shared by DAE and Solve boundary validation. |
 | `expr_contains_var` | `rumoca-ir-dae::expr_query` | Handles every `Expression` variant |
 | `expr_refers_to_var` | `rumoca-ir-dae::expr_query` | Same single-source rule. |
 | `expr_contains_der_of` | `rumoca-ir-dae::expr_query` | Same single-source rule. |
-| Solver runtime time-event helpers (`event_right_limit_time`, scheduled/periodic time-event filtering, dynamic time-event parameter lookup) | `rumoca-solver::timeline` | Concrete solver backends call the shared runtime policy instead of copying time-grid rules. |
-| Solver runtime event-boundary helpers (`process_runtime_event_boundary`, `runtime_event_horizon`, `runtime_root_event_application_time`, `RuntimeEventBoundaryHandler`) | `rumoca-solver::runtime::event` | Concrete solver backends provide callback hooks for backend-local row application/state reset while shared Modelica event-boundary policy stays in `rumoca-solver`. |
-| Solver zero-state orchestration helpers (`run_no_state_output_schedule`, `NoStateOrchestrationBackend`, `NoStateEventStep`) | `rumoca-solver::runtime::no_state` | Concrete solver backends provide row/root/event callbacks while shared no-state output/event-loop policy stays in `rumoca-solver`. |
-| Solver pre-parameter snapshot helpers (`write_pre_params_from_sources`, `update_slot`, `commit_pre_params_after_event`) | `rumoca-solver::runtime::pre_params` | Concrete solver backends call the shared pre-state write policy instead of copying `pre(...)` snapshot mechanics. |
-| Solver algebraic projection helpers (`project_algebraics`, `project_algebraics_and_detect_changes`, `project_initial_*`) | `rumoca-solver::runtime::projection` | Concrete solver backends provide backend-local residual/JVP evaluation through `AlgebraicProjectionModel`; projection policy and change detection stay shared. |
+| Solver runtime time-event helpers (`event_right_limit_time`, scheduled/periodic time-event filtering, dynamic time-event parameter lookup) | `rumoca-solver::timeline` | Shared time-grid rules. |
+| Solver runtime event-boundary helpers (`process_runtime_event_boundary`, `runtime_event_horizon`, `runtime_root_event_application_time`, `RuntimeEventBoundaryHandler`) | `rumoca-solver::runtime::event` | Backends hook row application/state reset; MLS event-boundary policy stays shared. |
+| Solver zero-state orchestration helpers (`run_no_state_output_schedule`, `NoStateOrchestrationBackend`, `NoStateEventStep`) | `rumoca-solver::runtime::no_state` | Backends hook row/root/event; output/event-loop policy stays shared. |
+| Solver pre-parameter snapshot helpers (`write_pre_params_from_sources`, `update_slot`, `commit_pre_params_after_event`) | `rumoca-solver::runtime::pre_params` | Shared `pre(...)` snapshot mechanics. |
+| Solver algebraic projection helpers (`project_algebraics`, `project_algebraics_and_detect_changes`, `project_initial_*`) | `rumoca-solver::runtime::projection` | Backends supply residual/JVP via `AlgebraicProjectionModel`; projection/change-detection policy stays shared. |
+| Solve runtime state machine and backend-neutral simulation driver (`SolveRuntime`, `simulate_state_targets`, event/discrete row application, algebraic settle, Jacobian/sensitivity reports) | `rumoca-solver::runtime::{solve_runtime,driver}` | Backends adapt via `SolverAdvanceBackend`; no backend-specific tracing namespaces. |
 
 Required rules:
 
-- Every helper above has exactly one implementation, in the listed
-  module. All callers MUST import from that module path.
-- Do not fork helpers "for convenience." If the owner creates a forbidden
-  dependency, move the helper by spec update instead.
-- Adding a helper to this list requires updating this spec.
+- Each helper has exactly one implementation in its listed module; callers MUST
+  import that path.
+- Do not fork helpers. If ownership creates a forbidden dependency, move it by
+  spec update.
+- List additions require a spec update.
 
 ### 4. Phase Typing via Newtypes
 
@@ -119,7 +120,7 @@ structural-parameter values are available only after instantiation.
 
 ### 5. Evaluation Decoupled from Representation
 
-Evaluation crates are aligned to IR ownership: `rumoca-eval-ast`, `rumoca-eval-flat`, and `rumoca-eval-dae`. `rumoca-eval-solve` builds on DAE evaluation primitives for solver-facing row evaluation. This keeps evaluation entry points explicit per representation and avoids cross-layer helper crates that hide where behavior lives.
+Evaluation crates are aligned to IR ownership: `rumoca-eval-ast`, `rumoca-eval-flat`, and `rumoca-eval-dae`. `rumoca-eval-solve` is the Tier 3 solver-facing row evaluator/scalarizer, including its own tensor-kernel selection, and MUST NOT depend on a Tier 4/5 crate; the runtime state machine and simulation driver live in `rumoca-solver::runtime`. This keeps evaluation entry points explicit per representation and avoids cross-layer helper crates that hide where behavior lives.
 
 Phase crates MAY depend on the evaluation crate for the IR they are actively processing
 when the phase needs compile-time evaluation of that representation. For example,
@@ -169,9 +170,7 @@ Re-export guardrails:
   depend on facades but must not add lower-layer forwarding surfaces.
 - Root/foundation crates MUST NOT act as compatibility facades for moved symbols.
   If a primitive is owned by a crate, downstream code must import it from the
-  owning crate, not via re-export through an intermediate crate. For example,
-  `Span` is owned by `rumoca-core` (§3a) and must be imported as
-  `use rumoca_core::Span`, not via a re-export through some other crate.
+  owning crate, not via re-export through an intermediate crate.
 
 CI: `architecture_hardening_test::test_no_new_cross_crate_public_exports`
 rejects `pub use rumoca_*::...` and `pub type X = rumoca_*::...` in non-facade

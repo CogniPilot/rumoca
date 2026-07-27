@@ -15,6 +15,9 @@ use serde::{Deserialize, Serialize};
 pub struct ScopeTree {
     /// All scopes indexed by ScopeId.
     scopes: Vec<Scope>,
+    /// Predefined names that remain visible at an encapsulated boundary.
+    #[serde(default)]
+    predefined_members: IndexMap<ComponentPath, DefId>,
 }
 
 impl ScopeTree {
@@ -27,6 +30,7 @@ impl ScopeTree {
             parent: None,
             members: IndexMap::default(),
             imports: Vec::new(),
+            inherited_members: IndexMap::default(),
         });
         tree
     }
@@ -44,6 +48,7 @@ impl ScopeTree {
             parent: Some(parent),
             members: IndexMap::default(),
             imports: Vec::new(),
+            inherited_members: IndexMap::default(),
         });
         id
     }
@@ -65,10 +70,32 @@ impl ScopeTree {
         }
     }
 
+    /// Register a predefined name in the global scope and in the restricted
+    /// fallback used at encapsulated boundaries (MLS §5.3.1).
+    pub fn add_predefined_member(&mut self, name: ComponentPath, def_id: DefId) {
+        self.predefined_members.insert(name.clone(), def_id);
+        self.add_member(ScopeId::GLOBAL, name, def_id);
+    }
+
     /// Add an import to a scope.
     pub fn add_import(&mut self, scope: ScopeId, import: Import) {
         if let Some(s) = self.get_mut(scope) {
             s.imports.push(import);
+        }
+    }
+
+    /// Replace the effective inherited-member view for a class scope.
+    ///
+    /// A present key with `None` is an ambiguous inherited name. Lookup stops
+    /// at that scope rather than selecting an arbitrary base declaration or
+    /// continuing to an unrelated enclosing declaration.
+    pub fn set_inherited_members(
+        &mut self,
+        scope: ScopeId,
+        members: IndexMap<ComponentPath, Option<DefId>>,
+    ) {
+        if let Some(s) = self.get_mut(scope) {
+            s.inherited_members = members;
         }
     }
 
@@ -94,7 +121,16 @@ impl ScopeTree {
                 return Some(def_id);
             }
 
-            // MLS §5.3.1: encapsulated scopes do not see enclosing scopes.
+            if let Some(inherited) = s.inherited_members.get(name) {
+                return *inherited;
+            }
+
+            // MLS §5.3.1: an encapsulated boundary exposes predefined names,
+            // but neither enclosing scopes nor arbitrary top-level classes.
+            if s.is_encapsulated() {
+                return self.predefined_members.get(name).copied();
+            }
+
             current = self.next_lookup_scope(scope_id, s);
         }
 
@@ -145,7 +181,18 @@ impl ScopeTree {
                 return import_result;
             }
 
-            // MLS §5.3.1: encapsulated scopes do not see enclosing scopes.
+            if let Some(inherited) = s.inherited_members.get(name) {
+                return (*inherited).filter(|&id| exclude.is_none_or(|ex| id != ex));
+            }
+
+            if s.is_encapsulated() {
+                return self
+                    .predefined_members
+                    .get(name)
+                    .copied()
+                    .filter(|&id| exclude.is_none_or(|ex| id != ex));
+            }
+
             current = self.next_lookup_scope(scope_id, s);
         }
 
@@ -158,11 +205,8 @@ impl ScopeTree {
     }
 
     fn next_lookup_scope(&self, scope_id: ScopeId, scope: &Scope) -> Option<ScopeId> {
-        if scope.is_encapsulated() && scope_id != ScopeId::GLOBAL {
-            Some(ScopeId::GLOBAL)
-        } else {
-            scope.parent
-        }
+        debug_assert!(!scope.is_encapsulated() || scope_id == ScopeId::GLOBAL);
+        scope.parent
     }
 
     /// Get the number of scopes.
@@ -187,6 +231,11 @@ pub struct Scope {
     pub members: IndexMap<ComponentPath, DefId>,
     /// Imports in this scope (MLS §13.2).
     pub imports: Vec<Import>,
+    /// Effective members contributed by resolved extends clauses.
+    ///
+    /// `None` records an ambiguous inherited name without choosing one base.
+    #[serde(default)]
+    pub inherited_members: IndexMap<ComponentPath, Option<DefId>>,
 }
 
 impl Scope {

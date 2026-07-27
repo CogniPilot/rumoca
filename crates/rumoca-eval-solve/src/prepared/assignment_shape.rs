@@ -83,7 +83,7 @@ pub fn target_assignment_shape(
     Ok(target_assignment_shapes(row)?.into_iter().next())
 }
 
-pub(super) fn target_assignment_shapes(
+pub fn target_assignment_shapes(
     row: &[LinearOp],
 ) -> Result<Vec<TargetAssignmentShape>, EvalSolveError> {
     if ScalarProgramBlock::program_output_count(row) > 1 {

@@ -424,9 +424,9 @@ pub(in crate::codegen) fn checked_linsolve_render_count(
 /// the matrix operand values; no output memref store is emitted here.
 /// Render a `ComputeNode::LinSolve` inner value as MLIR textual IR.
 ///
-/// Emits `setup_ops`, allocas flat A (n×n) and b (n) memrefs, fills them
-/// from computed registers, then calls `@rumoca_solve_linear_component` (the
-/// Gaussian-elimination runtime) once per output component.
+/// Emits `setup_ops`, allocas flat A (n×n), b (n), and x (n) memrefs, fills
+/// them from computed registers, then calls `@rumoca_solve_linear` once for
+/// the complete output vector.
 ///
 /// Pointers are passed as `i64` to avoid the MLIR memref-descriptor ABI:
 ///   `memref.extract_aligned_pointer_as_index` → `arith.index_cast` → `i64`
@@ -458,9 +458,11 @@ pub(in crate::codegen) fn render_linsolve_mlir_function(
     // Evaluate setup_ops → fills registers matrix_start..+n*n and rhs_start..+n
     emit_linear_ops_mlir(&setup_ops, &pfx, &mut out)?;
 
-    // Alloca flat A (n×n) and b (n) buffers on the stack
+    // Keep model-sized dense solve workspaces off the thread stack. These
+    // buffers are scoped to one evaluation and released after the result is
+    // copied to the caller's output memref.
     out.push_str(&format!(
-        "    %{pfx}_A = memref.alloca() : memref<{matrix_count}xf64>\n"
+        "    %{pfx}_A = memref.alloc() : memref<{matrix_count}xf64>\n"
     ));
     for i in 0..matrix_count {
         let reg = shape.matrix_reg(i)?;
@@ -470,7 +472,7 @@ pub(in crate::codegen) fn render_linsolve_mlir_function(
         ));
     }
     out.push_str(&format!(
-        "    %{pfx}_b = memref.alloca() : memref<{rhs_count}xf64>\n"
+        "    %{pfx}_b = memref.alloc() : memref<{rhs_count}xf64>\n"
     ));
     for i in 0..rhs_count {
         let reg = shape.rhs_reg(i)?;
@@ -481,24 +483,36 @@ pub(in crate::codegen) fn render_linsolve_mlir_function(
     }
 
     // Extract aligned pointers as i64 (avoids memref-descriptor ABI complexity)
+    // and solve the complete system once. The scalar compatibility helper
+    // returns one component per call; using it here would refactorize A `n`
+    // times and turn a native O(n^3) node into O(n^4).
     out.push_str(&format!(
         "    %{pfx}_Aidx = memref.extract_aligned_pointer_as_index %{pfx}_A : memref<{matrix_count}xf64> -> index\n\
          \t%{pfx}_Ai64 = arith.index_cast %{pfx}_Aidx : index to i64\n\
          \t%{pfx}_bidx = memref.extract_aligned_pointer_as_index %{pfx}_b : memref<{rhs_count}xf64> -> index\n\
          \t%{pfx}_bi64 = arith.index_cast %{pfx}_bidx : index to i64\n\
-         \t%{pfx}_nn = arith.constant {n} : i64\n"
+         \t%{pfx}_x = memref.alloc() : memref<{rhs_count}xf64>\n\
+         \t%{pfx}_xidx = memref.extract_aligned_pointer_as_index %{pfx}_x : memref<{rhs_count}xf64> -> index\n\
+         \t%{pfx}_xi64 = arith.index_cast %{pfx}_xidx : index to i64\n\
+         \t%{pfx}_nn = arith.constant {n} : i64\n\
+         \tfunc.call @rumoca_solve_linear(%{pfx}_Ai64, %{pfx}_bi64, %{pfx}_nn, %{pfx}_xi64) : (i64, i64, i64, i64) -> ()\n"
     ));
 
-    // Call runtime once per component, store each result to output
+    // Load each component from the one solved vector and store it to output.
     for comp in 0..shape.output_count()? {
         let output_idx = shape.output_index(comp)?;
         out.push_str(&format!(
-            "    %{pfx}_comp{comp} = arith.constant {comp} : i64\n\
-             \t%{pfx}_x{comp} = func.call @rumoca_solve_linear_component(%{pfx}_Ai64, %{pfx}_bi64, %{pfx}_nn, %{pfx}_comp{comp}) : (i64, i64, i64, i64) -> f64\n\
+            "    %{pfx}_xi{comp} = arith.constant {comp} : index\n\
+             \t%{pfx}_x{comp} = memref.load %{pfx}_x[%{pfx}_xi{comp}] : memref<{rhs_count}xf64>\n\
              \t%{pfx}_oi{comp} = arith.constant {output_idx} : index\n\
              \tmemref.store %{pfx}_x{comp}, %out[%{pfx}_oi{comp}] : memref<?xf64>\n"
         ));
     }
+    out.push_str(&format!(
+        "    memref.dealloc %{pfx}_x : memref<{rhs_count}xf64>\n\
+         \tmemref.dealloc %{pfx}_b : memref<{rhs_count}xf64>\n\
+         \tmemref.dealloc %{pfx}_A : memref<{matrix_count}xf64>\n"
+    ));
 
     Ok(out)
 }
@@ -583,9 +597,9 @@ fn emit_one_linear_op_mlir(
         out.push_str(&format!(
             "    %{pfx}_rnd{dst} = math.round %{pfx}_r{index} : f64\n\
              \t%{pfx}_zr{dst} = arith.constant 0.0 : f64\n\
-             \t%{pfx}_lo{dst} = arith.maximumf %{pfx}_rnd{dst}, %{pfx}_zr{dst} : f64\n\
+             \t%{pfx}_lo{dst} = arith.maxnumf %{pfx}_rnd{dst}, %{pfx}_zr{dst} : f64\n\
              \t%{pfx}_hi{dst} = arith.constant {last}.0 : f64\n\
-             \t%{pfx}_cl{dst} = arith.minimumf %{pfx}_lo{dst}, %{pfx}_hi{dst} : f64\n\
+             \t%{pfx}_cl{dst} = arith.minnumf %{pfx}_lo{dst}, %{pfx}_hi{dst} : f64\n\
              \t%{pfx}_si{dst} = arith.fptosi %{pfx}_cl{dst} : f64 to i64\n\
              \t%{pfx}_ic{dst} = arith.index_cast %{pfx}_si{dst} : i64 to index\n\
              \t%{pfx}_bs{dst} = arith.constant {base} : index\n\
@@ -596,8 +610,8 @@ fn emit_one_linear_op_mlir(
         let dst = solve_field_usize(&v, "dst")?;
         let src = solve_field_usize(&v, "src")?;
         out.push_str(&format!(
-            "    %{pfx}_mz{dst} = arith.constant 0.0 : f64\n\
-             \t%{pfx}_r{dst} = arith.addf %{pfx}_r{src}, %{pfx}_mz{dst} : f64\n"
+            "    %{pfx}_mo{dst} = arith.constant 1.0 : f64\n\
+             \t%{pfx}_r{dst} = arith.mulf %{pfx}_r{src}, %{pfx}_mo{dst} : f64\n"
         ));
     } else if let Ok(v) = get_field(op, "Unary") {
         let dst = solve_field_usize(&v, "dst")?;
@@ -650,8 +664,8 @@ fn binary_to_mlir_op(op: &str) -> Option<&'static str> {
         "Mul" => Some("arith.mulf"),
         "Div" => Some("arith.divf"),
         "Pow" => Some("math.powf"),
-        "Min" => Some("arith.minimumf"),
-        "Max" => Some("arith.maximumf"),
+        "Min" => Some("arith.minnumf"),
+        "Max" => Some("arith.maxnumf"),
         _ => None,
     }
 }

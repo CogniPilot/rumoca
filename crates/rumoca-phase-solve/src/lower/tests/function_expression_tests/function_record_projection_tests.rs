@@ -101,7 +101,7 @@ fn function_assigns_record_result_to_record_array_element() {
 }
 
 #[test]
-fn lower_expression_lowers_delay_source_from_pre_slot() {
+fn lower_expression_rejects_delay_that_survives_dae_lowering() {
     let mut dae_model = dae::Dae::default();
     dae_model
         .variables
@@ -109,8 +109,6 @@ fn lower_expression_lowers_delay_source_from_pre_slot() {
         .insert(rumoca_core::VarName::new("x"), scalar_var("x"));
     insert_pre_parameter(&mut dae_model, "x", &[]);
     let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
-    let x_slot = layout.binding("x").expect("x should be bound");
-    let pre_x_slot = layout.binding("__pre__.x").expect("pre(x) should be bound");
     let expr = rumoca_core::Expression::BuiltinCall {
         function: rumoca_core::BuiltinFunction::Delay,
         args: vec![
@@ -129,30 +127,10 @@ fn lower_expression_lowers_delay_source_from_pre_slot() {
         span: lower_test_span(),
     };
 
-    let lowered = lower_expression(&expr, &layout, &IndexMap::new()).expect("delay should lower");
+    let error = lower_expression(&expr, &layout, &IndexMap::new())
+        .expect_err("source delay operators must not survive the DAE boundary");
 
-    // SPEC_0007 keeps event-entry memory in explicit `__pre__.*` parameter
-    // slots. The current placeholder lowers delay(expr, dt) to pre(expr);
-    // introducing a real delay operator belongs in a later, measured change.
-    let result = lowered.result;
-    if let ScalarSlot::P { index, .. } = pre_x_slot {
-        assert!(
-            lowered
-                .ops
-                .iter()
-                .any(|op| matches!(op, LinearOp::LoadP { dst, index: i } if *dst == result && *i == index)),
-            "delay placeholder should use the event-entry pre slot"
-        );
-    }
-    if let ScalarSlot::P { index, .. } = x_slot {
-        assert!(
-            !lowered
-                .ops
-                .iter()
-                .any(|op| matches!(op, LinearOp::LoadP { dst, index: i } if *dst == result && *i == index)),
-            "delay placeholder must not read the current parameter slot when pre(x) exists"
-        );
-    }
+    assert!(error.to_string().contains("DAE runtime-operator lowering"));
 }
 #[test]
 fn lower_expression_handles_projected_function_output_array_element() {

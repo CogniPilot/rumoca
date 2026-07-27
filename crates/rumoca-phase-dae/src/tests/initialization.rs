@@ -47,6 +47,13 @@ fn real_var(name: &str, fixed: Option<bool>, start: Option<Expression>) -> flat:
     }
 }
 
+fn real_parameter(name: &str, fixed: bool, start: f64) -> flat::Variable {
+    flat::Variable {
+        variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
+        ..real_var(name, Some(fixed), Some(real_lit(start)))
+    }
+}
+
 fn component_ref(name: &str) -> rumoca_core::ComponentReference {
     rumoca_core::ComponentReference {
         local: false,
@@ -193,4 +200,45 @@ fn todae_skips_fixed_start_initial_equation_for_zero_size_array() {
     .expect("zero-size fixed variable should lower");
 
     assert!(fixed_start_equations_for(&dae, "x").is_empty());
+}
+
+#[test]
+fn todae_preserves_parameter_only_scalar_initial_equation() {
+    let mut flat = Model::new();
+    flat.add_variable(VarName::new("p"), real_parameter("p", false, 2.0));
+    flat.add_variable(VarName::new("q"), real_parameter("q", false, 1.0));
+    let equation = flat::Equation {
+        residual: Expression::Binary {
+            op: rumoca_core::OpBinary::Sub,
+            lhs: Box::new(Expression::Binary {
+                op: rumoca_core::OpBinary::Div,
+                lhs: Box::new(var_ref("p")),
+                rhs: Box::new(var_ref("q")),
+                span: test_span(),
+            }),
+            rhs: Box::new(real_lit(2.0)),
+            span: test_span(),
+        },
+        span: test_span(),
+        origin: flat::EquationOrigin::ComponentEquation {
+            component: "parameter-init-fixture".to_string(),
+        },
+        scalar_count: 1,
+    };
+    assert_eq!(
+        infer_equation_scalar_count(&equation.residual, &flat, &build_prefix_counts(&flat)),
+        1
+    );
+    flat.add_initial_equation(equation);
+
+    let dae = to_dae_with_options(
+        &flat,
+        ToDaeOptions {
+            error_on_unbalanced: false,
+        },
+    )
+    .expect("parameter-only scalar initialization equation should lower");
+
+    assert_eq!(dae.initialization.equations.len(), 1);
+    assert_eq!(dae.initialization.equations[0].scalar_count, 1);
 }

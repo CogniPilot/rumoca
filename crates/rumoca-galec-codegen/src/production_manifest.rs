@@ -457,7 +457,7 @@ fn code_file_entry(id: &str, file: &EmittedCodeFile) -> Result<File, GalecTarget
         id: Identifier::new(id)?,
         name: file.name.clone(),
         path: FilePath::root(),
-        checksum: FileChecksum::Sha1(file.sha1.clone()),
+        checksum: FileChecksum::Sha1(file.sha1),
         role: FileRole::Code,
         description: None,
     })
@@ -880,7 +880,7 @@ mod tests {
         let ac_sha1 = Sha1Hex::of_bytes(b"rendered AC manifest bytes");
         let header = emitted("TestBlock.h", b"header bytes");
         let source = emitted("TestBlock.c", b"source bytes");
-        let pc = assemble_production_manifest(&package, &ac, ac_sha1.clone(), &header, &source)
+        let pc = assemble_production_manifest(&package, &ac, ac_sha1, &header, &source)
             .expect("assembles");
 
         let reference = &pc.parts().manifest_reference;
@@ -902,10 +902,10 @@ mod tests {
         );
         assert_eq!(files[0].0, "F_H");
         assert_eq!(files[0].1, "TestBlock.h");
-        assert_eq!(files[0].2, &FileChecksum::Sha1(header.sha1.clone()));
+        assert_eq!(files[0].2, &FileChecksum::Sha1(header.sha1));
         assert_eq!(files[1].0, "F_C");
         assert_eq!(files[1].1, "TestBlock.c");
-        assert_eq!(files[1].2, &FileChecksum::Sha1(source.sha1.clone()));
+        assert_eq!(files[1].2, &FileChecksum::Sha1(source.sha1));
 
         // The PC manifest gets its own fresh UUID, distinct from the AC one.
         assert_ne!(pc.parts().attributes.id, ac.parts().attributes.id);

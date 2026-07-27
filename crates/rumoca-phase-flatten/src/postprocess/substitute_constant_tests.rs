@@ -1103,3 +1103,152 @@ fn expr_contains_var_ref(expr: &rumoca_core::Expression, needle: &str) -> bool {
         rumoca_core::Expression::Literal { .. } | rumoca_core::Expression::Empty { .. } => false,
     }
 }
+
+#[test]
+fn reports_self_referential_constant_binding_instead_of_recursing() {
+    // A short class definition such as `function f = base(arg = arg)` used to
+    // leave `f.arg` bound to a reference that resolves straight back to `f.arg`.
+    // Folding that binding must produce a spanned diagnostic; before cycle
+    // detection it recursed until the stack overflowed.
+    let mut ctx = Context::new();
+    ctx.constant_values.insert("a.k".to_string(), var_ref("k"));
+
+    let error = substitute_known_constants_expr(
+        var_ref("a.k"),
+        &ctx,
+        &rustc_hash::FxHashSet::default(),
+        &HashSet::new(),
+        "",
+    )
+    .expect_err("self-referential constant binding must be reported");
+
+    match &error {
+        FlattenError::CyclicConstantBinding { name, cycle, .. } => {
+            assert_eq!(name, "a.k");
+            assert!(
+                cycle.starts_with("a.k -> "),
+                "cycle should list the expansion chain, got {cycle}"
+            );
+        }
+        other => panic!("expected CyclicConstantBinding, got {other:?}"),
+    }
+}
+
+/// `Complex(re = 5e-3, im = 0)` on a record parameter must survive folding.
+///
+/// The declaration default recorded from the class body (`Complex(1, 0)`) is
+/// keyed on the whole-record path `src.Phi`, which is never a flat variable —
+/// only its members `src.Phi.re` / `src.Phi.im` are, and those already carry the
+/// modification. Folding the default over the reference dropped the modifier
+/// (MLS §7.2.4).
+#[test]
+fn keeps_expanded_record_component_reference_symbolic() {
+    let mut model = flat::Model::new();
+    add_primitive_variable(&mut model, "src.Phi.re");
+    add_primitive_variable(&mut model, "src.Phi.im");
+    add_primitive_variable(&mut model, "src.port_p.Phi.re");
+    add_primitive_variable(&mut model, "src.port_p.Phi.im");
+    model.add_equation(flat::Equation::new(
+        var_ref("src.Phi"),
+        test_span(),
+        flat::EquationOrigin::ComponentEquation {
+            component: "src".to_string(),
+        },
+    ));
+
+    let mut ctx = Context::new();
+    ctx.constant_values.insert(
+        "src.Phi".to_string(),
+        rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::Reference::new("Complex"),
+            args: vec![int_literal(1), int_literal(0)],
+            is_constructor: true,
+            span: rumoca_core::Span::DUMMY,
+        },
+    );
+    ctx.seed_expanded_component_keys(&model);
+
+    substitute_known_constants_in_flat(&mut model, &ctx).unwrap();
+
+    assert_eq!(model.equations[0].residual, var_ref("src.Phi"));
+}
+
+/// A record path with no flat members is still a foldable constant.
+///
+/// Package-level record constants such as `Medium.data` never appear in the flat
+/// variable set, so the guard above must not stop them from folding.
+#[test]
+fn still_folds_record_constant_without_flat_members() {
+    let mut model = flat::Model::new();
+    add_primitive_variable(&mut model, "src.y");
+    let constructor = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::Reference::new("Complex"),
+        args: vec![int_literal(1), int_literal(0)],
+        is_constructor: true,
+        span: rumoca_core::Span::DUMMY,
+    };
+    model.add_equation(flat::Equation::new(
+        var_ref("Pkg.phasor"),
+        test_span(),
+        flat::EquationOrigin::ComponentEquation {
+            component: "src".to_string(),
+        },
+    ));
+
+    let mut ctx = Context::new();
+    ctx.constant_values
+        .insert("Pkg.phasor".to_string(), constructor.clone());
+    ctx.seed_expanded_component_keys(&model);
+
+    substitute_known_constants_in_flat(&mut model, &ctx).unwrap();
+
+    assert_eq!(model.equations[0].residual, constructor);
+}
+
+/// Field access resolves through the class constant only when the flat model has
+/// no variable of that name.
+///
+/// `medium.state.reference_X` is a medium constant with no flat variable and must
+/// still fold, while `medium.state.X` is instantiated and must stay symbolic.
+#[test]
+fn folds_class_constant_field_but_not_instantiated_member() {
+    let mut model = flat::Model::new();
+    add_primitive_variable(&mut model, "medium.state.X");
+    let field = |base: &str, name: &str| rumoca_core::Expression::FieldAccess {
+        base: Box::new(var_ref(base)),
+        field: name.to_string(),
+        span: test_span(),
+    };
+    model.add_equation(flat::Equation::new(
+        field("medium.state", "reference_X"),
+        test_span(),
+        flat::EquationOrigin::ComponentEquation {
+            component: "medium".to_string(),
+        },
+    ));
+    model.add_equation(flat::Equation::new(
+        field("medium.state", "X"),
+        test_span(),
+        flat::EquationOrigin::ComponentEquation {
+            component: "medium".to_string(),
+        },
+    ));
+
+    let mut ctx = Context::new();
+    ctx.constant_values
+        .insert("medium.state.reference_X".to_string(), int_literal(7));
+    ctx.constant_values
+        .insert("medium.state.X".to_string(), int_literal(9));
+    ctx.seed_expanded_component_keys(&model);
+
+    substitute_known_constants_in_flat(&mut model, &ctx).unwrap();
+
+    assert!(matches!(
+        &model.equations[0].residual,
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Integer(7),
+            ..
+        }
+    ));
+    assert_eq!(model.equations[1].residual, field("medium.state", "X"));
+}

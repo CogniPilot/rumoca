@@ -7,7 +7,9 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+indexmap = { workspace = true }
 rumoca-core = { workspace = true }
+rumoca-eval-solve = { workspace = true }
 rumoca-ir-solve = { workspace = true }
 nalgebra = "0.34"
 serde = { workspace = true, features = ["derive"] }

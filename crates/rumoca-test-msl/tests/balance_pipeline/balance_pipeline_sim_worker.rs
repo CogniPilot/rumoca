@@ -45,16 +45,27 @@ static SIM_WORKER_PRLIMIT_AVAILABLE: std::sync::OnceLock<bool> = std::sync::Once
 static SIM_WORKER_PRLIMIT_WARNED: AtomicBool = AtomicBool::new(false);
 static SIM_WORKER_RUN_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
+/// Clamp a configured timeout override so it can only *raise* the budget.
+///
+/// The committed quality baseline was measured with the default budgets, so a
+/// config that shortened them would silently make the gate easier (models would
+/// time out instead of failing on their real defect).
+fn raise_only_timeout(configured: Option<f64>, floor: f64) -> Option<f64> {
+    configured
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .map(|value| value.max(floor))
+}
+
 pub(super) fn sim_timeout_override_secs() -> Option<f64> {
-    None
+    raise_only_timeout(parity_config().sim_timeout_secs, SIM_TIMEOUT_SECS)
 }
 
 pub(super) fn sim_timeout_secs() -> f64 {
-    SIM_TIMEOUT_SECS
+    sim_timeout_override_secs().unwrap_or(SIM_TIMEOUT_SECS)
 }
 
 pub(super) fn ir_solve_timeout_override_secs() -> Option<f64> {
-    None
+    raise_only_timeout(parity_config().ir_solve_timeout_secs, IR_SOLVE_TIMEOUT_SECS)
 }
 
 pub(super) fn ir_solve_timeout_secs() -> f64 {

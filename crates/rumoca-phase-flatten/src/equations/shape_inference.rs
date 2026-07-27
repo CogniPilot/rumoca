@@ -336,3 +336,35 @@ pub(crate) fn infer_simple_equation_scalar_count(
     }
     1
 }
+
+pub(crate) fn infer_simple_equation_dims(
+    lhs: &ast::Expression,
+    rhs: &ast::Expression,
+    prefix: &ast::QualifiedName,
+    ctx: &Context,
+    scalar_count: usize,
+) -> Option<Vec<i64>> {
+    let candidates = [
+        dims_for_shape(infer_expression_shape(lhs, prefix, ctx)),
+        dims_for_shape(infer_expression_shape(rhs, prefix, ctx)),
+        find_array_refs_needing_expansion(lhs, prefix, ctx)
+            .first()
+            .map(|array_ref| array_ref.dims.clone()),
+        find_array_refs_needing_expansion(rhs, prefix, ctx)
+            .first()
+            .map(|array_ref| array_ref.dims.clone()),
+    ];
+    candidates
+        .into_iter()
+        .flatten()
+        .find(|dims| dims_scalar_size(dims) == scalar_count)
+        .or_else(|| i64::try_from(scalar_count).ok().map(|count| vec![count]))
+}
+
+fn dims_for_shape(shape: ExpressionShape) -> Option<Vec<i64>> {
+    match shape {
+        ExpressionShape::Scalar | ExpressionShape::Other => None,
+        ExpressionShape::Vector(count) => Some(vec![count]),
+        ExpressionShape::Matrix(rows, columns) => Some(vec![rows, columns]),
+    }
+}

@@ -38,7 +38,7 @@ fn test_location(start: u32, end: u32) -> rumoca_core::Location {
         end_column: end + 1,
         start,
         end,
-        file_name: "function_param_fixture.mo".to_string(),
+        source: rumoca_core::SourceId::from_source_name("function_param_fixture.mo"),
     }
 }
 
@@ -399,6 +399,46 @@ fn canonicalize_collected_function_calls_distinguishes_duplicate_inherited_def_i
             instance_id: expected_instance,
             base_part_count: 3,
         })
+    );
+}
+
+#[test]
+fn canonicalize_collected_function_calls_prefers_exact_name_over_stale_def_id() {
+    let inherited_def_id = rumoca_core::DefId::new(901);
+    let flattened_def_id = rumoca_core::DefId::new(902);
+    let mut flat = flat::Model::new();
+    let mut function = rumoca_core::Function::new("Pkg.Medium.density", test_span());
+    function.def_id = Some(flattened_def_id);
+    function
+        .body
+        .push(rumoca_core::Statement::Return { span: test_span() });
+    flat.add_function(function);
+    let call_ref = core_comp_ref_with_def_id(&["Pkg", "Medium", "density"], inherited_def_id);
+    flat.add_equation(flat::Equation::new(
+        rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::Reference::from_component_reference(call_ref),
+            args: vec![],
+            is_constructor: false,
+            span: test_span(),
+        },
+        test_span(),
+        rumoca_ir_flat::EquationOrigin::ComponentEquation {
+            component: "test".to_string(),
+        },
+    ));
+
+    canonicalize_collected_function_calls(&mut flat).expect("canonicalize function calls");
+
+    let expected_instance = flat.functions[&rumoca_core::VarName::new("Pkg.Medium.density")]
+        .instance_id
+        .expect("flattened function instance identity");
+    let rumoca_core::Expression::FunctionCall { name, .. } = &flat.equations[0].residual else {
+        panic!("expected function call residual");
+    };
+    assert_eq!(
+        name.resolved_function()
+            .map(|resolved| resolved.instance_id),
+        Some(expected_instance)
     );
 }
 
@@ -995,6 +1035,7 @@ fn size_subscript(reference: &str, dimension: i64) -> ast::Subscript {
                 span: rumoca_core::Span::DUMMY,
             },
         ],
+        is_partial_application: false,
         span: rumoca_core::Span::DUMMY,
     })
 }

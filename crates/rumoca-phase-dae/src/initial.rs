@@ -64,8 +64,11 @@ where
         }
     }
 
-    dae.initialization.structured_equations =
-        remap_flat_structured_equations(&flat.initial_structured_equations, &flat_to_dae_index);
+    dae.initialization.structured_equations = remap_flat_structured_equations(
+        &flat.initial_structured_equations,
+        &flat_to_dae_index,
+        &dae.initialization.equations,
+    );
     Ok(())
 }
 

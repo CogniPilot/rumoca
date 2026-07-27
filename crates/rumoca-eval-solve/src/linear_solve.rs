@@ -1,8 +1,8 @@
-use crate::{EvalSolveError, get};
-use rumoca_solver::{
+use crate::tensor_policy::{
     LinearSolveKernel, TensorPolicyError, matrix_is_diagonal, matrix_nonzeros,
     select_linear_solve_kernel,
 };
+use crate::{EvalSolveError, get};
 
 /// Evaluate a [`LinearOp::LinearSolveComponent`] op directly, destructuring its
 /// fields. Keeps the interpreter's `eval_op` match arm to a single line.
@@ -253,13 +253,18 @@ fn build_augmented_matrix_unchecked(
     Ok(matrix)
 }
 
-pub(crate) struct AugmentedMatrix {
+/// Dense augmented `[A | b]` matrix used by the scalar Gaussian-elimination
+/// linear solve.
+///
+/// `pub` for `rumoca_solver::runtime::jacobian`, which reuses the same dense
+/// elimination for its inspector dumps.
+pub struct AugmentedMatrix {
     values: Vec<f64>,
     n: usize,
 }
 
 impl AugmentedMatrix {
-    pub(crate) fn zeroed(n: usize) -> Result<Self, EvalSolveError> {
+    pub fn zeroed(n: usize) -> Result<Self, EvalSolveError> {
         let len = checked_augmented_matrix_len(n)?;
         let mut values = Vec::new();
         reserve_linear_solve_capacity(&mut values, len)?;
@@ -275,11 +280,11 @@ impl AugmentedMatrix {
         self.n + 1
     }
 
-    pub(crate) fn get(&self, row: usize, col: usize) -> f64 {
+    pub fn get(&self, row: usize, col: usize) -> f64 {
         self.values[self.index(row, col)]
     }
 
-    pub(crate) fn set(&mut self, row: usize, col: usize, value: f64) {
+    pub fn set(&mut self, row: usize, col: usize, value: f64) {
         let index = self.index(row, col);
         self.values[index] = value;
     }
@@ -297,7 +302,7 @@ impl AugmentedMatrix {
     }
 }
 
-pub(crate) fn gaussian_eliminate(matrix: &mut AugmentedMatrix) -> Option<()> {
+pub fn gaussian_eliminate(matrix: &mut AugmentedMatrix) -> Option<()> {
     let n = matrix.n;
     for col in 0..n {
         let pivot = (col..n).max_by(|&a, &b| {

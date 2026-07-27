@@ -58,6 +58,7 @@ fn make_call(name: &str, args: Vec<ast::Expression>) -> ast::Expression {
     ast::Expression::FunctionCall {
         comp: make_comp_ref(name),
         args,
+        is_partial_application: false,
         span: rumoca_core::Span::DUMMY,
     }
 }
@@ -160,6 +161,37 @@ fn test_infer_simple_equation_scalar_count_matrix_vector_result() {
 
     let scalar_count = infer_simple_equation_scalar_count(&lhs, &rhs, &QualifiedName::new(), &ctx);
     assert_eq!(scalar_count, 2);
+}
+
+#[test]
+fn whole_matrix_equation_creates_compact_structured_family() {
+    let mut ctx = Context::new();
+    ctx.array_dimensions.insert("x".to_string(), vec![2, 3]);
+    let equation = InstanceEquation {
+        equation: ast::Equation::Simple {
+            lhs: ast::Expression::ComponentReference(make_comp_ref("x")),
+            rhs: make_call("zeros", vec![make_int(2), make_int(3)]),
+        },
+        origin: QualifiedName::from_dotted("M"),
+        source_scope: None,
+        source_scope_id: None,
+        span: test_span(),
+    };
+
+    let flattened = flatten_equation_with_def_map(&ctx, &equation, &QualifiedName::new(), None)
+        .expect("whole-array equation should flatten");
+
+    assert_eq!(flattened.equations.len(), 1);
+    assert_eq!(flattened.equations[0].scalar_count, 6);
+    assert_eq!(flattened.structured_equations.len(), 1);
+    let family = &flattened.structured_equations[0];
+    assert_eq!(family.domain.extents(), Ok(vec![2, 3]));
+    assert_eq!(family.equations_per_point, 1);
+    assert_eq!(family.first_equation_index, 0);
+    assert_eq!(
+        family.template.as_ref().map(|body| body.body.len()),
+        Some(1)
+    );
 }
 
 #[test]

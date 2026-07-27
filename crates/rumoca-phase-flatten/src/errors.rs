@@ -226,6 +226,41 @@ pub enum FlattenError {
         #[label("conflicting function reference")]
         span: SourceSpan,
     },
+
+    /// Connecting expandable connectors would require MLS §9.1.3 member-union
+    /// augmentation, which must not be approximated by connecting only the
+    /// members that already exist on both sides.
+    #[error(
+        "expandable connector connection between `{a}` and `{b}` requires unsupported member augmentation"
+    )]
+    #[diagnostic(
+        code(rumoca::flatten::EF020),
+        help(
+            "MLS §9.1.3 requires every expandable connector in the connection set to be augmented with the union of its members"
+        )
+    )]
+    UnsupportedExpandableConnectorAugmentation {
+        a: String,
+        b: String,
+        #[label("this connection requires expandable-connector augmentation")]
+        span: SourceSpan,
+    },
+
+    /// A constant/parameter binding expands into itself, so constant folding
+    /// would never terminate.
+    #[error("cyclic constant binding for `{name}`: {cycle}")]
+    #[diagnostic(
+        code(rumoca::flatten::EF021),
+        help(
+            "MLS §4.4.5: the declaration equation of a constant or parameter must not depend on itself"
+        )
+    )]
+    CyclicConstantBinding {
+        name: String,
+        cycle: String,
+        #[label("this reference expands into itself")]
+        span: SourceSpan,
+    },
 }
 
 impl FlattenError {
@@ -244,6 +279,26 @@ impl FlattenError {
             description: String
         }
     );
+    error_constructor!(
+        unsupported_expandable_connector_augmentation,
+        UnsupportedExpandableConnectorAugmentation {
+            a: String,
+            b: String
+        }
+    );
+
+    /// Create a CyclicConstantBinding error.
+    pub fn cyclic_constant_binding(
+        name: impl Into<String>,
+        cycle: impl Into<String>,
+        span: rumoca_core::Span,
+    ) -> Self {
+        Self::CyclicConstantBinding {
+            name: name.into(),
+            cycle: cycle.into(),
+            span: rumoca_core::span_to_source_span(span),
+        }
+    }
 
     /// Create a MissingFlowVariable error (no span).
     pub fn missing_flow_variable(

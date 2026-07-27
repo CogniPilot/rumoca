@@ -68,7 +68,7 @@ fn prepared_vec_with_capacity_rejects_impossible_capacity_with_span() {
 }
 
 #[test]
-fn prepared_compute_block_evaluates_map_through_scalar_view() {
+fn prepared_compute_block_evaluates_map_through_native_affine_loop() {
     let domain = test_domain();
     let block = ComputeBlock {
         nodes: vec![ComputeNode::Map {
@@ -93,6 +93,10 @@ fn prepared_compute_block_evaluates_map_through_scalar_view() {
     };
 
     let prepared = PreparedComputeBlock::new(&block).expect("valid map block should prepare");
+    assert!(matches!(
+        prepared.nodes.as_slice(),
+        [PreparedComputeNode::Affine { .. }]
+    ));
     let mut out = vec![0.0; prepared.len()];
     prepared
         .eval_with_context(
@@ -105,6 +109,43 @@ fn prepared_compute_block_evaluates_map_through_scalar_view() {
         .expect("prepared Map evaluation should succeed");
 
     assert_eq!(out, vec![10.0, 20.0, 30.0]);
+}
+
+#[test]
+fn prepared_empty_map_does_not_require_inputs_from_its_unexecuted_body() {
+    let domain = StructuredIndexDomain {
+        binders: vec![StructuredIndexBinder {
+            id: 0,
+            display_name: "i".to_string(),
+            lower: 1,
+            upper: 0,
+            step: 1,
+        }],
+    };
+    let block = ComputeBlock {
+        nodes: vec![ComputeNode::Map {
+            output_map: rumoca_ir_solve::TensorOutputMap::dense_contiguous(0, &domain)
+                .expect("empty domain still has a valid output mapping"),
+            domain,
+            base_ops: vec![
+                LinearOp::LoadY {
+                    dst: 0,
+                    index: usize::MAX,
+                },
+                LinearOp::StoreOutput { src: 0 },
+            ],
+            load_strides: Vec::new(),
+            const_strides: Vec::new(),
+            metadata: TensorNodeMetadata::default(),
+            span: test_span("prepared_empty_map.mo"),
+        }],
+    };
+
+    let prepared = PreparedComputeBlock::new(&block).expect("empty map should prepare");
+    assert_eq!(prepared.len(), 0);
+    prepared
+        .eval_with_context(&[], &[], 0.0, RowEvalContext::default(), &mut [])
+        .expect("an empty map must not evaluate or validate its body loads");
 }
 
 #[test]
@@ -154,6 +195,61 @@ fn prepared_compute_block_writes_sparse_map_output_slots() {
 }
 
 #[test]
+fn prepared_compute_block_combines_duplicate_affine_stride_descriptors() {
+    let domain = test_domain();
+    let block = ComputeBlock {
+        nodes: vec![ComputeNode::Map {
+            output_map: rumoca_ir_solve::TensorOutputMap::dense_contiguous(0, &domain)
+                .expect("valid dense output map"),
+            domain,
+            base_ops: vec![
+                LinearOp::LoadY { dst: 0, index: 0 },
+                LinearOp::StoreOutput { src: 0 },
+            ],
+            load_strides: vec![
+                AffineStencilLoadStride {
+                    op_position: 0,
+                    terms: vec![rumoca_ir_solve::AffineStencilIndexStrideTerm {
+                        dimension: 0,
+                        stride: isize::MAX,
+                    }],
+                },
+                AffineStencilLoadStride {
+                    op_position: 0,
+                    terms: vec![rumoca_ir_solve::AffineStencilIndexStrideTerm {
+                        dimension: 0,
+                        stride: 1,
+                    }],
+                },
+                AffineStencilLoadStride {
+                    op_position: 0,
+                    terms: vec![rumoca_ir_solve::AffineStencilIndexStrideTerm {
+                        dimension: 0,
+                        stride: -isize::MAX,
+                    }],
+                },
+            ],
+            const_strides: Vec::new(),
+            metadata: TensorNodeMetadata::default(),
+            span: test_span("prepared_combined_strides.mo"),
+        }],
+    };
+
+    let prepared = PreparedComputeBlock::new(&block).expect("combined stride should prepare");
+    let mut output = vec![0.0; prepared.len()];
+    prepared
+        .eval_with_context(
+            &[2.0, 3.0, 5.0],
+            &[],
+            0.0,
+            RowEvalContext::default(),
+            &mut output,
+        )
+        .expect("combined stride should evaluate");
+    assert_eq!(output, vec![2.0, 3.0, 5.0]);
+}
+
+#[test]
 fn prepared_compute_block_rejects_negative_tensor_output_map_with_span() {
     let span = rumoca_core::Span::from_offsets(
         rumoca_core::SourceId::from_source_name("bad_prepared_output.mo"),
@@ -189,7 +285,7 @@ fn prepared_compute_block_rejects_negative_tensor_output_map_with_span() {
     assert_eq!(err.source_span(), Some(span));
     assert!(
         err.to_string()
-            .contains("output map produced negative output index -1"),
+            .contains("output map produced negative output index"),
         "error should explain the invalid output map: {err}"
     );
 }

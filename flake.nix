@@ -147,8 +147,8 @@
 
         # Release-mode artifacts for the MSL parity gate, built as one Cargo
         # graph so the shard / merge / ModelicaTest / pinned-library consumers
-        # restore them via
-        # Cachix instead of recompiling + re-LTO'ing the workspace. A single
+        # restore them from the CI producer instead of recompiling + re-LTO'ing
+        # the workspace. A single
         # derivation keeps rumoca-worker, rumoca-sim-worker, rumoca-msl-tools,
         # the focused profile runner, and the libtest harness in one target
         # directory; separate derivations

@@ -119,6 +119,18 @@ impl<'a> LowerBuilder<'a> {
         name: &rumoca_core::Reference,
         span: rumoca_core::Span,
     ) -> Result<Option<&FunctionClosure>, LowerError> {
+        // Function inputs are bound in the same name-based local frame as
+        // scalar function inputs. A resolved reference in an inlined function
+        // still carries its source DefId, so consult the local textual key
+        // before falling through to the source-reference key. This mirrors
+        // local scalar lookup and lets higher-order function parameters shadow
+        // model-level names without discarding their resolved identity.
+        if let Some(closure) = self
+            .function_closures
+            .get(&generated_scope_key(name.as_str()))
+        {
+            return Ok(Some(closure));
+        }
         if !name.is_generated()
             && name.component_ref().is_none()
             && self

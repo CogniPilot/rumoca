@@ -500,6 +500,107 @@ end Top;
     );
 }
 
+/// MLS §7.3/§12.4: a self-forwarded package redeclare on a nested component
+/// retains the enclosing instance's effective virtual class declarations.
+#[test]
+fn test_forwarded_medium_specializes_inherited_function_result() {
+    let source = r#"
+partial package PartialMedium
+  replaceable record ThermodynamicState
+    Real value;
+  end ThermodynamicState;
+
+  replaceable function setState
+    input Real value;
+    output ThermodynamicState state;
+  algorithm
+    state := ThermodynamicState(value);
+  end setState;
+end PartialMedium;
+
+partial package PartialLinearMedium
+  extends PartialMedium;
+
+  redeclare record ThermodynamicState
+    Real value;
+    Real temperature;
+  end ThermodynamicState;
+end PartialLinearMedium;
+
+package ConcreteMedium
+  extends PartialLinearMedium;
+end ConcreteMedium;
+
+model Monitoring
+  replaceable package Medium = PartialMedium;
+  input Medium.ThermodynamicState state_in;
+end Monitoring;
+
+partial model PartialPump
+  replaceable package Medium = PartialMedium;
+  Monitoring monitoring(
+    redeclare package Medium = Medium,
+    state_in = Medium.setState(1.0));
+end PartialPump;
+
+model Test
+  extends PartialPump(redeclare package Medium = ConcreteMedium);
+end Test;
+"#;
+
+    let stored_def = rumoca_phase_parse::parse_to_ast(source, "test.mo").expect("parse failed");
+    let mut tree = rumoca_ir_ast::ClassTree::from_parsed(stored_def);
+    tree.source_map.add("test.mo", source);
+    let parsed = rumoca_ir_ast::ParsedTree::new(tree);
+    let resolved = rumoca_phase_resolve::resolve(parsed).expect("resolve failed");
+    let tree = resolved.into_inner();
+    let mut overlay = match rumoca_phase_instantiate::instantiate_model_with_outcome(&tree, "Test")
+    {
+        rumoca_phase_instantiate::InstantiationOutcome::Success(overlay) => overlay,
+        rumoca_phase_instantiate::InstantiationOutcome::NeedsInner { missing_inners, .. } => {
+            panic!("unexpected NeedsInner: {missing_inners:?}")
+        }
+        rumoca_phase_instantiate::InstantiationOutcome::Error(error) => {
+            panic!("instantiate failed: {error:?}")
+        }
+    };
+    let concrete_medium = tree
+        .get_class_by_qualified_name("ConcreteMedium")
+        .and_then(|class| class.def_id)
+        .expect("ConcreteMedium DefId");
+    let monitoring = overlay
+        .components
+        .values()
+        .find(|data| data.qualified_name.to_flat_string() == "monitoring")
+        .expect("monitoring component instance");
+    assert!(
+        monitoring
+            .class_overrides
+            .values()
+            .any(|class_override| class_override.alias == "Medium"
+                && class_override.target_def_id == concrete_medium),
+        "monitoring must carry its forwarded concrete Medium override: {:?}",
+        monitoring.class_overrides,
+    );
+    let monitoring_class = overlay
+        .classes
+        .values()
+        .find(|data| data.qualified_name.to_flat_string() == "monitoring")
+        .expect("monitoring class instance");
+    assert!(
+        monitoring_class
+            .class_overrides
+            .values()
+            .any(|class_override| class_override.alias == "Medium"
+                && class_override.target_def_id == concrete_medium),
+        "monitoring class IR must own its concrete Medium override: {:?}",
+        monitoring_class.class_overrides,
+    );
+
+    rumoca_phase_typecheck::typecheck_instanced(&tree, &mut overlay, "Test")
+        .expect("forwarded Medium must retain the enclosing concrete package specialization");
+}
+
 /// MLS §7.2/§7.3: extends modifiers must update dependent inherited constants
 /// before flattening range subscripts in equations (e.g., `1:Medium.nXi`).
 #[test]

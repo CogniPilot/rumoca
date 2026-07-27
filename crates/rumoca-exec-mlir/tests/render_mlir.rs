@@ -85,8 +85,11 @@ fn mlir_template_renders_loadtime() {
 
     let mlir = render_solve_template_with_name(&solve, "time_dep").expect("template should render");
 
-    // LoadTime: adds %t to 0.0
-    assert!(mlir.contains("arith.addf %t"), "LoadTime should add to %t");
+    // LoadTime uses a distinct SSA definition while preserving signed zero.
+    assert!(
+        mlir.contains("arith.mulf %t"),
+        "LoadTime should multiply %t by one"
+    );
 }
 
 #[test]

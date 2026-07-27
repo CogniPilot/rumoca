@@ -1104,6 +1104,7 @@ fn component_scope_inherits_type_extends_redeclare_function() {
                         value: Arc::new(ast_var("V_flow_op")),
                         span: test_span(),
                     }],
+                    is_partial_application: false,
                     span: test_span(),
                 }),
                 span: test_span(),

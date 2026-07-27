@@ -189,18 +189,21 @@ fn name_span(
         )));
     };
     let last = name.name.last().unwrap_or(first);
-    let file_name = if !first.location.file_name.is_empty() {
-        first.location.file_name.as_str()
+    let source = if first.location.source != rumoca_core::SourceId::DUMMY {
+        first.location.source
     } else {
-        last.location.file_name.as_str()
+        last.location.source
     };
     source_map
-        .try_location_to_span(
-            file_name,
+        .try_span(
+            source,
             first.location.start as usize,
             last.location.end as usize,
         )
         .ok_or_else(|| {
+            let file_name = source_map
+                .name(source)
+                .unwrap_or(crate::UNKNOWN_SOURCE_DISPLAY_NAME);
             Box::new(TypeCheckError::missing_source_context(format!(
                 "source file `{file_name}` for component modifier member type name was not found"
             )))

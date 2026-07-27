@@ -251,10 +251,7 @@ fn statement_from_ast_with_span(
             outputs: outputs
                 .iter()
                 .map(|output| output_component_reference_from_ast(output, context.def_map))
-                .collect::<LowerResult<Vec<_>>>()?
-                .into_iter()
-                .flatten()
-                .collect(),
+                .collect::<LowerResult<Vec<_>>>()?,
             span,
         }),
         ast::Statement::Reinit { variable, value } => Ok(rumoca_core::Statement::Reinit {

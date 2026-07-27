@@ -1310,14 +1310,10 @@ pub(super) fn extract_constants_from_class_with_prefix(
         ) {
             continue;
         }
-        let binding =
-            comp.binding
-                .as_ref()
-                .or(if !matches!(comp.start, ast::Expression::Empty { .. }) {
-                    Some(&comp.start)
-                } else {
-                    None
-                });
+        // MLS §4.4.4: the declaration binding carries the value. `start` is an
+        // initial guess (MLS §4.9) that the parser seeds with the declared
+        // type's default, so it is not a fallback here (SPEC_0008).
+        let binding = comp.binding.as_ref();
         let synthesized = if binding.is_none() {
             synthesize_component_modification_binding(comp)
         } else {
@@ -1352,14 +1348,8 @@ pub(super) fn extract_constants_from_class_with_prefix_and_imports(
         ) {
             continue;
         }
-        let binding =
-            comp.binding
-                .as_ref()
-                .or(if !matches!(comp.start, ast::Expression::Empty { .. }) {
-                    Some(&comp.start)
-                } else {
-                    None
-                });
+        // MLS §4.4.4 / §4.9: see above — `start` is not a value fallback.
+        let binding = comp.binding.as_ref();
         let synthesized = if binding.is_none() {
             synthesize_component_modification_binding(comp)
         } else {

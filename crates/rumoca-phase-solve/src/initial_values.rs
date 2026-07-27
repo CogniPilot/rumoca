@@ -42,17 +42,26 @@ pub(crate) fn apply_initial_equations_to_start_values(
             }
             let targets =
                 assignment_target_scalar_names(layout, assignment.target.as_str(), eq.span)?;
-            let values = initial_assignment_values(
+            let values = match initial_assignment_values(
                 assignment.solution,
                 &env,
                 assignment.target.as_str(),
                 &targets,
-            )
-            .map_err(|source| SolveModelLowerError::Evaluation {
-                context: format!("initial assignment for `{}`", assignment.target),
-                source,
-                span: assignment.solution.span().or(Some(eq.span)),
-            })?;
+            ) {
+                Ok(values) => values,
+                // Initial equations are residual constraints, not a causal
+                // execution order. A derivative-dependent or otherwise
+                // runtime-only RHS cannot seed a start value yet; leave it to
+                // the initialization projection instead of rejecting the DAE.
+                Err(err) if initial_seed_error_is_non_evaluable(&err) => continue,
+                Err(source) => {
+                    return Err(SolveModelLowerError::Evaluation {
+                        context: format!("initial assignment for `{}`", assignment.target),
+                        source,
+                        span: assignment.solution.span().or(Some(eq.span)),
+                    });
+                }
+            };
             changed |= pin_initial_assignment_targets(&targets, &mut pinned);
             changed |= apply_initial_assignment_values(
                 InitialAssignmentApplyContext {
@@ -947,6 +956,65 @@ mod tests {
             0,
             0,
         )
+    }
+
+    #[test]
+    fn derivative_dependent_initial_assignment_is_deferred_to_projection() {
+        let mut dae_model = dae::Dae::default();
+        for (name, states) in [("x", true), ("w", false)] {
+            let variable = dae::Variable {
+                name: rumoca_core::VarName::new(name),
+                ..dae::Variable::empty_with_span(test_span())
+            };
+            if states {
+                dae_model
+                    .variables
+                    .states
+                    .insert(rumoca_core::VarName::new(name), variable);
+            } else {
+                dae_model
+                    .variables
+                    .algebraics
+                    .insert(rumoca_core::VarName::new(name), variable);
+            }
+        }
+        let derivative = rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Der,
+            args: vec![var("x")],
+            span: test_span(),
+        };
+        dae_model.initialization.equations.push(dae::Equation {
+            lhs: None,
+            rhs: rumoca_core::Expression::Binary {
+                op: rumoca_core::OpBinary::Sub,
+                lhs: Box::new(var("w")),
+                rhs: Box::new(derivative),
+                span: test_span(),
+            },
+            span: test_span(),
+            origin: "initial equation from test".to_string(),
+            scalar_count: 1,
+        });
+        let layout = solve::VarLayout::from_parts(
+            IndexMap::from([
+                ("x".to_string(), solve::scalar_slot_y(0)),
+                ("w".to_string(), solve::scalar_slot_y(1)),
+            ]),
+            2,
+            0,
+        );
+        let mut initial_y = vec![1.0, 2.0];
+
+        apply_initial_equations_to_start_values(
+            &dae_model,
+            &layout,
+            &mut [],
+            &mut initial_y,
+            Arc::new(EvalRuntimeState::default()),
+        )
+        .expect("derivative-dependent equation should remain for initialization projection");
+
+        assert_eq!(initial_y, vec![1.0, 2.0]);
     }
 
     fn indexed_input_model_and_layout() -> (dae::Dae, solve::VarLayout) {

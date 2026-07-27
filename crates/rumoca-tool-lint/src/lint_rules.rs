@@ -1,6 +1,16 @@
 //! Lint rules for Modelica code.
+//!
+//! Rules are AST-driven ([`crate::LintContext`]): they inspect declarations and
+//! expressions rather than raw source lines, so keywords or numbers that appear
+//! inside comments and string literals never produce findings.
 
 use serde::{Deserialize, Serialize};
+
+use crate::lint_context::LintContext;
+
+mod ast_rules;
+
+pub(crate) use ast_rules::{MagicNumberRule, MissingDocumentationRule, NamingConventionRule};
 
 /// Severity level for lint messages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Default)]
@@ -75,121 +85,53 @@ impl LintMessage {
     }
 }
 
-/// Class keywords to check for naming conventions.
-const CLASS_KEYWORDS: &[&str] = &[
-    "model ",
-    "class ",
-    "block ",
-    "connector ",
-    "record ",
-    "package ",
-];
-
-/// Keywords that should have documentation.
-const DOC_KEYWORDS: &[&str] = &["model ", "function "];
-
 /// Check if a name starts with a lowercase letter.
 fn starts_with_lowercase(name: &str) -> bool {
-    name.chars()
-        .next()
-        .map(|c| c.is_lowercase())
-        .unwrap_or(false)
+    name.chars().next().is_some_and(char::is_lowercase)
 }
 
-/// Extract the class/function name after a keyword.
-fn extract_name_after_keyword<'a>(line: &'a str, keyword: &str) -> Option<&'a str> {
-    line.strip_prefix(keyword)?.split_whitespace().next()
-}
-
-/// Check if the previous line has a documentation string.
-fn has_doc_on_prev_line(lines: &[&str], line_num: usize) -> bool {
-    line_num > 0 && lines[line_num - 1].trim().starts_with('"')
+/// Suggested PascalCase rename for `name`.
+fn pascal_case_suggestion(name: &str) -> String {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(first) => format!("Rename to '{}{}'", first.to_uppercase(), chars.as_str()),
+        None => "Provide a name".to_string(),
+    }
 }
 
 /// Create a naming convention lint message for a lowercase name.
+///
+/// The message and suggestion wording is asserted by the wasm binding tests
+/// (`crates/rumoca-bind-wasm/src/tests.rs`); keep it stable.
 fn create_naming_message(
     keyword: &str,
     name: &str,
     file_name: &str,
-    line_num: usize,
+    line: u32,
+    column: u32,
 ) -> LintMessage {
     LintMessage::new(
         "naming-convention",
         LintLevel::Warning,
-        format!(
-            "{} name '{}' should start with uppercase (PascalCase)",
-            keyword.trim(),
-            name
-        ),
+        format!("{keyword} name '{name}' should start with uppercase (PascalCase)"),
         file_name,
-        (line_num + 1) as u32,
-        1,
+        line,
+        column,
     )
-    .with_suggestion(if name.is_empty() {
-        "Provide a name".to_string()
-    } else {
-        format!("Rename to '{}{}'", name[..1].to_uppercase(), &name[1..])
-    })
+    .with_suggestion(pascal_case_suggestion(name))
 }
 
 /// Check if a number should be flagged as a magic number.
+///
+/// `0`, `1`, `-1`, `2`, `10` and `100` are conventional and never reported.
 fn is_magic_number(num: f64) -> bool {
     num.abs() > 1.0 && num != 2.0 && num != 10.0 && num != 100.0
 }
 
-/// Check if a line should be skipped for magic number detection.
-fn should_skip_magic_number_check(trimmed: &str) -> bool {
-    trimmed.starts_with("parameter")
-        || trimmed.starts_with("constant")
-        || trimmed.contains("start")
-        || trimmed.contains("= 0")
-        || trimmed.contains("= 1")
-        || trimmed.contains("= -1")
-        || !trimmed.contains('=')
-        || trimmed.starts_with("//")
-}
-
-/// Check if a character can be part of a number.
-fn is_number_char(c: char, in_number: bool) -> bool {
-    c.is_ascii_digit() || (c == '.' && in_number) || (c == '-' && !in_number)
-}
-
-/// Check if a number string represents a magic number and return it if so.
-fn check_magic_number(num_str: &str, col: usize) -> Option<(usize, String)> {
-    let num: f64 = num_str.parse().ok()?;
-    if is_magic_number(num) {
-        Some((col, num_str.to_string()))
-    } else {
-        None
-    }
-}
-
-/// Find magic numbers in a line and return (column, number_string) pairs.
-fn find_magic_numbers(trimmed: &str) -> Vec<(usize, String)> {
-    let mut results = Vec::new();
-    let mut in_number = false;
-    let mut number_start = 0;
-
-    for (i, c) in trimmed.char_indices() {
-        if is_number_char(c, in_number) && !in_number {
-            number_start = i;
-            in_number = true;
-            continue;
-        }
-        if !is_number_char(c, in_number) && in_number {
-            if let Some(result) = check_magic_number(&trimmed[number_start..i], number_start) {
-                results.push(result);
-            }
-            in_number = false;
-        }
-    }
-    results
-}
-
 /// Trait for lint rules.
 pub trait LintRule {
-    /// Check source code and return lint messages.
-    fn check(&self, source: &str, file_name: &str) -> Vec<LintMessage>;
+    /// Check the file described by `ctx` and return lint messages.
+    fn check(&self, ctx: &LintContext<'_>) -> Vec<LintMessage>;
 
     /// Get the rule name.
     fn name(&self) -> &'static str;
@@ -198,143 +140,39 @@ pub trait LintRule {
     fn description(&self) -> &'static str;
 }
 
-/// Check a single line for naming convention violations.
-fn check_line_naming(trimmed: &str, file_name: &str, line_num: usize) -> Vec<LintMessage> {
-    CLASS_KEYWORDS
-        .iter()
-        .filter_map(|keyword| extract_name_after_keyword(trimmed, keyword).map(|n| (keyword, n)))
-        .filter(|(_, name)| !name.is_empty() && starts_with_lowercase(name))
-        .map(|(keyword, name)| create_naming_message(keyword, name, file_name, line_num))
-        .collect()
-}
-
-/// Check a single line for missing documentation.
-fn check_line_doc(
-    trimmed: &str,
-    lines: &[&str],
-    file_name: &str,
-    line_num: usize,
-) -> Vec<LintMessage> {
-    DOC_KEYWORDS
-        .iter()
-        .filter_map(|keyword| extract_name_after_keyword(trimmed, keyword).map(|n| (keyword, n)))
-        .filter(|_| !has_doc_on_prev_line(lines, line_num))
-        .map(|(keyword, name)| {
-            let name = if name.is_empty() { "unknown" } else { name };
-            LintMessage::new(
-                "missing-documentation",
-                LintLevel::Note,
-                format!("{}'{}' is missing documentation", keyword.trim(), name),
-                file_name,
-                (line_num + 1) as u32,
-                1,
-            )
-        })
-        .collect()
-}
-
-/// Rule: Check naming conventions.
-pub(crate) struct NamingConventionRule;
-
-impl LintRule for NamingConventionRule {
-    fn name(&self) -> &'static str {
-        "naming-convention"
-    }
-
-    fn description(&self) -> &'static str {
-        "Check that model and class names follow conventions (PascalCase)"
-    }
-
-    fn check(&self, source: &str, file_name: &str) -> Vec<LintMessage> {
-        source
-            .lines()
-            .enumerate()
-            .flat_map(|(line_num, line)| check_line_naming(line.trim(), file_name, line_num))
-            .collect()
-    }
-}
-
-/// Rule: Check for missing documentation.
-pub(crate) struct MissingDocumentationRule;
-
-impl LintRule for MissingDocumentationRule {
-    fn name(&self) -> &'static str {
-        "missing-documentation"
-    }
-
-    fn description(&self) -> &'static str {
-        "Check that models and functions have documentation strings"
-    }
-
-    fn check(&self, source: &str, file_name: &str) -> Vec<LintMessage> {
-        let lines: Vec<&str> = source.lines().collect();
-        lines
-            .iter()
-            .enumerate()
-            .flat_map(|(line_num, line)| check_line_doc(line.trim(), &lines, file_name, line_num))
-            .collect()
-    }
-}
-
-/// Rule: Check for magic numbers.
-pub(crate) struct MagicNumberRule;
-
-impl LintRule for MagicNumberRule {
-    fn name(&self) -> &'static str {
-        "magic-number"
-    }
-
-    fn description(&self) -> &'static str {
-        "Check for literal numbers that should be named constants"
-    }
-
-    fn check(&self, source: &str, file_name: &str) -> Vec<LintMessage> {
-        let mut messages = Vec::new();
-        for (line_num, line) in source.lines().enumerate() {
-            let trimmed = line.trim();
-            if should_skip_magic_number_check(trimmed) {
-                continue;
-            }
-            for (col, num_str) in find_magic_numbers(trimmed) {
-                messages.push(LintMessage::new(
-                    "magic-number",
-                    LintLevel::Help,
-                    format!("Consider extracting '{}' as a named constant", num_str),
-                    file_name,
-                    (line_num + 1) as u32,
-                    (col + 1) as u32,
-                ));
-            }
-        }
-        messages
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_naming_convention_rule() {
-        let rule = NamingConventionRule;
-        let source = "model myModel Real x; end myModel;";
-        let messages = rule.check(source, "test.mo");
-        assert!(!messages.is_empty());
-        assert_eq!(messages[0].rule, "naming-convention");
-    }
-
-    #[test]
-    fn test_naming_convention_valid() {
-        let rule = NamingConventionRule;
-        let source = "model MyModel Real x; end MyModel;";
-        let messages = rule.check(source, "test.mo");
-        assert!(messages.is_empty());
-    }
 
     #[test]
     fn test_lint_level_ordering() {
         assert!(LintLevel::Help < LintLevel::Note);
         assert!(LintLevel::Note < LintLevel::Warning);
         assert!(LintLevel::Warning < LintLevel::Error);
+    }
+
+    #[test]
+    fn starts_with_lowercase_only_matches_lowercase_initials() {
+        assert!(starts_with_lowercase("myModel"));
+        assert!(!starts_with_lowercase("MyModel"));
+        assert!(!starts_with_lowercase("'quoted'"));
+        assert!(!starts_with_lowercase(""));
+    }
+
+    #[test]
+    fn pascal_case_suggestion_uppercases_the_first_character_only() {
+        assert_eq!(pascal_case_suggestion("foo"), "Rename to 'Foo'");
+        assert_eq!(pascal_case_suggestion("fooBar"), "Rename to 'FooBar'");
+        assert_eq!(pascal_case_suggestion(""), "Provide a name");
+    }
+
+    #[test]
+    fn is_magic_number_exempts_conventional_constants() {
+        for exempt in [0.0, 1.0, -1.0, 2.0, 10.0, 100.0] {
+            assert!(!is_magic_number(exempt), "{exempt} should be exempt");
+        }
+        for magic in [42.0, 7.0, 350.0, -273.15] {
+            assert!(is_magic_number(magic), "{magic} should be magic");
+        }
     }
 }

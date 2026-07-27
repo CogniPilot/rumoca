@@ -108,7 +108,7 @@ impl<'a> LowerBuilder<'a> {
         let target = self.current_update_target?;
         let starts = self.variable_starts?;
         self.layout.bindings().iter().find_map(|(name, slot)| {
-            (*slot == target && starts.contains_key(name.as_str())).then(|| name.clone())
+            (*slot == target && starts.contains_key(name.as_str())).then(|| name.to_string())
         })
     }
 

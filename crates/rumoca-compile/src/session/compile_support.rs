@@ -585,6 +585,7 @@ pub(super) fn dae_phase_result_from_dae(
                 error: format!("{error}"),
                 error_code: None,
                 diagnostics: Vec::new(),
+                balance_detail: None,
             },
         },
         DaeModelOutcome::NeedsInner {
@@ -602,6 +603,7 @@ pub(super) fn dae_phase_result_from_dae(
                 error: format!("{error}"),
                 error_code: error.code().map(|code| code.to_string()),
                 diagnostics: Vec::new(),
+                balance_detail: None,
             }
         }
         DaeModelOutcome::TypecheckError(diags) => {
@@ -610,11 +612,12 @@ pub(super) fn dae_phase_result_from_dae(
                 phase: FailedPhase::Typecheck,
                 error: diagnostics
                     .iter()
-                    .map(|diag| diag.message.clone())
+                    .map(|diag| diagnostic_message_with_primary_location(diag, &tree.source_map))
                     .collect::<Vec<_>>()
                     .join("; "),
                 error_code: summarize_typecheck_error_code(&diagnostics),
                 diagnostics: diags,
+                balance_detail: None,
             }
         }
         DaeModelOutcome::FlattenError { error, .. } => {
@@ -624,15 +627,22 @@ pub(super) fn dae_phase_result_from_dae(
                 error: format!("{error}"),
                 error_code: error.code().map(|code| code.to_string()),
                 diagnostics: Vec::new(),
+                balance_detail: None,
             }
         }
         DaeModelOutcome::ToDaeError { error, .. } => {
             use miette::Diagnostic;
+            // ED001 carries the full component breakdown; keep it structured so
+            // downstream triage never has to re-parse the message text.
+            let balance_detail = error
+                .balance_detail()
+                .map(|detail| Box::new(detail.clone()));
             DaePhaseResult::Failed {
                 phase: FailedPhase::ToDae,
                 error: format!("{error}"),
                 error_code: error.code().map(|code| code.to_string()),
                 diagnostics: Vec::new(),
+                balance_detail,
             }
         }
     }
@@ -673,7 +683,9 @@ pub(super) fn compile_phase_result_from_dae(
                 phase: FailedPhase::Typecheck,
                 error: diagnostics
                     .iter()
-                    .map(|d| d.message.clone())
+                    .map(|diagnostic| {
+                        diagnostic_message_with_primary_location(diagnostic, &tree.source_map)
+                    })
                     .collect::<Vec<_>>()
                     .join("; "),
                 error_code: summarize_typecheck_error_code(&diagnostics),

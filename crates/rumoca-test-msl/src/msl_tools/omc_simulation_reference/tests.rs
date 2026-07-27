@@ -1,3 +1,4 @@
+use super::retry_policy::{OMC_FAILURE_RETRY_ATTEMPTS, OMC_TRANSIENT_FAILURE_RETRY_ATTEMPTS};
 use super::*;
 
 #[test]
@@ -136,6 +137,7 @@ fn merge_cached_results_for_resume_hydrates_missing_omc_timing() {
             rumoca_sim_wall_seconds: None,
             rumoca_trace_file: None,
             rumoca_trace_error: None,
+            failed_attempts: 0,
         },
     );
 
@@ -201,6 +203,7 @@ fn ensure_omc_trace_artifacts_regenerates_missing_json_from_cached_csv() {
             rumoca_sim_wall_seconds: Some(0.42),
             rumoca_trace_file: None,
             rumoca_trace_error: None,
+            failed_attempts: 0,
         },
     );
 
@@ -266,6 +269,7 @@ fn ensure_omc_trace_artifacts_regenerates_missing_json_from_error_result_with_cs
             rumoca_sim_wall_seconds: Some(0.42),
             rumoca_trace_file: None,
             rumoca_trace_error: None,
+            failed_attempts: 0,
         },
     );
 
@@ -322,6 +326,7 @@ fn cached_success_without_materialized_trace_source_is_not_reusable() {
         rumoca_sim_wall_seconds: Some(0.42),
         rumoca_trace_file: Some(format!("sim_traces/rumoca/{model_name}.json")),
         rumoca_trace_error: None,
+        failed_attempts: 0,
     };
     assert!(!cached_omc_result_is_reusable(
         &paths,
@@ -430,6 +435,7 @@ fn quantify_trace_differences_skips_excluded_model_before_trace_loading() {
             rumoca_sim_wall_seconds: Some(0.11),
             rumoca_trace_file: None,
             rumoca_trace_error: None,
+            failed_attempts: 0,
         },
     );
     let mut exclusions = BTreeMap::new();
@@ -500,6 +506,7 @@ fn quantify_trace_differences_includes_error_status_model_with_existing_traces()
             rumoca_sim_wall_seconds: Some(0.11),
             rumoca_trace_file: Some(format!("sim_traces/rumoca/{model_name}.json")),
             rumoca_trace_error: None,
+            failed_attempts: 0,
         },
     );
 
@@ -721,6 +728,7 @@ fn ensure_target_placeholders_preserves_full_target_denominator() {
             rumoca_sim_wall_seconds: None,
             rumoca_trace_file: Some("sim_traces/rumoca/A.json".to_string()),
             rumoca_trace_error: None,
+            failed_attempts: 0,
         },
     );
     let mut runtimes = HashMap::new();
@@ -753,4 +761,167 @@ fn ensure_target_placeholders_preserves_full_target_denominator() {
         Some("sim_solver_fail")
     );
     assert_eq!(all_results["B"].rumoca_ic_seconds, Some(0.1));
+}
+
+fn failure_result(status: &str, error: &str, failed_attempts: u32) -> SimModelResult {
+    SimModelResult {
+        status: status.to_string(),
+        error: Some(error.to_string()),
+        failed_attempts,
+        ..empty_omc_result()
+    }
+}
+
+/// A cached OMC failure must be retried until it reproduces: reusing a single
+/// transient error permanently removed the model from the parity comparison.
+#[test]
+fn cached_error_result_is_retried_until_attempt_budget() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let paths = fixture_paths(temp.path());
+    let model_name = "Modelica.Blocks.Examples.PID_Controller";
+
+    for attempts in 0..OMC_FAILURE_RETRY_ATTEMPTS {
+        let result = failure_result("error", "Simulation Failed: division by zero", attempts);
+        assert!(
+            !cached_omc_result_is_reusable(&paths, model_name, &result),
+            "failure with {attempts} attempt(s) must still be retried"
+        );
+    }
+    let settled = failure_result(
+        "error",
+        "Simulation Failed: division by zero",
+        OMC_FAILURE_RETRY_ATTEMPTS,
+    );
+    assert!(cached_omc_result_is_reusable(&paths, model_name, &settled));
+}
+
+#[test]
+fn transient_failure_text_gets_extended_retry_budget() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let paths = fixture_paths(temp.path());
+    let model_name = "Modelica.Blocks.Examples.PID_Controller";
+
+    for text in [
+        "omc worker Killed",
+        "out of memory while linking",
+        "timed out",
+    ] {
+        let result = failure_result("error", text, OMC_FAILURE_RETRY_ATTEMPTS);
+        assert!(
+            !cached_omc_result_is_reusable(&paths, model_name, &result),
+            "transient failure '{text}' must keep the larger retry budget"
+        );
+        let settled = failure_result("error", text, OMC_TRANSIENT_FAILURE_RETRY_ATTEMPTS);
+        assert!(cached_omc_result_is_reusable(&paths, model_name, &settled));
+    }
+
+    // A timeout status is transient by construction, whatever the message says.
+    let timeout = failure_result(
+        "timeout",
+        "omc simulate exceeded budget",
+        OMC_FAILURE_RETRY_ATTEMPTS,
+    );
+    assert!(!cached_omc_result_is_reusable(&paths, model_name, &timeout));
+}
+
+/// The attempt counter must persist across runs or the retry loop never ends.
+#[test]
+fn failed_attempts_accumulate_across_runs_and_reset_on_success() {
+    let mut fresh = failure_result("error", "Simulation Failed", 0);
+    carry_failed_attempts(&mut fresh, None);
+    assert_eq!(fresh.failed_attempts, 1);
+
+    let prior = failure_result("error", "Simulation Failed", 3);
+    let mut next = failure_result("timeout", "omc simulate exceeded budget", 0);
+    carry_failed_attempts(&mut next, Some(&prior));
+    assert_eq!(next.failed_attempts, 4);
+
+    let mut recovered = SimModelResult {
+        status: "success".to_string(),
+        ..empty_omc_result()
+    };
+    carry_failed_attempts(&mut recovered, Some(&prior));
+    assert_eq!(recovered.failed_attempts, 0);
+}
+
+/// Both selection branches must stay reachable: the CI lane filters to models
+/// rumoca already simulates, and the nightly/local lane needs the full target
+/// set so newly passing models already have an OMC baseline.
+#[test]
+fn select_omc_simulation_models_returns_all_targets_without_sim_ok_filter() {
+    let model_names = vec![
+        "Modelica.A".to_string(),
+        "Modelica.B".to_string(),
+        "Modelica.C".to_string(),
+    ];
+    let runtimes = runtime_fixture();
+
+    assert_eq!(
+        select_omc_simulation_models(&model_names, &runtimes, false),
+        model_names
+    );
+    // An empty runtime map means the rumoca run produced nothing to filter on,
+    // so the flag must not silently select zero models.
+    assert_eq!(
+        select_omc_simulation_models(&model_names, &HashMap::new(), true),
+        model_names
+    );
+}
+
+#[test]
+fn select_omc_simulation_models_filters_to_trace_candidates_with_flag() {
+    let model_names = vec![
+        "Modelica.A".to_string(),
+        "Modelica.B".to_string(),
+        "Modelica.C".to_string(),
+    ];
+    let runtimes = runtime_fixture();
+
+    assert_eq!(
+        select_omc_simulation_models(&model_names, &runtimes, true),
+        vec!["Modelica.A".to_string()]
+    );
+}
+
+fn runtime_fixture() -> HashMap<String, RumocaRuntime> {
+    let mut runtimes = HashMap::new();
+    runtimes.insert(
+        "Modelica.A".to_string(),
+        RumocaRuntime {
+            status: "sim_ok".to_string(),
+            trace_file: Some("sim_traces/rumoca/Modelica.A.json".to_string()),
+            ..RumocaRuntime::default()
+        },
+    );
+    // sim_ok but no trace: not a comparison candidate.
+    runtimes.insert(
+        "Modelica.B".to_string(),
+        RumocaRuntime {
+            status: "sim_ok".to_string(),
+            trace_file: None,
+            ..RumocaRuntime::default()
+        },
+    );
+    runtimes.insert(
+        "Modelica.C".to_string(),
+        RumocaRuntime {
+            status: "sim_solver_fail".to_string(),
+            trace_file: None,
+            ..RumocaRuntime::default()
+        },
+    );
+    runtimes
+}
+
+fn fixture_paths(root: &std::path::Path) -> MslPaths {
+    MslPaths {
+        repo_root: root.to_path_buf(),
+        msl_dir: root.join("msl"),
+        results_dir: root.join("results"),
+        flat_dir: root.join("omc_flat"),
+        work_dir: root.join("omc_work"),
+        sim_work_dir: root.join("omc_sim_work"),
+        omc_trace_dir: root.join("sim_traces").join("omc"),
+        rumoca_trace_dir: root.join("sim_traces").join("rumoca"),
+    }
 }

@@ -471,7 +471,7 @@ mod tests {
             end_column: end + 1,
             start,
             end,
-            file_name: "variable_fixture.mo".to_string(),
+            source: rumoca_core::SourceId::from_source_name("variable_fixture.mo"),
         }
     }
 

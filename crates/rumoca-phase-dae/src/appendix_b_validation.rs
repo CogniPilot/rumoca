@@ -90,6 +90,34 @@ fn solver_facing_dae_expressions(
             &action.condition,
             action.span,
         ));
+        let message = match &action.kind {
+            dae::DaeEventActionKind::Assert { message }
+            | dae::DaeEventActionKind::Terminate { message } => message,
+        };
+        exprs.push((
+            format!("event_actions[{idx}].message"),
+            message,
+            action.span,
+        ));
+    }
+    for (idx, channel) in dae_model.events.delay_channels.iter().enumerate() {
+        exprs.push((
+            format!("delay_channels[{idx}].source"),
+            &channel.source,
+            channel.span,
+        ));
+        exprs.push((
+            format!("delay_channels[{idx}].delay_time"),
+            &channel.delay_time,
+            channel.span,
+        ));
+        if let Some(delay_max) = &channel.delay_max {
+            exprs.push((
+                format!("delay_channels[{idx}].delay_max"),
+                delay_max,
+                channel.span,
+            ));
+        }
     }
     for (idx, expr) in dae_model.clocks.triggered_conditions.iter().enumerate() {
         let Some(span) = expr.span() else {
@@ -762,6 +790,70 @@ fn dfs_cycle(
 }
 
 fn validate_runtime_metadata_invariants(dae_model: &dae::Dae) -> Result<(), ToDaeError> {
+    validate_terminal_metadata(dae_model)?;
+    validate_delay_metadata(dae_model)?;
+    validate_clock_metadata(dae_model)?;
+    validate_scheduled_roots(dae_model)?;
+    validate_unique_synthetic_roots(dae_model)
+}
+
+fn validate_terminal_metadata(dae_model: &dae::Dae) -> Result<(), ToDaeError> {
+    let terminal_name = rumoca_core::VarName::new(rumoca_core::TERMINAL_EVENT_PARAMETER_NAME);
+    match (
+        dae_model.events.has_terminal_event,
+        dae_model.variables.parameters.get(&terminal_name),
+    ) {
+        (true, Some(parameter)) => {
+            validate_runtime_parameter(parameter, "terminal-event")?;
+        }
+        (true, None) => {
+            return Err(ToDaeError::runtime_metadata_violation(
+                "terminal-event metadata requires the runtime-managed terminal parameter",
+            ));
+        }
+        (false, Some(_)) => {
+            return Err(ToDaeError::runtime_metadata_violation(
+                "runtime-managed terminal parameter exists without terminal-event metadata",
+            ));
+        }
+        (false, None) => {}
+    }
+    Ok(())
+}
+
+fn validate_delay_metadata(dae_model: &dae::Dae) -> Result<(), ToDaeError> {
+    let mut delay_parameters = HashSet::new();
+    for channel in &dae_model.events.delay_channels {
+        let Some(parameter) = dae_model.variables.parameters.get(&channel.value_parameter) else {
+            return Err(ToDaeError::runtime_metadata_violation(format!(
+                "delay channel parameter `{}` is missing from the DAE parameter partition",
+                channel.value_parameter
+            )));
+        };
+        validate_runtime_parameter(parameter, "delay channel")?;
+        if !delay_parameters.insert(&channel.value_parameter) {
+            return Err(ToDaeError::runtime_metadata_violation(format!(
+                "delay channel parameter `{}` is assigned by more than one history channel",
+                channel.value_parameter
+            )));
+        }
+    }
+    for (name, parameter) in &dae_model.variables.parameters {
+        if rumoca_core::delay_slot_index(name.as_str()).is_some()
+            && !delay_parameters.contains(name)
+        {
+            return Err(ToDaeError::runtime_metadata_violation(format!(
+                "runtime-managed delay parameter `{name}` has no delay channel metadata"
+            )));
+        }
+        if rumoca_core::is_runtime_managed_slot(name.as_str()) {
+            validate_runtime_parameter(parameter, "runtime-managed")?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_clock_metadata(dae_model: &dae::Dae) -> Result<(), ToDaeError> {
     for schedule in &dae_model.clocks.schedules {
         if !schedule.period_seconds.is_finite() || schedule.period_seconds <= 0.0 {
             return Err(ToDaeError::runtime_metadata_violation(format!(
@@ -788,7 +880,10 @@ fn validate_runtime_metadata_invariants(dae_model: &dae::Dae) -> Result<(), ToDa
             )));
         }
     }
+    Ok(())
+}
 
+fn validate_scheduled_roots(dae_model: &dae::Dae) -> Result<(), ToDaeError> {
     for pair in dae_model.events.scheduled_time_events.windows(2) {
         if pair[1] <= pair[0] {
             return Err(ToDaeError::runtime_metadata_violation(format!(
@@ -824,7 +919,10 @@ fn validate_runtime_metadata_invariants(dae_model: &dae::Dae) -> Result<(), ToDa
             )));
         }
     }
+    Ok(())
+}
 
+fn validate_unique_synthetic_roots(dae_model: &dae::Dae) -> Result<(), ToDaeError> {
     let mut seen_roots: Vec<&rumoca_core::Expression> = Vec::new();
     for root in &dae_model.events.synthetic_root_conditions {
         if seen_roots.contains(&root) {
@@ -835,6 +933,19 @@ fn validate_runtime_metadata_invariants(dae_model: &dae::Dae) -> Result<(), ToDa
         seen_roots.push(root);
     }
 
+    Ok(())
+}
+
+fn validate_runtime_parameter(parameter: &dae::Variable, owner: &str) -> Result<(), ToDaeError> {
+    if parameter.origin != dae::VariableOrigin::Generated
+        || parameter.causality != dae::VariableCausality::CalculatedParameter
+        || !parameter.dims.is_empty()
+    {
+        return Err(ToDaeError::runtime_metadata_violation(format!(
+            "{owner} parameter `{}` must be a generated scalar calculated parameter",
+            parameter.name
+        )));
+    }
     Ok(())
 }
 

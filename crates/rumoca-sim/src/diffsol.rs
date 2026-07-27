@@ -85,7 +85,7 @@ pub fn build_simulation_with_stage_timing_and_solve_model(
     begin_stage("sim_overrides");
     let override_apply_start = Instant::now();
     crate::solve_lowering::apply_simulation_overrides(&mut solve_model, dae_model, opts)
-        .map_err(|err| SimError::SolverError(err.to_string()))?;
+        .map_err(diagnostic_sim_error)?;
     let override_apply_seconds = override_apply_start.elapsed().as_secs_f64();
     observe_solve_model(&solve_model);
     begin_stage("sim_build");
@@ -119,7 +119,7 @@ pub fn check_initialization(
     opts: &rumoca_solver::SimOptions,
 ) -> Result<(), SimError> {
     let solve_model = crate::solve_lowering::lower_for_simulation_with_overrides(dae_model, opts)
-        .map_err(|err| SimError::SolverError(err.to_string()))?;
+        .map_err(diagnostic_sim_error)?;
     rumoca_solver_diffsol::check_initialization(&solve_model, opts)
 }
 
@@ -128,7 +128,7 @@ pub fn simulate(
     opts: &rumoca_solver::SimOptions,
 ) -> Result<rumoca_solver::SimResult, SimError> {
     let solve_model = crate::solve_lowering::lower_for_simulation_with_overrides(dae_model, opts)
-        .map_err(|err| SimError::SolverError(err.to_string()))?;
+        .map_err(diagnostic_sim_error)?;
     rumoca_solver_diffsol::simulate(&solve_model, opts)
 }
 
@@ -215,7 +215,22 @@ impl SimulationSession {
 }
 
 fn solve_lowering_sim_error(err: rumoca_phase_solve::SolveModelLowerError) -> SimError {
-    SimError::SolveIr(err.to_string())
+    // `SimError` is a plain string carrier, so the bracketed prefix is the only
+    // channel through which the SPEC_0008 code of the phase that raised the
+    // defect (`EL0xx` from solve lowering, `ES0xx` from structural analysis)
+    // survives into downstream consumers — the MSL worker result schema and
+    // `rumoca-msl-tools triage`. It matches the CLI's `[{code}] {error}`
+    // rendering, so a user sees the same code in both places.
+    SimError::SolveIr(format!("[{}] {err}", err.code()))
+}
+
+/// Same contract as [`solve_lowering_sim_error`] for the structured simulation
+/// diagnostic, which also carries the runtime `EX0xx` codes (notably `EX003`
+/// for a rejected parameter/start override — otherwise unreachable downstream,
+/// because a re-derivation from the stringified `SimError` can only ever
+/// produce the `EX001`/`EX002` fallbacks).
+fn diagnostic_sim_error(err: SimulationDiagnosticError) -> SimError {
+    SimError::SolveIr(format!("[{}] {err}", err.diagnostic_code()))
 }
 
 #[cfg(feature = "scheduled-sim")]

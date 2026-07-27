@@ -91,6 +91,30 @@ impl TypeOverrideMap {
         })
     }
 
+    /// Materialize the effective virtual-class selections for instance IR.
+    ///
+    /// Identity mappings describe locally declared classes, not overrides, so
+    /// only changed declaration slots are retained.
+    pub(super) fn class_overrides(&self, tree: &ast::ClassTree) -> ast::ClassOverrideMap {
+        self.targets_by_alias_def_id
+            .iter()
+            .filter_map(|(alias_def_id, target_def_id)| {
+                if alias_def_id == target_def_id {
+                    return None;
+                }
+                let alias = tree
+                    .get_class_by_def_id(*alias_def_id)?
+                    .name
+                    .text
+                    .to_string();
+                Some((
+                    *alias_def_id,
+                    ast::ClassOverride::new(alias, *alias_def_id, *target_def_id, None),
+                ))
+            })
+            .collect()
+    }
+
     fn target_for_name(&self, name: &ast::Name) -> Option<DefId> {
         let exact_def_id = (name.name.len() == 1)
             .then_some(name.def_id)
@@ -104,6 +128,62 @@ impl TypeOverrideMap {
 
     fn target_for_path(&self, path: &ast::QualifiedName) -> Option<DefId> {
         self.targets_by_alias_path.get(path).copied()
+    }
+
+    /// Specialize inherited nested type identities for one effective package.
+    ///
+    /// A package alias such as `Medium` can select a derived package while the
+    /// selected `BaseProperties` model is declared in an ancestor package.
+    /// Components inherited by that model still carry the ancestor's resolved
+    /// `DefId` (for example `PartialMedium.ThermodynamicState`). Once the
+    /// package is selected for a concrete component instance, map every
+    /// declaration of a nested member in its extends chain to the member that
+    /// is effective in the selected package.
+    pub(super) fn specialize_inherited_nested_types(
+        &mut self,
+        tree: &ast::ClassTree,
+        effective_package_def_id: DefId,
+    ) {
+        let Some(effective_package) = tree.get_class_by_def_id(effective_package_def_id) else {
+            return;
+        };
+        let mut hierarchy = vec![effective_package];
+        let mut visited = std::collections::HashSet::new();
+
+        for index in 0..hierarchy.len() {
+            let class = hierarchy[index];
+            if let Some(def_id) = class.def_id
+                && !visited.insert(def_id)
+            {
+                continue;
+            }
+            hierarchy.extend(extends_base_classes(tree, class));
+        }
+
+        let member_names: std::collections::HashSet<String> = hierarchy
+            .iter()
+            .flat_map(|class| class.classes.keys().cloned())
+            .collect();
+        for member_name in member_names {
+            let Some(effective_member_def_id) =
+                find_member_type_in_class(tree, effective_package, &member_name)
+                    .and_then(|member| member.def_id)
+            else {
+                continue;
+            };
+            for inherited_member_def_id in hierarchy.iter().filter_map(|class| {
+                class
+                    .classes
+                    .get(&member_name)
+                    .and_then(|member| member.def_id)
+            }) {
+                self.insert_alias(
+                    ast::QualifiedName::from_ident(&member_name),
+                    Some(inherited_member_def_id),
+                    effective_member_def_id,
+                );
+            }
+        }
     }
 }
 
@@ -406,10 +486,22 @@ pub(super) fn apply_type_override<'a>(
     //
     // This must apply to package-member model types too (e.g.
     // `Medium.BaseProperties`), not only primitive/record members.
-    let exact_override = comp
+    let exact_override = comp.type_def_id.and_then(|source_def_id| {
+        type_overrides
+            .target_for_alias_def_id(source_def_id)
+            .filter(|target_def_id| {
+                exact_type_override_preserves_declaration_slot(tree, source_def_id, *target_def_id)
+            })
+    });
+    // A resolved type identity is authoritative. Name-only lookup is solely a
+    // fallback for unresolved declarations; otherwise an active outer scope
+    // containing an unrelated same-named type can capture an inherited
+    // component after resolve.
+    let unresolved_name_override = comp
         .type_def_id
-        .and_then(|def_id| type_overrides.target_for_alias_def_id(def_id))
-        .or_else(|| type_overrides.target_for_name(&comp.type_name));
+        .is_none()
+        .then(|| type_overrides.target_for_name(&comp.type_name))
+        .flatten();
     // Instance-level package redeclarations in active mod_env are more specific
     // than enclosing-class defaults when resolving dotted member types.
     let mod_env_override = resolve_dotted_type_from_mod_env(tree, &comp.type_name, mod_env);
@@ -424,7 +516,10 @@ pub(super) fn apply_type_override<'a>(
             .or(Some(prefix_override))
     })();
 
-    let override_def_id = exact_override.or(mod_env_override).or(prefix_override);
+    let override_def_id = exact_override
+        .or(unresolved_name_override)
+        .or(mod_env_override)
+        .or(prefix_override);
     if let Some(override_def_id) = override_def_id
         && comp.type_def_id != Some(override_def_id)
     {
@@ -437,6 +532,63 @@ pub(super) fn apply_type_override<'a>(
         return Ok(std::borrow::Cow::Owned(overridden));
     }
     Ok(std::borrow::Cow::Borrowed(comp))
+}
+
+fn exact_type_override_preserves_declaration_slot(
+    tree: &ast::ClassTree,
+    source_def_id: DefId,
+    target_def_id: DefId,
+) -> bool {
+    if source_def_id == target_def_id {
+        return true;
+    }
+    let (Some(source), Some(target)) = (
+        tree.get_class_by_def_id(source_def_id),
+        tree.get_class_by_def_id(target_def_id),
+    ) else {
+        return false;
+    };
+
+    // Differently named targets are explicit class/package aliases. For
+    // same-named declarations, require a structural redeclaration or extends
+    // relationship so unrelated lexical collisions cannot masquerade as an
+    // override.
+    source.name.text != target.name.text
+        || class_identity_reaches(tree, target, source_def_id)
+        || class_identity_reaches(tree, source, target_def_id)
+}
+
+fn class_identity_reaches(
+    tree: &ast::ClassTree,
+    root: &ast::ClassDef,
+    target_def_id: DefId,
+) -> bool {
+    const MAX_DEPTH: usize = 32;
+    let mut pending = vec![root];
+    let mut visited = std::collections::HashSet::new();
+
+    for _ in 0..MAX_DEPTH {
+        let Some(class) = pending.pop() else {
+            return false;
+        };
+        let Some(def_id) = class.def_id else {
+            continue;
+        };
+        if def_id == target_def_id {
+            return true;
+        }
+        if !visited.insert(def_id) {
+            continue;
+        }
+        if let Some(redeclare_target) = class
+            .redeclare_target_def_id
+            .and_then(|def_id| tree.get_class_by_def_id(def_id))
+        {
+            pending.push(redeclare_target);
+        }
+        pending.extend(extends_base_classes(tree, class));
+    }
+    false
 }
 
 fn resolve_dotted_type_from_mod_env(
@@ -694,8 +846,7 @@ mod tests {
         )
     }
 
-    #[test]
-    fn test_redeclared_nested_type_remaps_inherited_type_def_id() {
+    fn nested_type_override_fixture() -> (ast::ClassTree, DefId, DefId) {
         let base_package_id = DefId::new(1);
         let base_state_id = DefId::new(2);
         let derived_package_id = DefId::new(3);
@@ -724,6 +875,8 @@ mod tests {
             def_id: Some(derived_state_id),
             class_type: rumoca_core::ClassType::Record,
             is_replaceable: true,
+            is_redeclare: true,
+            redeclare_target_def_id: Some(base_state_id),
             ..Default::default()
         };
         let base_properties = ast::ClassDef {
@@ -783,7 +936,12 @@ mod tests {
             tree.name_map.insert(name.to_string(), def_id);
             tree.def_map.insert(def_id, name.to_string());
         }
+        (tree, base_state_id, derived_state_id)
+    }
 
+    #[test]
+    fn test_redeclared_nested_type_remaps_inherited_type_def_id() {
+        let (tree, base_state_id, derived_state_id) = nested_type_override_fixture();
         let base_properties = tree
             .get_class_by_qualified_name("DerivedMedium.BaseProperties")
             .expect("base properties class");
@@ -1029,6 +1187,157 @@ mod tests {
             overridden.type_def_id,
             Some(base_properties_id),
             "dotted type names with partial first-segment DefIds must resolve to the concrete member"
+        );
+    }
+
+    #[test]
+    fn test_selected_package_specializes_types_in_inherited_member_models() {
+        let partial_medium_id = DefId::new(30);
+        let partial_state_id = DefId::new(31);
+        let base_properties_id = DefId::new(32);
+        let concrete_medium_id = DefId::new(33);
+        let concrete_state_id = DefId::new(34);
+
+        let partial_state = ast::ClassDef {
+            name: make_token("ThermodynamicState"),
+            class_type: rumoca_core::ClassType::Record,
+            def_id: Some(partial_state_id),
+            ..Default::default()
+        };
+        let base_properties = ast::ClassDef {
+            name: make_token("BaseProperties"),
+            class_type: rumoca_core::ClassType::Model,
+            def_id: Some(base_properties_id),
+            ..Default::default()
+        };
+        let mut partial_medium = ast::ClassDef {
+            name: make_token("PartialMedium"),
+            class_type: rumoca_core::ClassType::Package,
+            def_id: Some(partial_medium_id),
+            ..Default::default()
+        };
+        partial_medium
+            .classes
+            .insert("ThermodynamicState".to_string(), partial_state);
+        partial_medium
+            .classes
+            .insert("BaseProperties".to_string(), base_properties);
+
+        let concrete_state = ast::ClassDef {
+            name: make_token("ThermodynamicState"),
+            class_type: rumoca_core::ClassType::Record,
+            def_id: Some(concrete_state_id),
+            is_redeclare: true,
+            redeclare_target_def_id: Some(partial_state_id),
+            ..Default::default()
+        };
+        let mut concrete_medium = ast::ClassDef {
+            name: make_token("ConcreteMedium"),
+            class_type: rumoca_core::ClassType::Package,
+            def_id: Some(concrete_medium_id),
+            extends: vec![ast::Extend {
+                base_name: make_name("PartialMedium"),
+                base_def_id: Some(partial_medium_id),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        concrete_medium
+            .classes
+            .insert("ThermodynamicState".to_string(), concrete_state);
+
+        let mut tree = ast::ClassTree::default();
+        tree.definitions
+            .classes
+            .insert("PartialMedium".to_string(), partial_medium);
+        tree.definitions
+            .classes
+            .insert("ConcreteMedium".to_string(), concrete_medium);
+        for (name, def_id) in [
+            ("PartialMedium", partial_medium_id),
+            ("PartialMedium.ThermodynamicState", partial_state_id),
+            ("PartialMedium.BaseProperties", base_properties_id),
+            ("ConcreteMedium", concrete_medium_id),
+            ("ConcreteMedium.ThermodynamicState", concrete_state_id),
+        ] {
+            tree.name_map.insert(name.to_string(), def_id);
+            tree.def_map.insert(def_id, name.to_string());
+        }
+
+        let inherited_state_component = ast::Component {
+            name: "state".to_string(),
+            type_name: make_name("ThermodynamicState"),
+            type_def_id: Some(partial_state_id),
+            ..ast::Component::empty_with_span(test_span())
+        };
+        let mut type_overrides = TypeOverrideMap::new();
+        type_overrides.insert_alias(
+            ast::QualifiedName::from_ident("Medium"),
+            None,
+            concrete_medium_id,
+        );
+        type_overrides.specialize_inherited_nested_types(&tree, concrete_medium_id);
+
+        let overridden =
+            apply_type_override(&tree, &inherited_state_component, &type_overrides, None)
+                .expect("selected package should specialize inherited member types");
+        assert_eq!(
+            overridden.type_def_id,
+            Some(concrete_state_id),
+            "an inherited BaseProperties model must use the selected medium's state type"
+        );
+    }
+
+    #[test]
+    fn test_resolved_type_identity_rejects_unrelated_same_named_override() {
+        let internal_constants_id = DefId::new(40);
+        let unrelated_constants_id = DefId::new(41);
+        let internal_constants = ast::ClassDef {
+            name: make_token("SpiceConstants"),
+            class_type: rumoca_core::ClassType::Record,
+            def_id: Some(internal_constants_id),
+            ..Default::default()
+        };
+        let unrelated_constants = ast::ClassDef {
+            name: make_token("SpiceConstants"),
+            class_type: rumoca_core::ClassType::Record,
+            def_id: Some(unrelated_constants_id),
+            ..Default::default()
+        };
+        let mut tree = ast::ClassTree::default();
+        tree.definitions
+            .classes
+            .insert("InternalConstants".to_string(), internal_constants);
+        tree.definitions
+            .classes
+            .insert("UnrelatedConstants".to_string(), unrelated_constants);
+        for (name, def_id) in [
+            ("Root.Internal.SpiceConstants", internal_constants_id),
+            ("Root.Examples.Test.SpiceConstants", unrelated_constants_id),
+        ] {
+            tree.name_map.insert(name.to_string(), def_id);
+            tree.def_map.insert(def_id, name.to_string());
+        }
+
+        let component = ast::Component {
+            name: "constants".to_string(),
+            type_name: make_name("SpiceConstants"),
+            type_def_id: Some(internal_constants_id),
+            ..ast::Component::empty_with_span(test_span())
+        };
+        let mut type_overrides = TypeOverrideMap::new();
+        type_overrides.insert_alias(
+            ast::QualifiedName::from_ident("SpiceConstants"),
+            Some(internal_constants_id),
+            unrelated_constants_id,
+        );
+
+        let overridden = apply_type_override(&tree, &component, &type_overrides, None)
+            .expect("unrelated type collision should be ignored");
+        assert_eq!(
+            overridden.type_def_id,
+            Some(internal_constants_id),
+            "resolve's exact type identity must survive unrelated same-named outer types"
         );
     }
 }

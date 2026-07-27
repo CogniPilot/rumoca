@@ -60,7 +60,7 @@ where
         ast::Expression::Unary { op, rhs, .. } => {
             let inner = affine_form_in_binders(rhs, binders, resolve_const)?;
             match op {
-                OpUnary::Minus => Some(inner.neg()),
+                OpUnary::Minus => inner.checked_neg(),
                 OpUnary::Plus => Some(inner),
                 _ => None,
             }
@@ -87,15 +87,17 @@ where
     let left = affine_form_in_binders(lhs, binders, resolve_const)?;
     let right = affine_form_in_binders(rhs, binders, resolve_const)?;
     match op {
-        OpBinary::Add => Some(left.add(&right)),
-        OpBinary::Sub => Some(left.add(&right.neg())),
+        OpBinary::Add => left.checked_add(&right),
+        OpBinary::Sub => right
+            .checked_neg()
+            .and_then(|right| left.checked_add(&right)),
         OpBinary::Mul => {
             // Affine × affine is affine only when at least one side is a
             // binder-free constant (`2*i` or `i*2`); `i*j` is rejected.
             if right.is_binder_free() {
-                Some(left.scale(right.constant))
+                left.checked_scale(right.constant)
             } else if left.is_binder_free() {
-                Some(right.scale(left.constant))
+                right.checked_scale(left.constant)
             } else {
                 None
             }
@@ -104,10 +106,9 @@ where
             // Only constant/constant division stays integer-affine here; a
             // binder-dependent numerator would not generally be integral.
             if left.is_binder_free() && right.is_binder_free() && right.constant != 0 {
-                Some(AffineForm::constant(
-                    left.constant / right.constant,
-                    binders.len(),
-                ))
+                left.constant
+                    .checked_div(right.constant)
+                    .map(|value| AffineForm::constant(value, binders.len()))
             } else {
                 None
             }
@@ -356,6 +357,23 @@ mod tests {
     }
 
     #[test]
+    fn affine_arithmetic_overflow_declines_the_regular_family_proof() {
+        assert_eq!(
+            form(&binary(OpBinary::Add, int(i64::MAX), int(1)), &["i"]),
+            None
+        );
+        assert_eq!(
+            form(&binary(OpBinary::Div, int(i64::MIN), int(-1)), &["i"]),
+            None
+        );
+        let maximum_i = binary(OpBinary::Mul, int(i64::MAX), name_ref("i"));
+        assert_eq!(
+            form(&binary(OpBinary::Add, maximum_i, name_ref("i")), &["i"]),
+            None
+        );
+    }
+
+    #[test]
     fn nonaffine_products_are_rejected() {
         // i * j is not affine in (i, j)
         assert_eq!(
@@ -399,6 +417,7 @@ mod tests {
         ast::Expression::FunctionCall {
             comp: comp_ref(name, None),
             args,
+            is_partial_application: false,
             span: rumoca_core::Span::DUMMY,
         }
     }

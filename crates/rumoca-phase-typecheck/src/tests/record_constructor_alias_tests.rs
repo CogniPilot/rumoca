@@ -231,6 +231,44 @@ fn test_build_instanced_component_type_scope_keeps_subscript_dot_single_segment(
 }
 
 #[test]
+fn test_build_instanced_component_shape_scope_uses_expanded_parent_domain() {
+    let mut overlay = InstanceOverlay::default();
+    overlay.components.insert(
+        InstanceId::new(1),
+        InstanceData {
+            qualified_name: QualifiedName::from_dotted("source.V[1]"),
+            ..Default::default()
+        },
+    );
+    overlay
+        .array_parent_dims
+        .insert("source.V".to_string(), vec![3]);
+    overlay
+        .array_parent_dims
+        .insert("source.V[1].member".to_string(), vec![2]);
+
+    let (full_prefix, short_model) = TypeChecker::instanced_scope_prefixes("Top.Model");
+    let scope_map =
+        TypeChecker::build_instanced_component_shape_scope(&overlay, &full_prefix, &short_model);
+
+    assert_eq!(
+        scope_map.get("source.V"),
+        Some(&Some(vec![3])),
+        "expanded array parent must retain its declared domain"
+    );
+    assert_eq!(
+        scope_map.get("source.V[1]"),
+        Some(&Some(Vec::new())),
+        "expanded element remains scalar"
+    );
+    assert_eq!(
+        scope_map.get("source.V.member"),
+        Some(&Some(vec![2])),
+        "indexed parent segments must be stripped without losing a nested member's own domain"
+    );
+}
+
+#[test]
 fn test_type_scope_hint_fallback_keeps_subscript_dot_single_segment() {
     let mut overlay = InstanceOverlay::default();
     overlay.components.insert(

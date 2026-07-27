@@ -249,11 +249,17 @@ fn value_only_lowering_skips_eager_sensitivity_artifacts() {
             .programs
             .is_empty()
     );
-    assert!(value_only.artifacts.continuous.mass_matrix.is_empty());
+    assert_eq!(
+        value_only.artifacts.continuous.mass_matrix,
+        solve::MassMatrix::Identity
+    );
 
     let full = lower_dae_to_solve_model(&dae_model)
         .expect("full runtime lowering should still produce sensitivity artifacts");
-    assert_eq!(full.artifacts.continuous.mass_matrix, vec![vec![1.0]]);
+    assert_eq!(
+        full.artifacts.continuous.mass_matrix,
+        solve::MassMatrix::Identity
+    );
     assert!(
         !full
             .artifacts
@@ -503,30 +509,60 @@ fn default_start_values_for_size_preserves_scalar_default_start() {
 }
 
 #[test]
-fn identity_mass_matrix_reports_capacity_overflow() -> Result<(), SolveModelLowerError> {
-    let span = rumoca_core::Span::from_offsets(
-        rumoca_core::SourceId::from_source_name("phase_solve_solve_model_tests_source_76.mo"),
+fn solver_nominals_evaluate_declared_values_and_default_to_one() {
+    let mut dae_model = dae::Dae::default();
+    let mut small = scalar_var("small");
+    small.nominal = Some(real_expr(1.0e-9));
+    dae_model.variables.states.insert(small.name.clone(), small);
+    let large = scalar_var("large");
+    dae_model.variables.states.insert(large.name.clone(), large);
+
+    let values = initial_solver_nominals(
+        &dae_model,
+        None,
+        &[],
+        &[0.0, 1.0e6],
+        2,
+        Arc::new(EvalRuntimeState::default()),
+    )
+    .expect("solver nominal values should lower");
+
+    assert_eq!(values, vec![1.0e-9, 1.0]);
+}
+
+#[test]
+fn solver_nominals_reject_short_initial_layout() {
+    let mut dae_model = dae::Dae::default();
+    let state = scalar_var("x");
+    dae_model.variables.states.insert(state.name.clone(), state);
+
+    let error = initial_solver_nominals(
+        &dae_model,
+        None,
+        &[],
+        &[],
         1,
-        9,
-    );
+        Arc::new(EvalRuntimeState::default()),
+    )
+    .expect_err("nominal evaluation must not truncate a malformed initial layout");
 
-    let err = match state_identity_mass_matrix(usize::MAX, span) {
-        Ok(_) => {
-            return Err(SolveModelLowerError::Lower(LowerError::ContractViolation {
-                reason: "oversized identity mass matrix should fail before allocating".to_string(),
-                span,
-            }));
-        }
-        Err(err) => err,
-    };
-
-    assert_eq!(err.source_span(), Some(span));
     assert!(
-        err.diagnostic_reason()
-            .contains("identity mass matrix rows capacity exceeds host memory limits"),
-        "unexpected error: {err}"
+        error
+            .diagnostic_reason()
+            .contains("solver nominal layout range 0..1 exceeds 0 initial values")
     );
-    Ok(())
+}
+
+#[test]
+fn nominal_values_broadcast_scalar_array_attribute() {
+    let mut array = scalar_var("x");
+    array.dims = vec![2];
+    array.nominal = Some(real_expr(1.0e-4));
+
+    let values = nominal_values(&array, &rumoca_eval_dae::VarEnv::new())
+        .expect("scalar nominal should broadcast over an array");
+
+    assert_eq!(values, vec![1.0e-4, 1.0e-4]);
 }
 
 #[test]

@@ -9,7 +9,8 @@ use super::{
     lower_discrete_rhs as lower_discrete_rhs_impl, lower_expression as lower_expression_impl,
     lower_expression_rows_from_expressions_with_runtime_metadata,
     lower_initial_expression_rows_from_expressions, lower_initial_residual,
-    lower_residual as lower_residual_impl, lower_root_conditions, lower_runtime_assignment_rhs,
+    lower_initial_update_rhs, lower_residual as lower_residual_impl, lower_root_conditions,
+    lower_runtime_assignment_rhs,
 };
 use crate::layout::build_var_layout;
 use crate::lower_solve_problem;
@@ -68,6 +69,112 @@ fn lower_builder_try_pack_registers_rejects_overflow() {
         super::LowerError::UnspannedContractViolation { .. }
     ));
     assert!(err.reason().contains("Solve register allocation overflow"));
+}
+
+#[test]
+fn generic_expression_lowering_rejects_derivative_calls() {
+    let layout = VarLayout::default();
+    let functions = IndexMap::new();
+    let mut builder = super::LowerBuilder::new(&layout, &functions);
+
+    let err = builder
+        .lower_expr(&der(real_lit(1.0)), &Scope::new(), 0)
+        .expect_err("generic lowering must not replace der() with a plausible value");
+
+    assert_eq!(err.source_span(), Some(lower_test_span()));
+    assert!(
+        err.reason()
+            .contains("der() reached generic Solve-IR expression lowering")
+    );
+}
+
+#[test]
+fn direct_assignment_diamond_is_lowered_as_a_memoized_dag() {
+    let layout = VarLayout::from_parts(
+        IndexMap::from([(
+            "u".to_string(),
+            ScalarSlot::Y {
+                index: 0,
+                byte_offset: 0,
+            },
+        )]),
+        1,
+        0,
+    );
+    let functions = IndexMap::new();
+    let span = lower_test_span();
+    let assignments = IndexMap::from([
+        (
+            "a".to_string(),
+            super::DirectAssignmentValue::full(add(var("u"), var("u")), span),
+        ),
+        (
+            "b".to_string(),
+            super::DirectAssignmentValue::full(add(var("a"), var("a")), span),
+        ),
+    ]);
+    let mut builder = super::LowerBuilder::new(&layout, &functions)
+        .with_direct_assignments(std::sync::Arc::new(assignments));
+
+    builder
+        .lower_expr(&add(var("b"), var("b")), &Scope::new(), 0)
+        .expect("direct-assignment diamond should lower");
+
+    assert_eq!(builder.direct_assignment_cache_misses, 2);
+    assert_eq!(builder.direct_assignment_cache_hits, 2);
+    assert_eq!(
+        builder
+            .direct_assignment_current_cache
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["a", "b"]
+    );
+    assert!(builder.direct_assignment_pre_cache.is_empty());
+}
+
+#[test]
+fn direct_assignment_cache_keeps_current_and_pre_values_distinct() {
+    let layout = VarLayout::from_parts(
+        IndexMap::from([
+            (
+                "u".to_string(),
+                ScalarSlot::Y {
+                    index: 0,
+                    byte_offset: 0,
+                },
+            ),
+            (
+                "__pre__.u".to_string(),
+                ScalarSlot::Y {
+                    index: 1,
+                    byte_offset: std::mem::size_of::<f64>(),
+                },
+            ),
+        ]),
+        2,
+        0,
+    );
+    let functions = IndexMap::new();
+    let assignments = IndexMap::from([(
+        "a".to_string(),
+        super::DirectAssignmentValue::full(add(var("u"), var("u")), lower_test_span()),
+    )]);
+    let mut builder = super::LowerBuilder::new(&layout, &functions)
+        .with_direct_assignments(std::sync::Arc::new(assignments));
+    let scope = Scope::new();
+
+    let current = builder
+        .lower_expr_in_mode(&var("a"), &scope, 0, super::ValueMode::Current)
+        .expect("current direct assignment should lower");
+    let previous = builder
+        .lower_expr_in_mode(&var("a"), &scope, 0, super::ValueMode::Pre)
+        .expect("pre direct assignment should lower");
+
+    assert_ne!(current, previous);
+    assert_eq!(builder.direct_assignment_cache_misses, 2);
+    assert_eq!(builder.direct_assignment_current_cache.len(), 1);
+    assert_eq!(builder.direct_assignment_pre_cache.len(), 1);
 }
 
 #[test]
@@ -190,6 +297,32 @@ fn lower_record_constructor_values_rejects_missing_required_field_with_input_spa
         }
         other => panic!("unexpected error: {other:?}"),
     }
+}
+
+#[test]
+fn record_constructor_without_function_output_is_a_scalar_record_value() {
+    let span = lower_test_span();
+    let mut constructor = rumoca_core::Function::new("Complex", span);
+    constructor.is_constructor = true;
+    constructor.add_input(rumoca_core::FunctionParam::new("re", "Real", span));
+    constructor.add_input(rumoca_core::FunctionParam::new("im", "Real", span));
+    let mut functions = IndexMap::new();
+    functions.insert(constructor.name.clone(), constructor);
+    let layout = VarLayout::default();
+    let builder = super::LowerBuilder::new(&layout, &functions);
+    let expression = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::Reference::new("Complex"),
+        args: Vec::new(),
+        is_constructor: true,
+        span,
+    };
+
+    assert_eq!(
+        builder
+            .infer_expr_dims(&expression, &Scope::new())
+            .expect("record constructors are structured scalar values"),
+        Vec::<usize>::new()
+    );
 }
 
 #[test]

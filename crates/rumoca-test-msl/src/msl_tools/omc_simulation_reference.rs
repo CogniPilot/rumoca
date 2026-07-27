@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 
 mod omc_session;
 mod output;
+mod retry_policy;
 mod runtime;
 mod speed_report;
 mod state_selection;
@@ -32,6 +33,7 @@ use omc_session::{OmcEvalError, OmcSession, OmcSimOutcome};
 use output::{
     build_sim_output_payload, compute_trace_output_summary, print_summary, write_trace_report,
 };
+use retry_policy::{carry_failed_attempts, omc_failure_retry_budget};
 use runtime::{
     attach_rumoca_runtime, ensure_target_placeholders, load_rumoca_runtime,
     path_for_rumoca_results, select_omc_simulation_models,
@@ -121,6 +123,12 @@ struct SimModelResult {
     rumoca_sim_wall_seconds: Option<f64>,
     rumoca_trace_file: Option<String>,
     rumoca_trace_error: Option<String>,
+    /// How many consecutive OMC runs produced this failure. A failure is only
+    /// cached (i.e. stops being retried) once it has reproduced enough times to
+    /// be believable; see [`omc_failure_retry_budget`]. Always `0` for a
+    /// success, so a model that starts passing resets its history.
+    #[serde(default)]
+    failed_attempts: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -164,7 +172,7 @@ struct ModelSelection {
     selection_seconds: f64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct RumocaRuntime {
     status: String,
     ic_status: Option<String>,
@@ -786,7 +794,9 @@ fn run_session_pending(
             timed_out: outcome.timed_out,
             skipped: false,
         });
-        state.all_results.insert(outcome.model, outcome.result);
+        let mut result = outcome.result;
+        carry_failed_attempts(&mut result, state.all_results.get(&outcome.model));
+        state.all_results.insert(outcome.model, result);
         if completed.is_multiple_of(25) || completed == total {
             println!("  OMC session progress: {completed}/{total} models");
         }
@@ -965,6 +975,7 @@ fn empty_omc_result() -> SimModelResult {
         rumoca_sim_wall_seconds: None,
         rumoca_trace_file: None,
         rumoca_trace_error: None,
+        failed_attempts: 0,
     }
 }
 
@@ -1032,7 +1043,9 @@ fn cached_omc_result_is_reusable(
     result: &SimModelResult,
 ) -> bool {
     match result.status.as_str() {
-        "error" | "timeout" => true,
+        // A failure is only believable once it has reproduced: reusing it after a
+        // single transient run permanently drops the model from the parity set.
+        "error" | "timeout" => result.failed_attempts >= omc_failure_retry_budget(result),
         "success" => cached_omc_success_has_trace_source(paths, model_name, result),
         _ => false,
     }
@@ -1230,6 +1243,9 @@ fn merge_cached_results_for_resume(
     Ok(())
 }
 fn hydrate_omc_fields_from_cached(current: &mut SimModelResult, cached: &SimModelResult) {
+    if current.failed_attempts == 0 {
+        current.failed_attempts = cached.failed_attempts;
+    }
     if current.error.is_none() {
         current.error = cached.error.clone();
     }

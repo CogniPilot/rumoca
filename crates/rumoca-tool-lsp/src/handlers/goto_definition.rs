@@ -7,8 +7,19 @@ use rumoca_compile::parsing::{self, DefId, ast};
 
 use crate::helpers::{
     get_qualified_class_name_at_position, get_word_at_position, imported_def_id,
-    resolve_at_position,
+    location_to_range_in_optional_source, resolve_at_position,
 };
+
+/// Range for a definition target, given the target file's text when known.
+///
+/// Go-to-definition can resolve into any file of the class tree, and this
+/// handler layer is filesystem-free (it also compiles to WASM), so a target in
+/// another file has no text available. Routing through
+/// [`location_to_range_in_optional_source`] keeps that case explicit instead of
+/// silently publishing lexer character columns as UTF-16 columns.
+fn definition_range(loc: &parsing::Location, source: Option<&str>) -> Range {
+    location_to_range_in_optional_source(source, loc)
+}
 
 /// Handle go-to-definition request.
 pub fn handle_goto_definition(
@@ -37,8 +48,9 @@ pub fn handle_goto_definition(
         }
     }
 
-    // Fallback: scan AST for matching declarations
-    ast_lookup(ast, &word, uri)
+    // Fallback: scan AST for matching declarations. These all live in `ast`,
+    // which was parsed from `source`, so UTF-16 columns are measurable here.
+    ast_lookup(ast, &word, source, uri)
 }
 
 fn qualified_path_lookup(
@@ -106,28 +118,22 @@ fn goto_response_for_def_id(
 ) -> Option<GotoDefinitionResponse> {
     let class = tree.get_class_by_def_id(def_id)?;
     let loc = &class.name.location;
-    let target_uri = target_uri_for_location(loc, fallback_uri);
-    let range = Range {
-        start: Position::new(
-            loc.start_line.saturating_sub(1),
-            loc.start_column.saturating_sub(1),
-        ),
-        end: Position::new(
-            loc.end_line.saturating_sub(1),
-            loc.end_column.saturating_sub(1),
-        ),
-    };
+    // The resolved tree carries the session source map, so a target in another
+    // file resolves to both its path (for the URI) and its text (for UTF-16
+    // columns) without the handler layer touching the filesystem.
+    let target = tree.source_map.get_source(loc.source);
+    let target_uri = target_uri_for_location(target.map(|(name, _)| name), fallback_uri);
     Some(GotoDefinitionResponse::Scalar(Location {
         uri: target_uri,
-        range,
+        range: definition_range(loc, target.map(|(_, content)| content)),
     }))
 }
 
-fn target_uri_for_location(loc: &parsing::Location, fallback_uri: &Url) -> Url {
-    if loc.file_name.is_empty() {
+fn target_uri_for_location(target_file_name: Option<&str>, fallback_uri: &Url) -> Url {
+    let Some(file_name) = target_file_name.filter(|name| !name.is_empty()) else {
         return fallback_uri.clone();
-    }
-    let path = Path::new(loc.file_name.as_str());
+    };
+    let path = Path::new(file_name);
     if path.is_absolute()
         && let Some(uri) = url_from_file_path(path)
     {
@@ -182,11 +188,12 @@ fn url_from_file_path(path: impl AsRef<Path>) -> Option<Url> {
 fn ast_lookup(
     ast: &ast::StoredDefinition,
     name: &str,
+    source: &str,
     uri: &Url,
 ) -> Option<GotoDefinitionResponse> {
     // Search for component declarations with this name
     for (_, class) in &ast.classes {
-        if let Some(loc) = find_declaration_in_class(class, name) {
+        if let Some(loc) = find_declaration_in_class(class, name, source) {
             return Some(GotoDefinitionResponse::Scalar(loc.with_uri(uri)));
         }
     }
@@ -194,22 +201,12 @@ fn ast_lookup(
     // Search for class definitions with this name
     for (class_name, class) in &ast.classes {
         if class_name == name {
-            let loc = &class.name.location;
             return Some(GotoDefinitionResponse::Scalar(Location {
                 uri: uri.clone(),
-                range: Range {
-                    start: Position::new(
-                        loc.start_line.saturating_sub(1),
-                        loc.start_column.saturating_sub(1),
-                    ),
-                    end: Position::new(
-                        loc.end_line.saturating_sub(1),
-                        loc.end_column.saturating_sub(1),
-                    ),
-                },
+                range: definition_range(&class.name.location, Some(source)),
             }));
         }
-        if let Some(loc) = find_class_in_class(class, name) {
+        if let Some(loc) = find_class_in_class(class, name, source) {
             return Some(GotoDefinitionResponse::Scalar(loc.with_uri(uri)));
         }
     }
@@ -230,26 +227,20 @@ impl FoundLocation {
     }
 }
 
-fn find_declaration_in_class(class: &ast::ClassDef, name: &str) -> Option<FoundLocation> {
+fn find_declaration_in_class(
+    class: &ast::ClassDef,
+    name: &str,
+    source: &str,
+) -> Option<FoundLocation> {
     if let Some(comp) = class.components.get(name) {
-        let loc = &comp.name_token.location;
         return Some(FoundLocation {
-            range: Range {
-                start: Position::new(
-                    loc.start_line.saturating_sub(1),
-                    loc.start_column.saturating_sub(1),
-                ),
-                end: Position::new(
-                    loc.end_line.saturating_sub(1),
-                    loc.end_column.saturating_sub(1),
-                ),
-            },
+            range: definition_range(&comp.name_token.location, Some(source)),
         });
     }
 
     // Search nested classes
     for (_, nested) in &class.classes {
-        if let Some(loc) = find_declaration_in_class(nested, name) {
+        if let Some(loc) = find_declaration_in_class(nested, name, source) {
             return Some(loc);
         }
     }
@@ -257,24 +248,14 @@ fn find_declaration_in_class(class: &ast::ClassDef, name: &str) -> Option<FoundL
     None
 }
 
-fn find_class_in_class(class: &ast::ClassDef, name: &str) -> Option<FoundLocation> {
+fn find_class_in_class(class: &ast::ClassDef, name: &str, source: &str) -> Option<FoundLocation> {
     for (nested_name, nested) in &class.classes {
         if nested_name == name {
-            let loc = &nested.name.location;
             return Some(FoundLocation {
-                range: Range {
-                    start: Position::new(
-                        loc.start_line.saturating_sub(1),
-                        loc.start_column.saturating_sub(1),
-                    ),
-                    end: Position::new(
-                        loc.end_line.saturating_sub(1),
-                        loc.end_column.saturating_sub(1),
-                    ),
-                },
+                range: definition_range(&nested.name.location, Some(source)),
             });
         }
-        if let Some(loc) = find_class_in_class(nested, name) {
+        if let Some(loc) = find_class_in_class(nested, name, source) {
             return Some(loc);
         }
     }
@@ -400,5 +381,31 @@ end Modelica;
             }
             other => panic!("expected scalar goto response, got: {other:?}"),
         }
+    }
+
+    #[test]
+    fn target_uri_for_location_covers_absolute_relative_and_missing_sources() {
+        let base = std::env::temp_dir().join("rumoca_lsp_target_uri_test");
+        let fallback_path = base.join("main.mo");
+        let fallback = Url::from_file_path(&fallback_path).expect("fallback uri");
+
+        // (a) an absolute path resolves to its own file uri.
+        let absolute = base.join("Other.mo");
+        let absolute_name = absolute.to_string_lossy().to_string();
+        assert_eq!(
+            target_uri_for_location(Some(absolute_name.as_str()), &fallback),
+            Url::from_file_path(&absolute).expect("absolute uri")
+        );
+
+        // (b) a relative path resolves against the fallback uri directory.
+        assert_eq!(
+            target_uri_for_location(Some("Sibling.mo"), &fallback),
+            Url::from_file_path(base.join("Sibling.mo")).expect("sibling uri")
+        );
+
+        // (c) a SourceId absent from the source map yields `None` here; fall
+        // back instead of panicking.
+        assert_eq!(target_uri_for_location(None, &fallback), fallback);
+        assert_eq!(target_uri_for_location(Some(""), &fallback), fallback);
     }
 }

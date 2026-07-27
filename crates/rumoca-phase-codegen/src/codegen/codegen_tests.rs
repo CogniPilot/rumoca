@@ -99,6 +99,53 @@ pub(super) fn solve_problem_with_two_by_two_linsolve_derivative() -> solve::Solv
     problem
 }
 
+fn solve_problem_with_mlir_numeric_edge_map() -> solve::SolveProblem {
+    let domain = rumoca_core::StructuredIndexDomain {
+        binders: vec![rumoca_core::StructuredIndexBinder {
+            id: 0,
+            display_name: "i".to_string(),
+            lower: 1,
+            upper: 1,
+            step: 1,
+        }],
+    };
+    let mut problem = solve::SolveProblem::default();
+    problem.continuous.derivative_rhs = solve::ComputeBlock {
+        nodes: vec![solve::ComputeNode::Map {
+            output_map: solve::TensorOutputMap::dense_contiguous(0, &domain)
+                .expect("one-element map has a valid output mapping"),
+            domain,
+            base_ops: vec![
+                solve::LinearOp::LoadP { dst: 0, index: 0 },
+                solve::LinearOp::LoadIndexedP {
+                    dst: 1,
+                    base: 1,
+                    count: 3,
+                    index: 0,
+                },
+                solve::LinearOp::Binary {
+                    dst: 2,
+                    op: solve::BinaryOp::Min,
+                    lhs: 0,
+                    rhs: 1,
+                },
+                solve::LinearOp::Binary {
+                    dst: 3,
+                    op: solve::BinaryOp::Max,
+                    lhs: 2,
+                    rhs: 1,
+                },
+                solve::LinearOp::StoreOutput { src: 3 },
+            ],
+            load_strides: Vec::new(),
+            const_strides: Vec::new(),
+            metadata: Default::default(),
+            span: fixture_span(),
+        }],
+    };
+    problem
+}
+
 #[test]
 fn test_render_simple_template() {
     let dae = dae::Dae::new();
@@ -463,7 +510,7 @@ fn test_rust_fixed_solve_builtin_target_syntax_checks_when_rustc_available() {
 }
 
 #[test]
-fn test_mlir_builtin_target_renders_tensor_scalar_fallback_rows() {
+fn test_mlir_builtin_target_renders_native_matmul() {
     let problem = solve_problem_with_one_by_one_matmul_derivative();
     let artifacts = solve::SolveArtifacts::default();
     let rendered = render_solve_template_with_name(
@@ -472,17 +519,165 @@ fn test_mlir_builtin_target_renders_tensor_scalar_fallback_rows() {
         builtin_template("mlir", "mlir.mlir.jinja"),
         "TensorDemo",
     )
-    .expect("mlir template should render tensor fallback rows");
+    .expect("mlir template should render native tensor node");
 
     assert!(rendered.contains("func.func @eval_derivative"));
     assert!(
-        rendered.contains("arith.mulf"),
-        "MLIR scalar fallback should preserve the tensor multiply as scalar ops: {rendered}"
+        rendered.contains("linalg.matmul"),
+        "MLIR should preserve dense matrix multiplication as a native operation: {rendered}"
     );
     assert!(
-        !rendered.contains("render_matmul_mlir"),
-        "MLIR template must not expose unfinished native tensor macro names: {rendered}"
+        rendered.contains("memref.store %mm0_Cv0_0"),
+        "MLIR native matrix multiplication should store its result: {rendered}"
     );
+}
+
+#[test]
+fn test_mlir_builtin_target_renders_one_native_linsolve_call() {
+    let problem = solve_problem_with_two_by_two_linsolve_derivative();
+    let artifacts = solve::SolveArtifacts::default();
+    let rendered = render_solve_template_with_name(
+        &problem,
+        &artifacts,
+        builtin_template("mlir", "mlir.mlir.jinja"),
+        "TensorDemo",
+    )
+    .expect("mlir template should render native linear solve");
+
+    assert_eq!(
+        rendered.matches("func.call @rumoca_solve_linear(").count(),
+        1,
+        "MLIR must factor and solve a native LinSolve exactly once: {rendered}"
+    );
+    assert!(
+        !rendered.contains("func.call @rumoca_solve_linear_component("),
+        "native LinSolve must not refactorize once per output component: {rendered}"
+    );
+    assert!(
+        rendered.contains("memref.load %ls0_x[%ls0_xi1]"),
+        "MLIR must read every result component from the solved vector: {rendered}"
+    );
+    assert!(
+        !rendered.contains("%ls0_A = memref.alloca"),
+        "model-sized LinSolve workspaces must not consume the thread stack: {rendered}"
+    );
+    assert_eq!(
+        rendered.matches("memref.dealloc %ls0_").count(),
+        3,
+        "MLIR must release the matrix, right-hand side, and solution workspaces: {rendered}"
+    );
+}
+
+#[test]
+fn test_mlir_native_map_uses_number_minmax_and_clamps_before_index_conversion() {
+    let rendered = render_solve_template_with_name(
+        &solve_problem_with_mlir_numeric_edge_map(),
+        &solve::SolveArtifacts::default(),
+        builtin_template("mlir", "mlir.mlir.jinja"),
+        "TensorDemo",
+    )
+    .expect("MLIR numeric-edge map should render");
+
+    assert!(rendered.contains("arith.minnumf"));
+    assert!(rendered.contains("arith.maxnumf"));
+    let clamp = rendered
+        .find("%drv_nf0_r1_indexed_clamp = arith.minnumf")
+        .expect("dynamic index must clamp with number semantics");
+    let conversion = rendered
+        .find("%drv_nf0_r1_indexed_i64 = arith.fptosi %drv_nf0_r1_indexed_clamp")
+        .expect("dynamic index must convert the clamped finite value");
+    assert!(rendered.contains(
+        "%drv_nf0_r1_indexed_absolute = arith.addi %drv_nf0_r1_indexed_base, \
+         %drv_nf0_r1_indexed_i64 : i64"
+    ));
+    assert!(
+        clamp < conversion,
+        "MLIR must clamp NaN/infinite indexed loads before integer conversion: {rendered}"
+    );
+}
+
+#[test]
+fn test_mlir_native_map_rejects_stride_metadata_on_the_wrong_op() {
+    let mut problem = solve_problem_with_mlir_numeric_edge_map();
+    let solve::ComputeNode::Map { load_strides, .. } =
+        &mut problem.continuous.derivative_rhs.nodes[0]
+    else {
+        panic!("fixture should contain a Map node");
+    };
+    load_strides.push(solve::AffineStencilLoadStride {
+        op_position: 2,
+        terms: vec![solve::AffineStencilIndexStrideTerm {
+            dimension: 0,
+            stride: 1,
+        }],
+    });
+
+    let err = render_solve_template_with_name(
+        &problem,
+        &solve::SolveArtifacts::default(),
+        builtin_template("mlir", "mlir.mlir.jinja"),
+        "TensorDemo",
+    )
+    .expect_err("MLIR must reject a load stride attached to a Binary op");
+
+    assert!(
+        err.to_string().contains("targets Binary")
+            && err
+                .to_string()
+                .contains("expected LoadY, LoadP, or LoadSeed"),
+        "{err}"
+    );
+}
+
+#[test]
+fn test_mlir_native_map_combines_duplicate_stride_descriptors() {
+    let mut problem = solve_problem_with_mlir_numeric_edge_map();
+    let solve::ComputeNode::Map {
+        domain,
+        output_map,
+        load_strides,
+        ..
+    } = &mut problem.continuous.derivative_rhs.nodes[0]
+    else {
+        panic!("fixture should contain a Map node");
+    };
+    domain.binders[0].upper = 3;
+    *output_map = solve::TensorOutputMap::dense_contiguous(0, domain)
+        .expect("three-element map has a dense output map");
+    *load_strides = vec![
+        solve::AffineStencilLoadStride {
+            op_position: 0,
+            terms: vec![solve::AffineStencilIndexStrideTerm {
+                dimension: 0,
+                stride: isize::MAX,
+            }],
+        },
+        solve::AffineStencilLoadStride {
+            op_position: 0,
+            terms: vec![solve::AffineStencilIndexStrideTerm {
+                dimension: 0,
+                stride: 1,
+            }],
+        },
+        solve::AffineStencilLoadStride {
+            op_position: 0,
+            terms: vec![solve::AffineStencilIndexStrideTerm {
+                dimension: 0,
+                stride: -isize::MAX,
+            }],
+        },
+    ];
+
+    let rendered = render_solve_template_with_name(
+        &problem,
+        &solve::SolveArtifacts::default(),
+        builtin_template("mlir", "mlir.mlir.jinja"),
+        "TensorDemo",
+    )
+    .expect("the combined MLIR stride is one");
+
+    assert!(!rendered.contains(&isize::MAX.to_string()), "{rendered}");
+    assert!(rendered.contains("arith.constant 1 : i64"), "{rendered}");
 }
 
 #[test]
@@ -987,6 +1182,25 @@ fn test_fmi3_scalar_blt_projection_renders_from_solve_ir() {
     dae.variables
         .algebraics
         .insert("y".into(), dae::Variable::new("y".into(), fixture_span()));
+    dae.continuous.equations.push(dae::Equation {
+        lhs: None,
+        rhs: rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Sub,
+            lhs: Box::new(rumoca_core::Expression::VarRef {
+                name: "y".into(),
+                subscripts: Vec::new(),
+                span: fixture_span(),
+            }),
+            rhs: Box::new(rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Real(2.0),
+                span: fixture_span(),
+            }),
+            span: fixture_span(),
+        },
+        span: fixture_span(),
+        origin: "FMI3 projection fallback fixture".into(),
+        scalar_count: 1,
+    });
     let mut dae_json = dae_template_json(&dae).expect("dae_template_json should not fail");
     let implicit = solve::ScalarProgramBlock::with_output_indices(
         vec![vec![

@@ -15,15 +15,23 @@ pub type ToDaeResult<T> = BoxedResult<T, ToDaeError>;
 #[derive(Debug, Clone, Error, Diagnostic)]
 pub enum ToDaeError {
     /// The model is unbalanced (equations don't match unknowns).
+    ///
+    /// `detail` carries the full component breakdown so the failure can be
+    /// root-caused without recompiling: which unknown/equation partition
+    /// dominates, which balance clamps were exercised, and how many continuous
+    /// equation rows were filtered out of `f_x` and why.
     #[error("unbalanced model: {equations} equations, {unknowns} unknowns (balance = {balance})")]
     #[diagnostic(
         code(rumoca::todae::ED001),
-        help("MLS §4.9: A balanced model has the same number of equations as unknowns")
+        help(
+            "MLS §4.9: A balanced model has the same number of equations as unknowns; breakdown: {detail}"
+        )
     )]
     Unbalanced {
         equations: usize,
         unknowns: usize,
         balance: i64,
+        detail: crate::balance::BalanceBreakdown,
     },
 
     /// Internal error during DAE conversion.
@@ -239,6 +247,22 @@ pub enum ToDaeError {
         #[label("connection graph constructed from these connectors")]
         span: SourceSpan,
     },
+
+    /// The source uses an MLS runtime operator whose semantics are not yet
+    /// implemented by the canonical DAE/runtime pipeline.
+    #[error("unsupported runtime operator `{operator}`: {detail}")]
+    #[diagnostic(
+        code(rumoca::todae::ED018),
+        help(
+            "Rumoca rejects this operator until its runtime semantics are implemented; accepting it with a passthrough or constant fallback would produce incorrect simulation results"
+        )
+    )]
+    UnsupportedRuntimeOperator {
+        operator: String,
+        detail: String,
+        #[label("unsupported runtime operator used here")]
+        span: SourceSpan,
+    },
 }
 
 impl ToDaeError {
@@ -254,6 +278,13 @@ impl ToDaeError {
         ConstructorFieldSelectionUnresolved { selection: String }
     );
     error_constructor!(unresolved_reference, UnresolvedReference { name: String });
+    error_constructor!(
+        unsupported_runtime_operator,
+        UnsupportedRuntimeOperator {
+            operator: String,
+            detail: String
+        }
+    );
     error_constructor!(
         discrete_solved_form_violation,
         DiscreteSolvedFormViolation { detail: String }
@@ -274,13 +305,26 @@ impl ToDaeError {
         SourceTemporalOperatorSurvivedDaeBoundary { detail: String }
     );
 
-    /// Create an Unbalanced error (no span, computed balance).
-    pub fn unbalanced(equations: usize, unknowns: usize) -> Self {
-        let balance = equations as i64 - unknowns as i64;
+    /// Create an Unbalanced error from the balance breakdown that produced it.
+    ///
+    /// `equations`/`unknowns`/`balance` are derived from `detail` so the error
+    /// payload and the balance gate can never disagree.
+    pub fn unbalanced_from_detail(detail: crate::balance::BalanceDetail) -> Self {
+        let (equations, unknowns) = detail.equations_unknowns();
+        let balance = detail.balance();
         Self::Unbalanced {
             equations,
             unknowns,
             balance,
+            detail: crate::balance::BalanceBreakdown::from(detail),
+        }
+    }
+
+    /// The balance breakdown carried by an [`ToDaeError::Unbalanced`] error.
+    pub fn balance_detail(&self) -> Option<&crate::balance::BalanceDetail> {
+        match self {
+            Self::Unbalanced { detail, .. } => Some(detail),
+            _ => None,
         }
     }
 
@@ -375,11 +419,20 @@ impl From<crate::balance::BalanceError> for ToDaeError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::balance::BalanceDetail;
     use rumoca_core::{SourceId, Span};
+
+    fn unbalanced_detail(f_x: usize, unknowns: usize) -> BalanceDetail {
+        BalanceDetail {
+            alg_unknowns: unknowns,
+            f_x_scalar: f_x,
+            ..BalanceDetail::default()
+        }
+    }
 
     #[test]
     fn test_unbalanced_error() {
-        let err = ToDaeError::unbalanced(5, 3);
+        let err = ToDaeError::unbalanced_from_detail(unbalanced_detail(5, 3));
         assert!(format!("{err}").contains("5 equations"));
         assert!(format!("{err}").contains("3 unknowns"));
 
@@ -390,13 +443,57 @@ mod tests {
     }
 
     #[test]
+    fn unbalanced_error_carries_detail_and_ed001_code() {
+        use miette::Diagnostic;
+        let detail = BalanceDetail {
+            interface_flow_count: 4,
+            ..unbalanced_detail(5, 3)
+        };
+        let (expected_equations, expected_unknowns) = detail.equations_unknowns();
+        let expected_balance = detail.balance();
+        let err = ToDaeError::unbalanced_from_detail(detail);
+
+        let ToDaeError::Unbalanced {
+            equations,
+            unknowns,
+            balance,
+            detail: carried,
+        } = &err
+        else {
+            panic!("expected an Unbalanced error, got {err:?}");
+        };
+        assert_eq!(*equations, expected_equations);
+        assert_eq!(*unknowns, expected_unknowns);
+        assert_eq!(*balance, expected_balance);
+        assert_eq!(carried.f_x_scalar, 5);
+        assert_eq!(carried.interface_flow_count, 4);
+
+        assert_eq!(
+            err.code().map(|c| c.to_string()).as_deref(),
+            Some("rumoca::todae::ED001")
+        );
+        let help = err
+            .help()
+            .map(|h| h.to_string())
+            .expect("ED001 must carry help text");
+        assert!(help.contains("f_x=5"), "{help}");
+        assert!(help.contains("iflow=4"), "{help}");
+        assert!(help.contains("clamps["), "{help}");
+        assert!(!help.contains('\n'), "help must stay single-line: {help}");
+        assert_eq!(
+            err.balance_detail().map(|detail| detail.f_x_scalar),
+            Some(5)
+        );
+    }
+
+    #[test]
     fn active_todae_errors_keep_stable_diagnostic_codes() {
         let span = Span::from_offsets(SourceId::from_source_name("errors_fixture.mo"), 0, 10);
         use miette::Diagnostic;
 
         let cases = [
             (
-                ToDaeError::unbalanced(5, 3),
+                ToDaeError::unbalanced_from_detail(unbalanced_detail(5, 3)),
                 "rumoca::todae::ED001",
                 Some("balanced model"),
             ),

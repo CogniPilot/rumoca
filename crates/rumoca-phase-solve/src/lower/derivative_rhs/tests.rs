@@ -5,6 +5,13 @@ fn unspanned_derivative_rhs_test_span() -> rumoca_core::Span {
 }
 
 #[test]
+fn native_linsolve_requires_contiguous_component_output_indices() {
+    assert!(component_indices_are_contiguous_from(&[2, 3, 4], 2));
+    assert!(!component_indices_are_contiguous_from(&[0, 1, 4], 0));
+    assert!(!component_indices_are_contiguous_from(&[3, 4], 2));
+}
+
+#[test]
 fn derivative_vec_with_capacity_reports_capacity_overflow() -> Result<(), LowerError> {
     let span = rumoca_core::Span::from_offsets(
         rumoca_core::SourceId::from_source_name(
@@ -333,8 +340,13 @@ fn lower_derivative_rhs_reports_missing_component_root_with_state_span() {
         equation_flags: Vec::new(),
     };
 
-    let err = lower_derivative_rhs_with_analysis(&dae_model, &layout, &analysis)
-        .expect_err("missing derivative RHS component root should fail");
+    let err = lower_derivative_rhs_with_analysis(
+        &dae_model,
+        &layout,
+        &analysis,
+        &mut crate::tensor_declines::TensorDeclineJournal::new(),
+    )
+    .expect_err("missing derivative RHS component root should fail");
 
     assert_eq!(err.source_span(), Some(span));
     assert!(
@@ -383,8 +395,13 @@ fn lower_derivative_rhs_reports_missing_component_root_entry_with_state_span() {
         equation_flags: Vec::new(),
     };
 
-    let err = lower_derivative_rhs_with_analysis(&dae_model, &layout, &analysis)
-        .expect_err("missing derivative RHS component root entry should fail");
+    let err = lower_derivative_rhs_with_analysis(
+        &dae_model,
+        &layout,
+        &analysis,
+        &mut crate::tensor_declines::TensorDeclineJournal::new(),
+    )
+    .expect_err("missing derivative RHS component root entry should fail");
 
     assert_eq!(err.source_span(), Some(span));
     assert!(
@@ -437,8 +454,13 @@ fn lower_derivative_rhs_uses_equation_span_when_state_span_is_missing() {
         equation_flags: Vec::new(),
     };
 
-    let err = lower_derivative_rhs_with_analysis(&dae_model, &layout, &analysis)
-        .expect_err("missing derivative RHS component root entry should fail");
+    let err = lower_derivative_rhs_with_analysis(
+        &dae_model,
+        &layout,
+        &analysis,
+        &mut crate::tensor_declines::TensorDeclineJournal::new(),
+    )
+    .expect_err("missing derivative RHS component root entry should fail");
 
     assert_eq!(err.source_span(), Some(span));
     assert!(

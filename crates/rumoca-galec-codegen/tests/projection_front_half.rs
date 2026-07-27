@@ -571,11 +571,15 @@ mod mangling {
 
     #[test]
     fn mangling_is_injective_over_the_corpus() {
-        let mut seen = std::collections::HashSet::new();
+        // Keyed on the lexeme, which `Name::lexeme` documents as the name's
+        // identity: injectivity is a property of the emitted GALEC text, and a
+        // whole-`Name` key would also fold in the span, which is provenance
+        // (D11) and would let two spellings of one name look distinct.
+        let mut seen = std::collections::BTreeSet::new();
         for name in CORPUS {
             let mangled = galec_variable_name(name).expect(name);
             assert!(
-                seen.insert(mangled.clone()),
+                seen.insert(mangled.lexeme().to_string()),
                 "collision for {name}: {mangled:?}"
             );
         }
@@ -583,7 +587,7 @@ mod mangling {
         for name in CORPUS {
             let pre = pre_state_name(name).expect(name);
             assert!(
-                seen.insert(pre.clone()),
+                seen.insert(pre.lexeme().to_string()),
                 "pre collision for {name}: {pre:?}"
             );
         }

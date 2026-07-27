@@ -19,5 +19,8 @@ indexmap = { workspace = true }
 [build-dependencies]
 parol = { workspace = true }
 
+[dev-dependencies]
+proptest = { workspace = true }
+
 [lints]
 workspace = true

@@ -11,7 +11,7 @@ fn test_location() -> rumoca_core::Location {
         end_column: 2,
         start: 0,
         end: 1,
-        file_name: TEST_FILE.to_string(),
+        source: rumoca_core::SourceId::from_source_name(TEST_FILE),
     }
 }
 
@@ -164,9 +164,12 @@ fn test_resolve_sibling_modification_keeps_class_modification_reference() {
     let expr = make_comp_ref_expr(&["aimcData", "statorCoreParameters"]);
     let resolved = resolve_modification_expr(
         &expr,
-        &ast::ModificationEnvironment::default(),
-        &effective_components,
-        &ast::ClassTree::default(),
+        ModifierResolveScope {
+            mod_env: &ast::ModificationEnvironment::default(),
+            effective_components: &effective_components,
+            tree: &ast::ClassTree::default(),
+            imports: &[],
+        },
         false,
     )
     .expect("resolution should succeed");
@@ -191,9 +194,12 @@ fn test_resolve_sibling_modification_still_resolves_scalar_field_override() {
     let expr = make_comp_ref_expr(&["stackData", "mSystems"]);
     let resolved = resolve_modification_expr(
         &expr,
-        &ast::ModificationEnvironment::default(),
-        &effective_components,
-        &ast::ClassTree::default(),
+        ModifierResolveScope {
+            mod_env: &ast::ModificationEnvironment::default(),
+            effective_components: &effective_components,
+            tree: &ast::ClassTree::default(),
+            imports: &[],
+        },
         false,
     )
     .expect("resolution should succeed");
@@ -270,6 +276,7 @@ fn test_resolve_sibling_modification_keeps_function_call_record_like_binding() {
                 span: rumoca_core::Span::DUMMY,
             },
             args: vec![make_int_expr(410), make_int_expr(388)],
+            is_partial_application: false,
             span: rumoca_core::Span::DUMMY,
         },
     );
@@ -278,9 +285,12 @@ fn test_resolve_sibling_modification_keeps_function_call_record_like_binding() {
     let expr = make_comp_ref_expr(&["aimcData", "statorCoreParameters"]);
     let resolved = resolve_modification_expr(
         &expr,
-        &ast::ModificationEnvironment::default(),
-        &effective_components,
-        &ast::ClassTree::default(),
+        ModifierResolveScope {
+            mod_env: &ast::ModificationEnvironment::default(),
+            effective_components: &effective_components,
+            tree: &ast::ClassTree::default(),
+            imports: &[],
+        },
         false,
     )
     .expect("resolution should succeed");
@@ -484,6 +494,7 @@ fn test_apply_component_modifier_rejects_inherited_final_component() {
             parent_snapshot: &parent_snapshot,
             shifted_parent_keys: &shifted_parent_keys,
             source_scope: None,
+            imports: &[],
         },
     };
 
@@ -531,6 +542,7 @@ fn test_apply_component_modifier_requires_span_for_final_modifier_error() {
             parent_snapshot: &parent_snapshot,
             shifted_parent_keys: &shifted_parent_keys,
             source_scope: None,
+            imports: &[],
         },
     };
 
@@ -626,6 +638,7 @@ fn test_forwarded_modifier_keeps_forwarded_source_scope() {
         parent_snapshot: &parent_snapshot,
         shifted_parent_keys: &shifted_parent_keys,
         source_scope: Some(ast::QualifiedName::from_ident("aimc")),
+        imports: &[],
     };
 
     insert_modifier_value_with_structural_overrides(
@@ -680,6 +693,7 @@ fn test_sibling_modifier_reference_keeps_local_source_scope() {
         parent_snapshot: &parent_snapshot,
         shifted_parent_keys: &shifted_parent_keys,
         source_scope: local_scope.clone(),
+        imports: &[],
     };
 
     insert_modifier_value_with_structural_overrides(
@@ -729,6 +743,7 @@ fn test_modifier_with_same_resolved_value_keeps_existing_source_scope() {
         parent_snapshot: &parent_snapshot,
         shifted_parent_keys: &shifted_parent_keys,
         source_scope: Some(ast::QualifiedName::from_ident("aimc")),
+        imports: &[],
     };
 
     insert_modifier_value_with_structural_overrides(
@@ -1000,6 +1015,48 @@ fn test_propagate_record_binding_projects_if_expression_branches_per_field() {
 }
 
 #[test]
+fn test_record_alias_from_outer_scope_projects_declared_default_field() {
+    let mut nested_record = ast::ClassDef {
+        name: make_token("CellData"),
+        class_type: rumoca_core::ClassType::Record,
+        def_id: Some(rumoca_core::DefId::new(1200)),
+        ..Default::default()
+    };
+    nested_record.components.insert(
+        "nRC".to_string(),
+        ast::Component {
+            binding: Some(make_int_expr(1)),
+            start: make_int_expr(1),
+            ..ast::Component::empty_with_span(test_span())
+        },
+    );
+
+    let mut ctx = InstantiateContext::new();
+    let binding_expr = make_comp_ref_expr(&["cellDataOriginal"]);
+    propagate_record_binding_to_fields(
+        &ast::ClassTree::default(),
+        &mut ctx,
+        &binding_expr,
+        Some(ast::QualifiedName::new()),
+        false,
+        &nested_record,
+        &IndexMap::default(),
+    )
+    .expect("outer record alias should project fields");
+
+    let field_mod = ctx
+        .mod_env()
+        .active
+        .get(&ast::QualifiedName::from_ident("nRC"))
+        .expect("the outer record's nRC must replace the target default");
+    let ast::Expression::FieldAccess { base, field, .. } = &field_mod.value else {
+        panic!("outer record field should be projected");
+    };
+    assert_eq!(field, "nRC");
+    assert_eq!(base.as_ref(), &binding_expr);
+}
+
+#[test]
 fn test_propagate_record_binding_preserves_matching_default_record_constructor() {
     let mut nested_record = ast::ClassDef {
         name: make_token("BaseData"),
@@ -1027,6 +1084,7 @@ fn test_propagate_record_binding_preserves_matching_default_record_constructor()
             span: rumoca_core::Span::DUMMY,
         },
         args: Vec::new(),
+        is_partial_application: false,
         span: rumoca_core::Span::DUMMY,
     };
 
@@ -1075,6 +1133,7 @@ fn test_propagate_record_binding_projects_subtype_default_record_constructor_fie
             span: rumoca_core::Span::DUMMY,
         },
         args: Vec::new(),
+        is_partial_application: false,
         span: rumoca_core::Span::DUMMY,
     };
 
@@ -1153,6 +1212,7 @@ fn test_propagate_record_binding_projects_through_unique_constructor_record_fiel
             span: rumoca_core::Span::DUMMY,
         },
         args: Vec::new(),
+        is_partial_application: false,
         span: rumoca_core::Span::DUMMY,
     };
 

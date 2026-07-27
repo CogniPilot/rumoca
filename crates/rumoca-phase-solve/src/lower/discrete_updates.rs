@@ -20,6 +20,36 @@ struct DiscreteTarget {
     reference: rumoca_core::Reference,
 }
 
+pub(super) fn is_initial_update_assignment_target(
+    dae_model: &dae::Dae,
+    layout: &VarLayout,
+    target: &str,
+) -> bool {
+    let target_base = dae::component_base_name(target).unwrap_or_else(|| target.to_string());
+    let target_name = rumoca_core::VarName::new(target_base);
+    if !matches!(
+        layout.binding(target),
+        Some(rumoca_ir_solve::ScalarSlot::P { .. })
+    ) {
+        return false;
+    }
+    dae_model
+        .variables
+        .parameters
+        .get(&target_name)
+        .is_some_and(|parameter| parameter.fixed != Some(false))
+        || dae_model
+            .variables
+            .discrete_reals
+            .contains_key(&target_name)
+        || dae_model
+            .variables
+            .discrete_valued
+            .contains_key(&target_name)
+        || (rumoca_core::is_runtime_managed_slot(target)
+            && rumoca_core::delay_slot_index(target).is_none())
+}
+
 fn discrete_vec_with_capacity<T>(
     capacity: usize,
     context: &'static str,
@@ -153,16 +183,47 @@ pub(crate) fn normalized_discrete_update_equations(
 
 pub(crate) fn initial_condition_update_equations(
     dae_model: &dae::Dae,
+    layout: &VarLayout,
 ) -> Result<Vec<dae::Equation>, LowerError> {
-    let Some(first_equation) = dae_model.conditions.equations.first() else {
+    let Some(first_equation) = dae_model
+        .initialization
+        .equations
+        .first()
+        .or_else(|| dae_model.conditions.equations.first())
+    else {
         return Ok(Vec::new());
     };
     let span = first_equation.span;
-    let mut equations = discrete_vec_with_capacity(
-        dae_model.conditions.equations.len(),
-        "initial condition update equation count",
-        span,
-    )?;
+    let capacity = dae_model
+        .initialization
+        .equations
+        .len()
+        .checked_add(dae_model.conditions.equations.len())
+        .ok_or_else(|| {
+            LowerError::contract_violation(
+                "initial update equation count exceeds host index range",
+                span,
+            )
+        })?;
+    let mut equations =
+        discrete_vec_with_capacity(capacity, "initial condition update equation count", span)?;
+    for eq in &dae_model.initialization.equations {
+        let Some(assignment) = rumoca_eval_dae::initial_assignment_from_equation(eq) else {
+            continue;
+        };
+        if assignment.is_pre_target
+            || !is_initial_update_assignment_target(dae_model, layout, assignment.target.as_str())
+        {
+            continue;
+        }
+        equations.push(dae::Equation::explicit_with_scalar_count(
+            rumoca_core::Reference::new(assignment.target),
+            assignment.solution.clone(),
+            eq.span,
+            eq.origin.clone(),
+            eq.scalar_count,
+        ));
+    }
     for eq in &dae_model.conditions.equations {
         if eq
             .lhs
@@ -185,7 +246,7 @@ pub(crate) fn lower_initial_update_rhs(
     dae_model: &dae::Dae,
     layout: &VarLayout,
 ) -> Result<Vec<Vec<LinearOp>>, LowerError> {
-    let equations = initial_condition_update_equations(dae_model)?;
+    let equations = initial_condition_update_equations(dae_model, layout)?;
     let structural_bindings = compile_time::structural_bindings(dae_model)?;
     Ok(rumoca_eval_solve::to_scalar_program_block(
         &expression_rows::lower_expression_rows_with_mode(

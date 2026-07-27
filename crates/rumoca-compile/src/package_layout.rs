@@ -67,8 +67,11 @@ fn build_package_layout_source_map(docs: &[(String, StoredDefinition)]) -> Resul
 }
 
 fn location_has_valid_span(location: &Location) -> bool {
-    !location.file_name.is_empty() && location.end > location.start
+    location.has_source()
 }
+
+/// Placeholder used when a `SourceId` has no registered name in the source map.
+const UNKNOWN_SOURCE_DISPLAY_NAME: &str = "<unknown source>";
 
 fn location_span(
     location: &Location,
@@ -82,16 +85,16 @@ fn location_span(
         bail!("{context} is missing a non-empty source location");
     }
     let span = source_map
-        .try_location_to_span(
-            &location.file_name,
+        .try_span(
+            location.source,
             location.start as usize,
             location.end as usize,
         )
         .with_context(|| {
-            format!(
-                "source file '{}' for {context} was not found",
-                location.file_name
-            )
+            let file_name = source_map
+                .name(location.source)
+                .unwrap_or(UNKNOWN_SOURCE_DISPLAY_NAME);
+            format!("source file '{file_name}' for {context} was not found")
         })?;
     Ok(Some(span))
 }
@@ -116,23 +119,23 @@ fn name_span(name: &Name, source_map: Option<&SourceMap>, context: &str) -> Resu
         .name
         .last()
         .with_context(|| format!("{context} is missing name segments"))?;
-    if first.location.file_name != last.location.file_name {
+    if first.location.source != last.location.source {
         bail!("{context} spans multiple source files");
     }
     if !location_has_valid_span(&first.location) || !location_has_valid_span(&last.location) {
         bail!("{context} is missing a non-empty source location");
     }
     let span = source_map
-        .try_location_to_span(
-            &first.location.file_name,
+        .try_span(
+            first.location.source,
             first.location.start as usize,
             last.location.end as usize,
         )
         .with_context(|| {
-            format!(
-                "source file '{}' for {context} was not found",
-                first.location.file_name
-            )
+            let file_name = source_map
+                .name(first.location.source)
+                .unwrap_or(UNKNOWN_SOURCE_DISPLAY_NAME);
+            format!("source file '{file_name}' for {context} was not found")
         })?;
     Ok(Some(span))
 }

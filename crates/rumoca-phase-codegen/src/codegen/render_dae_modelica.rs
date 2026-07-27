@@ -52,7 +52,7 @@ fn render_partition_equations(
             && let Some(rendered) = render_structured_family(equations, family, cfg)?
         {
             lines.extend(rendered.into_iter().map(|line| format!("  {line};")));
-            row = family.end_equation_index();
+            row = family.end_equation_index()?;
             continue;
         }
         lines.push(format!(
@@ -79,8 +79,11 @@ struct StructuredFamily {
 }
 
 impl StructuredFamily {
-    fn end_equation_index(&self) -> usize {
-        self.first_equation_index + self.equation_count * self.iteration_count
+    fn end_equation_index(&self) -> Result<usize, minijinja::Error> {
+        self.equation_count
+            .checked_mul(self.iteration_count)
+            .and_then(|count| self.first_equation_index.checked_add(count))
+            .ok_or_else(|| render_err("structured family equation range overflows"))
     }
 }
 
@@ -284,6 +287,27 @@ fn render_structured_family(
     family: &StructuredFamily,
     cfg: &ExprConfig,
 ) -> Result<Option<Vec<String>>, minijinja::Error> {
+    let owner = sequence_item(
+        equations,
+        family.first_equation_index,
+        "structured DAE owner equation",
+    )?;
+    let owner_scalar_count = get_field(&owner, "scalar_count")
+        .map_err(|err| {
+            render_err(format!(
+                "structured DAE owner scalar count is missing: {err}"
+            ))
+        })?
+        .as_usize()
+        .ok_or_else(|| {
+            render_err("structured DAE owner scalar count is not a host-size integer")
+        })?;
+    if owner_scalar_count > 1 {
+        // RowMajorProjection families initially own one exact aggregate array
+        // equation. Render that equation normally; only the later structural
+        // scalar-view form has one stored row per domain point.
+        return optional_render_miss();
+    }
     let tuples = family.domain.tuples()?;
     let mut lines = render_vec_with_capacity(
         family.equation_count,
@@ -320,8 +344,11 @@ fn family_equation_refs(
     let mut refs =
         render_vec_with_capacity(iteration_count, "structured DAE equation reference count")?;
     for iteration in 0..iteration_count {
-        let index =
-            family.first_equation_index + iteration * family.equation_count + equation_position;
+        let index = iteration
+            .checked_mul(family.equation_count)
+            .and_then(|offset| offset.checked_add(equation_position))
+            .and_then(|offset| family.first_equation_index.checked_add(offset))
+            .ok_or_else(|| render_err("structured DAE equation index overflows"))?;
         refs.push(sequence_item(equations, index, "structured DAE equation")?);
     }
     Ok(refs)

@@ -1,3 +1,6 @@
+use nalgebra::{DMatrix, DVector, Dyn, linalg::LU};
+use rumoca_ir_solve as solve;
+
 use super::solve_ops::RuntimeSolveError;
 
 #[derive(Debug, Clone)]
@@ -10,62 +13,57 @@ pub struct PreparedMassMatrix {
 enum MassMatrixKind {
     Identity,
     Diagonal(Vec<f64>),
-    Dense {
-        matrix: Vec<Vec<f64>>,
-        inverse: Vec<Vec<f64>>,
+    Sparse {
+        entries: Vec<solve::MassMatrixEntry>,
+        factorization: LU<f64, Dyn, Dyn>,
     },
 }
 
 impl PreparedMassMatrix {
-    pub fn new(mass: &[Vec<f64>], state_count: usize) -> Result<Self, RuntimeSolveError> {
-        if state_count == 0 || mass.is_empty() {
-            return Ok(Self {
-                state_count,
-                kind: MassMatrixKind::Identity,
-            });
-        }
-        let matrix = normalized_matrix(mass, state_count);
-        if is_identity(&matrix) {
-            return Ok(Self {
-                state_count,
-                kind: MassMatrixKind::Identity,
-            });
-        }
-        if let Some(diagonal) = diagonal_values(&matrix) {
-            return Ok(Self {
-                state_count,
-                kind: MassMatrixKind::Diagonal(diagonal),
-            });
-        }
-        let inverse =
-            invert(matrix.clone()).ok_or_else(|| RuntimeSolveError::UnsupportedModel {
-                reason: "singular state mass matrix".to_string(),
-            })?;
-        Ok(Self {
-            state_count,
-            kind: MassMatrixKind::Dense { matrix, inverse },
-        })
+    pub fn new(mass: &solve::MassMatrix, state_count: usize) -> Result<Self, RuntimeSolveError> {
+        let kind = match mass {
+            solve::MassMatrix::Identity => MassMatrixKind::Identity,
+            solve::MassMatrix::Diagonal { values } => {
+                validate_diagonal(values, state_count)?;
+                MassMatrixKind::Diagonal(values.clone())
+            }
+            solve::MassMatrix::Sparse { entries } => {
+                let factorization = factor_sparse_matrix(entries, state_count)?;
+                MassMatrixKind::Sparse {
+                    entries: entries.clone(),
+                    factorization,
+                }
+            }
+        };
+        Ok(Self { state_count, kind })
     }
 
     pub fn solve(&self, rhs: &[f64]) -> Result<Vec<f64>, RuntimeSolveError> {
-        let n = self.state_count.min(rhs.len());
+        if rhs.len() < self.state_count {
+            return Err(invalid_mass_matrix(format!(
+                "state mass-matrix solve requires {} RHS entries, got {}",
+                self.state_count,
+                rhs.len()
+            )));
+        }
+        let rhs = &rhs[..self.state_count];
         match &self.kind {
-            MassMatrixKind::Identity => Ok(rhs[..n].to_vec()),
+            MassMatrixKind::Identity => Ok(rhs.to_vec()),
             MassMatrixKind::Diagonal(diagonal) => diagonal
                 .iter()
-                .take(n)
                 .zip(rhs.iter().copied())
                 .map(|(coeff, value)| {
                     if coeff.abs() <= 1.0e-14 {
-                        Err(RuntimeSolveError::UnsupportedModel {
-                            reason: "singular state mass matrix".to_string(),
-                        })
+                        Err(invalid_mass_matrix("singular state mass matrix"))
                     } else {
                         Ok(value / coeff)
                     }
                 })
                 .collect(),
-            MassMatrixKind::Dense { inverse, .. } => Ok(mul_matrix_vector(inverse, &rhs[..n])),
+            MassMatrixKind::Sparse { factorization, .. } => factorization
+                .solve(&DVector::from_column_slice(rhs))
+                .map(|solution| solution.as_slice().to_vec())
+                .ok_or_else(|| invalid_mass_matrix("singular state mass matrix")),
         }
     }
 
@@ -93,15 +91,15 @@ impl PreparedMassMatrix {
                     *slot = coeff * value + beta * *slot;
                 }
             }
-            MassMatrixKind::Dense { matrix, .. } => {
-                for row_idx in 0..n {
-                    let acc = matrix[row_idx]
-                        .iter()
-                        .take(n)
-                        .zip(v.iter().copied())
-                        .map(|(coeff, value)| coeff * value)
-                        .sum::<f64>();
-                    out[row_idx] = acc + beta * out[row_idx];
+            MassMatrixKind::Sparse { entries, .. } => {
+                for slot in out.iter_mut().take(n) {
+                    *slot *= beta;
+                }
+                for entry in entries
+                    .iter()
+                    .filter(|entry| entry.row < n && entry.column < n)
+                {
+                    out[entry.row] += entry.value * v[entry.column];
                 }
             }
         }
@@ -111,103 +109,152 @@ impl PreparedMassMatrix {
     }
 }
 
-pub fn solve_mass_matrix(mass: &[Vec<f64>], rhs: &[f64]) -> Result<Vec<f64>, RuntimeSolveError> {
+pub fn solve_mass_matrix(
+    mass: &solve::MassMatrix,
+    rhs: &[f64],
+) -> Result<Vec<f64>, RuntimeSolveError> {
     PreparedMassMatrix::new(mass, rhs.len())?.solve(rhs)
 }
 
-fn normalized_matrix(mass: &[Vec<f64>], n: usize) -> Vec<Vec<f64>> {
-    let mut matrix = vec![vec![0.0; n]; n];
-    for (row_idx, row) in matrix.iter_mut().enumerate() {
-        for (col_idx, slot) in row.iter_mut().enumerate() {
-            *slot = mass
-                .get(row_idx)
-                .and_then(|mass_row| mass_row.get(col_idx))
-                .copied()
-                .unwrap_or((row_idx == col_idx) as u8 as f64);
+fn validate_diagonal(values: &[f64], state_count: usize) -> Result<(), RuntimeSolveError> {
+    if values.len() != state_count {
+        return Err(invalid_mass_matrix(format!(
+            "diagonal state mass matrix has {} entries for {state_count} states",
+            values.len()
+        )));
+    }
+    if values.iter().any(|value| !value.is_finite()) {
+        return Err(invalid_mass_matrix(
+            "diagonal state mass matrix contains a non-finite coefficient",
+        ));
+    }
+    Ok(())
+}
+
+fn factor_sparse_matrix(
+    entries: &[solve::MassMatrixEntry],
+    state_count: usize,
+) -> Result<LU<f64, Dyn, Dyn>, RuntimeSolveError> {
+    let mut matrix = DMatrix::<f64>::zeros(state_count, state_count);
+    for entry in entries {
+        if entry.row >= state_count || entry.column >= state_count {
+            return Err(invalid_mass_matrix(format!(
+                "state mass-matrix entry ({}, {}) is outside {state_count}x{state_count}",
+                entry.row, entry.column
+            )));
+        }
+        if !entry.value.is_finite() {
+            return Err(invalid_mass_matrix(
+                "sparse state mass matrix contains a non-finite coefficient",
+            ));
+        }
+        let coefficient = &mut matrix[(entry.row, entry.column)];
+        *coefficient += entry.value;
+        if !coefficient.is_finite() {
+            return Err(invalid_mass_matrix(
+                "duplicate sparse state mass-matrix entries accumulate to a non-finite coefficient",
+            ));
         }
     }
-    matrix
-}
-
-fn is_identity(matrix: &[Vec<f64>]) -> bool {
-    matrix.iter().enumerate().all(|(row_idx, row)| {
-        row.iter().enumerate().all(|(col_idx, value)| {
-            let expected = (row_idx == col_idx) as u8 as f64;
-            (*value - expected).abs() <= 1.0e-14
-        })
-    })
-}
-
-fn diagonal_values(matrix: &[Vec<f64>]) -> Option<Vec<f64>> {
-    let mut diagonal = Vec::with_capacity(matrix.len());
-    for (row_idx, row) in matrix.iter().enumerate() {
-        for (col_idx, value) in row.iter().enumerate() {
-            if row_idx == col_idx {
-                diagonal.push(*value);
-            } else if value.abs() > 1.0e-14 {
-                return None;
-            }
-        }
+    let factorization = matrix.lu();
+    if !factorization.is_invertible() {
+        return Err(invalid_mass_matrix("singular state mass matrix"));
     }
-    Some(diagonal)
+    Ok(factorization)
 }
 
-fn invert(matrix: Vec<Vec<f64>>) -> Option<Vec<Vec<f64>>> {
-    let n = matrix.len();
-    let mut augmented = vec![vec![0.0; n * 2]; n];
-    for row_idx in 0..n {
-        for col_idx in 0..n {
-            augmented[row_idx][col_idx] = matrix[row_idx][col_idx];
-        }
-        augmented[row_idx][n + row_idx] = 1.0;
-    }
-    gaussian_eliminate(&mut augmented)?;
-    Some(augmented.into_iter().map(|row| row[n..].to_vec()).collect())
-}
-
-fn gaussian_eliminate(matrix: &mut [Vec<f64>]) -> Option<()> {
-    let n = matrix.len();
-    for col in 0..n {
-        let pivot =
-            (col..n).max_by(|&a, &b| matrix[a][col].abs().total_cmp(&matrix[b][col].abs()))?;
-        if matrix[pivot][col].abs() <= 1.0e-14 {
-            return None;
-        }
-        matrix.swap(col, pivot);
-        normalize_pivot_row(matrix, col);
-        eliminate_column(matrix, col);
-    }
-    Some(())
-}
-
-fn normalize_pivot_row(matrix: &mut [Vec<f64>], col: usize) {
-    let pivot = matrix[col][col];
-    for value in &mut matrix[col][col..] {
-        *value /= pivot;
+fn invalid_mass_matrix(reason: impl Into<String>) -> RuntimeSolveError {
+    RuntimeSolveError::UnsupportedModel {
+        reason: reason.into(),
     }
 }
 
-fn eliminate_column(matrix: &mut [Vec<f64>], col: usize) {
-    let pivot_row = matrix[col].clone();
-    for (row_idx, row) in matrix.iter_mut().enumerate() {
-        if row_idx == col {
-            continue;
-        }
-        let factor = row[col];
-        for (value, pivot) in row[col..].iter_mut().zip(&pivot_row[col..]) {
-            *value -= factor * pivot;
-        }
-    }
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-fn mul_matrix_vector(matrix: &[Vec<f64>], vector: &[f64]) -> Vec<f64> {
-    matrix
-        .iter()
-        .map(|row| {
-            row.iter()
-                .zip(vector.iter().copied())
-                .map(|(coeff, value)| coeff * value)
-                .sum()
-        })
-        .collect()
+    #[test]
+    fn diagonal_mass_matrix_solves_and_applies_without_dense_expansion() {
+        let mass = solve::MassMatrix::Diagonal {
+            values: vec![2.0, 4.0],
+        };
+        let prepared = PreparedMassMatrix::new(&mass, 2).expect("diagonal should prepare");
+
+        assert_eq!(
+            prepared.solve(&[6.0, 8.0]).expect("diagonal should solve"),
+            [3.0, 2.0]
+        );
+
+        let mut out = [10.0, 20.0, 30.0];
+        prepared.apply_solver_mass_with_beta(&[1.0, 2.0, 3.0], 0.5, &mut out, 3);
+        assert_eq!(out, [7.0, 18.0, 15.0]);
+    }
+
+    #[test]
+    fn sparse_mass_matrix_reuses_lu_for_solve_and_entries_for_apply() {
+        let mass = solve::MassMatrix::Sparse {
+            entries: vec![
+                solve::MassMatrixEntry {
+                    row: 0,
+                    column: 0,
+                    value: 4.0,
+                },
+                solve::MassMatrixEntry {
+                    row: 0,
+                    column: 1,
+                    value: 1.0,
+                },
+                solve::MassMatrixEntry {
+                    row: 1,
+                    column: 0,
+                    value: 2.0,
+                },
+                solve::MassMatrixEntry {
+                    row: 1,
+                    column: 1,
+                    value: 3.0,
+                },
+            ],
+        };
+        let prepared = PreparedMassMatrix::new(&mass, 2).expect("matrix should factor");
+
+        let solution = prepared.solve(&[9.0, 8.0]).expect("matrix should solve");
+        assert!((solution[0] - 1.9).abs() < 1.0e-12);
+        assert!((solution[1] - 1.4).abs() < 1.0e-12);
+
+        let mut out = [10.0, 20.0, 30.0];
+        prepared.apply_solver_mass_with_beta(&[1.0, 2.0, 3.0], 0.5, &mut out, 3);
+        assert_eq!(out, [11.0, 18.0, 15.0]);
+    }
+
+    #[test]
+    fn mass_matrix_rejects_invalid_compact_payloads() {
+        let wrong_diagonal = solve::MassMatrix::Diagonal { values: vec![1.0] };
+        assert!(PreparedMassMatrix::new(&wrong_diagonal, 2).is_err());
+
+        let out_of_bounds = solve::MassMatrix::Sparse {
+            entries: vec![solve::MassMatrixEntry {
+                row: 2,
+                column: 0,
+                value: 1.0,
+            }],
+        };
+        assert!(PreparedMassMatrix::new(&out_of_bounds, 2).is_err());
+
+        let overflowing_duplicates = solve::MassMatrix::Sparse {
+            entries: vec![
+                solve::MassMatrixEntry {
+                    row: 0,
+                    column: 0,
+                    value: f64::MAX,
+                },
+                solve::MassMatrixEntry {
+                    row: 0,
+                    column: 0,
+                    value: f64::MAX,
+                },
+            ],
+        };
+        assert!(PreparedMassMatrix::new(&overflowing_duplicates, 1).is_err());
+    }
 }

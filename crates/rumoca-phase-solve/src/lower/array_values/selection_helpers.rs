@@ -145,6 +145,7 @@ pub(in crate::lower) fn build_scalarized_children_index(
 ) -> IndexMap<String, Vec<(ComponentReferenceKey, String)>> {
     let mut index: IndexMap<String, Vec<(ComponentReferenceKey, String)>> = IndexMap::new();
     for name in layout.bindings().keys() {
+        let name = name.as_str();
         let Some(dot) = name.rfind('.') else {
             continue;
         };
@@ -155,7 +156,7 @@ pub(in crate::lower) fn build_scalarized_children_index(
         index
             .entry(name[..dot].to_string())
             .or_default()
-            .push((generated_scope_key(name.clone()), name.clone()));
+            .push((generated_scope_key(name), name.to_string()));
     }
     index
 }

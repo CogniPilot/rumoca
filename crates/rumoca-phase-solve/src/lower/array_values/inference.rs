@@ -59,6 +59,11 @@ impl<'a> LowerBuilder<'a> {
                 })?
             }
             rumoca_core::Expression::FunctionCall {
+                name,
+                is_constructor,
+                ..
+            } if self.is_record_constructor_call(name, *is_constructor) => Vec::new(),
+            rumoca_core::Expression::FunctionCall {
                 name, args, span, ..
             } => self.infer_function_call_output_dims(name, args, scope, *span)?,
             rumoca_core::Expression::Array {
@@ -318,6 +323,14 @@ impl<'a> LowerBuilder<'a> {
         if let Some(values) = self.local_indexed_binding_values(name_text) {
             return Ok(vector_dims(values.len()));
         }
+        // Function-local scalar inputs shadow every model-level indexed
+        // binding with the same display name. Resolve that lexical binding
+        // before consulting source-reference metadata: local aliases produced
+        // by function inheritance may legitimately retain an incomplete
+        // component reference while the local frame remains authoritative.
+        if scope.contains_key(&generated_scope_key(name_text)) {
+            return Ok(Vec::new());
+        }
         if let Some(shape) = self.layout.shape(name_text) {
             return copy_shape_dims(shape, "layout binding shape rank", span);
         }
@@ -339,7 +352,6 @@ impl<'a> LowerBuilder<'a> {
         }
         if self.local_const_bindings.contains_key(name_text)
             || self.structural_bindings.contains_key(name_text)
-            || scope.contains_key(&generated_scope_key(name_text))
             || self.layout.binding(name_text).is_some()
         {
             return Ok(Vec::new());
@@ -394,7 +406,9 @@ impl<'a> LowerBuilder<'a> {
         scope: &Scope,
         span: rumoca_core::Span,
     ) -> Result<Vec<usize>, LowerError> {
-        if resolve_intrinsic_builtin(name.as_str()).is_some() {
+        if resolve_intrinsic_builtin(name.as_str()).is_some()
+            || is_synchronous_scalar_intrinsic(name.as_str())
+        {
             return Ok(Vec::new());
         }
         if let Some(projection) = self.lookup_function_output_projection(name, span)? {
@@ -1284,6 +1298,9 @@ fn var_ref_is_translation_constant(
     name: &rumoca_core::Reference,
 ) -> bool {
     let var_name = name.var_name();
+    if rumoca_core::is_runtime_managed_slot(var_name.as_str()) {
+        return false;
+    }
     if variables.constants.contains_key(var_name) {
         return true;
     }
@@ -1466,6 +1483,31 @@ mod tests {
 
         assert_eq!(err.source_span(), Some(span));
         assert_eq!(err.reason(), "array subscript must be positive");
+    }
+
+    #[test]
+    fn runtime_managed_parameter_is_not_a_translation_constant() {
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("runtime_delay_subscript.mo"),
+            3,
+            14,
+        );
+        let name = rumoca_core::delay_slot_name(0);
+        let mut variables = dae::DaeVariables::default();
+        variables.parameters.insert(
+            name.clone(),
+            dae::Variable {
+                name: name.clone(),
+                start: Some(literal_i64(0, span)),
+                is_tunable: false,
+                ..dae::Variable::empty_with_span(span)
+            },
+        );
+
+        assert!(!var_ref_is_translation_constant(
+            &variables,
+            &rumoca_core::Reference::new(name.as_str()),
+        ));
     }
 
     #[test]

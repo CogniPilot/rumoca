@@ -12,6 +12,7 @@
 //! The root keeps only module wiring and a curated set of re-exports so the sim
 //! facade (`lib.rs`) and the solver backends keep referring to the same paths.
 
+mod causal_reconstruction;
 mod diagnostics;
 mod direct;
 mod entry;
@@ -24,8 +25,8 @@ mod timing;
 
 // Re-exported through the sim facade so the root stays a curated same-crate
 // facade (see `architecture_hardening_test::test_sim_facade_cross_crate_exports_are_curated`).
-pub use rumoca_eval_solve::{EvalAtReport, EvalAtSlot, JacobianReport};
 pub use rumoca_phase_structural::{BlockReport, StructuralReport, TearingReport};
+pub use rumoca_solver::{EvalAtReport, EvalAtSlot, JacobianReport};
 
 pub use diagnostics::SimulationDiagnosticError;
 pub use entry::{

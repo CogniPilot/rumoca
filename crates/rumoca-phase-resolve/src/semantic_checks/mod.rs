@@ -134,16 +134,12 @@ impl CheckContext {
 }
 
 fn span_from_location(location: &Location) -> Option<Span> {
-    if location.file_name.is_empty() {
+    if location.source == SourceId::DUMMY {
         return None;
     }
     let start = location.start as usize;
     let end = (location.end as usize).max(start.saturating_add(1));
-    Some(Span::from_offsets(
-        source_id_for(&location.file_name),
-        start,
-        end,
-    ))
+    Some(Span::from_offsets(location.source, start, end))
 }
 
 fn label_from_location(
@@ -159,7 +155,7 @@ fn label_from_token(token: &Token, context: &str, message: impl Into<String>) ->
     let _ = context;
     let start = token.location.start as usize;
     let end = (token.location.end as usize).max(start.saturating_add(1));
-    let span = Span::from_offsets(source_id_for(&token.location.file_name), start, end);
+    let span = Span::from_offsets(token.location.source, start, end);
     PrimaryLabel::new(span).with_message(message)
 }
 
@@ -210,14 +206,14 @@ fn semantic_error(
 }
 
 /// Run all semantic checks on a StoredDefinition and collect diagnostics.
-pub fn check_semantics(def: &StoredDefinition, source_map: &SourceMap) -> Vec<Diagnostic> {
-    let _context = activate_semantic_context(def, source_map);
+pub fn check_semantics(def: &StoredDefinition, _source_map: &SourceMap) -> Vec<Diagnostic> {
+    let _context = activate_semantic_context(def);
     run_semantic_checks(def)
 }
 
 /// Run all semantic check batches with a single active source-map setup.
-pub fn check_all_semantics(def: &StoredDefinition, source_map: &SourceMap) -> Vec<Diagnostic> {
-    let _context = activate_semantic_context(def, source_map);
+pub fn check_all_semantics(def: &StoredDefinition, _source_map: &SourceMap) -> Vec<Diagnostic> {
+    let _context = activate_semantic_context(def);
     let mut diags = run_semantic_checks(def);
     diags.extend(run_chained_relational_checks(def));
     diags.extend(run_clock_expression_semantic_checks(def));
@@ -1791,15 +1787,15 @@ fn check_for_variable_assignment_eq(
 /// EXPR-014: Check for chained relational operators (e.g., 1 < 2 < 3).
 pub fn check_chained_relationals(
     def: &StoredDefinition,
-    source_map: &SourceMap,
+    _source_map: &SourceMap,
 ) -> Vec<Diagnostic> {
-    let _context = activate_semantic_context(def, source_map);
+    let _context = activate_semantic_context(def);
     run_chained_relational_checks(def)
 }
 
 /// EXPR-004: Check for der() in function algorithm sections.
-pub fn check_der_in_functions(def: &StoredDefinition, source_map: &SourceMap) -> Vec<Diagnostic> {
-    let _context = activate_semantic_context(def, source_map);
+pub fn check_der_in_functions(def: &StoredDefinition, _source_map: &SourceMap) -> Vec<Diagnostic> {
+    let _context = activate_semantic_context(def);
     run_der_in_function_checks(def)
 }
 

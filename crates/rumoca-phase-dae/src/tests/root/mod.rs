@@ -453,6 +453,125 @@ fn test_todae_rejects_non_external_function_without_body() {
 }
 
 #[test]
+fn test_todae_rejects_runtime_operators_without_correct_semantics() {
+    let cases = [
+        (
+            "actualStream",
+            rumoca_core::Expression::FunctionCall {
+                name: VarName::new("actualStream").into(),
+                args: vec![make_var_ref("x")],
+                is_constructor: false,
+                span: crate::test_support::test_span(),
+            },
+        ),
+        (
+            "inStream",
+            rumoca_core::Expression::FunctionCall {
+                name: VarName::new("inStream").into(),
+                args: vec![make_var_ref("x")],
+                is_constructor: false,
+                span: crate::test_support::test_span(),
+            },
+        ),
+    ];
+
+    for (expected_operator, residual) in cases {
+        let mut flat = Model::new();
+        add_primitive_real(&mut flat, "x");
+        flat.add_equation(rumoca_ir_flat::Equation {
+            residual,
+            span: crate::test_support::test_span(),
+            origin: rumoca_ir_flat::EquationOrigin::ComponentEquation {
+                component: "probe".to_string(),
+            },
+            scalar_count: 1,
+        });
+
+        let err = to_dae_with_options(
+            &flat,
+            ToDaeOptions {
+                error_on_unbalanced: false,
+            },
+        )
+        .expect_err("unsupported runtime operator must fail in ToDae validation");
+
+        assert!(
+            matches!(&err, ToDaeError::UnsupportedRuntimeOperator { operator, .. }
+                if operator == expected_operator),
+            "expected unsupported `{expected_operator}` diagnostic, got {err:?}"
+        );
+    }
+}
+
+#[test]
+fn test_todae_lowers_delay_to_runtime_history_channel() {
+    let span = crate::test_support::test_span();
+    let mut flat = Model::new();
+    add_primitive_real(&mut flat, "x");
+    flat.add_equation(rumoca_ir_flat::Equation {
+        residual: rumoca_core::Expression::BuiltinCall {
+            function: BuiltinFunction::Delay,
+            args: vec![
+                make_var_ref("x"),
+                rumoca_core::Expression::Literal {
+                    value: rumoca_core::Literal::Real(1.0),
+                    span,
+                },
+            ],
+            span,
+        },
+        span,
+        origin: rumoca_ir_flat::EquationOrigin::ComponentEquation {
+            component: "probe".to_string(),
+        },
+        scalar_count: 1,
+    });
+
+    let dae = to_dae_with_options(
+        &flat,
+        ToDaeOptions {
+            error_on_unbalanced: false,
+        },
+    )
+    .expect("delay should lower to explicit DAE runtime metadata");
+
+    assert_eq!(dae.events.delay_channels.len(), 1);
+    let channel = &dae.events.delay_channels[0];
+    assert_eq!(
+        channel.value_parameter.as_str(),
+        rumoca_core::delay_slot_name(0).as_str()
+    );
+    assert!(
+        dae.variables
+            .parameters
+            .contains_key(&channel.value_parameter)
+    );
+    assert_eq!(
+        dae.variables.parameters[&channel.value_parameter].fixed,
+        Some(false),
+        "the runtime delay slot is solved by its initial identity"
+    );
+    assert!(
+        dae.initialization.equations.iter().any(|equation| {
+            matches!(
+                (&equation.lhs, &equation.rhs),
+                (
+                    Some(lhs),
+                    rumoca_core::Expression::VarRef { name: rhs, .. },
+                ) if lhs.var_name() == &channel.value_parameter
+                    && rhs.var_name().as_str() == "x"
+            )
+        }),
+        "delay lowering must emit delay(source, ...) = source at initialization"
+    );
+    assert!(matches!(
+        dae.continuous.equations[0].rhs,
+        rumoca_core::Expression::VarRef { ref name, .. }
+            if name.var_name() == &channel.value_parameter
+    ));
+}
+
+#[test]
 fn test_todae_rejects_reinit_on_non_state_variable() {
     let mut flat = Model::new();
     add_primitive_real(&mut flat, "x");

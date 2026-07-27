@@ -1079,7 +1079,7 @@ fn lower_initial_residual_treats_initial_builtin_as_true() {
 }
 
 #[test]
-fn lower_initial_residual_uses_simplified_homotopy_expression() {
+fn lower_initial_residual_blends_homotopy_expression_from_lambda_slot() {
     let expr = rumoca_core::Expression::BuiltinCall {
         function: rumoca_core::BuiltinFunction::Homotopy,
         args: vec![
@@ -1105,11 +1105,35 @@ fn lower_initial_residual_uses_simplified_homotopy_expression() {
         test_span(),
         "homotopy initialization row",
     ));
-    let rows = lower_initial_residual(&dae_model, &VarLayout::default())
+    let layout = crate::build_var_layout(&dae_model).expect("homotopy layout should lower");
+    let rows = lower_initial_residual(&dae_model, &layout)
         .expect("initial homotopy residual should lower");
-    let (_, out) = eval_linear_ops(&rows[0], &[], &[], 0.0);
+    let mut p = vec![0.0; layout.p_scalars()];
+    set_p_value(
+        &layout,
+        &mut p,
+        crate::layout::HOMOTOPY_LAMBDA_PARAMETER_NAME,
+        0.0,
+    );
+    let (_, simplified) = eval_linear_ops(&rows[0], &[], &p, 0.0);
+    set_p_value(
+        &layout,
+        &mut p,
+        crate::layout::HOMOTOPY_LAMBDA_PARAMETER_NAME,
+        0.5,
+    );
+    let (_, midpoint) = eval_linear_ops(&rows[0], &[], &p, 0.0);
+    set_p_value(
+        &layout,
+        &mut p,
+        crate::layout::HOMOTOPY_LAMBDA_PARAMETER_NAME,
+        1.0,
+    );
+    let (_, actual) = eval_linear_ops(&rows[0], &[], &p, 0.0);
 
-    assert_eq!(out.expect("initial residual"), 2.0);
+    assert_eq!(simplified.expect("simplified residual"), 2.0);
+    assert_eq!(midpoint.expect("midpoint residual"), 6.0);
+    assert_eq!(actual.expect("actual residual"), 10.0);
 }
 
 #[test]
@@ -1140,6 +1164,51 @@ fn lower_initial_residual_includes_dae_initialization_equations() {
     let (regs, out) = eval_linear_ops(&rows[0], &[3.0], &[], 0.0);
     assert_eq!(out.expect("output"), 0.5);
     assert_eq!(read_reg(&regs, 0), 3.0);
+}
+
+#[test]
+fn initial_discrete_assignment_is_an_update_not_a_continuous_projection_row() {
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .algebraics
+        .insert(rumoca_core::VarName::new("u"), scalar_var("u"));
+    dae_model
+        .variables
+        .discrete_reals
+        .insert(rumoca_core::VarName::new("z"), scalar_var("z"));
+    dae_model
+        .initialization
+        .equations
+        .push(dae::Equation::residual(
+            rumoca_core::Expression::Binary {
+                op: rumoca_core::OpBinary::Sub,
+                lhs: Box::new(rumoca_core::Expression::VarRef {
+                    name: source_ref("z"),
+                    subscripts: Vec::new(),
+                    span: test_span(),
+                }),
+                rhs: Box::new(rumoca_core::Expression::VarRef {
+                    name: source_ref("u"),
+                    subscripts: Vec::new(),
+                    span: test_span(),
+                }),
+                span: test_span(),
+            },
+            test_span(),
+            "initial discrete assignment",
+        ));
+    let layout = crate::build_var_layout(&dae_model).expect("test DAE layout should build");
+
+    let residual = lower_initial_residual(&dae_model, &layout)
+        .expect("initial continuous projection rows should lower");
+    let updates = lower_initial_update_rhs(&dae_model, &layout)
+        .expect("initial discrete update rows should lower");
+
+    assert!(residual.is_empty());
+    assert_eq!(updates.len(), 1);
+    let (_, value) = eval_linear_ops(&updates[0], &[2.5], &[0.0], 0.0);
+    assert_eq!(value, Some(2.5));
 }
 
 #[test]
@@ -1300,6 +1369,29 @@ fn lower_initial_residual_includes_parameter_only_initial_equations() {
     assert_eq!(rows.len(), 1);
     let (_, out) = eval_linear_ops(&rows[0], &[], &p, 0.0);
     assert!((out.expect("p*p - 4 residual") - 5.0).abs() < 1e-12);
+
+    let problem =
+        crate::lower_solve_problem(&dae_model).expect("fixed=false parameter plan should lower");
+    let parameter_slot = problem
+        .layout
+        .binding("p")
+        .expect("fixed=false parameter should have a Solve slot");
+    assert!(
+        problem
+            .initialization
+            .projection_unknowns
+            .contains(&parameter_slot),
+        "fixed=false parameter must be an initialization unknown"
+    );
+    assert!(
+        problem
+            .initialization
+            .projection_plan
+            .blocks
+            .iter()
+            .any(|block| block.unknowns.contains(&parameter_slot)),
+        "parameter-only residual must receive a projection block"
+    );
 }
 
 #[test]

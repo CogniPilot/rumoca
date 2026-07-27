@@ -15,7 +15,8 @@
 //! - `errors` - Error types for name resolution
 //! - `registration` - Phase 1: DefId allocation and scope creation
 //! - `extends` - Phase 2a: Import and extends resolution
-//! - `contents` - Phase 2b: Equation, statement, expression resolution
+//! - `inherited_scopes` - Phase 2b: Effective inherited scope entries
+//! - `contents` - Phase 2c: Equation, statement, expression resolution
 //! - `cycles` - Phase 3: Inheritance cycle detection
 //! - `lookup` - Name lookup helpers
 //! - [`validation`] - Post-resolution validation (unresolved symbol detection)
@@ -24,6 +25,7 @@ mod contents;
 mod cycles;
 mod errors;
 mod extends;
+mod inherited_scopes;
 mod lookup;
 mod path_utils;
 mod registration;
@@ -91,7 +93,7 @@ fn location_to_span(loc: &Location, source_map: &SourceMap) -> Option<Span> {
     if !location_has_valid_span(loc) {
         return None;
     }
-    source_map.try_location_to_span(&loc.file_name, loc.start as usize, loc.end as usize)
+    source_map.try_span(loc.source, loc.start as usize, loc.end as usize)
 }
 
 fn location_span_or_emit(
@@ -102,19 +104,21 @@ fn location_span_or_emit(
 ) -> Option<Span> {
     let span = location_to_span(loc, source_map);
     if span.is_none() {
-        diagnostics.emit(missing_source_context_diagnostic(context, loc));
+        diagnostics.emit(missing_source_context_diagnostic(context, loc, source_map));
     }
     span
 }
 
-fn missing_source_context_diagnostic(context: &str, loc: &Location) -> Diagnostic {
+fn missing_source_context_diagnostic(
+    context: &str,
+    loc: &Location,
+    source_map: &SourceMap,
+) -> Diagnostic {
+    let source = source_display_name(loc.source, source_map);
     let reason = if !location_has_valid_span(loc) {
-        format!("{context} is missing a non-empty source location")
+        format!("{context} in `{source}` is missing a non-empty source location")
     } else {
-        format!(
-            "source file `{}` for {context} was not found",
-            loc.file_name
-        )
+        format!("source file `{source}` for {context} was not found")
     };
     Diagnostic::global_error(
         ER098_MISSING_SOURCE_CONTEXT,
@@ -122,9 +126,21 @@ fn missing_source_context_diagnostic(context: &str, loc: &Location) -> Diagnosti
     )
 }
 
+/// The file name to print for a `SourceId`.
+///
+/// The registered path is used whenever the source map knows it. An
+/// unregistered id — exactly the case that reaches the "was not found" branch —
+/// still names its file through the stable placeholder form, so SPEC_0008
+/// source provenance is never reduced to an anonymous placeholder.
+fn source_display_name(source: rumoca_core::SourceId, source_map: &SourceMap) -> String {
+    source_map
+        .name(source)
+        .map(str::to_string)
+        .unwrap_or_else(|| rumoca_core::placeholder_source_name(source))
+}
+
 fn location_has_valid_span(loc: &Location) -> bool {
-    !loc.file_name.is_empty()
-        && loc.end > loc.start
+    loc.has_source()
         && loc.start_line > 0
         && loc.start_column > 0
         && loc.end_line > 0
@@ -362,8 +378,6 @@ impl Resolver {
     /// Builtins get DefIds 1..N, allowing O(1) builtin checks while reserving
     /// `DefId(0)` for root/global scope per SPEC_0001.
     fn register_builtins(&mut self) {
-        let global = ScopeId::GLOBAL;
-
         // Chain all builtins, deduplicating (types appear in both BUILTIN_TYPES and BUILTIN_FUNCTIONS)
         let all_builtins = BUILTIN_TYPES
             .iter()
@@ -374,7 +388,7 @@ impl Resolver {
             if !self.name_to_def.contains_key(name) {
                 let def_id = self.alloc_def_id(None, name);
                 self.scope_tree
-                    .add_member(global, ComponentPath::from_flat_path(name), def_id);
+                    .add_predefined_member(ComponentPath::from_flat_path(name), def_id);
             }
         }
 
@@ -465,15 +479,18 @@ impl Resolver {
         self.resolve_extends_all(&mut tree.definitions, "");
         let extends_ms = maybe_elapsed_ms(extends_start);
 
+        let cycle_check_start = maybe_start_timer();
+        // Reject cycles before recursively constructing effective inherited
+        // member views, then make inherited names participate in ordinary
+        // scope lookup before contents are resolved.
+        self.check_inheritance_cycles(&tree.definitions);
+        self.populate_inherited_scope_members(&tree.definitions);
+        let cycle_check_ms = maybe_elapsed_ms(cycle_check_start);
+
         let contents_start = maybe_start_timer();
-        // Phase 2b: Resolve equations, statements, expressions
+        // Phase 2c: Resolve equations, statements, expressions
         self.resolve_contents_all(&mut tree.definitions, global_scope, "");
         let contents_ms = maybe_elapsed_ms(contents_start);
-
-        let cycle_check_start = maybe_start_timer();
-        // Phase 3: Check for circular inheritance (detects indirect cycles)
-        self.check_inheritance_cycles(&tree.definitions);
-        let cycle_check_ms = maybe_elapsed_ms(cycle_check_start);
 
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -735,6 +752,58 @@ fn unresolved_is_within_encapsulated_scope(resolver: &Resolver, scope_path: &[St
 fn has_inherited_match(resolver: &Resolver, scope_path: &[String], name: &str) -> bool {
     enclosing_scope_names(scope_path)
         .any(|container| resolver.lookup_inherited_member(&container, name).is_some())
+}
+
+#[cfg(test)]
+mod missing_source_context_tests {
+    use super::{Location, missing_source_context_diagnostic};
+    use rumoca_core::{SourceId, SourceMap};
+
+    fn location(source: SourceId, start: u32, end: u32, line: u32) -> Location {
+        Location {
+            start_line: line,
+            start_column: line,
+            end_line: line,
+            end_column: line,
+            start,
+            end,
+            source,
+        }
+    }
+
+    #[test]
+    fn missing_source_context_names_the_registered_file() {
+        let mut source_map = SourceMap::new();
+        let source = source_map.add("pkg/Widget.mo", "model Widget end Widget;");
+        // Line/column are zero, so the location is rejected before the span
+        // lookup, but the file itself is registered and must be named.
+        let loc = location(source, 0, 5, 0);
+        let diag = missing_source_context_diagnostic("component reference", &loc, &source_map);
+        assert!(
+            diag.message.contains("`pkg/Widget.mo`"),
+            "diagnostic must interpolate the real path, got: {}",
+            diag.message
+        );
+    }
+
+    #[test]
+    fn missing_source_context_keeps_provenance_for_unregistered_sources() {
+        let source_map = SourceMap::new();
+        let source = SourceId::from_source_name("pkg/Missing.mo");
+        let loc = location(source, 0, 5, 1);
+        let diag = missing_source_context_diagnostic("type reference", &loc, &source_map);
+        let placeholder = rumoca_core::placeholder_source_name(source);
+        assert!(
+            diag.message.contains(&placeholder),
+            "diagnostic must name the source identity, got: {}",
+            diag.message
+        );
+        assert_eq!(
+            rumoca_core::source_id_for_name(&placeholder),
+            source,
+            "the printed identity must resolve back to the originating file"
+        );
+    }
 }
 
 #[cfg(test)]

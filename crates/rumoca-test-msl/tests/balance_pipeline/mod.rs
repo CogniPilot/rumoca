@@ -2,6 +2,7 @@
 
 use super::*;
 
+mod balance_pipeline_balance_cohort;
 mod balance_pipeline_config;
 mod balance_pipeline_core;
 mod balance_pipeline_debug_introspection;
@@ -58,7 +59,15 @@ pub(super) const STAGE_WATCHDOG_LOG_INTERVAL_SECS: u64 = 15;
 pub(super) const MODEL_ATTEMPT_TIMEOUT_SECS: f64 = 45.0;
 
 pub(super) fn model_attempt_timeout_secs() -> f64 {
-    MODEL_ATTEMPT_TIMEOUT_SECS
+    // Raise-only: a config may extend the budget for a long-running diagnostic
+    // lane, but must never shorten it below the value the committed baseline
+    // was measured with.
+    parity_config()
+        .model_attempt_timeout_secs
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .map_or(MODEL_ATTEMPT_TIMEOUT_SECS, |value| {
+            value.max(MODEL_ATTEMPT_TIMEOUT_SECS)
+        })
 }
 
 pub(super) struct ModelCompileEntry {
@@ -229,6 +238,13 @@ struct MslSummary {
     /// Per-model results with eq/var counts for comparison with OMC reference data
     #[serde(default)]
     model_results: Vec<MslModelResult>,
+    /// Measured ED001 (unbalanced) cohort derived from `model_results`.
+    ///
+    /// This is the artifact that makes the balance question answerable: it
+    /// separates real balance failures from every other ToDae failure and
+    /// records the component breakdown for each one.
+    #[serde(default)]
+    compile_dae_balance_failures: balance_pipeline_balance_cohort::BalanceFailureCohort,
     /// Timing breakdown for major phases.
     #[serde(default)]
     timings: MslPhaseTimings,
@@ -242,9 +258,18 @@ struct MslSummary {
     /// Number of models where the solver failed.
     #[serde(default)]
     sim_solver_fail: usize,
-    /// Number of models skipped due to wall-clock timeout.
+    /// Number of models reported as out of wall-clock time.
+    ///
+    /// Read this together with [`MslSummary::timeout_recheck`]: models the
+    /// phase monitor killed while a compiler phase was still working towards a
+    /// diagnostic are re-run once under a larger budget, and the ones that
+    /// reach that diagnostic are counted under their real failure instead of
+    /// here.
     #[serde(default)]
     sim_timeout: usize,
+    /// Tally of the larger-budget re-runs of phase-monitor kills.
+    #[serde(default)]
+    timeout_recheck: MslTimeoutRecheckStats,
     /// Number of models with balance/dimension issues preventing simulation.
     #[serde(default)]
     sim_balance_fail: usize,
@@ -275,6 +300,21 @@ struct MslSummary {
     /// Standalone root MSL example models selected as simulation targets.
     #[serde(default)]
     sim_target_models: Vec<String>,
+    /// Models whose Solve lowering emitted a tensor-preservation report.
+    #[serde(default)]
+    tensor_models_reported: usize,
+    /// Canonical structured-family bodies observed across reported models.
+    #[serde(default)]
+    tensor_family_bodies: usize,
+    /// Canonical family bodies retained as Map/AffineStencil nodes.
+    #[serde(default)]
+    tensor_preserved_family_bodies: usize,
+    /// Derived scalar rows belonging to family bodies that fell back.
+    #[serde(default)]
+    tensor_scalarized_family_rows: usize,
+    /// Tensor-report failures, which must remain zero for a trustworthy KPI.
+    #[serde(default)]
+    tensor_report_errors: usize,
 }
 
 fn current_git_commit() -> String {
@@ -328,6 +368,7 @@ struct ResultCounters {
     sim_timeout: usize,
     sim_balance_fail: usize,
     sim_attempted: usize,
+    timeout_recheck: MslTimeoutRecheckStats,
     ic_attempted: usize,
     ic_ok: usize,
     ic_solver_fail: usize,
@@ -335,6 +376,11 @@ struct ResultCounters {
     total_sim_build_seconds: f64,
     total_sim_run_seconds: f64,
     total_sim_wall_seconds: f64,
+    tensor_models_reported: usize,
+    tensor_family_bodies: usize,
+    tensor_preserved_family_bodies: usize,
+    tensor_scalarized_family_rows: usize,
+    tensor_report_errors: usize,
 }
 
 /// Immutable inputs required to build the final MSL summary.
@@ -377,7 +423,19 @@ fn process_success_result(result: &MslModelResult, counters: &mut ResultCounters
 }
 
 fn process_result_error_taxonomy(result: &MslModelResult, counters: &mut ResultCounters) {
-    if let Some(code) = result.error_code.as_deref() {
+    // Compile, solve and sim stages all contribute their stable SPEC_0008 code:
+    // a model that compiles but fails to lower or to integrate is still a coded
+    // defect, and `error_code_counts` is the summary map that reaches
+    // `msl_results.json` and the printed report. Keep this in step with
+    // `build_mls_contract_coverage`'s per-package map.
+    for code in [
+        result.error_code.as_deref(),
+        result.ir_solve_error_code.as_deref(),
+        result.sim_error_code.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
         *counters
             .error_code_counts
             .entry(code.to_string())
@@ -595,12 +653,14 @@ fn empty_summary(total_mo_files: usize, parse_errors: usize) -> MslSummary {
         unsupported_feature_counts_by_backend: HashMap::new(),
         undefined_vars: HashMap::new(),
         balance_distribution: HashMap::new(),
+        compile_dae_balance_failures: Default::default(),
         model_results: Vec::new(),
         timings: MslPhaseTimings::default(),
         sim_ok: 0,
         sim_nan: 0,
         sim_solver_fail: 0,
         sim_timeout: 0,
+        timeout_recheck: MslTimeoutRecheckStats::default(),
         sim_balance_fail: 0,
         sim_attempted: 0,
         ic_attempted: 0,
@@ -611,10 +671,15 @@ fn empty_summary(total_mo_files: usize, parse_errors: usize) -> MslSummary {
         total_sim_run_seconds: 0.0,
         total_sim_wall_seconds: 0.0,
         sim_target_models: Vec::new(),
+        tensor_models_reported: 0,
+        tensor_family_bodies: 0,
+        tensor_preserved_family_bodies: 0,
+        tensor_scalarized_family_rows: 0,
+        tensor_report_errors: 0,
     }
 }
 
-fn phase_error_result(
+pub(crate) fn phase_error_result(
     name: String,
     phase_reached: &str,
     error: Option<String>,
@@ -652,6 +717,7 @@ fn phase_error_result(
         ir_flat_file: None,
         sim_status: None,
         sim_error: None,
+        sim_error_code: None,
         sim_error_span: None,
         ic_status: None,
         ic_error: None,
@@ -662,6 +728,11 @@ fn phase_error_result(
         ir_solve_seconds: None,
         ir_solve_structural_dae_seconds: None,
         ir_solve_lower_seconds: None,
+        tensor_family_bodies: None,
+        tensor_preserved_family_bodies: None,
+        tensor_scalarized_family_rows: None,
+        tensor_preservation_percent: None,
+        tensor_preservation_error: None,
         sim_backend_build_seconds: None,
         sim_run_seconds: None,
         sim_wall_seconds: None,
@@ -671,8 +742,11 @@ fn phase_error_result(
         ir_dae_file: None,
         ir_solve_file: None,
         ir_solve_error: None,
+        ir_solve_error_code: None,
         timeout_phase: None,
         timeout_seconds: None,
+        timeout_recheck: None,
+        balance_detail: None,
     }
 }
 
@@ -796,6 +870,7 @@ fn summarize_dae_success_fields(
         ir_flat_file: None,
         sim_status: None,
         sim_error: None,
+        sim_error_code: None,
         sim_error_span: None,
         ic_status: None,
         ic_error: None,
@@ -806,6 +881,11 @@ fn summarize_dae_success_fields(
         ir_solve_seconds: None,
         ir_solve_structural_dae_seconds: None,
         ir_solve_lower_seconds: None,
+        tensor_family_bodies: None,
+        tensor_preserved_family_bodies: None,
+        tensor_scalarized_family_rows: None,
+        tensor_preservation_percent: None,
+        tensor_preservation_error: None,
         sim_backend_build_seconds: None,
         sim_run_seconds: None,
         sim_wall_seconds: None,
@@ -815,8 +895,11 @@ fn summarize_dae_success_fields(
         ir_dae_file: None,
         ir_solve_file: None,
         ir_solve_error: None,
+        ir_solve_error_code: None,
         timeout_phase: None,
         timeout_seconds: None,
+        timeout_recheck: None,
+        balance_detail: None,
     }
 }
 

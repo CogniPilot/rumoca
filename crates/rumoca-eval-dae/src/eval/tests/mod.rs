@@ -14,10 +14,12 @@ type Subscript = rumoca_core::Subscript;
 type VarName = rumoca_core::VarName;
 mod clock_and_tables;
 mod complex_array_selection;
+mod complex_field_arithmetic;
 mod env_refresh;
 mod pre_seed_regressions;
 mod runtime_specials_more;
 mod shift_sample_value_form;
+mod size_shape_only;
 mod strict_eval_contract;
 mod string_specials;
 mod table_ad_edges;
@@ -1830,47 +1832,4 @@ fn test_build_env_seeds_fill_start_sized_by_string_array_literal() {
         eval_shaped_array_values::<f64>(&var("X"), &env, 4),
         Ok(vec![0.25; 4])
     );
-}
-
-#[test]
-fn test_build_env_discrete_start_forward_ref_re_evaluates_and_preserves_pre_seed() {
-    clear_pre_values();
-
-    let mut dae = rumoca_ir_dae::Dae::default();
-
-    // Insert dependent start first to exercise forward-reference handling.
-    let mut a = rumoca_ir_dae::Variable::new(
-        rumoca_core::VarName::new("a"),
-        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
-    );
-    a.start = Some(dae_var("b"));
-    dae.variables
-        .discrete_valued
-        .insert(rumoca_core::VarName::new("a"), a);
-
-    let mut b = rumoca_ir_dae::Variable::new(
-        rumoca_core::VarName::new("b"),
-        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
-    );
-    b.start = Some(dae_bool_lit(true));
-    dae.variables
-        .discrete_valued
-        .insert(rumoca_core::VarName::new("b"), b);
-
-    let env = build_env(&dae, &[], &[], 0.0).expect("test env should build");
-    assert_eq!(env_value(&env, "b"), 1.0);
-    assert_eq!(env_value(&env, "a"), 1.0);
-
-    // Pre-seeded values must take precedence over start expressions.
-    let mut pre_env = VarEnv::<f64>::new();
-    pre_env.set("a", 0.0);
-    pre_env.set("b", 0.0);
-    seed_pre_values_from_env(&pre_env);
-
-    let env_from_pre = build_env_with_runtime(&dae, &[], &[], 1.0, pre_env.runtime.clone())
-        .expect("test env should build");
-    assert_eq!(env_value(&env_from_pre, "a"), 0.0);
-    assert_eq!(env_value(&env_from_pre, "b"), 0.0);
-
-    clear_pre_values();
 }

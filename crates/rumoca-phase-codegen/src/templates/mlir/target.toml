@@ -1,7 +1,7 @@
 version = 1
 ir = "solve"
 name = "mlir"
-description = "MLIR textual solve-IR residual export with scalar tensor fallback"
+description = "MLIR textual solve-IR residual export with native affine tensor loops"
 execution_mode = "compiled"
 deployment_class = "cpu"
 readiness_level = 1
@@ -16,8 +16,11 @@ dynamic_control_flow = false
 host_callbacks = false
 
 [capabilities.tensor]
-matmul = "scalar"
-linsolve = "scalar"
+matmul = "native"
+linsolve = "native"
+elementwise = "native"
+stencil = "native"
+reductions = "scalar"
 layout = "row-major"
 supports_dynamic_shapes = false
 sparse = false

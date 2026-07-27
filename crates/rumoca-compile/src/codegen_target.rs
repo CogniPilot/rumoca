@@ -499,6 +499,13 @@ pub fn validate_dae_target_capabilities(
     if capabilities.events == Some(false) && dae_has_events(dae) {
         unsupported_feature(manifest, "events", "event or condition partitions present")?;
     }
+    if capabilities.runtime_events == Some(false) && dae_has_runtime_events(dae) {
+        unsupported_feature(
+            manifest,
+            "runtime_events",
+            "delay-history or terminal-event runtime support is required",
+        )?;
+    }
     if capabilities.clocks == Some(false) && dae_has_clocks(dae) {
         unsupported_feature(manifest, "clocks", "clock partition entries present")?;
     }
@@ -796,6 +803,10 @@ fn dae_has_events(dae: &dae::Dae) -> bool {
         || !dae.events.scheduled_time_events.is_empty()
         || !dae.discrete.real_updates.is_empty()
         || !dae.discrete.valued_updates.is_empty()
+}
+
+fn dae_has_runtime_events(dae: &dae::Dae) -> bool {
+    dae.events.has_terminal_event || !dae.events.delay_channels.is_empty()
 }
 
 fn dae_has_clocks(dae: &dae::Dae) -> bool {
@@ -1488,6 +1499,27 @@ events = false
             .expect_err("events should be rejected");
 
         assert!(err.to_string().contains("events"));
+    }
+
+    #[test]
+    fn target_capabilities_reject_runtime_events_generically() {
+        let manifest = manifest_with_capabilities(
+            r#"
+[capabilities]
+runtime_events = false
+"#,
+        );
+        let capabilities = manifest.capabilities.as_ref().expect("capabilities");
+        let mut dae = Dae::new();
+        dae.events.has_terminal_event = true;
+
+        let err = validate_dae_target_capabilities(&dae, &manifest, capabilities)
+            .expect_err("terminal runtime event should be rejected");
+
+        assert!(
+            err.to_string()
+                .contains("unsupported-feature:runtime_events")
+        );
     }
 
     #[test]

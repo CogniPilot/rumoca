@@ -236,6 +236,47 @@ pub(super) fn qualify_shape_subscripts_imports(
         .collect()
 }
 
+/// True when [`qualify_shape_expr_imports`] would rewrite something in `expr`.
+///
+/// Rewriting builds a fresh expression tree, so callers that only qualify as a
+/// retry ask this first and skip the retry entirely when no name in the
+/// expression is an import alias.
+pub(super) fn expr_mentions_import_alias(
+    expr: &ast::Expression,
+    imports: &[(String, String)],
+) -> bool {
+    let names_alias = |cref: &ast::ComponentReference| {
+        cref.parts.first().is_some_and(|first| {
+            let alias = first.ident.text.as_ref();
+            imports.iter().any(|(candidate, _)| candidate == alias)
+        })
+    };
+    let recurse = |expr| expr_mentions_import_alias(expr, imports);
+    match expr {
+        ast::Expression::ComponentReference(cref) => names_alias(cref),
+        ast::Expression::Range {
+            start, step, end, ..
+        } => recurse(start) || step.as_ref().is_some_and(|expr| recurse(expr)) || recurse(end),
+        ast::Expression::Unary { rhs, .. } => recurse(rhs),
+        ast::Expression::Binary { lhs, rhs, .. } => recurse(lhs) || recurse(rhs),
+        ast::Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => {
+            branches
+                .iter()
+                .any(|(cond, body)| recurse(cond) || recurse(body))
+                || recurse(else_branch)
+        }
+        ast::Expression::Parenthesized { inner, .. } => recurse(inner),
+        ast::Expression::FunctionCall { comp, args, .. } => {
+            names_alias(comp) || args.iter().any(recurse)
+        }
+        _ => false,
+    }
+}
+
 pub(super) fn qualify_shape_expr_imports(
     expr: &ast::Expression,
     imports: &[(String, String)],
@@ -289,12 +330,18 @@ pub(super) fn qualify_shape_expr_imports(
             inner: Arc::new(qualify_shape_expr_imports(inner, imports)),
             span: *span,
         },
-        ast::Expression::FunctionCall { comp, args, span } => ast::Expression::FunctionCall {
+        ast::Expression::FunctionCall {
+            comp,
+            args,
+            is_partial_application,
+            span,
+        } => ast::Expression::FunctionCall {
             comp: qualify_component_ref_imports(comp, imports),
             args: args
                 .iter()
                 .map(|arg| qualify_shape_expr_imports(arg, imports))
                 .collect(),
+            is_partial_application: *is_partial_application,
             span: *span,
         },
         _ => expr.clone(),

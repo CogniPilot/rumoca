@@ -10,34 +10,46 @@ pub use report_payload::{
     SimulationRequestSummary, SimulationRunMetrics, build_simulation_metrics_value,
     build_simulation_payload,
 };
+pub use runtime::eval_at::{EvalAtReport, EvalAtSlot};
 pub use runtime::event::{
     RuntimeEventBoundary, RuntimeEventBoundaryHandler, RuntimeEventBoundaryOutcome,
     process_runtime_event_boundary, runtime_event_horizon, runtime_event_right_limit,
     runtime_root_event_application_time,
 };
+pub use runtime::event_newton::{CoupledEventNewtonModel, solve_coupled_event_newton};
+pub use runtime::jacobian::{
+    JacobianReport, ObjectiveGradientReport, ParameterJacobianReport, SteadyStateSensitivityReport,
+};
 pub use runtime::mass_matrix::{PreparedMassMatrix, solve_mass_matrix};
 pub use runtime::no_state::{
-    NoStateEventStep, NoStateOrchestrationBackend, NoStateScheduledStop,
-    run_no_state_output_schedule,
+    NoStateEventStep, NoStateOrchestrationBackend, NoStateRootSearchScratch, NoStateScheduledStop,
+    first_no_state_root_crossing, run_no_state_output_schedule,
 };
 pub use runtime::orchestration::{LoopStats, run_with_runtime_schedule};
 pub use runtime::pre_params::{
-    clear_scheduled_root_relation_memory, commit_pre_params_after_event, update_slot,
-    write_pre_params_from_sources,
+    clear_scheduled_root_relation_memory, commit_pre_params_after_event,
+    commit_pre_params_after_event_at, update_slot, write_pre_params_from_sources,
 };
 pub use runtime::projection::{
     AlgebraicProjectionArgs, AlgebraicProjectionModel, ImplicitProjectionModel,
     implicit_residual_is_zero, implicit_residual_is_zero_through_interval,
     project_algebraic_seed_with_plan, project_algebraics, project_algebraics_and_detect_changes,
-    project_algebraics_with_plan, project_initial_variables_with_plan,
+    project_algebraics_with_plan, project_initial_variables_with_homotopy,
+    project_initial_variables_with_plan,
 };
 pub use runtime::report::{
-    RuntimeProgressSnapshot, RuntimeTraceContext, runtime_progress_snapshot, trace_runtime_done,
-    trace_runtime_progress, trace_runtime_start, trace_runtime_step_fail, trace_runtime_timeout,
+    DRIVER_TRACE_TARGET, RuntimeProgressSnapshot, RuntimeTraceContext, runtime_progress_snapshot,
+    trace_runtime_done, trace_runtime_progress, trace_runtime_start, trace_runtime_step_fail,
+    trace_runtime_timeout,
 };
 pub use runtime::schedule::{
-    RuntimeEventStop, RuntimeStopSchedule, SolveStopSchedule, initial_runtime_event_stop,
-    initial_static_event_pre_mode, merge_runtime_event_stops,
+    CoincidentScheduledEvent, RuntimeEventStop, RuntimeStopSchedule, SolveStopSchedule,
+    coincident_scheduled_event, initial_runtime_event_stop, initial_static_event_pre_mode,
+    merge_runtime_event_stops,
+};
+pub use runtime::solve_events::{
+    apply_discrete_slot_values, current_dynamic_time_event_stop, eval_event_actions_with_context,
+    next_runtime_event_stop, visible_values_with_context,
 };
 pub use runtime::solve_ops::{
     EventActionOutcome, EventPreMode, EventPreSources, RootCrossing, RuntimeSolveError,
@@ -46,11 +58,12 @@ pub use runtime::solve_ops::{
     filter_scheduled_root_crossings, first_root_crossing, push_visible_values,
     relation_memory_value_from_root, replace_last_visible_values, root_crossed, root_crossings,
     root_crossings_with_relation_memory, root_value_crossed, row_reads_solver_or_time,
-    update_relation_memory_slots,
+    runtime_value_changed, runtime_values_changed, update_relation_memory_slots,
 };
-pub use runtime::tensor_policy::{
-    LinearSolveKernel, MatMulKernel, TensorPolicyError, matrix_is_diagonal, matrix_nonzeros,
-    select_linear_solve_kernel, select_matmul_kernel,
+pub use runtime::solve_runtime::{
+    AlgebraicLinearization, AlgebraicSettle, EventUpdateRowFilter, InitialEventObservation,
+    ProjectedEventUpdateInput, ProjectedInitialEventInput, ProjectedInitialEventOutcome,
+    SolveRuntime, apply_discrete_slot_value,
 };
 pub use runtime::time::{
     event_solver_step_cap, stop_time_reached_with_tol, time_advanced_with_tol, time_match_with_tol,

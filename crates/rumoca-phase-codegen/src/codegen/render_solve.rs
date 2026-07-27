@@ -21,6 +21,7 @@ use super::render_solve_ops::{
 use super::{RenderResult, render_vec_with_capacity, reserve_render_capacity, value_to_string};
 
 mod dense_solve_render;
+mod mlir_family;
 #[cfg(test)]
 #[path = "render_solve_tests.rs"]
 mod render_solve_tests;
@@ -39,8 +40,9 @@ pub(super) use dense_solve_render::{
 };
 #[cfg(test)]
 pub(super) use dense_solve_render::{MatMulRenderShape, solve_output_targets};
+pub(super) use mlir_family::render_solve_native_family_mlir_function;
 pub(super) use template_partition::{
-    RenderNativeAffineFamily, SolveNativeFamiliesValue, SolveRowsValue,
+    RenderNativeAffineFamily, SolveNativeDenseNodesValue, SolveNativeFamiliesValue, SolveRowsValue,
     SolveScalarFallbackRowsValue, native_family_template_partition,
     render_solve_native_family_output_index_wgsl_function,
     render_solve_native_family_output_map_start_function, render_solve_native_family_wgsl_function,
@@ -324,15 +326,18 @@ fn render_native_family_expr_wgsl(
     family: &RenderNativeAffineFamily,
     config: &Value,
 ) -> RenderResult {
+    validate_native_family_metadata(family)?;
     let cfg = SolveRowCConfig::from_value(config);
     let mut overrides = std::collections::HashMap::new();
-    for stride in &family.load_strides {
-        if stride.terms.is_empty() {
+    for (op_position, op) in family.base_ops.iter().enumerate() {
+        let terms = family_load_terms(family, op_position)?;
+        if terms.is_empty() {
             continue;
         }
-        let (pattern_is_y, base_index) = match &family.base_ops[stride.op_position] {
-            solve::LinearOp::LoadY { index, .. } => (true, *index),
-            solve::LinearOp::LoadP { index, .. } => (false, *index),
+        let (source, base_index) = match op {
+            solve::LinearOp::LoadY { index, .. } => (NativeFamilyLoadSource::Y, *index),
+            solve::LinearOp::LoadP { index, .. } => (NativeFamilyLoadSource::P, *index),
+            solve::LinearOp::LoadSeed { index, .. } => (NativeFamilyLoadSource::Seed, *index),
             other => {
                 return Err(render_err(format!(
                     "native family stride targets a non-load op: {}",
@@ -340,19 +345,22 @@ fn render_native_family_expr_wgsl(
                 )));
             }
         };
-        let index_expr = affine_load_index_expr(base_index, &stride.terms, &family.domain)?;
-        let access = if pattern_is_y {
-            cfg.y_access_expr(&index_expr)
-        } else {
-            cfg.p_access_expr(&index_expr)
+        let index_expr = affine_load_index_expr(base_index, &terms, &family.domain)?;
+        let access = match source {
+            NativeFamilyLoadSource::Y => cfg.y_access_expr(&index_expr),
+            NativeFamilyLoadSource::P => cfg.p_access_expr(&index_expr),
+            NativeFamilyLoadSource::Seed => cfg.seed_access_expr(&index_expr).ok_or_else(|| {
+                render_err("native family LoadSeed requires a `seed` access pattern")
+            })?,
         };
-        overrides.insert(stride.op_position, access);
+        overrides.insert(op_position, access);
     }
-    for stride in &family.const_strides {
-        if stride.terms.is_empty() {
+    for (op_position, op) in family.base_ops.iter().enumerate() {
+        let terms = family_const_terms(family, op_position)?;
+        if terms.is_empty() {
             continue;
         }
-        let base_value = match &family.base_ops[stride.op_position] {
+        let base_value = match op {
             solve::LinearOp::Const { value, .. } => *value,
             other => {
                 return Err(render_err(format!(
@@ -361,10 +369,105 @@ fn render_native_family_expr_wgsl(
                 )));
             }
         };
-        let value_expr = affine_const_expr(base_value, &stride.terms, &family.domain)?;
-        overrides.insert(stride.op_position, value_expr);
+        let value_expr = affine_const_expr(base_value, &terms, &family.domain)?;
+        overrides.insert(op_position, value_expr);
     }
     render_solve_row_typed_with_overrides(&family.base_ops, &overrides, &cfg, SolveRowDialect::Wgsl)
+}
+
+enum NativeFamilyLoadSource {
+    Y,
+    P,
+    Seed,
+}
+
+fn validate_native_family_metadata(
+    family: &RenderNativeAffineFamily,
+) -> Result<(), minijinja::Error> {
+    let rank = family.domain.binders.len();
+    let scalar_count = family
+        .domain
+        .scalar_count()
+        .map_err(|error| render_err(format!("invalid native-family domain: {error}")))?;
+    if family.count != scalar_count {
+        return Err(render_err(format!(
+            "native-family row count {} does not match domain cardinality {scalar_count}",
+            family.count
+        )));
+    }
+    family
+        .output_map
+        .output_count(&family.domain)
+        .map_err(|error| render_err(format!("invalid native-family output map: {error:?}")))?;
+    for stride in &family.load_strides {
+        match family.base_ops.get(stride.op_position) {
+            Some(
+                solve::LinearOp::LoadY { .. }
+                | solve::LinearOp::LoadP { .. }
+                | solve::LinearOp::LoadSeed { .. },
+            ) => {}
+            Some(op) => {
+                return Err(render_err(format!(
+                    "native family stride targets a non-load op: {}",
+                    op.kind_name()
+                )));
+            }
+            None => {
+                return Err(render_err(format!(
+                    "native family load stride targets missing op {} of {}",
+                    stride.op_position,
+                    family.base_ops.len()
+                )));
+            }
+        }
+        validate_native_family_dimensions(
+            stride.terms.iter().map(|term| term.dimension),
+            rank,
+            "load",
+        )?;
+    }
+    for stride in &family.const_strides {
+        match family.base_ops.get(stride.op_position) {
+            Some(solve::LinearOp::Const { .. }) => {}
+            Some(op) => {
+                return Err(render_err(format!(
+                    "native family const stride targets a non-const op: {}",
+                    op.kind_name()
+                )));
+            }
+            None => {
+                return Err(render_err(format!(
+                    "native family constant stride targets missing op {} of {}",
+                    stride.op_position,
+                    family.base_ops.len()
+                )));
+            }
+        }
+        validate_native_family_dimensions(
+            stride.terms.iter().map(|term| term.dimension),
+            rank,
+            "constant",
+        )?;
+        if stride.terms.iter().any(|term| !term.stride.is_finite()) {
+            return Err(render_err("native family constant stride must be finite"));
+        }
+    }
+    Ok(())
+}
+
+fn validate_native_family_dimensions(
+    dimensions: impl Iterator<Item = usize>,
+    rank: usize,
+    kind: &str,
+) -> Result<(), minijinja::Error> {
+    for dimension in dimensions {
+        if dimension >= rank {
+            return Err(render_err(format!(
+                "native family {kind} stride dimension {dimension} exceeds domain rank {rank}"
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn affine_load_index_expr(
@@ -372,8 +475,10 @@ fn affine_load_index_expr(
     terms: &[solve::AffineStencilIndexStrideTerm],
     domain: &rumoca_core::StructuredIndexDomain,
 ) -> Result<String, minijinja::Error> {
+    let terms = combined_affine_index_terms(terms, domain)?;
+    validate_wgsl_affine_index_range(base_index, &terms, domain, "load")?;
     let mut expr = format!("i32({base_index}u)");
-    for term in terms {
+    for term in &terms {
         let contribution = domain_coordinate_contribution(term.dimension, term.stride, domain)?;
         expr = format!("{expr} + {contribution}");
     }
@@ -384,8 +489,10 @@ fn affine_output_index_expr(
     output_map: &solve::TensorOutputMap,
     domain: &rumoca_core::StructuredIndexDomain,
 ) -> Result<String, minijinja::Error> {
+    let terms = combined_affine_index_terms(&output_map.strides, domain)?;
+    validate_wgsl_affine_index_range(output_map.start, &terms, domain, "output")?;
     let mut expr = format!("i32({}u)", output_map.start);
-    for term in &output_map.strides {
+    for term in &terms {
         let contribution = domain_coordinate_contribution(term.dimension, term.stride, domain)?;
         expr = format!("{expr} + {contribution}");
     }
@@ -397,12 +504,177 @@ fn affine_const_expr(
     terms: &[solve::AffineStencilConstStrideTerm],
     domain: &rumoca_core::StructuredIndexDomain,
 ) -> Result<String, minijinja::Error> {
+    let terms = combined_affine_const_terms(terms, domain)?;
     let mut expr = format!("{base_value:?}");
-    for term in terms {
+    for term in &terms {
         let contribution = domain_coordinate_contribution_f32(term.dimension, term.stride, domain)?;
         expr = format!("{expr} + {contribution}");
     }
     Ok(expr)
+}
+
+fn family_load_terms(
+    family: &RenderNativeAffineFamily,
+    op_position: usize,
+) -> Result<Vec<solve::AffineStencilIndexStrideTerm>, minijinja::Error> {
+    let count = family
+        .load_strides
+        .iter()
+        .filter(|stride| stride.op_position == op_position)
+        .try_fold(0usize, |count, stride| {
+            count.checked_add(stride.terms.len())
+        })
+        .ok_or_else(|| render_err("native family load stride count overflows"))?;
+    let mut terms = render_vec_with_capacity(count, "native family load stride count")?;
+    for stride in family
+        .load_strides
+        .iter()
+        .filter(|stride| stride.op_position == op_position)
+    {
+        terms.extend(stride.terms.iter().cloned());
+    }
+    Ok(terms)
+}
+
+fn family_const_terms(
+    family: &RenderNativeAffineFamily,
+    op_position: usize,
+) -> Result<Vec<solve::AffineStencilConstStrideTerm>, minijinja::Error> {
+    let count = family
+        .const_strides
+        .iter()
+        .filter(|stride| stride.op_position == op_position)
+        .try_fold(0usize, |count, stride| {
+            count.checked_add(stride.terms.len())
+        })
+        .ok_or_else(|| render_err("native family constant stride count overflows"))?;
+    let mut terms = render_vec_with_capacity(count, "native family constant stride count")?;
+    for stride in family
+        .const_strides
+        .iter()
+        .filter(|stride| stride.op_position == op_position)
+    {
+        terms.extend(stride.terms.iter().cloned());
+    }
+    Ok(terms)
+}
+
+fn combined_affine_index_terms(
+    terms: &[solve::AffineStencilIndexStrideTerm],
+    domain: &rumoca_core::StructuredIndexDomain,
+) -> Result<Vec<solve::AffineStencilIndexStrideTerm>, minijinja::Error> {
+    let extents = domain
+        .extents()
+        .map_err(|error| render_err(format!("invalid native-family domain: {error}")))?;
+    let mut strides = render_vec_with_capacity(
+        domain.binders.len(),
+        "native family affine dimension stride count",
+    )?;
+    strides.resize(domain.binders.len(), 0i128);
+    for term in terms {
+        let Some(stride) = strides.get_mut(term.dimension) else {
+            return Err(render_err(format!(
+                "affine stride dimension {} out of bounds",
+                term.dimension
+            )));
+        };
+        *stride = stride
+            .checked_add(term.stride as i128)
+            .ok_or_else(|| render_err("affine stride accumulation overflows"))?;
+    }
+    let mut combined =
+        render_vec_with_capacity(strides.len(), "native family combined affine strides")?;
+    for (dimension, (stride, extent)) in strides.into_iter().zip(extents).enumerate() {
+        if stride == 0 || extent <= 1 {
+            continue;
+        }
+        let stride = isize::try_from(stride)
+            .map_err(|_| render_err("combined affine stride exceeds Solve-IR index range"))?;
+        combined.push(solve::AffineStencilIndexStrideTerm { dimension, stride });
+    }
+    Ok(combined)
+}
+
+fn combined_affine_const_terms(
+    terms: &[solve::AffineStencilConstStrideTerm],
+    domain: &rumoca_core::StructuredIndexDomain,
+) -> Result<Vec<solve::AffineStencilConstStrideTerm>, minijinja::Error> {
+    let extents = domain
+        .extents()
+        .map_err(|error| render_err(format!("invalid native-family domain: {error}")))?;
+    let mut strides = render_vec_with_capacity(
+        domain.binders.len(),
+        "native family constant dimension stride count",
+    )?;
+    strides.resize(domain.binders.len(), 0.0f64);
+    for term in terms {
+        if !term.stride.is_finite() {
+            return Err(render_err("native family constant stride must be finite"));
+        }
+        let Some(stride) = strides.get_mut(term.dimension) else {
+            return Err(render_err(format!(
+                "affine constant stride dimension {} out of bounds",
+                term.dimension
+            )));
+        };
+        *stride += term.stride;
+        if !stride.is_finite() {
+            return Err(render_err(
+                "native family constant stride accumulation is non-finite",
+            ));
+        }
+    }
+    let mut combined =
+        render_vec_with_capacity(strides.len(), "native family combined constant strides")?;
+    for (dimension, (stride, extent)) in strides.into_iter().zip(extents).enumerate() {
+        if stride == 0.0 || extent <= 1 {
+            continue;
+        }
+        combined.push(solve::AffineStencilConstStrideTerm { dimension, stride });
+    }
+    Ok(combined)
+}
+
+fn validate_wgsl_affine_index_range(
+    base: usize,
+    terms: &[solve::AffineStencilIndexStrideTerm],
+    domain: &rumoca_core::StructuredIndexDomain,
+    context: &str,
+) -> Result<(), minijinja::Error> {
+    let extents = domain
+        .extents()
+        .map_err(|error| render_err(format!("invalid native-family domain: {error}")))?;
+    let mut minimum = i128::try_from(base)
+        .map_err(|_| render_err(format!("WGSL native-family {context} base overflows")))?;
+    let mut maximum = minimum;
+    for term in terms {
+        let extent = extents.get(term.dimension).copied().ok_or_else(|| {
+            render_err(format!(
+                "WGSL native-family {context} dimension {} is out of bounds",
+                term.dimension
+            ))
+        })?;
+        let last = i128::try_from(extent - 1)
+            .map_err(|_| render_err(format!("WGSL native-family {context} extent overflows")))?;
+        let offset = last
+            .checked_mul(term.stride as i128)
+            .ok_or_else(|| render_err(format!("WGSL native-family {context} stride overflows")))?;
+        if offset < 0 {
+            minimum = minimum.checked_add(offset).ok_or_else(|| {
+                render_err(format!("WGSL native-family {context} minimum overflows"))
+            })?;
+        } else {
+            maximum = maximum.checked_add(offset).ok_or_else(|| {
+                render_err(format!("WGSL native-family {context} maximum overflows"))
+            })?;
+        }
+    }
+    if minimum < 0 || maximum > i128::from(i32::MAX) {
+        return Err(render_err(format!(
+            "WGSL native-family {context} index range {minimum}..={maximum} exceeds i32"
+        )));
+    }
+    Ok(())
 }
 
 fn domain_coordinate_contribution(

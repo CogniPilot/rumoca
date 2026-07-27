@@ -586,7 +586,7 @@ fn maybe_log_function_call_summary(
 
 fn apply_materialized_function_outputs<T: SimFloat>(
     materialized: eval::MaterializedOutputs<T>,
-    outputs: &[rumoca_core::ComponentReference],
+    outputs: &[Option<rumoca_core::ComponentReference>],
     output_names: &[String],
     env: &mut VarEnv<T>,
 ) -> Result<(), EvalError> {
@@ -601,6 +601,9 @@ fn apply_materialized_function_outputs<T: SimFloat>(
         .into_iter()
         .collect::<std::collections::HashMap<_, _>>();
     for (idx, target) in outputs.iter().enumerate() {
+        let Some(target) = target else {
+            continue;
+        };
         let Some(output_name) = output_names.get(idx) else {
             break;
         };
@@ -657,7 +660,7 @@ fn apply_materialized_function_outputs<T: SimFloat>(
 fn apply_selected_function_outputs<T: SimFloat>(
     func_name: &rumoca_core::VarName,
     args: &[rumoca_core::Expression],
-    outputs: &[rumoca_core::ComponentReference],
+    outputs: &[Option<rumoca_core::ComponentReference>],
     env: &mut VarEnv<T>,
     trace_algorithm_calls: bool,
 ) -> Result<bool, EvalError> {
@@ -681,6 +684,9 @@ fn apply_selected_function_outputs<T: SimFloat>(
 
     let mut assigned_outputs = 0usize;
     for (idx, target) in outputs.iter().enumerate() {
+        let Some(target) = target else {
+            continue;
+        };
         let Some(output_name) = output_names.get(idx) else {
             break;
         };
@@ -738,7 +744,7 @@ fn apply_selected_function_outputs<T: SimFloat>(
         output_names.len(),
         assigned_outputs,
     );
-    Ok(assigned_outputs > 0)
+    Ok(assigned_outputs > 0 || outputs.iter().any(Option::is_none))
 }
 
 fn eval_selected_function_output_array<T: SimFloat>(
@@ -768,7 +774,7 @@ fn eval_selected_function_output_array<T: SimFloat>(
 fn eval_function_call_statement<T: SimFloat>(
     comp: &rumoca_core::ComponentReference,
     args: &[rumoca_core::Expression],
-    outputs: &[rumoca_core::ComponentReference],
+    outputs: &[Option<rumoca_core::ComponentReference>],
     env: &mut VarEnv<T>,
 ) -> Result<(), EvalError> {
     let func_name = comp.to_var_name();
@@ -803,7 +809,8 @@ fn eval_function_call_statement<T: SimFloat>(
 
     let result = eval::eval_function_call_pub(&func_name, args, env)?;
     if outputs.len() == 1
-        && let Some((target_key, _)) = output_target_to_key_and_indices(&outputs[0], env)?
+        && let Some(output) = &outputs[0]
+        && let Some((target_key, _)) = output_target_to_key_and_indices(output, env)?
     {
         env.set(&target_key, result);
     }
@@ -1458,7 +1465,7 @@ mod tests {
             &[rumoca_core::Statement::FunctionCall {
                 comp: comp_ref(&["Pkg", "multi"]),
                 args: vec![real(2.5)],
-                outputs: vec![comp_ref(&["out1"]), comp_ref(&["out2"])],
+                outputs: vec![Some(comp_ref(&["out1"])), Some(comp_ref(&["out2"]))],
 
                 span: rumoca_core::Span::DUMMY,
             }],
@@ -1533,7 +1540,7 @@ mod tests {
             &[rumoca_core::Statement::FunctionCall {
                 comp: comp_ref(&["Pkg", "vectorPair"]),
                 args: vec![real(5.0)],
-                outputs: vec![slice, comp_ref(&["accepted"])],
+                outputs: vec![Some(slice), Some(comp_ref(&["accepted"]))],
                 span: rumoca_core::Span::DUMMY,
             }],
             &mut env,
@@ -1608,7 +1615,7 @@ mod tests {
             &[rumoca_core::Statement::FunctionCall {
                 comp: comp_ref(&["Pkg", "pickTable"]),
                 args: vec![var("srcTable")],
-                outputs: vec![comp_ref(&["out1"]), comp_ref(&["out2"])],
+                outputs: vec![Some(comp_ref(&["out1"])), Some(comp_ref(&["out2"]))],
 
                 span: rumoca_core::Span::DUMMY,
             }],
@@ -1621,7 +1628,7 @@ mod tests {
     }
 
     #[test]
-    fn test_function_call_statement_binds_pre_array_inputs_for_multi_output() {
+    fn test_function_call_statement_preserves_skipped_output_positions() {
         let mut env = VarEnv::<f64>::new();
         let mut functions = indexmap::IndexMap::new();
 
@@ -1635,6 +1642,11 @@ mod tests {
             .with_dims(vec![3]),
         );
         f.add_output(rumoca_core::FunctionParam::new(
+            "y1",
+            "Integer",
+            rumoca_core::Span::source_free_serde_default(),
+        ));
+        f.add_output(rumoca_core::FunctionParam::new(
             "y2",
             "Integer",
             rumoca_core::Span::source_free_serde_default(),
@@ -1645,6 +1657,18 @@ mod tests {
             rumoca_core::Span::source_free_serde_default(),
         ));
         f.body = vec![
+            rumoca_core::Statement::Assignment {
+                comp: comp_ref(&["y1"]),
+                value: rumoca_core::Expression::VarRef {
+                    name: rumoca_core::Reference::new("seedIn"),
+                    subscripts: vec![rumoca_core::Subscript::generated_index(
+                        1,
+                        rumoca_core::Span::DUMMY,
+                    )],
+                    span: rumoca_core::Span::DUMMY,
+                },
+                span: rumoca_core::Span::DUMMY,
+            },
             rumoca_core::Statement::Assignment {
                 comp: comp_ref(&["y2"]),
                 value: rumoca_core::Expression::VarRef {
@@ -1692,7 +1716,7 @@ mod tests {
                     args: vec![var("seedState")],
                     span: rumoca_core::Span::DUMMY,
                 }],
-                outputs: vec![comp_ref(&["out2"]), comp_ref(&["out3"])],
+                outputs: vec![None, Some(comp_ref(&["out2"])), Some(comp_ref(&["out3"]))],
 
                 span: rumoca_core::Span::DUMMY,
             }],

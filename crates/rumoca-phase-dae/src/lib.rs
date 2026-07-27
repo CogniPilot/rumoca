@@ -45,6 +45,7 @@ mod path_utils;
 mod pre_lowering;
 mod promote_parameter_variable;
 mod reference_validation;
+mod runtime_operator_lowering;
 mod runtime_precompute;
 mod scalar_inference;
 mod scalar_size;
@@ -91,7 +92,10 @@ use variable_analysis::{
 };
 use when_conversion::convert_when_clause;
 
-pub use balance::{BalanceError, balance, balance_detail, equations_unknowns, is_balanced};
+pub use balance::{
+    BalanceBreakdown, BalanceClamps, BalanceDetail, BalanceError, BalanceExclusionCounts,
+    BalanceExclusionReason, balance, balance_detail, equations_unknowns, is_balanced,
+};
 pub use dae_lowering::{
     CodegenDae, insert_array_size_args_dae, lower_record_function_params_dae,
     prepare_dae_for_codegen, prepare_dae_for_fmi_model_description, project_dae_for_fmi_metadata,
@@ -102,7 +106,7 @@ pub use errors::{ToDaeError, ToDaeResult};
 pub(crate) use variable_analysis::{
     collect_continuous_equation_lhs, find_connected_inputs_only_connected_to_inputs,
     infer_record_subscript_size_from_prefix_chain, is_continuous_unknown, is_internal_input,
-    record_subscript_scalar_size, resolve_flat_function,
+    record_subscript_scalar_size, resolve_flat_function, structured_record_subscript_scalar_size,
 };
 
 #[cfg(test)]
@@ -330,6 +334,14 @@ pub fn to_dae_with_options(
         "fixed_start_initial_equations",
         || initial::add_fixed_start_initial_equations(&mut dae),
     )?;
+    // Runtime operators must become explicit DAE inputs before any
+    // variability-driven transformation. In particular, terminal() has no
+    // source references and would otherwise look parameter-static to algebraic
+    // promotion. This first pass covers every equation/start expression built
+    // above.
+    run_todae_phase(todae_subphase_timing, "runtime_operator_lowering", || {
+        runtime_operator_lowering::lower_runtime_operators(&mut dae)
+    })?;
     // Promote parameter-variable algebraics (constant for the whole simulation)
     // into derived parameters BEFORE condition lowering, so a parameter-variable
     // `if` condition (e.g. `if sc < pc`) sees its operands as parameters and stays
@@ -345,6 +357,14 @@ pub fn to_dae_with_options(
     run_todae_phase(todae_subphase_timing, "assertion_actions", || {
         assertion_actions::lower_assert_equations_to_event_actions(&mut dae, flat)
     })?;
+    // Assertion actions are materialized from Flat IR after the early pass, so
+    // lower any runtime operators introduced in their condition/message
+    // expressions before condition canonicalization.
+    run_todae_phase(
+        todae_subphase_timing,
+        "runtime_operator_action_lowering",
+        || runtime_operator_lowering::lower_runtime_operators(&mut dae),
+    )?;
     run_todae_phase(todae_subphase_timing, "canonical_conditions", || {
         populate_canonical_conditions(&mut dae)
     })?;
@@ -464,9 +484,13 @@ fn finalize_lowered_dae(
         })?;
     }
 
-    if options.error_on_unbalanced && !dae.metadata.is_partial && balance::balance(dae)? != 0 {
-        let (equations, unknowns) = balance::equations_unknowns(dae)?;
-        return Err(ToDaeError::unbalanced(equations, unknowns));
+    if options.error_on_unbalanced && !dae.metadata.is_partial {
+        // One traversal: the detail is the sole input to both the verdict and
+        // the ED001 payload, so the gate and the diagnostic cannot disagree.
+        let detail = balance::balance_detail(dae)?;
+        if detail.balance() != 0 {
+            return Err(ToDaeError::unbalanced_from_detail(detail));
+        }
     }
 
     Ok(())
@@ -930,11 +954,14 @@ fn should_skip_binding_for_explicit_var(
     unknowns: &HashSet<rumoca_core::VarName>,
     unknown_prefix_children: &FxHashMap<String, Vec<rumoca_core::VarName>>,
 ) -> bool {
+    let unknown_subscriptless_index =
+        binding_conversion::build_unknown_subscriptless_index(unknowns);
     binding_conversion::should_skip_binding_for_explicit_var(
         name,
         var,
         unknowns,
         unknown_prefix_children,
+        &unknown_subscriptless_index,
     )
 }
 

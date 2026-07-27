@@ -4,7 +4,8 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 use std::fs::{self, File};
 use std::io::{BufRead, BufWriter, Write};
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
@@ -15,16 +16,20 @@ use rumoca_compile::compile::{
     CompilePhaseEvent, DaeCompilationResult, FailedPhase, Session, SessionConfig, SourceRootKind,
     install_compile_phase_observer,
 };
+use rumoca_phase_solve::tensor_preservation_report;
 use rumoca_sim::{
     BuildSimulationTimings, PreparedSimulation, SimError, SimOptions, SimResult, SimSolverMode,
     build_simulation_with_stage_timing_and_solve_model, check_prepared_initialization,
     run_prepared_simulation, structurally_lowered_dae_for_simulation_artifact,
 };
 use rumoca_worker::{
-    MODEL_WORKER_PARTIAL_RESULT_FILE, MODEL_WORKER_PROTOCOL_VERSION, MODEL_WORKER_RESULT_FILE,
-    ModelWorkerCommand, ModelWorkerControlMessage, ModelWorkerRequest, ModelWorkerResponse,
-    WorkerMemorySnapshot, WorkerModelResult, WorkerProgressEvent, WorkerProgressEventKind,
-    WorkerProgressPhase, pin_current_thread_to_cpu_core, read_model_worker_request_file,
+    MODEL_WORKER_MEMORY_LIMIT_EXIT_CODE, MODEL_WORKER_MEMORY_LIMIT_MB_DEFAULT,
+    MODEL_WORKER_PARENT_DISCONNECTED_EXIT_CODE, MODEL_WORKER_PARTIAL_RESULT_FILE,
+    MODEL_WORKER_PROTOCOL_VERSION, MODEL_WORKER_RESULT_FILE, ModelWorkerCommand,
+    ModelWorkerControlMessage, ModelWorkerRequest, ModelWorkerResponse, WorkerMemorySnapshot,
+    WorkerModelResult, WorkerProgressEvent, WorkerProgressEventKind, WorkerProgressPhase,
+    embedded_diagnostic_code, pin_current_thread_to_cpu_core, read_model_worker_request_file,
+    sim_error_diagnostic_code, strict_compile_failure_row, summary_only_failure_row,
     write_model_worker_response_file,
 };
 
@@ -32,6 +37,7 @@ const DEFAULT_SIM_END_TIME_SECS: f64 = 1.0;
 const SIM_OUTPUT_SAMPLES_DEFAULT: usize = 100;
 const SIM_OUTPUT_SAMPLES_NO_STATES: usize = 500;
 const DEFAULT_WORKER_STACK_MB: usize = 64;
+const MEMORY_WATCHDOG_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Parser)]
 #[command(name = "rumoca-worker")]
@@ -47,6 +53,9 @@ struct Args {
     /// it already parallelizes across worker processes.
     #[arg(long)]
     jobs: Option<usize>,
+    /// Maximum resident-plus-swap memory for this isolated worker.
+    #[arg(long, default_value_t = MODEL_WORKER_MEMORY_LIMIT_MB_DEFAULT)]
+    memory_limit_mb: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -226,6 +235,59 @@ fn fill_current_memory_snapshot(_snapshot: &mut WorkerMemorySnapshot) {
     // the snapshot schema but leave platform-specific counters empty.
 }
 
+#[cfg(target_os = "linux")]
+fn current_resident_and_swap_kb() -> Option<u64> {
+    let raw = fs::read_to_string("/proc/self/status").ok()?;
+    resident_and_swap_kb_from_status(&raw)
+}
+
+#[cfg(target_os = "linux")]
+fn resident_and_swap_kb_from_status(raw: &str) -> Option<u64> {
+    let mut rss_kb = None;
+    let mut swap_kb = None;
+    for line in raw.lines() {
+        let (slot, rest) = if let Some(rest) = line.strip_prefix("VmRSS:") {
+            (&mut rss_kb, rest)
+        } else if let Some(rest) = line.strip_prefix("VmSwap:") {
+            (&mut swap_kb, rest)
+        } else {
+            continue;
+        };
+        *slot = rest
+            .split_whitespace()
+            .next()
+            .and_then(|value| value.parse::<u64>().ok());
+    }
+    (rss_kb.is_some() || swap_kb.is_some())
+        .then(|| rss_kb.unwrap_or(0).saturating_add(swap_kb.unwrap_or(0)))
+}
+
+#[cfg(target_os = "linux")]
+fn spawn_memory_watchdog(memory_limit_mb: usize) {
+    let memory_limit_kb = (memory_limit_mb.max(1) as u64).saturating_mul(1024);
+    let _ = std::thread::Builder::new()
+        .name("rumoca-worker-memory-watchdog".to_string())
+        .spawn(move || {
+            loop {
+                if current_resident_and_swap_kb()
+                    .is_some_and(|memory_kb| memory_kb > memory_limit_kb)
+                {
+                    eprintln!(
+                        "rumoca-worker exceeded its {memory_limit_mb} MB resident-plus-swap limit"
+                    );
+                    std::process::exit(MODEL_WORKER_MEMORY_LIMIT_EXIT_CODE);
+                }
+                std::thread::sleep(MEMORY_WATCHDOG_POLL_INTERVAL);
+            }
+        });
+}
+
+#[cfg(not(target_os = "linux"))]
+fn spawn_memory_watchdog(_memory_limit_mb: usize) {
+    // The MSL parity worker pool is Linux-hosted. Other platforms retain the
+    // parent-control-channel lifetime guard below.
+}
+
 #[derive(Debug, Clone)]
 struct SimSettings {
     t_start: f64,
@@ -244,6 +306,8 @@ struct WorkerRunOk {
     ic_seconds: f64,
     solve_file: Option<String>,
     solve_error: Option<String>,
+    tensor_kpi: Option<WorkerTensorKpi>,
+    tensor_error: Option<String>,
 }
 
 struct WorkerRunErr {
@@ -253,6 +317,8 @@ struct WorkerRunErr {
     phase: WorkerErrorPhase,
     solve_file: Option<String>,
     solve_error: Option<String>,
+    tensor_kpi: Option<WorkerTensorKpi>,
+    tensor_error: Option<String>,
 }
 
 struct WorkerPreparedSimulation {
@@ -261,8 +327,18 @@ struct WorkerPreparedSimulation {
     sim_build_seconds: f64,
     solve_file: Option<String>,
     solve_error: Option<String>,
+    tensor_kpi: Option<WorkerTensorKpi>,
+    tensor_error: Option<String>,
     sim_build_started: bool,
     solve_completed: bool,
+}
+
+#[derive(Clone, Copy)]
+struct WorkerTensorKpi {
+    family_bodies: usize,
+    preserved_family_bodies: usize,
+    scalarized_family_rows: usize,
+    preservation_percent: Option<f64>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -514,11 +590,15 @@ fn write_ast_artifact(
         class: &'a rumoca_compile::parsing::ClassDef,
     }
 
+    let strict_recovery_tree = session.resolved_cached();
     let tree = match session.tree() {
         Ok(tree) => tree,
         Err(error) => {
-            row.ir_solve_error = Some(format!("failed to write ir-ast.json: {error}"));
-            return;
+            let Some(tree) = strict_recovery_tree.as_ref() else {
+                row.ir_solve_error = Some(format!("failed to write ir-ast.json: {error}"));
+                return;
+            };
+            tree.inner()
         }
     };
     let Some(class) = tree.get_class_by_qualified_name(&request.model_name) else {
@@ -535,6 +615,21 @@ fn write_ast_artifact(
     match write_artifact_json(request, "ir-ast.json", &artifact) {
         Ok(path) => row.ir_ast_file = Some(path),
         Err(error) => row.ir_solve_error = Some(error),
+    }
+}
+
+fn write_diagnostics_artifact(
+    session: &mut Session,
+    request: &ModelWorkerRequest,
+    row: &mut WorkerModelResult,
+) {
+    let mut diagnostics = session.compile_model_diagnostics(&request.model_name);
+    diagnostics.source_map = diagnostics
+        .source_map
+        .as_ref()
+        .map(rumoca_core::SourceMap::without_source_contents);
+    if let Err(error) = write_artifact_json(request, "diagnostics.json", &diagnostics) {
+        row.ir_solve_error = Some(error);
     }
 }
 
@@ -555,28 +650,6 @@ fn write_flat_artifact_after_todae_failure(
             row.ir_solve_error = Some(format!("failed to write ir-flat.json: {error}"));
         }
     }
-}
-
-fn phase_failure(
-    model_name: &str,
-    phase: &str,
-    error: impl Into<String>,
-    error_code: Option<String>,
-) -> WorkerModelResult {
-    WorkerModelResult::phase_failure(model_name.to_string(), phase, error, error_code)
-}
-
-fn strict_dae_failure_phase(failure_summary: &str) -> &'static str {
-    const PHASE_MARKERS: &[(&str, &str)] = &[
-        (" failed in Instantiate:", "Instantiate"),
-        (" failed in Typecheck:", "Typecheck"),
-        (" failed in Flatten:", "Flatten"),
-        (" failed in ToDae:", "ToDae"),
-    ];
-    PHASE_MARKERS
-        .iter()
-        .find_map(|(marker, phase)| failure_summary.contains(marker).then_some(*phase))
-        .unwrap_or("ToDae")
 }
 
 fn initialization_balance_check(
@@ -645,6 +718,12 @@ fn summarize_dae_success(
     row.is_balanced = Some(balance_for_report == 0);
     row.is_partial = Some(result.dae.metadata.is_partial);
     row.class_type = Some(result.dae.metadata.class_type.as_str().to_string());
+    // Carry the breakdown whenever the continuous balance is non-zero, so the
+    // `--allow-unbalanced-for-diagnostics` lane (which reaches this success
+    // path) still exposes the component counts for triage.
+    if !detail.is_balanced() {
+        row.balance_detail = Some(Box::new(detail.clone()));
+    }
     row.scalar_equations = usize::try_from(scalar_equations_for_report).ok();
     row.scalar_unknowns = usize::try_from(scalar_unknowns_for_report).ok();
     row.initial_equation_scalars = usize::try_from(initial_equation_scalars).ok();
@@ -817,6 +896,7 @@ fn classify_sim_error(
         .to_string(),
     );
     let source_span = None;
+    row.sim_error_code = sim_error_diagnostic_code(&err);
     row.sim_error = Some(err.to_string());
     row.sim_error_span = source_span;
     row.sim_seconds = Some(elapsed);
@@ -878,6 +958,8 @@ fn run_simulation_pipeline(
             },
             solve_file: build.solve_file.clone(),
             solve_error: build.solve_error.clone(),
+            tensor_kpi: build.tensor_kpi,
+            tensor_error: build.tensor_error.clone(),
         })
     })?;
     let ic_seconds = ic_started.elapsed().as_secs_f64();
@@ -900,6 +982,8 @@ fn run_simulation_pipeline(
                 ic_seconds,
                 solve_file: build.solve_file.clone(),
                 solve_error: build.solve_error.clone(),
+                tensor_kpi: build.tensor_kpi,
+                tensor_error: build.tensor_error.clone(),
             })
         }
         Ok(Err(err)) => Err(Box::new(WorkerRunErr {
@@ -909,6 +993,8 @@ fn run_simulation_pipeline(
             phase: WorkerErrorPhase::Simulation { sim_run_seconds },
             solve_file: build.solve_file,
             solve_error: build.solve_error,
+            tensor_kpi: build.tensor_kpi,
+            tensor_error: build.tensor_error,
         })),
         Err(panic_info) => Err(Box::new(WorkerRunErr {
             err: SimError::SolverError(format!(
@@ -920,6 +1006,8 @@ fn run_simulation_pipeline(
             phase: WorkerErrorPhase::Simulation { sim_run_seconds },
             solve_file: build.solve_file,
             solve_error: build.solve_error,
+            tensor_kpi: build.tensor_kpi,
+            tensor_error: build.tensor_error,
         })),
     }
 }
@@ -935,6 +1023,8 @@ fn build_worker_prepared_simulation(
     let mut solve_error = initial_structural_dae_artifact_error(dae, opts, request);
     let solve_completed = Cell::new(false);
     let mut sim_build_started = false;
+    let mut tensor_kpi = None;
+    let mut tensor_error = None;
     let prepared = build_simulation_with_stage_timing_and_solve_model(
         dae,
         opts,
@@ -947,6 +1037,29 @@ fn build_worker_prepared_simulation(
             );
         },
         |solve_model| {
+            match tensor_preservation_report(dae, &solve_model.problem) {
+                Ok(report) => {
+                    match report
+                        .preserved_family_bodies
+                        .checked_add(report.scalarized_family_bodies)
+                    {
+                        Some(family_bodies) => {
+                            tensor_kpi = Some(WorkerTensorKpi {
+                                family_bodies,
+                                preserved_family_bodies: report.preserved_family_bodies,
+                                scalarized_family_rows: report.scalarized_family_rows,
+                                preservation_percent: report.preservation_percent(),
+                            });
+                        }
+                        None => {
+                            tensor_error = Some(
+                                "tensor family-body count exceeds host index range".to_string(),
+                            );
+                        }
+                    }
+                }
+                Err(error) => tensor_error = Some(error.to_string()),
+            }
             observe_solve_model_artifact(
                 solve_model,
                 progress,
@@ -970,6 +1083,8 @@ fn build_worker_prepared_simulation(
             },
             solve_file: solve_file.clone(),
             solve_error: solve_error.clone(),
+            tensor_kpi,
+            tensor_error: tensor_error.clone(),
         })
     })?;
     Ok(WorkerPreparedSimulation {
@@ -978,6 +1093,8 @@ fn build_worker_prepared_simulation(
         sim_build_seconds,
         solve_file,
         solve_error,
+        tensor_kpi,
+        tensor_error,
         sim_build_started,
         solve_completed: solve_completed.get(),
     })
@@ -1012,7 +1129,10 @@ fn initial_structural_dae_artifact_error(
             }
             error
         }
-        Err(error) => Some(error.to_string()),
+        // The structural lowering error keeps the code of the phase that raised
+        // it, so tag it inline: `ir_solve_error` is a plain string and the code
+        // would otherwise be lost before the MSL result schema sees it.
+        Err(error) => Some(format!("[{}] {error}", error.code())),
     }
 }
 
@@ -1094,21 +1214,32 @@ fn run_model_request(session: &mut Session, request: &ModelWorkerRequest) -> Wor
     let compile_result = if request.allow_unbalanced_for_diagnostics {
         session
             .compile_model_dae_allow_unbalanced_for_diagnostics(&request.model_name)
-            .map_err(|error| error.to_string())
+            .map_err(|error| {
+                let summary = error.to_string();
+                Box::new(rumoca_compile::compile::StrictCompileFailure {
+                    phase: None,
+                    error_code: None,
+                    balance_detail: None,
+                    failures: Vec::new(),
+                    summary,
+                })
+            })
     } else {
-        session.compile_model_dae_strict_reachable_uncached_with_recovery(&request.model_name)
+        session
+            .compile_model_dae_strict_reachable_uncached_with_recovery_detailed(&request.model_name)
     };
     drop(_compile_phase_observer);
     let compile_seconds = compile_start.elapsed().as_secs_f64();
     let result = match compile_result {
         Ok(result) => result,
-        Err(summary) => {
-            let mut row = phase_failure(
-                &request.model_name,
-                strict_dae_failure_phase(&summary),
-                summary,
-                None,
-            );
+        Err(failure) => {
+            let mut row = if request.allow_unbalanced_for_diagnostics {
+                // The diagnostics lane has no structured phase; fall back to
+                // marker sniffing on the rendered summary.
+                summary_only_failure_row(&request.model_name, failure.summary.clone())
+            } else {
+                strict_compile_failure_row(&request.model_name, &failure)
+            };
             row.compile_seconds = Some(compile_seconds);
             apply_compile_phase_durations(&mut row, phase_timer.borrow().durations());
             progress.memory("after_compile_failure");
@@ -1144,7 +1275,18 @@ fn run_model_request(session: &mut Session, request: &ModelWorkerRequest) -> Wor
     let settings = simulation_settings(&result);
     let opts = sim_options(&settings, output_samples_for_model(result.dae.as_ref()));
     run_and_classify_simulation(&mut row, request, &result, &opts, &progress);
+    apply_solve_stage_diagnostic_code(&mut row);
     row
+}
+
+/// Lift the SPEC_0008 code carried by `ir_solve_error` into its own field so the
+/// MSL result schema exposes a solve-stage code the same way it exposes a
+/// compile-stage `error_code`.
+fn apply_solve_stage_diagnostic_code(row: &mut WorkerModelResult) {
+    row.ir_solve_error_code = row
+        .ir_solve_error
+        .as_deref()
+        .and_then(embedded_diagnostic_code);
 }
 
 fn is_trivial_static_dae(result: &DaeCompilationResult) -> bool {
@@ -1211,6 +1353,7 @@ fn run_and_classify_simulation(
         Ok(Ok(run)) => {
             row.ir_solve_file = run.solve_file;
             row.ir_solve_error = run.solve_error;
+            apply_tensor_kpi(row, run.tensor_kpi, run.tensor_error);
             classify_success(
                 row,
                 &run.sim_result,
@@ -1230,6 +1373,7 @@ fn run_and_classify_simulation(
         Ok(Err(run_err)) => {
             row.ir_solve_file = run_err.solve_file;
             row.ir_solve_error = run_err.solve_error;
+            apply_tensor_kpi(row, run_err.tensor_kpi, run_err.tensor_error);
             classify_sim_error(
                 row,
                 run_err.err,
@@ -1250,6 +1394,20 @@ fn run_and_classify_simulation(
         }
     }
     progress.memory("after_simulation");
+}
+
+fn apply_tensor_kpi(
+    row: &mut WorkerModelResult,
+    tensor_kpi: Option<WorkerTensorKpi>,
+    tensor_error: Option<String>,
+) {
+    if let Some(kpi) = tensor_kpi {
+        row.tensor_family_bodies = Some(kpi.family_bodies);
+        row.tensor_preserved_family_bodies = Some(kpi.preserved_family_bodies);
+        row.tensor_scalarized_family_rows = Some(kpi.scalarized_family_rows);
+        row.tensor_preservation_percent = kpi.preservation_percent;
+    }
+    row.tensor_preservation_error = tensor_error;
 }
 
 fn write_partial_compile_success(
@@ -1287,6 +1445,7 @@ fn write_compile_artifacts(
     }
     let Some(result) = result else {
         if request.emit_json {
+            write_diagnostics_artifact(session, request, row);
             write_flat_artifact_after_todae_failure(session, request, row);
         }
         progress.event(
@@ -1386,19 +1545,64 @@ fn write_control_message(message: &ModelWorkerControlMessage) -> Result<(), Stri
         .map_err(|error| format!("failed to flush model worker control message: {error}"))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CommandReaderExit {
+    ParentDisconnected,
+    ReceiverDropped,
+}
+
+fn read_worker_commands(
+    reader: impl BufRead,
+    sender: &mpsc::Sender<Result<ModelWorkerCommand, String>>,
+) -> CommandReaderExit {
+    for line in reader.lines() {
+        let line = match line {
+            Ok(line) => line,
+            Err(error) => {
+                let _ = sender.send(Err(format!(
+                    "failed to read model worker command stream: {error}"
+                )));
+                return CommandReaderExit::ReceiverDropped;
+            }
+        };
+        if line.trim().is_empty() {
+            continue;
+        }
+        let command = serde_json::from_str::<ModelWorkerCommand>(&line)
+            .map_err(|error| format!("failed to parse model worker command: {error}"));
+        if sender.send(command).is_err() {
+            return CommandReaderExit::ReceiverDropped;
+        }
+    }
+    CommandReaderExit::ParentDisconnected
+}
+
+fn spawn_worker_command_reader() -> mpsc::Receiver<Result<ModelWorkerCommand, String>> {
+    let (sender, receiver) = mpsc::channel();
+    let _ = std::thread::Builder::new()
+        .name("rumoca-worker-control-reader".to_string())
+        .spawn(move || {
+            let stdin = std::io::stdin();
+            let exit = read_worker_commands(stdin.lock(), &sender);
+            if exit == CommandReaderExit::ParentDisconnected {
+                eprintln!("rumoca-worker parent control channel closed");
+                std::process::exit(MODEL_WORKER_PARENT_DISCONNECTED_EXIT_CODE);
+            }
+        });
+    receiver
+}
+
 fn run_worker_daemon(source_root_path: &Path) -> Result<(), String> {
     let mut session = load_source_root(source_root_path)?;
     write_control_message(&ModelWorkerControlMessage::Ready {
         protocol_version: MODEL_WORKER_PROTOCOL_VERSION,
     })?;
-    for line in std::io::stdin().lock().lines() {
-        let line = line.map_err(|error| format!("failed to read model worker command: {error}"))?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        match serde_json::from_str::<ModelWorkerCommand>(&line)
-            .map_err(|error| format!("failed to parse model worker command: {error}"))?
-        {
+    let commands = spawn_worker_command_reader();
+    loop {
+        let command = commands
+            .recv()
+            .map_err(|_| "model worker command reader disconnected".to_string())??;
+        match command {
             ModelWorkerCommand::Run { request } => {
                 let _ = fs::remove_file(artifact_path(&request, "progress.jsonl"));
                 let _ = fs::remove_file(request.output_dir.join(MODEL_WORKER_RESULT_FILE));
@@ -1415,7 +1619,6 @@ fn run_worker_daemon(source_root_path: &Path) -> Result<(), String> {
             ModelWorkerCommand::Shutdown => return Ok(()),
         }
     }
-    Ok(())
 }
 
 fn run_worker_entry(args: Args) -> Result<(), String> {
@@ -1432,6 +1635,7 @@ fn run_worker_entry(args: Args) -> Result<(), String> {
 
 fn main() {
     let args = Args::parse();
+    spawn_memory_watchdog(args.memory_limit_mb);
     if let Some(jobs) = args.jobs {
         rumoca_compile::parallelism::set_compiler_parallelism(jobs);
     }
@@ -1447,5 +1651,59 @@ fn main() {
     if let Err(error) = result {
         eprintln!("{error}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn command_reader_reports_parent_disconnect_after_delivering_commands() {
+        let input = br#"{"command":"shutdown"}
+"#;
+        let (sender, receiver) = mpsc::channel();
+        let exit = read_worker_commands(Cursor::new(input), &sender);
+        assert_eq!(exit, CommandReaderExit::ParentDisconnected);
+        assert!(matches!(
+            receiver.recv().expect("command should be delivered"),
+            Ok(ModelWorkerCommand::Shutdown)
+        ));
+    }
+
+    #[test]
+    fn command_reader_delivers_parse_errors() {
+        let (sender, receiver) = mpsc::channel();
+        let exit = read_worker_commands(Cursor::new(b"not-json\n"), &sender);
+        assert_eq!(exit, CommandReaderExit::ParentDisconnected);
+        assert!(
+            receiver
+                .recv()
+                .expect("parse result should be delivered")
+                .expect_err("invalid JSON should fail")
+                .contains("failed to parse model worker command")
+        );
+    }
+
+    #[test]
+    fn solve_stage_diagnostic_code_is_lifted_out_of_the_error_text() {
+        let mut row =
+            WorkerModelResult::phase_failure("Modelica.A".to_string(), "Success", "", None);
+        row.ir_solve_error = Some("[ES010] structurally singular system".to_string());
+        apply_solve_stage_diagnostic_code(&mut row);
+        assert_eq!(row.ir_solve_error_code, Some("ES010".to_string()));
+
+        row.ir_solve_error = Some("failed to write ir-solve.json: disk full".to_string());
+        apply_solve_stage_diagnostic_code(&mut row);
+        assert_eq!(row.ir_solve_error_code, None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn resident_memory_limit_counts_swapped_pages() {
+        let status = "Name:\trumoca-worker\nVmRSS:\t4096 kB\nVmSwap:\t2048 kB\n";
+        assert_eq!(resident_and_swap_kb_from_status(status), Some(6144));
+        assert_eq!(resident_and_swap_kb_from_status("Name:\ttest\n"), None);
     }
 }

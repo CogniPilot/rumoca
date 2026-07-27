@@ -1503,7 +1503,7 @@ fn ac_manifest_carries_the_minted_uuid_and_alg_checksum() {
     let alg_sha1 = Sha1Hex::of_bytes(alg.as_bytes());
     let identity = ManifestIdentity::generated().expect("identity mints");
     let manifest =
-        assemble_manifest_with_identity(&package, alg_sha1.clone(), &identity).expect("assembles");
+        assemble_manifest_with_identity(&package, alg_sha1, &identity).expect("assembles");
     assert_eq!(
         manifest.parts().attributes.id,
         identity.id,
@@ -1519,8 +1519,7 @@ fn ac_manifest_carries_the_minted_uuid_and_alg_checksum() {
         })
         .expect("the .alg File entry carries a checksum");
     assert_eq!(
-        checksum.as_str(),
-        alg_sha1.as_str(),
+        checksum, &alg_sha1,
         "the .alg File/@checksum is the SHA-1 of the exact rendered .alg bytes"
     );
 }

@@ -624,6 +624,67 @@ fn test_nested_colon_parameter_binding_drives_size_dimension() {
     assert_eq!(q.dims, vec![6]);
 }
 
+#[test]
+fn test_array_component_modifier_reference_typechecks_in_lexical_parent_scope() {
+    let source = r#"
+        model Sink
+            parameter Real amplitude;
+        end Sink;
+
+        model Cell
+            parameter Real V;
+            Sink sink(final amplitude = V);
+        end Cell;
+
+        model Group
+            parameter Real V[3];
+            Cell cells[3](final V = V);
+        end Group;
+
+        model Top
+            Group group;
+        end Top;
+    "#;
+
+    let (tree, mut overlay) = instantiate_test_model(source, "Top");
+
+    for index in 1..=3 {
+        let cell_parameter_name = format!("group.cells[{index}].V");
+        let cell_parameter = find_component(&overlay, &cell_parameter_name)
+            .unwrap_or_else(|| panic!("{cell_parameter_name} should exist"));
+        assert_eq!(
+            cell_parameter.binding_source_scope,
+            Some(ast::QualifiedName::from_ident("group")),
+            "{cell_parameter_name} binding must retain its enclosing lexical source scope"
+        );
+
+        let forwarded_name = format!("group.cells[{index}].sink.amplitude");
+        let forwarded = find_component(&overlay, &forwarded_name)
+            .unwrap_or_else(|| panic!("{forwarded_name} should exist"));
+        assert_eq!(
+            forwarded
+                .binding_source_scope
+                .as_ref()
+                .map(ast::QualifiedName::to_flat_string),
+            Some(format!("group.cells[{index}]")),
+            "{forwarded_name} binding must retain the scalar cell source scope"
+        );
+        assert_eq!(
+            forwarded.binding_source.as_ref().map(ToString::to_string),
+            Some("V".to_string()),
+            "{forwarded_name} must retain the written scalar expression"
+        );
+        assert_eq!(
+            forwarded.binding.as_ref().map(ToString::to_string),
+            Some(format!("V[{index}]")),
+            "{forwarded_name} must retain the resolved outer array value"
+        );
+    }
+
+    typecheck_instanced(&tree, &mut overlay, "Top")
+        .expect("source-scoped array element modifier bindings should typecheck");
+}
+
 /// Test that mimics the DFFREG structure more closely
 /// DFFREG has: parameter n, dataIn[n], and DFFR dFFR(n=n) where DFFR also has dataIn[n]
 #[test]

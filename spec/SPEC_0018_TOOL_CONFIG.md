@@ -237,6 +237,35 @@ CLI arguments override file configuration using partial option types: full
 options have required fields, CLI override structs use `Option<T>`, and merge
 logic keeps file/default values when the CLI omits a field.
 
+### Editor (LSP) Override Pattern
+
+The language server MUST resolve the same config files, by the same
+hierarchical lookup, for `textDocument/formatting` and for the lint diagnostics
+it publishes. An editor that formats a file must produce byte-identical output
+to `rumoca fmt` on that file, and must not report a lint rule the project has
+disabled.
+
+Precedence is **inverted** relative to the CLI, and deliberately so:
+
+| Layer | Example | Precedence |
+|-------|---------|------------|
+| Editor request options | LSP `FormattingOptions.tabSize`, `insertSpaces`, `trimTrailingWhitespace`, `insertFinalNewline` | lowest |
+| Project config file | `.rumoca_fmt.toml` / `.rumoca_lint.toml` | highest |
+
+A CLI flag is a per-invocation statement of intent by the person running the
+command, so it wins. `FormattingOptions` is not: it is the editor's ambient
+preference (typically a global `editor.tabSize`), identical for every project
+the user opens. Letting it win would make a project's committed formatting
+profile depend on who opened the file — the outcome this spec exists to
+prevent. An editor option therefore only fills a field the config file leaves
+unset.
+
+Config lookup is a filesystem walk, so it MUST be cached per directory rather
+than re-resolved per request: diagnostics run on every keystroke. The cache is
+invalidated when a config file is opened, changed, or saved through the editor,
+and user-initiated requests (formatting) additionally revalidate the recorded
+config paths and mtimes.
+
 ### TOML Format
 
 ```toml

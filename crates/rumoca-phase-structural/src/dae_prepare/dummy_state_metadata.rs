@@ -281,11 +281,27 @@ fn numeric_constant(expr: &Expression) -> Option<f64> {
                 OpBinary::Sub | OpBinary::SubElem => Some(lhs - rhs),
                 OpBinary::Mul | OpBinary::MulElem => Some(lhs * rhs),
                 OpBinary::Div | OpBinary::DivElem => Some(lhs / rhs),
+                OpBinary::Exp | OpBinary::ExpElem => constant_power(lhs, rhs),
                 _ => None,
             }
         }
         _ => None,
     }
+}
+
+/// Value of `base ^ exponent` when both operands are compile-time constants.
+///
+/// MLS 3.7.1 makes `^` a pure scalar operation on Real operands, so a constant
+/// base raised to a constant exponent is itself a constant. MSL leans on this
+/// for reluctance and inductance coefficients (`R_m = effectiveTurns^2/L`);
+/// without it every row scaled by such a parameter looks nonlinear to the
+/// linear-constraint analysis and the row is dropped.
+///
+/// Non-finite results (`0^-1`) are refused rather than propagated, matching the
+/// finiteness guard on the elementary built-ins.
+fn constant_power(base: f64, exponent: f64) -> Option<f64> {
+    let value = base.powf(exponent);
+    value.is_finite().then_some(value)
 }
 
 fn scalar_var_name(dae: &Dae, name: &VarName, subscripts: &[Subscript]) -> Option<VarName> {
@@ -355,6 +371,16 @@ fn linear_terms(dae: &Dae, expr: &Expression) -> Option<LinearRow> {
         {
             linear_terms(dae, base)
         }
+        // A record field selection is linear in the scalar components it
+        // selects whenever the record expression itself is built from record
+        // addition, subtraction and negation (MLS 4.7 / 10.6). Magnetic-circuit
+        // rows are written that way — `(port_p.V_m - port_n.V_m).im` — and the
+        // projected form is the one whose terms are DAE variables.
+        Expression::FieldAccess { base, field, span } => {
+            let projected =
+                super::record_projection::project_record_field(dae, base, field, *span)?;
+            linear_terms(dae, &projected)
+        }
         Expression::BuiltinCall { .. }
         | Expression::FunctionCall { .. }
         | Expression::If { .. }
@@ -362,7 +388,6 @@ fn linear_terms(dae: &Dae, expr: &Expression) -> Option<LinearRow> {
         | Expression::Tuple { .. }
         | Expression::Range { .. }
         | Expression::ArrayComprehension { .. }
-        | Expression::FieldAccess { .. }
         | Expression::Index { .. }
         | Expression::Empty { .. } => None,
     }
@@ -474,10 +499,45 @@ fn structural_numeric_constant_inner(
                 OpBinary::Sub | OpBinary::SubElem => Some(lhs - rhs),
                 OpBinary::Mul | OpBinary::MulElem => Some(lhs * rhs),
                 OpBinary::Div | OpBinary::DivElem => Some(lhs / rhs),
+                OpBinary::Exp | OpBinary::ExpElem => constant_power(lhs, rhs),
                 _ => None,
             }
         }
+        // MLS 3.7.1 built-in mathematical functions are pure, so a call whose
+        // argument is itself a compile-time constant is a constant. Flattened
+        // MSL leans on this: `Modelica.Constants.pi` reaches the DAE as
+        // `2*asin(1.0)`, which otherwise makes every row scaled by pi look
+        // nonlinear to this analysis.
+        Expression::BuiltinCall { function, args, .. } => {
+            let [arg] = args.as_slice() else {
+                return None;
+            };
+            let value = structural_numeric_constant_inner(dae, arg, used_params, visiting)?;
+            elementary_builtin_value(*function, value).filter(|value| value.is_finite())
+        }
         _ => numeric_constant(expr),
+    }
+}
+
+/// Value of a pure elementary built-in at a constant argument (MLS 3.7.1).
+fn elementary_builtin_value(function: rumoca_core::BuiltinFunction, value: f64) -> Option<f64> {
+    use rumoca_core::BuiltinFunction as Builtin;
+    match function {
+        Builtin::Sin => Some(value.sin()),
+        Builtin::Cos => Some(value.cos()),
+        Builtin::Tan => Some(value.tan()),
+        Builtin::Asin => Some(value.asin()),
+        Builtin::Acos => Some(value.acos()),
+        Builtin::Atan => Some(value.atan()),
+        Builtin::Sinh => Some(value.sinh()),
+        Builtin::Cosh => Some(value.cosh()),
+        Builtin::Tanh => Some(value.tanh()),
+        Builtin::Exp => Some(value.exp()),
+        Builtin::Log => Some(value.ln()),
+        Builtin::Log10 => Some(value.log10()),
+        Builtin::Sqrt => Some(value.sqrt()),
+        Builtin::Abs => Some(value.abs()),
+        _ => None,
     }
 }
 
@@ -584,7 +644,7 @@ fn candidate_from_state_constraint(
     Some((component_name, state_name))
 }
 
-fn var_expr(name: &VarName, span: Span) -> Expression {
+pub(super) fn var_expr(name: &VarName, span: Span) -> Expression {
     let (reference, subscripts) = rumoca_core::component_reference_from_flat_name(name, span)
         .map(|mut component_ref| {
             let subscripts = component_ref
@@ -798,10 +858,21 @@ fn sorted_non_state_names(
 pub fn constrained_dummy_state_names(
     dae: &Dae,
 ) -> Result<IndexSet<String>, crate::StructuralError> {
+    if dae.variables.states.is_empty() {
+        return Ok(IndexSet::new());
+    }
+    let analysis = super::DummyStateAnalysis::build(dae)?;
     let mut names = IndexSet::new();
-    for (state_name, definition) in constrained_dummy_state_defining_exprs(dae)? {
-        if super::constrained_dummy_derivative_plan_for_definition(dae, &state_name, &definition)?
-            .is_some()
+    for (state_name, definition) in
+        constrained_dummy_state_defining_exprs_with_analysis(dae, &analysis)?
+    {
+        if super::constrained_dummy_derivative_plan_for_definition_with_analysis(
+            dae,
+            &state_name,
+            &definition,
+            &analysis,
+        )?
+        .is_some()
         {
             names.insert(state_name.as_str().to_string());
         }
@@ -919,13 +990,29 @@ fn duplicate_state_derivative_alias_definitions(
 pub fn constrained_dummy_state_defining_exprs(
     dae: &Dae,
 ) -> Result<IndexMap<VarName, ConstrainedDummyDefinition>, crate::StructuralError> {
+    // `direct_demotion_round_context` bails on a state-free system, so short
+    // circuit before paying for the whole-model analysis tables.
+    if dae.variables.states.is_empty() {
+        return Ok(IndexMap::new());
+    }
+    let analysis = super::DummyStateAnalysis::build(dae)?;
+    constrained_dummy_state_defining_exprs_with_analysis(dae, &analysis)
+}
+
+/// Same scan as [`constrained_dummy_state_defining_exprs`], but reusing a
+/// caller-owned analysis so a multi-round reduction builds the whole-model
+/// tables once per round instead of once per candidate.
+pub(super) fn constrained_dummy_state_defining_exprs_with_analysis(
+    dae: &Dae,
+    analysis: &super::DummyStateAnalysis,
+) -> Result<IndexMap<VarName, ConstrainedDummyDefinition>, crate::StructuralError> {
     let Some((state_names, state_name_set, when_assigned_states)) =
         direct_demotion_round_context(dae)
     else {
         return Ok(IndexMap::new());
     };
 
-    let scalarization = crate::scalarize::build_expression_scalarization_context(dae)?;
+    let scalarization = analysis.scalarization();
     let state_dependency = StateDependencyClosure::new(dae);
     let mut definitions = Vec::new();
     for (equation_index, equation) in dae.continuous.equations.iter().enumerate() {
@@ -950,15 +1037,16 @@ pub fn constrained_dummy_state_defining_exprs(
             state_dependency.classify(&defining_expr, &candidate, equation_index)
                 == StateDependency::OtherState;
         let Some(definition) =
-            direct_dummy_definition(dae, candidate.clone(), defining_expr, &scalarization)?
+            direct_dummy_definition(dae, candidate.clone(), defining_expr, scalarization)?
         else {
             continue;
         };
         let has_closed_derivative = !reaches_other_state
-            && super::constrained_dummy_derivative_plan_for_definition(
+            && super::constrained_dummy_derivative_plan_for_definition_with_analysis(
                 dae,
                 &candidate,
                 &definition,
+                analysis,
             )?
             .is_some();
         if !reaches_other_state && !has_closed_derivative {
@@ -972,7 +1060,7 @@ pub fn constrained_dummy_state_defining_exprs(
     )?);
     definitions.extend(duplicate_state_derivative_alias_definitions(
         dae,
-        &scalarization,
+        scalarization,
     )?);
 
     definitions.sort_by(|(a, _), (b, _)| {
@@ -983,8 +1071,34 @@ pub fn constrained_dummy_state_defining_exprs(
             .then_with(|| a.as_str().cmp(b.as_str()))
     });
     let mut result = IndexMap::new();
-    for (name, expr) in definitions {
-        result.entry(name).or_insert(expr);
+    for (name, definition) in definitions {
+        insert_preferred_dummy_definition(dae, &mut result, name, definition, analysis)?;
     }
     Ok(result)
+}
+
+fn insert_preferred_dummy_definition(
+    dae: &Dae,
+    definitions: &mut IndexMap<VarName, ConstrainedDummyDefinition>,
+    name: VarName,
+    candidate: ConstrainedDummyDefinition,
+    analysis: &super::DummyStateAnalysis,
+) -> Result<(), crate::StructuralError> {
+    let Some(existing) = definitions.get_mut(&name) else {
+        definitions.insert(name, candidate);
+        return Ok(());
+    };
+    let existing_is_viable = super::constrained_dummy_derivative_plan_for_definition_with_analysis(
+        dae, &name, existing, analysis,
+    )?
+    .is_some();
+    if !existing_is_viable
+        && super::constrained_dummy_derivative_plan_for_definition_with_analysis(
+            dae, &name, &candidate, analysis,
+        )?
+        .is_some()
+    {
+        *existing = candidate;
+    }
+    Ok(())
 }

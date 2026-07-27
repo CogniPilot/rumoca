@@ -969,3 +969,42 @@ fn scalar_structural_index_rejects_unspanned_function_call_context() {
         "unexpected error: {err}"
     );
 }
+
+/// MLS §10.4.2.1: `[ex, ey]` with `ex`, `ey` of size 3 is a 3x2 column
+/// concatenation, so `[ex, ey] * fc` with `fc` of size 2 is a 3-vector and not
+/// a scalar. The shape report must name the concatenated matrix shape.
+#[test]
+fn lower_expression_reports_matrix_column_concat_times_vector_shape() {
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .parameters
+        .insert(rumoca_core::VarName::new("ex"), array_var("ex", &[3]));
+    dae_model
+        .variables
+        .parameters
+        .insert(rumoca_core::VarName::new("ey"), array_var("ey", &[3]));
+    dae_model
+        .variables
+        .parameters
+        .insert(rumoca_core::VarName::new("fc"), array_var("fc", &[2]));
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
+    let expr = mul(
+        rumoca_core::Expression::Array {
+            elements: vec![var("ex"), var("ey")],
+            is_matrix: true,
+            span: lower_test_span(),
+        },
+        var("fc"),
+    );
+    let err = lower_expression(&expr, &layout, &IndexMap::new())
+        .expect_err("matrix-vector product is not scalar-valued");
+    assert!(
+        err.reason().contains(
+            "non-scalar multiplication result with width 3 is unsupported in scalar context \
+             (lhs_shape=[3, 2], rhs_shape=[2], result_shape=[3])"
+        ),
+        "{}",
+        err.reason()
+    );
+}

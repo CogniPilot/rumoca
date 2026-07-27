@@ -63,7 +63,11 @@ pub trait StatementRewriter: ExpressionRewriter {
                 args: self.rewrite_expressions(args),
                 outputs: outputs
                     .iter()
-                    .map(|output| self.rewrite_component_reference(output))
+                    .map(|output| {
+                        output
+                            .as_ref()
+                            .map(|output| self.rewrite_component_reference(output))
+                    })
                     .collect(),
                 span: *span,
             },
@@ -205,7 +209,12 @@ pub trait FallibleStatementRewriter: FallibleExpressionRewriter {
                 args: self.rewrite_expressions(args)?,
                 outputs: outputs
                     .iter()
-                    .map(|output| self.rewrite_component_reference(output))
+                    .map(|output| {
+                        output
+                            .as_ref()
+                            .map(|output| self.rewrite_component_reference(output))
+                            .transpose()
+                    })
                     .collect::<Result<Vec<_>, Self::Error>>()?,
                 span: *span,
             }),

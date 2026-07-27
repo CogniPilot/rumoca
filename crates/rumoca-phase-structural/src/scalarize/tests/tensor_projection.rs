@@ -120,6 +120,60 @@ fn scalarize_known_record_array_field_uses_selected_function_output_paths() {
 }
 
 #[test]
+fn scalarize_array_valued_record_member_slice_uses_record_and_field_indices() {
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .outputs
+        .insert(VarName::new("y"), variable("y", &[2, 2]));
+    for record_index in 1..=2 {
+        let name = format!("records[{record_index}].values");
+        dae_model
+            .variables
+            .parameters
+            .insert(VarName::new(&name), variable(&name, &[2]));
+    }
+    let member_slice = Expression::FieldAccess {
+        base: Box::new(Expression::Index {
+            base: Box::new(Expression::VarRef {
+                name: structured_reference("records", test_span()),
+                subscripts: Vec::new(),
+                span: test_span(),
+            }),
+            subscripts: vec![Subscript::Colon { span: test_span() }],
+            span: test_span(),
+        }),
+        field: "values".to_string(),
+        span: test_span(),
+    };
+    dae_model
+        .continuous
+        .equations
+        .push(eq("y", member_slice, 4));
+
+    scalarize_equations(&mut dae_model).unwrap();
+
+    let projected_names = dae_model
+        .continuous
+        .equations
+        .iter()
+        .map(|equation| match &equation.rhs {
+            Expression::VarRef { name, .. } => name.as_str(),
+            other => panic!("expected projected variable reference, got {other:?}"),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        projected_names,
+        vec![
+            "records[1].values[1]",
+            "records[1].values[2]",
+            "records[2].values[1]",
+            "records[2].values[2]",
+        ]
+    );
+}
+
+#[test]
 fn scalarize_vector_matrix_product_uses_column_dot_product() {
     let mut dae_model = dae::Dae::default();
     dae_model

@@ -1,8 +1,7 @@
 use std::sync::Arc;
 
-use rumoca_eval_solve::SolveRuntime;
 use rumoca_ir_solve as solve;
-use rumoca_solver::{SimBackend, SimOptions, SimResult};
+use rumoca_solver::{SimBackend, SimOptions, SimResult, SolveRuntime};
 
 use crate::{OdeModel, SimError, check_initialization, run_prepared_simulation};
 

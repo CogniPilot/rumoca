@@ -65,7 +65,7 @@ fn multi_output_record_materialization_assigns_every_field() {
         &[rumoca_core::Statement::FunctionCall {
             comp: comp_ref(&["Pkg", "makePair"]),
             args: Vec::new(),
-            outputs: vec![comp_ref(&["result"]), comp_ref(&["ok"])],
+            outputs: vec![Some(comp_ref(&["result"])), Some(comp_ref(&["ok"]))],
             span: rumoca_core::Span::DUMMY,
         }],
         &mut env,
@@ -87,7 +87,7 @@ fn partial_record_output_does_not_read_colliding_caller_binding() {
         &[rumoca_core::Statement::FunctionCall {
             comp: comp_ref(&["Pkg", "makePair"]),
             args: Vec::new(),
-            outputs: vec![comp_ref(&["result"]), comp_ref(&["ok"])],
+            outputs: vec![Some(comp_ref(&["result"])), Some(comp_ref(&["ok"]))],
             span: rumoca_core::Span::DUMMY,
         }],
         &mut env,

@@ -17,11 +17,14 @@ pub(crate) fn all_branches_consistent_with_scope(
     true
 }
 
-/// Get binding expression or start value for a component.
-fn get_binding_or_start(comp: &rumoca_ir_ast::Component) -> Option<&Expression> {
-    comp.binding
-        .as_ref()
-        .or_else(|| (!matches!(comp.start, Expression::Empty { .. })).then_some(&comp.start))
+/// The declaration binding that gives this component its value (MLS §4.4.4).
+///
+/// `start` is deliberately not a fallback: MLS §4.9 makes it an initial guess,
+/// and the parser seeds every `Real`/`Integer`/`Boolean` declaration with
+/// `0.0`/`0`/`false`. Reading it would register `n = 0` for an unbound
+/// `parameter Integer n`, which then silently sizes arrays (SPEC_0008).
+fn get_declaration_binding(comp: &rumoca_ir_ast::Component) -> Option<&Expression> {
+    comp.binding.as_ref()
 }
 
 /// Check if shape_expr contains colon dimensions.
@@ -43,7 +46,7 @@ fn eval_component_constants(
     // Try integer parameters
     if type_name == "Integer"
         && !ctx.integers.contains_key(full_name)
-        && let Some(val) = get_binding_or_start(comp).and_then(|e| eval_integer(e, ctx))
+        && let Some(val) = get_declaration_binding(comp).and_then(|e| eval_integer(e, ctx))
     {
         ctx.add_integer(full_name, val);
         progress = true;
@@ -52,7 +55,7 @@ fn eval_component_constants(
     // Try boolean parameters
     if type_name == "Boolean"
         && !ctx.booleans.contains_key(full_name)
-        && let Some(val) = get_binding_or_start(comp).and_then(|e| eval_boolean(e, ctx))
+        && let Some(val) = get_declaration_binding(comp).and_then(|e| eval_boolean(e, ctx))
     {
         ctx.booleans.insert(full_name.to_string(), val);
         progress = true;
@@ -61,7 +64,7 @@ fn eval_component_constants(
     // Try real parameters
     if type_name == "Real"
         && !ctx.reals.contains_key(full_name)
-        && let Some(val) = get_binding_or_start(comp).and_then(|e| eval_real(e, ctx))
+        && let Some(val) = get_declaration_binding(comp).and_then(|e| eval_real(e, ctx))
     {
         ctx.reals.insert(full_name.to_string(), val);
         progress = true;
@@ -208,7 +211,13 @@ pub fn max_variability_in_expr(
         .filter_map(|name| class.components.get(name))
         .map(|comp| VariabilityLevel::from_variability(&comp.variability))
         .max()
-        .unwrap_or(VariabilityLevel::Continuous)
+        // References that are not components of this class are type names,
+        // enum literals, functions, imported constants, or unresolved names.
+        // None imply continuous variability: semantic lookup diagnoses
+        // unresolved names separately, while the other categories are
+        // constant. Treating them as continuous produces false violations for
+        // bindings such as `Init.InitialState` and `fill(...)`.
+        .unwrap_or(VariabilityLevel::Constant)
 }
 
 #[cfg(test)]
@@ -301,6 +310,7 @@ mod tests {
                 span: rumoca_core::Span::DUMMY,
             },
             args,
+            is_partial_application: false,
             span: rumoca_core::Span::DUMMY,
         }
     }
@@ -543,6 +553,7 @@ mod tests {
                 span: rumoca_core::Span::DUMMY,
             },
             args: vec![make_comp_ref("arr"), make_int_literal(1)],
+            is_partial_application: false,
             span: rumoca_core::Span::DUMMY,
         };
         assert_eq!(eval_integer(&expr, &ctx), Some(10));
@@ -760,6 +771,7 @@ mod tests {
                 span: rumoca_core::Span::DUMMY,
             },
             args: vec![indexed_ref, make_int_literal(1)],
+            is_partial_application: false,
             span: rumoca_core::Span::DUMMY,
         };
 

@@ -107,10 +107,10 @@ use record_constant_arrays::{
     try_extract_record_array_constructor_constant,
 };
 use rumoca_eval_flat::phase_constant::{
-    ParamEvalContext, build_eval_context, eval_user_func_real, infer_array_dimensions,
-    infer_array_dimensions_full_with_functions, looks_like_enum_literal_path,
-    try_eval_flat_expr_boolean_with_context, try_eval_flat_expr_enum,
-    try_eval_integer_with_context, try_eval_real_with_context, try_infer_better_dims,
+    ParamEvalContext, ParamEvaluator, build_eval_context, eval_user_func_real,
+    infer_array_dimensions, infer_array_dimensions_full_with_functions,
+    looks_like_enum_literal_path, try_eval_flat_expr_enum, try_eval_integer_with_context,
+    try_infer_better_dims,
 };
 
 /// Options controlling flatten strictness.
@@ -395,6 +395,34 @@ pub fn flatten_ref_with_options(
     })?;
 
     Ok(flat)
+}
+
+/// Connection-set construction is intentionally scalar today, but the
+/// instantiate IR keeps regular vectorized connects compact and authoritative
+/// (SPEC_0032 §1). Each consumer boundary derives the scalar compatibility view
+/// on demand through `rumoca_eval_ast::connection::scalar_connection_view`
+/// instead of materializing a second copy of the whole overlay.
+/// Only classes that actually carry a compact family pay for a materialized
+/// scalar list; everything else borrows the stored slice.
+pub(crate) fn scalar_connections_of(
+    class_data: &ast::ClassInstanceData,
+) -> Result<std::borrow::Cow<'_, [ast::InstanceConnection]>, FlattenError> {
+    if !class_data
+        .connections
+        .iter()
+        .any(|connection| connection.family.is_some())
+    {
+        return Ok(std::borrow::Cow::Borrowed(&class_data.connections));
+    }
+    let mut connections = Vec::new();
+    for member in rumoca_eval_ast::connection::scalar_connection_view(&class_data.connections) {
+        connections.push(member.map_err(structured_connection_error)?.into_owned());
+    }
+    Ok(std::borrow::Cow::Owned(connections))
+}
+
+pub(crate) fn structured_connection_error(reason: String) -> FlattenError {
+    FlattenError::internal(format!("invalid structured connection: {reason}"))
 }
 
 fn seed_flat_functions_from_context(ctx: &Context, flat: &mut flat::Model) {

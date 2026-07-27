@@ -518,14 +518,18 @@ fn remap_residual_output_indices(
 
 fn residual_compute_node_output_indices(
     node: &solve::ComputeNode,
-    node_index: usize,
+    _node_index: usize,
     output_cursor: usize,
     span: rumoca_core::Span,
 ) -> Result<Vec<usize>, LowerError> {
     match node {
-        solve::ComputeNode::ScalarPrograms(block) => block
-            .compute_block_output_indices("implicit RHS residual remap", node_index, output_cursor)
-            .map_err(shape_contract_lower_error),
+        // Residual ScalarPrograms are emitted by `build_residual_compute_block`
+        // with indices in the residual-row coordinate system. In particular,
+        // an absolute prefix such as `[0, 1, ...]` is not a node-local output
+        // range merely because it starts at zero. Relocating that prefix after
+        // a preceding tensor node aliases later residual rows during the
+        // residual-to-implicit remap.
+        solve::ComputeNode::ScalarPrograms(block) => Ok(block.output_indices.clone()),
         solve::ComputeNode::Map {
             domain, output_map, ..
         }
@@ -857,6 +861,26 @@ mod tests {
 
         assert_eq!(block.compute_node_counts().matmul, 0);
         assert_eq!(block.len().map_err(shape_contract_lower_error)?, 4);
+        Ok(())
+    }
+
+    #[test]
+    fn residual_scalar_prefix_indices_remain_absolute_after_tensor_nodes() -> Result<(), LowerError>
+    {
+        let span = test_span();
+        let block = solve::ScalarProgramBlock::with_output_indices(
+            vec![zero_rhs_row(), zero_rhs_row()],
+            vec![span, span],
+            vec![0, 1],
+        )?;
+        let indices = residual_compute_node_output_indices(
+            &solve::ComputeNode::ScalarPrograms(block),
+            3,
+            250,
+            span,
+        )?;
+
+        assert_eq!(indices, vec![0, 1]);
         Ok(())
     }
 

@@ -343,15 +343,33 @@ pub(super) fn select_indices_for_dims(indices: &str, dims_len: usize) -> Option<
 
 /// Parse an index group like `"[2]"` into its integer value.
 fn parse_index_group_value(group: &str) -> Option<i64> {
-    let groups = balanced_index_groups(group)?;
-    let [group] = groups.as_slice() else {
+    let values = parse_literal_index_group_values(group)?;
+    let [value] = values.as_slice() else {
         return None;
     };
-    group[1..group.len() - 1].trim().parse().ok()
+    Some(*value)
 }
 
 pub(super) fn parse_single_index_group_value(group: &str) -> Option<i64> {
     parse_index_group_value(group)
+}
+
+/// Parse one bracket group containing scalar literal coordinates.
+///
+/// Modelica permits both `a[1,2]` and nested array indexing such as
+/// `a[1][2]`. Callers that reason about array rank must count the two
+/// coordinates in the first form separately rather than treating the whole
+/// bracket group as one dimension.
+pub(super) fn parse_literal_index_group_values(group: &str) -> Option<Vec<i64>> {
+    let groups = balanced_index_groups(group)?;
+    let [group] = groups.as_slice() else {
+        return None;
+    };
+    let values: Option<Vec<i64>> = group[1..group.len() - 1]
+        .split(',')
+        .map(|value| value.trim().parse().ok())
+        .collect();
+    values.filter(|values| !values.is_empty())
 }
 
 pub(super) fn compare_path_index_order(left: &str, right: &str) -> Ordering {

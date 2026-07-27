@@ -79,12 +79,53 @@ pub fn run(args: Args) -> Result<()> {
         .with_context(|| format!("failed to read {}", result_json.display()))?;
     println!("model: {}", response.result.model_name);
     println!("phase: {}", response.result.phase_reached);
+    if let Some(code) = &response.result.error_code {
+        println!("error_code: {code}");
+    }
     if let Some(error) = &response.result.error {
         println!("error: {error}");
     }
+    print_balance_breakdown(response.result.balance_detail.as_deref());
     println!("elapsed: {:.3}s", response.elapsed_secs);
     println!("artifacts: {}", output_dir.display());
     Ok(())
+}
+
+/// Print the ED001 component breakdown for a single model.
+///
+/// This is the documented one-model entry point that the MSL triage report's
+/// `reproduction` column points at: it names which unknown/equation partition
+/// dominates the gap, which balance clamps discarded rows (each clamp names a
+/// specific upstream analysis to audit), and how many continuous equation rows
+/// were filtered out of `f_x` and why.
+fn print_balance_breakdown(detail: Option<&rumoca_compile::analysis::BalanceDetail>) {
+    let Some(detail) = detail else {
+        return;
+    };
+    let (equations, unknowns) = detail.equations_unknowns();
+    println!(
+        "balance: {} ({equations} equations, {unknowns} unknowns)",
+        detail.balance()
+    );
+    println!("  dominant term: {}", detail.dominant_term());
+    print!("{detail}");
+    println!();
+    let clamps = detail.clamps();
+    if clamps.is_inert() {
+        println!("  clamps: none exercised");
+    } else {
+        println!("  clamps: {clamps}");
+        println!("  clamps exercised: {}", clamps.exercised().join(", "));
+    }
+    if detail.excluded.is_inert() {
+        println!("  excluded rows: none");
+    } else {
+        println!(
+            "  excluded rows ({}): {}",
+            detail.excluded.total(),
+            detail.excluded
+        );
+    }
 }
 
 fn ensure_msl_cache_exists(paths: &MslPaths) -> Result<()> {

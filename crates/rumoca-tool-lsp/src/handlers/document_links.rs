@@ -202,8 +202,12 @@ fn url_from_file_path(path: impl AsRef<Path>) -> Option<Url> {
     Url::parse(&format!("file://{}", normalized)).ok()
 }
 
+/// Convert a byte column within a line into an LSP UTF-16 column.
+///
+/// Counting `chars()` would produce Unicode **scalar** columns, which differ
+/// from UTF-16 columns for every astral character (emoji, `𝔸`, ...).
 fn byte_to_character(line: &str, byte_index: usize) -> u32 {
-    line[..byte_index.min(line.len())].chars().count() as u32
+    rumoca_lsp_position::byte_offset_to_position(line, byte_index).character
 }
 
 #[cfg(test)]
@@ -242,6 +246,23 @@ end M;
             }),
             "missing file link: {links:?}"
         );
+    }
+
+    #[test]
+    fn link_ranges_count_utf16_units_after_astral_char() {
+        // `𝔸` is one Unicode scalar but two UTF-16 units, so counting `chars()`
+        // would place the link one column too far left.
+        let source = "// 𝔸 https://example.com/docs\n";
+        let uri = Url::from_file_path(std::env::temp_dir().join("astral-links.mo")).expect("uri");
+        let links = handle_document_links(source, &uri);
+        assert_eq!(links.len(), 1, "expected one link: {links:?}");
+        let expected = rumoca_lsp_position::byte_offset_to_position(
+            source,
+            source.find("https://").expect("link start"),
+        );
+        assert_eq!(links[0].range.start, expected);
+        // `// ` (3) + `𝔸` (2 UTF-16 units) + ` ` (1) = column 6, not 5.
+        assert_eq!(links[0].range.start.character, 6);
     }
 
     #[test]

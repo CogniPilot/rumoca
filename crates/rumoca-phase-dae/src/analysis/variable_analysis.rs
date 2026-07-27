@@ -519,6 +519,33 @@ pub(crate) fn record_subscript_scalar_size(
     per_element.saturating_mul(selected)
 }
 
+/// Compute scalar size for a structured subscript on a record-array prefix.
+///
+/// Flat keeps record fields as scalarized descendants rather than a synthetic
+/// parent variable. Apply the structured slice to the record-array length,
+/// then multiply by the effective primitive-field count per element.
+pub(crate) fn structured_record_subscript_scalar_size(
+    base: &str,
+    subscripts: &[rumoca_core::Subscript],
+    total: usize,
+    flat: &Model,
+) -> Option<usize> {
+    let array_len = record_array_length(base, flat)?;
+    if array_len == 0 {
+        return Some(0);
+    }
+    let selected = crate::scalar_size::compute_subscripted_size_with_context(
+        &[array_len as i64],
+        subscripts,
+        flat,
+    )?;
+    if !total.is_multiple_of(array_len) {
+        return None;
+    }
+    let per_element = total / array_len;
+    Some(per_element.saturating_mul(selected))
+}
+
 pub(crate) fn infer_record_subscript_size_from_prefix_chain(
     var_name: &VarName,
     fallback_chain: Vec<VarName>,
@@ -1160,6 +1187,14 @@ impl FallibleExpressionVisitor for FlatFunctionCallValidator<'_> {
         args: &[Expression],
         is_constructor: bool,
     ) -> Result<(), Self::Error> {
+        let short_name = name.var_name().last_segment();
+        if !is_constructor && matches!(short_name, "actualStream" | "inStream") {
+            return Err(ToDaeError::unsupported_runtime_operator(
+                short_name,
+                "MLS §15.2 stream semantics must be lowered during Flat connection expansion",
+                self.inherited_span,
+            ));
+        }
         if !is_constructor {
             validate_function_call_name(
                 name.var_name(),
@@ -1240,7 +1275,7 @@ impl FallibleStatementVisitor for FlatFunctionCallValidator<'_> {
         &mut self,
         comp: &ComponentReference,
         args: &[Expression],
-        _outputs: &[ComponentReference],
+        _outputs: &[Option<ComponentReference>],
     ) -> Result<(), Self::Error> {
         let name = comp.to_var_name();
         validate_function_call_name(&name, self.flat, self.inherited_span, self.callable_formals)?;

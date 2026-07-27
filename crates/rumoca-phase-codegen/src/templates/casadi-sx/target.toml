@@ -5,6 +5,9 @@ description = "CasADi SX Python DAE export"
 execution_mode = "symbolic"
 deployment_class = "symbolic"
 
+[capabilities]
+runtime_events = false
+
 [[files]]
 path = "{{ model_name }}_casadi_sx.py"
 template = "casadi_sx.py.jinja"

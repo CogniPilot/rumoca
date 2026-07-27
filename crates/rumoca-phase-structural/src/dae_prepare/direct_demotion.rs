@@ -10,7 +10,7 @@ fn log_direct_demotion_scan_summary(
         return;
     }
     crate::structural_trace!(
-        "[sim-trace] direct-assignment-demotion scan: states={} candidates={} accepted={} skip_flow_sum_origin={} skip_unsafe_non_state_alias={} skip_when={} skip_always={} skip_self_der={} skip_der_in_defining_expr={} skip_unsliced_vector_ref={} skip_no_der={} skip_non_state_der={}",
+        "[sim-trace] direct-assignment-demotion scan: states={} candidates={} accepted={} skip_flow_sum_origin={} skip_unsafe_non_state_alias={} skip_when={} skip_always={} skip_self_der={} skip_der_in_defining_expr={} skip_nonsmooth_defining_expr={} skip_unsliced_vector_ref={} skip_no_der={} skip_non_state_der={}",
         state_count,
         counters.n_candidates,
         substitutions.len(),
@@ -20,6 +20,7 @@ fn log_direct_demotion_scan_summary(
         counters.n_skip_always_state,
         counters.n_skip_self_der,
         counters.n_skip_der_in_defining_expr,
+        counters.n_skip_nonsmooth_defining_expr,
         counters.n_skip_unsliced_vector_ref,
         counters.n_skip_no_der_expr,
         counters.n_skip_non_state_der
@@ -65,103 +66,126 @@ pub(super) fn equation_defining_expr_for_unknown(
         }
         return Some(eq.rhs.clone());
     }
-    if let Some((coef, remainder)) = split_linear_target(&eq.rhs, unknown_name, eq.span) {
-        let defining_expr = match coef {
-            1 => sub_expr(zero_expr(eq.span), remainder, eq.span),
-            -1 => remainder,
-            _ => return None,
-        };
-        if expression_contains_any_der_call(&defining_expr) {
-            return None;
-        }
-        return Some(defining_expr);
+    let defining_expr = residual_defining_expr(eq, unknown_name)?;
+    if expression_contains_any_der_call(&defining_expr) {
+        return None;
     }
-    None
+    Some(defining_expr)
 }
 
-fn unique_non_state_defining_expr_excluding(
-    definitions: &DefiningExprIndex,
-    unknown_name: &VarName,
-    excluded_eq_index: Option<usize>,
-) -> Option<Expression> {
-    let mut defining_exprs = definitions
-        .get(unknown_name.as_str())?
-        .iter()
-        .filter(|candidate| excluded_eq_index != Some(candidate.equation_index))
-        .map(|candidate| candidate.expr.clone());
-    let defining_expr = defining_exprs.next()?;
-    defining_exprs.next().is_none().then_some(defining_expr)
+/// Value-closure well-foundedness over defining expressions.
+///
+/// MLS Appendix B / SPEC_0003: variables that appear differentiated remain
+/// states, so a direct-assignment candidate is only a dummy trajectory when its
+/// defining expression resolves to a value that is *determined* and reaches no
+/// state.
+///
+/// "Determined" is a least fixpoint: a non-state unknown is settled once one of
+/// its invertible rows reads only parameters, constants, `time`, and already
+/// settled unknowns. Both halves of that matter.
+///
+/// * Taking *some* row rather than the only row is what lets the scan cross a
+///   connector node. A two-pin component states its current twice (`i =
+///   pin_p.i` and `i = -pin_n.i`) and a node states it again through the flow
+///   sum, so requiring a unique defining row refuses every current in an
+///   electrical circuit — including the constant excitation current a DC
+///   machine's flux is pinned to.
+/// * Requiring the fixpoint to close, rather than treating a cycle as
+///   harmless, is what keeps a free coordinate free. A translational flange
+///   position is defined only in terms of its neighbours' positions; that
+///   cycle never settles, and reading it as "no state found" would demote a
+///   mass position that nothing determines.
+struct AliasClosureScan<'a> {
+    definitions: &'a DefiningExprIndex,
+    state_name_set: &'a HashSet<String>,
+    non_state_unknown_names: &'a HashSet<String>,
+    excluded_eq_index: usize,
 }
 
-fn expr_depends_on_state_or_unsafe_non_state_alias(
-    definitions: &DefiningExprIndex,
-    expr: &Expression,
-    state_name_set: &HashSet<String>,
-    non_state_unknown_names: &HashSet<String>,
-    excluded_eq_index: Option<usize>,
-    visiting: &mut HashSet<String>,
-    alias_safety_cache: &mut AliasSafetyCache,
-) -> bool {
-    let mut refs = HashSet::new();
-    expr.collect_var_refs(&mut refs);
-    refs.into_iter().any(|ref_name| {
-        if state_name_set.contains(ref_name.as_str()) {
+impl AliasClosureScan<'_> {
+    fn value_is_undetermined_or_state_dependent(&self, defining_expr: &Expression) -> bool {
+        let Some(roots) = self.non_state_refs(defining_expr) else {
             return true;
-        }
-        if !non_state_unknown_names.contains(ref_name.as_str()) {
-            return false;
-        }
-        !non_state_alias_closure_is_state_free(
-            definitions,
-            &ref_name,
-            state_name_set,
-            non_state_unknown_names,
-            excluded_eq_index,
-            visiting,
-            alias_safety_cache,
-        )
-    })
-}
-
-fn non_state_alias_closure_is_state_free(
-    definitions: &DefiningExprIndex,
-    unknown_name: &VarName,
-    state_name_set: &HashSet<String>,
-    non_state_unknown_names: &HashSet<String>,
-    excluded_eq_index: Option<usize>,
-    visiting: &mut HashSet<String>,
-    alias_safety_cache: &mut AliasSafetyCache,
-) -> bool {
-    let cache_key = (unknown_name.as_str().to_string(), excluded_eq_index);
-    if let Some(is_safe) = alias_safety_cache.get(&cache_key) {
-        return *is_safe;
-    }
-    if !visiting.insert(unknown_name.as_str().to_string()) {
-        alias_safety_cache.insert(cache_key, false);
-        return false;
+        };
+        let reachable = self.reachable_closure(&roots);
+        let settled = self.settled_names(&reachable);
+        !roots.iter().all(|name| settled.contains(name.as_str()))
     }
 
-    let is_safe =
-        unique_non_state_defining_expr_excluding(definitions, unknown_name, excluded_eq_index)
-            .is_some_and(|defining_expr| {
-                // MLS Appendix B / SPEC_0003: variables appearing differentiated remain
-                // states. Alias-driven direct demotion is only sound when every
-                // referenced non-state unknown resolves through a unique, state-free
-                // closure.
-                !expr_depends_on_state_or_unsafe_non_state_alias(
-                    definitions,
-                    &defining_expr,
-                    state_name_set,
-                    non_state_unknown_names,
-                    excluded_eq_index,
-                    visiting,
-                    alias_safety_cache,
-                )
-            });
+    /// Non-state unknowns read by `expr`, or `None` if `expr` reads a state.
+    fn non_state_refs(&self, expr: &Expression) -> Option<IndexSet<VarName>> {
+        let mut refs = IndexSet::new();
+        expr.collect_var_refs(&mut refs);
+        let mut out = IndexSet::new();
+        for ref_name in refs {
+            if self.state_name_set.contains(ref_name.as_str()) {
+                return None;
+            }
+            if self.non_state_unknown_names.contains(ref_name.as_str()) {
+                out.insert(ref_name);
+            }
+        }
+        Some(out)
+    }
 
-    visiting.remove(unknown_name.as_str());
-    alias_safety_cache.insert(cache_key, is_safe);
-    is_safe
+    fn usable_candidates(&self, name: &VarName) -> impl Iterator<Item = &Expression> {
+        self.definitions
+            .get(name.as_str())
+            .into_iter()
+            .flatten()
+            .filter(|candidate| candidate.equation_index != self.excluded_eq_index)
+            .map(|candidate| &candidate.expr)
+    }
+
+    /// Every non-state unknown any defining row in the closure can read.
+    fn reachable_closure(&self, roots: &IndexSet<VarName>) -> IndexSet<VarName> {
+        let mut reachable = roots.clone();
+        let mut next = 0;
+        while next < reachable.len() {
+            let name = reachable
+                .get_index(next)
+                .expect("closure index is bounded by the set length")
+                .clone();
+            let mut refs = IndexSet::new();
+            for candidate in self.usable_candidates(&name) {
+                candidate.collect_var_refs(&mut refs);
+            }
+            reachable.extend(
+                refs.into_iter()
+                    .filter(|ref_name| self.non_state_unknown_names.contains(ref_name.as_str())),
+            );
+            next += 1;
+        }
+        reachable
+    }
+
+    fn settled_names(&self, reachable: &IndexSet<VarName>) -> HashSet<String> {
+        let mut settled: HashSet<String> = HashSet::new();
+        loop {
+            let newly_settled = reachable
+                .iter()
+                .filter(|name| !settled.contains(name.as_str()))
+                .filter(|name| self.has_settled_candidate(name, &settled))
+                .map(|name| name.as_str().to_string())
+                .collect::<Vec<_>>();
+            if newly_settled.is_empty() {
+                return settled;
+            }
+            settled.extend(newly_settled);
+        }
+    }
+
+    fn has_settled_candidate(&self, name: &VarName, settled: &HashSet<String>) -> bool {
+        self.usable_candidates(name).any(|candidate| {
+            let mut refs = IndexSet::new();
+            candidate.collect_var_refs(&mut refs);
+            refs.iter().all(|ref_name| {
+                !self.state_name_set.contains(ref_name.as_str())
+                    && (!self.non_state_unknown_names.contains(ref_name.as_str())
+                        || settled.contains(ref_name.as_str()))
+            })
+        })
+    }
 }
 
 fn defining_expr_references_unsafe_non_state_alias_closure(
@@ -170,18 +194,14 @@ fn defining_expr_references_unsafe_non_state_alias_closure(
     state_name_set: &HashSet<String>,
     non_state_unknown_names: &HashSet<String>,
     excluded_eq_index: usize,
-    alias_safety_cache: &mut AliasSafetyCache,
 ) -> bool {
-    let mut visiting = HashSet::new();
-    expr_depends_on_state_or_unsafe_non_state_alias(
+    AliasClosureScan {
         definitions,
-        defining_expr,
         state_name_set,
         non_state_unknown_names,
-        Some(excluded_eq_index),
-        &mut visiting,
-        alias_safety_cache,
-    )
+        excluded_eq_index,
+    }
+    .value_is_undetermined_or_state_dependent(defining_expr)
 }
 
 fn apply_direct_demotion_plans(
@@ -208,12 +228,88 @@ pub(super) fn apply_direct_demotion_plan(dae: &mut Dae, plan: &DirectStateDemoti
     0
 }
 
+/// Why a direct-assignment row was not turned into a demotion plan.
+///
+/// The scan summary only carries totals, which cannot say which state a given
+/// refusal belongs to. Naming the state next to the reason is what makes a
+/// single blocked index-reduction chain findable in a whole-library trace.
+#[derive(Clone, Copy)]
+enum DirectDemotionReject {
+    FlowSumOrigin,
+    WhenAssigned,
+    AlwaysState,
+    SelfDerDefiningExpr,
+    SelfDerReplacement,
+    DerInDefiningExpr,
+    NonsmoothDefiningExpr,
+    UnsafeNonStateAlias,
+    UnslicedVectorRef,
+    NonStateDer,
+}
+
+fn reject_direct_demotion(
+    round: &DirectDemotionRound<'_>,
+    counters: &mut DirectDemotionCounters,
+    state_name: &VarName,
+    reason: DirectDemotionReject,
+) -> Option<DirectStateDemotionPlan> {
+    let label = match reason {
+        DirectDemotionReject::FlowSumOrigin => {
+            counters.n_skip_flow_sum_origin += 1;
+            "flow_sum_origin"
+        }
+        DirectDemotionReject::WhenAssigned => {
+            counters.n_skip_when_assigned += 1;
+            "when_assigned"
+        }
+        DirectDemotionReject::AlwaysState => {
+            counters.n_skip_always_state += 1;
+            "state_select_always"
+        }
+        DirectDemotionReject::SelfDerDefiningExpr => {
+            counters.n_skip_self_der += 1;
+            "self_der_defining_expr"
+        }
+        DirectDemotionReject::SelfDerReplacement => {
+            counters.n_skip_self_der += 1;
+            "self_der_replacement"
+        }
+        DirectDemotionReject::DerInDefiningExpr => {
+            counters.n_skip_der_in_defining_expr += 1;
+            "der_in_defining_expr"
+        }
+        DirectDemotionReject::NonsmoothDefiningExpr => {
+            counters.n_skip_nonsmooth_defining_expr += 1;
+            "nonsmooth_defining_expr"
+        }
+        DirectDemotionReject::UnsafeNonStateAlias => {
+            counters.n_skip_unsafe_non_state_alias += 1;
+            "unsafe_non_state_alias"
+        }
+        DirectDemotionReject::UnslicedVectorRef => {
+            counters.n_skip_unsliced_vector_ref += 1;
+            "unsliced_vector_ref"
+        }
+        DirectDemotionReject::NonStateDer => {
+            counters.n_skip_non_state_der += 1;
+            "non_state_der"
+        }
+    };
+    if round.trace {
+        crate::structural_trace!(
+            "[sim-trace] direct-assignment rejected state={} reason={}",
+            state_name.as_str(),
+            label
+        );
+    }
+    None
+}
+
 fn direct_demotion_plan_for_equation(
     round: &DirectDemotionRound<'_>,
     eq_index: usize,
     eq: &Equation,
     counters: &mut DirectDemotionCounters,
-    alias_safety_cache: &mut AliasSafetyCache,
 ) -> Option<DirectStateDemotionPlan> {
     let (state_name, defining_expr) =
         extract_state_direct_assignment_equation(eq, &round.state_names, &round.state_name_set)?;
@@ -231,26 +327,68 @@ fn direct_demotion_plan_for_equation(
     };
     counters.n_candidates += 1;
     if eq.origin.starts_with("flow sum equation:") {
-        counters.n_skip_flow_sum_origin += 1;
-        return None;
+        return reject_direct_demotion(
+            round,
+            counters,
+            &state_name,
+            DirectDemotionReject::FlowSumOrigin,
+        );
     }
     log_direct_assignment_candidate(round.trace, counters, round.dae, eq, &state_name);
+    direct_demotion_plan_for_state(round, eq_index, &state_name, defining_expr, counters)
+}
+
+fn direct_demotion_plan_for_state(
+    round: &DirectDemotionRound<'_>,
+    eq_index: usize,
+    state_name: &VarName,
+    defining_expr: Expression,
+    counters: &mut DirectDemotionCounters,
+) -> Option<DirectStateDemotionPlan> {
     if round.when_assigned_states.contains(state_name.as_str()) {
-        counters.n_skip_when_assigned += 1;
-        return None;
+        return reject_direct_demotion(
+            round,
+            counters,
+            state_name,
+            DirectDemotionReject::WhenAssigned,
+        );
     }
-    let state = round.dae.variables.states.get(&state_name)?;
+    let state = round.dae.variables.states.get(state_name)?;
     if state.state_select == rumoca_core::StateSelect::Always {
-        counters.n_skip_always_state += 1;
-        return None;
+        return reject_direct_demotion(
+            round,
+            counters,
+            state_name,
+            DirectDemotionReject::AlwaysState,
+        );
     }
-    if expr_contains_der_of(&defining_expr, &state_name) {
-        counters.n_skip_self_der += 1;
-        return None;
+    if expr_contains_der_of(&defining_expr, state_name) {
+        return reject_direct_demotion(
+            round,
+            counters,
+            state_name,
+            DirectDemotionReject::SelfDerDefiningExpr,
+        );
     }
-    if !state_ders_in_expr_independently_defined(&defining_expr, &state_name, round) {
-        counters.n_skip_der_in_defining_expr += 1;
-        return None;
+    if !state_ders_in_expr_independently_defined(&defining_expr, state_name, round) {
+        return reject_direct_demotion(
+            round,
+            counters,
+            state_name,
+            DirectDemotionReject::DerInDefiningExpr,
+        );
+    }
+    if !super::state_row_reduction::expression_is_smooth_for_index_reduction(
+        &defining_expr,
+        round.dae,
+        &round.structural_bindings,
+    ) {
+        return reject_direct_demotion(
+            round,
+            counters,
+            state_name,
+            DirectDemotionReject::NonsmoothDefiningExpr,
+        );
     }
     // `der(state)` links are substituted symbolically on demotion (gated by
     // `state_ders_in_expr_independently_defined` above and validated again in
@@ -263,31 +401,57 @@ fn direct_demotion_plan_for_equation(
         &round.state_name_set,
         &round.non_state_unknown_names,
         eq_index,
-        alias_safety_cache,
     ) {
-        counters.n_skip_unsafe_non_state_alias += 1;
-        return None;
+        return reject_direct_demotion(
+            round,
+            counters,
+            state_name,
+            DirectDemotionReject::UnsafeNonStateAlias,
+        );
     }
     if state.size() > 1 || expr_contains_unsliced_vector_ref(&defining_expr, round.dae) {
         // MLS §10.1: array state shape is semantic IR. This path substitutes
         // whole `der(state)` calls, so unsliced compound states stay intact.
-        counters.n_skip_unsliced_vector_ref += 1;
-        return None;
+        return reject_direct_demotion(
+            round,
+            counters,
+            state_name,
+            DirectDemotionReject::UnslicedVectorRef,
+        );
     }
+    direct_demotion_replacement_plan(round, state_name, &defining_expr, counters)
+}
+
+/// Differentiate the accepted defining expression and check the result is a
+/// usable replacement for `der(state_name)`.
+fn direct_demotion_replacement_plan(
+    round: &DirectDemotionRound<'_>,
+    state_name: &VarName,
+    defining_expr: &Expression,
+    counters: &mut DirectDemotionCounters,
+) -> Option<DirectStateDemotionPlan> {
     let der_expr = choose_derivative_replacement(
-        &defining_expr,
+        defining_expr,
         &round.state_name_set,
         round.dae,
         &round.der_map,
         counters,
     )?;
-    if expr_contains_der_of(&der_expr, &state_name) {
-        counters.n_skip_self_der += 1;
-        return None;
+    if expr_contains_der_of(&der_expr, state_name) {
+        return reject_direct_demotion(
+            round,
+            counters,
+            state_name,
+            DirectDemotionReject::SelfDerReplacement,
+        );
     }
     if expr_contains_der_of_non_state(&der_expr, &round.state_name_set) {
-        counters.n_skip_non_state_der += 1;
-        return None;
+        return reject_direct_demotion(
+            round,
+            counters,
+            state_name,
+            DirectDemotionReject::NonStateDer,
+        );
     }
     if round.trace && counters.n_trace_logged_candidates < 16 {
         crate::structural_trace!(
@@ -298,7 +462,7 @@ fn direct_demotion_plan_for_equation(
         counters.n_trace_logged_candidates += 1;
     }
     Some(DirectStateDemotionPlan {
-        state_name,
+        state_name: state_name.clone(),
         der_expr,
     })
 }
@@ -336,19 +500,13 @@ fn collect_direct_demotion_plans(
         return Ok(HashMap::new());
     };
     structural_timing_done("direct_demotion.collect_round", timer);
-    let mut alias_safety_cache = AliasSafetyCache::new();
     let mut substitutions = HashMap::new();
     let mut counters = DirectDemotionCounters::default();
 
     let timer = structural_timing_start("direct_demotion.scan_equations");
     for (eq_index, eq) in round.dae.continuous.equations.iter().enumerate() {
-        let Some(plan) = direct_demotion_plan_for_equation(
-            &round,
-            eq_index,
-            eq,
-            &mut counters,
-            &mut alias_safety_cache,
-        ) else {
+        let Some(plan) = direct_demotion_plan_for_equation(&round, eq_index, eq, &mut counters)
+        else {
             continue;
         };
         substitutions

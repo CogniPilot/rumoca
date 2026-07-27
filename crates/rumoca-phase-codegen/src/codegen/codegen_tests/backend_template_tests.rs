@@ -1,6 +1,26 @@
 use super::*;
 
 #[test]
+fn test_dae_rhs_helpers_reject_missing_equations() {
+    let dae_json = serde_json::json!({ "f_x": [] });
+    let algebraic = r#"
+{% set cfg = {"prefix": "", "power": "powf", "float_literals": true, "subscript_underscore": true} %}
+{{ alg_rhs_for_var("missing_y", dae.f_x, cfg) }}
+"#;
+    let error = render_template_with_dae_json(&dae_json, algebraic)
+        .expect_err("missing algebraic equation must fail code generation");
+    assert!(error.to_string().contains("missing_y"));
+
+    let derivative = r#"
+{% set cfg = {"prefix": "", "power": "powf", "float_literals": true, "subscript_underscore": true} %}
+{{ ode_rhs_for_state("missing_x", dae.f_x, cfg) }}
+"#;
+    let error = render_template_with_dae_json(&dae_json, derivative)
+        .expect_err("missing derivative equation must fail code generation");
+    assert!(error.to_string().contains("missing_x"));
+}
+
+#[test]
 fn test_embedded_c_alg_rhs_indexes_common_array_binary_rhs() {
     let rhs = rumoca_core::Expression::Binary {
         op: rumoca_core::OpBinary::Sub,

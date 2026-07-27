@@ -1,5 +1,5 @@
 use super::*;
-use crate::helpers::location_to_range;
+use crate::helpers::location_to_range_in_optional_source;
 
 pub(super) fn is_hover_preview_candidate(ast: &ast::StoredDefinition, word: &str) -> bool {
     ast.classes.get(word).is_some_and(|class| {
@@ -12,17 +12,40 @@ pub(super) fn is_hover_preview_candidate(ast: &ast::StoredDefinition, word: &str
     })
 }
 
+/// Build a goto-definition response for a class declaration.
+///
+/// `target_source` is the text of the *declaration's* file when it is loaded;
+/// it is what turns the location's byte span into UTF-16 LSP columns. A target
+/// in an unopened file falls back to the lexer's character columns.
+/// [`class_target_definition`] with the target file's text pulled from the
+/// session snapshot, which is where its UTF-16 columns are measured.
+pub(super) fn class_target_definition_in_snapshot(
+    snapshot: &SessionSnapshot,
+    target_uri: &str,
+    declaration_location: &rumoca_compile::parsing::ir_core::Location,
+    fallback_uri: &Url,
+) -> Option<GotoDefinitionResponse> {
+    let source = snapshot.get_document(target_uri).map(|doc| doc.content);
+    class_target_definition(
+        target_uri,
+        declaration_location,
+        fallback_uri,
+        source.as_deref(),
+    )
+}
+
 pub(super) fn class_target_definition(
     target_uri: &str,
     declaration_location: &rumoca_compile::parsing::ir_core::Location,
     fallback_uri: &Url,
+    target_source: Option<&str>,
 ) -> Option<GotoDefinitionResponse> {
     let target_uri = Url::from_file_path(target_uri)
         .ok()
         .unwrap_or_else(|| fallback_uri.clone());
     Some(GotoDefinitionResponse::Scalar(Location {
         uri: target_uri,
-        range: location_to_range(declaration_location),
+        range: location_to_range_in_optional_source(target_source, declaration_location),
     }))
 }
 
@@ -91,104 +114,109 @@ fn class_type_keyword(class_type: &rumoca_compile::parsing::ir_core::ClassType) 
     }
 }
 
-pub(super) fn flattened_preview_for_model(
-    session: &mut Session,
+/// Render the hover markdown for an already-compiled model.
+///
+/// Pure formatting: the compile itself is owned by
+/// [`super::preview_cache`], which caches results and runs off the session
+/// write lock.
+pub(super) fn render_flattened_preview(
     model_name: &str,
-) -> Option<String> {
-    let mut report = session.compile_model_strict_reachable_uncached_with_recovery(model_name);
-    if !report.requested_succeeded() {
-        return None;
-    }
-    let Some(PhaseResult::Success(result)) = report.requested_result.take() else {
-        return None;
-    };
-
-    let mut lines = Vec::new();
-    lines.push(format!(
+    result: &rumoca_compile::compile::DaeCompilationResult,
+) -> String {
+    let dae = &result.dae;
+    let mut lines = vec![format!(
         "model={model_name} | f_x={} | f_z={} | f_m={} | m={} | balance={}",
-        result.dae.continuous.equations.len(),
-        result.dae.discrete.real_updates.len(),
-        result.dae.discrete.valued_updates.len(),
-        result.dae.variables.discrete_valued.len(),
+        dae.continuous.equations.len(),
+        dae.discrete.real_updates.len(),
+        dae.discrete.valued_updates.len(),
+        dae.variables.discrete_valued.len(),
         result.balance_detail.balance()
-    ));
-    lines.push(format!("f_x ({}):", result.dae.continuous.equations.len()));
-    for (idx, eq) in result.dae.continuous.equations.iter().take(6).enumerate() {
-        let lhs = eq
-            .lhs
-            .as_ref()
-            .map(ToString::to_string)
-            .unwrap_or_else(|| "0".to_string());
-        let rhs = truncate_debug(&eq.rhs, 140);
-        lines.push(format!("  {idx}: {lhs} = {rhs}"));
-    }
-    push_more_equations_line(&mut lines, result.dae.continuous.equations.len(), 6, "f_x");
-    lines.push(format!("f_z ({}):", result.dae.discrete.real_updates.len()));
-    for (idx, eq) in result.dae.discrete.real_updates.iter().take(4).enumerate() {
-        let lhs = eq
-            .lhs
-            .as_ref()
-            .map(ToString::to_string)
-            .unwrap_or_else(|| "0".to_string());
-        let rhs = truncate_debug(&eq.rhs, 140);
-        lines.push(format!("  {idx}: {lhs} = {rhs}"));
-    }
-    push_more_equations_line(&mut lines, result.dae.discrete.real_updates.len(), 4, "f_z");
-    lines.push(format!(
-        "f_m ({}):",
-        result.dae.discrete.valued_updates.len()
-    ));
-    for (idx, eq) in result
-        .dae
-        .discrete
-        .valued_updates
-        .iter()
-        .take(4)
-        .enumerate()
-    {
-        let lhs = eq
-            .lhs
-            .as_ref()
-            .map(ToString::to_string)
-            .unwrap_or_else(|| "0".to_string());
-        let rhs = truncate_debug(&eq.rhs, 140);
-        lines.push(format!("  {idx}: {lhs} = {rhs}"));
-    }
-    push_more_equations_line(
+    )];
+    push_equation_block(
         &mut lines,
-        result.dae.discrete.valued_updates.len(),
-        4,
-        "f_m",
+        "f_x",
+        &dae.continuous.equations,
+        6,
+        |idx, eq| render_equation_line(idx, eq.lhs.as_ref().map(ToString::to_string), &eq.rhs),
     );
-    if !result.dae.variables.discrete_valued.is_empty() {
-        lines.push("m (discrete-valued variables):".to_string());
-        for (idx, (name, var)) in result
-            .dae
-            .variables
-            .discrete_valued
-            .iter()
-            .take(6)
-            .enumerate()
-        {
-            let start = var
-                .start
-                .as_ref()
-                .map(|expr| truncate_debug(expr, 80))
-                .unwrap_or_else(|| "<none>".to_string());
-            lines.push(format!("{idx}: {name} start={start}"));
-        }
-        if result.dae.variables.discrete_valued.len() > 6 {
-            lines.push(format!(
-                "... {} more discrete-valued variables",
-                result.dae.variables.discrete_valued.len() - 6
-            ));
-        }
-    }
+    push_equation_block(
+        &mut lines,
+        "f_z",
+        &dae.discrete.real_updates,
+        4,
+        |idx, eq| render_equation_line(idx, eq.lhs.as_ref().map(ToString::to_string), &eq.rhs),
+    );
+    push_equation_block(
+        &mut lines,
+        "f_m",
+        &dae.discrete.valued_updates,
+        4,
+        |idx, eq| render_equation_line(idx, eq.lhs.as_ref().map(ToString::to_string), &eq.rhs),
+    );
+    let discrete_valued = &dae.variables.discrete_valued;
+    push_discrete_valued_block(
+        &mut lines,
+        discrete_valued.len(),
+        discrete_valued.iter(),
+        6,
+        |var| match var.start.as_ref() {
+            Some(expr) => truncate_debug(expr, 80),
+            None => "<none>".to_string(),
+        },
+    );
 
-    Some(format!(
+    format!(
         "**Flattened DAE Preview**\n\n```text\n{}\n```",
         lines.join("\n")
-    ))
+    )
+}
+
+fn render_equation_line<R: std::fmt::Debug>(idx: usize, lhs: Option<String>, rhs: &R) -> String {
+    let lhs = match lhs {
+        Some(rendered) => rendered,
+        None => "0".to_string(),
+    };
+    format!("  {idx}: {lhs} = {}", truncate_debug(rhs, 140))
+}
+
+fn push_equation_block<E>(
+    lines: &mut Vec<String>,
+    label: &str,
+    equations: &[E],
+    limit: usize,
+    render: impl Fn(usize, &E) -> String,
+) {
+    lines.push(format!("{label} ({}):", equations.len()));
+    for (idx, eq) in equations.iter().take(limit).enumerate() {
+        lines.push(render(idx, eq));
+    }
+    push_more_equations_line(lines, equations.len(), limit, label);
+}
+
+fn push_discrete_valued_block<'a, K, V, I>(
+    lines: &mut Vec<String>,
+    total: usize,
+    entries: I,
+    limit: usize,
+    render_start: impl Fn(&V) -> String,
+) where
+    K: std::fmt::Display + 'a,
+    V: 'a,
+    I: Iterator<Item = (&'a K, &'a V)>,
+{
+    if total == 0 {
+        return;
+    }
+    lines.push("m (discrete-valued variables):".to_string());
+    for (idx, (name, var)) in entries.take(limit).enumerate() {
+        lines.push(format!("{idx}: {name} start={}", render_start(var)));
+    }
+    if total > limit {
+        lines.push(format!(
+            "... {} more discrete-valued variables",
+            total - limit
+        ));
+    }
 }
 
 fn push_more_equations_line(lines: &mut Vec<String>, total: usize, shown: usize, label: &str) {

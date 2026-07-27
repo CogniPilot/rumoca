@@ -203,26 +203,10 @@ pub(crate) fn eval_boolean_binary_op(
             let r = try_eval_boolean_with_ctx_inner(rhs, ctx, prefix)?;
             Some(l || r)
         }
-        rumoca_core::OpBinary::Lt => {
-            let l = try_eval_integer_for_comparison(ctx, lhs, prefix)?;
-            let r = try_eval_integer_for_comparison(ctx, rhs, prefix)?;
-            Some(l < r)
-        }
-        rumoca_core::OpBinary::Le => {
-            let l = try_eval_integer_for_comparison(ctx, lhs, prefix)?;
-            let r = try_eval_integer_for_comparison(ctx, rhs, prefix)?;
-            Some(l <= r)
-        }
-        rumoca_core::OpBinary::Gt => {
-            let l = try_eval_integer_for_comparison(ctx, lhs, prefix)?;
-            let r = try_eval_integer_for_comparison(ctx, rhs, prefix)?;
-            Some(l > r)
-        }
-        rumoca_core::OpBinary::Ge => {
-            let l = try_eval_integer_for_comparison(ctx, lhs, prefix)?;
-            let r = try_eval_integer_for_comparison(ctx, rhs, prefix)?;
-            Some(l >= r)
-        }
+        rumoca_core::OpBinary::Lt => eval_ordering(ctx, lhs, rhs, prefix, |l, r| l < r),
+        rumoca_core::OpBinary::Le => eval_ordering(ctx, lhs, rhs, prefix, |l, r| l <= r),
+        rumoca_core::OpBinary::Gt => eval_ordering(ctx, lhs, rhs, prefix, |l, r| l > r),
+        rumoca_core::OpBinary::Ge => eval_ordering(ctx, lhs, rhs, prefix, |l, r| l >= r),
         rumoca_core::OpBinary::Eq => eval_equality(lhs, rhs, ctx, prefix, true),
         rumoca_core::OpBinary::Neq => eval_equality(lhs, rhs, ctx, prefix, false),
         _ => None,
@@ -321,6 +305,95 @@ pub(crate) fn try_resolve_enum_value(
         }
         _ => None,
     }
+}
+
+/// Evaluate an ordering comparison, preferring exact integers and falling back
+/// to Real operands.
+///
+/// MLS §3.5 orders Integer and Real alike, and Modelica code guards structural
+/// choices on Real parameters as readily as on Integer ones — MSL's
+/// `Thermal.FluidHeatFlow.BaseClasses.TwoPort` switches its energy balance on
+/// `m > Modelica.Constants.small`. Without the Real fallback such a condition is
+/// simply undecidable here, so the if-equation survives as a runtime
+/// conditional.
+fn eval_ordering(
+    ctx: Option<&Context>,
+    lhs: &ast::Expression,
+    rhs: &ast::Expression,
+    prefix: &ast::QualifiedName,
+    compare: fn(f64, f64) -> bool,
+) -> Option<bool> {
+    if let (Some(l), Some(r)) = (
+        try_eval_integer_for_comparison(ctx, lhs, prefix),
+        try_eval_integer_for_comparison(ctx, rhs, prefix),
+    ) {
+        return Some(compare(l as f64, r as f64));
+    }
+    let l = try_eval_real_for_comparison(ctx, lhs, prefix)?;
+    let r = try_eval_real_for_comparison(ctx, rhs, prefix)?;
+    (l.is_finite() && r.is_finite()).then(|| compare(l, r))
+}
+
+/// Try to evaluate a Real expression for comparison purposes.
+///
+/// Mirrors [`try_eval_integer_for_comparison`]'s shapes; Integer operands are
+/// admitted because MLS §10.6.13 promotes them to Real in a mixed comparison.
+fn try_eval_real_for_comparison(
+    ctx: Option<&Context>,
+    expr: &ast::Expression,
+    prefix: &ast::QualifiedName,
+) -> Option<f64> {
+    match expr {
+        ast::Expression::Terminal {
+            terminal_type: ast::TerminalType::UnsignedReal,
+            token,
+            ..
+        } => token.text.parse::<f64>().ok(),
+        ast::Expression::Terminal {
+            terminal_type: ast::TerminalType::UnsignedInteger,
+            token,
+            ..
+        } => token.text.parse::<f64>().ok(),
+        ast::Expression::ComponentReference(cr) => {
+            let ctx = ctx?;
+            let cref_name = cr.to_string();
+            scoped_lookup_real_param(ctx, &cref_name, prefix).or_else(|| {
+                scoped_lookup_integer_param(ctx, &cref_name, prefix).map(|value| value as f64)
+            })
+        }
+        ast::Expression::Unary {
+            op: rumoca_core::OpUnary::Minus,
+            rhs,
+            ..
+        } => try_eval_real_for_comparison(ctx, rhs, prefix).map(|value| -value),
+        ast::Expression::Parenthesized { inner, .. } => {
+            try_eval_real_for_comparison(ctx, inner, prefix)
+        }
+        _ => None,
+    }
+}
+
+fn scoped_lookup_real_param(ctx: &Context, name: &str, prefix: &ast::QualifiedName) -> Option<f64> {
+    let name_path = rumoca_core::ComponentPath::from_flat_path(name);
+    let scope_path = prefix.to_component_path();
+    for candidate in rumoca_core::scoped_component_path_candidates(&name_path, &scope_path) {
+        if let Some(value) = lookup_real_exact_or_unindexed(ctx, &candidate) {
+            return Some(value);
+        }
+    }
+    lookup_real_exact_or_unindexed(ctx, name)
+}
+
+fn lookup_real_exact_or_unindexed(ctx: &Context, key: &str) -> Option<f64> {
+    if let Some(value) = ctx.real_parameter_values.get(key).copied() {
+        return Some(value);
+    }
+    for candidate in crate::path_utils::unindexed_lookup_variants(key) {
+        if let Some(value) = ctx.real_parameter_values.get(&candidate).copied() {
+            return Some(value);
+        }
+    }
+    None
 }
 
 /// Try to evaluate an integer expression for comparison purposes.

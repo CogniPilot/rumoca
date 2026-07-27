@@ -43,6 +43,7 @@ impl ExpressionTransformer for QualifyReplaceableFunctionModifier<'_> {
         &mut self,
         comp: rumoca_ir_ast::ComponentReference,
         args: Vec<rumoca_ir_ast::Expression>,
+        is_partial_application: bool,
         span: rumoca_core::Span,
     ) -> rumoca_ir_ast::Expression {
         rumoca_ir_ast::Expression::FunctionCall {
@@ -51,6 +52,7 @@ impl ExpressionTransformer for QualifyReplaceableFunctionModifier<'_> {
                 .into_iter()
                 .map(|arg| self.transform_expression(arg))
                 .collect(),
+            is_partial_application,
             span,
         }
     }
@@ -417,6 +419,7 @@ impl ExpressionTransformer for MemberFunctionCallMarker<'_> {
         &mut self,
         comp: rumoca_ir_ast::ComponentReference,
         args: Vec<rumoca_ir_ast::Expression>,
+        is_partial_application: bool,
         span: rumoca_core::Span,
     ) -> rumoca_ir_ast::Expression {
         let comp = self.transform_component_ref_inner(comp);
@@ -427,6 +430,7 @@ impl ExpressionTransformer for MemberFunctionCallMarker<'_> {
                 .into_iter()
                 .map(|arg| self.transform_expression(arg))
                 .collect(),
+            is_partial_application,
             span,
         }
     }

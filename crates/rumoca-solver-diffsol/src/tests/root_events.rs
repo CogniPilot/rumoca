@@ -214,6 +214,143 @@ fn state_only_bdf_uses_search_values_for_parameter_static_roots() {
     );
 }
 
+/// `Modelica.Blocks.Math.Mean` in a rectifier samples at exactly the diode
+/// commutation instants. MLS 3.7 §8.5 handles every event at one instant in a
+/// single event iteration, so the zero-crossing must not consume the instant on
+/// its own: the sampled `y_last = f*pre(x)` (with `reinit(x, 0)` in the same
+/// `when`) has to see the pre-event integrator state, not the value the root's
+/// right-limit application left behind.
+///
+/// The `when sample(...)` body is only active *at* the tick, so an application
+/// at the root's right limit leaves `y_last` at its start value.
+#[test]
+fn scheduled_sample_still_fires_when_a_root_lands_on_its_instant() {
+    let result = simulate(
+        &sampled_mean_with_coincident_root(),
+        &SimOptions {
+            t_end: 0.1,
+            // The sample instant is deliberately off the output grid: an output
+            // point at 0.05 would pull the root's own application time onto the
+            // instant and hide the defect.
+            dt: Some(0.003),
+            ..Default::default()
+        },
+    )
+    .expect("a root at the sample instant must not swallow the scheduled event");
+
+    let y_last = result.data[1]
+        .last()
+        .copied()
+        .expect("the sampled mean should be recorded");
+    assert!(
+        (y_last - 5.0).abs() <= 1.0e-3,
+        "sampled mean should be 100*pre(x)=5 at t=0.05, got {y_last}; times={:?} y_last={:?}",
+        result.times,
+        result.data[1]
+    );
+}
+
+/// `der(x) = 1`, a zero-crossing of `x - 0.05` (so the root instant is exactly
+/// `t = 0.05`), and a single scheduled tick at `t = 0.05` whose `when` body sets
+/// `y_last = 100*pre(x)` and reinitialises `x` to 0.
+fn sampled_mean_with_coincident_root() -> solve::SolveModel {
+    let mut model = rising_state_with_root_reinit();
+    model.problem.clocks.periodic_event_schedules = vec![solve::PeriodicEventSchedule {
+        phase_seconds: 0.05,
+        period_seconds: 10.0,
+    }];
+    model.problem.solve_layout.parameter_count = 0;
+    model.problem.solve_layout.compiled_parameter_len = 2;
+    model.problem.solve_layout.discrete_real_scalar_names = vec!["y_last".to_string()];
+    // p[1] is the `pre(x)` slot the sampled row reads; p[0] is `y_last`.
+    model.problem.solve_layout.pre_param_bindings = vec![solve::PreParamBinding {
+        dest_p_index: 1,
+        source: solve::PreParamSource::Y { index: 0 },
+        clock_schedule: None,
+    }];
+    model.problem.discrete.update_targets = vec![solve::scalar_slot_y(0), solve::scalar_slot_p(0)];
+    model.problem.discrete.pre_modes = vec![
+        solve::DiscreteEventPreMode::FollowCurrent,
+        solve::DiscreteEventPreMode::Fixed,
+    ];
+    model.problem.discrete.rhs = sampled_mean_discrete_rhs();
+    model.parameters = vec![0.0, 0.0];
+    model.visible_names = vec!["x".to_string(), "y_last".to_string()];
+    model
+}
+
+/// Row 0: `x = if <sampled> then 0 else x` (the `reinit`).
+/// Row 1: `y_last = if <sampled> then 100*pre(x) else y_last`.
+///
+/// `<sampled>` is `time == 0.05 and y_last == 0`. `when sample(...)` bodies are
+/// active only *at* the tick, so an application at the root's right limit does
+/// not satisfy them; the `y_last == 0` conjunct stands in for the edge, keeping
+/// the body single-shot.
+fn sampled_mean_discrete_rhs() -> solve::ScalarProgramBlock {
+    // r0 = time, r1 = 0.05, r2 = time == tick, r3 = y_last, r4 = 0,
+    // r5 = y_last == 0, r6 = <sampled>.
+    let sampled = vec![
+        solve::LinearOp::LoadTime { dst: 0 },
+        solve::LinearOp::Const {
+            dst: 1,
+            value: 0.05,
+        },
+        solve::LinearOp::Compare {
+            dst: 2,
+            op: solve::CompareOp::Eq,
+            lhs: 0,
+            rhs: 1,
+        },
+        solve::LinearOp::LoadP { dst: 3, index: 0 },
+        solve::LinearOp::Const { dst: 4, value: 0.0 },
+        solve::LinearOp::Compare {
+            dst: 5,
+            op: solve::CompareOp::Eq,
+            lhs: 3,
+            rhs: 4,
+        },
+        solve::LinearOp::Binary {
+            dst: 6,
+            op: solve::BinaryOp::And,
+            lhs: 2,
+            rhs: 5,
+        },
+    ];
+    let mut reinit_row = sampled.clone();
+    reinit_row.extend([
+        solve::LinearOp::LoadY { dst: 7, index: 0 },
+        solve::LinearOp::Select {
+            dst: 8,
+            cond: 6,
+            if_true: 4,
+            if_false: 7,
+        },
+        solve::LinearOp::StoreOutput { src: 8 },
+    ]);
+    let mut mean_row = sampled;
+    mean_row.extend([
+        solve::LinearOp::LoadP { dst: 7, index: 1 },
+        solve::LinearOp::Const {
+            dst: 8,
+            value: 100.0,
+        },
+        solve::LinearOp::Binary {
+            dst: 9,
+            op: solve::BinaryOp::Mul,
+            lhs: 8,
+            rhs: 7,
+        },
+        solve::LinearOp::Select {
+            dst: 10,
+            cond: 6,
+            if_true: 9,
+            if_false: 3,
+        },
+        solve::LinearOp::StoreOutput { src: 10 },
+    ]);
+    solve::ScalarProgramBlock::with_source_span(vec![reinit_row, mean_row], fixture_span!())
+}
+
 fn rising_state_with_root_reinit() -> solve::SolveModel {
     let rhs = solve::ScalarProgramBlock::with_source_span(
         vec![vec![
@@ -234,7 +371,7 @@ fn rising_state_with_root_reinit() -> solve::SolveModel {
     model.problem.continuous.implicit_rhs =
         solve::ComputeBlock::from_scalar_program_block(rhs.clone());
     model.problem.continuous.implicit_row_targets = vec![Some(solve::scalar_slot_y(0))];
-    model.artifacts.continuous.mass_matrix = vec![vec![1.0]];
+    model.artifacts.continuous.mass_matrix = solve::MassMatrix::Identity;
     model.artifacts.continuous.implicit_jacobian_v =
         solve::ComputeBlock::from_scalar_program_block(zero.clone());
     model.problem.solve_layout.state_scalar_count = 1;
@@ -297,7 +434,7 @@ fn falling_ball_with_strict_reinit_guard() -> solve::SolveModel {
         solve::ComputeBlock::from_scalar_program_block(rhs.clone());
     model.problem.continuous.implicit_row_targets =
         vec![Some(solve::scalar_slot_y(0)), Some(solve::scalar_slot_y(1))];
-    model.artifacts.continuous.mass_matrix = vec![vec![1.0, 0.0], vec![0.0, 1.0]];
+    model.artifacts.continuous.mass_matrix = solve::MassMatrix::Identity;
     model.artifacts.continuous.implicit_jacobian_v =
         solve::ComputeBlock::from_scalar_program_block(zero.clone());
     model.problem.solve_layout.state_scalar_count = 2;
@@ -311,10 +448,12 @@ fn falling_ball_with_strict_reinit_guard() -> solve::SolveModel {
         solve::PreParamBinding {
             dest_p_index: 0,
             source: solve::PreParamSource::Y { index: 0 },
+            clock_schedule: None,
         },
         solve::PreParamBinding {
             dest_p_index: 1,
             source: solve::PreParamSource::Y { index: 1 },
+            clock_schedule: None,
         },
     ];
     model.problem.events.root_conditions = solve::ScalarProgramBlock::with_source_span(

@@ -5,6 +5,13 @@ use serde::{Deserialize, Serialize};
 
 const F64_BYTES: usize = std::mem::size_of::<f64>();
 
+fn intern_key_map<T>(values: IndexMap<String, T>) -> IndexMap<VarName, T> {
+    values
+        .into_iter()
+        .map(|(name, value)| (VarName::new(name), value))
+        .collect()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum ScalarSlot {
     Time,
@@ -15,13 +22,13 @@ pub enum ScalarSlot {
 
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct VarLayout {
-    bindings: IndexMap<String, ScalarSlot>,
+    bindings: IndexMap<VarName, ScalarSlot>,
     #[serde(default)]
-    shapes: IndexMap<String, Vec<usize>>,
+    shapes: IndexMap<VarName, Vec<usize>>,
     #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
-    shape_spans: IndexMap<String, Span>,
+    shape_spans: IndexMap<VarName, Span>,
     #[serde(skip)]
-    shape_indexed_keys: IndexMap<String, ComponentReferenceKey>,
+    shape_indexed_keys: IndexMap<VarName, ComponentReferenceKey>,
     #[serde(skip)]
     indexed_bindings: IndexMap<ComponentReferenceKey, Vec<IndexedScalarSlot>>,
     y_scalars: usize,
@@ -39,9 +46,20 @@ pub enum ComponentReferenceKey {
     },
 }
 
+/// One member step of a [`ComponentReferenceKey::Source`] path.
+///
+/// `ident` is interned: the solver layout is keyed by these parts, so the
+/// member name must hash as an id rather than as text. `VarName` serializes and
+/// deserializes as its spelling, so the on-disk Solve IR shape is unchanged —
+/// text crosses the process boundary, ids are used inside it.
+///
+/// This is the member *name*, not a member `DefId`: `ComponentReference`
+/// carries a single `def_id` for the whole chain and no per-part id exists to
+/// hold yet. Completing that is the remaining half of the (DefId, flat-offset)
+/// layout identity.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ComponentReferenceKeyPart {
-    pub ident: String,
+    pub ident: VarName,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub subscripts: Vec<ComponentReferenceSubscriptKey>,
 }
@@ -106,7 +124,7 @@ impl ComponentReferenceKey {
                     .map(component_reference_subscript_key)
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(ComponentReferenceKeyPart {
-                    ident: part.ident.clone(),
+                    ident: VarName::intern(&part.ident),
                     subscripts,
                 })
             })
@@ -245,7 +263,7 @@ impl VarLayout {
         p_scalars: usize,
     ) -> Self {
         Self {
-            bindings,
+            bindings: intern_key_map(bindings),
             shapes: IndexMap::new(),
             shape_spans: IndexMap::new(),
             shape_indexed_keys: IndexMap::new(),
@@ -277,6 +295,9 @@ impl VarLayout {
         y_scalars: usize,
         p_scalars: usize,
     ) -> Result<Self, VarLayoutShapeContractError> {
+        let bindings = intern_key_map(bindings);
+        let shapes = intern_key_map(shapes);
+        let shape_spans = intern_key_map(shape_spans);
         let indexed_bindings =
             indexed_bindings_from_shapes(&bindings, &shapes, &shape_spans, y_scalars, p_scalars)?;
         let shape_indexed_keys = generated_shape_indexed_keys(&shapes, &indexed_bindings);
@@ -340,11 +361,15 @@ impl VarLayout {
         bindings: IndexMap<String, ScalarSlot>,
         shapes: IndexMap<String, Vec<usize>>,
         shape_spans: IndexMap<String, Span>,
-        mut shape_indexed_keys: IndexMap<String, ComponentReferenceKey>,
+        shape_indexed_keys: IndexMap<String, ComponentReferenceKey>,
         indexed_bindings: IndexMap<ComponentReferenceKey, Vec<IndexedScalarSlot>>,
         y_scalars: usize,
         p_scalars: usize,
     ) -> Result<Self, VarLayoutShapeContractError> {
+        let bindings = intern_key_map(bindings);
+        let shapes = intern_key_map(shapes);
+        let shape_spans = intern_key_map(shape_spans);
+        let mut shape_indexed_keys = intern_key_map(shape_indexed_keys);
         for (name, key) in generated_shape_indexed_keys(&shapes, &indexed_bindings) {
             shape_indexed_keys.entry(name).or_insert(key);
         }
@@ -368,7 +393,7 @@ impl VarLayout {
         })
     }
 
-    pub fn bindings(&self) -> &IndexMap<String, ScalarSlot> {
+    pub fn bindings(&self) -> &IndexMap<VarName, ScalarSlot> {
         &self.bindings
     }
 
@@ -377,7 +402,8 @@ impl VarLayout {
     }
 
     pub fn binding(&self, name: &str) -> Option<ScalarSlot> {
-        if let Some(slot) = self.bindings.get(name).copied() {
+        let name = VarName::intern(name);
+        if let Some(slot) = self.bindings.get(&name).copied() {
             return Some(slot);
         }
         // Fall back to deriving an array element's slot from its base slot + shape.
@@ -385,7 +411,7 @@ impl VarLayout {
         // `base + flat_index(i,j)` — no need to materialize a `bindings` entry per
         // element. (Constant arrays hold distinct per-element values and are not
         // derivable this way; their elements stay in `bindings`.)
-        self.derive_array_element_binding(name)
+        self.derive_array_element_binding(name.as_str())
     }
 
     /// Derive an array element's `ScalarSlot` from its base slot + shape, for a
@@ -394,18 +420,19 @@ impl VarLayout {
     /// subscript is out of bounds.
     fn derive_array_element_binding(&self, name: &str) -> Option<ScalarSlot> {
         let scalar = rumoca_core::parse_scalar_name(name)?;
-        let root = self.bindings.get(scalar.base).copied()?;
-        let dims = self.shapes.get(scalar.base)?;
+        let base = VarName::intern(scalar.base);
+        let root = self.bindings.get(&base).copied()?;
+        let dims = self.shapes.get(&base)?;
         let flat = row_major_flat_index(&scalar.indices, dims)?;
         offset_contiguous_slot(root, flat)
     }
 
     pub fn shape(&self, name: &str) -> Option<&[usize]> {
-        self.shapes.get(name).map(Vec::as_slice)
+        self.shapes.get(&VarName::intern(name)).map(Vec::as_slice)
     }
 
     pub fn shape_span(&self, name: &str) -> Option<Span> {
-        self.shape_spans.get(name).copied()
+        self.shape_spans.get(&VarName::intern(name)).copied()
     }
 
     pub fn y_scalars(&self) -> usize {
@@ -430,10 +457,10 @@ impl VarLayout {
 }
 
 fn validate_shape_contract(
-    bindings: &IndexMap<String, ScalarSlot>,
-    shapes: &IndexMap<String, Vec<usize>>,
-    shape_spans: &IndexMap<String, Span>,
-    shape_indexed_keys: &IndexMap<String, ComponentReferenceKey>,
+    bindings: &IndexMap<VarName, ScalarSlot>,
+    shapes: &IndexMap<VarName, Vec<usize>>,
+    shape_spans: &IndexMap<VarName, Span>,
+    shape_indexed_keys: &IndexMap<VarName, ComponentReferenceKey>,
     indexed_bindings: &IndexMap<ComponentReferenceKey, Vec<IndexedScalarSlot>>,
     y_scalars: usize,
     p_scalars: usize,
@@ -443,7 +470,7 @@ fn validate_shape_contract(
         let span = shape_span(name, shape_spans)?;
         if shape.is_empty() {
             return Err(VarLayoutShapeContractError::EmptyShape {
-                variable: name.clone(),
+                variable: name.to_string(),
                 span,
             });
         }
@@ -454,7 +481,7 @@ fn validate_shape_contract(
         }
         let Some(slot) = bindings.get(name).copied() else {
             return Err(VarLayoutShapeContractError::ShapeWithoutBinding {
-                variable: name.clone(),
+                variable: name.to_string(),
                 span,
             });
         };
@@ -473,14 +500,14 @@ fn validate_shape_contract(
             }
             ScalarSlot::Time => {
                 return Err(VarLayoutShapeContractError::ShapeWithoutBinding {
-                    variable: name.clone(),
+                    variable: name.to_string(),
                     span,
                 });
             }
         };
         if slot_range_end(start, count).is_none_or(|end| end > available) {
             return Err(VarLayoutShapeContractError::ShapeOutOfBounds {
-                variable: name.clone(),
+                variable: name.to_string(),
                 start,
                 count,
                 available,
@@ -492,8 +519,8 @@ fn validate_shape_contract(
 }
 
 fn validate_shape_span_metadata(
-    shapes: &IndexMap<String, Vec<usize>>,
-    shape_spans: &IndexMap<String, Span>,
+    shapes: &IndexMap<VarName, Vec<usize>>,
+    shape_spans: &IndexMap<VarName, Span>,
 ) -> Result<(), VarLayoutShapeContractError> {
     if shape_spans.is_empty() {
         return Ok(());
@@ -501,7 +528,7 @@ fn validate_shape_span_metadata(
     for (name, span) in shape_spans {
         if !shapes.contains_key(name) {
             return Err(VarLayoutShapeContractError::ShapeSpanWithoutShape {
-                variable: name.clone(),
+                variable: name.to_string(),
                 span: *span,
             });
         }
@@ -509,7 +536,7 @@ fn validate_shape_span_metadata(
     for name in shapes.keys() {
         if !shape_spans.contains_key(name) {
             return Err(VarLayoutShapeContractError::ShapeSpanMissing {
-                variable: name.clone(),
+                variable: name.to_string(),
             });
         }
     }
@@ -517,8 +544,8 @@ fn validate_shape_span_metadata(
 }
 
 fn shape_span(
-    name: &str,
-    shape_spans: &IndexMap<String, Span>,
+    name: &VarName,
+    shape_spans: &IndexMap<VarName, Span>,
 ) -> Result<Option<Span>, VarLayoutShapeContractError> {
     if shape_spans.is_empty() {
         return Ok(None);
@@ -531,7 +558,7 @@ fn shape_span(
 }
 
 fn shape_scalar_count(
-    name: &str,
+    name: &VarName,
     shape: &[usize],
     span: Option<Span>,
 ) -> Result<usize, VarLayoutShapeContractError> {
@@ -549,9 +576,9 @@ fn slot_range_end(start: usize, count: usize) -> Option<usize> {
 }
 
 fn validate_zero_size_shape(
-    name: &str,
-    bindings: &IndexMap<String, ScalarSlot>,
-    shape_indexed_keys: &IndexMap<String, ComponentReferenceKey>,
+    name: &VarName,
+    bindings: &IndexMap<VarName, ScalarSlot>,
+    shape_indexed_keys: &IndexMap<VarName, ComponentReferenceKey>,
     indexed_bindings: &IndexMap<ComponentReferenceKey, Vec<IndexedScalarSlot>>,
     span: Option<Span>,
 ) -> Result<(), VarLayoutShapeContractError> {
@@ -580,9 +607,9 @@ fn validate_zero_size_shape(
 }
 
 fn validate_indexed_constant_shape(
-    name: &str,
+    name: &VarName,
     count: usize,
-    shape_indexed_keys: &IndexMap<String, ComponentReferenceKey>,
+    shape_indexed_keys: &IndexMap<VarName, ComponentReferenceKey>,
     indexed_bindings: &IndexMap<ComponentReferenceKey, Vec<IndexedScalarSlot>>,
     span: Option<Span>,
 ) -> Result<(), VarLayoutShapeContractError> {
@@ -608,13 +635,13 @@ fn validate_indexed_constant_shape(
 }
 
 fn generated_shape_indexed_keys(
-    shapes: &IndexMap<String, Vec<usize>>,
+    shapes: &IndexMap<VarName, Vec<usize>>,
     indexed_bindings: &IndexMap<ComponentReferenceKey, Vec<IndexedScalarSlot>>,
-) -> IndexMap<String, ComponentReferenceKey> {
+) -> IndexMap<VarName, ComponentReferenceKey> {
     shapes
         .keys()
         .filter_map(|name| {
-            let key = ComponentReferenceKey::generated(name);
+            let key = ComponentReferenceKey::generated(name.as_str());
             indexed_bindings
                 .contains_key(&key)
                 .then(|| (name.clone(), key))
@@ -623,9 +650,9 @@ fn generated_shape_indexed_keys(
 }
 
 fn indexed_bindings_from_shapes(
-    bindings: &IndexMap<String, ScalarSlot>,
-    shapes: &IndexMap<String, Vec<usize>>,
-    shape_spans: &IndexMap<String, Span>,
+    bindings: &IndexMap<VarName, ScalarSlot>,
+    shapes: &IndexMap<VarName, Vec<usize>>,
+    shape_spans: &IndexMap<VarName, Span>,
     y_scalars: usize,
     p_scalars: usize,
 ) -> Result<IndexMap<ComponentReferenceKey, Vec<IndexedScalarSlot>>, VarLayoutShapeContractError> {
@@ -642,34 +669,35 @@ fn indexed_bindings_from_shapes(
         let count = shape_scalar_count(name, shape, span)?;
         if slot_range_end(start, count).is_none_or(|end| end > available) {
             return Err(VarLayoutShapeContractError::ShapeOutOfBounds {
-                variable: name.clone(),
+                variable: name.to_string(),
                 start,
                 count,
                 available,
                 span,
             });
         }
-        let mut entries = shape_vec_with_capacity(count, name, span)?;
+        let mut entries = shape_vec_with_capacity(count, name.as_str(), span)?;
         for flat_index in 0..count {
-            let Some(indices) = flat_index_to_subscripts(name, shape, flat_index, span)? else {
+            let Some(indices) = flat_index_to_subscripts(name.as_str(), shape, flat_index, span)?
+            else {
                 continue;
             };
             let offset = start.checked_add(flat_index).ok_or_else(|| {
                 VarLayoutShapeContractError::ShapeOutOfBounds {
-                    variable: name.clone(),
+                    variable: name.to_string(),
                     start,
                     count,
                     available: start,
                     span,
                 }
             })?;
-            let Some(slot) = slot_with_checked_index(slot, offset, name, span)? else {
+            let Some(slot) = slot_with_checked_index(slot, offset, name.as_str(), span)? else {
                 continue;
             };
             entries.push(IndexedScalarSlot { indices, slot });
         }
         if !entries.is_empty() {
-            indexed_bindings.insert(ComponentReferenceKey::generated(name), entries);
+            indexed_bindings.insert(ComponentReferenceKey::generated(name.as_str()), entries);
         }
     }
     Ok(indexed_bindings)
@@ -832,8 +860,8 @@ mod tests {
             ("p".to_string(), vec![4usize]),
         ]);
         let layout = VarLayout {
-            bindings,
-            shapes,
+            bindings: intern_key_map(bindings),
+            shapes: intern_key_map(shapes),
             shape_spans: IndexMap::new(),
             shape_indexed_keys: IndexMap::new(),
             indexed_bindings: IndexMap::new(),
@@ -857,8 +885,17 @@ mod tests {
         assert_eq!(layout.binding("u[0,1]"), None);
     }
 
+    /// A source reference whose `def_id` is absent is a spanned error, never a
+    /// key rebuilt from the rendered spelling.
+    ///
+    /// SPEC_0008 forbids substituting a value for an absent identity, and doing
+    /// so here would be worse than a silent default: the fallback would be the
+    /// rendered name, which is exactly the identity this key exists to stop
+    /// using. The error is the only outcome, so `ComponentReferenceKey::Source`
+    /// cannot exist without a `DefId` and `Generated` is reachable only for
+    /// references that are genuinely compiler-generated.
     #[test]
-    fn component_reference_key_error_displays_missing_def_id() {
+    fn missing_def_id_is_a_spanned_error_not_a_rendered_name_fallback() {
         let span = layout_source_span(21, 4, 9);
         let reference = ComponentReference {
             local: false,
@@ -874,10 +911,53 @@ mod tests {
         let err = ComponentReferenceKey::from_component_reference(&reference)
             .expect_err("source component reference without DefId should fail");
 
+        assert_eq!(err.kind, ComponentReferenceKeyErrorKind::MissingDefId);
         assert_eq!(err.span, span);
         assert_eq!(
             err.to_string(),
             "component reference is missing resolved definition identity"
+        );
+        assert_ne!(
+            ComponentReferenceKey::from_component_reference(&reference).ok(),
+            Some(ComponentReferenceKey::generated("x")),
+            "the spelling must not be accepted as a substitute identity"
+        );
+    }
+
+    /// The key's member path hashes interned ids, and its serialized form is
+    /// still the spelling — so the Solve IR on disk is unchanged while
+    /// in-process identity is id-based.
+    #[test]
+    fn component_reference_key_parts_are_interned_and_serialize_as_text() {
+        let span = layout_source_span(23, 0, 5);
+        let part = |ident: &str| rumoca_core::ComponentRefPart {
+            ident: ident.to_string(),
+            span,
+            subs: Vec::new(),
+        };
+        let reference = ComponentReference {
+            local: false,
+            span,
+            parts: vec![part("gear"), part("ratio")],
+            def_id: Some(rumoca_core::DefId::new(9)),
+        };
+
+        let key = ComponentReferenceKey::from_component_reference(&reference)
+            .expect("resolved source reference builds a key");
+        let ComponentReferenceKey::Source { parts, .. } = &key else {
+            panic!("a resolved source reference must not become a generated key");
+        };
+        assert_eq!(parts[0].ident, VarName::intern("gear"));
+        assert_eq!(parts[1].ident, VarName::intern("ratio"));
+
+        let json = serde_json::to_string(&key).expect("key serializes");
+        assert!(
+            json.contains("\"gear\"") && json.contains("\"ratio\""),
+            "member names must still cross the process boundary as text: {json}"
+        );
+        assert_eq!(
+            serde_json::from_str::<ComponentReferenceKey>(&json).expect("key round-trips"),
+            key
         );
     }
 

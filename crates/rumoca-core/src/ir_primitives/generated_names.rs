@@ -18,6 +18,33 @@ use super::VarName;
 /// [`is_pre_slot`].
 pub const PRE_SLOT_NAMESPACE: &str = "__pre__";
 
+/// Runtime-managed parameter that is true only while processing the final
+/// simulation event at the configured stop time.
+pub const TERMINAL_EVENT_PARAMETER_NAME: &str = "__runtime__.terminal";
+
+/// Namespace identifier of runtime-managed transport-delay value slots.
+pub const DELAY_SLOT_NAMESPACE: &str = "__runtime__.delay";
+
+/// Render the generated parameter name for transport-delay channel `index`.
+pub fn delay_slot_name(index: usize) -> VarName {
+    VarName::new(format!("{DELAY_SLOT_NAMESPACE}.{index}"))
+}
+
+/// Inverse of [`delay_slot_name`]: the channel index of a generated delay
+/// value slot.
+pub fn delay_slot_index(name: &str) -> Option<usize> {
+    name.strip_prefix(DELAY_SLOT_NAMESPACE)?
+        .strip_prefix('.')?
+        .parse()
+        .ok()
+}
+
+/// True for parameters whose values are maintained by the simulation runtime
+/// rather than the parameter evaluator.
+pub fn is_runtime_managed_slot(name: &str) -> bool {
+    name == TERMINAL_EVENT_PARAMETER_NAME || delay_slot_index(name).is_some()
+}
+
 /// Render the generated pre-slot name for `base`: `__pre__.{base}`.
 pub fn pre_slot_name(base: &str) -> VarName {
     VarName::new(format!("{PRE_SLOT_NAMESPACE}.{base}"))

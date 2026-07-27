@@ -665,6 +665,7 @@ impl<'a> LowerBuilder<'a> {
         let suffix = format!("].{field}");
         for key in self.layout.bindings().keys() {
             let Some(index) = key
+                .as_str()
                 .strip_prefix(prefix.as_str())
                 .and_then(|rest| rest.strip_suffix(suffix.as_str()))
                 .and_then(|index| index.parse::<usize>().ok())

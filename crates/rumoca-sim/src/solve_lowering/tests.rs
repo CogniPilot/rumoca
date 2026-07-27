@@ -6,11 +6,15 @@ use rumoca_core::{BuiltinFunction, Expression, OpBinary, SourceId, Span, Subscri
 use rumoca_ir_dae as dae;
 use rumoca_solver::{SimOptions, SimSolverMode};
 
-use super::diagnostics::SimulationDiagnosticError;
+use super::diagnostics::{
+    EX001_SOLVER_FAILURE, EX002_RUNTIME_PREPARATION, EX003_INVALID_OVERRIDE,
+    SIM_RUNTIME_DIAGNOSTIC_CODES, SimulationDiagnosticError,
+};
 use super::entry::{lower_dae_for_simulation, lower_dae_for_simulation_with_stage_timing};
 use super::probe::{eval_dae_at, jacobian_for_dae};
 use super::structural_lowering::{
-    metadata_attachment_lower_error, structurally_lower_dae_for_simulation,
+    FunnelCopyBudget, StructurallyLoweredDae, metadata_attachment_lower_error,
+    structurally_lower_dae_for_simulation,
 };
 
 fn sim_source_span(source: u64, start: usize, end: usize) -> Span {
@@ -27,6 +31,95 @@ fn simulation_structural_lowering_keeps_observations_for_torn_variables() {
     assert_eq!(model.visible_names, ["a", "b", "c"]);
     assert_eq!(model.visible_value_rows.len(), model.visible_names.len());
     assert_eq!(model.problem.solve_layout.solver_maps.names.len(), 1);
+}
+
+#[test]
+fn simulation_structural_lowering_restores_shared_observation_computation_as_causal_slot() {
+    let mut dae = dae::Dae::new();
+    dae.variables.states.insert(
+        VarName::new("u"),
+        dae::Variable::new(VarName::new("u"), fixture_span()),
+    );
+    for name in ["x", "y"] {
+        dae.variables.algebraics.insert(
+            VarName::new(name),
+            dae::Variable::new(VarName::new(name), fixture_span()),
+        );
+    }
+    dae.continuous
+        .equations
+        .push(eq(sub(der(var("u")), real(0.0))));
+    let shared = Expression::BuiltinCall {
+        function: BuiltinFunction::Sin,
+        args: vec![var("u")],
+        span: fixture_span(),
+    };
+    dae.continuous.equations.push(dae::Equation::explicit(
+        reference("x"),
+        shared.clone(),
+        fixture_span(),
+        "shared x definition",
+    ));
+    dae.continuous.equations.push(dae::Equation::explicit(
+        reference("y"),
+        Expression::Binary {
+            op: OpBinary::Add,
+            lhs: Box::new(var("x")),
+            rhs: Box::new(var("x")),
+            span: fixture_span(),
+        },
+        fixture_span(),
+        "dependent y definition",
+    ));
+
+    let lowered = structurally_lower_dae_for_simulation(&dae, &SimOptions::default())
+        .expect("shared observation computation should lower as a causal DAG");
+
+    assert!(
+        lowered
+            .dae
+            .variables
+            .algebraics
+            .contains_key(&VarName::new("x"))
+    );
+    assert!(
+        lowered
+            .dae
+            .variables
+            .algebraics
+            .contains_key(&VarName::new("y"))
+    );
+    let restored = lowered
+        .dae
+        .continuous
+        .equations
+        .iter()
+        .filter(|equation| equation.origin == "causal reconstruction after structural elimination")
+        .collect::<Vec<_>>();
+    assert_eq!(restored.len(), 2);
+    assert!(rumoca_core::expressions_semantically_equal(
+        &restored[0].rhs,
+        &shared
+    ));
+    assert!(rumoca_core::expressions_semantically_equal(
+        &restored[1].rhs,
+        &Expression::Binary {
+            op: OpBinary::Add,
+            lhs: Box::new(var("x")),
+            rhs: Box::new(var("x")),
+            span: fixture_span(),
+        }
+    ));
+    let visible_y = lowered
+        .visible_expressions
+        .iter()
+        .find(|visible| visible.name == "y")
+        .expect("y remains observable");
+    let expected_y = var("y");
+    assert!(rumoca_core::expressions_semantically_equal(
+        &visible_y.expr,
+        &expected_y
+    ));
 }
 
 #[test]
@@ -70,6 +163,13 @@ fn simulation_structural_lowering_reports_blt_singularity() {
         "got: {err}"
     );
     assert!(err.to_string().contains("structurally singular system"));
+    // SPEC_0008: a structural failure keeps its own ES0xx code all the way to
+    // the user-facing sink instead of being relabeled by the sim facade.
+    assert_eq!(err.code(), "ES010");
+    assert_eq!(
+        SimulationDiagnosticError::SolveLowering(err).diagnostic_code(),
+        "ES010"
+    );
 }
 
 #[test]
@@ -482,11 +582,31 @@ fn simulation_lowering_preserves_source_span_for_shape_errors() {
         .expect_err("shape mismatch should fail during simulation lowering");
     assert_eq!(err.source_span(), Some(span), "unexpected error: {err:?}");
     let diagnostic = SimulationDiagnosticError::SolveLowering(err);
-    assert_eq!(diagnostic.diagnostic_code(), "lowering");
+    // SPEC_0008: the lowering defect keeps the code of the phase that raised
+    // it (EL001, unsupported expression) instead of the old generic
+    // "this came from lowering" label.
+    assert_eq!(diagnostic.diagnostic_code(), "EL001");
     assert_eq!(
         diagnostic.diagnostic_label(),
         "array operands have incompatible shapes [3, 3] and [2]"
     );
+}
+
+#[test]
+fn solver_and_override_errors_have_stable_runtime_codes() {
+    let solver = SimulationDiagnosticError::Solver("CVODE returned -1".to_string());
+    let override_error = SimulationDiagnosticError::InvalidOverride {
+        message: "unknown parameter `k`".to_string(),
+    };
+
+    assert_eq!(solver.diagnostic_code(), EX001_SOLVER_FAILURE);
+    assert_eq!(override_error.diagnostic_code(), EX003_INVALID_OVERRIDE);
+    for code in [solver.diagnostic_code(), override_error.diagnostic_code()] {
+        assert!(
+            SIM_RUNTIME_DIAGNOSTIC_CODES.contains(&code),
+            "runtime code {code} is not registered in SIM_RUNTIME_DIAGNOSTIC_CODES"
+        );
+    }
 }
 
 #[test]
@@ -498,12 +618,214 @@ fn simulation_diagnostic_preserves_runtime_preparation_span() {
     };
     let diagnostic = SimulationDiagnosticError::from(error);
 
-    assert_eq!(diagnostic.diagnostic_code(), "simulation");
+    assert_eq!(diagnostic.diagnostic_code(), EX002_RUNTIME_PREPARATION);
+    assert!(SIM_RUNTIME_DIAGNOSTIC_CODES.contains(&diagnostic.diagnostic_code()));
     assert_eq!(diagnostic.source_span(), Some(span));
     assert_eq!(
         diagnostic.to_string(),
         "Solve-IR scalarization failed: invalid native map metadata"
     );
+}
+
+fn visible_expression_names(lowered: &StructurallyLoweredDae) -> Vec<String> {
+    lowered
+        .visible_expressions
+        .iter()
+        .map(|visible| visible.name.clone())
+        .collect()
+}
+
+/// The observable inventory is declaration-based, so expanding the solver view
+/// into scalar rows must not change a single visible name or expression. The
+/// structural funnel relies on exactly this to resolve the visible expressions
+/// straight off the borrowed source DAE instead of scalarizing a private copy
+/// of it.
+///
+/// Both lowerings are checked against the same *independently written*
+/// expectation rather than against each other: `opts` no longer has any data
+/// path to `visible_expressions`, so comparing the two runs to each other could
+/// not fail whatever the inventory produced.
+#[test]
+fn visible_expressions_are_independent_of_solver_scalarization() {
+    let dae = vector_observation_dae();
+    // `y` is an array algebraic that survives elimination, so the inventory
+    // expands it from its own declared `dims` into two component references
+    // and leaves them as references — it never reads the defining row.
+    let expected: [(&str, Expression); 3] = [
+        ("x", var("x")),
+        ("y[1]", var_idx("y", 1)),
+        ("y[2]", var_idx("y", 2)),
+    ];
+
+    for scalarize in [true, false] {
+        let lowered = structurally_lower_dae_for_simulation(
+            &dae,
+            &SimOptions {
+                scalarize,
+                ..SimOptions::default()
+            },
+        )
+        .expect("array observation model lowers");
+
+        assert_eq!(
+            visible_expression_names(&lowered),
+            ["x", "y[1]", "y[2]"],
+            "observable names with scalarize={scalarize}"
+        );
+        for (visible, (name, expected_expr)) in lowered.visible_expressions.iter().zip(&expected) {
+            assert_eq!(&visible.name, name);
+            assert!(
+                rumoca_core::expressions_semantically_equal(&visible.expr, expected_expr),
+                "observation `{name}` with scalarize={scalarize} was `{}`",
+                super::expr_util::debug_render_expr(&visible.expr)
+            );
+        }
+    }
+}
+
+/// Ratchet on the two dominant costs of the structural funnel.
+///
+/// `copy_budget` is measured, not declared: every whole-DAE copy the funnel
+/// reaches records itself, so this pins what the funnel *does*, not what this
+/// module remembers doing. For both fixtures the nine copies are
+///
+/// 1. `prepare_structural_daes` — the source DAE,
+/// 2. `prepare_structural_daes` — the solver view copied off the source,
+/// 3. `dae_prepare::index_reduce_missing_state_derivatives` — staging copy,
+/// 4. `prepare_structural_daes` — the metadata DAE copied off the solver view,
+/// 5. `eliminate::prepare_blt_elimination` — the BLT sort input,
+/// 6. `dae_prepare::demote_states_without_assignable_derivative_rows` — staging
+///    copy, from `apply_simulation_elimination`,
+/// 7. `mark_state_selection_metadata` — the state-selection scratch copy,
+/// 8. `dae_prepare::demote_states_without_assignable_derivative_rows` — staging
+///    copy again, this time on that scratch copy,
+/// 9. `eliminate::condense_scalar_algebraic_loops` — its own BLT sort input.
+///
+/// Only four of those are made by the funnel itself, so a budget that counted
+/// this module's copy sites alone would report less than half the real cost.
+/// Copy 9 is made in a module the accounting does not instrument and is
+/// recorded by the funnel against the same acceptance condition — hence the
+/// unscalarized array view, whose array-shaped rows make loop condensation
+/// decline before it copies anything, is one lower.
+#[test]
+fn structural_funnel_copy_budget_is_ratcheted() {
+    let expected = FunnelCopyBudget {
+        dae_clones: 9,
+        scalarizations: 1,
+    };
+    let scalar_model = structurally_lower_dae_for_simulation(
+        &explicit_algebraic_ode_dae(),
+        &SimOptions::default(),
+    )
+    .expect("scalar funnel fixture lowers");
+    assert_eq!(
+        scalar_model.copy_budget, expected,
+        "scalar model funnel copy budget"
+    );
+    let array_model =
+        structurally_lower_dae_for_simulation(&vector_observation_dae(), &SimOptions::default())
+            .expect("array funnel fixture lowers");
+    assert_eq!(
+        array_model.copy_budget, expected,
+        "array model funnel copy budget"
+    );
+
+    let unscalarized = structurally_lower_dae_for_simulation(
+        &vector_observation_dae(),
+        &SimOptions {
+            scalarize: false,
+            ..SimOptions::default()
+        },
+    )
+    .expect("array funnel fixture lowers without scalarization");
+    assert_eq!(
+        unscalarized.copy_budget,
+        FunnelCopyBudget {
+            dae_clones: 8,
+            scalarizations: 0,
+        },
+        "unscalarized funnel copy budget"
+    );
+}
+
+/// The funnel records the whole-DAE copy that
+/// `condense_scalar_algebraic_loops` makes internally, because that module is
+/// outside the copy accounting. It records it against the same condition the
+/// condensation itself uses to decide whether to copy: an array-shaped solver
+/// view is declined before anything is copied. Pin that boundary here, so the
+/// mirrored condition cannot drift away from the behaviour it mirrors without
+/// a test failing.
+#[test]
+fn array_shaped_solver_view_declines_loop_condensation() {
+    let mut array_view = vector_observation_dae();
+    assert!(
+        !super::structural_lowering::solver_view_is_fully_scalar(&array_view),
+        "fixture must present an array-shaped continuous row"
+    );
+
+    let condensation =
+        rumoca_phase_structural::eliminate::condense_scalar_algebraic_loops(&mut array_view)
+            .expect("declining an array-shaped view is not an error");
+
+    assert!(
+        condensation.blocks.is_empty() && condensation.causal_variable_count() == 0,
+        "an array-shaped solver view must be declined, not condensed"
+    );
+    assert_eq!(
+        array_view.continuous.equations.len(),
+        vector_observation_dae().continuous.equations.len(),
+        "a declined view must be left unchanged"
+    );
+}
+
+/// The funnel resolves visible expressions against the borrowed source DAE and
+/// then releases both the source DAE and the causal plan before the metadata
+/// partition is rewritten. Pin that substitution resolution still happens on
+/// that reordered path: in the `a = b`, `b = c`, `c = sin(a)` torn loop only
+/// `c` survives as a solver unknown, so the observations for `a` and `b` must
+/// come back rewritten in terms of `c` rather than as bare self-references.
+#[test]
+fn visible_expressions_resolve_eliminated_aliases_after_source_release() {
+    let lowered =
+        structurally_lower_dae_for_simulation(&symbolic_loop_dae(), &SimOptions::default())
+            .expect("torn loop fixture lowers");
+
+    assert_eq!(visible_expression_names(&lowered), ["a", "b", "c"]);
+    assert_eq!(lowered.dae.continuous.equations.len(), 1);
+    for visible in &lowered.visible_expressions {
+        assert!(
+            rumoca_core::expressions_semantically_equal(&visible.expr, &var("c")),
+            "observation `{}` was not resolved through the elimination substitutions",
+            visible.name
+        );
+    }
+}
+
+/// One scalar state plus a two-element array algebraic defined by a single
+/// array row, so the solver view genuinely differs between the scalarized and
+/// unscalarized lowerings while the observable inventory must not.
+fn vector_observation_dae() -> dae::Dae {
+    let mut model = dae::Dae::new();
+    model.variables.states.insert(
+        VarName::new("x"),
+        dae::Variable::new(VarName::new("x"), fixture_span()),
+    );
+    model.variables.algebraics.insert(
+        VarName::new("y"),
+        dae::Variable {
+            dims: vec![2],
+            ..dae::Variable::new(VarName::new("y"), fixture_span())
+        },
+    );
+    model
+        .continuous
+        .equations
+        .push(eq(sub(der(var("x")), time())));
+    model.continuous.equations.push(eq_with_scalar_count(
+        sub(var("y"), array(vec![var("x"), mul(real(2.0), var("x"))])),
+        2,
+    ));
+    model
 }
 
 fn symbolic_loop_dae() -> dae::Dae {
@@ -1129,4 +1451,278 @@ fn eval_dae_at_reports_finite_values_from_initial_state() {
         .unwrap();
     assert_eq!(der_x.value, 0.0);
     assert_eq!(der_v.value, 0.0);
+}
+
+/// A model whose *source* view cannot be scalarized while its solver view can.
+///
+/// `y` is a two-element algebraic with no source provenance, constrained twice
+/// by the same array row: once written with a spanned reference and once with
+/// an unspanned one. Projecting an array reference into scalar components needs
+/// a span, and for the duplicate there is none on the expression, the
+/// reference or the variable — so the source view cannot be scalarized. The
+/// solver view can, because `remove_duplicate_continuous_equations` deletes the
+/// duplicate (equation identity ignores spans) and keeps the spanned row.
+/// (These are the only `Span::DUMMY` fixtures in this file: modelling *absent*
+/// provenance is their entire point.)
+fn unscalarizable_source_row_dae() -> dae::Dae {
+    let mut model = dae::Dae::new();
+    model.variables.states.insert(
+        VarName::new("x"),
+        dae::Variable::new(VarName::new("x"), fixture_span()),
+    );
+    model.variables.algebraics.insert(
+        VarName::new("y"),
+        dae::Variable {
+            dims: vec![2],
+            source_span: Span::DUMMY,
+            ..dae::Variable::new(VarName::new("y"), fixture_span())
+        },
+    );
+    model
+        .continuous
+        .equations
+        .push(eq(sub(der(var("x")), real(1.0))));
+    // `sin(y)` is not invertible for `y`, so the boundary phase cannot
+    // eliminate the row: it survives into the scalarized solver view, which is
+    // what makes the *duplicate* the only difference between the two views.
+    let definition = |reference: Expression| {
+        sub(
+            Expression::BuiltinCall {
+                function: BuiltinFunction::Sin,
+                args: vec![reference],
+                span: fixture_span(),
+            },
+            array(vec![real(1.0), real(2.0)]),
+        )
+    };
+    model.continuous.equations.push(dae::Equation {
+        lhs: None,
+        rhs: definition(var("y")),
+        span: fixture_span(),
+        origin: "spanned array row".to_string(),
+        scalar_count: 2,
+    });
+    model.continuous.equations.push(dae::Equation {
+        lhs: None,
+        rhs: definition(Expression::VarRef {
+            name: rumoca_core::Reference::new("y"),
+            subscripts: Vec::new(),
+            span: Span::DUMMY,
+        }),
+        span: Span::DUMMY,
+        origin: "unspanned duplicate array row".to_string(),
+        scalar_count: 2,
+    });
+    model
+}
+
+/// The funnel used to scalarize a private copy of the source DAE before reading
+/// the observable inventory off it, and then throw that copy away. The copy is
+/// gone, and with it a whole class of spurious rejections: a model must not be
+/// refused because a DAE nobody reads failed to scalarize.
+///
+/// This pins that deliberately. The first assertion proves the fixture really
+/// is one the deleted pass would have rejected; the second proves the funnel
+/// accepts it anyway, because the row that cannot be scalarized is eliminated
+/// before the view that *is* scalarized is built.
+#[test]
+fn source_view_scalarization_failure_no_longer_rejects_the_model() {
+    let mut source_view = unscalarizable_source_row_dae();
+    let source_error = rumoca_phase_structural::scalarize::scalarize_equations(&mut source_view)
+        .expect_err("the fixture's source view must be one that cannot be scalarized");
+    assert!(
+        source_error.to_string().contains("without a source span"),
+        "unexpected source scalarization failure: {source_error}"
+    );
+
+    let lowered = structurally_lower_dae_for_simulation(
+        &unscalarizable_source_row_dae(),
+        &SimOptions::default(),
+    )
+    .expect("the solver view scalarizes even though the source view does not");
+
+    assert_eq!(visible_expression_names(&lowered), ["x", "y[1]", "y[2]"]);
+    assert!(
+        lowered
+            .dae
+            .continuous
+            .equations
+            .iter()
+            .all(|equation| equation.scalar_count == 1),
+        "the surviving solver view is fully scalarized"
+    );
+}
+
+/// Variables with no provenance, equations with provenance.
+fn unspanned_variable_dae() -> dae::Dae {
+    let mut model = dae::Dae::new();
+    model.variables.states.insert(
+        VarName::new("x"),
+        dae::Variable {
+            source_span: Span::DUMMY,
+            ..dae::Variable::new(VarName::new("x"), fixture_span())
+        },
+    );
+    model
+        .continuous
+        .equations
+        .push(eq(sub(der(var("x")), mul(real(2.0), var("x")))));
+    model
+}
+
+/// The observable inventory now reads the *unscalarized* source DAE, and the
+/// span it reports capacity failures against comes from `dae_model_span`, which
+/// falls back to equation spans when no variable carries provenance. Pin both
+/// sides of that fallback: a model whose provenance lives only on its equations
+/// lowers, and a model with no provenance at all is rejected with the unspanned
+/// contract violation rather than silently acquiring a dummy span.
+#[test]
+fn observable_inventory_falls_back_to_equation_spans() {
+    let lowered =
+        structurally_lower_dae_for_simulation(&unspanned_variable_dae(), &SimOptions::default())
+            .expect("equation provenance is enough to build the observable inventory");
+    assert_eq!(visible_expression_names(&lowered), ["x"]);
+
+    let mut without_any_provenance = unspanned_variable_dae();
+    for equation in &mut without_any_provenance.continuous.equations {
+        equation.span = Span::DUMMY;
+    }
+
+    let error =
+        structurally_lower_dae_for_simulation(&without_any_provenance, &SimOptions::default())
+            .err()
+            .expect("a model with no provenance anywhere cannot be lowered");
+    assert!(
+        error.to_string().contains("no source provenance"),
+        "unexpected error for a provenance-free model: {error}"
+    );
+}
+
+/// A model whose reference metadata cannot be attached: `ghost` is neither a
+/// declared variable nor a structured reference, so `attach_dae_reference_metadata`
+/// cannot resolve it.
+fn unattachable_metadata_dae(with_algebraic: bool) -> dae::Dae {
+    let mut model = dae::Dae::new();
+    model.variables.states.insert(
+        VarName::new("x"),
+        dae::Variable::new(VarName::new("x"), fixture_span()),
+    );
+    model.continuous.equations.push(eq(sub(
+        der(var("x")),
+        Expression::VarRef {
+            name: rumoca_core::Reference::new("ghost"),
+            subscripts: Vec::new(),
+            span: fixture_span(),
+        },
+    )));
+    if with_algebraic {
+        model.variables.algebraics.insert(
+            VarName::new("a"),
+            dae::Variable::new(VarName::new("a"), fixture_span()),
+        );
+        model
+            .continuous
+            .equations
+            .push(eq(sub(var("a"), mul(real(2.0), var("x")))));
+    }
+    model
+}
+
+/// The direct path now runs its rejection predicates *before* it attaches
+/// reference metadata, so a rejected model never pays for that copy. The
+/// in-code claim that this cannot swallow a metadata-attachment failure rests
+/// on the fallback: the structural funnel attaches the same metadata and maps
+/// the failure through the same conversion.
+///
+/// Pin it from both sides of the reordered pair — a model the predicates reject
+/// (it has an algebraic) and a model they accept — and require the same
+/// metadata error either way.
+#[test]
+fn metadata_attachment_failure_is_reported_whether_or_not_the_direct_path_rejects() {
+    let opts = SimOptions {
+        solver_mode: SimSolverMode::RkLike,
+        ..SimOptions::default()
+    };
+    for with_algebraic in [true, false] {
+        let error = lower_dae_for_simulation(&unattachable_metadata_dae(with_algebraic), &opts)
+            .expect_err("an unresolvable reference must not lower");
+        assert!(
+            error
+                .to_string()
+                .contains("DAE reference metadata attachment failed"),
+            "direct-path rejection={with_algebraic} lost the metadata error: {error}"
+        );
+        assert!(
+            error.to_string().contains("ghost"),
+            "the metadata error must name the unresolved reference: {error}"
+        );
+    }
+}
+
+/// A retained causal target that index reduction generated is declared by the
+/// *prepared* DAE, never by the source snapshot the funnel took before the
+/// structural rewrites ran.
+///
+/// `factor_retained_computations_in_dae` rewrites rows to read every retained
+/// target, so a target this step declines to restore leaves rows naming a
+/// variable no partition declares. Solve lowering reports exactly that as
+/// `EL005` ("not a DAE variable"), which is how
+/// `Modelica.Mechanics.Rotational.Examples.First` stopped simulating once index
+/// reduction started naming `der(inertia1.w)` as `__dummyder__.inertia1.w`.
+#[test]
+fn causal_restore_declares_a_target_only_the_prepared_dae_knows() {
+    let generated = VarName::new("__dummyder__.x");
+    let mut lowered = dae::Dae::new();
+    lowered.variables.states.insert(
+        VarName::new("u"),
+        dae::Variable::new(VarName::new("u"), fixture_span()),
+    );
+    lowered
+        .continuous
+        .equations
+        .push(eq(sub(der(var("u")), var(generated.as_str()))));
+
+    // The source snapshot predates index reduction, so it cannot name the
+    // generated unknown; the prepared DAE is the one that declares it.
+    let source = dae::Dae::new();
+    let mut prepared = dae::Dae::new();
+    let mut variable = dae::Variable::new(generated.clone(), fixture_span());
+    variable.origin = dae::VariableOrigin::Generated;
+    prepared
+        .variables
+        .algebraics
+        .insert(generated.clone(), variable);
+
+    let plan = rumoca_phase_structural::eliminate::CausalSubstitutionPlan {
+        substitutions: vec![rumoca_phase_structural::eliminate::Substitution {
+            var_name: generated.clone(),
+            var_ref: None,
+            expr: real(2.0),
+            var_dims: Vec::new(),
+            replacement_dims: Vec::new(),
+            env_keys: vec![generated.as_str().to_string()],
+        }],
+        retained_targets: [generated.clone()].into_iter().collect(),
+    };
+
+    let restored = super::causal_reconstruction::restore_shared_causal_assignments(
+        &mut lowered,
+        &source,
+        &prepared,
+        &plan,
+    );
+
+    assert!(
+        restored.contains(&generated),
+        "the generated target must be reported as restored"
+    );
+    assert!(
+        lowered.variables.algebraics.contains_key(&generated),
+        "restoring the assignment must also declare the variable it assigns"
+    );
+    assert_eq!(
+        lowered.continuous.equations.len(),
+        2,
+        "the restored assignment must be appended as its own defining row"
+    );
 }

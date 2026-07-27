@@ -351,25 +351,25 @@ pub(super) fn contiguous_param_grid_layout(
         }
     }
     // Dense rectangular coverage: the element count must equal the box volume.
-    let total: usize = extents.iter().product();
+    let total = extents
+        .iter()
+        .try_fold(1usize, |total, extent| total.checked_mul(*extent))?;
     if total != grid.len() {
         return None;
     }
-    // Row-major strides (last dimension contiguous). Element counts are
-    // non-negative and fit `usize`, so the `i64` strides cast back losslessly.
-    let strides: Vec<usize> = rumoca_core::row_major_strides(&extents)
-        .into_iter()
-        .map(|stride| stride as usize)
-        .collect();
+    let strides = rumoca_core::row_major_strides(&extents)?;
     // Slots must be contiguous in row-major order from a common base.
     let base = grid.iter().map(|(_, slot)| *slot).min()?;
     for (indices, slot) in grid {
-        let flat: usize = indices
+        let flat = indices
             .iter()
             .enumerate()
-            .map(|(d, &i)| (i - 1) * strides[d])
-            .sum();
-        if *slot != base + flat {
+            .try_fold(0usize, |flat, (dimension, &index)| {
+                (index - 1)
+                    .checked_mul(strides[dimension])
+                    .and_then(|offset| flat.checked_add(offset))
+            })?;
+        if *slot != base.checked_add(flat)? {
             return None;
         }
     }
@@ -1278,7 +1278,7 @@ pub(super) fn intrinsic_short_name(name: &str) -> &str {
     crate::path_utils::leaf_segment(name)
 }
 
-pub(super) fn is_stream_passthrough_intrinsic(name: &str) -> bool {
+pub(super) fn is_unlowered_stream_intrinsic(name: &str) -> bool {
     matches!(intrinsic_short_name(name), "actualStream" | "inStream")
 }
 

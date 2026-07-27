@@ -27,10 +27,11 @@ use rumoca_core::{
 use serde::ser::{SerializeStruct, SerializeTuple};
 use serde::{Deserialize, Serialize};
 
-pub const DAE_SCHEMA_VERSION: u16 = 8;
+pub const DAE_SCHEMA_VERSION: u16 = 9;
 
 pub type SymbolAncestryMap = IndexMap<DefId, SymbolAncestry, rustc_hash::FxBuildHasher>;
 
+mod clock_schedule;
 mod event_threshold;
 mod expr_query;
 mod types;
@@ -39,8 +40,9 @@ pub use event_threshold::{is_event_constant_threshold, is_event_constant_time_th
 pub use expr_query::{
     DerivativeNameMatcher, complex_base_alias_match, embedded_subscripts_all_one,
     expr_contains_der_of, expr_contains_der_of_any, expr_contains_var, expr_refers_to_var,
-    indexed_field_var_ref, parse_embedded_subscripts, split_complex_field_suffix,
-    subscripts_all_one, subscripts_match_indices, var_ref_matches_unknown,
+    for_each_unknown_match_key, for_each_var_ref_match_key, indexed_field_var_ref,
+    parse_embedded_subscripts, split_complex_field_suffix, subscripts_all_one,
+    subscripts_match_indices, var_ref_matches_unknown,
 };
 pub use types::{
     StructuredEquationFamily, StructuredEquationSlot, component_base_name,
@@ -147,6 +149,8 @@ struct DaeWire {
     scheduled_time_events: Vec<f64>,
     scheduled_root_conditions: Vec<DaeScheduledRootCondition>,
     event_actions: Vec<DaeEventAction>,
+    has_terminal_event: bool,
+    delay_channels: Vec<DaeDelayChannel>,
     constructor_exprs: Vec<Expression>,
     schedules: Vec<ClockSchedule>,
     #[serde(default)]
@@ -184,7 +188,7 @@ impl Serialize for Dae {
         S: serde::Serializer,
     {
         if !serializer.is_human_readable() {
-            let mut tuple = serializer.serialize_tuple(29)?;
+            let mut tuple = serializer.serialize_tuple(31)?;
             tuple.serialize_element(&self.schema_version)?;
             tuple.serialize_element(&self.variables.states)?;
             tuple.serialize_element(&self.variables.algebraics)?;
@@ -206,6 +210,8 @@ impl Serialize for Dae {
             tuple.serialize_element(&self.events.scheduled_time_events)?;
             tuple.serialize_element(&self.events.scheduled_root_conditions)?;
             tuple.serialize_element(&self.events.event_actions)?;
+            tuple.serialize_element(&self.events.has_terminal_event)?;
+            tuple.serialize_element(&self.events.delay_channels)?;
             tuple.serialize_element(&self.clocks.constructor_exprs)?;
             tuple.serialize_element(&self.clocks.schedules)?;
             tuple.serialize_element(&self.clocks.triggered_conditions)?;
@@ -217,7 +223,7 @@ impl Serialize for Dae {
             return tuple.end();
         }
 
-        let mut state = serializer.serialize_struct("Dae", 29)?;
+        let mut state = serializer.serialize_struct("Dae", 31)?;
         state.serialize_field("schema_version", &self.schema_version)?;
         state.serialize_field("x", &self.variables.states)?;
         state.serialize_field("y", &self.variables.algebraics)?;
@@ -251,6 +257,8 @@ impl Serialize for Dae {
             &self.events.scheduled_root_conditions,
         )?;
         state.serialize_field("event_actions", &self.events.event_actions)?;
+        state.serialize_field("has_terminal_event", &self.events.has_terminal_event)?;
+        state.serialize_field("delay_channels", &self.events.delay_channels)?;
         state.serialize_field("constructor_exprs", &self.clocks.constructor_exprs)?;
         state.serialize_field("schedules", &self.clocks.schedules)?;
         state.serialize_field("triggered_conditions", &self.clocks.triggered_conditions)?;
@@ -309,6 +317,8 @@ impl<'de> Deserialize<'de> for Dae {
                 scheduled_time_events: wire.scheduled_time_events,
                 scheduled_root_conditions: wire.scheduled_root_conditions,
                 event_actions: wire.event_actions,
+                has_terminal_event: wire.has_terminal_event,
+                delay_channels: wire.delay_channels,
             },
             clocks: DaeClockPartition {
                 constructor_exprs: wire.constructor_exprs,
@@ -549,6 +559,25 @@ pub struct DaeEventPartition {
     /// residual expressions. `reinit` is lowered earlier into guarded discrete
     /// state-update equations and must not appear here.
     pub event_actions: Vec<DaeEventAction>,
+    /// Whether the model contains `terminal()` and therefore requires a final
+    /// event at the configured simulation stop time.
+    pub has_terminal_event: bool,
+    /// Transport-delay channels lowered from source `delay(...)` operators.
+    ///
+    /// Each channel owns one runtime-managed parameter slot. The source
+    /// expression and delay bounds remain explicit metadata so Solve lowering
+    /// can compile them without re-discovering source syntax.
+    pub delay_channels: Vec<DaeDelayChannel>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DaeDelayChannel {
+    pub value_parameter: VarName,
+    pub source: Expression,
+    pub delay_time: Expression,
+    pub delay_max: Option<Expression>,
+    pub source_is_discrete: bool,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -662,10 +691,11 @@ pub struct DaeMetadata {
     #[serde(default)]
     pub overconstrained_interface_count: i64,
 
-    /// Scalar count of excess equations from VCG break edges (MLS §9.4).
-    /// Break edges in the overconstrained connection graph generate equality equations
-    /// that should be replaced by `equalityConstraint()` calls. This correction
-    /// tracks the number of excess equation scalars.
+    /// Conservative scalar budget for VCG break-edge equations (MLS §9.4).
+    /// Zero-result constraints can already have been removed during flattening,
+    /// so balance accounting clamps this budget to the excess equations still
+    /// present. Replacement equations for nonempty `equalityConstraint` results
+    /// remain deferred.
     #[serde(default)]
     pub oc_break_edge_scalar_count: usize,
 

@@ -219,8 +219,44 @@ fn residual_expression_target_name(
             }
             positive_additive_target_name(dae_model, layout, rhs, flat_index, scalar_count)
         }
+        rumoca_core::Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => common_conditional_residual_target_name(
+            dae_model,
+            layout,
+            branches,
+            else_branch,
+            flat_index,
+            scalar_count,
+        ),
         _ => Ok(None),
     }
+}
+
+fn common_conditional_residual_target_name(
+    dae_model: &dae::Dae,
+    layout: &solve::VarLayout,
+    branches: &[(rumoca_core::Expression, rumoca_core::Expression)],
+    else_branch: &rumoca_core::Expression,
+    flat_index: usize,
+    scalar_count: usize,
+) -> Result<Option<String>, LowerError> {
+    let expected =
+        residual_expression_target_name(dae_model, layout, else_branch, flat_index, scalar_count)?;
+    let Some(expected) = expected else {
+        return Ok(None);
+    };
+    for (_, branch) in branches {
+        if residual_expression_target_name(dae_model, layout, branch, flat_index, scalar_count)?
+            .as_deref()
+            != Some(expected.as_str())
+        {
+            return Ok(None);
+        }
+    }
+    Ok(Some(expected))
 }
 
 fn positive_additive_target_name(

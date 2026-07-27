@@ -71,7 +71,7 @@ impl<T> Spanned<T> {
 
 /// A plain GALEC identifier (ASCII-letter-first; legality checked by the
 /// validator, trap T13).
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Identifier(pub String);
 
 impl Identifier {
@@ -94,7 +94,7 @@ impl Identifier {
 /// adds the surrounding `'` characters. Well-formedness of the quoted content
 /// (scalarized-reference structure, no whitespace) is a validator concern;
 /// the printer only rejects content that cannot be a single lexeme at all.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Name {
     /// Plain identifier, e.g. `firstTick`, with its source span (D11).
     Ident(Identifier, Span),

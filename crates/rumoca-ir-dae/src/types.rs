@@ -125,14 +125,46 @@ pub fn remap_structured_families_after_expansion(
     families: &mut Vec<StructuredEquationFamily>,
     spans: &[(usize, usize)],
 ) {
-    families.retain_mut(|family| match remapped_family_block(family, spans) {
-        Some((first, equations_per_point)) => {
-            family.first_equation_index = first;
-            family.equations_per_point = equations_per_point;
-            true
+    families.retain_mut(|family| {
+        let is_compact_owner = family.template.as_ref().is_some_and(|template| {
+            template.scalar_view == rumoca_core::ComprehensionScalarView::RowMajorProjection
+        });
+        let remapped = if is_compact_owner {
+            remapped_compact_family_block(family, spans)
+        } else {
+            remapped_family_block(family, spans)
+        };
+        match remapped {
+            Some((first, equations_per_point)) => {
+                family.first_equation_index = first;
+                family.equations_per_point = equations_per_point;
+                true
+            }
+            None => false,
         }
-        None => false,
     });
+}
+
+/// Re-point a compact array owner whose one input equation expanded into the
+/// complete scalar view. The expansion span proves this shape; no neighboring
+/// input equations are inspected or claimed by the family.
+fn remapped_compact_family_block(
+    family: &StructuredEquationFamily,
+    spans: &[(usize, usize)],
+) -> Option<(usize, usize)> {
+    let point_count = family.point_count().ok()?;
+    let expected_rows = point_count.checked_mul(family.equations_per_point)?;
+    if expected_rows == 0 {
+        return None;
+    }
+    let &(new_start, new_len) = spans.get(family.first_equation_index)?;
+    // A pass may leave the aggregate owner intact (one equation carrying
+    // scalar_count == expected_rows), or it may expand that owner into the
+    // complete derived scalar view. Both are valid representations of the
+    // same explicit RowMajorProjection ownership contract.
+    (new_len == 1)
+        .then_some((new_start, family.equations_per_point))
+        .or_else(|| (new_len == expected_rows).then_some((new_start, family.equations_per_point)))
 }
 
 /// Compute one family's `(first_equation_index, equations_per_point)` in the new row
@@ -161,7 +193,7 @@ fn remapped_family_block(
         {
             return None;
         }
-        old_idx += family.equations_per_point;
+        old_idx = old_idx.checked_add(family.equations_per_point)?;
     }
     // The family's rows must remain one contiguous run after expansion, else it
     // can no longer describe a single array block and the caller drops it.
@@ -169,7 +201,7 @@ fn remapped_family_block(
     if new_rows
         .iter()
         .enumerate()
-        .any(|(offset, &row)| row != first + offset)
+        .any(|(offset, &row)| first.checked_add(offset) != Some(row))
     {
         return None;
     }
@@ -184,9 +216,11 @@ fn collect_expanded_rows(
     spans: &[(usize, usize)],
     out: &mut Vec<usize>,
 ) -> Option<()> {
-    for src in old_idx..old_idx + count {
+    let old_end = old_idx.checked_add(count)?;
+    for src in old_idx..old_end {
         let &(new_start, new_len) = spans.get(src)?;
-        out.extend(new_start..new_start + new_len);
+        let new_end = new_start.checked_add(new_len)?;
+        out.extend(new_start..new_end);
     }
     Some(())
 }
@@ -238,6 +272,62 @@ mod tests {
                 equation_count: 2,
             })
         );
+    }
+
+    #[test]
+    fn remaps_compact_array_owner_to_derived_scalar_view() {
+        let mut families = vec![family(2, vec![1, 1, 1])];
+        families[0].template = Some(rumoca_core::ComprehensionTemplate {
+            body: Vec::new(),
+            scalar_view: rumoca_core::ComprehensionScalarView::RowMajorProjection,
+        });
+        let spans = vec![(0, 1), (1, 1), (2, 3), (5, 1)];
+
+        remap_structured_families_after_expansion(&mut families, &spans);
+
+        assert_eq!(families.len(), 1);
+        assert_eq!(families[0].first_equation_index, 2);
+        assert_eq!(families[0].equations_per_point, 1);
+        assert_eq!(
+            structured_equation_slot(&families, 4),
+            Some(StructuredEquationSlot {
+                family_index: 0,
+                iteration_index: 2,
+                equation_position: 0,
+                equation_count: 1,
+            })
+        );
+    }
+
+    #[test]
+    fn remap_preserves_an_unchanged_compact_array_owner() {
+        let mut families = vec![family(2, vec![1, 1, 1])];
+        families[0].template = Some(rumoca_core::ComprehensionTemplate {
+            body: Vec::new(),
+            scalar_view: rumoca_core::ComprehensionScalarView::RowMajorProjection,
+        });
+        let spans = vec![(0, 2), (2, 1), (3, 1), (4, 1)];
+
+        remap_structured_families_after_expansion(&mut families, &spans);
+
+        assert_eq!(families.len(), 1);
+        assert_eq!(families[0].first_equation_index, 3);
+        assert_eq!(families[0].equations_per_point, 1);
+    }
+
+    #[test]
+    fn remap_preserves_a_singleton_compact_array_owner() {
+        let mut families = vec![family(1, vec![1])];
+        families[0].template = Some(rumoca_core::ComprehensionTemplate {
+            body: Vec::new(),
+            scalar_view: rumoca_core::ComprehensionScalarView::RowMajorProjection,
+        });
+        let spans = vec![(0, 1), (1, 1)];
+
+        remap_structured_families_after_expansion(&mut families, &spans);
+
+        assert_eq!(families.len(), 1);
+        assert_eq!(families[0].first_equation_index, 1);
     }
 
     #[test]

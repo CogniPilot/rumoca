@@ -26,12 +26,11 @@ use rumoca_ir_flat as flat;
 use rustc_hash::FxHashMap;
 
 use crate::errors::FlattenError;
-use crate::path_utils::{
-    first_path_segment_without_index, segments as path_segments_of, strip_array_index,
-};
+use crate::path_utils::{segments as path_segments_of, strip_array_index};
 
 mod equation_generation;
 mod path_index;
+mod stream_operators;
 use equation_generation::*;
 pub(crate) use equation_generation::{connection_involves_disabled, process_connections};
 use path_index::*;
@@ -277,30 +276,33 @@ fn subscripted_base_var_with_rank(
     let (base_name, groups) = split_trailing_index_groups(var.as_str())?;
     let base = rumoca_core::VarName::new(&base_name);
     let base_var = flat.variables.get(&base)?;
+    let indices: Option<Vec<i64>> = groups
+        .iter()
+        .map(|group| parse_literal_index_group_values(group))
+        .collect::<Option<Vec<_>>>()
+        .map(|groups| groups.into_iter().flatten().collect());
+    let indices = indices?;
 
     if base_var.dims.is_empty() {
         // Collapsed connector-array fields may lose explicit dimensions in flat::Variable.
         // Accept positive scalar indices and map to the base variable.
-        if groups
-            .iter()
-            .all(|group| parse_single_index_group_value(group).is_some_and(|idx| idx >= 1))
-        {
-            return Some((base, groups.len()));
+        if indices.iter().all(|index| *index >= 1) {
+            return Some((base, indices.len()));
         }
         return None;
     }
 
-    if groups.len() > base_var.dims.len() {
+    if indices.len() > base_var.dims.len() {
         return None;
     }
 
-    let in_bounds = groups.iter().zip(base_var.dims.iter()).all(|(group, dim)| {
-        parse_single_index_group_value(group)
-            .is_some_and(|idx| *dim >= 1 && idx >= 1 && idx <= *dim)
-    });
+    let in_bounds = indices
+        .iter()
+        .zip(base_var.dims.iter())
+        .all(|(index, dim)| *dim >= 1 && *index >= 1 && *index <= *dim);
 
     if in_bounds {
-        Some((base, groups.len()))
+        Some((base, indices.len()))
     } else {
         None
     }
@@ -344,7 +346,23 @@ struct ConnectionSet {
 enum ConnectionKind {
     Flow,
     Potential,
-    Stream,
+}
+
+/// A semantic MLS §15.2 stream connection set.
+///
+/// Stream sets are kept per hierarchy level, exactly like the flow sets, because
+/// MLS §9.1.2 defines the inside/outside role of a connector relative to the
+/// class that declares the `connect`. A pass-through connector such as
+/// `pipe.port_a` is the *outside* connector of the set declared inside `Pipe`
+/// and the *inside* connector of the set declared in the enclosing model, and
+/// MLS §15.2 weights the two roles with opposite flow signs. Merging the levels
+/// into one global set would weight the same physical branch twice.
+#[derive(Debug)]
+struct StreamConnectionSet {
+    /// Stream variables connected at this level.
+    variables: Vec<rumoca_core::VarName>,
+    /// Scope where the connect() equation was declared; empty means root scope.
+    scope: String,
 }
 
 /// Union-Find data structure for building connection sets.
@@ -745,6 +763,76 @@ fn validate_expanded_connector_connection(
     Ok(())
 }
 
+fn count_expanded_connector_matches(
+    source_path: &str,
+    source_members: &[rumoca_core::VarName],
+    target_path: &str,
+    target_members: &[rumoca_core::VarName],
+    var_index: &ConnectionVarIndex,
+) -> usize {
+    let target_index = ConnectionSubMatchIndex::new(target_path, target_members, var_index);
+    source_members
+        .iter()
+        .filter(|member| {
+            let Some((suffix, indices)) = extract_suffix(member.as_str(), source_path) else {
+                return false;
+            };
+            let indices = strip_explicit_path_indices(&indices, source_path);
+            find_matching_var_b_indexed(&suffix, &indices, &target_index).is_some()
+        })
+        .count()
+}
+
+/// Reject the unsupported part of MLS §9.1.3 before connection-set building.
+///
+/// Identically declared expandable connectors need no augmentation and can use
+/// the normal connector expansion below. If either side is expandable and any
+/// existing member is absent on the peer, connecting only the intersection
+/// would silently change the model. Full member-union augmentation belongs
+/// before connection-set construction; until that elaboration exists, fail
+/// explicitly at this boundary.
+fn reject_expandable_connector_augmentation(
+    connections: &[&ast::InstanceConnection],
+    flat: &flat::Model,
+    prefix_children: &FxHashMap<String, Vec<rumoca_core::VarName>>,
+    var_index: &ConnectionVarIndex,
+) -> Result<(), FlattenError> {
+    for conn in connections {
+        let path_a = conn.a.to_flat_string();
+        let path_b = conn.b.to_flat_string();
+        let subs_a = find_sub_variables_indexed(&path_a, prefix_children, var_index);
+        let subs_b = find_sub_variables_indexed(&path_b, prefix_children, var_index);
+        if subs_a.is_empty() || subs_b.is_empty() {
+            // Undeclared expandable members are rejected by typecheck. Without
+            // descendants there is no Flat-IR evidence that either endpoint is
+            // an expandable connector, so leave other endpoint forms alone.
+            continue;
+        }
+
+        let is_expandable = |members: &[rumoca_core::VarName]| {
+            members.iter().any(|name| {
+                flat.variables
+                    .get(name)
+                    .is_some_and(|var| var.from_expandable_connector)
+            })
+        };
+        if !is_expandable(&subs_a) && !is_expandable(&subs_b) {
+            continue;
+        }
+
+        let matched_a =
+            count_expanded_connector_matches(&path_a, &subs_a, &path_b, &subs_b, var_index);
+        let matched_b =
+            count_expanded_connector_matches(&path_b, &subs_b, &path_a, &subs_a, var_index);
+        if matched_a != subs_a.len() || matched_b != subs_b.len() {
+            return Err(FlattenError::unsupported_expandable_connector_augmentation(
+                path_a, path_b, conn.span,
+            ));
+        }
+    }
+    Ok(())
+}
+
 // =============================================================================
 // Connection Set Building
 // =============================================================================
@@ -1124,7 +1212,7 @@ fn connect_sub_variable(
     path_b: &str,
     sub_match_index: &ConnectionSubMatchIndex,
     ctx: &mut ConnectionBuildCtx<'_>,
-) {
+) -> bool {
     // Skip parameters and constants — they are structural, not equation unknowns.
     // Connection equations for parameters (like connector.m = subcomponent.connector.m)
     // inflate the equation count without adding corresponding unknowns.
@@ -1134,11 +1222,11 @@ fn connect_sub_variable(
             rumoca_core::Variability::Parameter(_) | rumoca_core::Variability::Constant(_)
         )
     {
-        return;
+        return false;
     }
 
     let Some((suffix_a, indices_a)) = extract_suffix(sub_a.as_str(), path_a) else {
-        return;
+        return false;
     };
     let normalized_indices_a = strip_explicit_path_indices(&indices_a, path_a);
 
@@ -1146,7 +1234,7 @@ fn connect_sub_variable(
     let Some(var_b_match) =
         find_matching_var_b_indexed(&suffix_a, &normalized_indices_a, sub_match_index)
     else {
-        return;
+        return false;
     };
     let conn_a = scalarize_collapsed_connector_element(sub_a, path_a, ctx.flat);
     let mut conn_b = scalarize_collapsed_connector_element(&var_b_match, path_b, ctx.flat);
@@ -1213,6 +1301,7 @@ fn connect_sub_variable(
     } else {
         ctx.potential_uf.union(&conn_a, &conn_b);
     }
+    true
 }
 
 /// Process a single connection and update the connection structures.
@@ -1326,151 +1415,23 @@ fn expand_connector_connection(
     ctx: &mut ConnectionBuildCtx<'_>,
 ) {
     let sub_match_index = ConnectionSubMatchIndex::new(path_b, subs_b, ctx.var_index);
-    for sub_a in subs_a {
-        connect_sub_variable(sub_a, path_a, path_b, &sub_match_index, ctx);
-    }
-}
-
-fn collect_existing_lhs_vars(
-    flat: &flat::Model,
-) -> std::collections::HashSet<rumoca_core::VarName> {
-    let mut lhs_vars = std::collections::HashSet::new();
-    for eq in &flat.equations {
-        let rumoca_core::Expression::Binary { op, lhs, .. } = &eq.residual else {
-            continue;
-        };
-        if !matches!(op, rumoca_core::OpBinary::Sub) {
-            continue;
-        }
-        if let rumoca_core::Expression::VarRef { name, .. } = lhs.as_ref() {
-            lhs_vars.insert(name.var_name().clone());
-        }
-    }
-    lhs_vars
-}
-
-fn collect_existing_var_refs(
-    flat: &flat::Model,
-) -> std::collections::HashSet<rumoca_core::VarName> {
-    let mut refs = std::collections::HashSet::new();
-    for eq in &flat.equations {
-        eq.residual.collect_var_refs(&mut refs);
-    }
-    refs
-}
-
-fn stream_var_present_in_set(
-    flat: &flat::Model,
-    var: &rumoca_core::VarName,
-    vars: &std::collections::HashSet<rumoca_core::VarName>,
-) -> bool {
-    if vars.contains(var) {
-        return true;
-    }
-    if let Some(base) = subscripted_base_var(var, flat)
-        && vars.contains(&base)
-    {
-        return true;
-    }
-    if let Some(stripped) = strip_embedded_array_indices(var.as_str())
-        && vars.contains(&rumoca_core::VarName::new(stripped))
-    {
-        return true;
-    }
-    false
-}
-
-fn stream_set_touches_top_level_connector(
-    flat: &flat::Model,
-    vars: &[rumoca_core::VarName],
-) -> bool {
-    vars.iter().any(|var| {
-        first_path_segment_without_index(var.as_str())
-            .is_some_and(|prefix| flat.top_level_connectors.contains(prefix))
-    })
-}
-
-fn classify_stream_vars_by_presence(
-    flat: &flat::Model,
-    vars: Vec<rumoca_core::VarName>,
-    present: &std::collections::HashSet<rumoca_core::VarName>,
-) -> (Vec<rumoca_core::VarName>, Vec<rumoca_core::VarName>) {
-    let mut defined = Vec::new();
-    let mut undefined = Vec::new();
-    for var in vars {
-        if stream_var_present_in_set(flat, &var, present) {
-            defined.push(var);
-        } else {
-            undefined.push(var);
-        }
-    }
-    (defined, undefined)
-}
-
-fn append_stream_connection_sets_for_group(
-    flat: &flat::Model,
-    vars: Vec<rumoca_core::VarName>,
-    existing_lhs_vars: &std::collections::HashSet<rumoca_core::VarName>,
-    existing_var_refs: &mut Option<std::collections::HashSet<rumoca_core::VarName>>,
-    result: &mut Vec<ConnectionSet>,
-    span: rumoca_core::Span,
-) {
-    if vars.len() < 2 {
+    let matched = subs_a
+        .iter()
+        .filter(|sub_a| connect_sub_variable(sub_a, path_a, path_b, &sub_match_index, ctx))
+        .count();
+    if matched != 0 {
         return;
     }
 
-    let touches_top_level = stream_set_touches_top_level_connector(flat, &vars);
-    let (mut defined_streams, mut undefined_streams) =
-        classify_stream_vars_by_presence(flat, vars, existing_lhs_vars);
-    if undefined_streams.is_empty() {
-        return;
-    }
-
-    undefined_streams.sort_by(|a, b| compare_path_index_order(a.as_str(), b.as_str()));
-    defined_streams.sort_by(|a, b| compare_path_index_order(a.as_str(), b.as_str()));
-
-    if touches_top_level {
-        if undefined_streams.len() >= 2 {
-            result.push(ConnectionSet {
-                variables: undefined_streams,
-                kind: ConnectionKind::Stream,
-                scope: String::new(),
-                span,
-            });
-        }
-        return;
-    }
-
-    let refs = existing_var_refs.get_or_insert_with(|| collect_existing_var_refs(flat));
-    let (referenced_streams, mut still_undefined) =
-        classify_stream_vars_by_presence(flat, undefined_streams, refs);
-    if still_undefined.is_empty() {
-        return;
-    }
-
-    defined_streams.extend(referenced_streams);
-    defined_streams.sort_by(|a, b| compare_path_index_order(a.as_str(), b.as_str()));
-    still_undefined.sort_by(|a, b| compare_path_index_order(a.as_str(), b.as_str()));
-
-    if let Some(anchor) = defined_streams.first().cloned() {
-        for missing in still_undefined {
-            result.push(ConnectionSet {
-                variables: vec![missing, anchor.clone()],
-                kind: ConnectionKind::Stream,
-                scope: String::new(),
-                span,
-            });
-        }
-        return;
-    }
-
-    if still_undefined.len() >= 2 {
-        result.push(ConnectionSet {
-            variables: still_undefined,
-            kind: ConnectionKind::Stream,
-            scope: String::new(),
-            span,
-        });
+    // Connector arrays can be represented asymmetrically: one side may retain
+    // an indexless array member (`heat.port.T`, dims=[N]) while the other is
+    // expanded into connector elements (`pipe.ports[1].T`, ...). Matching from
+    // the expanded side supplies the element index needed to project the
+    // collapsed member, so retry in the opposite direction when the first
+    // representation produced no pairs.
+    let reverse_match_index = ConnectionSubMatchIndex::new(path_a, subs_a, ctx.var_index);
+    for sub_b in subs_b {
+        connect_sub_variable(sub_b, path_b, path_a, &reverse_match_index, ctx);
     }
 }
 
@@ -1491,18 +1452,20 @@ fn append_stream_connection_sets_for_group(
 ///
 /// Potential (equality) connection sets use a global union-find since
 /// N-1 equality equations give the same count whether split or merged.
-/// Connection sets plus the raw stream groups (the semantic stream
-/// connection sets used for the MLS §15.2 inStream rewrite, independent of
-/// the balance-oriented stream ConnectionSets).
+///
+/// Stream connection sets are computed per-scope for the same reason as the
+/// flow sets: MLS §15.2 weights an inside connector with `max(-m_flow, 0)` and
+/// an outside connector with `max(+m_flow, 0)`, and that role is only defined
+/// relative to the level that declares the `connect` (MLS §9.1.2).
 fn build_connection_sets(
     connections: &[&ast::InstanceConnection],
     flat: &flat::Model,
     prefix_children: &FxHashMap<String, Vec<rumoca_core::VarName>>,
     var_index: &ConnectionVarIndex,
-) -> Result<(Vec<ConnectionSet>, Vec<Vec<rumoca_core::VarName>>), FlattenError> {
+) -> Result<(Vec<ConnectionSet>, Vec<StreamConnectionSet>), FlattenError> {
     let mut potential_uf = UnionFind::new();
-    let mut stream_uf = UnionFind::new();
     let mut result = Vec::new();
+    let mut stream_sets: Vec<StreamConnectionSet> = Vec::new();
 
     // SPEC_0008: every generated connection equation carries real provenance.
     // Track direct connect() spans first; scalarized array members that do not
@@ -1537,9 +1500,11 @@ fn build_connection_sets(
             .push(conn);
     }
 
-    // Process each scope separately for flow pairs, globally for potential
+    // Process each scope separately for flow and stream pairs, globally for
+    // potential variables.
     for (scope, scope_conns) in &connections_by_scope {
         let mut flow_pairs: Vec<(rumoca_core::VarName, rumoca_core::VarName)> = Vec::new();
+        let mut stream_uf = UnionFind::new();
         for conn in scope_conns {
             process_connection(
                 conn,
@@ -1568,6 +1533,16 @@ fn build_connection_sets(
                 });
             }
         }
+
+        for (_root, vars) in stream_uf.get_sets() {
+            // A semantic stream set must retain real connect provenance even
+            // though equations are emitted only for its outside endpoints.
+            representative_connection_span(&vars, &var_first_span, flat)?;
+            stream_sets.push(StreamConnectionSet {
+                variables: vars,
+                scope: (*scope).to_string(),
+            });
+        }
     }
 
     // Extract potential connection sets (global — equality equations count
@@ -1584,26 +1559,7 @@ fn build_connection_sets(
         }
     }
 
-    let stream_sets = stream_uf.get_sets();
-    let mut raw_stream_groups: Vec<Vec<rumoca_core::VarName>> = Vec::new();
-    if !stream_sets.is_empty() {
-        let existing_lhs_vars = collect_existing_lhs_vars(flat);
-        let mut existing_var_refs: Option<std::collections::HashSet<rumoca_core::VarName>> = None;
-        for (_root, vars) in stream_sets {
-            raw_stream_groups.push(vars.clone());
-            let span = representative_connection_span(&vars, &var_first_span, flat)?;
-            append_stream_connection_sets_for_group(
-                flat,
-                vars,
-                &existing_lhs_vars,
-                &mut existing_var_refs,
-                &mut result,
-                span,
-            );
-        }
-    }
-
-    Ok((result, raw_stream_groups))
+    Ok((result, stream_sets))
 }
 
 fn representative_connection_span(
@@ -1727,5 +1683,11 @@ fn create_sum(
 // Task 2.2: Generate Effort (Potential) Equality Equations (CONN-001, CONN-026)
 // =============================================================================
 
+#[cfg(test)]
+mod family_view_tests;
+#[cfg(test)]
+mod scalar_count_tests;
+#[cfg(test)]
+mod stream_mixing_tests;
 #[cfg(test)]
 mod tests;

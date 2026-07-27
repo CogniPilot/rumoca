@@ -8,6 +8,23 @@ pub(super) fn summarize_msl_results(results: &[MslModelResult]) -> ResultCounter
     let mut counters = ResultCounters::default();
     for result in results {
         process_result_error_taxonomy(result, &mut counters);
+        match (
+            result.tensor_family_bodies,
+            result.tensor_preserved_family_bodies,
+            result.tensor_scalarized_family_rows,
+        ) {
+            (Some(family_bodies), Some(preserved_bodies), Some(scalarized_rows)) => {
+                counters.tensor_models_reported += 1;
+                counters.tensor_family_bodies += family_bodies;
+                counters.tensor_preserved_family_bodies += preserved_bodies;
+                counters.tensor_scalarized_family_rows += scalarized_rows;
+            }
+            (None, None, None) => {}
+            _ => counters.tensor_report_errors += 1,
+        }
+        if result.tensor_preservation_error.is_some() {
+            counters.tensor_report_errors += 1;
+        }
         match result.phase_reached.as_str() {
             "Resolve" => process_phase_failure(result, "Resolve", &mut counters),
             "Success" => process_success_result(result, &mut counters),
@@ -35,6 +52,7 @@ pub(super) fn summarize_msl_results(results: &[MslModelResult]) -> ResultCounter
                 _ => {}
             }
         }
+        count_timeout_recheck(result, &mut counters.timeout_recheck);
         if let Some(ref status) = result.ic_status {
             counters.ic_attempted += 1;
             match status.as_str() {
@@ -45,6 +63,24 @@ pub(super) fn summarize_msl_results(results: &[MslModelResult]) -> ResultCounter
         }
     }
     counters
+}
+
+/// Tally one model's phase-kill re-check.
+///
+/// An unrecognised outcome is counted as `unavailable` rather than dropped: a
+/// re-check whose verdict this build cannot name is a re-check whose verdict is
+/// unknown, and silently forgetting it would understate the killed cohort.
+fn count_timeout_recheck(result: &MslModelResult, stats: &mut MslTimeoutRecheckStats) {
+    let Some(recheck) = result.timeout_recheck.as_ref() else {
+        return;
+    };
+    stats.rechecked += 1;
+    match recheck.outcome.as_str() {
+        MSL_TIMEOUT_RECHECK_DIAGNOSTIC => stats.diagnostic += 1,
+        MSL_TIMEOUT_RECHECK_TIMEOUT => stats.timeout += 1,
+        MSL_TIMEOUT_RECHECK_COMPLETED => stats.completed += 1,
+        _ => stats.unavailable += 1,
+    }
 }
 
 pub(super) fn finalize_msl_summary_from_results(
@@ -130,12 +166,16 @@ fn build_summary_from_counters(
         unsupported_feature_counts_by_backend: counters.unsupported_feature_counts_by_backend,
         undefined_vars: counters.undefined_vars,
         balance_distribution: counters.balance_distribution,
+        compile_dae_balance_failures: balance_pipeline_balance_cohort::build_balance_failure_cohort(
+            &model_results,
+        ),
         model_results,
         timings,
         sim_ok: counters.sim_ok,
         sim_nan: counters.sim_nan,
         sim_solver_fail: counters.sim_solver_fail,
         sim_timeout: counters.sim_timeout,
+        timeout_recheck: counters.timeout_recheck,
         sim_balance_fail: counters.sim_balance_fail,
         sim_attempted: counters.sim_attempted,
         ic_attempted: counters.ic_attempted,
@@ -146,6 +186,11 @@ fn build_summary_from_counters(
         total_sim_run_seconds: counters.total_sim_run_seconds,
         total_sim_wall_seconds: counters.total_sim_wall_seconds,
         sim_target_models,
+        tensor_models_reported: counters.tensor_models_reported,
+        tensor_family_bodies: counters.tensor_family_bodies,
+        tensor_preserved_family_bodies: counters.tensor_preserved_family_bodies,
+        tensor_scalarized_family_rows: counters.tensor_scalarized_family_rows,
+        tensor_report_errors: counters.tensor_report_errors,
     }
 }
 

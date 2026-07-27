@@ -56,6 +56,37 @@ fn const_store_row(value: f64) -> Vec<solve::LinearOp> {
 }
 
 #[test]
+fn template_partition_keeps_native_family_rows_out_of_fallback_programs() {
+    let span = fixture_span("compact_map_then_scalar.mo");
+    let domain = tensor_domain(3);
+    let map = solve::ComputeNode::Map {
+        output_map: solve::TensorOutputMap::dense_contiguous(0, &domain)
+            .expect("valid dense output map"),
+        domain,
+        base_ops: const_store_row(2.0),
+        load_strides: Vec::new(),
+        const_strides: Vec::new(),
+        metadata: solve::TensorNodeMetadata::default(),
+        span,
+    };
+    let scalar = solve::ComputeNode::ScalarPrograms(solve::ScalarProgramBlock::with_source_span(
+        vec![const_store_row(7.0)],
+        span,
+    ));
+
+    let partition = native_family_template_partition(&solve::ComputeBlock {
+        nodes: vec![map, scalar],
+    })
+    .expect("native family followed by scalar fallback should partition");
+
+    assert_eq!(partition.families.len(), 1);
+    assert_eq!(partition.fallback_programs, vec![const_store_row(7.0)]);
+    assert_eq!(partition.scalar_fallback_rows.len(), 1);
+    assert_eq!(partition.scalar_fallback_rows[0].row_index, 0);
+    assert_eq!(partition.scalar_fallback_rows[0].output_index, 3);
+}
+
+#[test]
 fn template_partition_places_mixed_scalar_and_tensor_outputs() {
     let span = fixture_span("mixed_template_partition.mo");
     let block = solve::ComputeBlock {
@@ -488,6 +519,42 @@ fn native_family_const_stride_error_reports_op_kind() {
 
     assert!(err.contains("native family const stride targets a non-const op: LoadY"));
     assert!(!err.contains("LoadY {"));
+}
+
+#[test]
+fn wgsl_native_family_combines_duplicate_stride_descriptors() {
+    let mut family = native_family_with_base_ops(vec![
+        solve::LinearOp::LoadY { dst: 0, index: 0 },
+        solve::LinearOp::StoreOutput { src: 0 },
+    ]);
+    family.load_strides = vec![
+        solve::AffineStencilLoadStride {
+            op_position: 0,
+            terms: vec![solve::AffineStencilIndexStrideTerm {
+                dimension: 0,
+                stride: isize::MAX,
+            }],
+        },
+        solve::AffineStencilLoadStride {
+            op_position: 0,
+            terms: vec![solve::AffineStencilIndexStrideTerm {
+                dimension: 0,
+                stride: 1,
+            }],
+        },
+        solve::AffineStencilLoadStride {
+            op_position: 0,
+            terms: vec![solve::AffineStencilIndexStrideTerm {
+                dimension: 0,
+                stride: -isize::MAX,
+            }],
+        },
+    ];
+
+    let rendered = render_native_family_expr_wgsl(&family, &Value::from_serialize(()))
+        .expect("the combined stride is representable in WGSL");
+    assert!(rendered.contains("* 1"), "{rendered}");
+    assert!(!rendered.contains(&isize::MAX.to_string()), "{rendered}");
 }
 
 #[test]

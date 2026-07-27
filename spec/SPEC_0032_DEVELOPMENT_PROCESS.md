@@ -95,6 +95,9 @@ Failure classifications:
 | Commands not run MUST be reported with reason | final updates/PRs | Exposes residual risk |
 | Work is not done while temporary probes or symptom patches remain | all changes | Prevents cleanup debt |
 | Semantic work is done only after spec grounding, root-cause proof, and regression coverage | compiler/simulator | Fix must be defensible |
+| Cargo subprocesses launched by repository tooling MUST derive a host-topology job budget unless `CARGO_BUILD_JOBS` is explicitly set | developer tooling | Keeps verification responsive without overriding an operator choice |
+| The automatic Cargo budget MUST reserve zero physical cores below 4 logical CPUs, one below 8, and at most two at 8 or more | developer tooling | Small runners retain throughput while developer machines retain foreground capacity |
+| Long-running isolated workers MUST exit when their parent control channel closes and MUST enforce a bounded resident-memory policy | worker orchestration | Interrupted gates must not leave orphaned or unbounded processes |
 
 ## References
 

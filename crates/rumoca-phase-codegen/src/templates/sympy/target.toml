@@ -5,6 +5,9 @@ description = "SymPy Python DAE export"
 execution_mode = "symbolic"
 deployment_class = "symbolic"
 
+[capabilities]
+runtime_events = false
+
 [[files]]
 path = "{{ model_name }}_sympy.py"
 template = "sympy.py.jinja"

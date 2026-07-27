@@ -130,7 +130,7 @@ impl fmt::Display for UtcTimestamp {
 
 /// Non-manifest id (`efmiIdentifierType`): one or more characters from the
 /// XSD character set (ASCII alphanumerics plus `# ' ( ) , - . / : [ ] _ { }`).
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Identifier(String);
 
 impl Identifier {
@@ -199,7 +199,7 @@ fn invalid_attribute_char_reason(value: &str) -> Option<String> {
 /// return, or XML-illegal character. Stricter than the XSD (which permits
 /// the empty string) because an empty name/version/tool attribute is always
 /// a generator bug; use `None` for absent optional attributes instead.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct NormalizedText(String);
 
 impl NormalizedText {
@@ -235,7 +235,7 @@ impl fmt::Display for NormalizedText {
 /// Backslashes are also rejected — stricter than the XSD pattern — because a
 /// `\` in a file name is ambiguous on Windows consumers (path separator vs.
 /// name character).
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct NameWithoutSlashes(String);
 
 impl NameWithoutSlashes {
@@ -279,7 +279,7 @@ impl fmt::Display for NameWithoutSlashes {
 /// `.` and `..` segments (which the pattern technically admits but which are
 /// always generator bugs) and backslashes (ambiguous path separators on
 /// Windows consumers).
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct FilePath(String);
 
 impl FilePath {

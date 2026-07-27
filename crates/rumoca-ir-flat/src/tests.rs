@@ -105,6 +105,7 @@ fn make_der(var_name: &str) -> ast::Expression {
             span: DUMMY,
         },
         args: vec![make_var(var_name)],
+        is_partial_application: false,
         span: DUMMY,
     }
 }
@@ -292,6 +293,7 @@ fn test_function_call_named_arguments_preserved_as_internal_named_args() {
             make_named_arg("PRef", make_int(410)),
             make_named_arg("VRef", make_int(388)),
         ],
+        is_partial_application: false,
         span: DUMMY,
     };
 
@@ -547,7 +549,7 @@ fn test_extract_algorithm_outputs_keeps_function_call_targets() {
             def_id: None,
         },
         args: Vec::new(),
-        outputs: vec![ComponentReference {
+        outputs: vec![Some(ComponentReference {
             local: false,
             span: rumoca_core::Span::DUMMY,
             parts: vec![ComponentRefPart {
@@ -556,7 +558,7 @@ fn test_extract_algorithm_outputs_keeps_function_call_targets() {
                 subs: vec![Subscript::generated_index(2, rumoca_core::Span::DUMMY)],
             }],
             def_id: None,
-        }],
+        })],
         span: rumoca_core::Span::DUMMY,
     }];
 

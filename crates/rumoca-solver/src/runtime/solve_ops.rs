@@ -171,6 +171,31 @@ pub fn row_reads_solver_or_time(row: &[solve::LinearOp]) -> bool {
     })
 }
 
+/// Compare runtime fixed-point values with a combined absolute/relative scale.
+///
+/// Projection routines certify their own residual tolerances. This comparison
+/// only decides whether another coupled runtime pass is needed, so large
+/// physical values must not require bit-level or absolute-tolerance agreement.
+pub fn runtime_value_changed(old: f64, new: f64, tol: f64) -> bool {
+    if old == new {
+        return false;
+    }
+    if !old.is_finite() || !new.is_finite() {
+        return true;
+    }
+    let scale = 1.0_f64.max(old.abs()).max(new.abs());
+    (old - new).abs() > tol.abs() * scale
+}
+
+pub fn runtime_values_changed(before: &[f64], after: &[f64], tol: f64) -> bool {
+    before.len() != after.len()
+        || before
+            .iter()
+            .copied()
+            .zip(after.iter().copied())
+            .any(|(old, new)| runtime_value_changed(old, new, tol))
+}
+
 pub fn event_eval_params_for_pre_mode(
     model: &solve::SolveModel,
     base_p: &[f64],
@@ -502,5 +527,13 @@ mod tests {
                 post_relation_memory_value: 0.0
             }]
         );
+    }
+
+    #[test]
+    fn runtime_change_detection_combines_absolute_and_relative_scale() {
+        assert!(!runtime_value_changed(100_000.0, 100_000.01, 1.0e-6));
+        assert!(runtime_value_changed(0.0, 2.0e-6, 1.0e-6));
+        assert!(runtime_value_changed(f64::NAN, f64::NAN, 1.0e-6));
+        assert!(runtime_values_changed(&[1.0], &[1.0, 2.0], 1.0e-6));
     }
 }

@@ -25,6 +25,8 @@ fn decay_solve_layout() -> rumoca_ir_solve::SolveLayout {
         discrete_valued_scalar_names: Vec::new(),
         relation_memory_parameter_indices: Vec::new(),
         initial_event_parameter_index: None,
+        initial_homotopy_parameter_index: None,
+        terminal_event_parameter_index: None,
         pre_param_bindings: Vec::new(),
     }
 }
@@ -94,8 +96,8 @@ fn decay_model() -> rumoca_ir_solve::SolveModel {
             initialization: InitializationSolveSystem {
                 residual: ComputeBlock::from_scalar_program_block(zero_rb.clone()),
                 row_targets: Vec::new(),
-                projection_indices: Vec::new(),
-                projection_plan: rumoca_ir_solve::AlgebraicProjectionPlan::default(),
+                projection_unknowns: Vec::new(),
+                projection_plan: rumoca_ir_solve::InitializationProjectionPlan::default(),
                 update_rhs: ScalarProgramBlock::default(),
                 update_targets: Vec::new(),
             },
@@ -109,7 +111,7 @@ fn decay_model() -> rumoca_ir_solve::SolveModel {
         },
         artifacts: rumoca_ir_solve::SolveArtifacts {
             continuous: rumoca_ir_solve::ContinuousSolveArtifacts {
-                mass_matrix: vec![vec![1.0]],
+                mass_matrix: rumoca_ir_solve::MassMatrix::Identity,
                 implicit_jacobian_v: zero_block,
                 implicit_jacobian_v_scalar: zero_rb.clone(),
                 full_jacobian_v: zero_rb.clone(),
@@ -117,6 +119,7 @@ fn decay_model() -> rumoca_ir_solve::SolveModel {
             ..Default::default()
         },
         initial_y: vec![1.0],
+        solver_nominals: vec![1.0],
         parameters: Vec::new(),
         external_tables: rumoca_ir_solve::ExternalTables::default(),
         visible_names: vec!["x".to_string()],

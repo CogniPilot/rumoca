@@ -357,6 +357,14 @@ pub(crate) fn extract_lhs_var_size_with_linearized_bases(
         return Some(size);
     }
 
+    // MLS §3.7.4: `der(e)` has the same shape as `e`, so a subscripted
+    // derivative target such as `der(x_scaled[1])` is a single scalar equation
+    // even when `x_scaled` is an array. Without this the subscript is dropped
+    // and the row is counted with the full array size, over-producing `f_x`.
+    if let Some(size) = subscripted_derivative_lhs_scalar_size(lhs, flat, prefix_counts) {
+        return Some(size);
+    }
+
     if let Expression::Index {
         base, subscripts, ..
     } = lhs.as_ref()
@@ -397,6 +405,40 @@ pub(crate) fn extract_lhs_var_size_with_linearized_bases(
     extract_lhs_var_size_from_var_name(lhs, flat, prefix_counts)
 }
 
+/// Scalar size of a derivative LHS whose argument carries explicit subscripts,
+/// e.g. `der(x_scaled[1])` or `der(x_scaled[2:nx])`.
+///
+/// `extract_var_from_lhs` deliberately refuses subscripted `der` arguments, so
+/// without this the row falls back to whole-variable inference and reports the
+/// full array size instead of the number of selected elements.
+fn subscripted_derivative_lhs_scalar_size(
+    lhs: &Expression,
+    flat: &Model,
+    prefix_counts: &FxHashMap<String, usize>,
+) -> Option<usize> {
+    let Expression::BuiltinCall { function, args, .. } = lhs else {
+        return None;
+    };
+    if !matches!(function, rumoca_core::BuiltinFunction::Der) {
+        return None;
+    }
+    let [arg] = args.as_slice() else {
+        return None;
+    };
+    match arg {
+        Expression::VarRef {
+            name, subscripts, ..
+        } if !subscripts.is_empty() => {
+            let var = flat.variables.get(name.var_name())?;
+            compute_subscripted_size_with_context(&var.dims, subscripts, flat)
+        }
+        Expression::Index {
+            base, subscripts, ..
+        } => indexed_lhs_scalar_size(base, subscripts, flat, prefix_counts),
+        _ => None,
+    }
+}
+
 fn indexed_lhs_scalar_size(
     base: &Expression,
     subscripts: &[Subscript],
@@ -409,38 +451,7 @@ fn indexed_lhs_scalar_size(
     }
 
     let total = *prefix_counts.get(base_name.as_str())?;
-    let full_name = format!(
-        "{}{}",
-        base_name.as_str(),
-        render_subscript_suffix(subscripts)?
-    );
-    Some(record_subscript_scalar_size(
-        &full_name,
-        base_name.as_str(),
-        total,
-        flat,
-    ))
-}
-
-fn render_subscript_suffix(subscripts: &[Subscript]) -> Option<String> {
-    let mut out = String::new();
-    for subscript in subscripts {
-        match subscript {
-            Subscript::Index { value, .. } => out.push_str(&format!("[{value}]")),
-            Subscript::Expr { expr, .. } => {
-                let Expression::Literal {
-                    value: Literal::Integer(value),
-                    ..
-                } = expr.as_ref()
-                else {
-                    return None;
-                };
-                out.push_str(&format!("[{value}]"));
-            }
-            Subscript::Colon { .. } => out.push_str("[:]"),
-        }
-    }
-    Some(out)
+    structured_record_subscript_scalar_size(base_name.as_str(), subscripts, total, flat)
 }
 
 /// Extract a variable name from an LHS expression.

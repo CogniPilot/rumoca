@@ -5,10 +5,16 @@ use crate::pipeline::{
 };
 use crate::{Context, FlattenError, connections, functions};
 
-pub(crate) fn compute_cardinality_counts(ctx: &mut Context, overlay: &ast::InstanceOverlay) {
+pub(crate) fn compute_cardinality_counts(
+    ctx: &mut Context,
+    overlay: &ast::InstanceOverlay,
+) -> Result<(), FlattenError> {
     for (_def_id, class_data) in &overlay.classes {
-        for conn in &class_data.connections {
-            if connections::connection_involves_disabled(conn, &overlay.disabled_components) {
+        // SPEC_0032 §1: derive the scalar view lazily; family-free connections
+        // are borrowed, so the common case stays allocation-free.
+        for conn in rumoca_eval_ast::connection::scalar_connection_view(&class_data.connections) {
+            let conn = conn.map_err(crate::structured_connection_error)?;
+            if connections::connection_involves_disabled(&conn, &overlay.disabled_components) {
                 continue;
             }
             let a_path = conn.a.to_flat_string();
@@ -17,6 +23,7 @@ pub(crate) fn compute_cardinality_counts(ctx: &mut Context, overlay: &ast::Insta
             *ctx.cardinality_counts.entry(b_path).or_insert(0) += 1;
         }
     }
+    Ok(())
 }
 
 pub(crate) fn pre_collect_functions(

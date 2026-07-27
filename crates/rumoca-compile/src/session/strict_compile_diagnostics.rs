@@ -65,8 +65,98 @@ pub(super) fn dae_phase_result_to_failures(
             error,
             error_code,
             diagnostics,
+            ..
         } => failed_phase_failures(tree, model_name, *phase, error, error_code, diagnostics),
     }
+}
+
+/// Structured outcome of a failed strict-reachable-with-recovery compile.
+///
+/// The string `summary` is what the `Result<_, String>` API returns; the
+/// remaining fields carry the machine-readable facts that the string throws
+/// away — which phase actually failed, the SPEC_0008 error code (normalized to
+/// its bare form, e.g. `ED001` rather than `rumoca::todae::ED001`), and the
+/// balance breakdown when the failure is an unbalanced model.
+///
+/// `phase: None` means the compile never reached a model phase at all: parse or
+/// resolve failed first. Callers must not attribute those failures to ToDae.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct StrictCompileFailure {
+    pub summary: String,
+    pub phase: Option<FailedPhase>,
+    pub error_code: Option<String>,
+    pub balance_detail: Option<Box<rumoca_phase_dae::balance::BalanceDetail>>,
+    pub failures: Vec<ModelFailureDiagnostic>,
+}
+
+impl StrictCompileFailure {
+    /// Failure that never reached a model phase (parse/resolve stage).
+    pub(super) fn pre_phase(summary: String, failures: Vec<ModelFailureDiagnostic>) -> Self {
+        let error_code = first_error_code(&failures);
+        Self {
+            summary,
+            phase: None,
+            error_code,
+            balance_detail: None,
+            failures,
+        }
+    }
+
+    /// Failure attributed to the requested model's DAE phase result.
+    pub(super) fn from_dae_phase_result(
+        summary: String,
+        result: &DaePhaseResult,
+        failures: Vec<ModelFailureDiagnostic>,
+    ) -> Self {
+        match result {
+            DaePhaseResult::Failed {
+                phase,
+                error_code,
+                balance_detail,
+                ..
+            } => Self {
+                summary,
+                phase: Some(*phase),
+                error_code: error_code.as_deref().map(short_error_code),
+                balance_detail: balance_detail.clone(),
+                failures,
+            },
+            // A missing `inner` is diagnosed by instantiation, so the model did
+            // reach a model phase. Reporting `phase: None` here would render as
+            // `Resolve` and mislabel the failure.
+            DaePhaseResult::NeedsInner { .. } => Self {
+                summary,
+                phase: Some(FailedPhase::Instantiate),
+                error_code: first_error_code(&failures),
+                balance_detail: None,
+                failures,
+            },
+            DaePhaseResult::Success(_) => Self::pre_phase(summary, failures),
+        }
+    }
+
+    /// The phase name used by MSL/worker artifacts. Falls back to `Resolve`
+    /// because a `None` phase means the compile failed before instantiation.
+    pub fn phase_name(&self) -> &'static str {
+        match self.phase {
+            Some(FailedPhase::Instantiate) => "Instantiate",
+            Some(FailedPhase::Typecheck) => "Typecheck",
+            Some(FailedPhase::Flatten) => "Flatten",
+            Some(FailedPhase::ToDae) => "ToDae",
+            None => "Resolve",
+        }
+    }
+}
+
+fn short_error_code(code: &str) -> String {
+    rumoca_core::short_phase_error_code(code).to_string()
+}
+
+fn first_error_code(failures: &[ModelFailureDiagnostic]) -> Option<String> {
+    failures
+        .iter()
+        .find_map(|failure| failure.error_code.as_deref())
+        .map(short_error_code)
 }
 
 /// One failure per spanned phase diagnostic when the phase produced them, so
@@ -114,11 +204,10 @@ pub(super) fn class_primary_span(tree: &ast::ClassTree, model_name: &str) -> Opt
     let name_location = &class.name.location;
     let start = name_location.start as usize;
     let end = (name_location.end as usize).max(start.saturating_add(1));
-    let span = if let Some(source_id) = tree.source_map.get_id(&name_location.file_name) {
-        Span::from_offsets(source_id, start, end)
-    } else {
-        default_tree_span(&tree.source_map)
-    };
+    let span = tree
+        .source_map
+        .try_span(name_location.source, start, end)
+        .unwrap_or_else(|| default_tree_span(&tree.source_map));
     Some(span)
 }
 
@@ -155,11 +244,8 @@ pub(super) fn collect_resolve_failures_for_files(
         .filter(|diag| diag.is_error())
         .filter(|diag| {
             diag.labels.iter().any(|label| {
-                source_map
-                    .get_source(label.span.source)
-                    .is_some_and(|(file_name, _)| {
-                        files.iter().any(|file| same_path(file, file_name))
-                    })
+                source_file_key(source_map, label.span.source)
+                    .is_some_and(|file_name| files.iter().any(|file| same_path(file, &file_name)))
             })
         })
         .map(|diag| ModelFailureDiagnostic {
@@ -239,9 +325,31 @@ pub(super) fn collect_target_source_files(
         let Some(class) = tree.get_class_by_qualified_name(target) else {
             continue;
         };
-        files.insert(class.location.file_name.clone());
+        files.extend(source_file_key(&tree.source_map, class.location.source));
     }
     files
+}
+
+/// The per-file key a target and a diagnostic are matched on.
+///
+/// A source the map has no name for must not be dropped from the target set:
+/// silently losing it would suppress every resolve failure raised in that file
+/// (SPEC_0008 fail-fast). Its stable placeholder name is used instead, which
+/// both sides of the match agree on because they derive it the same way.
+///
+/// `SourceId::DUMMY` is the one case with no file to key on at all: it marks
+/// compiler-generated constructs, and inventing a key for it would attach
+/// unrelated source-free diagnostics to every target.
+fn source_file_key(source_map: &SourceMap, source: SourceId) -> Option<String> {
+    if source == SourceId::DUMMY {
+        return None;
+    }
+    Some(
+        source_map
+            .name(source)
+            .map(str::to_string)
+            .unwrap_or_else(|| rumoca_core::placeholder_source_name(source)),
+    )
 }
 
 fn class_primary_label(tree: &ast::ClassTree, model_name: &str, message: &str) -> Option<Label> {
@@ -413,4 +521,93 @@ fn canonicalized_path_key(path: &str) -> PathBuf {
     }
 
     resolved
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Session;
+
+    const MODEL: &str = "model M\n  Real x;\nequation\n  x = 1;\nend M;\n";
+
+    fn tree_without_source_map() -> ast::ClassTree {
+        let mut session = Session::default();
+        session
+            .add_document("unregistered.mo", MODEL)
+            .expect("document should parse");
+        session
+            .build_resolved()
+            .expect("resolved tree should be available");
+        let mut tree = session
+            .ensure_resolved()
+            .expect("resolved tree should be cached")
+            .0
+            .clone();
+        tree.source_map = SourceMap::new();
+        tree
+    }
+
+    #[test]
+    fn unresolvable_target_source_is_kept_and_still_matches_its_diagnostics() {
+        let tree = tree_without_source_map();
+        let source = tree
+            .definitions
+            .classes
+            .get("M")
+            .expect("class M")
+            .location
+            .source;
+        assert!(tree.source_map.name(source).is_none());
+
+        let files = collect_target_source_files(&tree, &["M".to_string()]);
+        assert_eq!(
+            files.len(),
+            1,
+            "a target whose source id has no registered name must not be dropped"
+        );
+
+        let mut diagnostics = CommonDiagnostics::new();
+        diagnostics.emit(CommonDiagnostic::error(
+            "ER002",
+            "unresolved component reference: 'y'",
+            PrimaryLabel::new(Span::from_offsets(source, 0, 1)),
+        ));
+        let failures = collect_resolve_failures_for_files(&diagnostics, &tree.source_map, &files);
+        assert_eq!(
+            failures.len(),
+            1,
+            "resolve failures in the target's file must still be collected"
+        );
+        assert_eq!(failures[0].error_code.as_deref(), Some("ER002"));
+    }
+
+    #[test]
+    fn source_free_diagnostics_never_match_a_target_file() {
+        let tree = tree_without_source_map();
+        let files = collect_target_source_files(&tree, &["M".to_string()]);
+        let mut diagnostics = CommonDiagnostics::new();
+        diagnostics.emit(CommonDiagnostic::error(
+            "ER002",
+            "compiler generated",
+            PrimaryLabel::new(Span::from_offsets(SourceId::DUMMY, 0, 1)),
+        ));
+        assert!(
+            collect_resolve_failures_for_files(&diagnostics, &tree.source_map, &files).is_empty()
+        );
+    }
+
+    #[test]
+    fn needs_inner_failure_is_attributed_to_instantiation() {
+        let result = DaePhaseResult::NeedsInner {
+            missing_inners: vec!["world".to_string()],
+            missing_spans: Vec::new(),
+        };
+        let failure = StrictCompileFailure::from_dae_phase_result(
+            "model needs inner declarations: world".to_string(),
+            &result,
+            Vec::new(),
+        );
+        assert_eq!(failure.phase, Some(FailedPhase::Instantiate));
+        assert_eq!(failure.phase_name(), "Instantiate");
+    }
 }

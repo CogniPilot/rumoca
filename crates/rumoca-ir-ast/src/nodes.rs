@@ -478,6 +478,13 @@ pub struct ClassDef {
     pub is_replaceable: bool,
     /// True if declared with element-level `redeclare` prefix.
     pub is_redeclare: bool,
+    /// Resolved inherited class slot replaced by this declaration (MLS §7.3).
+    ///
+    /// This is semantic identity, not a same-spelling heuristic. It is
+    /// populated by name resolution after the containing class's extends
+    /// graph is available.
+    #[serde(default)]
+    pub redeclare_target_def_id: Option<DefId>,
     /// Constraining type for replaceable classes (MLS §7.3.2)
     /// If set, redeclarations must be subtypes of this type
     pub constrainedby: Option<Name>,
@@ -527,6 +534,7 @@ impl Default for ClassDef {
             is_outer: false,
             is_replaceable: false,
             is_redeclare: false,
+            redeclare_target_def_id: None,
             constrainedby: None,
             array_subscripts: Vec::new(),
             external: None,
@@ -873,6 +881,12 @@ pub enum Expression {
     FunctionCall {
         comp: ComponentReference,
         args: Vec<Expression>,
+        /// True for the grammar form `function F(bound = value)`.
+        ///
+        /// A partial application is a function value, not a call result. The
+        /// parser must preserve that distinction through semantic checking.
+        #[serde(default)]
+        is_partial_application: bool,
         span: Span,
     },
     /// Class modification in extends/declaration context: `i(x = 2)`
@@ -980,10 +994,16 @@ impl Debug for Expression {
                 .field("end", end)
                 .finish(),
             Expression::ComponentReference(comp) => write!(f, "{:?}", comp),
-            Expression::FunctionCall { comp, args, .. } => f
+            Expression::FunctionCall {
+                comp,
+                args,
+                is_partial_application,
+                ..
+            } => f
                 .debug_struct("FunctionCall")
                 .field("comp", comp)
                 .field("args", args)
+                .field("is_partial_application", is_partial_application)
                 .finish(),
             Expression::ClassModification {
                 target,
@@ -1160,13 +1180,29 @@ impl std::fmt::Display for Expression {
                 token,
                 ..
             } => match terminal_type {
-                TerminalType::String => write!(f, "\"{}\"", token.text),
+                TerminalType::String => {
+                    write!(
+                        f,
+                        "\"{}\"",
+                        rumoca_core::escape_modelica_string(&token.text)
+                    )
+                }
                 TerminalType::Bool => write!(f, "{}", token.text),
                 _ => write!(f, "{}", token.text),
             },
             Expression::ComponentReference(comp) => write!(f, "{}", comp),
-            Expression::FunctionCall { comp, args, .. } => {
-                write!(f, "{}({})", comp, format_display_list(args))
+            Expression::FunctionCall {
+                comp,
+                args,
+                is_partial_application,
+                ..
+            } => {
+                let prefix = if *is_partial_application {
+                    "function "
+                } else {
+                    ""
+                };
+                write!(f, "{}{}({})", prefix, comp, format_display_list(args))
             }
             Expression::ClassModification {
                 target,

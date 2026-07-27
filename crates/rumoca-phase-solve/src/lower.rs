@@ -1,8 +1,4 @@
 //! Lower flat expressions and DAE residual rows to linear ops.
-//!
-//! SPEC_0021 file-size exception: this facade coordinates solve lowering
-//! submodules and still owns shared lowering dispatch. split plan: continue
-//! moving projection and branch logic into focused submodules.
 
 use std::sync::Arc;
 
@@ -76,28 +72,11 @@ pub(super) const SIZE_BINDING_PREFIX: &str = "__rumoca_size__.";
 const RETURN_FLAG_BINDING: &str = "__rumoca_returned__";
 pub(super) const BREAK_FLAG_BINDING: &str = "__rumoca_break__";
 
-#[derive(Debug, Clone)]
-pub(super) struct IndexedBinding {
-    slot: ScalarSlot,
-    indices: Vec<usize>,
-}
-
-#[derive(Default)]
-struct RecordComponentSources {
-    layout: Vec<(String, String, ScalarSlot)>,
-    direct: Vec<(String, String)>,
-}
-
-type IndexedRecordFieldKeyCache =
-    std::cell::RefCell<IndexMap<(String, String), Arc<IndexMap<Vec<usize>, String>>>>;
-
-pub(super) type IndexedBindingMap = Arc<IndexMap<ComponentReferenceKey, Vec<IndexedBinding>>>;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct LocalIndexedBinding {
-    reg: Reg,
-    indices: Vec<usize>,
-}
+mod record_sources;
+use record_sources::{
+    IndexedBinding, IndexedBindingMap, IndexedRecordFieldKeyCache, LocalIndexedBinding,
+    RecordComponentSources,
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct LoweredExpression {
@@ -150,6 +129,15 @@ pub(crate) fn lower_residual_rows_and_targets_from_equations<'a>(
     )
 }
 
+pub(crate) fn lower_compact_residual_expressions(
+    dae_model: &dae::Dae,
+    layout: &VarLayout,
+    expressions: &[rumoca_core::Expression],
+    owner_span: rumoca_core::Span,
+) -> Result<Vec<Vec<LinearOp>>, LowerError> {
+    expression_rows::lower_compact_residual_expressions(dae_model, layout, expressions, owner_span)
+}
+
 pub(crate) fn scalarized_record_field_binding_names(
     base: &str,
     layout: &VarLayout,
@@ -200,8 +188,9 @@ pub(crate) fn lower_derivative_rhs_with_analysis(
     dae_model: &dae::Dae,
     layout: &VarLayout,
     analysis: &derivative_rhs::DerivativeRhsAnalysis,
+    declines: &mut crate::tensor_declines::TensorDeclineJournal,
 ) -> Result<ComputeBlock, LowerError> {
-    derivative_rhs::lower_derivative_rhs_with_analysis(dae_model, layout, analysis)
+    derivative_rhs::lower_derivative_rhs_with_analysis(dae_model, layout, analysis, declines)
 }
 
 pub fn lower_derivative_rhs_scalar_programs(
@@ -310,40 +299,43 @@ pub fn lower_observation_rhs(
     layout: &VarLayout,
     expressions: &[rumoca_core::Expression],
 ) -> Result<Vec<Vec<LinearOp>>, LowerError> {
-    let structural_bindings = Arc::new(compile_time::structural_bindings(dae_model)?);
-    let indexed_bindings = indexed_bindings_for_layout(layout);
-    lower_observation_rhs_with_structural_bindings(
-        dae_model,
-        layout,
-        expressions,
-        &structural_bindings,
-        &indexed_bindings,
-    )
+    let context = observation_lowering_context(dae_model, layout)?;
+    lower_observation_rhs_with_context(dae_model, layout, expressions, &context)
 }
 
-/// Observation lowering with a caller-provided structural-bindings map, so
-/// batch callers build the (potentially large) scalarized binding map once
-/// instead of once per observation row.
-pub(crate) fn structural_bindings_for_dae(
+/// Shared immutable indexes for lowering a batch of visible observations.
+///
+/// Building runtime direct assignments scans the full DAE. Keep that scan out
+/// of the per-observation loop: large models commonly expose hundreds of
+/// reconstructed variables after structural elimination.
+pub(crate) struct ObservationLoweringContext {
+    structural_bindings: Arc<IndexMap<String, f64>>,
+    indexed_bindings: IndexedBindingMap,
+    direct_assignments: Arc<IndexMap<String, DirectAssignmentValue>>,
+}
+
+pub(crate) fn observation_lowering_context(
     dae_model: &dae::Dae,
-) -> Result<Arc<IndexMap<String, f64>>, LowerError> {
-    Ok(Arc::new(compile_time::structural_bindings(dae_model)?))
+    layout: &VarLayout,
+) -> Result<ObservationLoweringContext, LowerError> {
+    let structural_bindings = Arc::new(compile_time::structural_bindings(dae_model)?);
+    let direct_assignments = Arc::new(derivative_rhs::collect_runtime_direct_assignments(
+        dae_model,
+        &structural_bindings,
+    )?);
+    Ok(ObservationLoweringContext {
+        structural_bindings,
+        indexed_bindings: Arc::new(build_indexed_binding_map(layout)),
+        direct_assignments,
+    })
 }
 
-/// Prebuilt layout binding index for batch observation lowering.
-pub(crate) fn indexed_bindings_for_layout(layout: &VarLayout) -> IndexedBindingMap {
-    Arc::new(build_indexed_binding_map(layout))
-}
-
-pub(crate) fn lower_observation_rhs_with_structural_bindings(
+pub(crate) fn lower_observation_rhs_with_context(
     dae_model: &dae::Dae,
     layout: &VarLayout,
     expressions: &[rumoca_core::Expression],
-    structural_bindings: &Arc<IndexMap<String, f64>>,
-    indexed_bindings: &IndexedBindingMap,
+    context: &ObservationLoweringContext,
 ) -> Result<Vec<Vec<LinearOp>>, LowerError> {
-    let direct_assignments =
-        derivative_rhs::collect_runtime_direct_assignments(dae_model, structural_bindings)?;
     expression_rows::lower_observation_rows_from_expressions_with_structural_bindings(
         expressions,
         layout,
@@ -355,11 +347,11 @@ pub(crate) fn lower_observation_rhs_with_structural_bindings(
             discrete_valued_names: &dae_model.variables.discrete_valued,
             variable_starts: &dae_model.metadata.variable_starts,
             dae_variables: Some(&dae_model.variables),
-            structural_bindings: Some(Arc::clone(structural_bindings)),
-            direct_assignments: Some(Arc::new(direct_assignments)),
+            structural_bindings: Some(Arc::clone(&context.structural_bindings)),
+            direct_assignments: Some(Arc::clone(&context.direct_assignments)),
             guard_target_start_before_first_clock_tick: false,
         },
-        Arc::clone(indexed_bindings),
+        Arc::clone(&context.indexed_bindings),
     )
 }
 
@@ -401,6 +393,17 @@ struct LowerBuilder<'a> {
     structural_bindings: Arc<IndexMap<String, f64>>,
     direct_assignments: Arc<IndexMap<String, DirectAssignmentValue>>,
     direct_assignment_stack: Vec<String>,
+    /// Registers computed for model-level direct assignments in this row.
+    ///
+    /// Direct assignments form a causal DAG, but recursively lowering every
+    /// reference treats that DAG as an expression tree. Shared dependencies
+    /// then grow exponentially. Cache by value mode so each causal node is
+    /// emitted once per row while `pre(...)` remains distinct from its current
+    /// value.
+    direct_assignment_current_cache: IndexMap<String, Vec<Reg>>,
+    direct_assignment_pre_cache: IndexMap<String, Vec<Reg>>,
+    direct_assignment_cache_hits: usize,
+    direct_assignment_cache_misses: usize,
     indexed_bindings: IndexedBindingMap,
     local_indexed_bindings: IndexMap<String, Vec<LocalIndexedBinding>>,
     local_binding_dims: IndexMap<String, Vec<i64>>,
@@ -487,6 +490,10 @@ impl<'a> LowerBuilder<'a> {
             structural_bindings: Arc::default(),
             direct_assignments: Arc::default(),
             direct_assignment_stack: Vec::new(),
+            direct_assignment_current_cache: IndexMap::new(),
+            direct_assignment_pre_cache: IndexMap::new(),
+            direct_assignment_cache_hits: 0,
+            direct_assignment_cache_misses: 0,
             indexed_bindings: metadata
                 .indexed_bindings
                 .cloned()
@@ -560,6 +567,10 @@ impl<'a> LowerBuilder<'a> {
             structural_bindings: self.structural_bindings.clone(),
             direct_assignments: Arc::default(),
             direct_assignment_stack: Vec::new(),
+            direct_assignment_current_cache: IndexMap::new(),
+            direct_assignment_pre_cache: IndexMap::new(),
+            direct_assignment_cache_hits: 0,
+            direct_assignment_cache_misses: 0,
             indexed_bindings: Arc::clone(&self.indexed_bindings),
             local_indexed_bindings: IndexMap::new(),
             local_binding_dims: IndexMap::new(),
@@ -1126,6 +1137,14 @@ impl<'a> LowerBuilder<'a> {
         scope: &Scope,
         call_depth: usize,
     ) -> Result<Option<Vec<Reg>>, LowerError> {
+        let cached = match self.value_mode {
+            ValueMode::Current => self.direct_assignment_current_cache.get(key),
+            ValueMode::Pre => self.direct_assignment_pre_cache.get(key),
+        };
+        if let Some(values) = cached {
+            self.direct_assignment_cache_hits = self.direct_assignment_cache_hits.saturating_add(1);
+            return Ok(Some(values.clone()));
+        }
         let Some(assignment) = self.direct_assignments.get(key).cloned() else {
             return Ok(None);
         };
@@ -1137,11 +1156,26 @@ impl<'a> LowerBuilder<'a> {
             return Ok(None);
         }
 
+        self.direct_assignment_cache_misses = self.direct_assignment_cache_misses.saturating_add(1);
+        if tracing::enabled!(
+            target: "rumoca_phase_solve::direct_assignment",
+            tracing::Level::DEBUG
+        ) && self.direct_assignment_cache_misses.is_power_of_two()
+        {
+            tracing::debug!(
+                target: "rumoca_phase_solve::direct_assignment",
+                assignment = key,
+                expanded = self.direct_assignment_cache_misses,
+                cache_hits = self.direct_assignment_cache_hits,
+                active_depth = self.direct_assignment_stack.len(),
+                "lowering direct-assignment DAG"
+            );
+        }
         self.direct_assignment_stack.push(key.to_string());
         let lowered = self.lower_array_like_values(&assignment.rhs, scope, call_depth + 1);
         self.direct_assignment_stack.pop();
 
-        let values = lowered?;
+        let mut values = lowered?;
         if let Some(flat_index) = assignment.flat_index {
             let selected =
                 direct_assignment_component(&values, flat_index, assignment.repeat_period)
@@ -1151,8 +1185,16 @@ impl<'a> LowerBuilder<'a> {
                             flat_index + 1
                         ),
                     })?;
-            return Ok(Some(vec![selected]));
+            values = vec![selected];
         }
+        match self.value_mode {
+            ValueMode::Current => self
+                .direct_assignment_current_cache
+                .insert(key.to_string(), values.clone()),
+            ValueMode::Pre => self
+                .direct_assignment_pre_cache
+                .insert(key.to_string(), values.clone()),
+        };
         Ok(Some(values))
     }
 
@@ -1948,46 +1990,5 @@ impl<'a> LowerBuilder<'a> {
         }
     }
 }
-fn subscript_span(subscripts: &[rumoca_core::Subscript]) -> Option<rumoca_core::Span> {
-    subscripts
-        .iter()
-        .map(rumoca_core::Subscript::span)
-        .find(|span| !span.is_dummy())
-}
-
-fn subscript_span_with_owner(
-    subscripts: &[rumoca_core::Subscript],
-    owner_span: rumoca_core::Span,
-) -> rumoca_core::Span {
-    subscript_span(subscripts).unwrap_or(owner_span)
-}
-
-fn index_owner_span(
-    base: &rumoca_core::Expression,
-    subscripts: &[rumoca_core::Subscript],
-    owner_span: Option<rumoca_core::Span>,
-) -> Option<rumoca_core::Span> {
-    subscripts
-        .iter()
-        .find_map(subscript_source_provenance)
-        .or_else(|| base.span().filter(|span| !span.is_dummy()))
-        .or_else(|| owner_span.filter(|span| !span.is_dummy()))
-}
-
-fn subscript_source_provenance(subscript: &rumoca_core::Subscript) -> Option<rumoca_core::Span> {
-    let span = subscript.span();
-    if !span.is_dummy() {
-        return Some(span);
-    }
-    let rumoca_core::Subscript::Expr { expr, .. } = subscript else {
-        return None;
-    };
-    expr.span()
-}
-
-fn required_expression_span(
-    expr: &rumoca_core::Expression,
-    context: &'static str,
-) -> Result<rumoca_core::Span, LowerError> {
-    Ok(expr.require_span(context)?.span())
-}
+mod source_spans;
+use source_spans::*;

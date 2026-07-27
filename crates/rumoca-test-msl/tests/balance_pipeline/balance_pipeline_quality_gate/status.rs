@@ -69,6 +69,23 @@ pub(super) fn print_compile_and_sim_gate_pass(
     } else {
         println!("MSL simulation gate: skipped (no simulations attempted in this run).");
     }
+    let tensor_percent = tensor_preservation_percent(
+        gate_input.tensor_preserved_family_bodies,
+        gate_input.tensor_family_bodies,
+    );
+    match tensor_percent {
+        Some(percent) => println!(
+            "MSL tensor-preservation gate: PASS {percent:.2}% ({}/{} family bodies, {} scalarized rows, {} models reported).",
+            gate_input.tensor_preserved_family_bodies,
+            gate_input.tensor_family_bodies,
+            gate_input.tensor_scalarized_family_rows,
+            gate_input.tensor_models_reported
+        ),
+        None => println!(
+            "MSL tensor-preservation gate: no structured-family bodies observed ({} models reported).",
+            gate_input.tensor_models_reported
+        ),
+    }
 }
 
 pub(super) fn print_trace_gate_status(
@@ -167,25 +184,36 @@ pub(super) fn print_runtime_ratio_status(
     baseline: &MslQualityBaseline,
     parity_input: Option<&MslParityGateInput>,
 ) {
-    let Some(current_runtime) = parity_input.and_then(|parity| parity.runtime_ratio_stats.as_ref())
-    else {
+    let Some(parity) = parity_input else {
         return;
     };
+    let Some(current_gate) = runtime_ratio_gate_stats(baseline, parity) else {
+        return;
+    };
+    let current_runtime = &current_gate.stats;
 
-    let current_workers = parity_input
-        .and_then(|parity| parity.runtime_context.as_ref())
+    let current_workers = parity
+        .runtime_context
+        .as_ref()
         .and_then(|context| context.workers_used);
-    let current_omc_threads = parity_input
-        .and_then(|parity| parity.runtime_context.as_ref())
+    let current_omc_threads = parity
+        .runtime_context
+        .as_ref()
         .and_then(|context| context.omc_threads);
 
     if let Some(baseline_runtime) = baseline.runtime_ratio_stats.as_ref() {
+        let cohort = current_gate
+            .cohort_coverage
+            .map_or_else(String::new, |(matched, expected)| {
+                format!(", cohort={matched}/{expected}")
+            });
         println!(
-            "MSL speed gate: PASS system_median={:.3e} (baseline={:.3e}), wall_median={:.3e} (baseline={:.3e}), workers={}, omc_threads={}.",
+            "MSL speed gate: PASS system_median={:.3e} (baseline={:.3e}), wall_median={:.3e} (baseline={:.3e}){}, workers={}, omc_threads={}.",
             current_runtime.system_ratio_both_success.median,
             baseline_runtime.system_ratio_both_success.median,
             current_runtime.wall_ratio_both_success.median,
             baseline_runtime.wall_ratio_both_success.median,
+            cohort,
             fmt_opt_usize(current_workers),
             fmt_opt_usize(current_omc_threads)
         );

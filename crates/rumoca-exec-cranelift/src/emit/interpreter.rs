@@ -449,13 +449,7 @@ fn apply_binary(op: BinaryOp, lhs: f64, rhs: f64) -> f64 {
         BinaryOp::Add => lhs + rhs,
         BinaryOp::Sub => lhs - rhs,
         BinaryOp::Mul => lhs * rhs,
-        BinaryOp::Div => {
-            if rhs == 0.0 {
-                if lhs == 0.0 { 0.0 } else { f64::INFINITY }
-            } else {
-                lhs / rhs
-            }
-        }
+        BinaryOp::Div => lhs / rhs,
         BinaryOp::Pow => lhs.powf(rhs),
         BinaryOp::And => {
             if lhs != 0.0 && rhs != 0.0 {

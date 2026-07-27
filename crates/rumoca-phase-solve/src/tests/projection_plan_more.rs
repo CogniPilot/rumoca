@@ -244,7 +244,12 @@ fn initialization_projection_plan_includes_unfixed_states() {
         .projection_plan
         .blocks
         .iter()
-        .flat_map(|block| block.y_indices.iter().copied())
+        .flat_map(|block| {
+            block.unknowns.iter().filter_map(|unknown| match unknown {
+                solve::ScalarSlot::Y { index, .. } => Some(*index),
+                _ => None,
+            })
+        })
         .collect::<BTreeSet<_>>();
 
     assert!(

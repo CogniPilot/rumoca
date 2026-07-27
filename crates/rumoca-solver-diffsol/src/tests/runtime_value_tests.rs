@@ -703,7 +703,11 @@ fn solve_model_initial_projection_indices_use_solve_ir_slots() {
     model.problem.solve_layout.state_scalar_count = 3;
     model.problem.solve_layout.algebraic_scalar_count = 1;
     model.problem.solve_layout.output_scalar_count = 1;
-    model.problem.initialization.projection_indices = vec![0, 2, 3];
+    model.problem.initialization.projection_unknowns = vec![
+        solve::scalar_slot_y(0),
+        solve::scalar_slot_y(2),
+        solve::scalar_slot_y(3),
+    ];
     model.variable_meta = vec![
         solve::SolveVariableMeta {
             name: "x".to_string(),
@@ -737,7 +741,14 @@ fn solve_model_initial_projection_indices_use_solve_ir_slots() {
         },
     ];
 
-    assert_eq!(model.initialization_projection_indices(), vec![0, 2, 3]);
+    assert_eq!(
+        model.initialization_projection_unknowns(),
+        [
+            solve::scalar_slot_y(0),
+            solve::scalar_slot_y(2),
+            solve::scalar_slot_y(3)
+        ]
+    );
 }
 
 #[test]

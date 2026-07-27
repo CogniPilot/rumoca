@@ -4,8 +4,8 @@
 
 use rumoca_compile::compile::FailedPhase;
 use rumoca_contracts::test_support::{
-    expect_balanced, expect_failure_in_phase_with_code, expect_resolve_failure_with_code,
-    expect_success,
+    expect_balanced, expect_failure_in_phase_reporting_code, expect_failure_in_phase_with_code,
+    expect_resolve_failure_with_code, expect_success,
 };
 
 // =============================================================================
@@ -1043,9 +1043,14 @@ fn type_026_final_constraint_requires_final_replacement_rejected() {
 // same named elements
 // =============================================================================
 
+// Type checking reports two distinct codes here: the generic branch-type
+// mismatch (`ET002`) and the if-expression record-compatibility check
+// (`ET009`, MLS 3.7 §10.6.1). The summary `PhaseResult::error_code` is
+// therefore the `ET000` multi-code sentinel, so this case asserts on the
+// reported diagnostics.
 #[test]
 fn type_032_if_expression_mixing_record_types_rejected() {
-    expect_failure_in_phase_with_code(
+    expect_failure_in_phase_reporting_code(
         r#"
         model M
             record RA
@@ -1073,9 +1078,12 @@ fn type_032_if_expression_mixing_record_types_rejected() {
 // have same one
 // =============================================================================
 
+// Same two-diagnostic shape as TYPE-032: `ET002` for the branch-type mismatch
+// plus `ET009` for the operator-record compatibility check, collapsing the
+// summary code to the `ET000` multi-code sentinel.
 #[test]
 fn type_035_if_expression_mixing_operator_records_rejected() {
-    expect_failure_in_phase_with_code(
+    expect_failure_in_phase_reporting_code(
         r#"
         model M
             operator record CA

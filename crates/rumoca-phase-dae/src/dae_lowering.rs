@@ -4,8 +4,12 @@
 //! argument insertion, parameter dependency sorting, and vector equation
 //! scalarization that operate on the DAE IR before code generation.
 
+mod expanded_repartition;
+
 use crate::ToDaeError;
+use crate::scalar_inference::is_reduction_builtin;
 use crate::scalar_size::compute_var_size;
+use expanded_repartition::repartition_expanded_discrete_rows;
 use indexmap::{IndexMap, IndexSet};
 use rumoca_core::{ExpressionRewriter, ExpressionVisitor, StatementRewriter};
 use rumoca_ir_dae as dae;
@@ -876,6 +880,7 @@ pub fn scalarize_phantom_vector_equations(dae: &mut Dae) -> Result<(), ToDaeErro
         &array_dims,
         &dae.symbols.functions,
     )?;
+    repartition_expanded_discrete_rows(dae);
     Ok(())
 }
 
@@ -1294,11 +1299,11 @@ fn scalarize_expr_with_context(
         } => scalarize_if_expr_at(branches, else_branch, *span, ctx),
         rumoca_core::Expression::Array { elements, .. } => {
             // An array literal in a vector equation context: extract element k
-            if ctx.k < elements.len() {
-                scalarize_expr_with_context(&elements[ctx.k], ctx)
-            } else {
-                Ok(expr.clone())
-            }
+            let Some(selected) = (!elements.is_empty()).then(|| &elements[ctx.k % elements.len()])
+            else {
+                return Ok(expr.clone());
+            };
+            scalarize_expr_with_context(selected, ctx)
         }
         rumoca_core::Expression::ArrayComprehension {
             expr: inner,
@@ -1428,17 +1433,17 @@ fn scalarize_var_ref_at(
             span,
         }));
     }
-    if !array_dims.contains_key(n) {
+    let Some(dims) = array_dims.get(n) else {
         return Ok(None);
-    }
-    let index = one_based_scalar_index(k, span, "DAE phantom scalarized variable subscript")?;
+    };
     Ok(Some(rumoca_core::Expression::VarRef {
         name: name.clone(),
-        subscripts: vec![generated_index_subscript(
-            index,
+        subscripts: generated_flat_index_subscripts(
+            dims,
+            k,
             span,
             "DAE phantom scalarized variable subscript",
-        )?],
+        )?,
         span,
     }))
 }
@@ -1462,16 +1467,15 @@ fn scalarize_function_call_at(
     ctx: &ScalarizeExprContext<'_>,
 ) -> Result<rumoca_core::Expression, ToDaeError> {
     let function = ctx.functions.get(&rumoca_core::VarName::new(name.as_str()));
-    let first_output_size =
-        first_function_output_size(name.as_str(), ctx.functions).ok_or_else(|| {
+    let first_output_dims =
+        first_function_output_dims(name.as_str(), ctx.functions).ok_or_else(|| {
             ToDaeError::runtime_contract_violation_at(
                 format!("missing function output metadata for `{name}`"),
                 span,
             )
         })?;
+    let first_output_size = compute_var_size(first_output_dims);
     if first_output_size > 1 {
-        let index =
-            one_based_scalar_index(ctx.k, span, "DAE scalarized function output subscript")?;
         return Ok(rumoca_core::Expression::Index {
             base: Box::new(rumoca_core::Expression::FunctionCall {
                 name: name.clone(),
@@ -1482,11 +1486,12 @@ fn scalarize_function_call_at(
                 is_constructor,
                 span,
             }),
-            subscripts: vec![generated_index_subscript(
-                index,
+            subscripts: generated_flat_index_subscripts(
+                first_output_dims,
+                ctx.k,
                 span,
                 "DAE scalarized function output subscript",
-            )?],
+            )?,
             span,
         });
     }
@@ -1559,6 +1564,26 @@ struct PhantomArrayFormalArgVectorizer<'a> {
 }
 
 impl ExpressionRewriter for PhantomArrayFormalArgVectorizer<'_> {
+    fn walk_builtin_call_expression(
+        &mut self,
+        function: rumoca_core::BuiltinFunction,
+        args: &[rumoca_core::Expression],
+        span: rumoca_core::Span,
+    ) -> rumoca_core::Expression {
+        let args = if is_reduction_builtin(&function) {
+            args.iter()
+                .map(|arg| vectorize_phantom_expr(arg, self.phantom_map))
+                .collect()
+        } else {
+            self.rewrite_expressions(args)
+        };
+        rumoca_core::Expression::BuiltinCall {
+            function,
+            args,
+            span,
+        }
+    }
+
     fn walk_function_call_expression(
         &mut self,
         name: &rumoca_core::Reference,
@@ -1588,22 +1613,6 @@ impl ExpressionRewriter for PhantomArrayFormalArgVectorizer<'_> {
     }
 }
 
-fn one_based_scalar_index(
-    zero_based: usize,
-    span: rumoca_core::Span,
-    context: &'static str,
-) -> Result<i64, ToDaeError> {
-    zero_based
-        .checked_add(1)
-        .and_then(|index| i64::try_from(index).ok())
-        .ok_or_else(|| {
-            ToDaeError::runtime_contract_violation_at(
-                format!("{context} {zero_based} exceeds i64 range"),
-                span,
-            )
-        })
-}
-
 fn generated_index_subscript(
     index: i64,
     span: rumoca_core::Span,
@@ -1616,6 +1625,41 @@ fn generated_index_subscript(
             ToDaeError::runtime_metadata_violation_at(err.to_string(), span)
         }
     })
+}
+
+fn generated_flat_index_subscripts(
+    dims: &[i64],
+    flat_index: usize,
+    span: rumoca_core::Span,
+    context: &'static str,
+) -> Result<Vec<rumoca_core::Subscript>, ToDaeError> {
+    let scalar_count = compute_var_size(dims);
+    if scalar_count == 0 {
+        return Err(ToDaeError::runtime_contract_violation_at(
+            format!("{context} cannot select from empty array dimensions {dims:?}"),
+            span,
+        ));
+    }
+    let operand_index = flat_index % scalar_count;
+    let indices =
+        rumoca_ir_dae::flat_index_to_subscripts(dims, operand_index).ok_or_else(|| {
+            ToDaeError::runtime_contract_violation_at(
+                format!("{context} {operand_index} is outside array dimensions {dims:?}"),
+                span,
+            )
+        })?;
+    indices
+        .into_iter()
+        .map(|index| {
+            let index = i64::try_from(index).map_err(|_| {
+                ToDaeError::runtime_contract_violation_at(
+                    format!("{context} coordinate {index} exceeds i64 range"),
+                    span,
+                )
+            })?;
+            generated_index_subscript(index, span, context)
+        })
+        .collect()
 }
 
 fn scalarize_if_expr_at(
@@ -1690,14 +1734,14 @@ fn real_literal(value: f64, span: rumoca_core::Span) -> rumoca_core::Expression 
     }
 }
 
-fn first_function_output_size(
+fn first_function_output_dims<'a>(
     name: &str,
-    functions: &IndexMap<rumoca_core::VarName, rumoca_core::Function>,
-) -> Option<usize> {
+    functions: &'a IndexMap<rumoca_core::VarName, rumoca_core::Function>,
+) -> Option<&'a [i64]> {
     let lookup_name = rumoca_core::VarName::new(name);
     let function = functions.get(&lookup_name)?;
     let output = function.outputs.first()?;
-    Some(compute_var_size(&output.dims))
+    Some(&output.dims)
 }
 
 fn vectorize_phantom_expr(

@@ -310,6 +310,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "bit-set"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "08807e080ed7f9d5433fa9b275196cfc35414f66a0c79d864dc51a0d825231a3"
+dependencies = [
+ "bit-vec 0.8.0",
+]
+
+[[package]]
+name = "bit-vec"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5e764a1d40d510daf35e07be9eb06e75770908c27d411ee6c92109c9840eaaf7"
+
+[[package]]
 name = "bit-vec"
 version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3660,6 +3675,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "proptest"
+version = "1.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4b45fcc2344c680f5025fe57779faef368840d0bd1f42f216291f0dc4ace4744"
+dependencies = [
+ "bit-set",
+ "bit-vec 0.8.0",
+ "bitflags 2.13.0",
+ "num-traits",
+ "rand 0.9.4",
+ "rand_chacha 0.9.0",
+ "rand_xorshift",
+ "regex-syntax",
+ "rusty-fork",
+ "tempfile",
+ "unarray",
+]
+
+[[package]]
 name = "pulp"
 version = "0.22.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3769,6 +3803,12 @@ dependencies = [
  "num-traits",
  "pulp",
 ]
+
+[[package]]
+name = "quick-error"
+version = "1.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a1d01941d82fa2ab50be1e79e6714289dd7cde78eba4c074bc5a4374f650dfe0"
 
 [[package]]
 name = "quick-xml"
@@ -3961,6 +4001,15 @@ checksum = "04db2e382d13679a1e42400e90e306cdbb79dc5cd41bb035ba4eae72e78cdf37"
 dependencies = [
  "rand 0.9.4",
  "regex-syntax",
+]
+
+[[package]]
+name = "rand_xorshift"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "513962919efc330f829edb2535844d1b912b0fbe2ca165d613e4e8788bb05a5a"
+dependencies = [
+ "rand_core 0.9.5",
 ]
 
 [[package]]
@@ -4218,6 +4267,7 @@ dependencies = [
  "rumoca-phase-solve",
  "rumoca-phase-typecheck",
  "rumoca-sim",
+ "rumoca-solver",
  "rumoca-tool-fmt",
  "rumoca-tool-lint",
  "serde",
@@ -4422,8 +4472,6 @@ dependencies = [
  "rumoca-eval-dae",
  "rumoca-ir-dae",
  "rumoca-ir-solve",
- "rumoca-solver",
- "thiserror 2.0.18",
  "tracing",
 ]
 
@@ -4615,6 +4663,7 @@ dependencies = [
  "miette",
  "rumoca-core",
  "rumoca-eval-dae",
+ "rumoca-eval-flat",
  "rumoca-ir-dae",
  "rumoca-ir-flat",
  "rustc-hash",
@@ -4634,6 +4683,9 @@ dependencies = [
  "rumoca-eval-flat",
  "rumoca-ir-ast",
  "rumoca-ir-flat",
+ "rumoca-phase-instantiate",
+ "rumoca-phase-parse",
+ "rumoca-phase-resolve",
  "rustc-hash",
  "thiserror 2.0.18",
  "tracing",
@@ -4648,6 +4700,8 @@ dependencies = [
  "rumoca-core",
  "rumoca-eval-ast",
  "rumoca-ir-ast",
+ "rumoca-phase-parse",
+ "rumoca-phase-resolve",
  "rustc-hash",
  "thiserror 2.0.18",
  "tracing",
@@ -4662,6 +4716,7 @@ dependencies = [
  "miette",
  "parol",
  "parol_runtime",
+ "proptest",
  "rumoca-core",
  "rumoca-ir-ast",
  "scnr2",
@@ -4734,6 +4789,7 @@ dependencies = [
  "anyhow",
  "indexmap 2.14.0",
  "libc",
+ "proptest",
  "rumoca-codec",
  "rumoca-compile",
  "rumoca-core",
@@ -4765,9 +4821,11 @@ dependencies = [
 name = "rumoca-solver"
 version = "0.9.20"
 dependencies = [
+ "indexmap 2.14.0",
  "instant",
  "nalgebra",
  "rumoca-core",
+ "rumoca-eval-solve",
  "rumoca-ir-solve",
  "serde",
  "serde_json",
@@ -4949,6 +5007,8 @@ dependencies = [
  "mimalloc",
  "rumoca-compile",
  "rumoca-core",
+ "rumoca-phase-solve",
+ "rumoca-phase-structural",
  "rumoca-sim",
  "serde",
  "serde_json",
@@ -5099,6 +5159,18 @@ name = "rustversion"
 version = "1.0.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
+
+[[package]]
+name = "rusty-fork"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cc6bf79ff24e648f6da1f8d1f011e9cac26491b619e6b9280f2b47f1774e6ee2"
+dependencies = [
+ "fnv",
+ "quick-error",
+ "tempfile",
+ "wait-timeout",
+]
 
 [[package]]
 name = "ryu"
@@ -6359,6 +6431,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "11c524dc90cd71769e23e877ffdcb128f867970f1febdb8eb11a776f5f49e7fc"
 
 [[package]]
+name = "unarray"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eaea85b334db583fe3274d12b4cd1880032beab409c0d774be044d4480ab9a94"
+
+[[package]]
 name = "unicode-ident"
 version = "1.0.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7239,6 +7317,7 @@ dependencies = [
  "clap_complete",
  "lsp-types",
  "mimalloc",
+ "num_cpus",
  "serde",
  "serde_json",
  "sha2",
@@ -7265,7 +7344,7 @@ version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b5f6765e852b9b4dc8e2a76843e4d64d1cea8e79bcde0b6901aea8e7c7f08282"
 dependencies = [
- "bit-vec",
+ "bit-vec 0.9.1",
  "time",
 ]
 

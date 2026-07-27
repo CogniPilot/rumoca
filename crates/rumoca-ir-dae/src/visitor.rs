@@ -26,6 +26,7 @@ pub trait DaeVisitor {
         self.visit_expressions(&dae.conditions.relations);
         self.visit_expressions(&dae.events.synthetic_root_conditions);
         self.visit_event_actions(&dae.events.event_actions);
+        self.visit_delay_channels(&dae.events.delay_channels);
         self.visit_expressions(&dae.clocks.constructor_exprs);
         self.visit_expressions(&dae.clocks.triggered_conditions);
     }
@@ -90,6 +91,22 @@ pub trait DaeVisitor {
     fn visit_event_actions(&mut self, actions: &[crate::DaeEventAction]) {
         for action in actions {
             self.visit_expression(&action.condition);
+            match &action.kind {
+                crate::DaeEventActionKind::Assert { message }
+                | crate::DaeEventActionKind::Terminate { message } => {
+                    self.visit_expression(message);
+                }
+            }
+        }
+    }
+
+    fn visit_delay_channels(&mut self, channels: &[crate::DaeDelayChannel]) {
+        for channel in channels {
+            self.visit_expression(&channel.source);
+            self.visit_expression(&channel.delay_time);
+            if let Some(delay_max) = &channel.delay_max {
+                self.visit_expression(delay_max);
+            }
         }
     }
 
@@ -168,6 +185,7 @@ pub trait DaeExpressionRewriter: ExpressionRewriter {
         self.rewrite_expression_slots(&mut dae.conditions.relations);
         self.rewrite_expression_slots(&mut dae.events.synthetic_root_conditions);
         self.rewrite_event_actions(&mut dae.events.event_actions);
+        self.rewrite_delay_channels(&mut dae.events.delay_channels);
         self.rewrite_expression_slots(&mut dae.clocks.constructor_exprs);
         self.rewrite_expression_slots(&mut dae.clocks.triggered_conditions);
     }
@@ -191,6 +209,22 @@ pub trait DaeExpressionRewriter: ExpressionRewriter {
     fn rewrite_event_actions(&mut self, actions: &mut [crate::DaeEventAction]) {
         for action in actions {
             action.condition = self.rewrite_expression(&action.condition);
+            match &mut action.kind {
+                crate::DaeEventActionKind::Assert { message }
+                | crate::DaeEventActionKind::Terminate { message } => {
+                    *message = self.rewrite_expression(message);
+                }
+            }
+        }
+    }
+
+    fn rewrite_delay_channels(&mut self, channels: &mut [crate::DaeDelayChannel]) {
+        for channel in channels {
+            channel.source = self.rewrite_expression(&channel.source);
+            channel.delay_time = self.rewrite_expression(&channel.delay_time);
+            if let Some(delay_max) = &mut channel.delay_max {
+                *delay_max = self.rewrite_expression(delay_max);
+            }
         }
     }
 }
@@ -282,13 +316,13 @@ pub trait StatementVisitor: ExpressionVisitor {
         &mut self,
         comp: &ComponentReference,
         args: &[Expression],
-        outputs: &[ComponentReference],
+        outputs: &[Option<ComponentReference>],
     ) {
         self.visit_component_reference(comp);
         for arg in args {
             self.visit_expression(arg);
         }
-        for output in outputs {
+        for output in outputs.iter().flatten() {
             self.visit_component_reference(output);
         }
     }
@@ -583,13 +617,13 @@ impl StatementVisitor for AlgorithmOutputCollector {
         &mut self,
         comp: &ComponentReference,
         args: &[Expression],
-        outputs: &[ComponentReference],
+        outputs: &[Option<ComponentReference>],
     ) {
         self.visit_component_reference(comp);
         for arg in args {
             self.visit_expression(arg);
         }
-        for output in outputs {
+        for output in outputs.iter().flatten() {
             self.insert_output(rumoca_core::component_ref_to_base_reference(output));
             self.visit_component_reference(output);
         }

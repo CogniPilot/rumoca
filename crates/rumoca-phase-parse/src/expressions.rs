@@ -271,7 +271,12 @@ impl TryFrom<&modelica_grammar_trait::FunctionArgument> for rumoca_ir_ast::Expre
                 };
 
                 let span = call_span(&comp, &args);
-                Ok(rumoca_ir_ast::Expression::FunctionCall { comp, args, span })
+                Ok(rumoca_ir_ast::Expression::FunctionCall {
+                    comp,
+                    args,
+                    is_partial_application: true,
+                    span,
+                })
             }
         }
     }
@@ -308,6 +313,7 @@ impl TryFrom<&modelica_grammar_trait::FunctionArguments> for ExpressionList {
                     span: call_span(&comp, &func_args),
                     comp,
                     args: func_args,
+                    is_partial_application: true,
                 };
 
                 // Start with the partial application as the first arg
@@ -494,6 +500,7 @@ fn convert_enum_class_specifier_inner(
         span: name_ref.span,
         comp: name_ref,
         args: vec![],
+        is_partial_application: false,
     })
 }
 
@@ -534,6 +541,7 @@ fn convert_function_partial_specifier_inner(
         span: call_span(&base_func_ref, &args),
         comp: base_func_ref,
         args,
+        is_partial_application: true,
     };
     Ok(rumoca_ir_ast::Expression::Modification {
         span: merge_spans(name_ref.span, function_call.span()),
@@ -949,11 +957,15 @@ impl TryFrom<&modelica_grammar_trait::OutputExpressionList> for ExpressionList {
         let mut v = Vec::new();
         if let Some(opt) = &ast.output_expression_list_opt {
             v.push(opt.expression.clone());
+        } else if let Some(first) = ast.output_expression_list_list.first() {
+            v.push(empty_expr(token_span(&first.comma)?));
         }
         for expr in &ast.output_expression_list_list {
-            if let Some(opt) = &expr.output_expression_list_opt0 {
-                v.push(opt.expression.clone());
-            }
+            let output = match &expr.output_expression_list_opt0 {
+                Some(opt) => opt.expression.clone(),
+                None => empty_expr(token_span(&expr.comma)?),
+            };
+            v.push(output);
         }
         let each_flags = vec![false; v.len()];
         let final_flags = vec![false; v.len()];
@@ -1130,6 +1142,7 @@ fn convert_global_function_call(
         span: call_span(&comp, &args),
         comp,
         args,
+        is_partial_application: false,
     };
 
     // If there are subscripts, wrap in ArrayIndex
@@ -1159,6 +1172,7 @@ impl TryFrom<&modelica_grammar_trait::Primary> for rumoca_ir_ast::Expression {
                             span: call_span(&comp_ref, &args_vec),
                             comp: comp_ref,
                             args: args_vec,
+                            is_partial_application: false,
                         };
                         // Check for optional subscripts: f(x)[i]
                         match &args.component_primary_opt0 {

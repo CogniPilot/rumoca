@@ -302,7 +302,7 @@ impl<'a> LowerBuilder<'a> {
         let arg0 = eval_builtin_arg(self, args, 0, const_scope)?;
         match function {
             rumoca_core::BuiltinFunction::Abs => Ok(arg0.abs()),
-            rumoca_core::BuiltinFunction::Sign => Ok(arg0.signum()),
+            rumoca_core::BuiltinFunction::Sign => Ok(rumoca_core::modelica_sign(arg0)),
             rumoca_core::BuiltinFunction::Sqrt => Ok(arg0.sqrt()),
             rumoca_core::BuiltinFunction::Floor | rumoca_core::BuiltinFunction::Integer => {
                 Ok(arg0.floor())

@@ -4,8 +4,10 @@ use rumoca_ir_dae as dae;
 
 mod array_boundary;
 mod boundary_extra;
+mod structured_family;
 mod tearing;
 
+mod substitution_index;
 mod substitution_more;
 type BuiltinFunction = rumoca_core::BuiltinFunction;
 type Literal = rumoca_core::Literal;
@@ -31,6 +33,35 @@ fn structural_ok<T>(result: Result<T, StructuralError>) -> T {
         Ok(value) => value,
         Err(err) => panic!("unexpected structural error: {err}"),
     }
+}
+
+#[test]
+fn state_selection_requires_matching_improvement_without_shape_regression() {
+    let baseline = MatchingDefect {
+        unmatched_total: 6,
+        rectangularity: 0,
+    };
+    assert!(
+        MatchingDefect {
+            unmatched_total: 4,
+            rectangularity: 0,
+        }
+        .strictly_improves_without_rectangularity_regression(baseline)
+    );
+    assert!(
+        !MatchingDefect {
+            unmatched_total: 4,
+            rectangularity: 2,
+        }
+        .strictly_improves_without_rectangularity_regression(baseline)
+    );
+    assert!(
+        !MatchingDefect {
+            unmatched_total: 6,
+            rectangularity: 0,
+        }
+        .strictly_improves_without_rectangularity_regression(baseline)
+    );
 }
 
 fn test_dae_variable(path: &str) -> dae::Variable {
@@ -88,6 +119,39 @@ fn real(value: f64) -> Expression {
         value: Literal::Real(value),
         span: test_span(),
     }
+}
+
+#[test]
+fn delay_channel_inputs_remain_structural_unknowns() {
+    let mut dae = Dae::default();
+    for name in ["feedback", "ordinary"] {
+        dae.variables
+            .algebraics
+            .insert(VarName::new(name), test_dae_variable(name));
+    }
+    dae.variables.parameters.insert(
+        VarName::new("__runtime__.delay.0"),
+        test_dae_variable("__runtime__.delay.0"),
+    );
+    dae.events.delay_channels.push(dae::DaeDelayChannel {
+        value_parameter: VarName::new("__runtime__.delay.0"),
+        source: var_ref("feedback"),
+        delay_time: real(1.0),
+        delay_max: Some(real(1.0)),
+        source_is_discrete: false,
+        span: test_span(),
+    });
+    dae.continuous.equations.push(dae::Equation::explicit(
+        reference("feedback"),
+        var_ref("__runtime__.delay.0"),
+        test_span(),
+        "delay feedback carrier",
+    ));
+
+    let protected = runtime_protected_unknown_names(&dae).expect("runtime metadata is valid");
+
+    assert!(protected.contains("feedback"));
+    assert!(!protected.contains("ordinary"));
 }
 
 fn array(elements: Vec<Expression>) -> Expression {
@@ -328,7 +392,12 @@ fn contains_complex_constructor(expr: &Expression) -> bool {
             name,
             is_constructor,
             ..
-        } if *is_constructor && name.as_str() == "Complex" => true,
+        } if *is_constructor
+            && name.as_str() == "Complex"
+            && name.resolved_function().is_some() =>
+        {
+            true
+        }
         Expression::Binary { lhs, rhs, .. } => {
             contains_complex_constructor(lhs) || contains_complex_constructor(rhs)
         }
@@ -507,6 +576,28 @@ fn test_try_solve_does_not_match_complex_base_for_field_unknown() {
     };
     let result = try_solve_for_unknown(&rhs, &VarName::new("transferFunction.aSum.re"));
     assert!(result.is_none());
+}
+
+#[test]
+fn boundary_does_not_eliminate_scalar_from_multiscalar_equation() {
+    let mut dae = Dae::new();
+    for name in ["value.re", "source.re"] {
+        dae.variables
+            .algebraics
+            .insert(VarName::new(name), component_var(name));
+    }
+    dae.continuous.equations.push(residual(
+        var_ref("value.re"),
+        var_ref("source.re"),
+        2,
+        "two-scalar record equation",
+    ));
+
+    let result = structural_ok(resolve_boundary_equations(&mut dae));
+
+    assert_eq!(result.n_eliminated, 0);
+    assert_eq!(dae.continuous.equations.len(), 1);
+    assert_eq!(dae.variables.algebraics.len(), 2);
 }
 
 #[test]
@@ -1694,174 +1785,28 @@ fn test_eliminate_trivial_keeps_fixed_alias_unknown() {
     assert!(!dae.variables.algebraics.contains_key(&VarName::new("z")));
 }
 
-/// Removing a boundary/trivial equation that sits before a structured family must
-/// shift that family's `first_equation_index` down to match the compacted equation
-/// vector. Regression for a method-of-lines model (e.g. the docs turkey heat eq)
-/// where eliminating a boundary `Q_cond[1] = 0` left the interior `der` family one
-/// slot high, so Solve-IR lowering folded the adjacent surface `der` row into the
-/// interior stencil and computed it with the wrong body.
-#[test]
-fn shift_structured_families_after_equation_removal_remaps_first_eq() {
-    let family = |first_equation_index: usize| dae::StructuredEquationFamily {
-        domain: rumoca_core::StructuredIndexDomain {
-            binders: vec![rumoca_core::StructuredIndexBinder {
-                id: 0,
-                display_name: "i".to_string(),
-                lower: 1,
-                upper: 3,
-                step: 1,
-            }],
-        },
-        first_equation_index,
-        equations_per_point: 1,
-        span: test_span(),
-        origin: "test".to_string(),
-        regular: None,
-        template: None,
-        interiors_materialized: true,
-    };
-    let mut dae = Dae::new();
-    // fam0 spans eq 1..4 (e.g. Q_cond[2:4]); fam1 spans eq 6..9 (e.g. der(T[1:3])).
-    dae.continuous.structured_equations = vec![family(1), family(6)];
-
-    // Eliminating eq 0 (a boundary scalar before both families) compacts everything
-    // down by one: fam0 -> rows 0..3, fam1 -> rows 5..8.
-    shift_structured_families_after_equation_removal(&mut dae, &[0]);
-    assert_eq!(
-        dae.continuous.structured_equations[0].first_equation_index,
-        0
-    );
-    assert_eq!(
-        dae.continuous.structured_equations[1].first_equation_index,
-        5
-    );
-
-    // A removal in the gap *between* the families (eq 4, outside both blocks
-    // [0,3) and [5,8)) shifts only the family after it; both blocks stay intact.
-    shift_structured_families_after_equation_removal(&mut dae, &[4]);
-    assert_eq!(dae.continuous.structured_equations.len(), 2);
-    assert_eq!(
-        dae.continuous.structured_equations[0].first_equation_index,
-        0
-    );
-    assert_eq!(
-        dae.continuous.structured_equations[1].first_equation_index,
-        4
-    );
-}
-
-/// A family one of whose own rows is eliminated can no longer describe a
-/// contiguous array block, so it must be dropped (its survivors lower as scalars)
-/// rather than left pointing at a hole. Regression for a constant `for k loop
-/// a[k] = k*c` family folded away by trivial elimination, which otherwise left a
-/// dangling family that failed the corner-incidence invariant downstream.
-#[test]
-fn shift_structured_families_drops_family_with_removed_interior_row() {
-    let family = |first_equation_index: usize| dae::StructuredEquationFamily {
-        domain: rumoca_core::StructuredIndexDomain {
-            binders: vec![rumoca_core::StructuredIndexBinder {
-                id: 0,
-                display_name: "k".to_string(),
-                lower: 1,
-                upper: 3,
-                step: 1,
-            }],
-        },
-        first_equation_index,
-        equations_per_point: 1,
-        span: test_span(),
-        origin: "test".to_string(),
-        regular: None,
-        template: None,
-        interiors_materialized: true,
-    };
-    let mut dae = Dae::new();
-    // fam0 spans rows 3..6; a later survivor family fam1 spans rows 8..11.
-    dae.continuous.structured_equations = vec![family(3), family(8)];
-
-    // Eliminating fam0's middle row (eq 4) drops fam0 entirely; fam1 still shifts
-    // down by the one removed row before it.
-    shift_structured_families_after_equation_removal(&mut dae, &[4]);
-    assert_eq!(dae.continuous.structured_equations.len(), 1);
-    assert_eq!(
-        dae.continuous.structured_equations[0].first_equation_index,
-        7
-    );
-}
-
-/// A substitution can rewrite a structured family's row bodies while leaving the
-/// row count unchanged. The original family proof no longer applies, so the
-/// family must be dropped and lowered as scalar rows.
-#[test]
-fn drop_structured_families_touching_equations_drops_rewritten_family() {
-    let family = |first_equation_index: usize| dae::StructuredEquationFamily {
-        domain: rumoca_core::StructuredIndexDomain {
-            binders: vec![rumoca_core::StructuredIndexBinder {
-                id: 0,
-                display_name: "i".to_string(),
-                lower: 1,
-                upper: 2,
-                step: 1,
-            }],
-        },
-        first_equation_index,
-        equations_per_point: 1,
-        span: test_span(),
-        origin: "test".to_string(),
-        regular: None,
-        template: None,
-        interiors_materialized: true,
-    };
-    let mut dae = Dae::new();
-    dae.continuous.structured_equations = vec![family(1), family(4)];
-
-    drop_structured_families_touching_equations(&mut dae, &[2]);
-
-    assert_eq!(dae.continuous.structured_equations.len(), 1);
-    assert_eq!(
-        dae.continuous.structured_equations[0].first_equation_index,
-        4
-    );
-}
-
-/// Residual rows have no `lhs`, so substitution used to rewrite the RHS and
-/// return before recording the touched row. Structured metadata for that row
-/// must still be dropped because its compact body proof is now stale.
-#[test]
-fn substitution_drops_structured_family_for_rewritten_residual_row() {
-    let mut dae = Dae::new();
-    dae.continuous.equations.push(residual(
-        var_ref("x"),
-        var_ref("s"),
-        1,
-        "structured_residual",
-    ));
-    dae.continuous.structured_equations = vec![dae::StructuredEquationFamily {
-        domain: rumoca_core::StructuredIndexDomain {
-            binders: vec![rumoca_core::StructuredIndexBinder {
-                id: 0,
-                display_name: "i".to_string(),
-                lower: 1,
-                upper: 1,
-                step: 1,
-            }],
-        },
-        first_equation_index: 0,
-        equations_per_point: 1,
-        span: test_span(),
-        origin: "test".to_string(),
-        regular: None,
-        template: None,
-        interiors_materialized: true,
-    }];
-
-    structural_ok(apply_substitutions_to_remaining_once(
-        &mut dae,
-        &[false],
-        &[test_substitution("s", real(1.0))],
-    ));
-
-    assert!(dae.continuous.structured_equations.is_empty());
-}
-
 mod boundary_cases;
+
+/// State-derivative values are read before elimination, because elimination
+/// deletes the `der(x) = v` rows they come from. When `v` was itself an alias of
+/// that derivative (a model output publishing a joint velocity, say),
+/// elimination deletes `v` too, and the retained value then names a variable
+/// this DAE no longer has. Holonomic candidate construction reads these values
+/// against the current DAE, so a dangling one must not reach it.
+#[test]
+fn retained_derivative_values_naming_eliminated_variables_are_dropped() {
+    let mut dae = Dae::default();
+    dae.variables
+        .states
+        .insert(VarName::new("distance"), test_dae_variable("distance"));
+    dae.variables
+        .algebraics
+        .insert(VarName::new("speed"), test_dae_variable("speed"));
+    let mut values = std::collections::HashMap::new();
+    values.insert("distance".to_string(), var_ref("speed"));
+    values.insert("angle".to_string(), var_ref("eliminated_output"));
+
+    drop_unresolvable_derivative_values(&dae, &mut values);
+
+    assert_eq!(values.keys().collect::<Vec<_>>(), vec!["distance"]);
+}

@@ -663,7 +663,7 @@ fn quadrotor_acro_roll_command_changes_attitude_when_cmm_available() {
             .expect("QuadrotorAcro simulation structural lowering should succeed");
     let sim_solve = rumoca_phase_solve::lower_dae_to_solve_model_owned(sim_dae)
         .expect("QuadrotorAcro simulation DAE should lower to SolveModel");
-    let runtime = rumoca_eval_solve::SolveRuntime::new(&sim_solve)
+    let runtime = rumoca_solver::SolveRuntime::new(&sim_solve)
         .expect("QuadrotorAcro SolveRuntime should prepare");
     let mut derivative_probe_state = sim_solve.initial_y[..sim_solve.state_scalar_count()].to_vec();
     for (name, value) in [

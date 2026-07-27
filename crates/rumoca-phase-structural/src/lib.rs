@@ -10,6 +10,7 @@
 
 mod blt;
 pub mod dae_prepare;
+pub mod diagnostic_codes;
 mod diagnostics;
 pub mod eliminate;
 mod function_arguments;
@@ -26,6 +27,7 @@ pub mod tearing;
 mod types;
 mod variable_scope;
 
+pub use diagnostic_codes::STRUCTURAL_DIAGNOSTIC_CODES;
 pub use diagnostics::{AlgebraicLoop, StructuralDiagnostics};
 pub use eliminate::{EliminationResult, Substitution};
 pub use ic_plan::{CausalStep, IcBlock, IcRelaxationHint, build_ic_plan, build_ic_relaxation_hint};
@@ -34,8 +36,11 @@ pub use report::{BlockReport, StructuralReport, TearingReport};
 pub use runtime_defined::{
     runtime_defined_continuous_unknown_names, runtime_defined_unknown_names,
 };
-pub use tearing::{TearingResult, tear_algebraic_loop};
-pub use types::{BltBlock, EquationRef, SortedDae, StructuralError, UnknownId};
+pub use tearing::{TearingResult, tear_algebraic_loop, tear_algebraic_loop_with_causal_candidates};
+pub use types::{
+    BltBlock, EquationRef, SingularBlockWitness, SortedDae, StructuralError, StructuredScalarBlock,
+    UnknownId,
+};
 
 use rumoca_ir_dae as dae;
 
@@ -76,8 +81,7 @@ pub fn build_blt_from_incidence(incidence: &Incidence) -> Result<Vec<BltBlock>, 
         return Ok(Vec::new());
     }
 
-    let (match_eq, match_var) =
-        matching::maximum_matching(incidence.n_eq, incidence.n_var, &incidence.eq_unknowns, &[]);
+    let (match_eq, match_var) = maximum_matching_for_incidence(incidence, &[]);
     let matching_size = match_eq.iter().filter(|m| m.is_some()).count();
 
     if matching_size < incidence.n_eq || matching_size < incidence.n_var {
@@ -111,12 +115,7 @@ pub fn maximum_regular_subsystem(
     incidence: &Incidence,
     preferred_unknowns: &[Option<usize>],
 ) -> Result<RegularSubsystem, StructuralError> {
-    let (match_eq, match_var) = matching::maximum_matching(
-        incidence.n_eq,
-        incidence.n_var,
-        &incidence.eq_unknowns,
-        preferred_unknowns,
-    );
+    let (match_eq, match_var) = maximum_matching_for_incidence(incidence, preferred_unknowns);
     let matched_equations = match_eq
         .iter()
         .enumerate()
@@ -139,7 +138,9 @@ pub fn maximum_regular_subsystem(
     let eq_unknowns = matched_equations
         .iter()
         .map(|old_eq_idx| {
-            incidence.eq_unknowns[*old_eq_idx]
+            incidence
+                .eq_unknowns
+                .row(*old_eq_idx)
                 .iter()
                 .filter_map(|old_var_idx| old_to_new_var[*old_var_idx])
                 .collect()
@@ -206,10 +207,40 @@ fn matching_inverse(match_eq: &[Option<usize>], n_var: usize) -> Vec<Option<usiz
     match_var
 }
 
+fn maximum_matching_for_incidence(
+    incidence: &Incidence,
+    preferred_unknowns: &[Option<usize>],
+) -> (Vec<Option<usize>>, Vec<Option<usize>>) {
+    matching::maximum_matching_with_structured(
+        incidence.n_eq,
+        incidence.n_var,
+        &incidence.eq_unknowns,
+        preferred_unknowns,
+        &incidence.structured_matching,
+    )
+}
+
 fn singular_from_matching(
     incidence: &Incidence,
     match_eq: &[Option<usize>],
     match_var: &[Option<usize>],
+) -> StructuralError {
+    singular_from_matching_labeled(incidence, match_eq, match_var, EquationRef::to_string)
+}
+
+/// [`singular_from_matching`] with a caller-supplied equation label.
+///
+/// Callers that hold the DAE name the unmatched rows by their source origin
+/// (`f_x[530] (b2.frame_a.f = ...)`) instead of by slot alone, so a structural
+/// singularity is traceable to the equation that produced it without a second
+/// compile. Callers that only hold an incidence matrix (IC / Solve projection
+/// subsystems) keep the slot-only label, which is the only honest name they
+/// have.
+fn singular_from_matching_labeled(
+    incidence: &Incidence,
+    match_eq: &[Option<usize>],
+    match_var: &[Option<usize>],
+    label: impl Fn(&EquationRef) -> String,
 ) -> StructuralError {
     StructuralError::Singular {
         n_equations: incidence.n_eq,
@@ -219,7 +250,7 @@ fn singular_from_matching(
             .iter()
             .enumerate()
             .filter(|(_, m)| m.is_none())
-            .map(|(i, _)| incidence.equation_refs[i].to_string())
+            .map(|(i, _)| label(&incidence.equation_refs[i]))
             .collect(),
         unmatched_unknowns: match_var
             .iter()
@@ -233,6 +264,81 @@ fn singular_from_matching(
             .filter(|(_, m)| m.is_none())
             .map(|(i, _)| incidence.unknown_spans.get(i).copied().flatten())
             .collect(),
+        over_determined_block: Box::new(over_determined_block(
+            incidence, match_eq, match_var, &label,
+        )),
+    }
+}
+
+/// Maximum equation labels carried in a [`SingularBlockWitness`].
+///
+/// The witness exists to name the redundant constraint set, not to dump it: a
+/// deficient block in an MSL multibody loop can span hundreds of rows, and the
+/// block's *size* already says whether the deficiency is local or global.
+const SINGULAR_BLOCK_SAMPLE_LIMIT: usize = 24;
+
+/// The Dulmage-Mendelsohn over-determined block around the unmatched rows.
+///
+/// Alternating-path reachability from every unmatched equation: an unmatched
+/// row reaches its unknowns, each reached unknown reaches the equation it is
+/// matched to, and so on. Because the matching is maximum, every unknown
+/// reached this way is matched, so the reached equations outnumber the reached
+/// unknowns by exactly the number of unmatched rows in the block — that
+/// difference is the redundancy the modeller has to remove.
+fn over_determined_block(
+    incidence: &Incidence,
+    match_eq: &[Option<usize>],
+    match_var: &[Option<usize>],
+    label: impl Fn(&EquationRef) -> String,
+) -> types::SingularBlockWitness {
+    let mut seen_equation = vec![false; incidence.n_eq];
+    let mut seen_unknown = vec![false; incidence.n_var];
+    let mut queue: Vec<usize> = match_eq
+        .iter()
+        .enumerate()
+        .filter_map(|(equation, matched)| matched.is_none().then_some(equation))
+        .collect();
+    for &equation in &queue {
+        if let Some(flag) = seen_equation.get_mut(equation) {
+            *flag = true;
+        }
+    }
+    let mut unknowns = 0usize;
+    while let Some(equation) = queue.pop() {
+        for &unknown in incidence.eq_unknowns.row(equation) {
+            let Some(flag) = seen_unknown.get_mut(unknown) else {
+                continue;
+            };
+            if *flag {
+                continue;
+            }
+            *flag = true;
+            unknowns += 1;
+            let Some(Some(owner)) = match_var.get(unknown).copied() else {
+                continue;
+            };
+            let Some(owner_flag) = seen_equation.get_mut(owner) else {
+                continue;
+            };
+            if !*owner_flag {
+                *owner_flag = true;
+                queue.push(owner);
+            }
+        }
+    }
+    let equations = seen_equation.iter().filter(|seen| **seen).count();
+    let sample = seen_equation
+        .iter()
+        .enumerate()
+        .filter_map(|(equation, seen)| seen.then_some(equation))
+        .take(SINGULAR_BLOCK_SAMPLE_LIMIT)
+        .filter_map(|equation| incidence.equation_refs.get(equation))
+        .map(&label)
+        .collect();
+    types::SingularBlockWitness {
+        equations,
+        unknowns,
+        sample,
     }
 }
 
@@ -246,12 +352,16 @@ pub fn sort_dae(dae: &dae::Dae) -> Result<SortedDae<'_>, StructuralError> {
         return Err(StructuralError::EmptySystem);
     }
 
-    let (match_eq, match_var) =
-        matching::maximum_matching(inc.n_eq, inc.n_var, &inc.eq_unknowns, &[]);
+    let (match_eq, match_var) = maximum_matching_for_incidence(&inc, &[]);
     let matching_size = match_eq.iter().filter(|m| m.is_some()).count();
 
     if matching_size < inc.n_eq || matching_size < inc.n_var {
-        return Err(singular_from_matching(&inc, &match_eq, &match_var));
+        return Err(singular_from_matching_labeled(
+            &inc,
+            &match_eq,
+            &match_var,
+            |equation| equation_label(dae, equation),
+        ));
     }
 
     let adj = incidence::build_dependency_graph(&inc.eq_unknowns, &match_var, inc.n_eq);
@@ -295,11 +405,15 @@ pub fn build_structural_report(dae: &dae::Dae) -> Result<StructuralReport, Struc
         return Err(StructuralError::EmptySystem);
     }
 
-    let (match_eq, match_var) =
-        matching::maximum_matching(inc.n_eq, inc.n_var, &inc.eq_unknowns, &[]);
+    let (match_eq, match_var) = maximum_matching_for_incidence(&inc, &[]);
     let matching_size = match_eq.iter().filter(|m| m.is_some()).count();
     if matching_size < inc.n_eq || matching_size < inc.n_var {
-        return Err(singular_from_matching(&inc, &match_eq, &match_var));
+        return Err(singular_from_matching_labeled(
+            &inc,
+            &match_eq,
+            &match_var,
+            |equation| equation_label(dae, equation),
+        ));
     }
 
     let adj = incidence::build_dependency_graph(&inc.eq_unknowns, &match_var, inc.n_eq);
@@ -341,6 +455,13 @@ pub fn build_structural_report(dae: &dae::Dae) -> Result<StructuralReport, Struc
                 unknowns: unknowns.iter().map(UnknownId::to_string).collect(),
                 tearing: tear_loop(dae, &inc, equations, unknowns, &unknown_index),
             },
+            // Reported compactly: expanding a 2048-element family into 2048
+            // report lines would bury the rest of the structural dump.
+            BltBlock::StructuredScalar(structured) => BlockReport::StructuredScalar {
+                origin: equation_label(dae, &EquationRef(structured.first_equation_index)),
+                point_count: structured.point_count,
+                equations_per_point: structured.equations_per_point,
+            },
         })
         .collect();
 
@@ -372,7 +493,8 @@ fn tear_loop(
     let local_eq_unknowns: Vec<std::collections::HashSet<usize>> = equations
         .iter()
         .map(|eq| {
-            inc.eq_unknowns[eq.0]
+            inc.eq_unknowns
+                .row(eq.0)
                 .iter()
                 .filter_map(|global_var| var_local.get(global_var).copied())
                 .collect()
@@ -432,8 +554,7 @@ pub fn analyze_structure(dae: &dae::Dae) -> StructuralDiagnostics {
         return result;
     }
 
-    let (match_eq, match_var) =
-        matching::maximum_matching(inc.n_eq, inc.n_var, &inc.eq_unknowns, &[]);
+    let (match_eq, match_var) = maximum_matching_for_incidence(&inc, &[]);
     let matching_size = match_eq.iter().filter(|m| m.is_some()).count();
     result.matching_size = matching_size;
 
@@ -925,5 +1046,80 @@ mod tests {
 
         let result = sort_dae(&dae);
         assert!(matches!(result, Err(StructuralError::Singular { .. })));
+    }
+
+    /// A singular sort must name the redundant constraint set, not just the
+    /// arbitrary row the matching happened to leave over.
+    ///
+    /// `y = 1` and `y = 2` over-determine `y`: two equations reach one unknown,
+    /// so the Dulmage-Mendelsohn block is 2 equations over 1 unknown and both
+    /// equations are named by origin. Without the block the message reports one
+    /// unmatched row whose identity depends on matching order, which points at
+    /// neither of the two rows that actually conflict.
+    #[test]
+    fn singular_sort_reports_the_over_determined_block_by_origin() {
+        let mut dae = dae::Dae::new();
+        let y_name = rumoca_core::VarName::from("y");
+        dae.variables.algebraics.insert(
+            y_name.clone(),
+            dae::Variable::new(
+                y_name.clone(),
+                Span::from_offsets(SourceId::from_source_name(file!()), 1, 2),
+            ),
+        );
+        let span = Span::from_offsets(
+            SourceId::from_source_name("phase_structural_lib_witness.mo"),
+            0,
+            10,
+        );
+        let y_ref = rumoca_core::Expression::VarRef {
+            name: rumoca_core::Reference::from_var_name(y_name),
+            subscripts: vec![],
+            span,
+        };
+        let residual = |value: f64| rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Sub,
+            lhs: Box::new(y_ref.clone()),
+            rhs: Box::new(rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Real(value),
+                span,
+            }),
+            span,
+        };
+        dae.continuous
+            .equations
+            .push(dae::Equation::residual(residual(1.0), span, "y = 1"));
+        dae.continuous
+            .equations
+            .push(dae::Equation::residual(residual(2.0), span, "y = 2"));
+
+        let Err(StructuralError::Singular {
+            over_determined_block,
+            ..
+        }) = sort_dae(&dae)
+        else {
+            panic!("two equations for one unknown must sort as singular");
+        };
+        assert_eq!(over_determined_block.equations, 2);
+        assert_eq!(over_determined_block.unknowns, 1);
+        assert_eq!(
+            over_determined_block.sample,
+            vec!["f_x[0] (y = 1)".to_string(), "f_x[1] (y = 2)".to_string()],
+            "the block must name both conflicting rows by origin"
+        );
+        let rendered = StructuralError::Singular {
+            n_equations: 2,
+            n_unknowns: 1,
+            n_matched: 1,
+            unmatched_equations: vec!["f_x[1] (y = 2)".to_string()],
+            unmatched_unknowns: Vec::new(),
+            unmatched_unknown_spans: Vec::new(),
+            over_determined_block,
+        }
+        .to_string();
+        assert!(
+            rendered.contains("over-determined block: 2 equations over 1 unknowns"),
+            "the block must reach the rendered diagnostic: {rendered}"
+        );
     }
 }

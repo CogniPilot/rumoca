@@ -5,6 +5,9 @@ description = "Modelica source reconstructed from DAE IR"
 execution_mode = "source-transform"
 deployment_class = "modelica"
 
+[capabilities]
+runtime_events = false
+
 [[files]]
 path = "{{ model_name }}_dae.mo"
 template = "dae_modelica.mo.jinja"

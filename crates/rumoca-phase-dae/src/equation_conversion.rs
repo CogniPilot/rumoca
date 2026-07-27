@@ -683,6 +683,21 @@ fn record_field_specs_for_rhs(
         } if subscripts.is_empty() => {
             record_field_specs_for_reference_equation(lhs_name, rhs_name, flat, span)
         }
+        // `r = if cond then a else b` over record-valued branches: every branch
+        // has the record type of `r`, so the field list is whichever branch can
+        // supply it (MLS §3.7.1 requires all branches to share the type).
+        rumoca_core::Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => {
+            for (_, value) in branches {
+                if let Some(specs) = record_field_specs_for_rhs(lhs_name, value, flat, span)? {
+                    return Ok(Some(specs));
+                }
+            }
+            record_field_specs_for_rhs(lhs_name, else_branch, flat, span)
+        }
         _ => Ok(None),
     }
 }
@@ -832,6 +847,67 @@ fn field_scalar_count(field_vars: &[&flat::Variable]) -> usize {
         .map(|field_var| super::compute_var_size(&field_var.dims).max(1))
         .sum::<usize>()
         .max(1)
+}
+
+/// Everything the record-equation expansion needs to project one field of the
+/// right-hand side, kept together so the recursive projection stays within the
+/// argument budget.
+struct RecordFieldProjection<'a> {
+    lhs_name: &'a rumoca_core::Reference,
+    field: &'a RecordFieldSpec,
+    field_vars: &'a [&'a flat::Variable],
+    index: usize,
+    span: rumoca_core::Span,
+}
+
+/// Project the right-hand side of a record equation onto a single record field.
+///
+/// A record reference projects to that record's own field variables; a record
+/// constructor projects to the matching constructor argument; an `if`
+/// expression projects branch-wise so the scalarized field equation keeps the
+/// conditional instead of reaching the DAE as an opaque record row.
+fn project_record_field_rhs(
+    rhs: &rumoca_core::Expression,
+    projection: &RecordFieldProjection<'_>,
+    flat: &flat::Model,
+) -> Result<rumoca_core::Expression, ToDaeError> {
+    if let rumoca_core::Expression::If {
+        branches,
+        else_branch,
+        span,
+    } = rhs
+    {
+        let mut projected_branches = Vec::with_capacity(branches.len());
+        for (condition, value) in branches {
+            projected_branches.push((
+                condition.clone(),
+                project_record_field_rhs(value, projection, flat)?,
+            ));
+        }
+        return Ok(rumoca_core::Expression::If {
+            branches: projected_branches,
+            else_branch: Box::new(project_record_field_rhs(else_branch, projection, flat)?),
+            span: *span,
+        });
+    }
+    if let Some(projected) = record_reference_field_rhs(
+        rhs,
+        projection.field,
+        projection.field_vars,
+        flat,
+        projection.span,
+    )? {
+        return Ok(projected);
+    }
+    Ok(rhs_field_expression(
+        rhs,
+        projection.lhs_name,
+        projection.field,
+        projection.field_vars,
+        projection.index,
+        flat,
+        projection.span,
+    ))
 }
 
 fn record_reference_field_rhs(
@@ -1094,10 +1170,17 @@ pub(crate) fn expand_record_field_equation(
             return Err(record_field_expansion_error(lhs_name, field, eq.span));
         }
         let scalar_count = field_scalar_count(&field_vars);
-        let rhs_field = record_reference_field_rhs(rhs, field, &field_vars, flat, eq.span)?
-            .unwrap_or_else(|| {
-                rhs_field_expression(rhs, lhs_name, field, &field_vars, index, flat, eq.span)
-            });
+        let rhs_field = project_record_field_rhs(
+            rhs,
+            &RecordFieldProjection {
+                lhs_name,
+                field,
+                field_vars: &field_vars,
+                index,
+                span: eq.span,
+            },
+            flat,
+        )?;
         equations.push(flat::Equation::new_array(
             field_residual(
                 field_lhs_expression(&field_vars, eq.span),
@@ -1960,8 +2043,11 @@ pub(super) fn classify_equations(
         }
     }
 
-    dae.continuous.structured_equations =
-        remap_flat_structured_equations(&flat.structured_equations, &flat_to_fx_index);
+    dae.continuous.structured_equations = remap_flat_structured_equations(
+        &flat.structured_equations,
+        &flat_to_fx_index,
+        &dae.continuous.equations,
+    );
 
     if debug_eq_filter {
         stats.log();
@@ -1977,19 +2063,66 @@ fn collect_discrete_valued_lhs_target_counts(
     for target in dae.variables.discrete_valued.keys() {
         counts.insert(crate::dae_to_flat_var_name(target), 0);
     }
+    let families = discrete_valued_family_members(dae);
     for equation in &flat.equations {
-        if classify_residual_discrete_bucket(dae, &equation.residual)
-            != Some(ResidualDiscreteBucket::DiscreteValued)
-        {
-            continue;
-        }
+        let direct = classify_residual_discrete_bucket(dae, &equation.residual)
+            == Some(ResidualDiscreteBucket::DiscreteValued);
         for target in crate::discrete_partition::residual_lhs_targets(&equation.residual) {
-            if is_discrete_valued_target(dae, &target) {
-                *counts.entry(target).or_insert(0) += 1;
-            }
+            count_discrete_valued_definition(dae, &families, direct, target, &mut counts);
         }
     }
     counts
+}
+
+/// Credit one definition of `target` to the discrete-valued variables it
+/// writes: the target itself when the equation already classifies as a
+/// discrete-valued update, otherwise the array-family members it expands to.
+fn count_discrete_valued_definition(
+    dae: &dae::Dae,
+    families: &HashMap<rumoca_core::VarName, Vec<rumoca_core::VarName>>,
+    direct: bool,
+    target: rumoca_core::VarName,
+    counts: &mut HashMap<rumoca_core::VarName, usize>,
+) {
+    if direct {
+        if is_discrete_valued_target(dae, &target) {
+            *counts.entry(target).or_insert(0) += 1;
+        }
+        return;
+    }
+    for member in families.get(&target).into_iter().flatten() {
+        *counts.entry(member.clone()).or_insert(0) += 1;
+    }
+}
+
+/// Index the scalarized discrete-valued variables by the array-family name
+/// that an unexpanded equation writes to.
+///
+/// MSL `Modelica.StateGraph.Parallel` defines its branch connectors with
+/// `split.set = fill(inPort.set, nBranches)`, whose target `split.set` is not
+/// a DAE variable — `split[1].set`, `split[2].set`, … are. That definition is
+/// only materialized later, by
+/// `dae_lowering::scalarize_phantom_vector_equations`, so the count that
+/// decides alias orientation has to credit the members here. Without it a
+/// `connect` on the same member looks like the member's only definition and
+/// gets oriented to solve for it, colliding with the expanded family row.
+fn discrete_valued_family_members(
+    dae: &dae::Dae,
+) -> HashMap<rumoca_core::VarName, Vec<rumoca_core::VarName>> {
+    let mut families: HashMap<rumoca_core::VarName, Vec<rumoca_core::VarName>> = HashMap::new();
+    for name in dae.variables.discrete_valued.keys() {
+        let member = crate::dae_to_flat_var_name(name);
+        let base =
+            rumoca_core::VarName::new(crate::path_utils::strip_all_subscripts(member.as_str()));
+        if base == member {
+            continue;
+        }
+        families.entry(base).or_default().push(member);
+    }
+    // A family name that is itself a declared variable is an ordinary
+    // reference, not an array-family write target.
+    families.retain(|base, _| !is_discrete_valued_target(dae, base));
+    families
 }
 
 #[cfg(test)]

@@ -20,6 +20,7 @@ type Literal = rumoca_core::Literal;
 type OpBinary = rumoca_core::OpBinary;
 type Subscript = rumoca_core::Subscript;
 type VarName = rumoca_core::VarName;
+type VarNameId = rumoca_core::VarNameId;
 
 const MAX_FUNC_RECURSION: usize = 64;
 
@@ -101,6 +102,7 @@ use special::{
     copy_record_function_output_fields, eval_function_call, function_closure_from_arg,
     resolve_user_function_reference_target,
 };
+mod complex_field_arithmetic;
 mod eval_expr_impl;
 use array_eval::{
     declared_dims, eval_array_like_f64_values, eval_array_like_values, eval_binary_array_values,
@@ -216,20 +218,42 @@ impl EvalRuntimeState {
     }
 }
 
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+/// Key of the evaluator's environment-key cache.
+///
+/// Holds interned ids, not text: the key is `Copy`, the map probe hashes two
+/// `u32`s, and a cache hit allocates nothing. These are DAE variable names, so
+/// the interner is the right owner for them — it is already populated with
+/// every one of them by the flat IR, and it grows only with the model, never
+/// with evaluation.
+///
+/// The id still has to be *derived* from the `&str` the callers hold, and that
+/// derivation hashes the string (see [`VarNameId::intern`]). Measured on
+/// 64-character flat names, that costs ~75 ns per probe against ~58 ns for the
+/// owned-`String` key this replaced: the interner probe hashes the same bytes
+/// and adds a read lock. It is paid once per array access, not once per
+/// element — the vector it keys holds `count` element keys, each of which the
+/// caller then hashes again to look up in the variable environment, and a miss
+/// formats `count` fresh strings.
+///
+/// The way to actually remove that hash is to stop crossing a textual boundary
+/// here: give the evaluator environment interned keys end to end, so callers
+/// arrive holding a `VarName` and the probe becomes a pure `u32` hash. That is
+/// a larger change than this cache, and until it happens this site pays the
+/// derivation rather than hashing a flattened path into every map it touches.
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 enum EnvKeyCacheKey {
     Indexed {
-        name: String,
+        name: VarNameId,
         count: usize,
     },
     IndexedField {
-        base: String,
-        field: String,
+        base: VarNameId,
+        field: VarNameId,
         count: usize,
     },
     FieldIndexed {
-        base: String,
-        field: String,
+        base: VarNameId,
+        field: VarNameId,
         count: usize,
     },
 }
@@ -255,7 +279,7 @@ fn cached_indexed_keys(runtime: &EvalRuntimeState, name: &str, count: usize) -> 
     cached_env_keys(
         runtime,
         EnvKeyCacheKey::Indexed {
-            name: name.to_string(),
+            name: VarNameId::intern(name),
             count,
         },
         || {
@@ -275,8 +299,8 @@ fn cached_indexed_field_keys(
     cached_env_keys(
         runtime,
         EnvKeyCacheKey::IndexedField {
-            base: base.to_string(),
-            field: field.to_string(),
+            base: VarNameId::intern(base),
+            field: VarNameId::intern(field),
             count,
         },
         || {
@@ -296,8 +320,8 @@ fn cached_field_indexed_keys(
     cached_env_keys(
         runtime,
         EnvKeyCacheKey::FieldIndexed {
-            base: base.to_string(),
-            field: field.to_string(),
+            base: VarNameId::intern(base),
+            field: VarNameId::intern(field),
             count,
         },
         || {

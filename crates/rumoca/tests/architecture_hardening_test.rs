@@ -683,17 +683,20 @@ Author reminder: keep visualization assets outside the runtime-contract crate."
         section_contains_dependency(&content, "dependencies", "rumoca-ir-solve"),
         "rumoca-solver must depend on rumoca-ir-solve for solver-facing prepared layout data"
     );
+    // `rumoca-eval-solve` is deliberately allowed: the runtime state machine and
+    // the backend-neutral driver live in `rumoca-solver::runtime` (SPEC_0029
+    // §3b) and consume the Tier 3 row evaluator downward. Everything below is
+    // DAE/phase preparation, which stays upstream of the runtime crate.
     for banned in [
         "rumoca-ir-dae",
         "rumoca-eval-dae",
-        "rumoca-eval-solve",
         "rumoca-phase-dae",
         "rumoca-phase-structural",
         "rumoca-phase-solve",
     ] {
         assert!(
             !section_contains_dependency(&content, "dependencies", banned),
-            "rumoca-solver must not depend on {banned}; DAE/eval/phase preparation belongs upstream of the runtime-contract crate"
+            "rumoca-solver must not depend on {banned}; DAE/phase preparation belongs upstream of the runtime-contract crate"
         );
     }
     assert!(
@@ -1968,3 +1971,15 @@ mod size_and_validation;
 
 #[path = "architecture_hardening/env_var_registry.rs"]
 mod env_var_registry;
+
+#[path = "architecture_hardening/diagnostic_codes.rs"]
+mod diagnostic_codes;
+
+#[path = "architecture_hardening/crate_tier_edges.rs"]
+mod crate_tier_edges;
+
+#[path = "architecture_hardening/string_hashing.rs"]
+mod string_hashing;
+
+#[path = "architecture_hardening/instantiate_value_fabrication.rs"]
+mod instantiate_value_fabrication;

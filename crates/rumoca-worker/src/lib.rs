@@ -7,6 +7,13 @@ use std::time::{Duration, Instant};
 use rumoca_compile::compile::FailedPhase;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
+mod diagnostic_codes;
+mod failure_row;
+pub use diagnostic_codes::{embedded_diagnostic_code, sim_error_diagnostic_code};
+pub use failure_row::{
+    strict_compile_failure_row, strict_dae_failure_phase, summary_only_failure_row,
+};
+
 /// Per-model wall timeout (seconds) for one MSL-parity simulation. Shared so the
 /// rumoca sim worker and the OMC reference run use the *same* budget (a model is
 /// only fairly comparable when both tools are given identical time to simulate).
@@ -15,6 +22,13 @@ pub const MSL_SIM_TIMEOUT_SECS: f64 = 10.0;
 pub const MODEL_WORKER_PROTOCOL_VERSION: u32 = 1;
 pub const MODEL_WORKER_RESULT_FILE: &str = "result.json";
 pub const MODEL_WORKER_PARTIAL_RESULT_FILE: &str = "partial_result.json";
+/// Resident-plus-swap ceiling for one persistent MSL model worker.
+///
+/// The largest known successful compile is just under 5 GiB. Six GiB preserves
+/// that workload while bounding pathological Solve allocations.
+pub const MODEL_WORKER_MEMORY_LIMIT_MB_DEFAULT: usize = 6 * 1024;
+pub const MODEL_WORKER_MEMORY_LIMIT_EXIT_CODE: i32 = 70;
+pub const MODEL_WORKER_PARENT_DISCONNECTED_EXIT_CODE: i32 = 71;
 const MODEL_WORKER_POLL_MILLIS: u64 = 20;
 static MODEL_WORKER_EXE: OnceLock<Result<PathBuf, String>> = OnceLock::new();
 
@@ -199,6 +213,11 @@ pub enum ModelWorkerRunOutcome {
         active_phase: Option<WorkerProgressPhase>,
         phase_timeout_secs: f64,
     },
+    MemoryLimitExceeded {
+        elapsed_secs: f64,
+        active_phase: Option<WorkerProgressPhase>,
+        memory_limit_mb: usize,
+    },
     Failed(String),
 }
 
@@ -206,6 +225,7 @@ pub struct ModelWorkerDaemon {
     child: Child,
     stdin: ChildStdin,
     messages: mpsc::Receiver<Result<ModelWorkerControlMessage, String>>,
+    memory_limit_mb: usize,
 }
 
 impl ModelWorkerDaemon {
@@ -213,11 +233,15 @@ impl ModelWorkerDaemon {
         source_root_path: &Path,
         timeout_secs: f64,
         cpu_core_id: Option<usize>,
+        memory_limit_mb: usize,
     ) -> Result<Self, String> {
         let worker_exe = resolve_model_worker_exe()?;
         let mut command = Command::new(worker_exe);
         command.arg("--source-root-path").arg(source_root_path);
         command.arg("--jobs").arg("1");
+        command
+            .arg("--memory-limit-mb")
+            .arg(memory_limit_mb.max(1).to_string());
         if let Some(cpu_core_id) = cpu_core_id {
             command.arg("--cpu-core-id").arg(cpu_core_id.to_string());
         }
@@ -243,6 +267,7 @@ impl ModelWorkerDaemon {
             child,
             stdin,
             messages,
+            memory_limit_mb: memory_limit_mb.max(1),
         };
         match worker.wait_for_ready(timeout_secs) {
             Ok(()) => Ok(worker),
@@ -312,12 +337,20 @@ impl ModelWorkerDaemon {
                 Ok(Err(error)) => return ModelWorkerRunOutcome::Failed(error),
                 Err(mpsc::TryRecvError::Empty) => {}
                 Err(mpsc::TryRecvError::Disconnected) => {
-                    return ModelWorkerRunOutcome::Failed(
-                        "model worker stdout closed before result".to_string(),
-                    );
+                    // Poll the process status below before classifying this as
+                    // a generic transport failure. The memory watchdog closes
+                    // stdout immediately before its distinctive exit status is
+                    // observable by the parent.
                 }
             }
             match self.child.try_wait() {
+                Ok(Some(status)) if status.code() == Some(MODEL_WORKER_MEMORY_LIMIT_EXIT_CODE) => {
+                    return ModelWorkerRunOutcome::MemoryLimitExceeded {
+                        elapsed_secs: start.elapsed().as_secs_f64(),
+                        active_phase,
+                        memory_limit_mb: self.memory_limit_mb,
+                    };
+                }
                 Ok(Some(status)) => {
                     return ModelWorkerRunOutcome::Failed(format!(
                         "model worker exited with status {status}"
@@ -653,6 +686,12 @@ pub struct WorkerModelResult {
     pub ir_flat_file: Option<String>,
     pub sim_status: Option<String>,
     pub sim_error: Option<String>,
+    /// Stable SPEC_0008 code for `sim_error` (`EX0xx` for runtime failures,
+    /// delegated `EL0xx`/`ES0xx` when the defect came from solve lowering or
+    /// structural analysis). `None` for failures that are model behaviour
+    /// rather than a compiler defect (timeout, `assert`, `terminate`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sim_error_code: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sim_error_span: Option<rumoca_core::Span>,
     pub ic_status: Option<String>,
@@ -665,6 +704,16 @@ pub struct WorkerModelResult {
     pub ir_solve_seconds: Option<f64>,
     pub ir_solve_structural_dae_seconds: Option<f64>,
     pub ir_solve_lower_seconds: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tensor_family_bodies: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tensor_preserved_family_bodies: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tensor_scalarized_family_rows: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tensor_preservation_percent: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tensor_preservation_error: Option<String>,
     pub sim_backend_build_seconds: Option<f64>,
     pub sim_run_seconds: Option<f64>,
     pub sim_wall_seconds: Option<f64>,
@@ -674,8 +723,17 @@ pub struct WorkerModelResult {
     pub ir_dae_file: Option<String>,
     pub ir_solve_file: Option<String>,
     pub ir_solve_error: Option<String>,
+    /// Stable SPEC_0008 code for `ir_solve_error` (`EL0xx`/`ES0xx`). `None` when
+    /// the solve stage failed for a non-diagnostic reason such as an artifact
+    /// write error.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ir_solve_error_code: Option<String>,
     pub timeout_phase: Option<WorkerProgressPhase>,
     pub timeout_seconds: Option<f64>,
+    /// Component breakdown for an unbalanced (ED001) ToDae failure, so the MSL
+    /// harness can triage a balance cohort without recompiling.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub balance_detail: Option<Box<rumoca_compile::analysis::BalanceDetail>>,
 }
 
 impl WorkerModelResult {
@@ -715,6 +773,7 @@ impl WorkerModelResult {
             ir_flat_file: None,
             sim_status: None,
             sim_error: None,
+            sim_error_code: None,
             sim_error_span: None,
             ic_status: None,
             ic_error: None,
@@ -725,6 +784,11 @@ impl WorkerModelResult {
             ir_solve_seconds: None,
             ir_solve_structural_dae_seconds: None,
             ir_solve_lower_seconds: None,
+            tensor_family_bodies: None,
+            tensor_preserved_family_bodies: None,
+            tensor_scalarized_family_rows: None,
+            tensor_preservation_percent: None,
+            tensor_preservation_error: None,
             sim_backend_build_seconds: None,
             sim_run_seconds: None,
             sim_wall_seconds: None,
@@ -734,8 +798,10 @@ impl WorkerModelResult {
             ir_dae_file: None,
             ir_solve_file: None,
             ir_solve_error: None,
+            ir_solve_error_code: None,
             timeout_phase: None,
             timeout_seconds: None,
+            balance_detail: None,
         }
     }
 }

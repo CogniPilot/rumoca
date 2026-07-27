@@ -296,12 +296,18 @@ fn rewrite_structural_assert_condition(
         ast::Expression::ComponentReference(reference) => ast::Expression::ComponentReference(
             rewrite_assert_component_ref(ctx, reference, prefix),
         ),
-        ast::Expression::FunctionCall { comp, args, span } => ast::Expression::FunctionCall {
+        ast::Expression::FunctionCall {
+            comp,
+            args,
+            is_partial_application,
+            span,
+        } => ast::Expression::FunctionCall {
             comp: rewrite_assert_component_ref(ctx, comp, prefix),
             args: args
                 .iter()
                 .map(|arg| rewrite_structural_assert_condition(ctx, arg, prefix))
                 .collect(),
+            is_partial_application: *is_partial_application,
             span: *span,
         },
         ast::Expression::NamedArgument { name, value, span } => ast::Expression::NamedArgument {
@@ -594,6 +600,7 @@ mod tests {
         ast::Expression::FunctionCall {
             comp: component_ref(&["cardinality"]),
             args: vec![var_expr(parts)],
+            is_partial_application: false,
             span: test_span(),
         }
     }

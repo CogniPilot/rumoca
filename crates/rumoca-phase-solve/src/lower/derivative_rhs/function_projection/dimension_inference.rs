@@ -549,6 +549,23 @@ impl<'a> FunctionProjectionAnalysis<'a> {
             } else {
                 fallback_span
             };
+            if tracing::enabled!(
+                target: "rumoca_phase_solve::function_projection",
+                tracing::Level::DEBUG
+            ) {
+                let scope_dimensions = scope
+                    .dims
+                    .iter()
+                    .map(|(name, dims)| (name.as_str(), dims.as_slice()))
+                    .collect::<Vec<_>>();
+                tracing::debug!(
+                    target: "rumoca_phase_solve::function_projection",
+                    projection_context = context,
+                    expression = ?expr,
+                    scope_dimensions = ?scope_dimensions,
+                    "function projection could not infer expression dimensions"
+                );
+            }
             return Err(unsupported_at(
                 format!("{context} has unknown dimensions"),
                 span,

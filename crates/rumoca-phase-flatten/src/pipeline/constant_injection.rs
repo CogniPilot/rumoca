@@ -322,6 +322,16 @@ pub(crate) fn resolve_extends_base_qname(
 
 /// Multi-pass extraction of integer constants and array dimensions from ancestor classes
 /// (MLS §4.5, §7.1).
+///
+/// Each ancestor contributes its inherited constants under its *own* scope, not
+/// only under the base class that declared them. MLS §7.2.5 makes an extends
+/// modification part of the inheriting class's environment, so a base binding
+/// that reads another inherited constant (`constant Integer nX = nS;` with
+/// `extends PartialMedium(nS = 2)`) has to be re-evaluated there: the derived
+/// class sees `nX = 2` while the base class still sees `nX = 1`. Recording only
+/// the base-scope value leaves every dependent constant — the whole
+/// `substanceNames`/`nS`/`nX`/`nXi` chain that sizes the Media arrays — at the
+/// unmodified default.
 pub(crate) fn extract_ancestor_constants_multi_pass(
     tree: &ClassTree,
     class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
@@ -340,7 +350,7 @@ pub(crate) fn extract_ancestor_constants_multi_pass(
         for ancestor in ancestors {
             let ancestor_scope = class_scope_name(tree, ancestor)?;
             for ext in &ancestor.extends {
-                extract_extends_modification_constants(
+                apply_extends_constants_for_scope(
                     tree,
                     class_index,
                     &ancestor_scope,
@@ -395,15 +405,13 @@ pub(crate) fn extract_constants_from_class(class_def: &ClassDef, ctx: &mut Conte
         ) {
             continue;
         }
-        let binding =
-            comp.binding
-                .as_ref()
-                .or(if !matches!(comp.start, ast::Expression::Empty { .. }) {
-                    Some(&comp.start)
-                } else {
-                    None
-                });
-        let Some(expr) = binding else { continue };
+        // MLS §4.4.4: a constant/parameter's value is its declaration binding.
+        // `start` is an initial guess (MLS §4.9) that the parser seeds with the
+        // declared type's default, so an unbound declaration contributes no
+        // constant here rather than an invented `0`/`0.0`/`false` (SPEC_0008).
+        let Some(expr) = comp.binding.as_ref() else {
+            continue;
+        };
         let type_name = comp.type_name.to_string();
         if !ctx.constant_values.contains_key(name)
             && let Some(val) = try_extract_record_array_constructor_constant(expr, ctx, "", name)
@@ -1918,6 +1926,15 @@ pub(crate) struct Context {
     /// Parameter/constant variable keys materialized from the instantiated flat model.
     /// Injected class defaults must not overwrite these effective instance values.
     pub flat_parameter_constant_keys: rustc_hash::FxHashSet<String>,
+    /// Component paths that exist in the flat model only through their expanded
+    /// members (`src.Phi` is present as `src.Phi.re` / `src.Phi.im`).
+    ///
+    /// The instantiated members already carry the component modification, while
+    /// `constant_values` may still hold the declaration default recorded from the
+    /// class body. Folding that default into a reference to the whole component
+    /// would silently discard the modification (MLS §7.2.4), so such references
+    /// stay symbolic and are expanded member-wise instead.
+    pub(crate) expanded_component_keys: rustc_hash::FxHashSet<String>,
     /// Array dimensions for evaluating size() calls (name -> dims).
     pub array_dimensions: rustc_hash::FxHashMap<String, Vec<i64>>,
     /// Parameters marked with annotation(Evaluate=true) or declared final (MLS §18.3).

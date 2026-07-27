@@ -18,9 +18,12 @@ use crate::{
     vscode_cmd, wasm_smoke,
 };
 
+mod fuzz;
 mod msl_cargo_setup_timing;
 mod msl_quality_baseline;
+mod parity_budgets;
 
+use fuzz::VerifyFuzzArgs;
 use msl_cargo_setup_timing::{
     MslCargoSetupStepMetadata, MslCargoSetupTimingStep, run_msl_cargo_setup_step,
     write_msl_cargo_setup_timing_report,
@@ -120,6 +123,9 @@ pub(crate) struct VerifyMslParityArgs {
     /// Compile/balance stage worker count (default: host-derived)
     #[arg(long)]
     stage_parallelism: Option<usize>,
+    /// Per-model compile/simulation worker resident-plus-swap ceiling in MB
+    #[arg(long)]
+    model_worker_memory_mb: Option<usize>,
     /// Simulation worker count (default: stage parallelism, memory-capped)
     #[arg(long)]
     sim_parallelism: Option<usize>,
@@ -129,6 +135,8 @@ pub(crate) struct VerifyMslParityArgs {
     /// Total simulation memory budget in MB (caps the sim worker count)
     #[arg(long)]
     sim_total_memory_mb: Option<usize>,
+    #[command(flatten)]
+    budgets: parity_budgets::MslParityBudgetArgs,
     /// Explicit MSL quality baseline JSON for baseline-relative gates
     #[arg(long)]
     quality_baseline: Option<PathBuf>,
@@ -147,7 +155,7 @@ pub(crate) struct VerifyMslParityArgs {
     #[arg(long, value_name = "DIR", conflicts_with = "shard")]
     merge_shards: Option<PathBuf>,
     /// Run a prebuilt `msl_tests` libtest binary (built once by Nix/crane and
-    /// shared via Cachix) instead of recompiling the workspace. The gate does its
+    /// shared through CI) instead of recompiling the workspace. The gate does its
     /// normal config/baseline setup, then executes this binary directly — no
     /// `cargo test`, so no workspace compile + LTO in the consuming job.
     #[arg(long, value_name = "PATH")]
@@ -210,6 +218,9 @@ impl VerifyMslParityArgs {
         if let Some(value) = self.stage_parallelism {
             config.insert("stage_parallelism".into(), value.into());
         }
+        if let Some(value) = self.model_worker_memory_mb {
+            config.insert("model_worker_memory_mb".into(), value.into());
+        }
         if let Some(value) = self.sim_parallelism {
             config.insert("sim_parallelism".into(), value.into());
         }
@@ -219,6 +230,7 @@ impl VerifyMslParityArgs {
         if let Some(value) = self.sim_total_memory_mb {
             config.insert("sim_total_memory_mb".into(), value.into());
         }
+        self.budgets.insert_into(&mut config);
         if let Some(value) = &self.quality_baseline {
             config.insert(
                 "quality_baseline_file".into(),
@@ -344,6 +356,8 @@ pub(crate) enum VerifyCommand {
     MslParity(Box<VerifyMslParityArgs>),
     /// Generate real flamegraph SVGs for the hottest compile and sim models from the latest MSL run
     MslHotspots,
+    /// Bounded libFuzzer run of the standalone `fuzz/` parser fuzz target
+    Fuzz(VerifyFuzzArgs),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -498,6 +512,7 @@ pub(crate) fn run(args: VerifyArgs, root: &Path) -> Result<()> {
         VerifyCommand::Docs => test_cmd::run_workspace_docs(root),
         VerifyCommand::MslParity(args) => run_msl_quality_gate(root, &args),
         VerifyCommand::MslHotspots => run_msl_hotspot_flamegraphs(root),
+        VerifyCommand::Fuzz(args) => fuzz::run(&args, root),
     }
 }
 
@@ -1149,7 +1164,7 @@ fn run_msl_quality_gate(root: &Path, args: &VerifyMslParityArgs) -> Result<()> {
 }
 
 /// Run a specific libtest from a prebuilt `msl_tests` binary (built once by
-/// Nix/crane and shared via Cachix) instead of recompiling. The gate's config +
+/// Nix/crane and shared through CI) instead of recompiling. The gate's config +
 /// baseline setup has already run, so this only executes the binary with the
 /// right test filter — no `cargo test`, hence no workspace compile + LTO in the
 /// consuming job. Sim-running gates spawn `rumoca-sim-worker`, which the harness
@@ -1695,6 +1710,22 @@ mod tests {
             Some(true)
         );
         assert!(!args.uses_baseline_relative_quality_gate());
+    }
+
+    #[test]
+    fn msl_parity_config_forwards_model_worker_memory_ceiling() {
+        let args = VerifyMslParityArgs {
+            model_worker_memory_mb: Some(6144),
+            ..VerifyMslParityArgs::default()
+        };
+        let config = args.to_parity_config_json();
+
+        assert_eq!(
+            config
+                .get("model_worker_memory_mb")
+                .and_then(serde_json::Value::as_u64),
+            Some(6144)
+        );
     }
 
     #[test]

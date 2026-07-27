@@ -56,10 +56,11 @@ equation
 end Active;
 "#;
     let mut session = Session::default();
-    let diagnostics = compute_diagnostics_with_mode(
+    let diagnostics = compute_diagnostics_with_options(
         source,
         "input.mo",
         Some(&mut session),
+        &LintOptions::default(),
         SemanticDiagnosticsMode::Save,
     );
     let unresolved = diagnostics

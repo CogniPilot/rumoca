@@ -1072,9 +1072,15 @@ fn qualify_expr_inner(
             rhs: Arc::new(qualify_expr_inner(rhs, prefix, opts, locals, imports)),
             span: *span,
         },
-        Expression::FunctionCall { comp, args, span } => Expression::FunctionCall {
+        Expression::FunctionCall {
+            comp,
+            args,
+            is_partial_application,
+            span,
+        } => Expression::FunctionCall {
             comp: qualify_function_call_ref(comp, prefix, opts, locals, imports),
             args: qualify_vec_inner(args, prefix, opts, locals, imports),
+            is_partial_application: *is_partial_application,
             span: *span,
         },
         Expression::If {

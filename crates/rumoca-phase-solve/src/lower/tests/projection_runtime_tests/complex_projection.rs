@@ -635,7 +635,7 @@ fn lower_expression_rejects_complex_array_input_width_mismatch_with_span() {
 }
 
 #[test]
-fn lower_expression_der_builtin_returns_zero() {
+fn lower_expression_der_builtin_is_rejected_outside_derivative_rows() {
     let mut dae_model = dae::Dae::default();
     dae_model
         .variables
@@ -653,8 +653,11 @@ fn lower_expression_der_builtin_returns_zero() {
         }],
         span: lower_test_span(),
     };
-    let lowered =
-        lower_expression(&expr, &layout, &IndexMap::new()).expect("der builtin should lower");
-    let (regs, _) = eval_linear_ops(&lowered.ops, &[1.2], &[], 0.0);
-    assert!(read_reg(&regs, lowered.result).abs() < 1e-12);
+    let err = lower_expression(&expr, &layout, &IndexMap::new())
+        .expect_err("generic der() lowering must not emit a plausible zero");
+    assert_eq!(err.source_span(), Some(lower_test_span()));
+    assert!(
+        err.reason().contains("state-derivative lowering path"),
+        "unexpected derivative diagnostic: {err}"
+    );
 }

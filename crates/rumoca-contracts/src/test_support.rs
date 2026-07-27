@@ -100,6 +100,40 @@ pub fn expect_failure_in_phase_with_code(
     );
 }
 
+/// Compile a model from source, expecting failure in a specific compile phase
+/// that *reports* a specific diagnostic code.
+///
+/// Use this instead of [`expect_failure_in_phase_with_code`] when the phase
+/// legitimately reports several distinct diagnostics for one source construct.
+/// `PhaseResult::error_code` is a *summary*: `summarize_typecheck_error_code`
+/// (`rumoca-compile`) collapses a set of differing codes to the `ET000`
+/// sentinel, so the summary is not the code of any individual violation. This
+/// helper therefore asserts on the phase's diagnostic list, which is where the
+/// contract violation is actually recorded.
+///
+/// # Panics
+/// Panics if parsing fails, compilation succeeds, needs synthesized inner bindings,
+/// fails in a different phase, or no reported diagnostic carries the code.
+pub fn expect_failure_in_phase_reporting_code(
+    source: &str,
+    model: &str,
+    expected_phase: FailedPhase,
+    expected_code: &str,
+) {
+    let phase_result = compile_model_phases_or_panic(source, model);
+    let (actual_phase, codes) = extract_failed_phase_and_diagnostic_codes(phase_result, model);
+    assert_eq!(
+        actual_phase, expected_phase,
+        "Expected failure in phase {expected_phase} for model {model}, got {actual_phase}"
+    );
+    assert!(
+        codes
+            .iter()
+            .any(|code| error_code_matches(code, expected_code)),
+        "Expected phase {actual_phase} to report error code {expected_code} for model {model}, got {codes:?}"
+    );
+}
+
 fn compile_model_phases_or_panic(source: &str, model: &str) -> PhaseResult {
     let mut session = Session::new(SessionConfig::default());
     session
@@ -141,6 +175,32 @@ fn extract_failed_phase_and_code(
         )
     });
     (phase, code)
+}
+
+fn extract_failed_phase_and_diagnostic_codes(
+    phase_result: PhaseResult,
+    model: &str,
+) -> (FailedPhase, Vec<String>) {
+    match phase_result {
+        PhaseResult::Success(_) => {
+            panic!("Expected compilation failure for model {model}, but it succeeded")
+        }
+        PhaseResult::NeedsInner { .. } => {
+            panic!(
+                "Expected compile-phase failure for model {model}, got NeedsInner (missing inner declarations)"
+            )
+        }
+        PhaseResult::Failed {
+            phase, diagnostics, ..
+        } => {
+            let codes: Vec<String> = diagnostics.iter().filter_map(|d| d.code.clone()).collect();
+            assert!(
+                !codes.is_empty(),
+                "Expected coded diagnostics for model {model} in phase {phase}, got none"
+            );
+            (phase, codes)
+        }
+    }
 }
 
 fn error_code_matches(actual: &str, expected: &str) -> bool {

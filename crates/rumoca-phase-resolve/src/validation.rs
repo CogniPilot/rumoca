@@ -309,8 +309,7 @@ impl ast::Visitor for Validator {
 }
 
 fn has_valid_location(location: &Location) -> bool {
-    !location.file_name.is_empty()
-        && location.end > location.start
+    location.has_source()
         && location.start_line > 0
         && location.start_column > 0
         && location.end_line > 0

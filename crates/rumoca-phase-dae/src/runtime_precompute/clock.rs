@@ -5,15 +5,19 @@ use indexmap::{IndexMap, IndexSet};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
-use rumoca_core::ExpressionVisitor;
+use rumoca_core::{ClockLattice, ExpressionVisitor};
 use rumoca_ir_dae as dae;
 use rumoca_ir_dae::{ImplicitSampleChecker, VarRefWithSubscriptsCollector};
 
 use crate::condition_activation;
 
+#[cfg(test)]
+mod dead_branch_tests;
 mod event_clock;
+mod lattice_scalars;
 mod timing_inference;
 
+use lattice_scalars::*;
 use timing_inference::*;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -25,7 +29,7 @@ struct ReverseAliasTarget {
 struct SourceMap<'a> {
     forward: HashMap<String, Vec<&'a rumoca_core::Expression>>,
     reverse_alias: HashMap<String, Vec<ReverseAliasTarget>>,
-    timing_cache: RefCell<HashMap<String, Option<(f64, f64)>>>,
+    timing_cache: RefCell<HashMap<String, Option<ClockLattice>>>,
     scalar_cache: RefCell<HashMap<String, Option<f64>>>,
 }
 
@@ -81,81 +85,15 @@ pub(super) fn compute_clock_runtime_metadata(
         extend_unique_expressions(&mut clock_constructor_exprs, equation_constructors);
     }
     let clock_sources = build_clock_source_map(dae_model, compile_time_scalars);
-    let mut clock_schedules = Vec::new();
-    let mut unresolved_clock_exprs = Vec::new();
-    let mut triggered_clock_conditions = Vec::new();
-    let mut static_constructor_count = 0usize;
-    for expr in &clock_constructor_exprs {
-        if !requires_static_clock_schedule(expr) {
-            continue;
-        }
-        static_constructor_count += 1;
-        let Some((period, phase)) = infer_clock_timing_from_expr(
-            expr,
-            compile_time_scalars,
-            &clock_sources,
-            24,
-            &mut HashSet::new(),
-        ) else {
-            if event_clock::is_non_static_event_clock_constructor(
-                expr,
-                dae_model,
-                compile_time_scalars,
-                &clock_sources,
-            ) {
-                // Extract the condition expression from Clock(condition)
-                triggered_clock_conditions.extend(extract_event_clock_condition(expr));
-                continue;
-            }
-            if is_non_static_inferred_clock_composition(expr, compile_time_scalars, &clock_sources)
-            {
-                continue;
-            }
-            unresolved_clock_exprs.push(format_unresolved_clock_expr(
-                expr,
-                dae_model,
-                compile_time_scalars,
-                &clock_sources,
-            )?);
-            continue;
-        };
-        let Some(source_span) = clock_constructor_source_span(expr) else {
-            return Err(ToDaeError::runtime_metadata_violation(
-                "clock constructor is missing source provenance",
-            ));
-        };
-        clock_schedules.push(dae::ClockSchedule {
-            period_seconds: period,
-            phase_seconds: phase,
-            source_span,
-        });
-    }
-    clock_schedules.sort_by(|lhs, rhs| {
-        lhs.period_seconds
-            .total_cmp(&rhs.period_seconds)
-            .then(lhs.phase_seconds.total_cmp(&rhs.phase_seconds))
-    });
-    clock_schedules.dedup_by(|lhs, rhs| {
-        (lhs.period_seconds - rhs.period_seconds).abs()
-            <= 1e-12 * (1.0 + lhs.period_seconds.abs().max(rhs.period_seconds.abs()))
-            && (lhs.phase_seconds - rhs.phase_seconds).abs()
-                <= 1e-12 * (1.0 + lhs.phase_seconds.abs().max(rhs.phase_seconds.abs()))
-    });
-    if !unresolved_clock_exprs.is_empty() {
-        let unresolved = unresolved_clock_exprs.len();
-        let constructors = static_constructor_count;
-        let examples = unresolved_clock_exprs
-            .iter()
-            .take(3)
-            .cloned()
-            .collect::<Vec<_>>()
-            .join(" | ");
-        return Err(ToDaeError::unresolved_clock_schedule(
-            constructors,
-            unresolved,
-            examples,
-        ));
-    }
+    let mut scan = scan_static_clock_constructors(
+        &clock_constructor_exprs,
+        dae_model,
+        compile_time_scalars,
+        &clock_sources,
+    )?;
+    scan.ensure_resolved()?;
+    let clock_schedules = schedules_from_lattices(std::mem::take(&mut scan.lattices));
+
     let event_clock_variables =
         event_clock::event_clock_variable_names(dae_model, compile_time_scalars, &clock_sources);
     let mut clock_timings =
@@ -171,8 +109,98 @@ pub(super) fn compute_clock_runtime_metadata(
         clock_schedules,
         clock_intervals,
         clock_timings,
-        triggered_clock_conditions,
+        scan.triggered_conditions,
     ))
+}
+
+/// Static clock constructors resolved against the exact rational lattice.
+#[derive(Default)]
+struct StaticClockScan {
+    lattices: Vec<(ClockLattice, rumoca_core::Span)>,
+    unresolved: Vec<String>,
+    triggered_conditions: Vec<rumoca_core::Expression>,
+    constructor_count: usize,
+}
+
+impl StaticClockScan {
+    /// SPEC_0008: an unresolvable static clock constructor is a phase error,
+    /// never a substituted period.
+    fn ensure_resolved(&self) -> Result<(), ToDaeError> {
+        if self.unresolved.is_empty() {
+            return Ok(());
+        }
+        let examples = self
+            .unresolved
+            .iter()
+            .take(3)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(" | ");
+        Err(ToDaeError::unresolved_clock_schedule(
+            self.constructor_count,
+            self.unresolved.len(),
+            examples,
+        ))
+    }
+}
+
+fn scan_static_clock_constructors(
+    constructor_exprs: &[rumoca_core::Expression],
+    dae_model: &dae::Dae,
+    constants: &HashMap<String, f64>,
+    sources: &SourceMap<'_>,
+) -> Result<StaticClockScan, ToDaeError> {
+    let mut scan = StaticClockScan::default();
+    for expr in constructor_exprs {
+        if !requires_static_clock_schedule(expr) {
+            continue;
+        }
+        scan.constructor_count += 1;
+        let Some(lattice) =
+            infer_clock_timing_from_expr(expr, constants, sources, 24, &mut HashSet::new())
+        else {
+            if event_clock::is_non_static_event_clock_constructor(
+                expr, dae_model, constants, sources,
+            ) {
+                // Extract the condition expression from Clock(condition)
+                scan.triggered_conditions
+                    .extend(extract_event_clock_condition(expr));
+                continue;
+            }
+            if is_non_static_inferred_clock_composition(expr, constants, sources) {
+                continue;
+            }
+            scan.unresolved.push(format_unresolved_clock_expr(
+                expr, dae_model, constants, sources,
+            )?);
+            continue;
+        };
+        let Some(source_span) = clock_constructor_source_span(expr) else {
+            return Err(ToDaeError::runtime_metadata_violation(
+                "clock constructor is missing source provenance",
+            ));
+        };
+        scan.lattices.push((lattice, source_span));
+    }
+    Ok(scan)
+}
+
+/// MLS §16.5: two clock expressions denote the same clock exactly when their
+/// rational lattices coincide. Ordering and de-duplication therefore use exact
+/// rational comparison, never a seconds epsilon.
+fn schedules_from_lattices(
+    mut lattices: Vec<(ClockLattice, rumoca_core::Span)>,
+) -> Vec<dae::ClockSchedule> {
+    lattices.sort_by(|(lhs, _), (rhs, _)| {
+        lhs.period()
+            .cmp(&rhs.period())
+            .then(lhs.phase().cmp(&rhs.phase()))
+    });
+    lattices.dedup_by(|(lhs, _), (rhs, _)| lhs.is_same_clock(*rhs));
+    lattices
+        .into_iter()
+        .map(|(lattice, source_span)| dae::ClockSchedule::from_lattice(lattice, source_span))
+        .collect()
 }
 
 fn empty_clock_runtime_metadata() -> ClockRuntimeMetadata {
@@ -627,23 +655,16 @@ pub(super) fn scheduled_sample_root_schedule<'a>(
     clock_schedules: &'a [dae::ClockSchedule],
     constants: &HashMap<String, f64>,
 ) -> Option<&'a dae::ClockSchedule> {
-    let (period_seconds, phase_seconds) = scheduled_sample_root_timing(expr, constants)?;
-    clock_schedules.iter().find(|schedule| {
-        clock_schedules_equivalent(
-            schedule,
-            &dae::ClockSchedule {
-                period_seconds,
-                phase_seconds,
-                source_span: schedule.source_span,
-            },
-        )
-    })
+    let lattice = scheduled_sample_root_timing(expr, constants)?;
+    clock_schedules
+        .iter()
+        .find(|schedule| matches!(schedule.lattice(), Ok(other) if other.is_same_clock(lattice)))
 }
 
 fn scheduled_sample_root_timing(
     expr: &rumoca_core::Expression,
     constants: &HashMap<String, f64>,
-) -> Option<(f64, f64)> {
+) -> Option<ClockLattice> {
     match expr {
         rumoca_core::Expression::BuiltinCall {
             function: rumoca_core::BuiltinFunction::Sample,
@@ -679,10 +700,6 @@ fn is_non_static_inferred_clock_composition(
         return false;
     };
     infer_clock_timing_from_expr(source_expr, constants, sources, 24, &mut HashSet::new()).is_none()
-}
-
-fn valid_positive_period(period: f64) -> Option<f64> {
-    (period.is_finite() && period > 0.0).then_some(period)
 }
 
 fn eval_clock_scalar_child(
@@ -810,10 +827,9 @@ fn eval_positive_factor(
     sources: &SourceMap<'_>,
     remaining_depth: usize,
     visiting: &mut HashSet<String>,
-) -> Option<f64> {
+) -> Option<i64> {
     let raw = eval_clock_scalar_with_sources(expr?, constants, sources, remaining_depth, visiting)?;
-    let rounded = raw.round();
-    (rounded.is_finite() && rounded > 0.0).then_some(rounded)
+    positive_integer(raw)
 }
 
 pub(super) fn canonical_var_ref_key(
@@ -853,6 +869,35 @@ pub(super) fn canonical_var_name_key(
     Some(dae::format_subscript_key(name.as_str(), &indices))
 }
 
+/// Clock sources behind an `if` residual, honouring compile-time conditions.
+///
+/// MLS §16.5 gives every clocked variable exactly one clock, so this map may
+/// only offer right-hand sides the model can actually evaluate. A branch guarded
+/// by an already-known parameter expression (MLS §4.4.4) is either always or
+/// never taken, and the never-taken side is not a clock source. See
+/// `dead_branch_tests` for the `PeriodicExactClock` shape this decides.
+fn collect_assignments_from_if_residual<'a>(
+    branches: &'a [(rumoca_core::Expression, rumoca_core::Expression)],
+    else_branch: &'a rumoca_core::Expression,
+    constants: &HashMap<String, f64>,
+    out: &mut Vec<(String, &'a rumoca_core::Expression)>,
+) {
+    for (condition, value) in branches {
+        match eval_scalar_const_expr(condition, constants) {
+            // Statically taken: no later branch and no `else` can run.
+            Some(flag) if flag != 0.0 => {
+                collect_assignments_from_residual(value, constants, out);
+                return;
+            }
+            // Statically not taken: this branch is not part of the model.
+            Some(_) => {}
+            // Decided at run time: the branch stays a candidate.
+            None => collect_assignments_from_residual(value, constants, out),
+        }
+    }
+    collect_assignments_from_residual(else_branch, constants, out);
+}
+
 fn collect_assignments_from_residual<'a>(
     expr: &'a rumoca_core::Expression,
     constants: &HashMap<String, f64>,
@@ -863,12 +908,7 @@ fn collect_assignments_from_residual<'a>(
             branches,
             else_branch,
             ..
-        } => {
-            for (_, value) in branches {
-                collect_assignments_from_residual(value, constants, out);
-            }
-            collect_assignments_from_residual(else_branch, constants, out);
-        }
+        } => collect_assignments_from_if_residual(branches, else_branch, constants, out),
         _ => {
             let rumoca_core::Expression::Binary {
                 op: rumoca_core::OpBinary::Sub,
@@ -1047,12 +1087,8 @@ fn promote_uniform_element_schedules(
             continue;
         };
         let first = first.clone();
-        if schedules.all(|schedule| {
-            schedule.is_some_and(|schedule| {
-                schedule.period_seconds == first.period_seconds
-                    && schedule.phase_seconds == first.phase_seconds
-            })
-        }) {
+        if schedules.all(|schedule| schedule.is_some_and(|schedule| schedule.is_same_clock(&first)))
+        {
             timings.insert(base.clone(), first);
         }
     }
@@ -1107,8 +1143,7 @@ fn assert_compatible_clock_schedule(
     timing: &dae::ClockSchedule,
 ) {
     assert!(
-        existing.period_seconds == timing.period_seconds
-            && existing.phase_seconds == timing.phase_seconds,
+        existing.is_same_clock(timing),
         "conflicting clock schedules for `{item}`: \
          existing period={}/phase={} vs new period={}/phase={} — \
          check that all clock sources are consistent",
@@ -1451,9 +1486,9 @@ fn unique_component_clock_timing(
     unique
 }
 
+/// MLS §16.5 clock identity, decided on the exact rational lattice.
 fn clock_schedules_equivalent(lhs: &dae::ClockSchedule, rhs: &dae::ClockSchedule) -> bool {
-    (lhs.period_seconds - rhs.period_seconds).abs() <= 1.0e-12
-        && (lhs.phase_seconds - rhs.phase_seconds).abs() <= 1.0e-12
+    lhs.is_same_clock(rhs)
 }
 
 fn infer_clock_timings_by_variable(
@@ -1467,19 +1502,13 @@ fn infer_clock_timings_by_variable(
 
     for name in clock_interval_candidate_names(dae_model) {
         visiting.clear();
-        if let Some((period, phase)) =
+        if let Some(lattice) =
             infer_clock_timing_from_var_name(name, &[], constants, &sources, 24, &mut visiting)
-            && period.is_finite()
-            && period > 0.0
         {
             let source_span = clock_timing_source_span(&sources, name.as_str())?;
             timings.insert(
                 name.as_str().to_string(),
-                dae::ClockSchedule {
-                    period_seconds: period,
-                    phase_seconds: phase,
-                    source_span,
-                },
+                dae::ClockSchedule::from_lattice(lattice, source_span),
             );
         }
     }

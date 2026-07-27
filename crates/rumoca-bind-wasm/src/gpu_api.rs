@@ -13,21 +13,20 @@ use rumoca_compile::codegen::targets::{TargetBundle, TargetTemplateSource};
 /// Last prepared model identity. Parameter updates validate against this, then
 /// use full runtime lowering only when an update is requested.
 struct GpuPrepCache {
-    source_key: u64,
+    /// The exact source the prepared model was built from.
+    ///
+    /// Held by value and compared by value. This used to be a 64-bit hash of
+    /// the source, which cannot decide the question the cache actually asks —
+    /// "is this the same model?" — because a collision answers yes for a
+    /// different one, and the answer gates reuse of an already-compiled shader.
+    /// One session holds one model source, so keeping it costs a single string.
+    source: String,
     model_name: String,
     t_start: f64,
 }
 
 thread_local! {
     static GPU_PREP_CACHE: RefCell<Option<GpuPrepCache>> = const { RefCell::new(None) };
-}
-
-fn source_key(source: &str, model_name: &str) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::hash::DefaultHasher::new();
-    source.hash(&mut hasher);
-    model_name.hash(&mut hasher);
-    hasher.finish()
 }
 
 /// Prepare a model for WebGPU execution.
@@ -130,7 +129,7 @@ pub fn prepare_gpu_simulation(source: &str, model_name: &str) -> Result<String, 
             .map_err(|e| JsValue::from_str(&format!("JSON error: {e}")))?;
         GPU_PREP_CACHE.with(|cache| {
             *cache.borrow_mut() = Some(GpuPrepCache {
-                source_key: source_key(source, model_name),
+                source: source.to_string(),
                 model_name: model_name.to_string(),
                 t_start: opts.t_start,
             });
@@ -166,7 +165,7 @@ pub fn update_gpu_parameters(
                 "no prepared GPU model in this session; run prepare_gpu_simulation first",
             ));
         };
-        if prep.source_key != source_key(source, model_name) || prep.model_name != model_name {
+        if prep.source != source || prep.model_name != model_name {
             return Err(JsValue::from_str(
                 "the prepared GPU model does not match this source; run prepare_gpu_simulation again",
             ));

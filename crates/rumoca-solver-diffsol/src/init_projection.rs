@@ -15,13 +15,13 @@ pub(crate) fn initialize_state_runtime_values(
     current_y: &mut [f64],
     params: &mut [f64],
     current_t: &mut f64,
-) -> Result<Vec<solve_eval::InitialEventObservation>, SimError> {
+) -> Result<Vec<rumoca_solver::InitialEventObservation>, SimError> {
     let tol = opts.atol.max(1.0e-10);
+    runtime.initialize_delay_history(*current_t, current_y, params)?;
     runtime.set_initial_event_flag(params, true);
     let event_pre = InitialEventPreValues::snapshot(current_y, params);
     let t_start = *current_t;
     let initial_projection_params = state_initial_projection_params(
-        model,
         runtime,
         equilibrium_model,
         current_y,
@@ -47,7 +47,6 @@ pub(crate) fn initialize_state_runtime_values(
         tol,
     )?;
     let outcome = apply_state_initial_event_updates(StateInitialEventUpdates {
-        model,
         opts,
         runtime,
         current_y,
@@ -59,6 +58,7 @@ pub(crate) fn initialize_state_runtime_values(
     })?;
     initial_event_action_to_result(outcome.action, outcome.final_t)?;
     *current_t = outcome.final_t;
+    runtime.commit_delay_history(outcome.final_t, current_y, params)?;
     Ok(outcome.observations)
 }
 
@@ -77,7 +77,6 @@ impl InitialEventPreValues {
 }
 
 fn state_initial_projection_params(
-    model: &solve::SolveModel,
     runtime: &SolveRuntime,
     equilibrium_model: &OdeModel,
     current_y: &mut [f64],
@@ -101,13 +100,12 @@ fn state_initial_projection_params(
         tol,
         EVENT_UPDATE_MAX_ITERS,
     )?;
-    project_initial_unknowns(
-        model,
-        equilibrium_model,
+    runtime.settle_initialization_system(
         current_y,
-        &projection_params,
+        &mut projection_params,
         current_t,
         tol,
+        EVENT_UPDATE_MAX_ITERS,
     )?;
     seed_initial_discrete_values(
         runtime,
@@ -117,20 +115,17 @@ fn state_initial_projection_params(
         current_t,
         tol,
     )?;
-    project_initial_algebraics_and_updates(
-        model,
-        runtime,
-        equilibrium_model,
+    runtime.settle_initialization_system(
         current_y,
         &mut projection_params,
         current_t,
         tol,
+        EVENT_UPDATE_MAX_ITERS,
     )?;
     Ok(projection_params)
 }
 
 struct StateInitialEventUpdates<'a> {
-    model: &'a solve::SolveModel,
     opts: &'a SimOptions,
     runtime: &'a SolveRuntime,
     current_y: &'a mut [f64],
@@ -143,9 +138,8 @@ struct StateInitialEventUpdates<'a> {
 
 fn apply_state_initial_event_updates(
     ctx: StateInitialEventUpdates<'_>,
-) -> Result<solve_eval::ProjectedInitialEventOutcome, SimError> {
+) -> Result<rumoca_solver::ProjectedInitialEventOutcome, SimError> {
     let StateInitialEventUpdates {
-        model,
         opts,
         runtime,
         current_y,
@@ -156,7 +150,7 @@ fn apply_state_initial_event_updates(
         event_pre,
     } = ctx;
     let outcome = runtime.apply_projected_initial_event_boundary(
-        solve_eval::ProjectedInitialEventInput {
+        rumoca_solver::ProjectedInitialEventInput {
             y: current_y,
             p: params,
             t_start: current_t,
@@ -170,7 +164,6 @@ fn apply_state_initial_event_updates(
         },
         |y, p, t| refresh_algebraics_and_detect_changes(runtime, y, p, t, tol),
     )?;
-    commit_pre_params_after_event(model, current_y, params, tol);
     Ok(outcome)
 }
 
@@ -189,53 +182,6 @@ fn initial_event_action_to_result(
             message,
         }),
     }
-}
-
-fn project_initial_algebraics_and_updates(
-    model: &solve::SolveModel,
-    runtime: &SolveRuntime,
-    equilibrium_model: &OdeModel,
-    current_y: &mut [f64],
-    params: &mut [f64],
-    current_t: f64,
-    tol: f64,
-) -> Result<(), SimError> {
-    for _ in 0..EVENT_UPDATE_MAX_ITERS {
-        project_initial_unknowns(model, equilibrium_model, current_y, params, current_t, tol)?;
-        let updates_changed = apply_initialization_updates(
-            runtime,
-            equilibrium_model,
-            current_y,
-            params,
-            current_t,
-            tol,
-        )?;
-        if !updates_changed {
-            return Ok(());
-        }
-    }
-    Err(SimError::SolveIr(format!(
-        "initial algebraic/update projection did not converge at t={current_t}"
-    )))
-}
-
-fn project_initial_unknowns(
-    model: &solve::SolveModel,
-    equilibrium_model: &OdeModel,
-    current_y: &mut [f64],
-    params: &[f64],
-    current_t: f64,
-    tol: f64,
-) -> Result<(), SimError> {
-    project_initial_variables_with_plan(
-        equilibrium_model,
-        current_y,
-        params,
-        current_t,
-        &model.problem.initialization.projection_plan,
-        tol,
-    )
-    .map_err(SimError::from)
 }
 
 pub(crate) struct EventObservation<'a> {
@@ -267,6 +213,7 @@ impl EventObservation<'_> {
             RuntimeEventBoundary {
                 event_t,
                 horizon_t,
+                tolerance: self.tol,
                 event,
             },
             self,

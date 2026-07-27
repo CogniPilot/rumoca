@@ -13,7 +13,7 @@ use crate::instrumentation::{
 };
 use crate::source_root_cache::{resolve_source_root_cache_dir, source_root_cache_compiler_version};
 
-const PARSED_ARTIFACT_CACHE_SCHEMA_VERSION: u32 = 2;
+const PARSED_ARTIFACT_CACHE_SCHEMA_VERSION: u32 = 5;
 const PARSED_ARTIFACT_CACHE_DIR: &str = "parsed-files";
 const MAX_IN_MEMORY_PARSED_ARTIFACTS: usize = 256;
 
@@ -202,4 +202,25 @@ fn parse_file_with_preloaded_source_status(
     }
 
     Ok((file_name, definition, ParsedArtifactCacheStatus::Miss))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn binary_cache_round_trip_preserves_optional_redeclare_identity_layout() {
+        let mut definition =
+            rumoca_phase_parse::parse_to_ast("model M\n  Real x;\nend M;\n", "redeclare-layout.mo")
+                .expect("test source should parse");
+        let class = definition.classes.get_mut("M").expect("model M");
+        class.redeclare_target_def_id = Some(rumoca_core::DefId::new(42));
+        let temp = tempfile::tempdir().expect("temporary cache directory");
+        let cache_file = temp.path().join("artifact.bin");
+
+        write_cache(&cache_file, &definition).expect("cache write should succeed");
+        let restored = try_read_cache(&cache_file).expect("cache read should succeed");
+
+        assert_eq!(restored, definition);
+    }
 }

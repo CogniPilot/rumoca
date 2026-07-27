@@ -1,30 +1,42 @@
+/// Errors raised while lowering DAE data into Solve-IR rows.
+///
+/// Every variant carries a stable SPEC_0008 `EL0xx` code via
+/// [`LowerError::code`](crate::LowerError::code); the codes themselves live in
+/// [`crate::diagnostic_codes`]. Variants without a `span` field document why no
+/// honest source span exists, as SPEC_0008 "Source Traceability" requires.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LowerError {
-    Unsupported {
-        reason: String,
-    },
+    /// Span-free: the pre-span form of an unsupported construct, produced
+    /// before the owning row's fallback span is known.
+    /// [`LowerError::with_fallback_span`] promotes it to `UnsupportedAt` as soon
+    /// as a real span is available.
+    Unsupported { reason: String },
     UnsupportedAt {
         reason: String,
         contexts: Vec<String>,
         span: rumoca_core::Span,
     },
-    MissingBinding {
-        name: String,
-    },
-    MissingFunction {
-        name: String,
-    },
-    InvalidFunction {
-        name: String,
-        reason: String,
-    },
+    /// Span-free: raised from the solver layout table, which is keyed by flat
+    /// name and holds no source anchor. The caller attaches the owning row's
+    /// span with [`LowerError::with_fallback_span`].
+    MissingBinding { name: String },
+    /// Span-free: raised from the DAE function table, which is keyed by
+    /// qualified name and holds no source anchor. The caller attaches the
+    /// calling expression's span with [`LowerError::with_fallback_span`].
+    MissingFunction { name: String },
+    /// Span-free: describes a defect in a function *definition* reached through
+    /// the name-keyed function table, so the call site attaches the span with
+    /// [`LowerError::with_fallback_span`].
+    InvalidFunction { name: String, reason: String },
     ContractViolation {
         reason: String,
         span: rumoca_core::Span,
     },
-    UnspannedContractViolation {
-        reason: String,
-    },
+    /// Span-free: this variant exists precisely because the malformed IR carries
+    /// only `Span::DUMMY`; fabricating one would violate the SPEC_0008 rule that
+    /// dummy spans are reserved for genuinely source-free constructs.
+    /// `ContractViolation` is the spanned counterpart.
+    UnspannedContractViolation { reason: String },
     Scalarization {
         message: String,
         span: Option<rumoca_core::Span>,
@@ -39,12 +51,16 @@ pub enum LowerError {
     },
     /// A subscript whose value is only known at runtime, in a position that
     /// requires a compile-time index. Observation lowering declines on this.
+    ///
+    /// Span-free: a control-flow decline consumed by observation lowering, not
+    /// a user-facing diagnostic; the deciding caller owns the span.
     DynamicSubscript,
     /// `size()` in a for-loop range over a dimension with no structural
     /// binding. Observation lowering declines on this.
-    ForRangeUnknownDimension {
-        name: String,
-    },
+    ///
+    /// Span-free: a control-flow decline consumed by observation lowering, not
+    /// a user-facing diagnostic; the deciding caller owns the span.
+    ForRangeUnknownDimension { name: String },
     /// A function/constructor input with neither an actual argument nor a
     /// default binding. Observation lowering declines on this.
     MissingActualArgument {
@@ -57,9 +73,12 @@ pub enum LowerError {
     },
     /// A dynamic-binding path rooted in an expression form that has no
     /// binding key. Observation lowering declines on this.
-    DynamicBindingBase {
-        tag: String,
-    },
+    ///
+    /// Span-free: a control-flow decline consumed by observation lowering, not
+    /// a user-facing diagnostic; the deciding caller owns the span.
+    DynamicBindingBase { tag: String },
+    /// Wrapper that attaches a fallback span; delegates `code()`/`reason()` to
+    /// `source`.
     Spanned {
         source: Box<LowerError>,
         span: rumoca_core::Span,

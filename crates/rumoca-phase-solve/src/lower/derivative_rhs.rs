@@ -1,3 +1,4 @@
+mod direct_family;
 mod direct_matmul;
 mod equation_collection;
 #[path = "derivative_rhs/function_projection.rs"]
@@ -21,6 +22,7 @@ use rumoca_ir_solve::{BinaryOp, ComputeBlock, ComputeNode, LinearOp, Reg, Scalar
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use direct_family::*;
 use function_projection::{
     function_call_projected_scalars_with_owner, function_projected_residuals_with_owner,
 };
@@ -323,7 +325,8 @@ pub(super) fn lower_derivative_rhs(
     layout: &VarLayout,
 ) -> Result<ComputeBlock, LowerError> {
     let analysis = analyze_derivative_rhs(dae_model)?;
-    lower_derivative_rhs_with_analysis(dae_model, layout, &analysis)
+    let mut declines = crate::tensor_declines::TensorDeclineJournal::new();
+    lower_derivative_rhs_with_analysis(dae_model, layout, &analysis, &mut declines)
 }
 
 // SPEC_0021: Exception - derivative RHS lowering owns block assembly across
@@ -333,6 +336,7 @@ pub(crate) fn lower_derivative_rhs_with_analysis(
     dae_model: &dae::Dae,
     layout: &VarLayout,
     analysis: &DerivativeRhsAnalysis,
+    declines: &mut crate::tensor_declines::TensorDeclineJournal,
 ) -> Result<ComputeBlock, LowerError> {
     if analysis.states.is_empty() {
         return Ok(ComputeBlock::default());
@@ -357,9 +361,26 @@ pub(crate) fn lower_derivative_rhs_with_analysis(
         span,
     )?;
     processed.resize(analysis.states.len(), false);
+    let mut direct_family_nodes =
+        lower_direct_derivative_families(&mut processed, analysis, &lowering_ctx, &y_slot_ranges)?;
     let mut i = 0;
 
     while i < analysis.states.len() {
+        if let Some(mut family_nodes) = direct_family_nodes.shift_remove(&i) {
+            flush_pending_derivative_programs(
+                &mut block.nodes,
+                &mut pending_derivative_programs,
+                dae_model,
+                declines,
+            )?;
+            reserve_derivative_capacity(
+                &mut block.nodes,
+                family_nodes.len(),
+                "ordered direct derivative family tensor node count",
+                derivative_state_or_context_span(dae_model, &analysis.states[i])?,
+            )?;
+            block.nodes.append(&mut family_nodes);
+        }
         if processed[i] {
             i += 1;
             continue;
@@ -380,6 +401,7 @@ pub(crate) fn lower_derivative_rhs_with_analysis(
                 &mut block.nodes,
                 &mut pending_derivative_programs,
                 dae_model,
+                declines,
             )?;
 
             let mut group = derivative_vec_with_capacity(
@@ -390,12 +412,24 @@ pub(crate) fn lower_derivative_rhs_with_analysis(
             for idx in component {
                 group.push(analysis.states[*idx].clone());
             }
-            let node = lower_linsolve_group(&group, &lowering_ctx)?;
+            let span = derivative_state_or_context_span(dae_model, state)?;
+            let node = if component_indices_are_contiguous_from(component, i) {
+                lower_linsolve_group(&group, &lowering_ctx)?
+            } else {
+                let program = lower_linsolve_group_program(&group, &lowering_ctx)?;
+                ComputeNode::ScalarPrograms(
+                    rumoca_ir_solve::ScalarProgramBlock::with_output_indices(
+                        vec![program],
+                        vec![span],
+                        component.clone(),
+                    )?,
+                )
+            };
             reserve_derivative_capacity(
                 &mut block.nodes,
                 1,
                 "derivative compute node count",
-                derivative_state_or_context_span(dae_model, state)?,
+                span,
             )?;
             block.nodes.push(node);
             for idx in component.iter().copied() {
@@ -412,6 +446,7 @@ pub(crate) fn lower_derivative_rhs_with_analysis(
                         &mut block.nodes,
                         &mut pending_derivative_programs,
                         dae_model,
+                        declines,
                     )?;
                     let span = derivative_state_or_context_span(dae_model, state)?;
                     let output_indices = (i..i + group_len).collect::<Vec<_>>();
@@ -437,6 +472,7 @@ pub(crate) fn lower_derivative_rhs_with_analysis(
                         &mut block.nodes,
                         &mut pending_derivative_programs,
                         dae_model,
+                        declines,
                     )?;
                     reserve_derivative_capacity(
                         &mut block.nodes,
@@ -493,53 +529,16 @@ pub(crate) fn lower_derivative_rhs_with_analysis(
         &mut block.nodes,
         &mut pending_derivative_programs,
         dae_model,
+        declines,
     )?;
+    if !direct_family_nodes.is_empty() {
+        return Err(LowerError::contract_violation(
+            "direct derivative family nodes were not placed in state-output order",
+            span,
+        ));
+    }
 
     Ok(block)
-}
-
-fn flush_pending_derivative_programs(
-    nodes: &mut Vec<ComputeNode>,
-    pending: &mut Vec<crate::stencil::StructuredProgram>,
-    dae_model: &dae::Dae,
-) -> Result<(), LowerError> {
-    if !pending.is_empty() {
-        crate::stencil::push_structured_programs(
-            nodes,
-            pending,
-            &dae_model.continuous.structured_equations,
-            &dae_model.continuous.equations,
-        )?;
-    }
-    Ok(())
-}
-
-fn state_output_y_range(
-    dae_model: &dae::Dae,
-    state: &StateScalar,
-    output_index: usize,
-) -> Result<std::ops::Range<usize>, LowerError> {
-    let start = output_index.checked_sub(state.component).ok_or_else(|| {
-        derivative_component_contract_error(
-            dae_model,
-            state,
-            format!(
-                "derivative output index {output_index} is before component {} for state `{}`",
-                state.component, state.name
-            ),
-        )
-    })?;
-    let end = start.checked_add(state.base_size).ok_or_else(|| {
-        derivative_component_contract_error(
-            dae_model,
-            state,
-            format!(
-                "derivative output range overflows for state `{}` with base size {}",
-                state.name, state.base_size
-            ),
-        )
-    })?;
-    Ok(start..end)
 }
 
 pub(super) fn lower_derivative_rhs_scalar_programs(
@@ -1506,6 +1505,34 @@ fn lower_linsolve_group(
         metadata: rumoca_ir_solve::TensorNodeMetadata::default(),
         span: setup.span,
     })
+}
+
+fn lower_linsolve_group_program(
+    states: &[StateScalar],
+    ctx: &DerivativeRhsLoweringContext<'_>,
+) -> Result<Vec<LinearOp>, LowerError> {
+    let mut setup = build_dense_group_solve_setup(states, ctx)?;
+    for component in 0..setup.n {
+        let dst = setup.next_reg;
+        setup.next_reg = setup.next_reg.checked_add(1).ok_or_else(|| {
+            LowerError::contract_violation(
+                format!(
+                    "Solve register allocation overflow after r{}",
+                    setup.next_reg
+                ),
+                setup.span,
+            )
+        })?;
+        setup.ops.push(LinearOp::LinearSolveComponent {
+            dst,
+            matrix_start: setup.matrix_start,
+            rhs_start: setup.rhs_start,
+            n: setup.n,
+            component,
+        });
+        setup.ops.push(LinearOp::StoreOutput { src: dst });
+    }
+    Ok(setup.ops)
 }
 
 fn lower_linsolve_group_component(

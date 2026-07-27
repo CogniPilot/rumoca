@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 use crate::source_root_cache::source_root_cache_compiler_version;
 
-const SEMANTIC_SUMMARY_CACHE_SCHEMA_VERSION: u32 = 8;
+const SEMANTIC_SUMMARY_CACHE_SCHEMA_VERSION: u32 = 9;
 const SEMANTIC_SUMMARY_CACHE_DIR: &str = "semantic-summaries";
 const SEMANTIC_SUMMARY_CACHE_MAGIC: &[u8] = b"rumoca-semantic-summary-v1";
 const MAX_SEMANTIC_SUMMARY_CACHE_BYTES: u64 = 512 * 1024 * 1024;

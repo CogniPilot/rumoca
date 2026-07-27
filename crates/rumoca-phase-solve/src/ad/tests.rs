@@ -43,7 +43,8 @@ fn matmul_jvp_lowering_rejects_non_matmul_node_with_span() {
         span,
     ));
 
-    let err = lower_matmul_jvp_node(&node).expect_err("MatMul JVP helper should reject non-MatMul");
+    let err = lower_matmul_jvp_node(&node, SeedMode::SolverYOnly)
+        .expect_err("MatMul JVP helper should reject non-MatMul");
 
     assert_eq!(err.source_span(), Some(span));
     assert!(
@@ -60,7 +61,8 @@ fn matmul_jvp_lowering_rejects_empty_scalar_program_node() {
         rumoca_core::Span::source_free_serde_default(),
     ));
 
-    let err = lower_matmul_jvp_node(&node).expect_err("empty ScalarPrograms node is malformed IR");
+    let err = lower_matmul_jvp_node(&node, SeedMode::SolverYOnly)
+        .expect_err("empty ScalarPrograms node is malformed IR");
 
     assert_eq!(err.source_span(), None);
     assert!(matches!(err, LowerError::UnspannedContractViolation { .. }));
@@ -377,6 +379,46 @@ fn full_ad_of_indexed_param_load_emits_shifted_indexed_seed() {
     );
 }
 
+#[test]
+fn full_ad_treats_deterministic_random_outputs_as_piecewise_constant() {
+    let primal = vec![
+        LinearOp::Const { dst: 0, value: 7.0 },
+        LinearOp::Const {
+            dst: 1,
+            value: 11.0,
+        },
+        LinearOp::RandomInitialState {
+            dst: 2,
+            generator: rumoca_ir_solve::RandomGenerator::Xorshift64Star,
+            local_seed: 0,
+            global_seed: 1,
+            state_len: 2,
+            state_index: 0,
+        },
+        LinearOp::StoreOutput { src: 2 },
+    ];
+
+    let full = lower_row_ad_with_span(
+        &primal,
+        SeedMode::SolverYAndP { p_seed_offset: 0 },
+        Some(ad_test_span()),
+    )
+    .expect("deterministic random outputs are constant almost everywhere");
+
+    assert!(
+        full.iter()
+            .any(|op| matches!(op, LinearOp::RandomInitialState { .. })),
+        "the primal deterministic random operation must be preserved: {full:?}"
+    );
+    assert!(
+        !full.iter().any(|op| matches!(
+            op,
+            LinearOp::LoadSeed { .. } | LinearOp::LoadIndexedSeed { .. }
+        )),
+        "random output tangents must be zero even for parameter-seeded AD: {full:?}"
+    );
+}
+
 /// Numeric parity: evaluating the parameter-seed AD of an indexed parameter
 /// load yields the seed at exactly the selected slot, matching the analytic
 /// tangent d(p[base + clamp(round(idx))])/d(seed) = seed[p_seed_index(slot)].
@@ -457,6 +499,142 @@ fn compute_block_jvp_scalar_programs_applies_standard_ad() {
             .any(|op| matches!(op, LinearOp::LoadSeed { index: 0, .. })),
         "JVP row should load seed[0] for LoadY[0]: {:?}",
         jvp_rows.programs[0]
+    );
+}
+
+fn eval_full_jvp(
+    block: &ComputeBlock,
+    y: &[f64],
+    p: &[f64],
+    seed: &[f64],
+    p_seed_offset: usize,
+) -> Vec<f64> {
+    let jvp =
+        lower_compute_block_full_jvp(block, p_seed_offset).expect("full JVP fixture should lower");
+    let mut out = vec![0.0; jvp.len().expect("full JVP fixture output count")];
+    rumoca_eval_solve::PreparedComputeBlock::new(&jvp)
+        .expect("full JVP fixture should prepare")
+        .eval_with_context(
+            y,
+            p,
+            0.0,
+            rumoca_eval_solve::RowEvalContext {
+                seed: Some(seed),
+                ..Default::default()
+            },
+            &mut out,
+        )
+        .expect("full JVP fixture should evaluate");
+    out
+}
+
+#[test]
+fn compute_block_full_jvp_seeds_parameters_in_scalar_programs() {
+    let block = ComputeBlock::from_scalar_program_block(ScalarProgramBlock::with_source_span(
+        vec![vec![
+            LinearOp::LoadP { dst: 0, index: 0 },
+            LinearOp::StoreOutput { src: 0 },
+        ]],
+        ad_test_span(),
+    ));
+
+    assert_eq!(
+        eval_full_jvp(&block, &[2.0], &[7.0], &[0.0, 3.5], 1),
+        vec![3.5]
+    );
+}
+
+#[test]
+fn compute_block_full_jvp_preserves_parameter_map_strides() {
+    let domain = rumoca_core::StructuredIndexDomain {
+        binders: vec![rumoca_core::StructuredIndexBinder {
+            id: 0,
+            display_name: "i".to_string(),
+            lower: 1,
+            upper: 3,
+            step: 1,
+        }],
+    };
+    let block = ComputeBlock {
+        nodes: vec![ComputeNode::Map {
+            output_map: rumoca_ir_solve::TensorOutputMap::dense_contiguous(0, &domain)
+                .expect("valid full-JVP Map output"),
+            domain,
+            base_ops: vec![
+                LinearOp::LoadP { dst: 0, index: 0 },
+                LinearOp::StoreOutput { src: 0 },
+            ],
+            load_strides: vec![rumoca_ir_solve::AffineStencilLoadStride {
+                op_position: 0,
+                terms: vec![rumoca_ir_solve::AffineStencilIndexStrideTerm {
+                    dimension: 0,
+                    stride: 1,
+                }],
+            }],
+            const_strides: Vec::new(),
+            metadata: rumoca_ir_solve::TensorNodeMetadata::default(),
+            span: ad_test_span(),
+        }],
+    };
+
+    assert_eq!(
+        eval_full_jvp(
+            &block,
+            &[11.0],
+            &[2.0, 3.0, 5.0],
+            &[0.0, 7.0, 11.0, 13.0],
+            1,
+        ),
+        vec![7.0, 11.0, 13.0]
+    );
+}
+
+#[test]
+fn compute_block_full_jvp_differentiates_parameter_matmul_operands() {
+    let block = ComputeBlock {
+        nodes: vec![ComputeNode::MatMul {
+            lhs_ops: vec![LinearOp::LoadP { dst: 0, index: 0 }],
+            lhs_start: 0,
+            rhs_ops: vec![LinearOp::LoadP { dst: 1, index: 1 }],
+            rhs_start: 1,
+            m: 1,
+            k: 1,
+            n: 1,
+            lhs_sparsity: rumoca_ir_solve::SparsityPattern::Dense,
+            rhs_sparsity: rumoca_ir_solve::SparsityPattern::Dense,
+            metadata: rumoca_ir_solve::TensorNodeMetadata::default(),
+            span: ad_test_span(),
+        }],
+    };
+
+    // d(p0*p1) = dp0*p1 + p0*dp1 = 0.5*3 + 2*0.7.
+    assert_eq!(
+        eval_full_jvp(&block, &[], &[2.0, 3.0], &[0.5, 0.7], 0),
+        vec![2.9]
+    );
+}
+
+#[test]
+fn compute_block_full_jvp_differentiates_parameter_linsolve() {
+    let block = ComputeBlock {
+        nodes: vec![ComputeNode::LinSolve {
+            setup_ops: vec![
+                LinearOp::LoadP { dst: 0, index: 0 },
+                LinearOp::LoadP { dst: 1, index: 1 },
+            ],
+            matrix_start: 0,
+            rhs_start: 1,
+            n: 1,
+            next_reg: 2,
+            metadata: rumoca_ir_solve::TensorNodeMetadata::default(),
+            span: ad_test_span(),
+        }],
+    };
+
+    // x = b/A, so dx = (db - dA*x)/A = (0.7 - 0.5*3)/2.
+    assert_eq!(
+        eval_full_jvp(&block, &[], &[2.0, 6.0], &[0.5, 0.7], 0),
+        vec![-0.4]
     );
 }
 

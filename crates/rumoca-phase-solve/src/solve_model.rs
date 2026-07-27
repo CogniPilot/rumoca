@@ -404,48 +404,31 @@ fn lower_dae_to_solve_model_inner(
     crate::timing::log_stage("model.lower_solve_problem", timer);
     let timer = crate::timing::stage_start();
     let artifacts = if profile.needs_solve_artifacts() {
-        let mass_matrix = state_identity_mass_matrix(state_count, model_span)?;
+        // derivative_rhs already solves the MLS §8.3 system for der(state), so
+        // runtime backends receive the explicit system x' = f(x, p, t).
+        let mass_matrix = solve::MassMatrix::Identity;
         crate::lower_solve_artifacts_with_mass_matrix(&problem, mass_matrix)?
     } else {
         solve::SolveArtifacts::default()
     };
     crate::timing::log_stage("model.lower_solve_artifacts", timer);
-    let timer = crate::timing::stage_start();
-    let mut parameters = compiled_parameter_values(
+    let initial = lower_initial_solver_data(
         &dae_model,
         metadata_dae_model,
-        &problem.solve_layout,
         base_parameters,
+        &problem,
         eval_runtime.clone(),
     )?;
-    crate::timing::log_stage("model.compiled_parameter_values", timer);
-    let timer = crate::timing::stage_start();
-    let mut initial_y = initial_solver_values(
-        &dae_model,
-        metadata_dae_model,
-        &parameters,
-        problem.solve_layout.solver_scalar_count(),
-        eval_runtime.clone(),
-    )?;
-    crate::timing::log_stage("model.initial_solver_values", timer);
-    let timer = crate::timing::stage_start();
-    apply_initial_equations_to_start_values(
-        &dae_model,
-        &problem.layout,
-        &mut parameters,
-        &mut initial_y,
-        eval_runtime.clone(),
-    )?;
-    crate::timing::log_stage("model.apply_initial_equations", timer);
     let timer = crate::timing::stage_start();
     let table_env = build_runtime_parameter_tail_env_with_declared_slots_and_runtime(
         &dae_model,
-        &parameters,
+        &initial.parameters,
         0.0,
         eval_runtime,
     )
     .map_err(|source| runtime_tail_error(&dae_model, source))?;
-    let external_tables = external_table_data_for_parameter_values_in(&table_env, &parameters);
+    let external_tables =
+        external_table_data_for_parameter_values_in(&table_env, &initial.parameters);
     crate::timing::log_stage("model.external_tables", timer);
     let (visible_names, visible_value_rows, variable_meta) = lower_runtime_visible_outputs(
         &dae_model,
@@ -458,12 +441,83 @@ fn lower_dae_to_solve_model_inner(
     Ok(solve::SolveModel {
         problem,
         artifacts,
-        initial_y,
-        parameters,
+        initial_y: initial.y,
+        solver_nominals: initial.nominals,
+        parameters: initial.parameters,
         external_tables: solve::ExternalTables::new(external_tables),
         visible_names,
         visible_value_rows,
         variable_meta,
+    })
+}
+
+struct InitialSolverData {
+    parameters: Vec<f64>,
+    y: Vec<f64>,
+    nominals: Vec<f64>,
+}
+
+fn lower_initial_solver_data(
+    dae_model: &dae::Dae,
+    metadata_dae_model: Option<&dae::Dae>,
+    base_parameters: Vec<f64>,
+    problem: &solve::SolveProblem,
+    eval_runtime: Arc<EvalRuntimeState>,
+) -> Result<InitialSolverData, SolveModelLowerError> {
+    let timer = crate::timing::stage_start();
+    let mut parameters = compiled_parameter_values(
+        dae_model,
+        metadata_dae_model,
+        &problem.solve_layout,
+        base_parameters,
+        eval_runtime.clone(),
+    )?;
+    if let Some(index) = problem.solve_layout.initial_homotopy_parameter_index {
+        let parameter_count = parameters.len();
+        let Some(lambda) = parameters.get_mut(index) else {
+            return Err(solve_model_contract_violation(
+                format!(
+                    "initial homotopy parameter index {index} is outside {parameter_count} \
+                     compiled parameters"
+                ),
+                model_provenance_span(dae_model, metadata_dae_model)?,
+            ));
+        };
+        *lambda = 0.0;
+    }
+    crate::timing::log_stage("model.compiled_parameter_values", timer);
+    let timer = crate::timing::stage_start();
+    let mut y = initial_solver_values(
+        dae_model,
+        metadata_dae_model,
+        &parameters,
+        problem.solve_layout.solver_scalar_count(),
+        eval_runtime.clone(),
+    )?;
+    crate::timing::log_stage("model.initial_solver_values", timer);
+    let timer = crate::timing::stage_start();
+    apply_initial_equations_to_start_values(
+        dae_model,
+        &problem.layout,
+        &mut parameters,
+        &mut y,
+        eval_runtime.clone(),
+    )?;
+    crate::timing::log_stage("model.apply_initial_equations", timer);
+    let timer = crate::timing::stage_start();
+    let nominals = initial_solver_nominals(
+        dae_model,
+        metadata_dae_model,
+        &parameters,
+        &y,
+        problem.solve_layout.solver_scalar_count(),
+        eval_runtime,
+    )?;
+    crate::timing::log_stage("model.initial_solver_nominals", timer);
+    Ok(InitialSolverData {
+        parameters,
+        y,
+        nominals,
     })
 }
 
@@ -649,13 +703,13 @@ pub fn propagate_parameter_overrides(
     for (name, slot) in solve_model.problem.layout.bindings() {
         match slot {
             solve::ScalarSlot::P { index, .. } => {
-                slot_index.insert(name.clone(), *index);
+                slot_index.insert(name.to_string(), *index);
                 if let Some(value) = solve_model.parameters.get(*index) {
-                    values.insert(name.clone(), *value);
+                    values.insert(name.to_string(), *value);
                 }
             }
             solve::ScalarSlot::Constant(value) => {
-                values.insert(name.clone(), *value);
+                values.insert(name.to_string(), *value);
             }
             _ => {}
         }
@@ -848,6 +902,123 @@ fn initial_solver_values(
     }
     resize_solve_model_values(&mut values, solver_len, "initial solver values", span)?;
     Ok(values)
+}
+
+fn initial_solver_nominals(
+    dae_model: &dae::Dae,
+    metadata_dae_model: Option<&dae::Dae>,
+    params: &[f64],
+    initial_y: &[f64],
+    solver_len: usize,
+    runtime: Arc<EvalRuntimeState>,
+) -> Result<Vec<f64>, SolveModelLowerError> {
+    let span = model_provenance_span(dae_model, metadata_dae_model)?;
+    let mut values = solve_model_vec_with_capacity(solver_len, "solver nominal values", span)?;
+    if solver_len == 0 {
+        return Ok(values);
+    }
+    let mut env = build_runtime_parameter_tail_env_with_declared_slots_and_runtime(
+        dae_model, params, 0.0, runtime,
+    )
+    .map_err(|source| runtime_tail_error(dae_model, source))?;
+    if let Some(metadata_dae_model) = metadata_dae_model {
+        seed_missing_default_values_for_all_variables(metadata_dae_model, &mut env)?;
+    }
+    let solver_variables = solver_variables(dae_model, span)?;
+    seed_default_values(dae_model, &mut env, &solver_variables)?;
+    let mut y_offset = 0usize;
+    for (name, var) in solver_variables {
+        let size = solve_model_variable_size(var)?;
+        let y_end = checked_solve_model_count_add(y_offset, size, "solver nominal layout", span)?;
+        let starts = initial_y.get(y_offset..y_end).ok_or_else(|| {
+            solve_model_contract_violation(
+                format!(
+                    "solver nominal layout range {y_offset}..{y_end} exceeds {} initial values",
+                    initial_y.len()
+                ),
+                span,
+            )
+        })?;
+        let nominal_var = metadata_variable(metadata_dae_model, name.as_str()).unwrap_or(var);
+        let nominal_values = nominal_values(nominal_var, &env)?;
+        append_values_for_var(&mut values, name.as_str(), var, &nominal_values)?;
+        y_offset = y_end;
+        if values.len() >= solver_len {
+            values.truncate(solver_len);
+            break;
+        }
+        seed_var_values(&mut env, name.as_str(), var, starts)?;
+    }
+    resize_solve_model_values(&mut values, solver_len, "solver nominal values", span)?;
+    for value in &mut values {
+        *value = finite_positive_nominal(*value);
+    }
+    Ok(values)
+}
+
+fn metadata_variable<'a>(dae_model: Option<&'a dae::Dae>, name: &str) -> Option<&'a dae::Variable> {
+    all_dae_variables(dae_model?)
+        .find_map(|(candidate, variable)| (candidate.as_str() == name).then_some(variable))
+}
+
+fn nominal_values(
+    var: &dae::Variable,
+    env: &rumoca_eval_dae::VarEnv<f64>,
+) -> Result<Vec<f64>, SolveModelLowerError> {
+    let size = solve_model_variable_size(var)?;
+    if size == 0 {
+        return Ok(Vec::new());
+    }
+    let Some(expr) = var.nominal.as_ref() else {
+        return nominal_defaults(var, size);
+    };
+    if start_expr_is_nonnumeric(expr, env) {
+        return nominal_defaults(var, size);
+    }
+    if size <= 1 && var.dims.is_empty() {
+        let value =
+            eval_expr::<f64>(expr, env).map_err(|source| nominal_eval_error(var, source))?;
+        return single_start_value(finite_positive_nominal(value), var);
+    }
+    let raw = match eval_shaped_array_values(expr, env, size) {
+        Ok(values) => values,
+        Err(EvalError::ShapeMismatch { actual: 1, .. }) if can_broadcast_start_value(expr, env) => {
+            let value =
+                eval_expr::<f64>(expr, env).map_err(|source| nominal_eval_error(var, source))?;
+            expand_values_to_size(
+                single_start_value(finite_positive_nominal(value), var)?,
+                size,
+                var.name.as_str(),
+                expr.span().unwrap_or(var.source_span),
+            )?
+        }
+        Err(source) => return Err(nominal_eval_error(var, source)),
+    };
+    Ok(raw.into_iter().map(finite_positive_nominal).collect())
+}
+
+fn nominal_defaults(var: &dae::Variable, size: usize) -> Result<Vec<f64>, SolveModelLowerError> {
+    default_start_values_for_size(var, 1.0, size)
+}
+
+fn finite_positive_nominal(value: f64) -> f64 {
+    if value.is_finite() && value > 0.0 {
+        value
+    } else {
+        1.0
+    }
+}
+
+fn nominal_eval_error(var: &dae::Variable, source: EvalError) -> SolveModelLowerError {
+    SolveModelLowerError::Evaluation {
+        context: format!("nominal value for `{}`", var.name),
+        source,
+        span: var
+            .nominal
+            .as_ref()
+            .and_then(|expr| expr.span())
+            .or(Some(var.source_span)),
+    }
 }
 
 fn runtime_parameter_variables(
@@ -1348,23 +1519,6 @@ fn checked_solve_model_count_add(
     lhs.checked_add(rhs).ok_or_else(|| {
         solve_model_contract_violation(format!("{context} overflows host index range"), span)
     })
-}
-
-fn state_identity_mass_matrix(
-    state_count: usize,
-    span: rumoca_core::Span,
-) -> Result<Vec<Vec<f64>>, SolveModelLowerError> {
-    // The solve-IR derivative RHS rows already solve the MLS §8.3 equation
-    // system for der(state), including coupled derivative rows. Concrete
-    // solvers therefore receive x' = f(x, p, t) for state rows.
-    let mut mass = solve_model_vec_with_capacity(state_count, "identity mass matrix rows", span)?;
-    for idx in 0..state_count {
-        let mut row = solve_model_vec_with_capacity(state_count, "identity mass matrix row", span)?;
-        resize_solve_model_values(&mut row, state_count, "identity mass matrix row", span)?;
-        row[idx] = 1.0;
-        mass.push(row);
-    }
-    Ok(mass)
 }
 
 pub(crate) fn scalar_names(

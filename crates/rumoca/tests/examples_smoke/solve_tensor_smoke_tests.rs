@@ -74,26 +74,18 @@ fn assert_wgsl_solve_layout_budget(model_name: &str, layout_source: &str, max_by
     );
 }
 
-fn native_tensor_rows(block: &ComputeBlock) -> usize {
+fn scalar_fallback_rows(block: &ComputeBlock) -> usize {
     block
         .nodes
         .iter()
         .map(|node| match node {
-            ComputeNode::Map { domain, .. } | ComputeNode::AffineStencil { domain, .. } => domain
-                .scalar_count()
-                .expect("example tensor domain should have a valid scalar count"),
-            ComputeNode::ScalarPrograms(_)
-            | ComputeNode::MatMul { .. }
-            | ComputeNode::LinSolve { .. } => 0,
+            ComputeNode::ScalarPrograms(rows) => rows.stored_output_count(),
+            ComputeNode::MatMul { .. }
+            | ComputeNode::LinSolve { .. }
+            | ComputeNode::Map { .. }
+            | ComputeNode::AffineStencil { .. } => 0,
         })
         .sum()
-}
-
-fn scalar_fallback_rows(block: &ComputeBlock) -> usize {
-    block
-        .len()
-        .expect("smoke-test Solve compute block should report output length")
-        - native_tensor_rows(block)
 }
 
 fn scalar_fallback_output_indices(block: &ComputeBlock) -> Vec<usize> {
@@ -108,6 +100,64 @@ fn scalar_fallback_output_indices(block: &ComputeBlock) -> Vec<usize> {
             | ComputeNode::AffineStencil { .. } => Vec::new(),
         })
         .collect()
+}
+
+fn assert_compute_block_output_coverage(block: &ComputeBlock, block_name: &str) {
+    let output_count = block
+        .len()
+        .unwrap_or_else(|error| panic!("{block_name} output count should be valid: {error}"));
+    let mut covered = vec![None; output_count];
+    let mut output_cursor = 0usize;
+    for (node_index, node) in block.nodes.iter().enumerate() {
+        let indices = match node {
+            ComputeNode::ScalarPrograms(rows) => rows
+                .compute_block_output_indices(
+                    "example smoke output coverage",
+                    node_index,
+                    output_cursor,
+                )
+                .unwrap_or_else(|error| {
+                    panic!("{block_name} scalar output indices should be valid: {error}")
+                }),
+            ComputeNode::Map {
+                domain, output_map, ..
+            }
+            | ComputeNode::AffineStencil {
+                domain, output_map, ..
+            } => output_map.output_indices(domain).unwrap_or_else(|error| {
+                panic!("{block_name} tensor output indices should be valid: {error:?}")
+            }),
+            ComputeNode::MatMul { m, n, .. } => {
+                let count = m
+                    .checked_mul(*n)
+                    .expect("example MatMul output count should fit usize");
+                (output_cursor..output_cursor + count).collect()
+            }
+            ComputeNode::LinSolve { n, .. } => (output_cursor..output_cursor + n).collect(),
+        };
+        for index in &indices {
+            let owner = covered.get_mut(*index).unwrap_or_else(|| {
+                panic!(
+                    "{block_name} node {node_index} writes output slot {index} outside \
+                     {output_count} rows"
+                )
+            });
+            if let Some(previous) = *owner {
+                panic!(
+                    "{block_name} nodes {previous} and {node_index} overlap output slot {index}"
+                );
+            }
+            *owner = Some(node_index);
+        }
+        output_cursor = indices
+            .iter()
+            .max()
+            .and_then(|index| index.checked_add(1))
+            .map_or(output_cursor, |next| output_cursor.max(next));
+    }
+    if let Some(gap) = covered.iter().position(Option::is_none) {
+        panic!("{block_name} does not cover output slot {gap} of {output_count}");
+    }
 }
 
 fn extract_doc_model(source: &str, model_name: &str) -> String {
@@ -508,14 +558,16 @@ fn quadrotor_acro_solve_preserves_tensor_structure_when_cmm_available() {
 
     let problem = rumoca_phase_solve::lower_solve_problem(&result.dae)
         .expect("QuadrotorAcro should lower to Solve IR");
-    let implicit_rhs = &problem.continuous.implicit_rhs;
-    let linsolve_nodes = implicit_rhs.compute_node_counts().linsolve;
+    let derivative_rhs = &problem.continuous.derivative_rhs;
+    let derivative_counts = derivative_rhs.compute_node_counts();
+    let linsolve_nodes = derivative_counts.linsolve;
 
     assert!(
         linsolve_nodes > 0,
-        "QuadrotorAcro should preserve rigid-body solves as LinSolve nodes"
+        "QuadrotorAcro should preserve its explicit rigid-body derivative solve as a LinSolve \
+         node; derivative counts: {derivative_counts:?}"
     );
-    let max_scalar_ops = max_scalar_row_ops(implicit_rhs);
+    let max_scalar_ops = max_scalar_row_ops(derivative_rhs);
     assert!(
         max_scalar_ops < 9_000,
         "QuadrotorAcro Solve IR scalar fallback rows should stay below the \
@@ -655,6 +707,7 @@ fn pde_docs_examples_expose_structured_dae_and_native_stencils_when_supported() 
             );
         }
         if model_name == "AirfoilFlow" {
+            assert_compute_block_output_coverage(derivative_rhs, "AirfoilFlow derivative RHS");
             assert_eq!(
                 map_count(derivative_rhs),
                 7,
@@ -668,7 +721,9 @@ fn pde_docs_examples_expose_structured_dae_and_native_stencils_when_supported() 
             assert_eq!(
                 scalar_fallback_rows(derivative_rhs),
                 4,
-                "AirfoilFlow derivative RHS scalar rows should stay limited to the four motor states"
+                "AirfoilFlow derivative RHS scalar rows should stay limited to the four motor \
+                 states; got output indices {:?}",
+                scalar_fallback_output_indices(derivative_rhs)
             );
         }
         if model_name == "Turkey" {
@@ -1808,8 +1863,11 @@ fn airfoil_two_binder_load_strides_fully_characterized() {
                 .is_some_and(|shape| shape.len() == access.subscripts.len())
         })
         .expect("a state access resolvable in the layout");
-    let memory_strides = rumoca_core::row_major_strides(problem.layout.shape(&probe.var).unwrap());
-    let table_stride = probe.binder_index_strides(&memory_strides, interior.binders.len());
+    let memory_strides =
+        rumoca_core::row_major_strides(problem.layout.shape(&probe.var).unwrap()).unwrap();
+    let table_stride = probe
+        .binder_index_strides(&memory_strides, interior.binders.len())
+        .unwrap();
     assert_eq!(
         table_stride,
         vec![4, 1],

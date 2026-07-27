@@ -477,8 +477,17 @@ fn collect_model_states(
         let phase_reached = required_str(model, "phase_reached")
             .with_context(|| format!("invalid model_results entry for {model_name}"))?
             .to_string();
-        let sim_status = required_str(model, "sim_status")
-            .with_context(|| format!("invalid model_results entry for {model_name}"))?
+        let sim_status = model
+            .get("sim_status")
+            .map(|value| {
+                value.as_str().with_context(|| {
+                    format!(
+                        "invalid model_results entry for {model_name}: non-string field `sim_status`"
+                    )
+                })
+            })
+            .transpose()?
+            .unwrap_or("not_attempted")
             .to_string();
         states.insert(
             model_name.to_string(),
@@ -805,7 +814,8 @@ mod tests {
         let results = json!({
             "model_results": [
                 {"model_name": "High", "phase_reached": "Success", "sim_status": "sim_ok"},
-                {"model_name": "Near", "phase_reached": "Success", "sim_status": "sim_ok"}
+                {"model_name": "Near", "phase_reached": "Success", "sim_status": "sim_ok"},
+                {"model_name": "Failed", "phase_reached": "ToDae"}
             ]
         });
         let trace = json!({
@@ -819,6 +829,7 @@ mod tests {
 
         assert_eq!(states["High"].trace_band.as_deref(), Some("high"));
         assert_eq!(states["Near"].trace_band.as_deref(), Some("near"));
+        assert_eq!(states["Failed"].sim_status, "not_attempted");
     }
 
     fn states<const N: usize>(
