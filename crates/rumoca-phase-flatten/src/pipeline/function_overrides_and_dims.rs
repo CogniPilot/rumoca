@@ -1315,6 +1315,9 @@ fn resolve_override_member_name(
     if let Some(resolved) = resolve_override_member_projection_name(reference, ctx) {
         return Some(resolved);
     }
+    if reference_has_resolved_package_prefix(reference, ctx.class_index) {
+        return None;
+    }
     let scope = reference.component_scope()?;
     let member_leaf = scope.leaf_ident()?;
     let package = if let Some(source_package_def_id) = reference
@@ -1332,6 +1335,27 @@ fn resolve_override_member_name(
     }
     resolve_member_in_package_chain_exposed(ctx.tree, ctx.class_index, package, member_leaf)
         .filter(|resolved| resolved != reference.as_str())
+}
+
+/// Whether the reference already names a class/package-owned member.
+///
+/// A missing terminal `DefId` does not make a qualified reference relative:
+/// `Modelica.Constants.eps`, for example, still carries a resolvable package
+/// prefix. Such a reference cannot be captured by the only active replaceable
+/// package merely because that package is unique. A path with no resolvable
+/// prefix remains eligible for the relative-reference fallback below.
+fn reference_has_resolved_package_prefix(
+    reference: &rumoca_core::Reference,
+    class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
+) -> bool {
+    let path = ComponentPath::from_reference(reference);
+    (1..path.parts().len()).rev().any(|member_index| {
+        path.prefix(member_index).is_some_and(|prefix| {
+            class_index
+                .get_by_qualified_name(&prefix.to_flat_string())
+                .is_some()
+        })
+    })
 }
 
 fn resolve_override_member_projection_name(
@@ -1785,7 +1809,7 @@ pub(crate) fn rewrite_function_overrides_in_expression_with_ctx(
     {
         return;
     }
-    *expr = FunctionOverrideExpressionRewriter { ctx }.rewrite_expression(expr);
+    *expr = FunctionOverrideExpressionRewriter::new(ctx).rewrite_expression(expr);
 }
 
 fn expression_contains_function_call(expr: &Expression) -> bool {
@@ -1856,6 +1880,27 @@ fn subscript_contains_function_call(subscript: &rumoca_core::Subscript) -> bool 
 
 struct FunctionOverrideExpressionRewriter<'a> {
     ctx: &'a FunctionOverrideRewriteContext<'a>,
+    active_comprehension_binders: Vec<String>,
+}
+
+impl<'a> FunctionOverrideExpressionRewriter<'a> {
+    fn new(ctx: &'a FunctionOverrideRewriteContext<'a>) -> Self {
+        Self {
+            ctx,
+            active_comprehension_binders: Vec::new(),
+        }
+    }
+
+    fn reference_is_active_comprehension_binder(&self, reference: &rumoca_core::Reference) -> bool {
+        let path = ComponentPath::from_reference(reference);
+        let [part] = path.parts() else {
+            return false;
+        };
+        self.active_comprehension_binders
+            .iter()
+            .rev()
+            .any(|binder| binder == part)
+    }
 }
 
 impl ExpressionRewriter for FunctionOverrideExpressionRewriter<'_> {
@@ -1867,7 +1912,9 @@ impl ExpressionRewriter for FunctionOverrideExpressionRewriter<'_> {
         } = expr
         {
             let rewritten_subscripts = self.rewrite_subscripts(subscripts);
-            if reference_targets_function_local_def(name, self.ctx) {
+            if self.reference_is_active_comprehension_binder(name)
+                || reference_targets_function_local_def(name, self.ctx)
+            {
                 return Expression::VarRef {
                     name: name.clone(),
                     subscripts: rewritten_subscripts,
@@ -1935,6 +1982,33 @@ impl ExpressionRewriter for FunctionOverrideExpressionRewriter<'_> {
             };
         }
         self.walk_expression(expr)
+    }
+
+    fn walk_array_comprehension_expression(
+        &mut self,
+        expr: &Expression,
+        indices: &[rumoca_core::ComprehensionIndex],
+        filter: Option<&Expression>,
+        span: rumoca_core::Span,
+    ) -> Expression {
+        let binder_depth = self.active_comprehension_binders.len();
+        let mut rewritten_indices = Vec::with_capacity(indices.len());
+        for index in indices {
+            rewritten_indices.push(rumoca_core::ComprehensionIndex {
+                name: index.name.clone(),
+                range: self.rewrite_expression(&index.range),
+            });
+            self.active_comprehension_binders.push(index.name.clone());
+        }
+        let rewritten_expr = Box::new(self.rewrite_expression(expr));
+        let rewritten_filter = filter.map(|filter| Box::new(self.rewrite_expression(filter)));
+        self.active_comprehension_binders.truncate(binder_depth);
+        Expression::ArrayComprehension {
+            expr: rewritten_expr,
+            indices: rewritten_indices,
+            filter: rewritten_filter,
+            span,
+        }
     }
 }
 

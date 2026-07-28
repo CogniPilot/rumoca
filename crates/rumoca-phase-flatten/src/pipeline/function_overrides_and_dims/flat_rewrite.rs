@@ -53,7 +53,7 @@ pub(crate) fn rewrite_function_overrides_in_statement_with_ctx(
     stmt: &mut rumoca_core::Statement,
     ctx: &FunctionOverrideRewriteContext<'_>,
 ) {
-    *stmt = FunctionOverrideExpressionRewriter { ctx }.rewrite_statement(stmt);
+    *stmt = FunctionOverrideExpressionRewriter::new(ctx).rewrite_statement(stmt);
 }
 
 pub(crate) fn rewrite_function_overrides_in_expression(

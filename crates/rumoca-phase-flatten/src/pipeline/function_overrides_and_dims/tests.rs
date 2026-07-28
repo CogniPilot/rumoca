@@ -132,10 +132,9 @@ fn function_override_rewrite_keeps_function_local_record_fields() {
         &override_packages,
         &override_functions,
     );
-    let Expression::VarRef { name, .. } = (FunctionOverrideExpressionRewriter {
-        ctx: &no_locals_ctx,
-    })
-    .rewrite_expression(&expr) else {
+    let Expression::VarRef { name, .. } =
+        FunctionOverrideExpressionRewriter::new(&no_locals_ctx).rewrite_expression(&expr)
+    else {
         panic!("expected var ref");
     };
     assert_eq!(name.as_str(), "AliasMedium.kappa");
@@ -148,7 +147,7 @@ fn function_override_rewrite_keeps_function_local_record_fields() {
     )
     .with_local_def_ids(FxHashSet::from_iter([local_def]));
     let Expression::VarRef { name, .. } =
-        (FunctionOverrideExpressionRewriter { ctx: &local_ctx }).rewrite_expression(&expr)
+        FunctionOverrideExpressionRewriter::new(&local_ctx).rewrite_expression(&expr)
     else {
         panic!("expected var ref");
     };
@@ -675,6 +674,123 @@ fn package_constant_member_without_def_id_uses_unique_active_override_scope() {
         panic!("expected var ref");
     };
     assert_eq!(name.as_str(), "ConcreteMedium.fluidConstants");
+}
+
+#[test]
+fn qualified_package_member_without_def_id_is_not_captured_by_active_override() {
+    let modelica_def = DefId::new(1);
+    let constants_def = DefId::new(2);
+    let concrete_package_def = DefId::new(3);
+
+    let mut constants = class("Constants", ClassType::Package);
+    constants.def_id = Some(constants_def);
+    let mut modelica = class("Modelica", ClassType::Package);
+    modelica.def_id = Some(modelica_def);
+    modelica.classes.insert("Constants".to_string(), constants);
+    let mut concrete_package = class("ConcreteMedium", ClassType::Package);
+    concrete_package.def_id = Some(concrete_package_def);
+
+    let mut tree = ClassTree::new();
+    tree.definitions
+        .classes
+        .insert("Modelica".to_string(), modelica);
+    tree.definitions
+        .classes
+        .insert("ConcreteMedium".to_string(), concrete_package);
+
+    let class_index = rumoca_ir_ast::ClassDefIndex::from_tree(&tree);
+    let mut override_package =
+        override_target("ConcreteMedium", concrete_package_def, ClassType::Package);
+    override_package.alias = "Medium".to_string();
+    let override_packages = vec![override_package];
+    let override_functions = OverrideFunctionMap::default();
+    let ctx = FunctionOverrideRewriteContext::new(
+        &tree,
+        &class_index,
+        &override_packages,
+        &override_functions,
+    );
+
+    let component_ref = core_comp_ref(&["Modelica", "Constants", "eps"]);
+    let mut expr = Expression::VarRef {
+        name: rumoca_core::Reference::with_component_reference(
+            "Modelica.Constants.eps",
+            component_ref,
+        ),
+        subscripts: Vec::new(),
+        span: Span::DUMMY,
+    };
+
+    rewrite_function_overrides_in_expression_with_ctx(&mut expr, &ctx);
+
+    let Expression::VarRef { name, .. } = expr else {
+        panic!("expected var ref");
+    };
+    assert_eq!(name.as_str(), "Modelica.Constants.eps");
+}
+
+#[test]
+fn comprehension_binder_is_not_captured_by_active_override() {
+    let package_def = DefId::new(1);
+    let member_def = DefId::new(2);
+
+    let mut member = component("i", "Integer", DefId::new(3));
+    member.def_id = Some(member_def);
+    let mut package = class("ConcreteMedium", ClassType::Package);
+    package.def_id = Some(package_def);
+    package.components.insert("i".to_string(), member);
+
+    let mut tree = ClassTree::new();
+    tree.definitions
+        .classes
+        .insert("ConcreteMedium".to_string(), package);
+    tree.def_map
+        .insert(package_def, "ConcreteMedium".to_string());
+    tree.def_map
+        .insert(member_def, "ConcreteMedium.i".to_string());
+
+    let class_index = rumoca_ir_ast::ClassDefIndex::from_tree(&tree);
+    let mut override_package = override_target("ConcreteMedium", package_def, ClassType::Package);
+    override_package.alias = "Medium".to_string();
+    let override_packages = vec![override_package];
+    let override_functions = OverrideFunctionMap::default();
+    let ctx = FunctionOverrideRewriteContext::new(
+        &tree,
+        &class_index,
+        &override_packages,
+        &override_functions,
+    );
+
+    let mut expr = Expression::ArrayComprehension {
+        expr: Box::new(core_var("i")),
+        indices: vec![rumoca_core::ComprehensionIndex {
+            name: "i".to_string(),
+            range: Expression::Range {
+                start: Box::new(Expression::Literal {
+                    value: rumoca_core::Literal::Integer(1),
+                    span: test_span(),
+                }),
+                step: None,
+                end: Box::new(Expression::Literal {
+                    value: rumoca_core::Literal::Integer(3),
+                    span: test_span(),
+                }),
+                span: test_span(),
+            },
+        }],
+        filter: None,
+        span: test_span(),
+    };
+
+    rewrite_function_overrides_in_expression_with_ctx(&mut expr, &ctx);
+
+    let Expression::ArrayComprehension { expr, .. } = expr else {
+        panic!("expected array comprehension");
+    };
+    let Expression::VarRef { name, .. } = *expr else {
+        panic!("expected comprehension body var ref");
+    };
+    assert_eq!(name.as_str(), "i");
 }
 
 #[test]
