@@ -29,6 +29,9 @@ spec stays `DRAFT` until all milestones are implemented.
 |---|---|---|
 | Fail at the responsible add operation | ToDAE/wire decode | Earliest boundary |
 | Failures carry typed errors and provenance | DAE API | Actionable defects |
+| Every source semantic owner is consumed exactly once | ToDAE construction | Prevent silent omission |
+| Unsupported semantics fail with typed provenance | First owning phase | Reject before simulation |
+| Missing/failed semantics never become fallback values | All phase boundaries | Plausible wrong output is unsafe |
 | Delete impossible-state checks and fallbacks | All consumers | Guarantees replace checks |
 | Constructor checks replace validators | DAE cutover | One owner |
 | Delete legacy DAE and wire atomically | DAE cutover | No compatibility |
