@@ -3,11 +3,17 @@ use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use rumoca_core::ExpressionVisitor;
-use rumoca_core::{BuiltinFunction, Expression, Subscript};
 use rumoca_ir_dae as dae;
 use rumoca_phase_codegen::templates;
 use serde::{Deserialize, Serialize};
+
+mod feature_analysis;
+
+use feature_analysis::{
+    dae_has_clocks, dae_has_dynamic_derivative_subscripts, dae_has_dynamic_ranges, dae_has_events,
+    dae_has_external_functions, dae_has_initialization, dae_has_runtime_events,
+    dae_has_unlowered_source_temporal_operators, dae_uses_external_tables, dae_uses_random,
+};
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -58,6 +64,9 @@ pub struct TargetManifest {
 pub struct TargetCapabilities {
     pub continuous_states: Option<bool>,
     pub residual_equations: Option<bool>,
+    /// The target consumes compact DAE `structured_equations` as the
+    /// authoritative body instead of blindly iterating placeholder scalar rows.
+    pub structured_equation_families: Option<bool>,
     pub scalar_fallback: Option<bool>,
     pub external_functions: Option<bool>,
     pub external_tables: Option<bool>,
@@ -439,14 +448,25 @@ pub fn render_dae_target_files(
             manifest.ir
         );
     }
+    let capabilities = manifest
+        .capabilities
+        .as_ref()
+        .context("DAE target manifest must declare a [capabilities] table")?;
+    validate_dae_target_capabilities(dae, manifest, capabilities)?;
+    let structured_ownership = manifest
+        .capabilities
+        .as_ref()
+        .and_then(|capabilities| capabilities.structured_equation_families)
+        == Some(true);
 
     let mut files = Vec::with_capacity(manifest.files.len());
     for file in &manifest.files {
-        let path = render_dae_target_str(dae, &file.path, model_name)
+        let path = render_dae_target_str(dae, &file.path, model_name, structured_ownership)
             .with_context(|| format!("Render target output path '{}'", file.path))?;
         let template = source.template_source(&file.template)?;
-        let content = render_dae_target_str(dae, template.as_ref(), model_name)
-            .with_context(|| format!("Render target template '{}'", file.template))?;
+        let content =
+            render_dae_target_str(dae, template.as_ref(), model_name, structured_ownership)
+                .with_context(|| format!("Render target template '{}'", file.template))?;
         files.push(RenderedTargetFile {
             path: path.trim().to_string(),
             content,
@@ -460,6 +480,17 @@ pub fn validate_dae_target_capabilities(
     manifest: &TargetManifest,
     capabilities: &TargetCapabilities,
 ) -> Result<()> {
+    if dae_has_unlowered_source_temporal_operators(dae) {
+        bail!(
+            "invalid canonical DAE for target '{}': a source temporal or synchronous operator survived the Phase-DAE boundary",
+            manifest.name.as_deref().unwrap_or("<unnamed>")
+        );
+    }
+    if capabilities.structured_equation_families == Some(true) {
+        crate::codegen_api::validate_dae_structured_ownership(dae)?;
+    } else if let Err(error) = crate::codegen_api::validate_dae_scalar_residual_view(dae) {
+        unsupported_feature(manifest, "structured_equation_families", error)?;
+    }
     if capabilities.continuous_states == Some(false)
         && (!dae.variables.states.is_empty() || !dae.continuous.equations.is_empty())
     {
@@ -496,7 +527,7 @@ pub fn validate_dae_target_capabilities(
     if capabilities.initialization == Some(false) && dae_has_initialization(dae) {
         unsupported_feature(manifest, "initialization", "initial equations present")?;
     }
-    if capabilities.events == Some(false) && dae_has_events(dae) {
+    if capabilities.events != Some(true) && dae_has_events(dae) {
         unsupported_feature(manifest, "events", "event or condition partitions present")?;
     }
     if capabilities.runtime_events == Some(false) && dae_has_runtime_events(dae) {
@@ -506,7 +537,7 @@ pub fn validate_dae_target_capabilities(
             "delay-history or terminal-event runtime support is required",
         )?;
     }
-    if capabilities.clocks == Some(false) && dae_has_clocks(dae) {
+    if capabilities.clocks != Some(true) && dae_has_clocks(dae) {
         unsupported_feature(manifest, "clocks", "clock partition entries present")?;
     }
     if capabilities.dynamic_ranges == Some(false) && dae_has_dynamic_ranges(dae) {
@@ -581,6 +612,9 @@ fn validate_target_manifest(manifest: &TargetManifest) -> Result<()> {
     }
     if manifest.files.is_empty() && manifest.readiness_level != Some(0) {
         bail!("target.toml must contain at least one file entry");
+    }
+    if manifest.ir == TargetTemplateIr::Dae && manifest.capabilities.is_none() {
+        bail!("DAE target manifest must declare a [capabilities] table");
     }
     if let Some(capabilities) = &manifest.capabilities {
         validate_target_capabilities(manifest, capabilities)?;
@@ -687,6 +721,9 @@ fn validate_target_capabilities(
     manifest: &TargetManifest,
     capabilities: &TargetCapabilities,
 ) -> Result<()> {
+    if capabilities.structured_equation_families.is_some() && manifest.ir != TargetTemplateIr::Dae {
+        bail!("structured_equation_families capability is only valid for ir = \"dae\" targets");
+    }
     if capabilities.tensor.is_some() && manifest.ir != TargetTemplateIr::Solve {
         bail!("tensor capabilities are only valid for ir = \"solve\" targets");
     }
@@ -722,9 +759,19 @@ fn validate_target_capabilities(
     Ok(())
 }
 
-fn render_dae_target_str(dae: &dae::Dae, template: &str, model_name: &str) -> Result<String> {
-    crate::codegen_api::render_dae_template_with_name(dae, template, model_name)
-        .map_err(anyhow::Error::from)
+fn render_dae_target_str(
+    dae: &dae::Dae,
+    template: &str,
+    model_name: &str,
+    structured_ownership: bool,
+) -> Result<String> {
+    if structured_ownership {
+        crate::codegen_api::render_structured_dae_template_with_name(dae, template, model_name)
+            .map_err(anyhow::Error::from)
+    } else {
+        crate::codegen_api::render_dae_template_with_name(dae, template, model_name)
+            .map_err(anyhow::Error::from)
+    }
 }
 
 fn unsupported_feature(
@@ -740,248 +787,6 @@ fn unsupported_feature(
         feature,
         detail,
         feature
-    )
-}
-
-fn dae_has_external_functions(dae: &dae::Dae) -> bool {
-    dae.symbols
-        .functions
-        .values()
-        .any(|function| function.external.is_some())
-}
-
-fn dae_uses_external_tables(dae: &dae::Dae) -> bool {
-    dae_expressions(dae).any(|expr| expression_has_named_call(expr, is_external_table_call))
-}
-
-fn is_external_table_call(name: &str) -> bool {
-    matches!(
-        rumoca_core::top_level_last_segment(name),
-        "ExternalCombiTimeTable"
-            | "ExternalCombiTable1D"
-            | "ExternalCombiTable2D"
-            | "getTimeTableTmax"
-            | "getTimeTableTmin"
-            | "getTimeTableValueNoDer"
-            | "getTimeTableValueNoDer2"
-            | "getTimeTableValue"
-            | "getTable1DAbscissaUmax"
-            | "getTable1DAbscissaUmin"
-            | "getTable1DValueNoDer"
-            | "getTable1DValueNoDer2"
-            | "getTable1DValue"
-            | "getNextTimeEvent"
-            | "isValidTable"
-    )
-}
-
-fn dae_uses_random(dae: &dae::Dae) -> bool {
-    dae_expressions(dae).any(|expr| expression_has_named_call(expr, is_random_call))
-}
-
-fn is_random_call(name: &str) -> bool {
-    let short = rumoca_core::top_level_last_segment(name);
-    short.contains("Xorshift")
-        || matches!(
-            short,
-            "initialState"
-                | "random"
-                | "impureRandom"
-                | "impureRandomInteger"
-                | "initializeImpureRandom"
-        )
-}
-
-fn dae_has_initialization(dae: &dae::Dae) -> bool {
-    !dae.initialization.equations.is_empty() || !dae.initialization.structured_equations.is_empty()
-}
-
-fn dae_has_events(dae: &dae::Dae) -> bool {
-    !dae.conditions.equations.is_empty()
-        || !dae.conditions.relations.is_empty()
-        || !dae.events.synthetic_root_conditions.is_empty()
-        || !dae.events.scheduled_time_events.is_empty()
-        || !dae.discrete.real_updates.is_empty()
-        || !dae.discrete.valued_updates.is_empty()
-}
-
-fn dae_has_runtime_events(dae: &dae::Dae) -> bool {
-    dae.events.has_terminal_event || !dae.events.delay_channels.is_empty()
-}
-
-fn dae_has_clocks(dae: &dae::Dae) -> bool {
-    !dae.clocks.constructor_exprs.is_empty()
-        || !dae.clocks.schedules.is_empty()
-        || !dae.clocks.triggered_conditions.is_empty()
-        || !dae.clocks.intervals.is_empty()
-        || !dae.clocks.timings.is_empty()
-}
-
-fn dae_has_dynamic_ranges(dae: &dae::Dae) -> bool {
-    dae_expressions(dae).any(expression_has_dynamic_range)
-}
-
-fn dae_has_dynamic_derivative_subscripts(dae: &dae::Dae) -> bool {
-    dae_expressions(dae).any(expression_has_dynamic_derivative_subscripts)
-}
-
-fn dae_expressions(dae: &dae::Dae) -> impl Iterator<Item = &Expression> {
-    dae.continuous
-        .equations
-        .iter()
-        .map(|equation| &equation.rhs)
-        .chain(
-            dae.initialization
-                .equations
-                .iter()
-                .map(|equation| &equation.rhs),
-        )
-        .chain(
-            dae.discrete
-                .real_updates
-                .iter()
-                .map(|equation| &equation.rhs),
-        )
-        .chain(
-            dae.discrete
-                .valued_updates
-                .iter()
-                .map(|equation| &equation.rhs),
-        )
-        .chain(
-            dae.conditions
-                .equations
-                .iter()
-                .map(|equation| &equation.rhs),
-        )
-        .chain(dae.conditions.relations.iter())
-        .chain(dae.events.synthetic_root_conditions.iter())
-        .chain(dae.clocks.constructor_exprs.iter())
-        .chain(dae.clocks.triggered_conditions.iter())
-        .chain(dae.metadata.variable_starts.values())
-}
-
-fn expression_has_named_call(expr: &Expression, predicate: fn(&str) -> bool) -> bool {
-    struct Checker {
-        predicate: fn(&str) -> bool,
-        found: bool,
-    }
-
-    impl ExpressionVisitor for Checker {
-        fn visit_expression(&mut self, expr: &Expression) {
-            if !self.found {
-                self.walk_expression(expr);
-            }
-        }
-
-        fn visit_function_call(
-            &mut self,
-            name: &rumoca_core::Reference,
-            args: &[Expression],
-            _: bool,
-        ) {
-            if (self.predicate)(name.as_str()) {
-                self.found = true;
-                return;
-            }
-            for arg in args {
-                self.visit_expression(arg);
-            }
-        }
-    }
-
-    let mut checker = Checker {
-        predicate,
-        found: false,
-    };
-    checker.visit_expression(expr);
-    checker.found
-}
-
-fn expression_has_dynamic_range(expr: &Expression) -> bool {
-    struct Checker {
-        found: bool,
-    }
-
-    impl ExpressionVisitor for Checker {
-        fn visit_expression(&mut self, expr: &Expression) {
-            if !self.found {
-                self.walk_expression(expr);
-            }
-        }
-
-        fn visit_range(&mut self, start: &Expression, step: Option<&Expression>, end: &Expression) {
-            if !is_integer_literal(start)
-                || step.is_some_and(|step| !is_integer_literal(step))
-                || !is_integer_literal(end)
-            {
-                self.found = true;
-                return;
-            }
-            self.visit_expression(start);
-            if let Some(step) = step {
-                self.visit_expression(step);
-            }
-            self.visit_expression(end);
-        }
-    }
-
-    let mut checker = Checker { found: false };
-    checker.visit_expression(expr);
-    checker.found
-}
-
-fn expression_has_dynamic_derivative_subscripts(expr: &Expression) -> bool {
-    struct Checker {
-        found: bool,
-    }
-
-    impl ExpressionVisitor for Checker {
-        fn visit_expression(&mut self, expr: &Expression) {
-            if !self.found {
-                self.walk_expression(expr);
-            }
-        }
-
-        fn visit_builtin_call(&mut self, function: &BuiltinFunction, args: &[Expression]) {
-            if *function == BuiltinFunction::Der
-                && args.iter().any(expression_target_has_dynamic_subscript)
-            {
-                self.found = true;
-                return;
-            }
-            for arg in args {
-                self.visit_expression(arg);
-            }
-        }
-    }
-
-    let mut checker = Checker { found: false };
-    checker.visit_expression(expr);
-    checker.found
-}
-
-fn expression_target_has_dynamic_subscript(expr: &Expression) -> bool {
-    match expr {
-        Expression::VarRef { subscripts, .. } | Expression::Index { subscripts, .. } => {
-            subscripts.iter().any(|subscript| match subscript {
-                Subscript::Expr { expr, .. } => !is_integer_literal(expr),
-                Subscript::Colon { .. } => true,
-                Subscript::Index { .. } => false,
-            })
-        }
-        Expression::FieldAccess { base, .. } => expression_target_has_dynamic_subscript(base),
-        _ => false,
-    }
-}
-
-fn is_integer_literal(expr: &Expression) -> bool {
-    matches!(
-        expr,
-        Expression::Literal {
-            value: rumoca_core::Literal::Integer(_),
-            ..
-        }
     )
 }
 
@@ -1026,6 +831,43 @@ mod tests {
 
     fn residual(rhs: Expression, origin: &str) -> Equation {
         Equation::residual(rhs, Span::DUMMY, origin)
+    }
+
+    fn dae_with_placeholder_family() -> Dae {
+        let mut dae = Dae::new();
+        let placeholder = Expression::Literal {
+            value: Literal::Real(0.0),
+            span: Span::DUMMY,
+        };
+        for _ in 0..4 {
+            dae.continuous
+                .equations
+                .push(residual(placeholder.clone(), "family"));
+        }
+        dae.continuous
+            .structured_equations
+            .push(rumoca_ir_dae::StructuredEquationFamily {
+                domain: rumoca_core::StructuredIndexDomain {
+                    binders: vec![rumoca_core::StructuredIndexBinder {
+                        id: 0,
+                        display_name: "i".to_string(),
+                        lower: 1,
+                        upper: 4,
+                        step: 1,
+                    }],
+                },
+                first_equation_index: 0,
+                equations_per_point: 1,
+                span: Span::DUMMY,
+                origin: "family".to_string(),
+                regular: None,
+                template: Some(rumoca_core::ComprehensionTemplate {
+                    body: vec![placeholder],
+                    scalar_view: rumoca_core::ComprehensionScalarView::BinderSubstitution,
+                }),
+                interiors_materialized: false,
+            });
+        dae
     }
 
     fn manifest_with_capabilities(capabilities: &str) -> TargetManifest {
@@ -1152,6 +994,41 @@ render_context = "fmi-implementation"
             parse_target_manifest(target.manifest).unwrap_or_else(|err| {
                 panic!("built-in target '{}' failed to parse: {err}", target.name)
             });
+        }
+    }
+
+    #[test]
+    fn builtin_structured_dae_capability_matches_template_consumption() {
+        for target in templates::builtin_targets() {
+            let manifest = parse_target_manifest(target.manifest).unwrap_or_else(|err| {
+                panic!("built-in target '{}' failed to parse: {err}", target.name)
+            });
+            let family_aware = manifest
+                .capabilities
+                .as_ref()
+                .and_then(|capabilities| capabilities.structured_equation_families)
+                == Some(true);
+            if !family_aware {
+                continue;
+            }
+            assert!(
+                target
+                    .templates
+                    .iter()
+                    .any(|template| template.source.contains("render_dae_equations(")),
+                "built-in target '{}' declares structured family ownership but no template \
+                 consumes the canonical family",
+                target.name
+            );
+            assert!(
+                target
+                    .templates
+                    .iter()
+                    .all(|template| !template.source.contains("for eq in dae.f_x")),
+                "built-in target '{}' declares structured family ownership but directly loops \
+                 over scalar f_x",
+                target.name
+            );
         }
     }
 
@@ -1306,6 +1183,43 @@ dtypes = ["f32", "f64"]
             tensor.dtypes,
             Some(vec!["f32".to_string(), "f64".to_string()])
         );
+    }
+
+    #[test]
+    fn dae_target_must_declare_structured_family_consumption() {
+        let dae = dae_with_placeholder_family();
+        let manifest = manifest_with_capabilities(
+            r#"
+[capabilities]
+residual_equations = true
+"#,
+        );
+        let capabilities = manifest.capabilities.as_ref().expect("capabilities");
+
+        let error = validate_dae_target_capabilities(&dae, &manifest, capabilities)
+            .expect_err("scalar-only DAE target must reject placeholder rows");
+
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported-feature:structured_equation_families")
+        );
+    }
+
+    #[test]
+    fn family_aware_dae_target_accepts_canonical_structured_owner() {
+        let dae = dae_with_placeholder_family();
+        let manifest = manifest_with_capabilities(
+            r#"
+[capabilities]
+residual_equations = true
+structured_equation_families = true
+"#,
+        );
+        let capabilities = manifest.capabilities.as_ref().expect("capabilities");
+
+        validate_dae_target_capabilities(&dae, &manifest, capabilities)
+            .expect("declared family-aware target may consume the compact owner");
     }
 
     #[test]
@@ -1520,6 +1434,81 @@ runtime_events = false
             err.to_string()
                 .contains("unsupported-feature:runtime_events")
         );
+    }
+
+    #[test]
+    fn shared_dae_renderer_enforces_runtime_event_capability() {
+        let manifest = manifest_with_capabilities(
+            r#"
+[capabilities]
+runtime_events = false
+"#,
+        );
+        let mut dae = Dae::new();
+        dae.events.has_terminal_event = true;
+        let templates =
+            std::collections::BTreeMap::from([("model.out.jinja".to_string(), String::new())]);
+
+        let err = super::render_dae_target_files(&templates, &manifest, &dae, "M")
+            .expect_err("shared DAE rendering must not bypass target capabilities");
+
+        assert!(
+            err.to_string()
+                .contains("unsupported-feature:runtime_events"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn shared_dae_renderer_blocks_placeholder_scalar_residuals() {
+        let manifest = manifest_with_capabilities(
+            r#"
+[capabilities]
+residual_equations = true
+"#,
+        );
+        let templates =
+            std::collections::BTreeMap::from([("model.out.jinja".to_string(), String::new())]);
+
+        let error = super::render_dae_target_files(
+            &templates,
+            &manifest,
+            &dae_with_placeholder_family(),
+            "M",
+        )
+        .expect_err("shared DAE rendering must not expose placeholder residuals");
+
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported-feature:structured_equation_families"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn shared_dae_renderer_allows_declared_structured_owner_consumer() {
+        let manifest = manifest_with_capabilities(
+            r#"
+[capabilities]
+residual_equations = true
+structured_equation_families = true
+"#,
+        );
+        let templates = std::collections::BTreeMap::from([(
+            "model.out.jinja".to_string(),
+            "{{ dae.structured_equations | length }}".to_string(),
+        )]);
+
+        let files = super::render_dae_target_files(
+            &templates,
+            &manifest,
+            &dae_with_placeholder_family(),
+            "M",
+        )
+        .expect("declared family-aware consumer may render the canonical owner");
+
+        assert_eq!(files[0].content, "1");
     }
 
     #[test]

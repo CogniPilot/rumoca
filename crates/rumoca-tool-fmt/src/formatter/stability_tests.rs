@@ -346,29 +346,31 @@ fn cached_msl_source_root() -> Option<PathBuf> {
 /// Message used both when skipping the sweep and when refusing to skip it.
 const MSL_SWEEP_SKIP_MESSAGE: &str =
     "cached MSL not found under target/msl; skipping MSL formatter stability sweep";
+const MSL_SWEEP_REQUIRED_MARKER: &str = "../../target/msl/formatter-stability-required";
 
 /// Fail closed when the cache is missing but the sweep was demanded.
 ///
-/// CI sets `REQUIRE_MSL_FMT_DRIFT=1` on the job that populates `target/msl`, so
-/// a fetch step that is renamed or 404s under `continue-on-error` must fail this
-/// 2500-file sweep instead of silently turning it into a no-op. Same contract as
-/// `fmt_msl_copy_has_no_drift_and_bad_file_is_rewritten` in
+/// CI writes a fixed marker beside the MSL cache before populating it, so a
+/// fetch failure must fail this 2500-file sweep instead of silently turning it
+/// into a no-op. Same contract as `fmt_msl_copy_has_no_drift_and_bad_file_is_rewritten` in
 /// `crates/rumoca/tests/cli_fmt_lint.rs`, expressed with `assert!` so the check
 /// carries no bare panic (review-scan panic-discipline).
 fn resolve_msl_sweep_root(cached_root: Option<PathBuf>, require_sweep: bool) -> Option<PathBuf> {
     assert!(
         cached_root.is_some() || !require_sweep,
-        "REQUIRE_MSL_FMT_DRIFT is set: {MSL_SWEEP_SKIP_MESSAGE}"
+        "formatter stability marker is present: {MSL_SWEEP_SKIP_MESSAGE}"
     );
     cached_root
 }
 
 fn msl_sweep_is_required() -> bool {
-    std::env::var_os("REQUIRE_MSL_FMT_DRIFT").is_some()
+    crate_manifest_dir()
+        .join(MSL_SWEEP_REQUIRED_MARKER)
+        .is_file()
 }
 
 #[test]
-#[should_panic(expected = "REQUIRE_MSL_FMT_DRIFT is set")]
+#[should_panic(expected = "formatter stability marker is present")]
 fn missing_msl_cache_fails_closed_when_the_sweep_is_required() {
     let _ = resolve_msl_sweep_root(None, true);
 }

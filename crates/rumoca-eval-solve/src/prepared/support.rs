@@ -47,19 +47,29 @@ impl PreparedLinearOps {
     }
 }
 
-// SPEC_0021: Exception - matrix multiply evaluation keeps dimensions and
-// register slices explicit to avoid per-row allocation in the hot row evaluator.
-#[allow(clippy::too_many_arguments)]
+#[derive(Clone, Copy)]
+pub(super) struct MatMulEvalSpec {
+    pub(super) lhs_start: usize,
+    pub(super) rhs_start: usize,
+    pub(super) m: usize,
+    pub(super) k: usize,
+    pub(super) n: usize,
+    pub(super) kernel: MatMulKernel,
+}
+
 pub(super) fn eval_matmul_with_policy(
     regs: &[f64],
-    lhs_start: usize,
-    rhs_start: usize,
-    m: usize,
-    k: usize,
-    n: usize,
-    kernel: MatMulKernel,
+    spec: MatMulEvalSpec,
     out: &mut [f64],
 ) -> Result<(), EvalSolveError> {
+    let MatMulEvalSpec {
+        lhs_start,
+        rhs_start,
+        m,
+        k,
+        n,
+        kernel,
+    } = spec;
     let output_len = m
         .checked_mul(n)
         .ok_or_else(|| EvalSolveError::Scalarization {

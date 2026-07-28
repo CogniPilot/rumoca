@@ -10,6 +10,7 @@ use rumoca_ir_flat as flat;
 use rumoca_ir_solve as solve;
 use std::path::Path;
 
+mod expr_config;
 mod fmi3_projection;
 mod render_c;
 mod render_dae_modelica;
@@ -20,6 +21,7 @@ mod render_stmt;
 mod solve_lazy;
 mod symbol_alloc;
 
+pub(crate) use expr_config::{ExprConfig, IfStyle, get_str_attr};
 pub use fmi3_projection::fmi3_native_projection_available;
 use fmi3_projection::fmi3_scalar_projection_schedule_function;
 use render_expr::{get_field, is_variant, render_expression};
@@ -131,7 +133,140 @@ pub enum CodegenInput<'a> {
     Ast(&'a ast::ClassTree),
 }
 
-pub fn dae_template_json(dae: &dae::Dae) -> Result<serde_json::Value, CodegenError> {
+/// Reject DAE consumers that read scalar residual rows when a binder-substitution
+/// family owns the real body and the stored interior rows are only placeholders.
+///
+/// A `RowMajorProjection` family is different: its single aggregate equation is
+/// itself authoritative and remains safe for ordinary DAE serialization.
+pub fn validate_dae_scalar_residual_view(dae: &dae::Dae) -> Result<(), CodegenError> {
+    validate_partition_scalar_residual_view(
+        "continuous f_x",
+        &dae.continuous.equations,
+        &dae.continuous.structured_equations,
+    )?;
+    validate_partition_scalar_residual_view(
+        "initial equations",
+        &dae.initialization.equations,
+        &dae.initialization.structured_equations,
+    )
+}
+
+fn validate_partition_scalar_residual_view(
+    partition: &'static str,
+    equations: &[dae::Equation],
+    families: &[dae::StructuredEquationFamily],
+) -> Result<(), CodegenError> {
+    for family in families {
+        if scalar_view_unavailable(family, equations) {
+            return Err(CodegenError::NonMaterializedStructuredFamily {
+                partition,
+                origin: family.origin.clone(),
+                span: (!family.span.is_dummy()).then_some(family.span),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn scalar_view_unavailable(
+    family: &dae::StructuredEquationFamily,
+    equations: &[dae::Equation],
+) -> bool {
+    let aggregate_owner = family.template.as_ref().is_some_and(|template| {
+        template.scalar_view == rumoca_core::ComprehensionScalarView::RowMajorProjection
+    }) && aggregate_owner_matches_scalar_count(family, equations);
+    !family.interiors_materialized && !aggregate_owner
+}
+
+fn aggregate_owner_matches_scalar_count(
+    family: &dae::StructuredEquationFamily,
+    equations: &[dae::Equation],
+) -> bool {
+    family
+        .scalar_view_row_count()
+        .ok()
+        .zip(equations.get(family.first_equation_index))
+        .is_some_and(|(row_count, owner)| owner.scalar_count == row_count)
+}
+
+/// Validate the canonical owner required by a family-aware DAE target.
+pub fn validate_dae_structured_ownership(dae: &dae::Dae) -> Result<(), CodegenError> {
+    validate_partition_structured_ownership(
+        "continuous f_x",
+        &dae.continuous.equations,
+        &dae.continuous.structured_equations,
+    )?;
+    validate_partition_structured_ownership(
+        "initial equations",
+        &dae.initialization.equations,
+        &dae.initialization.structured_equations,
+    )
+}
+
+fn validate_partition_structured_ownership(
+    partition: &'static str,
+    equations: &[dae::Equation],
+    families: &[dae::StructuredEquationFamily],
+) -> Result<(), CodegenError> {
+    for family in families
+        .iter()
+        .filter(|family| !family.interiors_materialized)
+    {
+        validate_non_materialized_family(partition, equations, family)?;
+    }
+    Ok(())
+}
+
+fn validate_non_materialized_family(
+    partition: &'static str,
+    equations: &[dae::Equation],
+    family: &dae::StructuredEquationFamily,
+) -> Result<(), CodegenError> {
+    let invalid = |reason: String| CodegenError::InvalidStructuredFamilyOwnership {
+        partition,
+        origin: family.origin.clone(),
+        reason,
+        span: (!family.span.is_dummy()).then_some(family.span),
+    };
+    let template = family
+        .template
+        .as_ref()
+        .ok_or_else(|| invalid("non-materialized family has no canonical template".to_string()))?;
+    if template.body.len() != family.equations_per_point {
+        return Err(invalid(format!(
+            "template has {} body row(s), expected {}",
+            template.body.len(),
+            family.equations_per_point
+        )));
+    }
+    let row_count = family
+        .scalar_view_row_count()
+        .map_err(|error| invalid(format!("invalid compact domain: {error}")))?;
+    match template.scalar_view {
+        rumoca_core::ComprehensionScalarView::RowMajorProjection => {
+            if !aggregate_owner_matches_scalar_count(family, equations) {
+                return Err(invalid(format!(
+                    "aggregate owner does not carry scalar_count {row_count}"
+                )));
+            }
+        }
+        rumoca_core::ComprehensionScalarView::BinderSubstitution => {
+            let end = family
+                .first_equation_index
+                .checked_add(row_count)
+                .ok_or_else(|| invalid("scalar-view row range overflows".to_string()))?;
+            if end > equations.len() {
+                return Err(invalid(format!(
+                    "scalar-view row range ends at {end}, partition has {} row(s)",
+                    equations.len()
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn dae_template_json_unchecked(dae: &dae::Dae) -> Result<serde_json::Value, CodegenError> {
     let mut value = serde_json::to_value(dae).map_err(|e| CodegenError::SerializationFailed {
         message: format!("DAE: {e}"),
     })?;
@@ -178,6 +313,53 @@ pub fn dae_template_json(dae: &dae::Dae) -> Result<serde_json::Value, CodegenErr
         serde_json::Value::Array(condition_aliases),
     );
     Ok(value)
+}
+
+/// Build the auxiliary DAE entry for a Solve-template context.
+///
+/// Solve IR owns numerical kernels. DAE variables/functions remain useful
+/// metadata, but unavailable placeholder scalar views are removed so a Solve
+/// template can consume metadata while strict lookup of `dae.f_x` or
+/// `dae.initial_equations` still fails visibly.
+fn dae_template_json_for_solve_context(dae: &dae::Dae) -> Result<serde_json::Value, CodegenError> {
+    let mut value = dae_template_json_unchecked(dae)?;
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| CodegenError::SerializationFailed {
+            message: "DAE did not serialize to a JSON object".to_string(),
+        })?;
+    if dae
+        .continuous
+        .structured_equations
+        .iter()
+        .any(|family| scalar_view_unavailable(family, &dae.continuous.equations))
+    {
+        object.remove("f_x");
+    }
+    if dae
+        .initialization
+        .structured_equations
+        .iter()
+        .any(|family| scalar_view_unavailable(family, &dae.initialization.equations))
+    {
+        object.remove("initial_equations");
+    }
+    Ok(value)
+}
+
+pub fn dae_template_json(dae: &dae::Dae) -> Result<serde_json::Value, CodegenError> {
+    validate_dae_scalar_residual_view(dae)?;
+    dae_template_json_unchecked(dae)
+}
+
+/// Build a DAE template context for a consumer that explicitly understands the
+/// compact `structured_equations` owner and does not treat placeholder `f_x`
+/// interiors as mathematical residuals.
+pub fn dae_template_json_with_structured_ownership(
+    dae: &dae::Dae,
+) -> Result<serde_json::Value, CodegenError> {
+    validate_dae_structured_ownership(dae)?;
+    dae_template_json_unchecked(dae)
 }
 
 fn condition_aliases_from_dae(dae: &dae::Dae) -> Result<Vec<serde_json::Value>, serde_json::Error> {
@@ -1773,196 +1955,6 @@ fn render_statements_function(stmts: Value, config: Value, indent: Value) -> Ren
     cfg.subscript_underscore = false;
     let indent_str = indent.as_str().unwrap_or("    ");
     render_statements(&stmts, &cfg, indent_str)
-}
-
-// ── ExprConfig and helpers ───────────────────────────────────────────
-
-/// Configuration for expression rendering.
-#[derive(Clone)]
-pub(crate) struct ExprConfig {
-    pub(crate) prefix: String,
-    pub(crate) power: String,
-    pub(crate) and_op: String,
-    pub(crate) or_op: String,
-    pub(crate) not_op: String,
-    pub(crate) true_val: String,
-    pub(crate) false_val: String,
-    pub(crate) array_start: String,
-    pub(crate) array_end: String,
-    pub(crate) if_style: IfStyle,
-    /// When false, keep dots in variable/function names instead of replacing with underscores.
-    pub(crate) sanitize_dots: bool,
-    /// When true, use 1-based indexing (Modelica) instead of 0-based (Python).
-    pub(crate) one_based_index: bool,
-    /// When true, use Modelica builtin names (abs, min, max) instead of Python (fabs, fmin, fmax).
-    pub(crate) modelica_builtins: bool,
-    /// Optional function for element-wise multiply (e.g., `ca.times` for CasADi).
-    pub(crate) mul_elem_fn: Option<String>,
-    /// Optional function-call form for power (e.g., `ca.power` for CasADi).
-    /// When set, `a^b` renders as `power_fn(a, b)` instead of `a ** b`.
-    pub(crate) power_fn: Option<String>,
-    /// Subscript rendering style: "bracket" (default: `x[0]`) or "underscore" (`x_1`, 1-based).
-    /// The "underscore" style matches the C template's unpack_vars naming convention.
-    pub(crate) subscript_underscore: bool,
-    /// Override function name for `IfStyle::Function` (default: `"if_else"`).
-    /// E.g., set to `"IfElse.ifelse"` for Julia ModelingToolkit.
-    pub(crate) if_else_fn: Option<String>,
-    /// When true, render Modelica range `start:end` as Python `range(start, end + 1)`
-    /// and array comprehensions with `[...]` instead of `{...}`.
-    pub(crate) python_range: bool,
-    /// Override function name for `sum()` calls on non-literal arrays.
-    /// Default is `"sum1"` (CasADi convention, rendered as `prefix + sum1`).
-    /// Templates can set this to a runtime helper name.
-    pub(crate) sum_fn: String,
-    /// When true, render all numeric literals as float constants with `f` suffix.
-    /// E.g., `8` → `8.0f`, `3.14` → `3.14f`.
-    pub(crate) float_literals: bool,
-    /// Optional source-reference to emitted-symbol map provided by a template.
-    pub(crate) symbols: Option<Value>,
-    /// Optional aliases from Appendix-B condition memory (`c[i]`) to live
-    /// relation expressions for backends that do not run event iteration.
-    pub(crate) condition_aliases: Option<Value>,
-    /// Render-time substitutions for expression-level unrolling.
-    pub(crate) substitutions: Vec<(String, String)>,
-}
-
-#[derive(Clone, Copy)]
-pub(crate) enum IfStyle {
-    /// Python-style: ca.if_else(cond, then, else)
-    Function,
-    /// Ternary: cond ? then : else
-    Ternary,
-    /// Modelica-style: if cond then expr elseif cond2 then expr2 else expr3
-    Modelica,
-}
-
-impl Default for ExprConfig {
-    fn default() -> Self {
-        Self {
-            prefix: String::new(),
-            power: "**".to_string(),
-            and_op: "and".to_string(),
-            or_op: "or".to_string(),
-            not_op: "not ".to_string(),
-            true_val: "True".to_string(),
-            false_val: "False".to_string(),
-            array_start: "[".to_string(),
-            array_end: "]".to_string(),
-            if_style: IfStyle::Function,
-            sanitize_dots: true,
-            one_based_index: false,
-            modelica_builtins: false,
-            mul_elem_fn: None,
-            power_fn: None,
-            subscript_underscore: false,
-            if_else_fn: None,
-            python_range: false,
-            sum_fn: "sum1".to_string(),
-            float_literals: false,
-            symbols: None,
-            condition_aliases: None,
-            substitutions: Vec::new(),
-        }
-    }
-}
-
-/// Helper to get a string attribute from a Value.
-pub(crate) fn get_str_attr(v: &Value, attr: &str) -> Option<String> {
-    v.get_attr(attr)
-        .ok()
-        .and_then(|val| val.as_str().map(|s| s.to_string()))
-}
-
-fn get_present_attr(v: &Value, attr: &str) -> Option<Value> {
-    let val = v.get_attr(attr).ok()?;
-    (!val.is_undefined() && !val.is_none()).then_some(val)
-}
-
-fn get_bool_attr(v: &Value, attr: &str) -> Option<bool> {
-    Some(get_present_attr(v, attr)?.is_true())
-}
-
-fn get_non_empty_str_attr(v: &Value, attr: &str) -> Option<String> {
-    get_str_attr(v, attr).filter(|s| !s.is_empty())
-}
-
-impl ExprConfig {
-    pub(crate) fn from_value(v: &Value) -> Self {
-        let mut cfg = Self::default();
-
-        if let Some(s) = get_str_attr(v, "prefix") {
-            cfg.prefix = s;
-        }
-        if let Some(s) = get_str_attr(v, "power") {
-            cfg.power = s;
-        }
-        if let Some(s) = get_str_attr(v, "and_op") {
-            cfg.and_op = s;
-        }
-        if let Some(s) = get_str_attr(v, "or_op") {
-            cfg.or_op = s;
-        }
-        if let Some(s) = get_str_attr(v, "not_op") {
-            cfg.not_op = s;
-        }
-        if let Some(s) = get_str_attr(v, "true_val") {
-            cfg.true_val = s;
-        }
-        if let Some(s) = get_str_attr(v, "false_val") {
-            cfg.false_val = s;
-        }
-        if let Some(s) = get_str_attr(v, "array_start") {
-            cfg.array_start = s;
-        }
-        if let Some(s) = get_str_attr(v, "array_end") {
-            cfg.array_end = s;
-        }
-        if let Some(s) = get_str_attr(v, "if_style") {
-            cfg.if_style = match s.as_str() {
-                "ternary" => IfStyle::Ternary,
-                "modelica" => IfStyle::Modelica,
-                _ => IfStyle::Function,
-            };
-        }
-        if let Some(enabled) = get_bool_attr(v, "sanitize_dots") {
-            cfg.sanitize_dots = enabled;
-        }
-        if let Some(enabled) = get_bool_attr(v, "one_based_index") {
-            cfg.one_based_index = enabled;
-        }
-        if let Some(enabled) = get_bool_attr(v, "modelica_builtins") {
-            cfg.modelica_builtins = enabled;
-        }
-        if let Some(s) = get_non_empty_str_attr(v, "mul_elem_fn") {
-            cfg.mul_elem_fn = Some(s);
-        }
-        if let Some(s) = get_non_empty_str_attr(v, "power_fn") {
-            cfg.power_fn = Some(s);
-        }
-        if let Some(enabled) = get_bool_attr(v, "subscript_underscore") {
-            cfg.subscript_underscore = enabled;
-        }
-        if let Some(s) = get_non_empty_str_attr(v, "if_else_fn") {
-            cfg.if_else_fn = Some(s);
-        }
-        if let Some(enabled) = get_bool_attr(v, "python_range") {
-            cfg.python_range = enabled;
-        }
-        if let Some(s) = get_non_empty_str_attr(v, "sum_fn") {
-            cfg.sum_fn = s;
-        }
-        if let Some(enabled) = get_bool_attr(v, "float_literals") {
-            cfg.float_literals = enabled;
-        }
-        if let Some(val) = get_present_attr(v, "symbols") {
-            cfg.symbols = Some(val);
-        }
-        if let Some(val) = get_present_attr(v, "condition_aliases") {
-            cfg.condition_aliases = Some(val);
-        }
-
-        cfg
-    }
 }
 
 #[cfg(test)]

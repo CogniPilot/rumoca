@@ -47,6 +47,20 @@
           ps.virtualenv
         ]);
         openModelicaCli = openmodelica.packages.${system}.default;
+        mlirCpuTools = pkgs.symlinkJoin {
+          name = "rumoca-mlir-cpu-tools-18";
+          paths = [
+            pkgs.llvmPackages_18.clang
+            pkgs.llvmPackages_18.llvm
+            pkgs.llvmPackages_18.mlir
+          ];
+          postBuild = ''
+            ln -s "$out/bin/clang" "$out/bin/clang-18"
+            ln -s "$out/bin/llc" "$out/bin/llc-18"
+            ln -s "$out/bin/mlir-opt" "$out/bin/mlir-opt-18"
+            ln -s "$out/bin/mlir-translate" "$out/bin/mlir-translate-18"
+          '';
+        };
 
         # Native libs the workspace links against. libudev (systemd) for the
         # gamepad/input crates; clang/libclang for any bindgen-using dep.
@@ -94,6 +108,36 @@
         # Build the third-party dependency closure once; every package/check
         # below reuses it so a code change never recompiles dependencies.
         cargoArtifacts = craneLib.buildDepsOnly commonArgs;
+        mlirCpuTestArgs = builtins.concatStringsSep " " [
+          "--package rumoca-exec-mlir"
+          "--features required-mlir-cpu"
+          "--test benchmark_matmul"
+          "--test compile_basic"
+          "--test implicit_euler"
+          "--test integrate"
+          "--test linsolve_mlir"
+          "--test multi_fn_mlir"
+          "--test options"
+        ];
+        mlirCpuTests =
+          assert pkgs.lib.hasInfix ".#checks.x86_64-linux.mlir-cpu" (
+            builtins.readFile ./.github/workflows/ci.yml
+          );
+          craneLib.cargoTest (
+            commonArgs
+            // {
+              inherit cargoArtifacts;
+              pname = "rumoca-mlir-cpu-tests";
+              cargoExtraArgs = mlirCpuTestArgs;
+              nativeBuildInputs = commonArgs.nativeBuildInputs ++ [ mlirCpuTools ];
+              preCheck = ''
+                for tool in clang-18 llc-18 mlir-opt-18 mlir-translate-18; do
+                  command -v "$tool"
+                  "$tool" --version | grep -Eq 'version 18(\.|$)|MLIR 18(\.|$)'
+                done
+              '';
+            }
+          );
 
         rumoca = craneLib.buildPackage (
           commonArgs
@@ -231,6 +275,7 @@
           fmt = craneLib.cargoFmt { src = ./.; };
         }
         // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+          mlir-cpu = mlirCpuTests;
           openmodelica-cli = openModelicaCli;
         };
 

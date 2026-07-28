@@ -6,6 +6,8 @@ use rumoca_ir_solve::{
     BinaryOp, ComputeBlock, LinearOp, ScalarProgramBlock, SolveProblem, UnaryOp,
 };
 
+mod support;
+
 fn compile_derivative_rhs(
     solve: &SolveProblem,
     name: &str,
@@ -54,7 +56,7 @@ fn mlir_derivative_rhs_matches_expected() {
     let compiled = match result {
         Ok(c) => c,
         Err(MlirError::ToolNotFound { tool, .. }) => {
-            eprintln!("SKIP: {tool} not found — install mlir-18-tools to run this test");
+            support::missing_cpu_tool(tool);
             return;
         }
         Err(e) => panic!("compile failed: {e}"),
@@ -85,7 +87,7 @@ fn mlir_derivative_rhs_time_dependency() {
     let compiled = match result {
         Ok(c) => c,
         Err(MlirError::ToolNotFound { tool, .. }) => {
-            eprintln!("SKIP: {tool} not found — install mlir-18-tools to run this test");
+            support::missing_cpu_tool(tool);
             return;
         }
         Err(e) => panic!("compile failed: {e}"),
@@ -119,7 +121,7 @@ fn mlir_derivative_rhs_trig() {
     let compiled = match result {
         Ok(c) => c,
         Err(MlirError::ToolNotFound { tool, .. }) => {
-            eprintln!("SKIP: {tool} not found — install mlir-18-tools to run this test");
+            support::missing_cpu_tool(tool);
             return;
         }
         Err(e) => panic!("compile failed: {e}"),

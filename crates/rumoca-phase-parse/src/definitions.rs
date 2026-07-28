@@ -323,6 +323,12 @@ impl TryFrom<&modelica_grammar_trait::StoredDefinition> for rumoca_ir_ast::Store
                     &class.class_definition.name,
                 ));
             }
+            if def.classes.contains_key(class_name.as_ref()) {
+                return Err(semantic_error_from_token(
+                    format!("Duplicate top-level class definition '{class_name}'"),
+                    &class.class_definition.name,
+                ));
+            }
 
             def.classes
                 .insert(class_name.to_string(), class.class_definition.clone());
@@ -1110,7 +1116,7 @@ impl TryFrom<&modelica_grammar_trait::Composition> for Composition {
 
         // Extract external function declaration (MLS §12.9)
         if let Some(external_opt) = &ast.composition_opt {
-            comp.external = Some(extract_external_function(external_opt));
+            comp.external = Some(extract_external_function(external_opt)?);
         }
 
         Ok(Composition::new(comp))
@@ -1165,7 +1171,7 @@ fn merge_element_section(
 /// Extract external function information from the composition.
 fn extract_external_function(
     external_opt: &modelica_grammar_trait::CompositionOpt,
-) -> rumoca_ir_ast::ExternalFunction {
+) -> Result<rumoca_ir_ast::ExternalFunction, anyhow::Error> {
     let mut external = rumoca_ir_ast::ExternalFunction::default();
 
     // Extract language specification (e.g., "C")
@@ -1204,7 +1210,22 @@ fn extract_external_function(
         }
     }
 
-    external
+    // The annotation before the external-clause semicolon belongs to the
+    // external function interface (MLS §12.9.4), not to the containing class.
+    if let Some(annotation_opt) = &external_opt.composition_opt3
+        && let Some(class_mod_opt) = &annotation_opt
+            .annotation_clause
+            .class_modification
+            .class_modification_opt
+    {
+        validate_annotation_modifiers(
+            &class_mod_opt.argument_list,
+            &annotation_opt.annotation_clause.annotation.annotation,
+        )?;
+        external.annotation = class_mod_opt.argument_list.args.clone();
+    }
+
+    Ok(external)
 }
 
 //-----------------------------------------------------------------------------

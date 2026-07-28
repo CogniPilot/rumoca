@@ -9,6 +9,23 @@ pub fn dae_to_template_json(dae_model: &dae::Dae) -> Result<Value, CodegenError>
     rumoca_phase_codegen::dae_template_json(dae_model)
 }
 
+pub fn validate_dae_scalar_residual_view(dae_model: &dae::Dae) -> Result<(), CodegenError> {
+    rumoca_phase_codegen::validate_dae_scalar_residual_view(dae_model)
+}
+
+pub fn validate_dae_structured_ownership(dae_model: &dae::Dae) -> Result<(), CodegenError> {
+    rumoca_phase_codegen::validate_dae_structured_ownership(dae_model)
+}
+
+pub fn render_structured_dae_template_with_name(
+    dae_model: &dae::Dae,
+    template: &str,
+    model_name: &str,
+) -> Result<String, CodegenError> {
+    let dae_json = rumoca_phase_codegen::dae_template_json_with_structured_ownership(dae_model)?;
+    rumoca_phase_codegen::render_template_with_dae_json_and_name(&dae_json, template, model_name)
+}
+
 pub fn dae_for_solve_template_context(dae_model: &dae::Dae) -> Result<dae::Dae, CodegenError> {
     let mut prepared = dae_model.clone();
     rumoca_phase_structural::scalarize::scalarize_equations(&mut prepared).map_err(|err| {

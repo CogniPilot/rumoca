@@ -146,17 +146,17 @@ fn test_render_builtin_requires_function_name() {
 }
 
 #[test]
-fn test_render_builtin_wrapper_requires_required_argument() {
+fn test_render_builtin_rejects_unlowered_clock_semantics() {
     let dae = dae::Dae::new();
     let template = r#"
 {{ render_expr({"BuiltinCall": {"function": "Previous", "args": []}}, {}) }}
 "#;
-    let err = render_template(&dae, template).expect_err("missing wrapper arg must fail");
+    let err = render_template(&dae, template).expect_err("unlowered clock semantics must fail");
     assert_miette_template_span(&err);
     let msg = format!("{err}");
     assert!(
-        msg.contains("BuiltinCall Previous missing required argument 0"),
-        "expected strict builtin wrapper diagnostic, got: {msg}"
+        msg.contains("must be lowered with its clock schedule"),
+        "expected strict unlowered-clock diagnostic, got: {msg}"
     );
 }
 
@@ -181,7 +181,7 @@ fn test_render_smooth_requires_expression_argument() {
 }
 
 #[test]
-fn test_render_inferred_clock_sample_renders_sampled_value() {
+fn test_render_rejects_surviving_inferred_clock_sample() {
     let dae = dae::Dae::new();
     let template = r#"
 {{ render_expr({
@@ -191,10 +191,12 @@ fn test_render_inferred_clock_sample_renders_sampled_value() {
     }
 }, {}) }}
 "#;
-    let out = render_template(&dae, template).expect("sample(u) should render sampled value");
+    let error =
+        render_template(&dae, template).expect_err("sample(u) must be lowered before rendering");
+    let message = error.to_string();
     assert!(
-        out.contains("sampled_u"),
-        "expected sample(u) to render its sampled expression, got: {out}"
+        message.contains("must be lowered into clock/event metadata"),
+        "expected strict sample lowering diagnostic, got: {message}"
     );
 }
 

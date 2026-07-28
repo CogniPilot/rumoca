@@ -4,7 +4,9 @@
 //! receive only `rumoca-ir-solve` data.
 //!
 use indexmap::{IndexMap, IndexSet};
-use rumoca_core::{ExpressionVisitor, Literal, OpBinary, OpUnary};
+#[cfg(test)]
+use rumoca_core::OpBinary;
+use rumoca_core::{Diagnostic, ExpressionVisitor, PhaseError, PrimaryLabel};
 use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
 use std::sync::Arc;
@@ -25,14 +27,8 @@ use rumoca_eval_dae::{
 };
 use std::collections::{HashMap, HashSet};
 
-mod state_derivative_ordering;
 mod variable_meta;
 mod visible;
-use state_derivative_ordering::order_state_derivative_rows;
-#[cfg(test)]
-use state_derivative_ordering::{
-    reserve_state_derivative_order_capacity, reserve_state_derivative_order_flags,
-};
 use variable_meta::{
     continuous_real_role_is_event_discontinuous, event_discontinuous_scalar_names,
     variable_meta_classification,
@@ -103,6 +99,23 @@ impl std::fmt::Display for SolveModelLowerError {
 
 impl std::error::Error for SolveModelLowerError {}
 
+impl PhaseError for SolveModelLowerError {
+    fn to_diagnostic(&self) -> Diagnostic {
+        match self {
+            Self::Lower(error) => error.to_diagnostic(),
+            Self::Structural { source } => source.to_diagnostic(),
+            Self::Evaluation { span, .. } | Self::MassMatrix { span, .. } => match span {
+                Some(span) if !span.is_dummy() => Diagnostic::error(
+                    self.code(),
+                    self.to_string(),
+                    PrimaryLabel::new(*span).with_message(self.diagnostic_label()),
+                ),
+                Some(_) | None => Diagnostic::global_error(self.code(), self.to_string()),
+            },
+        }
+    }
+}
+
 impl SolveModelLowerError {
     pub fn diagnostic_reason(&self) -> String {
         match self {
@@ -169,6 +182,7 @@ pub fn lower_dae_to_solve_model_owned(
         dae_model,
         None,
         None,
+        &[],
         SolveModelLoweringProfile::Runtime,
         &HashMap::new(),
     )
@@ -183,6 +197,7 @@ pub fn lower_dae_to_solve_model_owned_with_visible_expressions(
         dae_model,
         Some(visible_expressions),
         None,
+        &[],
         SolveModelLoweringProfile::Runtime,
         &HashMap::new(),
     )
@@ -216,6 +231,25 @@ pub fn lower_dae_to_solve_model_owned_with_visible_expressions_and_metadata_and_
         dae_model,
         Some(visible_expressions),
         Some(metadata_dae_model),
+        &[],
+        SolveModelLoweringProfile::Runtime,
+        param_overrides,
+    )
+}
+
+pub fn lower_dae_to_solve_model_owned_with_manifold_constraints_and_overrides(
+    dae_model: dae::Dae,
+    visible_expressions: Vec<VisibleExpression>,
+    metadata_dae_model: &dae::Dae,
+    manifold_constraints: Vec<rumoca_phase_structural::dae_prepare::IndexReducedConstraint>,
+    param_overrides: &HashMap<String, f64>,
+) -> Result<solve::SolveModel, SolveModelLowerError> {
+    crate::clear_solve_lowering_runtime_state();
+    lower_dae_to_solve_model_inner(
+        dae_model,
+        Some(visible_expressions),
+        Some(metadata_dae_model),
+        &manifold_constraints,
         SolveModelLoweringProfile::Runtime,
         param_overrides,
     )
@@ -245,6 +279,25 @@ pub fn lower_dae_to_solve_model_owned_value_only_with_visible_expressions_and_me
         dae_model,
         Some(visible_expressions),
         Some(metadata_dae_model),
+        &[],
+        SolveModelLoweringProfile::RuntimeValueOnly,
+        param_overrides,
+    )
+}
+
+pub fn lower_dae_to_solve_model_owned_value_only_with_manifold_constraints_and_overrides(
+    dae_model: dae::Dae,
+    visible_expressions: Vec<VisibleExpression>,
+    metadata_dae_model: &dae::Dae,
+    manifold_constraints: Vec<rumoca_phase_structural::dae_prepare::IndexReducedConstraint>,
+    param_overrides: &HashMap<String, f64>,
+) -> Result<solve::SolveModel, SolveModelLowerError> {
+    crate::clear_solve_lowering_runtime_state();
+    lower_dae_to_solve_model_inner(
+        dae_model,
+        Some(visible_expressions),
+        Some(metadata_dae_model),
+        &manifold_constraints,
         SolveModelLoweringProfile::RuntimeValueOnly,
         param_overrides,
     )
@@ -274,6 +327,7 @@ pub fn lower_dae_to_solve_model_owned_for_gpu_preparation_with_metadata_and_over
         dae_model,
         None,
         Some(metadata_dae_model),
+        &[],
         SolveModelLoweringProfile::GpuPreparation,
         param_overrides,
     )
@@ -361,9 +415,10 @@ fn lower_runtime_visible_outputs(
 }
 
 fn lower_dae_to_solve_model_inner(
-    mut dae_model: dae::Dae,
+    dae_model: dae::Dae,
     visible_expressions: Option<Vec<VisibleExpression>>,
     metadata_dae_model: Option<&dae::Dae>,
+    manifold_constraints: &[rumoca_phase_structural::dae_prepare::IndexReducedConstraint],
     profile: SolveModelLoweringProfile,
     param_overrides: &HashMap<String, f64>,
 ) -> Result<solve::SolveModel, SolveModelLowerError> {
@@ -387,23 +442,20 @@ fn lower_dae_to_solve_model_inner(
         param_overrides,
     )?;
     crate::timing::log_stage("model.default_parameter_values", timer);
-    if profile.needs_runtime_support() {
-        let timer = crate::timing::stage_start();
-        order_state_derivative_rows(
-            &mut dae_model,
-            state_count,
-            &base_parameters,
-            eval_runtime.clone(),
-        )?;
-        crate::timing::log_stage("model.order_state_derivative_rows", timer);
-    }
     let solver_len = profiled_solver_len(&dae_model, state_count, profile)?;
     let model_span = model_provenance_span(&dae_model, metadata_dae_model)?;
     let timer = crate::timing::stage_start();
-    let problem = lower_profiled_solve_problem(&dae_model, solver_len, model_span, profile)?;
+    let mut problem = lower_profiled_solve_problem(&dae_model, solver_len, model_span, profile)?;
+    if profile.needs_runtime_support() {
+        crate::attach_index_reduced_manifold_projection(
+            &dae_model,
+            &mut problem,
+            manifold_constraints,
+        )?;
+    }
     crate::timing::log_stage("model.lower_solve_problem", timer);
     let timer = crate::timing::stage_start();
-    let artifacts = if profile.needs_solve_artifacts() {
+    let mut artifacts = if profile.needs_solve_artifacts() {
         // derivative_rhs already solves the MLS §8.3 system for der(state), so
         // runtime backends receive the explicit system x' = f(x, p, t).
         let mass_matrix = solve::MassMatrix::Identity;
@@ -411,6 +463,18 @@ fn lower_dae_to_solve_model_inner(
     } else {
         solve::SolveArtifacts::default()
     };
+    if !problem.continuous.manifold_residual.is_empty()
+        && artifacts.continuous.manifold_jacobian_v.is_empty()
+    {
+        artifacts.continuous.manifold_jacobian_v = crate::lower_compute_block_jvp(
+            &problem.continuous.manifold_residual,
+        )
+        .map_err(|err| {
+            SolveModelLowerError::Lower(
+                err.with_context("lower manifold Jacobian rows for value-only runtime"),
+            )
+        })?;
+    }
     crate::timing::log_stage("model.lower_solve_artifacts", timer);
     let initial = lower_initial_solver_data(
         &dae_model,
@@ -666,6 +730,14 @@ impl std::fmt::Display for ParameterOverrideError {
 }
 
 impl std::error::Error for ParameterOverrideError {}
+
+impl PhaseError for ParameterOverrideError {
+    fn to_diagnostic(&self) -> Diagnostic {
+        Diagnostic::global_error(self.code(), self.to_string()).with_note(
+            "the override is rejected rather than leaving dependent parameter values stale",
+        )
+    }
+}
 
 /// Propagate tunable parameter overrides to dependent parameters in place.
 ///
@@ -1546,170 +1618,6 @@ fn scalar_names_for_size(
     Ok(names)
 }
 
-fn derivative_coefficient_expr(
-    expr: &rumoca_core::Expression,
-    state_name: &str,
-    owner_span: rumoca_core::Span,
-) -> Result<rumoca_core::Expression, String> {
-    let span = coefficient_expr_span(expr, owner_span)?;
-    match expr {
-        rumoca_core::Expression::BuiltinCall { function, args, .. }
-            if *function == rumoca_core::BuiltinFunction::Der =>
-        {
-            Ok(if der_arg_matches(args, state_name)? {
-                real_expr(1.0, span)
-            } else {
-                real_expr(0.0, span)
-            })
-        }
-        rumoca_core::Expression::Unary {
-            op: OpUnary::Minus | OpUnary::DotMinus,
-            rhs,
-            ..
-        } => Ok(neg_expr(
-            derivative_coefficient_expr(rhs, state_name, span)?,
-            span,
-        )),
-        rumoca_core::Expression::Binary {
-            op: OpBinary::Add | OpBinary::AddElem,
-            lhs,
-            rhs,
-            ..
-        } => Ok(binary_expr_with_span(
-            add_op(),
-            derivative_coefficient_expr(lhs, state_name, span)?,
-            derivative_coefficient_expr(rhs, state_name, span)?,
-            span,
-        )),
-        rumoca_core::Expression::Binary {
-            op: OpBinary::Sub | OpBinary::SubElem,
-            lhs,
-            rhs,
-            ..
-        } => Ok(binary_expr_with_span(
-            sub_op(),
-            derivative_coefficient_expr(lhs, state_name, span)?,
-            derivative_coefficient_expr(rhs, state_name, span)?,
-            span,
-        )),
-        rumoca_core::Expression::Binary {
-            op: OpBinary::Mul | OpBinary::MulElem,
-            lhs,
-            rhs,
-            ..
-        } => coefficient_product(lhs, rhs, state_name, span),
-        rumoca_core::Expression::Binary {
-            op: OpBinary::Div | OpBinary::DivElem,
-            lhs,
-            rhs,
-            ..
-        } => {
-            if rhs.contains_der() {
-                return Err("derivative appears in denominator".to_string());
-            }
-            Ok(binary_expr_with_span(
-                div_op(),
-                derivative_coefficient_expr(lhs, state_name, span)?,
-                rhs.as_ref().clone(),
-                span,
-            ))
-        }
-        _ if expr.contains_der() => Err("unsupported derivative expression shape".to_string()),
-        _ => Ok(real_expr(0.0, span)),
-    }
-}
-
-fn coefficient_product(
-    lhs: &rumoca_core::Expression,
-    rhs: &rumoca_core::Expression,
-    state_name: &str,
-    owner_span: rumoca_core::Span,
-) -> Result<rumoca_core::Expression, String> {
-    let lhs_has_der = lhs.contains_der();
-    let rhs_has_der = rhs.contains_der();
-    match (lhs_has_der, rhs_has_der) {
-        (true, true) => Err("nonlinear derivative product".to_string()),
-        (true, false) => Ok(binary_expr_with_span(
-            mul_op(),
-            derivative_coefficient_expr(lhs, state_name, owner_span)?,
-            rhs.clone(),
-            owner_span,
-        )),
-        (false, true) => Ok(binary_expr_with_span(
-            mul_op(),
-            lhs.clone(),
-            derivative_coefficient_expr(rhs, state_name, owner_span)?,
-            owner_span,
-        )),
-        (false, false) => Ok(real_expr(0.0, owner_span)),
-    }
-}
-
-fn coefficient_expr_span(
-    expr: &rumoca_core::Expression,
-    owner_span: rumoca_core::Span,
-) -> Result<rumoca_core::Span, String> {
-    expr.span()
-        .or_else(|| (!owner_span.is_dummy()).then_some(owner_span))
-        .ok_or_else(|| "derivative coefficient expression has no source provenance".to_string())
-}
-
-fn der_arg_matches(args: &[rumoca_core::Expression], state_name: &str) -> Result<bool, String> {
-    let Some(rumoca_core::Expression::VarRef {
-        name, subscripts, ..
-    }) = args.first()
-    else {
-        return Ok(false);
-    };
-    if subscripts.is_empty() {
-        return Ok(name.as_str() == state_name);
-    }
-    let mut indices = Vec::new();
-    indices.try_reserve_exact(subscripts.len()).map_err(|_| {
-        "derivative subscript index text count exceeds host memory limits".to_string()
-    })?;
-    for sub in subscripts {
-        let Some(text) = subscript_index_text(sub) else {
-            return Ok(false);
-        };
-        indices.push(text);
-    }
-    Ok(format!("{}[{}]", name.as_str(), indices.join(",")) == state_name)
-}
-
-fn subscript_index_text(sub: &rumoca_core::Subscript) -> Option<String> {
-    match sub {
-        rumoca_core::Subscript::Index { value: i, .. } => Some(i.to_string()),
-        rumoca_core::Subscript::Expr { expr, .. } => match expr.as_ref() {
-            rumoca_core::Expression::Literal {
-                value: Literal::Integer(i),
-                ..
-            } => Some(i.to_string()),
-            rumoca_core::Expression::Literal {
-                value: Literal::Real(v),
-                ..
-            } if v.is_finite() && v.fract() == 0.0 => Some((*v as i64).to_string()),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-fn real_expr(value: f64, span: rumoca_core::Span) -> rumoca_core::Expression {
-    rumoca_core::Expression::Literal {
-        value: Literal::Real(value),
-        span,
-    }
-}
-
-fn neg_expr(expr: rumoca_core::Expression, span: rumoca_core::Span) -> rumoca_core::Expression {
-    rumoca_core::Expression::Unary {
-        op: OpUnary::Minus,
-        rhs: Box::new(expr),
-        span,
-    }
-}
-
 #[cfg(test)]
 fn binary_expr(
     op: OpBinary,
@@ -1722,6 +1630,7 @@ fn binary_expr(
     binary_expr_with_span(op, lhs, rhs, span)
 }
 
+#[cfg(test)]
 fn binary_expr_with_span(
     op: OpBinary,
     lhs: rumoca_core::Expression,
@@ -1736,18 +1645,7 @@ fn binary_expr_with_span(
     }
 }
 
-fn add_op() -> OpBinary {
-    OpBinary::Add
-}
-
-fn sub_op() -> OpBinary {
-    OpBinary::Sub
-}
-
-fn mul_op() -> OpBinary {
-    OpBinary::Mul
-}
-
+#[cfg(test)]
 fn div_op() -> OpBinary {
     OpBinary::Div
 }

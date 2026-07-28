@@ -639,7 +639,7 @@ fn location_to_span(loc: &parol_runtime::lexer::Location) -> Span {
     let end = BytePos(loc.end as usize);
     let source_name = loc.file_name.to_string_lossy();
     normalize_span(Span::new(
-        SourceId::from_source_name(source_name.as_ref()),
+        rumoca_core::source_id_for_name(source_name.as_ref()),
         start,
         end,
     ))

@@ -464,7 +464,7 @@ fn demote_states_without_assignable_derivative_rows_in_place(
 
 /// Final state cleanup after late prepare passes that can remove continuous rows.
 ///
-/// MLS Appendix B / SPEC_0003: retained states require retained derivative
+/// MLS Appendix B / SPEC_0022: retained states require retained derivative
 /// rows. This combines the existing no-derivative and no-assignable-row
 /// demotions without adding logging, timeout, or backend policy.
 pub fn demote_states_without_retained_derivative_rows(

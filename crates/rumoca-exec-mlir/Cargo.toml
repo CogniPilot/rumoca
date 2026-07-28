@@ -6,6 +6,12 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+# Cargo-native selector for the required MLIR CPU verification lane. Ordinary
+# workspace tests remain portable when MLIR is unavailable; the selected lane
+# turns every missing CPU tool into a hard failure.
+required-mlir-cpu = []
+
 [dependencies]
 rumoca-core = { workspace = true }
 rumoca-ir-solve = { workspace = true }

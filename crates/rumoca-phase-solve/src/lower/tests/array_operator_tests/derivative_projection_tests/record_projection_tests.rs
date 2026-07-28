@@ -1,4 +1,5 @@
 use super::*;
+use crate::lower::derivative_rhs::analyze_derivative_rhs;
 
 #[test]
 fn lower_derivative_rhs_projects_implicit_record_constructor_coupled_rows() {
@@ -474,6 +475,7 @@ fn projection_matrix(rows: Vec<Vec<f64>>) -> rumoca_core::Expression {
 fn lower_derivative_rhs_projects_record_field_with_derivative_when_sibling_field_is_unprojected() {
     let dae_model = planar_rotation_record_dae(PlanarRotationEquation::WholeRecord);
 
+    assert_planar_rotation_rows_are_partitioned_without_loss(&dae_model);
     let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let block = lower_derivative_rhs(&dae_model, &layout)
         .expect("derivative-bearing record field should project independently");
@@ -494,6 +496,7 @@ fn lower_derivative_rhs_projects_record_field_with_derivative_when_sibling_field
 fn lower_derivative_rhs_projects_record_function_field_access() {
     let dae_model = planar_rotation_record_dae(PlanarRotationEquation::FieldAccess);
 
+    assert_planar_rotation_rows_are_partitioned_without_loss(&dae_model);
     let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
     let block = lower_derivative_rhs(&dae_model, &layout)
         .expect("derivative-bearing record function field should project");
@@ -508,6 +511,25 @@ fn lower_derivative_rhs_projects_record_function_field_access() {
         output.filter(|value| value.is_finite() && value.abs() > 0.0)
     });
     assert_eq!(actual, Some(3.0));
+}
+
+fn assert_planar_rotation_rows_are_partitioned_without_loss(dae_model: &dae::Dae) {
+    let mut analysis =
+        analyze_derivative_rhs(dae_model).expect("structurally selected derivative row");
+    let rows = analysis.take_continuous_rows();
+    let derivative_count = rows.iter().filter(|row| row.is_derivative).count();
+    let algebraic_count = rows.len() - derivative_count;
+
+    assert_eq!(derivative_count, 1);
+    assert!(
+        algebraic_count >= 2,
+        "zero-axis record projections remain algebraic equations instead of being discarded"
+    );
+    assert_eq!(
+        derivative_count + algebraic_count,
+        rows.len(),
+        "every normalized record projection has exactly one owner"
+    );
 }
 
 enum PlanarRotationEquation {
@@ -551,6 +573,11 @@ fn insert_planar_rotation_variables(dae_model: &mut dae::Dae, equation: &PlanarR
         dae::Variable {
             component_ref: Some(source_component_ref_from_name("e")),
             dims: vec![3],
+            start: Some(projection_array(
+                vec![real_lit(0.0), real_lit(0.0), real_lit(1.0)],
+                false,
+            )),
+            is_tunable: false,
             ..scalar_var("e")
         },
     );

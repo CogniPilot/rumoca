@@ -41,6 +41,23 @@ fn load_y_range(op_position: usize, y_range: std::ops::Range<usize>) -> Structur
     }
 }
 
+fn unit_producer_load_strides(
+    op_positions: impl IntoIterator<Item = usize>,
+) -> Option<Vec<solve::AffineStencilLoadStride>> {
+    Some(
+        op_positions
+            .into_iter()
+            .map(|op_position| solve::AffineStencilLoadStride {
+                op_position,
+                terms: vec![solve::AffineStencilIndexStrideTerm {
+                    dimension: 0,
+                    stride: 1,
+                }],
+            })
+            .collect(),
+    )
+}
+
 fn domain_scalar_count(domain: &rumoca_core::StructuredIndexDomain) -> usize {
     domain
         .scalar_count()
@@ -122,6 +139,7 @@ fn structured_access_proof_rejects_string_literals() {
 fn decay_row(y: usize, p: usize, dae_equation_index: usize) -> StructuredProgram {
     StructuredProgram {
         dae_equation_index: Some(dae_equation_index),
+        producer_load_strides: unit_producer_load_strides([1]),
         access_proof: Some(access_proof(vec![
             StructuredAccessOperand::LoadP(p),
             StructuredAccessOperand::LoadY(y),
@@ -257,6 +275,7 @@ fn family_2d(start: usize, rows: usize, cols: usize) -> dae::StructuredEquationF
 fn stencil_row(y: usize, dae_equation_index: usize) -> StructuredProgram {
     StructuredProgram {
         dae_equation_index: Some(dae_equation_index),
+        producer_load_strides: unit_producer_load_strides([0, 1]),
         access_proof: Some(access_proof(vec![
             StructuredAccessOperand::LoadY(y),
             StructuredAccessOperand::LoadY(y + 1),
@@ -286,6 +305,7 @@ fn stencil_row(y: usize, dae_equation_index: usize) -> StructuredProgram {
 fn nonlinear_stencil_row(y: usize, dae_equation_index: usize) -> StructuredProgram {
     StructuredProgram {
         dae_equation_index: Some(dae_equation_index),
+        producer_load_strides: unit_producer_load_strides([0, 2]),
         access_proof: Some(access_proof(vec![
             StructuredAccessOperand::LoadY(y + 1),
             StructuredAccessOperand::LoadY(y),
@@ -328,6 +348,7 @@ fn nonlinear_stencil_row(y: usize, dae_equation_index: usize) -> StructuredProgr
 fn pointwise_row(y: usize, dae_equation_index: usize) -> StructuredProgram {
     StructuredProgram {
         dae_equation_index: Some(dae_equation_index),
+        producer_load_strides: unit_producer_load_strides([0]),
         access_proof: Some(access_proof(vec![StructuredAccessOperand::LoadY(y)])),
         output_index: y,
         pointwise_output_y_index: Some(y),
@@ -344,6 +365,7 @@ fn pointwise_row(y: usize, dae_equation_index: usize) -> StructuredProgram {
 fn scaled_row(y: usize, coefficient: f64, dae_equation_index: usize) -> StructuredProgram {
     StructuredProgram {
         dae_equation_index: Some(dae_equation_index),
+        producer_load_strides: unit_producer_load_strides([1]),
         access_proof: Some(access_proof(vec![
             StructuredAccessOperand::Const(coefficient),
             StructuredAccessOperand::LoadY(y),
@@ -373,6 +395,7 @@ fn scaled_row(y: usize, coefficient: f64, dae_equation_index: usize) -> Structur
 fn shifted_single_load_row(y: usize, dae_equation_index: usize) -> StructuredProgram {
     StructuredProgram {
         dae_equation_index: Some(dae_equation_index),
+        producer_load_strides: unit_producer_load_strides([0]),
         access_proof: Some(access_proof(vec![StructuredAccessOperand::LoadY(y + 1)])),
         output_index: y,
         pointwise_output_y_index: Some(y),
@@ -392,6 +415,7 @@ fn shifted_single_load_row(y: usize, dae_equation_index: usize) -> StructuredPro
 fn pointwise_other_array_row(y: usize, dae_equation_index: usize) -> StructuredProgram {
     StructuredProgram {
         dae_equation_index: Some(dae_equation_index),
+        producer_load_strides: unit_producer_load_strides([0]),
         access_proof: Some(access_proof(vec![StructuredAccessOperand::LoadY(y + 4)])),
         output_index: y,
         pointwise_output_y_index: Some(y),
@@ -411,6 +435,7 @@ fn pointwise_other_array_row(y: usize, dae_equation_index: usize) -> StructuredP
 fn shifted_other_array_row(y: usize, dae_equation_index: usize) -> StructuredProgram {
     StructuredProgram {
         dae_equation_index: Some(dae_equation_index),
+        producer_load_strides: unit_producer_load_strides([0]),
         access_proof: Some(access_proof(vec![StructuredAccessOperand::LoadY(y + 5)])),
         output_index: y,
         pointwise_output_y_index: Some(y),
@@ -1192,6 +1217,232 @@ fn corner_rows_reproduce_full_row_affine_strides_for_2d_family() {
 }
 
 #[test]
+fn producer_affine_metadata_is_compact_and_uses_recorded_array_access_strides() {
+    let extent = 1_000usize;
+    let scalar_count = extent * extent;
+    let layout = solve::VarLayout::from_parts_with_shapes(
+        IndexMap::from([(
+            "u".to_string(),
+            solve::ScalarSlot::Y {
+                index: 0,
+                byte_offset: 0,
+            },
+        )]),
+        IndexMap::from([("u".to_string(), vec![extent, extent])]),
+        scalar_count,
+        0,
+    )
+    .expect("compact producer metadata fixture layout should be valid");
+    let domain = test_domain_2d(extent, extent);
+    let family = dae::StructuredEquationFamily {
+        domain: domain.clone(),
+        first_equation_index: 0,
+        equations_per_point: 1,
+        span: stencil_test_span(),
+        origin: "producer metadata fixture".to_string(),
+        regular: Some(rumoca_core::RegularForFamily {
+            binders: vec!["i".to_string(), "j".to_string()],
+            accesses: vec![rumoca_core::ArrayAccess {
+                var: "u".to_string(),
+                subscripts: vec![
+                    rumoca_core::AffineForm {
+                        constant: 0,
+                        coeffs: vec![1, 0],
+                    },
+                    rumoca_core::AffineForm {
+                        constant: 0,
+                        coeffs: vec![0, 1],
+                    },
+                ],
+            }],
+        }),
+        template: None,
+        interiors_materialized: true,
+    };
+    let ops = vec![
+        solve::LinearOp::LoadY { dst: 0, index: 0 },
+        solve::LinearOp::StoreOutput { src: 0 },
+    ];
+
+    let metadata =
+        producer_load_strides_for_family_row(&layout, &family, 0, &ops, stencil_test_span())
+            .expect("producer affine access metadata should lower")
+            .expect("regular family should carry producer load strides");
+
+    assert_eq!(domain_scalar_count(&domain), scalar_count);
+    assert_eq!(
+        metadata.len(),
+        1,
+        "metadata stays O(accesses), not O(cells)"
+    );
+    assert_eq!(
+        metadata[0]
+            .terms
+            .iter()
+            .map(|term| (term.dimension, term.stride))
+            .collect::<Vec<_>>(),
+        vec![(0, extent as isize), (1, 1)]
+    );
+    assert!(
+        producer_load_strides_for_family_row(
+            &layout,
+            &family,
+            scalar_count - 1,
+            &ops,
+            stencil_test_span(),
+        )
+        .expect("non-base producer metadata lookup should remain valid")
+        .is_none(),
+        "the producer table is anchored once, not copied over one million scalar-view rows"
+    );
+}
+
+#[test]
+fn producer_metadata_corner_disagreement_rejects_stencil_instead_of_reconstructing_it() {
+    let domain = test_domain_2d(3, 3);
+    let producer = vec![solve::AffineStencilLoadStride {
+        op_position: 0,
+        terms: vec![
+            solve::AffineStencilIndexStrideTerm {
+                dimension: 0,
+                stride: 3,
+            },
+            solve::AffineStencilIndexStrideTerm {
+                dimension: 1,
+                stride: 1,
+            },
+        ],
+    }];
+    let mut base = pointwise_row(0, 0);
+    let mut i_neighbor = pointwise_row(3, 3);
+    let mut j_neighbor = pointwise_row(1, 1);
+    for row in [&mut base, &mut i_neighbor, &mut j_neighbor] {
+        row.producer_load_strides = Some(producer.clone());
+    }
+    let tuples = vec![vec![1, 1], vec![2, 1], vec![1, 2]];
+    let rows = vec![&base, &i_neighbor, &j_neighbor];
+    assert!(
+        producer_affine_strides_from_selected_rows(&rows, &domain, &tuples, stencil_test_span(),)
+            .expect("matching producer metadata should validate")
+            .is_some()
+    );
+    assert!(
+        tensor_node_from_compact_corners(
+            &[base.clone(), i_neighbor.clone(), j_neighbor.clone()],
+            &domain,
+            stencil_test_span(),
+            true,
+        )
+        .expect("matching producer metadata should reach compact node construction")
+        .is_some()
+    );
+
+    let solve::LinearOp::LoadY { index, .. } = &mut i_neighbor.ops[0] else {
+        panic!("fixture must begin with a LoadY");
+    };
+    *index = 4;
+    let disagreeing_rows = vec![&base, &i_neighbor, &j_neighbor];
+    assert!(
+        producer_affine_strides_from_selected_rows(
+            &disagreeing_rows,
+            &domain,
+            &tuples,
+            stencil_test_span(),
+        )
+        .expect("metadata disagreement should be a safe tensor decline")
+        .is_none(),
+        "corner rows validate producer metadata; they must never replace it"
+    );
+    assert!(
+        tensor_node_from_compact_corners(
+            &[base, i_neighbor, j_neighbor],
+            &domain,
+            stencil_test_span(),
+            true,
+        )
+        .expect("metadata disagreement should safely decline compact node construction")
+        .is_none()
+    );
+}
+
+#[test]
+fn tensor_output_map_proof_accepts_dense_mixed_radix_mapping() {
+    let domain = test_domain_2d(3, 4);
+    let output_map = solve::TensorOutputMap {
+        start: 0,
+        strides: vec![
+            solve::AffineStencilIndexStrideTerm {
+                dimension: 0,
+                stride: 4,
+            },
+            solve::AffineStencilIndexStrideTerm {
+                dimension: 1,
+                stride: 1,
+            },
+        ],
+    };
+
+    assert!(
+        tensor_output_map_is_proven_injective(&domain, &output_map, stencil_test_span())
+            .expect("dense output-map proof should complete")
+    );
+}
+
+#[test]
+fn tensor_output_map_proof_rejects_overlapping_mapping() {
+    let domain = test_domain_2d(3, 3);
+    let output_map = solve::TensorOutputMap {
+        start: 0,
+        strides: vec![
+            solve::AffineStencilIndexStrideTerm {
+                dimension: 0,
+                stride: 1,
+            },
+            solve::AffineStencilIndexStrideTerm {
+                dimension: 1,
+                stride: 1,
+            },
+        ],
+    };
+
+    assert!(
+        !tensor_output_map_is_proven_injective(&domain, &output_map, stencil_test_span())
+            .expect("overlapping output-map proof should complete")
+    );
+}
+
+#[test]
+fn tensor_output_map_proof_accepts_empty_domain() {
+    let domain = test_domain_2d(0, 3);
+    let output_map = solve::TensorOutputMap {
+        start: 0,
+        strides: Vec::new(),
+    };
+
+    assert!(
+        tensor_output_map_is_proven_injective(&domain, &output_map, stencil_test_span())
+            .expect("empty-domain output-map proof should complete")
+    );
+}
+
+#[test]
+fn tensor_output_map_proof_rejects_invalid_stride_dimension_on_empty_domain() {
+    let domain = test_domain_2d(0, 3);
+    let output_map = solve::TensorOutputMap {
+        start: 0,
+        strides: vec![solve::AffineStencilIndexStrideTerm {
+            dimension: 2,
+            stride: 1,
+        }],
+    };
+
+    assert!(
+        !tensor_output_map_is_proven_injective(&domain, &output_map, stencil_test_span())
+            .expect("empty-domain output-map validation should complete")
+    );
+}
+
+#[test]
 fn corner_rows_support_singleton_dimensions() {
     // With j pinned to a single value its stride is irrelevant. The compact corner
     // selection needs only the base and the i-neighbor.
@@ -1222,7 +1473,7 @@ fn affine_strides_for_family_uses_corners_with_bounded_full_scan_oracle() {
         .expect("full-row strides should compute");
     assert!(full.is_some(), "3x3 family lowers as a stencil");
     assert_eq!(
-        affine_strides_for_family(&rows, &row_indices, &domain, span, true)
+        affine_strides_for_family(&rows, &row_indices, &domain, span, true, false)
             .expect("family strides should compute"),
         full,
         "with corners available the wrapper returns the corner result (== full)"
@@ -1241,7 +1492,7 @@ fn affine_strides_for_family_uses_corners_with_bounded_full_scan_oracle() {
         "singleton dimensions stay corner-derivable"
     );
     assert_eq!(
-        affine_strides_for_family(&rows, &row_indices, &domain, span, true)
+        affine_strides_for_family(&rows, &row_indices, &domain, span, true, false)
             .expect("family strides should compute"),
         affine_strides_from_access_proofs(&rows, &row_indices, &domain, span)
             .expect("full-row strides should compute"),
@@ -1295,7 +1546,7 @@ fn corner_rows_reproduce_full_row_node_for_3d_family() {
 
     // And the production wrapper returns the corner result for the 3-D family.
     assert_eq!(
-        affine_strides_for_family(&rows, &row_indices, &domain, span, true)
+        affine_strides_for_family(&rows, &row_indices, &domain, span, true, false)
             .expect("family strides should compute"),
         Some(full),
     );
@@ -1411,6 +1662,21 @@ fn journals_non_affine_output_map_for_scattered_outputs() {
     // blocks the node: the row at grid position (2,1) writes slot 1 where the
     // affine map requires slot 3.
     let mut rows: Vec<_> = (0..6).map(|offset| decay_row(offset, 0, offset)).collect();
+    for row in &mut rows {
+        row.producer_load_strides = Some(vec![solve::AffineStencilLoadStride {
+            op_position: 1,
+            terms: vec![
+                solve::AffineStencilIndexStrideTerm {
+                    dimension: 0,
+                    stride: 3,
+                },
+                solve::AffineStencilIndexStrideTerm {
+                    dimension: 1,
+                    stride: 1,
+                },
+            ],
+        }]);
+    }
     rows[3].output_index = 1;
     assert_eq!(
         journaled_reason(

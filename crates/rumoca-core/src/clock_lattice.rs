@@ -57,7 +57,7 @@ impl ClockLatticeErrorKind {
             Self::NonPositiveFactor => {
                 "clock conversion factor must be strictly positive (MLS §16.5.2)"
             }
-            Self::IntegerOverflow => "exact clock lattice arithmetic overflowed 64-bit integers",
+            Self::IntegerOverflow => "exact clock lattice arithmetic overflowed 128-bit integers",
             Self::NotRationallyRepresentable => {
                 "clock interval has no exact reduced rational representation"
             }
@@ -72,6 +72,14 @@ impl ClockLatticeErrorKind {
         ClockLatticeError { kind: self, span }
     }
 }
+
+impl fmt::Display for ClockLatticeErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.message())
+    }
+}
+
+impl std::error::Error for ClockLatticeErrorKind {}
 
 /// A clock-lattice failure carrying the span of the offending clock expression.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -93,13 +101,13 @@ type LatticeResult<T> = Result<T, ClockLatticeErrorKind>;
 /// An exact rational number in reduced form with a strictly positive
 /// denominator.
 ///
-/// Arithmetic is performed in `i128` and narrowed back with checked
-/// conversions, so any result outside the `i64` range is reported rather than
-/// wrapped.
+/// Arithmetic stays in reduced `i128` form. Products cross-cancel before
+/// multiplication, and every remaining operation is checked, so values outside
+/// the representation are reported rather than wrapped.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub struct ClockRational {
-    num: i64,
-    den: i64,
+    num: i128,
+    den: i128,
 }
 
 impl ClockRational {
@@ -109,22 +117,22 @@ impl ClockRational {
     pub const ONE: Self = Self { num: 1, den: 1 };
 
     /// Reduce `num / den` to canonical form.
-    pub fn new(num: i64, den: i64) -> LatticeResult<Self> {
-        Self::reduce(i128::from(num), i128::from(den))
+    pub fn new(num: impl Into<i128>, den: impl Into<i128>) -> LatticeResult<Self> {
+        Self::reduce(num.into(), den.into())
     }
 
     /// The exact integer `value`.
-    pub const fn integer(value: i64) -> Self {
+    pub const fn integer(value: i128) -> Self {
         Self { num: value, den: 1 }
     }
 
     /// Reduced numerator; the sign of the rational lives here.
-    pub const fn numerator(self) -> i64 {
+    pub const fn numerator(self) -> i128 {
         self.num
     }
 
     /// Reduced denominator; always strictly positive.
-    pub const fn denominator(self) -> i64 {
+    pub const fn denominator(self) -> i128 {
         self.den
     }
 
@@ -142,34 +150,104 @@ impl ClockRational {
         if den == 0 {
             return Err(ClockLatticeErrorKind::ZeroDenominator);
         }
-        let sign = if den < 0 { -1i128 } else { 1i128 };
-        let divisor = gcd_i128(num, den);
-        let num = sign * (num / divisor);
-        let den = sign * (den / divisor);
+        if num == 0 {
+            return Ok(Self::ZERO);
+        }
+        let negative = (num < 0) != (den < 0);
+        Self::from_signed_magnitude(num.unsigned_abs(), negative, den.unsigned_abs())
+    }
+
+    fn from_signed_magnitude(
+        numerator: u128,
+        negative: bool,
+        denominator: u128,
+    ) -> LatticeResult<Self> {
+        if numerator == 0 {
+            return Ok(Self::ZERO);
+        }
+        let divisor = gcd_u128(numerator, denominator);
         Ok(Self {
-            num: narrow(num)?,
-            den: narrow(den)?,
+            num: signed_from_magnitude(numerator / divisor, negative)?,
+            den: positive_from_magnitude(denominator / divisor)?,
         })
+    }
+
+    fn checked_same_denominator(self, other: Self, subtract: bool) -> LatticeResult<Self> {
+        let lhs_negative = self.num.is_negative();
+        let rhs_negative = other.num.is_negative() != subtract;
+        let lhs = self.num.unsigned_abs();
+        let rhs = other.num.unsigned_abs();
+        let (magnitude, negative) = if lhs_negative == rhs_negative {
+            (
+                lhs.checked_add(rhs)
+                    .ok_or(ClockLatticeErrorKind::IntegerOverflow)?,
+                lhs_negative,
+            )
+        } else if lhs >= rhs {
+            (lhs - rhs, lhs_negative)
+        } else {
+            (rhs - lhs, rhs_negative)
+        };
+        Self::from_signed_magnitude(magnitude, negative, self.den as u128)
     }
 
     /// Exact sum.
     pub fn checked_add(self, other: Self) -> LatticeResult<Self> {
-        let lhs = i128::from(self.num) * i128::from(other.den);
-        let rhs = i128::from(other.num) * i128::from(self.den);
+        if self.den == other.den {
+            return self.checked_same_denominator(other, false);
+        }
+        let denominator_gcd = gcd_u128(self.den as u128, other.den as u128);
+        let denominator_gcd = positive_from_magnitude(denominator_gcd)?;
+        let lhs_scale = other.den / denominator_gcd;
+        let rhs_scale = self.den / denominator_gcd;
+        let lhs = self
+            .num
+            .checked_mul(lhs_scale)
+            .ok_or(ClockLatticeErrorKind::IntegerOverflow)?;
+        let rhs = other
+            .num
+            .checked_mul(rhs_scale)
+            .ok_or(ClockLatticeErrorKind::IntegerOverflow)?;
         let num = lhs
             .checked_add(rhs)
             .ok_or(ClockLatticeErrorKind::IntegerOverflow)?;
-        Self::reduce(num, i128::from(self.den) * i128::from(other.den))
+        let den = self
+            .den
+            .checked_mul(lhs_scale)
+            .ok_or(ClockLatticeErrorKind::IntegerOverflow)?;
+        Self::reduce(num, den)
     }
 
     /// Exact difference.
     pub fn checked_sub(self, other: Self) -> LatticeResult<Self> {
-        self.checked_add(other.checked_negate()?)
+        if self.den == other.den {
+            return self.checked_same_denominator(other, true);
+        }
+        let denominator_gcd = gcd_u128(self.den as u128, other.den as u128);
+        let denominator_gcd = positive_from_magnitude(denominator_gcd)?;
+        let lhs_scale = other.den / denominator_gcd;
+        let rhs_scale = self.den / denominator_gcd;
+        let lhs = self
+            .num
+            .checked_mul(lhs_scale)
+            .ok_or(ClockLatticeErrorKind::IntegerOverflow)?;
+        let rhs = other
+            .num
+            .checked_mul(rhs_scale)
+            .ok_or(ClockLatticeErrorKind::IntegerOverflow)?;
+        let num = lhs
+            .checked_sub(rhs)
+            .ok_or(ClockLatticeErrorKind::IntegerOverflow)?;
+        let den = self
+            .den
+            .checked_mul(lhs_scale)
+            .ok_or(ClockLatticeErrorKind::IntegerOverflow)?;
+        Self::reduce(num, den)
     }
 
     /// Exact negation.
     ///
-    /// `-i64::MIN` is not representable, so negation is checked like every
+    /// `-i128::MIN` is not representable, so negation is checked like every
     /// other operation in this module: it reports `IntegerOverflow` rather than
     /// panicking in debug builds or wrapping in release builds.
     pub fn checked_negate(self) -> LatticeResult<Self> {
@@ -184,10 +262,22 @@ impl ClockRational {
 
     /// Exact product.
     pub fn checked_mul(self, other: Self) -> LatticeResult<Self> {
-        Self::reduce(
-            i128::from(self.num) * i128::from(other.num),
-            i128::from(self.den) * i128::from(other.den),
-        )
+        if self.is_zero() || other.is_zero() {
+            return Ok(Self::ZERO);
+        }
+        let left_divisor = gcd_u128(self.num.unsigned_abs(), other.den as u128);
+        let right_divisor = gcd_u128(other.num.unsigned_abs(), self.den as u128);
+        let lhs_num = divide_signed_by_unsigned(self.num, left_divisor)?;
+        let rhs_num = divide_signed_by_unsigned(other.num, right_divisor)?;
+        let lhs_den = divide_positive_by_unsigned(self.den, right_divisor)?;
+        let rhs_den = divide_positive_by_unsigned(other.den, left_divisor)?;
+        let num = lhs_num
+            .checked_mul(rhs_num)
+            .ok_or(ClockLatticeErrorKind::IntegerOverflow)?;
+        let den = lhs_den
+            .checked_mul(rhs_den)
+            .ok_or(ClockLatticeErrorKind::IntegerOverflow)?;
+        Self::reduce(num, den)
     }
 
     /// Exact quotient; `other` must not be zero.
@@ -195,29 +285,36 @@ impl ClockRational {
         if other.is_zero() {
             return Err(ClockLatticeErrorKind::ZeroDenominator);
         }
-        Self::reduce(
-            i128::from(self.num) * i128::from(other.den),
-            i128::from(self.den) * i128::from(other.num),
-        )
+        if self.is_zero() {
+            return Ok(Self::ZERO);
+        }
+        let numerator_divisor = gcd_u128(self.num.unsigned_abs(), other.num.unsigned_abs());
+        let denominator_divisor = gcd_u128(self.den as u128, other.den as u128);
+        let lhs_num = divide_signed_by_unsigned(self.num, numerator_divisor)?;
+        let rhs_num = divide_signed_by_unsigned(other.num, numerator_divisor)?;
+        let lhs_den = divide_positive_by_unsigned(self.den, denominator_divisor)?;
+        let rhs_den = divide_positive_by_unsigned(other.den, denominator_divisor)?;
+        let num = lhs_num
+            .checked_mul(rhs_den)
+            .ok_or(ClockLatticeErrorKind::IntegerOverflow)?;
+        let den = lhs_den
+            .checked_mul(rhs_num)
+            .ok_or(ClockLatticeErrorKind::IntegerOverflow)?;
+        Self::reduce(num, den)
     }
 
     /// Exact product with an integer.
-    pub fn checked_mul_integer(self, factor: i64) -> LatticeResult<Self> {
-        Self::reduce(
-            i128::from(self.num) * i128::from(factor),
-            i128::from(self.den),
-        )
+    pub fn checked_mul_integer(self, factor: impl Into<i128>) -> LatticeResult<Self> {
+        self.checked_mul(Self::integer(factor.into()))
     }
 
     /// Exact quotient by a non-zero integer.
-    pub fn checked_div_integer(self, divisor: i64) -> LatticeResult<Self> {
+    pub fn checked_div_integer(self, divisor: impl Into<i128>) -> LatticeResult<Self> {
+        let divisor = divisor.into();
         if divisor == 0 {
             return Err(ClockLatticeErrorKind::ZeroDenominator);
         }
-        Self::reduce(
-            i128::from(self.num),
-            i128::from(self.den) * i128::from(divisor),
-        )
+        self.checked_div(Self::integer(divisor))
     }
 
     /// Convert to seconds. This is the only lossy step and belongs at the
@@ -227,8 +324,8 @@ impl ClockRational {
     }
 
     /// Largest integer `k` with `k <= self`.
-    pub fn floor_integer(self) -> LatticeResult<i64> {
-        narrow(i128::from(self.num).div_euclid(i128::from(self.den)))
+    pub fn floor_integer(self) -> LatticeResult<i128> {
+        Ok(self.num.div_euclid(self.den))
     }
 
     /// The reduced rational that is closest to `seconds` and reproduces it
@@ -258,9 +355,22 @@ impl PartialOrd for ClockRational {
 
 impl Ord for ClockRational {
     fn cmp(&self, other: &Self) -> Ordering {
-        let lhs = i128::from(self.num) * i128::from(other.den);
-        let rhs = i128::from(other.num) * i128::from(self.den);
-        lhs.cmp(&rhs)
+        match (self.num.is_negative(), other.num.is_negative()) {
+            (true, false) => Ordering::Less,
+            (false, true) => Ordering::Greater,
+            (false, false) => compare_positive_fractions(
+                self.num as u128,
+                self.den as u128,
+                other.num as u128,
+                other.den as u128,
+            ),
+            (true, true) => compare_positive_fractions(
+                other.num.unsigned_abs(),
+                other.den as u128,
+                self.num.unsigned_abs(),
+                self.den as u128,
+            ),
+        }
     }
 }
 
@@ -270,18 +380,88 @@ impl fmt::Display for ClockRational {
     }
 }
 
-fn narrow(value: i128) -> LatticeResult<i64> {
-    i64::try_from(value).map_err(|_| ClockLatticeErrorKind::IntegerOverflow)
+fn positive_from_magnitude(value: u128) -> LatticeResult<i128> {
+    i128::try_from(value).map_err(|_| ClockLatticeErrorKind::IntegerOverflow)
 }
 
-fn gcd_i128(lhs: i128, rhs: i128) -> i128 {
-    let (mut a, mut b) = (lhs.unsigned_abs(), rhs.unsigned_abs());
+fn signed_from_magnitude(value: u128, negative: bool) -> LatticeResult<i128> {
+    if !negative {
+        return positive_from_magnitude(value);
+    }
+    if value == 1u128 << 127 {
+        return Ok(i128::MIN);
+    }
+    positive_from_magnitude(value).map(|value| -value)
+}
+
+fn gcd_u128(mut a: u128, mut b: u128) -> u128 {
     while b != 0 {
         let next = a % b;
         a = b;
         b = next;
     }
-    if a == 0 { 1 } else { a as i128 }
+    if a == 0 { 1 } else { a }
+}
+
+fn divide_signed_by_unsigned(value: i128, divisor: u128) -> LatticeResult<i128> {
+    debug_assert_ne!(divisor, 0);
+    let magnitude = value.unsigned_abs() / divisor;
+    signed_from_magnitude(magnitude, value.is_negative())
+}
+
+fn divide_positive_by_unsigned(value: i128, divisor: u128) -> LatticeResult<i128> {
+    debug_assert!(value > 0);
+    debug_assert_ne!(divisor, 0);
+    positive_from_magnitude(value as u128 / divisor)
+}
+
+/// Compare two non-negative fractions without overflowing a cross-product.
+///
+/// Equal integer parts are stripped and the reciprocal remainders compared;
+/// reciprocation reverses the ordering at each iteration.
+fn compare_positive_fractions(
+    mut lhs_num: u128,
+    mut lhs_den: u128,
+    mut rhs_num: u128,
+    mut rhs_den: u128,
+) -> Ordering {
+    let mut reversed = false;
+    loop {
+        let lhs_integer = lhs_num / lhs_den;
+        let rhs_integer = rhs_num / rhs_den;
+        if lhs_integer != rhs_integer {
+            let ordering = lhs_integer.cmp(&rhs_integer);
+            return if reversed {
+                ordering.reverse()
+            } else {
+                ordering
+            };
+        }
+        let lhs_remainder = lhs_num % lhs_den;
+        let rhs_remainder = rhs_num % rhs_den;
+        match (lhs_remainder == 0, rhs_remainder == 0) {
+            (true, true) => return Ordering::Equal,
+            (true, false) => {
+                return if reversed {
+                    Ordering::Greater
+                } else {
+                    Ordering::Less
+                };
+            }
+            (false, true) => {
+                return if reversed {
+                    Ordering::Less
+                } else {
+                    Ordering::Greater
+                };
+            }
+            (false, false) => {
+                (lhs_num, lhs_den) = (lhs_den, lhs_remainder);
+                (rhs_num, rhs_den) = (rhs_den, rhs_remainder);
+                reversed = !reversed;
+            }
+        }
+    }
 }
 
 /// Decompose a finite non-zero `f64` into the exact fraction `num / den`.
@@ -294,15 +474,19 @@ fn exact_binary_fraction(value: f64) -> LatticeResult<(i128, i128)> {
     } else {
         (raw_mantissa | 0x0010_0000_0000_0000, raw_exponent - 1075)
     };
-    let magnitude = i128::from(mantissa);
-    let signed = if value < 0.0 { -magnitude } else { magnitude };
+    let removable_twos = mantissa.trailing_zeros().min(exponent.unsigned_abs());
+    let magnitude = u128::from(mantissa >> removable_twos);
+    let exponent = exponent
+        .checked_add(removable_twos as i32)
+        .ok_or(ClockLatticeErrorKind::IntegerOverflow)?;
+    let signed = signed_from_magnitude(magnitude, value < 0.0)?;
     if exponent >= 0 {
         let shift = u32::try_from(exponent).map_err(|_| ClockLatticeErrorKind::IntegerOverflow)?;
         let num = signed
             .checked_shl(shift)
-            .ok_or(ClockLatticeErrorKind::IntegerOverflow)?;
+            .ok_or(ClockLatticeErrorKind::NotRationallyRepresentable)?;
         if num >> shift != signed {
-            return Err(ClockLatticeErrorKind::IntegerOverflow);
+            return Err(ClockLatticeErrorKind::NotRationallyRepresentable);
         }
         return Ok((num, 1));
     }
@@ -314,21 +498,21 @@ fn exact_binary_fraction(value: f64) -> LatticeResult<(i128, i128)> {
 }
 
 /// Walk the continued-fraction convergents of `num / den` and return the first
-/// one that fits `i64` and converts back to exactly `seconds`.
+/// one that fits `i128` and converts back to exactly `seconds`.
 fn shortest_round_tripping_convergent(
     num: i128,
     den: i128,
     seconds: f64,
 ) -> LatticeResult<ClockRational> {
-    let sign = if num < 0 { -1i128 } else { 1i128 };
-    let (mut remainder_num, mut remainder_den) = (num.abs(), den);
-    let (mut prev_num, mut current_num) = (0i128, 1i128);
-    let (mut prev_den, mut current_den) = (1i128, 0i128);
+    let negative = num < 0;
+    let (mut remainder_num, mut remainder_den) = (num.unsigned_abs(), den as u128);
+    let (mut prev_num, mut current_num) = (0u128, 1u128);
+    let (mut prev_den, mut current_den) = (1u128, 0u128);
     loop {
         let term = remainder_num / remainder_den;
         let next_num = convergent_step(term, current_num, prev_num)?;
         let next_den = convergent_step(term, current_den, prev_den)?;
-        if let Some(candidate) = round_tripping_candidate(sign * next_num, next_den, seconds) {
+        if let Some(candidate) = round_tripping_candidate(negative, next_num, next_den, seconds) {
             return Ok(candidate);
         }
         prev_num = current_num;
@@ -344,19 +528,22 @@ fn shortest_round_tripping_convergent(
     }
 }
 
-fn convergent_step(term: i128, current: i128, previous: i128) -> LatticeResult<i128> {
+fn convergent_step(term: u128, current: u128, previous: u128) -> LatticeResult<u128> {
     term.checked_mul(current)
         .and_then(|scaled| scaled.checked_add(previous))
-        .ok_or(ClockLatticeErrorKind::IntegerOverflow)
+        .ok_or(ClockLatticeErrorKind::NotRationallyRepresentable)
 }
 
-fn round_tripping_candidate(num: i128, den: i128, seconds: f64) -> Option<ClockRational> {
-    let num = i64::try_from(num).ok()?;
-    let den = i64::try_from(den).ok()?;
-    if den <= 0 {
-        return None;
-    }
-    let candidate = ClockRational { num, den };
+fn round_tripping_candidate(
+    negative: bool,
+    num: u128,
+    den: u128,
+    seconds: f64,
+) -> Option<ClockRational> {
+    let candidate = ClockRational {
+        num: signed_from_magnitude(num, negative).ok()?,
+        den: positive_from_magnitude(den).ok()?,
+    };
     (candidate.to_f64() == seconds).then_some(candidate)
 }
 
@@ -391,7 +578,12 @@ impl ClockLattice {
 
     /// MLS §16.3 `Clock(intervalCounter, resolution)`: an exact rational period
     /// of `intervalCounter / resolution` seconds with zero phase.
-    pub fn from_interval_counter(interval_counter: i64, resolution: i64) -> LatticeResult<Self> {
+    pub fn from_interval_counter(
+        interval_counter: impl Into<i128>,
+        resolution: impl Into<i128>,
+    ) -> LatticeResult<Self> {
+        let interval_counter = interval_counter.into();
+        let resolution = resolution.into();
         if interval_counter <= 0 || resolution <= 0 {
             return Err(ClockLatticeErrorKind::NonPositiveFactor);
         }
@@ -432,7 +624,8 @@ impl ClockLattice {
 
     /// MLS §16.5.2 `subSample(u, factor)`: tick every `factor`-th tick of `u`,
     /// with the first activation of both clocks coinciding.
-    pub fn sub_sample(self, factor: i64) -> LatticeResult<Self> {
+    pub fn sub_sample(self, factor: impl Into<i128>) -> LatticeResult<Self> {
+        let factor = factor.into();
         if factor <= 0 {
             return Err(ClockLatticeErrorKind::NonPositiveFactor);
         }
@@ -441,7 +634,8 @@ impl ClockLattice {
 
     /// MLS §16.5.2 `superSample(u, factor)`: tick `factor` times per tick of
     /// `u`, with the first activation of both clocks coinciding.
-    pub fn super_sample(self, factor: i64) -> LatticeResult<Self> {
+    pub fn super_sample(self, factor: impl Into<i128>) -> LatticeResult<Self> {
+        let factor = factor.into();
         if factor <= 0 {
             return Err(ClockLatticeErrorKind::NonPositiveFactor);
         }
@@ -450,7 +644,11 @@ impl ClockLattice {
 
     /// MLS §16.5.2 `shiftSample(u, shiftCounter, resolution)`: shift the phase
     /// forward by `shiftCounter / resolution` of `interval(u)`.
-    pub fn shift_sample(self, shift_counter: i64, resolution: i64) -> LatticeResult<Self> {
+    pub fn shift_sample(
+        self,
+        shift_counter: impl Into<i128>,
+        resolution: impl Into<i128>,
+    ) -> LatticeResult<Self> {
         let offset = self.shift_offset(shift_counter, resolution)?;
         Self::new(self.period, self.phase.checked_add(offset)?)
     }
@@ -461,7 +659,11 @@ impl ClockLattice {
     /// Operator 16.12 states "It is an error if the clock of `y` starts before
     /// the base-clock of `u`", so a shift that would move the first activation
     /// before tick zero is reported rather than turned into a negative phase.
-    pub fn back_sample(self, back_counter: i64, resolution: i64) -> LatticeResult<Self> {
+    pub fn back_sample(
+        self,
+        back_counter: impl Into<i128>,
+        resolution: impl Into<i128>,
+    ) -> LatticeResult<Self> {
         let offset = self.shift_offset(back_counter, resolution)?;
         let phase = self.phase.checked_sub(offset)?;
         if phase.numerator() < 0 {
@@ -470,7 +672,13 @@ impl ClockLattice {
         Self::new(self.period, phase)
     }
 
-    fn shift_offset(self, counter: i64, resolution: i64) -> LatticeResult<ClockRational> {
+    fn shift_offset(
+        self,
+        counter: impl Into<i128>,
+        resolution: impl Into<i128>,
+    ) -> LatticeResult<ClockRational> {
+        let counter = counter.into();
+        let resolution = resolution.into();
         if counter < 0 || resolution <= 0 {
             return Err(ClockLatticeErrorKind::NonPositiveFactor);
         }
@@ -479,18 +687,18 @@ impl ClockLattice {
     }
 
     /// Exact instant of tick `index`: `phase + index * period` (MLS §16.3).
-    pub fn tick_time(self, index: i64) -> LatticeResult<ClockRational> {
+    pub fn tick_time(self, index: impl Into<i128>) -> LatticeResult<ClockRational> {
         self.phase
             .checked_add(self.period.checked_mul_integer(index)?)
     }
 
     /// Instant of tick `index` in seconds, rounded exactly once.
-    pub fn tick_time_seconds(self, index: i64) -> LatticeResult<f64> {
+    pub fn tick_time_seconds(self, index: impl Into<i128>) -> LatticeResult<f64> {
         Ok(self.tick_time(index)?.to_f64())
     }
 
     /// Index of the last tick at or before `instant`, clamped at tick zero.
-    pub fn tick_index_at_or_before(self, instant: ClockRational) -> LatticeResult<i64> {
+    pub fn tick_index_at_or_before(self, instant: ClockRational) -> LatticeResult<i128> {
         let elapsed = instant.checked_sub(self.phase)?;
         if !elapsed.is_positive() {
             return Ok(0);

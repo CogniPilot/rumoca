@@ -62,7 +62,7 @@ fn direct_state_indices_by_dae_equation(
             .direct_equations
             .get(&state.name)
             .and_then(|equation| analysis.equations.get(*equation))
-            .and_then(|equation| equation.dae_equation_index)
+            .and_then(DerivativeEquation::structured_dae_equation_index)
         else {
             continue;
         };
@@ -190,6 +190,7 @@ fn direct_family_tensor_nodes(
             &programs,
             &family.domain,
             family.span,
+            true,
         )?
         else {
             return Ok(None);
@@ -215,13 +216,23 @@ fn direct_family_corner_program(
         .direct_equations
         .get(&state.name)
         .and_then(|equation| analysis.equations.get(*equation))
-        .and_then(|equation| equation.dae_equation_index);
+        .and_then(DerivativeEquation::structured_dae_equation_index);
     let span = dae_equation_index
         .and_then(|index| ctx.dae_model.continuous.equations.get(index))
         .map(|equation| equation.span)
         .filter(|span| !span.is_dummy())
         .unwrap_or(derivative_state_or_context_span(ctx.dae_model, state)?);
     let ops = lower_state_derivative_row(state, &analysis.direct_equations, ctx)?;
+    let producer_load_strides = match dae_equation_index {
+        Some(equation_index) => crate::stencil::producer_load_strides_for_dae_equation(
+            ctx.layout,
+            &ctx.dae_model.continuous.structured_equations,
+            equation_index,
+            &ops,
+            span,
+        )?,
+        None => None,
+    };
     Ok(crate::stencil::StructuredProgram {
         load_y_ranges: crate::stencil::structured_load_y_ranges(&ops, y_slot_ranges, span)?,
         ops,
@@ -230,6 +241,7 @@ fn direct_family_corner_program(
         span,
         output_y_range: state_output_y_range(ctx.dae_model, state, state_index)?,
         dae_equation_index,
+        producer_load_strides,
         access_proof: derivative_row_access_proof(state, &analysis.direct_equations, ctx)?,
     })
 }

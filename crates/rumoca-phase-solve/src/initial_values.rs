@@ -175,6 +175,7 @@ fn initial_seed_error_is_non_evaluable(error: &EvalError) -> bool {
         | EvalError::StatementIterationLimit { .. }
         | EvalError::ShortRuntimeVector { .. }
         | EvalError::AssertionFailed { .. }
+        | EvalError::ClockLattice { .. }
         | EvalError::Terminated { .. } => false,
     }
 }

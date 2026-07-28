@@ -77,6 +77,65 @@ pub(super) struct RefreshProjectionModel<'a> {
     pub(super) jacobian_v: ProjectionJacobian<'a>,
 }
 
+pub(super) struct RuntimeManifoldProjection<'a> {
+    pub(super) runtime: &'a SolveRuntime,
+}
+
+impl ManifoldProjectionModel for RuntimeManifoldProjection<'_> {
+    fn eval_manifold_residual(
+        &self,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        out: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        self.runtime
+            .manifold_residual
+            .eval_with_context(y, p, t, self.runtime.row_eval_context(), out)
+            .map_err(Into::into)
+    }
+
+    fn eval_manifold_jacobian_v(
+        &self,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        v: &[f64],
+        out: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        self.runtime
+            .manifold_jacobian_v
+            .eval_with_context(
+                y,
+                p,
+                t,
+                RowEvalContext {
+                    seed: Some(v),
+                    ..self.runtime.row_eval_context()
+                },
+                out,
+            )
+            .map_err(Into::into)
+    }
+
+    fn manifold_residual_len(&self) -> usize {
+        self.runtime.manifold_residual.len()
+    }
+
+    fn manifold_projection_plan(&self) -> &solve::AlgebraicProjectionPlan {
+        &self
+            .runtime
+            .model
+            .problem
+            .continuous
+            .manifold_projection_plan
+    }
+
+    fn manifold_variable_scale(&self, y_index: usize) -> f64 {
+        self.runtime.model.solver_variable_scale(y_index)
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(super) enum ProjectionJacobian<'a> {
     SolverY {

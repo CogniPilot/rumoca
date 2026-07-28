@@ -20,7 +20,10 @@ use super::timing::{log_solve_lowering_done, log_solve_lowering_start, stage_tim
 /// agree on the matched system, and that fixes apply to both paths at once.
 fn rewrite_dae_for_structural_analysis(
     lowered: &mut dae::Dae,
-) -> Result<(), rumoca_phase_solve::SolveModelLowerError> {
+) -> Result<
+    Vec<rumoca_phase_structural::dae_prepare::IndexReducedConstraint>,
+    rumoca_phase_solve::SolveModelLowerError,
+> {
     // Capture source-level `dummy = der(state)` ownership before any state
     // demotion can move the derivative target out of the state partition.
     // Index reduction may introduce another alias later, so the same
@@ -58,7 +61,11 @@ fn rewrite_dae_for_structural_analysis(
     // more, so every nomination would be rejected as an unresolved `der` leaf.
     log_solve_lowering_start("prepare.index_reduce_deficient_constraint_rows");
     let timer = stage_timer_start();
-    rumoca_phase_structural::dae_prepare::index_reduce_deficient_constraint_rows(lowered);
+    let reduced_constraints =
+        rumoca_phase_structural::dae_prepare::index_reduce_deficient_constraint_rows_with_metadata(
+            lowered,
+        )
+        .constraints;
     log_solve_lowering_done("prepare.index_reduce_deficient_constraint_rows", timer);
     log_solve_lowering_start("prepare.eliminate_index_reduced_dummy_derivative_aliases");
     let timer = stage_timer_start();
@@ -114,14 +121,14 @@ fn rewrite_dae_for_structural_analysis(
             );
         }
     }
-    Ok(())
+    Ok(reduced_constraints)
 }
 
 pub(super) fn prepare_dae_for_structural_analysis(
     lowered: &mut dae::Dae,
     opts: &SimOptions,
 ) -> Result<(), rumoca_phase_solve::SolveModelLowerError> {
-    rewrite_dae_for_structural_analysis(lowered)?;
+    let _ = rewrite_dae_for_structural_analysis(lowered)?;
     scalarize_solver_view(lowered, opts, "prepare.scalarize_equations")
 }
 
@@ -221,6 +228,8 @@ impl FunnelCopyBudget {
 pub(super) struct StructurallyLoweredDae {
     pub(super) dae: dae::Dae,
     pub(super) metadata_dae: dae::Dae,
+    pub(super) reduced_constraints:
+        Vec<rumoca_phase_structural::dae_prepare::IndexReducedConstraint>,
     pub(super) visible_expressions: Vec<rumoca_phase_solve::VisibleExpression>,
     pub(super) copy_budget: FunnelCopyBudget,
 }
@@ -240,6 +249,7 @@ struct PreparedStructuralDaes {
     source_dae: FunnelDae,
     lowered: FunnelDae,
     metadata_dae: FunnelDae,
+    reduced_constraints: Vec<rumoca_phase_structural::dae_prepare::IndexReducedConstraint>,
 }
 
 pub(super) fn structurally_lower_dae_for_simulation(
@@ -251,15 +261,19 @@ pub(super) fn structurally_lower_dae_for_simulation(
         source_dae,
         mut lowered,
         mut metadata_dae,
+        mut reduced_constraints,
     } = prepare_structural_daes(dae_model)?;
 
     let elimination = eliminate_for_simulation(&mut lowered, dae_model)?;
-    let causal_plan = rumoca_phase_structural::eliminate::factor_causal_substitutions(
-        &source_dae,
-        &elimination.substitutions,
-    )
-    .map_err(|source| rumoca_phase_solve::SolveModelLowerError::Structural { source })?;
     apply_simulation_elimination(&mut lowered, &elimination.substitutions)?;
+    let causal_plan =
+        rumoca_phase_structural::eliminate::factor_causal_substitutions_with_consumers(
+            &source_dae,
+            &lowered,
+            &elimination.substitutions,
+        )
+        .map_err(|source| rumoca_phase_solve::SolveModelLowerError::Structural { source })?;
+    resolve_reduced_constraint_substitutions(&mut reduced_constraints, &elimination.substitutions)?;
     rumoca_phase_structural::eliminate::factor_retained_computations_in_dae(
         &mut lowered,
         &elimination.substitutions,
@@ -315,6 +329,7 @@ pub(super) fn structurally_lower_dae_for_simulation(
     let structurally_lowered = StructurallyLoweredDae {
         dae: lowered.into_inner(),
         metadata_dae: metadata_dae.into_inner(),
+        reduced_constraints,
         visible_expressions,
         copy_budget: FunnelCopyBudget::observed_since(copy_baseline),
     };
@@ -406,7 +421,7 @@ fn prepare_structural_daes(
     let timer = stage_timer_start();
     let mut lowered = source_dae.clone();
     log_solve_lowering_done("structural.clone_source_for_lowered", timer);
-    rewrite_dae_for_structural_analysis(&mut lowered)?;
+    let reduced_constraints = rewrite_dae_for_structural_analysis(&mut lowered)?;
     log_solve_lowering_start("structural.remove_duplicate_continuous_equations");
     let timer = stage_timer_start();
     remove_duplicate_continuous_equations(&mut lowered);
@@ -420,7 +435,63 @@ fn prepare_structural_daes(
         source_dae,
         lowered,
         metadata_dae,
+        reduced_constraints,
     })
+}
+
+fn resolve_reduced_constraint_substitutions(
+    constraints: &mut [rumoca_phase_structural::dae_prepare::IndexReducedConstraint],
+    substitutions: &[rumoca_phase_structural::eliminate::Substitution],
+) -> Result<(), rumoca_phase_solve::SolveModelLowerError> {
+    if constraints.is_empty() || substitutions.is_empty() {
+        return Ok(());
+    }
+    let mut expressions = Vec::new();
+    for constraint in constraints.iter() {
+        expressions.push(constraint.holonomic.rhs.clone());
+        if let Some(velocity) = &constraint.velocity {
+            expressions.push(velocity.rhs.clone());
+        }
+    }
+    rumoca_phase_structural::eliminate::resolve_substitutions_in_exprs(
+        &mut expressions,
+        substitutions,
+    )
+    .map_err(|source| rumoca_phase_solve::SolveModelLowerError::Structural { source })?;
+    let mut expressions = expressions.into_iter();
+    for constraint in constraints {
+        let Some(holonomic) = expressions.next() else {
+            return Err(rumoca_phase_solve::SolveModelLowerError::Lower(
+                rumoca_phase_solve::LowerError::UnspannedContractViolation {
+                    reason: "retained holonomic constraint inventory changed while applying \
+                             structural substitutions"
+                        .to_string(),
+                },
+            ));
+        };
+        constraint.holonomic.rhs = holonomic;
+        if let Some(velocity) = &mut constraint.velocity {
+            let Some(resolved_velocity) = expressions.next() else {
+                return Err(rumoca_phase_solve::SolveModelLowerError::Lower(
+                    rumoca_phase_solve::LowerError::UnspannedContractViolation {
+                        reason: "retained velocity constraint inventory changed while applying \
+                                 structural substitutions"
+                            .to_string(),
+                    },
+                ));
+            };
+            velocity.rhs = resolved_velocity;
+        }
+    }
+    if expressions.next().is_some() {
+        return Err(rumoca_phase_solve::SolveModelLowerError::Lower(
+            rumoca_phase_solve::LowerError::UnspannedContractViolation {
+                reason: "retained constraint substitution produced unclaimed expressions"
+                    .to_string(),
+            },
+        ));
+    }
+    Ok(())
 }
 
 fn scalarize_solver_view(

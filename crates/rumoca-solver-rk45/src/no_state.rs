@@ -6,8 +6,9 @@ use rumoca_solver::{
     ProjectedEventUpdateInput, ProjectedInitialEventInput, RuntimeEventBoundary,
     RuntimeEventBoundaryHandler, RuntimeEventStop, RuntimeSolveError, SimOptions, SimTermination,
     SolveRuntime, SolveStopSchedule, apply_discrete_slot_values, commit_pre_params_after_event_at,
-    first_no_state_root_crossing, process_runtime_event_boundary, run_no_state_output_schedule,
-    runtime_event_horizon, runtime_root_event_application_time, runtime_values_changed,
+    first_no_state_root_crossing, no_state_root_scan_step_ceiling, process_runtime_event_boundary,
+    run_no_state_output_schedule, runtime_event_horizon, runtime_root_event_application_time,
+    runtime_values_changed,
     timeline::{event_left_probe_time, sample_time_match_with_tol},
 };
 
@@ -210,7 +211,7 @@ impl NoStateOrchestrationBackend for Rk45NoStateOrchestration<'_> {
     }
 
     fn max_accepted_step_size(&self) -> Option<f64> {
-        self.runtime.runtime.delay_step_limit()
+        no_state_root_scan_step_ceiling(self.opts.dt, self.runtime.runtime.delay_step_limit())
     }
 
     fn next_scheduled_stop(&mut self, target: f64) -> Result<NoStateScheduledStop, Self::Error> {

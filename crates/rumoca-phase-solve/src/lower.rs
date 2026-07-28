@@ -14,6 +14,7 @@ mod array_values;
 mod builtin_methods;
 mod clock;
 mod compile_time;
+mod complex_field_access;
 #[cfg(test)]
 mod complex_operator_tests;
 mod complex_projection;
@@ -22,6 +23,7 @@ mod derivative_rhs;
 mod discrete_updates;
 mod emit;
 mod error;
+mod event_threshold;
 mod expression_rows;
 mod fft;
 mod function_calls;
@@ -42,6 +44,7 @@ mod test_fixtures;
 mod tests;
 
 use cse::RowCse;
+pub(crate) use derivative_rhs::{ContinuousEquationRow, ContinuousEquationRowProjection};
 pub(crate) use discrete_updates::{
     initial_condition_update_equations, lower_initial_update_rhs,
     normalized_discrete_update_equations,
@@ -138,6 +141,14 @@ pub(crate) fn lower_compact_residual_expressions(
     expression_rows::lower_compact_residual_expressions(dae_model, layout, expressions, owner_span)
 }
 
+pub(crate) fn lower_native_algebraic_residual_nodes(
+    dae_model: &dae::Dae,
+    layout: &VarLayout,
+    residual_equations: &[(usize, &dae::Equation)],
+) -> Result<Vec<expression_rows::NativeResidualNode>, LowerError> {
+    expression_rows::lower_native_algebraic_residual_nodes(dae_model, layout, residual_equations)
+}
+
 pub(crate) fn scalarized_record_field_binding_names(
     base: &str,
     layout: &VarLayout,
@@ -200,12 +211,6 @@ pub fn lower_derivative_rhs_scalar_programs(
     derivative_rhs::lower_derivative_rhs_scalar_programs(dae_model, layout)
 }
 
-pub(crate) fn state_derivative_equation_flags(
-    dae_model: &dae::Dae,
-) -> Result<Vec<bool>, LowerError> {
-    derivative_rhs::state_derivative_equation_flags(dae_model)
-}
-
 pub fn lower_discrete_rhs(
     dae_model: &dae::Dae,
     layout: &VarLayout,
@@ -240,6 +245,31 @@ pub(crate) fn lower_discrete_rhs_from_equations(
         )?,
     )?
     .programs)
+}
+
+pub(crate) fn lower_manifold_residual(
+    dae_model: &dae::Dae,
+    layout: &VarLayout,
+    equations: &[&dae::Equation],
+) -> Result<ComputeBlock, LowerError> {
+    let structural_bindings = compile_time::structural_bindings(dae_model)?;
+    expression_rows::lower_expression_rows_with_mode(
+        equations.iter().copied(),
+        layout,
+        &dae_model.symbols.functions,
+        expression_rows::RuntimeRowMetadata {
+            clock_intervals: &dae_model.clocks.intervals,
+            clock_timings: &dae_model.clocks.timings,
+            triggered_clock_conditions: &dae_model.clocks.triggered_conditions,
+            discrete_valued_names: &dae_model.variables.discrete_valued,
+            variable_starts: &dae_model.metadata.variable_starts,
+            dae_variables: Some(&dae_model.variables),
+            structural_bindings: Some(Arc::new(structural_bindings)),
+            direct_assignments: None,
+            guard_target_start_before_first_clock_tick: false,
+        },
+        false,
+    )
 }
 
 pub(crate) fn lower_runtime_assignment_rhs(
@@ -1869,125 +1899,6 @@ impl<'a> LowerBuilder<'a> {
         self.with_optional_source_context(Self::non_dummy_span(field_access_span), |this| {
             this.lower_if(&projected_branches, &projected_else, scope, call_depth)
         })
-    }
-
-    fn lower_complex_operator_field_access(
-        &mut self,
-        base: &rumoca_core::Expression,
-        field: &str,
-        scope: &Scope,
-        call_depth: usize,
-    ) -> Result<Option<Reg>, LowerError> {
-        let (re, im) = match base {
-            // MLS operator overloading for Complex numbers is flattened into
-            // ordinary expression trees. Projected `re/im` access must recover
-            // the selected component from the complex arithmetic result.
-            rumoca_core::Expression::Binary { op, lhs, rhs, span } => {
-                let (lhs_re, lhs_im) =
-                    self.lower_complex_operand_parts(lhs, *span, scope, call_depth)?;
-                let (rhs_re, rhs_im) =
-                    self.lower_complex_operand_parts(rhs, *span, scope, call_depth)?;
-                let op = match op {
-                    rumoca_core::OpBinary::Add => BinaryOp::Add,
-                    rumoca_core::OpBinary::Sub => BinaryOp::Sub,
-                    rumoca_core::OpBinary::Mul => BinaryOp::Mul,
-                    rumoca_core::OpBinary::Div => BinaryOp::Div,
-                    _ => return Ok(None),
-                };
-                self.lower_complex_binary_parts(op, lhs_re, lhs_im, rhs_re, rhs_im, *span)?
-            }
-            rumoca_core::Expression::Unary {
-                op: rumoca_core::OpUnary::Minus,
-                rhs,
-                span,
-            } => {
-                let (rhs_re, rhs_im) =
-                    self.lower_complex_operand_parts(rhs, *span, scope, call_depth)?;
-                (
-                    self.emit_unary_at(UnaryOp::Neg, rhs_re, *span)?,
-                    self.emit_unary_at(UnaryOp::Neg, rhs_im, *span)?,
-                )
-            }
-            rumoca_core::Expression::FunctionCall {
-                name, args, span, ..
-            } => {
-                let Some(op) = complex_operator_call_op(name.as_str()) else {
-                    return Ok(None);
-                };
-                let lhs = args.first().ok_or_else(|| {
-                    LowerError::contract_violation(
-                        format!("{} requires lhs for complex operator call", name.as_str()),
-                        *span,
-                    )
-                })?;
-                let rhs = args.get(1).ok_or_else(|| {
-                    LowerError::contract_violation(
-                        format!("{} requires rhs for complex operator call", name.as_str()),
-                        *span,
-                    )
-                })?;
-                let (lhs_re, lhs_im) =
-                    self.lower_complex_operand_parts(lhs, *span, scope, call_depth)?;
-                let (rhs_re, rhs_im) =
-                    self.lower_complex_operand_parts(rhs, *span, scope, call_depth)?;
-                self.lower_complex_binary_parts(op, lhs_re, lhs_im, rhs_re, rhs_im, *span)?
-            }
-            _ => return Ok(None),
-        };
-        Ok(Some(if field == "re" { re } else { im }))
-    }
-
-    fn lower_complex_binary_parts(
-        &mut self,
-        op: BinaryOp,
-        lhs_re: Reg,
-        lhs_im: Reg,
-        rhs_re: Reg,
-        rhs_im: Reg,
-        span: rumoca_core::Span,
-    ) -> Result<(Reg, Reg), LowerError> {
-        match op {
-            BinaryOp::Add => Ok((
-                self.emit_binary_at(BinaryOp::Add, lhs_re, rhs_re, span)?,
-                self.emit_binary_at(BinaryOp::Add, lhs_im, rhs_im, span)?,
-            )),
-            BinaryOp::Sub => Ok((
-                self.emit_binary_at(BinaryOp::Sub, lhs_re, rhs_re, span)?,
-                self.emit_binary_at(BinaryOp::Sub, lhs_im, rhs_im, span)?,
-            )),
-            BinaryOp::Mul => {
-                let ac = self.emit_binary_at(BinaryOp::Mul, lhs_re, rhs_re, span)?;
-                let bd = self.emit_binary_at(BinaryOp::Mul, lhs_im, rhs_im, span)?;
-                let ad = self.emit_binary_at(BinaryOp::Mul, lhs_re, rhs_im, span)?;
-                let bc = self.emit_binary_at(BinaryOp::Mul, lhs_im, rhs_re, span)?;
-                Ok((
-                    self.emit_binary_at(BinaryOp::Sub, ac, bd, span)?,
-                    self.emit_binary_at(BinaryOp::Add, ad, bc, span)?,
-                ))
-            }
-            BinaryOp::Div => {
-                let rr2 = self.emit_binary_at(BinaryOp::Mul, rhs_re, rhs_re, span)?;
-                let ri2 = self.emit_binary_at(BinaryOp::Mul, rhs_im, rhs_im, span)?;
-                let denom = self.emit_binary_at(BinaryOp::Add, rr2, ri2, span)?;
-                let lhs_rr = self.emit_binary_at(BinaryOp::Mul, lhs_re, rhs_re, span)?;
-                let lhs_ri = self.emit_binary_at(BinaryOp::Mul, lhs_re, rhs_im, span)?;
-                let li_rr = self.emit_binary_at(BinaryOp::Mul, lhs_im, rhs_re, span)?;
-                let li_ri = self.emit_binary_at(BinaryOp::Mul, lhs_im, rhs_im, span)?;
-                let re_num = self.emit_binary_at(BinaryOp::Add, lhs_rr, li_ri, span)?;
-                let im_num = self.emit_binary_at(BinaryOp::Sub, li_rr, lhs_ri, span)?;
-                Ok((
-                    self.emit_binary_at(BinaryOp::Div, re_num, denom, span)?,
-                    self.emit_binary_at(BinaryOp::Div, im_num, denom, span)?,
-                ))
-            }
-            _ => Err(LowerError::contract_violation(
-                format!(
-                    "complex operator call mapped to unsupported binary op {}",
-                    op.kind_name()
-                ),
-                span,
-            )),
-        }
     }
 }
 mod source_spans;

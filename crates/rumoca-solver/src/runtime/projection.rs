@@ -12,9 +12,12 @@ use scaling::{
 use singleton::{SingletonAssignmentStep, initial_row_target_name, singleton_assignment_improves};
 
 mod homotopy;
+mod manifold;
 mod plan;
 mod scaling;
 mod singleton;
+
+pub use manifold::{ManifoldProjectionModel, project_state_manifold};
 
 use plan::{
     algebraic_tail_len, require_square_projection_block, validate_algebraic_projection_plan,

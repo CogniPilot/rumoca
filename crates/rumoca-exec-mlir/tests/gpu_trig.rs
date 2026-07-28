@@ -159,6 +159,8 @@ fn nonlinear_drone_prepared(m: f64, j: f64, f: f64, g: f64) -> rumoca_ir_solve::
                 residual: zero_block.clone(),
                 derivative_rhs: solve.continuous.derivative_rhs.clone(),
                 algebraic_projection_plan: rumoca_ir_solve::AlgebraicProjectionPlan::default(),
+                manifold_residual: ComputeBlock::default(),
+                manifold_projection_plan: rumoca_ir_solve::AlgebraicProjectionPlan::default(),
             },
             initialization: InitializationSolveSystem {
                 residual: ComputeBlock::from_scalar_program_block(zero_rb.clone()),
@@ -210,6 +212,7 @@ fn nonlinear_drone_prepared(m: f64, j: f64, f: f64, g: f64) -> rumoca_ir_solve::
                 mass_matrix: rumoca_ir_solve::MassMatrix::Identity,
                 implicit_jacobian_v: zero_block,
                 implicit_jacobian_v_scalar: zero_rb.clone(),
+                manifold_jacobian_v: ComputeBlock::default(),
                 full_jacobian_v: zero_rb.clone(),
             },
             ..Default::default()

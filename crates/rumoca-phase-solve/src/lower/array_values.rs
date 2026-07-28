@@ -478,8 +478,15 @@ impl<'a> LowerBuilder<'a> {
         scope: &Scope,
         call_depth: usize,
     ) -> Result<Option<Reg>, LowerError> {
-        // MLS §10.6.2: fill(s, ...) constructs an array whose every selected
-        // element is the scalar expression `s`.
+        // MLS §10.3.3 permits an array-valued seed. Its dimensions trail the
+        // fill-prefix dimensions, so selecting a result element must also
+        // project into the seed. The scalar shortcut below cannot prove that
+        // mapping; decline it and let generic array selection use the fully
+        // lowered row-major values.
+        if !self.infer_expr_dims(&args[0], scope)?.is_empty() {
+            return Ok(None);
+        }
+        // A scalar seed is repeated at every selected prefix point.
         let owner_span = expr_span_from_subscripts(subscripts).or_else(|| base.span());
         let value = self.lower_structural_index_leaf(
             &args[0],

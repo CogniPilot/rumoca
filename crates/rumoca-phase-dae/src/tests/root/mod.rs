@@ -74,6 +74,29 @@ fn make_structured_var_ref(name: &str) -> rumoca_core::Expression {
     }
 }
 
+fn resolved_function_reference(
+    flat: &flat::Model,
+    name: &str,
+    def_id: rumoca_core::DefId,
+) -> rumoca_core::Reference {
+    let function_name = VarName::new(name);
+    let instance_id = flat.functions[&function_name]
+        .instance_id
+        .expect("Flat function has instance identity");
+    let mut component_ref = rumoca_core::component_reference_from_flat_name(
+        &function_name,
+        crate::test_support::test_span(),
+    )
+    .expect("structured function reference");
+    component_ref.def_id = Some(def_id);
+    rumoca_core::Reference::from_component_reference(component_ref).with_resolved_function(
+        rumoca_core::ResolvedFunctionReference {
+            instance_id,
+            base_part_count: function_name.segments().len(),
+        },
+    )
+}
+
 fn add_connection_equation(flat: &mut Model, lhs: &str, rhs: &str) {
     flat.add_equation(rumoca_ir_flat::Equation {
         residual: rumoca_core::Expression::Binary {
@@ -1148,6 +1171,8 @@ fn test_todae_lowers_when_multi_output_function_call_to_selection_updates() {
     }
 
     let mut function = rumoca_core::Function::new("Noise.next", crate::test_support::test_span());
+    let function_def_id = rumoca_core::DefId::new(730);
+    function.def_id = Some(function_def_id);
     function.add_input(rumoca_core::FunctionParam::new(
         "seed",
         "Real",
@@ -1174,13 +1199,14 @@ fn test_todae_lowers_when_multi_output_function_call_to_selection_updates() {
         span: crate::test_support::test_span(),
     });
     flat.add_function(function);
+    let function_ref = resolved_function_reference(&flat, "Noise.next", function_def_id);
 
     let mut when_clause =
         rumoca_ir_flat::WhenClause::new(make_var_ref("trigger"), crate::test_support::test_span());
     when_clause.add_equation(rumoca_ir_flat::WhenEquation::function_call_outputs(
         vec![VarName::new("noise.r_raw"), VarName::new("noise.state")],
         rumoca_core::Expression::FunctionCall {
-            name: VarName::new("Noise.next").into(),
+            name: function_ref,
             args: vec![make_var_ref("seed")],
             is_constructor: false,
             span: crate::test_support::test_span(),

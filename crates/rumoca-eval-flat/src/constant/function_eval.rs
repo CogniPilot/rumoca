@@ -1049,20 +1049,9 @@ fn eval_range_values(
             return Err(EvalError::range_error("step cannot be zero", span));
         }
 
-        let mut values = Vec::new();
-        let mut i = s;
-        if step_int > 0 {
-            while i <= e {
-                values.push(Value::Integer(i));
-                i += step_int;
-            }
-        } else {
-            while i >= e {
-                values.push(Value::Integer(i));
-                i += step_int;
-            }
-        }
-        return Ok(Value::Array(values));
+        return Ok(Value::Array(super::range_eval::collect_int_range(
+            s, e, step_int,
+        )));
     }
 
     // Real range
@@ -1082,21 +1071,14 @@ fn eval_range_values(
     if step_f == 0.0 {
         return Err(EvalError::range_error("step cannot be zero", span));
     }
-
-    let mut values = Vec::new();
-    let mut v = s;
-    if step_f > 0.0 {
-        while v <= e + f64::EPSILON {
-            values.push(Value::Real(v));
-            v += step_f;
-        }
-    } else {
-        while v >= e - f64::EPSILON {
-            values.push(Value::Real(v));
-            v += step_f;
-        }
+    if !s.is_finite() || !e.is_finite() || !step_f.is_finite() {
+        return Err(EvalError::range_error(
+            "range bounds and step must be finite",
+            span,
+        ));
     }
-    Ok(Value::Array(values))
+
+    super::range_eval::collect_real_range(s, e, step_f, span).map(Value::Array)
 }
 
 /// Convert a ComponentReference to a simple name string.

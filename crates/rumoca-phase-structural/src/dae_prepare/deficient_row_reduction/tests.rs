@@ -10,7 +10,8 @@ use rumoca_ir_dae::{Dae, Equation, Variable};
 use super::{
     Expression, Nomination, Prolongation, ProlongationOutcome, RankOutcome,
     alternating_path_shells, expression_node_count, index_reduce_deficient_constraint_rows,
-    nominate_deficient_rows, row_gains_information, row_is_vacuous,
+    index_reduce_deficient_constraint_rows_with_metadata, nominate_deficient_rows,
+    row_gains_information, row_is_vacuous,
 };
 
 fn test_span() -> Span {
@@ -334,10 +335,29 @@ fn refs_of(expr: &Expression) -> Vec<String> {
 #[test]
 fn a_twice_differentiated_constraint_retains_both_its_position_and_velocity_form() {
     let mut dae = index_three_chain_dae();
-    let changed = index_reduce_deficient_constraint_rows(&mut dae);
+    let result = index_reduce_deficient_constraint_rows_with_metadata(&mut dae);
     assert_eq!(
-        changed, 2,
+        result.differentiated_rows, 2,
         "the closure is differentiated once per round and both rounds are retained"
+    );
+    assert_eq!(result.constraints.len(), 1);
+    let retained = &result.constraints[0];
+    assert_eq!(retained.source_row, 2);
+    assert_eq!(
+        format!("{:?}", retained.holonomic.rhs),
+        format!("{:?}", index_three_chain_dae().continuous.equations[2].rhs),
+        "the sidecar preserves the position-level manifold residual"
+    );
+    assert_eq!(
+        refs_of(
+            &retained
+                .velocity
+                .as_ref()
+                .expect("two differentiations retain a velocity constraint")
+                .rhs
+        ),
+        vec!["v".to_string()],
+        "the sidecar preserves the velocity-level manifold residual"
     );
     assert_eq!(
         refs_of(&dae.continuous.equations[2].rhs),

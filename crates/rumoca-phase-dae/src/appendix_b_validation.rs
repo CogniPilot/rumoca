@@ -67,10 +67,20 @@ fn solver_facing_dae_expressions(
 ) -> Result<Vec<(String, &rumoca_core::Expression, rumoca_core::Span)>, ToDaeError> {
     let mut exprs = Vec::new();
     push_partition_exprs(&mut exprs, "f_x", &dae_model.continuous.equations);
+    push_structured_template_exprs(
+        &mut exprs,
+        "f_x.structured_equations",
+        &dae_model.continuous.structured_equations,
+    );
     push_partition_exprs(
         &mut exprs,
         "initial_equations",
         &dae_model.initialization.equations,
+    );
+    push_structured_template_exprs(
+        &mut exprs,
+        "initial_equations.structured_equations",
+        &dae_model.initialization.structured_equations,
     );
     push_partition_exprs(&mut exprs, "f_z", &dae_model.discrete.real_updates);
     push_partition_exprs(&mut exprs, "f_m", &dae_model.discrete.valued_updates);
@@ -128,6 +138,31 @@ fn solver_facing_dae_expressions(
         exprs.push((format!("clocks.triggered_conditions[{idx}]"), expr, span));
     }
     Ok(exprs)
+}
+
+fn push_structured_template_exprs<'a>(
+    exprs: &mut Vec<(String, &'a rumoca_core::Expression, rumoca_core::Span)>,
+    partition: &str,
+    families: &'a [dae::StructuredEquationFamily],
+) {
+    for (family_index, family) in families.iter().enumerate() {
+        let Some(template) = &family.template else {
+            continue;
+        };
+        exprs.extend(
+            template
+                .body
+                .iter()
+                .enumerate()
+                .map(|(body_index, expression)| {
+                    (
+                        format!("{partition}[{family_index}].template.body[{body_index}]"),
+                        expression,
+                        family.span,
+                    )
+                }),
+        );
+    }
 }
 
 fn push_partition_exprs<'a>(
@@ -230,9 +265,7 @@ impl ExpressionVisitor for SourceTemporalOperatorChecker {
                 }
             }
             rumoca_core::Expression::FunctionCall { name, span, .. } => {
-                if let Some(operator) =
-                    rumoca_core::source_temporal_function_short_name(name.as_str())
-                {
+                if let Some(operator) = dae_temporal_function_name(name) {
                     self.found = Some(SourceTemporalOperatorOccurrence {
                         operator,
                         span: real_span(*span),
@@ -268,7 +301,7 @@ impl ExpressionVisitor for SourceTemporalOperatorChecker {
         args: &[rumoca_core::Expression],
         is_constructor: bool,
     ) {
-        if let Some(operator) = rumoca_core::source_temporal_function_short_name(name.as_str()) {
+        if let Some(operator) = dae_temporal_function_name(name) {
             self.found = Some(SourceTemporalOperatorOccurrence {
                 operator,
                 span: None,
@@ -277,6 +310,13 @@ impl ExpressionVisitor for SourceTemporalOperatorChecker {
         }
         self.walk_function_call(name, args, is_constructor);
     }
+}
+
+fn dae_temporal_function_name(name: &rumoca_core::Reference) -> Option<&'static str> {
+    if name.as_str() == rumoca_core::INTERNAL_SAMPLE_FUNCTION_NAME {
+        return Some("sample");
+    }
+    rumoca_core::source_dae_forbidden_function_name(name.last_segment())
 }
 
 fn real_span(span: rumoca_core::Span) -> Option<rumoca_core::Span> {
@@ -895,7 +935,6 @@ fn validate_scheduled_roots(dae_model: &dae::Dae) -> Result<(), ToDaeError> {
 
     let root_condition_count = dae_model
         .conditions
-        .relations
         .len()
         .checked_add(dae_model.events.synthetic_root_conditions.len())
         .and_then(|count| count.checked_add(dae_model.clocks.triggered_conditions.len()))
@@ -1354,6 +1393,34 @@ mod tests {
 
         let err = validate_appendix_b_invariants(&dae_model)
             .expect_err("raw source temporal operator must fail the DAE boundary validation gate");
+        assert!(matches!(
+            err,
+            ToDaeError::SourceTemporalOperatorSurvivedDaeBoundary { .. }
+        ));
+    }
+
+    #[test]
+    fn internal_sample_name_cannot_bypass_dae_temporal_gate() {
+        let mut dae_model = dae::Dae::default();
+        dae_model
+            .variables
+            .discrete_valued
+            .insert(rumoca_core::VarName::new("tick"), bool_var("tick"));
+        dae_model
+            .discrete
+            .valued_updates
+            .push(dae::Equation::explicit(
+                rumoca_core::VarName::new("tick"),
+                call(
+                    rumoca_core::INTERNAL_SAMPLE_FUNCTION_NAME,
+                    vec![lit(0.0), lit(0.1)],
+                ),
+                test_span(),
+                "generated sample alias",
+            ));
+
+        let err = validate_appendix_b_invariants(&dae_model)
+            .expect_err("a textual sample alias must not evade SPEC_0007 validation");
         assert!(matches!(
             err,
             ToDaeError::SourceTemporalOperatorSurvivedDaeBoundary { .. }

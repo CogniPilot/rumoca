@@ -191,8 +191,8 @@ thread_local! {
 
 /// Resolve the `SourceId` for a parol token path, reusing the per-file memo.
 ///
-/// The value is identical to `SourceId::from_source_name(&path.to_string_lossy())`
-/// so span identity is preserved bit-for-bit against the pre-memo parser.
+/// Real paths hash through `SourceId::from_source_name`; canonical
+/// `<source-id:...>` registrations decode to their preassigned identity.
 fn parser_source_id(path: &Arc<PathBuf>) -> rumoca_core::SourceId {
     PARSE_SOURCE_ID.with(|cell| {
         let mut slot = cell.borrow_mut();
@@ -201,7 +201,7 @@ fn parser_source_id(path: &Arc<PathBuf>) -> rumoca_core::SourceId {
         {
             return *id;
         }
-        let id = rumoca_core::SourceId::from_source_name(path.to_string_lossy().as_ref());
+        let id = rumoca_core::source_id_for_name(path.to_string_lossy().as_ref());
         *slot = Some((Arc::clone(path), id));
         id
     })
@@ -702,6 +702,23 @@ end Ball;
 "#;
         let result = parse_string(source, "test.mo");
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn repeated_exponentiation_is_rejected_instead_of_truncated() {
+        let source = "model M\n  Real x;\nequation\n  x = 2^3^2;\nend M;";
+        let result = parse_string(source, "test.mo");
+        assert!(
+            result.is_err(),
+            "non-parenthesized repeated exponentiation must fail"
+        );
+    }
+
+    #[test]
+    fn duplicate_top_level_class_names_are_rejected() {
+        let source = "model M end M;\nmodel M end M;";
+        let error = parse_string(source, "test.mo").expect_err("duplicate class must fail");
+        assert!(error.to_string().contains("Duplicate top-level class"));
     }
 
     #[test]

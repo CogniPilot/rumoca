@@ -159,6 +159,82 @@ fn solve_problem_lowers_direct_derivative_family_to_one_map() {
 }
 
 #[test]
+fn derivative_system_row_order_removal_preserves_interleaved_structured_family() {
+    let span = solve_test_span();
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .states
+        .insert(rumoca_core::VarName::new("x"), source_array_var("x", &[2]));
+    dae_model
+        .variables
+        .states
+        .insert(rumoca_core::VarName::new("y"), source_array_var("y", &[2]));
+    for index in 1..=2 {
+        for base in ["x", "y"] {
+            let state = source_indexed_var(
+                base,
+                vec![rumoca_core::Subscript::generated_index(index, span)],
+            );
+            dae_model.continuous.equations.push(dae::Equation::residual(
+                binary(
+                    rumoca_core::OpBinary::Sub,
+                    der(state.clone()),
+                    rumoca_core::Expression::Unary {
+                        op: rumoca_core::OpUnary::Minus,
+                        rhs: Box::new(state),
+                        span,
+                    },
+                ),
+                span,
+                "interleaved structured derivative body",
+            ));
+        }
+    }
+    dae_model
+        .continuous
+        .structured_equations
+        .push(dae::StructuredEquationFamily {
+            domain: rumoca_core::StructuredIndexDomain {
+                binders: vec![rumoca_core::StructuredIndexBinder {
+                    id: 0,
+                    display_name: "i".to_string(),
+                    lower: 1,
+                    upper: 2,
+                    step: 1,
+                }],
+            },
+            first_equation_index: 0,
+            equations_per_point: 2,
+            span,
+            origin: "interleaved structured derivative body".to_string(),
+            regular: None,
+            template: None,
+            interiors_materialized: true,
+        });
+
+    let model = lower_dae_to_solve_model_owned(dae_model.clone())
+        .expect("runtime lowering must preserve the original structured row family");
+    assert!(
+        matches!(
+            model.problem.continuous.derivative_rhs.nodes.as_slice(),
+            [
+                solve::ComputeNode::Map { .. },
+                solve::ComputeNode::Map { .. }
+            ]
+        ),
+        "both structured derivative bodies should remain native: {:?}",
+        model.problem.continuous.derivative_rhs.nodes
+    );
+    let report = tensor_preservation_report(&dae_model, &model.problem)
+        .expect("structured derivative report should retain source family metadata");
+    assert_eq!(report.preserved_family_bodies, 2);
+    assert_eq!(report.scalarized_family_bodies, 0);
+    assert_eq!(report.scalarized_family_rows, 0);
+    assert!(report.fallbacks.is_empty());
+}
+
+#[test]
 fn solve_problem_lowers_aggregate_array_template_directly_to_map() {
     let span = solve_test_span();
     let mut dae_model = dae::Dae::default();

@@ -95,8 +95,10 @@ pub use solve_model::{
     lower_dae_to_solve_model_owned,
     lower_dae_to_solve_model_owned_for_gpu_preparation_with_metadata,
     lower_dae_to_solve_model_owned_for_gpu_preparation_with_metadata_and_overrides,
+    lower_dae_to_solve_model_owned_value_only_with_manifold_constraints_and_overrides,
     lower_dae_to_solve_model_owned_value_only_with_visible_expressions_and_metadata,
     lower_dae_to_solve_model_owned_value_only_with_visible_expressions_and_metadata_and_overrides,
+    lower_dae_to_solve_model_owned_with_manifold_constraints_and_overrides,
     lower_dae_to_solve_model_owned_with_visible_expressions,
     lower_dae_to_solve_model_owned_with_visible_expressions_and_metadata,
     lower_dae_to_solve_model_owned_with_visible_expressions_and_metadata_and_overrides,
@@ -348,17 +350,18 @@ fn lower_solve_problem_with_declines(
     profile: SolveProblemLoweringProfile,
     declines: &mut TensorDeclineJournal,
 ) -> Result<solve::SolveProblem, LowerError> {
-    if ir_boundary_validation_enabled() {
-        dae_model.validate_shape_contract().map_err(|err| {
-            lower_contract_violation(format!("invalid DAE IR shape contract: {err}"), err.span())
-        })?;
-    }
     appendix_b_validation::validate_solve_input_appendix_b_invariants(dae_model)?;
     // Consume the finalized output of the structural DAE-to-DAE alias pass.
     // Keeping the pass in phase-structural enforces SPEC_0007's phase boundary:
     // Solve lowering never owns mathematical DAE rewrites.
     let dummy_eliminated =
-        rumoca_phase_structural::dae_prepare::eliminate_dummy_derivative_aliases(dae_model);
+        rumoca_phase_structural::dae_prepare::eliminate_dummy_derivative_aliases(dae_model)
+            .map_err(|source| {
+                lower_contract_violation(
+                    format!("structural DAE transformation failed: {source}"),
+                    source.source_span().unwrap_or(rumoca_core::Span::DUMMY),
+                )
+            })?;
     let dae_model = dummy_eliminated.as_ref().unwrap_or(dae_model);
     // Record the continuous families THIS lowering consumes, before any of it
     // runs. Alias elimination above can already have rewritten the caller's
@@ -386,29 +389,26 @@ fn lower_solve_problem_with_declines(
 
     let timer = timing::stage_start();
     let runtime_tail_updates = runtime_tail_update_names(dae_model)?;
-    let runtime_assignment_equations =
-        runtime_assignment_equations(dae_model, &runtime_tail_updates)?;
     let discrete_update_equations = normalized_discrete_update_equations(dae_model)
         .map_err(|err| lower_problem_context(err, "collect discrete update equations"))?;
     timing::log_stage("problem.collect_runtime_equations", timer);
     let timer = timing::stage_start();
     let mut derivative_analysis = lower::analyze_derivative_rhs(dae_model)
         .map_err(|err| lower_problem_context(err, "analyze derivative RHS rows"))?;
-    let state_derivative_rows = lower_bool_slice_copy(
-        derivative_analysis.equation_flags(),
-        "state derivative row flag count",
-        model_span,
-    )?;
+    let continuous_rows = derivative_analysis.take_continuous_rows();
     timing::log_stage("problem.analyze_derivative_rhs", timer);
     let timer = timing::stage_start();
+    let runtime_assignment_equations =
+        runtime_assignment_equations(dae_model, &runtime_tail_updates, &continuous_rows)?;
     let residual_equations = if profile.lower_residual_equations() {
-        solver_residual_equations(dae_model, &runtime_tail_updates, &state_derivative_rows)?
+        solver_residual_equations(dae_model, &runtime_tail_updates, &continuous_rows)?
     } else {
         Vec::new()
     };
-    // `solver_residual_equations` has already removed state-derivative rows.
-    // The remaining original DAE indices are not a state-row prefix, so residual
-    // lowering must not infer derivative-row behavior from `row_idx < n_x`.
+    // `solver_residual_equations` has already removed derivative projections.
+    // Source rows retain their DAE index; projected rows receive a disjoint
+    // lowering namespace, so residual lowering must not infer derivative-row
+    // behavior from `row_idx < n_x`.
     let (residual, residual_targets) = lower_residual_rows_and_targets_from_equations(
         dae_model,
         &layout,
@@ -545,6 +545,8 @@ fn lower_solve_problem_with_declines(
             implicit_rhs,
             algebraic_projection_plan,
             residual: residual_block,
+            manifold_residual: solve::ComputeBlock::default(),
+            manifold_projection_plan: solve::AlgebraicProjectionPlan::default(),
             derivative_rhs,
         },
         initialization,
@@ -578,23 +580,13 @@ fn lower_solve_problem_with_declines(
     };
 
     appendix_b_validation::validate_solve_problem_appendix_b_invariants(&problem)?;
-    if ir_boundary_validation_enabled() {
-        problem.validate_shape_contract().map_err(|err| {
-            lower_optional_contract_violation(
-                format!("invalid Solve IR shape contract: {err}"),
-                err.source_span(),
-            )
-        })?;
-    }
+    problem.validate().map_err(|err| {
+        lower_optional_contract_violation(
+            format!("invalid Solve IR stage contract: {err}"),
+            err.source_span(),
+        )
+    })?;
     Ok(problem)
-}
-
-fn ir_boundary_validation_enabled() -> bool {
-    cfg!(any(
-        debug_assertions,
-        test,
-        feature = "strict-ir-validation"
-    ))
 }
 
 struct DiscreteSystemInputs<'a> {
@@ -1078,6 +1070,168 @@ fn initialization_projection_plan_from_combined(
     Ok(solve::InitializationProjectionPlan { blocks })
 }
 
+fn retained_manifold_equations(
+    constraints: &[rumoca_phase_structural::dae_prepare::IndexReducedConstraint],
+    span: rumoca_core::Span,
+) -> Result<Vec<&dae::Equation>, LowerError> {
+    let equation_capacity = constraints.len().checked_mul(2).ok_or_else(|| {
+        lower_contract_violation("manifold equation count overflows".into(), span)
+    })?;
+    let mut equations =
+        lower_vec_with_capacity(equation_capacity, "manifold equation count", span)?;
+    for constraint in constraints {
+        equations.push(&constraint.holonomic);
+        if let Some(velocity) = &constraint.velocity {
+            equations.push(velocity);
+        }
+    }
+    Ok(equations)
+}
+
+fn manifold_row_state_incidence(
+    scalar: &solve::ScalarProgramBlock,
+    state_count: usize,
+    span: rumoca_core::Span,
+) -> Result<Vec<BTreeSet<usize>>, LowerError> {
+    if !scalar.uses_local_contiguous_output_indices() {
+        return Err(lower_contract_violation(
+            "index-reduced manifold residual rows are not locally contiguous".to_string(),
+            span,
+        ));
+    }
+    let row_count = scalar.output_count();
+    if row_count == 0 {
+        return Err(lower_contract_violation(
+            "index reduction retained constraints but produced no manifold residual rows"
+                .to_string(),
+            span,
+        ));
+    }
+    let mut row_states = vec![BTreeSet::<usize>::new(); row_count];
+    let mut output_ordinal = 0usize;
+    for program in &scalar.programs {
+        let mut states = BTreeSet::new();
+        for op in program {
+            let solve::LinearOp::LoadY { index, .. } = op else {
+                continue;
+            };
+            if *index >= state_count {
+                return Err(lower_contract_violation(
+                    format!(
+                        "index-reduced manifold residual depends on non-state solver slot \
+                         Y[{index}]; this reduction cannot be simulated without silently \
+                         weakening its constraint"
+                    ),
+                    span,
+                ));
+            }
+            states.insert(*index);
+        }
+        let stored_outputs = solve::ScalarProgramBlock::program_output_count(program);
+        for _ in 0..stored_outputs {
+            let Some(&row) = scalar.output_indices.get(output_ordinal) else {
+                return Err(lower_contract_violation(
+                    "manifold scalar output inventory changed during projection planning"
+                        .to_string(),
+                    span,
+                ));
+            };
+            let Some(row_inventory) = row_states.get_mut(row) else {
+                return Err(lower_contract_violation(
+                    format!("manifold residual output row {row} is outside {row_count} rows"),
+                    span,
+                ));
+            };
+            row_inventory.extend(states.iter().copied());
+            output_ordinal += 1;
+        }
+    }
+    if output_ordinal != row_count {
+        return Err(lower_contract_violation(
+            format!(
+                "manifold residual stores {output_ordinal} outputs but declares {row_count} rows"
+            ),
+            span,
+        ));
+    }
+    Ok(row_states)
+}
+
+fn manifold_projection_plan_from_incidence(
+    row_states: Vec<BTreeSet<usize>>,
+    span: rumoca_core::Span,
+) -> Result<solve::AlgebraicProjectionPlan, LowerError> {
+    let mut components = Vec::<(Vec<usize>, BTreeSet<usize>)>::new();
+    for (row, states) in row_states.into_iter().enumerate() {
+        if states.is_empty() {
+            return Err(lower_contract_violation(
+                format!(
+                    "index-reduced manifold residual row {row} has no state dependence; \
+                     safe state projection is unavailable"
+                ),
+                span,
+            ));
+        }
+        let mut merged_rows = vec![row];
+        let mut merged_states = states;
+        let mut component = 0usize;
+        while component < components.len() {
+            if components[component].1.is_disjoint(&merged_states) {
+                component += 1;
+                continue;
+            }
+            let (rows, states) = components.remove(component);
+            merged_rows.extend(rows);
+            merged_states.extend(states);
+        }
+        components.push((merged_rows, merged_states));
+    }
+    components.sort_by_key(|(rows, _)| rows.first().copied().unwrap_or(usize::MAX));
+    let mut blocks =
+        lower_vec_with_capacity(components.len(), "manifold projection block count", span)?;
+    for (mut rows, states) in components {
+        rows.sort_unstable();
+        if states.len() < rows.len() {
+            return Err(lower_contract_violation(
+                format!(
+                    "index-reduced manifold block has {} residual rows but only {} participating \
+                     state coordinates; safe minimum-norm projection is unavailable",
+                    rows.len(),
+                    states.len()
+                ),
+                span,
+            ));
+        }
+        blocks.push(solve::AlgebraicProjectionBlock {
+            rows,
+            y_indices: states.into_iter().collect(),
+        });
+    }
+    Ok(solve::AlgebraicProjectionPlan { blocks })
+}
+
+pub(crate) fn attach_index_reduced_manifold_projection(
+    dae_model: &dae::Dae,
+    problem: &mut solve::SolveProblem,
+    constraints: &[rumoca_phase_structural::dae_prepare::IndexReducedConstraint],
+) -> Result<(), LowerError> {
+    if constraints.is_empty() {
+        return Ok(());
+    }
+    let span = dae_model_span(dae_model)?;
+    let equations = retained_manifold_equations(constraints, span)?;
+    let residual = lower::lower_manifold_residual(dae_model, &problem.layout, &equations)
+        .map_err(|err| lower_problem_context(err, "lower index-reduced manifold residuals"))?;
+    let scalar = rumoca_eval_solve::to_scalar_program_block(&residual)
+        .map_err(|err| lower_problem_context(err.into(), "scalarize manifold residuals"))?;
+    let state_count = problem.solve_layout.state_scalar_count();
+    let row_states = manifold_row_state_incidence(&scalar, state_count, span)?;
+    let plan = manifold_projection_plan_from_incidence(row_states, span)?;
+    problem.continuous.manifold_residual = residual;
+    problem.continuous.manifold_projection_plan = plan;
+    Ok(())
+}
+
 pub fn lower_solve_artifacts(
     problem: &solve::SolveProblem,
 ) -> Result<solve::SolveArtifacts, LowerError> {
@@ -1108,6 +1262,8 @@ fn lower_continuous_solve_artifacts(
 ) -> Result<solve::ContinuousSolveArtifacts, LowerError> {
     let implicit_jacobian_v = lower_compute_block_jvp(&problem.continuous.implicit_rhs)
         .map_err(|err| lower_problem_context(err, "lower implicit Jacobian rows"))?;
+    let manifold_jacobian_v = lower_compute_block_jvp(&problem.continuous.manifold_residual)
+        .map_err(|err| lower_problem_context(err, "lower manifold Jacobian rows"))?;
     // Row-aligned scalar JVP of `implicit_rhs`: the state-only path propagates the
     // state seed through the algebraic projection row by row, indexing by the same
     // `row_idx` as the scalarized value residual. The tensor `implicit_jacobian_v`
@@ -1144,6 +1300,7 @@ fn lower_continuous_solve_artifacts(
         mass_matrix,
         implicit_jacobian_v,
         implicit_jacobian_v_scalar,
+        manifold_jacobian_v,
         full_jacobian_v,
     })
 }
@@ -1178,18 +1335,32 @@ fn lower_problem_context(err: LowerError, context: &str) -> LowerError {
 fn solver_residual_equations<'a>(
     dae_model: &'a dae::Dae,
     runtime_tail_updates: &HashSet<String>,
-    state_derivative_rows: &[bool],
+    continuous_rows: &'a [lower::ContinuousEquationRow],
 ) -> Result<Vec<(usize, &'a dae::Equation)>, LowerError> {
     let mut equations = Vec::new();
-    for (row_idx, eq) in dae_model.continuous.equations.iter().enumerate() {
-        let Some(&is_state_derivative_row) = state_derivative_rows.get(row_idx) else {
-            return Err(lower_contract_violation(
-                format!("missing state-derivative flag for residual equation {row_idx}"),
-                eq.span,
-            ));
-        };
-        if solver_residual_equation(dae_model, runtime_tail_updates, is_state_derivative_row, eq)? {
-            equations.push((row_idx, eq));
+    for (normalized_index, row) in continuous_rows.iter().enumerate() {
+        let eq = &row.equation;
+        if solver_residual_equation(dae_model, runtime_tail_updates, row.is_derivative, eq)? {
+            let row_namespace = match row.projection {
+                lower::ContinuousEquationRowProjection::Source => row.source_equation_index,
+                lower::ContinuousEquationRowProjection::FunctionOutput { index } => {
+                    dae_model
+                        .continuous
+                        .equations
+                        .len()
+                        .checked_add(normalized_index)
+                        .ok_or_else(|| {
+                            lower_contract_violation(
+                                format!(
+                                    "normalized function projection namespace overflows for source equation {} projection {index}",
+                                    row.source_equation_index
+                                ),
+                                eq.span,
+                            )
+                        })?
+                }
+            };
+            equations.push((row_namespace, eq));
         }
     }
     Ok(equations)

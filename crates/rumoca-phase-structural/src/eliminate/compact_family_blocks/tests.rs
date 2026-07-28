@@ -144,6 +144,10 @@ fn whole_array_ode_dae(cells: usize) -> dae::Dae {
         binders: vec!["i".to_string()],
         accesses: Vec::new(),
     });
+    family.template = Some(rumoca_core::ComprehensionTemplate {
+        body: vec![system.continuous.equations[0].rhs.clone()],
+        scalar_view: rumoca_core::ComprehensionScalarView::RowMajorProjection,
+    });
     family.interiors_materialized = false;
     system.continuous.structured_equations = vec![family];
     system

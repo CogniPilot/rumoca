@@ -61,7 +61,7 @@
 //! - [`package`] — the [`AlgorithmCodePackage`] output contract
 //!   (constructed only by lowering, post-validated per GAL-004);
 //! - [`diagnostic`] — SPEC_0008-shaped [`GalecTargetError`] with stable
-//!   `ET0xx` codes and DAE source spans where available; projection-scope
+//!   `EGT0xx` codes and DAE source spans where available; projection-scope
 //!   rejections use the GAL-025 wording.
 
 pub mod admissibility;

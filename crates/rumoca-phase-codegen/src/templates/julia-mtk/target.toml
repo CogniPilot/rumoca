@@ -6,7 +6,9 @@ execution_mode = "symbolic"
 deployment_class = "symbolic"
 
 [capabilities]
+events = false
 runtime_events = false
+clocks = false
 
 [[files]]
 path = "{{ model_name }}_mtk.jl"

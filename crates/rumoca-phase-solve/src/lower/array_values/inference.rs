@@ -699,8 +699,7 @@ impl<'a> LowerBuilder<'a> {
                 self.infer_expr_dims(required_builtin_arg(args, function, 0, call_span)?, scope)?
             }
             rumoca_core::BuiltinFunction::Fill => {
-                let dims = fill_dimension_args(args, call_span)?;
-                self.infer_fill_dims(dims, call_span)?
+                self.infer_fill_call_dims(args, scope, call_span)?
             }
             rumoca_core::BuiltinFunction::Zeros | rumoca_core::BuiltinFunction::Ones => {
                 self.infer_fill_dims(args, call_span)?
@@ -1263,6 +1262,26 @@ impl<'a> LowerBuilder<'a> {
             )?);
         }
         Ok(values)
+    }
+
+    fn infer_fill_call_dims(
+        &self,
+        args: &[rumoca_core::Expression],
+        scope: &Scope,
+        call_span: rumoca_core::Span,
+    ) -> Result<Vec<usize>, LowerError> {
+        let dims = fill_dimension_args(args, call_span)?;
+        let mut result = self.infer_fill_dims(dims, call_span)?;
+        let seed = required_builtin_arg(args, &rumoca_core::BuiltinFunction::Fill, 0, call_span)?;
+        let mut seed_dims = self.infer_expr_dims(seed, scope)?;
+        result.try_reserve(seed_dims.len()).map_err(|_| {
+            LowerError::contract_violation(
+                "fill result rank exceeds host memory limits",
+                seed.span().unwrap_or(call_span),
+            )
+        })?;
+        result.append(&mut seed_dims);
+        Ok(result)
     }
 
     fn infer_binary_dims(

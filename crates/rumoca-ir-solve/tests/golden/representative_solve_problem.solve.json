@@ -1,5 +1,5 @@
 {
-  "schema_version": 22,
+  "schema_version": 23,
   "layout": {
     "bindings": {
       "x": {
@@ -205,6 +205,12 @@
           }
         }
       ]
+    },
+    "manifold_residual": {
+      "nodes": []
+    },
+    "manifold_projection_plan": {
+      "blocks": []
     },
     "derivative_rhs": {
       "nodes": [

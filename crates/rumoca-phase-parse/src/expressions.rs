@@ -1265,6 +1265,13 @@ impl TryFrom<&modelica_grammar_trait::Factor> for rumoca_ir_ast::Expression {
     fn try_from(ast: &modelica_grammar_trait::Factor) -> std::result::Result<Self, Self::Error> {
         if ast.factor_list.is_empty() {
             Ok(ast.primary.clone())
+        } else if ast.factor_list.len() > 1 {
+            // Modelica's factor grammar permits at most one exponentiation
+            // operator.  The recovery grammar is more permissive, so reject
+            // the extra operators here instead of silently dropping them.
+            Err(anyhow::anyhow!(
+                "multiple exponentiation operators require explicit parentheses"
+            ))
         } else {
             let op = match &ast.factor_list[0].factor_list_group {
                 modelica_grammar_trait::FactorListGroup::Circumflex(_) => {

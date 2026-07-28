@@ -464,7 +464,7 @@ fn rk45_dense_root_localization_selects_earliest_crossing_and_state() {
     );
     let runtime = SolveRuntime::new(&model).expect("root localization model should prepare");
     let backend = Rk45Backend::new(
-        &runtime,
+        Rc::new(runtime),
         &SimOptions {
             solver_mode: SimSolverMode::RkLike,
             t_end: 0.1,
@@ -887,7 +887,7 @@ fn runtime_contract_step_until_advances_rk45_backend() {
     ]]);
     let model = SolveRuntime::new(&prepared).expect("valid runtime contract model should prepare");
     let mut backend = Rk45Backend::new(
-        &model,
+        Rc::new(model),
         &SimOptions {
             solver_mode: SimSolverMode::RkLike,
             dt: Some(0.01),
@@ -902,6 +902,54 @@ fn runtime_contract_step_until_advances_rk45_backend() {
     assert_eq!(outcome, StepUntilOutcome::StopReached);
     assert!((backend.read_state().t - 0.1).abs() <= 1.0e-12);
     assert!((backend.state[0] - 1.2).abs() <= 1.0e-6);
+}
+
+#[test]
+fn rk45_tiny_final_remainder_is_not_clamped_past_target() {
+    let time = 1.0;
+    let target = time + 0.5 * MIN_STEP;
+    let h = trial_step_size(time, target, 0.1, None).expect("final remainder is representable");
+
+    assert_eq!(h, target - time);
+    assert!(h < MIN_STEP);
+    assert_eq!(time + h, target);
+}
+
+#[test]
+fn rk45_tiny_final_remainder_keeps_state_and_time_consistent() {
+    let prepared = single_state_model(vec![vec![
+        LinearOp::Const { dst: 0, value: 2.0 },
+        LinearOp::StoreOutput { src: 0 },
+    ]]);
+    let runtime = Rc::new(SolveRuntime::new(&prepared).expect("runtime should prepare"));
+    let start = 1.0;
+    let target = start + 0.5 * MIN_STEP;
+    let mut backend = Rk45Backend::new(
+        runtime,
+        &SimOptions {
+            t_start: start,
+            t_end: target,
+            dt: Some(0.1),
+            ..Default::default()
+        },
+    )
+    .expect("backend should build");
+    backend.init().expect("backend should initialize");
+
+    backend
+        .step_until(target)
+        .expect("tiny final remainder should be accepted");
+
+    assert_eq!(backend.time, target);
+    assert_eq!(backend.state[0], 1.0 + 2.0 * (target - start));
+}
+
+#[test]
+fn rk45_rejected_minimum_step_reports_underflow() {
+    assert!(matches!(
+        rejected_step_size(MIN_STEP, 2.0, 1.0),
+        Err(SimError::StepSizeUnderflow { target_t: 1.0 })
+    ));
 }
 
 #[test]
@@ -1262,6 +1310,8 @@ fn stiff_contact_model() -> solve::SolveModel {
                     ScalarProgramBlock::with_source_span(vec![dx, dv], fixture_span!()),
                 ),
                 algebraic_projection_plan: solve::AlgebraicProjectionPlan::default(),
+                manifold_residual: ComputeBlock::default(),
+                manifold_projection_plan: solve::AlgebraicProjectionPlan::default(),
             },
             initialization: solve::InitializationSolveSystem::default(),
             discrete: solve::DiscreteSolveSystem {
@@ -1358,6 +1408,8 @@ fn single_state_model(rhs_rows: Vec<Vec<LinearOp>>) -> solve::SolveModel {
                     ScalarProgramBlock::with_source_span(derivative_rows, fixture_span!()),
                 ),
                 algebraic_projection_plan: solve::AlgebraicProjectionPlan::default(),
+                manifold_residual: ComputeBlock::default(),
+                manifold_projection_plan: solve::AlgebraicProjectionPlan::default(),
             },
             initialization: solve::InitializationSolveSystem {
                 residual: ComputeBlock::from_scalar_program_block(zero.clone()),
@@ -1399,6 +1451,7 @@ fn single_state_model(rhs_rows: Vec<Vec<LinearOp>>) -> solve::SolveModel {
                 mass_matrix: solve::MassMatrix::Identity,
                 implicit_jacobian_v: ComputeBlock::from_scalar_program_block(zero.clone()),
                 implicit_jacobian_v_scalar: zero.clone(),
+                manifold_jacobian_v: ComputeBlock::default(),
                 full_jacobian_v: zero.clone(),
             },
             ..Default::default()
@@ -1578,6 +1631,8 @@ fn no_state_input_accumulator_model() -> solve::SolveModel {
                     ScalarProgramBlock::default(),
                 ),
                 algebraic_projection_plan: solve::AlgebraicProjectionPlan::default(),
+                manifold_residual: ComputeBlock::default(),
+                manifold_projection_plan: solve::AlgebraicProjectionPlan::default(),
             },
             initialization: solve::InitializationSolveSystem::default(),
             discrete: solve::DiscreteSolveSystem {
@@ -1626,6 +1681,7 @@ fn no_state_input_accumulator_model() -> solve::SolveModel {
                 mass_matrix: solve::MassMatrix::Identity,
                 implicit_jacobian_v: ComputeBlock::from_scalar_program_block(zero.clone()),
                 implicit_jacobian_v_scalar: zero,
+                manifold_jacobian_v: ComputeBlock::default(),
                 full_jacobian_v: ScalarProgramBlock::default(),
             },
             ..Default::default()

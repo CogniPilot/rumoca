@@ -738,7 +738,7 @@ mod tests {
             matches!(
                 err,
                 FlattenError::UnsupportedEquation { span: error_span, .. }
-                    if error_span == rumoca_core::span_to_source_span(span)
+                    if error_span == span
             ),
             "invalid LHS diagnostic should use the LHS source span: {err:?}"
         );

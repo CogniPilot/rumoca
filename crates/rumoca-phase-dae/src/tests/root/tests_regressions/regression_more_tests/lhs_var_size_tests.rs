@@ -86,10 +86,7 @@ fn test_extract_lhs_var_size_multilayer_subscript_fallback_is_scalar() {
     );
 }
 
-#[test]
-// SPEC_0021: Exception - single regression fixture for conditional residual branch sizing.
-#[allow(clippy::too_many_lines)]
-fn test_extract_lhs_var_size_conditional_residual_uses_branch_lhs_size() {
+fn conditional_residual_model() -> Model {
     let mut flat = Model::new();
     flat.add_variable(
         VarName::new("add.y"),
@@ -131,8 +128,11 @@ fn test_extract_lhs_var_size_conditional_residual_uses_branch_lhs_size() {
             ))
         }),
     );
+    flat
+}
 
-    let residual = Expression::If {
+fn conditional_residual_expression() -> Expression {
+    Expression::If {
         branches: vec![(
             Expression::Binary {
                 op: rumoca_core::OpBinary::Gt,
@@ -195,8 +195,13 @@ fn test_extract_lhs_var_size_conditional_residual_uses_branch_lhs_size() {
             span: crate::test_support::test_span(),
         }),
         span: crate::test_support::test_span(),
-    };
+    }
+}
 
+#[test]
+fn test_extract_lhs_var_size_conditional_residual_uses_branch_lhs_size() {
+    let flat = conditional_residual_model();
+    let residual = conditional_residual_expression();
     let prefix_counts = build_prefix_counts(&flat);
     assert_eq!(
         extract_lhs_var_size(&residual, &flat, &prefix_counts),

@@ -4,8 +4,8 @@
 
 use rumoca_compile::compile::FailedPhase;
 use rumoca_contracts::test_support::{
-    expect_balanced, expect_compile_failure, expect_failure_in_phase_with_code,
-    expect_parse_err_with_code, expect_resolve_failure_with_code, expect_success,
+    expect_balanced, expect_failure_in_phase_with_code, expect_parse_err_with_code,
+    expect_resolve_failure_with_code, expect_success,
 };
 
 fn flat_var_is_protected(result: &rumoca_compile::compile::CompilationResult, name: &str) -> bool {
@@ -753,7 +753,7 @@ fn inst_034_encapsulated_basic() {
     expect_success(
         r#"
         model Container
-            parameter Real g = 9.81;
+            constant Real g = 9.81;
             model Inner
                 Real x;
             equation
@@ -906,7 +906,7 @@ fn inst_component_modification() {
 // =============================================================================
 // INST-013: Constant-only references
 // "Enclosing class variables accessible only if declared constant"
-// (MLS §5.3.2)
+// (MLS §5.3.1)
 // =============================================================================
 
 #[test]
@@ -931,7 +931,7 @@ fn inst_013_enclosing_package_constant_accessible() {
 
 #[test]
 fn inst_013_enclosing_non_constant_rejected() {
-    expect_compile_failure(
+    expect_resolve_failure_with_code(
         r#"
         package P
             model Holder
@@ -948,6 +948,45 @@ fn inst_013_enclosing_non_constant_rejected() {
         end P;
         model Test
             P.Holder h;
+        end Test;
+    "#,
+        "Test",
+        "ER130",
+    );
+}
+
+#[test]
+fn inst_013_enclosing_parameter_rejected() {
+    expect_resolve_failure_with_code(
+        r#"
+        model M
+            parameter Boolean enabled = true;
+            model Inner
+                Real x if enabled;
+            end Inner;
+            Inner inner_model;
+        end M;
+    "#,
+        "M",
+        "ER130",
+    );
+}
+
+#[test]
+fn inst_013_short_class_modifier_uses_enclosing_instance_scope() {
+    expect_balanced(
+        r#"
+        model Resistor
+            parameter Real R;
+            Real v;
+        equation
+            v = R;
+        end Resistor;
+
+        model Test
+            parameter Real R = 2;
+            replaceable model Load = Resistor(R = R);
+            Load load;
         end Test;
     "#,
         "Test",

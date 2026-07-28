@@ -1658,7 +1658,33 @@ fn apply_complete_dummy_derivative_group(
             .map(|(name, _)| name.as_str())
             .collect::<Vec<_>>()
     );
+    let state_names = plan
+        .states
+        .iter()
+        .map(|(state_name, _)| state_name.clone())
+        .collect::<Vec<_>>();
+    let scalar_size = state_names.iter().try_fold(0usize, |total, state_name| {
+        let state = dae.variables.states.get(state_name)?;
+        total.checked_add(state.size())
+    });
+    let Some(scalar_size) = scalar_size else {
+        return Ok(0);
+    };
+    let dummy_names = state_names
+        .iter()
+        .map(dummy_derivative_name)
+        .collect::<Vec<_>>();
+    if dummy_names
+        .iter()
+        .any(|dummy_name| variable_name_is_taken(dae, dummy_name))
+    {
+        return Ok(0);
+    }
+
     let mut staged = super::copy_accounting::clone_dae(dae);
+    for (state_name, dummy_name) in state_names.iter().zip(&dummy_names) {
+        declare_dummy_derivative(&mut staged, state_name, dummy_name)?;
+    }
     let original_constraint = staged.continuous.equations[plan.constraint_index].clone();
     let differentiated_origin = if original_constraint.origin.is_empty() {
         "index_reduction:d_dt_complete_dummy_derivative_group".to_string()
@@ -1676,8 +1702,14 @@ fn apply_complete_dummy_derivative_group(
         scalar_count: original_constraint.scalar_count,
     });
 
-    for (state_name, derivative_value) in &plan.states {
-        rewrite_exact_derivative_everywhere(&mut staged, state_name, derivative_value);
+    for (state_name, dummy_name) in state_names.iter().zip(&dummy_names) {
+        let state_span = staged.variables.states[state_name].source_span;
+        let dummy_reference = Expression::VarRef {
+            name: Reference::new(dummy_name.as_str()),
+            subscripts: Vec::new(),
+            span: state_span,
+        };
+        rewrite_exact_derivative_everywhere(&mut staged, state_name, &dummy_reference);
     }
     if staged.continuous.equations.iter().any(|equation| {
         plan.states
@@ -1686,7 +1718,7 @@ fn apply_complete_dummy_derivative_group(
     }) {
         return Ok(0);
     }
-    for (state_name, _) in &plan.states {
+    for state_name in &state_names {
         let Some(variable) = staged.variables.states.shift_remove(state_name) else {
             return Ok(0);
         };
@@ -1695,7 +1727,14 @@ fn apply_complete_dummy_derivative_group(
             .algebraics
             .insert(state_name.clone(), variable);
     }
-    let demoted = plan.states.len();
+    super::constrained_dummy_derivative::verify_group_demotion_preserves_balance(
+        dae,
+        &staged,
+        &state_names,
+        scalar_size,
+        original_constraint.span,
+    )?;
+    let demoted = state_names.len();
     *dae = staged;
     Ok(demoted)
 }

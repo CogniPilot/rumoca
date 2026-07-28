@@ -56,21 +56,25 @@ impl TypeChecker {
         let mut collector = ConditionReferences::default();
         let _ = collector.visit_expression(condition);
         collector
-            .paths
+            .references
             .iter()
-            .all(|path| !self.is_simulation_time_reference(path))
+            .all(|reference| !self.is_simulation_time_reference(reference))
     }
 
-    fn is_simulation_time_reference(&self, path: &ComponentPath) -> bool {
-        if path.as_str() == "time" {
+    fn is_simulation_time_reference(&self, reference: &rumoca_ir_ast::ComponentReference) -> bool {
+        if reference.parts.len() == 1
+            && reference.parts[0].ident.text.as_ref() == "time"
+            && reference.parts[0].subs.iter().flatten().next().is_none()
+        {
             return true;
         }
-        match self.find_instanced_component_path_variability(path) {
-            None => false,
-            Some(
-                rumoca_core::Variability::Constant(_) | rumoca_core::Variability::Parameter(_),
-            ) => false,
-            Some(_) => true,
+        match self.lookup_component_reference_variability(reference) {
+            SemanticLookup::Found(
+                rumoca_eval_ast::eval::VariabilityLevel::Constant
+                | rumoca_eval_ast::eval::VariabilityLevel::Parameter,
+            )
+            | SemanticLookup::Missing => false,
+            SemanticLookup::Found(_) | SemanticLookup::Ambiguous => true,
         }
     }
 }
@@ -78,7 +82,7 @@ impl TypeChecker {
 /// Collects the component-reference paths that appear in one expression.
 #[derive(Default)]
 struct ConditionReferences {
-    paths: Vec<ComponentPath>,
+    references: Vec<rumoca_ir_ast::ComponentReference>,
 }
 
 impl Visitor for ConditionReferences {
@@ -87,9 +91,7 @@ impl Visitor for ConditionReferences {
         cr: &rumoca_ir_ast::ComponentReference,
         _context: rumoca_ir_ast::ComponentReferenceContext,
     ) -> ControlFlow<()> {
-        self.paths.push(ComponentPath::from_parts(
-            cr.parts.iter().map(|part| part.ident.text.to_string()),
-        ));
+        self.references.push(cr.clone());
         self.visit_component_reference(cr)
     }
 }

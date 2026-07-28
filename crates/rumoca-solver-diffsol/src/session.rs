@@ -7,8 +7,8 @@ use indexmap::IndexMap;
 use rumoca_eval_solve as solve_eval;
 use rumoca_ir_solve as solve;
 use rumoca_solver::{
-    RuntimeEventStop, SimOptions, SolveRuntime, SolveStopSchedule, event_solver_step_cap,
-    runtime_root_event_application_time, time_match_with_tol,
+    DiffsolMethod, RuntimeEventStop, SimOptions, SolveRuntime, SolveStopSchedule,
+    event_solver_step_cap, runtime_root_event_application_time, time_match_with_tol,
 };
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -67,6 +67,32 @@ struct BdfResetSnapshot {
 #[derive(Debug, Clone, Copy, Default)]
 struct StepAdvance {
     hit_root: bool,
+}
+
+#[derive(Debug, Default)]
+struct EventIterationStreak {
+    time: Option<f64>,
+    count: usize,
+}
+
+impl EventIterationStreak {
+    fn record(&mut self, event_time: f64, target_time: f64, kind: &str) -> Result<(), SimError> {
+        if self.time != Some(event_time) {
+            self.time = Some(event_time);
+            self.count = 0;
+        }
+        self.count = self.count.checked_add(1).ok_or_else(|| {
+            SimError::SolverError(format!(
+                "{kind} event iteration counter overflowed at t={event_time}"
+            ))
+        })?;
+        if self.count <= SESSION_ADVANCE_EVENT_LIMIT {
+            return Ok(());
+        }
+        Err(SimError::SolverError(format!(
+            "{kind} event processing did not settle at t={event_time} before t={target_time}"
+        )))
+    }
 }
 
 struct RuntimeOnlyDriver {
@@ -353,6 +379,15 @@ impl BdfSession {
         let runtime_context = solve_eval::SimulationContext::new();
         runtime_context.hydrate_solve_model(model);
         let runtime = SolveRuntime::new(model)?;
+        if !model.problem.continuous.manifold_projection_plan.is_empty()
+            && opts.diffsol_method != DiffsolMethod::Bdf
+        {
+            return Err(SimError::SolverError(format!(
+                "index-reduction manifold projection is not supported by {:?}; use BDF or the \
+                 RK-like solver",
+                opts.diffsol_method
+            )));
+        }
         let root_runtime = Arc::new(runtime.clone());
         let ode_model = OdeModel::new(model)?;
         let runtime_params = Rc::new(RefCell::new(model.parameters.clone()));
@@ -518,32 +553,14 @@ impl BdfSession {
         Ok(())
     }
 
-    fn increment_event_iterations(
-        event_iterations: &mut usize,
-        target_time: f64,
-        kind: &str,
-    ) -> Result<(), SimError> {
-        *event_iterations = event_iterations.checked_add(1).ok_or_else(|| {
-            SimError::SolverError(format!(
-                "{kind} event iteration counter overflowed before t={target_time}"
-            ))
-        })?;
-        if *event_iterations <= SESSION_ADVANCE_EVENT_LIMIT {
-            return Ok(());
-        }
-        Err(SimError::SolverError(format!(
-            "{kind} event processing did not settle before t={target_time}"
-        )))
-    }
-
     fn process_root_advance(
         &mut self,
         target_time: f64,
         advanced_time: f64,
         reached_scheduled_event: bool,
-        event_iterations: &mut usize,
+        event_streak: &mut EventIterationStreak,
     ) -> Result<(), SimError> {
-        Self::increment_event_iterations(event_iterations, target_time, "root")?;
+        event_streak.record(advanced_time, target_time, "root")?;
         (self.project_fn)()?;
         let reset_time =
             runtime_root_event_application_time(self.time(), target_time, self.event_tolerance);
@@ -560,9 +577,9 @@ impl BdfSession {
         event: RuntimeEventStop,
         target_time: f64,
         advanced_time: f64,
-        event_iterations: &mut usize,
+        event_streak: &mut EventIterationStreak,
     ) -> Result<(), SimError> {
-        Self::increment_event_iterations(event_iterations, target_time, "scheduled")?;
+        event_streak.record(advanced_time, target_time, "scheduled")?;
         (self.project_fn)()?;
         let reset_time = if event.observe_right_limit {
             runtime_root_event_application_time(advanced_time, target_time, self.event_tolerance)
@@ -576,7 +593,7 @@ impl BdfSession {
     }
 
     fn advance_to(&mut self, target_time: f64) -> Result<(), SimError> {
-        let mut event_iterations = 0usize;
+        let mut event_streak = EventIterationStreak::default();
         loop {
             let current_time = self.time();
             if target_time <= current_time {
@@ -621,7 +638,7 @@ impl BdfSession {
                     target_time,
                     advanced_time,
                     reached_scheduled_event.is_some(),
-                    &mut event_iterations,
+                    &mut event_streak,
                 )?;
                 continue;
             }
@@ -631,12 +648,11 @@ impl BdfSession {
                     event,
                     target_time,
                     advanced_time,
-                    &mut event_iterations,
+                    &mut event_streak,
                 )?;
                 continue;
             }
 
-            event_iterations = 0;
             if time_match_with_tol(advanced_time, target_time) || advanced_time >= target_time {
                 return Ok(());
             }
@@ -831,11 +847,13 @@ where
     S: OdeSolverMethod<'static, Eqn> + 'static,
 {
     let step_model = OdeModel::new(model)?;
+    let step_runtime = SolveRuntime::new(model)?;
     let step_opts = opts.clone();
     Ok(Box::new(move |dt: f64| {
         step_solver_by(
             &solver,
             &step_model,
+            &step_runtime,
             &params,
             &step_opts,
             dt,
@@ -973,9 +991,10 @@ where
 
 fn step_solver_by<Eqn, S>(
     solver: &Rc<RefCell<S>>,
-    _model: &OdeModel,
-    _params: &RuntimeParameters,
-    _opts: &SimOptions,
+    model: &OdeModel,
+    runtime: &SolveRuntime,
+    params: &RuntimeParameters,
+    opts: &SimOptions,
     dt: f64,
     enforce_stop_time: bool,
 ) -> Result<StepAdvance, SimError>
@@ -992,6 +1011,12 @@ where
         solver.state().t
     };
     let target = current_t + dt;
+    let project_manifold = !runtime
+        .model
+        .problem
+        .continuous
+        .manifold_projection_plan
+        .is_empty();
     // NOTE: deliberately no `implicit_residual_is_zero_through_interval`
     // fast-path here. Bumping `state_mut().t = target` to skip a "steady"
     // interval jumps the solver clock forward while leaving the BDF multistep
@@ -1001,10 +1026,10 @@ where
     // dense-output path (`advance_output_interval` in `lib.rs`) has no such
     // shortcut and completes the full horizon; mirror it.
     let mut solver = solver.borrow_mut();
-    if enforce_stop_time {
+    if enforce_stop_time || project_manifold {
         crate::set_solver_stop_time(&mut *solver, target)?;
     }
-    // Advance with the solver's own adaptive steps and land on `target` via
+    // Advance with the solver's own adaptive steps and normally land on `target` via
     // dense output (`state_mut_back`), rather than pinning a stop time at every
     // output sample. `set_stop_time(target)` forces a shortened, awkward final
     // step onto each output instant; on stiff models (e.g. the rover thermal
@@ -1015,19 +1040,42 @@ where
     // size, which is exactly what the batch dense-output path does
     // (`advance_output_interval` / `state_mut_back` in `lib.rs`) and why the
     // batch path completes the full horizon where the simulation session used
-    // to collapse.
+    // to collapse. Manifold projection is the exception: a projection reset
+    // invalidates dense history, so those models use an exact stop at `target`.
     loop {
         if solver.state().t >= target {
-            solver
-                .state_mut_back(target)
-                .map_err(|err| SimError::SolverError(format!("state_mut_back: {err}")))?;
+            land_session_on_target(
+                &mut *solver,
+                model,
+                runtime,
+                params,
+                opts,
+                target,
+                project_manifold,
+            )?;
             return Ok(StepAdvance::default());
         }
         match solver_call("BDF step", || solver.step()) {
             Ok(
                 diffsol::OdeSolverStopReason::TstopReached
                 | diffsol::OdeSolverStopReason::InternalTimestep,
-            ) => continue,
+            ) => {
+                let accepted_t = solver.state().t;
+                if project_manifold {
+                    project_session_accepted_state(
+                        &mut *solver,
+                        model,
+                        runtime,
+                        params,
+                        opts,
+                        accepted_t,
+                    )?;
+                }
+                if project_manifold && accepted_t < target {
+                    crate::set_solver_stop_time(&mut *solver, target)?;
+                }
+                continue;
+            }
             Ok(diffsol::OdeSolverStopReason::RootFound(t_root, _)) => {
                 // The free-running step overshoots the root (the solver state
                 // sits at the natural step end, past `t_root`). The caller's
@@ -1056,6 +1104,64 @@ where
     }
 }
 
+fn land_session_on_target<Eqn, S>(
+    solver: &mut S,
+    model: &OdeModel,
+    runtime: &SolveRuntime,
+    params: &RuntimeParameters,
+    opts: &SimOptions,
+    target: f64,
+    project_manifold: bool,
+) -> Result<(), SimError>
+where
+    Eqn: diffsol::OdeEquations<T = f64> + 'static,
+    Eqn::V: VectorHost<T = f64>,
+    S: OdeSolverMethod<'static, Eqn>,
+{
+    if time_match_with_tol(solver.state().t, target) {
+        return Ok(());
+    }
+    solver
+        .state_mut_back(target)
+        .map_err(|err| SimError::SolverError(format!("state_mut_back: {err}")))?;
+    if project_manifold {
+        project_session_accepted_state(solver, model, runtime, params, opts, target)?;
+    }
+    Ok(())
+}
+
+fn project_session_accepted_state<Eqn, S>(
+    solver: &mut S,
+    model: &OdeModel,
+    runtime: &SolveRuntime,
+    runtime_params: &RuntimeParameters,
+    opts: &SimOptions,
+    t: f64,
+) -> Result<(), SimError>
+where
+    Eqn: diffsol::OdeEquations<T = f64> + 'static,
+    Eqn::V: VectorHost<T = f64>,
+    S: OdeSolverMethod<'static, Eqn>,
+{
+    let mut y = solver.state().y.as_slice().to_vec();
+    let params = runtime_params.borrow().to_vec();
+    let tol = opts.atol.max(1.0e-10);
+    if !runtime.project_state_manifold(&mut y, &params, t, tol)? {
+        return Ok(());
+    }
+    rumoca_solver::project_algebraics(
+        model,
+        &mut y,
+        &params,
+        t,
+        model.state_count_for_projection(),
+        tol,
+    )?;
+    let dy = bdf_derivative_guess(model, &y, &params, t)?;
+    let h_cap = solver.state().h.abs().max(1.0e-12);
+    reset_solver_state(solver, runtime_params, &y, &dy, &params, t, h_cap)
+}
+
 fn root_event_time_for_target(root_t: f64, target_t: f64) -> f64 {
     if time_match_with_tol(root_t, target_t) {
         target_t
@@ -1081,6 +1187,28 @@ mod tests {
     fn advance_by(session: &mut SimulationSession, dt: f64, context: &str) {
         let target = session.time() + dt;
         session.advance_to(target).expect(context);
+    }
+
+    #[test]
+    fn event_iteration_streak_resets_when_time_advances() {
+        let mut streak = EventIterationStreak::default();
+        for index in 0..(SESSION_ADVANCE_EVENT_LIMIT * 2) {
+            streak
+                .record(index as f64, 1000.0, "root")
+                .expect("advancing event times must start new streaks");
+        }
+        assert_eq!(streak.count, 1);
+    }
+
+    #[test]
+    fn event_iteration_streak_rejects_same_time_chattering() {
+        let mut streak = EventIterationStreak::default();
+        for _ in 0..SESSION_ADVANCE_EVENT_LIMIT {
+            streak
+                .record(2.0, 3.0, "root")
+                .expect("events up to the cap are allowed");
+        }
+        assert!(streak.record(2.0, 3.0, "root").is_err());
     }
 
     #[test]
@@ -1439,6 +1567,8 @@ mod tests {
                     implicit_row_targets: vec![Some(solve::scalar_slot_y(0))],
                     algebraic_projection_plan: solve::AlgebraicProjectionPlan::default(),
                     residual: ComputeBlock::from_scalar_program_block(rhs.clone()),
+                    manifold_residual: ComputeBlock::default(),
+                    manifold_projection_plan: solve::AlgebraicProjectionPlan::default(),
                     derivative_rhs: ComputeBlock::from_scalar_program_block(rhs.clone()),
                 },
                 initialization: solve::InitializationSolveSystem {
@@ -1478,6 +1608,7 @@ mod tests {
                     mass_matrix: solve::MassMatrix::Identity,
                     implicit_jacobian_v: ComputeBlock::from_scalar_program_block(zero.clone()),
                     implicit_jacobian_v_scalar: zero.clone(),
+                    manifold_jacobian_v: ComputeBlock::default(),
                     full_jacobian_v: zero.clone(),
                 },
                 ..solve::SolveArtifacts::default()
@@ -1527,6 +1658,8 @@ mod tests {
                         }],
                     },
                     residual: ComputeBlock::from_scalar_program_block(derivative.clone()),
+                    manifold_residual: ComputeBlock::default(),
+                    manifold_projection_plan: solve::AlgebraicProjectionPlan::default(),
                     derivative_rhs: ComputeBlock::from_scalar_program_block(derivative.clone()),
                 },
                 initialization: solve::InitializationSolveSystem {
@@ -1560,6 +1693,7 @@ mod tests {
                         jacobian_v.clone(),
                     ),
                     implicit_jacobian_v_scalar: jacobian_v.clone(),
+                    manifold_jacobian_v: ComputeBlock::default(),
                     full_jacobian_v: jacobian_v.clone(),
                 },
                 ..solve::SolveArtifacts::default()

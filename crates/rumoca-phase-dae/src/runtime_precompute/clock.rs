@@ -29,7 +29,8 @@ struct ReverseAliasTarget {
 struct SourceMap<'a> {
     forward: HashMap<String, Vec<&'a rumoca_core::Expression>>,
     reverse_alias: HashMap<String, Vec<ReverseAliasTarget>>,
-    timing_cache: RefCell<HashMap<String, Option<ClockLattice>>>,
+    timing_cache:
+        RefCell<HashMap<String, Result<Option<ClockLattice>, rumoca_core::ClockLatticeErrorKind>>>,
     scalar_cache: RefCell<HashMap<String, Option<f64>>>,
 }
 
@@ -156,8 +157,16 @@ fn scan_static_clock_constructors(
             continue;
         }
         scan.constructor_count += 1;
+        let Some(source_span) = clock_constructor_source_span(expr) else {
+            return Err(ToDaeError::runtime_metadata_violation(
+                "clock constructor is missing source provenance",
+            ));
+        };
         let Some(lattice) =
             infer_clock_timing_from_expr(expr, constants, sources, 24, &mut HashSet::new())
+                .map_err(|kind| {
+                    ToDaeError::runtime_metadata_violation_at(kind.message(), source_span)
+                })?
         else {
             if event_clock::is_non_static_event_clock_constructor(
                 expr, dae_model, constants, sources,
@@ -174,11 +183,6 @@ fn scan_static_clock_constructors(
                 expr, dae_model, constants, sources,
             )?);
             continue;
-        };
-        let Some(source_span) = clock_constructor_source_span(expr) else {
-            return Err(ToDaeError::runtime_metadata_violation(
-                "clock constructor is missing source provenance",
-            ));
         };
         scan.lattices.push((lattice, source_span));
     }
@@ -665,7 +669,7 @@ fn scheduled_sample_root_timing(
     expr: &rumoca_core::Expression,
     constants: &HashMap<String, f64>,
 ) -> Option<ClockLattice> {
-    match expr {
+    let inferred = match expr {
         rumoca_core::Expression::BuiltinCall {
             function: rumoca_core::BuiltinFunction::Sample,
             args,
@@ -674,8 +678,9 @@ fn scheduled_sample_root_timing(
         rumoca_core::Expression::FunctionCall { name, args, .. } => {
             function_sample_start_interval_timing(name.last_segment(), args, constants)
         }
-        _ => None,
-    }
+        _ => return None,
+    };
+    inferred.expect("static clock scan must validate sample lattices before root scheduling")
 }
 
 fn is_non_static_inferred_clock_composition(
@@ -699,7 +704,10 @@ fn is_non_static_inferred_clock_composition(
     let Some(source_expr) = args.first() else {
         return false;
     };
-    infer_clock_timing_from_expr(source_expr, constants, sources, 24, &mut HashSet::new()).is_none()
+    matches!(
+        infer_clock_timing_from_expr(source_expr, constants, sources, 24, &mut HashSet::new()),
+        Ok(None)
+    )
 }
 
 fn eval_clock_scalar_child(
@@ -827,8 +835,15 @@ fn eval_positive_factor(
     sources: &SourceMap<'_>,
     remaining_depth: usize,
     visiting: &mut HashSet<String>,
-) -> Option<i64> {
-    let raw = eval_clock_scalar_with_sources(expr?, constants, sources, remaining_depth, visiting)?;
+) -> Result<Option<i128>, rumoca_core::ClockLatticeErrorKind> {
+    let Some(expr) = expr else {
+        return Ok(None);
+    };
+    let Some(raw) =
+        eval_clock_scalar_with_sources(expr, constants, sources, remaining_depth, visiting)
+    else {
+        return Ok(None);
+    };
     positive_integer(raw)
 }
 
@@ -1502,8 +1517,19 @@ fn infer_clock_timings_by_variable(
 
     for name in clock_interval_candidate_names(dae_model) {
         visiting.clear();
-        if let Some(lattice) =
-            infer_clock_timing_from_var_name(name, &[], constants, &sources, 24, &mut visiting)
+        let inferred =
+            infer_clock_timing_from_var_name(name, &[], constants, &sources, 24, &mut visiting);
+        let lattice = match inferred {
+            Ok(Some(lattice)) => lattice,
+            Ok(None) => continue,
+            Err(kind) => {
+                let source_span = clock_timing_source_span(&sources, name.as_str())?;
+                return Err(ToDaeError::runtime_metadata_violation_at(
+                    kind.message(),
+                    source_span,
+                ));
+            }
+        };
         {
             let source_span = clock_timing_source_span(&sources, name.as_str())?;
             timings.insert(

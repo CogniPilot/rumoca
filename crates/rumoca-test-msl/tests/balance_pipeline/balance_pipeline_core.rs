@@ -1589,7 +1589,7 @@ pub(super) fn run_msl_test(run_simulation: bool) -> MslSummary {
         total_mo_files: parsed.total_mo_files,
         parse_errors: parsed.parse_errors,
         total_models: selection.compile_scope_count,
-        class_type_counts,
+        class_type_counts: class_type_counts.into_iter().collect(),
     };
 
     finalize_msl_summary_from_results(

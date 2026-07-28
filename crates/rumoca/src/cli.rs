@@ -1175,9 +1175,15 @@ fn render_ir_as_modelica(
         rumoca_compile::codegen::templates::builtin_template_source(target, template_file)
             .ok_or_else(|| anyhow::anyhow!("missing built-in {target} template"))?;
     let model_identifier = model.replace('.', "_");
-    result
-        .render_template_str_with_name_and_ir(template, &model_identifier, phase.into())
-        .map_err(Into::into)
+    if phase == CompilePhase::Dae {
+        result
+            .render_structured_dae_template_str_with_name(template, &model_identifier)
+            .map_err(Into::into)
+    } else {
+        result
+            .render_template_str_with_name_and_ir(template, &model_identifier, phase.into())
+            .map_err(Into::into)
+    }
 }
 
 fn run_sim(args: SimCommandArgs) -> Result<()> {

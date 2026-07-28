@@ -533,11 +533,18 @@ pub(crate) fn process_connections(
 
     let all_connections: Vec<&ast::InstanceConnection> = owned_connections.iter().collect();
     let var_index = ConnectionVarIndex::new(flat);
+    let endpoint_index = ConnectionEndpointIndex::new(overlay);
 
     // MLS §9.1.3 augmentation must happen before connection-set construction.
     // Until the union elaboration exists, reject the unsupported case instead
     // of silently connecting only the intersection of declared bus members.
-    reject_expandable_connector_augmentation(&all_connections, flat, &prefix_children, &var_index)?;
+    reject_expandable_connector_augmentation(
+        &all_connections,
+        flat,
+        &endpoint_index,
+        &prefix_children,
+        &var_index,
+    )?;
 
     #[cfg(feature = "tracing")]
     {

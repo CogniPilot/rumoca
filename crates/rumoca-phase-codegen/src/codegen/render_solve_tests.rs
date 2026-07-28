@@ -48,6 +48,53 @@ fn one_by_one_matmul_node(lhs: f64, rhs: f64, span: rumoca_core::Span) -> solve:
     }
 }
 
+fn one_by_one_matmul_with_compare(span: rumoca_core::Span) -> solve::ComputeNode {
+    solve::ComputeNode::MatMul {
+        lhs_ops: vec![
+            solve::LinearOp::Const { dst: 0, value: 2.0 },
+            solve::LinearOp::Const { dst: 1, value: 1.0 },
+            solve::LinearOp::Compare {
+                dst: 2,
+                op: solve::CompareOp::Gt,
+                lhs: 0,
+                rhs: 1,
+            },
+        ],
+        lhs_start: 2,
+        rhs_ops: vec![solve::LinearOp::Const { dst: 3, value: 3.0 }],
+        rhs_start: 3,
+        m: 1,
+        k: 1,
+        n: 1,
+        lhs_sparsity: solve::SparsityPattern::Dense,
+        rhs_sparsity: solve::SparsityPattern::Dense,
+        metadata: solve::TensorNodeMetadata::default(),
+        span,
+    }
+}
+
+fn one_by_one_linsolve_with_compare(span: rumoca_core::Span) -> solve::ComputeNode {
+    solve::ComputeNode::LinSolve {
+        setup_ops: vec![
+            solve::LinearOp::Const { dst: 0, value: 2.0 },
+            solve::LinearOp::Const { dst: 1, value: 1.0 },
+            solve::LinearOp::Compare {
+                dst: 2,
+                op: solve::CompareOp::Gt,
+                lhs: 0,
+                rhs: 1,
+            },
+            solve::LinearOp::Const { dst: 3, value: 6.0 },
+        ],
+        matrix_start: 2,
+        rhs_start: 3,
+        n: 1,
+        next_reg: 4,
+        metadata: solve::TensorNodeMetadata::default(),
+        span,
+    }
+}
+
 fn const_store_row(value: f64) -> Vec<solve::LinearOp> {
     vec![
         solve::LinearOp::Const { dst: 0, value },
@@ -142,6 +189,34 @@ fn template_partition_tracks_multi_output_tensor_fallback_program() {
         .collect::<Vec<_>>();
 
     assert_eq!(rows, vec![(0, 0, 0), (0, 1, 1), (0, 2, 2), (0, 3, 3)]);
+}
+
+#[test]
+fn template_partition_retains_fallback_for_unsupported_mlir_dense_ops() {
+    let span = fixture_span("matmul_compare_fallback.mo");
+    let partition = native_family_template_partition(&solve::ComputeBlock {
+        nodes: vec![one_by_one_matmul_with_compare(span)],
+    })
+    .expect("unsupported native MLIR setup should still scalarize");
+
+    assert!(partition.native_dense_nodes.is_empty());
+    assert_eq!(partition.fallback_programs.len(), 1);
+    assert_eq!(partition.scalar_fallback_rows.len(), 1);
+    assert!(!partition.scalar_fallback_rows[0].native_dense);
+}
+
+#[test]
+fn template_partition_retains_linsolve_fallback_for_unsupported_mlir_dense_ops() {
+    let span = fixture_span("linsolve_compare_fallback.mo");
+    let partition = native_family_template_partition(&solve::ComputeBlock {
+        nodes: vec![one_by_one_linsolve_with_compare(span)],
+    })
+    .expect("unsupported native MLIR setup should still scalarize");
+
+    assert!(partition.native_dense_nodes.is_empty());
+    assert_eq!(partition.fallback_programs.len(), 1);
+    assert_eq!(partition.scalar_fallback_rows.len(), 1);
+    assert!(!partition.scalar_fallback_rows[0].native_dense);
 }
 
 #[test]

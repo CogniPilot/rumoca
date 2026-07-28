@@ -1,5 +1,6 @@
 use super::type_overrides::{
-    TypeOverrideMap, extract_component_class_overrides, find_nested_class_in_hierarchy,
+    TypeOverrideMap, class_redeclare_modifier_args, extract_component_class_overrides,
+    find_nested_class_in_hierarchy, validate_component_class_redeclare_target,
 };
 use super::{InstantiateContext, InstantiateError, InstantiateResult, location_to_span};
 use rumoca_ir_ast as ast;
@@ -218,10 +219,10 @@ fn is_self_forwarding_redeclare(mod_expr: &ast::Expression, target_name: &str) -
     let ast::Expression::ClassModification { target, .. } = mod_expr else {
         return false;
     };
-    target
-        .parts
-        .last()
-        .is_some_and(|part| part.ident.text.as_ref() == target_name)
+    let [part] = target.parts.as_slice() else {
+        return false;
+    };
+    part.subs.is_none() && part.ident.text.as_ref() == target_name
 }
 
 /// Resolve component-scoped class/package redeclares for nested instantiation.
@@ -248,7 +249,10 @@ pub(super) fn resolve_component_nested_type_overrides(
             {
                 continue;
             }
-            let Some(alias_def_id) = nested_class.and_then(|nested| nested.def_id) else {
+            let Some(nested_class) = nested_class else {
+                continue;
+            };
+            let Some(alias_def_id) = nested_class.def_id else {
                 return Err(Box::new(InstantiateError::redeclare_error(
                     target_name,
                     "resolved forwarding redeclare target has no DefId",
@@ -263,6 +267,13 @@ pub(super) fn resolve_component_nested_type_overrides(
                 .target_for_alias_def_id(alias_def_id)
                 .or_else(|| type_overrides.target_for_alias_name(target_name))
             {
+                validate_component_class_redeclare_target(
+                    tree,
+                    target_name,
+                    nested_class,
+                    mod_expr,
+                    effective_def_id,
+                )?;
                 class_overrides.insert(
                     alias_def_id,
                     ast::ClassOverride::new(
@@ -270,7 +281,8 @@ pub(super) fn resolve_component_nested_type_overrides(
                         alias_def_id,
                         effective_def_id,
                         class_redeclare_target_ref(mod_expr),
-                    ),
+                    )
+                    .with_modifier_args(class_redeclare_modifier_args(mod_expr)),
                 );
                 has_forwarding_class_redeclare = true;
             }

@@ -60,7 +60,15 @@ pub(super) fn expand_nested_if_to_simple(
         }
     }
 
-    if !else_simple_eqs.is_empty() && else_simple_eqs.len() != num_equations {
+    if else_block.is_none() && num_equations != 0 {
+        return Err(FlattenError::unsupported_equation(
+            format!(
+                "nested if-equation: omitted else branch has 0 equations, but if branch has {num_equations}"
+            ),
+            span,
+        ));
+    }
+    if else_block.is_some() && else_simple_eqs.len() != num_equations {
         return Err(FlattenError::unsupported_equation(
             format!(
                 "nested if-equation: else branch has {} equations, but if branch has {}",
@@ -81,16 +89,15 @@ pub(super) fn expand_nested_if_to_simple(
             .map(|(cond, eqs)| (cond.clone(), build_simple_equation_residual(&eqs[eq_idx])))
             .collect();
 
-        let else_residual = if !else_simple_eqs.is_empty() {
-            build_simple_equation_residual(&else_simple_eqs[eq_idx])
-        } else {
-            ast::Expression::Binary {
-                op: OpBinary::Sub,
-                lhs: Arc::new(expanded_branches[0].1[eq_idx].lhs.clone()),
-                rhs: Arc::new(zero_real_expr(span)),
-                span,
-            }
-        };
+        let else_residual = else_simple_eqs
+            .get(eq_idx)
+            .map(build_simple_equation_residual)
+            .ok_or_else(|| {
+                FlattenError::unsupported_equation(
+                    "dynamic nested if-equation cannot synthesize an omitted else equation",
+                    span,
+                )
+            })?;
 
         let conditional_residual = ast::Expression::If {
             branches,
@@ -181,18 +188,15 @@ fn build_conditional_residual_from_simple(
         .collect();
 
     // Get else branch residual.
-    let else_residual = if !else_simple_eqs.is_empty() {
-        build_simple_equation_residual(&else_simple_eqs[eq_idx])
-    } else {
-        // Preserve prior lowering semantics for if-equations without else:
-        // residual = lhs - (if cond then rhs else 0)  => else residual is lhs - 0.
-        ast::Expression::Binary {
-            op: OpBinary::Sub,
-            lhs: Arc::new(expanded_branches[0].1[eq_idx].lhs.clone()),
-            rhs: Arc::new(zero_real_expr(span)),
-            span,
-        }
-    };
+    let else_residual = else_simple_eqs
+        .get(eq_idx)
+        .map(build_simple_equation_residual)
+        .ok_or_else(|| {
+            FlattenError::unsupported_equation(
+                "dynamic if-equation cannot omit an else branch when another branch contributes equations",
+                span,
+            )
+        })?;
 
     // Build the if-expression
     Ok(ast::Expression::If {

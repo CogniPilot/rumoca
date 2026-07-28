@@ -19,6 +19,9 @@ pub enum EvalError {
     UnsupportedExpression {
         kind: &'static str,
     },
+    ClockLattice {
+        kind: rumoca_core::ClockLatticeErrorKind,
+    },
     ShapeMismatch {
         context: &'static str,
         expected: usize,
@@ -57,6 +60,7 @@ impl std::fmt::Display for EvalError {
             Self::UnsupportedExpression { kind } => {
                 write!(f, "unsupported expression in DAE evaluation: {kind}")
             }
+            Self::ClockLattice { kind } => write!(f, "invalid exact clock schedule: {kind}"),
             Self::ShapeMismatch {
                 context,
                 expected,

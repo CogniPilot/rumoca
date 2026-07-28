@@ -109,14 +109,15 @@ fn no_clock_sub_partitions_have_no_lattice() {
 
 #[test]
 fn overflowing_sub_sample_reports_a_spanned_error() {
-    let base = BaseClock::rational(1_000_003, 1, span())
-        .expect("exact rational clock")
-        .lattice()
-        .expect("exact base lattice");
+    let base = ClockLattice::new(
+        ClockRational::integer(i128::MAX / 2 + 1),
+        ClockRational::ZERO,
+    )
+    .expect("exact rational clock");
 
-    let error = SubClock::sub_sample(i64::MAX, span())
+    let error = SubClock::sub_sample(2, span())
         .derive(base)
-        .expect_err("i64::MAX sub-sampling must not wrap");
+        .expect_err("sub-sampling beyond i128 must not wrap");
 
     assert_eq!(error.kind, ClockLatticeErrorKind::IntegerOverflow);
     assert_eq!(error.span, span());

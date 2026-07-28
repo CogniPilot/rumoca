@@ -17,6 +17,7 @@ mod instanced_type_name_tests;
 mod modifier_tests;
 mod parameter_if_branch_tests;
 mod record_constructor_alias_tests;
+mod semantic_identity_tests;
 mod user_defined_type_tests;
 mod variability_tests;
 
@@ -54,9 +55,12 @@ fn add_test_instance(
     binding: Option<Expression>,
 ) {
     let instance_id = overlay.alloc_id();
+    let qualified_name = QualifiedName::from_dotted(qualified_name);
+    let component_ref = test_instance_component_reference(&qualified_name, component);
     overlay.add_component(InstanceData {
         instance_id,
-        qualified_name: QualifiedName::from_dotted(qualified_name),
+        component_ref,
+        qualified_name,
         type_id: component.type_id.unwrap_or(TypeId::UNKNOWN),
         type_name: component.type_name.to_string(),
         type_def_id: component.type_def_id,
@@ -97,9 +101,12 @@ fn add_instanced_component(
     is_primitive: bool,
 ) {
     let instance_id = overlay.alloc_id();
+    let qualified_name = QualifiedName::from_dotted(path);
+    let component_ref = test_instance_component_reference(&qualified_name, component);
     overlay.add_component(InstanceData {
         instance_id,
-        qualified_name: QualifiedName::from_dotted(path),
+        component_ref,
+        qualified_name,
         source_location: component.location.clone(),
         dims: component.shape.iter().map(|&dim| dim as i64).collect(),
         dims_expr: component.shape_expr.clone(),
@@ -114,4 +121,19 @@ fn add_instanced_component(
         is_primitive,
         ..Default::default()
     });
+}
+
+fn test_instance_component_reference(
+    qualified_name: &QualifiedName,
+    component: &Component,
+) -> Option<rumoca_core::ComponentReference> {
+    let def_id = component.def_id?;
+    let provenance =
+        rumoca_core::ProvenanceSpan::new(component.location.span(), "typecheck test instance")
+            .ok()?;
+    Some(rumoca_ir_ast::instance::component_reference_for_instance(
+        qualified_name,
+        provenance,
+        Some(def_id),
+    ))
 }

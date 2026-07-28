@@ -8,9 +8,11 @@
 //! This module resolves those references against the already-instantiated inner
 //! instance and records the disabled component paths for the flatten phase.
 
-#![allow(clippy::wildcard_imports)]
-
-use super::*;
+use super::{
+    IndexMap, InstantiateContext, InstantiateError, InstantiateEvalCtx, InstantiateResult,
+    OuterValues, ast, evaluate_component_condition_with_outer_values,
+    resolve_effective_components_for_eval,
+};
 
 impl InstantiateContext {
     /// Register boolean parameters discovered for a class scope (MLS §5.4 support).

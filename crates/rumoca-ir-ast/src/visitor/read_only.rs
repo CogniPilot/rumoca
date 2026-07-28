@@ -74,6 +74,7 @@ pub enum ExpressionContext {
     StatementFunctionOutput,
     ExtendModification,
     ExternalArgument,
+    ExternalAnnotation,
 }
 
 pub enum VisitScope<'a> {
@@ -809,6 +810,9 @@ pub trait Visitor {
         }
         for arg in &external.args {
             self.visit_expression_ctx(arg, ExpressionContext::ExternalArgument)?;
+        }
+        for annotation in &external.annotation {
+            self.visit_expression_ctx(annotation, ExpressionContext::ExternalAnnotation)?;
         }
         Continue(())
     }

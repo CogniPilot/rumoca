@@ -5,6 +5,8 @@
 /// Analytical: x(t) = exp(-t)
 use rumoca_exec_mlir::{MlirError, build_ode_model};
 
+mod support;
+
 fn decay_solve_layout() -> rumoca_ir_solve::SolveLayout {
     use indexmap::IndexMap;
     use rumoca_ir_solve::{SolveLayout, SolverNameIndexMaps};
@@ -92,6 +94,8 @@ fn decay_model() -> rumoca_ir_solve::SolveModel {
                 )),
                 derivative_rhs: derivative_rhs_cb,
                 algebraic_projection_plan: rumoca_ir_solve::AlgebraicProjectionPlan::default(),
+                manifold_residual: ComputeBlock::default(),
+                manifold_projection_plan: rumoca_ir_solve::AlgebraicProjectionPlan::default(),
             },
             initialization: InitializationSolveSystem {
                 residual: ComputeBlock::from_scalar_program_block(zero_rb.clone()),
@@ -114,6 +118,7 @@ fn decay_model() -> rumoca_ir_solve::SolveModel {
                 mass_matrix: rumoca_ir_solve::MassMatrix::Identity,
                 implicit_jacobian_v: zero_block,
                 implicit_jacobian_v_scalar: zero_rb.clone(),
+                manifold_jacobian_v: ComputeBlock::default(),
                 full_jacobian_v: zero_rb.clone(),
             },
             ..Default::default()
@@ -135,7 +140,7 @@ fn mlir_euler_decay_matches_analytical() {
     let compiled = match build_ode_model(&model, "decay") {
         Ok(c) => c,
         Err(MlirError::ToolNotFound { tool, .. }) => {
-            eprintln!("SKIP: {tool} not found");
+            support::missing_cpu_tool(tool);
             return;
         }
         Err(e) => panic!("compile failed: {e}"),
@@ -177,7 +182,7 @@ fn mlir_derivatives_match_analytical_at_multiple_points() {
     let compiled = match build_ode_model(&model, "decay_pts") {
         Ok(c) => c,
         Err(MlirError::ToolNotFound { tool, .. }) => {
-            eprintln!("SKIP: {tool} not found");
+            support::missing_cpu_tool(tool);
             return;
         }
         Err(e) => panic!("compile failed: {e}"),

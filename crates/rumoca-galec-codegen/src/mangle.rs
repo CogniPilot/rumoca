@@ -20,7 +20,7 @@
 //!
 //! Names that cannot be a single quoted lexeme (containing `'`, whitespace,
 //! control characters — e.g. flattened Modelica quoted identifiers such as
-//! `Logic.'1'`) are rejected with `ET012` rather than rewritten: rewriting
+//! `Logic.'1'`) are rejected with `EGT012` rather than rewritten: rewriting
 //! would lose the original name and risk collisions.
 //!
 //! # Injectivity and reserved-disjointness (by construction)

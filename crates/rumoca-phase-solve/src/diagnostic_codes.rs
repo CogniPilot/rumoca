@@ -137,6 +137,7 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::*;
+    use rumoca_core::PhaseError;
 
     fn solve_code_test_span() -> rumoca_core::Span {
         rumoca_core::Span::from_offsets(
@@ -364,5 +365,29 @@ mod tests {
         assert_eq!(EL020_EVALUATION, "EL020");
         assert_eq!(EL021_MASS_MATRIX, "EL021");
         assert_eq!(EL030_PARAMETER_OVERRIDE_UNPROPAGATABLE, "EL030");
+    }
+
+    #[test]
+    fn phase_error_preserves_lowering_code_and_source_identity() {
+        let span = solve_code_test_span();
+        let error = LowerError::MissingBinding {
+            name: "x".to_string(),
+        }
+        .with_fallback_span(span);
+
+        let diagnostic = error.to_diagnostic();
+        assert_eq!(diagnostic.code.as_deref(), Some(EL002_MISSING_BINDING));
+        assert_eq!(diagnostic.labels[0].span, span);
+    }
+
+    #[test]
+    fn solve_wrapper_delegates_structural_phase_diagnostic() {
+        let error = SolveModelLowerError::Structural {
+            source: rumoca_phase_structural::StructuralError::EmptySystem,
+        };
+
+        let diagnostic = error.to_diagnostic();
+        assert_eq!(diagnostic.code.as_deref(), Some("ES011"));
+        assert!(diagnostic.labels.is_empty());
     }
 }

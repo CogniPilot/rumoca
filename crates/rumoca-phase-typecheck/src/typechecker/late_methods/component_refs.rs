@@ -130,7 +130,8 @@ impl TypeChecker {
         comp: &rumoca_ir_ast::ComponentReference,
         type_table: &TypeTable,
     ) -> Result<TypeId, ComponentReferenceTypeError> {
-        let Some((mut current_type, prefix_len)) = self.find_component_ref_prefix_type(comp) else {
+        let Some((mut current_type, prefix_len)) = self.find_component_ref_prefix_type(comp)?
+        else {
             return Ok(TypeId::UNKNOWN);
         };
         if prefix_len == comp.parts.len() {
@@ -187,176 +188,114 @@ impl TypeChecker {
     fn find_component_ref_prefix_type(
         &self,
         comp: &rumoca_ir_ast::ComponentReference,
-    ) -> Option<(TypeId, usize)> {
-        if let Some(found) = self.find_scoped_component_ref_prefix_type(comp) {
-            return Some(found);
-        }
-
-        let mut exact_prefix = String::new();
-        let mut ident_prefix = String::new();
-        let mut best_exact = None;
-        let mut best_ident = None;
-
-        for (idx, part) in comp.parts.iter().enumerate() {
-            if idx > 0 {
-                exact_prefix.push('.');
-                ident_prefix.push('.');
-            }
-            exact_prefix.push_str(&part.to_string());
-            ident_prefix.push_str(part.ident.text.as_ref());
-            if let Some(type_id) = self
-                .current_component_types
-                .get(exact_prefix.as_str())
-                .copied()
-            {
-                best_exact = Some((type_id, idx + 1));
-            }
-            if let Some(type_id) = self
-                .current_component_types
-                .get(ident_prefix.as_str())
-                .copied()
-            {
-                best_ident = Some((type_id, idx + 1));
+    ) -> Result<Option<(TypeId, usize)>, ComponentReferenceTypeError> {
+        for prefix_len in (1..=comp.parts.len()).rev() {
+            match self.lookup_instance_reference(comp, prefix_len) {
+                SemanticLookup::Found(semantics) => {
+                    return Ok(Some((semantics.type_id, prefix_len)));
+                }
+                SemanticLookup::Ambiguous => {
+                    return Err(self.ambiguous_component_reference(comp));
+                }
+                SemanticLookup::Missing => {}
             }
         }
-
-        match (best_exact, best_ident) {
-            (Some(exact), Some(ident)) if ident.1 > exact.1 => Some(ident),
-            (Some(exact), _) => Some(exact),
-            (None, ident) => ident,
-        }
-    }
-
-    pub(super) fn find_instanced_component_path_type(
-        &self,
-        path: &ComponentPath,
-    ) -> Option<TypeId> {
-        if let Some(type_id) = self
-            .current_instance_scope
-            .as_ref()
-            .and_then(|scope| self.lookup_scoped_component_type(path, scope))
+        if let Some(semantics) = comp
+            .def_id
+            .and_then(|def_id| self.current_declaration_semantics.get(&def_id))
         {
-            return Some(type_id);
+            return Ok(Some((semantics.type_id, 1)));
         }
-        self.lookup_current_component_type(path.as_str())
+        Ok(None)
     }
 
-    fn lookup_scoped_component_type(
+    pub(super) fn lookup_instance_expression(
         &self,
-        path: &ComponentPath,
-        scope: &ComponentPath,
-    ) -> Option<TypeId> {
-        rumoca_core::scoped_component_path_candidates(path, scope)
-            .into_iter()
-            .find_map(|candidate| self.lookup_current_component_type(&candidate))
+        expression: &Expression,
+    ) -> SemanticLookup<ComponentSemantics> {
+        self.current_instance_semantics.lookup_expression(
+            expression,
+            self.current_class_instance_id,
+            self.current_instance_scope.as_ref(),
+        )
     }
 
-    fn lookup_current_component_type(&self, path: &str) -> Option<TypeId> {
-        self.current_component_types
-            .get(path)
-            .or_else(|| {
-                self.current_component_types
-                    .get(&rumoca_core::strip_all_subscripts(path))
+    pub(in crate::typechecker) fn lookup_component_reference_prefix_shape(
+        &self,
+        reference: &rumoca_ir_ast::ComponentReference,
+        prefix_len: usize,
+    ) -> SemanticLookup<Option<Vec<usize>>> {
+        match self.current_instance_semantics.lookup_reference_shape(
+            reference,
+            prefix_len,
+            self.current_class_instance_id,
+            self.current_instance_scope.as_ref(),
+        ) {
+            SemanticLookup::Missing if prefix_len == 1 => reference
+                .def_id
+                .and_then(|def_id| self.current_declaration_semantics.get(&def_id))
+                .map_or(SemanticLookup::Missing, |semantics| {
+                    SemanticLookup::Found(semantics.shape.clone())
+                }),
+            result => result,
+        }
+    }
+
+    pub(super) fn lookup_component_reference_variability(
+        &self,
+        reference: &rumoca_ir_ast::ComponentReference,
+    ) -> SemanticLookup<rumoca_eval_ast::eval::VariabilityLevel> {
+        match self.lookup_instance_reference(reference, reference.parts.len()) {
+            SemanticLookup::Found(semantics) => SemanticLookup::Found(semantics.variability),
+            SemanticLookup::Missing => reference
+                .def_id
+                .and_then(|def_id| self.current_declaration_semantics.get(&def_id))
+                .map_or(SemanticLookup::Missing, |semantics| {
+                    SemanticLookup::Found(semantics.variability)
+                }),
+            SemanticLookup::Ambiguous => SemanticLookup::Ambiguous,
+        }
+    }
+
+    fn lookup_instance_reference(
+        &self,
+        reference: &rumoca_ir_ast::ComponentReference,
+        prefix_len: usize,
+    ) -> SemanticLookup<ComponentSemantics> {
+        self.current_instance_semantics.lookup_reference(
+            reference,
+            prefix_len,
+            self.current_class_instance_id,
+            self.current_instance_scope.as_ref(),
+        )
+    }
+
+    fn ambiguous_component_reference(
+        &self,
+        reference: &rumoca_ir_ast::ComponentReference,
+    ) -> ComponentReferenceTypeError {
+        let span = if reference.span.is_dummy() {
+            reference.parts.first().and_then(|part| {
+                self.source_map.try_span(
+                    part.ident.location.source,
+                    part.ident.location.start as usize,
+                    part.ident.location.end as usize,
+                )
             })
-            .copied()
-    }
-
-    pub(in crate::typechecker) fn find_instanced_component_path_shape(
-        &self,
-        path: &ComponentPath,
-    ) -> Option<&Option<Vec<usize>>> {
-        if let Some(shape) = self
-            .current_instance_scope
-            .as_ref()
-            .and_then(|scope| self.lookup_scoped_component_shape(path, scope))
-        {
-            return Some(shape);
+        } else {
+            Some(reference.span)
+        };
+        match span {
+            Some(span) => ComponentReferenceTypeError::AmbiguousIdentity {
+                reference: reference.to_string(),
+                span,
+            },
+            None => ComponentReferenceTypeError::MissingSourceContext(
+                TypeCheckError::missing_source_context(format!(
+                    "source span for ambiguous component reference `{reference}` was not found"
+                )),
+            ),
         }
-        self.lookup_current_component_shape(path.as_str())
-    }
-
-    fn lookup_scoped_component_shape(
-        &self,
-        path: &ComponentPath,
-        scope: &ComponentPath,
-    ) -> Option<&Option<Vec<usize>>> {
-        rumoca_core::scoped_component_path_candidates(path, scope)
-            .into_iter()
-            .find_map(|candidate| self.lookup_current_component_shape(&candidate))
-    }
-
-    fn lookup_current_component_shape(&self, path: &str) -> Option<&Option<Vec<usize>>> {
-        self.current_component_shapes.get(path).or_else(|| {
-            self.current_component_shapes
-                .get(&rumoca_core::strip_all_subscripts(path))
-        })
-    }
-
-    pub(super) fn find_instanced_component_path_variability(
-        &self,
-        path: &ComponentPath,
-    ) -> Option<&rumoca_core::Variability> {
-        if let Some(variability) = self
-            .current_instance_scope
-            .as_ref()
-            .and_then(|scope| self.lookup_scoped_component_variability(path, scope))
-        {
-            return Some(variability);
-        }
-        self.lookup_current_component_variability(path.as_str())
-    }
-
-    fn lookup_scoped_component_variability(
-        &self,
-        path: &ComponentPath,
-        scope: &ComponentPath,
-    ) -> Option<&rumoca_core::Variability> {
-        rumoca_core::scoped_component_path_candidates(path, scope)
-            .into_iter()
-            .find_map(|candidate| self.lookup_current_component_variability(&candidate))
-    }
-
-    fn lookup_current_component_variability(
-        &self,
-        path: &str,
-    ) -> Option<&rumoca_core::Variability> {
-        self.current_component_variabilities.get(path).or_else(|| {
-            self.current_component_variabilities
-                .get(&rumoca_core::strip_all_subscripts(path))
-        })
-    }
-
-    fn find_scoped_component_ref_prefix_type(
-        &self,
-        comp: &rumoca_ir_ast::ComponentReference,
-    ) -> Option<(TypeId, usize)> {
-        let mut scope = self.current_instance_scope.clone()?;
-        loop {
-            if let Some(found) = self.find_component_ref_prefix_at_scope(comp, &scope) {
-                return Some(found);
-            }
-            let Some(parent) = scope.parent() else {
-                break;
-            };
-            scope = parent;
-        }
-        None
-    }
-
-    fn find_component_ref_prefix_at_scope(
-        &self,
-        comp: &rumoca_ir_ast::ComponentReference,
-        scope: &ComponentPath,
-    ) -> Option<(TypeId, usize)> {
-        for end in (1..=comp.parts.len()).rev() {
-            let relative =
-                ComponentPath::from_parts(comp.parts[..end].iter().map(|part| part.to_string()));
-            let candidate = scope.join(&relative);
-            if let Some(type_id) = self.lookup_current_component_type(candidate.as_str()) {
-                return Some((type_id, end));
-            }
-        }
-        None
     }
 
     fn lookup_component_member_type(

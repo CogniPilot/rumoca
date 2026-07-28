@@ -24,7 +24,7 @@ pub use boolean_eval::try_eval_flat_expr_boolean;
 use enum_identity::EnumCanonicalizer;
 pub use enum_identity::canonicalize_enum_literal;
 
-// Conditional tracing support (SPEC_0024)
+// Conditional tracing support (SPEC_0008)
 #[cfg(feature = "tracing")]
 use tracing::debug;
 

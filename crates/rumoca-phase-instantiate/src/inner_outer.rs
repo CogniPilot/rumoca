@@ -3,9 +3,15 @@
 //! Extracted from the instantiate facade so the phase entry points stay within
 //! the SPEC_0021 file-size budget.
 
-#![allow(clippy::wildcard_imports)]
-
-use super::*;
+use super::{
+    ComponentImports, IndexMap, InnerDeclaration, InstantiateContext, InstantiateError,
+    InstantiateEvalCtx, InstantiateOptions, InstantiateResult, MissingInnerInfo, OuterValues,
+    TypeOverrideMap, ast, component_declaration_source_scope, description_tokens_to_string,
+    evaluate_component_condition_with_outer_values, extract_bool_params_with_mods,
+    extract_real_params_with_mods, find_class_in_tree, get_or_compute_template, instantiate_class,
+    instantiate_component, is_type_compatible_with_def_id, location_to_span, path_utils,
+    resolve_effective_components_for_eval, try_eval_real_expr,
+};
 use rustc_hash::FxHashMap;
 
 /// Error type for synthetic inner retry attempts.

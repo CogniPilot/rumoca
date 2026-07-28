@@ -193,25 +193,12 @@ fn test_propagate_alias_map_copies_indexed_record_fields() {
 }
 
 #[test]
-fn test_insert_instanced_aliases_ignores_dot_inside_subscript_expression() {
-    let mut out = HashMap::new();
-    TypeChecker::insert_instanced_aliases(
-        &mut out,
-        "plug[data.medium]",
-        TypeId::new(7),
-        Some("Top"),
-    );
-
-    assert_eq!(out.get("plug[data.medium]"), Some(&TypeId::new(7)));
-    assert_eq!(out.get("Top.plug[data.medium]"), Some(&TypeId::new(7)));
-}
-
-#[test]
-fn test_build_instanced_component_type_scope_keeps_subscript_dot_single_segment() {
+fn instance_identity_scope_keeps_subscript_dot_single_segment() {
     let mut overlay = InstanceOverlay::default();
     overlay.components.insert(
         InstanceId::new(1),
         InstanceData {
+            instance_id: InstanceId::new(1),
             qualified_name: QualifiedName {
                 parts: vec![("plug[data.medium]".to_string(), vec![])],
             },
@@ -220,22 +207,27 @@ fn test_build_instanced_component_type_scope_keeps_subscript_dot_single_segment(
         },
     );
 
-    let (full_prefix, short_model) = TypeChecker::instanced_scope_prefixes("Top.Model");
-    let scope_map =
-        TypeChecker::build_instanced_component_type_scope(&overlay, &full_prefix, &short_model);
-    assert_eq!(
-        scope_map.get("plug[data.medium]"),
-        Some(&TypeId::new(11)),
+    let scope = InstanceSemanticScope::from_overlay(&overlay);
+    let reference = make_comp_ref("plug[data.medium]");
+    assert!(
+        matches!(
+            scope.lookup_reference(&reference, 1, None, None),
+            SemanticLookup::Found(ComponentSemantics {
+                type_id,
+                ..
+            }) if type_id == TypeId::new(11)
+        ),
         "dot inside subscript content must not block top-level instanced scope aliases"
     );
 }
 
 #[test]
-fn test_build_instanced_component_shape_scope_uses_expanded_parent_domain() {
+fn instance_identity_scope_uses_expanded_parent_domain() {
     let mut overlay = InstanceOverlay::default();
     overlay.components.insert(
         InstanceId::new(1),
         InstanceData {
+            instance_id: InstanceId::new(1),
             qualified_name: QualifiedName::from_dotted("source.V[1]"),
             ..Default::default()
         },
@@ -247,25 +239,50 @@ fn test_build_instanced_component_shape_scope_uses_expanded_parent_domain() {
         .array_parent_dims
         .insert("source.V[1].member".to_string(), vec![2]);
 
-    let (full_prefix, short_model) = TypeChecker::instanced_scope_prefixes("Top.Model");
-    let scope_map =
-        TypeChecker::build_instanced_component_shape_scope(&overlay, &full_prefix, &short_model);
+    let scope = InstanceSemanticScope::from_overlay(&overlay);
+    let source_v = make_dotted_comp_ref(&["source", "V"]);
+    let source_v_indexed = make_dotted_comp_ref(&["source", "V[1]"]);
+    let source_v_member = make_dotted_comp_ref(&["source", "V", "member"]);
 
-    assert_eq!(
-        scope_map.get("source.V"),
-        Some(&Some(vec![3])),
+    assert!(
+        matches!(
+            scope.lookup_reference_shape(&source_v, 2, None, None),
+            SemanticLookup::Found(Some(shape)) if shape == vec![3]
+        ),
         "expanded array parent must retain its declared domain"
     );
-    assert_eq!(
-        scope_map.get("source.V[1]"),
-        Some(&Some(Vec::new())),
+    assert!(
+        matches!(
+            scope.lookup_reference_shape(&source_v_indexed, 2, None, None),
+            SemanticLookup::Found(Some(shape)) if shape.is_empty()
+        ),
         "expanded element remains scalar"
     );
-    assert_eq!(
-        scope_map.get("source.V.member"),
-        Some(&Some(vec![2])),
+    assert!(
+        matches!(
+            scope.lookup_reference_shape(&source_v_member, 3, None, None),
+            SemanticLookup::Found(Some(shape)) if shape == vec![2]
+        ),
         "indexed parent segments must be stripped without losing a nested member's own domain"
     );
+}
+
+fn make_dotted_comp_ref(parts: &[&str]) -> ComponentReference {
+    ComponentReference {
+        local: false,
+        parts: parts
+            .iter()
+            .map(|part| ComponentRefPart {
+                ident: Token {
+                    text: Arc::from(*part),
+                    ..Default::default()
+                },
+                subs: None,
+            })
+            .collect(),
+        span: rumoca_core::Span::DUMMY,
+        def_id: None,
+    }
 }
 
 #[test]

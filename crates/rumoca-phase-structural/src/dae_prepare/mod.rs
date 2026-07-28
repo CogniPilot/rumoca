@@ -61,7 +61,10 @@ pub use dummy_state_metadata::{
     constrained_dummy_state_names,
 };
 mod deficient_row_reduction;
-pub use deficient_row_reduction::index_reduce_deficient_constraint_rows;
+pub use deficient_row_reduction::{
+    IndexReducedConstraint, IndexReductionResult, index_reduce_deficient_constraint_rows,
+    index_reduce_deficient_constraint_rows_with_metadata,
+};
 mod demotion_rank_check;
 mod direct_demotion;
 mod dummy_derivative_alias;

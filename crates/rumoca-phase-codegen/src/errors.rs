@@ -75,6 +75,37 @@ pub enum CodegenError {
         message: String,
         span: Option<rumoca_core::Span>,
     },
+
+    /// A DAE template requested scalar residual rows whose authoritative body
+    /// exists only in a compact structured family.
+    #[error(
+        "DAE scalar residual view is unavailable for structured family `{origin}` in {partition}"
+    )]
+    #[diagnostic(
+        code(rumoca::codegen::EC007),
+        help(
+            "select a target that declares and consumes structured equation families, or lower through Solve IR"
+        )
+    )]
+    NonMaterializedStructuredFamily {
+        partition: &'static str,
+        origin: String,
+        span: Option<rumoca_core::Span>,
+    },
+
+    /// A target declared structured-family support, but the canonical family
+    /// metadata is incomplete or inconsistent with its DAE partition.
+    #[error("invalid structured-family ownership for `{origin}` in {partition}: {reason}")]
+    #[diagnostic(
+        code(rumoca::codegen::EC008),
+        help("fix the DAE producer; code generation cannot infer missing family semantics")
+    )]
+    InvalidStructuredFamilyOwnership {
+        partition: &'static str,
+        origin: String,
+        reason: String,
+        span: Option<rumoca_core::Span>,
+    },
 }
 
 impl CodegenError {
@@ -235,6 +266,16 @@ mod tests {
             CodegenError::DaePreparationFailed { .. } => {
                 unreachable!(
                     "From<minijinja::Error> only constructs template errors, never DAE preparation errors"
+                );
+            }
+            CodegenError::NonMaterializedStructuredFamily { .. } => {
+                unreachable!(
+                    "From<minijinja::Error> only constructs template errors, never structured-family errors"
+                );
+            }
+            CodegenError::InvalidStructuredFamilyOwnership { .. } => {
+                unreachable!(
+                    "From<minijinja::Error> only constructs template errors, never structured-family ownership errors"
                 );
             }
         }

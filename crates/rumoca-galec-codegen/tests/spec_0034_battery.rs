@@ -280,7 +280,7 @@ fn assert_unsupported(errors: &[GalecTargetError], feature: &str) {
     assert!(
         errors
             .iter()
-            .any(|error| error.code() == "ET017" && error.to_string().contains(&marker)),
+            .any(|error| error.code() == "EGT017" && error.to_string().contains(&marker)),
         "expected `{marker}` among: {errors:#?}"
     );
 }
@@ -301,7 +301,7 @@ mod rejected_constructs {
     fn scope_rejections_carry_stable_codes_and_gal025_wording() {
         type Mutate = fn(&mut dae::Dae);
         let cases: &[(&str, &str, Mutate)] = &[
-            ("continuous state", "ET001", |model| {
+            ("continuous state", "EGT001", |model| {
                 model
                     .variables
                     .states
@@ -314,7 +314,7 @@ mod rejected_constructs {
                     scalar_count: 1,
                 });
             }),
-            ("external function", "ET002", |model| {
+            ("external function", "EGT002", |model| {
                 let mut function = rumoca_core::Function::new("tableLookup", Span::DUMMY);
                 function.external = Some(rumoca_core::ExternalFunction {
                     language: "C".to_owned(),
@@ -325,10 +325,10 @@ mod rejected_constructs {
                     .functions
                     .insert(VarName::new("tableLookup"), function);
             }),
-            ("runtime event", "ET003", |model| {
+            ("runtime event", "EGT003", |model| {
                 model.events.scheduled_time_events.push(0.5);
             }),
-            ("dynamic clock", "ET004", |model| {
+            ("dynamic clock", "EGT004", |model| {
                 model.clocks.triggered_conditions.push(boolean(true));
             }),
         ];
@@ -362,7 +362,7 @@ mod rejected_constructs {
         });
         let errors = lower_err(&model, &base_types());
         assert!(
-            errors.iter().any(|error| error.code() == "ET005"),
+            errors.iter().any(|error| error.code() == "EGT005"),
             "{errors:#?}"
         );
     }
@@ -419,6 +419,52 @@ mod rejected_constructs {
         });
         let errors = lower_err(&model, &base_types());
         assert_unsupported(&errors, "multi-rate");
+    }
+
+    /// Authoritative root-schedule metadata may identify a sample condition
+    /// whose finalized RHS no longer carries the source call. An unrelated
+    /// two-argument call must not be mined for the period expression.
+    #[test]
+    fn schedule_metadata_does_not_treat_ordinary_call_as_sample_timing() {
+        let mut model = model_with_body(var("u"));
+        let ordinary_call = Expression::FunctionCall {
+            name: Reference::new("ordinaryClockHelper"),
+            args: vec![real(0.0), var("samplePeriod")],
+            is_constructor: false,
+            span: Span::DUMMY,
+        };
+        model.conditions.relations[0] = ordinary_call.clone();
+        model.conditions.equations[0].rhs = ordinary_call.clone();
+        model
+            .events
+            .scheduled_root_conditions
+            .push(dae::DaeScheduledRootCondition {
+                root_index: 0,
+                period_seconds: 1e-3,
+                phase_seconds: 0.0,
+            });
+        model.clocks.constructor_exprs.push(ordinary_call);
+
+        let package = lower(&model, &base_types());
+        let source_period = package
+            .manifest
+            .variables
+            .iter()
+            .find(|variable| variable.common().name.as_str() == "samplePeriod")
+            .expect("source samplePeriod constant is retained");
+        assert_ne!(
+            package.manifest.clock_variable_ref_id.as_str(),
+            source_period.common().id.as_str(),
+            "an ordinary two-argument call must not supply sample timing"
+        );
+        assert!(
+            package.manifest.variables.iter().any(|variable| variable
+                .common()
+                .name
+                .as_str()
+                .starts_with("clockSamplePeriod")),
+            "the authoritative schedule should synthesize its period constant"
+        );
     }
 
     /// `sample()` used as a value expression (a sample-expression clock)
@@ -594,7 +640,7 @@ mod builtin_parity {
     }
 
     /// A canonical `noEvent` call has exactly one argument; extra arguments
-    /// are a compiler bug and must be reported (ET018), never silently
+    /// are a compiler bug and must be reported (EGT018), never silently
     /// truncated to the first argument.
     #[test]
     fn no_event_extra_arguments_are_a_diagnostic_never_truncated() {
@@ -602,7 +648,7 @@ mod builtin_parity {
         let errors = lower_err(&model_with_body(body), &base_types());
         assert!(
             errors.iter().any(|error| {
-                error.code() == "ET018"
+                error.code() == "EGT018"
                     && error.to_string().contains("NoEvent")
                     && error.to_string().contains("expected 1")
             }),
@@ -1429,7 +1475,7 @@ mod reserved_names {
 #[test]
 fn missing_type_provenance_is_a_diagnostic_through_lowering() {
     // Without the ScalarTypeMap, parameter/constant types are honestly
-    // unresolvable: ET011 per variable, never a guessed default type.
+    // unresolvable: EGT011 per variable, never a guessed default type.
     let model = model_with_body(var("u"));
     let input = GalecInput::new(&model, "Battery");
     let errors = lower_to_algorithm_code(&input, &GalecOptions::default())
@@ -1437,13 +1483,13 @@ fn missing_type_provenance_is_a_diagnostic_through_lowering() {
         .expect_err("must not default types");
     assert!(!errors.is_empty());
     assert!(
-        errors.iter().all(|error| error.code() == "ET011"),
+        errors.iter().all(|error| error.code() == "EGT011"),
         "{errors:#?}"
     );
     for name in ["samplePeriod", "i1", "i2"] {
         assert!(
             errors.iter().any(|error| error.to_string().contains(name)),
-            "no ET011 for `{name}`: {errors:#?}"
+            "no EGT011 for `{name}`: {errors:#?}"
         );
     }
 }
@@ -1451,7 +1497,7 @@ fn missing_type_provenance_is_a_diagnostic_through_lowering() {
 /// A pre reference arriving as a rendered element name (`__pre__.h[2]`)
 /// resolves through its base slot with the index as a literal subscript —
 /// the same fallback `lower_state_ref` and the condition machinery have
-/// (GAL-026 array-native intent), never a misleading ET019.
+/// (GAL-026 array-native intent), never a misleading EGT019.
 #[test]
 fn rendered_pre_element_reference_resolves_through_the_base_slot() {
     let mut model = model_with_body(var("__pre__.h[2]"));
@@ -1487,7 +1533,7 @@ fn mutated_package_cannot_render_unvalidated_galec() {
             value: gast::Expression::Real(1.0),
         }));
     let error = render_algorithm_code(&package).expect_err("facade must re-validate the block");
-    assert_eq!(error.code(), "ET018");
+    assert_eq!(error.code(), "EGT018");
 }
 
 /// The typed AC manifest is assembled from one identity + the SHA-1 of the

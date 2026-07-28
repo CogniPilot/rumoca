@@ -282,6 +282,71 @@ fn external_declarations_survive_move_out_at_every_depth() {
 }
 
 #[test]
+fn external_clause_annotations_preserve_structured_expressions() {
+    let source = r##"
+pure function Linked
+  input Real u;
+  output Real y;
+external "C" y = linked_call(u)
+  annotation(
+    Library = {"Linked", "Support"},
+    Include = "#include \"linked.h\"");
+end Linked;
+"##;
+    let def = parse_to_ast(source, "external_annotations.mo").expect("source should parse");
+    let external = def
+        .classes
+        .get("Linked")
+        .and_then(|class| class.external.as_ref())
+        .expect("external declaration should be present");
+
+    let [library, include] = external.annotation.as_slice() else {
+        panic!("expected Library and Include annotation expressions");
+    };
+    let rumoca_ir_ast::Expression::Modification {
+        target,
+        value: library_value,
+        ..
+    } = library
+    else {
+        panic!("Library must remain a structured modification");
+    };
+    assert_eq!(target.parts.len(), 1);
+    assert_eq!(target.parts[0].ident.text.as_ref(), "Library");
+    let rumoca_ir_ast::Expression::Array { elements, .. } = library_value.as_ref() else {
+        panic!("Library value must remain a structured array");
+    };
+    assert_eq!(elements.len(), 2);
+    assert!(matches!(
+        &elements[0],
+        rumoca_ir_ast::Expression::Terminal {
+            terminal_type: rumoca_ir_ast::TerminalType::String,
+            token,
+            ..
+        } if token.text.as_ref() == "Linked"
+    ));
+
+    let rumoca_ir_ast::Expression::Modification {
+        target,
+        value: include_value,
+        ..
+    } = include
+    else {
+        panic!("Include must remain a structured modification");
+    };
+    assert_eq!(target.parts.len(), 1);
+    assert_eq!(target.parts[0].ident.text.as_ref(), "Include");
+    assert!(matches!(
+        include_value.as_ref(),
+        rumoca_ir_ast::Expression::Terminal {
+            terminal_type: rumoca_ir_ast::TerminalType::String,
+            token,
+            ..
+        } if token.text.as_ref() == "#include \"linked.h\""
+    ));
+}
+
+#[test]
 fn extends_class_specifier_keeps_its_composition() {
     // MLS §4.5 long-class-specifier, `extends` form: the composition payload is
     // consumed by `convert_extends_class_specifier`, a second take-site.

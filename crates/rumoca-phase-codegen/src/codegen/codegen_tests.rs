@@ -28,6 +28,130 @@ fn fixture_span() -> rumoca_core::Span {
     )
 }
 
+fn dae_with_non_materialized_family(scalar_view: rumoca_core::ComprehensionScalarView) -> dae::Dae {
+    let span = fixture_span();
+    let placeholder = rumoca_core::Expression::Literal {
+        value: rumoca_core::Literal::Real(0.0),
+        span,
+    };
+    let mut model = dae::Dae::new();
+    let equation_count = if scalar_view == rumoca_core::ComprehensionScalarView::RowMajorProjection
+    {
+        1
+    } else {
+        4
+    };
+    for _ in 0..equation_count {
+        let mut owner = dae::Equation::residual(placeholder.clone(), span, "structured fixture");
+        if scalar_view == rumoca_core::ComprehensionScalarView::RowMajorProjection {
+            owner.scalar_count = 4;
+        }
+        model.continuous.equations.push(owner);
+    }
+    model
+        .continuous
+        .structured_equations
+        .push(dae::StructuredEquationFamily {
+            domain: rumoca_core::StructuredIndexDomain {
+                binders: vec![rumoca_core::StructuredIndexBinder {
+                    id: 0,
+                    display_name: "i".to_string(),
+                    lower: 1,
+                    upper: 4,
+                    step: 1,
+                }],
+            },
+            first_equation_index: 0,
+            equations_per_point: 1,
+            span,
+            origin: "structured fixture".to_string(),
+            regular: None,
+            template: Some(rumoca_core::ComprehensionTemplate {
+                body: vec![placeholder],
+                scalar_view,
+            }),
+            interiors_materialized: false,
+        });
+    model
+}
+
+#[test]
+fn dae_scalar_template_json_rejects_placeholder_family_interiors() {
+    let dae =
+        dae_with_non_materialized_family(rumoca_core::ComprehensionScalarView::BinderSubstitution);
+
+    let error = dae_template_json(&dae).expect_err("scalar f_x must not expose placeholders");
+
+    assert!(matches!(
+        error,
+        CodegenError::NonMaterializedStructuredFamily {
+            partition: "continuous f_x",
+            ..
+        }
+    ));
+}
+
+#[test]
+fn structured_owner_context_allows_family_aware_consumer_only() {
+    let dae =
+        dae_with_non_materialized_family(rumoca_core::ComprehensionScalarView::BinderSubstitution);
+
+    let value = dae_template_json_with_structured_ownership(&dae)
+        .expect("family-aware context should retain the canonical family");
+
+    assert_eq!(
+        value
+            .get("structured_equations")
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::len),
+        Some(1)
+    );
+}
+
+#[test]
+fn aggregate_row_major_owner_is_safe_for_dae_context() {
+    let dae =
+        dae_with_non_materialized_family(rumoca_core::ComprehensionScalarView::RowMajorProjection);
+
+    dae_template_json(&dae).expect("aggregate equation is an authoritative DAE residual");
+}
+
+#[test]
+fn malformed_aggregate_owner_is_rejected() {
+    let mut dae =
+        dae_with_non_materialized_family(rumoca_core::ComprehensionScalarView::RowMajorProjection);
+    dae.continuous.equations[0].scalar_count = 1;
+
+    let error = dae_template_json_with_structured_ownership(&dae)
+        .expect_err("family-aware context must validate its aggregate owner");
+
+    assert!(matches!(
+        error,
+        CodegenError::InvalidStructuredFamilyOwnership { .. }
+    ));
+}
+
+#[test]
+fn solve_context_retains_dae_metadata_but_redacts_placeholder_fx() {
+    let dae =
+        dae_with_non_materialized_family(rumoca_core::ComprehensionScalarView::BinderSubstitution);
+    let renderer = SolveTemplateRenderer::new_with_dae(
+        &solve::SolveProblem::default(),
+        &solve::SolveArtifacts::default(),
+        dae,
+    )
+    .expect("solve context should build lazily");
+
+    let metadata = renderer
+        .render_with_name("{{ dae.structured_equations | length }}", "M")
+        .expect("safe DAE metadata remains available to Solve templates");
+    assert_eq!(metadata, "1");
+
+    renderer
+        .render_with_name("{{ dae.f_x | length }}", "M")
+        .expect_err("unavailable scalar f_x must remain strict-undefined");
+}
+
 #[test]
 fn condition_aliases_use_condition_equation_span() {
     let span = fixture_span();
@@ -61,6 +185,35 @@ fn solve_problem_with_one_by_one_matmul_derivative() -> solve::SolveProblem {
             lhs_start: 0,
             rhs_ops: vec![solve::LinearOp::Const { dst: 1, value: 3.0 }],
             rhs_start: 1,
+            m: 1,
+            k: 1,
+            n: 1,
+            lhs_sparsity: Default::default(),
+            rhs_sparsity: Default::default(),
+            metadata: Default::default(),
+            span: fixture_span(),
+        }],
+    };
+    problem
+}
+
+fn solve_problem_with_scalar_fallback_matmul_derivative() -> solve::SolveProblem {
+    let mut problem = solve::SolveProblem::default();
+    problem.continuous.derivative_rhs = solve::ComputeBlock {
+        nodes: vec![solve::ComputeNode::MatMul {
+            lhs_ops: vec![
+                solve::LinearOp::Const { dst: 0, value: 2.0 },
+                solve::LinearOp::Const { dst: 1, value: 1.0 },
+                solve::LinearOp::Compare {
+                    dst: 2,
+                    op: solve::CompareOp::Gt,
+                    lhs: 0,
+                    rhs: 1,
+                },
+            ],
+            lhs_start: 2,
+            rhs_ops: vec![solve::LinearOp::Const { dst: 3, value: 3.0 }],
+            rhs_start: 3,
             m: 1,
             k: 1,
             n: 1,
@@ -529,6 +682,35 @@ fn test_mlir_builtin_target_renders_native_matmul() {
     assert!(
         rendered.contains("memref.store %mm0_Cv0_0"),
         "MLIR native matrix multiplication should store its result: {rendered}"
+    );
+    assert!(
+        !rendered.contains("%mm0_A = memref.alloca"),
+        "model-sized MatMul workspaces must not consume the thread stack: {rendered}"
+    );
+    assert_eq!(
+        rendered.matches("memref.dealloc %mm0_").count(),
+        3,
+        "MLIR must release the left, right, and output matrix workspaces: {rendered}"
+    );
+}
+
+#[test]
+fn test_mlir_matmul_with_unsupported_native_op_uses_scalar_fallback() {
+    let rendered = render_solve_template_with_name(
+        &solve_problem_with_scalar_fallback_matmul_derivative(),
+        &solve::SolveArtifacts::default(),
+        builtin_template("mlir", "mlir.mlir.jinja"),
+        "TensorDemo",
+    )
+    .expect("MLIR should render the shared scalar MatMul fallback");
+
+    assert!(
+        !rendered.contains("linalg.matmul"),
+        "unsupported native setup must not emit a partial MatMul: {rendered}"
+    );
+    assert!(
+        rendered.contains("arith.cmpf ogt") && rendered.contains("memref.store"),
+        "scalar fallback must retain the comparison and output store: {rendered}"
     );
 }
 

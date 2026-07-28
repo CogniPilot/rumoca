@@ -74,6 +74,12 @@ pub trait SolverAdvanceBackend {
     fn native_y(&self) -> Vec<f64>;
     fn step(&mut self) -> Result<StepOutcome, SimDriverError>;
     fn set_stop_time(&mut self, stop_time: f64) -> Result<(), SimDriverError>;
+    /// A backend that resets integration history after accepted-step
+    /// projection cannot interpolate across that reset. Such backends request
+    /// exact output stops while the projection plan is active.
+    fn requires_exact_output_stop(&self) -> bool {
+        false
+    }
     fn interpolate(&mut self, t: f64) -> Result<Vec<f64>, SimDriverError>;
     fn state_mut_back(&mut self, t: f64) -> Result<(), SimDriverError>;
 
@@ -775,10 +781,17 @@ fn advance_output_interval<St: SolverAdvanceBackend + ?Sized>(
     backend: &mut St,
     deferred_root: &mut Option<f64>,
 ) -> Result<bool, SimDriverError> {
+    if backend.requires_exact_output_stop() {
+        backend.set_stop_time(target)?;
+    }
     loop {
         ctx.budget.check()?;
         if backend.time() >= target {
-            let y_at_target = backend.interpolate(target)?;
+            let y_at_target = if sample_time_match_with_tol(backend.time(), target) {
+                backend.native_y()
+            } else {
+                backend.interpolate(target)?
+            };
             *state.current_t = target;
             state
                 .params

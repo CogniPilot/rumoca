@@ -21,6 +21,30 @@ use rumoca_tool_fmt::PartialFormatOptions;
 use rumoca_tool_lint::LintOptions;
 use std::time::SystemTime;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ToolConfigError {
+    path: PathBuf,
+    message: String,
+}
+
+impl ToolConfigError {
+    fn load(path: &Path, tool: &str, error: impl std::fmt::Display) -> Self {
+        Self {
+            path: path.to_path_buf(),
+            message: format!(
+                "failed to load {tool} configuration '{}': {error}",
+                path.display()
+            ),
+        }
+    }
+}
+
+impl std::fmt::Display for ToolConfigError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
 /// Effective tool configuration for one directory.
 #[derive(Debug, Clone, Default)]
 pub(super) struct EditorToolOptions {
@@ -35,15 +59,15 @@ pub(super) struct EditorToolOptions {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ConfigStamp {
     path: PathBuf,
-    modified: Option<SystemTime>,
+    modified: SystemTime,
 }
 
 impl ConfigStamp {
-    fn of(path: PathBuf) -> Self {
+    fn of(path: PathBuf, tool: &str) -> std::result::Result<Self, ToolConfigError> {
         let modified = std::fs::metadata(&path)
-            .ok()
-            .and_then(|meta| meta.modified().ok());
-        Self { path, modified }
+            .and_then(|metadata| metadata.modified())
+            .map_err(|error| ToolConfigError::load(&path, tool, error))?;
+        Ok(Self { path, modified })
     }
 }
 
@@ -56,43 +80,55 @@ pub(super) struct ToolConfigEntry {
 
 impl ToolConfigEntry {
     /// Whether the config files this entry was built from are unchanged.
-    fn is_current_for(&self, dir: &Path) -> bool {
-        self.fmt_config == rumoca_tool_fmt::find_config(dir).map(ConfigStamp::of)
-            && self.lint_config == rumoca_tool_lint::find_config(dir).map(ConfigStamp::of)
+    fn is_current_for(&self, dir: &Path) -> std::result::Result<bool, ToolConfigError> {
+        let fmt_config = config_stamp(rumoca_tool_fmt::find_config(dir), "formatter")?;
+        let lint_config = config_stamp(rumoca_tool_lint::find_config(dir), "linter")?;
+        Ok(self.fmt_config == fmt_config && self.lint_config == lint_config)
     }
 }
 
+fn config_stamp(
+    path: Option<PathBuf>,
+    tool: &str,
+) -> std::result::Result<Option<ConfigStamp>, ToolConfigError> {
+    path.map(|path| ConfigStamp::of(path, tool)).transpose()
+}
+
+fn load_format_overrides(
+    path: &Path,
+) -> std::result::Result<PartialFormatOptions, ToolConfigError> {
+    rumoca_tool_fmt::load_config_overrides(path)
+        .map_err(|error| ToolConfigError::load(path, "formatter", error))
+}
+
+fn load_lint_options(path: &Path) -> std::result::Result<LintOptions, ToolConfigError> {
+    rumoca_tool_lint::load_config(path)
+        .map_err(|error| ToolConfigError::load(path, "linter", error))
+}
+
 /// Load the formatter/linter configuration that applies to `dir`.
-///
-/// A malformed config file falls back to the tool defaults rather than failing
-/// the request: the editor still has to format and lint, and the CLI reports
-/// the parse error with a real diagnostic.
-pub(super) fn resolve_editor_tool_options(dir: &Path) -> ToolConfigEntry {
+pub(super) fn resolve_editor_tool_options(
+    dir: &Path,
+) -> std::result::Result<ToolConfigEntry, ToolConfigError> {
     let fmt_config_path = rumoca_tool_fmt::find_config(dir);
-    let format_overrides = match fmt_config_path
-        .as_deref()
-        .map(rumoca_tool_fmt::load_config_overrides)
-    {
-        Some(Ok(overrides)) => overrides,
-        Some(Err(_)) | None => PartialFormatOptions::default(),
+    let format_overrides = match fmt_config_path.as_deref() {
+        Some(path) => load_format_overrides(path)?,
+        None => PartialFormatOptions::default(),
     };
     let lint_config_path = rumoca_tool_lint::find_config(dir);
-    let lint = match lint_config_path
-        .as_deref()
-        .map(rumoca_tool_lint::load_config)
-    {
-        Some(Ok(options)) => options,
-        Some(Err(_)) | None => LintOptions::default(),
+    let lint = match lint_config_path.as_deref() {
+        Some(path) => load_lint_options(path)?,
+        None => LintOptions::default(),
     };
 
-    ToolConfigEntry {
+    Ok(ToolConfigEntry {
         options: Arc::new(EditorToolOptions {
             format_overrides,
             lint,
         }),
-        fmt_config: fmt_config_path.map(ConfigStamp::of),
-        lint_config: lint_config_path.map(ConfigStamp::of),
-    }
+        fmt_config: config_stamp(fmt_config_path, "formatter")?,
+        lint_config: config_stamp(lint_config_path, "linter")?,
+    })
 }
 
 /// The directory a document's tool config is resolved from.
@@ -107,10 +143,13 @@ impl ModelicaLanguageServer {
     /// Cached tool options for a document. Never touches the filesystem when
     /// the directory is already cached — this is on the per-keystroke
     /// diagnostics path.
-    pub(super) async fn tool_options_for_document(&self, uri_path: &str) -> Arc<EditorToolOptions> {
+    pub(super) async fn tool_options_for_document(
+        &self,
+        uri_path: &str,
+    ) -> std::result::Result<Arc<EditorToolOptions>, ToolConfigError> {
         let dir = config_dir_for_document(uri_path);
         if let Some(entry) = self.tool_config_cache.read().await.get(&dir) {
-            return Arc::clone(&entry.options);
+            return Ok(Arc::clone(&entry.options));
         }
         self.resolve_and_cache_tool_options(dir).await
     }
@@ -121,22 +160,77 @@ impl ModelicaLanguageServer {
     pub(super) async fn refreshed_tool_options_for_document(
         &self,
         uri_path: &str,
-    ) -> Arc<EditorToolOptions> {
+    ) -> std::result::Result<Arc<EditorToolOptions>, ToolConfigError> {
         let dir = config_dir_for_document(uri_path);
         let cached = self.tool_config_cache.read().await.get(&dir).cloned();
         if let Some(entry) = cached
-            && entry.is_current_for(&dir)
+            && entry.is_current_for(&dir)?
         {
-            return Arc::clone(&entry.options);
+            return Ok(Arc::clone(&entry.options));
         }
         self.resolve_and_cache_tool_options(dir).await
     }
 
-    async fn resolve_and_cache_tool_options(&self, dir: PathBuf) -> Arc<EditorToolOptions> {
-        let entry = resolve_editor_tool_options(&dir);
+    async fn resolve_and_cache_tool_options(
+        &self,
+        dir: PathBuf,
+    ) -> std::result::Result<Arc<EditorToolOptions>, ToolConfigError> {
+        let entry = resolve_editor_tool_options(&dir)?;
+        self.clear_tool_config_diagnostics(&entry).await;
         let options = Arc::clone(&entry.options);
         self.tool_config_cache.write().await.insert(dir, entry);
-        options
+        Ok(options)
+    }
+
+    /// Continue lint/compile diagnostics with defaults only after publishing
+    /// the configuration failure. Failed loads are never cached, so repairing
+    /// the file takes effect on the next request.
+    pub(super) async fn tool_options_for_document_or_default(
+        &self,
+        uri_path: &str,
+    ) -> Arc<EditorToolOptions> {
+        match self.tool_options_for_document(uri_path).await {
+            Ok(options) => options,
+            Err(error) => {
+                self.publish_tool_config_error(&error).await;
+                Arc::new(EditorToolOptions::default())
+            }
+        }
+    }
+
+    async fn publish_tool_config_error(&self, error: &ToolConfigError) {
+        self.client
+            .log_message(MessageType::ERROR, error.to_string())
+            .await;
+        let Ok(uri) = Url::from_file_path(&error.path) else {
+            return;
+        };
+        self.client
+            .publish_diagnostics(
+                uri,
+                vec![Diagnostic {
+                    range: Range::new(Position::new(0, 0), Position::new(0, 1)),
+                    severity: Some(DiagnosticSeverity::ERROR),
+                    code: Some(NumberOrString::String("rumoca-config".to_string())),
+                    source: Some("Rumoca Config".to_string()),
+                    message: error.to_string(),
+                    ..Diagnostic::default()
+                }],
+                None,
+            )
+            .await;
+    }
+
+    async fn clear_tool_config_diagnostics(&self, entry: &ToolConfigEntry) {
+        for stamp in [&entry.fmt_config, &entry.lint_config]
+            .into_iter()
+            .flatten()
+        {
+            let Ok(uri) = Url::from_file_path(&stamp.path) else {
+                continue;
+            };
+            self.client.publish_diagnostics(uri, Vec::new(), None).await;
+        }
     }
 
     /// Drop cached tool options when `uri` names a config file, so a config
@@ -155,12 +249,12 @@ impl ModelicaLanguageServer {
         &self,
         uri_path: &str,
         client_options: &lsp_types::FormattingOptions,
-    ) -> rumoca_tool_fmt::FormatOptions {
-        let tool_options = self.refreshed_tool_options_for_document(uri_path).await;
+    ) -> std::result::Result<rumoca_tool_fmt::FormatOptions, ToolConfigError> {
+        let tool_options = self.refreshed_tool_options_for_document(uri_path).await?;
         let client = handlers::partial_format_options_from_client(client_options);
-        rumoca_tool_fmt::FormatOptions::from_partial(
+        Ok(rumoca_tool_fmt::FormatOptions::from_partial(
             client.overlay(tool_options.format_overrides.clone()),
-        )
+        ))
     }
 }
 
@@ -211,7 +305,7 @@ mod tests {
         )
         .expect("write lint config");
 
-        let entry = resolve_editor_tool_options(&dir);
+        let entry = resolve_editor_tool_options(&dir).expect("valid tool configs");
         assert_eq!(
             entry.options.format_overrides.profile,
             Some(rumoca_tool_fmt::FormatProfile::Canonical)
@@ -227,15 +321,42 @@ mod tests {
             entry.options.lint.disabled_rules
         );
         assert!(
-            entry.is_current_for(&dir),
+            entry.is_current_for(&dir).expect("config stamps"),
             "freshly resolved entry is current"
         );
 
         std::fs::remove_file(dir.join(".rumoca_fmt.toml")).expect("cleanup fmt");
         std::fs::remove_file(dir.join(".rumoca_lint.toml")).expect("cleanup lint");
         assert!(
-            !entry.is_current_for(&dir),
+            !entry.is_current_for(&dir).expect("removed configs"),
             "removing the config files must invalidate the entry"
         );
+    }
+
+    #[test]
+    fn malformed_formatter_config_is_an_error() {
+        let dir = std::env::temp_dir().join("rumoca_lsp_tool_config_malformed");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join(".rumoca_fmt.toml");
+        std::fs::write(&path, "profile = [\n").expect("write malformed config");
+
+        let error = resolve_editor_tool_options(&dir)
+            .expect_err("malformed formatter config must not become cached defaults");
+
+        assert!(error.to_string().contains("formatter configuration"));
+        assert!(error.to_string().contains(&path.display().to_string()));
+        std::fs::remove_file(path).expect("cleanup config");
+    }
+
+    #[test]
+    fn formatter_config_read_failure_is_an_error() {
+        let dir = std::env::temp_dir().join("rumoca_lsp_tool_config_read_error");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+
+        let error =
+            load_format_overrides(&dir).expect_err("unreadable config path must be surfaced");
+
+        assert!(error.to_string().contains("formatter configuration"));
+        assert!(error.to_string().contains("failed to read config file"));
     }
 }

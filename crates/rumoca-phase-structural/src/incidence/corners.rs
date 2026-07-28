@@ -16,14 +16,15 @@ use rumoca_ir_dae as dae;
 use crate::incidence::rows::IncidenceRowsBuilder;
 use crate::types::StructuralError;
 
-/// Supplies the walked, canonical (sorted, deduplicated) incidence of one
+/// Supplies unknown occurrences in deterministic expression-walk order for one
 /// scalar equation row.
 ///
 /// Corner emission reads only base and neighbor rows through this, which is
-/// what keeps interior bodies untouched. Tests substitute a fixed row table for
-/// the DAE walker.
+/// what keeps interior bodies untouched. Occurrence order is required: sorted
+/// incidence sets lose access identity when two affine accesses cross between
+/// corner points. Tests substitute a fixed row table for the DAE walker.
 pub(crate) trait RowSource {
-    fn sorted_row(&self, row: usize) -> Vec<usize>;
+    fn ordered_row(&self, row: usize) -> Vec<usize>;
 }
 
 /// The corner model of one regular family: the compact domain shape plus the
@@ -92,6 +93,7 @@ impl CornerPlan {
 ///
 /// Materialized families are deliberately excluded: their walked incidence is
 /// authoritative, so they keep the per-row body walk.
+#[cfg(test)]
 pub(crate) fn plan_regular_family_corners(dae: &dae::Dae, n_eq: usize) -> Vec<CornerPlan> {
     let mut plans: Vec<CornerPlan> = dae
         .continuous
@@ -109,6 +111,7 @@ pub(crate) fn plan_regular_family_corners(dae: &dae::Dae, n_eq: usize) -> Vec<Co
 ///
 /// Family row ranges are disjoint by construction; this is a defensive filter
 /// so a degraded IR cannot make one family overwrite another's rows.
+#[cfg(test)]
 fn retain_disjoint(plans: Vec<CornerPlan>) -> Vec<CornerPlan> {
     let mut kept: Vec<CornerPlan> = Vec::with_capacity(plans.len());
     let mut next_free_row = 0usize;
@@ -132,10 +135,10 @@ fn retain_disjoint(plans: Vec<CornerPlan>) -> Vec<CornerPlan> {
 /// builder's row indices coincide with DAE equation indices and translated rows
 /// can name their base row directly.
 ///
-/// Returns `Err` when the family's corner rows are not a uniform per-binder
-/// translation (i.e. the family is not actually regular in the numeric unknown
-/// layout). Callers roll the builder back and fall through to walking every
-/// row, which is exactly the historical behaviour for a declined family.
+/// Returns `Err` when the family's corner rows cannot establish an affine
+/// per-access translation (i.e. the family is not actually regular in the
+/// numeric unknown layout). Non-materialized interior bodies are placeholders,
+/// so production callers propagate this error rather than walking those rows.
 pub(crate) fn emit_family_rows(
     builder: &mut IncidenceRowsBuilder,
     plan: &CornerPlan,
@@ -152,15 +155,15 @@ pub(crate) fn emit_family_rows(
         ));
     }
     let base_rows: Vec<Vec<usize>> = (0..plan.equations_per_point)
-        .map(|position| source.sorted_row(plan.first_equation_index + position))
+        .map(|position| source.ordered_row(plan.first_equation_index + position))
         .collect();
     let units = derive_translation_units(plan, &base_rows, source)?;
 
     for base in &base_rows {
-        builder.push_sorted(base);
+        builder.push_occurrences(base);
     }
     for point in 1..plan.point_count {
-        emit_point_rows(builder, plan, &units, point)?;
+        emit_point_rows(builder, plan, &base_rows, &units, point)?;
     }
     Ok(())
 }
@@ -168,33 +171,53 @@ pub(crate) fn emit_family_rows(
 fn emit_point_rows(
     builder: &mut IncidenceRowsBuilder,
     plan: &CornerPlan,
-    units: &[Vec<i64>],
+    base_rows: &[Vec<usize>],
+    units: &[Vec<Vec<i64>>],
     point: usize,
 ) -> Result<(), StructuralError> {
-    for (position, steps) in units.iter().enumerate() {
-        let shift = cell_shift(plan, steps, point).ok_or_else(|| {
+    for (position, occurrence_units) in units.iter().enumerate() {
+        let shifts: Vec<i64> = occurrence_units
+            .iter()
+            .map(|steps| {
+                cell_shift(plan, steps, point).ok_or_else(|| {
+                    contract(
+                        plan,
+                        format!(
+                            "corner translation for family row {} point {point} overflows",
+                            plan.first_equation_index
+                        ),
+                    )
+                })
+            })
+            .collect::<Result<_, _>>()?;
+        let source = base_rows.get(position).ok_or_else(|| {
             contract(
                 plan,
                 format!(
-                    "corner translation for family row {} point {point} overflows",
-                    plan.first_equation_index
+                    "corner translation has no source occurrences for family row position {position}"
                 ),
             )
         })?;
-        builder.push_translated(plan.first_equation_index + position, shift)?;
+        builder.push_affine_occurrences(source, &shifts)?;
     }
     Ok(())
 }
 
-/// Per-(row position, binder) translation unit, read from each binder's
-/// neighbor cell. A row may shift differently per binder because its accesses
-/// can target distinct arrays; an extent-1 binder contributes no shift.
+/// Per-(row position, unknown occurrence, binder) translation unit, read from
+/// each binder's neighbor cell.
+///
+/// Occurrences are independent because a regular body can capture a scalar while
+/// indexing an array, e.g. `der(x[i]) = u`: `u` has zero stride and `der(x[i])`
+/// advances. An extent-1 binder contributes no shift.
 fn derive_translation_units(
     plan: &CornerPlan,
     base_rows: &[Vec<usize>],
     source: &dyn RowSource,
-) -> Result<Vec<Vec<i64>>, StructuralError> {
-    let mut units = vec![vec![0i64; plan.extents.len()]; plan.equations_per_point];
+) -> Result<Vec<Vec<Vec<i64>>>, StructuralError> {
+    let mut units: Vec<Vec<Vec<i64>>> = base_rows
+        .iter()
+        .map(|row| vec![vec![0i64; plan.extents.len()]; row.len()])
+        .collect();
     for (dimension, &extent) in plan.extents.iter().enumerate() {
         if extent <= 1 {
             continue;
@@ -209,14 +232,18 @@ fn derive_translation_units(
                     ),
                 )
             })?;
-            let neighbor = source.sorted_row(row);
-            let unit = uniform_translation(base, &neighbor).ok_or_else(|| {
+            let neighbor = source.ordered_row(row);
+            let column_units = column_translations(base, &neighbor).ok_or_else(|| {
                 contract(
                     plan,
-                    format!("family row {row} is not a uniform translation of its base cell"),
+                    format!(
+                        "family row {row} does not preserve its base-cell incidence cardinality"
+                    ),
                 )
             })?;
-            units[position][dimension] = unit;
+            for (column, unit) in column_units.into_iter().enumerate() {
+                units[position][column][dimension] = unit;
+            }
         }
     }
     Ok(units)
@@ -272,15 +299,30 @@ pub(crate) fn uniform_translation(base: &[usize], neighbor: &[usize]) -> Option<
     i64::try_from(delta).ok()
 }
 
+/// Per-occurrence affine translation from one corner cell to its neighbor.
+///
+/// Expression-walk order preserves source-access identity, so each occurrence
+/// can have its own stride, including zero for a binder-invariant capture.
+fn column_translations(base: &[usize], neighbor: &[usize]) -> Option<Vec<i64>> {
+    if base.len() != neighbor.len() {
+        return None;
+    }
+    base.iter()
+        .zip(neighbor)
+        .map(|(&left, &right)| {
+            let delta = i128::try_from(right)
+                .ok()?
+                .checked_sub(i128::try_from(left).ok()?)?;
+            i64::try_from(delta).ok()
+        })
+        .collect()
+}
+
 /// A family-level contract failure, reported against the owning
 /// `for`-equation's span.
 ///
-/// The caller of [`emit_family_rows`] treats the error as a *decline* and walks
-/// the family's rows body by body instead. That is not silent recovery: the
-/// walked incidence is the authoritative relation, and the corner model is only
-/// the arithmetic shortcut to it. The span is attached anyway so that any future
-/// caller that surfaces the failure -- rather than falling back -- reports it
-/// against real source.
+/// The span is attached so a failed compact proof reports against the source
+/// `for` equation instead of becoming a span-free backend error.
 fn contract(plan: &CornerPlan, reason: String) -> StructuralError {
     StructuralError::ContractViolation {
         reason,
@@ -297,14 +339,11 @@ pub(crate) mod tests {
     pub(crate) struct TableRows(pub(crate) Vec<Vec<usize>>);
 
     impl RowSource for TableRows {
-        fn sorted_row(&self, row: usize) -> Vec<usize> {
-            let mut columns = match self.0.get(row) {
+        fn ordered_row(&self, row: usize) -> Vec<usize> {
+            match self.0.get(row) {
                 Some(columns) => columns.clone(),
                 None => Vec::new(),
-            };
-            columns.sort_unstable();
-            columns.dedup();
-            columns
+            }
         }
     }
 
@@ -392,6 +431,12 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn column_translations_preserve_invariant_captures() {
+        assert_eq!(column_translations(&[10, 40], &[11, 40]), Some(vec![1, 0]));
+        assert_eq!(column_translations(&[1], &[2, 3]), None);
+    }
+
+    #[test]
     fn cell_coordinate_decomposes_row_major_position() {
         // 3x4 grid, row-major: strides [4, 1], extents [3, 4]. Cell 6 = (1, 2).
         assert_eq!(cell_coordinate(6, 4, 3), 1);
@@ -418,6 +463,17 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn corner_emission_keeps_fixed_and_varying_columns() {
+        let plan = CornerPlan::from_family(&one_dim_family(4)).expect("1-D corner plan");
+        let table = TableRows(vec![vec![0, 4], vec![1, 4], Vec::new(), Vec::new()]);
+        let rows = synthesize(&plan, &table).expect("captured scalar has an affine zero stride");
+        assert_eq!(rows.row(0), &[0, 4]);
+        assert_eq!(rows.row(1), &[1, 4]);
+        assert_eq!(rows.row(2), &[2, 4]);
+        assert_eq!(rows.row(3), &[3, 4]);
+    }
+
+    #[test]
     fn corner_emission_reconstructs_2d_interior_from_two_corner_neighbors() {
         // 2x2 row-major family. The j-unit is +2 (cell0 -> cell1) and the
         // i-unit is +10 (cell0 -> cell2), so cell3 must be the base shifted by
@@ -429,12 +485,26 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn corner_emission_declines_when_the_neighbor_is_not_a_translation() {
-        // Base {0,1}; neighbor {2,5} shifts its elements by 2 and 4 -- not a
-        // single constant offset.
-        let plan = CornerPlan::from_family(&one_dim_family(2)).expect("1-D corner plan");
-        let table = TableRows(vec![vec![0, 1], vec![2, 5]]);
-        assert!(synthesize(&plan, &table).is_none());
+    fn corner_emission_supports_distinct_access_strides() {
+        // The two accesses advance by different strides. This is still affine:
+        // it represents two arrays with different scalar layouts.
+        let plan = CornerPlan::from_family(&one_dim_family(3)).expect("1-D corner plan");
+        let table = TableRows(vec![vec![0, 1], vec![2, 5], Vec::new()]);
+        let rows = synthesize(&plan, &table).expect("each access has an affine stride");
+        assert_eq!(rows.row(2), &[4, 9]);
+    }
+
+    #[test]
+    fn corner_emission_preserves_identity_when_affine_accesses_cross() {
+        // Expression order is [x[3*i], x[8-2*i]]. Numeric incidence order
+        // crosses between i=1 and i=2, so sorting the corners before pairing
+        // would infer the wrong strides for i=3.
+        let plan = CornerPlan::from_family(&one_dim_family(3)).expect("1-D corner plan");
+        let table = TableRows(vec![vec![3, 6], vec![6, 4], Vec::new()]);
+        let rows = synthesize(&plan, &table).expect("occurrence identity establishes both strides");
+        assert_eq!(rows.row(0), &[3, 6]);
+        assert_eq!(rows.row(1), &[4, 6]);
+        assert_eq!(rows.row(2), &[2, 9]);
     }
 
     #[test]
@@ -460,9 +530,9 @@ pub(crate) mod tests {
             reads: RefCell<Vec<usize>>,
         }
         impl RowSource for CountingRows {
-            fn sorted_row(&self, row: usize) -> Vec<usize> {
+            fn ordered_row(&self, row: usize) -> Vec<usize> {
                 self.reads.borrow_mut().push(row);
-                self.table.sorted_row(row)
+                self.table.ordered_row(row)
             }
         }
 

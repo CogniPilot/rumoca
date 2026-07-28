@@ -667,7 +667,7 @@ impl ModelicaLanguageServer {
         uri_path: &str,
         error: String,
     ) -> Value {
-        let tool_options = self.tool_options_for_document(uri_path).await;
+        let tool_options = self.tool_options_for_document_or_default(uri_path).await;
         let mut diagnostics = {
             let mut session = self.session.write().await;
             handlers::compute_diagnostics_with_options(
@@ -1656,7 +1656,8 @@ impl LanguageServer for ModelicaLanguageServer {
             // format-on-save produce identical bytes.
             let options = self
                 .effective_format_options(&uri_path, &params.options)
-                .await;
+                .await
+                .map_err(|error| tower_lsp::jsonrpc::Error::invalid_params(error.to_string()))?;
             return Ok(handlers::handle_formatting(&doc.content, &options));
         }
         Ok(None)
@@ -1729,7 +1730,7 @@ impl LanguageServer for ModelicaLanguageServer {
         {
             return Ok(params);
         }
-        let tool_options = self.tool_options_for_document(&uri_path).await;
+        let tool_options = self.tool_options_for_document_or_default(&uri_path).await;
         let _strict_guard = self.work_lanes.strict.lock().await;
         if self.analysis_request_is_stale(request_token).await {
             return Ok(params);

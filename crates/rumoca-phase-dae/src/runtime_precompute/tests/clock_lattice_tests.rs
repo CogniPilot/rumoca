@@ -346,8 +346,8 @@ fn back_sample_before_the_base_clock_start_is_reported() {
         .expect_err("a clock that starts before its base clock must not resolve");
 
     assert!(
-        matches!(error, ToDaeError::UnresolvedClockSchedule { .. }),
-        "expected an unresolved clock schedule error, got {error:?}"
+        matches!(error, ToDaeError::RuntimeMetadataViolationAt { .. }),
+        "expected a spanned clock-lattice error, got {error:?}"
     );
 }
 
@@ -360,21 +360,40 @@ fn overflowing_conversion_factor_is_reported_not_wrapped() {
     assign(
         &mut dae_model,
         "base",
-        call("subSample", vec![clock_call(0.1), lit(3.0)]),
-        "base = subSample(Clock(0.1), 3)",
+        clock_call(1.0e20),
+        "base = Clock(1e20)",
     );
     assign(
         &mut dae_model,
         "huge",
-        call("subSample", vec![var("base"), lit(i64::MAX as f64)]),
-        "huge = subSample(base, 9223372036854775807)",
+        call("subSample", vec![var("base"), lit(1.0e20)]),
+        "huge = subSample(base, 1e20)",
     );
 
     let error = populate_runtime_precompute(&mut dae_model)
         .expect_err("an overflowing clock conversion must not be silently wrapped");
 
     assert!(
-        matches!(error, ToDaeError::UnresolvedClockSchedule { .. }),
-        "expected an unresolved clock schedule error, got {error:?}"
+        matches!(error, ToDaeError::RuntimeMetadataViolationAt { .. }),
+        "expected a spanned clock-lattice overflow, got {error:?}"
     );
+}
+
+#[test]
+fn accumulated_factor_two_to_the_sixty_third_is_supported() {
+    let boundary = (1u64 << 63) as f64;
+    let mut dae_model = dae::Dae::default();
+    assign(
+        &mut dae_model,
+        "wide",
+        call(
+            "subSample",
+            vec![call("Clock", vec![lit(1.0), lit(1.0)]), lit(boundary)],
+        ),
+        "wide = subSample(Clock(1, 1), 2^63)",
+    );
+
+    populate_runtime_precompute(&mut dae_model).expect("CLK-017 requires accumulated factor 2^63");
+
+    assert_eq!(dae_model.clocks.timings["wide"].period_seconds, boundary);
 }

@@ -187,18 +187,20 @@ fn lower_structured_dae_for_simulation(
 ) -> Result<solve::SolveModel, rumoca_phase_solve::SolveModelLowerError> {
     match opts.solver_mode {
         SimSolverMode::RkLike => {
-            rumoca_phase_solve::lower_dae_to_solve_model_owned_value_only_with_visible_expressions_and_metadata_and_overrides(
+            rumoca_phase_solve::lower_dae_to_solve_model_owned_value_only_with_manifold_constraints_and_overrides(
                 structurally_lowered.dae,
                 structurally_lowered.visible_expressions,
                 &structurally_lowered.metadata_dae,
+                structurally_lowered.reduced_constraints,
                 param_overrides,
             )
         }
         SimSolverMode::Auto | SimSolverMode::Bdf => {
-            rumoca_phase_solve::lower_dae_to_solve_model_owned_with_visible_expressions_and_metadata_and_overrides(
+            rumoca_phase_solve::lower_dae_to_solve_model_owned_with_manifold_constraints_and_overrides(
                 structurally_lowered.dae,
                 structurally_lowered.visible_expressions,
                 &structurally_lowered.metadata_dae,
+                structurally_lowered.reduced_constraints,
                 param_overrides,
             )
         }

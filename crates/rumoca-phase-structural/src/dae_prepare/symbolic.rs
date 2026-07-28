@@ -579,8 +579,55 @@ impl<'a> SymbolicDerivativeContext<'a> {
                 let denom = make_binary(OpBinary::Mul, rhs.clone(), rhs.clone(), span);
                 Some(make_binary(OpBinary::Div, numer, denom, span))
             }
+            OpBinary::Exp => {
+                self.differentiate_scalar_constant_power(lhs, rhs, span, active_functions)
+            }
             _ => None,
         }
+    }
+
+    /// Differentiate the MLS scalar power form `x ^ n` when `n` is structural.
+    ///
+    /// This deliberately excludes element-wise power and every array shape:
+    /// their result-shape and broadcasting rules need an array-native rule, not
+    /// scalar syntax copied over them. A tunable or state-dependent exponent is
+    /// also declined because its derivative requires `log(x)` and a domain proof
+    /// that this restricted index-reduction differentiator does not provide.
+    fn differentiate_scalar_constant_power(
+        &self,
+        base: &Expression,
+        exponent: &Expression,
+        span: Span,
+        active_functions: &mut Vec<rumoca_core::FunctionInstanceId>,
+    ) -> Option<Expression> {
+        if !expression_is_scalar(base, self.dae) || !expression_is_scalar(exponent, self.dae) {
+            return None;
+        }
+        let bindings = crate::static_eval::structural_scalar_bindings(self.dae);
+        let exponent_value = crate::static_eval::eval_static_number(exponent, &bindings)?;
+        if !exponent_value.is_finite() {
+            return None;
+        }
+        if exponent_value == 0.0 {
+            return Some(real_literal(0.0, span));
+        }
+        let base_derivative = self.differentiate(base, active_functions)?;
+        if exponent_value == 1.0 {
+            return Some(base_derivative);
+        }
+        let reduced_power = make_binary(
+            OpBinary::Exp,
+            base.clone(),
+            real_literal(exponent_value - 1.0, span),
+            span,
+        );
+        let slope = make_binary(
+            OpBinary::Mul,
+            real_literal(exponent_value, span),
+            reduced_power,
+            span,
+        );
+        Some(make_binary(OpBinary::Mul, slope, base_derivative, span))
     }
 
     /// `(d(lhs) * rhs, lhs * d(rhs))`, cloning an operand only when its term

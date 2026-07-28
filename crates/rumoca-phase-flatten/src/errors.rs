@@ -5,7 +5,10 @@
 //! Uses miette for rich diagnostic output with error codes and help text.
 
 use miette::Diagnostic;
-use rumoca_core::{BoxedResult, SourceSpan, error_constructor};
+use rumoca_core::{
+    BoxedResult, Diagnostic as CommonDiagnostic, PhaseError, Span, error_constructor,
+    miette_phase_error_to_diagnostic,
+};
 use thiserror::Error;
 
 /// Type alias for flatten results with boxed errors.
@@ -23,7 +26,7 @@ pub enum FlattenError {
     UndefinedVariable {
         name: String,
         #[label("referenced here")]
-        span: SourceSpan,
+        span: Span,
     },
 
     /// A connection involves incompatible connector types.
@@ -36,7 +39,7 @@ pub enum FlattenError {
         a: String,
         b: String,
         #[label("connection here")]
-        span: SourceSpan,
+        span: Span,
     },
 
     /// A flow variable is missing in a connector.
@@ -53,7 +56,7 @@ pub enum FlattenError {
     UnsupportedEquation {
         description: String,
         #[label("unsupported equation")]
-        span: SourceSpan,
+        span: Span,
     },
 
     /// Internal error during flattening.
@@ -73,28 +76,14 @@ pub enum FlattenError {
         function: String,
         reason: String,
         #[label("function call here")]
-        span: SourceSpan,
+        span: Span,
     },
 
-    /// A record constructor was requested for a record with conditional
-    /// components (MLS §12.6.1 / FUNC-029).
-    #[error(
-        "record `{record}` has conditional component `{component}` and cannot have a constructor"
-    )]
-    #[diagnostic(
-        code(rumoca::flatten::EF018),
-        help("MLS §12.6.1: records with conditional components have no record constructor")
-    )]
-    ConditionalComponentConstructor {
-        record: String,
-        component: String,
-        #[label("record constructed here")]
-        span: SourceSpan,
-    },
+    // EF018 is reserved for the deferred MLS §12.6.1 record-cast check.
     // Note: EF006 was EventTriggerOutsideWhen, removed per MLS Appendix B which
     // allows edge()/change() in discrete equations. Code reserved for future use.
     // Note: EF007 (UnevaluableDimensions) removed - typecheck phase (ET004) now handles this
-    // per SPEC_0027 which moved dimension evaluation to typecheck phase.
+    // per SPEC_0007, which assigns dimension evaluation to typecheck.
     /// Source-scope metadata required for Modelica name lookup was missing.
     #[error("missing source scope for {context}: {name}")]
     #[diagnostic(
@@ -107,7 +96,7 @@ pub enum FlattenError {
         name: String,
         context: String,
         #[label("instance created here")]
-        span: SourceSpan,
+        span: Span,
     },
 
     /// Flat IR contains a callable definition that is not executable.
@@ -121,7 +110,7 @@ pub enum FlattenError {
     FunctionWithoutBody {
         name: String,
         #[label("non-executable function reached the flat IR boundary")]
-        span: SourceSpan,
+        span: Span,
     },
 
     /// A primitive component reached Flat IR with a symbolic dimension that could not be resolved.
@@ -134,7 +123,7 @@ pub enum FlattenError {
         name: String,
         expression: String,
         #[label("dimension declared here")]
-        span: SourceSpan,
+        span: Span,
     },
 
     /// A numeric token accepted by the parser could not be converted to a number.
@@ -146,7 +135,7 @@ pub enum FlattenError {
     MalformedNumericLiteral {
         text: String,
         #[label("malformed numeric literal")]
-        span: SourceSpan,
+        span: Span,
     },
 
     /// Function-override rewriting did not converge within the configured fixed-point cap.
@@ -172,7 +161,7 @@ pub enum FlattenError {
         function: String,
         output: String,
         #[label("function output may be unassigned here")]
-        span: SourceSpan,
+        span: Span,
     },
 
     /// A variable reached flattening without a resolvable type name.
@@ -186,7 +175,7 @@ pub enum FlattenError {
     UnresolvedVariableType {
         name: String,
         #[label("variable declared here")]
-        span: SourceSpan,
+        span: Span,
     },
 
     /// A resolved class reached flattening without the DefId metadata required
@@ -200,7 +189,7 @@ pub enum FlattenError {
         name: String,
         context: String,
         #[label("class used here")]
-        span: SourceSpan,
+        span: Span,
     },
 
     /// Source location metadata could not be mapped to the source text needed
@@ -224,7 +213,7 @@ pub enum FlattenError {
         rendered: String,
         structured: String,
         #[label("conflicting function reference")]
-        span: SourceSpan,
+        span: Span,
     },
 
     /// Connecting expandable connectors would require MLS §9.1.3 member-union
@@ -243,7 +232,7 @@ pub enum FlattenError {
         a: String,
         b: String,
         #[label("this connection requires expandable-connector augmentation")]
-        span: SourceSpan,
+        span: Span,
     },
 
     /// A constant/parameter binding expands into itself, so constant folding
@@ -259,7 +248,23 @@ pub enum FlattenError {
         name: String,
         cycle: String,
         #[label("this reference expands into itself")]
-        span: SourceSpan,
+        span: Span,
+    },
+
+    /// An external-function call argument cannot be represented by the current
+    /// Flat IR metadata without changing its ABI position or meaning.
+    #[error("unsupported external-function argument {position}: {reason}")]
+    #[diagnostic(
+        code(rumoca::flatten::EF022),
+        help(
+            "MLS §12.9 external-call arguments are ordered expressions; flatten must preserve every argument or reject the interface"
+        )
+    )]
+    UnsupportedExternalFunctionArgument {
+        position: usize,
+        reason: String,
+        #[label("this argument cannot be represented without loss")]
+        span: Span,
     },
 }
 
@@ -296,7 +301,7 @@ impl FlattenError {
         Self::CyclicConstantBinding {
             name: name.into(),
             cycle: cycle.into(),
-            span: rumoca_core::span_to_source_span(span),
+            span,
         }
     }
 
@@ -325,7 +330,7 @@ impl FlattenError {
         Self::MissingSourceScope {
             name: name.into(),
             context: context.into(),
-            span: rumoca_core::span_to_source_span(span),
+            span,
         }
     }
 
@@ -337,7 +342,7 @@ impl FlattenError {
         Self::InconsistentFunctionReference {
             rendered: rendered.into(),
             structured: structured.into(),
-            span: rumoca_core::span_to_source_span(span),
+            span,
         }
     }
 
@@ -350,7 +355,7 @@ impl FlattenError {
         Self::InvalidFunctionCallArgs {
             function: function.into(),
             reason: reason.into(),
-            span: rumoca_core::span_to_source_span(span),
+            span,
         }
     }
 
@@ -358,7 +363,7 @@ impl FlattenError {
     pub fn function_without_body(name: impl Into<String>, span: rumoca_core::Span) -> Self {
         Self::FunctionWithoutBody {
             name: name.into(),
-            span: rumoca_core::span_to_source_span(span),
+            span,
         }
     }
 
@@ -371,7 +376,7 @@ impl FlattenError {
         Self::UnresolvedComponentDimension {
             name: name.into(),
             expression: expression.into(),
-            span: rumoca_core::span_to_source_span(span),
+            span,
         }
     }
 
@@ -379,7 +384,7 @@ impl FlattenError {
     pub fn malformed_numeric_literal(text: impl Into<String>, span: rumoca_core::Span) -> Self {
         Self::MalformedNumericLiteral {
             text: text.into(),
-            span: rumoca_core::span_to_source_span(span),
+            span,
         }
     }
 
@@ -400,7 +405,7 @@ impl FlattenError {
         Self::FunctionOutputUnassigned {
             function: function.into(),
             output: output.into(),
-            span: rumoca_core::span_to_source_span(span),
+            span,
         }
     }
 
@@ -408,7 +413,7 @@ impl FlattenError {
     pub fn unresolved_variable_type(name: impl Into<String>, span: rumoca_core::Span) -> Self {
         Self::UnresolvedVariableType {
             name: name.into(),
-            span: rumoca_core::span_to_source_span(span),
+            span,
         }
     }
 
@@ -421,7 +426,7 @@ impl FlattenError {
         Self::MissingResolvedClassMetadata {
             name: name.into(),
             context: context.into(),
-            span: rumoca_core::span_to_source_span(span),
+            span,
         }
     }
 
@@ -430,6 +435,33 @@ impl FlattenError {
         Self::MissingSourceContext {
             reason: reason.into(),
         }
+    }
+}
+
+impl PhaseError for FlattenError {
+    fn to_diagnostic(&self) -> CommonDiagnostic {
+        let source_spans = match self {
+            Self::UndefinedVariable { span, .. }
+            | Self::IncompatibleConnectors { span, .. }
+            | Self::UnsupportedEquation { span, .. }
+            | Self::InvalidFunctionCallArgs { span, .. }
+            | Self::MissingSourceScope { span, .. }
+            | Self::FunctionWithoutBody { span, .. }
+            | Self::UnresolvedComponentDimension { span, .. }
+            | Self::MalformedNumericLiteral { span, .. }
+            | Self::FunctionOutputUnassigned { span, .. }
+            | Self::UnresolvedVariableType { span, .. }
+            | Self::MissingResolvedClassMetadata { span, .. }
+            | Self::InconsistentFunctionReference { span, .. }
+            | Self::UnsupportedExpandableConnectorAugmentation { span, .. }
+            | Self::CyclicConstantBinding { span, .. }
+            | Self::UnsupportedExternalFunctionArgument { span, .. } => std::slice::from_ref(span),
+            Self::MissingFlowVariable { .. }
+            | Self::Internal(_)
+            | Self::FunctionRewriteNoConverge { .. }
+            | Self::MissingSourceContext { .. } => &[],
+        };
+        miette_phase_error_to_diagnostic(self, source_spans)
     }
 }
 
@@ -468,5 +500,25 @@ mod tests {
         let help = err.help().map(|h| h.to_string());
         assert!(help.is_some());
         assert!(help.unwrap().contains("MLS §9.1"));
+    }
+
+    #[test]
+    fn phase_error_preserves_source_identity_and_help() {
+        let span = Span::from_offsets(
+            SourceId::from_source_name("phase_flatten_phase_error.mo"),
+            2,
+            8,
+        );
+        let error = FlattenError::incompatible_connectors("left", "right", span);
+        let diagnostic = error.to_diagnostic();
+
+        assert_eq!(diagnostic.code.as_deref(), Some("EF002"));
+        assert_eq!(diagnostic.labels[0].span, span);
+        assert!(
+            diagnostic
+                .notes
+                .iter()
+                .any(|note| note.contains("MLS §9.1"))
+        );
     }
 }

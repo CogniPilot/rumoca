@@ -186,13 +186,11 @@ jobs:
           use-flakehub: false
           diagnostic-endpoint: ''
 
-      - name: Nix build the flake package check
-        # Build ONLY the reproducible package check. Format and clippy are owned
-        # by the standalone Format/Lint jobs, and the heavy release MSL artifact
-        # bundle is built once by the dedicated `nix-build-msl` producer and
-        # transferred through a workflow artifact; building any of that here too
-        # would duplicate
-        # release+LTO work.
+      - name: Nix build the package and required MLIR CPU checks
+        # Build only the reproducible package and focused MLIR CPU checks.
+        # Format and clippy are owned by the standalone Format/Lint jobs, and
+        # the heavy release MSL artifact bundle is built once by the dedicated
+        # `nix-build-msl` producer.
         #
         # We deliberately do NOT run `nix flake check`: it eval-builds every output
         # (re-building those packages), and its `--no-build` eval trips over the
@@ -200,7 +198,9 @@ jobs:
         # (`path '…rust-nightly.toml.drv' is not valid`). `nix build` realizes the
         # toolchain, so building the checks directly is the reliable gate.
         run: |
-          nix build --print-build-logs .#checks.x86_64-linux.rumoca
+          nix build --print-build-logs \
+            .#checks.x86_64-linux.rumoca \
+            .#checks.x86_64-linux.mlir-cpu
 
   test:
     name: Test (${{ matrix.os }})
@@ -310,6 +310,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p target/msl
+          touch target/msl/formatter-stability-required
           msl_dir=target/msl/ModelicaStandardLibrary-4.1.0
           if [[ -f "$msl_dir/Complex.mo" && -f "$msl_dir/Modelica 4.1.0/package.mo" ]]; then
             echo "MSL cache is valid at $msl_dir"
@@ -353,8 +355,6 @@ jobs:
       # fails on the smoke step).
       - name: Run workspace tests (Linux monitored)
         if: runner.os == 'Linux' && !cancelled()
-        env:
-          REQUIRE_MSL_FMT_DRIFT: "1"
         shell: bash
         run: |
           set -euo pipefail
@@ -378,8 +378,6 @@ jobs:
 
       - name: Run workspace tests
         if: runner.os != 'Linux' && !cancelled()
-        env:
-          REQUIRE_MSL_FMT_DRIFT: "1"
         run: cargo xtask verify workspace
 
       - name: Build all binaries
@@ -1170,7 +1168,7 @@ jobs:
 
       - name: Locate MSL quality snapshot
         id: msl-quality-snapshot
-        if: ${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        if: ${{ success() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -1408,8 +1406,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          modelicatest_revision=8ae3d35c24e519cb2996cab20f3b13daf2b0c50a
           rm -rf target/msl/modelicatest-source
-          git clone --depth 1 --branch v4.1.0             https://github.com/modelica/ModelicaStandardLibrary.git             target/msl/modelicatest-source
+          git init target/msl/modelicatest-source
+          git -C target/msl/modelicatest-source remote add origin \
+            https://github.com/modelica/ModelicaStandardLibrary.git
+          git -C target/msl/modelicatest-source fetch --depth 1 origin "$modelicatest_revision"
+          git -C target/msl/modelicatest-source checkout --detach FETCH_HEAD
+          test "$(git -C target/msl/modelicatest-source rev-parse HEAD)" = "$modelicatest_revision"
           rm -rf target/msl/ModelicaStandardLibrary-4.1.0/ModelicaTest
           cp -a             target/msl/modelicatest-source/ModelicaTest             target/msl/ModelicaStandardLibrary-4.1.0/ModelicaTest
 
@@ -1857,7 +1861,7 @@ jobs:
             target: aarch64-unknown-linux-musl
             rumoca_asset: rumoca-linux-aarch64
             lsp_asset: rumoca-lsp-linux-aarch64
-          - os: macos-15
+          - os: macos-15-intel
             target: x86_64-apple-darwin
             rumoca_asset: rumoca-macos-x86_64
             lsp_asset: rumoca-lsp-macos-x86_64
@@ -1998,7 +2002,7 @@ jobs:
             target: aarch64-unknown-linux-gnu
             nix_system: aarch64-linux
             name: linux-aarch64-gnu
-          - os: macos-15
+          - os: macos-15-intel
             target: x86_64-apple-darwin
             nix_system: x86_64-darwin
             name: macos-x86_64

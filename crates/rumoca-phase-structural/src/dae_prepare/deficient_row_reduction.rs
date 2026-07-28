@@ -159,6 +159,28 @@ const MAX_DIFFERENTIATED_NODES: usize = 32_768;
 /// than merely reachable.
 const NOMINATED_SHELL_DEPTH: usize = 1;
 
+/// One source constraint retained by equation-driven index reduction.
+///
+/// `holonomic` is the position-level residual. `velocity` is present when the
+/// same row was prolonged a second time to acceleration level. This is a
+/// structural sidecar rather than a DAE field: the finalized DAE contains the
+/// acceleration-level equation, while runtimes need the lower-order manifold
+/// equations to control numerical drift.
+#[derive(Debug, Clone)]
+pub struct IndexReducedConstraint {
+    pub source_row: usize,
+    pub holonomic: rumoca_ir_dae::Equation,
+    pub velocity: Option<rumoca_ir_dae::Equation>,
+}
+
+/// Result of equation-driven index reduction, including the manifold contract
+/// that must accompany the rewritten DAE into simulation lowering.
+#[derive(Debug, Clone, Default)]
+pub struct IndexReductionResult {
+    pub differentiated_rows: usize,
+    pub constraints: Vec<IndexReducedConstraint>,
+}
+
 /// Differentiate the deficient constraint rows until the matching is perfect.
 ///
 /// Returns the number of rows differentiated. A model whose scalarized view
@@ -186,18 +208,27 @@ const NOMINATED_SHELL_DEPTH: usize = 1;
 /// Never fails: a model whose derivative closure cannot be built simply is not
 /// index-reduced here, which is the behaviour that predates this pass.
 pub fn index_reduce_deficient_constraint_rows(dae: &mut Dae) -> usize {
+    index_reduce_deficient_constraint_rows_with_metadata(dae).differentiated_rows
+}
+
+/// Equation-driven index reduction with explicit lower-order constraint
+/// metadata for solver manifold projection.
+pub fn index_reduce_deficient_constraint_rows_with_metadata(dae: &mut Dae) -> IndexReductionResult {
     if dae.continuous.equations.is_empty() {
-        return 0;
+        return IndexReductionResult::default();
     }
     let RankOutcome::Deficient(first) = nominate_deficient_rows(dae) else {
-        return 0;
+        return IndexReductionResult::default();
     };
     let before = first.deficiency;
     let determined_before = first.determined_columns.clone();
     let mut undo: Vec<RoundSnapshot> = Vec::new();
     let prolongation = run_prolongation(dae, first, &mut undo);
     if prolongation.is_accepted(&determined_before) {
-        return prolongation.rows;
+        return IndexReductionResult {
+            differentiated_rows: prolongation.rows,
+            constraints: retained_constraint_metadata(&undo),
+        };
     }
     structural_trace!(
         "[sim-trace] deficient-row prolongation reverted rows={} deficiency_before={before} outcome={}",
@@ -207,7 +238,28 @@ pub fn index_reduce_deficient_constraint_rows(dae: &mut Dae) -> usize {
     for snapshot in undo.into_iter().rev() {
         snapshot.apply(dae);
     }
-    0
+    IndexReductionResult::default()
+}
+
+fn retained_constraint_metadata(snapshots: &[RoundSnapshot]) -> Vec<IndexReducedConstraint> {
+    let mut by_row = std::collections::BTreeMap::<usize, Vec<rumoca_ir_dae::Equation>>::new();
+    for snapshot in snapshots {
+        for (row, equation) in &snapshot.rows {
+            by_row.entry(*row).or_default().push(equation.clone());
+        }
+    }
+    by_row
+        .into_iter()
+        .filter_map(|(source_row, mut levels)| {
+            let holonomic = levels.first().cloned()?;
+            let velocity = (levels.len() > 1).then(|| levels.swap_remove(1));
+            Some(IndexReducedConstraint {
+                source_row,
+                holonomic,
+                velocity,
+            })
+        })
+        .collect()
 }
 
 /// What one iteration to a fixed point cost and what it bought.
@@ -380,7 +432,7 @@ fn run_prolongation(
                 outcome: ProlongationOutcome::Deficient(nomination.deficiency),
             };
         }
-        undo.push(snapshot);
+        undo.push(snapshot.only_rows(&carried));
         rows += changed;
         let next = match nominate_deficient_rows(dae) {
             RankOutcome::Deficient(next) => next,
@@ -468,6 +520,15 @@ impl RoundSnapshot {
         dae.initialization
             .equations
             .truncate(self.initialization_len);
+    }
+
+    fn only_rows(mut self, rewritten: &[usize]) -> Self {
+        let rewritten = rewritten
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>();
+        self.rows.retain(|(row, _)| rewritten.contains(row));
+        self
     }
 }
 

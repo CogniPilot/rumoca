@@ -1,5 +1,6 @@
 use super::*;
 use crate::source_spans::required_location_span;
+use std::ops::ControlFlow;
 
 pub(super) fn effective_function_param_class_type(
     class_index: &ast::ClassDefIndex<'_>,
@@ -38,9 +39,9 @@ pub(super) fn effective_function_param_class_type(
 /// Convert an AST ExternalFunction to ExternalFunction.
 pub(super) fn convert_external_function(
     ext: &rumoca_ir_ast::ExternalFunction,
-    _default_name: &str,
-) -> rumoca_core::ExternalFunction {
-    rumoca_core::ExternalFunction {
+    def_map: &crate::ResolveDefMap,
+) -> Result<rumoca_core::ExternalFunction, FlattenError> {
+    Ok(rumoca_core::ExternalFunction {
         language: ext.language.clone().unwrap_or_else(|| "C".to_string()),
         function_name: ext.function_name.as_ref().map(|t| t.text.to_string()),
         output_name: ext.output.as_ref().map(|o| {
@@ -53,22 +54,139 @@ pub(super) fn convert_external_function(
         arg_names: ext
             .args
             .iter()
-            .filter_map(|arg| {
-                // Extract variable names from expressions
-                if let ast::Expression::ComponentReference(cr) = arg {
-                    Some(
-                        cr.parts
-                            .iter()
-                            .map(|p| p.ident.text.to_string())
-                            .collect::<Vec<_>>()
-                            .join("."),
-                    )
-                } else {
-                    None
-                }
-            })
-            .collect(),
+            .enumerate()
+            .map(|(index, arg)| external_argument_name(arg, index + 1))
+            .collect::<Result<Vec<_>, _>>()?,
+        annotations: ext
+            .annotation
+            .iter()
+            .map(|annotation| convert_external_annotation(annotation, def_map))
+            .collect::<Result<Vec<_>, _>>()?,
+    })
+}
+
+fn external_argument_name(
+    argument: &ast::Expression,
+    position: usize,
+) -> Result<String, FlattenError> {
+    let ast::Expression::ComponentReference(reference) = argument else {
+        let kind = match argument {
+            ast::Expression::Terminal { .. } => "literal expression",
+            ast::Expression::Unary { .. } | ast::Expression::Binary { .. } => "operator expression",
+            ast::Expression::FunctionCall { .. } => "function-call expression",
+            ast::Expression::Array { .. }
+            | ast::Expression::ArrayComprehension { .. }
+            | ast::Expression::ArrayIndex { .. } => "array expression",
+            _ => "compound expression",
+        };
+        return Err(FlattenError::UnsupportedExternalFunctionArgument {
+            position,
+            reason: format!(
+                "{kind} cannot be represented by Flat external-function `arg_names` metadata"
+            ),
+            span: argument.span(),
+        });
+    };
+
+    if reference.parts.is_empty()
+        || reference
+            .parts
+            .iter()
+            .any(|part| part.subs.as_ref().is_some_and(|subs| !subs.is_empty()))
+    {
+        return Err(FlattenError::UnsupportedExternalFunctionArgument {
+            position,
+            reason: concat!(
+                "indexed or empty component references cannot be represented by Flat ",
+                "external-function `arg_names` metadata"
+            )
+            .to_string(),
+            span: argument.span(),
+        });
     }
+
+    Ok(reference
+        .parts
+        .iter()
+        .map(|part| part.ident.text.to_string())
+        .collect::<Vec<_>>()
+        .join("."))
+}
+
+fn convert_external_annotation(
+    annotation: &ast::Expression,
+    def_map: &crate::ResolveDefMap,
+) -> Result<rumoca_core::ExternalFunctionAnnotation, FlattenError> {
+    let ast::Expression::Modification {
+        target,
+        value,
+        span,
+    } = annotation
+    else {
+        return Err(unsupported_external_annotation(
+            annotation,
+            "expected a named annotation modification",
+        ));
+    };
+    if target.parts.is_empty()
+        || target
+            .parts
+            .iter()
+            .any(|part| part.subs.as_ref().is_some_and(|subs| !subs.is_empty()))
+    {
+        return Err(unsupported_external_annotation(
+            annotation,
+            "annotation names must be non-indexed name paths",
+        ));
+    }
+    reject_lossy_external_annotation_value(value)?;
+    Ok(rumoca_core::ExternalFunctionAnnotation {
+        name: target
+            .parts
+            .iter()
+            .map(|part| part.ident.text.to_string())
+            .collect(),
+        value: ast_lower::expression_from_ast_with_def_map(value, Some(def_map))?,
+        span: *span,
+    })
+}
+
+fn reject_lossy_external_annotation_value(value: &ast::Expression) -> Result<(), FlattenError> {
+    struct LossySyntax {
+        kind: Option<&'static str>,
+    }
+
+    impl ast::Visitor for LossySyntax {
+        fn visit_expression(&mut self, expr: &ast::Expression) -> ControlFlow<()> {
+            self.kind = match expr {
+                ast::Expression::Empty { .. } => Some("empty modification"),
+                ast::Expression::ClassModification { .. } => Some("class modification"),
+                ast::Expression::NamedArgument { .. } => Some("named argument"),
+                ast::Expression::Modification { .. } => Some("nested modification"),
+                _ => None,
+            };
+            if self.kind.is_some() {
+                return ControlFlow::Break(());
+            }
+            ast::walk_expression_default(self, expr)
+        }
+    }
+
+    let mut visitor = LossySyntax { kind: None };
+    let _ = <LossySyntax as ast::Visitor>::visit_expression(&mut visitor, value);
+    visitor.kind.map_or(Ok(()), |kind| {
+        Err(unsupported_external_annotation(
+            value,
+            &format!("cannot preserve {kind} in Flat metadata"),
+        ))
+    })
+}
+
+fn unsupported_external_annotation(expression: &ast::Expression, reason: &str) -> FlattenError {
+    FlattenError::Internal(format!(
+        "unsupported external-function annotation at {:?}: {reason}",
+        expression.span()
+    ))
 }
 
 /// Extract derivative annotations from function annotation expressions (MLS §12.7.1).

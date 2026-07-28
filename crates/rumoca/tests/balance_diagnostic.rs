@@ -764,7 +764,7 @@ end Underdetermined;
             ..
         } => {
             assert_eq!(phase, FailedPhase::ToDae);
-            assert_eq!(error_code.as_deref(), Some("rumoca::todae::ED001"));
+            assert_eq!(error_code.as_deref(), Some("ED001"));
             assert!(error.contains("unbalanced model"), "{error}");
         }
         PhaseResult::Success(_) => panic!("under-determined model must not compile"),

@@ -6,8 +6,8 @@ use std::{
 };
 
 use diffsol::{
-    BdfState, MatrixCommon, OdeEquations, OdeEquationsImplicit, OdeSolverMethod, OdeSolverProblem,
-    OdeSolverState, RkState, VectorHost,
+    BdfState, DiffsolError, MatrixCommon, OdeEquations, OdeEquationsImplicit, OdeSolverMethod,
+    OdeSolverProblem, OdeSolverState, RkState, VectorHost, error::OdeSolverError,
 };
 use rumoca_eval_solve as solve_eval;
 use rumoca_ir_solve as solve;
@@ -319,8 +319,27 @@ where
     }
     fresh_state.set_step_size(problem.h0, &problem.atol, problem.rtol, &problem.eqn, 1);
     solver.set_state(fresh_state);
+    clear_stop_time_after_reset(solver, t)?;
     cap_solver_step_size(solver, h_cap);
     Ok(())
+}
+
+fn clear_stop_time_after_reset<'a, Eqn, S>(solver: &mut S, t: f64) -> Result<(), SimError>
+where
+    Eqn: OdeEquations<T = f64> + 'a,
+    Eqn::V: VectorHost<T = f64>,
+    S: OdeSolverMethod<'a, Eqn>,
+{
+    // Diffsol has no explicit clear-stop-time operation. Its BDF/RK methods
+    // clear the stored deadline while reporting StopTimeAtCurrentTime when the
+    // deadline equals the reset state. A later driver step can then install
+    // its own deadline without inheriting the event instant.
+    match solver.set_stop_time(t) {
+        Ok(()) | Err(DiffsolError::OdeSolverError(OdeSolverError::StopTimeAtCurrentTime)) => Ok(()),
+        Err(error) => Err(SimError::SolverError(format!(
+            "clear solver stop time after reset: {error}"
+        ))),
+    }
 }
 
 fn cap_solver_step_size<'a, Eqn, S>(solver: &mut S, h_cap: f64)

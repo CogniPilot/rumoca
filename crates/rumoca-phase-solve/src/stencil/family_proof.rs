@@ -1,9 +1,10 @@
-//! Proof that a structured family's whole domain is reconstructible from its
-//! CORNER cells alone (base cell plus one unit neighbor per binder).
+//! Proof that a structured family's whole domain can use its compact producer
+//! metadata, validated by CORNER cells (base plus one unit neighbor per binder).
 //!
-//! Corner-only lowering reads `O(ndim)` cells and lifts them into one tensor
-//! node covering every point of the domain. That is sound only when the family
-//! genuinely varies affinely in its binders. Two independent facts are required
+//! Compact lowering reads `O(ndim)` validation cells and lifts producer access
+//! metadata into one tensor node covering every point of the domain. That is
+//! sound only when the family genuinely varies affinely in its binders. Two
+//! independent facts are required
 //! and neither implies the other:
 //!
 //! * `family.regular` -- Flat IR proved every cell shares ONE affine body, so

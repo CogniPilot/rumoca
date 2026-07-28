@@ -1247,7 +1247,7 @@ mod tests {
 
         match err {
             FlattenError::UnsupportedEquation { span, .. } => {
-                assert_eq!(span, rumoca_core::span_to_source_span(range_span));
+                assert_eq!(span, range_span);
             }
             other => panic!("unexpected error: {other:?}"),
         }
@@ -1485,7 +1485,7 @@ mod tests {
 
         match err {
             FlattenError::UnsupportedEquation { span, .. } => {
-                assert_eq!(span, rumoca_core::span_to_source_span(second_span));
+                assert_eq!(span, second_span);
             }
             other => panic!("unexpected error: {other:?}"),
         }

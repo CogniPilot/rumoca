@@ -2,6 +2,7 @@ use super::*;
 
 mod assertion_actions_tests;
 mod clocked_tuple_tests;
+mod enum_binding_tests;
 mod regression_more_tests;
 mod when_inactive_tests;
 mod when_lowering_tests;
@@ -72,7 +73,10 @@ fn test_todae_inherits_scalarized_element_start_from_array_base() {
         inherited,
         Some(format!(
             "{:?}",
-            make_var_ref("Modelica.Electrical.Digital.Interfaces.Logic.'U'")
+            Expression::Literal {
+                value: Literal::Real(0.0),
+                span: crate::test_support::test_span(),
+            }
         ))
     );
 }
@@ -494,7 +498,7 @@ fn test_todae_routes_discrete_valued_clocked_binding_to_fm() {
 }
 
 #[test]
-fn test_todae_routes_algorithm_when_sample_assignment_to_f_z() {
+fn test_todae_lowers_textual_algorithm_sample_alias_to_schedule_and_predicate() {
     let mut flat = Model::new();
     flat.add_variable(
         VarName::new("samplePeriod"),
@@ -563,32 +567,16 @@ fn test_todae_routes_algorithm_when_sample_assignment_to_f_z() {
             error_on_unbalanced: false,
         },
     )
-    .expect("algorithm when sample assignment should lower to discrete partition");
+    .expect("a textual sample alias should lower through the canonical temporal path");
 
-    assert!(
-        dae.variables
-            .discrete_reals
-            .contains_key(&rumoca_core::VarName::new("r")),
-        "algorithm when-assigned Real output must be discrete"
-    );
-    assert!(
-        dae.continuous.equations.is_empty(),
-        "algorithm when-assigned Real output must not remain in f_x"
-    );
-    assert!(
-        dae.discrete
-            .real_updates
-            .iter()
-            .any(|eq| eq.lhs.as_ref().is_some_and(|lhs| lhs.as_str() == "r")),
-        "algorithm when-assigned Real output must be routed to f_z"
-    );
-    assert_eq!(
-        dae.clocks.schedules.len(),
-        1,
-        "algorithm when sample assignment must produce a periodic runtime schedule"
-    );
-    assert!((dae.clocks.schedules[0].period_seconds - 0.1).abs() <= 1e-12);
-    assert!(dae.clocks.schedules[0].phase_seconds.abs() <= 1e-12);
+    assert_eq!(dae.events.scheduled_root_conditions.len(), 1);
+    assert!(matches!(
+        dae.conditions.relations.first(),
+        Some(Expression::Binary {
+            op: rumoca_core::OpBinary::And,
+            ..
+        })
+    ));
 }
 
 fn add_tick_based_discrete_vars(flat: &mut Model) {

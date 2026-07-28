@@ -89,11 +89,15 @@ struct Report {
 struct WorkloadReport {
     name: &'static str,
     exponent: f64,
+    timing_passed: bool,
+    structural_integrity_passed: bool,
+    spec_0032_compact_storage: bool,
     passed: bool,
+    structural_failures: Vec<String>,
     measurements: Vec<Measurement>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Default, Serialize)]
 struct Measurement {
     size: usize,
     median_ms: f64,
@@ -103,6 +107,12 @@ struct Measurement {
     equations: usize,
     structured_families: usize,
     compact_domain_points: usize,
+    row_major_families: usize,
+    binder_substitution_families: usize,
+    non_materialized_families: usize,
+    dae_scalar_residual_view_available: bool,
+    solve_map_nodes: usize,
+    solve_affine_stencil_nodes: usize,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -112,6 +122,12 @@ struct CompileInventory {
     equations: usize,
     structured_families: usize,
     compact_domain_points: usize,
+    row_major_families: usize,
+    binder_substitution_families: usize,
+    non_materialized_families: usize,
+    dae_scalar_residual_view_available: bool,
+    solve_map_nodes: usize,
+    solve_affine_stencil_nodes: usize,
 }
 
 fn whole_array_source(size: usize) -> String {
@@ -149,13 +165,17 @@ fn compile_once(workload: Workload, size: usize) -> Result<(Duration, CompileInv
     let result = session
         .compile_model(workload.model_name())
         .with_context(|| format!("failed to compile {} at N={size}", workload.name()))?;
+    let inventory = inventory(&result)?;
     let elapsed = started.elapsed();
-    Ok((elapsed, inventory(&result)?))
+    Ok((elapsed, inventory))
 }
 
 fn inventory(result: &CompilationResult) -> Result<CompileInventory> {
     let families = &result.dae.continuous.structured_equations;
     let mut compact_domain_points = 0usize;
+    let mut row_major_families = 0usize;
+    let mut binder_substitution_families = 0usize;
+    let mut non_materialized_families = 0usize;
     for family in families {
         let points = family
             .domain
@@ -164,13 +184,40 @@ fn inventory(result: &CompilationResult) -> Result<CompileInventory> {
         compact_domain_points = compact_domain_points
             .checked_add(points)
             .context("compact structured-family point count overflowed")?;
+        if !family.interiors_materialized {
+            non_materialized_families += 1;
+        }
+        match family
+            .template
+            .as_ref()
+            .map(|template| template.scalar_view)
+        {
+            Some(rumoca_compile::compile::core::ComprehensionScalarView::RowMajorProjection) => {
+                row_major_families += 1;
+            }
+            Some(rumoca_compile::compile::core::ComprehensionScalarView::BinderSubstitution) => {
+                binder_substitution_families += 1;
+            }
+            None => {}
+        }
     }
+    let dae_scalar_residual_view_available =
+        rumoca_compile::codegen::validate_dae_scalar_residual_view(&result.dae).is_ok();
+    let solve = rumoca_sim::lower_solve_problem(&result.dae)
+        .context("tensor workload failed Solve-IR lowering")?;
+    let solve_counts = solve.compute_node_counts();
     Ok(CompileInventory {
         states: result.dae.variables.states.len(),
         algebraics: result.dae.variables.algebraics.len(),
         equations: result.dae.continuous.equations.len(),
         structured_families: families.len(),
         compact_domain_points,
+        row_major_families,
+        binder_substitution_families,
+        non_materialized_families,
+        dae_scalar_residual_view_available,
+        solve_map_nodes: solve_counts.map,
+        solve_affine_stencil_nodes: solve_counts.affine_stencil,
     })
 }
 
@@ -191,6 +238,12 @@ fn measure_workload(
             equations: 0,
             structured_families: 0,
             compact_domain_points: 0,
+            row_major_families: 0,
+            binder_substitution_families: 0,
+            non_materialized_families: 0,
+            dae_scalar_residual_view_available: false,
+            solve_map_nodes: 0,
+            solve_affine_stencil_nodes: 0,
         })
         .collect::<Vec<_>>();
     collect_samples(workload, &mut measurements, repetitions)?;
@@ -202,7 +255,11 @@ fn measure_workload(
     Ok(WorkloadReport {
         name: workload.name(),
         exponent,
+        timing_passed: false,
+        structural_integrity_passed: false,
+        spec_0032_compact_storage: false,
         passed: false,
+        structural_failures: Vec::new(),
         measurements,
     })
 }
@@ -242,6 +299,97 @@ fn record_sample(measurement: &mut Measurement, elapsed: Duration, inventory: Co
     measurement.equations = inventory.equations;
     measurement.structured_families = inventory.structured_families;
     measurement.compact_domain_points = inventory.compact_domain_points;
+    measurement.row_major_families = inventory.row_major_families;
+    measurement.binder_substitution_families = inventory.binder_substitution_families;
+    measurement.non_materialized_families = inventory.non_materialized_families;
+    measurement.dae_scalar_residual_view_available = inventory.dae_scalar_residual_view_available;
+    measurement.solve_map_nodes = inventory.solve_map_nodes;
+    measurement.solve_affine_stencil_nodes = inventory.solve_affine_stencil_nodes;
+}
+
+struct StructuralAssessment {
+    integrity_passed: bool,
+    spec_0032_compact_storage: bool,
+    failures: Vec<String>,
+}
+
+fn assess_structure(workload: Workload, measurements: &[Measurement]) -> StructuralAssessment {
+    let mut failures = Vec::new();
+    let mut compact_storage = true;
+    for measurement in measurements {
+        let size = measurement.size;
+        match workload {
+            Workload::WholeArrayFirstOrder => {
+                require_structure(
+                    measurement.equations == 1,
+                    &mut failures,
+                    format!("N={size}: expected one aggregate DAE equation"),
+                );
+                require_structure(
+                    measurement.structured_families == 1
+                        && measurement.compact_domain_points == size
+                        && measurement.row_major_families == 1,
+                    &mut failures,
+                    format!(
+                        "N={size}: expected one row-major compact family covering exactly N points"
+                    ),
+                );
+                require_structure(
+                    measurement.dae_scalar_residual_view_available,
+                    &mut failures,
+                    format!("N={size}: aggregate DAE equation must be directly consumable"),
+                );
+                require_structure(
+                    measurement.solve_map_nodes >= 1,
+                    &mut failures,
+                    format!("N={size}: expected a native Solve Map node"),
+                );
+                compact_storage &= measurement.equations == 1;
+            }
+            Workload::CascadedFirstOrder => {
+                let expected_points = size.saturating_sub(1);
+                require_structure(
+                    measurement.structured_families == 1
+                        && measurement.compact_domain_points == expected_points
+                        && measurement.binder_substitution_families == 1
+                        && measurement.non_materialized_families == 1,
+                    &mut failures,
+                    format!(
+                        "N={size}: expected one non-materialized binder-substitution family \
+                         covering N-1 points"
+                    ),
+                );
+                require_structure(
+                    !measurement.dae_scalar_residual_view_available,
+                    &mut failures,
+                    format!(
+                        "N={size}: placeholder scalar residual view must fail loudly at DAE codegen"
+                    ),
+                );
+                require_structure(
+                    measurement.solve_affine_stencil_nodes >= 1,
+                    &mut failures,
+                    format!("N={size}: expected a native Solve AffineStencil node"),
+                );
+                // One boundary row plus one compact family owner is the largest
+                // O(1) DAE equation inventory this workload may claim. The current
+                // pipeline stores N placeholder rows, so this intentionally reports
+                // and gates the remaining SPEC_0032 violation.
+                compact_storage &= measurement.equations <= 2;
+            }
+        }
+    }
+    StructuralAssessment {
+        integrity_passed: failures.is_empty(),
+        spec_0032_compact_storage: compact_storage,
+        failures,
+    }
+}
+
+fn require_structure(condition: bool, failures: &mut Vec<String>, message: String) {
+    if !condition {
+        failures.push(message);
+    }
 }
 
 fn median(sorted: &[f64]) -> f64 {
@@ -314,17 +462,39 @@ fn write_report(path: &Path, report: &Report) -> Result<()> {
 
 fn print_workload(report: &WorkloadReport, max_exponent: f64) {
     println!(
-        "{}: exponent {:.3} (limit {:.3})",
-        report.name, report.exponent, max_exponent
+        "{}: exponent {:.3} (limit {:.3}), structural_integrity={}, \
+         spec_0032_compact_storage={}",
+        report.name,
+        report.exponent,
+        max_exponent,
+        report.structural_integrity_passed,
+        report.spec_0032_compact_storage
     );
     for measurement in &report.measurements {
         println!(
-            "  N={:<5} median={:>9.3} ms equations={} families={} domain_points={}",
+            "  N={:<5} median={:>9.3} ms equations={} families={} domain_points={} \
+             row_major={} binder_substitution={} non_materialized={} dae_scalar_view={} \
+             solve_maps={} solve_stencils={}",
             measurement.size,
             measurement.median_ms,
             measurement.equations,
             measurement.structured_families,
-            measurement.compact_domain_points
+            measurement.compact_domain_points,
+            measurement.row_major_families,
+            measurement.binder_substitution_families,
+            measurement.non_materialized_families,
+            measurement.dae_scalar_residual_view_available,
+            measurement.solve_map_nodes,
+            measurement.solve_affine_stencil_nodes,
+        );
+    }
+    for failure in &report.structural_failures {
+        println!("  structural failure: {failure}");
+    }
+    if !report.spec_0032_compact_storage {
+        println!(
+            "  SPEC_0032 failure: DAE equation storage scales with domain cardinality \
+             instead of retaining only the compact owner"
         );
     }
 }
@@ -334,13 +504,20 @@ fn run(mut args: Args) -> Result<()> {
     let mut workloads = Vec::with_capacity(Workload::ALL.len());
     for workload in Workload::ALL {
         let mut report = measure_workload(workload, &args.sizes, args.repetitions)?;
-        report.passed = report.exponent <= args.max_exponent;
+        let assessment = assess_structure(workload, &report.measurements);
+        report.timing_passed = report.exponent <= args.max_exponent;
+        report.structural_integrity_passed = assessment.integrity_passed;
+        report.spec_0032_compact_storage = assessment.spec_0032_compact_storage;
+        report.structural_failures = assessment.failures;
+        report.passed = report.timing_passed
+            && report.structural_integrity_passed
+            && report.spec_0032_compact_storage;
         print_workload(&report, args.max_exponent);
         workloads.push(report);
     }
     let passed = workloads.iter().all(|workload| workload.passed);
     let report = Report {
-        schema_version: 1,
+        schema_version: 2,
         repetitions: args.repetitions,
         max_exponent: args.max_exponent,
         passed,
@@ -350,7 +527,8 @@ fn run(mut args: Args) -> Result<()> {
     println!("Report: {}", args.output.display());
     if args.enforce && !passed {
         bail!(
-            "tensor compile scaling exceeded the {:.3} exponent ratchet",
+            "tensor compile-scaling or structural-ownership ratchet failed \
+             (timing limit {:.3}); inspect the report for workload invariants",
             args.max_exponent
         );
     }
@@ -365,6 +543,20 @@ fn main() -> Result<()> {
 mod tests {
     use super::*;
 
+    fn cascaded_measurement(equations: usize) -> Measurement {
+        Measurement {
+            size: 128,
+            equations,
+            structured_families: 1,
+            compact_domain_points: 127,
+            binder_substitution_families: 1,
+            non_materialized_families: 1,
+            dae_scalar_residual_view_available: false,
+            solve_affine_stencil_nodes: 1,
+            ..Measurement::default()
+        }
+    }
+
     #[test]
     fn log_log_slope_recovers_linear_scaling() {
         let slope = log_log_slope(&[(10.0, 2.0), (100.0, 20.0), (1_000.0, 200.0)]).unwrap();
@@ -375,5 +567,37 @@ mod tests {
     fn log_log_slope_recovers_constant_scaling() {
         let slope = log_log_slope(&[(10.0, 4.0), (100.0, 4.0), (1_000.0, 4.0)]).unwrap();
         assert!(slope.abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn scalarized_whole_array_cannot_pass_structural_ratchet() {
+        let measurement = Measurement {
+            size: 128,
+            equations: 128,
+            dae_scalar_residual_view_available: true,
+            ..Measurement::default()
+        };
+
+        let assessment = assess_structure(Workload::WholeArrayFirstOrder, &[measurement]);
+
+        assert!(!assessment.integrity_passed);
+        assert!(!assessment.spec_0032_compact_storage);
+    }
+
+    #[test]
+    fn cascaded_placeholder_rows_are_reported_as_spec_violation() {
+        let assessment =
+            assess_structure(Workload::CascadedFirstOrder, &[cascaded_measurement(128)]);
+
+        assert!(assessment.integrity_passed);
+        assert!(!assessment.spec_0032_compact_storage);
+    }
+
+    #[test]
+    fn compact_cascaded_owner_can_satisfy_structural_ratchet() {
+        let assessment = assess_structure(Workload::CascadedFirstOrder, &[cascaded_measurement(2)]);
+
+        assert!(assessment.integrity_passed);
+        assert!(assessment.spec_0032_compact_storage);
     }
 }

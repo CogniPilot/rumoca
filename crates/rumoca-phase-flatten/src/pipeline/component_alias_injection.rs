@@ -567,6 +567,18 @@ fn inject_component_static_constants(
             ctx,
         );
     }
+    // The selected replacement is the outer declaration for this component
+    // instance. Re-apply its complete inherited environment after the
+    // component class's defaults so the replacement wins with normal MLS
+    // outer-over-inner precedence.
+    inject_component_declared_class_overrides(
+        tree,
+        class_index,
+        comp_scope,
+        comp,
+        class_context,
+        ctx,
+    );
 }
 
 fn inject_scan_class_static_constants(
@@ -610,100 +622,204 @@ pub(crate) fn inject_component_declared_class_overrides(
     class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
     comp_scope: &str,
     comp: &rumoca_ir_ast::InstanceData,
-    _resolve_context: &str,
+    resolve_context: &str,
     ctx: &mut Context,
 ) {
     let active_alias = active_component_alias(&comp.type_name);
-    let lower_alias = |name: &str| {
-        let mut chars = name.chars();
-        let Some(first) = chars.next() else {
-            return String::new();
-        };
-        let mut lowered = first.to_lowercase().collect::<String>();
-        lowered.push_str(chars.as_str());
-        lowered
+    let modifier_context = comp
+        .declaration_source_scope
+        .as_ref()
+        .map(ToString::to_string)
+        .unwrap_or_else(|| resolve_context.to_string());
+    let request = ComponentClassOverrideInject {
+        tree,
+        class_index,
+        comp_scope,
+        active_alias,
+        modifier_context: &modifier_context,
     };
 
     for class_override in comp.class_overrides.values() {
-        let alias_name = &class_override.alias;
-        let def_id = class_override.target_def_id;
-        let Some(alias_class) = class_index.get(def_id) else {
-            continue;
-        };
-        if !matches!(alias_class.class_type, rumoca_core::ClassType::Package) {
-            continue;
-        }
+        inject_component_declared_class_override(&request, class_override, ctx);
+    }
+}
 
-        let alias_resolve_context = tree.def_map.get(&def_id).map(String::as_str).unwrap_or("");
+struct ComponentClassOverrideInject<'a, 'tree> {
+    tree: &'a ClassTree,
+    class_index: &'a rumoca_ir_ast::ClassDefIndex<'tree>,
+    comp_scope: &'a str,
+    active_alias: Option<&'a str>,
+    modifier_context: &'a str,
+}
 
-        let alias_scope = format!("{comp_scope}.{alias_name}");
+fn inject_component_declared_class_override(
+    request: &ComponentClassOverrideInject<'_, '_>,
+    class_override: &rumoca_ir_ast::ClassOverride,
+    ctx: &mut Context,
+) {
+    let alias_name = &class_override.alias;
+    let def_id = class_override.target_def_id;
+    let Some(alias_class) = request.class_index.get(def_id) else {
+        return;
+    };
+    if !matches!(alias_class.class_type, rumoca_core::ClassType::Package) {
+        return;
+    }
+
+    let alias_resolve_context = request
+        .tree
+        .def_map
+        .get(&def_id)
+        .map(String::as_str)
+        .unwrap_or("");
+    let alias_scope = format!("{}.{alias_name}", request.comp_scope);
+    extract_constants_from_class_with_prefix_and_imports(
+        request.tree,
+        request.class_index,
+        &alias_scope,
+        alias_class,
+        alias_resolve_context,
+        ctx,
+    );
+    let lowered_alias_name = lower_initial(alias_name);
+    if lowered_alias_name != *alias_name {
+        let lowered_alias_scope = format!("{}.{lowered_alias_name}", request.comp_scope);
         extract_constants_from_class_with_prefix_and_imports(
-            tree,
-            class_index,
-            &alias_scope,
+            request.tree,
+            request.class_index,
+            &lowered_alias_scope,
             alias_class,
             alias_resolve_context,
             ctx,
         );
-        let lowered_alias_name = lower_alias(alias_name);
-        if lowered_alias_name != *alias_name {
-            let lowered_alias_scope = format!("{comp_scope}.{lowered_alias_name}");
-            extract_constants_from_class_with_prefix_and_imports(
-                tree,
-                class_index,
+        for ext in &alias_class.extends {
+            apply_extends_constants_for_scope(
+                request.tree,
+                request.class_index,
                 &lowered_alias_scope,
-                alias_class,
-                alias_resolve_context,
-                ctx,
-            );
-            for ext in &alias_class.extends {
-                apply_extends_constants_for_scope(
-                    tree,
-                    class_index,
-                    &lowered_alias_scope,
-                    ext,
-                    alias_resolve_context,
-                    ctx,
-                );
-            }
-        }
-        for ext in &alias_class.extends {
-            apply_extends_constants_for_scope(
-                tree,
-                class_index,
-                &alias_scope,
                 ext,
                 alias_resolve_context,
                 ctx,
             );
         }
-
-        // Only expose unqualified component-scope constants (`comp_scope.nX`) for
-        // the alias actually used by this component's declared type. This avoids
-        // collisions from unrelated package aliases that happen to define the same
-        // constant names (e.g., fixedX, nX) in different media packages.
-        if active_alias != Some(alias_name.as_str()) {
-            continue;
-        }
-
-        extract_constants_from_class_with_prefix_and_imports(
-            tree,
-            class_index,
-            comp_scope,
-            alias_class,
+    }
+    for ext in &alias_class.extends {
+        apply_extends_constants_for_scope(
+            request.tree,
+            request.class_index,
+            &alias_scope,
+            ext,
             alias_resolve_context,
             ctx,
         );
-        for ext in &alias_class.extends {
-            apply_extends_constants_for_scope(
-                tree,
-                class_index,
-                comp_scope,
-                ext,
-                alias_resolve_context,
-                ctx,
-            );
-        }
+    }
+    apply_class_override_constant_modifiers(
+        request.tree,
+        request.class_index,
+        &alias_scope,
+        class_override,
+        request.modifier_context,
+        ctx,
+    );
+    if lowered_alias_name != *alias_name {
+        let lowered_alias_scope = format!("{}.{lowered_alias_name}", request.comp_scope);
+        apply_class_override_constant_modifiers(
+            request.tree,
+            request.class_index,
+            &lowered_alias_scope,
+            class_override,
+            request.modifier_context,
+            ctx,
+        );
+    }
+
+    // Only expose unqualified component-scope constants (`comp_scope.nX`) for
+    // the alias actually used by this component's declared type. This avoids
+    // collisions from unrelated package aliases that happen to define the same
+    // constant names (e.g., fixedX, nX) in different media packages.
+    if request.active_alias != Some(alias_name.as_str()) {
+        return;
+    }
+
+    inject_active_component_class_override(
+        request,
+        class_override,
+        alias_class,
+        alias_resolve_context,
+        ctx,
+    );
+}
+
+fn inject_active_component_class_override(
+    request: &ComponentClassOverrideInject<'_, '_>,
+    class_override: &rumoca_ir_ast::ClassOverride,
+    alias_class: &ClassDef,
+    alias_resolve_context: &str,
+    ctx: &mut Context,
+) {
+    extract_constants_from_class_with_prefix_and_imports(
+        request.tree,
+        request.class_index,
+        request.comp_scope,
+        alias_class,
+        alias_resolve_context,
+        ctx,
+    );
+    for ext in &alias_class.extends {
+        apply_extends_constants_for_scope(
+            request.tree,
+            request.class_index,
+            request.comp_scope,
+            ext,
+            alias_resolve_context,
+            ctx,
+        );
+    }
+    apply_class_override_constant_modifiers(
+        request.tree,
+        request.class_index,
+        request.comp_scope,
+        class_override,
+        request.modifier_context,
+        ctx,
+    );
+}
+
+fn lower_initial(name: &str) -> String {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return String::new();
+    };
+    let mut lowered = first.to_lowercase().collect::<String>();
+    lowered.push_str(chars.as_str());
+    lowered
+}
+
+/// Apply the class modification following a component-local redeclare to the
+/// constants already injected for that selected package.
+///
+/// MLS §7.2/§7.3 (INST-001/002) requires the modifier expression to be
+/// interpreted where the component declaration occurs, while the resulting
+/// value belongs only to this component instance. Reusing the scoped extends
+/// modifier extractor gives the same outer-over-inner precedence without
+/// changing the shared replacement `ClassDef`.
+fn apply_class_override_constant_modifiers(
+    tree: &ClassTree,
+    class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
+    scope: &str,
+    class_override: &rumoca_ir_ast::ClassOverride,
+    modifier_context: &str,
+    ctx: &mut Context,
+) {
+    for modifier in &class_override.modifier_args {
+        extract_extends_modification_expr(
+            tree,
+            class_index,
+            scope,
+            modifier,
+            modifier_context,
+            ctx,
+        );
     }
 }
 
@@ -1025,5 +1141,88 @@ mod strip_declared_suffix_tests {
             strip_declared_suffix("Pkg[data.medium].Air.BaseProperties", "Air.BaseProperties"),
             Some("Pkg[data.medium]".to_string())
         );
+    }
+}
+
+#[cfg(test)]
+mod component_redeclare_tests {
+    use rumoca_core::{Expression, Literal, VarName};
+    use rumoca_ir_ast as ast;
+    use rumoca_ir_flat as flat;
+
+    const SOURCE: &str = r"
+package Constraint
+  constant Real k = 10.0;
+end Constraint;
+
+package Good
+  extends Constraint(k = 20.0);
+end Good;
+
+model Inner
+  replaceable package Medium = Constraint
+    constrainedby Constraint;
+  Real y = Medium.k;
+end Inner;
+
+model ExtendsUse
+  extends Inner(redeclare package Medium = Good);
+end ExtendsUse;
+
+model ComponentUse
+  Inner i(redeclare package Medium = Good);
+end ComponentUse;
+
+model ComponentModifierUse
+  Inner a(redeclare package Medium = Good(k = 25.0));
+  Inner b(redeclare package Medium = Good(k = 30.0));
+  Inner unmodified(redeclare package Medium = Good);
+end ComponentModifierUse;
+";
+
+    fn flatten_source(model: &str) -> flat::Model {
+        let file_name = "<component_redeclare_flatten_test>";
+        let stored =
+            rumoca_phase_parse::parse_to_ast(SOURCE, file_name).expect("fixture should parse");
+        let mut tree = ast::ClassTree::from_parsed(stored);
+        tree.source_map.add(file_name, SOURCE);
+        let resolved = rumoca_phase_resolve::resolve(ast::ParsedTree::new(tree))
+            .expect("fixture should resolve");
+        let instanced = rumoca_phase_instantiate::instantiate(resolved, model)
+            .expect("fixture should instantiate");
+        crate::flatten_ref(instanced.inner(), instanced.overlay(), model)
+            .expect("fixture should flatten")
+    }
+
+    fn real_binding(model: &flat::Model, name: &str) -> f64 {
+        let variable = model
+            .variables
+            .get(&VarName::new(name))
+            .unwrap_or_else(|| panic!("missing flat variable {name}"));
+        match variable.binding.as_ref() {
+            Some(Expression::Literal {
+                value: Literal::Real(value),
+                ..
+            }) => *value,
+            binding => panic!("expected real literal binding for {name}, got {binding:?}"),
+        }
+    }
+
+    #[test]
+    fn component_and_extends_redeclare_apply_the_same_target_modification_environment() {
+        let component = flatten_source("ComponentUse");
+        let extends = flatten_source("ExtendsUse");
+
+        assert_eq!(real_binding(&component, "i.y"), 20.0);
+        assert_eq!(real_binding(&extends, "y"), 20.0);
+    }
+
+    #[test]
+    fn component_redeclare_modifiers_are_isolated_to_each_package_instance() {
+        let model = flatten_source("ComponentModifierUse");
+
+        assert_eq!(real_binding(&model, "a.y"), 25.0);
+        assert_eq!(real_binding(&model, "b.y"), 30.0);
+        assert_eq!(real_binding(&model, "unmodified.y"), 20.0);
     }
 }

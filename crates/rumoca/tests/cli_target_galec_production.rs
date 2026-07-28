@@ -412,7 +412,7 @@ fn unsupported_galec_projection_diagnostic_points_at_source_expression() {
         "unsupported GALEC builtin should be rejected"
     );
     let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
-    assert!(stderr.contains("[ET017]"), "{stderr}");
+    assert!(stderr.contains("[EGT017]"), "{stderr}");
     assert!(stderr.contains("builtin:mod"), "{stderr}");
     assert!(
         stderr.contains("mod(3, 2)"),

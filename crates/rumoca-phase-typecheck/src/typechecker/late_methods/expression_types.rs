@@ -15,10 +15,9 @@ impl TypeChecker {
         {
             return Some(type_table.integer());
         }
-        if let Some(path) = rumoca_ir_ast::expression_component_path(expr)
-            && let Some(type_id) = self.find_instanced_component_path_type(&path)
-        {
-            return Some(type_id);
+        match self.lookup_instance_expression(expr) {
+            SemanticLookup::Found(semantics) => return Some(semantics.type_id),
+            SemanticLookup::Missing | SemanticLookup::Ambiguous => {}
         }
         match expr {
             Expression::Terminal { terminal_type, .. } => match terminal_type {
@@ -145,6 +144,9 @@ impl TypeChecker {
             return self.infer_user_function_output_type(comp, &dotted_name, type_table);
         }
         match type_table.get(type_id) {
+            Some(Type::Builtin(rumoca_ir_ast::BuiltinType::Clock)) if leaf == "Clock" => {
+                Some(type_id)
+            }
             Some(Type::Class(class_ty)) if class_ty.kind == ClassKind::Record => Some(type_id),
             Some(Type::Alias(_)) | Some(Type::Enumeration(_)) => Some(type_id),
             Some(Type::Class(class_ty)) if class_ty.kind == ClassKind::Function => {

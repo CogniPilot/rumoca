@@ -1021,6 +1021,14 @@ fn omc_assertion_failure_lines(error_text: &str) -> Vec<String> {
 
 fn ensure_omc_trace_artifacts(paths: &MslPaths, results: &mut BTreeMap<String, SimModelResult>) {
     for (model_name, result) in results {
+        if result.status != "success" {
+            result.trace_file = None;
+            result.trace_error = Some(format!(
+                "OMC attempt status `{}` is not eligible for trace provenance",
+                result.status
+            ));
+            continue;
+        }
         if !omc_result_can_produce_trace(result)
             || omc_trace_artifact_exists(paths, model_name, result)
         {
@@ -1061,26 +1069,27 @@ fn cached_omc_success_has_trace_source(
 }
 
 fn omc_result_can_produce_trace(result: &SimModelResult) -> bool {
-    result.status == "success" || result.result_file.is_some() || result.trace_file.is_some()
+    result.status == "success" && (result.result_file.is_some() || result.trace_file.is_some())
 }
 
-fn omc_model_is_trace_candidate(result: &SimModelResult) -> bool {
-    result.rumoca_status.as_deref() == Some("sim_ok") && omc_result_can_produce_trace(result)
+fn rumoca_model_is_trace_candidate(result: &SimModelResult) -> bool {
+    result.rumoca_status.as_deref() == Some("sim_ok")
 }
 
 fn resolve_declared_omc_trace_path(
     paths: &MslPaths,
-    model_name: &str,
+    _model_name: &str,
     model: &SimModelResult,
 ) -> Option<PathBuf> {
-    if let Some(trace_file) = model.trace_file.as_ref() {
-        let path = PathBuf::from(trace_file);
-        if path.is_absolute() {
-            return Some(path);
-        }
-        return Some(paths.results_dir.join(path));
+    if model.status != "success" {
+        return None;
     }
-    Some(paths.omc_trace_dir.join(format!("{model_name}.json")))
+    let trace_file = model.trace_file.as_ref()?;
+    let path = PathBuf::from(trace_file);
+    if path.is_absolute() {
+        return Some(path);
+    }
+    Some(paths.results_dir.join(path))
 }
 
 fn write_omc_trace_artifact(
@@ -1306,24 +1315,40 @@ fn quantify_trace_differences(
 ) -> Result<TraceQuantification> {
     let mut report = TraceQuantification::default();
     for (model_name, omc_model) in all_results {
-        if !omc_model_is_trace_candidate(omc_model) {
+        if !rumoca_model_is_trace_candidate(omc_model) {
             continue;
         }
         if let Some(reason) = trace_exclusions.get(model_name) {
             report.skipped.insert(model_name.clone(), reason.clone());
             continue;
         }
+        if omc_model.status != "success" {
+            report.missing_trace.insert(
+                model_name.clone(),
+                format!(
+                    "OMC attempt status `{}` is not successful; stale trace artifacts are ineligible",
+                    omc_model.status
+                ),
+            );
+            continue;
+        }
         let Some(rumoca_trace_path) = resolve_rumoca_trace_path(paths, model_name, omc_model)
         else {
-            report
-                .missing_trace
-                .insert(model_name.clone(), "missing rumoca trace path".to_string());
+            report.missing_trace.insert(
+                model_name.clone(),
+                "successful Rumoca attempt did not declare a trace file".to_string(),
+            );
             continue;
         };
         let Some(omc_trace_path) = resolve_omc_trace_path(paths, model_name, omc_model) else {
+            let reason = if omc_model.trace_file.is_some() {
+                "declared OMC trace file does not exist"
+            } else {
+                "successful OMC attempt did not declare a trace file"
+            };
             report
                 .missing_trace
-                .insert(model_name.clone(), "missing omc trace path".to_string());
+                .insert(model_name.clone(), reason.to_string());
             continue;
         };
         let rumoca_trace = match load_trace_json(&rumoca_trace_path) {
@@ -1378,22 +1403,15 @@ fn quantify_trace_differences(
 
 fn resolve_rumoca_trace_path(
     paths: &MslPaths,
-    model_name: &str,
+    _model_name: &str,
     model: &SimModelResult,
 ) -> Option<PathBuf> {
-    if let Some(trace_file) = model.rumoca_trace_file.as_ref() {
-        let path = PathBuf::from(trace_file);
-        if path.is_absolute() {
-            return Some(path);
-        }
-        return Some(paths.results_dir.join(path));
+    let trace_file = model.rumoca_trace_file.as_ref()?;
+    let path = PathBuf::from(trace_file);
+    if path.is_absolute() {
+        return Some(path);
     }
-    let fallback = paths.rumoca_trace_dir.join(format!("{model_name}.json"));
-    if fallback.is_file() {
-        Some(fallback)
-    } else {
-        None
-    }
+    Some(paths.results_dir.join(path))
 }
 
 fn resolve_omc_trace_path(

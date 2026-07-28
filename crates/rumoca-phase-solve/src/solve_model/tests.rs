@@ -607,60 +607,6 @@ fn visible_subscripts_report_integer_range_overflow_without_dummy_span() {
 }
 
 #[test]
-fn state_derivative_order_flags_report_capacity_overflow_with_span() {
-    let span = rumoca_core::Span::from_offsets(
-        rumoca_core::SourceId::from_source_name("phase_solve_solve_model_tests_source_47.mo"),
-        9,
-        17,
-    );
-    let err = reserve_state_derivative_order_flags(usize::MAX, span)
-        .expect_err("oversized state-row ordering flags should fail before allocating");
-
-    assert_eq!(err.source_span(), Some(span));
-    assert!(
-        err.diagnostic_reason()
-            .contains("state derivative row ordering capacity overflows"),
-        "unexpected error: {err}"
-    );
-}
-
-#[test]
-fn state_derivative_order_flags_report_capacity_overflow_without_dummy_span() {
-    let err = reserve_state_derivative_order_flags(usize::MAX, unspanned_solve_model_test_span())
-        .expect_err("oversized unspanned state-row flags should fail before allocating");
-
-    assert_eq!(err.source_span(), None);
-    assert!(matches!(
-        err,
-        SolveModelLowerError::Lower(LowerError::UnspannedContractViolation { .. })
-    ));
-    assert!(
-        err.diagnostic_reason()
-            .contains("state derivative row ordering capacity overflows"),
-        "unexpected error: {err}"
-    );
-}
-
-#[test]
-fn state_derivative_order_capacity_reports_overflow_with_span() {
-    let span = rumoca_core::Span::from_offsets(
-        rumoca_core::SourceId::from_source_name("phase_solve_solve_model_tests_source_48.mo"),
-        1,
-        6,
-    );
-    let mut values = Vec::<dae::Equation>::new();
-    let err = reserve_state_derivative_order_capacity(&mut values, usize::MAX, span)
-        .expect_err("oversized state-row ordering buffer should fail before allocating");
-
-    assert_eq!(err.source_span(), Some(span));
-    assert!(
-        err.diagnostic_reason()
-            .contains("state derivative row ordering capacity overflows"),
-        "unexpected error: {err}"
-    );
-}
-
-#[test]
 fn initial_solver_values_preserve_vector_start_reference() {
     let mut dae_model = dae::Dae::default();
     let mut shape_type = scalar_var("body1.shapeType");
@@ -717,7 +663,7 @@ fn lower_uses_default_numeric_slot_for_string_parameter_start() {
     let mut dae_model = dae::Dae::default();
     let mut method = scalar_var("periodicClock.solverMethod");
     method.start = Some(rumoca_core::Expression::Literal {
-        value: Literal::String("ExplicitEuler".to_string()),
+        value: rumoca_core::Literal::String("ExplicitEuler".to_string()),
         span: solve_model_test_span(),
     });
     dae_model
@@ -745,7 +691,7 @@ fn lower_uses_default_numeric_slot_for_nested_string_parameter_start() {
     terminal.start = Some(rumoca_core::Expression::If {
         branches: vec![(
             rumoca_core::Expression::Literal {
-                value: Literal::Boolean(true),
+                value: rumoca_core::Literal::Boolean(true),
                 span: solve_model_test_span(),
             },
             string_expr("TerminalBox"),

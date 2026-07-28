@@ -48,6 +48,22 @@ fn builtin(function: BuiltinFunction, args: Vec<Expression>) -> Expression {
     }
 }
 
+fn integer(value: i64) -> Expression {
+    Expression::Literal {
+        value: Literal::Integer(value),
+        span: test_span(),
+    }
+}
+
+fn power(base: Expression, exponent: Expression) -> Expression {
+    Expression::Binary {
+        op: OpBinary::Exp,
+        lhs: Box::new(base),
+        rhs: Box::new(exponent),
+        span: test_span(),
+    }
+}
+
 fn der_leaf_names(expr: &Expression) -> Vec<String> {
     struct Collector {
         names: Vec<String>,
@@ -191,6 +207,82 @@ fn cross_product_with_a_constant_operand_folds_to_zero() {
     assert!(
         zero_fold::is_zero_array(&derivative),
         "cross(k, k) has a structurally zero derivative, got {derivative:?}"
+    );
+}
+
+#[test]
+fn scalar_constant_powers_use_the_power_rule() {
+    let mut dae = Dae::new();
+    state(&mut dae, "x", Vec::new());
+    let der_map = HashMap::from([("x".to_string(), var("x_dot"))]);
+
+    let zero = symbolic_time_derivative(&power(var("x"), integer(0)), &dae, &der_map)
+        .expect("x^0 is differentiable");
+    assert!(matches!(
+        zero,
+        Expression::Literal {
+            value: Literal::Real(value),
+            ..
+        } if value == 0.0
+    ));
+
+    let one = symbolic_time_derivative(&power(var("x"), integer(1)), &dae, &der_map)
+        .expect("x^1 is differentiable");
+    assert_eq!(one, var("x_dot"));
+
+    let square = symbolic_time_derivative(&power(var("x"), integer(2)), &dae, &der_map)
+        .expect("x^2 is differentiable");
+    let rendered = format!("{square:?}");
+    assert!(
+        rendered.contains("\"x\"") && rendered.contains("x_dot"),
+        "2*x*der(x) must retain both the base and its derivative, got {square:?}"
+    );
+}
+
+#[test]
+fn fixed_parameter_power_is_structural_but_tunable_power_is_not() {
+    let mut dae = Dae::new();
+    state(&mut dae, "x", Vec::new());
+    let der_map = HashMap::from([("x".to_string(), var("x_dot"))]);
+
+    let mut exponent = Variable::new(VarName::new("n"), test_span());
+    exponent.source_span = test_span();
+    exponent.start = Some(integer(3));
+    dae.variables.parameters.insert(VarName::new("n"), exponent);
+    assert!(
+        symbolic_time_derivative(&power(var("x"), var("n")), &dae, &der_map).is_some(),
+        "a fixed scalar parameter exponent is structurally constant"
+    );
+
+    dae.variables
+        .parameters
+        .get_mut(&VarName::new("n"))
+        .expect("parameter exists")
+        .is_tunable = true;
+    assert!(
+        symbolic_time_derivative(&power(var("x"), var("n")), &dae, &der_map).is_none(),
+        "a tunable exponent needs the unsupported general u(t)^v(t) rule"
+    );
+}
+
+#[test]
+fn power_rule_refuses_array_and_elementwise_shapes() {
+    let mut dae = Dae::new();
+    state(&mut dae, "x", vec![2]);
+    assert!(
+        symbolic_time_derivative(&power(var("x"), integer(2)), &dae, &HashMap::new()).is_none(),
+        "the scalar power rule must not be applied to an array base"
+    );
+
+    let elementwise = Expression::Binary {
+        op: OpBinary::ExpElem,
+        lhs: Box::new(var("x")),
+        rhs: Box::new(integer(2)),
+        span: test_span(),
+    };
+    assert!(
+        symbolic_time_derivative(&elementwise, &dae, &HashMap::new()).is_none(),
+        "element-wise powers require a separate array-native rule"
     );
 }
 

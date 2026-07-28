@@ -122,38 +122,89 @@ pub(super) fn collect_real_range(
     step: f64,
     span: Span,
 ) -> Result<Vec<Value>, EvalError> {
-    let mut values = Vec::new();
-    let mut v = start;
-    if step > 0.0 {
-        while v <= end + f64::EPSILON {
-            values.push(Value::Real(v));
-            if v >= end {
-                break;
-            }
-            let next = v + step;
-            if next == v {
-                return Err(EvalError::range_error(
-                    "range step does not advance at this magnitude",
-                    span,
-                ));
-            }
-            v = next;
-        }
+    if !start.is_finite() || !end.is_finite() || !step.is_finite() {
+        return Err(EvalError::range_error(
+            "range bounds and step must be finite",
+            span,
+        ));
+    }
+    if step == 0.0 {
+        return Err(EvalError::range_error("step cannot be zero", span));
+    }
+
+    // MLS §10.4.3 defines the final index as floor((end - start) / step).
+    // Compute cardinality in that quotient space instead of comparing values
+    // against an endpoint-scaled epsilon: endpoint scaling changes the
+    // mathematical range at large offsets. Snap only a quotient that is
+    // within one representable ULP of an integer, matching OMC's treatment of
+    // decimal cases such as 0:0.1:0.3.
+    if (step > 0.0 && start > end) || (step < 0.0 && start < end) {
+        return Ok(Vec::new());
+    }
+    let quotient = (end - start) / step;
+    if !quotient.is_finite() {
+        return Err(EvalError::range_error("range has too many elements", span));
+    }
+    let nearest = quotient.round();
+    let next = f64::from_bits(quotient.to_bits() + 1);
+    let quotient_for_floor = if (quotient - nearest).abs() <= next - quotient {
+        nearest
     } else {
-        while v >= end - f64::EPSILON {
-            values.push(Value::Real(v));
-            if v <= end {
-                break;
-            }
-            let next = v + step;
-            if next == v {
-                return Err(EvalError::range_error(
-                    "range step does not advance at this magnitude",
-                    span,
-                ));
-            }
-            v = next;
-        }
+        quotient
+    };
+    let last_index = quotient_for_floor.floor();
+    if last_index < 0.0 || last_index >= usize::MAX as f64 {
+        return Err(EvalError::range_error("range has too many elements", span));
+    }
+    let count = (last_index as usize)
+        .checked_add(1)
+        .ok_or_else(|| EvalError::range_error("range has too many elements", span))?;
+    let mut values = Vec::new();
+    values
+        .try_reserve_exact(count)
+        .map_err(|_| EvalError::range_error("range has too many elements", span))?;
+    for index in 0..count {
+        values.push(Value::Real(start + (index as f64) * step));
     }
     Ok(values)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn real_range_uses_indexed_values_without_accumulation_drift() {
+        let values = collect_real_range(0.0, 0.3, 0.1, Span::DUMMY).unwrap();
+        assert_eq!(values.len(), 4);
+        assert_eq!(values[3], Value::Real(0.30000000000000004));
+    }
+
+    #[test]
+    fn real_range_cardinality_tolerance_is_in_quotient_space() {
+        let start = 1.0e15;
+        let values = collect_real_range(start, start + 0.5, 1.0, Span::DUMMY).unwrap();
+        assert_eq!(values, vec![Value::Real(start)]);
+    }
+
+    #[test]
+    fn descending_real_range_uses_the_same_quotient_rule() {
+        let values = collect_real_range(0.3, 0.0, -0.1, Span::DUMMY).unwrap();
+        assert_eq!(values.len(), 4);
+        assert_eq!(values[3], Value::Real(-5.551115123125783e-17));
+    }
+
+    #[test]
+    fn real_range_rejects_non_finite_inputs() {
+        let result = collect_real_range(f64::INFINITY, 1.0, 1.0, Span::DUMMY);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn real_range_cardinality_does_not_require_distinct_binary64_values() {
+        let start = 1.0e15;
+        let values = collect_real_range(start, start + 0.5, 0.01, Span::DUMMY).unwrap();
+        assert_eq!(values.len(), 51);
+        assert_eq!(values[0], values[1]);
+    }
 }

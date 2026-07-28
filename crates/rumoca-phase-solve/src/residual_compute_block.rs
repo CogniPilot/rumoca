@@ -1,9 +1,11 @@
 use indexmap::IndexMap;
-use rumoca_core::{ExpressionRewriter, ExpressionVisitor};
+use rumoca_core::{ExpressionRewriter, ExpressionScope, ExpressionVisitor};
 use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
 
 use crate::{lower, lower::LowerError, stencil};
+
+mod ordering;
 
 pub(crate) fn build_residual_compute_block(
     dae_model: &dae::Dae,
@@ -20,7 +22,9 @@ pub(crate) fn build_residual_compute_block(
         residual_equations,
         span,
     )?;
-    let (mut direct_nodes, compact_coverage) =
+    let native_nodes =
+        lower::lower_native_algebraic_residual_nodes(dae_model, layout, residual_equations)?;
+    let (direct_nodes, compact_coverage) =
         build_direct_family_nodes(dae_model, layout, residual_targets, residual_equations)?;
     let mut rows = residual_vec_with_capacity(
         residual_rows.len(),
@@ -42,12 +46,27 @@ pub(crate) fn build_residual_compute_block(
             if compact_coverage
                 .iter()
                 .any(|coverage| coverage.contains(residual_index))
+                || native_nodes.iter().any(|(start, count, _)| {
+                    CompactOutputCoverage {
+                        start: *start,
+                        step: 1,
+                        count: *count,
+                    }
+                    .contains(residual_index)
+                })
             {
                 residual_index += 1;
                 continue;
             }
             let target = residual_targets.get(residual_index).copied().flatten();
             let pointwise_output_y_index = target_y_index(target);
+            let producer_load_strides = stencil::producer_load_strides_for_dae_equation(
+                layout,
+                &dae_model.continuous.structured_equations,
+                *equation_index,
+                &ops,
+                equation.span,
+            )?;
             rows.push(stencil::StructuredProgram {
                 load_y_ranges: stencil::structured_load_y_ranges(
                     &ops,
@@ -65,6 +84,7 @@ pub(crate) fn build_residual_compute_block(
                     equation.span,
                 )?,
                 dae_equation_index: Some(*equation_index),
+                producer_load_strides,
                 access_proof: residual_row_access_proof(
                     layout,
                     &structural_bindings,
@@ -77,32 +97,21 @@ pub(crate) fn build_residual_compute_block(
             residual_index += 1;
         }
     }
-    // Every node built here addresses its residual rows by ABSOLUTE output
-    // index. A `ScalarProgramBlock` whose stored indices happen to be exactly
-    // `0..n` is indistinguishable from the local-contiguous form that
-    // `ComputeBlock` re-bases onto the running output cursor, so such a block is
-    // only interpreted correctly when it sits at cursor 0. The row-ordered nodes
-    // come first for exactly that reason: the block owning residual row 0 is the
-    // one that can look local-contiguous, and it must be the block's first node.
-    // The direct structured-family nodes cover scattered output ranges and carry
-    // absolute output maps (the cursor only ever moves forward past them), so
-    // they are appended afterwards. Prepending them instead shifted the first
-    // scalar block by the families' output extent — both the shape contract and
-    // the runtime evaluator then addressed rows past the end of the residual.
-    let mut block = solve::ComputeBlock { nodes: Vec::new() };
-    stencil::push_structured_programs(
-        &mut block.nodes,
-        &mut rows,
-        &dae_model.continuous.structured_equations,
-        &dae_model.continuous.equations,
+    ordering::assemble_residual_compute_block(ordering::ResidualAssemblyInput {
+        rows: &mut rows,
+        native_nodes,
+        direct_nodes,
+        compact_coverage: &compact_coverage,
+        structured_equations: &dae_model.continuous.structured_equations,
+        dae_equations: &dae_model.continuous.equations,
         declines,
-    )?;
-    block.nodes.append(&mut direct_nodes);
-    Ok(block)
+        expected_output_count: residual_rows.len(),
+        span,
+    })
 }
 
 #[derive(Debug, Clone, Copy)]
-struct CompactOutputCoverage {
+pub(super) struct CompactOutputCoverage {
     start: usize,
     step: usize,
     count: usize,
@@ -232,6 +241,13 @@ fn build_direct_family_nodes(
     let y_slot_ranges = stencil::structured_y_slot_ranges(layout)?;
     let structural_bindings = lower::structural_bindings_for_structured_access(dae_model)?;
     let variables = ProjectionVariableIndex::new(dae_model);
+    let position_context = DirectFamilyPositionContext {
+        layout,
+        residual_targets,
+        output_spans: &output_spans,
+        y_slot_ranges: &y_slot_ranges,
+        structural_bindings: &structural_bindings,
+    };
     let mut nodes = Vec::new();
     let mut coverage = Vec::new();
     for family in &dae_model.continuous.structured_equations {
@@ -260,11 +276,7 @@ fn build_direct_family_nodes(
             let Some((node, covered)) = direct_family_position_node(
                 dae_model,
                 &variables,
-                layout,
-                residual_targets,
-                &output_spans,
-                &y_slot_ranges,
-                &structural_bindings,
+                &position_context,
                 family,
                 template,
                 equation_position,
@@ -292,11 +304,14 @@ fn compact_direct_family_is_proven(
     family: &dae::StructuredEquationFamily,
     template: &rumoca_core::ComprehensionTemplate,
 ) -> bool {
+    if !direct_template_identity_is_safe(family, template) {
+        return false;
+    }
     match template.scalar_view {
-        // Corner-derived load strides are sound only when Flat IR proved every
+        // Producer load strides are available only when Flat IR proved every
         // source subscript affine in the binders and binders do not otherwise
         // contribute values to the body. Without both guards, `u[i*i]` or
-        // `x[i] = i*i` would be extrapolated from their first two cells.
+        // `x[i] = i*i` could not be represented by affine access metadata.
         rumoca_core::ComprehensionScalarView::BinderSubstitution => {
             family.regular.is_some()
                 && template
@@ -307,6 +322,59 @@ fn compact_direct_family_is_proven(
         // These indices are synthesized from the validated row-major domain,
         // rather than inferred from source subscript expressions.
         rumoca_core::ComprehensionScalarView::RowMajorProjection => true,
+    }
+}
+
+fn direct_template_identity_is_safe(
+    family: &dae::StructuredEquationFamily,
+    template: &rumoca_core::ComprehensionTemplate,
+) -> bool {
+    template.body.iter().all(|body| {
+        let mut proof = DirectTemplateIdentityProof {
+            family_binders: &family.domain.binders,
+            valid: true,
+        };
+        proof.visit_expression(body);
+        proof.valid
+    })
+}
+
+struct DirectTemplateIdentityProof<'a> {
+    family_binders: &'a [rumoca_core::StructuredIndexBinder],
+    valid: bool,
+}
+
+impl ExpressionVisitor for DirectTemplateIdentityProof<'_> {
+    fn visit_builtin_call(
+        &mut self,
+        function: &rumoca_core::BuiltinFunction,
+        args: &[rumoca_core::Expression],
+    ) {
+        if matches!(
+            function,
+            rumoca_core::BuiltinFunction::Terminal
+                | rumoca_core::BuiltinFunction::Delay
+                | rumoca_core::BuiltinFunction::Pre
+                | rumoca_core::BuiltinFunction::Der
+        ) {
+            self.valid = false;
+            return;
+        }
+        self.walk_builtin_call(function, args);
+    }
+
+    fn enter_scope(&mut self, scope: ExpressionScope<'_>) {
+        let ExpressionScope::ArrayComprehension(indices) = scope;
+        if indices.iter().any(|index| {
+            self.family_binders
+                .iter()
+                .any(|binder| binder.display_name == index.name)
+        }) {
+            // Names are not sufficient to distinguish the outer family binder
+            // from a same-named nested comprehension binder. Until binder IDs
+            // are carried on every use, direct substitution must decline.
+            self.valid = false;
+        }
     }
 }
 
@@ -354,15 +422,18 @@ impl ExpressionVisitor for BinderSubscriptUseProof<'_> {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+struct DirectFamilyPositionContext<'a> {
+    layout: &'a solve::VarLayout,
+    residual_targets: &'a [Option<solve::ScalarSlot>],
+    output_spans: &'a IndexMap<usize, ResidualOutputSpan>,
+    y_slot_ranges: &'a stencil::YSlotRanges,
+    structural_bindings: &'a IndexMap<String, f64>,
+}
+
 fn direct_family_position_node(
     dae_model: &dae::Dae,
     variables: &ProjectionVariableIndex<'_>,
-    layout: &solve::VarLayout,
-    residual_targets: &[Option<solve::ScalarSlot>],
-    output_spans: &IndexMap<usize, ResidualOutputSpan>,
-    y_slot_ranges: &stencil::YSlotRanges,
-    structural_bindings: &IndexMap<String, f64>,
+    context: &DirectFamilyPositionContext<'_>,
     family: &dae::StructuredEquationFamily,
     template: &rumoca_core::ComprehensionTemplate,
     equation_position: usize,
@@ -376,14 +447,96 @@ fn direct_family_position_node(
     if point_count < 2 {
         return Ok(None);
     }
-    let corner_ordinals = family.domain.corner_ordinals().map_err(|err| {
+    let Some(corners) = direct_corner_expressions(
+        family,
+        template,
+        equation_position,
+        context.layout,
+        variables,
+    )?
+    else {
+        return Ok(None);
+    };
+    let corner_ops = lower::lower_compact_residual_expressions(
+        dae_model,
+        context.layout,
+        &corners.expressions,
+        family.span,
+    )?;
+    let mut programs = Vec::with_capacity(corners.ordinals.len());
+    for ((ordinal, expression), ops) in corners
+        .ordinals
+        .iter()
+        .zip(&corners.expressions)
+        .zip(corner_ops)
+    {
+        let Some(program) = direct_corner_program(DirectCornerProgramInput {
+            layout: context.layout,
+            residual_targets: context.residual_targets,
+            output_spans: context.output_spans,
+            y_slot_ranges: context.y_slot_ranges,
+            structural_bindings: context.structural_bindings,
+            family,
+            equation_position,
+            ordinal: *ordinal,
+            expression,
+            ops,
+        })?
+        else {
+            return Ok(None);
+        };
+        programs.push(program);
+    }
+    let Some(node) = stencil::tensor_node_from_compact_corners(
+        &programs,
+        &family.domain,
+        family.span,
+        family.regular.is_some(),
+    )?
+    else {
+        return Ok(None);
+    };
+    let Some(start) = family_output_index(family, 0, equation_position, context.output_spans)?
+    else {
+        return Ok(None);
+    };
+    let Some(second) = family_output_index(family, 1, equation_position, context.output_spans)?
+    else {
+        return Ok(None);
+    };
+    let Some(step) = second.checked_sub(start).filter(|step| *step > 0) else {
+        return Ok(None);
+    };
+    Ok(Some((
+        node,
+        CompactOutputCoverage {
+            start,
+            step,
+            count: point_count,
+        },
+    )))
+}
+
+struct DirectCornerExpressions {
+    ordinals: Vec<usize>,
+    expressions: Vec<rumoca_core::Expression>,
+}
+
+fn direct_corner_expressions(
+    family: &dae::StructuredEquationFamily,
+    template: &rumoca_core::ComprehensionTemplate,
+    equation_position: usize,
+    layout: &solve::VarLayout,
+    variables: &ProjectionVariableIndex<'_>,
+) -> Result<Option<DirectCornerExpressions>, LowerError> {
+    let ordinals = family.domain.corner_ordinals().map_err(|err| {
         residual_contract_error(
             format!("structured family domain is invalid: {err}"),
             Some(family.span),
         )
     })?;
-    let mut corner_expressions = Vec::with_capacity(corner_ordinals.len());
-    for ordinal in &corner_ordinals {
+    let mut expressions = Vec::with_capacity(ordinals.len());
+    for ordinal in &ordinals {
         let Some(tuple) = family.domain.index_tuple_at(*ordinal).map_err(|err| {
             residual_contract_error(
                 format!("structured family domain is invalid: {err}"),
@@ -404,69 +557,65 @@ fn direct_family_position_node(
         else {
             return Ok(None);
         };
-        corner_expressions.push(expression);
+        expressions.push(expression);
     }
-    let corner_ops = lower::lower_compact_residual_expressions(
-        dae_model,
+    Ok(Some(DirectCornerExpressions {
+        ordinals,
+        expressions,
+    }))
+}
+
+struct DirectCornerProgramInput<'a> {
+    layout: &'a solve::VarLayout,
+    residual_targets: &'a [Option<solve::ScalarSlot>],
+    output_spans: &'a IndexMap<usize, ResidualOutputSpan>,
+    y_slot_ranges: &'a stencil::YSlotRanges,
+    structural_bindings: &'a IndexMap<String, f64>,
+    family: &'a dae::StructuredEquationFamily,
+    equation_position: usize,
+    ordinal: usize,
+    expression: &'a rumoca_core::Expression,
+    ops: Vec<solve::LinearOp>,
+}
+
+fn direct_corner_program(
+    input: DirectCornerProgramInput<'_>,
+) -> Result<Option<stencil::StructuredProgram>, LowerError> {
+    let DirectCornerProgramInput {
         layout,
-        &corner_expressions,
-        family.span,
-    )?;
-    let mut programs = Vec::with_capacity(corner_ordinals.len());
-    for ((ordinal, expression), ops) in corner_ordinals
-        .iter()
-        .zip(&corner_expressions)
-        .zip(corner_ops)
-    {
-        let Some(output_index) =
-            family_output_index(family, *ordinal, equation_position, output_spans)?
-        else {
-            return Ok(None);
-        };
-        let target = residual_targets.get(output_index).copied().flatten();
-        let Some(access_proof) =
-            residual_row_access_proof(layout, structural_bindings, expression, family.span, 0, 1)?
-        else {
-            return Ok(None);
-        };
-        programs.push(stencil::StructuredProgram {
-            load_y_ranges: stencil::structured_load_y_ranges(&ops, y_slot_ranges, family.span)?,
-            ops,
-            output_index,
-            pointwise_output_y_index: target_y_index(target),
-            span: family.span,
-            output_y_range: residual_output_y_range(
-                target,
-                y_slot_ranges,
-                output_index,
-                family.span,
-            )?,
-            dae_equation_index: None,
-            access_proof: Some(access_proof),
-        });
-    }
-    let Some(node) =
-        stencil::tensor_node_from_compact_corners(&programs, &family.domain, family.span)?
+        residual_targets,
+        output_spans,
+        y_slot_ranges,
+        structural_bindings,
+        family,
+        equation_position,
+        ordinal,
+        expression,
+        ops,
+    } = input;
+    let Some(output_index) = family_output_index(family, ordinal, equation_position, output_spans)?
     else {
         return Ok(None);
     };
-    let Some(start) = family_output_index(family, 0, equation_position, output_spans)? else {
+    let target = residual_targets.get(output_index).copied().flatten();
+    let Some(access_proof) =
+        residual_row_access_proof(layout, structural_bindings, expression, family.span, 0, 1)?
+    else {
         return Ok(None);
     };
-    let Some(second) = family_output_index(family, 1, equation_position, output_spans)? else {
-        return Ok(None);
-    };
-    let Some(step) = second.checked_sub(start).filter(|step| *step > 0) else {
-        return Ok(None);
-    };
-    Ok(Some((
-        node,
-        CompactOutputCoverage {
-            start,
-            step,
-            count: point_count,
-        },
-    )))
+    let producer_load_strides =
+        stencil::producer_load_strides_for_family_row(layout, family, ordinal, &ops, family.span)?;
+    Ok(Some(stencil::StructuredProgram {
+        load_y_ranges: stencil::structured_load_y_ranges(&ops, y_slot_ranges, family.span)?,
+        ops,
+        output_index,
+        pointwise_output_y_index: target_y_index(target),
+        span: family.span,
+        output_y_range: residual_output_y_range(target, y_slot_ranges, output_index, family.span)?,
+        dae_equation_index: None,
+        producer_load_strides,
+        access_proof: Some(access_proof),
+    }))
 }
 
 fn residual_output_spans(
@@ -830,24 +979,25 @@ fn project_scalarized_aggregate_element(
 /// the full scan selected.
 struct ProjectionVariableIndex<'a> {
     by_name: IndexMap<&'a str, &'a dae::Variable>,
-    by_aggregate_path: IndexMap<String, Vec<&'a dae::Variable>>,
+    by_aggregate_path: IndexMap<rumoca_core::ComponentPath, Vec<&'a dae::Variable>>,
 }
 
 impl<'a> ProjectionVariableIndex<'a> {
     fn new(dae_model: &'a dae::Dae) -> Self {
         // RowMajorProjection templates retain the pre-instantiation aggregate
         // declaration, while scalar DAE descendants carry per-instance DefIds.
-        // Their fully flattened component path is unique at this phase, so the
-        // canonical path string is the bucket key and the selected result keeps
-        // the descendant's resolved ComponentReference.
+        // Their fully flattened component path is unique at this phase. Keep
+        // that path structured in the lookup key; rendering it is only a
+        // serialization/display concern.
         let mut by_name: IndexMap<&'a str, &'a dae::Variable> = IndexMap::new();
-        let mut by_aggregate_path: IndexMap<String, Vec<&'a dae::Variable>> = IndexMap::new();
+        let mut by_aggregate_path: IndexMap<rumoca_core::ComponentPath, Vec<&'a dae::Variable>> =
+            IndexMap::new();
         for variable in continuous_and_known_variables(dae_model) {
             by_name.entry(variable.name.as_str()).or_insert(variable);
             if let Some(component_ref) = variable.component_ref.as_ref() {
                 let base = rumoca_core::component_ref_to_base_reference(component_ref);
                 by_aggregate_path
-                    .entry(base.as_str().to_string())
+                    .entry(rumoca_core::ComponentPath::from_reference(&base))
                     .or_default()
                     .push(variable);
             }
@@ -867,7 +1017,7 @@ impl<'a> ProjectionVariableIndex<'a> {
     /// in scan order.
     fn sharing_aggregate_path(&self, aggregate: &rumoca_core::Reference) -> &[&'a dae::Variable] {
         self.by_aggregate_path
-            .get(aggregate.as_str())
+            .get(&rumoca_core::ComponentPath::from_reference(aggregate))
             .map_or(&[][..], Vec::as_slice)
     }
 }
@@ -1336,6 +1486,27 @@ mod tests {
         }
     }
 
+    fn direct_template_test_family(span: rumoca_core::Span) -> dae::StructuredEquationFamily {
+        dae::StructuredEquationFamily {
+            domain: rumoca_core::StructuredIndexDomain {
+                binders: vec![rumoca_core::StructuredIndexBinder {
+                    id: 0,
+                    display_name: "i".to_string(),
+                    lower: 1,
+                    upper: 4,
+                    step: 1,
+                }],
+            },
+            first_equation_index: 0,
+            equations_per_point: 1,
+            span,
+            origin: "direct template proof fixture".to_string(),
+            regular: None,
+            template: None,
+            interiors_materialized: true,
+        }
+    }
+
     fn unspanned_residual_test_span() -> rumoca_core::Span {
         rumoca_core::Span::DUMMY
     }
@@ -1578,24 +1749,7 @@ mod tests {
             1,
             2,
         );
-        let family = dae::StructuredEquationFamily {
-            domain: rumoca_core::StructuredIndexDomain {
-                binders: vec![rumoca_core::StructuredIndexBinder {
-                    id: 0,
-                    display_name: "i".to_string(),
-                    lower: 1,
-                    upper: 4,
-                    step: 1,
-                }],
-            },
-            first_equation_index: 0,
-            equations_per_point: 1,
-            span,
-            origin: "non-affine source family".to_string(),
-            regular: None,
-            template: None,
-            interiors_materialized: true,
-        };
+        let family = direct_template_test_family(span);
         let source_template = rumoca_core::ComprehensionTemplate {
             body: vec![literal_zero(span)],
             scalar_view: rumoca_core::ComprehensionScalarView::BinderSubstitution,
@@ -1649,6 +1803,70 @@ mod tests {
             rumoca_core::BuiltinFunction::Min,
             2
         ));
+    }
+
+    #[test]
+    fn direct_template_declines_shadowed_family_binder() {
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("compact_binder_capture.mo"),
+            1,
+            2,
+        );
+        let family = direct_template_test_family(span);
+        let shadowed_binder_template = rumoca_core::ComprehensionTemplate {
+            body: vec![rumoca_core::Expression::ArrayComprehension {
+                expr: Box::new(rumoca_core::Expression::VarRef {
+                    name: rumoca_core::Reference::new("i"),
+                    subscripts: Vec::new(),
+                    span,
+                }),
+                indices: vec![rumoca_core::ComprehensionIndex {
+                    name: "i".to_string(),
+                    range: rumoca_core::Expression::Range {
+                        start: Box::new(literal_zero(span)),
+                        step: None,
+                        end: Box::new(literal_zero(span)),
+                        span,
+                    },
+                }],
+                filter: None,
+                span,
+            }],
+            scalar_view: rumoca_core::ComprehensionScalarView::RowMajorProjection,
+        };
+        assert!(!compact_direct_family_is_proven(
+            &family,
+            &shadowed_binder_template
+        ));
+    }
+
+    #[test]
+    fn direct_template_declines_dae_identity_operators() {
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("compact_stale_dae_identity.mo"),
+            1,
+            2,
+        );
+        let family = direct_template_test_family(span);
+        for function in [
+            rumoca_core::BuiltinFunction::Terminal,
+            rumoca_core::BuiltinFunction::Delay,
+            rumoca_core::BuiltinFunction::Pre,
+            rumoca_core::BuiltinFunction::Der,
+        ] {
+            let stale_dae_operator_template = rumoca_core::ComprehensionTemplate {
+                body: vec![rumoca_core::Expression::BuiltinCall {
+                    function,
+                    args: vec![literal_zero(span)],
+                    span,
+                }],
+                scalar_view: rumoca_core::ComprehensionScalarView::RowMajorProjection,
+            };
+            assert!(
+                !compact_direct_family_is_proven(&family, &stale_dae_operator_template),
+                "{function:?} must decline direct template compaction"
+            );
+        }
     }
 
     #[test]

@@ -142,6 +142,8 @@ pub mod codegen {
         render_ast_template_with_name, render_dae_template, render_dae_template_with_json,
         render_dae_template_with_json_and_name, render_dae_template_with_name,
         render_flat_template_with_name, render_solve_template_with_name,
+        render_structured_dae_template_with_name, validate_dae_scalar_residual_view,
+        validate_dae_structured_ownership,
     };
     pub mod targets {
         pub use crate::codegen_target::{

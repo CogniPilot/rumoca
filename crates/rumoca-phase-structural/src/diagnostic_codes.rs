@@ -51,6 +51,7 @@ mod tests {
 
     use super::*;
     use crate::StructuralError;
+    use rumoca_core::PhaseError;
 
     fn structural_code_test_span() -> rumoca_core::Span {
         rumoca_core::Span::from_offsets(
@@ -160,5 +161,35 @@ mod tests {
         assert_eq!(ES012_INVALID_IC_PLAN_UNKNOWN, "ES012");
         assert_eq!(ES013_INCONSISTENT_EQUATION, "ES013");
         assert_eq!(ES014_CONTRACT_VIOLATION, "ES014");
+    }
+
+    #[test]
+    fn phase_error_preserves_all_available_singularity_spans() {
+        let primary = structural_code_test_span();
+        let secondary = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("structural-secondary.mo"),
+            10,
+            16,
+        );
+        let error = StructuralError::Singular {
+            n_equations: 1,
+            n_unknowns: 2,
+            n_matched: 1,
+            unmatched_equations: Vec::new(),
+            unmatched_unknowns: vec!["x".to_string(), "y".to_string()],
+            unmatched_unknown_spans: vec![Some(primary), Some(secondary)],
+            over_determined_block: Box::default(),
+        };
+
+        let diagnostic = error.to_diagnostic();
+        assert_eq!(diagnostic.code.as_deref(), Some(ES010_SINGULAR_SYSTEM));
+        assert_eq!(diagnostic.labels[0].span, primary);
+        assert!(diagnostic.labels[0].primary);
+        assert!(
+            diagnostic
+                .labels
+                .iter()
+                .any(|label| label.span == secondary && !label.primary)
+        );
     }
 }

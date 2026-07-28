@@ -1476,6 +1476,94 @@ pub(super) fn print_msl_balance_summary(summary: &MslSummary) {
 mod tests {
     use super::*;
 
+    fn summary_with_artifact_maps(reverse: bool) -> MslSummary {
+        let mut summary = empty_summary(0, 0);
+        summary.git_commit = "deterministic-test".to_string();
+        let entries = if reverse {
+            [("zeta".to_string(), 2), ("alpha".to_string(), 1)]
+        } else {
+            [("alpha".to_string(), 1), ("zeta".to_string(), 2)]
+        };
+        summary.class_type_counts = entries.clone().into_iter().collect();
+        summary.failures_by_phase = entries
+            .clone()
+            .into_iter()
+            .map(|(key, value)| (key, vec![value.to_string()]))
+            .collect();
+        summary.error_categories = entries
+            .clone()
+            .into_iter()
+            .map(|(key, value)| (key.clone(), vec![(key, value.to_string())]))
+            .collect();
+        summary.error_code_counts = entries.clone().into_iter().collect();
+        summary.unsupported_feature_counts = entries.clone().into_iter().collect();
+        summary.undefined_vars = entries.clone().into_iter().collect();
+        summary.balance_distribution = [(-1, 1), (2, 2)].into_iter().collect();
+
+        let backend_entries = if reverse {
+            [("z-backend", 2), ("a-backend", 1)]
+        } else {
+            [("a-backend", 1), ("z-backend", 2)]
+        };
+        summary.unsupported_feature_counts_by_backend = backend_entries
+            .into_iter()
+            .map(|(backend, value)| {
+                let feature_entries = if reverse {
+                    [
+                        ("z-feature".to_string(), value),
+                        ("a-feature".to_string(), 1),
+                    ]
+                } else {
+                    [
+                        ("a-feature".to_string(), 1),
+                        ("z-feature".to_string(), value),
+                    ]
+                };
+                (
+                    backend.to_string(),
+                    feature_entries.into_iter().collect::<BTreeMap<_, _>>(),
+                )
+            })
+            .collect();
+        summary
+    }
+
+    #[test]
+    fn msl_summary_artifact_maps_serialize_deterministically() {
+        let summary = summary_with_artifact_maps(false);
+        let first = serde_json::to_vec_pretty(&summary).expect("serialize summary");
+        let repeated = serde_json::to_vec_pretty(&summary).expect("repeat serialization");
+        assert_eq!(
+            first, repeated,
+            "repeated serialization must be byte-identical"
+        );
+
+        let reverse = summary_with_artifact_maps(true);
+        let reverse_bytes =
+            serde_json::to_vec_pretty(&reverse).expect("serialize reverse insertion");
+        assert_eq!(
+            first, reverse_bytes,
+            "map insertion order must not affect artifact bytes"
+        );
+
+        let compact = serde_json::to_string(&summary).expect("serialize compact summary");
+        for expected in [
+            r#""class_type_counts":{"alpha":1,"zeta":2}"#,
+            r#""failures_by_phase":{"alpha":["1"],"zeta":["2"]}"#,
+            r#""error_categories":{"alpha":[["alpha","1"]],"zeta":[["zeta","2"]]}"#,
+            r#""error_code_counts":{"alpha":1,"zeta":2}"#,
+            r#""unsupported_feature_counts":{"alpha":1,"zeta":2}"#,
+            r#""undefined_vars":{"alpha":1,"zeta":2}"#,
+            r#""balance_distribution":{"-1":1,"2":2}"#,
+            r#""unsupported_feature_counts_by_backend":{"a-backend":{"a-feature":1,"z-feature":1},"z-backend":{"a-feature":1,"z-feature":2}}"#,
+        ] {
+            assert!(
+                compact.contains(expected),
+                "serialized artifact keys are not sorted: expected {expected} in {compact}"
+            );
+        }
+    }
+
     fn model_result(name: &str, phase_reached: &str, sim_status: Option<&str>) -> MslModelResult {
         let mut result = phase_error_result(name.to_string(), phase_reached, None, None);
         result.sim_status = sim_status.map(str::to_string);

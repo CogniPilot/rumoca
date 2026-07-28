@@ -1216,6 +1216,7 @@ fn build_instance_data(
             .class_def
             .map(|c| matches!(c.class_type, rumoca_core::ClassType::Connector))
             .unwrap_or(false),
+        is_expandable_connector_type: args.class_def.is_some_and(|class| class.expandable),
         oc_record_path: if args.ctx.is_in_overconstrained() {
             args.ctx.overconstrained_record_path()
         } else {

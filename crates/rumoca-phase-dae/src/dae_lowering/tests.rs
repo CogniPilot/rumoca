@@ -518,7 +518,7 @@ fn scalarize_phantom_vector_equations_reports_missing_function_shape_with_call_s
     match err {
         ToDaeError::RuntimeContractViolation { detail, span, .. } => {
             assert!(detail.contains("missing function output metadata for `missingShape`"));
-            assert_eq!(span, rumoca_core::span_to_source_span(call_span));
+            assert_eq!(span, call_span);
         }
         other => panic!("unexpected error: {other:?}"),
     }

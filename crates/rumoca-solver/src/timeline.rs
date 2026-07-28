@@ -1,38 +1,112 @@
 use rumoca_ir_solve as solve;
 
+const MAX_OUTPUT_TIME_COUNT: usize = 10_000_000;
+
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+pub enum OutputTimelineError {
+    #[error("simulation time bounds must be finite and ordered")]
+    InvalidBounds,
+    #[error("simulation output interval must be finite and positive")]
+    InvalidInterval,
+    #[error("simulation output grid would contain too many samples")]
+    TooManySamples,
+    #[error("simulation output interval does not advance at this time magnitude")]
+    NonAdvancingInterval,
+}
+
 pub fn build_output_times(t_start: f64, t_end: f64, dt: f64) -> Vec<f64> {
-    if !dt.is_finite() || dt <= 0.0 {
-        if sample_time_match_with_tol(t_start, t_end) {
-            return vec![t_start];
+    try_build_output_times(t_start, t_end, dt).unwrap_or_else(|_| {
+        if t_start == t_end {
+            vec![t_start]
+        } else {
+            vec![t_start, t_end]
         }
-        return vec![t_start, t_end];
+    })
+}
+
+pub fn try_build_output_times(
+    t_start: f64,
+    t_end: f64,
+    dt: f64,
+) -> Result<Vec<f64>, OutputTimelineError> {
+    if !t_start.is_finite() || !t_end.is_finite() || t_end < t_start {
+        return Err(OutputTimelineError::InvalidBounds);
+    }
+    if t_start == t_end {
+        return Ok(vec![t_start]);
+    }
+    if !dt.is_finite() || dt <= 0.0 {
+        return Err(OutputTimelineError::InvalidInterval);
     }
 
+    let quotient = (t_end - t_start) / dt;
+    if !quotient.is_finite() || quotient > MAX_OUTPUT_TIME_COUNT as f64 {
+        return Err(OutputTimelineError::TooManySamples);
+    }
+    let grid_count = (quotient.floor() as usize)
+        .checked_add(1)
+        .ok_or(OutputTimelineError::TooManySamples)?;
+    // Reserve one slot for an exact endpoint when the arithmetic grid does not
+    // land on it. Keeping the total bounded is more important than admitting
+    // the final boundary case of the safety cap.
+    if grid_count >= MAX_OUTPUT_TIME_COUNT {
+        return Err(OutputTimelineError::TooManySamples);
+    }
     let mut times = Vec::new();
-    let mut k = 0usize;
-    loop {
+    times
+        .try_reserve_exact(
+            grid_count
+                .checked_add(1)
+                .ok_or(OutputTimelineError::TooManySamples)?,
+        )
+        .map_err(|_| OutputTimelineError::TooManySamples)?;
+    for k in 0..grid_count {
         let t_raw = t_start + (k as f64) * dt;
-        if t_raw > t_end && !sample_time_match_with_tol(t_raw, t_end) {
-            break;
+        if times
+            .last()
+            .is_some_and(|previous| t_raw <= *previous && t_raw != t_end)
+        {
+            return Err(OutputTimelineError::NonAdvancingInterval);
         }
-        // Snap to t_end when within tolerance so the endpoint is always exact.
-        let t = if sample_time_match_with_tol(t_raw, t_end) {
+        let t = if k > 0 && (t_raw >= t_end || output_time_match_with_ulp(t_raw, t_end)) {
             t_end
         } else {
             t_raw
         };
-        times.push(t);
-        if t >= t_end {
-            return times;
+        if times.last().is_some_and(|previous| t <= *previous) {
+            return Err(OutputTimelineError::NonAdvancingInterval);
         }
-        k += 1;
+        times.push(t);
+        if t == t_end {
+            return Ok(times);
+        }
     }
-    if let Some(&last) = times.last()
-        && !sample_time_match_with_tol(last, t_end)
+    if !times
+        .last()
+        .is_some_and(|last| output_time_match_with_ulp(*last, t_end))
     {
         times.push(t_end);
+    } else if let Some(last) = times.last_mut() {
+        *last = t_end;
     }
-    times
+    Ok(times)
+}
+
+fn output_time_match_with_ulp(left: f64, right: f64) -> bool {
+    if left == right {
+        return true;
+    }
+    let ulp = [left, right]
+        .into_iter()
+        .flat_map(|value| {
+            [
+                (value.next_up() - value).abs(),
+                (value - value.next_down()).abs(),
+            ]
+        })
+        .filter(|spacing| spacing.is_finite())
+        .fold(0.0, f64::max);
+    ulp > 0.0 && (left - right).abs() <= ulp
 }
 
 pub fn sample_time_match_with_tol(a: f64, b: f64) -> bool {
@@ -151,13 +225,27 @@ fn next_schedule_event_time(
 /// used only for schedules with no rational form.
 pub fn schedule_tick_time(schedule: &solve::PeriodicEventSchedule, tick: f64) -> f64 {
     let fallback = schedule.phase_seconds + tick * schedule.period_seconds;
-    if tick != tick.trunc() || tick.abs() > i64::MAX as f64 {
+    if tick != tick.trunc()
+        || !tick.is_finite()
+        || tick >= i128::MAX as f64
+        || tick <= i128::MIN as f64
+    {
         return fallback;
     }
-    match schedule.exact_tick_time_seconds(tick as i64) {
-        Some(exact) => exact,
-        None => fallback,
-    }
+    try_schedule_tick_time(schedule, tick as i128).unwrap_or(fallback)
+}
+
+/// Fallible exact form of [`schedule_tick_time`].
+///
+/// The integer index uses the exact MLS clock lattice and preserves its
+/// structured overflow/representability error. The `f64` convenience wrapper
+/// retains the seconds fallback for callers whose public API cannot return an
+/// error.
+pub fn try_schedule_tick_time(
+    schedule: &solve::PeriodicEventSchedule,
+    tick: i128,
+) -> Result<f64, rumoca_core::ClockLatticeErrorKind> {
+    schedule.exact_tick_time_seconds(tick)
 }
 
 pub fn event_time_in_window(event_t: f64, current_t: f64, target_t: f64) -> bool {
@@ -467,6 +555,31 @@ mod tests {
     fn build_output_times_handles_zero_span_and_invalid_dt() {
         assert_eq!(build_output_times(1.0, 1.0, 0.0), vec![1.0]);
         assert_eq!(build_output_times(1.0, 2.0, 0.0), vec![1.0, 2.0]);
+        assert_eq!(try_build_output_times(1.0, 1.0, 0.0), Ok(vec![1.0]));
+    }
+
+    #[test]
+    fn try_build_output_times_rejects_unrepresentable_or_unbounded_grids() {
+        assert_eq!(
+            try_build_output_times(1.0, 2.0, 1.0e-320),
+            Err(OutputTimelineError::TooManySamples)
+        );
+        assert_eq!(
+            try_build_output_times(1.0e20, f64::from_bits(1.0e20_f64.to_bits() + 1), 1.0),
+            Err(OutputTimelineError::NonAdvancingInterval)
+        );
+    }
+
+    #[test]
+    fn output_grid_does_not_collapse_distinct_large_absolute_times() {
+        let start = 1.0e15;
+        let times = try_build_output_times(start, start + 1.0, 0.25)
+            .expect("representable large-time grid");
+
+        assert_eq!(
+            times,
+            vec![start, start + 0.25, start + 0.5, start + 0.75, start + 1.0]
+        );
     }
 
     #[test]
@@ -493,6 +606,20 @@ mod tests {
 
         assert_ne!(999_983.0_f64 * 0.001, 999.983);
         assert_eq!(schedule_tick_time(&schedule, 999_983.0), 999.983);
+    }
+
+    #[test]
+    fn exact_tick_scheduler_supports_two_to_the_sixty_third() {
+        let schedule = solve::PeriodicEventSchedule {
+            period_seconds: 1.0,
+            phase_seconds: 0.0,
+        };
+        let boundary = 1i128 << 63;
+
+        assert_eq!(
+            try_schedule_tick_time(&schedule, boundary),
+            Ok(boundary as f64)
+        );
     }
 
     #[test]
@@ -529,6 +656,10 @@ mod tests {
 
         let tick = schedule_tick_time(&schedule, 1.0);
         assert_eq!(tick, f64::MIN_POSITIVE);
+        assert_eq!(
+            try_schedule_tick_time(&schedule, 1),
+            Err(rumoca_core::ClockLatticeErrorKind::NotRationallyRepresentable)
+        );
     }
 
     #[test]

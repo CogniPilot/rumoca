@@ -18,8 +18,9 @@ impl ClockTiming {
     }
 
     /// Recover the exact lattice behind this timing (MLS §16.5).
-    pub(super) fn lattice(self) -> Option<ClockLattice> {
-        ClockLattice::from_seconds(self.period, self.phase).ok()
+    pub(super) fn lattice(self) -> Result<ClockLattice, EvalError> {
+        ClockLattice::from_seconds(self.period, self.phase)
+            .map_err(|kind| EvalError::ClockLattice { kind })
     }
 }
 
@@ -67,51 +68,63 @@ pub(super) fn valid_positive_period(period: f64) -> Option<f64> {
 /// MLS §16.5: a statically periodic clock is a rational lattice point. Seconds
 /// are rationalized once here so every derived-clock conversion below is exact
 /// integer arithmetic.
-fn periodic_timing_from_seconds(period: f64, phase: f64) -> Option<ClockTiming> {
-    let period = valid_positive_period(period)?;
+fn periodic_timing_from_seconds(period: f64, phase: f64) -> Result<Option<ClockTiming>, EvalError> {
+    let Some(period) = valid_positive_period(period) else {
+        return Ok(None);
+    };
     ClockLattice::from_seconds(period, phase)
-        .ok()
         .map(ClockTiming::from_lattice)
+        .map(Some)
+        .map_err(|kind| EvalError::ClockLattice { kind })
 }
 
 /// Accept an evaluated scalar as a strictly positive MLS clock factor.
-fn positive_integer(value: f64) -> Option<i64> {
+fn positive_integer(value: f64) -> Result<Option<i128>, EvalError> {
     let rounded = value.round();
-    if !rounded.is_finite() || rounded <= 0.0 || rounded.abs() > i64::MAX as f64 {
-        return None;
+    if !rounded.is_finite() || rounded <= 0.0 {
+        return Ok(None);
     }
-    Some(rounded as i64)
+    integer_in_range(rounded)
 }
 
 /// Accept an evaluated scalar as a strictly positive MLS clock counter only
 /// when it really is an integer, within the shared clock-factor tolerance.
-fn exact_positive_integer(value: f64) -> Option<i64> {
+fn exact_positive_integer(value: f64) -> Result<Option<i128>, EvalError> {
     let rounded = value.round();
     let tolerance = rumoca_core::CLOCK_FACTOR_INTEGER_TOLERANCE * rounded.abs().max(1.0);
     if (value - rounded).abs() > tolerance {
-        return None;
+        return Ok(None);
     }
     positive_integer(rounded)
 }
 
 /// Accept an evaluated scalar as a non-negative MLS shift counter.
-fn non_negative_integer(value: f64) -> Option<i64> {
+fn non_negative_integer(value: f64) -> Result<Option<i128>, EvalError> {
     let rounded = value.round();
-    if !rounded.is_finite() || rounded < 0.0 || rounded.abs() > i64::MAX as f64 {
-        return None;
+    if !rounded.is_finite() || rounded < 0.0 {
+        return Ok(None);
     }
-    Some(rounded as i64)
+    integer_in_range(rounded)
+}
+
+fn integer_in_range(rounded: f64) -> Result<Option<i128>, EvalError> {
+    if rounded < i128::MIN as f64 || rounded >= i128::MAX as f64 {
+        return Err(EvalError::ClockLattice {
+            kind: rumoca_core::ClockLatticeErrorKind::IntegerOverflow,
+        });
+    }
+    Ok(Some(rounded as i128))
 }
 
 pub(super) fn eval_positive_factor<T: SimFloat>(
     arg: Option<&rumoca_core::Expression>,
     env: &VarEnv<T>,
-) -> Result<Option<i64>, EvalError> {
+) -> Result<Option<i128>, EvalError> {
     let Some(expr) = arg else {
         return Ok(None);
     };
     let raw = eval_expr::<T>(expr, env)?.real();
-    Ok(positive_integer(raw))
+    positive_integer(raw)
 }
 
 pub(super) fn infer_clock_timing_from_expr<T: SimFloat>(
@@ -129,14 +142,10 @@ pub(super) fn infer_clock_timing_from_expr<T: SimFloat>(
             // MLS §16.5.1: sampled values and clocked variables keep the period
             // of their associated clock. Runtime metadata precomputes that
             // association for alias-backed explicit clock connectors.
-            env.clock_intervals
-                .get(name.as_str())
-                .and_then(|period| periodic_timing_from_seconds(*period, 0.0))
-                .map(Some)
-                .ok_or(EvalError::UnsupportedExpression {
-                    kind: "clock timing",
-                })
-                .or(Ok(None))
+            let Some(period) = env.clock_intervals.get(name.as_str()) else {
+                return Ok(None);
+            };
+            periodic_timing_from_seconds(*period, 0.0)
         }
         _ => Ok(None),
     }
@@ -173,12 +182,12 @@ fn eval_clock_constructor_timing<T: SimFloat>(
         let count = eval_expr::<T>(first, env)?.real();
         let resolution = eval_expr::<T>(&args[1], env)?.real();
         if resolution.is_finite() && resolution > 0.0 {
-            return Ok(exact_interval_counter_timing(count, resolution));
+            return exact_interval_counter_timing(count, resolution);
         }
     }
 
     let period = eval_expr::<T>(first, env)?.real();
-    Ok(periodic_timing_from_seconds(period, 0.0))
+    periodic_timing_from_seconds(period, 0.0)
 }
 
 /// MLS §16.3 `Clock(intervalCounter, resolution)`.
@@ -187,13 +196,18 @@ fn eval_clock_constructor_timing<T: SimFloat>(
 /// rational `intervalCounter / resolution`. Non-integral arguments are not
 /// legal Modelica; they keep the seconds quotient so no previously accepted
 /// model changes behaviour here.
-fn exact_interval_counter_timing(count: f64, resolution: f64) -> Option<ClockTiming> {
+fn exact_interval_counter_timing(
+    count: f64,
+    resolution: f64,
+) -> Result<Option<ClockTiming>, EvalError> {
     if let (Some(counter), Some(resolution)) = (
-        exact_positive_integer(count),
-        exact_positive_integer(resolution),
-    ) && let Ok(lattice) = ClockLattice::from_interval_counter(counter, resolution)
-    {
-        return Some(ClockTiming::from_lattice(lattice));
+        exact_positive_integer(count)?,
+        exact_positive_integer(resolution)?,
+    ) {
+        return ClockLattice::from_interval_counter(counter, resolution)
+            .map(ClockTiming::from_lattice)
+            .map(Some)
+            .map_err(|kind| EvalError::ClockLattice { kind });
     }
     periodic_timing_from_seconds(count / resolution, 0.0)
 }
@@ -211,7 +225,10 @@ fn eval_sub_sample_timing<T: SimFloat>(
         return Ok(None);
     };
     let factor = eval_positive_factor(args.get(1), env)?.unwrap_or(1);
-    Ok(base.sub_sample(factor).ok().map(ClockTiming::from_lattice))
+    base.sub_sample(factor)
+        .map(ClockTiming::from_lattice)
+        .map(Some)
+        .map_err(|kind| EvalError::ClockLattice { kind })
 }
 
 fn eval_super_sample_timing<T: SimFloat>(
@@ -222,10 +239,10 @@ fn eval_super_sample_timing<T: SimFloat>(
         return Ok(None);
     };
     let factor = eval_positive_factor(args.get(1), env)?.unwrap_or(1);
-    Ok(base
-        .super_sample(factor)
-        .ok()
-        .map(ClockTiming::from_lattice))
+    base.super_sample(factor)
+        .map(ClockTiming::from_lattice)
+        .map(Some)
+        .map_err(|kind| EvalError::ClockLattice { kind })
 }
 
 fn eval_shift_like_timing<T: SimFloat>(
@@ -240,7 +257,7 @@ fn eval_shift_like_timing<T: SimFloat>(
         return Ok(None);
     };
     let shift = eval_expr::<T>(args.get(1).unwrap_or(first), env)?.real();
-    let Some(counter) = non_negative_integer(shift) else {
+    let Some(counter) = non_negative_integer(shift)? else {
         return Ok(None);
     };
     // MLS §16.5.2: shiftSample/backSample shift by `counter/resolution` of
@@ -248,7 +265,7 @@ fn eval_shift_like_timing<T: SimFloat>(
     // not an absolute number of seconds. `resolution` defaults to 1.
     let resolution = match args.get(2) {
         Some(expr) => {
-            let Some(resolution) = positive_integer(eval_expr::<T>(expr, env)?.real()) else {
+            let Some(resolution) = positive_integer(eval_expr::<T>(expr, env)?.real())? else {
                 return Ok(None);
             };
             resolution
@@ -260,7 +277,10 @@ fn eval_shift_like_timing<T: SimFloat>(
     } else {
         base.back_sample(counter, resolution)
     };
-    Ok(shifted.ok().map(ClockTiming::from_lattice))
+    shifted
+        .map(ClockTiming::from_lattice)
+        .map(Some)
+        .map_err(|kind| EvalError::ClockLattice { kind })
 }
 
 fn base_clock_lattice<T: SimFloat>(
@@ -273,7 +293,7 @@ fn base_clock_lattice<T: SimFloat>(
     let Some(base) = infer_clock_constructor_timing_from_expr(expr, env)? else {
         return Ok(None);
     };
-    Ok(base.lattice())
+    base.lattice().map(Some)
 }
 
 fn infer_clock_constructor_timing_from_expr<T: SimFloat>(
@@ -317,7 +337,7 @@ fn sample_start_interval_tick<T: SimFloat>(
     let phase = eval_expr::<T>(start, env)?.real();
     let period = eval_expr::<T>(interval, env)?.real();
     let timing =
-        periodic_timing_from_seconds(period, phase).ok_or(EvalError::UnsupportedExpression {
+        periodic_timing_from_seconds(period, phase)?.ok_or(EvalError::UnsupportedExpression {
             kind: "sample interval",
         })?;
     clock_tick_value(env, timing)

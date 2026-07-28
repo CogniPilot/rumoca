@@ -14,10 +14,10 @@ use crate::runtime::solve_events::{
     next_runtime_event_stop, visible_values_with_context,
 };
 use crate::{
-    EventActionOutcome, ImplicitProjectionModel, RuntimeEventStop, RuntimeSolveError,
-    SolveStopSchedule, project_algebraic_seed_with_plan, project_algebraics_with_plan,
-    push_visible_values, replace_last_visible_values, timeline::sample_time_match_with_tol,
-    update_relation_memory_slots,
+    EventActionOutcome, ImplicitProjectionModel, ManifoldProjectionModel, RuntimeEventStop,
+    RuntimeSolveError, SolveStopSchedule, project_algebraic_seed_with_plan,
+    project_algebraics_with_plan, push_visible_values, replace_last_visible_values,
+    timeline::sample_time_match_with_tol, update_relation_memory_slots,
 };
 use rumoca_eval_solve::refresh_plan::{
     AlgebraicRefreshRow, RefreshPlan, build_algebraic_refresh_plan, build_derivative_refresh_plan,
@@ -70,6 +70,8 @@ pub struct SolveRuntime {
     implicit_projection_jacobian_v: PreparedComputeBlock,
     implicit_projection_scalar_jacobian_v: PreparedScalarProgramBlock,
     implicit_scalar_rhs: PreparedScalarProgramBlock,
+    manifold_residual: PreparedComputeBlock,
+    manifold_jacobian_v: PreparedComputeBlock,
     initial_residual: PreparedComputeBlock,
     initial_residual_jacobian_v: PreparedComputeBlock,
     initial_scalar_residual: PreparedScalarProgramBlock,
@@ -110,11 +112,27 @@ pub struct SolveRuntime {
     reverse_scratch: RefCell<solve_eval::reverse::ReverseScratch>,
 }
 
+fn prepare_manifold_projection_programs(
+    model: &solve::SolveModel,
+) -> Result<(PreparedComputeBlock, PreparedComputeBlock), EvalSolveError> {
+    Ok((
+        PreparedComputeBlock::new_with_label(
+            &model.problem.continuous.manifold_residual,
+            "runtime_manifold_residual",
+        )?,
+        PreparedComputeBlock::new_with_label(
+            &model.artifacts.continuous.manifold_jacobian_v,
+            "runtime_manifold_jacobian_v",
+        )?,
+    ))
+}
+
 impl SolveRuntime {
     pub fn new(model: &solve::SolveModel) -> Result<Self, EvalSolveError> {
         let implicit_scalar_programs =
             to_scalar_program_block(&model.problem.continuous.implicit_rhs)?;
         let implicit_scalar_rhs = PreparedScalarProgramBlock::new(implicit_scalar_programs)?;
+        let (manifold_residual, manifold_jacobian_v) = prepare_manifold_projection_programs(model)?;
         let derivative_scalar_rhs =
             to_scalar_program_block(&model.problem.continuous.derivative_rhs)?;
         let algebraic_refresh = build_algebraic_refresh_plan(model, &implicit_scalar_rhs)?;
@@ -154,6 +172,8 @@ impl SolveRuntime {
                 to_scalar_program_block(&model.artifacts.continuous.implicit_jacobian_v)?,
             )?,
             implicit_scalar_rhs,
+            manifold_residual,
+            manifold_jacobian_v,
             initial_residual: PreparedComputeBlock::new_with_label(
                 &model.problem.initialization.residual,
                 "runtime_initial_residual",
@@ -516,6 +536,26 @@ impl SolveRuntime {
                 tolerance: args.tol,
             },
             args.max_iters,
+        )
+    }
+
+    /// Project accepted state values onto lower-order constraints retained by
+    /// structural index reduction.
+    pub fn project_state_manifold(
+        &self,
+        solver_y: &mut [f64],
+        params: &[f64],
+        t: f64,
+        tol: f64,
+    ) -> Result<bool, RuntimeSolveError> {
+        let projection_model = RuntimeManifoldProjection { runtime: self };
+        crate::project_state_manifold(
+            &projection_model,
+            solver_y,
+            params,
+            t,
+            self.state_count,
+            tol,
         )
     }
 

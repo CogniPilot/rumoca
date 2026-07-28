@@ -25,6 +25,19 @@ Rust compiler. See [Dependency Tiers](#dependency-tiers).
 contain only data types, display/debug implementations, and serde
 serialization. No evaluation logic, phase logic, or side effects.
 
+IR data types own the checked constructors needed to make their local
+invariants unrepresentable. `rumoca-ir-dae` also owns private current-version
+wire decoding, checked root assembly, and closed root-bound operations that
+atomically rebuild invariant-related objects. These are data-integrity APIs,
+not semantic analysis: phase crates decide which transformation is valid and
+supply its typed proof/input. DAE exposes no public whole-root validator,
+unchecked builder, mutable partition callback, or invariant-bearing child
+`Deserialize` implementation.
+
+DAE construction enters through `Dae::construct`. Its generatively branded,
+sequential semantic-owner closures share one expression arena; expression
+insertion requires `expr.at(provenance)` and cannot allocate source-free nodes.
+
 Allowed exception: IR crates MAY provide read-only traversal/query helpers over
 their own data when those helpers have no side effects, do not evaluate
 expressions, depend on phase crates, or encode backend policy.
@@ -36,8 +49,10 @@ IR nodes without semantic state. These helpers are limited to structural
 ownership-preserving rewrites such as "visit every expression and allow a
 caller-supplied replacement"; they MUST NOT perform name lookup, constant
 evaluation, type inference, lowering, balance analysis, backend selection, or
-runtime behavior. Keep read-only traversal/query helpers and rewrite-shape
-helpers separate so reviewers can see observation versus mutation.
+runtime behavior. A multi-object DAE rewrite must be a consuming, root-bound,
+non-cloneable checked operation so catalog and expression identity change
+atomically. Keep read-only traversal/query helpers and rewrite-shape helpers
+separate so reviewers can see observation versus mutation.
 
 ### 3a. Foundation Types Live in rumoca-core
 

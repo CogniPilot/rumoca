@@ -255,8 +255,6 @@ pub struct Resolver {
     /// so enclosing-class walks traverse the scope tree instead of re-parsing
     /// qualified names.
     pub(crate) class_def_scopes: std::collections::HashMap<DefId, ScopeId>,
-    /// Fully qualified class names whose scopes are encapsulated.
-    pub(crate) encapsulated_class_names: std::collections::HashSet<String>,
     /// DefIds that can legitimately anchor partial type resolution (replaceable roots).
     pub(crate) partial_type_root_ids: std::collections::HashSet<DefId>,
     /// Exclusive upper bound for builtin DefIds. `DefId(0)` is root/global.
@@ -359,7 +357,6 @@ impl Resolver {
             class_to_bases: IndexMap::default(),
             scope_to_class_def: std::collections::HashMap::new(),
             class_def_scopes: std::collections::HashMap::new(),
-            encapsulated_class_names: std::collections::HashSet::new(),
             partial_type_root_ids: std::collections::HashSet::new(),
             builtin_count: 0,
             stats: ResolutionStats::default(),
@@ -590,6 +587,11 @@ pub fn resolve_with_options_collect(
             .diagnostics
             .emit(apply_semantic_diagnostic_policy(diag, options));
     }
+    for diag in semantic_checks::check_resolved_semantics(&tree) {
+        resolver
+            .diagnostics
+            .emit(apply_semantic_diagnostic_policy(diag, options));
+    }
     let semantic_checks_ms = maybe_elapsed_ms(semantic_checks_start);
 
     // Validate unresolved symbols gathered by post-resolution visitor (MLS §5.3)
@@ -597,7 +599,7 @@ pub fn resolve_with_options_collect(
     let validation = validation::validate_resolution(&tree);
     let validation_ms = maybe_elapsed_ms(validation_start);
     let unresolved_emit_start = maybe_start_timer();
-    emit_unresolved_symbol_diagnostics(&mut resolver, &validation, options);
+    emit_unresolved_symbol_diagnostics(&mut resolver, &tree, &validation, options);
     let unresolved_emit_ms = maybe_elapsed_ms(unresolved_emit_start);
 
     #[cfg(target_arch = "wasm32")]
@@ -649,10 +651,21 @@ pub fn resolve_with_stats(parsed: ParsedTree) -> ResolveWithStatsResult {
             ResolveOptions::default(),
         ));
     }
+    for diag in semantic_checks::check_resolved_semantics(&tree) {
+        resolver.diagnostics.emit(apply_semantic_diagnostic_policy(
+            diag,
+            ResolveOptions::default(),
+        ));
+    }
 
     // Validate unresolved symbols gathered by post-resolution visitor (MLS §5.3)
     let validation = validation::validate_resolution(&tree);
-    emit_unresolved_symbol_diagnostics(&mut resolver, &validation, ResolveOptions::default());
+    emit_unresolved_symbol_diagnostics(
+        &mut resolver,
+        &tree,
+        &validation,
+        ResolveOptions::default(),
+    );
 
     let stats = resolver.stats.clone();
     let result = if resolver.has_errors() {
@@ -682,18 +695,26 @@ pub fn resolve_parsed(def: StoredDefinition) -> Result<ResolvedTree, Diagnostics
 /// MLS §5.3 name lookup failures are reported as resolve-phase diagnostics.
 fn emit_unresolved_symbol_diagnostics(
     resolver: &mut Resolver,
+    tree: &ClassTree,
     validation: &ValidationResult,
     options: ResolveOptions,
 ) {
     for unresolved in &validation.unresolved {
-        if unresolved.kind == UnresolvedKind::ComponentReference
-            && has_inherited_match(resolver, &unresolved.scope_path, &unresolved.name)
+        if unresolved.kind == UnresolvedKind::TypeReference
+            && unresolved.path.len() == 1
+            && tree
+                .scope_tree
+                .inherited_member(unresolved.scope_id, &unresolved.path)
+                == Some(rumoca_ir_ast::InheritedMember::Ambiguous)
         {
+            // Conflicting inherited children are a partially flattened-class
+            // error (MLS §5.6.1.4 / INST-037). Keep the structured ambiguity
+            // for instantiation's EI010 diagnostic instead of misreporting it
+            // as a static name-not-found error.
             continue;
         }
-
         let force_error = unresolved.kind == UnresolvedKind::ComponentReference
-            && unresolved_is_within_encapsulated_scope(resolver, &unresolved.scope_path);
+            && unresolved_is_within_encapsulated_scope(tree, unresolved.scope_id);
         let (kind, code, is_error) = match unresolved.kind {
             UnresolvedKind::TypeReference => ("type reference", "ER002", true),
             UnresolvedKind::ExtendsBase => ("extends base class", "ER003", true),
@@ -735,23 +756,12 @@ fn emit_unresolved_symbol_diagnostics(
     }
 }
 
-/// Qualified names of the reference site's class and every enclosing class,
-/// composed innermost-first from the structured scope segments.
-fn enclosing_scope_names(scope_path: &[String]) -> impl Iterator<Item = String> + '_ {
-    (1..=scope_path.len())
-        .rev()
-        .map(|end| scope_path[..end].join("."))
-}
-
-fn unresolved_is_within_encapsulated_scope(resolver: &Resolver, scope_path: &[String]) -> bool {
-    enclosing_scope_names(scope_path).any(|path| resolver.encapsulated_class_names.contains(&path))
-}
-
-/// Check whether an unresolved simple name can be found in inherited members of
-/// the current class or any enclosing class.
-fn has_inherited_match(resolver: &Resolver, scope_path: &[String], name: &str) -> bool {
-    enclosing_scope_names(scope_path)
-        .any(|container| resolver.lookup_inherited_member(&container, name).is_some())
+fn unresolved_is_within_encapsulated_scope(tree: &ClassTree, scope: ScopeId) -> bool {
+    std::iter::successors(Some(scope), |current| tree.scope_tree.parent(*current)).any(|current| {
+        tree.scope_tree
+            .get(current)
+            .is_some_and(rumoca_ir_ast::Scope::is_encapsulated)
+    })
 }
 
 #[cfg(test)]

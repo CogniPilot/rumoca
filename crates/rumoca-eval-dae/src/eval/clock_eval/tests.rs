@@ -118,15 +118,28 @@ fn clock_does_not_tick_before_its_phase() {
 }
 
 #[test]
-fn overflowing_conversion_factor_yields_no_timing() {
-    let base = call("subSample", vec![call("Clock", vec![lit(0.1)]), lit(3.0)]);
-    let env = VarEnv::<f64>::new();
-    let huge = call("subSample", vec![base, lit(i64::MAX as f64)]);
+fn two_to_the_sixty_third_factor_remains_exact() {
+    let boundary = (1u64 << 63) as f64;
+    let timing = timing(&call(
+        "subSample",
+        vec![call("Clock", vec![lit(1.0)]), lit(boundary)],
+    ));
 
-    assert!(
-        infer_clock_timing_from_expr(&huge, &env)
-            .expect("inference must not error")
-            .is_none(),
-        "an overflowing conversion must not produce a wrapped period"
+    assert_eq!(timing.period, boundary);
+}
+
+#[test]
+fn overflowing_conversion_factor_preserves_the_lattice_error() {
+    let env = VarEnv::<f64>::new();
+    let huge = call(
+        "subSample",
+        vec![call("Clock", vec![lit(1.0e20)]), lit(1.0e20)],
     );
+
+    assert!(matches!(
+        infer_clock_timing_from_expr(&huge, &env),
+        Err(EvalError::ClockLattice {
+            kind: rumoca_core::ClockLatticeErrorKind::IntegerOverflow,
+        })
+    ));
 }

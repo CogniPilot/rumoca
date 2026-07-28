@@ -794,7 +794,7 @@ fn scalarize_matrix_vector_derivative_residual_uses_expression_shape() {
         .algebraics
         .insert(VarName::new("M_body"), variable("M_body", &[3]));
 
-    // MLS §10.6 / SPEC_0019: array equations scalarize by expression shape.
+    // MLS §10.6 / SPEC_0032: array equations scalarize by expression shape.
     // A residual `J * der(omega) - M_body` must produce one derivative row per
     // vector component even if stale metadata says there is only one row.
     dae_model.continuous.equations.push(Equation {
@@ -836,7 +836,7 @@ fn scalarize_matrix_vector_derivative_residual_preserves_qualified_state_name() 
         variable("vehicle.M_body", &[3]),
     );
 
-    // MLS §10.6 / SPEC_0019: scalarizing an array equation must project the
+    // MLS §10.6 / SPEC_0032: scalarizing an array equation must project the
     // existing IR variable reference. Qualified component paths are part of
     // the Modelica name and must not be stripped while projecting der().
     dae_model.continuous.equations.push(Equation {

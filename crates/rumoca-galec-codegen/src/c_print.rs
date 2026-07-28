@@ -7,7 +7,7 @@
 //! builtin calls ([`crate::lower::emittable_builtin_targets`]),
 //! parentheses, if-expressions, `not`, unary minus over references, binary
 //! operations, and whole-array start literals. Anything outside that shape
-//! fails with a typed `ET023` — never silently dropped (GAL-007).
+//! fails with a typed `EGT023` — never silently dropped (GAL-007).
 //!
 //! Semantics preserved in C:
 //!
@@ -98,7 +98,7 @@ impl<'a> CPrinter<'a> {
     ///
     /// # Errors
     ///
-    /// `ET023` for statement kinds the current lowering never emits
+    /// `EGT023` for statement kinds the current lowering never emits
     /// (module docs); expression errors propagate.
     pub fn statement_lines(&self, statement: &Statement) -> Result<Vec<String>, GalecTargetError> {
         match statement {
@@ -356,8 +356,8 @@ impl<'a> CPrinter<'a> {
     ///
     /// # Errors
     ///
-    /// `ET023` for constructs outside the lowering's emitted shape;
-    /// `ET018` for catalog names the lowering cannot emit.
+    /// `EGT023` for constructs outside the lowering's emitted shape;
+    /// `EGT018` for catalog names the lowering cannot emit.
     pub fn expression(&self, expression: &Expression) -> Result<String, GalecTargetError> {
         match expression {
             Expression::Bool(value) => Ok(if *value { "true" } else { "false" }.to_owned()),
@@ -703,7 +703,7 @@ mod tests {
         let error = CPrinter::new(&table)
             .expression(&Expression::Integer(i64::from(i32::MAX) + 1))
             .unwrap_err();
-        assert_eq!(error.code(), "ET023", "{error}");
+        assert_eq!(error.code(), "EGT023", "{error}");
     }
 
     #[test]
@@ -799,7 +799,7 @@ mod tests {
             arguments: vec![state("a")],
         });
         let error = CPrinter::new(&table).expression(&call).unwrap_err();
-        assert_eq!(error.code(), "ET018", "{error}");
+        assert_eq!(error.code(), "EGT018", "{error}");
     }
 
     #[test]
@@ -860,13 +860,13 @@ mod tests {
     }
 
     #[test]
-    fn non_assignment_statements_are_rejected_with_et023() {
+    fn non_assignment_statements_are_rejected_with_egt023() {
         let table = table(&[]);
         let statement = Statement::Signal(vec![rumoca_ir_galec::ast::Identifier::new("NAN")]);
         let error = CPrinter::new(&table)
             .statement_lines(&statement)
             .unwrap_err();
-        assert_eq!(error.code(), "ET023");
+        assert_eq!(error.code(), "EGT023");
         assert!(error.to_string().contains("signal statement"), "{error}");
     }
 
@@ -876,6 +876,6 @@ mod tests {
         let error = CPrinter::new(&table)
             .expression(&Expression::Array(vec![Expression::Real(1.0)]))
             .unwrap_err();
-        assert_eq!(error.code(), "ET023", "{error}");
+        assert_eq!(error.code(), "EGT023", "{error}");
     }
 }

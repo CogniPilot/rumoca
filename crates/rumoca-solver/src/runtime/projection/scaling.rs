@@ -229,11 +229,11 @@ pub(super) fn scaled_newton_delta(
             .zip(row_scales.iter().copied())
             .map(|(value, scale)| -value / valid_variable_scale(scale)),
     );
-    let scaled_delta = scaled_jacobian
-        .clone()
-        .lu()
-        .solve(&rhs)
-        .or_else(|| scaled_jacobian.svd(true, true).solve(&rhs, tolerance).ok())?;
+    let direct = (scaled_jacobian.nrows() == scaled_jacobian.ncols())
+        .then(|| scaled_jacobian.clone().lu().solve(&rhs))
+        .flatten();
+    let scaled_delta =
+        direct.or_else(|| scaled_jacobian.svd(true, true).solve(&rhs, tolerance).ok())?;
     Some(DVector::from_iterator(
         scaled_delta.len(),
         scaled_delta

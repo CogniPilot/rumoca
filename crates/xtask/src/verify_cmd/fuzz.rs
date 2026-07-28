@@ -61,6 +61,7 @@ pub(crate) fn run(args: &VerifyFuzzArgs, root: &Path) -> Result<()> {
 fn ensure_cargo_fuzz_available(root: &Path) -> Result<()> {
     let mut probe = Command::new("cargo");
     probe.arg("fuzz").arg("--version").current_dir(root);
+    crate::resource_budget::apply_to_child(&mut probe);
     let output = probe
         .output()
         .context("failed to run `cargo fuzz --version`")?;

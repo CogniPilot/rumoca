@@ -3,10 +3,10 @@
 use crate::Resolver;
 use indexmap::map::Entry;
 use rumoca_core::{ComponentPath, DefId};
-use rumoca_ir_ast::AstIndexMap as IndexMap;
+use rumoca_ir_ast::{AstIndexMap as IndexMap, InheritedMember};
 use std::collections::{HashMap, HashSet};
 
-type InheritedMembers = IndexMap<ComponentPath, Option<DefId>>;
+type InheritedMembers = IndexMap<ComponentPath, InheritedMember>;
 
 #[derive(Clone, Copy)]
 enum InheritedDeclaration<'a> {
@@ -79,7 +79,7 @@ impl Resolver {
             return;
         };
         for (name, def_id) in &base_scope.members {
-            visible.insert(name.clone(), Some(*def_id));
+            visible.insert(name.clone(), InheritedMember::Unique(*def_id));
         }
     }
 }
@@ -194,14 +194,14 @@ fn merge_base_members(
             Entry::Occupied(entry)
                 if matches!(
                     (*entry.get(), candidate),
-                    (Some(existing), Some(candidate))
+                    (InheritedMember::Unique(existing), InheritedMember::Unique(candidate))
                         if declarations_are_compatible(existing, candidate, declarations)
                 ) => {}
             // MLS §5.6.1.4: the first duplicate element is the one kept, so a
             // name an extends modification may still reconcile keeps binding.
             Entry::Occupied(_) if modified_by_extends => {}
             Entry::Occupied(mut entry) if *entry.get() != candidate => {
-                entry.insert(None);
+                entry.insert(InheritedMember::Ambiguous);
             }
             Entry::Occupied(_) => {}
         }

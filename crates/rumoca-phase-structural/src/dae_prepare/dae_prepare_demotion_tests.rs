@@ -1087,7 +1087,7 @@ fn test_demote_direct_assigned_states_keeps_state_with_other_state_in_alias_clos
         .algebraics
         .insert(VarName::new("z"), test_variable("z"));
 
-    // MLS Appendix B / SPEC_0003: variables that appear differentiated remain
+    // MLS Appendix B / SPEC_0022: variables that appear differentiated remain
     // states. A direct-assignment candidate is not a dummy trajectory when its
     // non-state alias closure depends on another state.
     dae.continuous.equations.push(eq(sub(der("x"), var("z"))));
@@ -1574,7 +1574,7 @@ fn test_demote_direct_assigned_states_skips_unsliced_array_state_alias() {
     tau.dims = vec![3];
     dae.variables.algebraics.insert(VarName::new("tau"), tau);
 
-    // MLS §10.1 / SPEC_0019: `omega = attitude.omega` is an array equation.
+    // MLS §10.1 / SPEC_0032: `omega = attitude.omega` is an array equation.
     // Direct state demotion must not treat the unsliced array alias as a scalar
     // trajectory assignment while the retained derivative rows are indexed.
     dae.continuous

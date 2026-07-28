@@ -715,16 +715,7 @@ fn validate_affine_load_strides(
     load_strides: &[AffineStencilLoadStride],
 ) -> Result<(), SolveProblemShapeContractError> {
     for stride in load_strides {
-        validate_affine_stride_dimensions(
-            validation.context,
-            validation.node_index,
-            validation.dimension,
-            "load",
-            stride.op_position,
-            &stride.terms,
-            validation.domain.binders.len(),
-            validation.span,
-        )?;
+        validate_affine_stride_dimensions(validation, "load", stride.op_position, &stride.terms)?;
         match validation.base_ops.get(stride.op_position) {
             Some(LinearOp::LoadY { .. } | LinearOp::LoadP { .. } | LinearOp::LoadSeed { .. }) => {}
             actual => {
@@ -762,14 +753,10 @@ fn validate_affine_constant_strides(
             }
         }
         validate_affine_stride_dimensions(
-            validation.context,
-            validation.node_index,
-            validation.dimension,
+            validation,
             "constant",
             stride.op_position,
             &stride.terms,
-            validation.domain.binders.len(),
-            validation.span,
         )?;
         match validation.base_ops.get(stride.op_position) {
             Some(LinearOp::Const { .. }) => {}
@@ -826,28 +813,24 @@ impl AffineStrideDimension for AffineStencilConstStrideTerm {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn validate_affine_stride_dimensions<T: AffineStrideDimension>(
-    context: &str,
-    node_index: usize,
-    dimension: &'static str,
+    validation: &AffineValidationContext<'_>,
     stride_kind: &'static str,
     op_position: usize,
     terms: &[T],
-    domain_rank: usize,
-    span: Span,
 ) -> Result<(), SolveProblemShapeContractError> {
+    let domain_rank = validation.domain.binders.len();
     for term in terms {
         if term.dimension() >= domain_rank {
             return Err(SolveProblemShapeContractError::AffineStrideDimension {
-                context: context.to_string(),
-                node_index,
-                dimension,
+                context: validation.context.to_string(),
+                node_index: validation.node_index,
+                dimension: validation.dimension,
                 stride_kind,
                 op_position,
                 stride_dimension: term.dimension(),
                 domain_rank,
-                span,
+                span: validation.span,
             });
         }
     }

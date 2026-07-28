@@ -1,5 +1,6 @@
 use super::*;
 
+mod assertions;
 mod current_values;
 
 fn test_span() -> rumoca_core::Span {

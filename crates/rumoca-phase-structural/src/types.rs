@@ -1,7 +1,6 @@
 //! Types for BLT-sorted DAE structure.
 
-use rumoca_core::Diagnostic;
-use rumoca_ir_dae as dae;
+use rumoca_core::{Diagnostic, Label, PhaseError, PrimaryLabel};
 
 /// Reference to a continuous equation in the original DAE `f_x` list.
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
@@ -231,9 +230,7 @@ impl BltBlock {
 
 /// A DAE sorted into BLT block form for sequential simulation.
 #[derive(Debug)]
-pub struct SortedDae<'a> {
-    /// Reference to the original DAE.
-    pub dae: &'a dae::Dae,
+pub struct SortedDae {
     /// BLT blocks in evaluation order.
     pub blocks: Vec<BltBlock>,
     /// Full matching: each pair `(equation, unknown)` from the maximum matching.
@@ -382,6 +379,49 @@ impl StructuralError {
             | Self::ContractViolation { .. }
             | Self::UnspannedContractViolation { .. } => None,
         }
+    }
+}
+
+impl PhaseError for StructuralError {
+    fn to_diagnostic(&self) -> Diagnostic {
+        let mut diagnostic = match self.source_span() {
+            Some(span) => Diagnostic::error(
+                self.code(),
+                self.to_string(),
+                PrimaryLabel::new(span).with_message(structural_error_label(self)),
+            ),
+            None => Diagnostic::global_error(self.code(), self.to_string()),
+        };
+
+        if let Self::Singular {
+            unmatched_unknown_spans,
+            ..
+        } = self
+        {
+            for span in unmatched_unknown_spans
+                .iter()
+                .flatten()
+                .copied()
+                .filter(|span| !span.is_dummy())
+                .skip(1)
+            {
+                diagnostic = diagnostic.with_label(
+                    Label::secondary(span).with_message("unmatched structural unknown"),
+                );
+            }
+        }
+        diagnostic
+    }
+}
+
+fn structural_error_label(error: &StructuralError) -> &'static str {
+    match error {
+        StructuralError::Singular { .. } => "unmatched structural unknown",
+        StructuralError::InconsistentEquation { .. } => "inconsistent equation",
+        StructuralError::ContractViolation { .. } => "invalid structural metadata",
+        StructuralError::EmptySystem
+        | StructuralError::InvalidIcPlanUnknown { .. }
+        | StructuralError::UnspannedContractViolation { .. } => "structural analysis failed",
     }
 }
 

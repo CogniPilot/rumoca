@@ -97,6 +97,14 @@ pub(super) struct RoundRank {
     columnless_rows: usize,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum PrefixRankChange {
+    Improved,
+    Flat,
+    Regressed,
+    Unavailable,
+}
+
 pub(super) fn round_rank(dae: &Dae) -> RoundRank {
     RoundRank {
         deficiency: scalar_rank_view::every_row_is_one_scalar_wide(dae)
@@ -212,6 +220,10 @@ pub(super) fn row_rank_reading(dae: &Dae) -> Option<usize> {
 /// `DoublePendulumInitTip` (two flat demotions, and refusing them leaves a
 /// `der()` reference the later partition cleanup cannot resolve). Accepting them
 /// where rows are scalar is what loses the degrees of freedom listed above.
+/// A flat scalar demotion is therefore still refused here. The constrained
+/// reducer may retain one only on a private staged copy when it makes a second
+/// state newly eligible, and commits that pair only if the combined witness
+/// strictly improves; see `apply_rank_improving_derivative_pair`.
 ///
 /// # The other way a demotion pays for itself
 ///
@@ -251,25 +263,32 @@ pub(super) fn demotion_is_rank_justified(
     if promotes_a_state {
         return true;
     }
-    if scalar_rank_view::columnless_row_count(staged) < round.columnless_rows {
-        return true;
-    }
-    let Some(before) = round.deficiency else {
-        return true;
-    };
-    let Some(after) = scalar_rank_view::deficiency_over_distinct_rows(staged) else {
-        return true;
-    };
-    if after < before {
-        return true;
+    match prefix_rank_change(round, staged) {
+        PrefixRankChange::Improved | PrefixRankChange::Unavailable => return true,
+        PrefixRankChange::Flat | PrefixRankChange::Regressed => {}
     }
     crate::structural_trace!(
-        "[sim-trace] constrained-dummy exchange rejected state={} reason=rank_not_improved deficiency {} -> {}",
-        state_name.as_str(),
-        before,
-        after
+        "[sim-trace] constrained-dummy exchange rejected state={} reason=rank_not_improved",
+        state_name.as_str()
     );
     false
+}
+
+pub(super) fn prefix_rank_change(round: &RoundRank, staged: &Dae) -> PrefixRankChange {
+    if scalar_rank_view::columnless_row_count(staged) < round.columnless_rows {
+        return PrefixRankChange::Improved;
+    }
+    let Some(before) = round.deficiency else {
+        return PrefixRankChange::Unavailable;
+    };
+    let Some(after) = scalar_rank_view::deficiency_over_distinct_rows(staged) else {
+        return PrefixRankChange::Unavailable;
+    };
+    match after.cmp(&before) {
+        std::cmp::Ordering::Less => PrefixRankChange::Improved,
+        std::cmp::Ordering::Equal => PrefixRankChange::Flat,
+        std::cmp::Ordering::Greater => PrefixRankChange::Regressed,
+    }
 }
 
 /// True when the rank witness allows a row *consumption* to be committed.

@@ -1237,5 +1237,22 @@ fn preserve_component_source_modification(
     value.source_modifications = opt.argument_list.args.clone();
     value.source_modification_each_flags = opt.argument_list.each_flags.clone();
     value.source_modification_final_flags = opt.argument_list.final_flags.clone();
-    value.source_modification_redeclare_flags = opt.argument_list.redeclare_flags.clone();
+    // MLS §7.3: an element modifier carrying `replaceable` is itself a
+    // redeclaration. Preserve the semantic fact on the component instead of
+    // forcing instantiation to infer redeclare intent from expression shape.
+    value.source_modification_redeclare_flags = (0..value.source_modifications.len())
+        .map(|index| {
+            opt.argument_list
+                .redeclare_flags
+                .get(index)
+                .copied()
+                .unwrap_or(false)
+                || opt
+                    .argument_list
+                    .replaceable_flags
+                    .get(index)
+                    .copied()
+                    .unwrap_or(false)
+        })
+        .collect();
 }

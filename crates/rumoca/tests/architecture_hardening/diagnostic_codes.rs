@@ -1,6 +1,6 @@
 //! SPEC_0008 diagnostic-code hardening gates.
 //!
-//! Three properties are enforced by text scan (no new crate dependency, so
+//! Four properties are enforced by text scan (no new crate dependency, so
 //! `crates/rumoca/Cargo.toml` stays untouched):
 //!
 //! 1. **Span-freedom is justified.** Every `LowerError` / `StructuralError`
@@ -8,19 +8,106 @@
 //!    span exists, per SPEC_0008 "Source Traceability". Only the two delegating
 //!    wrappers (`Spanned`, `WithContext`) are exempt.
 //! 2. **The spec table does not go stale.** Every `E<PREFIX>0xx` range minted by
-//!    the structural / solve / sim-runtime code registries must have a row in
+//!    a phase diagnostic registry must have a row in
 //!    `spec/SPEC_0008_PHASE_ERRORS.md`.
-//! 3. **Placeholders stay dead.** The pre-SPEC_0008 free-form simulation codes
+//! 3. **Diagnostic identities are globally unique.** A mnemonic belongs to
+//!    exactly one phase/target owner.
+//! 4. **Placeholders stay dead.** The pre-SPEC_0008 free-form simulation codes
 //!    (`"lowering"` / `"simulation"` / `"override"`) must not come back.
 
 use super::*;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 const SPAN_FREE_MARKER: &str = "Span-free:";
 
 /// Variants that legitimately have neither a span-bearing field nor a
 /// `Span-free:` note: they wrap another error and delegate span/code lookups.
 const SPAN_DELEGATING_VARIANTS: &[&str] = &["Spanned", "WithContext"];
+
+const MANDATED_PHASE_ERROR_IMPLS: &[(&str, &[&str])] = &[
+    ("crates/rumoca-phase-parse/src/errors.rs", &["ParseError"]),
+    (
+        "crates/rumoca-phase-resolve/src/errors.rs",
+        &["ResolveError"],
+    ),
+    (
+        "crates/rumoca-phase-typecheck/src/lib.rs",
+        &["TypeCheckError"],
+    ),
+    (
+        "crates/rumoca-phase-instantiate/src/errors.rs",
+        &["InstantiateError"],
+    ),
+    (
+        "crates/rumoca-phase-flatten/src/errors.rs",
+        &["FlattenError"],
+    ),
+    ("crates/rumoca-phase-dae/src/errors.rs", &["ToDaeError"]),
+    (
+        "crates/rumoca-phase-structural/src/types.rs",
+        &["StructuralError"],
+    ),
+    (
+        "crates/rumoca-phase-solve/src/lower/error.rs",
+        &["LowerError"],
+    ),
+    (
+        "crates/rumoca-phase-solve/src/solve_model.rs",
+        &["SolveModelLowerError", "ParameterOverrideError"],
+    ),
+];
+
+#[test]
+fn test_semantic_phase_errors_implement_phase_error() {
+    let root = workspace_root();
+    let mut missing = Vec::new();
+
+    for (relative_path, error_types) in MANDATED_PHASE_ERROR_IMPLS {
+        let content =
+            fs::read_to_string(root.join(relative_path)).expect("read mandated phase error source");
+        for error_type in *error_types {
+            let marker = format!("PhaseError for {error_type}");
+            if !content.contains(&marker) {
+                missing.push(format!("{relative_path}: {error_type}"));
+            }
+        }
+    }
+
+    assert!(
+        missing.is_empty(),
+        "SPEC_0008 `Phase Error Pattern` requires every semantic phase-local user-facing error \
+enum to implement rumoca_core::PhaseError (codegen is the explicit exception); missing: \
+{missing:#?}"
+    );
+}
+
+#[test]
+fn test_miette_phase_errors_retain_source_identified_spans() {
+    let root = workspace_root();
+    let paths = [
+        "crates/rumoca-phase-resolve/src/errors.rs",
+        "crates/rumoca-phase-instantiate/src/errors.rs",
+        "crates/rumoca-phase-flatten/src/errors.rs",
+        "crates/rumoca-phase-dae/src/errors.rs",
+    ];
+    let mut offenders = Vec::new();
+
+    for relative_path in paths {
+        let content =
+            fs::read_to_string(root.join(relative_path)).expect("read miette phase error source");
+        for (line_index, line) in content.lines().enumerate() {
+            if line.contains("span: SourceSpan") {
+                offenders.push(format!("{relative_path}:{}", line_index + 1));
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "SPEC_0008 source identity cannot be reconstructed from miette::SourceSpan byte offsets; \
+phase-local errors must retain rumoca_core::Span: {offenders:#?}"
+    );
+}
 
 struct Variant {
     name: String,
@@ -196,45 +283,152 @@ fn split_code(literal: &str) -> Option<(&str, &str)> {
     Some((&literal[..1 + letters], digits))
 }
 
-/// The `E<letters>0xx` ranges a diagnostic-code registry mints.
-fn minted_ranges(content: &str) -> BTreeSet<String> {
-    content
+/// Exact mnemonics minted by a diagnostic registry.
+///
+/// Phase registries use either bare string literals (`"ET001"`) or miette
+/// attributes (`code(rumoca::typecheck::ET001)`). Restricting the scan to
+/// those two production forms avoids treating explanatory cross-phase
+/// comments as ownership.
+fn minted_codes(content: &str) -> BTreeSet<String> {
+    let mut codes: BTreeSet<String> = content
         .split('"')
         .skip(1)
         .step_by(2)
-        .filter_map(|literal| split_code(literal).map(|(prefix, _)| format!("{prefix}0xx")))
+        .filter(|literal| split_code(literal).is_some())
+        .map(str::to_string)
+        .collect();
+
+    for tail in content.split("code(rumoca::").skip(1) {
+        let Some(attribute) = tail.split(')').next() else {
+            continue;
+        };
+        let Some(code) = attribute.rsplit("::").next().map(str::trim) else {
+            continue;
+        };
+        if split_code(code).is_some() {
+            codes.insert(code.to_string());
+        }
+    }
+    codes
+}
+
+fn minted_ranges(codes: &BTreeSet<String>) -> BTreeSet<String> {
+    codes
+        .iter()
+        .filter_map(|code| split_code(code).map(|(prefix, _)| format!("{prefix}0xx")))
         .collect()
+}
+
+struct DiagnosticRegistry {
+    owner: &'static str,
+    paths: &'static [&'static str],
+}
+
+const DIAGNOSTIC_REGISTRIES: &[DiagnosticRegistry] = &[
+    DiagnosticRegistry {
+        owner: "parse",
+        paths: &["crates/rumoca-phase-parse/src/errors.rs"],
+    },
+    DiagnosticRegistry {
+        owner: "resolve",
+        paths: &["crates/rumoca-phase-resolve/src"],
+    },
+    DiagnosticRegistry {
+        owner: "typecheck",
+        paths: &["crates/rumoca-phase-typecheck/src"],
+    },
+    DiagnosticRegistry {
+        owner: "instantiate",
+        paths: &["crates/rumoca-phase-instantiate/src/errors.rs"],
+    },
+    DiagnosticRegistry {
+        owner: "flatten",
+        paths: &["crates/rumoca-phase-flatten/src/errors.rs"],
+    },
+    DiagnosticRegistry {
+        owner: "todae",
+        paths: &["crates/rumoca-phase-dae/src/errors.rs"],
+    },
+    DiagnosticRegistry {
+        owner: "codegen",
+        paths: &["crates/rumoca-phase-codegen/src/errors.rs"],
+    },
+    DiagnosticRegistry {
+        owner: "class merge",
+        paths: &["crates/rumoca-compile/src/session/diagnostic_adapters.rs"],
+    },
+    DiagnosticRegistry {
+        owner: "structural",
+        paths: &["crates/rumoca-phase-structural/src/diagnostic_codes.rs"],
+    },
+    DiagnosticRegistry {
+        owner: "solve lowering",
+        paths: &["crates/rumoca-phase-solve/src/diagnostic_codes.rs"],
+    },
+    DiagnosticRegistry {
+        owner: "simulation runtime",
+        paths: &["crates/rumoca-sim/src/solve_lowering/diagnostics.rs"],
+    },
+    DiagnosticRegistry {
+        owner: "GALEC IR",
+        paths: &[
+            "crates/rumoca-ir-galec/src/diagnostic.rs",
+            "crates/rumoca-ir-galec/src/parse/errors.rs",
+        ],
+    },
+    DiagnosticRegistry {
+        owner: "GALEC target projection",
+        paths: &["crates/rumoca-galec-codegen/src/diagnostic.rs"],
+    },
+    DiagnosticRegistry {
+        owner: "eFMI packaging",
+        paths: &["crates/rumoca-galec-codegen/src/manifest_context/diagnostic.rs"],
+    },
+];
+
+fn registry_codes(root: &Path, registry: &DiagnosticRegistry) -> BTreeSet<String> {
+    let mut codes = BTreeSet::new();
+    for rel in registry.paths {
+        let path = root.join(rel);
+        let mut files = Vec::new();
+        if path.is_dir() {
+            collect_rs_files(&path, &mut files);
+        } else {
+            files.push(path);
+        }
+        for file in files {
+            let content = fs::read_to_string(&file).unwrap_or_else(|error| {
+                panic!("read diagnostic registry {}: {error}", file.display())
+            });
+            let production = content.split("#[cfg(test)]").next().unwrap_or(&content);
+            codes.extend(minted_codes(production));
+        }
+    }
+    assert!(
+        !codes.is_empty(),
+        "{} diagnostic registry did not mint any codes",
+        registry.owner
+    );
+    codes
 }
 
 #[test]
 fn test_phase_error_codes_are_registered_in_spec_0008() {
     let root = workspace_root();
-    let registries = [
-        "crates/rumoca-phase-structural/src/diagnostic_codes.rs",
-        "crates/rumoca-phase-solve/src/diagnostic_codes.rs",
-        "crates/rumoca-sim/src/solve_lowering/diagnostics.rs",
-    ];
-
     let mut ranges = BTreeSet::new();
-    for rel in registries {
-        let content = fs::read_to_string(root.join(rel)).expect("read diagnostic-code registry");
-        let production = content
-            .split("#[cfg(test)]")
-            .next()
-            .expect("registry source has a production section");
-        ranges.extend(minted_ranges(production));
+    for registry in DIAGNOSTIC_REGISTRIES {
+        ranges.extend(minted_ranges(&registry_codes(&root, registry)));
     }
 
-    for expected in ["ES0xx", "EL0xx", "EX0xx"] {
+    for expected in [
+        "EP0xx", "ER0xx", "ET0xx", "EI0xx", "EF0xx", "ED0xx", "EC0xx", "EM0xx", "ES0xx", "EL0xx",
+        "EX0xx", "EG0xx", "EGT0xx", "EFM0xx",
+    ] {
         assert!(
             ranges.contains(expected),
-            "expected the structural/solve/sim registries to mint {expected}; found {ranges:?}"
+            "expected a phase registry to mint {expected}; found {ranges:?}"
         );
     }
-
-    // EM0xx is minted by rumoca-compile's session adapters and was historically
-    // undocumented; pin it here so the table stays honest about live ranges.
-    ranges.insert("EM0xx".to_string());
 
     let spec =
         fs::read_to_string(root.join("spec/SPEC_0008_PHASE_ERRORS.md")).expect("read SPEC_0008");
@@ -247,6 +441,30 @@ fn test_phase_error_codes_are_registered_in_spec_0008() {
         missing.is_empty(),
         "SPEC_0008 `Error Code Ranges` is missing a row for live diagnostic ranges {missing:#?}; \
 add `| <RANGE> | <phase> | <mnemonic> | <description> |` instead of shipping unregistered codes"
+    );
+}
+
+#[test]
+fn test_diagnostic_mnemonics_have_one_global_owner() {
+    let root = workspace_root();
+    let mut owners_by_code: BTreeMap<String, BTreeSet<&str>> = BTreeMap::new();
+    for registry in DIAGNOSTIC_REGISTRIES {
+        for code in registry_codes(&root, registry) {
+            owners_by_code
+                .entry(code)
+                .or_default()
+                .insert(registry.owner);
+        }
+    }
+
+    let collisions: Vec<String> = owners_by_code
+        .into_iter()
+        .filter(|(_, owners)| owners.len() > 1)
+        .map(|(code, owners)| format!("{code}: {owners:?}"))
+        .collect();
+    assert!(
+        collisions.is_empty(),
+        "SPEC_0008 diagnostic mnemonics must have one global owner; collisions: {collisions:#?}"
     );
 }
 

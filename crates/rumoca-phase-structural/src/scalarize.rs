@@ -1097,7 +1097,7 @@ fn scalarize_continuous_equations(
         let scalar_count = if has_residual_lhs_targets {
             lhs_targets.len().max(1)
         } else if let Some(rhs_count) = rhs_shape_count.filter(|count| *count > 1) {
-            // MLS §10.6 / SPEC_0019: array equations represent one scalar
+            // MLS §10.6 / SPEC_0032: array equations represent one scalar
             // equation per array element. Prefer the expression IR shape over
             // stale scalar_count metadata for residuals such as
             // `J * der(omega) - M_body`.

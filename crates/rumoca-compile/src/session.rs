@@ -9,7 +9,7 @@ use rayon::prelude::*;
 use rumoca_core::{DefId, Span};
 use rumoca_core::{
     Diagnostic as CommonDiagnostic, Diagnostics as CommonDiagnostics, Label, OptionalTimer,
-    PrimaryLabel, SourceMap, maybe_elapsed_duration, maybe_start_timer,
+    PhaseError, PrimaryLabel, SourceMap, maybe_elapsed_duration, maybe_start_timer,
 };
 use rumoca_ir_ast as ast;
 use rumoca_ir_dae as dae;
@@ -121,9 +121,7 @@ use compile_support::{
 mod compiled_source_root;
 pub use compiled_source_root::CompiledSourceRoot;
 mod diagnostic_adapters;
-use diagnostic_adapters::{
-    diagnostic_message_with_primary_location, merge_error_to_common, miette_error_to_common,
-};
+use diagnostic_adapters::{diagnostic_message_with_primary_location, merge_error_to_common};
 mod model_diagnostics;
 use model_diagnostics::{
     global_resolution_failure_diagnostics, merge_model_diagnostics, model_diagnostics_for_tree,
@@ -1784,9 +1782,7 @@ pub(crate) enum DaePhaseResult {
         phase: FailedPhase,
         error: String,
         error_code: Option<String>,
-        /// Structured spanned diagnostics from the failing phase, when the
-        /// phase produces them (typecheck today). Empty means only the
-        /// stringified `error` is available.
+        /// Structured diagnostics from the failing semantic phase.
         diagnostics: Vec<CommonDiagnostic>,
         /// Breakdown carried by an unbalanced (ED001) ToDae failure; else None.
         balance_detail: Option<Box<rumoca_phase_dae::balance::BalanceDetail>>,
@@ -1832,9 +1828,7 @@ pub enum PhaseResult {
         phase: FailedPhase,
         error: String,
         error_code: Option<String>,
-        /// Structured spanned diagnostics from the failing phase, when the
-        /// phase produces them (typecheck today). Empty means only the
-        /// stringified `error` is available.
+        /// Structured diagnostics from the failing semantic phase.
         #[serde(default)]
         diagnostics: Vec<CommonDiagnostic>,
     },

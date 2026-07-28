@@ -46,6 +46,7 @@ pub(in crate::typechecker) struct MissingComponentMember {
 pub(in crate::typechecker) enum ComponentReferenceTypeError {
     MissingMember(MissingComponentMember),
     MissingSourceContext(TypeCheckError),
+    AmbiguousIdentity { reference: String, span: Span },
 }
 
 impl TypeCheckTraversalCallbacks for TypeChecker {
@@ -166,17 +167,6 @@ impl TypeCheckTraversalCallbacks for TypeChecker {
 }
 
 impl TypeChecker {
-    fn component_scope_name(class: &ClassDef) -> &str {
-        class.name.text.as_ref()
-    }
-
-    fn component_scope_full_name<'a>(&'a self, class: &ClassDef) -> Option<&'a str> {
-        class
-            .def_id
-            .and_then(|def_id| self.def_qualified_names.get(&def_id))
-            .map(String::as_str)
-    }
-
     fn instance_component_path(qualified_name: &rumoca_ir_ast::QualifiedName) -> ComponentPath {
         qualified_name.to_component_path()
     }
@@ -206,34 +196,6 @@ impl TypeChecker {
             .unwrap_or_else(|| {
                 Self::enclosing_scope_name(&Self::instance_component_path(&data.qualified_name))
             })
-    }
-
-    fn insert_visible_component_type(
-        scope_types: &mut HashMap<String, TypeId>,
-        comp_name: &str,
-        type_id: TypeId,
-        scope_name: &str,
-        full_scope_name: Option<&str>,
-    ) {
-        scope_types.insert(comp_name.to_string(), type_id);
-        if !scope_name.is_empty() {
-            scope_types.insert(
-                rumoca_core::ComponentPath::from_flat_path(scope_name)
-                    .join(&rumoca_core::ComponentPath::from_flat_path(comp_name))
-                    .to_flat_string(),
-                type_id,
-            );
-        }
-        if let Some(full_scope_name) = full_scope_name
-            && !full_scope_name.is_empty()
-        {
-            scope_types.insert(
-                rumoca_core::ComponentPath::from_flat_path(full_scope_name)
-                    .join(&rumoca_core::ComponentPath::from_flat_path(comp_name))
-                    .to_flat_string(),
-                type_id,
-            );
-        }
     }
 
     pub(crate) fn alias_field_key_range<'a>(
@@ -303,38 +265,14 @@ impl TypeChecker {
             self.check_component(name, comp, type_table);
         }
 
-        // Expose resolved component types for equation compatibility checks in this class.
-        let prev_scope_types = std::mem::take(&mut self.current_component_types);
-        let mut scope_types = HashMap::new();
-        let class_name = Self::component_scope_name(class);
-        let full_class_name = self.component_scope_full_name(class);
-        for (name, comp) in &class.components {
-            let Some(type_id) = comp.type_id else {
-                continue;
-            };
-            // MLS §5.3/§5.6: keep local and qualified component names visible so
-            // later typed member lookup can validate each dotted segment.
-            Self::insert_visible_component_type(
-                &mut scope_types,
-                name,
-                type_id,
-                class_name,
-                full_class_name,
-            );
-        }
-        self.current_component_types = scope_types;
-        let mut scope_shapes = HashMap::new();
-        for (name, comp) in &class.components {
-            let shape = if !comp.shape.is_empty() {
-                Some(comp.shape.clone())
-            } else if comp.shape_expr.is_empty() {
-                Some(Vec::new())
-            } else {
-                None
-            };
-            scope_shapes.insert(name.clone(), shape);
-        }
-        self.current_component_shapes = scope_shapes;
+        // Resolved source declarations are the semantic keys for standalone
+        // type checking. Display names remain only on diagnostics.
+        let previous_declarations = std::mem::take(&mut self.current_declaration_semantics);
+        self.current_declaration_semantics = class
+            .components
+            .values()
+            .filter_map(ComponentSemantics::from_declaration)
+            .collect();
 
         // Validate known builtin modifier value types now that local component
         // types are available in scope (e.g., `Real x(start = y)`).
@@ -364,7 +302,7 @@ impl TypeChecker {
         }
 
         // Restore parent class scope.
-        self.current_component_types = prev_scope_types;
+        self.current_declaration_semantics = previous_declarations;
     }
 
     /// Type check a component declaration.

@@ -9,9 +9,13 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 mod diagnostic_codes;
 mod failure_row;
+mod memory_limit;
 pub use diagnostic_codes::{embedded_diagnostic_code, sim_error_diagnostic_code};
 pub use failure_row::{
     strict_compile_failure_row, strict_dae_failure_phase, summary_only_failure_row,
+};
+pub use memory_limit::{
+    WorkerMemoryLimitEnforcement, WorkerMemoryLimitStartError, start_worker_memory_limit,
 };
 
 /// Per-model wall timeout (seconds) for one MSL-parity simulation. Shared so the
@@ -28,7 +32,11 @@ pub const MODEL_WORKER_PARTIAL_RESULT_FILE: &str = "partial_result.json";
 /// that workload while bounding pathological Solve allocations.
 pub const MODEL_WORKER_MEMORY_LIMIT_MB_DEFAULT: usize = 6 * 1024;
 pub const MODEL_WORKER_MEMORY_LIMIT_EXIT_CODE: i32 = 70;
+pub const MODEL_WORKER_MEMORY_LIMIT_EXCEEDED_CLASSIFICATION: &str = "worker_memory_limit_exceeded";
 pub const MODEL_WORKER_PARENT_DISCONNECTED_EXIT_CODE: i32 = 71;
+pub const MODEL_WORKER_MEMORY_LIMIT_UNAVAILABLE_EXIT_CODE: i32 = 72;
+pub const MODEL_WORKER_MEMORY_LIMIT_UNAVAILABLE_CLASSIFICATION: &str =
+    "worker_memory_limit_enforcement_unavailable";
 const MODEL_WORKER_POLL_MILLIS: u64 = 20;
 static MODEL_WORKER_EXE: OnceLock<Result<PathBuf, String>> = OnceLock::new();
 
@@ -241,7 +249,7 @@ impl ModelWorkerDaemon {
         command.arg("--jobs").arg("1");
         command
             .arg("--memory-limit-mb")
-            .arg(memory_limit_mb.max(1).to_string());
+            .arg(memory_limit_mb.to_string());
         if let Some(cpu_core_id) = cpu_core_id {
             command.arg("--cpu-core-id").arg(cpu_core_id.to_string());
         }
@@ -267,7 +275,7 @@ impl ModelWorkerDaemon {
             child,
             stdin,
             messages,
-            memory_limit_mb: memory_limit_mb.max(1),
+            memory_limit_mb,
         };
         match worker.wait_for_ready(timeout_secs) {
             Ok(()) => Ok(worker),
@@ -351,6 +359,14 @@ impl ModelWorkerDaemon {
                         memory_limit_mb: self.memory_limit_mb,
                     };
                 }
+                Ok(Some(status))
+                    if status.code() == Some(MODEL_WORKER_MEMORY_LIMIT_UNAVAILABLE_EXIT_CODE) =>
+                {
+                    return ModelWorkerRunOutcome::Failed(format!(
+                        "[{MODEL_WORKER_MEMORY_LIMIT_UNAVAILABLE_CLASSIFICATION}] \
+                         model worker lost memory-limit enforcement"
+                    ));
+                }
                 Ok(Some(status)) => {
                     return ModelWorkerRunOutcome::Failed(format!(
                         "model worker exited with status {status}"
@@ -376,6 +392,7 @@ impl ModelWorkerDaemon {
 
     fn wait_for_ready(&mut self, timeout_secs: f64) -> Result<(), String> {
         let start = Instant::now();
+        let mut stdout_disconnected = false;
         loop {
             match self.messages.try_recv() {
                 Ok(Ok(ModelWorkerControlMessage::Ready { protocol_version }))
@@ -396,10 +413,24 @@ impl ModelWorkerDaemon {
                 Ok(Err(error)) => return Err(error),
                 Err(mpsc::TryRecvError::Empty) => {}
                 Err(mpsc::TryRecvError::Disconnected) => {
-                    return Err("model worker stdout closed before ready".to_string());
+                    stdout_disconnected = true;
                 }
             }
             match self.child.try_wait() {
+                Ok(Some(status)) if status.code() == Some(MODEL_WORKER_MEMORY_LIMIT_EXIT_CODE) => {
+                    return Err(format!(
+                        "[{MODEL_WORKER_MEMORY_LIMIT_EXCEEDED_CLASSIFICATION}] \
+                         model worker exceeded its memory limit before ready"
+                    ));
+                }
+                Ok(Some(status))
+                    if status.code() == Some(MODEL_WORKER_MEMORY_LIMIT_UNAVAILABLE_EXIT_CODE) =>
+                {
+                    return Err(format!(
+                        "[{MODEL_WORKER_MEMORY_LIMIT_UNAVAILABLE_CLASSIFICATION}] \
+                         model worker could not establish memory-limit enforcement"
+                    ));
+                }
                 Ok(Some(status)) => {
                     return Err(format!(
                         "model worker exited before ready with status {status}"
@@ -409,10 +440,7 @@ impl ModelWorkerDaemon {
                 Err(error) => return Err(format!("failed to poll model worker startup: {error}")),
             }
             if start.elapsed() >= Duration::from_secs_f64(timeout_secs) {
-                return Err(format!(
-                    "model worker exceeded {:.3}s startup budget in phase SourceRootLoad",
-                    timeout_secs
-                ));
+                return Err(startup_timeout_error(stdout_disconnected, timeout_secs));
             }
             std::thread::sleep(Duration::from_millis(MODEL_WORKER_POLL_MILLIS));
         }
@@ -429,6 +457,16 @@ impl ModelWorkerDaemon {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+fn startup_timeout_error(stdout_disconnected: bool, timeout_secs: f64) -> String {
+    if stdout_disconnected {
+        return "model worker stdout closed before ready".to_string();
+    }
+    format!(
+        "model worker exceeded {:.3}s startup budget in phase SourceRootLoad",
+        timeout_secs
+    )
 }
 
 impl Drop for ModelWorkerDaemon {

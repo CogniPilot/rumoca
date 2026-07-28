@@ -7,6 +7,16 @@ use crate::AstIndexMap as IndexMap;
 use rumoca_core::{ComponentPath, DefId, ScopeId};
 use serde::{Deserialize, Serialize};
 
+/// Effective visibility of one inherited name in a class scope.
+///
+/// Ambiguity is distinct from absence: lookup must stop at the class boundary
+/// without selecting a declaration or falling through to an enclosing scope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum InheritedMember {
+    Unique(DefId),
+    Ambiguous,
+}
+
 /// MLS §5.3: Scope tree for name lookup.
 ///
 /// The scope tree tracks the hierarchical structure of scopes and
@@ -86,13 +96,14 @@ impl ScopeTree {
 
     /// Replace the effective inherited-member view for a class scope.
     ///
-    /// A present key with `None` is an ambiguous inherited name. Lookup stops
-    /// at that scope rather than selecting an arbitrary base declaration or
-    /// continuing to an unrelated enclosing declaration.
+    /// A present `InheritedMember::Ambiguous` value records an ambiguous
+    /// inherited name. Lookup stops at that scope rather than selecting an
+    /// arbitrary base declaration or continuing to an unrelated enclosing
+    /// declaration.
     pub fn set_inherited_members(
         &mut self,
         scope: ScopeId,
-        members: IndexMap<ComponentPath, Option<DefId>>,
+        members: IndexMap<ComponentPath, InheritedMember>,
     ) {
         if let Some(s) = self.get_mut(scope) {
             s.inherited_members = members;
@@ -122,7 +133,10 @@ impl ScopeTree {
             }
 
             if let Some(inherited) = s.inherited_members.get(name) {
-                return *inherited;
+                return match inherited {
+                    InheritedMember::Unique(def_id) => Some(*def_id),
+                    InheritedMember::Ambiguous => None,
+                };
             }
 
             // MLS §5.3.1: an encapsulated boundary exposes predefined names,
@@ -140,6 +154,25 @@ impl ScopeTree {
     /// Look up a name only in the given scope (no parent search).
     pub fn lookup_local(&self, scope: ScopeId, name: &ComponentPath) -> Option<DefId> {
         self.get(scope).and_then(|s| s.members.get(name).copied())
+    }
+
+    /// Whether `target` is declared directly in `scope`.
+    ///
+    /// This identity query lets post-resolution checks use `DefId` directly
+    /// instead of reconstructing a member name from rendered source text.
+    pub fn declares(&self, scope: ScopeId, target: DefId) -> bool {
+        self.get(scope)
+            .is_some_and(|scope| scope.members.values().any(|def_id| *def_id == target))
+    }
+
+    /// Whether `target` is the unique inherited declaration visible in `scope`.
+    pub fn inherits_unique(&self, scope: ScopeId, target: DefId) -> bool {
+        self.get(scope).is_some_and(|scope| {
+            scope
+                .inherited_members
+                .values()
+                .any(|member| *member == InheritedMember::Unique(target))
+        })
     }
 
     /// Look up a name, optionally excluding a specific DefId from results.
@@ -182,7 +215,12 @@ impl ScopeTree {
             }
 
             if let Some(inherited) = s.inherited_members.get(name) {
-                return (*inherited).filter(|&id| exclude.is_none_or(|ex| id != ex));
+                return match inherited {
+                    InheritedMember::Unique(def_id) => {
+                        Some(*def_id).filter(|&id| exclude.is_none_or(|ex| id != ex))
+                    }
+                    InheritedMember::Ambiguous => None,
+                };
             }
 
             if s.is_encapsulated() {
@@ -202,6 +240,15 @@ impl ScopeTree {
     /// Get the parent scope.
     pub fn parent(&self, scope: ScopeId) -> Option<ScopeId> {
         self.get(scope).and_then(|s| s.parent)
+    }
+
+    /// Read the inherited-name state recorded directly on one scope.
+    pub fn inherited_member(
+        &self,
+        scope: ScopeId,
+        name: &ComponentPath,
+    ) -> Option<InheritedMember> {
+        self.get(scope)?.inherited_members.get(name).copied()
     }
 
     fn next_lookup_scope(&self, scope_id: ScopeId, scope: &Scope) -> Option<ScopeId> {
@@ -233,9 +280,10 @@ pub struct Scope {
     pub imports: Vec<Import>,
     /// Effective members contributed by resolved extends clauses.
     ///
-    /// `None` records an ambiguous inherited name without choosing one base.
+    /// `InheritedMember::Ambiguous` records an ambiguous inherited name
+    /// without choosing one base.
     #[serde(default)]
-    pub inherited_members: IndexMap<ComponentPath, Option<DefId>>,
+    pub inherited_members: IndexMap<ComponentPath, InheritedMember>,
 }
 
 impl Scope {

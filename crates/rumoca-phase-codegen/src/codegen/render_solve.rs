@@ -28,8 +28,8 @@ mod render_solve_tests;
 mod template_partition;
 pub(super) use dense_solve_render::{
     LinSolveRenderShape, SolveOutputTargets, checked_linsolve_product,
-    checked_linsolve_render_count, checked_linsolve_sum, render_linsolve_mlir_function,
-    render_matmul_c_function, render_matmul_mlir_function,
+    checked_linsolve_render_count, checked_linsolve_sum, mlir_native_dense_node_supported,
+    render_linsolve_mlir_function, render_matmul_c_function, render_matmul_mlir_function,
     render_optional_solve_slot_assign_c_function, render_solve_block_c_function,
     render_solve_block_py_function, render_solve_block_rust_function,
     render_solve_pre_param_binding_c_function, render_solve_row_c_function,

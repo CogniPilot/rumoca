@@ -213,11 +213,14 @@ impl TypeChecker {
         {
             return VariabilityLevel::Continuous;
         }
-        let path = ComponentPath::from_parts(reference.parts.iter().map(ToString::to_string));
-        self.find_instanced_component_path_variability(&path)
-            .map(VariabilityLevel::from_variability)
-            .or_else(|| Self::declared_reference_variability(reference, class))
-            .unwrap_or(VariabilityLevel::Constant)
+        match self.lookup_component_reference_variability(reference) {
+            SemanticLookup::Found(variability) => variability,
+            // Ambiguity must never make a binding look less variable. The
+            // component-reference validation emits ET001 for the same node.
+            SemanticLookup::Ambiguous => VariabilityLevel::Continuous,
+            SemanticLookup::Missing => Self::declared_reference_variability(reference, class)
+                .unwrap_or(VariabilityLevel::Constant),
+        }
     }
 
     fn declared_reference_variability(
@@ -225,9 +228,13 @@ impl TypeChecker {
         class: &ClassDef,
     ) -> Option<rumoca_eval_ast::eval::VariabilityLevel> {
         reference
-            .parts
-            .first()
-            .and_then(|part| class.components.get(part.ident.text.as_ref()))
+            .def_id
+            .and_then(|def_id| {
+                class
+                    .components
+                    .values()
+                    .find(|component| component.def_id == Some(def_id))
+            })
             .map(|component| {
                 rumoca_eval_ast::eval::VariabilityLevel::from_variability(&component.variability)
             })

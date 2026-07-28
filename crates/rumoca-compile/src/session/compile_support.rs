@@ -389,7 +389,7 @@ pub(super) fn dae_model_outcome_from_flat_with_options(
         }
     };
 
-    // MLS §5.6 / SPEC_0004: ToDae stays downstream of flatten and should
+    // MLS §5.6 / SPEC_0007: ToDae stays downstream of flatten and should
     // consume the cached flat artifact rather than rebuilding earlier phases.
     match to_dae_with_options(&artifact.flat, todae_options) {
         Ok(dae) => (
@@ -545,7 +545,7 @@ fn dae_compilation_result_from_artifact(
     artifact: DaeModelArtifactData,
     experiment_settings: ExperimentSettings,
     source_map: SourceMap,
-) -> Result<DaeCompilationResult, rumoca_phase_dae::BalanceError> {
+) -> Result<DaeCompilationResult, ToDaeError> {
     let has_unbound_fixed_parameters = artifact.flat.has_unbound_fixed_parameters();
     let active_discrete_scalar_count = active_discrete_scalar_count(&artifact.flat, &artifact.dae);
     let balance_detail = rumoca_phase_dae::balance_detail(&artifact.dae)?;
@@ -566,6 +566,14 @@ fn dae_compilation_result_from_artifact(
     })
 }
 
+fn phase_error_payload(
+    error: &(impl PhaseError + std::fmt::Display),
+) -> (String, Option<String>, Vec<CommonDiagnostic>) {
+    let diagnostic = error.to_diagnostic();
+    let code = diagnostic.code.clone();
+    (error.to_string(), code, vec![diagnostic])
+}
+
 pub(super) fn dae_phase_result_from_dae(
     tree: &ast::ClassTree,
     model_name: &str,
@@ -580,13 +588,16 @@ pub(super) fn dae_phase_result_from_dae(
             tree.source_map.clone(),
         ) {
             Ok(result) => DaePhaseResult::Success(Box::new(result)),
-            Err(error) => DaePhaseResult::Failed {
-                phase: FailedPhase::ToDae,
-                error: format!("{error}"),
-                error_code: None,
-                diagnostics: Vec::new(),
-                balance_detail: None,
-            },
+            Err(error) => {
+                let (error, error_code, diagnostics) = phase_error_payload(&error);
+                DaePhaseResult::Failed {
+                    phase: FailedPhase::ToDae,
+                    error,
+                    error_code,
+                    diagnostics,
+                    balance_detail: None,
+                }
+            }
         },
         DaeModelOutcome::NeedsInner {
             missing_inners,
@@ -597,12 +608,12 @@ pub(super) fn dae_phase_result_from_dae(
             missing_spans,
         },
         DaeModelOutcome::InstantiateError(error) => {
-            use miette::Diagnostic;
+            let (error, error_code, diagnostics) = phase_error_payload(&*error);
             DaePhaseResult::Failed {
                 phase: FailedPhase::Instantiate,
-                error: format!("{error}"),
-                error_code: error.code().map(|code| code.to_string()),
-                diagnostics: Vec::new(),
+                error,
+                error_code,
+                diagnostics,
                 balance_detail: None,
             }
         }
@@ -621,27 +632,27 @@ pub(super) fn dae_phase_result_from_dae(
             }
         }
         DaeModelOutcome::FlattenError { error, .. } => {
-            use miette::Diagnostic;
+            let (error, error_code, diagnostics) = phase_error_payload(&*error);
             DaePhaseResult::Failed {
                 phase: FailedPhase::Flatten,
-                error: format!("{error}"),
-                error_code: error.code().map(|code| code.to_string()),
-                diagnostics: Vec::new(),
+                error,
+                error_code,
+                diagnostics,
                 balance_detail: None,
             }
         }
         DaeModelOutcome::ToDaeError { error, .. } => {
-            use miette::Diagnostic;
             // ED001 carries the full component breakdown; keep it structured so
             // downstream triage never has to re-parse the message text.
             let balance_detail = error
                 .balance_detail()
                 .map(|detail| Box::new(detail.clone()));
+            let (error, error_code, diagnostics) = phase_error_payload(&*error);
             DaePhaseResult::Failed {
                 phase: FailedPhase::ToDae,
-                error: format!("{error}"),
-                error_code: error.code().map(|code| code.to_string()),
-                diagnostics: Vec::new(),
+                error,
+                error_code,
+                diagnostics,
                 balance_detail,
             }
         }
@@ -668,13 +679,12 @@ pub(super) fn compile_phase_result_from_dae(
             };
         }
         DaeModelOutcome::InstantiateError(error) => {
-            use miette::Diagnostic;
-            let error_code = error.code().map(|c| c.to_string());
+            let (error, error_code, diagnostics) = phase_error_payload(&*error);
             return PhaseResult::Failed {
                 phase: FailedPhase::Instantiate,
-                error: format!("{}", error),
+                error,
                 error_code,
-                diagnostics: Vec::new(),
+                diagnostics,
             };
         }
         DaeModelOutcome::TypecheckError(diags) => {
@@ -693,23 +703,21 @@ pub(super) fn compile_phase_result_from_dae(
             };
         }
         DaeModelOutcome::FlattenError { error, .. } => {
-            use miette::Diagnostic;
-            let error_code = error.code().map(|c| c.to_string());
+            let (error, error_code, diagnostics) = phase_error_payload(&*error);
             return PhaseResult::Failed {
                 phase: FailedPhase::Flatten,
-                error: format!("{}", error),
+                error,
                 error_code,
-                diagnostics: Vec::new(),
+                diagnostics,
             };
         }
         DaeModelOutcome::ToDaeError { error, .. } => {
-            use miette::Diagnostic;
-            let error_code = error.code().map(|c| c.to_string());
+            let (error, error_code, diagnostics) = phase_error_payload(&*error);
             return PhaseResult::Failed {
                 phase: FailedPhase::ToDae,
-                error: format!("{}", error),
+                error,
                 error_code,
-                diagnostics: Vec::new(),
+                diagnostics,
             };
         }
     };
@@ -717,11 +725,13 @@ pub(super) fn compile_phase_result_from_dae(
     let balance_detail = match rumoca_phase_dae::balance_detail(&artifact.dae) {
         Ok(detail) => detail,
         Err(error) => {
+            let error = ToDaeError::from(error);
+            let (error, error_code, diagnostics) = phase_error_payload(&error);
             return PhaseResult::Failed {
                 phase: FailedPhase::ToDae,
-                error: format!("{error}"),
-                error_code: None,
-                diagnostics: Vec::new(),
+                error,
+                error_code,
+                diagnostics,
             };
         }
     };

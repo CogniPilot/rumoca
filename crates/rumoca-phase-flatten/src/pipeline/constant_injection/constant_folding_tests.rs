@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use super::{
-    extract_named_record_constructor_fields, infer_dims_from_expr,
+    eval_size_call_with_scope, extract_named_record_constructor_fields, infer_dims_from_expr,
     try_eval_const_boolean_with_scope,
 };
 use crate::Context;
@@ -33,6 +33,14 @@ fn real_expr(value: &str) -> ast::Expression {
 fn int_expr(value: &str) -> ast::Expression {
     ast::Expression::Terminal {
         terminal_type: ast::TerminalType::UnsignedInteger,
+        token: token(value),
+        span: rumoca_core::Span::DUMMY,
+    }
+}
+
+fn string_expr(value: &str) -> ast::Expression {
+    ast::Expression::Terminal {
+        terminal_type: ast::TerminalType::String,
         token: token(value),
         span: rumoca_core::Span::DUMMY,
     }
@@ -115,6 +123,51 @@ fn infers_constant_range_binding_dimensions() {
     assert_eq!(
         infer_dims_from_expr(&expr, &Context::default(), ""),
         Some(vec![3])
+    );
+}
+
+#[test]
+fn fill_with_array_seed_prefixes_dimensions_including_zero() {
+    let seed = ast::Expression::Array {
+        elements: vec![int_expr("1"), int_expr("2"), int_expr("3")],
+        is_matrix: false,
+        span: rumoca_core::Span::DUMMY,
+    };
+    let expr = ast::Expression::FunctionCall {
+        comp: component_ref("fill", None),
+        args: vec![seed, int_expr("0"), int_expr("2")],
+        is_partial_application: false,
+        span: rumoca_core::Span::DUMMY,
+    };
+
+    assert_eq!(
+        infer_dims_from_expr(&expr, &Context::default(), ""),
+        Some(vec![0, 2, 3])
+    );
+}
+
+#[test]
+fn size_of_string_matrix_literal_uses_shape_without_value_evaluation() {
+    let matrix = ast::Expression::Array {
+        elements: vec![
+            ast::Expression::Array {
+                elements: vec![string_expr("\"a\""), string_expr("\"b\"")],
+                is_matrix: false,
+                span: rumoca_core::Span::DUMMY,
+            },
+            ast::Expression::Array {
+                elements: vec![string_expr("\"c\""), string_expr("\"d\"")],
+                is_matrix: false,
+                span: rumoca_core::Span::DUMMY,
+            },
+        ],
+        is_matrix: true,
+        span: rumoca_core::Span::DUMMY,
+    };
+
+    assert_eq!(
+        eval_size_call_with_scope(&matrix, &int_expr("2"), &Context::default(), ""),
+        Some(2)
     );
 }
 

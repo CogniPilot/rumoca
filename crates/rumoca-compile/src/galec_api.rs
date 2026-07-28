@@ -22,7 +22,7 @@
 //! # Scalar-type provenance rules
 //!
 //! `rumoca_ir_dae::Variable` deliberately carries no scalar type, and the
-//! projection refuses to guess (`ET011`, S8). The facade contributes the
+//! projection refuses to guess (`EGT011`, S8). The facade contributes the
 //! one piece of provenance the projection cannot see: every Flat variable
 //! whose `type_id` resolves to the builtin `Real` / `Integer` / `Boolean`
 //! maps to the matching GALEC scalar type (flatten's
@@ -38,7 +38,7 @@
 //!
 //! Anything else — `String`/`Clock`/enumeration/record types, unresolved
 //! `TypeId::UNKNOWN` — stays absent from the map. Absence is loud, never a
-//! default: the projection rejects untypeable variables with `ET011`.
+//! default: the projection rejects untypeable variables with `EGT011`.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -66,7 +66,7 @@ use rumoca_ir_galec::ast::ScalarType;
 #[derive(Debug, thiserror::Error)]
 pub enum GalecExportError {
     /// The projection rejected the model (admissibility, classification,
-    /// or lowering diagnostics — every collected `ET0xx`).
+    /// or lowering diagnostics — every collected `EGT0xx`).
     #[error("GALEC projection rejected the model:\n{}", render_diagnostics(.0))]
     Projection(Vec<GalecTargetError>),
     /// Rendering a validated package failed (validator/printer/serializer).
@@ -135,7 +135,7 @@ pub fn dae_for_galec_projection(dae: &Dae) -> Dae {
 ///
 /// [`GalecExportError::Projection`] with all collected projection
 /// diagnostics, or [`GalecExportError::Render`] for validator/mangler/
-/// C-printer failures on the validated package (`ET018`/`ET022`/`ET023`).
+/// C-printer failures on the validated package (`EGT018`/`EGT022`/`EGT023`).
 pub fn render_galec_c_export(
     dae: &Dae,
     flat: &FlatModel,
@@ -743,7 +743,7 @@ pub(crate) fn register_manifest_filters(env: &mut minijinja::Environment<'_>) {
 /// Build the [`ScalarTypeMap`] for a compiled model from Flat-side declared
 /// types (module docs). Generated condition/`__pre__` variables stay absent
 /// on purpose — the projection's `classify` fallbacks own them — and any
-/// other missing mapping is reported loudly by the projection's `ET011`.
+/// other missing mapping is reported loudly by the projection's `EGT011`.
 #[must_use]
 pub fn build_scalar_type_map(flat: &FlatModel) -> ScalarTypeMap {
     let builtins = BuiltinScalarTypeIds::resolve();
@@ -1056,8 +1056,8 @@ end ContinuousDemo;
         assert!(
             diagnostics
                 .iter()
-                .any(|diagnostic| diagnostic.to_string().contains("[ET001]")),
-            "expected ET001 continuous-dynamics rejection: {diagnostics:#?}"
+                .any(|diagnostic| diagnostic.to_string().contains("[EGT001]")),
+            "expected EGT001 continuous-dynamics rejection: {diagnostics:#?}"
         );
     }
 }

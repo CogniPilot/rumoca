@@ -329,14 +329,14 @@ fn test_integer_range_stops_cleanly_at_machine_bounds() {
 }
 
 #[test]
-fn test_real_range_rejects_non_advancing_step() {
+fn test_real_range_allows_repeated_binary64_values() {
     let start = 1.0e20_f64;
     let end = f64::from_bits(start.to_bits() + 1);
 
-    assert!(matches!(
-        collect_real_range(start, end, 1.0, test_span()),
-        Err(EvalError::RangeError { .. })
-    ));
+    let values = collect_real_range(start, end, 1.0, test_span()).unwrap();
+    assert_eq!(values.len(), 16_385);
+    assert_eq!(values.first(), Some(&Value::Real(start)));
+    assert_eq!(values.last(), Some(&Value::Real(end)));
 }
 
 #[test]

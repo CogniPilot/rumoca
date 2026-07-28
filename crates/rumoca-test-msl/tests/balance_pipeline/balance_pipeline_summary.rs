@@ -156,16 +156,20 @@ fn build_summary_from_counters(
         initial_unbalanced_models: counters.initial_unbalanced_models,
         partial_models: counters.partial_models,
         class_type_counts: inputs.class_type_counts,
-        failures_by_phase: counters.failures_by_phase,
+        failures_by_phase: counters.failures_by_phase.into_iter().collect(),
         unbalanced_list: counters.unbalanced_list,
         initial_unbalanced_list: counters.initial_unbalanced_list,
         non_sim_list: counters.non_sim_list,
-        error_categories: counters.error_categories,
-        error_code_counts: counters.error_code_counts,
-        unsupported_feature_counts: counters.unsupported_feature_counts,
-        unsupported_feature_counts_by_backend: counters.unsupported_feature_counts_by_backend,
-        undefined_vars: counters.undefined_vars,
-        balance_distribution: counters.balance_distribution,
+        error_categories: counters.error_categories.into_iter().collect(),
+        error_code_counts: counters.error_code_counts.into_iter().collect(),
+        unsupported_feature_counts: counters.unsupported_feature_counts.into_iter().collect(),
+        unsupported_feature_counts_by_backend: counters
+            .unsupported_feature_counts_by_backend
+            .into_iter()
+            .map(|(backend, counts)| (backend, counts.into_iter().collect()))
+            .collect(),
+        undefined_vars: counters.undefined_vars.into_iter().collect(),
+        balance_distribution: counters.balance_distribution.into_iter().collect(),
         compile_dae_balance_failures: balance_pipeline_balance_cohort::build_balance_failure_cohort(
             &model_results,
         ),

@@ -460,6 +460,7 @@ fn validate_compute_node(
         ),
         solve::ComputeNode::Map {
             domain,
+            output_map,
             base_ops,
             load_strides,
             const_strides,
@@ -470,6 +471,7 @@ fn validate_compute_node(
             context,
             "Map",
             domain,
+            output_map,
             base_ops,
             load_strides,
             const_strides,
@@ -479,6 +481,7 @@ fn validate_compute_node(
         ),
         solve::ComputeNode::AffineStencil {
             domain,
+            output_map,
             base_ops,
             load_strides,
             const_strides,
@@ -489,6 +492,7 @@ fn validate_compute_node(
             context,
             "AffineStencil",
             domain,
+            output_map,
             base_ops,
             load_strides,
             const_strides,
@@ -597,6 +601,7 @@ fn validate_affine_row_tensor_node(
     context: &str,
     node_name: &str,
     domain: &rumoca_core::StructuredIndexDomain,
+    output_map: &solve::TensorOutputMap,
     base_ops: &[solve::LinearOp],
     load_strides: &[solve::AffineStencilLoadStride],
     const_strides: &[solve::AffineStencilConstStride],
@@ -605,6 +610,15 @@ fn validate_affine_row_tensor_node(
     seed_use: SeedUse,
 ) -> Result<(), LowerError> {
     validate_tensor_metadata(context, metadata)?;
+    let proof_span = span.ok_or_else(|| LowerError::UnspannedContractViolation {
+        reason: format!("{context}: {node_name} output-map proof is missing source provenance"),
+    })?;
+    if !crate::stencil::tensor_output_map_is_proven_injective(domain, output_map, proof_span)? {
+        return Err(solve_validation_error(
+            format!("{context}: {node_name} output map is overlapping or not proven injective"),
+            span,
+        ));
+    }
     validate_row_ops(
         &format!("{context}.base_ops"),
         base_ops,

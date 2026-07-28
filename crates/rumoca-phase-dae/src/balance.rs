@@ -2,8 +2,7 @@
 //!
 //! This is the single canonical implementation of balance checking for the
 //! Rumoca DAE IR. All other crates must call these functions rather than
-//! reimplementing the formula (AGENTS.md: "Balance arithmetic lives in
-//! `rumoca-phase-dae`").
+//! reimplementing the formula (SPEC_0029 §3b).
 
 use std::collections::HashSet;
 
@@ -153,6 +152,10 @@ pub fn is_balanced(dae_model: &dae::Dae) -> BalanceResult<bool> {
 
 /// Return detailed breakdown of the balance calculation components.
 pub fn balance_detail(dae_model: &dae::Dae) -> BalanceResult<BalanceDetail> {
+    balance_detail_impl(dae_model)
+}
+
+pub(crate) fn balance_detail_impl(dae_model: &dae::Dae) -> BalanceResult<BalanceDetail> {
     let state_unknowns: usize = dae_model.variables.states.values().map(|v| v.size()).sum();
     let alg_unknowns: usize = dae_model
         .variables
@@ -745,7 +748,7 @@ fn count_condition_memory_equation_scalars(dae_model: &dae::Dae) -> usize {
     let discrete_valued_symbols = BalanceSymbolSet::new(dae_model, &discrete_valued_names);
     dae_model
         .conditions
-        .equations
+        .equations()
         .iter()
         .filter(|eq| equation_lhs_matches_symbol(eq, &discrete_valued_symbols))
         .map(|eq| eq.scalar_count)

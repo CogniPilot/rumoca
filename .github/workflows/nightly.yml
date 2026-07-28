@@ -174,13 +174,22 @@ jobs:
           unzip -q target/msl/msl-v4.1.0.zip -d "$msl_dir"
           rm target/msl/msl-v4.1.0.zip
 
-      # `msl-external-tests` is declared in crates/rumoca-test-msl/Cargo.toml but
-      # was not referenced by any workflow, so the FMI3 and CasADi backends had
-      # no scheduled MSL coverage at all. The flake's dev shell supplies the
-      # `cc` toolchain and the CasADi Python package these suites need.
+      # These are diagnostic MSL corpus cross-checks, not the required template
+      # runtime gates. The flake's dev shell supplies the C toolchain and the
+      # CasADi Python package. Target-list discovery remains a manual maintenance
+      # command because it writes proposed fixture files rather than asserting a
+      # fixed correctness threshold.
+      - name: FMI2 MSL suite
+        continue-on-error: true
+        run: nix develop --command cargo test --release -p rumoca-test-msl --features msl-external-tests --test fmi2_msl_test -- --nocapture
+
       - name: FMI3 MSL suite
         continue-on-error: true
         run: nix develop --command cargo test --release -p rumoca-test-msl --features msl-external-tests --test fmi3_msl_test -- --nocapture
+
+      - name: Embedded C MSL suite
+        continue-on-error: true
+        run: nix develop --command cargo test --release -p rumoca-test-msl --features msl-external-tests --test embedded_c_msl_test -- --nocapture
 
       - name: CasADi MSL suite
         continue-on-error: true

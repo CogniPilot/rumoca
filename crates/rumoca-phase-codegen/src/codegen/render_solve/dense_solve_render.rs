@@ -128,7 +128,7 @@ fn checked_matmul_render_count(
 /// Three dispatch paths:
 /// - `Diagonal` lhs (n=1, m=k): element-wise scalar multiplies (no GEMM)
 /// - `Explicit { nnz }` lhs: scalar FMA over each nonzero position
-/// - `Dense` (default): `linalg.matmul` with alloca'd temporaries
+/// - `Dense` (default): `linalg.matmul` with heap-allocated temporaries
 ///
 /// Called from the MLIR template as `render_matmul_mlir(node.MatMul, node_id, output_offset)`.
 ///
@@ -215,7 +215,7 @@ fn render_dense_matmul_mlir(
 ) -> Result<(), minijinja::Error> {
     let MatMulRenderShape { m, k, n, .. } = shape;
     out.push_str(&format!(
-        "    %{pfx}_A = memref.alloca() : memref<{m}x{k}xf64>\n"
+        "    %{pfx}_A = memref.alloc() : memref<{m}x{k}xf64>\n"
     ));
     for i in 0..m {
         for j in 0..k {
@@ -229,7 +229,7 @@ fn render_dense_matmul_mlir(
     }
 
     out.push_str(&format!(
-        "    %{pfx}_B = memref.alloca() : memref<{k}x{n}xf64>\n"
+        "    %{pfx}_B = memref.alloc() : memref<{k}x{n}xf64>\n"
     ));
     for i in 0..k {
         for j in 0..n {
@@ -244,7 +244,7 @@ fn render_dense_matmul_mlir(
 
     out.push_str(&format!(
         "    %{pfx}_zero = arith.constant 0.0 : f64\n\
-         \t%{pfx}_C = memref.alloca() : memref<{m}x{n}xf64>\n\
+         \t%{pfx}_C = memref.alloc() : memref<{m}x{n}xf64>\n\
          \tlinalg.fill ins(%{pfx}_zero : f64) outs(%{pfx}_C : memref<{m}x{n}xf64>)\n\
          \tlinalg.matmul ins(%{pfx}_A, %{pfx}_B : memref<{m}x{k}xf64>, memref<{k}x{n}xf64>) \
                         outs(%{pfx}_C : memref<{m}x{n}xf64>)\n"
@@ -268,6 +268,11 @@ fn render_dense_matmul_mlir(
             ));
         }
     }
+    out.push_str(&format!(
+        "    memref.dealloc %{pfx}_C : memref<{m}x{n}xf64>\n\
+         \tmemref.dealloc %{pfx}_B : memref<{k}x{n}xf64>\n\
+         \tmemref.dealloc %{pfx}_A : memref<{m}x{k}xf64>\n"
+    ));
     Ok(())
 }
 
@@ -424,7 +429,7 @@ pub(in crate::codegen) fn checked_linsolve_render_count(
 /// the matrix operand values; no output memref store is emitted here.
 /// Render a `ComputeNode::LinSolve` inner value as MLIR textual IR.
 ///
-/// Emits `setup_ops`, allocas flat A (n×n), b (n), and x (n) memrefs, fills
+/// Emits `setup_ops`, heap-allocates flat A (n×n), b (n), and x (n) memrefs, fills
 /// them from computed registers, then calls `@rumoca_solve_linear` once for
 /// the complete output vector.
 ///
@@ -667,6 +672,79 @@ fn binary_to_mlir_op(op: &str) -> Option<&'static str> {
         "Min" => Some("arith.minnumf"),
         "Max" => Some("arith.maxnumf"),
         _ => None,
+    }
+}
+
+/// Whether MLIR's native dense-node emitter can lower every setup operation.
+///
+/// Unsupported operations must retain the shared scalarized program. Marking
+/// only part of a tensor setup stream as native would filter out that fallback
+/// and silently omit the node's outputs from generated MLIR.
+pub(in crate::codegen) fn mlir_native_dense_node_supported(node: &solve::ComputeNode) -> bool {
+    match node {
+        solve::ComputeNode::MatMul {
+            lhs_ops, rhs_ops, ..
+        } => lhs_ops
+            .iter()
+            .chain(rhs_ops)
+            .all(mlir_native_linear_op_supported),
+        solve::ComputeNode::LinSolve { setup_ops, .. } => {
+            setup_ops.iter().all(mlir_native_linear_op_supported)
+        }
+        solve::ComputeNode::ScalarPrograms(_)
+        | solve::ComputeNode::Map { .. }
+        | solve::ComputeNode::AffineStencil { .. } => false,
+    }
+}
+
+fn mlir_native_linear_op_supported(op: &solve::LinearOp) -> bool {
+    match op {
+        solve::LinearOp::Const { .. }
+        | solve::LinearOp::LoadY { .. }
+        | solve::LinearOp::LoadP { .. }
+        | solve::LinearOp::LoadIndexedP { .. }
+        | solve::LinearOp::Move { .. }
+        | solve::LinearOp::StoreOutput { .. } => true,
+        solve::LinearOp::Unary { op, .. } => matches!(
+            op,
+            solve::UnaryOp::Neg
+                | solve::UnaryOp::Abs
+                | solve::UnaryOp::Sqrt
+                | solve::UnaryOp::Floor
+                | solve::UnaryOp::Ceil
+                | solve::UnaryOp::Trunc
+                | solve::UnaryOp::Sin
+                | solve::UnaryOp::Cos
+                | solve::UnaryOp::Tan
+                | solve::UnaryOp::Exp
+                | solve::UnaryOp::Log
+        ),
+        solve::LinearOp::Binary { op, .. } => matches!(
+            op,
+            solve::BinaryOp::Add
+                | solve::BinaryOp::Sub
+                | solve::BinaryOp::Mul
+                | solve::BinaryOp::Div
+                | solve::BinaryOp::Pow
+                | solve::BinaryOp::Min
+                | solve::BinaryOp::Max
+        ),
+        solve::LinearOp::LoadTime { .. }
+        | solve::LinearOp::LoadSeed { .. }
+        | solve::LinearOp::LoadIndexedSeed { .. }
+        | solve::LinearOp::LinearSolveComponent { .. }
+        | solve::LinearOp::TableBounds { .. }
+        | solve::LinearOp::TableLookup { .. }
+        | solve::LinearOp::TableLookupSlope { .. }
+        | solve::LinearOp::TableNextEvent { .. }
+        | solve::LinearOp::RandomInitialState { .. }
+        | solve::LinearOp::RandomResult { .. }
+        | solve::LinearOp::RandomState { .. }
+        | solve::LinearOp::ImpureRandomInit { .. }
+        | solve::LinearOp::ImpureRandom { .. }
+        | solve::LinearOp::ImpureRandomInteger { .. }
+        | solve::LinearOp::Compare { .. }
+        | solve::LinearOp::Select { .. } => false,
     }
 }
 

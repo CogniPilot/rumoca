@@ -17,18 +17,6 @@ type Expression = ast::Expression;
 type ScopeKind = ast::ScopeKind;
 type StoredDefinition = ast::StoredDefinition;
 
-/// True when `expr` is a component reference whose first path element is
-/// `name` — the shape that makes a modification value name the very element the
-/// modification targets.
-fn expression_leads_with_name(expr: &Expression, name: &str) -> bool {
-    let Expression::ComponentReference(comp) = expr else {
-        return false;
-    };
-    comp.parts
-        .first()
-        .is_some_and(|part| &*part.ident.text == name)
-}
-
 impl ResolveTraversalCallbacks for Resolver {
     fn create_loop_scope(&mut self, enclosing: ScopeId) -> ScopeId {
         self.scope_tree.create_scope(enclosing, ScopeKind::ForLoop)
@@ -87,13 +75,15 @@ impl Resolver {
             constrainedby.def_id = Some(def_id);
         }
 
+        let short_class_modifier_scope =
+            (class.end_name_token.is_none() && !class.encapsulated).then_some(enclosing_scope);
         for ext in class.extends.iter_mut() {
             for modification in ext.modifications.iter_mut() {
                 Self::resolve_extend_modification(
                     self,
                     &mut modification.expr,
                     class_scope,
-                    enclosing_scope,
+                    short_class_modifier_scope.unwrap_or(class_scope),
                 );
             }
         }
@@ -168,37 +158,29 @@ impl Resolver {
 
     /// Resolve one modification of an `extends` clause.
     ///
-    /// MLS §5.3.1 / §4.5: a modifier of the form `x = x` cannot mean "the
-    /// modified element modifies itself" — the right-hand side names something
-    /// visible where the modification is written. This is how a short class
-    /// definition such as
-    /// `function f = base(arg = arg)` passes an enclosing component down into
-    /// the partially applied function. Resolving the value in the modified
-    /// class's own scope would bind it to the element being modified, which is
-    /// circular. Such self-named values are therefore resolved in the enclosing
-    /// scope; every other modification value keeps the class scope.
+    /// Resolve an extends modification without conflating its target and value
+    /// environments.
+    ///
+    /// MLS §4.6.1: a non-encapsulated short class does not introduce an
+    /// additional lexical scope for its modifiers. Consequently the modifier
+    /// target is resolved against the derived/base class while every value is
+    /// resolved in the enclosing instance scope. Long-form and encapsulated
+    /// short-class modifiers use the class scope for both.
     fn resolve_extend_modification(
         &mut self,
         expr: &mut Expression,
-        class_scope: ScopeId,
-        enclosing_scope: ScopeId,
+        target_scope: ScopeId,
+        value_scope: ScopeId,
     ) {
         match expr {
-            Expression::NamedArgument { name, value, .. }
-                if expression_leads_with_name(value, &name.text) =>
-            {
-                self.resolve_expression(std::sync::Arc::make_mut(value), enclosing_scope);
+            Expression::NamedArgument { value, .. } => {
+                self.resolve_expression(std::sync::Arc::make_mut(value), value_scope);
             }
-            Expression::Modification { target, value, .. }
-                if target
-                    .parts
-                    .first()
-                    .is_some_and(|part| expression_leads_with_name(value, &part.ident.text)) =>
-            {
-                self.resolve_component_reference(target, class_scope);
-                self.resolve_expression(std::sync::Arc::make_mut(value), enclosing_scope);
+            Expression::Modification { target, value, .. } => {
+                self.resolve_component_reference(target, target_scope);
+                self.resolve_expression(std::sync::Arc::make_mut(value), value_scope);
             }
-            other => self.resolve_expression(other, class_scope),
+            other => self.resolve_expression(other, target_scope),
         }
     }
 

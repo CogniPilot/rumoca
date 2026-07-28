@@ -19,7 +19,7 @@ use rumoca_compile::{
 };
 use rumoca_phase_flatten::{flatten_phase_timing_stats, reset_flatten_phase_timing_stats};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{self, Cursor, Read, Write};
 use std::path::{Path, PathBuf};

@@ -17,7 +17,7 @@
 //! | causality `calculatedParameter`, not tunable, origin `source` | `DependentParameter` (defining expression preserved symbolically in `Variable.start`) |
 //! | generated `__pre__.` slot (origin `generated` + prefix) | `State`, named `'previous(x)'` (trap T2) |
 //! | causality `local` in `z`/`m` | `State` |
-//! | anything else | `ET010` diagnostic (fail early, no default class) |
+//! | anything else | `EGT010` diagnostic (fail early, no default class) |
 //!
 //! The generated condition vector `c` (the `f_c` targets) and its
 //! `__pre__.c` slot are **projection-internal**: they encode the when-edge
@@ -32,7 +32,7 @@
 //! caller-supplied [`ScalarTypeMap`](crate::input::ScalarTypeMap) provenance
 //! first, then the partition contract (`x`/`y`/`u`/`w`/`z` are Real), then
 //! condition-vector targets (Boolean by MLS B.1d), then pre-slot base
-//! inheritance; otherwise `ET011`.
+//! inheritance; otherwise `EGT011`.
 
 use std::collections::{HashMap, HashSet};
 

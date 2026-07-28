@@ -117,6 +117,34 @@ fn test_try_eval_integer_with_ctx_div_operator_requires_exact_quotient() {
 }
 
 #[test]
+fn dynamic_nested_if_without_else_rejects_unbalanced_equation_count() {
+    let block = EquationBlock {
+        cond: ast::Expression::ComponentReference(make_comp_ref("dynamicCondition")),
+        eqs: vec![ast::Equation::Simple {
+            lhs: ast::Expression::ComponentReference(make_comp_ref("x")),
+            rhs: make_int(1),
+        }],
+    };
+
+    let result = expand_nested_if_to_simple(
+        &Context::new(),
+        &[block],
+        &None,
+        &QualifiedName::new(),
+        test_span(),
+    );
+    let Err(err) = result else {
+        panic!("an omitted else branch must contribute zero equations");
+    };
+
+    assert!(
+        err.to_string()
+            .contains("omitted else branch has 0 equations"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
 fn test_try_eval_integer_with_ctx_div_builtin_remains_truncating() {
     let ctx = Context::new();
     let expr = make_call("div", vec![make_int(7), make_int(2)]);

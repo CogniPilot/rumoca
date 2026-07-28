@@ -146,7 +146,7 @@ impl ModelicaLanguageServer {
                 return;
             }
             let diagnostics_started = Instant::now();
-            let tool_options = self.tool_options_for_document(&file_name).await;
+            let tool_options = self.tool_options_for_document_or_default(&file_name).await;
             let mut session = self.session.write().await;
             let mut diagnostics = handlers::compute_diagnostics_with_options(
                 text,
@@ -171,7 +171,7 @@ impl ModelicaLanguageServer {
             return;
         }
         let diagnostics_started = Instant::now();
-        let tool_options = self.tool_options_for_document(&file_name).await;
+        let tool_options = self.tool_options_for_document_or_default(&file_name).await;
         let mut diagnostics = handlers::compute_diagnostics_with_options(
             text,
             &file_name,

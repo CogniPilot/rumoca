@@ -738,25 +738,31 @@ fn partition_node_for_template(
         solve::ComputeNode::MatMul { m, n, span, .. } => {
             let span = required_compute_node_span(*span, "matmul scalar fallback")?;
             let count = checked_product(*m, *n, "matmul scalar fallback", span)?;
-            push_native_dense_node(partition, node, *output_cursor, span)?;
+            let native_dense = mlir_native_dense_node_supported(node);
+            if native_dense {
+                push_native_dense_node(partition, node, *output_cursor, span)?;
+            }
             push_multi_output_tensor_fallback_program(
                 partition,
                 output_cursor,
                 node,
                 count,
-                true,
+                native_dense,
                 span,
             )?;
         }
         solve::ComputeNode::LinSolve { n, span, .. } => {
             let span = required_compute_node_span(*span, "linsolve scalar fallback")?;
-            push_native_dense_node(partition, node, *output_cursor, span)?;
+            let native_dense = mlir_native_dense_node_supported(node);
+            if native_dense {
+                push_native_dense_node(partition, node, *output_cursor, span)?;
+            }
             push_multi_output_tensor_fallback_program(
                 partition,
                 output_cursor,
                 node,
                 *n,
-                true,
+                native_dense,
                 span,
             )?;
         }

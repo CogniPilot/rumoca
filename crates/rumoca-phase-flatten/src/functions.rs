@@ -1809,7 +1809,7 @@ fn convert_function<'tree>(
 
     // Convert external function declaration (MLS §12.9)
     if let Some(ref ext) = class_def.external {
-        func.external = Some(convert_external_function(ext, qualified_name));
+        func.external = Some(convert_external_function(ext, def_map)?);
     }
 
     // Extract derivative annotations (MLS §12.7.1)

@@ -69,6 +69,44 @@ struct ConnectionVarIndex {
     parsed_parts_by_var: FxHashMap<rumoca_core::VarName, Vec<String>>,
 }
 
+struct ConnectionEndpointIndex {
+    declared: IndexMap<rumoca_core::ComponentPath, ast::InstanceId>,
+    expandable_owners: IndexMap<rumoca_core::ComponentPath, ast::InstanceId>,
+}
+
+impl ConnectionEndpointIndex {
+    fn new(overlay: &ast::InstanceOverlay) -> Self {
+        let mut declared = IndexMap::default();
+        let mut expandable_owners = IndexMap::default();
+        for (instance_id, component) in &overlay.components {
+            let path = component.qualified_name.to_component_path();
+            declared.insert(path.clone(), *instance_id);
+            if component.is_expandable_connector_type {
+                expandable_owners.insert(path, *instance_id);
+            }
+        }
+        Self {
+            declared,
+            expandable_owners,
+        }
+    }
+
+    fn needs_expandable_augmentation(&self, endpoint: &ast::QualifiedName) -> bool {
+        let endpoint = endpoint.to_component_path();
+        if self.declared.contains_key(&endpoint) {
+            return false;
+        }
+        let mut owner = endpoint.parent();
+        while let Some(candidate) = owner {
+            if self.expandable_owners.contains_key(&candidate) {
+                return true;
+            }
+            owner = candidate.parent();
+        }
+        false
+    }
+}
+
 impl ConnectionVarIndex {
     fn new(flat: &flat::Model) -> Self {
         Self::from_var_names(flat.variables.keys())
@@ -707,7 +745,7 @@ fn canonical_type_id(type_id: TypeId, type_roots: &IndexMap<TypeId, TypeId>) -> 
 /// Validate that connected variables have compatible array dimensions.
 ///
 /// Per CONN-008 (MLS §9.2): Array dimensions must match for connection.
-/// Per SPEC_0027: Dimension evaluation happens in typecheck phase before flatten.
+/// Per SPEC_0007: dimension evaluation happens in typecheck before flatten.
 ///
 /// Empty dimensions `[]` indicates a scalar variable (0-dimensional).
 /// Scalars must connect to scalars; arrays must connect to same-dimension arrays.
@@ -794,6 +832,7 @@ fn count_expanded_connector_matches(
 fn reject_expandable_connector_augmentation(
     connections: &[&ast::InstanceConnection],
     flat: &flat::Model,
+    endpoint_index: &ConnectionEndpointIndex,
     prefix_children: &FxHashMap<String, Vec<rumoca_core::VarName>>,
     var_index: &ConnectionVarIndex,
 ) -> Result<(), FlattenError> {
@@ -803,9 +842,13 @@ fn reject_expandable_connector_augmentation(
         let subs_a = find_sub_variables_indexed(&path_a, prefix_children, var_index);
         let subs_b = find_sub_variables_indexed(&path_b, prefix_children, var_index);
         if subs_a.is_empty() || subs_b.is_empty() {
-            // Undeclared expandable members are rejected by typecheck. Without
-            // descendants there is no Flat-IR evidence that either endpoint is
-            // an expandable connector, so leave other endpoint forms alone.
+            if endpoint_index.needs_expandable_augmentation(&conn.a)
+                || endpoint_index.needs_expandable_augmentation(&conn.b)
+            {
+                return Err(FlattenError::unsupported_expandable_connector_augmentation(
+                    path_a, path_b, conn.span,
+                ));
+            }
             continue;
         }
 

@@ -16,6 +16,8 @@ use rumoca_exec_mlir::{
 };
 use rumoca_ir_solve::{ComputeBlock, ComputeNode, LinearOp, SolveProblem};
 
+mod support;
+
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 fn solve_problem_for(derivative_rhs: ComputeBlock) -> SolveProblem {
@@ -85,7 +87,7 @@ fn linsolve_node_numerics_match_analytical() {
     let compiled = match compile_derivative_rhs(&problem, "linsolve_node") {
         Ok(c) => c,
         Err(MlirError::ToolNotFound { tool, .. }) => {
-            eprintln!("SKIP: {tool} not found");
+            support::missing_cpu_tool(tool);
             return;
         }
         Err(e) => panic!("compile failed: {e}"),
@@ -114,7 +116,7 @@ fn linsolve_scalar_path_numerics_match_analytical() {
     let compiled = match compile_derivative_rhs(&problem, "linsolve_scalar") {
         Ok(c) => c,
         Err(MlirError::ToolNotFound { tool, .. }) => {
-            eprintln!("SKIP: {tool} not found");
+            support::missing_cpu_tool(tool);
             return;
         }
         Err(e) => panic!("compile failed: {e}"),
@@ -148,7 +150,7 @@ fn linsolve_node_and_scalar_agree_at_multiple_points() {
         (Ok(a), Ok(b)) => (a, b),
         (Err(MlirError::ToolNotFound { tool, .. }), _)
         | (_, Err(MlirError::ToolNotFound { tool, .. })) => {
-            eprintln!("SKIP: {tool} not found");
+            support::missing_cpu_tool(tool);
             return;
         }
         (Err(e), _) | (_, Err(e)) => panic!("compile failed: {e}"),
@@ -205,7 +207,7 @@ fn linsolve_partial_pivoting_correctness() {
     let compiled = match compile_derivative_rhs(&problem, "ls_pivot") {
         Ok(c) => c,
         Err(MlirError::ToolNotFound { tool, .. }) => {
-            eprintln!("SKIP: {tool} not found");
+            support::missing_cpu_tool(tool);
             return;
         }
         Err(e) => panic!("compile failed: {e}"),

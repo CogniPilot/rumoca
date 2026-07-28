@@ -300,12 +300,20 @@ fn reverse_row_adjoints(
             // derivative). Consume the adjoint without redistributing it.
             LinearOp::Const { dst, .. }
             | LinearOp::LoadTime { dst }
-            | LinearOp::LoadIndexedP { dst, .. }
             | LinearOp::Compare { dst, .. } => {
                 take_adj(adj, dst);
             }
             LinearOp::LoadY { dst, index } => accumulate(cot.y, index, take_adj(adj, dst)),
             LinearOp::LoadP { dst, index } => accumulate(cot.p, index, take_adj(adj, dst)),
+            LinearOp::LoadIndexedP {
+                dst,
+                base,
+                count,
+                index,
+            } => {
+                let slot = rumoca_ir_solve::resolve_indexed_slot(reg(regs, index), base, count);
+                accumulate(cot.p, slot, take_adj(adj, dst));
+            }
             LinearOp::LoadSeed { dst, index } => accumulate(cot.seed, index, take_adj(adj, dst)),
             LinearOp::Move { dst, src } => {
                 let dst_adj = take_adj(adj, dst);
@@ -648,6 +656,65 @@ mod tests {
             "df/dy0 should be 3 (register reuse handled), got {}",
             cot_y[0]
         );
+    }
+
+    #[test]
+    fn reverse_indexed_parameter_load_accumulates_selected_slot() {
+        let block = ScalarProgramBlock::with_output_indices(
+            vec![vec![
+                LinearOp::LoadY { dst: 0, index: 0 },
+                LinearOp::LoadIndexedP {
+                    dst: 1,
+                    base: 1,
+                    count: 3,
+                    index: 0,
+                },
+                LinearOp::StoreOutput { src: 1 },
+            ]],
+            vec![rumoca_core::Span::DUMMY],
+            vec![0],
+        )
+        .expect("valid indexed-parameter block");
+        let row_registers =
+            [crate::required_registers(&block.programs[0]).expect("register count")];
+        let requirements =
+            crate::scalar_program_block_input_requirements(&block).expect("requirements");
+        let mut cot_y = [0.0];
+        let mut cot_p = [0.0; 4];
+        let mut scratch = ReverseScratch::default();
+
+        reverse_scalar_block_vjp(
+            &ScalarVjpProgram {
+                block: &block,
+                row_registers: &row_registers,
+                requirements,
+            },
+            &ReverseInputs {
+                y: &[1.0],
+                p: &[10.0, 20.0, 30.0, 40.0],
+                t: 0.0,
+                context: RowEvalContext::default(),
+            },
+            &[2.5],
+            &mut ReverseCotangents {
+                y: &mut cot_y,
+                p: &mut cot_p,
+                seed: &mut [],
+            },
+            &mut scratch,
+        )
+        .expect("reverse sweep");
+
+        assert_eq!(cot_y, [0.0]);
+        assert_eq!(cot_p, [0.0, 0.0, 2.5, 0.0]);
+        let parameter_direction = [1.0, -2.0, 3.0, -4.0];
+        let forward_contraction = 2.5 * parameter_direction[2];
+        let reverse_contraction: f64 = cot_p
+            .iter()
+            .zip(parameter_direction)
+            .map(|(cotangent, direction)| cotangent * direction)
+            .sum();
+        assert_eq!(forward_contraction, reverse_contraction);
     }
 
     /// Reverse VJP through a `LinearSolveComponent` (`x = A⁻¹ b`). The 2x2 system's

@@ -115,12 +115,33 @@ pub trait NoStateOrchestrationBackend {
 
     fn current_time(&self) -> f64;
     fn set_current_time(&mut self, time: f64);
+    /// Maximum accepted interval and root-surface observation spacing.
+    ///
+    /// Zero-state root detection is resolution-bounded: a finite positive
+    /// ceiling detects sign transitions that remain bracketed between adjacent
+    /// observations, but it is not a proof that an arbitrary surface has no
+    /// additional roots inside one interval.
     fn max_accepted_step_size(&self) -> Option<f64>;
     fn next_scheduled_stop(&mut self, target: f64) -> Result<NoStateScheduledStop, Self::Error>;
     fn next_root_event_time(&mut self, target: f64, tol: f64) -> Result<Option<f64>, Self::Error>;
     fn handle_event_step(&mut self, step: NoStateEventStep) -> Result<(), Self::Error>;
     fn settle_accepted_step(&mut self) -> Result<(), Self::Error>;
     fn record_output(&mut self) -> Result<(), Self::Error>;
+}
+
+/// Combine the output-resolution ceiling with the delay-history step limit.
+///
+/// Invalid or non-positive values do not constrain the scan. The minimum
+/// valid ceiling bounds work without allocating a time grid.
+pub fn no_state_root_scan_step_ceiling(
+    output_dt: Option<f64>,
+    delay_step_limit: Option<f64>,
+) -> Option<f64> {
+    [output_dt, delay_step_limit]
+        .into_iter()
+        .flatten()
+        .filter(|step| step.is_finite() && *step > 0.0)
+        .reduce(f64::min)
 }
 
 pub fn run_no_state_output_schedule<B, I>(
@@ -157,7 +178,11 @@ where
         let max_step = backend.max_accepted_step_size();
         let step_target = capped_no_state_step_target(current, target, max_step);
         let scheduled = backend.next_scheduled_stop(step_target)?;
-        let root_event_time = backend.next_root_event_time(step_target, tol)?;
+        // Do not inspect through a scheduled/delay deadline. The event at that
+        // exact instant owns the boundary, and a later relation transition is
+        // considered only after its right limit has been settled.
+        let root_scan_target = scheduled.stop_time.min(step_target);
+        let root_event_time = backend.next_root_event_time(root_scan_target, tol)?;
         let root_event = root_event_time
             .map(|root_time| scheduled.event_stop.is_none() || root_time < scheduled.stop_time)
             .unwrap_or(false);
@@ -342,5 +367,158 @@ mod tests {
         .unwrap();
 
         assert!((root - 0.5).abs() <= 1.0e-12);
+    }
+
+    #[test]
+    fn root_scan_ceiling_uses_the_nearest_dt_or_delay_limit() {
+        assert_eq!(
+            no_state_root_scan_step_ceiling(Some(0.25), Some(0.1)),
+            Some(0.1)
+        );
+        assert_eq!(
+            no_state_root_scan_step_ceiling(Some(0.25), Some(f64::NAN)),
+            Some(0.25)
+        );
+        assert_eq!(no_state_root_scan_step_ceiling(Some(0.0), Some(-1.0)), None);
+    }
+
+    struct OscillatoryBackend {
+        current_time: f64,
+        scan_ceiling: Option<f64>,
+        scheduled_deadline: Option<f64>,
+        scratch: NoStateRootSearchScratch,
+        root_events: Vec<f64>,
+        scheduled_events: Vec<f64>,
+        root_scan_targets: Vec<f64>,
+    }
+
+    impl OscillatoryBackend {
+        fn new(scan_ceiling: Option<f64>, scheduled_deadline: Option<f64>) -> Self {
+            Self {
+                current_time: 0.0,
+                scan_ceiling,
+                scheduled_deadline,
+                scratch: NoStateRootSearchScratch::new(1),
+                root_events: Vec::new(),
+                scheduled_events: Vec::new(),
+                root_scan_targets: Vec::new(),
+            }
+        }
+    }
+
+    impl NoStateOrchestrationBackend for OscillatoryBackend {
+        type Error = ();
+
+        fn current_time(&self) -> f64 {
+            self.current_time
+        }
+
+        fn set_current_time(&mut self, time: f64) {
+            self.current_time = time;
+        }
+
+        fn max_accepted_step_size(&self) -> Option<f64> {
+            self.scan_ceiling
+        }
+
+        fn next_scheduled_stop(
+            &mut self,
+            target: f64,
+        ) -> Result<NoStateScheduledStop, Self::Error> {
+            let event_time = self
+                .scheduled_deadline
+                .filter(|event| *event > self.current_time && *event <= target);
+            Ok(NoStateScheduledStop {
+                stop_time: event_time.unwrap_or(target),
+                event_stop: event_time.map(|_| RuntimeEventStop {
+                    pre_mode: EventPreMode::FollowCurrent,
+                    observe_right_limit: false,
+                    terminal: false,
+                }),
+            })
+        }
+
+        fn next_root_event_time(
+            &mut self,
+            target: f64,
+            tol: f64,
+        ) -> Result<Option<f64>, Self::Error> {
+            self.root_scan_targets.push(target);
+            first_no_state_root_crossing(
+                &mut self.scratch,
+                1,
+                self.current_time,
+                target,
+                tol,
+                |t, out| {
+                    out[0] = (t - 0.25) * (t - 0.75);
+                    Ok(())
+                },
+            )
+        }
+
+        fn handle_event_step(&mut self, step: NoStateEventStep) -> Result<(), Self::Error> {
+            if step.root_event {
+                let event_time = step.root_event_time.expect("root event time");
+                self.root_events.push(event_time);
+                self.current_time = (event_time + 2.0 * step.tol).min(step.target);
+            } else {
+                self.scheduled_events.push(step.stop_time);
+                self.current_time = step.stop_time;
+                self.scheduled_deadline = None;
+            }
+            Ok(())
+        }
+
+        fn settle_accepted_step(&mut self) -> Result<(), Self::Error> {
+            Ok(())
+        }
+
+        fn record_output(&mut self) -> Result<(), Self::Error> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn bounded_scan_finds_two_zero_state_crossings_in_order_across_a_deadline() {
+        let mut backend = OscillatoryBackend::new(Some(0.2), Some(0.5));
+
+        run_no_state_output_schedule(&mut backend, [1.0], 1.0e-10).unwrap();
+
+        assert_eq!(backend.root_events.len(), 2);
+        assert!((backend.root_events[0] - 0.25).abs() <= 1.0e-9);
+        assert!((backend.root_events[1] - 0.75).abs() <= 1.0e-9);
+        assert_eq!(backend.scheduled_events, vec![0.5]);
+        assert!(
+            backend.root_scan_targets.contains(&0.5),
+            "root scanning must stop at the exact scheduled deadline"
+        );
+    }
+
+    #[test]
+    fn zero_state_root_detection_is_sensitive_to_the_declared_resolution() {
+        let mut endpoint_only = OscillatoryBackend::new(None, None);
+
+        run_no_state_output_schedule(&mut endpoint_only, [1.0], 1.0e-10).unwrap();
+
+        assert!(
+            endpoint_only.root_events.is_empty(),
+            "two crossings with equal endpoint signs are intentionally unresolved without an interior ceiling"
+        );
+    }
+
+    #[test]
+    fn bounded_scan_does_not_synthesize_events_without_a_sign_transition() {
+        let mut scratch = NoStateRootSearchScratch::new(1);
+
+        for (start, end) in [(0.0, 0.2), (0.2, 0.4), (0.4, 0.6), (0.6, 0.8), (0.8, 1.0)] {
+            let root =
+                first_no_state_root_crossing(&mut scratch, 1, start, end, 1.0e-10, |t, out| {
+                    out[0] = t * t + 1.0;
+                    Ok::<_, ()>(())
+                })
+                .unwrap();
+            assert_eq!(root, None);
+        }
     }
 }

@@ -21,7 +21,7 @@
 //! built by the caller from Flat-side declared types (`flat::Variable::
 //! type_id`), keyed by the DAE variable name. When the map is absent or has
 //! no entry and the partition contract does not fix the type either,
-//! classification fails with `ET011` — a type is never inferred from start
+//! classification fails with `EGT011` — a type is never inferred from start
 //! values and never defaulted (SPEC_0008, S8).
 
 use std::collections::HashMap;

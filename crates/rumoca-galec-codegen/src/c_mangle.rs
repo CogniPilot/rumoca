@@ -17,7 +17,7 @@
 //!
 //! The map is deterministic but not injective on its own (`a.b` and `a_b`
 //! both yield `a_b`), so [`CNameTable::build`] checks collisions over the
-//! whole package and fails with a typed `ET022` — names are never silently
+//! whole package and fails with a typed `EGT022` — names are never silently
 //! renamed apart (SPEC_0008: no silent defaults).
 
 use std::collections::HashMap;
@@ -226,7 +226,7 @@ const C_RESERVED_IDENTIFIERS: &[&str] = &[
 ///
 /// # Errors
 ///
-/// `ET023` when the name cannot begin a C identifier (empty or not
+/// `EGT023` when the name cannot begin a C identifier (empty or not
 /// ASCII-letter-first — GALEC name legality makes this a projection bug,
 /// but a corrupt name must fail loudly, never be patched up).
 pub fn c_identifier(name: &Name) -> Result<String, GalecTargetError> {
@@ -269,11 +269,11 @@ pub struct CNameTable {
 
 impl CNameTable {
     /// Build the table over every variable the block declares, failing with
-    /// `ET022` on the first C-name collision (module docs).
+    /// `EGT022` on the first C-name collision (module docs).
     ///
     /// # Errors
     ///
-    /// `ET022` on collision; `ET023` for names outside the C-manglable set.
+    /// `EGT022` on collision; `EGT023` for names outside the C-manglable set.
     pub fn build(block: &Block) -> Result<Self, GalecTargetError> {
         let declared = block
             .interface
@@ -329,7 +329,7 @@ impl CNameTable {
     ///
     /// # Errors
     ///
-    /// `ET018` for a name the block never declared — the lowering resolves
+    /// `EGT018` for a name the block never declared — the lowering resolves
     /// every reference through the classification, so this is a projection
     /// bug.
     pub fn c_name(&self, name: &Name) -> Result<&str, GalecTargetError> {
@@ -341,7 +341,7 @@ impl CNameTable {
     ///
     /// # Errors
     ///
-    /// `ET018` for an undeclared spelling (see [`Self::c_name`]).
+    /// `EGT018` for an undeclared spelling (see [`Self::c_name`]).
     pub fn c_name_by_spelling(&self, spelling: &str) -> Result<&str, GalecTargetError> {
         self.by_spelling
             .get(spelling)
@@ -431,7 +431,7 @@ mod tests {
     #[test]
     fn non_letter_first_names_are_rejected_loudly() {
         let error = c_identifier(&Name::quoted("2fast")).unwrap_err();
-        assert_eq!(error.code(), "ET023", "{error}");
+        assert_eq!(error.code(), "EGT023", "{error}");
     }
 
     #[test]
@@ -462,9 +462,9 @@ mod tests {
             c_name,
         } = &error
         else {
-            panic!("expected ET022 CNameCollision, got: {error}");
+            panic!("expected EGT022 CNameCollision, got: {error}");
         };
-        assert_eq!(error.code(), "ET022");
+        assert_eq!(error.code(), "EGT022");
         assert_eq!(c_name, "a_b");
         assert_ne!(first, second);
     }
@@ -473,6 +473,6 @@ mod tests {
     fn undeclared_references_are_a_loud_projection_bug() {
         let table = CNameTable::build(&block_with_states(&[Name::ident("y")])).unwrap();
         let error = table.c_name(&Name::ident("ghost")).unwrap_err();
-        assert_eq!(error.code(), "ET018", "{error}");
+        assert_eq!(error.code(), "EGT018", "{error}");
     }
 }

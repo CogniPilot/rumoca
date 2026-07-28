@@ -78,6 +78,7 @@ mod tests {
             is_overconstrained: false,
             is_protected: false,
             is_connector_type: false,
+            is_expandable_connector_type: false,
             oc_record_path: None,
             oc_eq_constraint_size: None,
         }

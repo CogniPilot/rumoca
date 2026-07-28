@@ -2,7 +2,7 @@
 // boundary handling, and output sampling. split plan: move event handling and
 // dense-output/sample scheduling into focused solver modules.
 
-use std::{cell::RefCell, time::Instant};
+use std::{cell::RefCell, rc::Rc, time::Instant};
 
 use indexmap::IndexMap;
 use rumoca_ir_solve as solve;
@@ -101,8 +101,8 @@ enum SimulationSessionInner {
 }
 
 struct StateSession {
-    runtime: &'static SolveRuntime,
-    backend: Rk45Backend<'static>,
+    runtime: Rc<SolveRuntime>,
+    backend: Rk45Backend,
     reset_snapshot: Rk45ResetSnapshot,
     input_values: IndexMap<String, f64>,
 }
@@ -215,8 +215,8 @@ impl SimulationSession {
 
 impl StateSession {
     fn new(model: &solve::SolveModel, opts: SimOptions) -> Result<Self, SimError> {
-        let runtime = Box::leak(Box::new(SolveRuntime::new(model)?));
-        let mut backend = Rk45Backend::new(runtime, &opts)?;
+        let runtime = Rc::new(SolveRuntime::new(model)?);
+        let mut backend = Rk45Backend::new(Rc::clone(&runtime), &opts)?;
         backend.init()?;
         let reset_snapshot = backend.reset_snapshot();
         Ok(Self {
@@ -361,7 +361,7 @@ impl StateSession {
 
 fn record_rk_initial_samples(
     model: &SolveRuntime,
-    backend: &Rk45Backend<'_>,
+    backend: &Rk45Backend,
     data: &mut [Vec<f64>],
     times: &mut Vec<f64>,
     t_start: f64,
@@ -419,8 +419,8 @@ impl From<RuntimeSolveError> for SimError {
     }
 }
 
-struct Rk45Backend<'a> {
-    model: &'a SolveRuntime,
+struct Rk45Backend {
+    model: Rc<SolveRuntime>,
     time: f64,
     state: Vec<f64>,
     params: Vec<f64>,
@@ -500,11 +500,14 @@ pub fn simulate(model: &solve::SolveModel, opts: &SimOptions) -> Result<SimResul
     }
 
     validate_explicit_solve_model(model)?;
-    let model = SolveRuntime::new(model)?;
+    let model = Rc::new(SolveRuntime::new(model)?);
     let sample_dt = default_output_dt(opts);
-    let sample_times = timeline::build_output_times(opts.t_start, opts.t_end, sample_dt);
+    let sample_times = timeline::try_build_output_times(opts.t_start, opts.t_end, sample_dt)
+        .map_err(|error| SimError::RuntimeContract {
+            reason: error.to_string(),
+        })?;
     let mut times = checked_vec_with_capacity(sample_times.len(), "RK45 output times")?;
-    let mut backend = Rk45Backend::new(&model, opts)?;
+    let mut backend = Rk45Backend::new(Rc::clone(&model), opts)?;
     backend.init()?;
     let mut data =
         checked_vec_with_capacity(model.model.visible_names.len(), "RK45 output series")?;
@@ -668,8 +671,8 @@ fn roots_are_simultaneous(first: &LocatedRoot, candidate: &LocatedRoot) -> bool 
         || (first.time - candidate.time).abs() <= first.time_tolerance.max(candidate.time_tolerance)
 }
 
-impl<'a> Rk45Backend<'a> {
-    fn new(model: &'a SolveRuntime, opts: &SimOptions) -> Result<Self, SimError> {
+impl Rk45Backend {
+    fn new(model: Rc<SolveRuntime>, opts: &SimOptions) -> Result<Self, SimError> {
         let state = model.model.initial_y[..model.state_count].to_vec();
         let next_step = default_step_size(opts);
         if !next_step.is_finite() || next_step <= 0.0 {
@@ -678,7 +681,7 @@ impl<'a> Rk45Backend<'a> {
             });
         }
         Ok(Self {
-            model,
+            model: Rc::clone(&model),
             time: opts.t_start,
             state,
             params: model.model.parameters.clone(),
@@ -736,6 +739,30 @@ impl<'a> Rk45Backend<'a> {
         for (dst, src) in self.state.iter_mut().zip(solver_y.iter().copied()) {
             *dst = src;
         }
+    }
+
+    fn project_accepted_state(&mut self, time: f64, state: &mut [f64]) -> Result<bool, SimError> {
+        let mut solver_y = self.model.full_solver_y(
+            time,
+            state,
+            &self.params,
+            ALGEBRAIC_REFRESH_TOL,
+            UPDATE_MAX_ITERS,
+        )?;
+        let changed =
+            self.model
+                .project_state_manifold(&mut solver_y, &self.params, time, self.atol)?;
+        state.copy_from_slice(&solver_y[..self.model.state_count]);
+        self.model.full_solver_y_with_guess(
+            time,
+            state,
+            &self.params,
+            &mut solver_y,
+            ALGEBRAIC_REFRESH_TOL,
+            UPDATE_MAX_ITERS,
+        )?;
+        *self.solver_y_guess.borrow_mut() = solver_y;
+        Ok(changed)
     }
 
     fn trial_step(&self, h: f64, event_boundary: Option<f64>) -> Result<TrialStep, SimError> {
@@ -995,12 +1022,7 @@ impl<'a> Rk45Backend<'a> {
                 self.continuous_eval_time(old_t, event_boundary),
                 &old_state,
             )?;
-            let remaining = target_t - self.time;
-            let h = self
-                .delay_step_limit
-                .map_or(self.next_step, |limit| self.next_step.min(limit))
-                .min(remaining)
-                .max(MIN_STEP);
+            let h = trial_step_size(self.time, target_t, self.next_step, self.delay_step_limit)?;
             let trial = self.trial_step(h, event_boundary)?;
             let step_context = StepAcceptanceContext {
                 old_roots: &old_roots,
@@ -1012,10 +1034,11 @@ impl<'a> Rk45Backend<'a> {
             {
                 return Ok(outcome);
             }
-            self.next_step = adapt_step(h, trial.error_norm);
-            if self.next_step < MIN_STEP && self.time + MIN_STEP < target_t {
-                return Err(SimError::StepSizeUnderflow { target_t });
-            }
+            self.next_step = if self.time > old_t {
+                adapt_step(h, trial.error_norm)
+            } else {
+                rejected_step_size(h, trial.error_norm, target_t)?
+            };
         }
         Ok(StepUntilOutcome::StopReached)
     }
@@ -1032,9 +1055,11 @@ impl<'a> Rk45Backend<'a> {
             return Ok(None);
         }
         let new_t = (self.time + h).min(context.target_t);
+        let mut projected_next = trial.y_next.clone();
+        let manifold_changed = self.project_accepted_state(new_t, &mut projected_next)?;
         let new_roots = self.eval_root_conditions(
             self.continuous_eval_time(new_t, context.event_boundary),
-            &trial.y_next,
+            &projected_next,
         )?;
         let mut crossings = root_crossings_with_relation_memory(
             context.old_roots,
@@ -1054,7 +1079,7 @@ impl<'a> Rk45Backend<'a> {
                 &old_state,
                 trial.stages.each_ref().map(Vec::as_slice),
             )?;
-            let (root, simultaneous_crossings) = self.locate_step_roots(
+            let (mut root, simultaneous_crossings) = self.locate_step_roots(
                 &dense_output,
                 RootLocalizationInput {
                     old_roots: context.old_roots,
@@ -1063,6 +1088,9 @@ impl<'a> Rk45Backend<'a> {
                     event_boundary: context.event_boundary,
                 },
             )?;
+            self.project_accepted_state(root.time, &mut root.state)?;
+            let pre_time = timeline::event_left_limit_time(root.time).max(old_t);
+            self.project_accepted_state(pre_time, &mut root.pre_state)?;
             if rk_eval_trace_enabled() {
                 tracing::debug!(
                     target: "rumoca_solver_rk45::eval",
@@ -1095,9 +1123,13 @@ impl<'a> Rk45Backend<'a> {
             return Ok(Some(StepUntilOutcome::RootFound { t_root: root.time }));
         }
         self.time = new_t;
-        self.state = trial.y_next.clone();
+        self.state = projected_next;
         self.post_event_eval_time = None;
-        self.cache_derivative(self.time, &self.state, trial.stages[6].clone());
+        if manifold_changed {
+            self.clear_derivative_cache();
+        } else {
+            self.cache_derivative(self.time, &self.state, trial.stages[6].clone());
+        }
         self.commit_delay_point()?;
         Ok(None)
     }
@@ -1243,7 +1275,8 @@ impl<'a> Rk45Backend<'a> {
             .drain(..)
             .map(|crossing| (crossing.index, crossing.post_relation_memory_value))
             .collect::<Vec<_>>();
-        let runtime = self.model;
+        let runtime = Rc::clone(&self.model);
+        let projection_runtime = Rc::clone(&runtime);
         let state_count = runtime.state_count;
         let tol = self.atol;
         let outcome = runtime.apply_projected_event_update(
@@ -1258,7 +1291,9 @@ impl<'a> Rk45Backend<'a> {
                 row_filter: EventUpdateRowFilter::All,
                 root_relation_overrides: &root_overrides,
             },
-            move |y, p| project_rk_algebraics(runtime, y, p, event_time, state_count, tol),
+            move |y, p| {
+                project_rk_algebraics(&projection_runtime, y, p, event_time, state_count, tol)
+            },
         )?;
         self.copy_state_from_solver_y(&solver_y);
         let post_event_y = self.current_solver_y()?;
@@ -1379,7 +1414,7 @@ impl<'a> Rk45Backend<'a> {
     }
 }
 
-impl SimulationBackend for Rk45Backend<'_> {
+impl SimulationBackend for Rk45Backend {
     fn init(&mut self) -> Result<(), Self::Error> {
         self.model.initialize_delay_history(
             self.time,
@@ -1397,6 +1432,14 @@ impl SimulationBackend for Rk45Backend<'_> {
             self.atol,
             UPDATE_MAX_ITERS,
         )?;
+        project_rk_algebraics(
+            self.model.as_ref(),
+            &mut solver_y,
+            &self.params,
+            self.time,
+            self.model.state_count,
+            self.atol,
+        )?;
         self.copy_state_from_solver_y(&solver_y);
         self.model.update_relation_memory_from_state(
             self.time,
@@ -1408,7 +1451,8 @@ impl SimulationBackend for Rk45Backend<'_> {
         let dynamic_event =
             self.model
                 .current_dynamic_time_event_stop(&solver_y, &self.params, self.time)?;
-        let runtime = self.model;
+        let runtime = Rc::clone(&self.model);
+        let projection_runtime = Rc::clone(&runtime);
         let state_count = runtime.state_count;
         let tol = self.atol;
         let outcome = runtime.apply_projected_initial_event_boundary(
@@ -1424,7 +1468,7 @@ impl SimulationBackend for Rk45Backend<'_> {
                 dynamic_event,
                 apply_without_initial_event: false,
             },
-            move |y, p, t| project_rk_algebraics(runtime, y, p, t, state_count, tol),
+            move |y, p, t| project_rk_algebraics(&projection_runtime, y, p, t, state_count, tol),
         )?;
         self.copy_state_from_solver_y(&solver_y);
         self.time = outcome.final_t;
@@ -1445,7 +1489,7 @@ impl SimulationBackend for Rk45Backend<'_> {
     }
 }
 
-impl RuntimeEventBoundaryHandler for Rk45Backend<'_> {
+impl RuntimeEventBoundaryHandler for Rk45Backend {
     type Error = SimError;
 
     fn on_event_time(
@@ -1497,7 +1541,7 @@ impl RuntimeEventBoundaryHandler for Rk45Backend<'_> {
     }
 }
 
-impl Rk45Backend<'_> {
+impl Rk45Backend {
     fn event_pre_for_update(
         &mut self,
         event_time: f64,
@@ -1583,7 +1627,7 @@ impl Rk45Backend<'_> {
     }
 }
 
-fn advance_backend_to(backend: &mut Rk45Backend<'_>, target_t: f64) -> Result<(), SimError> {
+fn advance_backend_to(backend: &mut Rk45Backend, target_t: f64) -> Result<(), SimError> {
     match backend.advance_to(target_t)? {
         StepUntilOutcome::StopReached | StepUntilOutcome::Finished => Ok(()),
         StepUntilOutcome::InternalStep | StepUntilOutcome::RootFound { .. } => Ok(()),
@@ -1612,6 +1656,7 @@ fn project_rk_algebraics(
     tol: f64,
 ) -> Result<bool, RuntimeSolveError> {
     let before = y.to_vec();
+    runtime.project_state_manifold(y, p, t, tol)?;
     let state = y[..state_count.min(y.len())].to_vec();
     let refreshed = runtime.full_solver_y(t, &state, p, ALGEBRAIC_REFRESH_TOL, UPDATE_MAX_ITERS)?;
     y.copy_from_slice(&refreshed);
@@ -1678,6 +1723,31 @@ fn adapt_step(h: f64, error_norm: f64) -> f64 {
     }
     let factor = (0.9 * error_norm.powf(-0.2)).clamp(0.2, 5.0);
     (h * factor).max(MIN_STEP)
+}
+
+fn trial_step_size(
+    time: f64,
+    target_t: f64,
+    next_step: f64,
+    delay_step_limit: Option<f64>,
+) -> Result<f64, SimError> {
+    let remaining = target_t - time;
+    let proposed = delay_step_limit.map_or(next_step, |limit| next_step.min(limit));
+    let h = proposed.min(remaining);
+    if !h.is_finite() || h <= 0.0 || time + h == time {
+        return Err(SimError::StepSizeUnderflow { target_t });
+    }
+    if h < MIN_STEP && h < remaining {
+        return Err(SimError::StepSizeUnderflow { target_t });
+    }
+    Ok(h)
+}
+
+fn rejected_step_size(h: f64, error_norm: f64, target_t: f64) -> Result<f64, SimError> {
+    if h <= MIN_STEP {
+        return Err(SimError::StepSizeUnderflow { target_t });
+    }
+    Ok(adapt_step(h, error_norm))
 }
 
 #[cfg(test)]

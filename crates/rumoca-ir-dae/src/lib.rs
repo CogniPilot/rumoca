@@ -27,16 +27,15 @@ use rumoca_core::{
 use serde::ser::{SerializeStruct, SerializeTuple};
 use serde::{Deserialize, Serialize};
 
-pub const DAE_SCHEMA_VERSION: u16 = 9;
+pub const DAE_SCHEMA_VERSION: u16 = 11;
 
 pub type SymbolAncestryMap = IndexMap<DefId, SymbolAncestry, rustc_hash::FxBuildHasher>;
 
+pub mod checked;
 mod clock_schedule;
-mod event_threshold;
 mod expr_query;
 mod types;
 pub mod visitor;
-pub use event_threshold::{is_event_constant_threshold, is_event_constant_time_threshold_relation};
 pub use expr_query::{
     DerivativeNameMatcher, complex_base_alias_match, embedded_subscripts_all_one,
     expr_contains_der_of, expr_contains_der_of_any, expr_contains_var, expr_refers_to_var,
@@ -143,7 +142,7 @@ struct DaeWire {
     valued_updates: Vec<Equation>,
     #[serde(rename = "f_c")]
     condition_equations: Vec<Equation>,
-    #[serde(default, rename = "relation")]
+    #[serde(rename = "relation")]
     relations: Vec<Expression>,
     synthetic_root_conditions: Vec<Expression>,
     scheduled_time_events: Vec<f64>,
@@ -179,6 +178,13 @@ impl Default for Dae {
             symbols: DaeSymbolTable::default(),
             metadata: DaeMetadata::default(),
         }
+    }
+}
+
+impl Dae {
+    /// Create an empty valid DAE.
+    pub fn new() -> Self {
+        Self::default()
     }
 }
 
@@ -284,7 +290,7 @@ impl<'de> Deserialize<'de> for Dae {
             )));
         }
 
-        Ok(Self {
+        Ok(Dae {
             schema_version: wire.schema_version,
             variables: DaeVariables {
                 states: wire.states,
@@ -455,6 +461,14 @@ impl std::error::Error for DaeShapeContractError {
 }
 
 impl DaeVariables {
+    /// Whether standalone simulation requires at least one input scalar.
+    ///
+    /// MLS §10.1 permits zero-sized arrays. Such declarations remain present
+    /// in the IR but contribute no externally supplied scalar values.
+    pub fn has_input_scalars(&self) -> bool {
+        self.inputs.values().any(|variable| variable.size() != 0)
+    }
+
     pub fn validate_shape_contract(&self) -> Result<(), DaeShapeContractError> {
         validate_partition_shape_contract(DaeVariablePartition::State, &self.states)?;
         validate_partition_shape_contract(DaeVariablePartition::Algebraic, &self.algebraics)?;
@@ -533,8 +547,8 @@ pub struct DaeConditionPartition {
     /// Canonically populated during ToDAE from if/when conditions.
     #[serde(rename = "f_c")]
     pub equations: Vec<Equation>,
-    /// Relation expressions used by `f_c(relation(v))` (MLS B.1d).
-    #[serde(default, rename = "relation")]
+    /// Primitive relation expressions monitored during integration (MLS B.1d).
+    #[serde(rename = "relation")]
     pub relations: Vec<Expression>,
 }
 
@@ -710,11 +724,6 @@ pub struct DaeMetadata {
 }
 
 impl Dae {
-    /// Create a new empty DAE.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     /// Get total number of variables.
     pub fn num_variables(&self) -> usize {
         self.variables.states.len()
@@ -1102,6 +1111,31 @@ mod variable_shape_contract_tests {
         };
 
         assert_eq!(variable.try_size(), Ok(0));
+    }
+
+    #[test]
+    fn input_scalar_predicate_ignores_present_zero_sized_inputs() {
+        let mut variables = DaeVariables::default();
+        variables.inputs.insert(
+            VarName::new("u0"),
+            Variable {
+                name: VarName::new("u0"),
+                dims: vec![0, 3],
+                ..Variable::empty_with_span(test_span())
+            },
+        );
+
+        assert!(!variables.has_input_scalars());
+
+        variables.inputs.insert(
+            VarName::new("u1"),
+            Variable {
+                name: VarName::new("u1"),
+                dims: vec![1],
+                ..Variable::empty_with_span(test_span())
+            },
+        );
+        assert!(variables.has_input_scalars());
     }
 
     #[test]
@@ -1770,7 +1804,7 @@ pub struct Algorithm {
     /// Statements in this algorithm.
     pub statements: Vec<Statement>,
     /// Output variables (left-hand sides of assignments).
-    /// Used for balance checking per SPEC_0020.
+    /// Used for balance checking per SPEC_0007 / MLS §11.
     pub outputs: Vec<Reference>,
     /// Source span for error reporting.
     pub span: Span,

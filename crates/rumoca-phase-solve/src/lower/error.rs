@@ -127,6 +127,19 @@ impl std::fmt::Display for LowerError {
 
 impl std::error::Error for LowerError {}
 
+impl rumoca_core::PhaseError for LowerError {
+    fn to_diagnostic(&self) -> rumoca_core::Diagnostic {
+        match self.source_span() {
+            Some(span) => rumoca_core::Diagnostic::error(
+                self.code(),
+                self.to_string(),
+                rumoca_core::PrimaryLabel::new(span).with_message(self.label_reason()),
+            ),
+            None => rumoca_core::Diagnostic::global_error(self.code(), self.to_string()),
+        }
+    }
+}
+
 impl From<rumoca_eval_solve::ScalarizeError> for LowerError {
     fn from(value: rumoca_eval_solve::ScalarizeError) -> Self {
         Self::Scalarization {

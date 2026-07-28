@@ -224,30 +224,6 @@ impl TypeChecker {
         class: &ClassDef,
         type_table: &TypeTable,
     ) {
-        let class_name = Self::component_scope_name(class);
-        let full_class_name = self.component_scope_full_name(class).map(ToOwned::to_owned);
-        for (comp_name, comp) in &class.components {
-            let type_id = comp.type_id.unwrap_or_else(|| {
-                self.resolve_type_name(&comp.type_name.to_string(), comp.type_def_id, type_table)
-            });
-            if type_id.is_unknown() {
-                continue;
-            }
-            let mut visible = HashMap::new();
-            Self::insert_visible_component_type(
-                &mut visible,
-                comp_name,
-                type_id,
-                class_name,
-                full_class_name.as_deref(),
-            );
-            for (name, visible_type) in visible {
-                self.current_component_types
-                    .entry(name)
-                    .or_insert(visible_type);
-            }
-        }
-
         for (comp_name, comp) in &class.components {
             let type_id = comp.type_id.unwrap_or_else(|| {
                 self.resolve_type_name(&comp.type_name.to_string(), comp.type_def_id, type_table)

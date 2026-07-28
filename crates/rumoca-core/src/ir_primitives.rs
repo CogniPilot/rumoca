@@ -1249,6 +1249,21 @@ impl std::fmt::Display for Literal {
     }
 }
 
+/// One structured annotation attached to an external function interface.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExternalFunctionAnnotation {
+    /// Structured annotation name segments, such as `["Library"]`.
+    pub name: Vec<String>,
+    /// Semantic annotation value; never a rendered source-expression string.
+    pub value: Expression,
+    /// Source span of the complete annotation modification.
+    #[serde(
+        default = "Span::source_free_serde_default",
+        skip_serializing_if = "Span::is_dummy"
+    )]
+    pub span: Span,
+}
+
 /// External function declaration (MLS §12.9).
 ///
 /// For functions declared with `external` to call C/Fortran code.
@@ -1263,6 +1278,9 @@ pub struct ExternalFunction {
     pub output_name: Option<String>,
     /// Argument names passed to the external function.
     pub arg_names: Vec<String>,
+    /// Structured annotations attached to the external function interface.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub annotations: Vec<ExternalFunctionAnnotation>,
 }
 
 /// Function derivative annotation (MLS §12.7.1).

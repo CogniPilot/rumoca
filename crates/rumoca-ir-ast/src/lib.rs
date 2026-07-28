@@ -81,7 +81,7 @@ pub use instance::{
     InstanceEquation, InstanceId, InstanceOverlay, InstanceStatement, InstancedTree,
     ModificationEnvironment, ModificationValue, QualifiedName,
 };
-pub use scope::{Import as ScopeImport, Scope, ScopeKind, ScopeTree};
+pub use scope::{Import as ScopeImport, InheritedMember, Scope, ScopeKind, ScopeTree};
 pub use state_machines::{State, StateMachine, StateMachineState, StateMachines, Transition};
 pub use types::{
     ArrayType, BuiltinType, ClassKind, ClassType as TypeClassType, EnumerationType, FunctionType,

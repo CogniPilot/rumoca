@@ -4,8 +4,8 @@ use rumoca_solver::{
     NoStateOrchestrationBackend, NoStateRootSearchScratch, NoStateScheduledStop,
     ProjectedEventUpdateInput, RuntimeSolveError, apply_discrete_slot_values,
     build_sim_result_from_solve_model, first_no_state_root_crossing,
-    project_algebraics_and_detect_changes, run_no_state_output_schedule,
-    timeline::event_left_probe_time,
+    no_state_root_scan_step_ceiling, project_algebraics_and_detect_changes,
+    run_no_state_output_schedule, timeline::event_left_probe_time,
 };
 
 pub(crate) fn settle_algebraics_and_relation_memory(
@@ -38,6 +38,7 @@ pub(crate) fn refresh_algebraics_and_detect_changes(
 ) -> Result<bool, RuntimeSolveError> {
     let before = y.to_vec();
     runtime.refresh_delay_values(t, y, p)?;
+    runtime.project_state_manifold(y, p, t, tol)?;
     runtime.refresh_algebraic_and_output_slots(t, y, p, tol, EVENT_UPDATE_MAX_ITERS)?;
     Ok(runtime_values_changed(&before, y, tol))
 }
@@ -151,7 +152,8 @@ pub(crate) fn simulate_no_state_solve_ir(
     opts: &SimOptions,
 ) -> Result<SimResult, SimError> {
     let dt = opts.dt.unwrap_or((opts.t_end - opts.t_start).abs() / 500.0);
-    let times = rumoca_solver::timeline::build_output_times(opts.t_start, opts.t_end, dt);
+    let times = rumoca_solver::timeline::try_build_output_times(opts.t_start, opts.t_end, dt)
+        .map_err(|error| SimError::SolverError(error.to_string()))?;
     let mut runtime = initialize_no_state_runtime(model, opts, times.len(), true)?;
     let tol = opts.atol.max(1.0e-10);
 
@@ -263,7 +265,7 @@ impl NoStateOrchestrationBackend for DiffsolNoStateOrchestration<'_> {
     }
 
     fn max_accepted_step_size(&self) -> Option<f64> {
-        self.runtime.runtime.delay_step_limit()
+        no_state_root_scan_step_ceiling(self.opts.dt, self.runtime.runtime.delay_step_limit())
     }
 
     fn next_scheduled_stop(&mut self, target: f64) -> Result<NoStateScheduledStop, Self::Error> {
@@ -701,6 +703,9 @@ pub(crate) fn prepare_fixed_event_left_limit(
     input
         .runtime
         .refresh_delay_values(left_t, input.y, input.params)?;
+    input
+        .runtime
+        .project_state_manifold(input.y, input.params, left_t, input.tol)?;
     input.runtime.refresh_observation_discrete_rows(
         input.y,
         input.params,

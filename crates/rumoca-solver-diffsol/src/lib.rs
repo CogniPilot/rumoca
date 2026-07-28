@@ -91,6 +91,15 @@ pub fn build_simulation(
     let runtime_context = solve_eval::SimulationContext::new();
     runtime_context.hydrate_solve_model(model);
     validate_model(model)?;
+    if !model.problem.continuous.manifold_projection_plan.is_empty()
+        && opts.diffsol_method != DiffsolMethod::Bdf
+    {
+        return Err(SimError::SolverError(format!(
+            "index-reduction manifold projection is not supported by {:?}; use BDF or the \
+             RK-like solver",
+            opts.diffsol_method
+        )));
+    }
     let state = if model.state_scalar_count() == 0 {
         tracing::debug!(target: "rumoca_solver_diffsol::bdf_path", "no-state path");
         PreparedSimulationState::NoState
@@ -184,7 +193,9 @@ fn simulate_prepared(prepared: &PreparedSimulation) -> Result<SimResult, SimErro
             runtime,
         } => {
             let dt = opts.dt.unwrap_or((opts.t_end - opts.t_start).abs() / 500.0);
-            let times = rumoca_solver::timeline::build_output_times(opts.t_start, opts.t_end, dt);
+            let times =
+                rumoca_solver::timeline::try_build_output_times(opts.t_start, opts.t_end, dt)
+                    .map_err(|error| SimError::SolverError(error.to_string()))?;
             simulate_state_only_bdf(model, opts, &times, equilibrium_model, runtime)
         }
         PreparedSimulationState::General {
@@ -192,7 +203,9 @@ fn simulate_prepared(prepared: &PreparedSimulation) -> Result<SimResult, SimErro
             runtime,
         } => {
             let dt = opts.dt.unwrap_or((opts.t_end - opts.t_start).abs() / 500.0);
-            let times = rumoca_solver::timeline::build_output_times(opts.t_start, opts.t_end, dt);
+            let times =
+                rumoca_solver::timeline::try_build_output_times(opts.t_start, opts.t_end, dt)
+                    .map_err(|error| SimError::SolverError(error.to_string()))?;
             simulate_with_states(model, opts, times, equilibrium_model, runtime)
         }
     };
@@ -637,6 +650,7 @@ struct DiffsolAdvanceBackend<'a, Eqn, S> {
     algebraic_warm_start: Option<AlgebraicWarmStart>,
     opts: &'a SimOptions,
     mode: DiffsolMode,
+    active_stop_time: Option<f64>,
     _eqn: std::marker::PhantomData<fn() -> Eqn>,
 }
 
@@ -667,6 +681,7 @@ where
             algebraic_warm_start: inputs.algebraic_warm_start,
             opts: inputs.opts,
             mode: inputs.mode,
+            active_stop_time: None,
             _eqn: std::marker::PhantomData,
         }
     }
@@ -697,6 +712,45 @@ where
         warm_start.commit(solver_y);
         Ok(())
     }
+
+    fn project_accepted_solver_state(&mut self) -> Result<(), SimDriverError> {
+        let t = self.solver.state().t;
+        let h_cap = self.solver.state().h.abs().max(1.0e-12);
+        let native = self.solver.state().y.as_slice().to_vec();
+        let mut params = self.runtime_params.borrow().clone();
+        let mut solver_y = self.native_to_full_y(&native, t, &params)?;
+        self.runtime
+            .refresh_delay_values(t, &solver_y, &mut params)?;
+        if !self
+            .runtime
+            .project_state_manifold(&mut solver_y, &params, t, self.tol())?
+        {
+            return self.commit_state_only_warm_start();
+        }
+        match self.mode {
+            DiffsolMode::General => {
+                project_algebraics(
+                    self.equilibrium_model,
+                    &mut solver_y,
+                    &params,
+                    t,
+                    self.equilibrium_model.state_count_for_projection(),
+                    self.tol(),
+                )?;
+            }
+            DiffsolMode::StateOnly => {
+                self.runtime.refresh_algebraic_and_output_slots(
+                    t,
+                    &mut solver_y,
+                    &params,
+                    self.tol(),
+                    EVENT_UPDATE_MAX_ITERS,
+                )?;
+            }
+        }
+        let (native_y, native_dy) = self.reset_vectors(&solver_y, &params, t)?;
+        self.reset(&native_y, &native_dy, &params, t, h_cap)
+    }
 }
 
 impl<'a, Eqn, S> SolverAdvanceBackend for DiffsolAdvanceBackend<'a, Eqn, S>
@@ -720,13 +774,23 @@ where
             OdeSolverStopReason::RootFound(t_root, _) => StepOutcome::Root { t_root },
         };
         if !matches!(outcome, StepOutcome::Root { .. }) {
-            self.commit_state_only_warm_start()?;
+            self.project_accepted_solver_state()?;
         }
         Ok(outcome)
     }
 
     fn set_stop_time(&mut self, stop_time: f64) -> Result<(), SimDriverError> {
+        self.active_stop_time = Some(stop_time);
         set_solver_stop_time(&mut self.solver, stop_time).map_err(sim_to_driver)
+    }
+
+    fn requires_exact_output_stop(&self) -> bool {
+        !self
+            .model
+            .problem
+            .continuous
+            .manifold_projection_plan
+            .is_empty()
     }
 
     fn interpolate(&mut self, t: f64) -> Result<Vec<f64>, SimDriverError> {
@@ -816,8 +880,9 @@ where
             h_cap,
         )
         .map_err(sim_to_driver)?;
-        if !stop_time_reached_with_tol(t, self.opts.t_end) {
-            set_solver_stop_time(&mut self.solver, self.opts.t_end).map_err(sim_to_driver)?;
+        let stop_time = self.active_stop_time.unwrap_or(self.opts.t_end);
+        if !stop_time_reached_with_tol(t, stop_time) {
+            set_solver_stop_time(&mut self.solver, stop_time).map_err(sim_to_driver)?;
         }
         self.commit_state_only_warm_start()
     }
@@ -830,15 +895,19 @@ where
         tol: f64,
     ) -> Result<bool, RuntimeSolveError> {
         self.runtime.refresh_delay_values(t, y, p)?;
+        let manifold_changed = self.runtime.project_state_manifold(y, p, t, tol)?;
         match self.mode {
-            DiffsolMode::General => project_algebraics_and_detect_changes(
-                self.equilibrium_model,
-                y,
-                p,
-                t,
-                self.equilibrium_model.state_count_for_projection(),
-                tol,
-            ),
+            DiffsolMode::General => {
+                let algebraic_changed = project_algebraics_and_detect_changes(
+                    self.equilibrium_model,
+                    y,
+                    p,
+                    t,
+                    self.equilibrium_model.state_count_for_projection(),
+                    tol,
+                )?;
+                Ok(manifold_changed || algebraic_changed)
+            }
             DiffsolMode::StateOnly => {
                 let before = y.to_vec();
                 self.runtime.refresh_algebraic_and_output_slots(
@@ -848,7 +917,7 @@ where
                     tol,
                     EVENT_UPDATE_MAX_ITERS,
                 )?;
-                Ok(runtime_values_changed(&before, y, tol))
+                Ok(manifold_changed || runtime_values_changed(&before, y, tol))
             }
         }
     }

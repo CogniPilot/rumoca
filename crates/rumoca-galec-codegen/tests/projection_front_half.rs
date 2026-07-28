@@ -121,7 +121,7 @@ mod admissibility {
             .insert(VarName::new("x"), variable("x"));
         model.continuous.equations.push(equation("x"));
         let errors = check_admissibility(&GalecInput::new(&model, "M")).unwrap_err();
-        assert_eq!(codes(&errors), vec!["ET001"]);
+        assert_eq!(codes(&errors), vec!["EGT001"]);
         let message = errors[0].to_string();
         assert!(
             message.contains("not yet supported by the Rumoca GALEC projection"),
@@ -146,7 +146,7 @@ mod admissibility {
             .functions
             .insert(VarName::new("tableLookup"), function);
         let errors = check_admissibility(&GalecInput::new(&model, "M")).unwrap_err();
-        assert_eq!(codes(&errors), vec!["ET002"]);
+        assert_eq!(codes(&errors), vec!["EGT002"]);
         assert!(
             errors[0]
                 .to_string()
@@ -159,7 +159,7 @@ mod admissibility {
         let mut model = base_dae();
         model.events.scheduled_time_events.push(0.5);
         let errors = check_admissibility(&GalecInput::new(&model, "M")).unwrap_err();
-        assert_eq!(codes(&errors), vec!["ET003"]);
+        assert_eq!(codes(&errors), vec!["EGT003"]);
         assert!(
             errors[0]
                 .to_string()
@@ -172,7 +172,7 @@ mod admissibility {
         let mut model = base_dae();
         model.clocks.triggered_conditions.push(boolean(true));
         let errors = check_admissibility(&GalecInput::new(&model, "M")).unwrap_err();
-        assert_eq!(codes(&errors), vec!["ET004"]);
+        assert_eq!(codes(&errors), vec!["EGT004"]);
     }
 
     #[test]
@@ -184,12 +184,12 @@ mod admissibility {
             source_span: Span::DUMMY,
         });
         let errors = check_admissibility(&GalecInput::new(&two, "M")).unwrap_err();
-        assert_eq!(codes(&errors), vec!["ET005"]);
+        assert_eq!(codes(&errors), vec!["EGT005"]);
 
         let mut none = base_dae();
         none.clocks.schedules.clear();
         let errors = check_admissibility(&GalecInput::new(&none, "M")).unwrap_err();
-        assert_eq!(codes(&errors), vec!["ET005"]);
+        assert_eq!(codes(&errors), vec!["EGT005"]);
     }
 
     #[test]
@@ -198,7 +198,7 @@ mod admissibility {
             let mut model = base_dae();
             model.clocks.schedules[0].period_seconds = bad;
             let errors = check_admissibility(&GalecInput::new(&model, "M")).unwrap_err();
-            assert_eq!(codes(&errors), vec!["ET006"], "period {bad}");
+            assert_eq!(codes(&errors), vec!["EGT006"], "period {bad}");
         }
     }
 
@@ -207,12 +207,12 @@ mod admissibility {
         let mut partial = base_dae();
         partial.metadata.is_partial = true;
         let errors = check_admissibility(&GalecInput::new(&partial, "M")).unwrap_err();
-        assert_eq!(codes(&errors), vec!["ET007"]);
+        assert_eq!(codes(&errors), vec!["EGT007"]);
 
         let mut package = base_dae();
         package.metadata.class_type = rumoca_core::ClassType::Package;
         let errors = check_admissibility(&GalecInput::new(&package, "M")).unwrap_err();
-        assert_eq!(codes(&errors), vec!["ET008"]);
+        assert_eq!(codes(&errors), vec!["EGT008"]);
     }
 
     #[test]
@@ -225,7 +225,7 @@ mod admissibility {
             .discrete_reals
             .insert(VarName::new("table"), array);
         let errors = check_admissibility(&GalecInput::new(&model, "M")).unwrap_err();
-        assert_eq!(codes(&errors), vec!["ET009"]);
+        assert_eq!(codes(&errors), vec!["EGT009"]);
     }
 
     #[test]
@@ -249,20 +249,20 @@ mod admissibility {
         model.events.scheduled_time_events.push(1.0);
         let errors = check_admissibility(&GalecInput::new(&model, "M")).unwrap_err();
         let codes = codes(&errors);
-        assert!(codes.contains(&"ET007"), "{codes:?}");
-        assert!(codes.contains(&"ET003"), "{codes:?}");
-        assert!(codes.contains(&"ET005"), "{codes:?}");
+        assert!(codes.contains(&"EGT007"), "{codes:?}");
+        assert!(codes.contains(&"EGT003"), "{codes:?}");
+        assert!(codes.contains(&"EGT005"), "{codes:?}");
     }
 
     /// Startup is built from `start` values only; a model with initial
-    /// equations must be rejected up front (ET021, GAL-025 wording), never
+    /// equations must be rejected up front (EGT021, GAL-025 wording), never
     /// projected with its initialization partition silently ignored.
     #[test]
     fn initial_equations_rejected_never_silently_ignored() {
         let mut model = base_dae();
         model.initialization.equations.push(equation("n"));
         let errors = check_admissibility(&GalecInput::new(&model, "M")).unwrap_err();
-        assert_eq!(codes(&errors), vec!["ET021"]);
+        assert_eq!(codes(&errors), vec!["EGT021"]);
         assert!(
             errors[0]
                 .to_string()
@@ -289,7 +289,7 @@ mod admissibility {
                 interiors_materialized: true,
             });
         let errors = check_admissibility(&GalecInput::new(&structured_only, "M")).unwrap_err();
-        assert_eq!(codes(&errors), vec!["ET021"]);
+        assert_eq!(codes(&errors), vec!["EGT021"]);
     }
 }
 
@@ -499,7 +499,7 @@ mod classification {
         let errors = classify_variables(&input).unwrap_err();
         assert!(!errors.is_empty());
         assert!(
-            codes(&errors).iter().all(|code| *code == "ET011"),
+            codes(&errors).iter().all(|code| *code == "EGT011"),
             "{errors:?}"
         );
         let unresolved: Vec<String> = errors
@@ -521,7 +521,7 @@ mod classification {
             .insert(VarName::new("y"), variable("y"));
         let input = GalecInput::new(&model, "M");
         let errors = classify_variables(&input).unwrap_err();
-        assert_eq!(codes(&errors), vec!["ET010"]);
+        assert_eq!(codes(&errors), vec!["EGT010"]);
     }
 }
 
@@ -642,10 +642,10 @@ mod mangling {
     fn unrepresentable_names_are_rejected() {
         for bad in ["Logic.'1'", "has space", "", "previous(x)"] {
             let error = galec_variable_name(bad).unwrap_err();
-            assert_eq!(error.code(), "ET012", "{bad}");
+            assert_eq!(error.code(), "EGT012", "{bad}");
         }
         let error = pre_state_name("a(b)").unwrap_err();
-        assert_eq!(error.code(), "ET012");
+        assert_eq!(error.code(), "EGT012");
     }
 }
 
@@ -792,7 +792,7 @@ mod manifest_variables {
         let input = GalecInput::new(&model, "M").with_scalar_types(&types);
         let classification = classify_variables(&input).expect("classifies");
         let errors = build_manifest_variables(&classification).unwrap_err();
-        assert!(codes(&errors).contains(&"ET015"), "{errors:?}");
+        assert!(codes(&errors).contains(&"EGT015"), "{errors:?}");
     }
 
     #[test]
@@ -811,7 +811,7 @@ mod manifest_variables {
         let input = GalecInput::new(&model, "M").with_scalar_types(&types);
         let classification = classify_variables(&input).expect("classifies");
         let errors = build_manifest_variables(&classification).unwrap_err();
-        assert_eq!(codes(&errors), vec!["ET014"]);
+        assert_eq!(codes(&errors), vec!["EGT014"]);
     }
 
     #[test]
@@ -953,7 +953,7 @@ mod manifest_variables {
         let input = GalecInput::new(&model, "M").with_scalar_types(&types);
         let classification = classify_variables(&input).expect("classifies");
         let errors = build_manifest_variables(&classification).unwrap_err();
-        assert_eq!(codes(&errors), vec!["ET013"]);
+        assert_eq!(codes(&errors), vec!["EGT013"]);
     }
 
     #[test]

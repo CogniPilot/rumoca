@@ -4,6 +4,12 @@ use std::process::Command;
 
 use tempfile::tempdir;
 
+fn formatter_stability_is_required() -> bool {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/msl/formatter-stability-required")
+        .is_file()
+}
+
 fn write_model(path: &Path, source: &str) {
     fs::write(path, source).expect("write model file");
 }
@@ -403,7 +409,7 @@ fn fmt_common_cli_options_control_rewrites() {
 fn fmt_msl_copy_has_no_drift_and_bad_file_is_rewritten() {
     let Some(msl_root) = cached_msl_root() else {
         let message = "cached MSL not found under target/msl; skipping MSL formatter drift test";
-        if std::env::var_os("REQUIRE_MSL_FMT_DRIFT").is_some() {
+        if formatter_stability_is_required() {
             panic!("{message}");
         }
         eprintln!("{message}");

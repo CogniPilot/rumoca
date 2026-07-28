@@ -74,16 +74,6 @@ where
     Ok(values)
 }
 
-pub(crate) fn lower_bool_slice_copy(
-    values: &[bool],
-    context: &'static str,
-    span: rumoca_core::Span,
-) -> Result<Vec<bool>, LowerError> {
-    let mut copied = lower_vec_with_capacity(values.len(), context, span)?;
-    copied.extend(values.iter().copied());
-    Ok(copied)
-}
-
 pub(crate) fn reserve_lower_index_map_capacity<K, V>(
     values: &mut IndexMap<K, V>,
     additional: usize,

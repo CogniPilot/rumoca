@@ -1520,6 +1520,116 @@ fn register_function_context_inheritance_names(
 }
 
 #[test]
+fn external_function_metadata_preserves_library_and_include_annotations() {
+    let source = r##"
+pure function Linked
+  input Real u;
+  output Real y;
+external "C" y = linked_call(u)
+  annotation(
+    Library = {"Linked", "Support"},
+    Include = "#include \"linked.h\"");
+end Linked;
+"##;
+    let parsed =
+        rumoca_phase_parse::parse_to_ast(source, "external_annotations.mo").expect("valid source");
+    let external = parsed
+        .classes
+        .get("Linked")
+        .and_then(|class| class.external.as_ref())
+        .expect("external declaration");
+    let metadata = convert_external_function(external, &crate::ResolveDefMap::default())
+        .expect("external annotations should lower without loss");
+
+    let [library, include] = metadata.annotations.as_slice() else {
+        panic!("expected Library and Include metadata");
+    };
+    assert_eq!(library.name, ["Library"]);
+    let rumoca_core::Expression::Array { elements, .. } = &library.value else {
+        panic!("Library must retain its array expression");
+    };
+    assert!(matches!(
+        elements.as_slice(),
+        [
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::String(first),
+                ..
+            },
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::String(second),
+                ..
+            }
+        ] if first == "Linked" && second == "Support"
+    ));
+
+    assert_eq!(include.name, ["Include"]);
+    assert!(matches!(
+        &include.value,
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::String(value),
+            ..
+        } if value == "#include \"linked.h\""
+    ));
+}
+
+#[test]
+fn external_function_metadata_rejects_annotation_syntax_it_cannot_preserve() {
+    let source = r#"
+pure function Linked
+  input Real u;
+  output Real y;
+external "C" y = linked_call(u)
+  annotation(__Vendor(options = 1));
+end Linked;
+"#;
+    let parsed =
+        rumoca_phase_parse::parse_to_ast(source, "external_annotations.mo").expect("valid source");
+    let external = parsed
+        .classes
+        .get("Linked")
+        .and_then(|class| class.external.as_ref())
+        .expect("external declaration");
+    let error = convert_external_function(external, &crate::ResolveDefMap::default())
+        .expect_err("unrepresentable annotation syntax must fail instead of being dropped");
+
+    assert!(
+        error
+            .to_string()
+            .contains("unsupported external-function annotation")
+    );
+}
+
+#[test]
+fn external_function_metadata_rejects_unrepresentable_argument_without_shifting_abi_slots() {
+    let source = r#"
+pure function Linked
+  input Real u;
+  input Real v;
+  output Real y;
+external "C" y = linked_call(u, 2.0, v);
+end Linked;
+"#;
+    let parsed =
+        rumoca_phase_parse::parse_to_ast(source, "external_arguments.mo").expect("valid source");
+    let external = parsed
+        .classes
+        .get("Linked")
+        .and_then(|class| class.external.as_ref())
+        .expect("external declaration");
+    let error = convert_external_function(external, &crate::ResolveDefMap::default())
+        .expect_err("unrepresentable arguments must fail instead of being dropped");
+
+    let FlattenError::UnsupportedExternalFunctionArgument {
+        position, reason, ..
+    } = error
+    else {
+        panic!("expected a precise external-function argument error");
+    };
+    assert_eq!(position, 2);
+    assert!(reason.contains("literal expression"));
+}
+
+#[test]
 fn test_extract_derivative_annotation_simple() {
     use rumoca_core::Token;
     use rumoca_ir_ast::{ComponentRefPart, ComponentReference};

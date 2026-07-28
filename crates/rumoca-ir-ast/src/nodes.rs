@@ -402,6 +402,12 @@ pub struct ExternalFunction {
     pub output: Option<ComponentReference>,
     /// Arguments passed to the external function.
     pub args: Vec<Expression>,
+    /// Annotation arguments attached to the external clause (MLS §12.9.4).
+    ///
+    /// These remain syntax-preserving AST expressions so annotations such as
+    /// `Library` and `Include` are not collapsed into rendered strings.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub annotation: Vec<Expression>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

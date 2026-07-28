@@ -509,11 +509,7 @@ fn build_model_diagnostics_for_typed_model(
             };
         }
         TypedModelOutcome::InstantiateError(error) => {
-            collected.push(miette_error_to_common(
-                &*error,
-                model_span,
-                &tree.source_map,
-            ));
+            collected.push(error.to_diagnostic());
             return BodySemanticDiagnosticsResult {
                 diagnostics: model_diagnostics_for_tree(tree, collected),
                 blocks_model_stage: true,
@@ -570,30 +566,18 @@ fn build_model_diagnostics_for_dae_model(
             return model_diagnostics_for_tree(tree, collected);
         }
         DaeModelOutcome::InstantiateError(error) => {
-            collected.push(miette_error_to_common(
-                &*error,
-                model_span,
-                &tree.source_map,
-            ));
+            collected.push(error.to_diagnostic());
             return model_diagnostics_for_tree(tree, collected);
         }
         DaeModelOutcome::TypecheckError(diags) => {
             return model_diagnostics_for_tree(tree, diags);
         }
         DaeModelOutcome::FlattenError { error } => {
-            collected.push(miette_error_to_common(
-                &*error,
-                model_span,
-                &tree.source_map,
-            ));
+            collected.push(error.to_diagnostic());
             return model_diagnostics_for_tree(tree, collected);
         }
         DaeModelOutcome::ToDaeError { error } => {
-            collected.push(miette_error_to_common(
-                &*error,
-                model_span,
-                &tree.source_map,
-            ));
+            collected.push(error.to_diagnostic());
             return model_diagnostics_for_tree(tree, collected);
         }
     }

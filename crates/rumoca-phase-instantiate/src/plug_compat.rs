@@ -9,6 +9,7 @@ use rumoca_ir_ast as ast;
 
 /// Class-level interface flags that must match for a redeclaration regardless
 /// of how subtype acceptance was established (MLS §6.4):
+/// - specialized class kind (TYPE-028)
 /// - operator record base kind (TYPE-006)
 /// - expandable connectors (TYPE-016)
 /// - purity: an impure replacement needs an impure constraint (TYPE-021)
@@ -22,6 +23,9 @@ pub(crate) fn class_flags_compatible(
     let Some(supertype) = supertype else {
         return true;
     };
+    if subtype.class_type != supertype.class_type {
+        return false;
+    }
     if subtype.operator_record != supertype.operator_record {
         return false;
     }
@@ -73,10 +77,10 @@ fn is_transitively_non_replaceable(class: &ast::ClassDef) -> bool {
 
 /// MLS §6.5 plug compatibility for sibling-based acceptance: every public
 /// component of the constraining type must exist in the replacement with the
-/// same causality, flow/stream prefix, and conditionality. Component *types*
-/// are deliberately not compared: sibling stacks legitimately differ in
-/// nested replaceable members (e.g. Media), and a type comparison here would
-/// reject valid MSL redeclarations.
+/// same compatible interface. Type spelling alone is not compared because
+/// sibling stacks legitimately use distinct nested replaceable names (e.g.
+/// Media), but primitive bases, array shape, variability, causality, and
+/// flow/stream prefixes are compared whenever the AST proves them.
 pub(crate) fn members_plug_compatible(
     tree: &ast::ClassTree,
     subtype: &ast::ClassDef,
@@ -88,6 +92,9 @@ pub(crate) fn members_plug_compatible(
         let Some(a_comp) = sub_members.get(name) else {
             return false;
         };
+        if !component_interfaces_compatible(tree, a_comp, b_comp) {
+            return false;
+        }
         if std::mem::discriminant(&a_comp.causality) != std::mem::discriminant(&b_comp.causality) {
             return false;
         }
@@ -129,6 +136,137 @@ pub(crate) fn members_plug_compatible(
     true
 }
 
+/// Compare only interface properties whose incompatibility is provable from
+/// the current AST. In particular, unresolved or non-primitive sibling type
+/// names are not rejected merely for differing spelling.
+fn component_interfaces_compatible(
+    tree: &ast::ClassTree,
+    subtype: &ast::Component,
+    supertype: &ast::Component,
+) -> bool {
+    if let (Some(sub_base), Some(super_base)) = (
+        primitive_base(tree, subtype),
+        primitive_base(tree, supertype),
+    ) && sub_base != super_base
+    {
+        return false;
+    }
+
+    let sub_rank = component_rank(subtype);
+    let super_rank = component_rank(supertype);
+    if sub_rank != super_rank {
+        return false;
+    }
+    if sub_rank > 0
+        && !subtype.shape.is_empty()
+        && !supertype.shape.is_empty()
+        && subtype.shape != supertype.shape
+    {
+        return false;
+    }
+
+    if let (Some(sub_variability), Some(super_variability)) = (
+        explicit_variability_rank(&subtype.variability),
+        explicit_variability_rank(&supertype.variability),
+    ) && sub_variability > super_variability
+    {
+        return false;
+    }
+
+    true
+}
+
+fn component_rank(component: &ast::Component) -> usize {
+    if component.shape_expr.is_empty() {
+        component.shape.len()
+    } else {
+        component.shape_expr.len()
+    }
+}
+
+/// MLS §4.5/§6.4 orders variability from constant through continuous. `Empty`
+/// is left unknown here because its effective default depends on the resolved
+/// component type.
+fn explicit_variability_rank(variability: &rumoca_core::Variability) -> Option<u8> {
+    match variability {
+        rumoca_core::Variability::Constant(_) => Some(0),
+        rumoca_core::Variability::Parameter(_) => Some(1),
+        rumoca_core::Variability::Discrete(_) => Some(2),
+        rumoca_core::Variability::Continuous(_) => Some(3),
+        rumoca_core::Variability::Empty => None,
+    }
+}
+
+fn primitive_base(tree: &ast::ClassTree, component: &ast::Component) -> Option<&'static str> {
+    if let Some(type_id) = component.type_id
+        && let Some(base) = primitive_base_from_type_id(tree, type_id, 0)
+    {
+        return Some(base);
+    }
+    primitive_base_from_type(
+        tree,
+        &component.type_name.to_string(),
+        component.type_def_id,
+        0,
+    )
+}
+
+fn primitive_base_from_type_id(
+    tree: &ast::ClassTree,
+    type_id: rumoca_core::TypeId,
+    depth: usize,
+) -> Option<&'static str> {
+    if type_id.is_unknown() || depth >= 10 {
+        return None;
+    }
+    match tree.type_table.get(type_id)? {
+        ast::Type::Builtin(ast::BuiltinType::Real) => Some("Real"),
+        ast::Type::Builtin(ast::BuiltinType::Integer) => Some("Integer"),
+        ast::Type::Builtin(ast::BuiltinType::Boolean) => Some("Boolean"),
+        ast::Type::Builtin(ast::BuiltinType::String) => Some("String"),
+        ast::Type::Builtin(ast::BuiltinType::Clock) => Some("Clock"),
+        ast::Type::Alias(alias) => primitive_base_from_type_id(tree, alias.aliased, depth + 1),
+        ast::Type::Array(array) => primitive_base_from_type_id(tree, array.element, depth + 1),
+        ast::Type::Class(_)
+        | ast::Type::Enumeration(_)
+        | ast::Type::Function(_)
+        | ast::Type::Unknown => None,
+    }
+}
+
+fn primitive_base_from_type(
+    tree: &ast::ClassTree,
+    type_name: &str,
+    type_def_id: Option<rumoca_core::DefId>,
+    depth: usize,
+) -> Option<&'static str> {
+    let builtin = match type_name {
+        "Real" => Some("Real"),
+        "Integer" => Some("Integer"),
+        "Boolean" => Some("Boolean"),
+        "String" => Some("String"),
+        "Clock" => Some("Clock"),
+        _ => None,
+    };
+    if builtin.is_some() || depth >= 10 {
+        return builtin;
+    }
+
+    let class = type_def_id
+        .and_then(|def_id| tree.get_class_by_def_id(def_id))
+        .or_else(|| find_class_in_tree(tree, type_name))?;
+    if class.extends.len() != 1 {
+        return None;
+    }
+    let base = &class.extends[0];
+    primitive_base_from_type(
+        tree,
+        &base.base_name.to_string(),
+        base.base_def_id.or(base.base_name.def_id),
+        depth + 1,
+    )
+}
+
 /// True when the class (or its single-extends chain) derives from the
 /// builtin ExternalObject.
 fn derives_external_object(class: &ast::ClassDef) -> bool {
@@ -138,10 +276,8 @@ fn derives_external_object(class: &ast::ClassDef) -> bool {
         .any(|ext| ext.base_name.to_string() == "ExternalObject")
 }
 
-/// MLS §6.6 / TYPE-018..020: inputs of the constraining function must appear
-/// by name and in the same relative order in the replacement; replacement
-/// inputs not present in the constraint need defaults; outputs must match by
-/// name in order.
+/// MLS §6.6 / TYPE-018..020: constrained inputs and outputs must be leading
+/// prefixes in the replacement; additional inputs need defaults.
 fn function_signatures_plug_compatible(
     sub_members: &indexmap::IndexMap<String, ast::Component>,
     super_members: &indexmap::IndexMap<String, ast::Component>,
@@ -163,27 +299,31 @@ fn function_signatures_plug_compatible(
 
     let b_inputs = inputs(super_members);
     let a_inputs = inputs(sub_members);
-    // B's inputs must appear in A preserving relative order.
-    let mut b_iter = b_inputs.iter().peekable();
-    for name in &a_inputs {
-        if b_iter.peek().is_some_and(|next| *next == name) {
-            b_iter.next();
-        }
-    }
-    if b_iter.peek().is_some() {
+    if !a_inputs.starts_with(&b_inputs) {
         return false;
     }
-    // A's extra inputs need defaults.
-    for name in &a_inputs {
-        if !b_inputs.contains(name)
+    for name in &b_inputs {
+        if super_members
+            .get(name)
+            .is_some_and(|component| component.binding.is_some())
             && sub_members
                 .get(name)
-                .is_some_and(|comp| comp.binding.is_none())
+                .is_some_and(|component| component.binding.is_none())
         {
             return false;
         }
     }
-    outputs(super_members) == outputs(sub_members)
+    if a_inputs[b_inputs.len()..].iter().any(|name| {
+        sub_members
+            .get(name)
+            .is_some_and(|component| component.binding.is_none())
+    }) {
+        return false;
+    }
+
+    let b_outputs = outputs(super_members);
+    let a_outputs = outputs(sub_members);
+    a_outputs.starts_with(&b_outputs)
 }
 
 /// Public components of a class including inherited ones (depth-limited walk
@@ -219,4 +359,361 @@ fn collect_public_members(
     let mut out = indexmap::IndexMap::new();
     collect_into(tree, class, 8, &mut out);
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    fn token(text: &str) -> rumoca_core::Token {
+        rumoca_core::Token {
+            text: Arc::from(text),
+            location: rumoca_core::Location::default(),
+            token_number: 0,
+            token_type: 0,
+        }
+    }
+
+    fn component(
+        name: &str,
+        type_name: &str,
+        variability: rumoca_core::Variability,
+        causality: rumoca_core::Causality,
+    ) -> ast::Component {
+        ast::Component {
+            name: name.to_string(),
+            name_token: token(name),
+            type_name: ast::Name::from_string(type_name),
+            variability,
+            causality,
+            ..ast::Component::empty_with_span(rumoca_core::Span::DUMMY)
+        }
+    }
+
+    fn with_shape(mut component: ast::Component, shape: &[usize]) -> ast::Component {
+        component.shape = shape.to_vec();
+        component.shape_expr = shape
+            .iter()
+            .map(|size| {
+                ast::Subscript::Expression(ast::Expression::Terminal {
+                    terminal_type: ast::TerminalType::UnsignedInteger,
+                    token: token(&size.to_string()),
+                    span: rumoca_core::Span::DUMMY,
+                })
+            })
+            .collect();
+        component
+    }
+
+    fn with_binding(mut component: ast::Component) -> ast::Component {
+        component.binding = Some(ast::Expression::Terminal {
+            terminal_type: ast::TerminalType::UnsignedInteger,
+            token: token("1"),
+            span: rumoca_core::Span::DUMMY,
+        });
+        component
+    }
+
+    fn class(class_type: rumoca_core::ClassType, members: Vec<ast::Component>) -> ast::ClassDef {
+        ast::ClassDef {
+            class_type,
+            components: members
+                .into_iter()
+                .map(|member| (member.name.clone(), member))
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    fn continuous() -> rumoca_core::Variability {
+        rumoca_core::Variability::Continuous(token("continuous"))
+    }
+
+    fn parameter() -> rumoca_core::Variability {
+        rumoca_core::Variability::Parameter(token("parameter"))
+    }
+
+    fn input() -> rumoca_core::Causality {
+        rumoca_core::Causality::Input(token("input"))
+    }
+
+    fn output() -> rumoca_core::Causality {
+        rumoca_core::Causality::Output(token("output"))
+    }
+
+    #[test]
+    fn rejects_provably_incompatible_builtin_member_types() {
+        let tree = ast::ClassTree::new();
+        let constraint = class(
+            rumoca_core::ClassType::Package,
+            vec![component(
+                "x",
+                "Real",
+                continuous(),
+                rumoca_core::Causality::Empty,
+            )],
+        );
+        let replacement = class(
+            rumoca_core::ClassType::Package,
+            vec![component(
+                "x",
+                "Integer",
+                continuous(),
+                rumoca_core::Causality::Empty,
+            )],
+        );
+
+        assert!(!members_plug_compatible(&tree, &replacement, &constraint));
+    }
+
+    #[test]
+    fn rejects_array_rank_and_known_size_mismatches() {
+        let tree = ast::ClassTree::new();
+        let constraint = class(
+            rumoca_core::ClassType::Package,
+            vec![with_shape(
+                component("x", "Real", continuous(), rumoca_core::Causality::Empty),
+                &[2],
+            )],
+        );
+        let rank_mismatch = class(
+            rumoca_core::ClassType::Package,
+            vec![with_shape(
+                component("x", "Real", continuous(), rumoca_core::Causality::Empty),
+                &[2, 1],
+            )],
+        );
+        let size_mismatch = class(
+            rumoca_core::ClassType::Package,
+            vec![with_shape(
+                component("x", "Real", continuous(), rumoca_core::Causality::Empty),
+                &[3],
+            )],
+        );
+
+        assert!(!members_plug_compatible(&tree, &rank_mismatch, &constraint));
+        assert!(!members_plug_compatible(&tree, &size_mismatch, &constraint));
+    }
+
+    #[test]
+    fn enforces_variability_ordering_and_direction() {
+        let tree = ast::ClassTree::new();
+        let constraint = class(
+            rumoca_core::ClassType::Package,
+            vec![component("x", "Real", parameter(), input())],
+        );
+        let higher_variability = class(
+            rumoca_core::ClassType::Package,
+            vec![component("x", "Real", continuous(), input())],
+        );
+        let wrong_direction = class(
+            rumoca_core::ClassType::Package,
+            vec![component("x", "Real", parameter(), output())],
+        );
+        let lower_variability = class(
+            rumoca_core::ClassType::Package,
+            vec![component(
+                "x",
+                "Real",
+                rumoca_core::Variability::Constant(token("constant")),
+                input(),
+            )],
+        );
+
+        assert!(!members_plug_compatible(
+            &tree,
+            &higher_variability,
+            &constraint
+        ));
+        assert!(!members_plug_compatible(
+            &tree,
+            &wrong_direction,
+            &constraint
+        ));
+        assert!(members_plug_compatible(
+            &tree,
+            &lower_variability,
+            &constraint
+        ));
+    }
+
+    #[test]
+    fn function_signatures_compare_input_types_and_output_shapes() {
+        let tree = ast::ClassTree::new();
+        let constraint = class(
+            rumoca_core::ClassType::Function,
+            vec![
+                component("u", "Real", continuous(), input()),
+                with_shape(component("y", "Real", continuous(), output()), &[2]),
+            ],
+        );
+        let wrong_input_type = class(
+            rumoca_core::ClassType::Function,
+            vec![
+                component("u", "Integer", continuous(), input()),
+                with_shape(component("y", "Real", continuous(), output()), &[2]),
+            ],
+        );
+        let wrong_output_shape = class(
+            rumoca_core::ClassType::Function,
+            vec![
+                component("u", "Real", continuous(), input()),
+                with_shape(component("y", "Real", continuous(), output()), &[3]),
+            ],
+        );
+
+        assert!(!members_plug_compatible(
+            &tree,
+            &wrong_input_type,
+            &constraint
+        ));
+        assert!(!members_plug_compatible(
+            &tree,
+            &wrong_output_shape,
+            &constraint
+        ));
+    }
+
+    #[test]
+    fn function_signature_requires_constrained_inputs_before_defaulted_extras() {
+        let constrained = indexmap::IndexMap::from([
+            (
+                "u".to_string(),
+                component("u", "Real", continuous(), input()),
+            ),
+            (
+                "v".to_string(),
+                component("v", "Real", continuous(), input()),
+            ),
+        ]);
+        let interleaved = indexmap::IndexMap::from([
+            (
+                "u".to_string(),
+                component("u", "Real", continuous(), input()),
+            ),
+            (
+                "extra".to_string(),
+                with_binding(component("extra", "Real", continuous(), input())),
+            ),
+            (
+                "v".to_string(),
+                component("v", "Real", continuous(), input()),
+            ),
+        ]);
+        let trailing = indexmap::IndexMap::from([
+            (
+                "u".to_string(),
+                component("u", "Real", continuous(), input()),
+            ),
+            (
+                "v".to_string(),
+                component("v", "Real", continuous(), input()),
+            ),
+            (
+                "extra".to_string(),
+                with_binding(component("extra", "Real", continuous(), input())),
+            ),
+        ]);
+
+        assert!(!function_signatures_plug_compatible(
+            &interleaved,
+            &constrained
+        ));
+        assert!(function_signatures_plug_compatible(&trailing, &constrained));
+    }
+
+    #[test]
+    fn function_signature_preserves_required_input_bindings_and_allows_trailing_outputs() {
+        let constrained = indexmap::IndexMap::from([
+            (
+                "u".to_string(),
+                with_binding(component("u", "Real", continuous(), input())),
+            ),
+            (
+                "y".to_string(),
+                component("y", "Real", continuous(), output()),
+            ),
+        ]);
+        let missing_binding = indexmap::IndexMap::from([
+            (
+                "u".to_string(),
+                component("u", "Real", continuous(), input()),
+            ),
+            (
+                "y".to_string(),
+                component("y", "Real", continuous(), output()),
+            ),
+        ]);
+        let compatible = indexmap::IndexMap::from([
+            (
+                "u".to_string(),
+                with_binding(component("u", "Real", continuous(), input())),
+            ),
+            (
+                "y".to_string(),
+                component("y", "Real", continuous(), output()),
+            ),
+            (
+                "diagnostic".to_string(),
+                component("diagnostic", "Real", continuous(), output()),
+            ),
+        ]);
+
+        assert!(!function_signatures_plug_compatible(
+            &missing_binding,
+            &constrained
+        ));
+        assert!(function_signatures_plug_compatible(
+            &compatible,
+            &constrained
+        ));
+    }
+
+    #[test]
+    fn sibling_type_spellings_with_the_same_primitive_base_remain_compatible() {
+        let mut tree = ast::ClassTree::new();
+        for name in ["StateA", "StateB"] {
+            tree.definitions.classes.insert(
+                name.to_string(),
+                ast::ClassDef {
+                    name: token(name),
+                    class_type: rumoca_core::ClassType::Type,
+                    extends: vec![ast::Extend {
+                        base_name: ast::Name::from_string("Real"),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+            );
+        }
+        let constraint = class(
+            rumoca_core::ClassType::Package,
+            vec![component(
+                "state",
+                "StateA",
+                continuous(),
+                rumoca_core::Causality::Empty,
+            )],
+        );
+        let replacement = class(
+            rumoca_core::ClassType::Package,
+            vec![component(
+                "state",
+                "StateB",
+                continuous(),
+                rumoca_core::Causality::Empty,
+            )],
+        );
+
+        assert!(members_plug_compatible(&tree, &replacement, &constraint));
+    }
+
+    #[test]
+    fn specialized_class_kinds_must_match() {
+        let package = class(rumoca_core::ClassType::Package, Vec::new());
+        let function = class(rumoca_core::ClassType::Function, Vec::new());
+
+        assert!(!class_flags_compatible(&function, Some(&package)));
+    }
 }

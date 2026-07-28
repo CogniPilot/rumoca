@@ -9,7 +9,7 @@ pub(super) struct Rk45ResetSnapshot {
     next_step: f64,
 }
 
-impl Rk45Backend<'_> {
+impl Rk45Backend {
     pub(super) fn reset_snapshot(&self) -> Rk45ResetSnapshot {
         Rk45ResetSnapshot {
             state: self.state.clone(),

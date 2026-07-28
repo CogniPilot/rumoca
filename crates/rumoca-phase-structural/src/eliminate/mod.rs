@@ -50,7 +50,8 @@ pub use block_condensation::{
 };
 use boundary_scan::{BoundaryScanCtx, BoundaryScanState, scan_boundary_equations};
 pub use causal_factor::{
-    CausalSubstitutionPlan, factor_causal_substitutions, factor_retained_computations_in_dae,
+    CausalSubstitutionPlan, factor_causal_substitutions,
+    factor_causal_substitutions_with_consumers, factor_retained_computations_in_dae,
 };
 use compact_family_blocks::expand_compact_family_blocks;
 use connection_policy::should_skip_connection_equation;

@@ -1754,12 +1754,14 @@ impl PreparedComputeNode {
                 })?;
                 eval_matmul_with_policy(
                     &scratch.regs,
-                    *lhs_start as usize,
-                    *rhs_start as usize,
-                    *m,
-                    *k,
-                    *n,
-                    *kernel,
+                    MatMulEvalSpec {
+                        lhs_start: *lhs_start as usize,
+                        rhs_start: *rhs_start as usize,
+                        m: *m,
+                        k: *k,
+                        n: *n,
+                        kernel: *kernel,
+                    },
                     &mut out[*output_start..output_end],
                 )
             }

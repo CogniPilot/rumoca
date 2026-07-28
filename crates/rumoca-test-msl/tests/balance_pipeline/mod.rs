@@ -209,8 +209,8 @@ struct MslSummary {
     partial_models: usize,
     /// Class type breakdown (model, connector, function, etc.)
     #[serde(default)]
-    class_type_counts: HashMap<String, usize>,
-    failures_by_phase: HashMap<String, Vec<String>>,
+    class_type_counts: BTreeMap<String, usize>,
+    failures_by_phase: BTreeMap<String, Vec<String>>,
     unbalanced_list: Vec<String>,
     #[serde(default)]
     initial_unbalanced_list: Vec<String>,
@@ -219,22 +219,22 @@ struct MslSummary {
     non_sim_list: Vec<String>,
     /// Flatten error categories with (model_name, error) pairs
     #[serde(default)]
-    error_categories: HashMap<String, Vec<(String, String)>>,
+    error_categories: BTreeMap<String, Vec<(String, String)>>,
     /// Stable compiler diagnostic/error-code counts across all failed models.
     #[serde(default)]
-    error_code_counts: HashMap<String, usize>,
+    error_code_counts: BTreeMap<String, usize>,
     /// Unsupported backend/semantic feature IDs extracted from stable error codes/messages.
     #[serde(default)]
-    unsupported_feature_counts: HashMap<String, usize>,
+    unsupported_feature_counts: BTreeMap<String, usize>,
     /// Unsupported feature IDs grouped by manifest target/backend label.
     #[serde(default)]
-    unsupported_feature_counts_by_backend: HashMap<String, HashMap<String, usize>>,
+    unsupported_feature_counts_by_backend: BTreeMap<String, BTreeMap<String, usize>>,
     /// Most common undefined variables with counts
     #[serde(default)]
-    undefined_vars: HashMap<String, usize>,
+    undefined_vars: BTreeMap<String, usize>,
     /// Balance value distribution (balance -> count)
     #[serde(default)]
-    balance_distribution: HashMap<i64, usize>,
+    balance_distribution: BTreeMap<i64, usize>,
     /// Per-model results with eq/var counts for comparison with OMC reference data
     #[serde(default)]
     model_results: Vec<MslModelResult>,
@@ -388,7 +388,7 @@ struct MslSummaryInputs {
     total_mo_files: usize,
     parse_errors: usize,
     total_models: usize,
-    class_type_counts: HashMap<String, usize>,
+    class_type_counts: BTreeMap<String, usize>,
 }
 
 /// Process a successful compilation result.
@@ -642,17 +642,17 @@ fn empty_summary(total_mo_files: usize, parse_errors: usize) -> MslSummary {
         initial_balanced_models: 0,
         initial_unbalanced_models: 0,
         partial_models: 0,
-        class_type_counts: HashMap::new(),
-        failures_by_phase: HashMap::new(),
+        class_type_counts: BTreeMap::new(),
+        failures_by_phase: BTreeMap::new(),
         unbalanced_list: Vec::new(),
         initial_unbalanced_list: Vec::new(),
         non_sim_list: Vec::new(),
-        error_categories: HashMap::new(),
-        error_code_counts: HashMap::new(),
-        unsupported_feature_counts: HashMap::new(),
-        unsupported_feature_counts_by_backend: HashMap::new(),
-        undefined_vars: HashMap::new(),
-        balance_distribution: HashMap::new(),
+        error_categories: BTreeMap::new(),
+        error_code_counts: BTreeMap::new(),
+        unsupported_feature_counts: BTreeMap::new(),
+        unsupported_feature_counts_by_backend: BTreeMap::new(),
+        undefined_vars: BTreeMap::new(),
+        balance_distribution: BTreeMap::new(),
         compile_dae_balance_failures: Default::default(),
         model_results: Vec::new(),
         timings: MslPhaseTimings::default(),

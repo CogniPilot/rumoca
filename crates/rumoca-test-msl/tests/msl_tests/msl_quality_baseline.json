@@ -1,5 +1,5 @@
 {
-  "quality_gate_version": 1,
+  "quality_gate_version": 2,
   "run_scope": "full",
   "git_commit": "a499eb8f15bf6af9d28f5a7011e82edfe73803b4",
   "msl_version": "v4.1.0",
@@ -8,6 +8,26 @@
     "from_omc_version": "OpenModelica 1.27.0~dev.beta.3",
     "to_omc_version": "a96aa1a-cmake",
     "sim_target_models": 566
+  },
+  "metric_schema_migration": {
+    "from_quality_gate_version": 1,
+    "to_quality_gate_version": 2,
+    "flatten_models_before": 565,
+    "flatten_models_after": 555,
+    "reattributed_error_code": "ER002",
+    "reattributed_models": [
+      "Modelica.Fluid.Examples.AST_BatchPlant.BatchPlant_StandardWater",
+      "Modelica.Fluid.Examples.AST_BatchPlant.Test.OneTank",
+      "Modelica.Fluid.Examples.AST_BatchPlant.Test.TankWithEmptyingPipe1",
+      "Modelica.Fluid.Examples.AST_BatchPlant.Test.TankWithEmptyingPipe2",
+      "Modelica.Fluid.Examples.AST_BatchPlant.Test.TanksWithEmptyingPipe1",
+      "Modelica.Fluid.Examples.AST_BatchPlant.Test.TanksWithEmptyingPipe2",
+      "Modelica.Fluid.Examples.AST_BatchPlant.Test.TwoTanks",
+      "Modelica.Fluid.Examples.Explanatory.MeasuringTemperature",
+      "Modelica.Fluid.Examples.Explanatory.MomentumBalanceFittings",
+      "Modelica.Fluid.Examples.InverseParameterization"
+    ],
+    "tensor_preservation_source_git_commit": "a966d9e8e781ff7154d25a7cf4e74eb2b14ac4df"
   },
   "sim_timeout_seconds": 10.0,
   "simulatable_attempted": 566,
@@ -339,6 +359,14 @@
       "total_omc_only_states": 30,
       "max_model_state_set_difference": 14
     }
+  },
+  "tensor_preservation": {
+    "models_reported": 310,
+    "family_bodies": 2327,
+    "preserved_family_bodies": 113,
+    "scalarized_family_rows": 8100,
+    "report_errors": 0,
+    "preservation_percent": 4.856037816931671
   },
   "pipeline_progress": {
     "total_mo_files": 2555,

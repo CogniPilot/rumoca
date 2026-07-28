@@ -21,7 +21,9 @@ use rumoca_ir_dae as dae;
 /// the defining row becomes the unique state-derivative row and constitutive
 /// equations determine the dummy.
 #[must_use]
-pub fn eliminate_dummy_derivative_aliases(dae_model: &dae::Dae) -> Option<dae::Dae> {
+pub fn eliminate_dummy_derivative_aliases(
+    dae_model: &dae::Dae,
+) -> Result<Option<dae::Dae>, crate::StructuralError> {
     // The copy-returning form is the one that pays for a copy, and it pays for
     // it only when there is something to rewrite: the alias scan is read-only,
     // so it runs on the borrowed DAE first.
@@ -29,10 +31,13 @@ pub fn eliminate_dummy_derivative_aliases(dae_model: &dae::Dae) -> Option<dae::D
         .state_to_dummy
         .is_empty()
     {
-        return None;
+        return Ok(None);
     }
     let mut rewritten = super::copy_accounting::clone_dae(dae_model);
-    eliminate_dummy_derivative_aliases_in_place(&mut rewritten).then_some(rewritten)
+    if !eliminate_dummy_derivative_aliases_in_place(&mut rewritten) {
+        return Ok(None);
+    }
+    crate::finish_dae(rewritten).map(Some)
 }
 
 /// Apply the same rewrite at the structural DAE boundary, without a copy.

@@ -32,7 +32,7 @@ pub use visitor::{
     walk_scalar_program_block, walk_solve_artifacts, walk_solve_model, walk_solve_problem,
 };
 
-pub const SOLVE_SCHEMA_VERSION: u16 = 22;
+pub const SOLVE_SCHEMA_VERSION: u16 = 23;
 
 pub fn source_span_from_offsets(source: u64, start: usize, end: usize) -> Span {
     Span::from_offsets(SourceId(source), start, end)
@@ -434,7 +434,7 @@ impl<'de> Deserialize<'de> for SolveProblem {
             )));
         }
 
-        Ok(Self {
+        let problem = Self {
             schema_version: wire.schema_version,
             layout: wire.layout,
             solve_layout: wire.solve_layout,
@@ -443,7 +443,9 @@ impl<'de> Deserialize<'de> for SolveProblem {
             discrete: wire.discrete,
             events: wire.events,
             clocks: wire.clocks,
-        })
+        };
+        problem.validate().map_err(serde::de::Error::custom)?;
+        Ok(problem)
     }
 }
 
@@ -461,6 +463,7 @@ impl SolveProblem {
     pub fn compute_node_counts(&self) -> ComputeNodeCounts {
         let mut counts = self.continuous.implicit_rhs.compute_node_counts();
         counts.add_assign(self.continuous.residual.compute_node_counts());
+        counts.add_assign(self.continuous.manifold_residual.compute_node_counts());
         counts.add_assign(self.continuous.derivative_rhs.compute_node_counts());
         counts
     }
@@ -468,6 +471,10 @@ impl SolveProblem {
     pub fn uses_linear_solve_component(&self) -> bool {
         self.continuous.implicit_rhs.uses_linear_solve_component()
             || self.continuous.residual.uses_linear_solve_component()
+            || self
+                .continuous
+                .manifold_residual
+                .uses_linear_solve_component()
             || self.continuous.derivative_rhs.uses_linear_solve_component()
     }
 
@@ -487,6 +494,11 @@ impl SolveProblem {
         validate_event_partition_shape(self)?;
         Ok(())
     }
+
+    /// Validate the complete finalized Solve-IR stage contract.
+    pub fn validate(&self) -> Result<(), SolveProblemShapeContractError> {
+        self.validate_shape_contract()
+    }
 }
 
 fn validate_continuous_system_shape(
@@ -499,6 +511,9 @@ fn validate_continuous_system_shape(
     system
         .residual
         .validate_shape_contract("continuous.residual")?;
+    system
+        .manifold_residual
+        .validate_shape_contract("continuous.manifold_residual")?;
     system
         .derivative_rhs
         .validate_shape_contract("continuous.derivative_rhs")?;
@@ -515,6 +530,15 @@ fn validate_continuous_system_shape(
         &system.algebraic_projection_plan,
         implicit_count,
         problem.solve_layout.solver_scalar_count(),
+    )?;
+    let manifold_count = system
+        .manifold_residual
+        .output_count("continuous.manifold_residual")?;
+    validate_manifold_projection_plan(
+        "continuous.manifold_projection_plan",
+        &system.manifold_projection_plan,
+        manifold_count,
+        problem.solve_layout.state_scalar_count(),
     )
 }
 
@@ -772,6 +796,36 @@ fn validate_projection_plan(
     Ok(())
 }
 
+fn validate_manifold_projection_plan(
+    context: &'static str,
+    plan: &AlgebraicProjectionPlan,
+    row_upper_bound: usize,
+    state_upper_bound: usize,
+) -> Result<(), SolveProblemShapeContractError> {
+    let mut rows_seen = BTreeSet::new();
+    let mut states_seen = BTreeSet::new();
+    for block in &plan.blocks {
+        if block.rows.is_empty()
+            || block.y_indices.is_empty()
+            || block.rows.len() > block.y_indices.len()
+        {
+            return Err(
+                SolveProblemShapeContractError::ProjectionBlockShapeMismatch {
+                    context,
+                    row_count: block.rows.len(),
+                    unknown_count: block.y_indices.len(),
+                    span: None,
+                },
+            );
+        }
+        validate_indices(context, &block.rows, row_upper_bound)?;
+        validate_indices(context, &block.y_indices, state_upper_bound)?;
+        validate_unique_projection_indices(context, &block.rows, &mut rows_seen)?;
+        validate_unique_projection_indices(context, &block.y_indices, &mut states_seen)?;
+    }
+    validate_count(context, row_upper_bound, rows_seen.len())
+}
+
 fn validate_initial_projection_plan(
     context: &'static str,
     plan: &InitializationProjectionPlan,
@@ -897,6 +951,15 @@ pub struct ContinuousSolveSystem {
     pub implicit_row_targets: Vec<Option<ScalarSlot>>,
     pub algebraic_projection_plan: AlgebraicProjectionPlan,
     pub residual: ComputeBlock,
+    /// Lower-order holonomic and velocity residuals retained when structural
+    /// index reduction replaces them with acceleration-level equations.
+    #[serde(default)]
+    pub manifold_residual: ComputeBlock,
+    /// Connected state-coordinate blocks used to project accepted numerical
+    /// steps onto `manifold_residual = 0`. Blocks may have more state
+    /// coordinates than residual rows; runtimes use a minimum-norm correction.
+    #[serde(default)]
+    pub manifold_projection_plan: AlgebraicProjectionPlan,
     pub derivative_rhs: ComputeBlock,
 }
 
@@ -981,6 +1044,10 @@ pub struct ContinuousSolveArtifacts {
     /// (`LinSolve`/`MatMul`) blocks.
     #[serde(default)]
     pub implicit_jacobian_v_scalar: ScalarProgramBlock,
+    /// Forward-mode state Jacobian-vector product for
+    /// [`ContinuousSolveSystem::manifold_residual`].
+    #[serde(default)]
+    pub manifold_jacobian_v: ComputeBlock,
     pub full_jacobian_v: ScalarProgramBlock,
 }
 
@@ -1117,11 +1184,14 @@ impl PeriodicEventSchedule {
 
     /// Instant of tick `index` in seconds, computed exactly then rounded once.
     ///
-    /// Returns `None` when the schedule has no rational form or the instant
-    /// leaves the exact integer range; callers then fall back to seconds
-    /// arithmetic rather than inventing a tick.
-    pub fn exact_tick_time_seconds(&self, index: i64) -> Option<f64> {
-        self.lattice().ok()?.tick_time_seconds(index).ok()
+    /// A schedule with no rational form or a tick outside the exact integer
+    /// representation reports the original lattice error. Authoritative
+    /// schedulers must not replace that failure with floating-point arithmetic.
+    pub fn exact_tick_time_seconds(
+        &self,
+        index: impl Into<i128>,
+    ) -> Result<f64, rumoca_core::ClockLatticeErrorKind> {
+        self.lattice()?.tick_time_seconds(index)
     }
 }
 

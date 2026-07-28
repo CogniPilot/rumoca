@@ -174,16 +174,20 @@ end AliasCollisionProbe;
 #[test]
 fn test_instance_redeclare_package_constants_resolve_per_instance_scope() {
     let source = r#"
+package PartialMedium
+  constant Integer nX = 0;
+end PartialMedium;
+
 package MediumA
-  constant Integer nX = 1;
+  extends PartialMedium(nX = 1);
 end MediumA;
 
 package MediumB
-  constant Integer nX = 2;
+  extends PartialMedium(nX = 2);
 end MediumB;
 
 model Base
-  replaceable package Medium = MediumA;
+  replaceable package Medium = MediumA constrainedby PartialMedium;
   Real x[Medium.nX];
 equation
   for i in 1:Medium.nX loop

@@ -9,6 +9,10 @@ fn rational(num: i64, den: i64) -> ClockRational {
     ClockRational::new(num, den).expect("test rational must reduce")
 }
 
+fn rational128(num: i128, den: i128) -> ClockRational {
+    ClockRational::new(num, den).expect("test rational must reduce")
+}
+
 fn lattice(period: ClockRational, phase: ClockRational) -> ClockLattice {
     ClockLattice::new(period, phase).expect("test lattice must be positive")
 }
@@ -38,6 +42,20 @@ fn seconds_round_trip_is_faithful_not_merely_close() {
     let recovered = ClockRational::from_seconds(drifted).expect("finite value is representable");
     assert_ne!(recovered, rational(3, 10));
     assert_eq!(recovered.to_f64(), drifted);
+}
+
+#[test]
+fn large_and_small_finite_seconds_round_trip_exactly() {
+    let large = ClockRational::from_seconds(1.0e20).expect("1e20 must fit i128");
+    let small = ClockRational::from_seconds(1.0e-20).expect("1e-20 must fit i128");
+
+    assert_eq!(large, rational128(100_000_000_000_000_000_000, 1));
+    assert!(
+        small.denominator() > i128::from(i64::MAX),
+        "the regression boundary must require the widened representation"
+    );
+    assert_eq!(large.to_f64(), 1.0e20);
+    assert_eq!(small.to_f64(), 1.0e-20);
 }
 
 #[test]
@@ -176,6 +194,26 @@ fn tick_index_and_membership_are_exact() {
 }
 
 #[test]
+fn accumulated_factor_and_tick_index_support_two_to_the_sixty_third() {
+    let boundary = 1i128 << 63;
+    let base = lattice(ClockRational::ONE, ClockRational::ZERO);
+    let slow = base
+        .sub_sample(1i64 << 32)
+        .and_then(|clock| clock.sub_sample(1i64 << 31))
+        .expect("CLK-017 requires accumulated factor 2^63");
+
+    assert_eq!(slow.period(), ClockRational::integer(boundary));
+    assert_eq!(
+        base.tick_time(boundary),
+        Ok(ClockRational::integer(boundary))
+    );
+    assert_eq!(
+        base.tick_index_at_or_before(ClockRational::integer(boundary)),
+        Ok(boundary)
+    );
+}
+
+#[test]
 fn non_positive_periods_and_factors_are_rejected() {
     assert_eq!(
         ClockLattice::new(ClockRational::ZERO, ClockRational::ZERO),
@@ -202,26 +240,53 @@ fn non_positive_periods_and_factors_are_rejected() {
 
 #[test]
 fn overflowing_composition_reports_a_spanned_error_instead_of_wrapping() {
-    let clock = lattice(rational(1_000_003, 1), ClockRational::ZERO);
+    let clock = lattice(rational128(i128::MAX / 2 + 1, 1), ClockRational::ZERO);
     let kind = clock
-        .sub_sample(i64::MAX)
-        .expect_err("i64::MAX sub-sampling must not wrap");
+        .sub_sample(2)
+        .expect_err("a product above i128::MAX must not wrap");
 
     assert_eq!(kind, ClockLatticeErrorKind::IntegerOverflow);
     let spanned = kind.at(span());
     assert_eq!(spanned.span, span());
     assert_eq!(
         spanned.to_string(),
-        "exact clock lattice arithmetic overflowed 64-bit integers"
+        "exact clock lattice arithmetic overflowed 128-bit integers"
     );
 }
 
 #[test]
 fn overflowing_super_sample_reports_overflow() {
-    let clock = lattice(rational(1, 3_037_000_500), ClockRational::ZERO);
+    let clock = lattice(rational128(1, i128::MAX / 2 + 1), ClockRational::ZERO);
     assert_eq!(
-        clock.super_sample(3_037_000_500),
+        clock.super_sample(2),
         Err(ClockLatticeErrorKind::IntegerOverflow)
+    );
+}
+
+#[test]
+fn multiplication_cross_cancels_before_checked_products() {
+    let left = rational128(i128::MAX, 2);
+    let right = rational128(2, i128::MAX);
+    assert_eq!(left.checked_mul(right), Ok(ClockRational::ONE));
+
+    let quotient_left = rational128(i128::MIN, i128::MAX);
+    let quotient_right = rational128(i128::MIN, i128::MAX);
+    assert_eq!(
+        quotient_left.checked_div(quotient_right),
+        Ok(ClockRational::ONE)
+    );
+}
+
+#[test]
+fn same_denominator_addition_reduces_before_narrowing() {
+    let half_max = rational128(i128::MAX, 2);
+    assert_eq!(
+        half_max.checked_add(half_max),
+        Ok(ClockRational::integer(i128::MAX))
+    );
+    assert_eq!(
+        half_max.checked_sub(half_max.checked_negate().expect("negation fits")),
+        Ok(ClockRational::integer(i128::MAX))
     );
 }
 
@@ -262,8 +327,8 @@ fn back_sample_before_the_base_clock_start_is_an_error() {
 #[test]
 fn negation_of_the_minimum_integer_is_reported_not_wrapped() {
     // Every other operation in this module is overflow-checked; negation must
-    // be too, because -i64::MIN panics in debug and wraps in release.
-    let extreme = ClockRational::integer(i64::MIN);
+    // be too, because -i128::MIN panics in debug and wraps in release.
+    let extreme = ClockRational::integer(i128::MIN);
     assert_eq!(
         extreme.checked_negate(),
         Err(ClockLatticeErrorKind::IntegerOverflow)
@@ -288,8 +353,20 @@ fn division_by_zero_is_reported() {
 }
 
 #[test]
-fn rational_ordering_uses_exact_cross_multiplication() {
+fn rational_ordering_is_exact_without_overflowing_cross_products() {
     assert!(rational(1, 3) < rational(1, 2));
     assert!(rational(-1, 3) < ClockRational::ZERO);
     assert_eq!(rational(2, 4), rational(1, 2));
+
+    let almost_one = rational128(i128::MAX - 1, i128::MAX);
+    assert!(almost_one < ClockRational::ONE);
+    assert!(rational128(i128::MIN, i128::MAX) < rational(-1, 1));
+}
+
+#[test]
+fn denominator_above_positive_i128_range_is_reported() {
+    assert_eq!(
+        ClockRational::new(1, i128::MIN),
+        Err(ClockLatticeErrorKind::IntegerOverflow)
+    );
 }

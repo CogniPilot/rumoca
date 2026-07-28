@@ -59,7 +59,9 @@ pub(super) fn omc_sim_reference_timeout_secs() -> u64 {
 }
 /// Force low-impact OpenMP/BLAS threading in OMC child processes.
 pub(super) const OMC_PARITY_THREADS_DEFAULT: usize = 1;
-pub(super) const MSL_QUALITY_GATE_VERSION: u32 = 1;
+/// Version 2 makes tensor-preservation evidence mandatory and records the
+/// corrected cumulative-stage attribution for pre-flatten `ER0xx` failures.
+pub(super) const MSL_QUALITY_GATE_VERSION: u32 = 2;
 pub(super) const MSL_QUALITY_RUN_SCOPE_FULL: &str = "full";
 pub(super) const MSL_QUALITY_RUN_SCOPE_PARTIAL: &str = "partial";
 pub(super) const MSL_QUALITY_BASELINE_FILE_REL: &str = "tests/msl_tests/msl_quality_baseline.json";
@@ -195,8 +197,45 @@ pub(super) struct MslTensorPreservationBaseline {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub(super) struct MslMetricSchemaMigration {
+    from_quality_gate_version: u32,
+    to_quality_gate_version: u32,
+    flatten_models_before: usize,
+    flatten_models_after: usize,
+    reattributed_error_code: String,
+    reattributed_models: Vec<String>,
+    tensor_preservation_source_git_commit: String,
+}
+
+fn quality_gate_v2_metric_schema_migration() -> MslMetricSchemaMigration {
+    MslMetricSchemaMigration {
+        from_quality_gate_version: 1,
+        to_quality_gate_version: MSL_QUALITY_GATE_VERSION,
+        flatten_models_before: 565,
+        flatten_models_after: 555,
+        reattributed_error_code: "ER002".to_string(),
+        reattributed_models: [
+            "Modelica.Fluid.Examples.AST_BatchPlant.BatchPlant_StandardWater",
+            "Modelica.Fluid.Examples.AST_BatchPlant.Test.OneTank",
+            "Modelica.Fluid.Examples.AST_BatchPlant.Test.TankWithEmptyingPipe1",
+            "Modelica.Fluid.Examples.AST_BatchPlant.Test.TankWithEmptyingPipe2",
+            "Modelica.Fluid.Examples.AST_BatchPlant.Test.TanksWithEmptyingPipe1",
+            "Modelica.Fluid.Examples.AST_BatchPlant.Test.TanksWithEmptyingPipe2",
+            "Modelica.Fluid.Examples.AST_BatchPlant.Test.TwoTanks",
+            "Modelica.Fluid.Examples.Explanatory.MeasuringTemperature",
+            "Modelica.Fluid.Examples.Explanatory.MomentumBalanceFittings",
+            "Modelica.Fluid.Examples.InverseParameterization",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect(),
+        tensor_preservation_source_git_commit: "a966d9e8e781ff7154d25a7cf4e74eb2b14ac4df"
+            .to_string(),
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct MslQualityBaseline {
-    #[serde(default = "default_msl_quality_gate_version")]
     quality_gate_version: u32,
     #[serde(default = "default_msl_quality_run_scope")]
     run_scope: String,
@@ -239,12 +278,9 @@ pub(super) struct MslQualityBaseline {
     runtime_ratio_cohort_models: Option<IndexSet<String>>,
     #[serde(default)]
     trace_accuracy_stats: Option<MslTraceAccuracyStatsBaseline>,
+    tensor_preservation: MslTensorPreservationBaseline,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    tensor_preservation: Option<MslTensorPreservationBaseline>,
-}
-
-fn default_msl_quality_gate_version() -> u32 {
-    MSL_QUALITY_GATE_VERSION
+    metric_schema_migration: Option<MslMetricSchemaMigration>,
 }
 
 fn default_msl_quality_run_scope() -> String {
@@ -1160,19 +1196,18 @@ pub(super) fn current_msl_quality_baseline(
                 .then(|| parity.runtime_model_ratios.keys().cloned().collect())
         }),
         trace_accuracy_stats: parity_input.and_then(|parity| parity.trace_accuracy_stats.clone()),
-        tensor_preservation: (gate_input.tensor_models_reported != 0).then(|| {
-            MslTensorPreservationBaseline {
-                models_reported: gate_input.tensor_models_reported,
-                family_bodies: gate_input.tensor_family_bodies,
-                preserved_family_bodies: gate_input.tensor_preserved_family_bodies,
-                scalarized_family_rows: gate_input.tensor_scalarized_family_rows,
-                report_errors: gate_input.tensor_report_errors,
-                preservation_percent: tensor_preservation_percent(
-                    gate_input.tensor_preserved_family_bodies,
-                    gate_input.tensor_family_bodies,
-                ),
-            }
-        }),
+        tensor_preservation: MslTensorPreservationBaseline {
+            models_reported: gate_input.tensor_models_reported,
+            family_bodies: gate_input.tensor_family_bodies,
+            preserved_family_bodies: gate_input.tensor_preserved_family_bodies,
+            scalarized_family_rows: gate_input.tensor_scalarized_family_rows,
+            report_errors: gate_input.tensor_report_errors,
+            preservation_percent: tensor_preservation_percent(
+                gate_input.tensor_preserved_family_bodies,
+                gate_input.tensor_family_bodies,
+            ),
+        },
+        metric_schema_migration: Some(quality_gate_v2_metric_schema_migration()),
     }
 }
 
@@ -1413,9 +1448,7 @@ fn push_tensor_preservation_regression_reasons(
             gate_input.tensor_report_errors
         ));
     }
-    let Some(baseline_tensor) = baseline.tensor_preservation.as_ref() else {
-        return;
-    };
+    let baseline_tensor = &baseline.tensor_preservation;
     let allowed_drop = solve_stage_count_allowed_drop(gate_input.simulatable_attempted);
     if stage_count_regressed(
         gate_input.tensor_models_reported,

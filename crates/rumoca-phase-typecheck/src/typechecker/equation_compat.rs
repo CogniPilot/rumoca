@@ -212,40 +212,53 @@ impl TypeChecker {
             Err(ComponentReferenceTypeError::MissingSourceContext(error)) => {
                 self.emit_typecheck_error(error);
             }
+            Err(ComponentReferenceTypeError::AmbiguousIdentity { reference, span }) => {
+                self.emit_typecheck_error(TypeCheckError::phase_diagnostic(
+                    "ET001",
+                    format!(
+                        "ambiguous component identity for `{reference}`; resolved instance candidates disagree"
+                    ),
+                    "ambiguous component reference",
+                    span,
+                ));
+            }
         }
     }
 
     /// MLS §10.5.1: the number of subscripts must not exceed the declared
     /// dimensions, and literal index subscripts must stay within bounds.
     fn validate_component_subscripts(&mut self, comp: &rumoca_ir_ast::ComponentReference) {
-        let mut prefix_parts = Vec::new();
         // Absence from the concrete instance-shape index is unknown, not a
         // scalar declaration. A known scalar is represented explicitly as
         // `Some(Vec::new())` by the shape index.
         let mut effective_shape: Option<Vec<usize>> = None;
-        for part in &comp.parts {
-            prefix_parts.push(part.ident.text.to_string());
-            let prefix = ComponentPath::from_parts(prefix_parts.iter().cloned());
-            match self.find_instanced_component_path_shape(&prefix).cloned() {
+        for (part_index, part) in comp.parts.iter().enumerate() {
+            let prefix = ComponentPath::from_parts(
+                comp.parts
+                    .iter()
+                    .take(part_index + 1)
+                    .map(|part| part.ident.text.to_string()),
+            );
+            match self.lookup_component_reference_prefix_shape(comp, part_index + 1) {
                 // MLS §10.4.1: the shape of `a.b` is `size(a)` ++ `size(b)`.
                 // The instance shape index stores every path with its own
                 // declared extents, so each part contributes all of them. This
                 // is the same composition rule the equation-shape walk uses; a
                 // member whose extents happen to repeat the owner's must not be
                 // mistaken for an owner-inclusive row.
-                Some(Some(local_shape)) => {
+                SemanticLookup::Found(Some(local_shape)) => {
                     effective_shape
                         .get_or_insert_with(Vec::new)
                         .extend_from_slice(&local_shape);
                 }
-                Some(None) => {
+                SemanticLookup::Found(None) | SemanticLookup::Ambiguous => {
                     // The declaration has dimensions, but one or more extents
                     // are not evaluable in this instance. Unknown shape is not
                     // scalar: defer arity and bounds validation until a phase
                     // owns concrete extents.
                     effective_shape = None;
                 }
-                None => {}
+                SemanticLookup::Missing => {}
             }
             let Some(subscripts) = part.subs.as_ref() else {
                 continue;

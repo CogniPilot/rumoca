@@ -5,15 +5,17 @@
 //! scalarization that operate on the DAE IR before code generation.
 
 mod expanded_repartition;
+mod parameter_order;
 
 use crate::ToDaeError;
 use crate::scalar_inference::is_reduction_builtin;
 use crate::scalar_size::compute_var_size;
 use expanded_repartition::repartition_expanded_discrete_rows;
-use indexmap::{IndexMap, IndexSet};
-use rumoca_core::{ExpressionRewriter, ExpressionVisitor, StatementRewriter};
+use indexmap::IndexMap;
+pub(crate) use parameter_order::sort_parameters_by_start_dependency;
+use rumoca_core::{ExpressionRewriter, StatementRewriter};
 use rumoca_ir_dae as dae;
-use rumoca_ir_dae::DaeExpressionRewriter;
+use rumoca_ir_dae::{DaeExpressionRewriter, DaeVariableMutVisitor};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 type Dae = dae::Dae;
@@ -29,7 +31,7 @@ struct ArrayParamMap {
 /// rewrites without mutating the simulation DAE.
 #[derive(Debug, Clone)]
 pub struct CodegenDae {
-    dae: Dae,
+    dae: dae::Dae,
 }
 
 impl CodegenDae {
@@ -64,7 +66,7 @@ pub fn prepare_dae_for_codegen(dae: &dae::Dae) -> Result<CodegenDae, ToDaeError>
 /// parameter overrides.
 pub fn prepare_dae_for_fmi_model_description(dae: &dae::Dae) -> Result<CodegenDae, ToDaeError> {
     let mut prepared = dae.clone();
-    crate::fmi_metadata_values::fold_fmi_model_description_values_to_literals(&mut prepared)?;
+    crate::fmi_metadata_values::fold_fmi_model_description_values_to_literals(&mut prepared, dae)?;
     Ok(CodegenDae { dae: prepared })
 }
 
@@ -230,10 +232,14 @@ pub(crate) fn lower_enum_literal_refs_to_ordinals(dae: &mut Dae) {
         return;
     }
     let ordinals = dae.symbols.enum_literal_ordinals.clone();
-    EnumLiteralOrdinalLowerer {
+    let mut lowerer = EnumLiteralOrdinalLowerer {
         ordinals: &ordinals,
+    };
+    lowerer.visit_variables_mut(&mut dae.variables);
+    for start in dae.metadata.variable_starts.values_mut() {
+        *start = lowerer.rewrite_expression(start);
     }
-    .rewrite_dae(dae);
+    lowerer.rewrite_dae(dae);
     for function in dae.symbols.functions.values_mut() {
         function.body = EnumLiteralOrdinalLowerer {
             ordinals: &ordinals,
@@ -268,6 +274,27 @@ impl ExpressionRewriter for EnumLiteralOrdinalLowerer<'_> {
 impl StatementRewriter for EnumLiteralOrdinalLowerer<'_> {}
 
 impl DaeExpressionRewriter for EnumLiteralOrdinalLowerer<'_> {}
+
+impl DaeVariableMutVisitor for EnumLiteralOrdinalLowerer<'_> {
+    fn visit_variable_mut(
+        &mut self,
+        _partition: dae::DaeVariablePartition,
+        _name: &rumoca_core::VarName,
+        variable: &mut dae::Variable,
+    ) {
+        for expression in [
+            &mut variable.start,
+            &mut variable.min,
+            &mut variable.max,
+            &mut variable.nominal,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            *expression = self.rewrite_expression(expression);
+        }
+    }
+}
 
 fn decompose_record_args_dae_stmt(
     stmt: &mut rumoca_core::Statement,
@@ -698,111 +725,6 @@ fn required_arg_owner_span(
     span.require_provenance(context)
         .map(Into::into)
         .map_err(|err| ToDaeError::runtime_metadata_violation(err.to_string()))
-}
-
-// =============================================================================
-
-/// Topologically sort parameters so that start-value dependencies are ordered.
-///
-/// If parameter A's `start` expression references parameter B, then B must
-/// appear before A in the parameter map. This ensures code generators that
-/// evaluate start values sequentially produce correct numeric results.
-///
-/// Falls back to the original order if cycles are detected.
-pub(crate) fn sort_parameters_by_start_dependency(dae: &mut Dae) {
-    let param_names: IndexSet<rumoca_core::VarName> =
-        dae.variables.parameters.keys().cloned().collect();
-    if param_names.len() <= 1 {
-        return;
-    }
-
-    // Build adjacency: param → set of params its start expression depends on
-    let mut deps: IndexMap<usize, IndexSet<usize>> = IndexMap::new();
-    for (idx, (_, var)) in dae.variables.parameters.iter().enumerate() {
-        let Some(ref start_expr) = var.start else {
-            continue;
-        };
-        for ref_name in collect_expression_var_refs(start_expr) {
-            let Some(dep_idx) = param_names.get_index_of(&ref_name) else {
-                continue;
-            };
-            if dep_idx != idx {
-                deps.entry(idx).or_default().insert(dep_idx);
-            }
-        }
-    }
-
-    // If no dependencies exist, nothing to reorder.
-    if deps.is_empty() {
-        return;
-    }
-
-    // Kahn's algorithm for topological sort
-    let n = param_names.len();
-    let mut in_degree = vec![0usize; n];
-    // Build forward edges: if node depends on dep, then dep → node
-    let mut forward: Vec<Vec<usize>> = vec![Vec::new(); n];
-    for (&node, predecessors) in &deps {
-        for &pred in predecessors {
-            forward[pred].push(node);
-            in_degree[node] += 1;
-        }
-    }
-
-    let mut queue: std::collections::VecDeque<usize> = std::collections::VecDeque::new();
-    for (i, &deg) in in_degree.iter().enumerate() {
-        if deg == 0 {
-            queue.push_back(i);
-        }
-    }
-
-    let mut sorted_indices = Vec::with_capacity(n);
-    while let Some(node) = queue.pop_front() {
-        sorted_indices.push(node);
-        for &next in &forward[node] {
-            in_degree[next] -= 1;
-            if in_degree[next] == 0 {
-                queue.push_back(next);
-            }
-        }
-    }
-
-    if sorted_indices.len() != n {
-        // Cycle detected — keep original order (conservative fallback)
-        return;
-    }
-
-    // Rebuild the parameters IndexMap in sorted order
-    let old_params: Vec<(rumoca_core::VarName, dae::Variable)> =
-        dae.variables.parameters.drain(..).collect();
-    for &idx in &sorted_indices {
-        let (name, var) = old_params[idx].clone();
-        dae.variables.parameters.insert(name, var);
-    }
-}
-
-/// Collect all VarRef names from an expression tree.
-fn collect_expression_var_refs(expr: &rumoca_core::Expression) -> Vec<rumoca_core::VarName> {
-    let mut collector = VarRefListCollector { refs: Vec::new() };
-    collector.visit_expression(expr);
-    collector.refs
-}
-
-struct VarRefListCollector {
-    refs: Vec<rumoca_core::VarName>,
-}
-
-impl ExpressionVisitor for VarRefListCollector {
-    fn visit_var_ref(
-        &mut self,
-        name: &rumoca_core::Reference,
-        subscripts: &[rumoca_core::Subscript],
-    ) {
-        self.refs.push(name.var_name().clone());
-        for subscript in subscripts {
-            self.visit_subscript(subscript);
-        }
-    }
 }
 
 // =============================================================================

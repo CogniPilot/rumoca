@@ -9,10 +9,7 @@ use rumoca_ir_flat as flat;
 
 use crate::{
     ToDaeError,
-    analysis::{
-        discrete_partition,
-        variable_analysis::{self, resolve_flat_function},
-    },
+    analysis::{discrete_partition, variable_analysis},
     compute_var_size, dae_to_flat_expression, dae_to_flat_var_name,
     flat_to_dae_expression_with_refs, flat_to_dae_var_name, resolve_embedded_subscript_size,
 };
@@ -166,9 +163,12 @@ fn build_when_function_call_output_eqs(
         ));
     }
 
-    let Some(function_def) = resolve_flat_function(name.as_str(), flat) else {
-        return Err(ToDaeError::unresolved_function_call(name.as_str(), span));
-    };
+    let function_def = crate::convert::resolved_flat_function_instance(
+        name,
+        span,
+        flat,
+        "when-equation multi-output function",
+    )?;
     if function_def.outputs.len() < outputs.len() {
         return Err(ToDaeError::internal(format!(
             "when-equation multi-output assignment expects {} outputs from '{}', but function has {}",
@@ -180,13 +180,8 @@ fn build_when_function_call_output_eqs(
 
     let mut equations = Vec::with_capacity(outputs.len());
     for (target, function_output) in outputs.iter().zip(function_def.outputs.iter()) {
-        let selection_name = rumoca_core::VarName::new(format!(
-            "{}.{}",
-            name.as_str(),
-            function_output.name.as_str()
-        ));
         let rhs = rumoca_core::Expression::FunctionCall {
-            name: selection_name.into(),
+            name: projected_function_output_reference(name, function_def, function_output, span)?,
             args: args.clone(),
             is_constructor: false,
             span,
@@ -204,6 +199,31 @@ fn build_when_function_call_output_eqs(
         }
     }
     Ok(equations)
+}
+
+fn projected_function_output_reference(
+    name: &rumoca_core::Reference,
+    function: &rumoca_core::Function,
+    output: &rumoca_core::FunctionParam,
+    span: Span,
+) -> Result<rumoca_core::Reference, ToDaeError> {
+    name.with_appended_parts(
+        &[rumoca_core::ComponentRefPart {
+            ident: output.name.clone(),
+            span,
+            subs: Vec::new(),
+        }],
+        span,
+    )
+    .ok_or_else(|| {
+        ToDaeError::runtime_contract_violation_at(
+            format!(
+                "when-equation output `{}.{}` cannot preserve structured function identity",
+                function.name, output.name
+            ),
+            span,
+        )
+    })
 }
 
 /// Insert a converted when-equation into a target map, rejecting duplicate targets.
@@ -572,6 +592,194 @@ mod tests {
         )
         .expect_err("duplicate insert should fail");
         assert!(err.to_string().contains("duplicate assignment"));
+    }
+
+    fn multi_output_function_fixture(
+        span: Span,
+    ) -> (flat::Model, rumoca_core::Expression, rumoca_core::VarName) {
+        let mut flat = flat::Model::new();
+        let target = rumoca_core::VarName::new("x");
+        flat.variables.insert(
+            target.clone(),
+            flat::Variable {
+                name: target.clone(),
+                ..rumoca_ir_flat::Variable::empty_with_span(span)
+            },
+        );
+
+        let mut projected = rumoca_core::Function::new("Outer.Pkg.f", span);
+        projected.def_id = Some(rumoca_core::DefId::new(40));
+        projected.instance_id = Some(rumoca_core::FunctionInstanceId::new(40));
+        projected
+            .outputs
+            .push(rumoca_core::FunctionParam::new("out", "Real", span));
+        flat.add_function(projected);
+        let projected_instance_id = flat.functions[&rumoca_core::VarName::new("Outer.Pkg.f")]
+            .instance_id
+            .expect("fixture function identity");
+
+        let mut exact_name_collision = rumoca_core::Function::new("Outer.Pkg.f.out", span);
+        exact_name_collision.def_id = Some(rumoca_core::DefId::new(41));
+        exact_name_collision.instance_id = Some(rumoca_core::FunctionInstanceId::new(41));
+        exact_name_collision
+            .outputs
+            .push(rumoca_core::FunctionParam::new("other", "Real", span));
+        flat.add_function(exact_name_collision);
+
+        let component_ref = rumoca_core::ComponentReference {
+            local: false,
+            span,
+            parts: ["Outer", "Pkg", "f"]
+                .into_iter()
+                .map(|ident| rumoca_core::ComponentRefPart {
+                    ident: ident.to_string(),
+                    span,
+                    subs: Vec::new(),
+                })
+                .collect(),
+            def_id: Some(rumoca_core::DefId::new(40)),
+        };
+        let function = rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::Reference::from_component_reference(component_ref)
+                .with_resolved_function(rumoca_core::ResolvedFunctionReference {
+                    instance_id: projected_instance_id,
+                    base_part_count: 3,
+                }),
+            args: Vec::new(),
+            is_constructor: false,
+            span,
+        };
+        (flat, function, target)
+    }
+
+    #[test]
+    fn when_multi_output_projection_preserves_nested_function_identity() {
+        let span = test_span(20);
+        let (flat, function, target) = multi_output_function_fixture(span);
+
+        let equations = build_when_function_call_output_eqs(
+            &[target],
+            &function,
+            span,
+            "nested collision",
+            &flat,
+        )
+        .expect("typed multi-output projection");
+
+        let [equation] = equations.as_slice() else {
+            panic!("expected one projected output equation");
+        };
+        let rumoca_core::Expression::FunctionCall { name, .. } = &equation.equation.rhs else {
+            panic!("expected projected function call");
+        };
+        assert_eq!(name.as_str(), "Outer.Pkg.f.out");
+        let expected_instance_id = flat.functions[&rumoca_core::VarName::new("Outer.Pkg.f")]
+            .instance_id
+            .expect("fixture function identity");
+        assert_eq!(
+            name.resolved_function(),
+            Some(rumoca_core::ResolvedFunctionReference {
+                instance_id: expected_instance_id,
+                base_part_count: 3,
+            })
+        );
+        let component_ref = name
+            .component_ref()
+            .expect("projection retains structured reference");
+        assert_eq!(
+            component_ref
+                .parts
+                .iter()
+                .map(|part| part.ident.as_str())
+                .collect::<Vec<_>>(),
+            ["Outer", "Pkg", "f", "out"]
+        );
+        assert_eq!(component_ref.def_id, Some(rumoca_core::DefId::new(40)));
+    }
+
+    #[test]
+    fn when_multi_output_projection_rejects_missing_function_identity() {
+        let span = test_span(25);
+        let (flat, function, target) = multi_output_function_fixture(span);
+        let rumoca_core::Expression::FunctionCall {
+            name,
+            args,
+            is_constructor,
+            ..
+        } = function
+        else {
+            unreachable!("fixture is a function call");
+        };
+        let unresolved = rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::Reference::from_component_reference(
+                name.component_ref()
+                    .expect("fixture has structured reference")
+                    .clone(),
+            ),
+            args,
+            is_constructor,
+            span,
+        };
+
+        let error = build_when_function_call_output_eqs(
+            &[target],
+            &unresolved,
+            span,
+            "missing identity",
+            &flat,
+        )
+        .expect_err("missing identity must fail in ToDae");
+
+        assert!(matches!(
+            error,
+            ToDaeError::RuntimeContractViolation { detail, ir_span, .. }
+                if detail.contains("lacks resolved function identity") && ir_span == span
+        ));
+    }
+
+    #[test]
+    fn when_multi_output_projection_rejects_missing_declaration_identity() {
+        let span = test_span(27);
+        let (flat, function, target) = multi_output_function_fixture(span);
+        let rumoca_core::Expression::FunctionCall {
+            name,
+            args,
+            is_constructor,
+            ..
+        } = function
+        else {
+            unreachable!("fixture is a function call");
+        };
+        let resolved = name
+            .resolved_function()
+            .expect("fixture has resolved function identity");
+        let mut component_ref = name
+            .component_ref()
+            .expect("fixture has structured reference")
+            .clone();
+        component_ref.def_id = None;
+        let missing_declaration_identity = rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::Reference::from_component_reference(component_ref)
+                .with_resolved_function(resolved),
+            args,
+            is_constructor,
+            span,
+        };
+
+        let error = build_when_function_call_output_eqs(
+            &[target],
+            &missing_declaration_identity,
+            span,
+            "missing declaration identity",
+            &flat,
+        )
+        .expect_err("missing declaration identity must fail in ToDae");
+
+        assert!(matches!(
+            error,
+            ToDaeError::RuntimeContractViolation { detail, ir_span, .. }
+                if detail.contains("lacks source declaration identity") && ir_span == span
+        ));
     }
 
     #[test]

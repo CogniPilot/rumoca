@@ -262,18 +262,12 @@ impl TypeChecker {
             return;
         };
 
-        let prev_scope_types = std::mem::take(&mut self.current_component_types);
-        let prev_scope_shapes = std::mem::take(&mut self.current_component_shapes);
-        let prev_scope_variabilities = std::mem::take(&mut self.current_component_variabilities);
+        let previous_declarations = std::mem::take(&mut self.current_declaration_semantics);
+        let previous_semantics = std::mem::take(&mut self.current_instance_semantics);
         let prev_instance_scope = self.current_instance_scope.take();
+        let previous_class_instance_id = self.current_class_instance_id.take();
         let prev_instance_domain_shape = std::mem::take(&mut self.current_instance_domain_shape);
-        let (full_prefix, short_model) = Self::instanced_scope_prefixes(model_name);
-        self.current_component_types =
-            Self::build_instanced_component_type_scope(overlay, &full_prefix, &short_model);
-        self.current_component_shapes =
-            Self::build_instanced_component_shape_scope(overlay, &full_prefix, &short_model);
-        self.current_component_variabilities =
-            Self::build_instanced_component_variability_scope(overlay, &full_prefix, &short_model);
+        self.current_instance_semantics = InstanceSemanticScope::from_overlay(overlay);
 
         if overlay.classes.is_empty() {
             self.check_declaration_only_overlay(tree, overlay, model_class, model_name, type_table);
@@ -291,10 +285,10 @@ impl TypeChecker {
         }
         self.check_instanced_bindings(tree, overlay, type_table);
 
-        self.current_component_types = prev_scope_types;
-        self.current_component_shapes = prev_scope_shapes;
-        self.current_component_variabilities = prev_scope_variabilities;
+        self.current_declaration_semantics = previous_declarations;
+        self.current_instance_semantics = previous_semantics;
         self.current_instance_scope = prev_instance_scope;
+        self.current_class_instance_id = previous_class_instance_id;
         self.current_instance_domain_shape = prev_instance_domain_shape;
     }
 
@@ -304,10 +298,13 @@ impl TypeChecker {
         overlay: &InstanceOverlay,
         class_data: &rumoca_ir_ast::ClassInstanceData,
         type_table: &TypeTable,
-        checked_declarations: &mut HashSet<(DefId, String)>,
+        checked_declarations: &mut HashSet<(DefId, ComponentPath)>,
     ) {
         let instance_scope = class_data.qualified_name.to_component_path();
         let previous_scope = self.current_instance_scope.replace(instance_scope.clone());
+        let previous_class_instance_id = self
+            .current_class_instance_id
+            .replace(class_data.instance_id);
         let previous_domain = std::mem::take(&mut self.current_instance_domain_shape);
         let previous_call_type_overrides = std::mem::take(&mut self.current_call_type_overrides);
         self.current_instance_domain_shape = overlay
@@ -342,6 +339,7 @@ impl TypeChecker {
         self.check_instanced_class_body(class_data, type_table);
 
         self.current_instance_scope = previous_scope;
+        self.current_class_instance_id = previous_class_instance_id;
         self.current_instance_domain_shape = previous_domain;
         self.current_call_type_overrides = previous_call_type_overrides;
     }
@@ -423,12 +421,12 @@ impl TypeChecker {
         class: &ClassDef,
         instance_scope: &ComponentPath,
         type_table: &TypeTable,
-        checked_instances: &mut HashSet<(DefId, String)>,
+        checked_instances: &mut HashSet<(DefId, ComponentPath)>,
     ) {
         let Some(class_def_id) = class.def_id else {
             return;
         };
-        if !checked_instances.insert((class_def_id, instance_scope.to_flat_string())) {
+        if !checked_instances.insert((class_def_id, instance_scope.clone())) {
             return;
         }
         for extend in &class.extends {
@@ -469,12 +467,12 @@ impl TypeChecker {
         class: &ClassDef,
         instance_scope: &ComponentPath,
         type_table: &TypeTable,
-        checked_instances: &mut HashSet<(DefId, String)>,
+        checked_instances: &mut HashSet<(DefId, ComponentPath)>,
     ) {
         let Some(class_def_id) = class.def_id else {
             return;
         };
-        if !checked_instances.insert((class_def_id, instance_scope.to_flat_string())) {
+        if !checked_instances.insert((class_def_id, instance_scope.clone())) {
             return;
         }
 
@@ -497,6 +495,20 @@ impl TypeChecker {
     }
 
     fn check_instanced_class_declaration(&mut self, class: &ClassDef, type_table: &TypeTable) {
+        for component in class.components.values() {
+            let Some(def_id) = component.def_id else {
+                continue;
+            };
+            let type_id = self.resolve_type_name(
+                &component.type_name.to_string(),
+                component.type_def_id,
+                type_table,
+            );
+            self.current_declaration_semantics.insert(
+                def_id,
+                ComponentSemantics::from_declaration_with_type(component, type_id),
+            );
+        }
         for (name, component) in &class.components {
             let type_id = self.resolve_type_name(
                 &component.type_name.to_string(),

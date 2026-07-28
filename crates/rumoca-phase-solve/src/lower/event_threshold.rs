@@ -1,8 +1,10 @@
 use rumoca_core::{BuiltinFunction, Expression, OpBinary, OpUnary, VarName};
+use rumoca_ir_dae as dae;
 
-use crate::{Dae, component_base_name};
-
-pub fn is_event_constant_time_threshold_relation(dae: &Dae, expr: &Expression) -> bool {
+pub(super) fn is_event_constant_time_threshold_relation(
+    dae_model: &dae::Dae,
+    expr: &Expression,
+) -> bool {
     let Expression::Binary { op, lhs, rhs, .. } = expr else {
         return false;
     };
@@ -10,18 +12,18 @@ pub fn is_event_constant_time_threshold_relation(dae: &Dae, expr: &Expression) -
         && expr_is_bare_time(lhs)
         && !expr_is_bare_time(rhs)
     {
-        return is_event_constant_threshold(dae, rhs);
+        return is_event_constant_threshold(dae_model, rhs);
     }
     if matches!(op, OpBinary::Le | OpBinary::Lt)
         && expr_is_bare_time(rhs)
         && !expr_is_bare_time(lhs)
     {
-        return is_event_constant_threshold(dae, lhs);
+        return is_event_constant_threshold(dae_model, lhs);
     }
     false
 }
 
-pub fn is_event_constant_threshold(dae: &Dae, expr: &Expression) -> bool {
+fn is_event_constant_threshold(dae_model: &dae::Dae, expr: &Expression) -> bool {
     match expr {
         Expression::Literal { .. } => true,
         Expression::BuiltinCall {
@@ -30,21 +32,24 @@ pub fn is_event_constant_threshold(dae: &Dae, expr: &Expression) -> bool {
             ..
         } => matches!(args.as_slice(), [arg] if pre_arg_is_component_reference(arg)),
         Expression::Unary { op, rhs, .. } => {
-            threshold_unary_op_is_arithmetic(op) && is_event_constant_threshold(dae, rhs)
+            threshold_unary_op_is_arithmetic(op) && is_event_constant_threshold(dae_model, rhs)
         }
         Expression::Binary { op, lhs, rhs, .. } => {
             threshold_binary_op_is_arithmetic(op)
-                && is_event_constant_threshold(dae, lhs)
-                && is_event_constant_threshold(dae, rhs)
+                && is_event_constant_threshold(dae_model, lhs)
+                && is_event_constant_threshold(dae_model, rhs)
         }
         Expression::VarRef {
             name, subscripts, ..
-        } => subscripts_are_evaluable(subscripts) && var_ref_is_event_constant(dae, name.as_str()),
+        } => {
+            subscripts_are_evaluable(subscripts)
+                && var_ref_is_event_constant(dae_model, name.as_str())
+        }
         Expression::Index {
             base, subscripts, ..
-        } => subscripts_are_evaluable(subscripts) && is_event_constant_threshold(dae, base),
+        } => subscripts_are_evaluable(subscripts) && is_event_constant_threshold(dae_model, base),
         Expression::FieldAccess { base, field, .. } => {
-            field_access_is_event_constant(dae, base, field)
+            field_access_is_event_constant(dae_model, base, field)
         }
         _ => false,
     }
@@ -92,17 +97,17 @@ fn pre_arg_is_component_reference(expr: &Expression) -> bool {
     }
 }
 
-fn field_access_is_event_constant(dae: &Dae, base: &Expression, field: &str) -> bool {
+fn field_access_is_event_constant(dae_model: &dae::Dae, base: &Expression, field: &str) -> bool {
     if let Expression::VarRef {
         name, subscripts, ..
     } = base
         && subscripts_are_evaluable(subscripts)
     {
         let field_name = format!("{}.{}", name.as_str(), field);
-        return var_ref_is_event_constant(dae, &field_name)
-            || var_ref_is_event_constant(dae, name.as_str());
+        return var_ref_is_event_constant(dae_model, &field_name)
+            || var_ref_is_event_constant(dae_model, name.as_str());
     }
-    is_event_constant_threshold(dae, base)
+    is_event_constant_threshold(dae_model, base)
 }
 
 fn subscripts_are_evaluable(subscripts: &[rumoca_core::Subscript]) -> bool {
@@ -132,16 +137,16 @@ fn expr_is_evaluable_subscript(expr: &Expression) -> bool {
     }
 }
 
-fn var_ref_is_event_constant(dae: &Dae, name: &str) -> bool {
-    if dae.symbols.enum_literal_ordinals.contains_key(name) {
+fn var_ref_is_event_constant(dae_model: &dae::Dae, name: &str) -> bool {
+    if dae_model.symbols.enum_literal_ordinals.contains_key(name) {
         return true;
     }
     let is_const = |candidate: &VarName| {
-        dae.variables.parameters.contains_key(candidate)
-            || dae.variables.constants.contains_key(candidate)
+        dae_model.variables.parameters.contains_key(candidate)
+            || dae_model.variables.constants.contains_key(candidate)
     };
     is_const(&VarName::new(name))
-        || component_base_name(name)
+        || dae::component_base_name(name)
             .map(|base| is_const(&VarName::new(base)))
             .unwrap_or(false)
 }
@@ -151,8 +156,6 @@ mod tests {
     use rumoca_core::{BuiltinFunction, Literal, Reference, SourceId, Span, Subscript};
 
     use super::*;
-    use crate::Variable;
-
     fn test_span() -> Span {
         Span::from_offsets(SourceId::from_source_name("event_threshold_test.mo"), 1, 2)
     }
@@ -200,19 +203,19 @@ mod tests {
 
     #[test]
     fn time_threshold_accepts_event_constant_expressions() {
-        let mut dae = Dae::default();
-        dae.variables.parameters.insert(
+        let mut dae_model = dae::Dae::default();
+        dae_model.variables.parameters.insert(
             VarName::new("deadline"),
-            Variable {
+            dae::Variable {
                 name: VarName::new("deadline"),
-                ..Variable::empty_with_span(test_span())
+                ..dae::Variable::empty_with_span(test_span())
             },
         );
-        dae.variables.parameters.insert(
+        dae_model.variables.parameters.insert(
             VarName::new("p"),
-            Variable {
+            dae::Variable {
                 name: VarName::new("p"),
-                ..Variable::empty_with_span(test_span())
+                ..dae::Variable::empty_with_span(test_span())
             },
         );
         let indexed_parameter = Expression::VarRef {
@@ -222,22 +225,22 @@ mod tests {
         };
 
         assert!(is_event_constant_time_threshold_relation(
-            &dae,
+            &dae_model,
             &ge(var("time"), var("deadline"))
         ));
         assert!(is_event_constant_time_threshold_relation(
-            &dae,
+            &dae_model,
             &ge(var("time"), pre(var("x")))
         ));
         assert!(is_event_constant_time_threshold_relation(
-            &dae,
+            &dae_model,
             &ge(var("time"), indexed_parameter)
         ));
     }
 
     #[test]
     fn time_threshold_rejects_live_or_boolean_thresholds() {
-        let dae = Dae::default();
+        let dae_model = dae::Dae::default();
         let live_threshold = ge(var("time"), var("x"));
         let boolean_threshold = ge(
             var("time"),
@@ -254,27 +257,27 @@ mod tests {
         };
 
         assert!(!is_event_constant_time_threshold_relation(
-            &dae,
+            &dae_model,
             &live_threshold
         ));
         assert!(!is_event_constant_time_threshold_relation(
-            &dae,
+            &dae_model,
             &boolean_threshold
         ));
         assert!(!is_event_constant_time_threshold_relation(
-            &dae,
+            &dae_model,
             &ge(var("time"), indexed_parameter)
         ));
         assert!(!is_event_constant_time_threshold_relation(
-            &dae,
+            &dae_model,
             &eq(var("time"), real(1.0))
         ));
         assert!(!is_event_constant_time_threshold_relation(
-            &dae,
+            &dae_model,
             &ge(var("time"), ge(var("x"), real(0.0)))
         ));
         assert!(!is_event_constant_time_threshold_relation(
-            &dae,
+            &dae_model,
             &ge(var("time"), pre(ge(var("x"), real(0.0))))
         ));
     }

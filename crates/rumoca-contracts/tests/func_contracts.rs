@@ -821,26 +821,19 @@ fn func_023_cyclic_function_bindings_rejected() {
     );
 }
 
-// =============================================================================
-// FUNC-029: Conditional components in target record: it is an error
-// =============================================================================
-
 #[test]
-fn func_029_constructor_for_conditional_record_rejected() {
-    expect_failure_in_phase_with_code(
+fn record_constructor_with_statically_present_conditional_field_accepted() {
+    expect_success(
         r#"
         model M
-            parameter Boolean has = true;
             record R
                 Real x;
-                Real y if has;
+                Real y if true;
             end R;
             R r = R(1.0, 2.0);
         end M;
     "#,
         "M",
-        FailedPhase::Flatten,
-        "EF018",
     );
 }
 

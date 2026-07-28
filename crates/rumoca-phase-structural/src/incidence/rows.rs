@@ -120,8 +120,8 @@ impl IncidenceRows {
     /// answers with `binary_search`. Exposing it would let a caller hand in an
     /// unsorted row and get a silently wrong `contains` in release builds —
     /// where the `debug_assert!` is compiled out. Production callers use
-    /// [`IncidenceRows::from_sets`], which sorts, or the builder's
-    /// `push_translated`, which preserves order arithmetically.
+    /// [`IncidenceRows::from_sets`], which sorts, or the builder's affine
+    /// translation path, which restores canonical order.
     #[cfg(test)]
     #[must_use]
     pub(crate) fn from_sorted_rows<I>(rows: I) -> Self
@@ -173,9 +173,10 @@ impl<'a> IntoIterator for &'a IncidenceRows {
     }
 }
 
-/// Position in a partially built [`IncidenceRows`], for rolling back a family
-/// emission that turned out not to be a uniform translation.
+/// Position in a partially built [`IncidenceRows`], for test coverage of
+/// transactional family emission.
 #[derive(Debug, Clone, Copy)]
+#[cfg(test)]
 pub(crate) struct RowCheckpoint {
     rows: usize,
     columns: usize,
@@ -183,9 +184,9 @@ pub(crate) struct RowCheckpoint {
 
 /// Incremental builder that keeps the CSR invariants.
 ///
-/// Crate-private: [`Self::push_sorted`] trusts its caller for the ascending,
-/// duplicate-free invariant that [`IncidenceRows::contains`] then relies on, so
-/// the builder stays in the hands of code this crate's tests cover.
+/// Crate-private test constructors have a sorted insertion path that trusts
+/// their caller for the ascending, duplicate-free invariant that
+/// [`IncidenceRows::contains`] then relies on.
 #[derive(Debug)]
 pub(crate) struct IncidenceRowsBuilder {
     offsets: Vec<usize>,
@@ -239,6 +240,7 @@ impl IncidenceRowsBuilder {
     }
 
     /// Append a row that is already ascending and duplicate-free.
+    #[cfg(test)]
     pub(crate) fn push_sorted(&mut self, columns: &[usize]) {
         debug_assert!(
             columns.windows(2).all(|pair| pair[0] < pair[1]),
@@ -248,38 +250,61 @@ impl IncidenceRowsBuilder {
         self.offsets.push(self.columns.len());
     }
 
-    /// Append a row that is `source_row` shifted by a single constant offset.
+    /// Append unknown occurrences, canonicalizing them into one incidence row.
+    pub(crate) fn push_occurrences(&mut self, occurrences: &[usize]) {
+        self.push_unsorted(occurrences.iter().copied());
+    }
+
+    /// Affinely translate ordered unknown occurrences and append their
+    /// canonical incidence set.
     ///
-    /// A uniform translation preserves both order and distinctness, so the run
-    /// is copied arithmetically -- no re-sort, no set, no per-row allocation.
-    /// This is what lets a regular family's interior cells be emitted from its
-    /// corner rows in `O(1)` work per scalar row.
-    pub(crate) fn push_translated(
+    /// Regular equation bodies may capture binder-invariant unknowns alongside
+    /// indexed array elements. Such a row is affine even though it is not a
+    /// uniform translation as a whole: the captured column has shift zero while
+    /// the indexed column advances. Occurrence identity is retained until after
+    /// translation; sorting earlier would pair the wrong accesses when two
+    /// affine index expressions cross.
+    pub(crate) fn push_affine_occurrences(
         &mut self,
-        source_row: usize,
-        shift: i64,
+        occurrences: &[usize],
+        shifts: &[i64],
     ) -> Result<(), StructuralError> {
-        let (start, end) = self.row_bounds(source_row)?;
-        let target_start = self.columns.len();
-        self.columns.reserve(end.saturating_sub(start));
-        for index in start..end {
-            let source = self.columns[index];
+        if occurrences.len() != shifts.len() {
+            return Err(StructuralError::UnspannedContractViolation {
+                reason: format!(
+                    "incidence affine translation has {} shifts for {} source occurrences",
+                    shifts.len(),
+                    occurrences.len()
+                ),
+            });
+        }
+
+        let mut scratch = std::mem::take(&mut self.scratch);
+        scratch.clear();
+        scratch.reserve(occurrences.len());
+        for (&source, &shift) in occurrences.iter().zip(shifts) {
             let Some(shifted) = shifted_column(source, shift) else {
-                self.columns.truncate(target_start);
+                self.scratch = scratch;
                 return Err(StructuralError::UnspannedContractViolation {
                     reason: format!(
-                        "incidence row translation of column {source} by {shift} leaves the unknown index range"
+                        "incidence affine translation of column {source} by {shift} leaves the unknown index range"
                     ),
                 });
             };
-            self.columns.push(shifted);
+            scratch.push(shifted);
         }
+
+        scratch.sort_unstable();
+        scratch.dedup();
+        self.columns.extend_from_slice(&scratch);
         self.offsets.push(self.columns.len());
+        self.scratch = scratch;
         Ok(())
     }
 
     /// Record the current position so a failed family emission can be undone.
     #[must_use]
+    #[cfg(test)]
     pub(crate) fn checkpoint(&self) -> RowCheckpoint {
         RowCheckpoint {
             rows: self.offsets.len(),
@@ -288,6 +313,7 @@ impl IncidenceRowsBuilder {
     }
 
     /// Discard every row pushed after `checkpoint`.
+    #[cfg(test)]
     pub(crate) fn rollback(&mut self, checkpoint: RowCheckpoint) {
         self.offsets.truncate(checkpoint.rows);
         self.columns.truncate(checkpoint.columns);
@@ -300,20 +326,6 @@ impl IncidenceRowsBuilder {
             offsets: self.offsets,
             columns: self.columns,
         }
-    }
-
-    fn row_bounds(&self, row: usize) -> Result<(usize, usize), StructuralError> {
-        let bounds = self
-            .offsets
-            .get(row)
-            .copied()
-            .zip(self.offsets.get(row.saturating_add(1)).copied());
-        bounds.ok_or_else(|| StructuralError::UnspannedContractViolation {
-            reason: format!(
-                "incidence row translation source {row} is not among the {} rows emitted so far",
-                self.row_count()
-            ),
-        })
     }
 }
 
@@ -372,39 +384,36 @@ mod tests {
     }
 
     #[test]
-    fn push_translated_shifts_a_run_and_preserves_order() {
+    fn push_affine_occurrences_shifts_then_canonicalizes() {
         let mut builder = IncidenceRowsBuilder::default();
-        builder.push_sorted(&[5, 6, 20]);
-        builder.push_translated(0, 3).expect("in-range shift");
-        builder.push_translated(1, -4).expect("in-range shift");
+        builder
+            .push_affine_occurrences(&[5, 6, 20], &[3, 0, 7])
+            .expect("in-range affine shifts");
         let rows = builder.finish();
-        assert_eq!(rows.row(1), &[8, 9, 23]);
-        assert_eq!(rows.row(2), &[4, 5, 19]);
-        assert!(rows.row(1).windows(2).all(|pair| pair[0] < pair[1]));
+        assert_eq!(rows.row(0), &[6, 8, 27]);
+        assert!(rows.row(0).windows(2).all(|pair| pair[0] < pair[1]));
     }
 
     #[test]
-    fn push_translated_rejects_negative_or_overflowing_shift() {
+    fn push_affine_occurrences_rejects_invalid_shift_or_arity() {
         let mut builder = IncidenceRowsBuilder::default();
-        builder.push_sorted(&[0, 1]);
         let err = builder
-            .push_translated(0, -1)
+            .push_affine_occurrences(&[0, 1], &[-1, 0])
             .expect_err("shifting column 0 below zero leaves the index range");
         assert!(matches!(
             err,
             StructuralError::UnspannedContractViolation { .. }
         ));
-        // The failed row was rolled back, so the builder still holds one row.
-        assert_eq!(builder.row_count(), 1);
+        assert_eq!(builder.row_count(), 0);
 
-        let missing = builder
-            .push_translated(9, 1)
-            .expect_err("row 9 has not been emitted yet");
+        let arity = builder
+            .push_affine_occurrences(&[9], &[1, 2])
+            .expect_err("occurrence and shift counts must match");
         assert!(matches!(
-            missing,
+            arity,
             StructuralError::UnspannedContractViolation { .. }
         ));
-        assert_eq!(builder.finish().len(), 1);
+        assert_eq!(builder.finish().len(), 0);
     }
 
     #[test]

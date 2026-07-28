@@ -169,6 +169,41 @@ fn tool_config_cache_reloads_after_config_file_change() {
 }
 
 #[test]
+fn malformed_formatter_config_fails_request_and_is_not_cached() {
+    let temp = new_temp_dir("tool-config-malformed");
+    run_async_test(async {
+        let config_path = temp.join(".rumoca_fmt.toml");
+        std::fs::write(&config_path, "profile = [\n").expect("write malformed fmt config");
+        let service = new_test_service();
+        let server = service.inner();
+        let uri = open_model(server, &temp.join("m.mo"), UNFORMATTED_MODEL).await;
+
+        let error = server
+            .formatting(formatting_params(&uri, 2))
+            .await
+            .expect_err("malformed formatter config must fail the formatting request");
+        assert!(
+            error.to_string().contains("formatter configuration"),
+            "{error:?}"
+        );
+        assert!(
+            server.tool_config_cache.read().await.is_empty(),
+            "failed config loads must not cache defaults"
+        );
+
+        std::fs::write(&config_path, "profile = \"canonical\"\n").expect("repair fmt config");
+        let formatted = server
+            .formatting(formatting_params(&uri, 2))
+            .await
+            .expect("repaired config should load")
+            .expect("canonical profile should produce an edit");
+        assert!(!formatted.is_empty());
+        assert_eq!(server.tool_config_cache.read().await.len(), 1);
+    });
+    let _ = std::fs::remove_dir_all(&temp);
+}
+
+#[test]
 fn diagnostics_respect_rumoca_lint_toml_disabled_rules() {
     let temp = new_temp_dir("tool-config-lint");
     run_async_test(async {
@@ -182,7 +217,10 @@ fn diagnostics_respect_rumoca_lint_toml_disabled_rules() {
         let service = new_test_service();
         let server = service.inner();
         let before = {
-            let options = server.tool_options_for_document(&file_name).await;
+            let options = server
+                .tool_options_for_document(&file_name)
+                .await
+                .expect("default tool options");
             rumoca_tool_lint::lint(source, &file_name, &options.lint)
         };
         assert!(
@@ -204,7 +242,10 @@ fn diagnostics_respect_rumoca_lint_toml_disabled_rules() {
             })
             .await;
 
-        let options = server.tool_options_for_document(&file_name).await;
+        let options = server
+            .tool_options_for_document(&file_name)
+            .await
+            .expect("valid lint config");
         assert!(
             options
                 .lint

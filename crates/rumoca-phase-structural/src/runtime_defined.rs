@@ -4,8 +4,7 @@
 //! runtime (f_z, f_m equations, or f_x assignments using pre()/sample()/etc.)
 //! rather than solved by the continuous solver.
 //!
-//! AGENTS.md: "`runtime_defined_unknown_names` lives in
-//! `rumoca-phase-structural::runtime_defined`."
+//! SPEC_0029 §3b assigns the shared helper to this module.
 
 use std::collections::HashSet;
 

@@ -525,6 +525,14 @@ fn test_constrained_dummy_derivative_reduction_reaches_fixed_point() {
             .algebraics
             .contains_key(&VarName::new("mass.v"))
     );
+    for state in ["mass.s", "mass.v"] {
+        assert!(
+            dae.variables
+                .algebraics
+                .contains_key(&VarName::new(format!("__dummyder__.{state}"))),
+            "the fixed-point pair must retain a named derivative unknown for {state}"
+        );
+    }
 }
 
 #[test]
@@ -630,12 +638,27 @@ fn test_complete_dummy_derivative_group_preserves_position_and_adds_velocity_con
         scalar_count: 3,
     });
     let original_equation_count = dae.continuous.equations.len();
+    let original_scalar_rows: usize = dae
+        .continuous
+        .equations
+        .iter()
+        .map(|equation| equation.scalar_count)
+        .sum();
 
     let demoted = reduce_constrained_dummy_derivatives(&mut dae)
         .expect("the complete vector dummy-derivative group should reduce");
 
     assert_eq!(demoted, 3);
     assert_eq!(dae.continuous.equations.len(), original_equation_count + 1);
+    assert_eq!(
+        dae.continuous
+            .equations
+            .iter()
+            .map(|equation| equation.scalar_count)
+            .sum::<usize>(),
+        original_scalar_rows + 3,
+        "the differentiated vector constraint adds one scalar row per demoted state"
+    );
     assert!(dae.continuous.equations.iter().any(|equation| {
         equation.origin == "holonomic position constraint" && equation.rhs == position_constraint
     }));
@@ -649,21 +672,41 @@ fn test_complete_dummy_derivative_group_preserves_position_and_adds_velocity_con
                 .contains("d_dt_complete_dummy_derivative_group")
         })
         .expect("the differentiated velocity constraint should be appended");
+    assert_complete_group_generated_dummies(&dae, differentiated);
+}
+
+fn assert_complete_group_generated_dummies(dae: &Dae, differentiated: &Equation) {
     for index in 1..=3 {
         let dummy = VarName::new(format!("dummy{index}"));
+        let generated_dummy = VarName::new(format!("__dummyder__.dummy{index}"));
         assert!(!dae.variables.states.contains_key(&dummy));
         assert!(dae.variables.algebraics.contains_key(&dummy));
+        assert!(
+            dae.variables.algebraics.contains_key(&generated_dummy),
+            "each demoted state needs a distinct generated derivative unknown"
+        );
         assert!(
             dae.continuous
                 .equations
                 .iter()
                 .all(|equation| !expr_contains_der_of(&equation.rhs, &dummy))
         );
-        assert!(expr_contains_var(
-            &differentiated.rhs,
-            &VarName::new(format!("velocity{index}"))
-        ));
+        let velocity = VarName::new(format!("velocity{index}"));
+        assert!(
+            dae.continuous.equations.iter().any(|equation| {
+                expr_contains_var(&equation.rhs, &velocity)
+                    && expr_contains_var(&equation.rhs, &generated_dummy)
+            }),
+            "the former velocity=der(dummy) row must define the generated unknown, not collapse to a tautology"
+        );
+        assert!(expr_contains_var(&differentiated.rhs, &velocity));
     }
+
+    let mut scalar = dae.clone();
+    crate::scalarize::scalarize_equations(&mut scalar)
+        .expect("the balanced generated-dummy system should scalarize");
+    crate::sort_dae(&scalar)
+        .expect("the complete dummy-derivative transform must leave a perfect matching");
 }
 
 #[test]

@@ -22,12 +22,13 @@ type FmiEvalResult<T> = Result<T, FmiEvalError>;
 /// expression language, so every serialized start/min/max/nominal value must be
 /// a finite numeric value or value list under default parameter values.
 pub(crate) fn fold_fmi_model_description_values_to_literals(
-    dae: &mut Dae,
+    target: &mut Dae,
+    source: &rumoca_ir_dae::Dae,
 ) -> Result<(), ToDaeError> {
-    let dims = collect_variable_dims(dae)?;
+    let dims = collect_variable_dims(source)?;
     let runtime =
         rumoca_eval_dae::build_partial_runtime_parameter_tail_env_with_declared_slots_and_runtime(
-            dae,
+            source,
             &[],
             0.0,
             Arc::new(rumoca_eval_dae::EvalRuntimeState::new()),
@@ -37,13 +38,13 @@ pub(crate) fn fold_fmi_model_description_values_to_literals(
                 "could not prepare default parameter evaluation for FMI modelDescription: {err}"
             ))
         })?;
-    let values = collect_best_effort_fmi_metadata_values(dae, &dims, &runtime)?;
-    rewrite_fmi_model_description_values(dae, &dims, &runtime, &values)
+    let values = collect_best_effort_fmi_metadata_values(source, &dims, &runtime)?;
+    rewrite_fmi_model_description_values(target, &dims, &runtime, &values)
 }
 
 pub(crate) fn fold_fmi_model_description_values_from_source(
     target: &mut Dae,
-    source: &Dae,
+    source: &rumoca_ir_dae::Dae,
 ) -> Result<(), ToDaeError> {
     let dims = collect_variable_dims(source)?;
     let runtime =

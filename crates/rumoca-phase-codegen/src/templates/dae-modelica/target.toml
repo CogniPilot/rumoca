@@ -7,6 +7,7 @@ deployment_class = "modelica"
 
 [capabilities]
 runtime_events = false
+structured_equation_families = true
 
 [[files]]
 path = "{{ model_name }}_dae.mo"

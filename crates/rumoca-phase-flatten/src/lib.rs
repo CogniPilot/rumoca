@@ -10,9 +10,9 @@
 //! - Generating globally unique variable names from resolved instance paths
 //! - Expanding connection equations per MLS §9
 //! - Converting equations to residual form (0 = residual)
-//! - Preserving algorithm sections per SPEC_0020
+//! - Preserving algorithm sections per SPEC_0007 and MLS §11
 //!
-//! # Tracing (SPEC_0024)
+//! # Tracing (SPEC_0008)
 //!
 //! Enable the `tracing` feature for detailed diagnostic output:
 //! ```bash

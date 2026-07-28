@@ -5,7 +5,10 @@
 //! Uses miette for rich diagnostic output with error codes and help text.
 
 use miette::Diagnostic;
-use rumoca_core::{BoxedResult, SourceSpan, Span, error_constructor, span_to_source_span};
+use rumoca_core::{
+    BoxedResult, Diagnostic as CommonDiagnostic, PhaseError, Span, error_constructor,
+    miette_phase_error_to_diagnostic,
+};
 use thiserror::Error;
 
 /// Type alias for ToDae results with boxed errors.
@@ -50,7 +53,7 @@ pub enum ToDaeError {
     ReinitNonState {
         name: String,
         #[label("reinit applied to non-state variable here")]
-        span: SourceSpan,
+        span: Span,
     },
 
     /// Function call could not be resolved to a builtin/intrinsic/user function.
@@ -62,7 +65,7 @@ pub enum ToDaeError {
     UnresolvedFunctionCall {
         name: String,
         #[label("unresolved function call here")]
-        span: SourceSpan,
+        span: Span,
     },
 
     /// Function definition exists but has no executable implementation.
@@ -74,7 +77,7 @@ pub enum ToDaeError {
     FunctionWithoutBody {
         name: String,
         #[label("invalid function definition referenced here")]
-        span: SourceSpan,
+        span: Span,
     },
 
     /// Constructor field selection cannot be resolved from constructor signature.
@@ -88,7 +91,7 @@ pub enum ToDaeError {
     ConstructorFieldSelectionUnresolved {
         selection: String,
         #[label("unresolved constructor field selection here")]
-        span: SourceSpan,
+        span: Span,
     },
 
     /// Variable/reference name could not be resolved in generated DAE expressions.
@@ -102,7 +105,7 @@ pub enum ToDaeError {
     UnresolvedReference {
         name: String,
         #[label("unresolved reference appears here")]
-        span: SourceSpan,
+        span: Span,
     },
 
     /// Clock constructor expression could not be lowered to a static schedule.
@@ -132,7 +135,7 @@ pub enum ToDaeError {
     DiscreteSolvedFormViolation {
         detail: String,
         #[label("invalid discrete solved-form equation")]
-        span: SourceSpan,
+        span: Span,
     },
 
     /// Canonical condition partition (`f_c(relation(v))`) is inconsistent.
@@ -162,7 +165,7 @@ pub enum ToDaeError {
         detail: String,
         ir_span: Span,
         #[label("invalid runtime metadata here")]
-        span: SourceSpan,
+        span: Span,
     },
 
     /// Model-level algorithms are not allowed in solver-facing DAE unless lowered.
@@ -177,7 +180,7 @@ pub enum ToDaeError {
         section: String,
         origin: String,
         #[label("unsupported algorithm statement here")]
-        span: SourceSpan,
+        span: Span,
     },
 
     /// Solver-facing DAE contains high-level synchronous constructs that must be lowered.
@@ -191,7 +194,7 @@ pub enum ToDaeError {
     StrictSolverDaeViolation {
         detail: String,
         #[label("unsupported synchronous construct appears here")]
-        span: SourceSpan,
+        span: Span,
     },
 
     /// Solver-facing DAE failed required runtime contract checks.
@@ -206,7 +209,7 @@ pub enum ToDaeError {
         detail: String,
         ir_span: Span,
         #[label("invalid runtime contract originates here")]
-        span: SourceSpan,
+        span: Span,
     },
 
     /// Solver-facing DAE failed required runtime contract checks without source provenance.
@@ -230,7 +233,7 @@ pub enum ToDaeError {
     SourceTemporalOperatorSurvivedDaeBoundary {
         detail: String,
         #[label("source temporal operator survived here")]
-        span: SourceSpan,
+        span: Span,
     },
 
     /// The virtual connection graph (MLS §9.4) is invalid: required
@@ -245,7 +248,7 @@ pub enum ToDaeError {
     InvalidConnectionGraph {
         detail: String,
         #[label("connection graph constructed from these connectors")]
-        span: SourceSpan,
+        span: Span,
     },
 
     /// The source uses an MLS runtime operator whose semantics are not yet
@@ -261,7 +264,7 @@ pub enum ToDaeError {
         operator: String,
         detail: String,
         #[label("unsupported runtime operator used here")]
-        span: SourceSpan,
+        span: Span,
     },
 }
 
@@ -365,7 +368,7 @@ impl ToDaeError {
         Self::RuntimeMetadataViolationAt {
             detail: detail.into(),
             ir_span: span,
-            span: span_to_source_span(span),
+            span,
         }
     }
 
@@ -381,7 +384,7 @@ impl ToDaeError {
         Self::RuntimeContractViolation {
             detail: detail.into(),
             ir_span: span,
-            span: span_to_source_span(span),
+            span,
         }
     }
 
@@ -395,11 +398,40 @@ impl ToDaeError {
     }
 
     pub fn source_span(&self) -> Option<Span> {
+        self.diagnostic_source_spans()
+            .first()
+            .copied()
+            .and_then(real_span)
+    }
+
+    fn diagnostic_source_spans(&self) -> &[Span] {
         match self {
-            Self::RuntimeMetadataViolationAt { ir_span, .. }
-            | Self::RuntimeContractViolation { ir_span, .. } => real_span(*ir_span),
-            _ => None,
+            Self::ReinitNonState { span, .. }
+            | Self::UnresolvedFunctionCall { span, .. }
+            | Self::FunctionWithoutBody { span, .. }
+            | Self::ConstructorFieldSelectionUnresolved { span, .. }
+            | Self::UnresolvedReference { span, .. }
+            | Self::DiscreteSolvedFormViolation { span, .. }
+            | Self::RuntimeMetadataViolationAt { span, .. }
+            | Self::UnsupportedAlgorithm { span, .. }
+            | Self::StrictSolverDaeViolation { span, .. }
+            | Self::RuntimeContractViolation { span, .. }
+            | Self::SourceTemporalOperatorSurvivedDaeBoundary { span, .. }
+            | Self::InvalidConnectionGraph { span, .. }
+            | Self::UnsupportedRuntimeOperator { span, .. } => std::slice::from_ref(span),
+            Self::Unbalanced { .. }
+            | Self::Internal(_)
+            | Self::UnresolvedClockSchedule { .. }
+            | Self::ConditionPartitionViolation { .. }
+            | Self::RuntimeMetadataViolation { .. }
+            | Self::UnspannedRuntimeContractViolation { .. } => &[],
         }
+    }
+}
+
+impl PhaseError for ToDaeError {
+    fn to_diagnostic(&self) -> CommonDiagnostic {
+        miette_phase_error_to_diagnostic(self, self.diagnostic_source_spans())
     }
 }
 
@@ -583,5 +615,26 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn phase_error_preserves_source_identity_and_help() {
+        let span = Span::from_offsets(
+            SourceId::from_source_name("phase_dae_phase_error.mo"),
+            12,
+            21,
+        );
+        let error =
+            ToDaeError::unsupported_runtime_operator("spatialDistribution", "not lowered", span);
+        let diagnostic = error.to_diagnostic();
+
+        assert_eq!(diagnostic.code.as_deref(), Some("ED018"));
+        assert_eq!(diagnostic.labels[0].span, span);
+        assert!(
+            diagnostic
+                .notes
+                .iter()
+                .any(|note| note.contains("rejects this operator"))
+        );
     }
 }

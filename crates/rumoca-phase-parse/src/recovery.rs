@@ -24,8 +24,8 @@ struct LexedSource {
 
 struct Lexer<'a> {
     source: &'a str,
-    /// Source identity for this file, hashed once in `Lexer::new` so recovery
-    /// tokens carry the same `SourceId` a normal parse would stamp.
+    /// Source identity resolved once in `Lexer::new` so recovery tokens carry
+    /// the same hashed or preassigned `SourceId` a normal parse would stamp.
     source_id: SourceId,
     offset: usize,
     line: u32,
@@ -36,7 +36,7 @@ impl<'a> Lexer<'a> {
     fn new(source: &'a str, file_name: &'a str) -> Self {
         Self {
             source,
-            source_id: SourceId::from_source_name(file_name),
+            source_id: rumoca_core::source_id_for_name(file_name),
             offset: 0,
             line: 1,
             column: 1,

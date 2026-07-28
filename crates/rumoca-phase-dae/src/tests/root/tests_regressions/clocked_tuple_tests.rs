@@ -49,6 +49,7 @@ fn add_clocked_tuple_variables(flat: &mut Model, span: Span) {
 
 fn add_hold_function(flat: &mut Model, span: Span) {
     let mut hold = rumoca_core::Function::new("hold", span);
+    hold.def_id = Some(rumoca_core::DefId::new(731));
     hold.outputs
         .push(rumoca_core::FunctionParam::new("x", "Real", span));
     hold.outputs
@@ -57,6 +58,7 @@ fn add_hold_function(flat: &mut Model, span: Span) {
 }
 
 fn add_clocked_tuple_equation(flat: &mut Model, span: Span) {
+    let hold_reference = resolved_function_reference(flat, "hold", rumoca_core::DefId::new(731));
     flat.add_equation(rumoca_ir_flat::Equation {
         residual: Expression::Binary {
             op: rumoca_core::OpBinary::Sub,
@@ -65,7 +67,7 @@ fn add_clocked_tuple_equation(flat: &mut Model, span: Span) {
                 span,
             }),
             rhs: Box::new(Expression::FunctionCall {
-                name: rumoca_core::Reference::from_component_reference(make_comp_ref("hold")),
+                name: hold_reference,
                 args: vec![Expression::FunctionCall {
                     name: rumoca_core::Reference::from_component_reference(make_comp_ref(
                         "previous",

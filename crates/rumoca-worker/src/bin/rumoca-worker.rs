@@ -5,7 +5,7 @@ use std::fs::{self, File};
 use std::io::{BufRead, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
@@ -23,21 +23,19 @@ use rumoca_sim::{
     run_prepared_simulation, structurally_lowered_dae_for_simulation_artifact,
 };
 use rumoca_worker::{
-    MODEL_WORKER_MEMORY_LIMIT_EXIT_CODE, MODEL_WORKER_MEMORY_LIMIT_MB_DEFAULT,
-    MODEL_WORKER_PARENT_DISCONNECTED_EXIT_CODE, MODEL_WORKER_PARTIAL_RESULT_FILE,
-    MODEL_WORKER_PROTOCOL_VERSION, MODEL_WORKER_RESULT_FILE, ModelWorkerCommand,
-    ModelWorkerControlMessage, ModelWorkerRequest, ModelWorkerResponse, WorkerMemorySnapshot,
-    WorkerModelResult, WorkerProgressEvent, WorkerProgressEventKind, WorkerProgressPhase,
-    embedded_diagnostic_code, pin_current_thread_to_cpu_core, read_model_worker_request_file,
-    sim_error_diagnostic_code, strict_compile_failure_row, summary_only_failure_row,
-    write_model_worker_response_file,
+    MODEL_WORKER_MEMORY_LIMIT_MB_DEFAULT, MODEL_WORKER_PARENT_DISCONNECTED_EXIT_CODE,
+    MODEL_WORKER_PARTIAL_RESULT_FILE, MODEL_WORKER_PROTOCOL_VERSION, MODEL_WORKER_RESULT_FILE,
+    ModelWorkerCommand, ModelWorkerControlMessage, ModelWorkerRequest, ModelWorkerResponse,
+    WorkerMemorySnapshot, WorkerModelResult, WorkerProgressEvent, WorkerProgressEventKind,
+    WorkerProgressPhase, embedded_diagnostic_code, pin_current_thread_to_cpu_core,
+    read_model_worker_request_file, sim_error_diagnostic_code, start_worker_memory_limit,
+    strict_compile_failure_row, summary_only_failure_row, write_model_worker_response_file,
 };
 
 const DEFAULT_SIM_END_TIME_SECS: f64 = 1.0;
 const SIM_OUTPUT_SAMPLES_DEFAULT: usize = 100;
 const SIM_OUTPUT_SAMPLES_NO_STATES: usize = 500;
 const DEFAULT_WORKER_STACK_MB: usize = 64;
-const MEMORY_WATCHDOG_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Parser)]
 #[command(name = "rumoca-worker")]
@@ -53,7 +51,8 @@ struct Args {
     /// it already parallelizes across worker processes.
     #[arg(long)]
     jobs: Option<usize>,
-    /// Maximum resident-plus-swap memory for this isolated worker.
+    /// Maximum resident-plus-swap memory for this isolated worker; 0 disables
+    /// enforcement explicitly.
     #[arg(long, default_value_t = MODEL_WORKER_MEMORY_LIMIT_MB_DEFAULT)]
     memory_limit_mb: usize,
 }
@@ -233,59 +232,6 @@ fn fill_current_memory_snapshot(snapshot: &mut WorkerMemorySnapshot) {
 fn fill_current_memory_snapshot(_snapshot: &mut WorkerMemorySnapshot) {
     // OS memory accounting is optional diagnostic data. Non-Linux workers keep
     // the snapshot schema but leave platform-specific counters empty.
-}
-
-#[cfg(target_os = "linux")]
-fn current_resident_and_swap_kb() -> Option<u64> {
-    let raw = fs::read_to_string("/proc/self/status").ok()?;
-    resident_and_swap_kb_from_status(&raw)
-}
-
-#[cfg(target_os = "linux")]
-fn resident_and_swap_kb_from_status(raw: &str) -> Option<u64> {
-    let mut rss_kb = None;
-    let mut swap_kb = None;
-    for line in raw.lines() {
-        let (slot, rest) = if let Some(rest) = line.strip_prefix("VmRSS:") {
-            (&mut rss_kb, rest)
-        } else if let Some(rest) = line.strip_prefix("VmSwap:") {
-            (&mut swap_kb, rest)
-        } else {
-            continue;
-        };
-        *slot = rest
-            .split_whitespace()
-            .next()
-            .and_then(|value| value.parse::<u64>().ok());
-    }
-    (rss_kb.is_some() || swap_kb.is_some())
-        .then(|| rss_kb.unwrap_or(0).saturating_add(swap_kb.unwrap_or(0)))
-}
-
-#[cfg(target_os = "linux")]
-fn spawn_memory_watchdog(memory_limit_mb: usize) {
-    let memory_limit_kb = (memory_limit_mb.max(1) as u64).saturating_mul(1024);
-    let _ = std::thread::Builder::new()
-        .name("rumoca-worker-memory-watchdog".to_string())
-        .spawn(move || {
-            loop {
-                if current_resident_and_swap_kb()
-                    .is_some_and(|memory_kb| memory_kb > memory_limit_kb)
-                {
-                    eprintln!(
-                        "rumoca-worker exceeded its {memory_limit_mb} MB resident-plus-swap limit"
-                    );
-                    std::process::exit(MODEL_WORKER_MEMORY_LIMIT_EXIT_CODE);
-                }
-                std::thread::sleep(MEMORY_WATCHDOG_POLL_INTERVAL);
-            }
-        });
-}
-
-#[cfg(not(target_os = "linux"))]
-fn spawn_memory_watchdog(_memory_limit_mb: usize) {
-    // The MSL parity worker pool is Linux-hosted. Other platforms retain the
-    // parent-control-channel lifetime guard below.
 }
 
 #[derive(Debug, Clone)]
@@ -801,7 +747,7 @@ fn should_simulate(
         && !result.dae.metadata.is_partial
         && (request.explicit_sim_target
             || (root_standalone_example_name(&request.model_name)
-                && result.dae.variables.inputs.is_empty()
+                && !result.dae.variables.has_input_scalars()
                 && !result.has_unbound_fixed_parameters))
 }
 
@@ -1635,7 +1581,14 @@ fn run_worker_entry(args: Args) -> Result<(), String> {
 
 fn main() {
     let args = Args::parse();
-    spawn_memory_watchdog(args.memory_limit_mb);
+    if let Err(error) = start_worker_memory_limit(args.memory_limit_mb) {
+        let _ = write_control_message(&ModelWorkerControlMessage::Error {
+            protocol_version: MODEL_WORKER_PROTOCOL_VERSION,
+            message: error.to_string(),
+        });
+        eprintln!("{error}");
+        std::process::exit(error.exit_code());
+    }
     if let Some(jobs) = args.jobs {
         rumoca_compile::parallelism::set_compiler_parallelism(jobs);
     }
@@ -1659,6 +1612,58 @@ mod tests {
     use super::*;
     use std::io::Cursor;
 
+    fn compile_zero_sized_standalone_model() -> Box<DaeCompilationResult> {
+        let mut session = Session::default();
+        session
+            .add_document(
+                "EmptyBindings.mo",
+                r#"
+                    model EmptyBindings
+                      input Real u[0];
+                      parameter Real p[0];
+                      Real x(start = 1);
+                    equation
+                      der(x) = -x;
+                    end EmptyBindings;
+                "#,
+            )
+            .expect("parse zero-sized standalone model");
+        let mut result = session
+            .compile_model_dae_strict_reachable_uncached_with_recovery("EmptyBindings")
+            .expect("compile zero-sized standalone model");
+        let input_name = rumoca_compile::compile::core::VarName::new("u");
+        std::sync::Arc::make_mut(&mut result.dae)
+            .variables
+            .inputs
+            .insert(
+                input_name.clone(),
+                rumoca_compile::compile::Variable {
+                    name: input_name,
+                    dims: vec![0],
+                    ..rumoca_compile::compile::Variable::empty_with_span(
+                        rumoca_compile::compile::core::Span::DUMMY,
+                    )
+                },
+            );
+        result
+    }
+
+    fn simulation_request(model_name: &str) -> ModelWorkerRequest {
+        ModelWorkerRequest {
+            protocol_version: MODEL_WORKER_PROTOCOL_VERSION,
+            model_name: model_name.to_string(),
+            run_simulation: true,
+            selected_for_simulation: true,
+            explicit_sim_target: false,
+            emit_json: false,
+            allow_unbalanced_for_diagnostics: false,
+            nan_trace: false,
+            emit_modelica: false,
+            source_root_path: PathBuf::new(),
+            output_dir: PathBuf::new(),
+        }
+    }
+
     #[test]
     fn command_reader_reports_parent_disconnect_after_delivering_commands() {
         let input = br#"{"command":"shutdown"}
@@ -1669,6 +1674,18 @@ mod tests {
         assert!(matches!(
             receiver.recv().expect("command should be delivered"),
             Ok(ModelWorkerCommand::Shutdown)
+        ));
+    }
+
+    #[test]
+    fn worker_simulates_zero_sized_inputs_and_fixed_parameters() {
+        let result = compile_zero_sized_standalone_model();
+        assert!(!result.dae.variables.inputs.is_empty());
+        assert!(!result.dae.variables.has_input_scalars());
+        assert!(!result.has_unbound_fixed_parameters);
+        assert!(should_simulate(
+            &simulation_request("Modelica.Test.Examples.EmptyBindings"),
+            &result
         ));
     }
 
@@ -1697,13 +1714,5 @@ mod tests {
         row.ir_solve_error = Some("failed to write ir-solve.json: disk full".to_string());
         apply_solve_stage_diagnostic_code(&mut row);
         assert_eq!(row.ir_solve_error_code, None);
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn resident_memory_limit_counts_swapped_pages() {
-        let status = "Name:\trumoca-worker\nVmRSS:\t4096 kB\nVmSwap:\t2048 kB\n";
-        assert_eq!(resident_and_swap_kb_from_status(status), Some(6144));
-        assert_eq!(resident_and_swap_kb_from_status("Name:\ttest\n"), None);
     }
 }

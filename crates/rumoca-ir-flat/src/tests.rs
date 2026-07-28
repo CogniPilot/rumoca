@@ -510,6 +510,26 @@ fn test_unbound_fixed_parameters_detects_missing_bindings() {
 }
 
 #[test]
+fn test_unbound_fixed_parameters_ignore_zero_sized_parameters() {
+    let mut flat = Model::new();
+    let mut empty = make_parameter_var("p_empty", None, false);
+    empty.dims = vec![0, 3];
+    flat.add_variable(VarName::new("p_empty"), empty);
+
+    assert!(!flat.has_unbound_fixed_parameters());
+    assert!(flat.unbound_fixed_parameters().is_empty());
+
+    let mut nonempty = make_parameter_var("p_nonempty", None, false);
+    nonempty.dims = vec![1];
+    flat.add_variable(VarName::new("p_nonempty"), nonempty);
+    assert!(flat.has_unbound_fixed_parameters());
+    assert_eq!(
+        flat.unbound_fixed_parameters(),
+        vec![VarName::new("p_nonempty")]
+    );
+}
+
+#[test]
 fn test_extract_algorithm_outputs_drops_assignment_subscripts() {
     let stmts = vec![Statement::Assignment {
         comp: ComponentReference {

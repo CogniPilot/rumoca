@@ -142,12 +142,132 @@ fn reduce_constrained_dummy_derivatives_in_place(dae: &mut Dae) -> Result<usize,
             demoted_this_round = true;
             break;
         }
+        if !demoted_this_round {
+            let demoted_pair =
+                apply_rank_improving_derivative_pair(dae, &protected_group_states, &round_rank)?;
+            if demoted_pair != 0 {
+                total_demoted += demoted_pair;
+                continue;
+            }
+        }
         if !demoted_this_round && !reduce_one_dummy_derivative_group(dae, &mut total_demoted)? {
             break;
         }
     }
 
     Ok(total_demoted)
+}
+
+/// Commit two causally linked demotions when neither may commit in isolation.
+///
+/// A position state's differentiated definition can make its velocity newly
+/// eligible for constrained-dummy reduction. In a scalar system the first
+/// demotion can leave the rank witness flat while the newly enabled velocity
+/// demotion retires the defect. Trying unrelated flat candidates as a batch
+/// would over-demote valid state sets, so this fallback accepts only a successor
+/// that becomes newly eligible after the first staged demotion, and commits only
+/// when the two-step system strictly improves rank.
+fn apply_rank_improving_derivative_pair(
+    dae: &mut Dae,
+    protected_group_states: &IndexSet<VarName>,
+    round_rank: &super::demotion_rank_check::RoundRank,
+) -> Result<usize, StructuralError> {
+    let analysis = DummyStateAnalysis::build(dae)?;
+    let definitions = constrained_dummy_state_defining_exprs_with_analysis(dae, &analysis)?;
+    for (state_name, definition) in &definitions {
+        if protected_group_states.contains(state_name)
+            || state_has_overlapping_event_update(dae, state_name)
+        {
+            continue;
+        }
+        let Some(first_plan) = constrained_dummy_derivative_plan_for_definition_with_analysis(
+            dae, state_name, definition, &analysis,
+        )?
+        else {
+            continue;
+        };
+        let Some(first_staged) = stage_constrained_dummy_derivative_plan(dae, &first_plan)? else {
+            continue;
+        };
+        if super::demotion_rank_check::prefix_rank_change(round_rank, &first_staged)
+            != super::demotion_rank_check::PrefixRankChange::Flat
+        {
+            continue;
+        }
+        let successor_analysis = DummyStateAnalysis::build(&first_staged)?;
+        let successor_definitions = constrained_dummy_state_defining_exprs_with_analysis(
+            &first_staged,
+            &successor_analysis,
+        )?;
+        for (successor, successor_definition) in successor_definitions
+            .iter()
+            .filter(|(successor, _)| !definitions.contains_key(*successor))
+        {
+            if protected_group_states.contains(successor)
+                || state_has_overlapping_event_update(&first_staged, successor)
+                || !derivative_plan_mentions_successor(&first_plan, successor)
+            {
+                continue;
+            }
+            let Some(successor_plan) =
+                constrained_dummy_derivative_plan_for_definition_with_analysis(
+                    &first_staged,
+                    successor,
+                    successor_definition,
+                    &successor_analysis,
+                )?
+            else {
+                continue;
+            };
+            if successor_plan
+                .promoted_state_names
+                .contains(&first_plan.state_name)
+            {
+                continue;
+            }
+            let Some(second_staged) =
+                stage_constrained_dummy_derivative_plan(&first_staged, &successor_plan)?
+            else {
+                continue;
+            };
+            if super::demotion_rank_check::prefix_rank_change(round_rank, &second_staged)
+                != super::demotion_rank_check::PrefixRankChange::Improved
+            {
+                continue;
+            }
+            let mut structural_params = definition.structural_params.clone();
+            structural_params.extend(successor_definition.structural_params.iter().cloned());
+            *dae = second_staged;
+            pin_structural_params(dae, &structural_params);
+            crate::structural_trace!(
+                "[sim-trace] constrained-dummy derivative pair demoted states=[{}, {}]",
+                state_name.as_str(),
+                successor.as_str()
+            );
+            return Ok(2);
+        }
+    }
+    Ok(0)
+}
+
+/// Prove that the second demotion belongs to the derivative row introduced by
+/// the first one.
+///
+/// Merely becoming eligible after staging is not a causal identity: an
+/// unrelated state can become analyzable because the staged system changed
+/// rank. The first plan must explicitly read the successor (or its derivative)
+/// before the pair is allowed to commit.
+fn derivative_plan_mentions_successor(
+    plan: &ConstrainedDummyDerivativePlan,
+    successor: &VarName,
+) -> bool {
+    plan.aggregate_der_expr
+        .iter()
+        .chain(plan.component_der_exprs.values())
+        .any(|expression| {
+            rumoca_ir_dae::expr_refers_to_var(expression, successor)
+                || rumoca_ir_dae::expr_contains_der_of(expression, successor)
+        })
 }
 
 /// Commit one complete dummy-derivative group, adding what it demoted to
@@ -1024,18 +1144,53 @@ fn verify_demotion_preserves_balance(
     size: usize,
     span: Span,
 ) -> Result<(), StructuralError> {
-    let row_growth = scalar_row_total(after).wrapping_sub(scalar_row_total(before));
-    let unknown_growth = scalar_unknown_total(after).wrapping_sub(scalar_unknown_total(before));
-    if row_growth == size && unknown_growth == size {
+    verify_dummy_derivative_balance(
+        before,
+        after,
+        size,
+        span,
+        format!("state `{}`", state_name.as_str()),
+    )
+}
+
+pub(super) fn verify_group_demotion_preserves_balance(
+    before: &Dae,
+    after: &Dae,
+    state_names: &[VarName],
+    size: usize,
+    span: Span,
+) -> Result<(), StructuralError> {
+    let names = state_names
+        .iter()
+        .map(|name| format!("`{}`", name.as_str()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    verify_dummy_derivative_balance(before, after, size, span, format!("state group [{names}]"))
+}
+
+fn verify_dummy_derivative_balance(
+    before: &Dae,
+    after: &Dae,
+    size: usize,
+    span: Span,
+    subject: String,
+) -> Result<(), StructuralError> {
+    let before_rows = scalar_row_total(before);
+    let after_rows = scalar_row_total(after);
+    let before_unknowns = scalar_unknown_total(before);
+    let after_unknowns = scalar_unknown_total(after);
+    if after_rows.checked_sub(before_rows) == Some(size)
+        && after_unknowns.checked_sub(before_unknowns) == Some(size)
+    {
         return Ok(());
     }
     Err(StructuralError::ContractViolation {
         reason: format!(
-            "index reduction unbalanced the system while demoting state `{}`: \
-             demoting {size} scalar state(s) added {row_growth} scalar row(s) and \
-             {unknown_growth} scalar unknown(s), but the dummy-derivative construction \
-             must add exactly one row and one unknown per demoted scalar state",
-            state_name.as_str()
+            "index reduction unbalanced the system while demoting {subject}: \
+             demoting {size} scalar state(s) changed the scalar row count from \
+             {before_rows} to {after_rows} and the scalar unknown count from \
+             {before_unknowns} to {after_unknowns}, but the dummy-derivative construction \
+             must add exactly one row and one unknown per demoted scalar state"
         ),
         span,
     })
@@ -1053,12 +1208,31 @@ fn apply_constrained_dummy_derivative_plan(
     plan: &ConstrainedDummyDerivativePlan,
     round_rank: &super::demotion_rank_check::RoundRank,
 ) -> Result<usize, StructuralError> {
-    let dummy_name = dummy_derivative_group::dummy_derivative_name(&plan.state_name);
-    if dummy_derivative_group::variable_name_is_taken(dae, &dummy_name) {
+    let Some(staged) = stage_constrained_dummy_derivative_plan(dae, plan)? else {
+        return Ok(0);
+    };
+    if !super::demotion_rank_check::demotion_is_rank_justified(
+        round_rank,
+        &staged,
+        &plan.state_name,
+        !plan.promoted_state_names.is_empty(),
+    ) {
         return Ok(0);
     }
+    *dae = staged;
+    Ok(1)
+}
+
+fn stage_constrained_dummy_derivative_plan(
+    dae: &Dae,
+    plan: &ConstrainedDummyDerivativePlan,
+) -> Result<Option<Dae>, StructuralError> {
+    let dummy_name = dummy_derivative_group::dummy_derivative_name(&plan.state_name);
+    if dummy_derivative_group::variable_name_is_taken(dae, &dummy_name) {
+        return Ok(None);
+    }
     let Some(demoted) = dae.variables.states.get(&plan.state_name) else {
-        return Ok(0);
+        return Ok(None);
     };
     let (size, span) = (demoted.size(), demoted.source_span);
     let mut staged = super::copy_accounting::clone_dae(dae);
@@ -1070,11 +1244,11 @@ fn apply_constrained_dummy_derivative_plan(
         .iter()
         .any(|equation| expr_contains_der_of(&equation.rhs, &plan.state_name))
     {
-        return Ok(0);
+        return Ok(None);
     }
     append_dummy_derivative_definitions(&mut staged, plan, &dummy_name)?;
     let Some(var) = staged.variables.states.shift_remove(&plan.state_name) else {
-        return Ok(0);
+        return Ok(None);
     };
     staged
         .variables
@@ -1082,19 +1256,10 @@ fn apply_constrained_dummy_derivative_plan(
         .insert(plan.state_name.clone(), var);
     for promoted_name in &plan.promoted_state_names {
         let Some(var) = staged.variables.algebraics.shift_remove(promoted_name) else {
-            return Ok(0);
+            return Ok(None);
         };
         staged.variables.states.insert(promoted_name.clone(), var);
     }
     verify_demotion_preserves_balance(dae, &staged, &plan.state_name, size, span)?;
-    if !super::demotion_rank_check::demotion_is_rank_justified(
-        round_rank,
-        &staged,
-        &plan.state_name,
-        !plan.promoted_state_names.is_empty(),
-    ) {
-        return Ok(0);
-    }
-    *dae = staged;
-    Ok(1)
+    Ok(Some(staged))
 }

@@ -208,8 +208,8 @@ grows the list; never lower it to make a red gate green.
 - Simulation attempts are limited to standalone root MSL examples:
   - explicit `Modelica.*.Examples.*` roots
   - non-partial models
-  - no unbound top-level inputs
-  - no unbound fixed parameters
+  - no unbound top-level input scalars (zero-sized input arrays are allowed)
+  - no unbound fixed-parameter scalars (zero-sized parameters are allowed)
 - Worker timeout semantics are two-tiered:
   - DAE-to-Solve-IR lowering budget: `IR_SOLVE_TIMEOUT_SECS` (currently 10s)
   - solver budget: `SIM_TIMEOUT_SECS` (currently 10s)
@@ -262,7 +262,7 @@ failures render without a marker, so they were all filed under `ToDae` — which
 is why `error_code_counts` was empty and the "ToDae gap" appeared to be a
 balance cohort. Do not reintroduce text-derived phase attribution.
 
-### Baseline re-promotion: `flatten_models` 565 → 555
+### Quality-gate schema v2: `flatten_models` 565 → 555
 
 The stage floors are *cumulative pass* counts derived from `phase_reached`:
 `flatten_models` counts models that got past flattening, `dae_models` those that
@@ -292,6 +292,14 @@ reached instantiation, let alone flattening. They were previously counted as
 baseline moves 565 → 555 to record what the pipeline actually achieves; the
 compiler did not regress on these models, the measurement did. `dae_models` and
 `compiled_models` are unaffected — those rows were never successes.
+
+Quality-gate schema version 2 records this as a metric-attribution migration
+instead of presenting it as an ordinary baseline regression. The migration
+lists all ten `ER002` models and the before/after counts. Version 2 also makes
+the top-level `tensor_preservation` baseline mandatory; a field-less version-1
+baseline now fails deserialization instead of silently disabling the tensor
+ratchet. Its initial KPI values come from the full `a966d9e8` run, whose source
+tree is identical to the reviewed branch tree.
 
 `completed_compile_phase_follows_the_pipeline_order` and
 `gate_input_stage_counts_are_derived_from_phase_reached` pin the derivation, so

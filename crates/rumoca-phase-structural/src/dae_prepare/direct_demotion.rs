@@ -75,7 +75,7 @@ pub(super) fn equation_defining_expr_for_unknown(
 
 /// Value-closure well-foundedness over defining expressions.
 ///
-/// MLS Appendix B / SPEC_0003: variables that appear differentiated remain
+/// MLS Appendix B / SPEC_0022: variables that appear differentiated remain
 /// states, so a direct-assignment candidate is only a dummy trajectory when its
 /// defining expression resolves to a value that is *determined* and reaches no
 /// state.

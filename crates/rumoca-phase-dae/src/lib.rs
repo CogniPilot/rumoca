@@ -49,6 +49,7 @@ mod runtime_operator_lowering;
 mod runtime_precompute;
 mod scalar_inference;
 mod scalar_size;
+mod temporal_finalization;
 mod when_analysis;
 mod when_conversion;
 mod when_guard;
@@ -240,14 +241,12 @@ pub fn to_dae_with_options(
     // Fail fast on unresolved or non-executable function calls so unsupported
     // evaluation paths don't leak into simulation.
     validate_flat_function_calls(flat)?;
-    if ir_boundary_validation_enabled() {
-        flat.validate_shape_contract().map_err(|err| {
-            ToDaeError::runtime_contract_violation_at(
-                format!("invalid Flat IR shape contract: {err:?}"),
-                err.span(),
-            )
-        })?;
-    }
+    flat.validate().map_err(|err| {
+        ToDaeError::runtime_contract_violation_at(
+            format!("invalid Flat IR stage contract: {err:?}"),
+            err.span(),
+        )
+    })?;
 
     // MLS §4.7: Propagate partial status and class type for balance checking
     dae.metadata.is_partial = flat.is_partial;
@@ -437,6 +436,7 @@ fn finalize_lowered_dae(
     })?;
     run_todae_phase(todae_subphase_timing, "temporal_lowering_finalize", || {
         pre_lowering::lower_pre_operator(dae)?;
+        temporal_finalization::lower_internal_sample_ticks(dae)?;
         sort_parameters_by_start_dependency(dae);
         Ok::<(), ToDaeError>(())
     })?;
@@ -475,33 +475,16 @@ fn finalize_lowered_dae(
     run_todae_phase(todae_subphase_timing, "reference_validation", || {
         validate_dae_references(dae, &known_flat_var_names)
     })?;
-    if ir_boundary_validation_enabled() {
-        dae.validate_shape_contract().map_err(|err| {
-            ToDaeError::runtime_contract_violation_at(
-                format!("invalid DAE IR shape contract: {err:?}"),
-                err.span(),
-            )
-        })?;
-    }
-
     if options.error_on_unbalanced && !dae.metadata.is_partial {
         // One traversal: the detail is the sole input to both the verdict and
         // the ED001 payload, so the gate and the diagnostic cannot disagree.
-        let detail = balance::balance_detail(dae)?;
+        let detail = balance::balance_detail_impl(dae)?;
         if detail.balance() != 0 {
             return Err(ToDaeError::unbalanced_from_detail(detail));
         }
     }
 
     Ok(())
-}
-
-fn ir_boundary_validation_enabled() -> bool {
-    cfg!(any(
-        debug_assertions,
-        test,
-        feature = "strict-ir-validation"
-    ))
 }
 
 /// Determine if an algebraic variable should be stored as discrete or regular algebraic.
@@ -642,7 +625,8 @@ fn classify_variables(
         }
 
         let kind = classification::classify_variable(var, inputs.state_vars);
-        let mut dae_var = create_dae_variable(name, var, &known_var_names)?;
+        let mut dae_var =
+            create_dae_variable(name, var, &known_var_names, &flat.enum_literal_ordinals)?;
         inherit_scalarized_start_from_base(name, flat, &mut dae_var, &known_var_names)?;
         record_variable_start_metadata(dae, name, &dae_var);
 
@@ -813,6 +797,7 @@ fn inherit_scalarized_start_from_base(
     dae_var.start = Some(flat_to_dae_expression(&rewrite_start_expr_missing_refs(
         &selected_start,
         known_var_names,
+        &flat.enum_literal_ordinals,
     )));
     if dae_var.fixed.is_none() {
         dae_var.fixed = base_var.fixed;

@@ -700,6 +700,13 @@ pub struct InstanceData {
     /// count toward the local equation size. Models/blocks (like Delta) are NOT
     /// interface connectors even if they contain sub-connectors.
     pub is_connector_type: bool,
+    /// True if this component's type is an expandable connector (MLS §9.1.3).
+    ///
+    /// Kept on the container instance because an empty expandable connector has
+    /// no flattened descendants from which later phases could recover this
+    /// semantic fact.
+    #[serde(default)]
+    pub is_expandable_connector_type: bool,
     /// The path of the enclosing overconstrained record (MLS §9.4).
     /// E.g., "frame_a.R" for variables frame_a.R.T and frame_a.R.w.
     /// Used to group OC variables into VCG nodes for balance correction.
@@ -751,6 +758,7 @@ impl Default for InstanceData {
             is_overconstrained: false,
             is_protected: false,
             is_connector_type: false,
+            is_expandable_connector_type: false,
             oc_record_path: None,
             oc_eq_constraint_size: None,
         }

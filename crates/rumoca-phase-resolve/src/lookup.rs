@@ -138,6 +138,7 @@ impl Resolver {
     /// Only for call sites that hold nothing but a rendered scope path (the
     /// unresolved-reference report, whose records carry scope text rather than
     /// resolved ids). Semantic call sites must pass the container's `DefId`.
+    #[cfg(test)]
     pub(crate) fn lookup_inherited_member(
         &self,
         container_qualified_name: &str,

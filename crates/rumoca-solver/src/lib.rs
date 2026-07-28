@@ -23,7 +23,7 @@ pub use runtime::jacobian::{
 pub use runtime::mass_matrix::{PreparedMassMatrix, solve_mass_matrix};
 pub use runtime::no_state::{
     NoStateEventStep, NoStateOrchestrationBackend, NoStateRootSearchScratch, NoStateScheduledStop,
-    first_no_state_root_crossing, run_no_state_output_schedule,
+    first_no_state_root_crossing, no_state_root_scan_step_ceiling, run_no_state_output_schedule,
 };
 pub use runtime::orchestration::{LoopStats, run_with_runtime_schedule};
 pub use runtime::pre_params::{
@@ -32,10 +32,10 @@ pub use runtime::pre_params::{
 };
 pub use runtime::projection::{
     AlgebraicProjectionArgs, AlgebraicProjectionModel, ImplicitProjectionModel,
-    implicit_residual_is_zero, implicit_residual_is_zero_through_interval,
+    ManifoldProjectionModel, implicit_residual_is_zero, implicit_residual_is_zero_through_interval,
     project_algebraic_seed_with_plan, project_algebraics, project_algebraics_and_detect_changes,
     project_algebraics_with_plan, project_initial_variables_with_homotopy,
-    project_initial_variables_with_plan,
+    project_initial_variables_with_plan, project_state_manifold,
 };
 pub use runtime::report::{
     DRIVER_TRACE_TARGET, RuntimeProgressSnapshot, RuntimeTraceContext, runtime_progress_snapshot,

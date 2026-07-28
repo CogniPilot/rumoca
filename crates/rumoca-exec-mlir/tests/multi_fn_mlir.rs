@@ -14,6 +14,8 @@ use rumoca_ir_solve::{
     ComputeBlock, ContinuousSolveSystem, LinearOp, ScalarProgramBlock, SolveProblem, UnaryOp,
 };
 
+mod support;
+
 fn spb(rows: Vec<Vec<LinearOp>>, label: &str) -> ScalarProgramBlock {
     ScalarProgramBlock::with_source_span(
         rows,
@@ -59,7 +61,7 @@ fn compile_or_skip(
     match exec_compile_derivative_rhs(solve, &artifacts, name) {
         Ok(c) => Some(c),
         Err(MlirError::ToolNotFound { tool, .. }) => {
-            eprintln!("SKIP: {tool} not found");
+            support::missing_cpu_tool(tool);
             None
         }
         Err(e) => panic!("compile failed: {e}"),

@@ -574,12 +574,29 @@ fn validate_solve_target_capabilities(
     manifest: &TargetManifest,
     capabilities: &TargetCapabilities,
 ) -> Result<()> {
-    let scalar_fallback = capabilities.scalar_fallback.unwrap_or(true);
-    let tensor = capabilities.tensor.as_ref();
     let solve = rumoca_sim::lower_solve_problem(&result.dae)
         .context("Lower Solve IR for target capability validation")?;
-    let inventory = solve.compute_node_counts();
+    let mut inventory = solve.compute_node_counts();
+    inventory.add_assign(solve.initialization.residual.compute_node_counts());
+    let uses_linear_solve_component = solve.uses_linear_solve_component()
+        || solve.initialization.residual.uses_linear_solve_component();
 
+    validate_solve_tensor_inventory(
+        manifest,
+        capabilities,
+        inventory,
+        uses_linear_solve_component,
+    )
+}
+
+fn validate_solve_tensor_inventory(
+    manifest: &TargetManifest,
+    capabilities: &TargetCapabilities,
+    inventory: rumoca_ir_solve::ComputeNodeCounts,
+    uses_linear_solve_component: bool,
+) -> Result<()> {
+    let scalar_fallback = capabilities.scalar_fallback.unwrap_or(true);
+    let tensor = capabilities.tensor.as_ref();
     validate_solve_tensor_feature(
         manifest,
         "tensor.matmul",
@@ -592,13 +609,26 @@ fn validate_solve_target_capabilities(
         manifest,
         "tensor.linsolve",
         "LinSolve",
-        inventory.linsolve
-            + if solve.uses_linear_solve_component() {
-                1
-            } else {
-                0
-            },
+        inventory
+            .linsolve
+            .saturating_add(usize::from(uses_linear_solve_component)),
         tensor.and_then(|tensor| tensor.linsolve),
+        scalar_fallback,
+    )?;
+    validate_solve_tensor_feature(
+        manifest,
+        "tensor.elementwise",
+        "Map",
+        inventory.map,
+        tensor.and_then(|tensor| tensor.elementwise),
+        scalar_fallback,
+    )?;
+    validate_solve_tensor_feature(
+        manifest,
+        "tensor.stencil",
+        "AffineStencil",
+        inventory.affine_stencil,
+        tensor.and_then(|tensor| tensor.stencil),
         scalar_fallback,
     )?;
     Ok(())
@@ -707,6 +737,8 @@ fn write_manifest_file(
 enum ManifestRenderer {
     /// Generic path: the IR-keyed JSON template context.
     Ir(TemplateIr),
+    /// DAE template that declares compact structured-family ownership.
+    DaeStructured,
     /// `wgsl-solve` renders Solve kernels without the DAE JSON context.
     WgslSolve,
     /// `embedded-c-galec` renders thin C templates over one typed
@@ -738,6 +770,15 @@ fn resolve_manifest_renderer(
         )
         .context("GALEC C export for target 'embedded-c-galec'")?;
         return Ok(ManifestRenderer::GalecC(export));
+    }
+    if manifest.ir == TargetTemplateIr::Dae
+        && manifest
+            .capabilities
+            .as_ref()
+            .and_then(|capabilities| capabilities.structured_equation_families)
+            == Some(true)
+    {
+        return Ok(ManifestRenderer::DaeStructured);
     }
     Ok(ManifestRenderer::Ir(template_ir_to_cli(manifest.ir)))
 }
@@ -772,6 +813,9 @@ impl ManifestRenderer {
         match self {
             Self::Ir(ir) => result
                 .render_template_str_with_name_and_ir(template, model_identifier, *ir)
+                .map_err(Into::into),
+            Self::DaeStructured => result
+                .render_structured_dae_template_str_with_name(template, model_identifier)
                 .map_err(Into::into),
             Self::WgslSolve => result
                 .render_solve_template_str_without_dae(template, model_identifier)
@@ -1024,6 +1068,67 @@ matmul = "native"
         let message = err.to_string();
         assert!(message.contains("tensor.linsolve"), "{message}");
         assert!(message.contains("scalar fallback is disabled"), "{message}");
+    }
+
+    #[test]
+    fn solve_target_capabilities_fail_closed_for_map_and_affine_stencil() {
+        let manifest = solve_manifest(
+            r#"
+[capabilities]
+scalar_fallback = false
+"#,
+        );
+        let capabilities = manifest.capabilities.as_ref().expect("capabilities");
+        let cases = [
+            (
+                rumoca_ir_solve::ComputeNodeCounts {
+                    map: 1,
+                    ..Default::default()
+                },
+                "tensor.elementwise",
+            ),
+            (
+                rumoca_ir_solve::ComputeNodeCounts {
+                    affine_stencil: 1,
+                    ..Default::default()
+                },
+                "tensor.stencil",
+            ),
+        ];
+
+        for (inventory, expected_feature) in cases {
+            let error = validate_solve_tensor_inventory(&manifest, capabilities, inventory, false)
+                .expect_err("undeclared native tensor node must be rejected");
+            let message = error.to_string();
+            assert!(
+                message.contains(&format!("unsupported-feature:{expected_feature}")),
+                "{message}"
+            );
+            assert!(message.contains("scalar fallback is disabled"), "{message}");
+        }
+    }
+
+    #[test]
+    fn solve_target_capabilities_accept_declared_native_map_and_affine_stencil() {
+        let manifest = solve_manifest(
+            r#"
+[capabilities]
+scalar_fallback = false
+
+[capabilities.tensor]
+elementwise = "native"
+stencil = "native"
+"#,
+        );
+        let capabilities = manifest.capabilities.as_ref().expect("capabilities");
+        let inventory = rumoca_ir_solve::ComputeNodeCounts {
+            map: 1,
+            affine_stencil: 1,
+            ..Default::default()
+        };
+
+        validate_solve_tensor_inventory(&manifest, capabilities, inventory, false)
+            .expect("declared native Map and AffineStencil support should be accepted");
     }
 
     #[test]

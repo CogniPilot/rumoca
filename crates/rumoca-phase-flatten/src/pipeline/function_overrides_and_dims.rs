@@ -8,10 +8,12 @@ use rustc_hash::FxHashSet;
 mod flat_rewrite;
 mod member_calls;
 mod named_args;
+mod scoped_member_name;
 
 pub(crate) use flat_rewrite::*;
 pub(crate) use member_calls::*;
 use named_args::{named_function_arg, named_function_arg_names};
+use scoped_member_name::scoped_override_component_member_name;
 
 pub(crate) type ComponentOverrideMap =
     rustc_hash::FxHashMap<ComponentPath, rustc_hash::FxHashMap<String, OverrideTarget>>;
@@ -1323,6 +1325,11 @@ fn resolve_override_member_name(
     } else {
         ctx.unique_active_override_package()?
     };
+    if let Some(scoped_name) =
+        scoped_override_component_member_name(reference, package, &[member_leaf.to_string()], ctx)
+    {
+        return Some(scoped_name);
+    }
     resolve_member_in_package_chain_exposed(ctx.tree, ctx.class_index, package, member_leaf)
         .filter(|resolved| resolved != reference.as_str())
 }
@@ -1350,6 +1357,11 @@ fn resolve_override_member_projection_name(
         else {
             continue;
         };
+        if let Some(scoped_name) =
+            scoped_override_component_member_name(reference, package, &parts[member_index..], ctx)
+        {
+            return Some(scoped_name);
+        }
         let member_leaf = parts[member_index].as_str();
         let Some(resolved_member) = resolve_member_in_package_chain_exposed(
             ctx.tree,

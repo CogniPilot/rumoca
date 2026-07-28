@@ -11,7 +11,7 @@ pub(crate) use shape_inference::{
     infer_simple_equation_scalar_count,
 };
 
-// Conditional tracing support (SPEC_0024)
+// Conditional tracing support (SPEC_0008)
 use rumoca_eval_flat::constant::{EvalContext, Value};
 use rumoca_ir_ast as ast;
 use rumoca_ir_flat as flat;
@@ -1430,7 +1430,10 @@ fn expand_if_equation(
     let all_same_count = expanded_branches
         .iter()
         .all(|(_, eqs)| eqs.len() == num_equations)
-        && (else_simple_eqs.is_empty() || else_simple_eqs.len() == num_equations);
+        && match else_block {
+            Some(_) => else_simple_eqs.len() == num_equations,
+            None => num_equations == 0,
+        };
 
     if all_same_count {
         // Fast path: position-based matching (original behavior)

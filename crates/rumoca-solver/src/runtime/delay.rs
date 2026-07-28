@@ -14,6 +14,7 @@ struct DelayPoint {
 #[derive(Clone, Debug, Default)]
 struct DelayChannelHistory {
     points: Vec<DelayPoint>,
+    points_head: usize,
     delay_time: f64,
     delay_max: f64,
     accepted_query_time: f64,
@@ -21,6 +22,7 @@ struct DelayChannelHistory {
     // coordinate may move in either direction when delayTime is variable, so
     // consumed forward crossings cannot be discarded.
     discontinuity_times: Vec<f64>,
+    discontinuity_head: usize,
     pruned_discontinuity_parity: bool,
     suppressed_discontinuity: Option<SuppressedDiscontinuity>,
 }
@@ -126,10 +128,12 @@ impl DelayRuntime {
             .zip(rows.delay_maxima.iter().copied())
             .map(|((value, delay_time), delay_max)| DelayChannelHistory {
                 points: vec![DelayPoint { time, value }],
+                points_head: 0,
                 delay_time,
                 delay_max,
                 accepted_query_time: time - delay_time,
                 discontinuity_times: Vec::new(),
+                discontinuity_head: 0,
                 pruned_discontinuity_parity: false,
                 suppressed_discontinuity: None,
             })
@@ -216,10 +220,12 @@ impl DelayRuntime {
                         time: accepted_time,
                         value,
                     }],
+                    points_head: 0,
                     delay_time,
                     delay_max,
                     accepted_query_time: accepted_time - delay_time,
                     discontinuity_times: Vec::new(),
+                    discontinuity_head: 0,
                     pruned_discontinuity_parity: false,
                     suppressed_discontinuity: None,
                 })
@@ -237,10 +243,12 @@ impl DelayRuntime {
                         time: accepted_time,
                         value,
                     }],
+                    points_head: 0,
                     delay_time,
                     delay_max,
                     accepted_query_time: accepted_time - delay_time,
                     discontinuity_times: Vec::new(),
+                    discontinuity_head: 0,
                     pruned_discontinuity_parity: false,
                     suppressed_discontinuity: None,
                 })
@@ -260,7 +268,7 @@ impl DelayRuntime {
                 self.source_is_discrete[index],
             );
             if discontinuity {
-                insert_discontinuity_time(&mut channel.discontinuity_times, accepted_time);
+                insert_discontinuity_time(channel, accepted_time);
             }
             update_suppressed_discontinuity(channel, accepted_time - rows.delay_times[index]);
             prune_history(channel, accepted_time);
@@ -429,20 +437,19 @@ fn delayed_value(
     discrete: bool,
 ) -> f64 {
     let query_time = time - delay_time;
-    let Some(first) = channel.points.first().copied() else {
+    let points = active_points(channel);
+    let Some(first) = points.first().copied() else {
         return current_source;
     };
     if query_time <= first.time {
         return first.value;
     }
-    let upper = channel
-        .points
-        .partition_point(|point| point.time <= query_time);
-    let lower = channel.points[upper.saturating_sub(1)];
-    if discrete || upper < channel.points.len() && channel.points[upper].time == lower.time {
+    let upper = points.partition_point(|point| point.time <= query_time);
+    let lower = points[upper.saturating_sub(1)];
+    if discrete || upper < points.len() && points[upper].time == lower.time {
         return lower.value;
     }
-    let next = channel.points.get(upper).copied().unwrap_or(DelayPoint {
+    let next = points.get(upper).copied().unwrap_or(DelayPoint {
         time,
         value: current_source,
     });
@@ -459,15 +466,18 @@ fn append_accepted_point(
     value: f64,
     discrete: bool,
 ) -> bool {
-    let Some(last) = channel.points.last().copied() else {
+    let Some(last) = active_points(channel).last().copied() else {
         channel.points.push(DelayPoint { time, value });
         return false;
     };
-    if time < last.time && !delay_time_matches(time, last.time) {
+    if time < last.time {
         return false;
     }
     let changed = value.to_bits() != last.value.to_bits();
-    if delay_time_matches(time, last.time) {
+    // Accepted samples are the authoritative history timeline. Only the exact
+    // same timestamp denotes an event left/right pair; a relative tolerance
+    // would merge distinct samples at large absolute times.
+    if time == last.time {
         if changed {
             channel.points.push(DelayPoint { time, value });
         }
@@ -477,27 +487,53 @@ fn append_accepted_point(
     discrete && changed
 }
 
-fn insert_discontinuity_time(discontinuities: &mut Vec<f64>, source_time: f64) {
-    match discontinuities.binary_search_by(|candidate| candidate.total_cmp(&source_time)) {
-        Ok(_) => {}
-        Err(index)
-            if discontinuities
-                .get(index)
-                .is_some_and(|candidate| delay_time_matches(*candidate, source_time))
-                || index
-                    .checked_sub(1)
-                    .and_then(|previous| discontinuities.get(previous))
-                    .is_some_and(|candidate| delay_time_matches(*candidate, source_time)) => {}
-        Err(index) => discontinuities.insert(index, source_time),
+fn insert_discontinuity_time(channel: &mut DelayChannelHistory, source_time: f64) {
+    let discontinuities = active_discontinuities(channel);
+    let insertion =
+        match discontinuities.binary_search_by(|candidate| candidate.total_cmp(&source_time)) {
+            Ok(_) => return,
+            Err(index)
+                if discontinuities
+                    .get(index)
+                    .is_some_and(|candidate| delay_time_matches(*candidate, source_time))
+                    || index
+                        .checked_sub(1)
+                        .and_then(|previous| discontinuities.get(previous))
+                        .is_some_and(|candidate| delay_time_matches(*candidate, source_time)) =>
+            {
+                return;
+            }
+            Err(index) => index,
+        };
+    channel
+        .discontinuity_times
+        .insert(channel.discontinuity_head + insertion, source_time);
+}
+
+fn active_points(channel: &DelayChannelHistory) -> &[DelayPoint] {
+    &channel.points[channel.points_head..]
+}
+
+fn active_discontinuities(channel: &DelayChannelHistory) -> &[f64] {
+    &channel.discontinuity_times[channel.discontinuity_head..]
+}
+
+fn compact_consumed_prefix<T: Copy>(values: &mut Vec<T>, head: &mut usize) {
+    let active_len = values.len().saturating_sub(*head);
+    if *head == 0 || *head < active_len {
+        return;
     }
+    values.copy_within(*head.., 0);
+    values.truncate(active_len);
+    *head = 0;
 }
 
 fn matching_discontinuity_index(channel: &DelayChannelHistory, query_time: f64) -> Option<usize> {
-    let index = channel.discontinuity_times.partition_point(|source_time| {
+    let discontinuities = active_discontinuities(channel);
+    let index = discontinuities.partition_point(|source_time| {
         *source_time < query_time && !delay_time_matches(*source_time, query_time)
     });
-    if channel
-        .discontinuity_times
+    if discontinuities
         .get(index)
         .is_some_and(|source_time| delay_time_matches(*source_time, query_time))
     {
@@ -505,13 +541,13 @@ fn matching_discontinuity_index(channel: &DelayChannelHistory, query_time: f64) 
     }
     index
         .checked_sub(1)
-        .filter(|previous| delay_time_matches(channel.discontinuity_times[*previous], query_time))
+        .filter(|previous| delay_time_matches(discontinuities[*previous], query_time))
 }
 
 fn update_suppressed_discontinuity(channel: &mut DelayChannelHistory, query_time: f64) {
     channel.suppressed_discontinuity =
         matching_discontinuity_index(channel, query_time).map(|index| {
-            let source_time = channel.discontinuity_times[index];
+            let source_time = active_discontinuities(channel)[index];
             let right_side = if query_time > source_time {
                 true
             } else if query_time < source_time {
@@ -537,11 +573,12 @@ fn update_suppressed_discontinuity(channel: &mut DelayChannelHistory, query_time
 }
 
 fn discrete_delay_root(channel: &DelayChannelHistory, query_time: f64) -> f64 {
-    if channel.discontinuity_times.is_empty() {
+    let discontinuities = active_discontinuities(channel);
+    if discontinuities.is_empty() {
         return 1.0;
     }
     if let Some(index) = matching_discontinuity_index(channel, query_time) {
-        let source_time = channel.discontinuity_times[index];
+        let source_time = discontinuities[index];
         if let Some(suppressed) = channel.suppressed_discontinuity
             && delay_time_matches(suppressed.source_time, source_time)
         {
@@ -550,14 +587,11 @@ fn discrete_delay_root(channel: &DelayChannelHistory, query_time: f64) -> f64 {
         }
         return 0.0;
     }
-    let next = channel
-        .discontinuity_times
-        .partition_point(|source_time| *source_time < query_time);
-    let left_distance = next.checked_sub(1).map_or(f64::INFINITY, |index| {
-        query_time - channel.discontinuity_times[index]
-    });
-    let right_distance = channel
-        .discontinuity_times
+    let next = discontinuities.partition_point(|source_time| *source_time < query_time);
+    let left_distance = next
+        .checked_sub(1)
+        .map_or(f64::INFINITY, |index| query_time - discontinuities[index]);
+    let right_distance = discontinuities
         .get(next)
         .map_or(f64::INFINITY, |source_time| source_time - query_time);
     delay_root_interval_sign(channel, next) * left_distance.min(right_distance)
@@ -570,26 +604,26 @@ fn delay_root_interval_sign(channel: &DelayChannelHistory, interval: usize) -> f
 
 fn prune_history(channel: &mut DelayChannelHistory, time: f64) {
     let keep_after = time - channel.delay_max;
-    let first_after = channel
-        .points
-        .partition_point(|point| point.time < keep_after);
-    let drain_count = first_after.saturating_sub(1);
-    if drain_count > 0 {
-        channel.points.drain(..drain_count);
+    let first_after = active_points(channel).partition_point(|point| point.time < keep_after);
+    let consumed_points = first_after.saturating_sub(1);
+    if consumed_points > 0 {
+        channel.points_head += consumed_points;
+        compact_consumed_prefix(&mut channel.points, &mut channel.points_head);
     }
-    let discontinuity_drain_count = channel.discontinuity_times.partition_point(|source_time| {
+    let consumed_discontinuities = active_discontinuities(channel).partition_point(|source_time| {
         *source_time < keep_after && !delay_time_matches(*source_time, keep_after)
     });
-    if discontinuity_drain_count > 0 {
-        if discontinuity_drain_count % 2 == 1 {
+    if consumed_discontinuities > 0 {
+        if consumed_discontinuities % 2 == 1 {
             channel.pruned_discontinuity_parity = !channel.pruned_discontinuity_parity;
         }
-        channel
-            .discontinuity_times
-            .drain(..discontinuity_drain_count);
+        channel.discontinuity_head += consumed_discontinuities;
+        compact_consumed_prefix(
+            &mut channel.discontinuity_times,
+            &mut channel.discontinuity_head,
+        );
         if channel.suppressed_discontinuity.is_some_and(|suppressed| {
-            channel
-                .discontinuity_times
+            active_discontinuities(channel)
                 .first()
                 .is_none_or(|first| suppressed.source_time < *first)
         }) {
@@ -607,8 +641,24 @@ fn min_positive_delay(delays: &[f64]) -> Option<f64> {
 }
 
 fn delay_time_matches(left: f64, right: f64) -> bool {
-    let scale = left.abs().max(right.abs()).max(1.0);
-    (left - right).abs() <= 16.0 * f64::EPSILON * scale
+    if left == right {
+        return true;
+    }
+    if !left.is_finite() || !right.is_finite() {
+        return false;
+    }
+    let ulp = local_time_ulp(left).max(local_time_ulp(right));
+    ulp > 0.0 && (left - right).abs() <= 2.0 * ulp
+}
+
+fn local_time_ulp(value: f64) -> f64 {
+    [
+        (value.next_up() - value).abs(),
+        (value - value.next_down()).abs(),
+    ]
+    .into_iter()
+    .filter(|spacing| spacing.is_finite())
+    .fold(0.0, f64::max)
 }
 
 #[cfg(test)]
@@ -635,15 +685,72 @@ mod tests {
                     value: 2.0,
                 },
             ],
+            points_head: 0,
             delay_time: 0.5,
             delay_max: 1.0,
             accepted_query_time: 0.5,
             discontinuity_times: Vec::new(),
+            discontinuity_head: 0,
             pruned_discontinuity_parity: false,
             suppressed_discontinuity: None,
         };
 
         assert!((delayed_value(&channel, 1.25, 0.5, 3.0, false) - 1.5).abs() <= 1.0e-12);
+    }
+
+    #[test]
+    fn large_absolute_times_do_not_merge_distinct_accepted_samples() {
+        let start = 1.0e15;
+        let mut channel = DelayChannelHistory {
+            points: vec![DelayPoint {
+                time: start,
+                value: 0.0,
+            }],
+            points_head: 0,
+            delay_time: 0.0,
+            delay_max: 10.0,
+            accepted_query_time: start,
+            discontinuity_times: Vec::new(),
+            discontinuity_head: 0,
+            pruned_discontinuity_parity: false,
+            suppressed_discontinuity: None,
+        };
+
+        assert!(!append_accepted_point(
+            &mut channel,
+            start + 1.0,
+            1.0,
+            false
+        ));
+        assert_eq!(active_points(&channel).len(), 2);
+        assert!(!delay_time_matches(start, start + 1.0));
+        assert!((delayed_value(&channel, start + 0.5, 0.0, 1.0, false) - 0.5).abs() <= 1.0e-12);
+    }
+
+    #[test]
+    fn history_pruning_advances_a_logical_head_before_compaction() {
+        let mut channel = DelayChannelHistory {
+            points: (0..200)
+                .map(|time| DelayPoint {
+                    time: time as f64,
+                    value: time as f64,
+                })
+                .collect(),
+            points_head: 0,
+            delay_time: 0.0,
+            delay_max: 198.0,
+            accepted_query_time: 199.0,
+            discontinuity_times: Vec::new(),
+            discontinuity_head: 0,
+            pruned_discontinuity_parity: false,
+            suppressed_discontinuity: None,
+        };
+
+        prune_history(&mut channel, 200.0);
+
+        assert_eq!(channel.points_head, 1);
+        assert_eq!(channel.points.len(), 200);
+        assert_eq!(active_points(&channel)[0].time, 1.0);
     }
 
     #[test]
@@ -663,10 +770,12 @@ mod tests {
                     value: 1.0,
                 },
             ],
+            points_head: 0,
             delay_time: 0.5,
             delay_max: 1.0,
             accepted_query_time: 1.0,
             discontinuity_times: Vec::new(),
+            discontinuity_head: 0,
             pruned_discontinuity_parity: false,
             suppressed_discontinuity: None,
         };
@@ -841,10 +950,12 @@ mod tests {
     fn accepted_backward_delay_crossing_suppresses_the_left_side() {
         let mut channel = DelayChannelHistory {
             points: Vec::new(),
+            points_head: 0,
             delay_time: 0.5,
             delay_max: 1.0,
             accepted_query_time: 1.1,
             discontinuity_times: vec![1.0],
+            discontinuity_head: 0,
             pruned_discontinuity_parity: false,
             suppressed_discontinuity: None,
         };

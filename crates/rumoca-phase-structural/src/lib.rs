@@ -345,8 +345,8 @@ fn over_determined_block(
 /// Transform a DAE into BLT-sorted block form for sequential simulation.
 ///
 /// Returns `Err` if the system is structurally singular or empty.
-pub fn sort_dae(dae: &dae::Dae) -> Result<SortedDae<'_>, StructuralError> {
-    let inc = incidence::build_incidence(dae);
+pub fn sort_dae(dae: &dae::Dae) -> Result<SortedDae, StructuralError> {
+    let inc = incidence::build_incidence(dae)?;
 
     if inc.n_eq == 0 && inc.n_var == 0 {
         return Err(StructuralError::EmptySystem);
@@ -385,11 +385,14 @@ pub fn sort_dae(dae: &dae::Dae) -> Result<SortedDae<'_>, StructuralError> {
         .collect();
 
     Ok(SortedDae {
-        dae,
         blocks,
         matching: matching_pairs,
         diagnostics: diagnostics_warnings,
     })
+}
+
+pub(crate) fn finish_dae(dae: dae::Dae) -> Result<dae::Dae, StructuralError> {
+    Ok(dae)
 }
 
 /// Build a named structural report: the matching (which equation determines
@@ -400,7 +403,7 @@ pub fn sort_dae(dae: &dae::Dae) -> Result<SortedDae<'_>, StructuralError> {
 pub fn build_structural_report(dae: &dae::Dae) -> Result<StructuralReport, StructuralError> {
     use std::collections::HashMap;
 
-    let inc = incidence::build_incidence(dae);
+    let inc = incidence::build_incidence(dae)?;
     if inc.n_eq == 0 && inc.n_var == 0 {
         return Err(StructuralError::EmptySystem);
     }
@@ -545,7 +548,22 @@ fn equation_label(dae: &dae::Dae, equation: &EquationRef) -> String {
 pub fn analyze_structure(dae: &dae::Dae) -> StructuralDiagnostics {
     let mut result = StructuralDiagnostics::default();
 
-    let inc = incidence::build_incidence(dae);
+    let inc = match incidence::build_incidence(dae) {
+        Ok(incidence) => incidence,
+        Err(error) => {
+            let diagnostic = match error.source_span() {
+                Some(span) => rumoca_core::Diagnostic::warning(
+                    error.code(),
+                    error.to_string(),
+                    rumoca_core::PrimaryLabel::new(span)
+                        .with_message("invalid compact structural family"),
+                ),
+                None => rumoca_core::Diagnostic::global_warning(error.code(), error.to_string()),
+            };
+            result.diagnostics.push(diagnostic);
+            return result;
+        }
+    };
 
     result.n_equations = inc.n_eq;
     result.n_unknowns = inc.n_var;

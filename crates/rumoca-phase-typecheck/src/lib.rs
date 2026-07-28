@@ -36,6 +36,7 @@ mod function_signatures;
 mod instanced;
 mod modifier_targets;
 mod path_utils;
+mod semantic_scope;
 mod typechecker;
 pub mod unit_syntax;
 
@@ -47,10 +48,11 @@ use rumoca_core::{
 /// Placeholder used when a `SourceId` has no registered name in the source map.
 pub(crate) const UNKNOWN_SOURCE_DISPLAY_NAME: &str = "<unknown source>";
 use rumoca_ir_ast::{
-    ClassDef, ClassKind, ClassTree, Component, EnumerationType, Expression, InstanceOverlay,
-    ResolvedTree, ScopeImport, StoredDefinition, Type, TypeAlias, TypeClassType, TypeTable,
-    TypedTree,
+    ClassDef, ClassKind, ClassTree, Component, EnumerationType, Expression, InstanceId,
+    InstanceOverlay, ResolvedTree, ScopeImport, StoredDefinition, Type, TypeAlias, TypeClassType,
+    TypeTable, TypedTree,
 };
+use semantic_scope::{ComponentSemantics, InstanceSemanticScope, SemanticLookup};
 use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 use typechecker::traversal_adapter::{
@@ -272,22 +274,12 @@ pub struct TypeChecker {
     /// This unwraps aliases and trivial class wrappers (e.g. operator-record
     /// unit wrappers) so assignment checks compare semantic roots.
     type_roots: HashMap<TypeId, TypeId>,
-    /// Component type ids visible in the current class scope.
-    current_component_types: HashMap<String, TypeId>,
-    /// Component shapes visible in the current class scope.
-    ///
-    /// `Some(shape)` is a known shape (empty = scalar); `None` means the
-    /// component declares dimensions that are not evaluated here. Per
-    /// SPEC_0008, an absent or `None` entry must be treated as unknown,
-    /// never as scalar.
-    current_component_shapes: HashMap<String, Option<Vec<usize>>>,
-    /// Component variability visible in the current concrete instance scope.
-    ///
-    /// Unlike declaration-level lookup, this preserves the variability of a
-    /// projected member such as `system.energyDynamics`: the enclosing
-    /// `system` object is continuous, while the referenced member is a
-    /// parameter.
-    current_component_variabilities: HashMap<String, rumoca_core::Variability>,
+    /// Source-declaration component metadata for standalone resolved-tree checks.
+    current_declaration_semantics: HashMap<DefId, ComponentSemantics>,
+    /// Concrete component metadata keyed by `InstanceId`.
+    current_instance_semantics: InstanceSemanticScope,
+    /// Concrete class instance whose body is currently being checked.
+    current_class_instance_id: Option<InstanceId>,
     /// Concrete instance scope used for lexical lookup in instanced bodies and
     /// bindings.
     current_instance_scope: Option<ComponentPath>,
@@ -339,9 +331,9 @@ impl TypeChecker {
             class_base_def_ids: HashMap::new(),
             type_suffix_index: HashMap::new(),
             type_roots: HashMap::new(),
-            current_component_types: HashMap::new(),
-            current_component_shapes: HashMap::new(),
-            current_component_variabilities: HashMap::new(),
+            current_declaration_semantics: HashMap::new(),
+            current_instance_semantics: InstanceSemanticScope::default(),
+            current_class_instance_id: None,
             current_instance_scope: None,
             current_integer_iterators: Vec::new(),
             current_instance_domain_shape: Vec::new(),
@@ -453,11 +445,14 @@ impl TypeChecker {
         overlay: &InstanceOverlay,
         ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
     ) {
-        let component_index: HashMap<String, &rumoca_ir_ast::InstanceData> = overlay
-            .components
-            .values()
-            .map(|data| (data.qualified_name.to_flat_string(), data))
-            .collect();
+        let mut component_index =
+            HashMap::<ComponentPath, Vec<&rumoca_ir_ast::InstanceData>>::new();
+        for data in overlay.components.values() {
+            component_index
+                .entry(data.qualified_name.to_component_path())
+                .or_default()
+                .push(data);
+        }
 
         const MAX_PASSES: usize = 5;
         for _ in 0..MAX_PASSES {
@@ -484,15 +479,15 @@ impl TypeChecker {
 
     fn apply_instance_class_overrides(
         tree: &ClassTree,
-        component_index: &HashMap<String, &rumoca_ir_ast::InstanceData>,
+        component_index: &HashMap<ComponentPath, Vec<&rumoca_ir_ast::InstanceData>>,
         data: &rumoca_ir_ast::InstanceData,
         ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
     ) {
         if data.class_overrides.is_empty() {
             return;
         }
-        let comp_scope = data.qualified_name.to_flat_string();
-        if comp_scope.is_empty() {
+        let comp_path = data.qualified_name.to_component_path();
+        if comp_path.is_root() {
             return;
         }
 
@@ -501,7 +496,7 @@ impl TypeChecker {
             Self::apply_class_override_alias(
                 tree,
                 component_index,
-                &comp_scope,
+                &comp_path,
                 active_alias.as_deref(),
                 &class_override.alias,
                 class_override.target_def_id,
@@ -512,8 +507,8 @@ impl TypeChecker {
 
     fn apply_class_override_alias(
         tree: &ClassTree,
-        component_index: &HashMap<String, &rumoca_ir_ast::InstanceData>,
-        comp_scope: &str,
+        component_index: &HashMap<ComponentPath, Vec<&rumoca_ir_ast::InstanceData>>,
+        comp_path: &ComponentPath,
         active_alias: Option<&str>,
         alias: &str,
         def_id: DefId,
@@ -522,7 +517,7 @@ impl TypeChecker {
         if Self::try_apply_forwarded_parent_alias_constants(
             tree,
             component_index,
-            comp_scope,
+            comp_path,
             active_alias,
             alias,
             def_id,
@@ -533,6 +528,7 @@ impl TypeChecker {
 
         let is_active_alias = active_alias == Some(alias);
 
+        let comp_scope = comp_path.to_flat_string();
         let alias_scope = format!("{comp_scope}.{alias}");
         // MLS §7.3: instance-level redeclare overrides must replace inherited/default
         // package constants in the local alias scope.
@@ -542,14 +538,14 @@ impl TypeChecker {
         // For declarations like `Medium.BaseProperties medium`, expose
         // unqualified constants (`medium.nX`) from the active alias only.
         if is_active_alias {
-            Self::extract_override_class_constants(tree, comp_scope, def_id, ctx);
+            Self::extract_override_class_constants(tree, &comp_scope, def_id, ctx);
         }
     }
 
     fn try_apply_forwarded_parent_alias_constants(
         tree: &ClassTree,
-        component_index: &HashMap<String, &rumoca_ir_ast::InstanceData>,
-        comp_scope: &str,
+        component_index: &HashMap<ComponentPath, Vec<&rumoca_ir_ast::InstanceData>>,
+        comp_path: &ComponentPath,
         active_alias: Option<&str>,
         alias: &str,
         def_id: DefId,
@@ -562,19 +558,22 @@ impl TypeChecker {
             return false;
         }
 
-        let enclosing = Self::enclosing_scope_or_root(comp_scope);
-        if enclosing.is_empty() {
+        let Some(enclosing) = comp_path.parent() else {
             return false;
-        }
-        let Some(parent_data) = component_index.get(enclosing) else {
+        };
+        let Some(parent_candidates) = component_index.get(&enclosing) else {
+            return false;
+        };
+        let [parent_data] = parent_candidates.as_slice() else {
             return false;
         };
         if Self::class_override_by_alias(parent_data, alias).is_none() {
             return false;
         }
 
+        let comp_scope = comp_path.to_flat_string();
         let source_alias = format!("{comp_scope}.{alias}");
-        let target_alias = format!("{enclosing}.{alias}");
+        let target_alias = format!("{}.{alias}", enclosing.to_flat_string());
         let alias_pair = [(source_alias, target_alias.clone())];
         Self::propagate_alias_values_in_ctx(&alias_pair, ctx);
 
@@ -630,171 +629,6 @@ impl TypeChecker {
         data.class_overrides
             .values()
             .find(|class_override| class_override.alias == alias)
-    }
-
-    /// Build lookup keys for top-level model components from instanced overlay data.
-    fn build_instanced_component_type_scope(
-        overlay: &InstanceOverlay,
-        full_prefix: &str,
-        short_model: &str,
-    ) -> HashMap<String, TypeId> {
-        let mut out = HashMap::new();
-        let short_prefix = format!("{short_model}.");
-
-        for data in overlay.components.values() {
-            let qn = data.qualified_name.to_flat_string();
-            // Preserve the effective instance type for expression lookup.
-            // Canonical roots are for compatibility checks; using them here
-            // erases redeclared/derived record members before member lookup.
-            let instance_type = data.type_id;
-            out.insert(qn.clone(), instance_type);
-            out.entry(rumoca_core::strip_all_subscripts(&qn))
-                .or_insert(instance_type);
-            if let Some(rest) = qn.strip_prefix(full_prefix) {
-                Self::insert_instanced_aliases(&mut out, rest, instance_type, Some(short_model));
-                continue;
-            }
-            if let Some(rest) = qn.strip_prefix(&short_prefix) {
-                Self::insert_instanced_aliases(&mut out, rest, instance_type, None);
-                continue;
-            }
-            if !path_utils::is_qualified_class_name(&qn) {
-                out.insert(qn, instance_type);
-            }
-        }
-
-        out
-    }
-
-    /// Shape map keyed like `build_instanced_component_type_scope`. The model
-    /// prefixes are passed in so the textual-path handling stays in one place.
-    fn build_instanced_component_shape_scope(
-        overlay: &InstanceOverlay,
-        full_prefix: &str,
-        short_model: &str,
-    ) -> HashMap<String, Option<Vec<usize>>> {
-        let mut out = HashMap::new();
-        let short_prefix = format!("{short_model}.");
-        for data in overlay.components.values() {
-            let shape = if !data.dims.is_empty() {
-                Some(data.dims.iter().map(|&d| d as usize).collect::<Vec<_>>())
-            } else if data.dims_expr.is_empty() {
-                Some(Vec::new())
-            } else {
-                None
-            };
-            let qn = data.qualified_name.to_flat_string();
-            if let Some(rest) = qn.strip_prefix(full_prefix) {
-                out.insert(rest.to_string(), shape.clone());
-                out.entry(rumoca_core::strip_all_subscripts(rest))
-                    .or_insert_with(|| shape.clone());
-            } else if let Some(rest) = qn.strip_prefix(&short_prefix) {
-                out.insert(rest.to_string(), shape.clone());
-                out.entry(rumoca_core::strip_all_subscripts(rest))
-                    .or_insert_with(|| shape.clone());
-            }
-            out.insert(qn.clone(), shape.clone());
-            out.entry(rumoca_core::strip_all_subscripts(&qn))
-                .or_insert(shape);
-        }
-        // Array expansion stores scalar element rows (`a[1]`, `a[2]`, ...)
-        // while retaining the declared parent domain separately. Index the
-        // parent domain as well so source-scoped references such as `a[1]`
-        // validate against `a`'s array shape rather than capturing a scalar
-        // declaration with the same local name.
-        for (parent, dims) in &overlay.array_parent_dims {
-            let shape = Some(dims.iter().map(|&dim| dim as usize).collect::<Vec<_>>());
-            if let Some(rest) = parent.strip_prefix(full_prefix) {
-                out.insert(rest.to_string(), shape.clone());
-                out.insert(rumoca_core::strip_all_subscripts(rest), shape.clone());
-            } else if let Some(rest) = parent.strip_prefix(&short_prefix) {
-                out.insert(rest.to_string(), shape.clone());
-                out.insert(rumoca_core::strip_all_subscripts(rest), shape.clone());
-            }
-            out.insert(parent.clone(), shape.clone());
-            out.insert(rumoca_core::strip_all_subscripts(parent), shape);
-        }
-        out
-    }
-
-    /// Variability map keyed like `build_instanced_component_type_scope`.
-    fn build_instanced_component_variability_scope(
-        overlay: &InstanceOverlay,
-        full_prefix: &str,
-        short_model: &str,
-    ) -> HashMap<String, rumoca_core::Variability> {
-        let mut out = HashMap::new();
-        let short_prefix = format!("{short_model}.");
-        for data in overlay.components.values() {
-            let variability = data.variability.clone();
-            let qn = data.qualified_name.to_flat_string();
-            Self::insert_instanced_variability_alias(&mut out, &qn, variability.clone());
-            if let Some(rest) = qn.strip_prefix(full_prefix) {
-                Self::insert_full_prefix_variability_aliases(
-                    &mut out,
-                    rest,
-                    short_model,
-                    variability,
-                );
-            } else if let Some(rest) = qn.strip_prefix(&short_prefix) {
-                Self::insert_instanced_variability_alias(&mut out, rest, variability);
-            }
-        }
-        out
-    }
-
-    fn insert_full_prefix_variability_aliases(
-        out: &mut HashMap<String, rumoca_core::Variability>,
-        relative_path: &str,
-        short_model: &str,
-        variability: rumoca_core::Variability,
-    ) {
-        Self::insert_instanced_variability_alias(out, relative_path, variability.clone());
-        if !path_utils::is_qualified_class_name(relative_path) {
-            Self::insert_instanced_variability_alias(
-                out,
-                &format!("{short_model}.{relative_path}"),
-                variability,
-            );
-        }
-    }
-
-    fn insert_instanced_variability_alias(
-        out: &mut HashMap<String, rumoca_core::Variability>,
-        path: &str,
-        variability: rumoca_core::Variability,
-    ) {
-        out.insert(path.to_string(), variability.clone());
-        let unsubscripted = rumoca_core::strip_all_subscripts(path);
-        out.entry(unsubscripted).or_insert(variability);
-    }
-
-    /// Model-name prefix and short model name shared by the instanced scope
-    /// builders, so the textual-path handling happens exactly once.
-    fn instanced_scope_prefixes(model_name: &str) -> (String, String) {
-        let full_prefix = format!("{model_name}.");
-        let short_model = path_utils::class_name_leaf(model_name).to_string();
-        (full_prefix, short_model)
-    }
-
-    fn insert_instanced_aliases(
-        out: &mut HashMap<String, TypeId>,
-        rest: &str,
-        type_id: TypeId,
-        short_model: Option<&str>,
-    ) {
-        if path_utils::is_qualified_class_name(rest) {
-            return;
-        }
-        out.insert(rest.to_string(), type_id);
-        out.entry(rumoca_core::strip_all_subscripts(rest))
-            .or_insert(type_id);
-        if let Some(short_model) = short_model {
-            let short_path = format!("{short_model}.{rest}");
-            out.insert(short_path.clone(), type_id);
-            out.entry(rumoca_core::strip_all_subscripts(&short_path))
-                .or_insert(type_id);
-        }
     }
 
     /// Build a type context that includes user-defined classes, enums, and aliases.

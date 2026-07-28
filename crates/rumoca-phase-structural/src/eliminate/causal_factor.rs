@@ -1,6 +1,9 @@
 use indexmap::{IndexMap, IndexSet};
-use rumoca_core::{Expression, ExpressionRewriter, FallibleExpressionRewriter, Reference, VarName};
-use rumoca_ir_dae::DaeExpressionRewriter;
+use rumoca_core::{
+    Expression, ExpressionRewriter, ExpressionVisitor, FallibleExpressionRewriter, Reference,
+    VarName,
+};
+use rumoca_ir_dae::{DaeExpressionRewriter, DaeVisitor};
 
 use super::{
     Dae, StructuralError, Substitution, apply_substitutions_to_expressions_in_order,
@@ -36,8 +39,27 @@ pub fn factor_causal_substitutions(
     dae: &Dae,
     substitutions: &[Substitution],
 ) -> Result<CausalSubstitutionPlan, StructuralError> {
+    factor_causal_substitutions_with_consumers(dae, dae, substitutions)
+}
+
+/// Factor substitutions using the post-elimination DAE as the authoritative
+/// inventory of expanded downstream consumers.
+pub fn factor_causal_substitutions_with_consumers(
+    source_dae: &Dae,
+    consumer_dae: &Dae,
+    substitutions: &[Substitution],
+) -> Result<CausalSubstitutionPlan, StructuralError> {
     let candidates = unique_computational_candidates(substitutions);
-    let retained_candidates = candidates.iter().collect::<Vec<_>>();
+    let consumer_counts = candidate_consumer_counts(consumer_dae, &candidates);
+    let retained_candidates = candidates
+        .iter()
+        .enumerate()
+        .filter(|(index, candidate)| {
+            source_observable_target(source_dae, &candidate.substitution.var_name)
+                || consumer_counts[*index] > 1
+        })
+        .map(|(_, candidate)| candidate)
+        .collect::<Vec<_>>();
     let retained_targets = retained_candidates
         .iter()
         .map(|candidate| candidate.substitution.var_name.clone())
@@ -56,7 +78,11 @@ pub fn factor_causal_substitutions(
         .iter()
         .map(|substitution| substitution.expr.clone())
         .collect::<Vec<_>>();
-    apply_substitutions_to_expressions_in_order(dae, &mut expressions, &collapsed_substitutions)?;
+    apply_substitutions_to_expressions_in_order(
+        source_dae,
+        &mut expressions,
+        &collapsed_substitutions,
+    )?;
     for (substitution, expression) in factored.iter_mut().zip(expressions) {
         substitution.expr = expression;
     }
@@ -64,6 +90,64 @@ pub fn factor_causal_substitutions(
         substitutions: factored,
         retained_targets,
     })
+}
+
+fn source_observable_target(dae: &Dae, target: &VarName) -> bool {
+    dae.variables.states.contains_key(target)
+        || dae.variables.algebraics.contains_key(target)
+        || dae.variables.outputs.contains_key(target)
+}
+
+fn candidate_consumer_counts(dae: &Dae, candidates: &[Candidate<'_>]) -> Vec<usize> {
+    let mut counter = CandidateConsumerCounter::new(candidates);
+    DaeVisitor::visit_dae(&mut counter, dae);
+    counter.counts
+}
+
+struct CandidateConsumerCounter<'a> {
+    candidates: &'a [Candidate<'a>],
+    buckets: IndexMap<u64, Vec<usize>>,
+    counts: Vec<usize>,
+}
+
+impl<'a> CandidateConsumerCounter<'a> {
+    fn new(candidates: &'a [Candidate<'a>]) -> Self {
+        let mut buckets = IndexMap::<u64, Vec<usize>>::new();
+        for (index, candidate) in candidates.iter().enumerate() {
+            for fingerprint in [candidate.fingerprint, candidate.normalized_fingerprint] {
+                let bucket = buckets.entry(fingerprint).or_default();
+                if !bucket.contains(&index) {
+                    bucket.push(index);
+                }
+            }
+        }
+        Self {
+            candidates,
+            buckets,
+            counts: vec![0; candidates.len()],
+        }
+    }
+}
+
+impl ExpressionVisitor for CandidateConsumerCounter<'_> {
+    fn visit_expression(&mut self, expression: &Expression) {
+        let fingerprint = rumoca_core::expression_semantic_fingerprint(expression);
+        if let Some(indices) = self.buckets.get(&fingerprint) {
+            for &index in indices {
+                let candidate = &self.candidates[index];
+                if candidate_matches(candidate, expression, fingerprint) {
+                    self.counts[index] += 1;
+                }
+            }
+        }
+        self.walk_expression(expression);
+    }
+}
+
+impl DaeVisitor for CandidateConsumerCounter<'_> {
+    fn visit_expression(&mut self, expression: &Expression) {
+        ExpressionVisitor::visit_expression(self, expression);
+    }
 }
 
 /// Replace expanded copies of retained computations throughout an already
@@ -288,6 +372,15 @@ mod tests {
         }
     }
 
+    fn dae_with_observable(name: &str) -> Dae {
+        let mut dae = Dae::new();
+        let name = VarName::new(name);
+        let mut variable = rumoca_ir_dae::Variable::empty_with_span(span());
+        variable.name = name.clone();
+        dae.variables.algebraics.insert(name, variable);
+        dae
+    }
+
     #[test]
     fn factors_exact_copied_definition_through_named_target() {
         let shared = sin(var("u"));
@@ -296,13 +389,10 @@ mod tests {
             substitution("y", add(shared.clone(), shared)),
         ];
 
-        let plan = factor_causal_substitutions(&Dae::new(), &substitutions)
+        let plan = factor_causal_substitutions(&dae_with_observable("x"), &substitutions)
             .expect("causal factoring should succeed");
 
-        assert_eq!(
-            plan.retained_targets,
-            IndexSet::from([VarName::new("x"), VarName::new("y")])
-        );
+        assert_eq!(plan.retained_targets, IndexSet::from([VarName::new("x")]));
         assert_eq!(plan.substitutions[0].expr, substitutions[0].expr);
         assert_eq!(plan.substitutions[1].expr, add(var("x"), var("x")));
     }
@@ -322,7 +412,7 @@ mod tests {
             substitution("consumer", add(shared.clone(), shared)),
         ];
 
-        let plan = factor_causal_substitutions(&Dae::new(), &substitutions)
+        let plan = factor_causal_substitutions(&dae_with_observable("first"), &substitutions)
             .expect("causal factoring should succeed");
 
         assert!(
@@ -412,5 +502,50 @@ mod tests {
             panic!("expected binary residual");
         };
         assert_eq!(lhs.as_ref(), &var("shared"));
+    }
+
+    #[test]
+    fn keeps_source_observable_target_without_multiple_consumers() {
+        let mut source = Dae::new();
+        let name = VarName::new("observable");
+        let mut variable = rumoca_ir_dae::Variable::empty_with_span(span());
+        variable.name = name.clone();
+        source.variables.algebraics.insert(name.clone(), variable);
+        let substitutions = vec![substitution("observable", sin(var("u")))];
+
+        let plan = factor_causal_substitutions_with_consumers(&source, &Dae::new(), &substitutions)
+            .expect("source-observable targets must remain reconstructable");
+
+        assert_eq!(plan.retained_targets, IndexSet::from([name]));
+    }
+
+    #[test]
+    fn collapses_single_use_generated_computation() {
+        let shared = sin(var("u"));
+        let substitutions = vec![
+            substitution("generated", shared.clone()),
+            substitution("consumer", add(shared, real(1.0))),
+        ];
+
+        let plan = factor_causal_substitutions(&Dae::new(), &substitutions)
+            .expect("single-use generated computation should remain inlined");
+
+        assert!(plan.retained_targets.is_empty());
+    }
+
+    #[test]
+    fn dead_substitution_occurrences_do_not_retain_generated_computation() {
+        let shared = sin(var("u"));
+        let substitutions = vec![
+            substitution("generated", shared.clone()),
+            substitution("dead_a", shared.clone()),
+            substitution("dead_b", shared),
+        ];
+
+        let plan =
+            factor_causal_substitutions_with_consumers(&Dae::new(), &Dae::new(), &substitutions)
+                .expect("dead substitution inventory must not count as live consumers");
+
+        assert!(plan.retained_targets.is_empty());
     }
 }

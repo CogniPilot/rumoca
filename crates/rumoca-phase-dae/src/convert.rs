@@ -23,6 +23,58 @@ pub(crate) fn flat_to_dae_expression_with_refs(
     DaeReferenceRewriter { flat }.rewrite_expression(expr)
 }
 
+pub(crate) fn resolved_flat_function_instance<'a>(
+    name: &rumoca_core::Reference,
+    span: rumoca_core::Span,
+    flat: &'a flat::Model,
+    context: &str,
+) -> Result<&'a rumoca_core::Function, ToDaeError> {
+    let resolved = name.resolved_function().ok_or_else(|| {
+        ToDaeError::runtime_contract_violation_at(
+            format!(
+                "{context} `{}` lacks resolved function identity",
+                name.as_str()
+            ),
+            span,
+        )
+    })?;
+    let component_ref = name.component_ref().ok_or_else(|| {
+        ToDaeError::runtime_contract_violation_at(
+            format!("{context} `{}` lacks a structured reference", name.as_str()),
+            span,
+        )
+    })?;
+    if component_ref.def_id.is_none() {
+        return Err(ToDaeError::runtime_contract_violation_at(
+            format!(
+                "{context} `{}` lacks source declaration identity",
+                name.as_str()
+            ),
+            span,
+        ));
+    }
+    if component_ref.parts.len() != resolved.base_part_count {
+        return Err(ToDaeError::runtime_contract_violation_at(
+            format!(
+                "{context} `{}` has an invalid resolved base boundary",
+                name.as_str()
+            ),
+            span,
+        ));
+    }
+    rumoca_core::resolve_function_instance(flat.functions.values(), resolved.instance_id).map_err(
+        |error| {
+            ToDaeError::runtime_contract_violation_at(
+                format!(
+                    "{context} `{}` has invalid identity: {error}",
+                    name.as_str()
+                ),
+                span,
+            )
+        },
+    )
+}
+
 pub fn attach_dae_reference_metadata(dae: &mut dae::Dae) -> Result<(), ToDaeError> {
     assign_missing_source_component_ref_def_ids(dae);
     let scope = DaeReferenceScope::new(dae);
@@ -893,7 +945,7 @@ impl DaeReferenceScope {
         // producer bug, not something to recover by parsing the name.
         Err(ToDaeError::UnresolvedReference {
             name: name.as_str().to_string(),
-            span: rumoca_core::span_to_source_span(span),
+            span,
         })
     }
 

@@ -11,6 +11,8 @@ use rumoca_ir_solve::{
     SolverNameIndexMaps, UnaryOp,
 };
 
+mod support;
+
 fn spb(rows: Vec<Vec<LinearOp>>, label: &str) -> ScalarProgramBlock {
     ScalarProgramBlock::with_source_span(
         rows,
@@ -55,6 +57,8 @@ fn decay_model() -> rumoca_ir_solve::SolveModel {
                 )),
                 derivative_rhs: derivative_rhs_cb,
                 algebraic_projection_plan: rumoca_ir_solve::AlgebraicProjectionPlan::default(),
+                manifold_residual: ComputeBlock::default(),
+                manifold_projection_plan: rumoca_ir_solve::AlgebraicProjectionPlan::default(),
             },
             initialization: InitializationSolveSystem {
                 residual: ComputeBlock::from_scalar_program_block(zero_rb.clone()),
@@ -96,6 +100,7 @@ fn decay_model() -> rumoca_ir_solve::SolveModel {
                 mass_matrix: rumoca_ir_solve::MassMatrix::Identity,
                 implicit_jacobian_v: zero_block,
                 implicit_jacobian_v_scalar: zero_rb.clone(),
+                manifold_jacobian_v: ComputeBlock::default(),
                 full_jacobian_v: zero_rb.clone(),
             },
             ..Default::default()
@@ -128,7 +133,7 @@ fn cpu_vectorized_matches_cpu_native() {
     let native = match build_ode_model_with_opts(&model, "decay_native", &native_opts) {
         Ok(m) => m,
         Err(MlirError::ToolNotFound { tool, .. }) => {
-            eprintln!("SKIP: {tool} not found");
+            support::missing_cpu_tool(tool);
             return;
         }
         Err(e) => panic!("native compile failed: {e}"),
@@ -137,7 +142,7 @@ fn cpu_vectorized_matches_cpu_native() {
     let vectorized = match build_ode_model_with_opts(&model, "decay_vec", &vec_opts) {
         Ok(m) => m,
         Err(MlirError::ToolNotFound { tool, .. }) => {
-            eprintln!("SKIP: {tool} not found");
+            support::missing_cpu_tool(tool);
             return;
         }
         Err(e) => panic!("vectorized compile failed: {e}"),

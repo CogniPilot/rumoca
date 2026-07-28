@@ -1,7 +1,7 @@
 //! P4 parser allocation work: every parser token must carry the file's
 //! `SourceId`, computed once per file, and never an owned path copy.
 
-use rumoca_core::{SourceId, Token};
+use rumoca_core::{SourceId, Token, placeholder_source_name};
 use rumoca_ir_ast::{ClassDef, StoredDefinition};
 use rumoca_phase_parse::{parse_to_ast, parse_to_recovered_ast};
 
@@ -104,6 +104,28 @@ fn recovered_ast_source_ids_match_normal_parse() {
             token.location.source, expected,
             "recovered token {:?} carries the wrong source id",
             token.text
+        );
+    }
+}
+
+#[test]
+fn canonical_preassigned_source_name_is_not_rehashed() {
+    let expected = SourceId::from_source_name("canonical-preassigned-source.mo");
+    let file_name = placeholder_source_name(expected);
+
+    let parsed = parse_to_ast(SOURCE, &file_name).expect("source should parse");
+    for token in collect_tokens(&parsed) {
+        assert_eq!(
+            token.location.source, expected,
+            "normal parser rehashed canonical source registration"
+        );
+    }
+
+    let recovered = parse_to_recovered_ast(SOURCE, &file_name);
+    for token in collect_tokens(&recovered) {
+        assert_eq!(
+            token.location.source, expected,
+            "recovery parser rehashed canonical source registration"
         );
     }
 }

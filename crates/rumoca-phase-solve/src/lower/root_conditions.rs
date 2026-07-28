@@ -613,7 +613,7 @@ fn is_piecewise_constant_time_threshold_relation(
     dae_model: &dae::Dae,
     expr: &rumoca_core::Expression,
 ) -> bool {
-    dae::is_event_constant_time_threshold_relation(dae_model, expr)
+    super::event_threshold::is_event_constant_time_threshold_relation(dae_model, expr)
 }
 
 fn expression_uses_known_root_bindings(

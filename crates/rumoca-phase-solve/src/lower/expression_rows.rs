@@ -16,8 +16,10 @@ use super::{
     unsupported_at,
 };
 
+mod native_residual;
 #[cfg(test)]
 mod reciprocal_tests;
+pub(super) use native_residual::{NativeResidualNode, lower_native_algebraic_residual_nodes};
 
 pub(super) type LoweredRowsAndTargets = (Vec<Vec<LinearOp>>, Vec<Option<ScalarSlot>>);
 

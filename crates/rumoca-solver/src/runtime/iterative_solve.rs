@@ -84,6 +84,7 @@ where
         return Ok(x);
     }
     let b_norm = norm(b);
+    check_finite(b_norm)?;
     if b_norm == 0.0 {
         return Ok(x); // x = 0 solves A x = 0.
     }
@@ -183,6 +184,7 @@ where
         residual[i] = b[i] - work[i];
     }
     let relative_residual = norm(&residual) / b_norm;
+    check_finite(relative_residual)?;
     if relative_residual <= config.tol.max(1.0e-8) {
         return Ok(x);
     }
@@ -205,10 +207,14 @@ fn apply_hessenberg_solution<E>(
             acc -= hessenberg[col][i] * y_col;
         }
         let diag = hessenberg[i][i];
-        if diag.abs() <= f64::EPSILON {
+        if diag == 0.0 || !diag.is_finite() {
             return Err(GmresError::NonFinite);
         }
-        y[i] = acc / diag;
+        let quotient = acc / diag;
+        if !quotient.is_finite() {
+            return Err(GmresError::NonFinite);
+        }
+        y[i] = quotient;
     }
     for (i, &yi) in y.iter().enumerate() {
         axpy(x, yi, &basis[i]);
@@ -224,7 +230,7 @@ fn axpy(target: &mut [f64], factor: f64, source: &[f64]) {
 }
 
 fn norm(v: &[f64]) -> f64 {
-    dot(v, v).sqrt()
+    v.iter().fold(0.0, |acc, value| acc.hypot(*value))
 }
 
 fn dot(a: &[f64], b: &[f64]) -> f64 {
@@ -293,5 +299,18 @@ mod tests {
         let a = vec![vec![2.0, 0.0], vec![0.0, 3.0]];
         let x = gmres(dense_apply(&a), &[0.0, 0.0], GmresConfig::default()).expect("zero");
         assert_eq!(x, vec![0.0, 0.0]);
+    }
+
+    #[test]
+    fn gmres_solves_scaled_nonsingular_system() {
+        let a = vec![vec![1.0e-20]];
+        let x = gmres(dense_apply(&a), &[1.0], GmresConfig::default())
+            .expect("nonzero scaled operator should solve");
+
+        assert_eq!(x.len(), 1);
+        assert!((x[0] - 1.0e20).abs() <= 1.0e6);
+        let mut applied = [0.0];
+        dense_apply(&a)(&x, &mut applied).expect("operator");
+        assert!((applied[0] - 1.0).abs() <= 1.0e-12);
     }
 }

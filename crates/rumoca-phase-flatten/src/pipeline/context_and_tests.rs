@@ -1567,7 +1567,7 @@ fn process_class_instance_body(
         }
     }
 
-    // Convert algorithms (preserve structure per SPEC_0020)
+    // Convert algorithms (preserve structure per SPEC_0007 / MLS §11)
     for inst_algs in &class_data.algorithms {
         set_class_instance_imports_for_statement_block(
             ctx,
@@ -1646,7 +1646,7 @@ fn process_class_instance_body(
 
 /// Flatten an algorithm section.
 ///
-/// Per SPEC_0020: Algorithms are preserved as structured statements,
+/// Per SPEC_0007 / MLS §11: algorithms are preserved as structured statements,
 /// with variable names qualified and outputs identified.
 pub(crate) fn flatten_algorithm_section(
     statements: &[InstanceStatement],

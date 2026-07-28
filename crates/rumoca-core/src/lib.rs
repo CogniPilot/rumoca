@@ -6,15 +6,14 @@
 //!
 //! This crate provides common error infrastructure for compiler phases:
 //!
-//! - [`SourceSpan`] - Re-exported from miette for span conversion
+//! - [`Span`] - Source-identified spans retained by phase errors
 //! - [`BoxedResult`] - Type alias for `Result<T, Box<E>>` pattern
 //! - [`error_constructor!`] - Macro for generating error constructors
 //!
 //! ## Example Usage
 //!
 //! ```ignore
-//! use rumoca_core::{BoxedResult, SourceSpan, error_constructor};
-//! use rumoca_core::Span;
+//! use rumoca_core::{BoxedResult, Span, error_constructor};
 //!
 //! pub type FlattenResult<T> = BoxedResult<T, FlattenError>;
 //!
@@ -22,7 +21,7 @@
 //! pub enum FlattenError {
 //!     #[error("undefined variable: {name}")]
 //!     #[diagnostic(code(rumoca::flatten::EF001))]
-//!     UndefinedVariable { name: String, span: SourceSpan },
+//!     UndefinedVariable { name: String, span: Span },
 //! }
 //!
 //! impl FlattenError {
@@ -91,6 +90,26 @@ pub fn source_temporal_function_name(name: &str) -> Option<&'static str> {
         "reinit" => Some("reinit"),
         _ => None,
     }
+}
+
+/// Return the canonical name for any source-level temporal or synchronous
+/// function-call operator forbidden in solver-facing DAE expressions.
+///
+/// Callers with a structured [`Reference`] should pass `reference.last_segment()`;
+/// this exact-name table is the shared vocabulary owner and does not recover
+/// hierarchy from rendered strings.
+pub fn source_dae_forbidden_function_name(name: &str) -> Option<&'static str> {
+    source_temporal_function_name(name).or(match name {
+        "Clock" => Some("Clock"),
+        "hold" => Some("hold"),
+        "subSample" => Some("subSample"),
+        "superSample" => Some("superSample"),
+        "shiftSample" => Some("shiftSample"),
+        "backSample" => Some("backSample"),
+        "noClock" => Some("noClock"),
+        "firstTick" => Some("firstTick"),
+        _ => None,
+    })
 }
 
 /// Return the canonical name for source temporal function-call operators after
@@ -495,6 +514,12 @@ pub fn span_to_source_span(span: Span) -> SourceSpan {
     let start = span.start.0;
     let len = span.end.0.saturating_sub(span.start.0);
     (start, len).into()
+}
+
+impl From<Span> for SourceSpan {
+    fn from(span: Span) -> Self {
+        span_to_source_span(span)
+    }
 }
 
 // =============================================================================
@@ -1213,6 +1238,65 @@ pub trait PhaseError {
     fn to_diagnostic(&self) -> Diagnostic;
 }
 
+/// Convert a miette-derived phase error without discarding Rumoca source ids.
+///
+/// Miette labels retain byte offsets but do not identify which source in a
+/// multi-file [`SourceMap`] owns those offsets. Phase-local error enums keep
+/// the original [`Span`] values and pass them here in the same order as their
+/// `#[label]` fields. The miette representation remains useful for standalone
+/// rendering while the common diagnostic remains source-identifiable.
+#[must_use]
+pub fn miette_phase_error_to_diagnostic(
+    error: &dyn MietteDiagnostic,
+    source_spans: &[Span],
+) -> Diagnostic {
+    let code = error
+        .code()
+        .map(|code| short_phase_error_code(&code.to_string()).to_string())
+        .expect("phase-local user errors must have a SPEC_0008 diagnostic code");
+    let severity = match error.severity().unwrap_or(Severity::Error) {
+        Severity::Error => DiagnosticSeverity::Error,
+        Severity::Warning => DiagnosticSeverity::Warning,
+        Severity::Advice => DiagnosticSeverity::Note,
+    };
+    let mut labels = Vec::new();
+    if let Some(miette_labels) = error.labels() {
+        for (index, miette_label) in miette_labels.enumerate() {
+            let Some(span) = source_spans.get(index).copied() else {
+                continue;
+            };
+            if span.is_dummy() {
+                continue;
+            }
+            debug_assert_eq!(miette_label.offset(), span.start.0);
+            debug_assert_eq!(miette_label.len(), span.end.0.saturating_sub(span.start.0));
+            labels.push(Label {
+                span,
+                message: miette_label.label().map(str::to_string),
+                primary: miette_label.primary() || index == 0,
+            });
+        }
+    }
+    let mut notes = Vec::new();
+    if let Some(help) = error.help() {
+        notes.push(help.to_string());
+    }
+    if !source_spans.is_empty() && labels.is_empty() {
+        notes.push(
+            "source provenance was unavailable for this diagnostic; the producing phase must \
+             preserve a non-dummy owner span"
+                .to_string(),
+        );
+    }
+    Diagnostic {
+        severity,
+        code: Some(code),
+        message: error.to_string(),
+        labels,
+        notes,
+    }
+}
+
 /// A collection of diagnostics.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct Diagnostics {
@@ -1281,12 +1365,12 @@ pub use miette::SourceSpan;
 /// ```
 pub type BoxedResult<T, E> = Result<T, Box<E>>;
 
-/// Macro for generating error constructor methods with span conversion.
+/// Macro for generating error constructor methods.
 ///
 /// This macro generates constructor methods for error enum variants that
-/// contain a `span: SourceSpan` field. It handles the common pattern of:
+/// contain a `span: Span` field. It handles the common pattern of:
 /// 1. Taking `impl Into<String>` for string fields
-/// 2. Taking `Span` and converting to `SourceSpan`
+/// 2. Retaining the source-identified `Span`
 ///
 /// # Syntax
 ///
@@ -1294,7 +1378,7 @@ pub type BoxedResult<T, E> = Result<T, Box<E>>;
 /// error_constructor!(method_name, VariantName { field1: Type1, field2: Type2 });
 /// ```
 ///
-/// The last field is assumed to be `span: Span` which gets converted to `SourceSpan`.
+/// The last field is assumed to be `span: Span`, retaining source identity.
 ///
 /// # Example
 ///
@@ -1315,7 +1399,7 @@ macro_rules! error_constructor {
         pub fn $fn_name($field: impl Into<String>, span: $crate::Span) -> Self {
             Self::$variant {
                 $field: $field.into(),
-                span: $crate::span_to_source_span(span),
+                span,
             }
         }
     };
@@ -1331,7 +1415,7 @@ macro_rules! error_constructor {
             Self::$variant {
                 $f1: $f1.into(),
                 $f2: $f2.into(),
-                span: $crate::span_to_source_span(span),
+                span,
             }
         }
     };
@@ -1349,7 +1433,7 @@ macro_rules! error_constructor {
                 $f1: $f1.into(),
                 $f2: $f2.into(),
                 $f3: $f3.into(),
-                span: $crate::span_to_source_span(span),
+                span,
             }
         }
     };
@@ -1369,7 +1453,7 @@ macro_rules! error_constructor {
                 $f2: $f2.into(),
                 $f3: $f3.into(),
                 $f4: $f4.into(),
-                span: $crate::span_to_source_span(span),
+                span,
             }
         }
     };
@@ -1391,7 +1475,7 @@ macro_rules! error_constructor {
                 $f3: $f3.into(),
                 $f4: $f4.into(),
                 $f5: $f5.into(),
-                span: $crate::span_to_source_span(span),
+                span,
             }
         }
     };
@@ -1400,9 +1484,7 @@ macro_rules! error_constructor {
     ($fn_name:ident, $variant:ident {}) => {
         /// Create an error with the given span.
         pub fn $fn_name(span: $crate::Span) -> Self {
-            Self::$variant {
-                span: $crate::span_to_source_span(span),
-            }
+            Self::$variant { span }
         }
     };
 
@@ -1599,18 +1681,9 @@ pub mod error_macro_tests {
     // Test enum for the macro
     #[derive(Debug, Clone)]
     pub enum TestError {
-        SingleField {
-            name: String,
-            span: SourceSpan,
-        },
-        TwoFields {
-            a: String,
-            b: String,
-            span: SourceSpan,
-        },
-        SpanOnly {
-            span: SourceSpan,
-        },
+        SingleField { name: String, span: Span },
+        TwoFields { a: String, b: String, span: Span },
+        SpanOnly { span: Span },
     }
 
     impl TestError {
@@ -1632,8 +1705,9 @@ pub mod error_macro_tests {
         match err {
             TestError::SingleField { name, span: s } => {
                 assert_eq!(name, "test_name");
-                assert_eq!(s.offset(), 10);
-                assert_eq!(s.len(), 10);
+                assert_eq!(s.source, span.source);
+                assert_eq!(s.start.0, 10);
+                assert_eq!(s.end.0, 20);
             }
             _ => panic!("Wrong variant"),
         }
@@ -1647,7 +1721,9 @@ pub mod error_macro_tests {
             TestError::TwoFields { a, b, span: s } => {
                 assert_eq!(a, "first");
                 assert_eq!(b, "second");
-                assert_eq!(s.offset(), 10);
+                assert_eq!(s.source, span.source);
+                assert_eq!(s.start.0, 10);
+                assert_eq!(s.end.0, 20);
             }
             _ => panic!("Wrong variant"),
         }
@@ -1659,8 +1735,9 @@ pub mod error_macro_tests {
         let err = TestError::span_only(span);
         match err {
             TestError::SpanOnly { span: s } => {
-                assert_eq!(s.offset(), 10);
-                assert_eq!(s.len(), 10);
+                assert_eq!(s.source, span.source);
+                assert_eq!(s.start.0, 10);
+                assert_eq!(s.end.0, 20);
             }
             _ => panic!("Wrong variant"),
         }

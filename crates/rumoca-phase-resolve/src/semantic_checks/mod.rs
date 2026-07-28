@@ -15,6 +15,7 @@ use std::collections::{HashMap, HashSet};
 mod annotations;
 mod builtin_calls;
 mod clocks;
+mod enclosing_references;
 mod expr;
 mod functions;
 mod lookup;
@@ -26,6 +27,7 @@ mod type_roots;
 use annotations::*;
 use builtin_calls::*;
 use clocks::*;
+use enclosing_references::*;
 use expr::*;
 use functions::*;
 use lookup::*;
@@ -223,6 +225,11 @@ pub fn check_all_semantics(def: &StoredDefinition, _source_map: &SourceMap) -> V
     diags.extend(run_state_machine_semantic_checks(def));
     diags.extend(run_restriction_semantic_checks(def));
     diags
+}
+
+/// Run checks that require the resolved scope tree and declaration identities.
+pub fn check_resolved_semantics(tree: &ast::ClassTree) -> Vec<Diagnostic> {
+    run_enclosing_reference_checks(tree)
 }
 
 fn run_semantic_checks(def: &StoredDefinition) -> Vec<Diagnostic> {

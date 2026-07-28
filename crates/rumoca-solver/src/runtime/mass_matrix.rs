@@ -52,18 +52,20 @@ impl PreparedMassMatrix {
             MassMatrixKind::Diagonal(diagonal) => diagonal
                 .iter()
                 .zip(rhs.iter().copied())
-                .map(|(coeff, value)| {
-                    if coeff.abs() <= 1.0e-14 {
-                        Err(invalid_mass_matrix("singular state mass matrix"))
-                    } else {
-                        Ok(value / coeff)
-                    }
-                })
+                .map(|(coefficient, value)| solve_diagonal_entry(*coefficient, value))
                 .collect(),
-            MassMatrixKind::Sparse { factorization, .. } => factorization
-                .solve(&DVector::from_column_slice(rhs))
-                .map(|solution| solution.as_slice().to_vec())
-                .ok_or_else(|| invalid_mass_matrix("singular state mass matrix")),
+            MassMatrixKind::Sparse { factorization, .. } => {
+                let solution = factorization
+                    .solve(&DVector::from_column_slice(rhs))
+                    .ok_or_else(|| invalid_mass_matrix("singular state mass matrix"))?;
+                if solution.iter().all(|value| value.is_finite()) {
+                    Ok(solution.as_slice().to_vec())
+                } else {
+                    Err(invalid_mass_matrix(
+                        "state mass-matrix solve produced a non-finite value",
+                    ))
+                }
+            }
         }
     }
 
@@ -114,6 +116,19 @@ pub fn solve_mass_matrix(
     rhs: &[f64],
 ) -> Result<Vec<f64>, RuntimeSolveError> {
     PreparedMassMatrix::new(mass, rhs.len())?.solve(rhs)
+}
+
+fn solve_diagonal_entry(coefficient: f64, rhs: f64) -> Result<f64, RuntimeSolveError> {
+    if coefficient == 0.0 {
+        return Err(invalid_mass_matrix("singular state mass matrix"));
+    }
+    let quotient = rhs / coefficient;
+    if !quotient.is_finite() {
+        return Err(invalid_mass_matrix(
+            "state mass-matrix solve produced a non-finite value",
+        ));
+    }
+    Ok(quotient)
 }
 
 fn validate_diagonal(values: &[f64], state_count: usize) -> Result<(), RuntimeSolveError> {
@@ -188,6 +203,32 @@ mod tests {
         let mut out = [10.0, 20.0, 30.0];
         prepared.apply_solver_mass_with_beta(&[1.0, 2.0, 3.0], 0.5, &mut out, 3);
         assert_eq!(out, [7.0, 18.0, 15.0]);
+    }
+
+    #[test]
+    fn diagonal_mass_matrix_accepts_scaled_nonsingular_coefficients() {
+        let mass = solve::MassMatrix::Diagonal {
+            values: vec![1.0e-20],
+        };
+        let prepared = PreparedMassMatrix::new(&mass, 1).expect("scaled matrix should prepare");
+
+        assert_eq!(
+            prepared
+                .solve(&[2.0e-20])
+                .expect("scaled matrix should solve"),
+            [2.0]
+        );
+        assert!(
+            prepared.solve(&[f64::MAX]).is_err(),
+            "a non-finite quotient must fail rather than escape the mass solve"
+        );
+    }
+
+    #[test]
+    fn diagonal_mass_matrix_rejects_exact_zero() {
+        let mass = solve::MassMatrix::Diagonal { values: vec![0.0] };
+        let prepared = PreparedMassMatrix::new(&mass, 1).expect("shape should prepare");
+        assert!(prepared.solve(&[1.0]).is_err());
     }
 
     #[test]

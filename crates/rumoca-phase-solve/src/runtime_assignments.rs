@@ -7,22 +7,19 @@ use rumoca_ir_solve as solve;
 use crate::lower::normalized_discrete_update_equations;
 use crate::{LowerError, checked_literal_positive_indices};
 
+/// Owns only the final runtime-assignment equation nodes selected from
+/// non-derivative normalized rows. `dae_model` remains the canonical,
+/// borrowed catalog for variable shape and runtime-tail metadata.
 pub(crate) fn runtime_assignment_equations(
     dae_model: &dae::Dae,
     runtime_tail_updates: &HashSet<String>,
+    continuous_rows: &[crate::lower::ContinuousEquationRow],
 ) -> Result<Vec<dae::Equation>, LowerError> {
-    let state_derivative_rows = crate::lower::state_derivative_equation_flags(dae_model)?;
     let mut equations = Vec::new();
-    for (row_idx, eq) in dae_model.continuous.equations.iter().enumerate() {
-        let Some(&is_state_derivative_row) = state_derivative_rows.get(row_idx) else {
-            return Err(runtime_assignment_contract_violation(
-                format!("missing state-derivative flag for runtime-assignment equation {row_idx}"),
-                eq.span,
-            ));
-        };
-        if !is_state_derivative_row
+    for row in continuous_rows {
+        if !row.is_derivative
             && let Some(equation) =
-                runtime_assignment_equation(dae_model, runtime_tail_updates, eq)?
+                runtime_assignment_equation(dae_model, runtime_tail_updates, &row.equation)?
         {
             equations.push(equation);
         }

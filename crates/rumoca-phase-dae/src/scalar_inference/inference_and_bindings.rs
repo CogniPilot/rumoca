@@ -524,12 +524,18 @@ pub(crate) fn resolve_missing_start_ref(
 pub(crate) fn rewrite_start_expr_missing_refs(
     expr: &Expression,
     known_var_names: &HashSet<String>,
+    enum_literal_ordinals: &IndexMap<String, i64>,
 ) -> Expression {
-    StartRefRewriter { known_var_names }.rewrite_expression(expr)
+    StartRefRewriter {
+        known_var_names,
+        enum_literal_ordinals,
+    }
+    .rewrite_expression(expr)
 }
 
 struct StartRefRewriter<'a> {
     known_var_names: &'a HashSet<String>,
+    enum_literal_ordinals: &'a IndexMap<String, i64>,
 }
 
 impl ExpressionRewriter for StartRefRewriter<'_> {
@@ -539,6 +545,13 @@ impl ExpressionRewriter for StartRefRewriter<'_> {
         subscripts: &[rumoca_core::Subscript],
         span: rumoca_core::Span,
     ) -> Expression {
+        if subscripts.is_empty() && self.enum_literal_ordinals.contains_key(name.as_str()) {
+            return Expression::VarRef {
+                name: name.clone(),
+                subscripts: Vec::new(),
+                span,
+            };
+        }
         let resolved_name = if let Some(resolved) =
             crate::path_utils::resolve_known_path_suffix(name.as_str(), self.known_var_names)
         {
@@ -560,6 +573,7 @@ pub(crate) fn create_dae_variable(
     name: &VarName,
     var: &flat::Variable,
     known_var_names: &HashSet<String>,
+    enum_literal_ordinals: &IndexMap<String, i64>,
 ) -> Result<Variable, ToDaeError> {
     // MLS §4.4.1: declaration/modification bindings define parameter/constant values.
     // Start remains an initialization attribute and should not be used as the
@@ -575,8 +589,15 @@ pub(crate) fn create_dae_variable(
         .transpose()?;
     let start = if let Some(expr) = start_source {
         let owner_span = variable_attribute_owner_span(name, "start", expr)?;
-        let selected = select_scalar_start_record_alias(name, expr, known_var_names, owner_span);
-        let rewritten = rewrite_start_expr_missing_refs(&selected, known_var_names);
+        let selected = select_scalar_start_record_alias(
+            name,
+            expr,
+            known_var_names,
+            enum_literal_ordinals,
+            owner_span,
+        );
+        let rewritten =
+            rewrite_start_expr_missing_refs(&selected, known_var_names, enum_literal_ordinals);
         Some(flat_to_dae_expression(&rewritten))
     } else {
         None
@@ -660,8 +681,12 @@ fn select_scalar_start_record_alias(
     lhs_name: &VarName,
     expr: &Expression,
     known_var_names: &HashSet<String>,
+    enum_literal_ordinals: &IndexMap<String, i64>,
     owner_span: rumoca_core::Span,
 ) -> Expression {
+    if is_enum_literal_reference(expr, enum_literal_ordinals) {
+        return expr.clone();
+    }
     let lhs_path = rumoca_core::ComponentPath::from_flat_path(lhs_name.as_str());
     let leaf_field = lhs_path.parts().last();
     let Some(lhs_base) = flat::component_base_name(lhs_name.as_str()) else {
@@ -761,6 +786,20 @@ fn select_scalar_start_record_alias(
     }
 }
 
+fn is_enum_literal_reference(
+    expr: &Expression,
+    enum_literal_ordinals: &IndexMap<String, i64>,
+) -> bool {
+    matches!(
+        expr,
+        Expression::VarRef {
+            name,
+            subscripts,
+            ..
+        } if subscripts.is_empty() && enum_literal_ordinals.contains_key(name.as_str())
+    )
+}
+
 fn select_leaf_start_record_alias(
     expr: &Expression,
     leaf_field: Option<&String>,
@@ -853,7 +892,7 @@ mod tests {
         };
         let known_var_names = HashSet::from([name.as_str().to_string()]);
 
-        let dae_var = create_dae_variable(&name, &flat_var, &known_var_names)
+        let dae_var = create_dae_variable(&name, &flat_var, &known_var_names, &IndexMap::new())
             .unwrap_or_else(|err| panic!("DAE variable should build: {err}"));
 
         assert_eq!(
@@ -913,7 +952,7 @@ mod tests {
         };
         let known_var_names = HashSet::from([name.as_str().to_string()]);
 
-        let dae_var = create_dae_variable(&name, &flat_var, &known_var_names)
+        let dae_var = create_dae_variable(&name, &flat_var, &known_var_names, &IndexMap::new())
             .unwrap_or_else(|err| panic!("DAE variable should build: {err}"));
 
         let Some(Expression::FunctionCall { args, .. }) = dae_var.start else {
@@ -961,7 +1000,7 @@ mod tests {
 
         let Expression::VarRef {
             name: rewritten, ..
-        } = rewrite_start_expr_missing_refs(&expr, &known_var_names)
+        } = rewrite_start_expr_missing_refs(&expr, &known_var_names, &IndexMap::new())
         else {
             panic!("expected structured VarRef");
         };
@@ -997,7 +1036,7 @@ mod tests {
 
         let Expression::VarRef {
             name: rewritten, ..
-        } = rewrite_start_expr_missing_refs(&expr, &known_var_names)
+        } = rewrite_start_expr_missing_refs(&expr, &known_var_names, &IndexMap::new())
         else {
             panic!("expected structured VarRef");
         };
@@ -1023,7 +1062,7 @@ mod tests {
         };
         let known_var_names = HashSet::from([name.as_str().to_string()]);
 
-        let dae_var = create_dae_variable(&name, &flat_var, &known_var_names)
+        let dae_var = create_dae_variable(&name, &flat_var, &known_var_names, &IndexMap::new())
             .unwrap_or_else(|err| panic!("DAE variable should build: {err}"));
 
         assert_eq!(dae_var.causality, rumoca_ir_dae::VariableCausality::Input);
@@ -1044,7 +1083,7 @@ mod tests {
         };
         let known_var_names = HashSet::from([name.as_str().to_string()]);
 
-        let dae_var = create_dae_variable(&name, &flat_var, &known_var_names)
+        let dae_var = create_dae_variable(&name, &flat_var, &known_var_names, &IndexMap::new())
             .unwrap_or_else(|err| panic!("DAE variable should build: {err}"));
 
         assert_eq!(
@@ -1071,7 +1110,7 @@ mod tests {
         };
         let known_var_names = HashSet::from([name.as_str().to_string()]);
 
-        let err = create_dae_variable(&name, &flat_var, &known_var_names)
+        let err = create_dae_variable(&name, &flat_var, &known_var_names, &IndexMap::new())
             .expect_err("unspanned start attribute should fail");
 
         assert!(matches!(err, ToDaeError::RuntimeMetadataViolation { .. }));

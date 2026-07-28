@@ -1677,6 +1677,40 @@ move analysis/evaluation helpers to rumoca-analysis-dae or rumoca-phase-solve."
 }
 
 #[test]
+fn test_event_threshold_analysis_is_owned_by_solve_lowering() {
+    let root = workspace_root();
+    let ir_analysis = root.join("crates/rumoca-ir-dae/src/event_threshold.rs");
+    let ir_root = root.join("crates/rumoca-ir-dae/src/lib.rs");
+    let phase_analysis = root.join("crates/rumoca-phase-solve/src/lower/event_threshold.rs");
+    let root_lowering = root.join("crates/rumoca-phase-solve/src/lower/root_conditions.rs");
+
+    assert!(
+        !ir_analysis.exists(),
+        "event-threshold classification is executable phase analysis and must not live in \
+rumoca-ir-dae (SPEC_0007 key invariant 2; SPEC_0029 §3)"
+    );
+
+    let ir_root = fs::read_to_string(ir_root).expect("read ir-dae lib.rs");
+    assert!(
+        !ir_root.contains("event_threshold")
+            && !ir_root.contains("is_event_constant_threshold")
+            && !ir_root.contains("is_event_constant_time_threshold_relation"),
+        "rumoca-ir-dae must not expose event-threshold phase analysis"
+    );
+
+    assert!(
+        phase_analysis.is_file(),
+        "event-threshold classification must be owned by solve lowering"
+    );
+    let root_lowering =
+        fs::read_to_string(root_lowering).expect("read solve root-condition lowering");
+    assert!(
+        root_lowering.contains("event_threshold::is_event_constant_time_threshold_relation"),
+        "root-condition lowering must use its phase-owned event-threshold analysis"
+    );
+}
+
+#[test]
 fn test_no_new_cross_crate_public_exports() {
     let root = workspace_root();
     let mut rs_files = Vec::new();
@@ -1867,82 +1901,6 @@ use rumoca-eval-solve scalar fallback APIs at backend boundaries"
 }
 
 #[test]
-fn test_phase_debug_output_uses_tracing_not_env_stderr() {
-    let root = workspace_root();
-    let checks: &[(&str, &[&str])] = &[
-        (
-            "crates/rumoca-phase-structural/src",
-            &["RUMOCA_SIM_TRACE", "RUMOCA_SIM_INTROSPECT", "eprintln!"],
-        ),
-        (
-            "crates/rumoca-phase-dae/src",
-            &[
-                "eprintln!",
-                "RUMOCA_DEBUG_TODAE",
-                "RUMOCA_DEBUG_EQ_FILTER",
-                "RUMOCA_TODAE_PROFILE",
-                "RUMOCA_DEBUG_FM_CANON",
-                "RUMOCA_DAE_CLOCK_DEBUG",
-            ],
-        ),
-        (
-            "crates/rumoca-phase-instantiate/src",
-            &["eprintln!", "RUMOCA_DEBUG_CONNECTION_PARAMS"],
-        ),
-    ];
-
-    let mut offenders = Vec::new();
-    for (src, banned) in checks {
-        let mut rs_files = Vec::new();
-        collect_rs_files(&root.join(src), &mut rs_files);
-        for path in rs_files {
-            let content = fs::read_to_string(&path).expect("read phase source");
-            offenders.extend(find_banned_source_lines(
-                &path, &content, banned, "contains",
-            ));
-        }
-    }
-
-    assert!(
-        offenders.is_empty(),
-        "phase debug output must use the tracing feature instead of \
-stderr writes or phase-level debug environment variables: {offenders:?}"
-    );
-}
-
-#[test]
-fn test_phase_typecheck_errors_go_through_phase_error_type() {
-    let root = workspace_root();
-    let typecheck_src = root.join("crates/rumoca-phase-typecheck/src");
-    let allowed_error_module = typecheck_src.join("lib.rs");
-    let mut rs_files = Vec::new();
-    collect_rs_files(&typecheck_src, &mut rs_files);
-
-    let mut offenders = Vec::new();
-    for path in rs_files {
-        if path == allowed_error_module {
-            continue;
-        }
-        let content = fs::read_to_string(&path).expect("read phase-typecheck source");
-        offenders.extend(find_banned_source_lines(
-            &path,
-            &content,
-            &[
-                "CommonDiagnostic::error(",
-                "rumoca_core::Diagnostic::error(",
-            ],
-            "constructs",
-        ));
-    }
-
-    assert!(
-        offenders.is_empty(),
-        "phase-typecheck fatal diagnostics must go through TypeCheckError/PhaseError \
-instead of constructing CommonDiagnostic::error in helper modules: {offenders:?}"
-    );
-}
-
-#[test]
 fn test_ir_crates_have_no_public_hashmap_or_hashset_fields() {
     // SPEC_0021: public IR/DAE struct fields must use IndexMap/IndexSet, not
     // HashMap/HashSet, so that serialised payloads are deterministically ordered.
@@ -1983,3 +1941,6 @@ mod string_hashing;
 
 #[path = "architecture_hardening/instantiate_value_fabrication.rs"]
 mod instantiate_value_fabrication;
+
+#[path = "architecture_hardening/phase_diagnostics.rs"]
+mod phase_diagnostics;

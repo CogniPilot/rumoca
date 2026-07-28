@@ -5,6 +5,7 @@ use crate::{
     flat_to_dae_expression_with_refs, flat_to_dae_var_name,
 };
 mod alias_canonicalization;
+mod assertions;
 mod current_value_rewrite;
 mod for_lowering;
 mod guarded_expr;
@@ -17,6 +18,7 @@ use alias_canonicalization::{
     defined_target_reroute_alias_rhs_target, is_binding_equation_origin,
     is_connection_equation_origin, reroutable_alias_rhs_target,
 };
+use assertions::{collect_algorithm_statements_with_assertions, is_noop_algorithm_statement};
 use current_value_rewrite::{
     algorithm_variable_dims, current_value_subscript_expr, rewrite_algorithm_current_refs,
 };
@@ -1310,33 +1312,6 @@ fn algorithm_if_else_assignment_expr(
 
 type AlgorithmAssignment = (VarName, Expression, Span, String);
 
-fn is_noop_algorithm_statement(statement: &Statement) -> bool {
-    match statement {
-        Statement::Empty { .. }
-        | Statement::Assert { .. }
-        | Statement::Return { .. }
-        | Statement::Break { .. } => true,
-        Statement::FunctionCall { outputs, .. } => outputs.is_empty(),
-        Statement::For { equations, .. } => equations.iter().all(is_noop_algorithm_statement),
-        Statement::If {
-            cond_blocks,
-            else_block,
-            ..
-        } => {
-            cond_blocks
-                .iter()
-                .all(|block| block.stmts.iter().all(is_noop_algorithm_statement))
-                && else_block
-                    .as_ref()
-                    .is_none_or(|stmts| stmts.iter().all(is_noop_algorithm_statement))
-        }
-        Statement::When { blocks, .. } => blocks
-            .iter()
-            .all(|block| block.stmts.iter().all(is_noop_algorithm_statement)),
-        Statement::Assignment { .. } | Statement::While { .. } | Statement::Reinit { .. } => false,
-    }
-}
-
 fn collect_statement_targets(
     dae: &Dae,
     flat: &Model,
@@ -1658,6 +1633,7 @@ struct LoweredAlgorithmPartitions {
     main: Vec<rumoca_ir_dae::Equation>,
     f_z: Vec<rumoca_ir_dae::Equation>,
     f_m: Vec<rumoca_ir_dae::Equation>,
+    event_actions: Vec<rumoca_ir_dae::DaeEventAction>,
 }
 
 struct WhenAssignmentTarget {
@@ -1811,15 +1787,21 @@ fn lower_algorithm_to_equations(
         route_lowered_when_equation(dae, &mut lowered, eq);
     }
 
-    let main_assignments = collect_algorithm_block_assignments(
+    let body = collect_algorithm_statements_with_assertions(
         dae,
         flat,
         &main_statements,
-        &IndexMap::new(),
-        &HashSet::new(),
+        algorithm.span,
+        &algorithm.origin,
+        if allow_parameter_targets {
+            crate::assertion_actions::AssertionScope::Initial
+        } else {
+            crate::assertion_actions::AssertionScope::Runtime
+        },
     )?;
+    lowered.event_actions = body.event_actions;
 
-    for (target, (_, value, span, origin)) in main_assignments {
+    for (target, (_, value, span, origin)) in body.assignments {
         // Flat statements currently do not carry their own spans. Use the
         // enclosing algorithm span for generated DAE equations so diagnostics
         // remain anchored to source instead of Span::DUMMY (SPEC_0008).
@@ -1963,6 +1945,7 @@ pub(super) fn lower_algorithms_to_equations(dae: &mut Dae, flat: &Model) -> Resu
                 dae.continuous.equations.extend(lowered.main);
                 dae.discrete.real_updates.extend(lowered.f_z);
                 dae.discrete.valued_updates.extend(lowered.f_m);
+                dae.events.event_actions.extend(lowered.event_actions);
             }
             Err(kind) => {
                 return Err(ToDaeError::unsupported_algorithm(
@@ -1982,6 +1965,7 @@ pub(super) fn lower_algorithms_to_equations(dae: &mut Dae, flat: &Model) -> Resu
                 // Discrete targets use the normal Appendix B solved forms.
                 dae.initialization.equations.extend(lowered.f_z);
                 dae.initialization.equations.extend(lowered.f_m);
+                dae.events.event_actions.extend(lowered.event_actions);
             }
             Err(kind) => {
                 return Err(ToDaeError::unsupported_algorithm(

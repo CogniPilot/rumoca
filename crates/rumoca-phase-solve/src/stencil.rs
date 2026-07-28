@@ -21,6 +21,12 @@ use body_shape::{corner_dae_body_shapes_match, structured_dae_body_shapes_match}
 mod compact_domain;
 use compact_domain::compact_domain_from_tuples;
 
+mod producer_metadata;
+use producer_metadata::producer_affine_strides_from_selected_rows;
+pub(crate) use producer_metadata::{
+    producer_load_strides_for_dae_equation, producer_load_strides_for_family_row,
+};
+
 mod family_proof;
 pub(crate) use family_proof::compact_corner_lowering_is_proven;
 
@@ -44,6 +50,12 @@ pub(crate) struct StructuredProgram {
     pub(crate) load_y_ranges: Vec<StructuredLoadYRange>,
     pub(crate) dae_equation_index: Option<usize>,
     pub(crate) access_proof: Option<StructuredAccessProof>,
+    /// Load-index strides derived from the producer's `RegularForFamily`
+    /// affine access table. Only a family's base scalar-view program carries
+    /// this table, keeping metadata independent of domain cardinality.
+    /// `Some(empty)` proves all represented loads binder-invariant; `None`
+    /// means this is not the base row or producer metadata was unavailable.
+    pub(crate) producer_load_strides: Option<Vec<solve::AffineStencilLoadStride>>,
 }
 
 #[derive(Debug, Clone)]
@@ -288,14 +300,17 @@ pub(crate) fn compact_corner_body_shapes_match(
 /// `domain.corner_ordinals()`: base, then one unit neighbor for each
 /// non-singleton binder. No full-domain row vector is allocated or inspected.
 ///
-/// The caller owns the decision that corner-only lowering is legal for this
-/// family -- this function derives strides and the output map from the corners
-/// it is handed and cannot see the interior cells. Gate every call on
-/// [`compact_corner_lowering_is_proven`] (or an equivalent per-family proof).
+/// For a regular family, `producer_metadata_required` must be true: load
+/// strides come from producer metadata and corners only validate them. False is
+/// reserved for template-owned row-major projections, whose generated compact
+/// corners remain the authoritative view even though no `RegularForFamily`
+/// access table exists. Gate every call on [`compact_corner_lowering_is_proven`]
+/// (or an equivalent per-family proof).
 pub(crate) fn tensor_node_from_compact_corners(
     corner_programs: &[StructuredProgram],
     domain: &rumoca_core::StructuredIndexDomain,
     span: rumoca_core::Span,
+    producer_metadata_required: bool,
 ) -> Result<Option<solve::ComputeNode>, LowerError> {
     let corner_ordinals = structured_domain_corner_ordinals(domain, span)?;
     if corner_programs.len() != corner_ordinals.len() || corner_programs.len() < 2 {
@@ -316,9 +331,12 @@ pub(crate) fn tensor_node_from_compact_corners(
         corner_tuples.push(tuple);
     }
     let corner_rows = corner_programs.iter().collect::<Vec<_>>();
-    let Some(strides) =
+    let strides = if producer_metadata_required {
+        producer_affine_strides_from_selected_rows(&corner_rows, domain, &corner_tuples, span)?
+    } else {
         affine_strides_from_selected_rows(&corner_rows, domain, &corner_tuples, span)?
-    else {
+    };
+    let Some(strides) = strides else {
         return Ok(None);
     };
     let Some(output_map) =
@@ -670,6 +688,7 @@ fn structured_tensor_at(
         &domain,
         family.span,
         family.interiors_materialized,
+        family.regular.is_some(),
     )?
     else {
         return Ok(decline_decision(
@@ -715,8 +734,8 @@ struct StructuredNodeIdentity {
 }
 
 /// Assemble the family's `ComputeNode` (a pointwise `Map` or an `AffineStencil`)
-/// from its base row, the corner-derived strides, and the output map, preserving
-/// the consumed `row_indices`.
+/// from its base row, producer-proven strides, and output map, preserving the
+/// consumed `row_indices`.
 fn structured_tensor_node(
     rows: &[StructuredProgram],
     row_indices: Vec<usize>,
@@ -914,8 +933,9 @@ fn max_structured_affine_domain(
     Ok(StructuredDomainDecision::Scalar(decline))
 }
 
-/// Preserve a `regular` family's entire candidate range as one stencil domain,
-/// validated from corner rows only (body shape, strides, output map).
+/// Preserve a `regular` family's entire candidate range as one stencil domain.
+/// Producer access metadata supplies strides; corner rows validate that
+/// metadata, body shape, and the output map.
 ///
 /// Regularity is all-or-nothing (every cell shares one affine body, so the whole
 /// domain is the only candidate stencil), so a failed check declines straight to
@@ -953,6 +973,7 @@ fn regular_family_full_domain(
         &domain,
         family.span,
         family.interiors_materialized,
+        family.regular.is_some(),
     )?
     .is_none()
     {
@@ -1112,21 +1133,31 @@ fn affine_strides_from_representative_proofs(
     proof_strides_for_base_ops(base_row.ops.as_slice(), base_proof, operand_deltas, span)
 }
 
-/// Load/const strides for a regular family, corner-first (P1). The strides depend
-/// only on the access pattern, so the family's corner rows (base + one neighbor
-/// per dimension) yield the same result as diffing every row -- this is the
-/// production path, so the interior rows are not read when the corner model
-/// applies. Falls back to the full-row derivation when the corners cannot be
-/// isolated, keeping scalar fallback for families the corner model does not cover.
-/// In debug builds, small materialized families are checked against the full-row
-/// oracle -- the equivalence that lets flatten (P3) stop materializing interiors.
+/// Select load/constant strides for a structured family. Regular families must
+/// carry producer access metadata, validated against O(rank) corner rows.
+/// Non-regular materialized scalar views use the conservative inference path
+/// when preserving an affine sub-domain.
 fn affine_strides_for_family(
     rows: &[StructuredProgram],
     row_indices: &[usize],
     domain: &rumoca_core::StructuredIndexDomain,
     span: rumoca_core::Span,
     interiors_materialized: bool,
+    producer_metadata_required: bool,
 ) -> Result<Option<AffineStrides>, LowerError> {
+    if producer_metadata_required {
+        let Some((corner_rows, corner_tuples)) =
+            corner_rows_and_tuples(rows, row_indices, domain, span)?
+        else {
+            return Ok(None);
+        };
+        return producer_affine_strides_from_selected_rows(
+            &corner_rows,
+            domain,
+            &corner_tuples,
+            span,
+        );
+    }
     let corner = affine_strides_from_corner_rows(rows, row_indices, domain, span)?;
     if !interiors_materialized {
         // The interior rows carry only placeholder bodies, so the full-row scan
@@ -1344,10 +1375,14 @@ fn output_map_from_selected_rows(
     else {
         return Ok(None);
     };
-    Ok(Some(solve::TensorOutputMap {
-        start: first_row.output_index,
-        strides,
-    }))
+    proven_tensor_output_map(
+        domain,
+        solve::TensorOutputMap {
+            start: first_row.output_index,
+            strides,
+        },
+        span,
+    )
 }
 
 fn proof_operand_kinds_match(
@@ -1601,10 +1636,14 @@ fn output_map_for_rows(
     else {
         return Ok(None);
     };
-    Ok(Some(solve::TensorOutputMap {
-        start: first_row.output_index,
-        strides,
-    }))
+    proven_tensor_output_map(
+        domain,
+        solve::TensorOutputMap {
+            start: first_row.output_index,
+            strides,
+        },
+        span,
+    )
 }
 
 pub(crate) fn tensor_output_map_from_values(
@@ -1620,7 +1659,80 @@ pub(crate) fn tensor_output_map_from_values(
     else {
         return Ok(None);
     };
-    Ok(Some(solve::TensorOutputMap { start, strides }))
+    proven_tensor_output_map(domain, solve::TensorOutputMap { start, strides }, span)
+}
+
+fn proven_tensor_output_map(
+    domain: &rumoca_core::StructuredIndexDomain,
+    output_map: solve::TensorOutputMap,
+    span: rumoca_core::Span,
+) -> Result<Option<solve::TensorOutputMap>, LowerError> {
+    tensor_output_map_is_proven_injective(domain, &output_map, span)
+        .map(|proven| proven.then_some(output_map))
+}
+
+/// Conservatively prove that an affine output map is injective over a compact
+/// rectangular domain.
+///
+/// Sorted absolute strides form a mixed-radix separation proof: every next
+/// stride must exceed the complete offset span reachable by all smaller
+/// strides. Maps outside this sufficient class are declined to scalar rows;
+/// they are never assumed safe merely because their corner samples differ.
+pub(crate) fn tensor_output_map_is_proven_injective(
+    domain: &rumoca_core::StructuredIndexDomain,
+    output_map: &solve::TensorOutputMap,
+    span: rumoca_core::Span,
+) -> Result<bool, LowerError> {
+    let extents = domain.extents().map_err(|error| {
+        stencil_contract_violation(format!("structured index domain is invalid: {error}"), span)
+    })?;
+    let mut dimension_strides =
+        stencil_vec_with_capacity(extents.len(), "tensor output-map rank", span)?;
+    dimension_strides.resize(extents.len(), 0i128);
+    for term in &output_map.strides {
+        let Some(stride) = dimension_strides.get_mut(term.dimension) else {
+            return Ok(false);
+        };
+        *stride = stride.checked_add(term.stride as i128).ok_or_else(|| {
+            stencil_contract_violation("tensor output-map stride sum overflows i128", span)
+        })?;
+    }
+    if extents.contains(&0) {
+        return Ok(true);
+    }
+
+    let mut active =
+        stencil_vec_with_capacity(extents.len(), "tensor output-map active rank", span)?;
+    for (extent, stride) in extents.into_iter().zip(dimension_strides) {
+        if extent <= 1 {
+            continue;
+        }
+        let magnitude = stride.checked_abs().ok_or_else(|| {
+            stencil_contract_violation("tensor output-map stride magnitude overflows i128", span)
+        })?;
+        if magnitude == 0 {
+            return Ok(false);
+        }
+        active.push((magnitude, extent));
+    }
+    active.sort_unstable_by_key(|(magnitude, _)| *magnitude);
+
+    let mut covered_span = 0i128;
+    for (magnitude, extent) in active {
+        if magnitude <= covered_span {
+            return Ok(false);
+        }
+        let extent_minus_one = i128::try_from(extent - 1).map_err(|_| {
+            stencil_contract_violation("tensor output-map extent exceeds i128", span)
+        })?;
+        covered_span = magnitude
+            .checked_mul(extent_minus_one)
+            .and_then(|span| covered_span.checked_add(span))
+            .ok_or_else(|| {
+                stencil_contract_violation("tensor output-map proof span overflows i128", span)
+            })?;
+    }
+    Ok(true)
 }
 
 #[derive(Clone, Debug, PartialEq)]

@@ -127,7 +127,15 @@ fn baseline_quality_template() -> MslQualityBaseline {
         runtime_ratio_stats: None,
         runtime_ratio_cohort_models: None,
         trace_accuracy_stats: None,
-        tensor_preservation: None,
+        tensor_preservation: MslTensorPreservationBaseline {
+            models_reported: 0,
+            family_bodies: 0,
+            preserved_family_bodies: 0,
+            scalarized_family_rows: 0,
+            report_errors: 0,
+            preservation_percent: None,
+        },
+        metric_schema_migration: None,
     }
 }
 
@@ -693,14 +701,14 @@ fn cumulative_stage_gate_allows_early_stage_improvement() {
 #[test]
 fn tensor_preservation_gate_rejects_family_body_scalarization() {
     let baseline = MslQualityBaseline {
-        tensor_preservation: Some(MslTensorPreservationBaseline {
+        tensor_preservation: MslTensorPreservationBaseline {
             models_reported: 10,
             family_bodies: 100,
             preserved_family_bodies: 80,
             scalarized_family_rows: 20,
             report_errors: 0,
             preservation_percent: Some(80.0),
-        }),
+        },
         ..baseline_quality_template()
     };
     let gate_input = MslQualityGateInput {
@@ -1840,6 +1848,56 @@ fn completed_compile_phase_follows_the_pipeline_order() {
     // `dae_models` uses the same predicate against ToDae.
     assert!(completed_compile_phase("Success", "ToDae"));
     assert!(!completed_compile_phase("ToDae", "ToDae"));
+}
+
+#[test]
+fn checked_quality_baseline_has_versioned_metric_migration_and_tensor_kpi() {
+    let baseline =
+        load_msl_quality_baseline(&msl_quality_baseline_path()).expect("load checked baseline");
+    assert_eq!(baseline.quality_gate_version, MSL_QUALITY_GATE_VERSION);
+    assert_eq!(baseline.flatten_models, 555);
+    assert!(baseline.tensor_preservation.models_reported > 0);
+    assert!(baseline.tensor_preservation.family_bodies > 0);
+    assert_eq!(baseline.tensor_preservation.report_errors, 0);
+
+    let migration = baseline
+        .metric_schema_migration
+        .expect("checked baseline must document the version-1 to version-2 migration");
+    assert_eq!(migration.from_quality_gate_version, 1);
+    assert_eq!(migration.to_quality_gate_version, MSL_QUALITY_GATE_VERSION);
+    assert_eq!(migration.flatten_models_before, 565);
+    assert_eq!(migration.flatten_models_after, 555);
+    assert_eq!(migration.reattributed_error_code, "ER002");
+    assert_eq!(migration.reattributed_models.len(), 10);
+    assert!(!migration.tensor_preservation_source_git_commit.is_empty());
+}
+
+#[test]
+fn quality_baseline_rejects_missing_tensor_preservation_field() {
+    let mut value =
+        serde_json::to_value(baseline_quality_template()).expect("serialize baseline fixture");
+    value
+        .as_object_mut()
+        .expect("baseline serializes as object")
+        .remove("tensor_preservation");
+
+    let error = serde_json::from_value::<MslQualityBaseline>(value)
+        .expect_err("schema-v2 baseline without tensor KPI must fail");
+    assert!(error.to_string().contains("tensor_preservation"));
+}
+
+#[test]
+fn quality_baseline_rejects_missing_schema_version() {
+    let mut value =
+        serde_json::to_value(baseline_quality_template()).expect("serialize baseline fixture");
+    value
+        .as_object_mut()
+        .expect("baseline serializes as object")
+        .remove("quality_gate_version");
+
+    let error = serde_json::from_value::<MslQualityBaseline>(value)
+        .expect_err("baseline without schema version must fail");
+    assert!(error.to_string().contains("quality_gate_version"));
 }
 
 /// The stage counts the gate ratchets must be derived from the row set, not

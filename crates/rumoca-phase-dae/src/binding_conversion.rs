@@ -1,6 +1,6 @@
 //! Conversion of declaration bindings into continuous DAE equations.
 
-use indexmap::IndexSet;
+use indexmap::{IndexMap, IndexSet};
 use rumoca_core::Span;
 use rumoca_ir_dae as dae;
 use rumoca_ir_flat as flat;
@@ -24,6 +24,7 @@ struct BindingEquationContext<'a> {
     dae: &'a mut Dae,
     flat: &'a Model,
     known_var_names: &'a HashSet<String>,
+    enum_literal_ordinals: &'a IndexMap<String, i64>,
 }
 
 struct BindingEquationSpec<'a> {
@@ -162,6 +163,7 @@ pub(super) fn convert_bindings_to_equations(
                 dae,
                 flat,
                 known_var_names: &known_var_names,
+                enum_literal_ordinals: &flat.enum_literal_ordinals,
             };
             add_binding_equation(
                 &mut binding_context,
@@ -627,6 +629,7 @@ fn add_binding_equation(
         spec.name,
         spec.binding,
         ctx.known_var_names,
+        ctx.enum_literal_ordinals,
         span,
     );
     let origin = rumoca_ir_flat::EquationOrigin::Binding {
@@ -684,6 +687,7 @@ fn select_scalar_binding_record_field_alias(
     lhs_name: &VarName,
     binding: &Expression,
     known_var_names: &HashSet<String>,
+    enum_literal_ordinals: &IndexMap<String, i64>,
     owner_span: Span,
 ) -> Expression {
     let Expression::VarRef {
@@ -695,6 +699,9 @@ fn select_scalar_binding_record_field_alias(
         return binding.clone();
     };
     if !subscripts.is_empty() {
+        return binding.clone();
+    }
+    if enum_literal_ordinals.contains_key(rhs_name.as_str()) {
         return binding.clone();
     }
 
@@ -1084,8 +1091,13 @@ mod tests {
         };
         let owner_span = test_span();
 
-        let selected =
-            select_scalar_binding_record_field_alias(&lhs, &binding, &known_var_names, owner_span);
+        let selected = select_scalar_binding_record_field_alias(
+            &lhs,
+            &binding,
+            &known_var_names,
+            &IndexMap::new(),
+            owner_span,
+        );
         assert_eq!(
             format!("{selected:?}"),
             format!(
@@ -1114,8 +1126,13 @@ mod tests {
         };
         let owner_span = test_span();
 
-        let selected =
-            select_scalar_binding_record_field_alias(&lhs, &binding, &known_var_names, owner_span);
+        let selected = select_scalar_binding_record_field_alias(
+            &lhs,
+            &binding,
+            &known_var_names,
+            &IndexMap::new(),
+            owner_span,
+        );
 
         assert_eq!(
             format!("{selected:?}"),
@@ -1141,8 +1158,13 @@ mod tests {
         };
         let owner_span = test_span();
 
-        let selected =
-            select_scalar_binding_record_field_alias(&lhs, &binding, &known_var_names, owner_span);
+        let selected = select_scalar_binding_record_field_alias(
+            &lhs,
+            &binding,
+            &known_var_names,
+            &IndexMap::new(),
+            owner_span,
+        );
         assert_eq!(
             format!("{selected:?}"),
             format!(

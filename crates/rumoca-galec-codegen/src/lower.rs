@@ -22,7 +22,7 @@
 //!    commits at the end, trap T2);
 //! 7. post-validate: `rumoca_ir_galec::validate` over the block and the typed
 //!    Algorithm Code manifest validation — any failure here is a bug in
-//!    this projection and reported as an internal error (ET018), never
+//!    this projection and reported as an internal error (EGT018), never
 //!    shipped.
 //!
 //! # D8 (Real relationals and escape sets, trap T9)
@@ -64,9 +64,9 @@ pub use expr::emittable_builtin_targets;
 ///
 /// # Errors
 ///
-/// Returns ALL collected diagnostics: admissibility rejections (ET001–
-/// ET009), classification/manifest failures (ET010–ET016), and lowering
-/// rejections (ET017–ET020). The input DAE is never mutated (GAL-002).
+/// Returns ALL collected diagnostics: admissibility rejections (EGT001–
+/// EGT009), classification/manifest failures (EGT010–EGT016), and lowering
+/// rejections (EGT017–EGT020). The input DAE is never mutated (GAL-002).
 pub fn lower_to_algorithm_code(
     input: &GalecInput<'_>,
     options: &GalecOptions,
@@ -259,7 +259,7 @@ fn block_name(
 
 /// GAL-004 post-validation: the emitted block must pass the full GALEC
 /// validator, and the manifest fragment must assemble into a valid typed
-/// Algorithm Code manifest. Failures are projection bugs (ET018).
+/// Algorithm Code manifest. Failures are projection bugs (EGT018).
 fn validate_package(package: &AlgorithmCodePackage) -> Result<(), Vec<GalecTargetError>> {
     let mut errors = Vec::new();
     if let Err(diagnostics) = rumoca_ir_galec::validate(&package.block) {
