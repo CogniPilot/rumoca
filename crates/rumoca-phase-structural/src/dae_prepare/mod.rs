@@ -41,8 +41,8 @@ mod derivative_map;
 #[cfg(test)]
 use derivative_map::needs_compound_derivative_expansion;
 use derivative_map::{
-    RelaxedDerivativeMapOptions, build_relaxed_derivative_map_for_exprs,
-    build_relaxed_derivative_map_for_exprs_with_index,
+    RelaxedDerivativeMapOptions, build_independent_derivative_map_for_direct_state_definition,
+    build_relaxed_derivative_map_for_exprs, build_relaxed_derivative_map_for_exprs_with_index,
     build_relaxed_derivative_map_for_state_definition, derivative_closure_names,
 };
 pub use derivative_map::{compute_full_derivative_map, expand_compound_derivatives};
@@ -1579,6 +1579,7 @@ struct DirectDemotionCounters {
     n_skip_when_assigned: usize,
     n_skip_always_state: usize,
     n_skip_self_der: usize,
+    n_skip_derivative_alias_feedback: usize,
     n_skip_der_in_defining_expr: usize,
     n_skip_nonsmooth_defining_expr: usize,
     n_skip_unsliced_vector_ref: usize,

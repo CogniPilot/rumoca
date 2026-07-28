@@ -10,7 +10,7 @@ fn log_direct_demotion_scan_summary(
         return;
     }
     crate::structural_trace!(
-        "[sim-trace] direct-assignment-demotion scan: states={} candidates={} accepted={} skip_flow_sum_origin={} skip_unsafe_non_state_alias={} skip_when={} skip_always={} skip_self_der={} skip_der_in_defining_expr={} skip_nonsmooth_defining_expr={} skip_unsliced_vector_ref={} skip_no_der={} skip_non_state_der={}",
+        "[sim-trace] direct-assignment-demotion scan: states={} candidates={} accepted={} skip_flow_sum_origin={} skip_unsafe_non_state_alias={} skip_when={} skip_always={} skip_self_der={} skip_derivative_alias_feedback={} skip_der_in_defining_expr={} skip_nonsmooth_defining_expr={} skip_unsliced_vector_ref={} skip_no_der={} skip_non_state_der={}",
         state_count,
         counters.n_candidates,
         substitutions.len(),
@@ -19,6 +19,7 @@ fn log_direct_demotion_scan_summary(
         counters.n_skip_when_assigned,
         counters.n_skip_always_state,
         counters.n_skip_self_der,
+        counters.n_skip_derivative_alias_feedback,
         counters.n_skip_der_in_defining_expr,
         counters.n_skip_nonsmooth_defining_expr,
         counters.n_skip_unsliced_vector_ref,
@@ -240,6 +241,7 @@ enum DirectDemotionReject {
     AlwaysState,
     SelfDerDefiningExpr,
     SelfDerReplacement,
+    DerivativeAliasFeedback,
     DerInDefiningExpr,
     NonsmoothDefiningExpr,
     UnsafeNonStateAlias,
@@ -273,6 +275,10 @@ fn reject_direct_demotion(
         DirectDemotionReject::SelfDerReplacement => {
             counters.n_skip_self_der += 1;
             "self_der_replacement"
+        }
+        DirectDemotionReject::DerivativeAliasFeedback => {
+            counters.n_skip_derivative_alias_feedback += 1;
+            "derivative_alias_feedback"
         }
         DirectDemotionReject::DerInDefiningExpr => {
             counters.n_skip_der_in_defining_expr += 1;
@@ -310,9 +316,12 @@ fn direct_demotion_plan_for_equation(
     eq_index: usize,
     eq: &Equation,
     counters: &mut DirectDemotionCounters,
-) -> Option<DirectStateDemotionPlan> {
-    let (state_name, defining_expr) =
-        extract_state_direct_assignment_equation(eq, &round.state_names, &round.state_name_set)?;
+) -> Result<Option<DirectStateDemotionPlan>, StructuralError> {
+    let Some((state_name, defining_expr)) =
+        extract_state_direct_assignment_equation(eq, &round.state_names, &round.state_name_set)
+    else {
+        return Ok(None);
+    };
     let defining_expr = if is_connection_equation_origin(&eq.origin) {
         match connection_component_fixed_defining_expr(
             round.dae,
@@ -327,12 +336,12 @@ fn direct_demotion_plan_for_equation(
     };
     counters.n_candidates += 1;
     if eq.origin.starts_with("flow sum equation:") {
-        return reject_direct_demotion(
+        return Ok(reject_direct_demotion(
             round,
             counters,
             &state_name,
             DirectDemotionReject::FlowSumOrigin,
-        );
+        ));
     }
     log_direct_assignment_candidate(round.trace, counters, round.dae, eq, &state_name);
     direct_demotion_plan_for_state(round, eq_index, &state_name, defining_expr, counters)
@@ -344,51 +353,53 @@ fn direct_demotion_plan_for_state(
     state_name: &VarName,
     defining_expr: Expression,
     counters: &mut DirectDemotionCounters,
-) -> Option<DirectStateDemotionPlan> {
+) -> Result<Option<DirectStateDemotionPlan>, StructuralError> {
     if round.when_assigned_states.contains(state_name.as_str()) {
-        return reject_direct_demotion(
+        return Ok(reject_direct_demotion(
             round,
             counters,
             state_name,
             DirectDemotionReject::WhenAssigned,
-        );
+        ));
     }
-    let state = round.dae.variables.states.get(state_name)?;
+    let Some(state) = round.dae.variables.states.get(state_name) else {
+        return Ok(None);
+    };
     if state.state_select == rumoca_core::StateSelect::Always {
-        return reject_direct_demotion(
+        return Ok(reject_direct_demotion(
             round,
             counters,
             state_name,
             DirectDemotionReject::AlwaysState,
-        );
+        ));
     }
     if expr_contains_der_of(&defining_expr, state_name) {
-        return reject_direct_demotion(
+        return Ok(reject_direct_demotion(
             round,
             counters,
             state_name,
             DirectDemotionReject::SelfDerDefiningExpr,
-        );
+        ));
     }
     if !state_ders_in_expr_independently_defined(&defining_expr, state_name, round) {
-        return reject_direct_demotion(
+        return Ok(reject_direct_demotion(
             round,
             counters,
             state_name,
             DirectDemotionReject::DerInDefiningExpr,
-        );
+        ));
     }
     if !super::state_row_reduction::expression_is_smooth_for_index_reduction(
         &defining_expr,
         round.dae,
         &round.structural_bindings,
     ) {
-        return reject_direct_demotion(
+        return Ok(reject_direct_demotion(
             round,
             counters,
             state_name,
             DirectDemotionReject::NonsmoothDefiningExpr,
-        );
+        ));
     }
     // `der(state)` links are substituted symbolically on demotion (gated by
     // `state_ders_in_expr_independently_defined` above and validated again in
@@ -402,22 +413,22 @@ fn direct_demotion_plan_for_state(
         &round.non_state_unknown_names,
         eq_index,
     ) {
-        return reject_direct_demotion(
+        return Ok(reject_direct_demotion(
             round,
             counters,
             state_name,
             DirectDemotionReject::UnsafeNonStateAlias,
-        );
+        ));
     }
     if state.size() > 1 || expr_contains_unsliced_vector_ref(&defining_expr, round.dae) {
         // MLS §10.1: array state shape is semantic IR. This path substitutes
         // whole `der(state)` calls, so unsliced compound states stay intact.
-        return reject_direct_demotion(
+        return Ok(reject_direct_demotion(
             round,
             counters,
             state_name,
             DirectDemotionReject::UnslicedVectorRef,
-        );
+        ));
     }
     direct_demotion_replacement_plan(round, state_name, &defining_expr, counters)
 }
@@ -429,29 +440,61 @@ fn direct_demotion_replacement_plan(
     state_name: &VarName,
     defining_expr: &Expression,
     counters: &mut DirectDemotionCounters,
-) -> Option<DirectStateDemotionPlan> {
-    let der_expr = choose_derivative_replacement(
+) -> Result<Option<DirectStateDemotionPlan>, StructuralError> {
+    let Some(mut der_expr) = choose_derivative_replacement(
         defining_expr,
         &round.state_name_set,
         round.dae,
         &round.der_map,
         counters,
-    )?;
+    ) else {
+        return Ok(None);
+    };
     if expr_contains_der_of(&der_expr, state_name) {
-        return reject_direct_demotion(
+        return Ok(reject_direct_demotion(
             round,
             counters,
             state_name,
             DirectDemotionReject::SelfDerReplacement,
-        );
+        ));
+    }
+    if derivative_replacement_reads_own_alias(round.dae, state_name, &der_expr) {
+        let independent_map = build_independent_derivative_map_for_direct_state_definition(
+            round.dae,
+            defining_expr,
+            state_name,
+        )?;
+        let Some(independent_der_expr) = choose_derivative_replacement(
+            defining_expr,
+            &round.state_name_set,
+            round.dae,
+            &independent_map,
+            counters,
+        ) else {
+            return Ok(reject_direct_demotion(
+                round,
+                counters,
+                state_name,
+                DirectDemotionReject::DerivativeAliasFeedback,
+            ));
+        };
+        der_expr = independent_der_expr;
+        if derivative_replacement_reads_own_alias(round.dae, state_name, &der_expr) {
+            return Ok(reject_direct_demotion(
+                round,
+                counters,
+                state_name,
+                DirectDemotionReject::DerivativeAliasFeedback,
+            ));
+        }
     }
     if expr_contains_der_of_non_state(&der_expr, &round.state_name_set) {
-        return reject_direct_demotion(
+        return Ok(reject_direct_demotion(
             round,
             counters,
             state_name,
             DirectDemotionReject::NonStateDer,
-        );
+        ));
     }
     if round.trace && counters.n_trace_logged_candidates < 16 {
         crate::structural_trace!(
@@ -461,10 +504,38 @@ fn direct_demotion_replacement_plan(
         );
         counters.n_trace_logged_candidates += 1;
     }
-    Some(DirectStateDemotionPlan {
+    Ok(Some(DirectStateDemotionPlan {
         state_name: state_name.clone(),
         der_expr,
-    })
+    }))
+}
+
+/// Whether the proposed replacement reads a variable whose defining row is
+/// `alias = der(state_name)`.
+///
+/// Using that alias to justify demotion is circular: rewriting the defining row
+/// turns it into `alias = alias`, so the transformation removes the only
+/// evidence relating the successor trajectory to the candidate state. This
+/// exact name-membership check is the local certificate that every accepted
+/// derivative replacement is independent of the derivative relation it will
+/// rewrite.
+fn derivative_replacement_reads_own_alias(
+    dae: &Dae,
+    state_name: &VarName,
+    replacement: &Expression,
+) -> bool {
+    let aliases = dae
+        .continuous
+        .equations
+        .iter()
+        .filter_map(|equation| try_extract_derivative_alias(equation, state_name))
+        .collect::<HashSet<_>>();
+    if aliases.is_empty() {
+        return false;
+    }
+    let mut refs = IndexSet::new();
+    replacement.collect_var_refs(&mut refs);
+    refs.iter().any(|name| aliases.contains(name))
 }
 
 /// `der(z)` links inside a defining expression are demotable only when `z`'s
@@ -505,7 +576,7 @@ fn collect_direct_demotion_plans(
 
     let timer = structural_timing_start("direct_demotion.scan_equations");
     for (eq_index, eq) in round.dae.continuous.equations.iter().enumerate() {
-        let Some(plan) = direct_demotion_plan_for_equation(&round, eq_index, eq, &mut counters)
+        let Some(plan) = direct_demotion_plan_for_equation(&round, eq_index, eq, &mut counters)?
         else {
             continue;
         };

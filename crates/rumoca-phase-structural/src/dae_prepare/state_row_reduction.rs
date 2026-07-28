@@ -722,6 +722,13 @@ fn differentiate_candidate_row_through(
     context: &RoundContext<'_>,
     leaves: LeafResolution,
 ) -> Result<Option<Expression>, StructuralError> {
+    if residual_is_exact_identity(&dae.continuous.equations[idx].rhs) {
+        return Ok(trace_row_declined(
+            idx,
+            state_name,
+            "tautological_source_row",
+        ));
+    }
     let seed_exprs = vec![dae.continuous.equations[idx].rhs.clone()];
     let der_map = build_relaxed_derivative_map_for_exprs_with_index(
         dae,
@@ -743,6 +750,13 @@ fn differentiate_candidate_row_through(
         return Ok(trace_row_declined(idx, state_name, "not_differentiable"));
     };
     let new_rhs = crate::eliminate::simplify_arithmetic_identities(differentiated);
+    if differentiated_row_duplicates_existing_constraint(dae, idx, &new_rhs) {
+        return Ok(trace_row_declined(
+            idx,
+            state_name,
+            "duplicates_existing_constraint",
+        ));
+    }
     let der_states = derivative_states_in_eq(&new_rhs, context.state_names);
     if !der_states.iter().any(|der_state| der_state == state_name) {
         return Ok(trace_row_declined(
@@ -767,6 +781,85 @@ fn differentiate_candidate_row_through(
         return Ok(None);
     }
     Ok(Some(new_rhs))
+}
+
+/// An exact residual identity carries no constraint and cannot fund index
+/// reduction.
+///
+/// These rows arise legitimately after an earlier derivative substitution
+/// (for example `w = der(phi)` becomes `w = w` while a separately
+/// differentiated position constraint supplies `w = 0`). Differentiating the
+/// identity would produce `der(w) = der(w)` and consume a finite candidate
+/// slot without adding information. The syntactic form plus semantic operand
+/// equality is a complete local certificate for this rejection.
+fn residual_is_exact_identity(expression: &Expression) -> bool {
+    let Expression::Binary {
+        op: OpBinary::Sub | OpBinary::SubElem,
+        lhs,
+        rhs,
+        ..
+    } = expression
+    else {
+        return false;
+    };
+    rumoca_core::expressions_semantically_equal(lhs, rhs)
+}
+
+/// Whether replacing `source_row` with `candidate` would discard a constraint.
+///
+/// Index reduction consumes the source row and retains its differentiated
+/// form. If that form already exists, the replacement reduces the number of
+/// distinct continuous constraints by one even though the raw row count is
+/// unchanged. Rejecting that transformation is an exact local certificate:
+/// every accepted consumption contributes a semantically new row of the same
+/// scalar width.
+fn differentiated_row_duplicates_existing_constraint(
+    dae: &Dae,
+    source_row: usize,
+    candidate: &Expression,
+) -> bool {
+    let Some(source_width) = dae
+        .continuous
+        .equations
+        .get(source_row)
+        .map(|equation| equation.scalar_count)
+    else {
+        return false;
+    };
+    dae.continuous
+        .equations
+        .iter()
+        .enumerate()
+        .any(|(index, equation)| {
+            index != source_row
+                && equation.scalar_count == source_width
+                && residuals_are_semantically_equivalent(&equation.rhs, candidate)
+        })
+}
+
+fn residuals_are_semantically_equivalent(lhs: &Expression, rhs: &Expression) -> bool {
+    if rumoca_core::expressions_semantically_equal(lhs, rhs) {
+        return true;
+    }
+    let (
+        Expression::Binary {
+            op: OpBinary::Sub,
+            lhs: lhs_positive,
+            rhs: lhs_negative,
+            ..
+        },
+        Expression::Binary {
+            op: OpBinary::Sub,
+            lhs: rhs_positive,
+            rhs: rhs_negative,
+            ..
+        },
+    ) = (lhs, rhs)
+    else {
+        return false;
+    };
+    rumoca_core::expressions_semantically_equal(lhs_positive, rhs_negative)
+        && rumoca_core::expressions_semantically_equal(lhs_negative, rhs_positive)
 }
 
 /// Record why a candidate row cannot reduce `state_name`, and report "no row".
@@ -1530,6 +1623,108 @@ mod tests {
             args: vec![var_ref(name, span)],
             span,
         }
+    }
+
+    #[test]
+    fn index_reduction_preserves_source_when_derivative_duplicates_existing_constraint() {
+        let span = test_span();
+        let mut dae = Dae::new();
+        dae.variables
+            .states
+            .insert(VarName::new("w"), Variable::new(VarName::new("w"), span));
+        for name in ["phi", "a"] {
+            dae.variables
+                .algebraics
+                .insert(VarName::new(name), Variable::new(VarName::new(name), span));
+        }
+        let source = Expression::Binary {
+            op: OpBinary::Sub,
+            lhs: Box::new(var_ref("w", span)),
+            rhs: Box::new(der_call("phi", span)),
+            span,
+        };
+        let existing_derivative = Expression::Binary {
+            op: OpBinary::Sub,
+            lhs: Box::new(der_call("w", span)),
+            rhs: Box::new(var_ref("a", span)),
+            span,
+        };
+        dae.continuous
+            .equations
+            .push(Equation::residual(source.clone(), span, "kinematic alias"));
+        dae.continuous.equations.push(Equation::residual(
+            existing_derivative,
+            span,
+            "existing acceleration row",
+        ));
+
+        let changed = index_reduce_missing_state_derivatives_once(&mut dae)
+            .expect("duplicate derivative must be declined without invalidating the DAE");
+
+        assert_eq!(changed, 0);
+        assert_eq!(dae.continuous.equations[0].rhs, source);
+        assert!(dae.initialization.equations.is_empty());
+    }
+
+    #[test]
+    fn index_reduction_skips_identity_and_differentiates_real_constraint() {
+        let span = test_span();
+        let mut dae = Dae::new();
+        dae.variables
+            .states
+            .insert(VarName::new("w"), Variable::new(VarName::new("w"), span));
+        dae.variables
+            .algebraics
+            .insert(VarName::new("a"), Variable::new(VarName::new("a"), span));
+        let identity = Expression::Binary {
+            op: OpBinary::Sub,
+            lhs: Box::new(var_ref("w", span)),
+            rhs: Box::new(var_ref("w", span)),
+            span,
+        };
+        dae.continuous.equations.push(Equation::residual(
+            identity.clone(),
+            span,
+            "collapsed derivative alias",
+        ));
+        dae.continuous.equations.push(Equation::residual(
+            Expression::Binary {
+                op: OpBinary::Sub,
+                lhs: Box::new(var_ref("w", span)),
+                rhs: Box::new(Expression::Literal {
+                    value: Literal::Integer(0),
+                    span,
+                }),
+                span,
+            },
+            span,
+            "fixed velocity constraint",
+        ));
+        dae.continuous.equations.push(Equation::residual(
+            Expression::Binary {
+                op: OpBinary::Sub,
+                lhs: Box::new(var_ref("a", span)),
+                rhs: Box::new(der_call("w", span)),
+                span,
+            },
+            span,
+            "acceleration alias",
+        ));
+
+        let changed = index_reduce_missing_state_derivatives_once(&mut dae)
+            .expect("the finite constraint should fund index reduction");
+
+        assert_eq!(changed, 1);
+        assert_eq!(dae.continuous.equations[0].rhs, identity);
+        assert!(
+            dae.continuous.equations[1]
+                .origin
+                .contains("index_reduction:d_dt_for_w")
+        );
+        assert!(expr_contains_der_of(
+            &dae.continuous.equations[1].rhs,
+            &VarName::new("w")
+        ));
     }
 
     #[test]

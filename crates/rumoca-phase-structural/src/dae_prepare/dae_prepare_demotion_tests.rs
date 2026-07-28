@@ -753,6 +753,53 @@ fn test_demote_direct_assigned_states_allows_fixed_connection_alias() {
 }
 
 #[test]
+fn test_direct_demotion_uses_independent_constraint_not_own_derivative_alias() {
+    let mut dae = Dae::new();
+    for name in ["body.phi", "body.w"] {
+        dae.variables
+            .states
+            .insert(VarName::new(name), test_variable(name));
+    }
+    dae.variables.algebraics.insert(
+        VarName::new("body.flange.phi"),
+        test_variable("body.flange.phi"),
+    );
+    dae.variables
+        .parameters
+        .insert(VarName::new("fixed.phi0"), test_variable("fixed.phi0"));
+
+    dae.continuous
+        .equations
+        .push(eq(sub(var("body.phi"), var("body.flange.phi"))));
+    let derivative_alias = sub(var("body.w"), der("body.phi"));
+    dae.continuous.equations.push(eq(derivative_alias.clone()));
+    dae.continuous.equations.push(spanned_eq(
+        sub(var("body.flange.phi"), var("fixed.phi0")),
+        "connection equation: body.flange.phi = fixed.phi0",
+        test_span(),
+    ));
+
+    let demoted = demote_direct_assigned_states(&mut dae).expect("scan should remain valid");
+
+    assert_eq!(demoted, 2);
+    assert!(dae.variables.states.is_empty());
+    assert!(
+        !dae.continuous
+            .equations
+            .iter()
+            .any(|equation| equation.rhs == derivative_alias),
+        "the independent fixed constraint must replace der(body.phi)"
+    );
+    assert!(
+        dae.continuous.equations.iter().any(|equation| {
+            expr_contains_var(&equation.rhs, &VarName::new("body.w"))
+                && !expr_contains_der_of(&equation.rhs, &VarName::new("body.phi"))
+        }),
+        "the derivative definition must remain a usable algebraic constraint"
+    );
+}
+
+#[test]
 fn test_demote_direct_assigned_states_rejects_state_dependent_connection_alias() {
     let mut dae = Dae::new();
     let connection_span = Span::from_offsets(

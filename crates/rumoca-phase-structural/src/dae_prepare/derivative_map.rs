@@ -212,6 +212,30 @@ pub(super) fn build_relaxed_derivative_map_for_state_definition(
     )
 }
 
+/// Differentiate a direct state definition without using the state's own
+/// derivative relation as evidence.
+///
+/// Direct demotion may cross a connector flow-sum row, so this uses the
+/// differentiable index rather than the narrower residual-inversion index.
+pub(super) fn build_independent_derivative_map_for_direct_state_definition(
+    dae: &Dae,
+    defining_expr: &Expression,
+    state_name: &VarName,
+) -> Result<HashMap<String, Expression>, StructuralError> {
+    let defining_expr_index = collect_differentiable_defining_expr_index(dae);
+    build_relaxed_derivative_map_for_exprs_with_index(
+        dae,
+        &defining_expr_index,
+        std::slice::from_ref(defining_expr),
+        RelaxedDerivativeMapOptions {
+            canonical_state_derivative: Some(state_name),
+            rejected_state_derivative: Some(state_name),
+            excluded_equations: &[],
+            selected_derivatives: None,
+        },
+    )
+}
+
 /// Drop extracted `der(state)` values that are not explicit ODE right-hand
 /// sides.
 ///
