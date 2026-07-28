@@ -174,52 +174,171 @@ fn residual_runtime_assignment(
     scalar_count: usize,
     span: rumoca_core::Span,
 ) -> Result<Option<(rumoca_core::VarName, rumoca_core::Expression)>, LowerError> {
-    let rumoca_core::Expression::Binary {
-        op: rumoca_core::OpBinary::Sub,
-        lhs,
-        rhs,
-        span: _,
-    } = expr
-    else {
-        return Ok(None);
-    };
+    match expr {
+        rumoca_core::Expression::Unary {
+            op: rumoca_core::OpUnary::Minus | rumoca_core::OpUnary::DotMinus,
+            rhs,
+            ..
+        } => residual_runtime_assignment(dae_model, runtime_tail_updates, rhs, scalar_count, span),
+        rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Sub,
+            lhs,
+            rhs,
+            ..
+        } => residual_binary_runtime_assignment(
+            dae_model,
+            runtime_tail_updates,
+            lhs,
+            rhs,
+            scalar_count,
+            span,
+        ),
+        rumoca_core::Expression::If {
+            branches,
+            else_branch,
+            span,
+        } => residual_if_runtime_assignment(
+            dae_model,
+            runtime_tail_updates,
+            branches,
+            else_branch,
+            scalar_count,
+            *span,
+        ),
+        _ => Ok(None),
+    }
+}
+
+fn residual_binary_runtime_assignment(
+    dae_model: &dae::Dae,
+    runtime_tail_updates: &HashSet<String>,
+    lhs: &rumoca_core::Expression,
+    rhs: &rumoca_core::Expression,
+    scalar_count: usize,
+    span: rumoca_core::Span,
+) -> Result<Option<(rumoca_core::VarName, rumoca_core::Expression)>, LowerError> {
+    if runtime_residual_is_literal_zero(rhs) {
+        return residual_runtime_assignment(
+            dae_model,
+            runtime_tail_updates,
+            lhs,
+            scalar_count,
+            span,
+        );
+    }
+    if runtime_residual_is_literal_zero(lhs) {
+        return residual_runtime_assignment(
+            dae_model,
+            runtime_tail_updates,
+            rhs,
+            scalar_count,
+            span,
+        );
+    }
     let lhs_target = target_expr_name(lhs)?;
     let rhs_target = target_expr_name(rhs)?;
     if let Some(target) = lhs_target
         && is_writable_runtime_tail_name(dae_model, target.as_str())
         && !runtime_tail_has_event_update(runtime_tail_updates, target.as_str())
         && !is_static_runtime_tail_name(dae_model, runtime_tail_updates, target.as_str())
-        && runtime_assignment_shape_compatible(
-            dae_model,
-            target.as_str(),
-            rhs.as_ref(),
-            scalar_count,
-            span,
-        )?
+        && runtime_assignment_shape_compatible(dae_model, target.as_str(), rhs, scalar_count, span)?
     {
-        return Ok(Some((
-            array_target_name(target, scalar_count),
-            rhs.as_ref().clone(),
-        )));
+        return Ok(Some((array_target_name(target, scalar_count), rhs.clone())));
     }
     if let Some(target) = rhs_target
         && is_writable_runtime_tail_name(dae_model, target.as_str())
         && !runtime_tail_has_event_update(runtime_tail_updates, target.as_str())
         && !is_static_runtime_tail_name(dae_model, runtime_tail_updates, target.as_str())
-        && runtime_assignment_shape_compatible(
+        && runtime_assignment_shape_compatible(dae_model, target.as_str(), lhs, scalar_count, span)?
+    {
+        return Ok(Some((array_target_name(target, scalar_count), lhs.clone())));
+    }
+    Ok(None)
+}
+
+fn runtime_residual_is_literal_zero(expression: &rumoca_core::Expression) -> bool {
+    matches!(
+        expression,
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Integer(0),
+            ..
+        } | rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Real(0.0),
+            ..
+        }
+    )
+}
+
+/// Normalize an if-equation only when every branch solves the same writable
+/// runtime-tail variable.
+///
+/// The common target is a construction certificate: without it, selecting a
+/// branch could change which storage slot the equation defines, so the row
+/// must remain an implicit residual.
+fn residual_if_runtime_assignment(
+    dae_model: &dae::Dae,
+    runtime_tail_updates: &HashSet<String>,
+    branches: &[(rumoca_core::Expression, rumoca_core::Expression)],
+    else_branch: &rumoca_core::Expression,
+    scalar_count: usize,
+    span: rumoca_core::Span,
+) -> Result<Option<(rumoca_core::VarName, rumoca_core::Expression)>, LowerError> {
+    let mut common_target = None;
+    let mut normalized_branches = Vec::new();
+    normalized_branches
+        .try_reserve_exact(branches.len())
+        .map_err(|_| {
+            runtime_assignment_contract_violation(
+                "conditional runtime assignment branch count exceeds host memory limits"
+                    .to_string(),
+                span,
+            )
+        })?;
+    for (condition, residual) in branches {
+        let Some((target, rhs)) = residual_runtime_assignment(
             dae_model,
-            target.as_str(),
-            lhs.as_ref(),
+            runtime_tail_updates,
+            residual,
             scalar_count,
             span,
         )?
-    {
-        return Ok(Some((
-            array_target_name(target, scalar_count),
-            lhs.as_ref().clone(),
-        )));
+        else {
+            return Ok(None);
+        };
+        if common_target
+            .as_ref()
+            .is_some_and(|existing| existing != &target)
+        {
+            return Ok(None);
+        }
+        common_target.get_or_insert(target);
+        normalized_branches.push((condition.clone(), rhs));
     }
-    Ok(None)
+    let Some((else_target, else_rhs)) = residual_runtime_assignment(
+        dae_model,
+        runtime_tail_updates,
+        else_branch,
+        scalar_count,
+        span,
+    )?
+    else {
+        return Ok(None);
+    };
+    if common_target
+        .as_ref()
+        .is_some_and(|existing| existing != &else_target)
+    {
+        return Ok(None);
+    }
+    let target = common_target.unwrap_or(else_target);
+    Ok(Some((
+        target,
+        rumoca_core::Expression::If {
+            branches: normalized_branches,
+            else_branch: Box::new(else_rhs),
+            span,
+        },
+    )))
 }
 
 fn is_static_runtime_tail_name(

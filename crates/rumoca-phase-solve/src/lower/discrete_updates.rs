@@ -208,21 +208,9 @@ pub(crate) fn initial_condition_update_equations(
     let mut equations =
         discrete_vec_with_capacity(capacity, "initial condition update equation count", span)?;
     for eq in &dae_model.initialization.equations {
-        let Some(assignment) = rumoca_eval_dae::initial_assignment_from_equation(eq) else {
-            continue;
-        };
-        if assignment.is_pre_target
-            || !is_initial_update_assignment_target(dae_model, layout, assignment.target.as_str())
-        {
-            continue;
+        if let Some(equation) = initial_update_equation(dae_model, layout, eq)? {
+            equations.push(equation);
         }
-        equations.push(dae::Equation::explicit_with_scalar_count(
-            rumoca_core::Reference::new(assignment.target),
-            assignment.solution.clone(),
-            eq.span,
-            eq.origin.clone(),
-            eq.scalar_count,
-        ));
     }
     for eq in &dae_model.conditions.equations {
         if eq
@@ -234,6 +222,25 @@ pub(crate) fn initial_condition_update_equations(
         }
     }
     Ok(equations)
+}
+
+pub(super) fn initial_update_equation(
+    dae_model: &dae::Dae,
+    layout: &VarLayout,
+    equation: &dae::Equation,
+) -> Result<Option<dae::Equation>, LowerError> {
+    let rewritten = rewrite_discrete_update_equation(dae_model, equation)?;
+    let normalized = normalize_discrete_update_equation(
+        dae_model,
+        &rewritten,
+        &IndexSet::new(),
+        &IndexSet::new(),
+    )?;
+    Ok(normalized
+        .lhs
+        .as_ref()
+        .is_some_and(|lhs| is_initial_update_assignment_target(dae_model, layout, lhs.as_str()))
+        .then_some(normalized))
 }
 
 fn is_condition_memory_lhs(dae_model: &dae::Dae, lhs: &rumoca_core::VarName) -> bool {

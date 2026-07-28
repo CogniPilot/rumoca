@@ -33,48 +33,31 @@ pub fn initial_residual_equations<'a>(
     // itself only uses the index for per-row temp namespacing (uniqueness) and
     // `row_idx >= state_scalar_count` comparisons (`state_scalar_count` is 0 in
     // initial mode, so the value beyond "is it < 0" is irrelevant there).
-    let continuous = dae_model
-        .continuous
-        .equations
-        .iter()
-        .enumerate()
-        .filter(|(row_idx, _)| {
-            !state_derivative_rows
-                .get(*row_idx)
-                .copied()
-                .unwrap_or(false)
-        });
+    let mut equations = Vec::new();
+    for (row_idx, equation) in dae_model.continuous.equations.iter().enumerate() {
+        if state_derivative_rows.get(row_idx).copied().unwrap_or(false) {
+            continue;
+        }
+        equations.push((row_idx, equation));
+    }
     // Initialization-specific equations are not part of the continuous system, so
     // they take indices past the continuous range: no structured family matches
     // (clean scalar fallback) while the index stays unique for temp namespacing.
     let continuous_len = dae_model.continuous.equations.len();
-    let initial = dae_model
-        .initialization
-        .equations
-        .iter()
-        .filter(|eq| initial_equation_constrains_solver_unknown(dae_model, layout, eq))
-        .enumerate()
-        .map(move |(offset, eq)| (continuous_len + offset, eq));
-    Ok(continuous.chain(initial).collect())
+    for (offset, equation) in dae_model.initialization.equations.iter().enumerate() {
+        if super::discrete_updates::initial_update_equation(dae_model, layout, equation)?.is_none()
+            && initial_equation_constrains_solver_unknown(layout, equation)
+        {
+            equations.push((continuous_len + offset, equation));
+        }
+    }
+    Ok(equations)
 }
 
 fn initial_equation_constrains_solver_unknown(
-    dae_model: &dae::Dae,
     layout: &VarLayout,
     equation: &dae::Equation,
 ) -> bool {
-    if rumoca_eval_dae::initial_assignment_from_equation(equation).is_some_and(|assignment| {
-        !assignment.is_pre_target
-            && super::discrete_updates::is_initial_update_assignment_target(
-                dae_model,
-                layout,
-                assignment.target.as_str(),
-            )
-    }) {
-        // Solve's initialization update partition owns direct assignments to
-        // runtime P slots, including residual-form `p - rhs = 0` equations.
-        return false;
-    }
     match equation
         .lhs
         .as_ref()
