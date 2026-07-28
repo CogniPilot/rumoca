@@ -1,4 +1,4 @@
-use rumoca_core::Span;
+use rumoca_core::{Span, VarName};
 
 use super::{DaeProvenanceOrigin, ScalarType};
 
@@ -55,9 +55,18 @@ pub enum DaeConstructionError {
     InvalidSubscript {
         span: Span,
     },
+    InvalidVariableRole {
+        name: VarName,
+        span: Span,
+    },
     DuplicateDefinition {
         kind: &'static str,
         index: u32,
+        span: Span,
+    },
+    DuplicateKey {
+        kind: &'static str,
+        key: String,
         span: Span,
     },
     IncompleteDefinition {
@@ -118,11 +127,20 @@ impl std::fmt::Display for DaeConstructionError {
             Self::EmptyArray { .. } => formatter.write_str("empty array needs an explicit type"),
             Self::ZeroRangeStep { .. } => formatter.write_str("range step cannot be zero"),
             Self::InvalidSubscript { .. } => formatter.write_str("invalid array subscript"),
+            Self::InvalidVariableRole { name, .. } => {
+                write!(
+                    formatter,
+                    "variable `{name}` has the wrong DAE coordinate role"
+                )
+            }
             Self::DuplicateDefinition { kind, index, .. } => {
                 write!(
                     formatter,
                     "duplicate {kind} definition for identity {index}"
                 )
+            }
+            Self::DuplicateKey { kind, key, .. } => {
+                write!(formatter, "duplicate {kind} key `{key}`")
             }
             Self::IncompleteDefinition { kind, index, .. } => {
                 write!(formatter, "missing {kind} definition for identity {index}")

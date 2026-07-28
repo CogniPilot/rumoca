@@ -49,6 +49,30 @@ branded_id!(
     VariableId
 );
 branded_id!(
+    /// Identity of one parameter or constant coordinate.
+    ParameterId
+);
+branded_id!(
+    /// Identity of one externally supplied input coordinate.
+    InputId
+);
+branded_id!(
+    /// Identity of one continuous state coordinate.
+    StateId
+);
+branded_id!(
+    /// Identity of one continuous algebraic coordinate.
+    AlgebraicId
+);
+branded_id!(
+    /// Identity of one discrete Real coordinate.
+    DiscreteRealId
+);
+branded_id!(
+    /// Identity of one discrete-valued coordinate.
+    DiscreteValueId
+);
+branded_id!(
     /// Identity of one DAE function declaration.
     FunctionId
 );

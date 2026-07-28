@@ -1,6 +1,6 @@
 use std::marker::PhantomData;
 
-use rumoca_core::{SourceMap, VarName};
+use rumoca_core::{ComponentReference, SourceMap, StateSelect, VarName};
 use serde::{Deserialize, Serialize};
 
 use super::expression::{
@@ -8,8 +8,9 @@ use super::expression::{
     source_text,
 };
 use super::{
-    BinaryOperator, ConditionId, DaeConstructionError, DaeGeneration, DaeProvenance, DomainId,
-    EquationId, ExprId, FunctionId, ScalarType, ValueTypeId, VariableId,
+    AlgebraicId, BinaryOperator, ConditionId, DaeConstructionError, DaeGeneration, DaeProvenance,
+    DiscreteRealId, DiscreteValueId, DomainId, EquationId, ExprId, FunctionId, InputId,
+    ParameterId, ScalarType, StateId, ValueTypeId, VariableId,
 };
 
 pub const CHECKED_DAE_SCHEMA_VERSION: u16 = 11;
@@ -20,20 +21,83 @@ mod wire;
 #[serde(deny_unknown_fields)]
 struct VariableEntry {
     name: VarName,
+    role: VariableRole,
     value_type: u32,
     declaration: DaeProvenance,
-    definition: Option<VariableDefinitionWire>,
+    attributes: Option<VariableAttributesWire>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct VariableDefinitionWire {
-    binding: Option<u32>,
+struct VariableAttributesWire {
+    component_ref: Option<ComponentReference>,
+    start: Option<u32>,
+    fixed: Option<bool>,
+    min: Option<u32>,
+    max: Option<u32>,
+    nominal: Option<u32>,
+    unit: Option<String>,
+    state_select: StateSelect,
+    description: Option<String>,
+    causality: VariableCausality,
+    is_tunable: bool,
+    origin: VariableOrigin,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-pub struct VariableDefinition<'dae> {
-    pub binding: Option<ExprId<'dae>>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VariableRole {
+    Parameter,
+    Constant,
+    Input,
+    State,
+    Algebraic,
+    Output,
+    DiscreteReal,
+    DiscreteValue,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VariableCausality {
+    Input,
+    Output,
+    Parameter,
+    CalculatedParameter,
+    Independent,
+    #[default]
+    Local,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VariableOrigin {
+    #[default]
+    Source,
+    Generated,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct VariableAttributes<'dae> {
+    pub component_ref: Option<ComponentReference>,
+    pub start: Option<ExprId<'dae>>,
+    pub fixed: Option<bool>,
+    pub min: Option<ExprId<'dae>>,
+    pub max: Option<ExprId<'dae>>,
+    pub nominal: Option<ExprId<'dae>>,
+    pub unit: Option<String>,
+    pub state_select: StateSelect,
+    pub description: Option<String>,
+    pub causality: VariableCausality,
+    pub is_tunable: bool,
+    pub origin: VariableOrigin,
+}
+
+/// Linear authority to attach forward-referencing variable attributes.
+///
+/// The token is branded, non-cloneable, and consumed by [`Variables::define`].
+pub struct VariableReservation<'dae> {
+    variable: VariableId<'dae>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -134,11 +198,30 @@ impl Storage {
         at: DaeProvenance,
     ) -> Result<ValueTypeId<'dae>, DaeConstructionError> {
         let raw = match coordinate {
-            CoordinateInput::Variable(id) | CoordinateInput::Previous(id) => self
-                .variables
-                .get(id.index() as usize)
-                .map(|variable| variable.value_type)
-                .ok_or_else(|| unknown("variable", id.index(), at))?,
+            CoordinateInput::Parameter(id) => self.coordinate_variable_type(
+                id.index(),
+                &[VariableRole::Parameter, VariableRole::Constant],
+                at,
+            )?,
+            CoordinateInput::Input(id) => {
+                self.coordinate_variable_type(id.index(), &[VariableRole::Input], at)?
+            }
+            CoordinateInput::State(id) | CoordinateInput::Derivative(id) => {
+                self.coordinate_variable_type(id.index(), &[VariableRole::State], at)?
+            }
+            CoordinateInput::Algebraic(id) => self.coordinate_variable_type(
+                id.index(),
+                &[VariableRole::Algebraic, VariableRole::Output],
+                at,
+            )?,
+            CoordinateInput::DiscreteReal(id)
+            | CoordinateInput::PreDiscreteReal(id)
+            | CoordinateInput::Previous(id) => {
+                self.coordinate_variable_type(id.index(), &[VariableRole::DiscreteReal], at)?
+            }
+            CoordinateInput::DiscreteValue(id) | CoordinateInput::PreDiscreteValue(id) => {
+                self.coordinate_variable_type(id.index(), &[VariableRole::DiscreteValue], at)?
+            }
             CoordinateInput::Time | CoordinateInput::Delay(_) => {
                 return self.intern_type(ValueType::scalar(ScalarType::Real), at);
             }
@@ -153,6 +236,25 @@ impl Storage {
             }
         };
         Ok(ValueTypeId::from_raw(raw))
+    }
+
+    fn coordinate_variable_type(
+        &self,
+        raw: u32,
+        roles: &[VariableRole],
+        at: DaeProvenance,
+    ) -> Result<u32, DaeConstructionError> {
+        let variable = self
+            .variables
+            .get(raw as usize)
+            .ok_or_else(|| unknown("variable", raw, at))?;
+        if !roles.contains(&variable.role) {
+            return Err(DaeConstructionError::InvalidVariableRole {
+                name: variable.name.clone(),
+                span: at.span(),
+            });
+        }
+        Ok(variable.value_type)
     }
 
     pub(crate) fn function_signature<'dae>(
@@ -432,75 +534,290 @@ pub struct Variables<'storage, 'dae> {
 }
 
 impl<'dae> Variables<'_, 'dae> {
-    pub fn declare(
+    pub fn parameter(
         &mut self,
         name: VarName,
         value_type: ValueTypeId<'dae>,
         declaration: DaeProvenance,
+        attributes: VariableAttributes<'dae>,
+    ) -> Result<ParameterId<'dae>, DaeConstructionError> {
+        self.add_complete(
+            name,
+            VariableRole::Parameter,
+            value_type,
+            declaration,
+            attributes,
+        )
+        .map(|id| ParameterId::from_raw(id.index()))
+    }
+
+    pub fn constant(
+        &mut self,
+        name: VarName,
+        value_type: ValueTypeId<'dae>,
+        declaration: DaeProvenance,
+        attributes: VariableAttributes<'dae>,
+    ) -> Result<ParameterId<'dae>, DaeConstructionError> {
+        self.add_complete(
+            name,
+            VariableRole::Constant,
+            value_type,
+            declaration,
+            attributes,
+        )
+        .map(|id| ParameterId::from_raw(id.index()))
+    }
+
+    pub fn input(
+        &mut self,
+        name: VarName,
+        value_type: ValueTypeId<'dae>,
+        declaration: DaeProvenance,
+        attributes: VariableAttributes<'dae>,
+    ) -> Result<InputId<'dae>, DaeConstructionError> {
+        self.add_complete(
+            name,
+            VariableRole::Input,
+            value_type,
+            declaration,
+            attributes,
+        )
+        .map(|id| InputId::from_raw(id.index()))
+    }
+
+    pub fn state(
+        &mut self,
+        name: VarName,
+        value_type: ValueTypeId<'dae>,
+        declaration: DaeProvenance,
+        attributes: VariableAttributes<'dae>,
+    ) -> Result<StateId<'dae>, DaeConstructionError> {
+        self.add_complete(
+            name,
+            VariableRole::State,
+            value_type,
+            declaration,
+            attributes,
+        )
+        .map(|id| StateId::from_raw(id.index()))
+    }
+
+    pub fn algebraic(
+        &mut self,
+        name: VarName,
+        value_type: ValueTypeId<'dae>,
+        declaration: DaeProvenance,
+        attributes: VariableAttributes<'dae>,
+    ) -> Result<AlgebraicId<'dae>, DaeConstructionError> {
+        self.add_complete(
+            name,
+            VariableRole::Algebraic,
+            value_type,
+            declaration,
+            attributes,
+        )
+        .map(|id| AlgebraicId::from_raw(id.index()))
+    }
+
+    pub fn output(
+        &mut self,
+        name: VarName,
+        value_type: ValueTypeId<'dae>,
+        declaration: DaeProvenance,
+        attributes: VariableAttributes<'dae>,
+    ) -> Result<AlgebraicId<'dae>, DaeConstructionError> {
+        self.add_complete(
+            name,
+            VariableRole::Output,
+            value_type,
+            declaration,
+            attributes,
+        )
+        .map(|id| AlgebraicId::from_raw(id.index()))
+    }
+
+    pub fn discrete_real(
+        &mut self,
+        name: VarName,
+        value_type: ValueTypeId<'dae>,
+        declaration: DaeProvenance,
+        attributes: VariableAttributes<'dae>,
+    ) -> Result<DiscreteRealId<'dae>, DaeConstructionError> {
+        self.add_complete(
+            name,
+            VariableRole::DiscreteReal,
+            value_type,
+            declaration,
+            attributes,
+        )
+        .map(|id| DiscreteRealId::from_raw(id.index()))
+    }
+
+    pub fn discrete_value(
+        &mut self,
+        name: VarName,
+        value_type: ValueTypeId<'dae>,
+        declaration: DaeProvenance,
+        attributes: VariableAttributes<'dae>,
+    ) -> Result<DiscreteValueId<'dae>, DaeConstructionError> {
+        self.add_complete(
+            name,
+            VariableRole::DiscreteValue,
+            value_type,
+            declaration,
+            attributes,
+        )
+        .map(|id| DiscreteValueId::from_raw(id.index()))
+    }
+
+    pub fn reserve_algebraic(
+        &mut self,
+        name: VarName,
+        value_type: ValueTypeId<'dae>,
+        declaration: DaeProvenance,
+    ) -> Result<(AlgebraicId<'dae>, VariableReservation<'dae>), DaeConstructionError> {
+        let id = self.reserve_forward(name, VariableRole::Algebraic, value_type, declaration)?;
+        Ok((
+            AlgebraicId::from_raw(id.index()),
+            VariableReservation { variable: id },
+        ))
+    }
+
+    pub fn reserve_parameter(
+        &mut self,
+        name: VarName,
+        value_type: ValueTypeId<'dae>,
+        declaration: DaeProvenance,
+    ) -> Result<(ParameterId<'dae>, VariableReservation<'dae>), DaeConstructionError> {
+        let id = self.reserve_forward(name, VariableRole::Parameter, value_type, declaration)?;
+        Ok((
+            ParameterId::from_raw(id.index()),
+            VariableReservation { variable: id },
+        ))
+    }
+
+    pub fn define(
+        &mut self,
+        reservation: VariableReservation<'dae>,
+        attributes: VariableAttributes<'dae>,
+        provenance: DaeProvenance,
+    ) -> Result<(), DaeConstructionError> {
+        check_provenance(self.source_map, provenance)?;
+        let variable = reservation.variable;
+        self.validate_attributes(variable, &attributes, provenance)?;
+        let Some(entry) = self.storage.variables.get_mut(variable.index() as usize) else {
+            return Err(unknown("variable", variable.index(), provenance));
+        };
+        if entry.attributes.is_some() {
+            return Err(duplicate("variable", variable.index(), provenance));
+        }
+        entry.attributes = Some(erase_variable_attributes(attributes));
+        self.storage.unfilled_variables -= 1;
+        Ok(())
+    }
+
+    fn add_complete(
+        &mut self,
+        name: VarName,
+        role: VariableRole,
+        value_type: ValueTypeId<'dae>,
+        declaration: DaeProvenance,
+        attributes: VariableAttributes<'dae>,
     ) -> Result<VariableId<'dae>, DaeConstructionError> {
-        let id = self.reserve_forward(name, value_type, declaration)?;
-        self.define(id, VariableDefinition::default(), declaration)?;
+        let id = self.reserve_forward(name, role, value_type, declaration)?;
+        self.validate_attributes(id, &attributes, declaration)?;
+        self.storage.variables[id.index() as usize].attributes =
+            Some(erase_variable_attributes(attributes));
+        self.storage.unfilled_variables -= 1;
         Ok(id)
     }
 
-    pub fn reserve_forward(
+    fn reserve_forward(
         &mut self,
         name: VarName,
+        role: VariableRole,
         value_type: ValueTypeId<'dae>,
         declaration: DaeProvenance,
     ) -> Result<VariableId<'dae>, DaeConstructionError> {
         check_provenance(self.source_map, declaration)?;
         self.storage
             .value_type_at(value_type.index(), declaration)?;
+        if self
+            .storage
+            .variables
+            .iter()
+            .any(|entry| entry.name == name)
+        {
+            return Err(DaeConstructionError::DuplicateKey {
+                kind: "variable",
+                key: name.to_string(),
+                span: declaration.span(),
+            });
+        }
         let raw = checked_u32(self.storage.variables.len(), "variable arena", declaration)?;
         self.storage.variables.push(VariableEntry {
             name,
+            role,
             value_type: value_type.index(),
             declaration,
-            definition: None,
+            attributes: None,
         });
         self.storage.unfilled_variables += 1;
         Ok(VariableId::from_raw(raw))
     }
 
-    pub fn define(
-        &mut self,
+    fn validate_attributes(
+        &self,
         variable: VariableId<'dae>,
-        definition: VariableDefinition<'dae>,
+        attributes: &VariableAttributes<'dae>,
         provenance: DaeProvenance,
     ) -> Result<(), DaeConstructionError> {
-        check_provenance(self.source_map, provenance)?;
-        if let Some(binding) = definition.binding {
+        let expected = self
+            .storage
+            .variables
+            .get(variable.index() as usize)
+            .map(|entry| entry.value_type)
+            .ok_or_else(|| unknown("variable", variable.index(), provenance))?;
+        for expression in [
+            attributes.start,
+            attributes.min,
+            attributes.max,
+            attributes.nominal,
+        ]
+        .into_iter()
+        .flatten()
+        {
             let found = self
                 .storage
                 .expressions
                 .value_types
-                .get(binding.index() as usize)
+                .get(expression.index() as usize)
                 .copied()
-                .ok_or_else(|| unknown("expression", binding.index(), provenance))?;
-            let expected = self
-                .storage
-                .variables
-                .get(variable.index() as usize)
-                .map(|entry| entry.value_type)
-                .ok_or_else(|| unknown("variable", variable.index(), provenance))?;
+                .ok_or_else(|| unknown("expression", expression.index(), provenance))?;
             if found != expected {
                 return Err(DaeConstructionError::ShapeMismatch {
                     span: provenance.span(),
                 });
             }
         }
-        let Some(entry) = self.storage.variables.get_mut(variable.index() as usize) else {
-            return Err(unknown("variable", variable.index(), provenance));
-        };
-        if entry.definition.is_some() {
-            return Err(duplicate("variable", variable.index(), provenance));
-        }
-        entry.definition = Some(VariableDefinitionWire {
-            binding: definition.binding.map(ExprId::index),
-        });
-        self.storage.unfilled_variables -= 1;
         Ok(())
+    }
+}
+
+fn erase_variable_attributes(attributes: VariableAttributes<'_>) -> VariableAttributesWire {
+    VariableAttributesWire {
+        component_ref: attributes.component_ref,
+        start: attributes.start.map(ExprId::index),
+        fixed: attributes.fixed,
+        min: attributes.min.map(ExprId::index),
+        max: attributes.max.map(ExprId::index),
+        nominal: attributes.nominal.map(ExprId::index),
+        unit: attributes.unit,
+        state_select: attributes.state_select,
+        description: attributes.description,
+        causality: attributes.causality,
+        is_tunable: attributes.is_tunable,
+        origin: attributes.origin,
     }
 }
 
@@ -814,9 +1131,18 @@ impl<'dae> ExpressionView<'dae> {
 
     pub fn variable_coordinate(self) -> Option<VariableId<'dae>> {
         match self.node {
-            ExprNode::Coordinate(Coordinate::Variable(variable)) => {
-                Some(VariableId::from_raw(*variable))
-            }
+            ExprNode::Coordinate(
+                Coordinate::Parameter(variable)
+                | Coordinate::Input(variable)
+                | Coordinate::State(variable)
+                | Coordinate::Derivative(variable)
+                | Coordinate::Algebraic(variable)
+                | Coordinate::DiscreteReal(variable)
+                | Coordinate::DiscreteValue(variable)
+                | Coordinate::PreDiscreteReal(variable)
+                | Coordinate::PreDiscreteValue(variable)
+                | Coordinate::Previous(variable),
+            ) => Some(VariableId::from_raw(*variable)),
             _ => None,
         }
     }

@@ -48,11 +48,17 @@ fn exact_expression_provenance_resolves_through_the_source_map() {
     let dae = Dae::construct(source.map, |dae| {
         let real =
             dae.types(|types| types.intern(ValueType::scalar(ScalarType::Real), declaration))?;
-        let x =
-            dae.variables(|variables| variables.declare(VarName::new("x"), real, declaration))?;
+        let x = dae.variables(|variables| {
+            variables.algebraic(
+                VarName::new("x"),
+                real,
+                declaration,
+                VariableAttributes::default(),
+            )
+        })?;
         let domain = dae.domains(|domains| domains.compact(3, range))?;
         dae.expressions(|expr| {
-            let x_node = expr.at(x_first).coordinate(CoordinateInput::Variable(x))?;
+            let x_node = expr.at(x_first).coordinate(CoordinateInput::Algebraic(x))?;
             let two = expr.at(two_first).literal(DaeLiteral::Real(2.0))?;
             let _sum = expr.at(plus).binary(BinaryOperator::Add, x_node, two)?;
             let _array_node = expr.at(array).array([x_node, two])?;
@@ -116,16 +122,22 @@ fn variable_occurrences_share_declaration_identity_but_keep_use_spans() {
     let dae = Dae::construct(source.map, |dae| {
         let real =
             dae.types(|types| types.intern(ValueType::scalar(ScalarType::Real), declaration))?;
-        let x =
-            dae.variables(|variables| variables.declare(VarName::new("x"), real, declaration))?;
+        let x = dae.variables(|variables| {
+            variables.algebraic(
+                VarName::new("x"),
+                real,
+                declaration,
+                VariableAttributes::default(),
+            )
+        })?;
         dae.equation(equation_owner, |equation| {
             let mut expr = equation.expressions();
             let lhs = expr
                 .at(first_use)
-                .coordinate(CoordinateInput::Variable(x))?;
+                .coordinate(CoordinateInput::Algebraic(x))?;
             let rhs = expr
                 .at(second_use)
-                .coordinate(CoordinateInput::Variable(x))?;
+                .coordinate(CoordinateInput::Algebraic(x))?;
             equation.equal(lhs, rhs)?;
             Ok(())
         })?;
@@ -158,6 +170,96 @@ fn variable_occurrences_share_declaration_identity_but_keep_use_spans() {
         assert_eq!(view.variable_count(), 1);
         assert_eq!(view.equation_count(), 1);
     });
+}
+
+#[test]
+fn variable_roles_drive_coordinate_construction_and_wire_validation() {
+    let source = TestSource::new(
+        "parameter Real p; constant Real c; input Real u; Real x; Real y; \
+         output Real o; discrete Real z; discrete Boolean m;",
+    );
+    let p_at = source.source("parameter Real p", 0);
+    let c_at = source.source("constant Real c", 0);
+    let u_at = source.source("input Real u", 0);
+    let x_at = source.source("Real x", 0);
+    let y_at = source.source("Real y", 0);
+    let o_at = source.source("output Real o", 0);
+    let z_at = source.source("discrete Real z", 0);
+    let m_at = source.source("discrete Boolean m", 0);
+
+    let dae = Dae::construct(source.map, |dae| {
+        let real = dae.types(|types| types.intern(ValueType::scalar(ScalarType::Real), p_at))?;
+        let boolean =
+            dae.types(|types| types.intern(ValueType::scalar(ScalarType::Boolean), m_at))?;
+        let (p, c, u, x, y, o, z, m) = dae.variables(|variables| {
+            Ok((
+                variables.parameter(
+                    VarName::new("p"),
+                    real,
+                    p_at,
+                    VariableAttributes::default(),
+                )?,
+                variables.constant(VarName::new("c"), real, c_at, VariableAttributes::default())?,
+                variables.input(VarName::new("u"), real, u_at, VariableAttributes::default())?,
+                variables.state(VarName::new("x"), real, x_at, VariableAttributes::default())?,
+                variables.algebraic(
+                    VarName::new("y"),
+                    real,
+                    y_at,
+                    VariableAttributes::default(),
+                )?,
+                variables.output(VarName::new("o"), real, o_at, VariableAttributes::default())?,
+                variables.discrete_real(
+                    VarName::new("z"),
+                    real,
+                    z_at,
+                    VariableAttributes::default(),
+                )?,
+                variables.discrete_value(
+                    VarName::new("m"),
+                    boolean,
+                    m_at,
+                    VariableAttributes::default(),
+                )?,
+            ))
+        })?;
+        dae.expressions(|expressions| {
+            for (at, coordinate) in [
+                (p_at, CoordinateInput::Parameter(p)),
+                (c_at, CoordinateInput::Parameter(c)),
+                (u_at, CoordinateInput::Input(u)),
+                (x_at, CoordinateInput::State(x)),
+                (x_at, CoordinateInput::Derivative(x)),
+                (y_at, CoordinateInput::Algebraic(y)),
+                (o_at, CoordinateInput::Algebraic(o)),
+                (z_at, CoordinateInput::DiscreteReal(z)),
+                (z_at, CoordinateInput::PreDiscreteReal(z)),
+                (z_at, CoordinateInput::Previous(z)),
+                (m_at, CoordinateInput::DiscreteValue(m)),
+                (m_at, CoordinateInput::PreDiscreteValue(m)),
+            ] {
+                expressions.at(at).coordinate(coordinate)?;
+            }
+            Ok(())
+        })
+    })
+    .expect("role-specific coordinates are valid");
+
+    let encoded = serde_json::to_string(&dae).unwrap();
+    let decoded: Dae = serde_json::from_str(&encoded).unwrap();
+    decoded.inspect(|view| {
+        assert_eq!(view.variable_count(), 8);
+        assert_eq!(view.expression_count(), 12);
+    });
+
+    let forged = encoded.replacen("\"role\":\"state\"", "\"role\":\"algebraic\"", 1);
+    assert_ne!(forged, encoded, "wire fixture contains the state role");
+    let error = serde_json::from_str::<Dae>(&forged).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("variable `x` has the wrong DAE coordinate role")
+    );
 }
 
 #[test]

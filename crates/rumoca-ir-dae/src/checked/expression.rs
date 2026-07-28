@@ -3,7 +3,8 @@ use serde::{Deserialize, Serialize};
 
 use super::model::Storage;
 use super::{
-    DaeConstructionError, DaeProvenance, DomainId, ExprId, FunctionId, ValueTypeId, VariableId,
+    AlgebraicId, DaeConstructionError, DaeProvenance, DiscreteRealId, DiscreteValueId, DomainId,
+    ExprId, FunctionId, InputId, ParameterId, StateId, ValueTypeId,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -123,7 +124,15 @@ pub enum PureBuiltin {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Coordinate {
-    Variable(u32),
+    Parameter(u32),
+    Input(u32),
+    State(u32),
+    Derivative(u32),
+    Algebraic(u32),
+    DiscreteReal(u32),
+    DiscreteValue(u32),
+    PreDiscreteReal(u32),
+    PreDiscreteValue(u32),
     Time,
     Condition(u32),
     Delay(u32),
@@ -133,18 +142,34 @@ pub(crate) enum Coordinate {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CoordinateInput<'dae> {
-    Variable(VariableId<'dae>),
+    Parameter(ParameterId<'dae>),
+    Input(InputId<'dae>),
+    State(StateId<'dae>),
+    Derivative(StateId<'dae>),
+    Algebraic(AlgebraicId<'dae>),
+    DiscreteReal(DiscreteRealId<'dae>),
+    DiscreteValue(DiscreteValueId<'dae>),
+    PreDiscreteReal(DiscreteRealId<'dae>),
+    PreDiscreteValue(DiscreteValueId<'dae>),
     Time,
     Condition(super::ConditionId<'dae>),
     Delay(u32),
-    Previous(VariableId<'dae>),
+    Previous(DiscreteRealId<'dae>),
     Terminal,
 }
 
 impl CoordinateInput<'_> {
     fn erase(self) -> Coordinate {
         match self {
-            Self::Variable(id) => Coordinate::Variable(id.index()),
+            Self::Parameter(id) => Coordinate::Parameter(id.index()),
+            Self::Input(id) => Coordinate::Input(id.index()),
+            Self::State(id) => Coordinate::State(id.index()),
+            Self::Derivative(id) => Coordinate::Derivative(id.index()),
+            Self::Algebraic(id) => Coordinate::Algebraic(id.index()),
+            Self::DiscreteReal(id) => Coordinate::DiscreteReal(id.index()),
+            Self::DiscreteValue(id) => Coordinate::DiscreteValue(id.index()),
+            Self::PreDiscreteReal(id) => Coordinate::PreDiscreteReal(id.index()),
+            Self::PreDiscreteValue(id) => Coordinate::PreDiscreteValue(id.index()),
             Self::Time => Coordinate::Time,
             Self::Condition(id) => Coordinate::Condition(id.index()),
             Self::Delay(id) => Coordinate::Delay(id),

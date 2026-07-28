@@ -49,7 +49,7 @@ fn reconstruct<'dae>(
     dae: &mut DaeConstruction<'dae>,
 ) -> Result<(), DaeConstructionError> {
     let types = reconstruct_types(wire, dae)?;
-    let variables = reconstruct_variables(wire, dae, &types)?;
+    let (variables, variable_reservations) = reconstruct_variables(wire, dae, &types)?;
     let functions = reconstruct_functions(wire, dae, &types)?;
     let domains = reconstruct_domains(wire, dae)?;
     let conditions = reconstruct_conditions(wire, dae)?;
@@ -62,7 +62,7 @@ fn reconstruct<'dae>(
         expressions: Vec::with_capacity(wire.expressions.nodes.len()),
     };
     reconstruct_expressions(wire, dae, &mut ids)?;
-    define_variables(wire, dae, &ids)?;
+    define_variables(wire, dae, &ids, variable_reservations)?;
     define_functions(wire, dae, &ids)?;
     define_conditions(wire, dae, &ids)?;
     reconstruct_equations(wire, dae, &ids)
@@ -90,8 +90,9 @@ fn reconstruct_variables<'dae>(
     wire: &Storage,
     dae: &mut DaeConstruction<'dae>,
     types: &[ValueTypeId<'dae>],
-) -> Result<Vec<VariableId<'dae>>, DaeConstructionError> {
+) -> Result<(Vec<VariableId<'dae>>, Vec<VariableReservation<'dae>>), DaeConstructionError> {
     let mut ids = Vec::with_capacity(wire.variables.len());
+    let mut reservations = Vec::with_capacity(wire.variables.len());
     for variable in &wire.variables {
         let ty = mapped(
             types,
@@ -100,11 +101,17 @@ fn reconstruct_variables<'dae>(
             variable.declaration,
         )?;
         let id = dae.variables(|variables| {
-            variables.reserve_forward(variable.name.clone(), ty, variable.declaration)
+            variables.reserve_forward(
+                variable.name.clone(),
+                variable.role,
+                ty,
+                variable.declaration,
+            )
         })?;
         ids.push(id);
+        reservations.push(VariableReservation { variable: id });
     }
-    Ok(ids)
+    Ok((ids, reservations))
 }
 
 fn reconstruct_functions<'dae>(
@@ -238,17 +245,41 @@ fn rebuild_coordinate<'dae>(
     at: DaeProvenance,
 ) -> Result<CoordinateInput<'dae>, DaeConstructionError> {
     Ok(match coordinate {
-        Coordinate::Variable(variable) => {
-            CoordinateInput::Variable(mapped(&ids.variables, variable, "variable", at)?)
-        }
+        Coordinate::Parameter(variable) => CoordinateInput::Parameter(ParameterId::from_raw(
+            mapped(&ids.variables, variable, "variable", at)?.index(),
+        )),
+        Coordinate::Input(variable) => CoordinateInput::Input(InputId::from_raw(
+            mapped(&ids.variables, variable, "variable", at)?.index(),
+        )),
+        Coordinate::State(variable) => CoordinateInput::State(StateId::from_raw(
+            mapped(&ids.variables, variable, "variable", at)?.index(),
+        )),
+        Coordinate::Derivative(variable) => CoordinateInput::Derivative(StateId::from_raw(
+            mapped(&ids.variables, variable, "variable", at)?.index(),
+        )),
+        Coordinate::Algebraic(variable) => CoordinateInput::Algebraic(AlgebraicId::from_raw(
+            mapped(&ids.variables, variable, "variable", at)?.index(),
+        )),
+        Coordinate::DiscreteReal(variable) => CoordinateInput::DiscreteReal(
+            DiscreteRealId::from_raw(mapped(&ids.variables, variable, "variable", at)?.index()),
+        ),
+        Coordinate::DiscreteValue(variable) => CoordinateInput::DiscreteValue(
+            DiscreteValueId::from_raw(mapped(&ids.variables, variable, "variable", at)?.index()),
+        ),
+        Coordinate::PreDiscreteReal(variable) => CoordinateInput::PreDiscreteReal(
+            DiscreteRealId::from_raw(mapped(&ids.variables, variable, "variable", at)?.index()),
+        ),
+        Coordinate::PreDiscreteValue(variable) => CoordinateInput::PreDiscreteValue(
+            DiscreteValueId::from_raw(mapped(&ids.variables, variable, "variable", at)?.index()),
+        ),
         Coordinate::Time => CoordinateInput::Time,
         Coordinate::Condition(condition) => {
             CoordinateInput::Condition(mapped(&ids.conditions, condition, "condition", at)?)
         }
         Coordinate::Delay(delay) => CoordinateInput::Delay(delay),
-        Coordinate::Previous(variable) => {
-            CoordinateInput::Previous(mapped(&ids.variables, variable, "variable", at)?)
-        }
+        Coordinate::Previous(variable) => CoordinateInput::Previous(DiscreteRealId::from_raw(
+            mapped(&ids.variables, variable, "variable", at)?.index(),
+        )),
         Coordinate::Terminal => CoordinateInput::Terminal,
     })
 }
@@ -333,22 +364,29 @@ fn define_variables<'dae>(
     wire: &Storage,
     dae: &mut DaeConstruction<'dae>,
     ids: &WireIds<'dae>,
+    reservations: Vec<VariableReservation<'dae>>,
 ) -> Result<(), DaeConstructionError> {
-    for (index, variable) in wire.variables.iter().enumerate() {
-        let Some(definition) = &variable.definition else {
+    for (index, (variable, reservation)) in wire.variables.iter().zip(reservations).enumerate() {
+        let Some(attributes) = &variable.attributes else {
             return Err(incomplete("variable", index, variable.declaration));
         };
-        let binding = definition
-            .binding
-            .map(|raw| mapped(&ids.expressions, raw, "expression", variable.declaration))
-            .transpose()?;
-        dae.variables(|variables| {
-            variables.define(
-                ids.variables[index],
-                VariableDefinition { binding },
-                variable.declaration,
-            )
-        })?;
+        let mapped_expression =
+            |raw| mapped(&ids.expressions, raw, "expression", variable.declaration);
+        let attributes = VariableAttributes {
+            component_ref: attributes.component_ref.clone(),
+            start: attributes.start.map(mapped_expression).transpose()?,
+            fixed: attributes.fixed,
+            min: attributes.min.map(mapped_expression).transpose()?,
+            max: attributes.max.map(mapped_expression).transpose()?,
+            nominal: attributes.nominal.map(mapped_expression).transpose()?,
+            unit: attributes.unit.clone(),
+            state_select: attributes.state_select,
+            description: attributes.description.clone(),
+            causality: attributes.causality,
+            is_tunable: attributes.is_tunable,
+            origin: attributes.origin,
+        };
+        dae.variables(|variables| variables.define(reservation, attributes, variable.declaration))?;
     }
     Ok(())
 }

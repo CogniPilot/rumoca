@@ -46,11 +46,14 @@ pub use expression::{
     BinaryOperator, CoordinateInput, DaeLiteral, ExpressionAt, Expressions, PureBuiltin,
     ScalarType, Subscript, UnaryOperator, ValueType,
 };
-pub use ids::{ConditionId, DomainId, EquationId, ExprId, FunctionId, ValueTypeId, VariableId};
+pub use ids::{
+    AlgebraicId, ConditionId, DiscreteRealId, DiscreteValueId, DomainId, EquationId, ExprId,
+    FunctionId, InputId, ParameterId, StateId, ValueTypeId, VariableId,
+};
 pub use model::{
     CHECKED_DAE_SCHEMA_VERSION, Conditions, Dae, DaeConstruction, DaeView, Domains, Equation,
-    EquationView, ExpressionKind, ExpressionView, Functions, ValueTypes, VariableDefinition,
-    Variables,
+    EquationView, ExpressionKind, ExpressionView, Functions, ValueTypes, VariableAttributes,
+    VariableCausality, VariableOrigin, VariableReservation, VariableRole, Variables,
 };
 pub use provenance::{DaeGeneration, DaeProvenance, DaeProvenanceOrigin};
 
