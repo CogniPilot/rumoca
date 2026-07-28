@@ -114,7 +114,7 @@ fn parser_shaped_assert_call_is_not_dropped() {
 }
 
 #[test]
-fn nested_algorithm_assert_is_rejected_instead_of_dropped() {
+fn nested_algorithm_assert_preserves_its_branch_guard() {
     let mut flat = Model::new();
     flat.algorithms.push(flat::Algorithm::new(
         vec![rumoca_core::Statement::If {
@@ -131,24 +131,37 @@ fn nested_algorithm_assert_is_rejected_instead_of_dropped() {
         "nested algorithm assertion",
     ));
 
-    let err = to_dae_with_options(
+    let dae = to_dae_with_options(
         &flat,
         ToDaeOptions {
             error_on_unbalanced: false,
         },
     )
-    .expect_err("unsupported nested assertion ordering must fail");
+    .expect("guarded assertion should lower");
 
     assert!(
         matches!(
-            err,
-            ToDaeError::UnsupportedAlgorithm {
-                ref section,
-                ref origin,
+            assert_action_condition(&dae),
+            rumoca_core::Expression::Binary {
+                op: rumoca_core::OpBinary::And,
+                lhs,
+                rhs,
                 ..
-            } if section == "model" && origin.contains("Assert")
+            } if matches!(
+                lhs.as_ref(),
+                rumoca_core::Expression::Literal {
+                    value: rumoca_core::Literal::Boolean(true),
+                    ..
+                }
+            ) && matches!(
+                rhs.as_ref(),
+                rumoca_core::Expression::Literal {
+                    value: rumoca_core::Literal::Boolean(true),
+                    ..
+                }
+            )
         ),
-        "nested assertion must report ED013, got {err:?}"
+        "assert(false, ...) under if true must retain both the branch guard and failure condition"
     );
 }
 

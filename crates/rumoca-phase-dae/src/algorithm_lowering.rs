@@ -1317,7 +1317,9 @@ fn collect_statement_targets(
     flat: &Model,
     statement: &Statement,
 ) -> Result<Vec<VarName>, String> {
-    if is_noop_algorithm_statement(statement) {
+    if is_noop_algorithm_statement(statement)
+        || assertions::is_algorithm_assertion_statement(statement)
+    {
         return Ok(Vec::new());
     }
 
@@ -1524,7 +1526,9 @@ fn lower_statement_assignments_with_context(
     current_values: &IndexMap<VarName, Expression>,
     known_targets: &HashSet<VarName>,
 ) -> Result<Vec<AlgorithmAssignment>, String> {
-    if is_noop_algorithm_statement(statement) {
+    if is_noop_algorithm_statement(statement)
+        || assertions::is_algorithm_assertion_statement(statement)
+    {
         return Ok(Vec::new());
     }
 
@@ -1649,6 +1653,14 @@ fn collect_when_statement_target_branches(
     blocks: &[StatementBlock],
     statement_span: Span,
 ) -> Result<WhenAssignmentBranches, String> {
+    if blocks.iter().any(|block| {
+        block
+            .stmts
+            .iter()
+            .any(assertions::statement_contains_assertion)
+    }) {
+        return Err("NestedWhenAssert".to_string());
+    }
     let mut targets: WhenAssignmentBranches = IndexMap::new();
     let empty_values = IndexMap::new();
     let empty_targets = HashSet::new();

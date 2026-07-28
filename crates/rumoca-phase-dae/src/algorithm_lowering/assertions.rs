@@ -2,6 +2,7 @@ use super::*;
 use crate::assertion_actions::{
     AlgorithmAssertionAction, AssertionScope, lower_algorithm_assertion_to_event_action,
 };
+use rumoca_core::{OpBinary, OpUnary};
 
 pub(super) struct LoweredAlgorithmBody {
     pub(super) assignments: IndexMap<VarName, AlgorithmAssignment>,
@@ -15,7 +16,7 @@ struct AlgorithmAssertionParts<'a> {
     span: Span,
 }
 
-fn is_algorithm_assertion_statement(statement: &Statement) -> bool {
+pub(super) fn is_algorithm_assertion_statement(statement: &Statement) -> bool {
     matches!(statement, Statement::Assert { .. })
         || matches!(
             statement,
@@ -137,6 +138,20 @@ pub(super) fn collect_algorithm_statements_with_assertions(
             )?);
             continue;
         }
+        collect_nested_assertions(
+            OrderedAssertionContext {
+                dae,
+                flat,
+                current_values: &current_values,
+                known_targets: &known_targets,
+                algorithm_span,
+                algorithm_origin,
+                scope,
+            },
+            statement,
+            None,
+            &mut event_actions,
+        )?;
         for (target, value, span, origin) in lower_statement_assignments_with_context(
             dae,
             flat,
@@ -157,6 +172,138 @@ pub(super) fn collect_algorithm_statements_with_assertions(
         assignments: collapse_overlapping_array_assignments(dae, assignments)?,
         event_actions,
     })
+}
+
+fn collect_nested_assertions(
+    context: OrderedAssertionContext<'_>,
+    statement: &Statement,
+    guard: Option<Expression>,
+    actions: &mut Vec<rumoca_ir_dae::DaeEventAction>,
+) -> Result<(), String> {
+    if let Some(assertion) = algorithm_assertion_parts(statement)? {
+        actions.push(lower_guarded_assertion(context, assertion, guard)?);
+        return Ok(());
+    }
+    let Statement::If {
+        cond_blocks,
+        else_block,
+        span,
+    } = statement
+    else {
+        if statement_contains_assertion(statement) {
+            return Err(format!(
+                "Nested{}",
+                unsupported_algorithm_statement_tag(statement)
+            ));
+        }
+        return Ok(());
+    };
+
+    let mut remaining_guard = guard;
+    for block in cond_blocks {
+        let branch_guard = and_guard(
+            remaining_guard.clone(),
+            block.cond.clone(),
+            expression_span_or(&block.cond, *span),
+        );
+        for nested in &block.stmts {
+            collect_nested_assertions(context, nested, Some(branch_guard.clone()), actions)?;
+        }
+        remaining_guard = Some(and_guard(
+            remaining_guard,
+            not_guard(block.cond.clone(), expression_span_or(&block.cond, *span)),
+            *span,
+        ));
+    }
+    if let Some(statements) = else_block {
+        for nested in statements {
+            collect_nested_assertions(context, nested, remaining_guard.clone(), actions)?;
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn statement_contains_assertion(statement: &Statement) -> bool {
+    if is_algorithm_assertion_statement(statement) {
+        return true;
+    }
+    match statement {
+        Statement::For { equations, .. } => equations.iter().any(statement_contains_assertion),
+        Statement::While { block, .. } => block.stmts.iter().any(statement_contains_assertion),
+        Statement::If {
+            cond_blocks,
+            else_block,
+            ..
+        } => {
+            cond_blocks
+                .iter()
+                .any(|block| block.stmts.iter().any(statement_contains_assertion))
+                || else_block
+                    .as_ref()
+                    .is_some_and(|statements| statements.iter().any(statement_contains_assertion))
+        }
+        Statement::When { blocks, .. } => blocks
+            .iter()
+            .any(|block| block.stmts.iter().any(statement_contains_assertion)),
+        Statement::Empty { .. }
+        | Statement::Assignment { .. }
+        | Statement::Return { .. }
+        | Statement::Break { .. }
+        | Statement::FunctionCall { .. }
+        | Statement::Reinit { .. }
+        | Statement::Assert { .. } => false,
+    }
+}
+
+fn lower_guarded_assertion(
+    context: OrderedAssertionContext<'_>,
+    assertion: AlgorithmAssertionParts<'_>,
+    guard: Option<Expression>,
+) -> Result<rumoca_ir_dae::DaeEventAction, String> {
+    let mut action = lower_ordered_assertion(context, assertion)?;
+    let Some(guard) = guard else {
+        return Ok(action);
+    };
+    let guard = rewrite_algorithm_current_refs(
+        context.dae,
+        &guard,
+        context.current_values,
+        context.known_targets,
+    )?;
+    let guard =
+        flat_to_dae_expression_with_refs(&guard, context.flat).map_err(|err| err.to_string())?;
+    let span = action.span;
+    action.condition = Expression::Binary {
+        op: OpBinary::And,
+        lhs: Box::new(guard),
+        rhs: Box::new(action.condition),
+        span,
+    };
+    Ok(action)
+}
+
+fn and_guard(lhs: Option<Expression>, rhs: Expression, span: Span) -> Expression {
+    let Some(lhs) = lhs else {
+        return rhs;
+    };
+    Expression::Binary {
+        op: OpBinary::And,
+        lhs: Box::new(lhs),
+        rhs: Box::new(rhs),
+        span,
+    }
+}
+
+fn not_guard(expression: Expression, span: Span) -> Expression {
+    Expression::Unary {
+        op: OpUnary::Not,
+        rhs: Box::new(expression),
+        span,
+    }
+}
+
+fn expression_span_or(expression: &Expression, owner_span: Span) -> Span {
+    expression.span().unwrap_or(owner_span)
 }
 
 fn lower_ordered_assertion(
@@ -237,6 +384,7 @@ fn reject_reads_before_assignment(
     Ok(())
 }
 
+#[derive(Clone, Copy)]
 struct OrderedAssertionContext<'a> {
     dae: &'a Dae,
     flat: &'a Model,
