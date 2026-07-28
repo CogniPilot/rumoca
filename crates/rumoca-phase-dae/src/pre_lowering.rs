@@ -30,6 +30,11 @@ pub(crate) fn lower_pre_operator(dae: &mut dae::Dae) -> Result<(), ToDaeError> {
     // IndexMap for deterministic parameter insertion order (SPEC_0021).
     let mut pre_targets: IndexMap<rumoca_core::VarName, PreTarget> = IndexMap::new();
     collect_pre_targets_from_equations(&dae.continuous.equations, &mut pre_targets, false)?;
+    collect_pre_targets_from_structured_equations(
+        &dae.continuous.structured_equations,
+        &mut pre_targets,
+        false,
+    )?;
     collect_pre_targets_from_equations(&dae.discrete.real_updates, &mut pre_targets, true)?;
     collect_pre_targets_from_equations(&dae.discrete.valued_updates, &mut pre_targets, true)?;
     collect_pre_targets_from_equations(&dae.conditions.equations, &mut pre_targets, true)?;
@@ -41,6 +46,11 @@ pub(crate) fn lower_pre_operator(dae: &mut dae::Dae) -> Result<(), ToDaeError> {
     }
     collect_pre_targets_from_event_actions(&dae.events.event_actions, &mut pre_targets)?;
     collect_pre_targets_from_equations(&dae.initialization.equations, &mut pre_targets, true)?;
+    collect_pre_targets_from_structured_equations(
+        &dae.initialization.structured_equations,
+        &mut pre_targets,
+        true,
+    )?;
 
     discard_enum_literal_pre_targets(dae, &mut pre_targets);
     resolve_pre_targets(dae, &mut pre_targets)?;
@@ -78,6 +88,11 @@ pub(crate) fn lower_pre_operator(dae: &mut dae::Dae) -> Result<(), ToDaeError> {
         &pre_targets,
         &relation_memories,
     )?;
+    rewrite_structured_equations(
+        &mut dae.continuous.structured_equations,
+        &pre_targets,
+        &relation_memories,
+    )?;
     rewrite_equations(
         &mut dae.discrete.real_updates,
         &pre_targets,
@@ -109,6 +124,11 @@ pub(crate) fn lower_pre_operator(dae: &mut dae::Dae) -> Result<(), ToDaeError> {
         &pre_targets,
         &relation_memories,
     )?;
+    rewrite_structured_equations(
+        &mut dae.initialization.structured_equations,
+        &pre_targets,
+        &relation_memories,
+    )?;
     Ok(())
 }
 
@@ -126,6 +146,21 @@ fn collect_pre_targets_from_equations(
 ) -> Result<(), ToDaeError> {
     for eq in equations {
         collect_pre_targets_from_expr(&eq.rhs, targets, allow_continuous_target)?;
+    }
+    Ok(())
+}
+
+fn collect_pre_targets_from_structured_equations(
+    families: &[dae::StructuredEquationFamily],
+    targets: &mut IndexMap<rumoca_core::VarName, PreTarget>,
+    allow_continuous_target: bool,
+) -> Result<(), ToDaeError> {
+    for expression in families
+        .iter()
+        .filter_map(|family| family.template.as_ref())
+        .flat_map(|template| &template.body)
+    {
+        collect_pre_targets_from_expr(expression, targets, allow_continuous_target)?;
     }
     Ok(())
 }
@@ -633,6 +668,21 @@ fn rewrite_equations(
 ) -> Result<(), ToDaeError> {
     for eq in equations {
         eq.rhs = rewrite_pre_expr(&eq.rhs, targets, relation_memories)?;
+    }
+    Ok(())
+}
+
+fn rewrite_structured_equations(
+    families: &mut [dae::StructuredEquationFamily],
+    targets: &IndexMap<rumoca_core::VarName, PreTarget>,
+    relation_memories: &[(rumoca_core::Expression, rumoca_core::Expression)],
+) -> Result<(), ToDaeError> {
+    for expression in families
+        .iter_mut()
+        .filter_map(|family| family.template.as_mut())
+        .flat_map(|template| &mut template.body)
+    {
+        *expression = rewrite_pre_expr(expression, targets, relation_memories)?;
     }
     Ok(())
 }

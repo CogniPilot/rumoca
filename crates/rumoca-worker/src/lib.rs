@@ -47,6 +47,11 @@ pub struct ModelWorkerRequest {
     pub run_simulation: bool,
     pub selected_for_simulation: bool,
     pub explicit_sim_target: bool,
+    /// Per-model solver wall budget. `None` selects
+    /// [`MSL_SIM_TIMEOUT_SECS`]; workers clamp explicit values to that floor so
+    /// callers can only raise the parity budget.
+    #[serde(default)]
+    pub sim_timeout_secs: Option<f64>,
     /// Emit the machine-exact IR JSON (`ir-*.json`) for each stage. Off by
     /// default for interactive debugging (the readable `ir-*.mo` Modelica dumps
     /// are preferred); enable when exact op/index or span detail is needed.

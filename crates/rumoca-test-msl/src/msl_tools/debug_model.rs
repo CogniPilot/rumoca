@@ -61,6 +61,7 @@ pub fn run(args: Args) -> Result<()> {
         run_simulation: args.simulate,
         selected_for_simulation: args.simulate,
         explicit_sim_target: args.simulate,
+        sim_timeout_secs: Some(args.timeout_secs),
         emit_json: args.json,
         allow_unbalanced_for_diagnostics: args.allow_unbalanced,
         nan_trace: args.nan_trace,

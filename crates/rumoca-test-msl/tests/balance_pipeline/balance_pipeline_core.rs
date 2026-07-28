@@ -1205,6 +1205,7 @@ fn prepare_model_worker_request(
         run_simulation: plan.run_simulation,
         selected_for_simulation: plan.selected_for_simulation,
         explicit_sim_target: plan.explicit_sim_target,
+        sim_timeout_secs: Some(sim_timeout_secs()),
         emit_json: false,
         allow_unbalanced_for_diagnostics: false,
         nan_trace: false,

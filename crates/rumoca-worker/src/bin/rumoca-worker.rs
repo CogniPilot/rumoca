@@ -682,8 +682,13 @@ fn summarize_dae_success(
     row
 }
 
-fn sim_timeout_secs() -> f64 {
-    rumoca_worker::MSL_SIM_TIMEOUT_SECS
+fn sim_timeout_secs(request: &ModelWorkerRequest) -> f64 {
+    request
+        .sim_timeout_secs
+        .filter(|seconds| seconds.is_finite() && *seconds > 0.0)
+        .map_or(rumoca_worker::MSL_SIM_TIMEOUT_SECS, |seconds| {
+            seconds.max(rumoca_worker::MSL_SIM_TIMEOUT_SECS)
+        })
 }
 
 fn simulation_settings(result: &rumoca_compile::compile::DaeCompilationResult) -> SimSettings {
@@ -760,7 +765,7 @@ fn output_samples_for_model(dae: &rumoca_compile::compile::Dae) -> usize {
     }
 }
 
-fn sim_options(settings: &SimSettings, output_samples: usize) -> SimOptions {
+fn sim_options(settings: &SimSettings, output_samples: usize, max_wall_seconds: f64) -> SimOptions {
     let span = (settings.t_end - settings.t_start).abs();
     let dt = settings
         .dt
@@ -770,7 +775,7 @@ fn sim_options(settings: &SimSettings, output_samples: usize) -> SimOptions {
         t_start: settings.t_start,
         t_end: settings.t_end,
         dt,
-        max_wall_seconds: Some(sim_timeout_secs()),
+        max_wall_seconds: Some(max_wall_seconds),
         solver_mode: SimSolverMode::from_external_name(&settings.solver),
         ..SimOptions::default()
     };
@@ -1219,7 +1224,11 @@ fn run_model_request(session: &mut Session, request: &ModelWorkerRequest) -> Wor
     }
 
     let settings = simulation_settings(&result);
-    let opts = sim_options(&settings, output_samples_for_model(result.dae.as_ref()));
+    let opts = sim_options(
+        &settings,
+        output_samples_for_model(result.dae.as_ref()),
+        sim_timeout_secs(request),
+    );
     run_and_classify_simulation(&mut row, request, &result, &opts, &progress);
     apply_solve_stage_diagnostic_code(&mut row);
     row
@@ -1655,6 +1664,7 @@ mod tests {
             run_simulation: true,
             selected_for_simulation: true,
             explicit_sim_target: false,
+            sim_timeout_secs: None,
             emit_json: false,
             allow_unbalanced_for_diagnostics: false,
             nan_trace: false,
@@ -1714,5 +1724,23 @@ mod tests {
         row.ir_solve_error = Some("failed to write ir-solve.json: disk full".to_string());
         apply_solve_stage_diagnostic_code(&mut row);
         assert_eq!(row.ir_solve_error_code, None);
+    }
+
+    #[test]
+    fn simulation_request_timeout_is_raise_only() {
+        let mut request = simulation_request("Modelica.Test.Examples.Timeout");
+        assert_eq!(
+            sim_timeout_secs(&request),
+            rumoca_worker::MSL_SIM_TIMEOUT_SECS
+        );
+
+        request.sim_timeout_secs = Some(30.0);
+        assert_eq!(sim_timeout_secs(&request), 30.0);
+
+        request.sim_timeout_secs = Some(1.0);
+        assert_eq!(
+            sim_timeout_secs(&request),
+            rumoca_worker::MSL_SIM_TIMEOUT_SECS
+        );
     }
 }
