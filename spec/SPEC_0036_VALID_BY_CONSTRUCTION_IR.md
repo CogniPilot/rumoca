@@ -310,6 +310,8 @@ builders recreate a weaker DAE and are rejected.
 - [SPEC_0022](SPEC_0022_MLS_COMPILER_COMPLIANCE.md) — MLS contract index
 - [SPEC_0029](SPEC_0029_CRATE_BOUNDARIES.md) — crate and rewrite ownership
 - [SPEC_0032](SPEC_0032_RANGE_PRESERVING_TENSORS.md) — structured families
+- [SPEC_0037](archive/deferred/SPEC_0037_FORMALLY_VERIFIED_COMPILER.md) —
+  deferred formal-verification architecture
 - [MLS Appendix B](https://specification.modelica.org/maint/3.6/modelica-dae-representation.html)
 
 Before proposal, SPEC_0007 and SPEC_0029 require coordinated terminology and

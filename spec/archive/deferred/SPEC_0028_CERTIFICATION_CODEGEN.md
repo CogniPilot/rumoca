@@ -55,6 +55,8 @@ Promote this only after:
 
 ## References
 
+- [SPEC_0037](SPEC_0037_FORMALLY_VERIFIED_COMPILER.md) — deferred phase proofs
+  and assurance-evidence architecture.
 - RTCA DO-178C / EUROCAE ED-12C
 - RTCA DO-330 / EUROCAE ED-215
 - RTCA DO-331 / EUROCAE ED-218
