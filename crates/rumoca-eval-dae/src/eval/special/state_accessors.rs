@@ -56,18 +56,13 @@ pub(super) fn eval_unit_conversion_function<T: SimFloat>(
 
 pub(super) fn eval_stream_special_function<T: SimFloat>(
     short_name: &str,
-    args: &[Expression],
-    env: &VarEnv<T>,
+    _args: &[Expression],
+    _env: &VarEnv<T>,
 ) -> Result<Option<T>, EvalError> {
     match short_name {
-        // MLS stream operators are lowered to direct argument passthrough only
-        // once connector flow semantics have been resolved upstream.
-        "actualStream" | "inStream" => {
-            let arg = args.first().ok_or(EvalError::UnsupportedExpression {
-                kind: "stream operator argument",
-            })?;
-            eval_expr::<T>(arg, env).map(Some)
-        }
+        "actualStream" | "inStream" => Err(EvalError::UnsupportedExpression {
+            kind: "stream operator not lowered during Flat connection expansion",
+        }),
         "writeRealMatrix" => Err(EvalError::UnsupportedExpression {
             kind: "writeRealMatrix side effect",
         }),

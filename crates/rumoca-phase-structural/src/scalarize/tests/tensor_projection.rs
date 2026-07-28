@@ -120,6 +120,60 @@ fn scalarize_known_record_array_field_uses_selected_function_output_paths() {
 }
 
 #[test]
+fn scalarize_array_valued_record_member_slice_uses_record_and_field_indices() {
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .outputs
+        .insert(VarName::new("y"), variable("y", &[2, 2]));
+    for record_index in 1..=2 {
+        let name = format!("records[{record_index}].values");
+        dae_model
+            .variables
+            .parameters
+            .insert(VarName::new(&name), variable(&name, &[2]));
+    }
+    let member_slice = Expression::FieldAccess {
+        base: Box::new(Expression::Index {
+            base: Box::new(Expression::VarRef {
+                name: structured_reference("records", test_span()),
+                subscripts: Vec::new(),
+                span: test_span(),
+            }),
+            subscripts: vec![Subscript::Colon { span: test_span() }],
+            span: test_span(),
+        }),
+        field: "values".to_string(),
+        span: test_span(),
+    };
+    dae_model
+        .continuous
+        .equations
+        .push(eq("y", member_slice, 4));
+
+    scalarize_equations(&mut dae_model).unwrap();
+
+    let projected_names = dae_model
+        .continuous
+        .equations
+        .iter()
+        .map(|equation| match &equation.rhs {
+            Expression::VarRef { name, .. } => name.as_str(),
+            other => panic!("expected projected variable reference, got {other:?}"),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        projected_names,
+        vec![
+            "records[1].values[1]",
+            "records[1].values[2]",
+            "records[2].values[1]",
+            "records[2].values[2]",
+        ]
+    );
+}
+
+#[test]
 fn scalarize_vector_matrix_product_uses_column_dot_product() {
     let mut dae_model = dae::Dae::default();
     dae_model
@@ -740,7 +794,7 @@ fn scalarize_matrix_vector_derivative_residual_uses_expression_shape() {
         .algebraics
         .insert(VarName::new("M_body"), variable("M_body", &[3]));
 
-    // MLS §10.6 / SPEC_0019: array equations scalarize by expression shape.
+    // MLS §10.6 / SPEC_0032: array equations scalarize by expression shape.
     // A residual `J * der(omega) - M_body` must produce one derivative row per
     // vector component even if stale metadata says there is only one row.
     dae_model.continuous.equations.push(Equation {
@@ -782,7 +836,7 @@ fn scalarize_matrix_vector_derivative_residual_preserves_qualified_state_name() 
         variable("vehicle.M_body", &[3]),
     );
 
-    // MLS §10.6 / SPEC_0019: scalarizing an array equation must project the
+    // MLS §10.6 / SPEC_0032: scalarizing an array equation must project the
     // existing IR variable reference. Qualified component paths are part of
     // the Modelica name and must not be stripped while projecting der().
     dae_model.continuous.equations.push(Equation {

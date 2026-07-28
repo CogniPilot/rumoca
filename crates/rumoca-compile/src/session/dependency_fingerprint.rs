@@ -227,8 +227,11 @@ fn class_source_fingerprint(
     hasher.update(b"rumoca-class-source-v1");
     hasher.update(class_name.as_bytes());
 
-    if let Some(source_id) = tree.source_map.get_id(&location.file_name)
-        && let Some((_, content)) = tree.source_map.get_source(source_id)
+    // Locations carry a `SourceId`, not a path, so the file name is recovered
+    // through the source map. Registered source text hashes exactly the class
+    // byte range the pre-`SourceId` compiler hashed, so warm caches survive.
+    let registered = tree.source_map.get_source(location.source);
+    if let Some((_, content)) = registered
         && !content.is_empty()
     {
         let bytes = content.as_bytes();
@@ -238,19 +241,33 @@ fn class_source_fingerprint(
         }
     }
 
-    let file_bytes = file_bytes_cache
-        .entry(location.file_name.clone())
-        .or_insert_with(|| std::fs::read(&location.file_name).ok());
-    if let Some(bytes) = file_bytes.as_deref()
-        && start < end
-        && end <= bytes.len()
-    {
-        hasher.update(&bytes[start..end]);
-        return *hasher.finalize().as_bytes();
+    // A source map that kept names but dropped contents still yields the real
+    // path, so the class bytes can be recovered from disk. A source that is not
+    // registered at all has no path to read: `fs::read("")` would fail on every
+    // class and collapse them onto one fingerprint, so it is not attempted.
+    let file_name = registered.map(|(name, _)| name);
+    if let Some(file_name) = file_name {
+        let file_bytes = file_bytes_cache
+            .entry(file_name.to_string())
+            .or_insert_with(|| std::fs::read(file_name).ok());
+        if let Some(bytes) = file_bytes.as_deref()
+            && start < end
+            && end <= bytes.len()
+        {
+            hasher.update(&bytes[start..end]);
+            return *hasher.finalize().as_bytes();
+        }
     }
 
-    // Fallback for virtual or unavailable files.
-    hasher.update(location.file_name.as_bytes());
+    // Fallback for virtual or unavailable files. `SourceId` is the stable
+    // identity derived from the file name (SPEC_0008), so it keeps classes in
+    // different files apart even when the map has no name for them or when
+    // several files share one placeholder display name. Hashing only the name
+    // here would let two files collide and serve a stale compile cache.
+    hasher.update(&location.source.0.to_le_bytes());
+    if let Some(file_name) = file_name {
+        hasher.update(file_name.as_bytes());
+    }
     hasher.update(&location.start.to_le_bytes());
     hasher.update(&location.end.to_le_bytes());
     hasher.update(format!("{:?}", class.class_type).as_bytes());
@@ -495,6 +512,109 @@ mod tests {
         assert!(
             deps.iter().any(|dep| dep == "P.Helper"),
             "external declaration arguments should participate in dependency collection"
+        );
+    }
+
+    const FINGERPRINT_MODEL: &str = "model M\n  Real x;\nequation\n  x = 1;\nend M;\n";
+
+    fn resolved_tree_for(uri: &str, source: &str) -> ast::ClassTree {
+        let mut session = Session::default();
+        session
+            .add_document(uri, source)
+            .expect("document should parse");
+        session
+            .build_resolved()
+            .expect("resolved tree should be available");
+        session
+            .ensure_resolved()
+            .expect("resolved tree should be cached")
+            .0
+            .clone()
+    }
+
+    #[test]
+    fn class_source_fingerprint_hashes_the_registered_class_source_bytes() {
+        // Pins the exact hash input: domain tag, qualified class name, and the
+        // class byte range of the registered source. This is the value the
+        // pre-`SourceId` compiler produced, so warm caches stay valid.
+        let tree = resolved_tree_for("fingerprint_test.mo", FINGERPRINT_MODEL);
+        let class = tree.definitions.classes.get("M").expect("class M");
+        assert_eq!(
+            tree.source_map.name(class.location.source),
+            Some("fingerprint_test.mo"),
+            "the class location must resolve back to its registered file name"
+        );
+
+        let start = class.location.start as usize;
+        let end = class.location.end as usize;
+        assert!(start < end && end <= FINGERPRINT_MODEL.len());
+        let mut expected = blake3::Hasher::new();
+        expected.update(b"rumoca-class-source-v1");
+        expected.update(b"M");
+        expected.update(&FINGERPRINT_MODEL.as_bytes()[start..end]);
+
+        let mut cache = HashMap::new();
+        assert_eq!(
+            class_source_fingerprint(&tree, class, "M", &mut cache),
+            *expected.finalize().as_bytes()
+        );
+    }
+
+    #[test]
+    fn class_source_fingerprint_survives_a_file_rename() {
+        // The class text is what identifies the class; moving the same text to
+        // another file must not invalidate the cached compile result.
+        let first = resolved_tree_for("before_rename.mo", FINGERPRINT_MODEL);
+        let second = resolved_tree_for("after/rename.mo", FINGERPRINT_MODEL);
+        let first_class = first.definitions.classes.get("M").expect("class M");
+        let second_class = second.definitions.classes.get("M").expect("class M");
+        assert_ne!(
+            first_class.location.source, second_class.location.source,
+            "the two files must have distinct source identities"
+        );
+
+        let mut cache = HashMap::new();
+        assert_eq!(
+            class_source_fingerprint(&first, first_class, "M", &mut cache),
+            class_source_fingerprint(&second, second_class, "M", &mut cache)
+        );
+    }
+
+    #[test]
+    fn class_source_fingerprint_keeps_unregistered_sources_apart() {
+        // Without registered source text the fallback has no bytes to hash. It
+        // must still separate identical classes that live in different files,
+        // otherwise one stale entry is served for the other file's compile.
+        let mut first = resolved_tree_for("unregistered/a.mo", FINGERPRINT_MODEL);
+        let mut second = resolved_tree_for("unregistered/b.mo", FINGERPRINT_MODEL);
+        first.source_map = rumoca_core::SourceMap::new();
+        second.source_map = rumoca_core::SourceMap::new();
+        let first_class = first.definitions.classes.get("M").expect("class M").clone();
+        let second_class = second
+            .definitions
+            .classes
+            .get("M")
+            .expect("class M")
+            .clone();
+        assert_eq!(first_class.location.start, second_class.location.start);
+        assert_eq!(first_class.location.end, second_class.location.end);
+        assert_ne!(first_class.location.source, second_class.location.source);
+
+        let mut cache = HashMap::new();
+        let first_fingerprint = class_source_fingerprint(&first, &first_class, "M", &mut cache);
+        let second_fingerprint = class_source_fingerprint(&second, &second_class, "M", &mut cache);
+        assert_ne!(
+            first_fingerprint, second_fingerprint,
+            "classes from different files must not share a fingerprint"
+        );
+        assert_eq!(
+            first_fingerprint,
+            class_source_fingerprint(&first, &first_class, "M", &mut cache),
+            "the fallback must stay deterministic"
+        );
+        assert!(
+            !cache.contains_key(""),
+            "an unregistered source must never be read as the empty path"
         );
     }
 }

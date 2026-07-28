@@ -136,11 +136,14 @@ impl<'a> LowerBuilder<'a> {
         {
             return Ok(Some(reg));
         }
-        if is_stream_passthrough_intrinsic(call_name) {
-            return args
-                .first()
-                .map(|arg| self.lower_expr(arg, scope, call_depth))
-                .transpose();
+        if is_unlowered_stream_intrinsic(call_name) {
+            return Err(unsupported_at(
+                format!(
+                    "{} must be lowered during Flat connection expansion before Solve-IR lowering",
+                    intrinsic_short_name(call_name)
+                ),
+                span,
+            ));
         }
         if let Some(reg) = self.lower_runtime_string_special_intrinsic(call_name, args, span)? {
             return Ok(Some(reg));
@@ -1447,10 +1450,10 @@ impl<'a> LowerBuilder<'a> {
             span,
         )?;
         for (key, slot) in self.layout.bindings() {
-            let Some(suffix) = key.strip_prefix(prefix.as_str()) else {
+            let Some(suffix) = key.as_str().strip_prefix(prefix.as_str()) else {
                 continue;
             };
-            slots.push((key.clone(), suffix.to_string(), *slot));
+            slots.push((key.to_string(), suffix.to_string(), *slot));
         }
         for (key, suffix, slot) in slots {
             if self

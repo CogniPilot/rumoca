@@ -1,6 +1,6 @@
 //! Conversion of declaration bindings into continuous DAE equations.
 
-use indexmap::IndexSet;
+use indexmap::{IndexMap, IndexSet};
 use rumoca_core::Span;
 use rumoca_ir_dae as dae;
 use rumoca_ir_flat as flat;
@@ -24,6 +24,7 @@ struct BindingEquationContext<'a> {
     dae: &'a mut Dae,
     flat: &'a Model,
     known_var_names: &'a HashSet<String>,
+    enum_literal_ordinals: &'a IndexMap<String, i64>,
 }
 
 struct BindingEquationSpec<'a> {
@@ -66,6 +67,7 @@ pub(super) fn convert_bindings_to_equations(
         .map(|name| name.as_str().to_string())
         .collect();
     let unknown_prefix_children = build_unknown_prefix_children(&unknowns)?;
+    let unknown_subscriptless_index = build_unknown_subscriptless_index(&unknowns);
     let internal_inputs = super::InternalInputIndex::new(flat)?;
     let connected_inputs_only_connected_to_inputs =
         super::find_connected_inputs_only_connected_to_inputs(flat, &internal_inputs);
@@ -123,7 +125,13 @@ pub(super) fn convert_bindings_to_equations(
         // a constant binding (e.g., `suspend = false`) provides the VALUE and must be kept.
         if all_defined.contains(name)
             && !defined_by_unknown_rhs.contains(name)
-            && should_skip_binding_for_explicit_var(name, var, &unknowns, &unknown_prefix_children)
+            && should_skip_binding_for_explicit_var(
+                name,
+                var,
+                &unknowns,
+                &unknown_prefix_children,
+                &unknown_subscriptless_index,
+            )
         {
             continue;
         }
@@ -155,6 +163,7 @@ pub(super) fn convert_bindings_to_equations(
                 dae,
                 flat,
                 known_var_names: &known_var_names,
+                enum_literal_ordinals: &flat.enum_literal_ordinals,
             };
             add_binding_equation(
                 &mut binding_context,
@@ -232,6 +241,7 @@ pub(super) fn should_skip_binding_for_explicit_var(
     var: &flat::Variable,
     unknowns: &HashSet<VarName>,
     unknown_prefix_children: &FxHashMap<String, Vec<VarName>>,
+    unknown_subscriptless_index: &FxHashMap<String, Vec<VarName>>,
 ) -> bool {
     let Some(binding) = &var.binding else {
         // No binding - nothing to skip, but also nothing to keep
@@ -242,9 +252,19 @@ pub(super) fn should_skip_binding_for_explicit_var(
     let binding_refs = super::collect_var_refs(binding);
     let resolved_name =
         super::resolve_name_against_set(name, unknowns).unwrap_or_else(|| name.clone());
+    let resolved_name_family = strip_all_subscripts(resolved_name.as_str());
     let references_other_unknowns = binding_refs.iter().any(|r| {
         if let Some(resolved_ref) = super::resolve_name_against_set(r, unknowns) {
             return resolved_ref != resolved_name;
+        }
+
+        let reference_family = strip_all_subscripts(r.as_str());
+        if reference_family != resolved_name_family
+            && unknown_subscriptless_index
+                .get(&reference_family)
+                .is_some_and(|members| !members.is_empty())
+        {
+            return true;
         }
 
         // A record-level ref (e.g., `port_p.V_m`) can map to expanded unknown
@@ -314,11 +334,19 @@ pub(super) fn collect_vars_with_unknown_rhs(
             &unknown_subscriptless_index,
         )
         .unwrap_or_else(|| lhs_name.var_name().clone());
-        if rhs_refs
-            .iter()
-            .filter_map(|r| resolve_unknown_ref_by_shape(r, unknowns, &unknown_subscriptless_index))
-            .any(|r| r != lhs_resolved)
-        {
+        let lhs_family = strip_all_subscripts(lhs_resolved.as_str());
+        if rhs_refs.iter().any(|reference| {
+            if let Some(resolved) =
+                resolve_unknown_ref_by_shape(reference, unknowns, &unknown_subscriptless_index)
+            {
+                return resolved != lhs_resolved;
+            }
+            let reference_family = strip_all_subscripts(reference.as_str());
+            reference_family != lhs_family
+                && unknown_subscriptless_index
+                    .get(&reference_family)
+                    .is_some_and(|members| !members.is_empty())
+        }) {
             result.insert(lhs_name.var_name().clone());
         }
     }
@@ -390,7 +418,7 @@ fn expressions_equivalent(a: &Expression, b: &Expression) -> bool {
         (Expression::Literal { value: l1, .. }, Expression::Literal { value: l2, .. }) => {
             match (l1, l2) {
                 (Literal::Integer(a), Literal::Integer(b)) => a == b,
-                (Literal::Real(a), Literal::Real(b)) => (a - b).abs() < 1e-15,
+                (Literal::Real(a), Literal::Real(b)) => a == b || a.to_bits() == b.to_bits(),
                 (Literal::Boolean(a), Literal::Boolean(b)) => a == b,
                 (Literal::String(a), Literal::String(b)) => a == b,
                 _ => false,
@@ -493,7 +521,7 @@ fn subscripts_equivalent(lhs: &rumoca_core::Subscript, rhs: &rumoca_core::Subscr
     }
 }
 
-fn build_unknown_subscriptless_index(
+pub(super) fn build_unknown_subscriptless_index(
     unknowns: &HashSet<VarName>,
 ) -> FxHashMap<String, Vec<VarName>> {
     let mut index: FxHashMap<String, Vec<VarName>> = FxHashMap::default();
@@ -601,6 +629,7 @@ fn add_binding_equation(
         spec.name,
         spec.binding,
         ctx.known_var_names,
+        ctx.enum_literal_ordinals,
         span,
     );
     let origin = rumoca_ir_flat::EquationOrigin::Binding {
@@ -658,6 +687,7 @@ fn select_scalar_binding_record_field_alias(
     lhs_name: &VarName,
     binding: &Expression,
     known_var_names: &HashSet<String>,
+    enum_literal_ordinals: &IndexMap<String, i64>,
     owner_span: Span,
 ) -> Expression {
     let Expression::VarRef {
@@ -669,6 +699,9 @@ fn select_scalar_binding_record_field_alias(
         return binding.clone();
     };
     if !subscripts.is_empty() {
+        return binding.clone();
+    }
+    if enum_literal_ordinals.contains_key(rhs_name.as_str()) {
         return binding.clone();
     }
 
@@ -834,6 +867,7 @@ mod tests {
         ]);
         let unknown_prefix_children = build_unknown_prefix_children(&unknowns)
             .unwrap_or_else(|err| panic!("unknown prefix index should build: {err}"));
+        let unknown_subscriptless_index = build_unknown_subscriptless_index(&unknowns);
 
         let var = flat::Variable {
             name: VarName::new("self"),
@@ -855,7 +889,8 @@ mod tests {
                 &VarName::new("self"),
                 &var,
                 &unknowns,
-                &unknown_prefix_children
+                &unknown_prefix_children,
+                &unknown_subscriptless_index
             ),
             "record-prefix unknown binding must be preserved"
         );
@@ -866,6 +901,7 @@ mod tests {
         let unknowns = HashSet::from([VarName::new("x")]);
         let unknown_prefix_children = build_unknown_prefix_children(&unknowns)
             .unwrap_or_else(|err| panic!("unknown prefix index should build: {err}"));
+        let unknown_subscriptless_index = build_unknown_subscriptless_index(&unknowns);
 
         let var = flat::Variable {
             name: VarName::new("x"),
@@ -885,8 +921,73 @@ mod tests {
             &VarName::new("x"),
             &var,
             &unknowns,
-            &unknown_prefix_children
+            &unknown_prefix_children,
+            &unknown_subscriptless_index
         ));
+    }
+
+    #[test]
+    fn test_should_skip_binding_keeps_collapsed_array_family_reference() {
+        let unknowns = HashSet::from([
+            VarName::new("heat.Ts"),
+            VarName::new("heat.states[1].T"),
+            VarName::new("heat.states[2].T"),
+        ]);
+        let unknown_prefix_children = build_unknown_prefix_children(&unknowns)
+            .unwrap_or_else(|err| panic!("unknown prefix index should build: {err}"));
+        let unknown_subscriptless_index = build_unknown_subscriptless_index(&unknowns);
+        let var = flat::Variable {
+            name: VarName::new("heat.Ts"),
+            variability: rumoca_core::Variability::Empty,
+            is_primitive: true,
+            binding: Some(Expression::VarRef {
+                name: VarName::new("heat.states.T").into(),
+                subscripts: vec![],
+                span: test_span(),
+            }),
+            ..rumoca_ir_flat::Variable::empty_with_span(test_span())
+        };
+
+        assert!(
+            !should_skip_binding_for_explicit_var(
+                &VarName::new("heat.Ts"),
+                &var,
+                &unknowns,
+                &unknown_prefix_children,
+                &unknown_subscriptless_index,
+            ),
+            "a collapsed array-family reference is an unknown constraint, not a constant default"
+        );
+    }
+
+    #[test]
+    fn test_should_skip_binding_keeps_distinct_scalar_array_element_reference() {
+        let unknowns = HashSet::from([VarName::new("x[1]"), VarName::new("x[2]")]);
+        let unknown_prefix_children = build_unknown_prefix_children(&unknowns)
+            .unwrap_or_else(|err| panic!("unknown prefix index should build: {err}"));
+        let unknown_subscriptless_index = build_unknown_subscriptless_index(&unknowns);
+        let var = flat::Variable {
+            name: VarName::new("x[1]"),
+            variability: rumoca_core::Variability::Empty,
+            is_primitive: true,
+            binding: Some(Expression::VarRef {
+                name: VarName::new("x[2]").into(),
+                subscripts: vec![],
+                span: test_span(),
+            }),
+            ..rumoca_ir_flat::Variable::empty_with_span(test_span())
+        };
+
+        assert!(
+            !should_skip_binding_for_explicit_var(
+                &VarName::new("x[1]"),
+                &var,
+                &unknowns,
+                &unknown_prefix_children,
+                &unknown_subscriptless_index,
+            ),
+            "different scalar elements in one array family are different unknowns"
+        );
     }
 
     #[test]
@@ -934,6 +1035,49 @@ mod tests {
     }
 
     #[test]
+    fn test_collect_shadowed_bindings_rejects_distinct_real_rhs() {
+        let mut flat = Model::new();
+        flat.add_variable(
+            VarName::new("x"),
+            flat::Variable {
+                name: VarName::new("x"),
+                is_primitive: true,
+                binding: Some(Expression::Literal {
+                    value: rumoca_core::Literal::Real(1.0),
+                    span: test_span(),
+                }),
+                ..rumoca_ir_flat::Variable::empty_with_span(test_span())
+            },
+        );
+        flat.add_equation(rumoca_ir_flat::Equation {
+            residual: Expression::Binary {
+                op: rumoca_core::OpBinary::Sub,
+                lhs: Box::new(Expression::VarRef {
+                    name: VarName::new("x").into(),
+                    subscripts: vec![],
+                    span: test_span(),
+                }),
+                rhs: Box::new(Expression::Literal {
+                    value: rumoca_core::Literal::Real(f64::from_bits(1.0_f64.to_bits() + 1)),
+                    span: test_span(),
+                }),
+                span: test_span(),
+            },
+            span: test_span(),
+            origin: EquationOrigin::ComponentEquation {
+                component: "M".to_string(),
+            },
+            scalar_count: 1,
+        });
+
+        let shadowed = collect_bindings_shadowed_by_identical_explicit_equations(&flat);
+        assert!(
+            !shadowed.contains(&VarName::new("x")),
+            "numerically close but distinct literals are not the same equation"
+        );
+    }
+
+    #[test]
     fn test_select_scalar_binding_record_field_alias_selects_known_field() {
         let known_var_names = HashSet::from([
             "mach.friction.frictionParameters.wRef".to_string(),
@@ -947,8 +1091,13 @@ mod tests {
         };
         let owner_span = test_span();
 
-        let selected =
-            select_scalar_binding_record_field_alias(&lhs, &binding, &known_var_names, owner_span);
+        let selected = select_scalar_binding_record_field_alias(
+            &lhs,
+            &binding,
+            &known_var_names,
+            &IndexMap::new(),
+            owner_span,
+        );
         assert_eq!(
             format!("{selected:?}"),
             format!(
@@ -977,8 +1126,13 @@ mod tests {
         };
         let owner_span = test_span();
 
-        let selected =
-            select_scalar_binding_record_field_alias(&lhs, &binding, &known_var_names, owner_span);
+        let selected = select_scalar_binding_record_field_alias(
+            &lhs,
+            &binding,
+            &known_var_names,
+            &IndexMap::new(),
+            owner_span,
+        );
 
         assert_eq!(
             format!("{selected:?}"),
@@ -1004,8 +1158,13 @@ mod tests {
         };
         let owner_span = test_span();
 
-        let selected =
-            select_scalar_binding_record_field_alias(&lhs, &binding, &known_var_names, owner_span);
+        let selected = select_scalar_binding_record_field_alias(
+            &lhs,
+            &binding,
+            &known_var_names,
+            &IndexMap::new(),
+            owner_span,
+        );
         assert_eq!(
             format!("{selected:?}"),
             format!(

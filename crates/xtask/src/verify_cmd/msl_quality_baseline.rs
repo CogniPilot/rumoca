@@ -9,10 +9,26 @@ use super::VerifyMslParityArgs;
 const MSL_QUALITY_BASELINE_ASSET_URL: &str = "https://github.com/CogniPilot/rumoca/releases/download/msl-quality-baseline/msl_quality_baseline.json";
 const MSL_QUALITY_BASELINE_FALLBACK_REL: &str =
     "crates/rumoca-test-msl/tests/msl_tests/msl_quality_baseline.json";
-const MSL_QUALITY_GATE_VERSION: u64 = 1;
+const MSL_QUALITY_GATE_VERSION: u64 = 2;
+const PREVIOUS_MSL_QUALITY_GATE_VERSION: u64 = 1;
 const MSL_QUALITY_RUN_SCOPE: &str = "full";
+const V2_FLATTEN_MODELS_BEFORE: usize = 565;
+const V2_FLATTEN_MODELS_AFTER: usize = 555;
+const V2_REATTRIBUTED_ERROR_CODE: &str = "ER002";
+const V2_REATTRIBUTED_MODELS: [&str; 10] = [
+    "Modelica.Fluid.Examples.AST_BatchPlant.BatchPlant_StandardWater",
+    "Modelica.Fluid.Examples.AST_BatchPlant.Test.OneTank",
+    "Modelica.Fluid.Examples.AST_BatchPlant.Test.TankWithEmptyingPipe1",
+    "Modelica.Fluid.Examples.AST_BatchPlant.Test.TankWithEmptyingPipe2",
+    "Modelica.Fluid.Examples.AST_BatchPlant.Test.TanksWithEmptyingPipe1",
+    "Modelica.Fluid.Examples.AST_BatchPlant.Test.TanksWithEmptyingPipe2",
+    "Modelica.Fluid.Examples.AST_BatchPlant.Test.TwoTanks",
+    "Modelica.Fluid.Examples.Explanatory.MeasuringTemperature",
+    "Modelica.Fluid.Examples.Explanatory.MomentumBalanceFittings",
+    "Modelica.Fluid.Examples.InverseParameterization",
+];
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct MslQualityBaselineHeader {
     quality_gate_version: u64,
     run_scope: String,
@@ -21,15 +37,86 @@ struct MslQualityBaselineHeader {
     sim_target_models: usize,
     #[serde(default)]
     omc_context_migration: Option<OmcContextMigration>,
+    #[serde(default)]
+    metric_schema_migration: Option<MetricSchemaMigration>,
+    simulatable_attempted: usize,
+    parse_models: usize,
+    flatten_models: usize,
+    dae_models: usize,
+    compiled_models: usize,
+    solve_models: usize,
+    balanced_models: usize,
+    unbalanced_models: usize,
+    partial_models: usize,
+    balance_denominator: usize,
+    initial_balanced_models: usize,
+    initial_unbalanced_models: usize,
+    sim_attempted: usize,
+    ic_attempted: usize,
+    ic_ok: usize,
+    ic_solver_fail: usize,
+    sim_ok: usize,
+    runtime_ratio_stats: RuntimeRatioStats,
+    trace_accuracy_stats: TraceAccuracyStats,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct OmcContextMigration {
     #[serde(deserialize_with = "deserialize_omc_version")]
     from_omc_version: String,
     #[serde(deserialize_with = "deserialize_omc_version")]
     to_omc_version: String,
     sim_target_models: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct MetricSchemaMigration {
+    from_quality_gate_version: u64,
+    to_quality_gate_version: u64,
+    flatten_models_before: usize,
+    flatten_models_after: usize,
+    reattributed_error_code: String,
+    reattributed_models: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RuntimeRatioStats {
+    system_ratio_both_success: DistributionMedian,
+    wall_ratio_both_success: DistributionMedian,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct DistributionMedian {
+    median: f64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct TraceAccuracyStats {
+    models_compared: usize,
+    agreement_high: usize,
+    agreement_minor: usize,
+    agreement_deviation: usize,
+    bad_channels_total: usize,
+    severe_channels_total: usize,
+    models_with_severe_channel: usize,
+    models_with_any_channel_deviation: usize,
+    violation_mass_total: f64,
+    initial_condition: InitialConditionStats,
+    state_selection: StateSelectionStats,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct InitialConditionStats {
+    deviation_channels_total: usize,
+    severe_channels_total: usize,
+    violation_mass_total: f64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct StateSelectionStats {
+    exact_state_set_match_models: usize,
+    total_rumoca_only_states: usize,
+    total_omc_only_states: usize,
 }
 
 fn deserialize_omc_version<'de, D>(deserializer: D) -> std::result::Result<String, D::Error>
@@ -80,12 +167,12 @@ pub(super) fn resolve_msl_quality_baseline(
     if !args.no_remote_quality_baseline
         && let Some(promoted) = download_msl_quality_baseline_asset(root)?
     {
-        let promoted_header = load_baseline_header(&promoted)?;
+        let promoted_header = load_promoted_baseline_header(&promoted)?;
         match choose_baseline(&promoted_header, &checked_in_header)? {
             BaselineChoice::Promoted => return Ok(promoted),
             BaselineChoice::CheckedInMigration => {
                 println!(
-                    "MSL quality baseline: checked-in baseline declares an OMC context migration; using {}",
+                    "MSL quality baseline: checked-in baseline declares a context/schema migration; using {}",
                     checked_in.display()
                 );
                 return Ok(checked_in);
@@ -112,6 +199,47 @@ fn choose_baseline(
     checked_in: &MslQualityBaselineHeader,
 ) -> Result<BaselineChoice> {
     validate_context_migration(checked_in)?;
+    validate_metric_schema_migration(checked_in)?;
+    if promoted.quality_gate_version != checked_in.quality_gate_version {
+        let Some(migration) = checked_in.metric_schema_migration.as_ref() else {
+            bail!(
+                "MSL quality schema differs without an explicit migration (promoted={}, checked-in={})",
+                promoted.quality_gate_version,
+                checked_in.quality_gate_version
+            );
+        };
+        ensure!(
+            migration.from_quality_gate_version == promoted.quality_gate_version
+                && migration.to_quality_gate_version == checked_in.quality_gate_version,
+            "MSL quality schema migration differs from baseline contexts (declared={} -> {}, actual={} -> {})",
+            migration.from_quality_gate_version,
+            migration.to_quality_gate_version,
+            promoted.quality_gate_version,
+            checked_in.quality_gate_version
+        );
+        ensure!(
+            promoted.sim_target_models == checked_in.sim_target_models,
+            "MSL quality schema migration target set differs (promoted={}, checked-in={})",
+            promoted.sim_target_models,
+            checked_in.sim_target_models
+        );
+        let omc_context_changed = promoted.omc_version != checked_in.omc_version;
+        if omc_context_changed {
+            let Some(omc_migration) = checked_in.omc_context_migration.as_ref() else {
+                bail!(
+                    "MSL quality schema and OMC contexts both differ, but no OMC migration is declared"
+                );
+            };
+            ensure!(
+                omc_migration.from_omc_version == promoted.omc_version,
+                "MSL OMC context migration source differs (declared={}, promoted={})",
+                omc_migration.from_omc_version,
+                promoted.omc_version
+            );
+        }
+        validate_migration_metric_integrity(promoted, checked_in, true, omc_context_changed)?;
+        return Ok(BaselineChoice::CheckedInMigration);
+    }
     if promoted.omc_version == checked_in.omc_version {
         return Ok(BaselineChoice::Promoted);
     }
@@ -135,6 +263,7 @@ fn choose_baseline(
         promoted.sim_target_models,
         checked_in.sim_target_models
     );
+    validate_migration_metric_integrity(promoted, checked_in, false, true)?;
     Ok(BaselineChoice::CheckedInMigration)
 }
 
@@ -161,7 +290,342 @@ fn validate_context_migration(baseline: &MslQualityBaselineHeader) -> Result<()>
     Ok(())
 }
 
+fn validate_metric_schema_migration(baseline: &MslQualityBaselineHeader) -> Result<()> {
+    let Some(migration) = baseline.metric_schema_migration.as_ref() else {
+        return Ok(());
+    };
+    ensure!(
+        migration.from_quality_gate_version == PREVIOUS_MSL_QUALITY_GATE_VERSION
+            && migration.to_quality_gate_version == MSL_QUALITY_GATE_VERSION,
+        "MSL metric schema migration must be the reviewed version-1 to version-2 correction"
+    );
+    ensure!(
+        migration.to_quality_gate_version == baseline.quality_gate_version,
+        "MSL metric schema migration target differs (declared={}, baseline={})",
+        migration.to_quality_gate_version,
+        baseline.quality_gate_version
+    );
+    ensure!(
+        migration.flatten_models_before == V2_FLATTEN_MODELS_BEFORE
+            && migration.flatten_models_after == V2_FLATTEN_MODELS_AFTER,
+        "MSL metric schema migration flatten counts differ from the reviewed correction"
+    );
+    ensure!(
+        migration.flatten_models_before - migration.flatten_models_after
+            == migration.reattributed_models.len(),
+        "MSL metric schema migration count delta does not match affected model set"
+    );
+    ensure!(
+        migration.reattributed_error_code == V2_REATTRIBUTED_ERROR_CODE,
+        "MSL metric schema migration diagnostic cohort differs from the reviewed correction"
+    );
+    let mut unique_models = migration.reattributed_models.clone();
+    unique_models.sort();
+    unique_models.dedup();
+    ensure!(
+        unique_models.len() == migration.reattributed_models.len(),
+        "MSL metric schema migration model set contains duplicates"
+    );
+    let mut expected_models = V2_REATTRIBUTED_MODELS.map(str::to_string).to_vec();
+    expected_models.sort();
+    ensure!(
+        unique_models == expected_models,
+        "MSL metric schema migration model set differs from the reviewed correction"
+    );
+    Ok(())
+}
+
+fn validate_migration_metric_integrity(
+    promoted: &MslQualityBaselineHeader,
+    checked_in: &MslQualityBaselineHeader,
+    flatten_is_migrated: bool,
+    omc_context_changed: bool,
+) -> Result<()> {
+    ensure!(
+        promoted.simulatable_attempted == checked_in.simulatable_attempted,
+        "MSL migration denominator changed (promoted={}, checked-in={})",
+        promoted.simulatable_attempted,
+        checked_in.simulatable_attempted
+    );
+    if flatten_is_migrated {
+        let migration = checked_in
+            .metric_schema_migration
+            .as_ref()
+            .expect("schema migration was established by choose_baseline");
+        ensure!(
+            promoted.flatten_models == migration.flatten_models_before
+                && checked_in.flatten_models == migration.flatten_models_after,
+            "MSL metric schema migration flatten counts do not match the compared baselines"
+        );
+    }
+
+    let higher_is_better = [
+        (
+            "parse models",
+            promoted.parse_models,
+            checked_in.parse_models,
+        ),
+        ("DAE models", promoted.dae_models, checked_in.dae_models),
+        (
+            "compiled models",
+            promoted.compiled_models,
+            checked_in.compiled_models,
+        ),
+        (
+            "solve models",
+            promoted.solve_models,
+            checked_in.solve_models,
+        ),
+        (
+            "balanced models",
+            promoted.balanced_models,
+            checked_in.balanced_models,
+        ),
+        (
+            "balance denominator",
+            promoted.balance_denominator,
+            checked_in.balance_denominator,
+        ),
+        (
+            "initial balanced models",
+            promoted.initial_balanced_models,
+            checked_in.initial_balanced_models,
+        ),
+        (
+            "simulation attempts",
+            promoted.sim_attempted,
+            checked_in.sim_attempted,
+        ),
+        (
+            "initial-condition attempts",
+            promoted.ic_attempted,
+            checked_in.ic_attempted,
+        ),
+        ("initial-condition solves", promoted.ic_ok, checked_in.ic_ok),
+        ("successful simulations", promoted.sim_ok, checked_in.sim_ok),
+    ];
+    for (label, promoted_value, checked_in_value) in higher_is_better {
+        ensure_not_lowered(label, promoted_value, checked_in_value)?;
+    }
+    if !flatten_is_migrated {
+        ensure_not_lowered(
+            "flatten models",
+            promoted.flatten_models,
+            checked_in.flatten_models,
+        )?;
+    }
+
+    for (label, promoted_value, checked_in_value) in [
+        (
+            "partial models",
+            promoted.partial_models,
+            checked_in.partial_models,
+        ),
+        (
+            "unbalanced models",
+            promoted.unbalanced_models,
+            checked_in.unbalanced_models,
+        ),
+        (
+            "initial unbalanced models",
+            promoted.initial_unbalanced_models,
+            checked_in.initial_unbalanced_models,
+        ),
+        (
+            "initial-condition solver failures",
+            promoted.ic_solver_fail,
+            checked_in.ic_solver_fail,
+        ),
+    ] {
+        ensure_not_raised(label, promoted_value, checked_in_value)?;
+    }
+
+    if !omc_context_changed {
+        validate_omc_dependent_metric_integrity(promoted, checked_in)?;
+    }
+    Ok(())
+}
+
+fn validate_omc_dependent_metric_integrity(
+    promoted: &MslQualityBaselineHeader,
+    checked_in: &MslQualityBaselineHeader,
+) -> Result<()> {
+    let promoted_trace = &promoted.trace_accuracy_stats;
+    let checked_trace = &checked_in.trace_accuracy_stats;
+    for (label, promoted_value, checked_in_value) in [
+        (
+            "trace models compared",
+            promoted_trace.models_compared,
+            checked_trace.models_compared,
+        ),
+        (
+            "high trace agreement",
+            promoted_trace.agreement_high,
+            checked_trace.agreement_high,
+        ),
+        (
+            "state-set exact matches",
+            promoted_trace.state_selection.exact_state_set_match_models,
+            checked_trace.state_selection.exact_state_set_match_models,
+        ),
+    ] {
+        ensure_not_lowered(label, promoted_value, checked_in_value)?;
+    }
+    let promoted_high_minor = promoted_trace
+        .agreement_high
+        .checked_add(promoted_trace.agreement_minor)
+        .context("promoted high+minor trace agreement overflowed")?;
+    let checked_high_minor = checked_trace
+        .agreement_high
+        .checked_add(checked_trace.agreement_minor)
+        .context("checked-in high+minor trace agreement overflowed")?;
+    ensure_not_lowered(
+        "high+minor trace agreement",
+        promoted_high_minor,
+        checked_high_minor,
+    )?;
+    ensure_not_lowered(
+        "trace models without severe channels",
+        promoted_trace
+            .models_compared
+            .saturating_sub(promoted_trace.models_with_severe_channel),
+        checked_trace
+            .models_compared
+            .saturating_sub(checked_trace.models_with_severe_channel),
+    )?;
+    validate_omc_error_metric_integrity(promoted_trace, checked_trace)?;
+    validate_runtime_metric_integrity(promoted, checked_in)
+}
+
+fn validate_omc_error_metric_integrity(
+    promoted_trace: &TraceAccuracyStats,
+    checked_trace: &TraceAccuracyStats,
+) -> Result<()> {
+    for (label, promoted_value, checked_in_value) in [
+        (
+            "trace deviation models",
+            promoted_trace.agreement_deviation,
+            checked_trace.agreement_deviation,
+        ),
+        (
+            "trace bad channels",
+            promoted_trace.bad_channels_total,
+            checked_trace.bad_channels_total,
+        ),
+        (
+            "trace severe channels",
+            promoted_trace.severe_channels_total,
+            checked_trace.severe_channels_total,
+        ),
+        (
+            "trace models with bad channels",
+            promoted_trace.models_with_any_channel_deviation,
+            checked_trace.models_with_any_channel_deviation,
+        ),
+        (
+            "initial-condition deviation channels",
+            promoted_trace.initial_condition.deviation_channels_total,
+            checked_trace.initial_condition.deviation_channels_total,
+        ),
+        (
+            "initial-condition severe channels",
+            promoted_trace.initial_condition.severe_channels_total,
+            checked_trace.initial_condition.severe_channels_total,
+        ),
+        (
+            "state-set rumoca-only states",
+            promoted_trace.state_selection.total_rumoca_only_states,
+            checked_trace.state_selection.total_rumoca_only_states,
+        ),
+        (
+            "state-set OMC-only states",
+            promoted_trace.state_selection.total_omc_only_states,
+            checked_trace.state_selection.total_omc_only_states,
+        ),
+    ] {
+        ensure_not_raised(label, promoted_value, checked_in_value)?;
+    }
+    ensure_float_not_raised(
+        "trace violation mass",
+        promoted_trace.violation_mass_total,
+        checked_trace.violation_mass_total,
+    )?;
+    ensure_float_not_raised(
+        "initial-condition violation mass",
+        promoted_trace.initial_condition.violation_mass_total,
+        checked_trace.initial_condition.violation_mass_total,
+    )
+}
+
+fn validate_runtime_metric_integrity(
+    promoted: &MslQualityBaselineHeader,
+    checked_in: &MslQualityBaselineHeader,
+) -> Result<()> {
+    ensure_runtime_speedup_not_regressed(
+        "runtime system speedup median",
+        promoted
+            .runtime_ratio_stats
+            .system_ratio_both_success
+            .median,
+        checked_in
+            .runtime_ratio_stats
+            .system_ratio_both_success
+            .median,
+    )?;
+    ensure_runtime_speedup_not_regressed(
+        "runtime wall speedup median",
+        promoted.runtime_ratio_stats.wall_ratio_both_success.median,
+        checked_in
+            .runtime_ratio_stats
+            .wall_ratio_both_success
+            .median,
+    )
+}
+
+fn ensure_not_lowered(label: &str, promoted: usize, checked_in: usize) -> Result<()> {
+    ensure!(
+        checked_in >= promoted,
+        "MSL migration lowers unrelated {label} (promoted={promoted}, checked-in={checked_in})"
+    );
+    Ok(())
+}
+
+fn ensure_not_raised(label: &str, promoted: usize, checked_in: usize) -> Result<()> {
+    ensure!(
+        checked_in <= promoted,
+        "MSL migration raises unrelated {label} (promoted={promoted}, checked-in={checked_in})"
+    );
+    Ok(())
+}
+
+fn ensure_float_not_raised(label: &str, promoted: f64, checked_in: f64) -> Result<()> {
+    ensure!(
+        checked_in <= promoted + 1.0e-9,
+        "MSL migration raises unrelated {label} (promoted={promoted:.6e}, checked-in={checked_in:.6e})"
+    );
+    Ok(())
+}
+
+fn ensure_runtime_speedup_not_regressed(label: &str, promoted: f64, checked_in: f64) -> Result<()> {
+    ensure!(
+        checked_in >= promoted * 0.65,
+        "MSL migration regresses unrelated {label} by more than 35% (promoted={promoted:.6e}, checked-in={checked_in:.6e})"
+    );
+    Ok(())
+}
+
 fn load_baseline_header(path: &Path) -> Result<MslQualityBaselineHeader> {
+    load_baseline_header_with_previous(path, false)
+}
+
+fn load_promoted_baseline_header(path: &Path) -> Result<MslQualityBaselineHeader> {
+    load_baseline_header_with_previous(path, true)
+}
+
+fn load_baseline_header_with_previous(
+    path: &Path,
+    allow_previous_version: bool,
+) -> Result<MslQualityBaselineHeader> {
     let data = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
     let baseline: MslQualityBaselineHeader = serde_json::from_slice(&data).map_err(|error| {
         anyhow::anyhow!(
@@ -169,8 +633,11 @@ fn load_baseline_header(path: &Path) -> Result<MslQualityBaselineHeader> {
             path.display()
         )
     })?;
+    let version_supported = baseline.quality_gate_version == MSL_QUALITY_GATE_VERSION
+        || (allow_previous_version
+            && baseline.quality_gate_version == PREVIOUS_MSL_QUALITY_GATE_VERSION);
     ensure!(
-        baseline.quality_gate_version == MSL_QUALITY_GATE_VERSION,
+        version_supported,
         "unsupported MSL quality_gate_version={} in {}",
         baseline.quality_gate_version,
         path.display()
@@ -188,6 +655,8 @@ fn load_baseline_header(path: &Path) -> Result<MslQualityBaselineHeader> {
     );
     validate_context_migration(&baseline)
         .with_context(|| format!("invalid OMC context migration in {}", path.display()))?;
+    validate_metric_schema_migration(&baseline)
+        .with_context(|| format!("invalid metric schema migration in {}", path.display()))?;
     Ok(baseline)
 }
 
@@ -255,135 +724,5 @@ fn download_msl_quality_baseline_asset(root: &Path) -> Result<Option<PathBuf>> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{
-        super::VerifyMslParityArgs, BaselineChoice, MslQualityBaselineHeader, OmcContextMigration,
-        choose_baseline, load_baseline_header, validate_context_migration,
-    };
-    use serde_json::json;
-    use std::{fs, path::PathBuf};
-
-    fn header(omc_version: &str) -> MslQualityBaselineHeader {
-        MslQualityBaselineHeader {
-            quality_gate_version: 1,
-            run_scope: "full".to_string(),
-            omc_version: omc_version.to_string(),
-            sim_target_models: 566,
-            omc_context_migration: None,
-        }
-    }
-
-    fn migration(from: &str, to: &str) -> OmcContextMigration {
-        OmcContextMigration {
-            from_omc_version: from.to_string(),
-            to_omc_version: to.to_string(),
-            sim_target_models: 566,
-        }
-    }
-
-    #[test]
-    fn msl_parity_config_forwards_resolved_quality_baseline_path() {
-        let args = VerifyMslParityArgs {
-            quality_baseline: Some(PathBuf::from(
-                "target/msl/baselines/msl_quality_baseline.json",
-            )),
-            ..VerifyMslParityArgs::default()
-        };
-        let config = args.to_parity_config_json();
-
-        assert_eq!(
-            config
-                .get("quality_baseline_file")
-                .and_then(serde_json::Value::as_str),
-            Some("target/msl/baselines/msl_quality_baseline.json")
-        );
-    }
-
-    #[test]
-    fn default_msl_parity_uses_baseline_relative_quality_gate() {
-        assert!(VerifyMslParityArgs::default().uses_baseline_relative_quality_gate());
-        let short_run = VerifyMslParityArgs {
-            sim_set: Some("short".to_string()),
-            ..VerifyMslParityArgs::default()
-        };
-        assert!(!short_run.uses_baseline_relative_quality_gate());
-    }
-
-    #[test]
-    fn checked_in_baseline_declares_omc_context_migration() {
-        let promoted = header("OpenModelica 1.27.0");
-        let mut checked_in = header("a96aa1a-cmake");
-        checked_in.omc_context_migration = Some(migration("OpenModelica 1.27.0", "a96aa1a-cmake"));
-
-        assert_eq!(
-            choose_baseline(&promoted, &checked_in).expect("declared migration should select"),
-            BaselineChoice::CheckedInMigration
-        );
-    }
-
-    #[test]
-    fn same_omc_context_keeps_promoted_baseline() {
-        assert_eq!(
-            choose_baseline(&header("a96aa1a-cmake"), &header("a96aa1a-cmake"))
-                .expect("same context should select"),
-            BaselineChoice::Promoted
-        );
-    }
-
-    #[test]
-    fn changed_omc_context_requires_exact_migration_declaration() {
-        let promoted = header("old");
-        let mut checked_in = header("new");
-        assert!(choose_baseline(&promoted, &checked_in).is_err());
-
-        checked_in.omc_context_migration = Some(migration("new", "old"));
-        assert!(choose_baseline(&promoted, &checked_in).is_err());
-
-        checked_in.omc_context_migration = Some(migration("old", "new"));
-        checked_in
-            .omc_context_migration
-            .as_mut()
-            .unwrap()
-            .sim_target_models = 565;
-        assert!(choose_baseline(&promoted, &checked_in).is_err());
-    }
-
-    #[test]
-    fn migration_must_be_internally_consistent_without_promoted_baseline() {
-        let mut baseline = header("new");
-        baseline.omc_context_migration = Some(migration("old", "other"));
-        assert!(validate_context_migration(&baseline).is_err());
-
-        baseline.omc_context_migration = Some(migration("new", "new"));
-        assert!(validate_context_migration(&baseline).is_err());
-
-        baseline.omc_context_migration = Some(migration("old", "new"));
-        baseline
-            .omc_context_migration
-            .as_mut()
-            .unwrap()
-            .sim_target_models = 565;
-        assert!(validate_context_migration(&baseline).is_err());
-    }
-
-    #[test]
-    fn baseline_header_rejects_missing_or_invalid_omc_version() {
-        let temp = tempfile::tempdir().expect("temporary directory should be available");
-        let invalid_versions = [None, Some(json!(null)), Some(json!(7)), Some(json!(" "))];
-
-        for (index, version) in invalid_versions.into_iter().enumerate() {
-            let path = temp.path().join(format!("invalid-{index}.json"));
-            let mut baseline = json!({
-                "quality_gate_version": 1,
-                "run_scope": "full",
-                "sim_target_models": 566
-            });
-            if let Some(version) = version {
-                baseline["omc_version"] = version;
-            }
-            fs::write(&path, baseline.to_string()).expect("fixture should be writable");
-            let error = load_baseline_header(&path).expect_err("invalid context must fail");
-            assert!(error.to_string().contains("omc_version"), "{error}");
-        }
-    }
-}
+#[path = "msl_quality_baseline_tests.rs"]
+mod tests;

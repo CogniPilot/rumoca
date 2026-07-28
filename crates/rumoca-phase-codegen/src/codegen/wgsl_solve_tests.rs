@@ -454,7 +454,7 @@ fn test_wgsl_solve_builtin_target_reports_invalid_native_stride_position() {
     assert!(
         error
             .to_string()
-            .contains("native map family stride op position 99 out of bounds"),
+            .contains("load stride at op 99 of 4 targets missing op"),
         "error should explain the invalid native-family stride position: {error}"
     );
 }

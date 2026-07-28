@@ -1,6 +1,53 @@
 use super::*;
 
 #[test]
+fn nested_type_in_an_instantiating_model_does_not_capture_a_device_sibling_type() {
+    let mut session = Session::default();
+    session
+        .add_document(
+            "test.mo",
+            r#"
+                package Root
+                  package Examples
+                    model Test
+                      record Shared
+                        Real unrelated;
+                      end Shared;
+                      Root.Internal.Device device;
+                    end Test;
+                  end Examples;
+                  package Internal
+                    function consume
+                      input Shared constants;
+                      output Real value;
+                    algorithm
+                      value := constants.value;
+                    end consume;
+                    model Device
+                      constant Shared constants;
+                      Shared copied = constants;
+                      Real observed = consume(constants);
+                    end Device;
+                    record Shared
+                      Real value;
+                    end Shared;
+                  end Internal;
+                end Root;
+            "#,
+        )
+        .expect("source should parse");
+
+    let diagnostics = session.compile_model_diagnostics("Root.Examples.Test");
+    assert!(
+        diagnostics
+            .diagnostics
+            .iter()
+            .all(|diagnostic| !diagnostic.message.contains("type mismatch")),
+        "device-local sibling types must not bind to an unrelated nested record: {diagnostics:?}"
+    );
+}
+
+#[test]
 fn test_merge_duplicate_class_diagnostic_has_primary_label() {
     let mut session = Session::default();
     session
@@ -1236,4 +1283,116 @@ end P;
         matches!(result, Ok(PhaseResult::Success(_))),
         "expected compile success for enum 2D lookup model, got {result:?}"
     );
+}
+
+/// An under-determined model must surface as a structured ToDae/ED001 failure
+/// carrying the balance breakdown, not just a rendered summary string.
+#[test]
+fn strict_dae_recovery_detailed_reports_todae_ed001_with_balance_detail() {
+    let mut session = Session::default();
+    session
+        .add_document(
+            "Unbalanced.mo",
+            r#"
+                model Unbalanced
+                  Real x;
+                  Real y;
+                equation
+                  x = 1;
+                end Unbalanced;
+                "#,
+        )
+        .unwrap();
+
+    let failure = session
+        .compile_model_dae_strict_reachable_uncached_with_recovery_detailed("Unbalanced")
+        .expect_err("an under-determined model must not compile strictly");
+
+    assert_eq!(failure.phase, Some(FailedPhase::ToDae));
+    assert_eq!(failure.phase_name(), "ToDae");
+    assert_eq!(
+        failure.error_code.as_deref(),
+        Some("ED001"),
+        "expected the bare SPEC_0008 code, got {:?}",
+        failure.error_code
+    );
+    let detail = failure
+        .balance_detail
+        .as_ref()
+        .expect("ED001 must carry the balance breakdown");
+    assert!(
+        detail.balance() != 0,
+        "carried detail must reproduce the unbalanced verdict: {detail}"
+    );
+    assert_eq!(detail.equations_unknowns().1, detail.raw_unknowns());
+    assert!(failure.summary.contains("unbalanced model"));
+}
+
+/// The direct regression for the ThreeTanks mislabel: a resolve-stage failure
+/// must report `phase: None` (rendered as `Resolve`), never `ToDae`.
+#[test]
+fn strict_dae_recovery_detailed_reports_none_phase_for_resolve_failure() {
+    let mut session = Session::default();
+    session
+        .add_document(
+            "Unresolved.mo",
+            r#"
+                model Unresolved
+                  Real x;
+                equation
+                  x = nParallel;
+                end Unresolved;
+                "#,
+        )
+        .unwrap();
+
+    let failure = session
+        .compile_model_dae_strict_reachable_uncached_with_recovery_detailed("Unresolved")
+        .expect_err("an unresolved reference must not compile strictly");
+
+    assert_eq!(
+        failure.phase, None,
+        "resolve failures never reach a model phase, got {:?}",
+        failure.phase
+    );
+    assert_eq!(failure.phase_name(), "Resolve");
+    assert!(
+        failure.balance_detail.is_none(),
+        "a resolve failure carries no balance breakdown"
+    );
+    assert!(
+        !failure.summary.contains("failed in ToDae"),
+        "summary must not claim ToDae: {}",
+        failure.summary
+    );
+}
+
+/// The string API must keep returning exactly the detailed summary so
+/// its six existing callers do not change behavior.
+#[test]
+fn strict_dae_recovery_string_api_matches_detailed_summary() {
+    let mut session = Session::default();
+    session
+        .add_document(
+            "Unbalanced2.mo",
+            r#"
+                model Unbalanced2
+                  Real x;
+                  Real y;
+                equation
+                  x = 1;
+                end Unbalanced2;
+                "#,
+        )
+        .unwrap();
+
+    let detailed_summary = session
+        .compile_model_dae_strict_reachable_uncached_with_recovery_detailed("Unbalanced2")
+        .expect_err("model is unbalanced")
+        .summary
+        .clone();
+    let string_summary = session
+        .compile_model_dae_strict_reachable_uncached_with_recovery("Unbalanced2")
+        .expect_err("model is unbalanced");
+    assert_eq!(detailed_summary, string_summary);
 }

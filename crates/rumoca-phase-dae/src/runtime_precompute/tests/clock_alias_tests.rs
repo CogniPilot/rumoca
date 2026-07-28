@@ -3,11 +3,11 @@ use super::*;
 fn seed_conditional_residual_alias_chain_params(dae_model: &mut dae::Dae) {
     for (name, value) in [
         ("periodicClock.factor", 20.0),
-        ("periodicClock.resolution", 2.0),
-        ("periodicClock.resolutionFactor", 1000.0),
+        ("periodicClock.resolution", 4.0),
+        ("periodicClock.resolutionFactor", 60.0),
         ("shiftSample1.shiftCounter", 4.0),
         ("shiftSample1.resolution", 2.0),
-        ("threshold", 3.0),
+        ("threshold", 5.0),
     ] {
         let mut p = dae::Variable::new(
             rumoca_core::VarName::new(name),
@@ -149,8 +149,8 @@ fn test_runtime_precompute_resolves_clock_alias_chain_from_conditional_residual_
             .clocks
             .schedules
             .iter()
-            .any(|sched| (sched.period_seconds - 0.02).abs() <= 1e-12),
-        "expected 20/1000 second periodic schedule through conditional-residual alias chain"
+            .any(|sched| (sched.period_seconds - 20.0 * 60.0).abs() <= 1e-9),
+        "MLS §16.5.2: subSample(Clock(20), 60) is a 1200 s clock through the alias chain"
     );
 }
 

@@ -30,13 +30,14 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::lint_context::LintContext;
 use crate::lint_options::LintOptions;
 use crate::lint_rules::{
     LintLevel, LintMessage, LintRule, MagicNumberRule, MissingDocumentationRule,
     NamingConventionRule,
 };
 
-use rumoca_compile::parsing::validate_source_syntax;
+use rumoca_compile::parsing::parse_source_to_ast;
 
 /// Lint Modelica source code.
 ///
@@ -56,25 +57,34 @@ pub fn lint(source: &str, file_name: &str, options: &LintOptions) -> Vec<LintMes
 
     let mut messages = Vec::new();
 
-    // Check syntax first
-    if let Err(e) = validate_source_syntax(source, file_name) {
-        if !directives.suppresses(1, "syntax-error") {
-            messages.push(LintMessage {
-                rule: "syntax-error",
-                level: LintLevel::Error,
-                message: format!("Syntax error: {}", e),
-                file: file_name.to_string(),
-                line: 1,
-                column: 1,
-                suggestion: None,
-            });
+    // Parse once: a syntax error short-circuits, otherwise every rule shares
+    // this AST instead of re-scanning raw lines.
+    let ast = match parse_source_to_ast(source, file_name) {
+        Ok(ast) => ast,
+        Err(e) => {
+            if !directives.suppresses(1, "syntax-error") {
+                messages.push(LintMessage {
+                    rule: "syntax-error",
+                    level: LintLevel::Error,
+                    message: format!("Syntax error: {}", e),
+                    file: file_name.to_string(),
+                    line: 1,
+                    column: 1,
+                    suggestion: None,
+                });
+            }
+            return messages;
         }
-        return messages;
-    }
+    };
+
+    let ctx = LintContext {
+        file_name,
+        ast: &ast,
+    };
 
     // Apply lint rules
     for rule in get_enabled_rules(options) {
-        let rule_messages = rule.check(source, file_name);
+        let rule_messages = rule.check(&ctx);
         messages.extend(rule_messages);
     }
 
@@ -141,7 +151,7 @@ fn parse_directive_line(line: &str) -> Option<Directive> {
     let body = line[marker + LINT_DIRECTIVE.len()..].trim();
     // First token is the directive; trailing text (e.g. an explanatory note in
     // the same comment) is ignored.
-    match body.split_whitespace().next().unwrap_or_default() {
+    match body.split_whitespace().next()? {
         "ignore-file" | "disable-file" => Some(Directive::IgnoreFile),
         "allow" => {
             let rules = body["allow".len()..].trim();

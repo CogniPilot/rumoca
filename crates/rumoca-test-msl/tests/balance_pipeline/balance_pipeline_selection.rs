@@ -1,5 +1,6 @@
 use super::*;
 use indexmap::IndexSet;
+use rumoca_worker::MODEL_WORKER_MEMORY_LIMIT_MB_DEFAULT;
 
 // =============================================================================
 // Focused simulation target selection and subset controls
@@ -101,6 +102,13 @@ fn host_available_memory_mb() -> Option<usize> {
 
 pub(super) fn compile_model_memory_mb() -> usize {
     MSL_COMPILE_MODEL_MEMORY_MB_DEFAULT
+}
+
+pub(super) fn model_worker_memory_limit_mb() -> usize {
+    parity_config()
+        .model_worker_memory_mb
+        .unwrap_or(MODEL_WORKER_MEMORY_LIMIT_MB_DEFAULT)
+        .max(1)
 }
 
 fn prior_model_complexity_score(complexity: PriorModelComplexity) -> usize {
@@ -1235,6 +1243,43 @@ mod tests {
                 .iter()
                 .all(|name| name.starts_with("ModelicaTest.")),
             "ModelicaTest CI target file should contain only ModelicaTest.* models"
+        );
+    }
+
+    /// Growth ratchet for the ModelicaTest semantic gate.
+    ///
+    /// The gate exists to broaden semantic coverage over time, so the committed
+    /// target list may only ever grow. Raise this floor in the same commit that
+    /// promotes new targets (from
+    /// `rumoca-msl-tools modelica-test-catalog --promote-targets-out`, which
+    /// only promotes `sim_ok` models); never lower it to make a red gate green.
+    const MODELICA_TEST_CI_TARGET_FLOOR: usize = 1;
+
+    #[test]
+    fn modelica_test_ci_target_list_only_grows() {
+        let modelica_test_file = msl_crate_manifest_dir().join(MODELICA_TEST_TARGETS_FILE_REL);
+        let names =
+            load_target_model_names(&modelica_test_file).expect("load ModelicaTest CI targets");
+
+        assert!(
+            names.len() >= MODELICA_TEST_CI_TARGET_FLOOR,
+            "ModelicaTest CI target list shrank to {} (floor {MODELICA_TEST_CI_TARGET_FLOOR}); \
+             the semantic gate may only grow",
+            names.len()
+        );
+
+        let mut sorted = names.clone();
+        sorted.sort();
+        assert_eq!(
+            names, sorted,
+            "ModelicaTest CI target list must stay sorted so promoted lists diff cleanly"
+        );
+
+        let unique = names.iter().collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            unique.len(),
+            names.len(),
+            "ModelicaTest CI target list must not contain duplicates"
         );
     }
 

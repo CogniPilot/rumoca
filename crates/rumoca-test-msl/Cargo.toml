@@ -28,6 +28,10 @@ path = "src/bin/rumoca-msl-tools.rs"
 name = "rumoca-msl-profile"
 path = "src/bin/rumoca-msl-profile.rs"
 
+[[bin]]
+name = "rumoca-tensor-scaling"
+path = "src/bin/rumoca-tensor-scaling.rs"
+
 [dependencies]
 anyhow = { workspace = true }
 clap = { workspace = true }

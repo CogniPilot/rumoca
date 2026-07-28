@@ -27,20 +27,21 @@ use rumoca_core::{
 use serde::ser::{SerializeStruct, SerializeTuple};
 use serde::{Deserialize, Serialize};
 
-pub const DAE_SCHEMA_VERSION: u16 = 8;
+pub const DAE_SCHEMA_VERSION: u16 = 11;
 
 pub type SymbolAncestryMap = IndexMap<DefId, SymbolAncestry, rustc_hash::FxBuildHasher>;
 
-mod event_threshold;
+pub mod checked;
+mod clock_schedule;
 mod expr_query;
 mod types;
 pub mod visitor;
-pub use event_threshold::{is_event_constant_threshold, is_event_constant_time_threshold_relation};
 pub use expr_query::{
     DerivativeNameMatcher, complex_base_alias_match, embedded_subscripts_all_one,
     expr_contains_der_of, expr_contains_der_of_any, expr_contains_var, expr_refers_to_var,
-    indexed_field_var_ref, parse_embedded_subscripts, split_complex_field_suffix,
-    subscripts_all_one, subscripts_match_indices, var_ref_matches_unknown,
+    for_each_unknown_match_key, for_each_var_ref_match_key, indexed_field_var_ref,
+    parse_embedded_subscripts, split_complex_field_suffix, subscripts_all_one,
+    subscripts_match_indices, var_ref_matches_unknown,
 };
 pub use types::{
     StructuredEquationFamily, StructuredEquationSlot, component_base_name,
@@ -141,12 +142,14 @@ struct DaeWire {
     valued_updates: Vec<Equation>,
     #[serde(rename = "f_c")]
     condition_equations: Vec<Equation>,
-    #[serde(default, rename = "relation")]
+    #[serde(rename = "relation")]
     relations: Vec<Expression>,
     synthetic_root_conditions: Vec<Expression>,
     scheduled_time_events: Vec<f64>,
     scheduled_root_conditions: Vec<DaeScheduledRootCondition>,
     event_actions: Vec<DaeEventAction>,
+    has_terminal_event: bool,
+    delay_channels: Vec<DaeDelayChannel>,
     constructor_exprs: Vec<Expression>,
     schedules: Vec<ClockSchedule>,
     #[serde(default)]
@@ -178,13 +181,20 @@ impl Default for Dae {
     }
 }
 
+impl Dae {
+    /// Create an empty valid DAE.
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
 impl Serialize for Dae {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
         if !serializer.is_human_readable() {
-            let mut tuple = serializer.serialize_tuple(29)?;
+            let mut tuple = serializer.serialize_tuple(31)?;
             tuple.serialize_element(&self.schema_version)?;
             tuple.serialize_element(&self.variables.states)?;
             tuple.serialize_element(&self.variables.algebraics)?;
@@ -206,6 +216,8 @@ impl Serialize for Dae {
             tuple.serialize_element(&self.events.scheduled_time_events)?;
             tuple.serialize_element(&self.events.scheduled_root_conditions)?;
             tuple.serialize_element(&self.events.event_actions)?;
+            tuple.serialize_element(&self.events.has_terminal_event)?;
+            tuple.serialize_element(&self.events.delay_channels)?;
             tuple.serialize_element(&self.clocks.constructor_exprs)?;
             tuple.serialize_element(&self.clocks.schedules)?;
             tuple.serialize_element(&self.clocks.triggered_conditions)?;
@@ -217,7 +229,7 @@ impl Serialize for Dae {
             return tuple.end();
         }
 
-        let mut state = serializer.serialize_struct("Dae", 29)?;
+        let mut state = serializer.serialize_struct("Dae", 31)?;
         state.serialize_field("schema_version", &self.schema_version)?;
         state.serialize_field("x", &self.variables.states)?;
         state.serialize_field("y", &self.variables.algebraics)?;
@@ -251,6 +263,8 @@ impl Serialize for Dae {
             &self.events.scheduled_root_conditions,
         )?;
         state.serialize_field("event_actions", &self.events.event_actions)?;
+        state.serialize_field("has_terminal_event", &self.events.has_terminal_event)?;
+        state.serialize_field("delay_channels", &self.events.delay_channels)?;
         state.serialize_field("constructor_exprs", &self.clocks.constructor_exprs)?;
         state.serialize_field("schedules", &self.clocks.schedules)?;
         state.serialize_field("triggered_conditions", &self.clocks.triggered_conditions)?;
@@ -276,7 +290,7 @@ impl<'de> Deserialize<'de> for Dae {
             )));
         }
 
-        Ok(Self {
+        Ok(Dae {
             schema_version: wire.schema_version,
             variables: DaeVariables {
                 states: wire.states,
@@ -309,6 +323,8 @@ impl<'de> Deserialize<'de> for Dae {
                 scheduled_time_events: wire.scheduled_time_events,
                 scheduled_root_conditions: wire.scheduled_root_conditions,
                 event_actions: wire.event_actions,
+                has_terminal_event: wire.has_terminal_event,
+                delay_channels: wire.delay_channels,
             },
             clocks: DaeClockPartition {
                 constructor_exprs: wire.constructor_exprs,
@@ -445,6 +461,14 @@ impl std::error::Error for DaeShapeContractError {
 }
 
 impl DaeVariables {
+    /// Whether standalone simulation requires at least one input scalar.
+    ///
+    /// MLS §10.1 permits zero-sized arrays. Such declarations remain present
+    /// in the IR but contribute no externally supplied scalar values.
+    pub fn has_input_scalars(&self) -> bool {
+        self.inputs.values().any(|variable| variable.size() != 0)
+    }
+
     pub fn validate_shape_contract(&self) -> Result<(), DaeShapeContractError> {
         validate_partition_shape_contract(DaeVariablePartition::State, &self.states)?;
         validate_partition_shape_contract(DaeVariablePartition::Algebraic, &self.algebraics)?;
@@ -523,8 +547,8 @@ pub struct DaeConditionPartition {
     /// Canonically populated during ToDAE from if/when conditions.
     #[serde(rename = "f_c")]
     pub equations: Vec<Equation>,
-    /// Relation expressions used by `f_c(relation(v))` (MLS B.1d).
-    #[serde(default, rename = "relation")]
+    /// Primitive relation expressions monitored during integration (MLS B.1d).
+    #[serde(rename = "relation")]
     pub relations: Vec<Expression>,
 }
 
@@ -549,6 +573,25 @@ pub struct DaeEventPartition {
     /// residual expressions. `reinit` is lowered earlier into guarded discrete
     /// state-update equations and must not appear here.
     pub event_actions: Vec<DaeEventAction>,
+    /// Whether the model contains `terminal()` and therefore requires a final
+    /// event at the configured simulation stop time.
+    pub has_terminal_event: bool,
+    /// Transport-delay channels lowered from source `delay(...)` operators.
+    ///
+    /// Each channel owns one runtime-managed parameter slot. The source
+    /// expression and delay bounds remain explicit metadata so Solve lowering
+    /// can compile them without re-discovering source syntax.
+    pub delay_channels: Vec<DaeDelayChannel>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DaeDelayChannel {
+    pub value_parameter: VarName,
+    pub source: Expression,
+    pub delay_time: Expression,
+    pub delay_max: Option<Expression>,
+    pub source_is_discrete: bool,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -662,10 +705,11 @@ pub struct DaeMetadata {
     #[serde(default)]
     pub overconstrained_interface_count: i64,
 
-    /// Scalar count of excess equations from VCG break edges (MLS §9.4).
-    /// Break edges in the overconstrained connection graph generate equality equations
-    /// that should be replaced by `equalityConstraint()` calls. This correction
-    /// tracks the number of excess equation scalars.
+    /// Conservative scalar budget for VCG break-edge equations (MLS §9.4).
+    /// Zero-result constraints can already have been removed during flattening,
+    /// so balance accounting clamps this budget to the excess equations still
+    /// present. Replacement equations for nonempty `equalityConstraint` results
+    /// remain deferred.
     #[serde(default)]
     pub oc_break_edge_scalar_count: usize,
 
@@ -680,11 +724,6 @@ pub struct DaeMetadata {
 }
 
 impl Dae {
-    /// Create a new empty DAE.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     /// Get total number of variables.
     pub fn num_variables(&self) -> usize {
         self.variables.states.len()
@@ -1072,6 +1111,31 @@ mod variable_shape_contract_tests {
         };
 
         assert_eq!(variable.try_size(), Ok(0));
+    }
+
+    #[test]
+    fn input_scalar_predicate_ignores_present_zero_sized_inputs() {
+        let mut variables = DaeVariables::default();
+        variables.inputs.insert(
+            VarName::new("u0"),
+            Variable {
+                name: VarName::new("u0"),
+                dims: vec![0, 3],
+                ..Variable::empty_with_span(test_span())
+            },
+        );
+
+        assert!(!variables.has_input_scalars());
+
+        variables.inputs.insert(
+            VarName::new("u1"),
+            Variable {
+                name: VarName::new("u1"),
+                dims: vec![1],
+                ..Variable::empty_with_span(test_span())
+            },
+        );
+        assert!(variables.has_input_scalars());
     }
 
     #[test]
@@ -1740,7 +1804,7 @@ pub struct Algorithm {
     /// Statements in this algorithm.
     pub statements: Vec<Statement>,
     /// Output variables (left-hand sides of assignments).
-    /// Used for balance checking per SPEC_0020.
+    /// Used for balance checking per SPEC_0007 / MLS §11.
     pub outputs: Vec<Reference>,
     /// Source span for error reporting.
     pub span: Span,

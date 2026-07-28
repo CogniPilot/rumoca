@@ -4,11 +4,9 @@ use rumoca_core::Span;
 use rumoca_core::{Diagnostic, Label, PrimaryLabel};
 use rumoca_ir_dae as dae;
 
+use crate::diagnostic_codes::{ES001_STRUCTURAL_SINGULARITY, ES002_ALGEBRAIC_LOOP};
 use crate::incidence::Incidence;
 use crate::types::UnknownId;
-
-const ES001_STRUCTURAL_SINGULARITY: &str = "ES001";
-const ES002_ALGEBRAIC_LOOP: &str = "ES002";
 
 fn label_span(span: Span) -> Option<Span> {
     if span.is_dummy() {
@@ -83,7 +81,7 @@ pub struct AlgebraicLoop {
 pub(crate) struct MatchingContext<'a> {
     pub equations: &'a [&'a dae::Equation],
     pub unknown_names: &'a [UnknownId],
-    pub eq_unknowns: &'a [std::collections::HashSet<usize>],
+    pub eq_unknowns: &'a crate::incidence::rows::IncidenceRows,
     pub match_eq: &'a [Option<usize>],
     pub match_var: &'a [Option<usize>],
 }
@@ -297,7 +295,7 @@ mod tests {
         let equation = residual_equation(Span::DUMMY);
         let equations = vec![&equation];
         let unknown_names = vec![UnknownId::Variable(VarName::new("x"))];
-        let eq_unknowns = vec![HashSet::new()];
+        let eq_unknowns = crate::incidence::rows::IncidenceRows::from_sets(vec![HashSet::new()]);
         let match_eq = vec![None];
         let match_var = vec![None];
         let ctx = MatchingContext {
@@ -313,6 +311,10 @@ mod tests {
 
         let diagnostic = &result.diagnostics[0];
         assert_eq!(diagnostic.severity, DiagnosticSeverity::Warning);
+        assert_eq!(
+            diagnostic.code.as_deref(),
+            Some(ES001_STRUCTURAL_SINGULARITY)
+        );
         assert!(diagnostic.labels.is_empty());
         assert!(
             diagnostic
@@ -332,7 +334,7 @@ mod tests {
         let equation = residual_equation(span);
         let equations = vec![&equation];
         let unknown_names = vec![UnknownId::Variable(VarName::new("x"))];
-        let eq_unknowns = vec![HashSet::new()];
+        let eq_unknowns = crate::incidence::rows::IncidenceRows::from_sets(vec![HashSet::new()]);
         let match_eq = vec![None];
         let match_var = vec![None];
         let ctx = MatchingContext {
@@ -346,6 +348,10 @@ mod tests {
 
         ctx.check_singularity(&mut result, 1, 1, 0);
 
+        assert_eq!(
+            result.diagnostics[0].code.as_deref(),
+            Some(ES001_STRUCTURAL_SINGULARITY)
+        );
         let labels = &result.diagnostics[0].labels;
         assert!(labels.iter().any(|label| label.primary));
         assert!(
@@ -354,5 +360,34 @@ mod tests {
                 .all(|label| label.span.source == span.source
                     && label.span.end.0 > label.span.start.0)
         );
+    }
+
+    #[test]
+    fn algebraic_loop_warning_carries_es002() {
+        let span = Span::from_offsets(
+            SourceId::from_source_name("phase_structural_diagnostics_source_11.mo"),
+            4,
+            9,
+        );
+        let equation_a = residual_equation(span);
+        let equation_b = residual_equation(span);
+        let equations = vec![&equation_a, &equation_b];
+        let incidence = Incidence::new(
+            vec![HashSet::from([0, 1]), HashSet::from([0, 1])],
+            vec![crate::types::EquationRef(0), crate::types::EquationRef(1)],
+            vec![
+                UnknownId::Variable(VarName::new("x")),
+                UnknownId::Variable(VarName::new("y")),
+            ],
+        );
+        // A 2-cycle in the dependency graph is an algebraic loop.
+        let adj = vec![vec![1], vec![0]];
+        let match_eq = vec![Some(0), Some(1)];
+
+        let warnings = collect_warnings(&incidence, &match_eq, &adj, &equations);
+
+        assert_eq!(warnings.len(), 1, "expected one algebraic-loop warning");
+        assert_eq!(warnings[0].severity, DiagnosticSeverity::Warning);
+        assert_eq!(warnings[0].code.as_deref(), Some(ES002_ALGEBRAIC_LOOP));
     }
 }

@@ -10,16 +10,6 @@ pub(crate) fn lower_vec_with_capacity<T>(
     Ok(values)
 }
 
-pub(crate) fn lower_vec_with_optional_capacity<T>(
-    capacity: usize,
-    context: &'static str,
-    span: Option<rumoca_core::Span>,
-) -> Result<Vec<T>, LowerError> {
-    let mut values = Vec::new();
-    reserve_lower_optional_capacity(&mut values, capacity, context, span)?;
-    Ok(values)
-}
-
 pub(crate) fn reserve_lower_capacity<T>(
     values: &mut Vec<T>,
     additional: usize,
@@ -82,16 +72,6 @@ where
         )
     })?;
     Ok(values)
-}
-
-pub(crate) fn lower_bool_slice_copy(
-    values: &[bool],
-    context: &'static str,
-    span: rumoca_core::Span,
-) -> Result<Vec<bool>, LowerError> {
-    let mut copied = lower_vec_with_capacity(values.len(), context, span)?;
-    copied.extend(values.iter().copied());
-    Ok(copied)
 }
 
 pub(crate) fn reserve_lower_index_map_capacity<K, V>(

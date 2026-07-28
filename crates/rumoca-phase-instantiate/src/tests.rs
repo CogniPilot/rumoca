@@ -13,7 +13,7 @@ fn make_token(text: &str) -> rumoca_core::Token {
 
 fn make_location(file_name: &str, start: u32, end: u32) -> rumoca_core::Location {
     rumoca_core::Location {
-        file_name: file_name.to_string(),
+        source: rumoca_core::SourceId::from_source_name(file_name),
         start,
         end,
         ..Default::default()
@@ -611,7 +611,7 @@ fn test_equations_to_instance_without_connections_filters_connect_equations()
     let origin = ast::QualifiedName::from_ident("M");
     let ctx = InstantiateContext::new();
     let converted =
-        equations_to_instance_without_connections(&ctx, &equations, &origin, &source_map)?;
+        equations_to_instance_without_connections(&ctx, &equations, &origin, &source_map, None)?;
 
     assert_eq!(converted.len(), 1);
     assert!(matches!(
@@ -619,6 +619,56 @@ fn test_equations_to_instance_without_connections_filters_connect_equations()
         ast::Equation::Simple { .. }
     ));
     assert_eq!(converted[0].origin, origin);
+    Ok(())
+}
+
+#[test]
+fn structural_if_equations_keep_only_the_active_branch() -> InstantiateResult<()> {
+    let source_name = "structural_if.mo";
+    let condition = ast::Expression::Terminal {
+        terminal_type: ast::TerminalType::Bool,
+        token: make_token_at("false", source_name, 0, 5),
+        span: rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name(source_name),
+            0,
+            5,
+        ),
+    };
+    let inactive = ast::Equation::Simple {
+        lhs: make_comp_ref_expr_at(&["inactive"], source_name, 7, 15),
+        rhs: make_int_expr(2),
+    };
+    let active = ast::Equation::Simple {
+        lhs: make_comp_ref_expr_at(&["active"], source_name, 17, 23),
+        rhs: make_int_expr(1),
+    };
+    let equations = vec![ast::Equation::If {
+        cond_blocks: vec![ast::EquationBlock {
+            cond: condition,
+            eqs: vec![inactive],
+        }],
+        else_block: Some(vec![active]),
+    }];
+
+    let mut source_map = rumoca_core::SourceMap::new();
+    source_map.add(source_name, "false; inactive; active;");
+    let tree = ast::ClassTree::default();
+    let mod_env = ast::ModificationEnvironment::default();
+    let effective_components = IndexMap::default();
+    let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
+    let converted = equations_to_instance_without_connections(
+        &InstantiateContext::new(),
+        &equations,
+        &ast::QualifiedName::from_ident("M"),
+        &source_map,
+        Some(&eval_ctx),
+    )?;
+
+    assert_eq!(converted.len(), 1);
+    let ast::Equation::Simple { lhs, .. } = &converted[0].equation else {
+        panic!("expected selected simple equation");
+    };
+    assert_eq!(lhs.to_string(), "active");
     Ok(())
 }
 
@@ -692,6 +742,30 @@ fn test_extract_int_params_record_alias_prefers_rebound_field_values() {
         Some(&2),
         "aliased record field should override stale/default value"
     );
+}
+
+#[test]
+fn test_register_known_integer_instance_uses_modifier_source_scope() {
+    let mut ctx = InstantiateContext::new();
+    ctx.known_int_params.insert("source.n".to_string(), 2);
+    ctx.known_int_params.insert("holder.n".to_string(), 1);
+    let data = ast::InstanceData {
+        qualified_name: ast::QualifiedName::from_dotted("holder.n"),
+        binding: Some(ast::Expression::FieldAccess {
+            base: std::sync::Arc::new(make_comp_ref_expr(&["source"])),
+            field: "n".to_string(),
+            span: rumoca_core::Span::DUMMY,
+        }),
+        binding_source_scope: Some(ast::QualifiedName::new()),
+        binding_from_modification: true,
+        variability: rumoca_core::Variability::Parameter(make_token("parameter")),
+        is_discrete_type: true,
+        ..Default::default()
+    };
+
+    ctx.register_known_integer_instance(&data);
+
+    assert_eq!(ctx.known_int_params.get("holder.n"), Some(&2));
 }
 
 // -------------------------------------------------------------------------

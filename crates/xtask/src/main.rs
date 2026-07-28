@@ -10,6 +10,7 @@ mod modelica_dependency_cache;
 mod playground_cmd;
 mod release_cmd;
 mod repo_cli_cmd;
+mod resource_budget;
 mod review_packet_cmd;
 mod review_scan_cmd;
 mod static_server;
@@ -633,6 +634,7 @@ pub(crate) fn exe_name(base: &str) -> String {
 }
 
 pub(crate) fn run_status(mut command: Command) -> Result<()> {
+    resource_budget::apply_to_child(&mut command);
     let rendered = format!("{command:?}");
     let status = command
         .status()
@@ -644,6 +646,7 @@ pub(crate) fn run_status(mut command: Command) -> Result<()> {
 }
 
 pub(crate) fn run_status_quiet(mut command: Command) -> Result<()> {
+    resource_budget::apply_to_child(&mut command);
     let rendered = format!("{command:?}");
     let output = command
         .output()
@@ -663,6 +666,7 @@ pub(crate) fn run_status_quiet(mut command: Command) -> Result<()> {
 }
 
 fn run_capture(mut command: Command) -> Result<String> {
+    resource_budget::apply_to_child(&mut command);
     let rendered = format!("{command:?}");
     let output = command
         .output()

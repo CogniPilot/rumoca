@@ -514,103 +514,7 @@ pub(crate) fn try_eval_string_binary(expr: &str, flat: &flat::Model) -> Option<i
     }
 }
 
-/// Recursively evaluate a flat expression to an integer value.
-///
-/// Handles literals, parameter references (via binding), binary arithmetic
-/// (`+`, `-`, `*`), and `size(array, dim)` calls.
-pub(crate) fn try_eval_flat_expr_i64(
-    expr: &rumoca_core::Expression,
-    flat: &flat::Model,
-    depth: u8,
-) -> Option<i64> {
-    if depth > 8 {
-        return None;
-    }
-    match expr {
-        rumoca_core::Expression::Literal {
-            value: rumoca_core::Literal::Integer(n),
-            ..
-        } => Some(*n),
-        rumoca_core::Expression::Literal {
-            value: rumoca_core::Literal::Real(f),
-            ..
-        } => {
-            let n = *f as i64;
-            if (n as f64 - *f).abs() < 0.001 {
-                Some(n)
-            } else {
-                None
-            }
-        }
-        rumoca_core::Expression::VarRef { name, .. } => {
-            let var = flat.variables.get(name.var_name())?;
-            let binding = var.binding.as_ref()?;
-            try_eval_flat_expr_i64(binding, flat, depth + 1)
-        }
-        rumoca_core::Expression::Binary { op, lhs, rhs, .. } => {
-            let l = try_eval_flat_expr_i64(lhs, flat, depth + 1)?;
-            let r = try_eval_flat_expr_i64(rhs, flat, depth + 1)?;
-            eval_binary_op_i64(op, l, r)
-        }
-        rumoca_core::Expression::BuiltinCall { function, args, .. }
-            if matches!(function, rumoca_core::BuiltinFunction::Size) && args.len() == 2 =>
-        {
-            eval_size_call_i64(&args[0], &args[1], flat, depth)
-        }
-        _ => None,
-    }
-}
-
-/// Evaluate a binary arithmetic operation on two integer values.
-pub(crate) fn eval_binary_op_i64(op: &rumoca_core::OpBinary, l: i64, r: i64) -> Option<i64> {
-    match op {
-        rumoca_core::OpBinary::Add | rumoca_core::OpBinary::AddElem => Some(l + r),
-        rumoca_core::OpBinary::Sub | rumoca_core::OpBinary::SubElem => Some(l - r),
-        rumoca_core::OpBinary::Mul | rumoca_core::OpBinary::MulElem => Some(l * r),
-        rumoca_core::OpBinary::Div | rumoca_core::OpBinary::DivElem => {
-            if r != 0 {
-                Some(l / r)
-            } else {
-                None
-            }
-        }
-        _ => None,
-    }
-}
-
-/// Evaluate `size(array, dim)` from literal array shape or variable dimensions.
-pub(crate) fn eval_size_call_i64(
-    array_arg: &rumoca_core::Expression,
-    dim_arg: &rumoca_core::Expression,
-    flat: &flat::Model,
-    depth: u8,
-) -> Option<i64> {
-    let dim = try_eval_flat_expr_i64(dim_arg, flat, depth + 1)? as usize;
-    if let Some(size) = literal_array_dim_size(array_arg, dim) {
-        return Some(size);
-    }
-    if let rumoca_core::Expression::VarRef { name, .. } = array_arg {
-        let var = flat.variables.get(name.var_name())?;
-        let idx = dim.checked_sub(1)?;
-        var.dims.get(idx).copied()
-    } else {
-        None
-    }
-}
-
-fn literal_array_dim_size(expr: &rumoca_core::Expression, dim: usize) -> Option<i64> {
-    let rumoca_core::Expression::Array { elements, .. } = expr else {
-        return None;
-    };
-    match dim {
-        1 => Some(elements.len() as i64),
-        2 => elements.first().and_then(|first| match first {
-            rumoca_core::Expression::Array { elements, .. } => Some(elements.len() as i64),
-            _ => None,
-        }),
-        _ => None,
-    }
-}
+pub(crate) use rumoca_eval_flat::flat_int::try_eval_flat_expr_i64;
 
 /// Resolve the scalar size of a VarRef with embedded subscripts.
 ///
@@ -641,6 +545,7 @@ pub(crate) fn resolve_embedded_subscript_size(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rumoca_eval_flat::flat_int::eval_size_call_i64;
 
     fn test_span() -> rumoca_core::Span {
         rumoca_core::Span::from_offsets(

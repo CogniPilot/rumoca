@@ -22,48 +22,29 @@ use rumoca_ir_solve::{
 };
 
 mod compute_block_scalarize;
-pub mod eval_at;
-mod inspect_alloc;
-mod iterative_solve;
-pub mod jacobian;
-mod linear_solve;
+pub mod linear_solve;
 pub mod nan_trace;
 mod prepared;
 mod random_runtime;
-mod refresh_plan;
-mod reverse;
-mod runtime;
-mod runtime_events;
-pub mod sim_driver;
+pub mod refresh_plan;
+pub mod reverse;
 mod sparsity;
 mod table_runtime;
+pub mod tensor_policy;
 mod update_rows;
 pub use compute_block_scalarize::{
     ScalarizeError, checked_contiguous_output_count, checked_tensor_output_count,
     scalar_program_output_count, scalar_program_output_indices, tensor_output_indices,
     to_scalar_program_block,
 };
-pub use eval_at::{EvalAtReport, EvalAtSlot};
-pub use jacobian::{
-    JacobianReport, ObjectiveGradientReport, ParameterJacobianReport, SteadyStateSensitivityReport,
-};
 use linear_solve::{solve_component_op, solve_component_unchecked};
 pub use prepared::{
-    PreparedComputeBlock, PreparedScalarProgramBlock, TargetAssignmentShape,
-    target_assignment_shape,
+    ComputeNodeOutputRangeRequest, PreparedComputeBlock, PreparedScalarProgramBlock,
+    TargetAssignmentShape, target_assignment_shape, target_assignment_shapes,
 };
 use random_runtime::{
     ImpureRandomState, impure_random_mutex, impure_random_sample, impure_random_stream_id,
     initial_state_values, projected_random_value, random_result_and_state, read_reg_range,
-};
-pub use runtime::{
-    AlgebraicLinearization, AlgebraicSettle, EventUpdateRowFilter, InitialEventObservation,
-    ProjectedEventUpdateInput, ProjectedInitialEventInput, ProjectedInitialEventOutcome,
-    SolveRuntime, apply_discrete_slot_value,
-};
-pub use runtime_events::{
-    apply_discrete_slot_values, current_dynamic_time_event_stop, eval_event_actions_with_context,
-    next_runtime_event_stop, visible_values_with_context,
 };
 pub use sparsity::{
     JacobianSparsity, jacobian_sparsity_from_jvp, jacobian_sparsity_from_scalar_jvp,
@@ -650,6 +631,7 @@ impl<'out> OutputCursor<'out> {
 pub(crate) struct RowEvalScratch {
     pub(crate) regs: Vec<f64>,
     pub(crate) initialized: Vec<bool>,
+    pub(crate) affine_ops: Vec<LinearOp>,
 }
 
 #[derive(Clone, Copy)]
@@ -1550,7 +1532,11 @@ pub(crate) fn validate_output_len(out: &[f64], required: usize) -> Result<(), Ev
     })
 }
 
-pub(crate) fn validate_input_requirements(
+/// Validate that `y`/`p`/`seed` are long enough for `requirements`.
+///
+/// `pub` for `rumoca_solver::runtime::solve_runtime`, which validates solver
+/// vectors before handing them to a prepared row.
+pub fn validate_input_requirements(
     requirements: RowInputRequirements,
     y: &[f64],
     p: &[f64],
@@ -1911,7 +1897,7 @@ pub(crate) fn eval_unary(op: UnaryOp, value: f64) -> f64 {
         UnaryOp::Neg => -value,
         UnaryOp::Not => (value == 0.0) as u8 as f64,
         UnaryOp::Abs => value.abs(),
-        UnaryOp::Sign => value.signum(),
+        UnaryOp::Sign => rumoca_core::modelica_sign(value),
         UnaryOp::Sqrt => value.sqrt(),
         UnaryOp::Floor => value.floor(),
         UnaryOp::Ceil => value.ceil(),
@@ -1936,21 +1922,13 @@ pub(crate) fn eval_binary(op: BinaryOp, lhs: f64, rhs: f64) -> f64 {
         BinaryOp::Add => lhs + rhs,
         BinaryOp::Sub => lhs - rhs,
         BinaryOp::Mul => lhs * rhs,
-        BinaryOp::Div => guarded_division(lhs, rhs),
+        BinaryOp::Div => lhs / rhs,
         BinaryOp::Pow => lhs.powf(rhs),
         BinaryOp::And => ((lhs != 0.0) && (rhs != 0.0)) as u8 as f64,
         BinaryOp::Or => ((lhs != 0.0) || (rhs != 0.0)) as u8 as f64,
         BinaryOp::Atan2 => lhs.atan2(rhs),
         BinaryOp::Min => lhs.min(rhs),
         BinaryOp::Max => lhs.max(rhs),
-    }
-}
-
-fn guarded_division(lhs: f64, rhs: f64) -> f64 {
-    if rhs == 0.0 {
-        if lhs == 0.0 { 0.0 } else { f64::INFINITY }
-    } else {
-        lhs / rhs
     }
 }
 

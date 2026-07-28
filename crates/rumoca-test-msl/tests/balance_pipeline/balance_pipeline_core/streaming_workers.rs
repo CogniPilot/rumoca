@@ -164,6 +164,7 @@ pub(super) fn run_model_worker_queue(queue: ModelWorkerQueue<'_>) {
                 queue.source_root_path,
                 startup_timeout_secs,
                 queue.cpu_core_id,
+                model_worker_memory_limit_mb(),
             ) {
                 Ok(spawned) => worker = Some(spawned),
                 Err(error) => {
@@ -977,6 +978,10 @@ pub(super) fn log_compile_scope(compile_count: usize) {
     println!(
         "  Compiling {} models with memory-aware batching...",
         compile_count
+    );
+    println!(
+        "  Model worker memory ceiling: {} MB resident-plus-swap per worker",
+        model_worker_memory_limit_mb()
     );
 }
 

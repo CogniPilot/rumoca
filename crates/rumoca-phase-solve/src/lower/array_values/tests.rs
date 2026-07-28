@@ -232,6 +232,147 @@ fn lower_array_like_values_lowers_modelica_array_constructor_call() -> Result<()
 }
 
 #[test]
+fn fill_array_seed_prefixes_shape_and_repeats_row_major_values() -> Result<(), LowerError> {
+    let layout = VarLayout::default();
+    let functions = IndexMap::new();
+    let mut builder = LowerBuilder::new(&layout, &functions);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("fill_array_seed.mo"),
+        1,
+        18,
+    );
+    let seed = rumoca_core::Expression::Array {
+        elements: vec![
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Real(1.0),
+                span,
+            },
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Real(2.0),
+                span,
+            },
+        ],
+        is_matrix: false,
+        span,
+    };
+    let expr = rumoca_core::Expression::BuiltinCall {
+        function: rumoca_core::BuiltinFunction::Fill,
+        args: vec![
+            seed,
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Integer(2),
+                span,
+            },
+        ],
+        span,
+    };
+
+    assert_eq!(builder.infer_expr_dims(&expr, &Scope::new())?, vec![2, 2]);
+    assert_eq!(
+        builder.lower_array_like_values(&expr, &Scope::new(), 0)?,
+        vec![0, 1, 0, 1]
+    );
+    Ok(())
+}
+
+#[test]
+fn fill_array_seed_preserves_zero_prefix_dimension_without_evaluating_seed()
+-> Result<(), LowerError> {
+    let layout = VarLayout::default();
+    let functions = IndexMap::new();
+    let mut builder = LowerBuilder::new(&layout, &functions);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("fill_zero_prefix.mo"),
+        1,
+        18,
+    );
+    let seed = rumoca_core::Expression::Array {
+        elements: vec![rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Real(1.0),
+            span,
+        }],
+        is_matrix: false,
+        span,
+    };
+    let expr = rumoca_core::Expression::BuiltinCall {
+        function: rumoca_core::BuiltinFunction::Fill,
+        args: vec![
+            seed,
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Integer(0),
+                span,
+            },
+        ],
+        span,
+    };
+
+    assert_eq!(builder.infer_expr_dims(&expr, &Scope::new())?, vec![0, 1]);
+    assert!(
+        builder
+            .lower_array_like_values(&expr, &Scope::new(), 0)?
+            .is_empty()
+    );
+    assert!(builder.ops.is_empty());
+    Ok(())
+}
+
+#[test]
+fn zero_inner_matmul_builds_a_native_node_with_empty_operands() -> Result<(), LowerError> {
+    let layout = VarLayout::default();
+    let functions = IndexMap::new();
+    let builder = LowerBuilder::new(&layout, &functions);
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("zero_inner_matmul.mo"),
+        1,
+        18,
+    );
+    let zero_fill = |dims: &[i64]| rumoca_core::Expression::BuiltinCall {
+        function: rumoca_core::BuiltinFunction::Fill,
+        args: std::iter::once(rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Real(0.0),
+            span,
+        })
+        .chain(
+            dims.iter()
+                .copied()
+                .map(|value| rumoca_core::Expression::Literal {
+                    value: rumoca_core::Literal::Integer(value),
+                    span,
+                }),
+        )
+        .collect(),
+        span,
+    };
+
+    let node = builder.build_matmul_node(
+        &zero_fill(&[2, 0]),
+        &zero_fill(&[0, 3]),
+        span,
+        &Scope::new(),
+        0,
+        MatMulShape { m: 2, k: 0, n: 3 },
+    )?;
+    let rumoca_ir_solve::ComputeNode::MatMul {
+        lhs_ops,
+        rhs_ops,
+        m,
+        k,
+        n,
+        ..
+    } = node
+    else {
+        return Err(LowerError::contract_violation(
+            "zero-inner matrix product did not remain MatMul",
+            span,
+        ));
+    };
+    assert!(lhs_ops.is_empty());
+    assert!(rhs_ops.is_empty());
+    assert_eq!((m, k, n), (2, 0, 3));
+    Ok(())
+}
+
+#[test]
 fn lower_min_max_builtin_rejects_empty_args_without_dummy_span() -> Result<(), LowerError> {
     let layout = VarLayout::default();
     let functions = IndexMap::new();

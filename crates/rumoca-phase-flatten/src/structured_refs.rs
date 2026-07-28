@@ -35,6 +35,18 @@ pub(crate) fn attach_structured_references(flat: &mut flat::Model) -> Result<(),
     for equation in &mut flat.initial_equations {
         equation.residual = rewriter.rewrite_expression(&equation.residual);
     }
+    for family in flat
+        .structured_equations
+        .iter_mut()
+        .chain(flat.initial_structured_equations.iter_mut())
+    {
+        let Some(template) = family.template.as_mut() else {
+            continue;
+        };
+        for body in &mut template.body {
+            *body = rewriter.rewrite_expression(body);
+        }
+    }
     for assert_eq in flat
         .assert_equations
         .iter_mut()
@@ -182,7 +194,7 @@ impl ExpressionRewriter for StructuredRefRewriter<'_> {
         else {
             return self.walk_expression(expr);
         };
-        if name.has_structure() || name.is_generated() {
+        if name.is_generated() {
             return self.walk_expression(expr);
         }
         let reference = match self.index.structured_for(name.var_name()) {
@@ -213,4 +225,86 @@ fn generated_index_subscript(
 ) -> Result<rumoca_core::Subscript, FlattenError> {
     rumoca_core::Subscript::try_generated_index(index, span, context)
         .map_err(|err| FlattenError::missing_source_context(err.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rumoca_core::{
+        ComponentRefPart, ComponentReference, ComprehensionScalarView, ComprehensionTemplate,
+        DefId, Expression, Reference, SourceId, StructuredIndexDomain, VarName,
+    };
+
+    fn span() -> rumoca_core::Span {
+        rumoca_core::Span::from_offsets(SourceId::from_source_name("structured_refs_test.mo"), 1, 2)
+    }
+
+    fn component_reference(parts: &[&str], def_id: Option<DefId>) -> ComponentReference {
+        let span = span();
+        ComponentReference {
+            local: false,
+            span,
+            parts: parts
+                .iter()
+                .map(|ident| ComponentRefPart {
+                    ident: (*ident).to_string(),
+                    span,
+                    subs: Vec::new(),
+                })
+                .collect(),
+            def_id,
+        }
+    }
+
+    #[test]
+    fn structured_template_reference_uses_declared_variable_identity() {
+        let mut flat = flat::Model::default();
+        let name = VarName::new("vehicle.R");
+        let def_id = DefId::new(42);
+        flat.variables.insert(
+            name.clone(),
+            flat::Variable {
+                name: name.clone(),
+                component_ref: Some(component_reference(&["vehicle", "R"], Some(def_id))),
+                ..flat::Variable::empty_with_span(span())
+            },
+        );
+        flat.structured_equations
+            .push(flat::StructuredEquationFamily {
+                domain: StructuredIndexDomain {
+                    binders: Vec::new(),
+                },
+                first_equation_index: 0,
+                equations_per_point: 1,
+                span: span(),
+                origin: flat::EquationOrigin::ComponentEquation {
+                    component: "vehicle".to_string(),
+                },
+                regular: None,
+                template: Some(ComprehensionTemplate {
+                    body: vec![Expression::VarRef {
+                        name: Reference::with_component_reference(
+                            name.as_str(),
+                            component_reference(&["vehicle", "R"], None),
+                        ),
+                        subscripts: Vec::new(),
+                        span: span(),
+                    }],
+                    scalar_view: ComprehensionScalarView::BinderSubstitution,
+                }),
+                interiors_materialized: true,
+            });
+
+        attach_structured_references(&mut flat).expect("structured references attach");
+
+        let Expression::VarRef { name, .. } = &flat.structured_equations[0]
+            .template
+            .as_ref()
+            .expect("template")
+            .body[0]
+        else {
+            panic!("expected template var ref");
+        };
+        assert_eq!(name.target_def_id(), Some(def_id));
+    }
 }

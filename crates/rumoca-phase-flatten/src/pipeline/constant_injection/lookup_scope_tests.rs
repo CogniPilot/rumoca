@@ -82,6 +82,7 @@ fn call_expr(name: &str, args: Vec<ast::Expression>) -> ast::Expression {
     ast::Expression::FunctionCall {
         comp: comp_ref(name),
         args,
+        is_partial_application: false,
         span: test_span(),
     }
 }

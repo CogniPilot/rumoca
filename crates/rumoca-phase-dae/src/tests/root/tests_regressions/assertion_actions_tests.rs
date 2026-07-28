@@ -119,7 +119,7 @@ fn test_todae_lowers_initial_assert_equation_to_initial_event_action() {
 }
 
 #[test]
-fn test_todae_terminal_when_assert_does_not_create_continuous_roots() {
+fn test_todae_lowers_terminal_when_assert_to_runtime_event_metadata() {
     let mut flat = Model::new();
     add_primitive_real(&mut flat, "x");
     let span = crate::test_support::test_span();
@@ -151,10 +151,33 @@ fn test_todae_terminal_when_assert_does_not_create_continuous_roots() {
     ));
     flat.when_clauses.push(when_clause);
 
-    let dae = lower_assertion_model(&flat);
+    let dae = to_dae_with_options(
+        &flat,
+        ToDaeOptions {
+            error_on_unbalanced: false,
+        },
+    )
+    .expect("terminal() should lower to an explicit final-event input");
 
+    assert!(dae.events.has_terminal_event);
     assert!(
-        dae.events.synthetic_root_conditions.is_empty(),
-        "terminal-only assertion expressions are evaluated at termination and must not be monitored as continuous roots"
+        dae.variables
+            .parameters
+            .contains_key(&rumoca_core::VarName::new(
+                rumoca_core::TERMINAL_EVENT_PARAMETER_NAME
+            )),
+        "terminal lowering should declare the runtime-managed parameter"
+    );
+    assert!(
+        dae.events.event_actions.iter().any(|action| {
+            action.condition.contains_subexpression(|expr| {
+                matches!(
+                    expr,
+                    Expression::VarRef { name, .. }
+                        if name.as_str() == rumoca_core::TERMINAL_EVENT_PARAMETER_NAME
+                )
+            })
+        }),
+        "terminal event action should read the explicit runtime marker"
     );
 }

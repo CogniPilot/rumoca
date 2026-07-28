@@ -748,6 +748,7 @@ fn test_import_resolves_function_call_receiver_to_fqn() {
     let expr = Expression::FunctionCall {
         comp: make_comp_ref(&["Medium", "temperature_phX"]),
         args: vec![],
+        is_partial_application: false,
         span: rumoca_core::Span::DUMMY,
     };
 
@@ -786,6 +787,7 @@ fn test_imported_function_call_shadows_builtin_name() {
     let expr = Expression::FunctionCall {
         comp: make_comp_ref(&["abs"]),
         args: vec![Expression::ComponentReference(make_comp_ref(&["c1"]))],
+        is_partial_application: false,
         span: rumoca_core::Span::DUMMY,
     };
 
@@ -816,6 +818,7 @@ fn test_leading_dot_builtin_function_call_bypasses_import_shadow() {
     let expr = Expression::FunctionCall {
         comp,
         args: vec![Expression::ComponentReference(make_comp_ref(&["x"]))],
+        is_partial_application: false,
         span: rumoca_core::Span::DUMMY,
     };
 
@@ -846,6 +849,7 @@ fn test_builtin_function_call_receiver_not_instance_qualified() {
     let expr = Expression::FunctionCall {
         comp: make_comp_ref(&["size"]),
         args: vec![Expression::ComponentReference(make_comp_ref(&["table"]))],
+        is_partial_application: false,
         span: rumoca_core::Span::DUMMY,
     };
 
@@ -873,6 +877,7 @@ fn test_unimported_function_call_receiver_not_instance_qualified() {
     let expr = Expression::FunctionCall {
         comp: make_comp_ref(&["localFunction"]),
         args: vec![],
+        is_partial_application: false,
         span: rumoca_core::Span::DUMMY,
     };
 

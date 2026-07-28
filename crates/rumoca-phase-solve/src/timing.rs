@@ -33,3 +33,21 @@ pub(crate) fn log_stage(label: &'static str, start: StageTimer) {
         "solve model lowering stage"
     );
 }
+
+/// [`log_stage`] plus the row/node counts the stage consumed and produced, so a
+/// slow stage can be read as "many rows" versus "superlinear in rows".
+pub(crate) fn log_stage_with_shape(
+    label: &'static str,
+    start: StageTimer,
+    rows: usize,
+    nodes: usize,
+) {
+    tracing::debug!(
+        target: "rumoca_phase_solve::timing",
+        phase = label,
+        elapsed_seconds = stage_elapsed_seconds(start),
+        rows,
+        nodes,
+        "solve model lowering stage"
+    );
+}

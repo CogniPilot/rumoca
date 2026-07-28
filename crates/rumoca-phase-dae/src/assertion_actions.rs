@@ -26,7 +26,7 @@ pub(crate) fn lower_assert_equations_to_event_actions(
 }
 
 #[derive(Clone, Copy)]
-enum AssertionScope {
+pub(crate) enum AssertionScope {
     Runtime,
     Initial,
 }
@@ -38,6 +38,42 @@ impl AssertionScope {
             Self::Initial => "initial assert equation",
         }
     }
+}
+
+pub(crate) struct AlgorithmAssertionAction {
+    pub(crate) condition: Expression,
+    pub(crate) message: Expression,
+    pub(crate) level: Option<Expression>,
+    pub(crate) span: Span,
+    pub(crate) origin: String,
+}
+
+struct AssertionActionParts<'a> {
+    condition: &'a Expression,
+    message: &'a Expression,
+    level: Option<&'a Expression>,
+    span: Span,
+    origin: String,
+}
+
+pub(crate) fn lower_algorithm_assertion_to_event_action(
+    dae_model: &dae::Dae,
+    flat: &flat::Model,
+    assertion: &AlgorithmAssertionAction,
+    scope: AssertionScope,
+) -> Result<dae::DaeEventAction, ToDaeError> {
+    lower_assertion_parts_to_event_action(
+        dae_model,
+        flat,
+        AssertionActionParts {
+            condition: &assertion.condition,
+            message: &assertion.message,
+            level: assertion.level.as_ref(),
+            span: assertion.span,
+            origin: assertion.origin.clone(),
+        },
+        scope,
+    )
 }
 
 fn lower_assertion_set_to_event_actions(
@@ -72,39 +108,66 @@ fn lower_assertion_event_action(
     assertion: &flat::AssertEquation,
     scope: AssertionScope,
 ) -> Result<dae::DaeEventAction, ToDaeError> {
-    let condition = assertion_action_condition(assertion, scope);
+    lower_assertion_parts_to_event_action(
+        dae_model,
+        flat,
+        AssertionActionParts {
+            condition: &assertion.condition,
+            message: &assertion.message,
+            level: assertion.level.as_ref(),
+            span: assertion.span,
+            origin: scope.origin().to_string(),
+        },
+        scope,
+    )
+}
+
+fn lower_assertion_parts_to_event_action(
+    dae_model: &dae::Dae,
+    flat: &flat::Model,
+    assertion: AssertionActionParts<'_>,
+    scope: AssertionScope,
+) -> Result<dae::DaeEventAction, ToDaeError> {
+    let condition =
+        assertion_action_condition(assertion.condition, assertion.level, assertion.span, scope);
     let condition = flat_to_dae_expression_with_refs(&condition, flat)?;
     let condition = fold_assertion_condition_constants(&condition, dae_model, assertion.span);
     Ok(dae::DaeEventAction {
         condition,
         kind: dae::DaeEventActionKind::Assert {
-            message: flat_to_dae_expression_with_refs(&assertion.message, flat)?,
+            message: flat_to_dae_expression_with_refs(assertion.message, flat)?,
         },
         span: assertion.span,
-        origin: scope.origin().to_string(),
+        origin: assertion.origin,
     })
 }
 
 fn assertion_action_condition(
-    assertion: &flat::AssertEquation,
+    condition: &Expression,
+    level: Option<&Expression>,
+    span: Span,
     scope: AssertionScope,
 ) -> Expression {
-    let failing = assertion_failure_condition(assertion);
+    let failing = assertion_failure_condition(condition, level, span);
     match scope {
         AssertionScope::Runtime => failing,
-        AssertionScope::Initial => and_expr(initial_expr(assertion.span), failing, assertion.span),
+        AssertionScope::Initial => and_expr(initial_expr(span), failing, span),
     }
 }
 
-fn assertion_failure_condition(assertion: &flat::AssertEquation) -> Expression {
-    let failing = not_expr(assertion.condition.clone(), assertion.span);
-    let Some(level) = assertion.level.as_ref() else {
+fn assertion_failure_condition(
+    condition: &Expression,
+    level: Option<&Expression>,
+    span: Span,
+) -> Expression {
+    let failing = not_expr(condition.clone(), span);
+    let Some(level) = level else {
         return failing;
     };
     and_expr(
         failing,
-        assertion_level_error_condition(level.clone(), assertion.span),
-        assertion.span,
+        assertion_level_error_condition(level.clone(), span),
+        span,
     )
 }
 

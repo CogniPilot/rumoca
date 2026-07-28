@@ -11,7 +11,8 @@ pub(crate) fn infer_scalar_count_from_collected_varrefs(
     }
 
     let mut max_size = 0;
-    let mut any_found = false;
+    let mut any_shape_source_found = false;
+    let mut any_resolved_non_shape_source_found = false;
     let mut has_unresolved_arithmetic_subscript = false;
     for var_ref in var_refs {
         let var_name = &var_ref.name;
@@ -29,7 +30,7 @@ pub(crate) fn infer_scalar_count_from_collected_varrefs(
                 var.variability,
                 Variability::Parameter(_) | Variability::Constant(_) | Variability::Discrete(_)
             ) {
-                any_found = true;
+                any_resolved_non_shape_source_found = true;
                 continue;
             }
 
@@ -40,7 +41,7 @@ pub(crate) fn infer_scalar_count_from_collected_varrefs(
             } else {
                 compute_subscripted_size_with_context(&var.dims, &var_ref.subscripts, flat)?
             };
-            any_found = true;
+            any_shape_source_found = true;
             max_size = max_size.max(size);
             continue;
         }
@@ -64,7 +65,7 @@ pub(crate) fn infer_scalar_count_from_collected_varrefs(
         if var_ref.subscripts.is_empty()
             && let Some(&count) = prefix_counts.get(var_name.as_str())
         {
-            any_found = true;
+            any_shape_source_found = true;
             if count > max_size {
                 max_size = count;
             }
@@ -88,7 +89,7 @@ pub(crate) fn infer_scalar_count_from_collected_varrefs(
             )
         };
         if let Some(size) = per_elem {
-            any_found = true;
+            any_shape_source_found = true;
             max_size = max_size.max(size);
             continue;
         }
@@ -96,10 +97,20 @@ pub(crate) fn infer_scalar_count_from_collected_varrefs(
 
     if max_size > 0 {
         Some(max_size)
-    } else if any_found {
-        // All found variables had size 0 (zero-sized arrays like Real[0]).
+    } else if any_shape_source_found {
+        // Every shape-contributing variable had size 0 (zero-sized arrays like
+        // Real[0]). Parameters, constants, and discrete variables are deliberately
+        // not shape sources; their presence alone must not manufacture zero-size
+        // evidence. In particular, a scalar fixed=false parameter initialization
+        // equation can consist entirely of parameter references.
         // Return Some(0) so the equation is correctly eliminated.
         Some(0)
+    } else if any_resolved_non_shape_source_found {
+        // The references resolved, but all belong to variability classes that
+        // intentionally do not determine the shape of a continuous equation.
+        // Leave the shape undecided so expression-form inference (or the
+        // scalar fallback) can determine it.
+        None
     } else {
         // No variables found at all.
         // Check for unevaluated subscript expressions before concluding zero-sized.

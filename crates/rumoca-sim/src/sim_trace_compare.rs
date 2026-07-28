@@ -1,3 +1,11 @@
+mod normalization;
+#[cfg(test)]
+mod tests;
+
+use normalization::{
+    ReferenceScale, array_element_base, range_is_degenerate, reference_scale,
+    robust_reference_percentiles, sample_range,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -54,6 +62,17 @@ pub struct ChannelDeviationMetric {
     pub integral_abs_error: f64,
     pub mean_abs_error: f64,
     pub normalization_scale: f64,
+    /// Robust (p95 - p05) spread of the reference channel before flooring.
+    #[serde(default)]
+    pub reference_range: f64,
+    /// Robust `max(|p05|, |p95|)` magnitude of the reference channel.
+    #[serde(default)]
+    pub reference_magnitude: f64,
+    /// Sibling-derived scale of the array this channel belongs to, recorded
+    /// whenever one was available so triage can see why an information-free
+    /// channel was normalized the way it was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference_array_group_floor: Option<f64>,
     pub normalized_l1_error: f64,
     pub bounded_normalized_l1_error: f64,
     pub normalized_max_abs_error: f64,
@@ -216,36 +235,7 @@ pub fn compare_model_traces(
         return Err(TraceCompareError::MissingTimes);
     }
 
-    let rumoca_series = series_map(rumoca);
-    let omc_series = series_map(omc);
-    let rumoca_discrete_channels = discrete_channel_names(rumoca);
-    let omc_discrete_channels = discrete_channel_names(omc);
-    let rumoca_names: HashSet<String> = rumoca_series.keys().cloned().collect();
-    let omc_names: HashSet<String> = omc_series.keys().cloned().collect();
-    let common: HashSet<String> = rumoca_names.intersection(&omc_names).cloned().collect();
-    if common.is_empty() {
-        return Err(TraceCompareError::NoCommonVariables);
-    }
-
-    let mut channels: Vec<ChannelDeviationMetric> = common
-        .into_iter()
-        .filter_map(|name| {
-            let is_discrete_channel =
-                rumoca_discrete_channels.contains(&name) || omc_discrete_channels.contains(&name);
-            compare_channel(
-                &name,
-                &rumoca.times,
-                rumoca_series.get(&name)?,
-                &omc.times,
-                omc_series.get(&name)?,
-                is_discrete_channel,
-            )
-        })
-        .collect();
-    if channels.is_empty() {
-        return Err(TraceCompareError::NoComparableSamples);
-    }
-
+    let mut channels = compare_common_channels(rumoca, omc)?;
     channels.sort_by(|a, b| {
         b.bounded_normalized_l1_error
             .partial_cmp(&a.bounded_normalized_l1_error)
@@ -305,6 +295,125 @@ pub fn compare_model_traces(
         initial_condition,
         worst_variables,
     })
+}
+
+/// Per-channel metrics for every variable the two traces have in common.
+fn compare_common_channels(
+    rumoca: &SimTrace,
+    omc: &SimTrace,
+) -> Result<Vec<ChannelDeviationMetric>, TraceCompareError> {
+    let rumoca_series = series_map(rumoca);
+    let omc_series = series_map(omc);
+    let rumoca_discrete_channels = discrete_channel_names(rumoca);
+    let omc_discrete_channels = discrete_channel_names(omc);
+    let rumoca_names: HashSet<String> = rumoca_series.keys().cloned().collect();
+    let omc_names: HashSet<String> = omc_series.keys().cloned().collect();
+    let common: HashSet<String> = rumoca_names.intersection(&omc_names).cloned().collect();
+    if common.is_empty() {
+        return Err(TraceCompareError::NoCommonVariables);
+    }
+
+    let array_group_floors = reference_array_group_floors(
+        &omc.times,
+        &omc_series,
+        &common,
+        &rumoca_discrete_channels,
+        &omc_discrete_channels,
+        comparison_window(&rumoca.times, &omc.times),
+    );
+
+    let channels: Vec<ChannelDeviationMetric> = common
+        .into_iter()
+        .filter_map(|name| {
+            let is_discrete_channel =
+                rumoca_discrete_channels.contains(&name) || omc_discrete_channels.contains(&name);
+            let array_group_floor = if is_discrete_channel {
+                None
+            } else {
+                array_element_base(&name)
+                    .and_then(|base| array_group_floors.get(base))
+                    .copied()
+            };
+            compare_channel(
+                &name,
+                ChannelSeries::new(&rumoca.times, rumoca_series.get(&name)?),
+                ChannelSeries::new(&omc.times, omc_series.get(&name)?),
+                is_discrete_channel,
+                array_group_floor,
+            )
+        })
+        .collect();
+    if channels.is_empty() {
+        return Err(TraceCompareError::NoComparableSamples);
+    }
+    Ok(channels)
+}
+
+/// Time span over which the two traces can be compared at all.
+fn comparison_window(rumoca_times: &[f64], omc_times: &[f64]) -> Option<(f64, f64)> {
+    let start = rumoca_times.first()?.max(*omc_times.first()?);
+    let end = rumoca_times.last()?.min(*omc_times.last()?);
+    (end > start).then_some((start, end))
+}
+
+/// Smallest usable robust reference range among the elements of each
+/// array-valued reference quantity.
+///
+/// This is measured on the *reference* trace alone — never on our own output —
+/// so the normalization of an information-free channel stays a property of what
+/// we are being compared against. See the `normalization` module docs for why
+/// the sibling elements of an array are the right estimate and why the smallest
+/// of them is the conservative choice.
+///
+/// Only elements that are themselves compared contribute, and only when their
+/// range is non-degenerate — which is exactly what an information-free channel's
+/// own range is not, so a channel cannot set its own floor. The floor is
+/// therefore always at least `CONTINUOUS_ABSOLUTE_SCALE_FLOOR`, the value it
+/// replaces.
+fn reference_array_group_floors(
+    omc_times: &[f64],
+    omc_series: &HashMap<String, Vec<Option<f64>>>,
+    names: &HashSet<String>,
+    rumoca_discrete_channels: &HashSet<String>,
+    omc_discrete_channels: &HashSet<String>,
+    window: Option<(f64, f64)>,
+) -> HashMap<String, f64> {
+    let mut floors: HashMap<String, f64> = HashMap::new();
+    let Some((start, end)) = window else {
+        return floors;
+    };
+    for name in names {
+        if rumoca_discrete_channels.contains(name) || omc_discrete_channels.contains(name) {
+            continue;
+        }
+        let Some(base) = array_element_base(name) else {
+            continue;
+        };
+        let Some(values) = omc_series.get(name) else {
+            continue;
+        };
+        let samples = omc_times
+            .iter()
+            .zip(values.iter())
+            .filter(|(time, _)| **time >= start && **time <= end)
+            .filter_map(|(_, value)| value.filter(|value| value.is_finite()))
+            .collect::<Vec<_>>();
+        if samples.len() < 2 {
+            continue;
+        }
+        let Some((p05, p95)) = robust_reference_percentiles(&samples) else {
+            continue;
+        };
+        let range = (p95 - p05).abs();
+        if range_is_degenerate(range) {
+            continue;
+        }
+        floors
+            .entry(base.to_string())
+            .and_modify(|floor| *floor = floor.min(range))
+            .or_insert(range);
+    }
+    floors
 }
 
 fn initial_condition_stats(channels: &[ChannelDeviationMetric]) -> InitialConditionStats {
@@ -613,40 +722,42 @@ fn series_map(trace: &SimTrace) -> HashMap<String, Vec<Option<f64>>> {
     out
 }
 
-fn compare_channel(
-    name: &str,
-    rumoca_times: &[f64],
-    rumoca_values: &[Option<f64>],
-    omc_times: &[f64],
-    omc_values: &[Option<f64>],
-    use_step_hold: bool,
-) -> Option<ChannelDeviationMetric> {
-    if rumoca_times.len() < 2
-        || omc_times.len() < 2
-        || rumoca_times.len() != rumoca_values.len()
-        || omc_times.len() != omc_values.len()
-    {
-        return None;
+/// One tool's samples for a single channel: a time grid and the aligned values.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ChannelSeries<'a> {
+    pub times: &'a [f64],
+    pub values: &'a [Option<f64>],
+}
+
+impl<'a> ChannelSeries<'a> {
+    pub(crate) fn new(times: &'a [f64], values: &'a [Option<f64>]) -> Self {
+        Self { times, values }
     }
 
-    let deduped_grid = channel_comparison_grid(rumoca_times, omc_times)?;
-    if deduped_grid.len() < 2 {
-        return None;
+    fn is_comparable(&self) -> bool {
+        self.times.len() >= 2 && self.times.len() == self.values.len()
     }
+}
 
-    let mut samples = Vec::with_capacity(deduped_grid.len());
-    for &t in &deduped_grid {
-        let r = interp_channel(rumoca_times, rumoca_values, t, use_step_hold);
-        let o = interp_channel(omc_times, omc_values, t, use_step_hold);
-        samples.push((t, r, o));
-    }
+/// Accumulated per-window error statistics for a single channel.
+struct ChannelErrorAccumulator {
+    ref_samples: Vec<f64>,
+    paired_samples: Vec<(f64, f64, f64)>,
+    integral_abs_error: f64,
+    integral_duration: f64,
+    max_abs_error: f64,
+}
 
-    let mut ref_samples = Vec::new();
-    let mut paired_samples = Vec::new();
-    let mut integral_abs_error = 0.0_f64;
-    let mut integral_duration = 0.0_f64;
-    let mut max_abs_error = 0.0_f64;
-
+fn accumulate_channel_error(
+    samples: &[(f64, Option<f64>, Option<f64>)],
+) -> ChannelErrorAccumulator {
+    let mut acc = ChannelErrorAccumulator {
+        ref_samples: Vec::with_capacity(samples.len() * 2),
+        paired_samples: Vec::with_capacity(samples.len() * 2),
+        integral_abs_error: 0.0,
+        integral_duration: 0.0,
+        max_abs_error: 0.0,
+    };
     for window in samples.windows(2) {
         let (t0, r0, o0) = window[0];
         let (t1, r1, o1) = window[1];
@@ -657,31 +768,55 @@ fn compare_channel(
         let (Some(r0), Some(o0), Some(r1), Some(o1)) = (r0, o0, r1, o1) else {
             continue;
         };
-        let d0 = r0 - o0;
-        let d1 = r1 - o1;
-        let e0 = d0.abs();
-        let e1 = d1.abs();
+        let e0 = (r0 - o0).abs();
+        let e1 = (r1 - o1).abs();
 
-        integral_abs_error += 0.5 * (e0 + e1) * dt;
-        integral_duration += dt;
-        max_abs_error = max_abs_error.max(e0).max(e1);
-        ref_samples.push(o0);
-        ref_samples.push(o1);
-        paired_samples.push((t0, r0, o0));
-        paired_samples.push((t1, r1, o1));
+        acc.integral_abs_error += 0.5 * (e0 + e1) * dt;
+        acc.integral_duration += dt;
+        acc.max_abs_error = acc.max_abs_error.max(e0).max(e1);
+        acc.ref_samples.push(o0);
+        acc.ref_samples.push(o1);
+        acc.paired_samples.push((t0, r0, o0));
+        acc.paired_samples.push((t1, r1, o1));
     }
+    acc
+}
 
-    if ref_samples.len() < 2 || integral_duration <= 0.0 {
+fn compare_channel(
+    name: &str,
+    rumoca: ChannelSeries<'_>,
+    omc: ChannelSeries<'_>,
+    use_step_hold: bool,
+    array_group_floor: Option<f64>,
+) -> Option<ChannelDeviationMetric> {
+    if !rumoca.is_comparable() || !omc.is_comparable() {
         return None;
     }
 
-    let mean_abs_error = integral_abs_error / integral_duration;
-    let reference_range = robust_reference_range(&ref_samples).unwrap_or(0.0);
-    let normalization_scale = if use_step_hold {
-        reference_range.max(1.0).max(NORMALIZATION_SCALE_EPS)
-    } else {
-        reference_range.max(NORMALIZATION_SCALE_EPS)
-    };
+    let deduped_grid = channel_comparison_grid(rumoca.times, omc.times)?;
+    if deduped_grid.len() < 2 {
+        return None;
+    }
+
+    let samples = deduped_grid
+        .iter()
+        .map(|&t| {
+            (
+                t,
+                interp_channel(rumoca.times, rumoca.values, t, use_step_hold),
+                interp_channel(omc.times, omc.values, t, use_step_hold),
+            )
+        })
+        .collect::<Vec<_>>();
+
+    let acc = accumulate_channel_error(&samples);
+    if acc.ref_samples.len() < 2 || acc.integral_duration <= 0.0 {
+        return None;
+    }
+
+    let mean_abs_error = acc.integral_abs_error / acc.integral_duration;
+    let scale = reference_scale(&acc.ref_samples, use_step_hold, array_group_floor);
+    let normalization_scale = scale.normalization_scale;
     let normalized_l1_error = mean_abs_error / normalization_scale;
     let bounded_normalized_l1_error = normalized_l1_error / (1.0 + normalized_l1_error);
     let initial_abs_error = initial_abs_error(&samples);
@@ -690,25 +825,29 @@ fn compare_channel(
         normalized / (1.0 + normalized)
     });
     let shape = classify_channel_deviation_shape(
-        &paired_samples,
-        mean_abs_error,
-        max_abs_error,
-        normalization_scale,
-        bounded_normalized_l1_error,
-        use_step_hold,
+        &acc.paired_samples,
+        ChannelErrorSummary {
+            mean_abs_error,
+            max_abs_error: acc.max_abs_error,
+            bounded_normalized_l1_error,
+        },
+        scale,
     );
 
     Some(ChannelDeviationMetric {
         name: name.to_string(),
         shape,
-        samples: ref_samples.len(),
-        integral_duration,
-        integral_abs_error,
+        samples: acc.ref_samples.len(),
+        integral_duration: acc.integral_duration,
+        integral_abs_error: acc.integral_abs_error,
         mean_abs_error,
         normalization_scale,
+        reference_range: scale.range,
+        reference_magnitude: scale.magnitude,
+        reference_array_group_floor: scale.array_group_floor,
         normalized_l1_error,
         bounded_normalized_l1_error,
-        normalized_max_abs_error: max_abs_error / normalization_scale,
+        normalized_max_abs_error: acc.max_abs_error / normalization_scale,
         initial_abs_error,
         initial_bounded_normalized_error,
     })
@@ -764,21 +903,26 @@ fn dedup_grid_times(grid: Vec<f64>) -> Vec<f64> {
     deduped_grid
 }
 
-fn classify_channel_deviation_shape(
-    samples: &[(f64, f64, f64)],
+/// Scalar error summary handed to shape classification.
+#[derive(Debug, Clone, Copy)]
+struct ChannelErrorSummary {
     mean_abs_error: f64,
     max_abs_error: f64,
-    normalization_scale: f64,
     bounded_normalized_l1_error: f64,
-    use_step_hold: bool,
+}
+
+fn classify_channel_deviation_shape(
+    samples: &[(f64, f64, f64)],
+    error: ChannelErrorSummary,
+    scale: ReferenceScale,
 ) -> TraceDeviationShape {
-    if bounded_normalized_l1_error <= HIGH_AGREEMENT_CHANNEL_THRESHOLD {
+    if error.bounded_normalized_l1_error <= HIGH_AGREEMENT_CHANNEL_THRESHOLD {
         return TraceDeviationShape::WithinTolerance;
     }
-    if samples.len() < 3 || max_abs_error <= NORMALIZATION_SCALE_EPS {
+    if samples.len() < 3 || error.max_abs_error <= NORMALIZATION_SCALE_EPS {
         return TraceDeviationShape::Unknown;
     }
-    if use_step_hold {
+    if scale.use_step_hold {
         return TraceDeviationShape::EventTimeMismatch;
     }
     if initial_error_dominates(samples) {
@@ -787,7 +931,7 @@ fn classify_channel_deviation_shape(
     if sign_inversion_dominates(samples) {
         return TraceDeviationShape::SignInversion;
     }
-    if scale_error_dominates(samples, mean_abs_error) {
+    if scale_error_dominates(samples, error.mean_abs_error) {
         return TraceDeviationShape::ScaleError;
     }
     if constant_offset_dominates(samples) {
@@ -796,13 +940,17 @@ fn classify_channel_deviation_shape(
     if monotonic_drift_dominates(samples) {
         return TraceDeviationShape::MonotonicDrift;
     }
-    if phase_shift_likely(samples, mean_abs_error, max_abs_error) {
+    if phase_shift_likely(samples, error.mean_abs_error, error.max_abs_error) {
         return TraceDeviationShape::PhaseTimeShift;
     }
-    if normalization_scale <= NORMALIZATION_SCALE_EPS * 10.0 && mean_abs_error > 0.1 {
+    // A flat-zero reference with a large absolute residual is almost always a
+    // channel mapping problem rather than a numeric deviation. This is keyed on
+    // the *raw* reference statistics, not on `normalization_scale`, which now
+    // has an absolute floor and would otherwise make this branch unreachable.
+    if scale.reference_is_degenerate() && error.mean_abs_error > 0.1 {
         return TraceDeviationShape::MissingOrWrongChannelMapping;
     }
-    if bounded_normalized_l1_error <= MINOR_AGREEMENT_CHANNEL_THRESHOLD {
+    if error.bounded_normalized_l1_error <= MINOR_AGREEMENT_CHANNEL_THRESHOLD {
         return TraceDeviationShape::StepSizeIntegrationError;
     }
     TraceDeviationShape::Unknown
@@ -901,50 +1049,6 @@ fn phase_shift_likely(
     let similar_range =
         (rumoca_range - omc_range).abs() <= 0.25 * rumoca_range.max(omc_range).max(1.0);
     similar_range && rumoca_range.max(omc_range) > 0.1
-}
-
-fn sample_range(values: impl Iterator<Item = f64>) -> f64 {
-    let (min, max) = values.fold((f64::INFINITY, f64::NEG_INFINITY), |(min, max), value| {
-        (min.min(value), max.max(value))
-    });
-    if min.is_finite() && max.is_finite() {
-        max - min
-    } else {
-        0.0
-    }
-}
-
-fn robust_reference_range(values: &[f64]) -> Option<f64> {
-    let mut sorted = values
-        .iter()
-        .copied()
-        .filter(|value| value.is_finite())
-        .collect::<Vec<_>>();
-    if sorted.is_empty() {
-        return None;
-    }
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let p05 = percentile_sorted(&sorted, RANGE_LOW_QUANTILE);
-    let p95 = percentile_sorted(&sorted, RANGE_HIGH_QUANTILE);
-    Some((p95 - p05).abs())
-}
-
-fn percentile_sorted(sorted: &[f64], quantile: f64) -> f64 {
-    if sorted.is_empty() {
-        return 0.0;
-    }
-    if sorted.len() == 1 {
-        return sorted[0];
-    }
-    let clamped = quantile.clamp(0.0, 1.0);
-    let position = clamped * (sorted.len() - 1) as f64;
-    let lower_idx = position.floor() as usize;
-    let upper_idx = position.ceil() as usize;
-    if lower_idx == upper_idx {
-        return sorted[lower_idx];
-    }
-    let weight = position - lower_idx as f64;
-    sorted[lower_idx] * (1.0 - weight) + sorted[upper_idx] * weight
 }
 
 fn median_of_sorted(sorted: &[f64]) -> Option<f64> {
@@ -1047,603 +1151,5 @@ fn interp_step_hold(times: &[f64], values: &[Option<f64>], t: f64) -> Option<f64
                 values.get(right - 1).copied().flatten()
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::path::PathBuf;
-
-    fn trace(model_name: &str, times: Vec<f64>, names: Vec<&str>, data: Vec<Vec<f64>>) -> SimTrace {
-        SimTrace {
-            model_name: Some(model_name.to_string()),
-            times,
-            names: names.into_iter().map(ToOwned::to_owned).collect(),
-            data: data
-                .into_iter()
-                .map(|col| col.into_iter().map(Some).collect())
-                .collect(),
-            variable_meta: None,
-        }
-    }
-
-    #[test]
-    fn channel_normalized_l1_matches_expected_value() {
-        let metric = compare_channel(
-            "x",
-            &[0.0, 0.5, 1.0],
-            &[Some(0.0), Some(1.0), Some(2.0)],
-            &[0.0, 0.5, 1.0],
-            &[Some(0.0), Some(1.1), Some(2.1)],
-            false,
-        )
-        .expect("channel should compare");
-
-        // integral_abs_error = 0.075, duration = 1.0
-        // reference range uses P95-P05 over sampled reference values.
-        let scale = robust_reference_range(&[0.0, 1.1, 1.1, 2.1]).expect("range");
-        let expected = 0.075 / scale;
-        assert!((metric.normalized_l1_error - expected).abs() < 1.0e-12);
-    }
-
-    #[test]
-    fn channel_normalized_l1_is_finite_when_reference_is_near_zero() {
-        let metric = compare_channel(
-            "u",
-            &[0.0, 1.0],
-            &[Some(1.0), Some(1.0)],
-            &[0.0, 1.0],
-            &[Some(0.0), Some(0.0)],
-            false,
-        )
-        .expect("channel should compare");
-        assert!(metric.normalized_l1_error.is_finite());
-        assert!(metric.normalized_l1_error > 1.0e10);
-        assert!((metric.bounded_normalized_l1_error - 1.0).abs() < 1.0e-10);
-    }
-
-    #[test]
-    fn channel_mean_abs_error_uses_time_weighted_integration() {
-        let metric = compare_channel(
-            "x",
-            &[0.0, 0.001, 1.0],
-            &[Some(200.0), Some(100.0), Some(100.0)],
-            &[0.0, 0.001, 1.0],
-            &[Some(100.0), Some(100.0), Some(100.0)],
-            false,
-        )
-        .expect("channel should compare");
-
-        // Error is concentrated in [0, 0.001], so the time-weighted mean absolute error is:
-        // integral_abs_error = 0.5*(100 + 0)*0.001 = 0.05
-        let expected = 0.05;
-        assert!((metric.mean_abs_error - expected).abs() < 1.0e-12);
-    }
-
-    #[test]
-    fn channel_shape_labels_constant_offset() {
-        let metric = compare_channel(
-            "x",
-            &[0.0, 0.5, 1.0],
-            &[Some(1.0), Some(2.0), Some(3.0)],
-            &[0.0, 0.5, 1.0],
-            &[Some(0.0), Some(1.0), Some(2.0)],
-            false,
-        )
-        .expect("channel should compare");
-
-        assert_eq!(metric.shape, TraceDeviationShape::ConstantOffset);
-    }
-
-    #[test]
-    fn channel_shape_labels_scale_error() {
-        let metric = compare_channel(
-            "x",
-            &[0.0, 0.5, 1.0],
-            &[Some(0.0), Some(2.0), Some(4.0)],
-            &[0.0, 0.5, 1.0],
-            &[Some(0.0), Some(1.0), Some(2.0)],
-            false,
-        )
-        .expect("channel should compare");
-
-        assert_eq!(metric.shape, TraceDeviationShape::ScaleError);
-    }
-
-    #[test]
-    fn channel_shape_labels_discrete_event_time_mismatch() {
-        let metric = compare_channel(
-            "q",
-            &[0.0, 0.6, 1.0],
-            &[Some(0.0), Some(1.0), Some(1.0)],
-            &[0.0, 0.4, 1.0],
-            &[Some(0.0), Some(1.0), Some(1.0)],
-            true,
-        )
-        .expect("channel should compare");
-
-        assert_eq!(metric.shape, TraceDeviationShape::EventTimeMismatch);
-    }
-
-    #[test]
-    fn model_score_uses_median_bounded_l1() {
-        let rumoca = trace(
-            "M",
-            vec![0.0, 0.5, 1.0],
-            vec!["x", "y", "z"],
-            vec![
-                vec![0.0, 1.0, 2.0],
-                vec![0.05, 1.05, 2.05],
-                vec![0.5, 1.5, 2.5],
-            ],
-        );
-        let omc = trace(
-            "M",
-            vec![0.0, 0.5, 1.0],
-            vec!["x", "y", "z"],
-            vec![
-                vec![0.0, 1.0, 2.0],
-                vec![0.0, 1.0, 2.0],
-                vec![0.0, 1.0, 2.0],
-            ],
-        );
-
-        let metric = compare_model_traces("M", &rumoca, &omc).expect("model compare");
-        assert_eq!(metric.compared_variables, 3);
-        let mut channel_scores = metric
-            .worst_variables
-            .iter()
-            .map(|channel| channel.bounded_normalized_l1_error)
-            .collect::<Vec<_>>();
-        channel_scores.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        let expected_median = median_of_sorted(&channel_scores).expect("median");
-        assert!((metric.bounded_normalized_l1_score - expected_median).abs() < 1.0e-15);
-        assert!(metric.bounded_normalized_l1_score > 0.0);
-        assert!(!metric.worst_variables.is_empty());
-        assert_eq!(
-            metric.channel_high_count + metric.channel_minor_count + metric.channel_deviation_count,
-            metric.compared_variables
-        );
-        assert!(metric.channel_violation_mass >= 0.0);
-    }
-
-    #[test]
-    fn compare_model_requires_common_variables() {
-        let rumoca = trace("M", vec![0.0, 1.0], vec!["x"], vec![vec![0.0, 1.0]]);
-        let omc = trace("M", vec![0.0, 1.0], vec!["z"], vec![vec![0.0, 1.0]]);
-        let err = compare_model_traces("M", &rumoca, &omc).expect_err("no common vars");
-        assert!(matches!(err, TraceCompareError::NoCommonVariables));
-    }
-
-    #[test]
-    fn compare_trace_collapses_duplicate_timestamps_to_last_value() {
-        let rumoca = trace("M", vec![0.0, 0.1], vec!["x"], vec![vec![1.0, 1.0]]);
-        let mut omc = trace(
-            "M",
-            vec![0.0, 0.0, 0.1],
-            vec!["x"],
-            vec![vec![0.0, 1.0, 1.0]],
-        );
-        normalize_trace(&mut omc);
-
-        let metric = compare_model_traces("M", &rumoca, &omc).expect("model compare");
-        assert!(
-            metric.bounded_normalized_l1_score < 1.0e-12,
-            "duplicate timestamp collapse should keep settled event value"
-        );
-    }
-
-    #[test]
-    fn discrete_channel_uses_step_hold_interpolation() {
-        let metric = compare_channel(
-            "q",
-            &[0.0, 1.0],
-            &[Some(0.0), Some(1.0)],
-            &[0.0, 0.5, 1.0],
-            &[Some(0.0), Some(0.0), Some(1.0)],
-            true,
-        )
-        .expect("channel compare");
-        assert!(
-            metric.bounded_normalized_l1_error < 1.0e-12,
-            "step-hold should avoid synthetic mid-step interpolation error for discrete channels"
-        );
-    }
-
-    #[test]
-    fn event_discontinuous_real_channel_uses_step_hold_interpolation() {
-        let rumoca = SimTrace {
-            model_name: Some("M".to_string()),
-            times: vec![0.0, 1.0],
-            names: vec!["y".to_string()],
-            data: vec![vec![Some(0.0), Some(1.0)]],
-            variable_meta: Some(vec![SimTraceVariableMeta {
-                name: "y".to_string(),
-                role: Some("output".to_string()),
-                value_type: Some("Real".to_string()),
-                variability: Some("continuous".to_string()),
-                time_domain: Some("event-discontinuous".to_string()),
-            }]),
-        };
-        let omc = SimTrace {
-            model_name: Some("M".to_string()),
-            times: vec![0.0, 0.5, 1.0],
-            names: vec!["y".to_string()],
-            data: vec![vec![Some(0.0), Some(0.0), Some(1.0)]],
-            variable_meta: None,
-        };
-
-        let metric = compare_model_traces("M", &rumoca, &omc)
-            .expect("event-discontinuous Real trace should compare");
-        assert!(
-            metric.bounded_normalized_l1_score < 1.0e-12,
-            "event-discontinuous Real channels should avoid synthetic linear ramp error"
-        );
-    }
-
-    #[test]
-    fn discrete_only_model_traces_contribute_to_metrics() {
-        let rumoca = SimTrace {
-            model_name: Some("M".to_string()),
-            times: vec![0.0, 1.0],
-            names: vec!["q".to_string()],
-            data: vec![vec![Some(0.0), Some(1.0)]],
-            variable_meta: Some(vec![SimTraceVariableMeta {
-                name: "q".to_string(),
-                role: Some("algebraic".to_string()),
-                value_type: Some("Boolean".to_string()),
-                variability: Some("discrete".to_string()),
-                time_domain: Some("event-discrete".to_string()),
-            }]),
-        };
-        let omc = SimTrace {
-            model_name: Some("M".to_string()),
-            times: vec![0.0, 0.5, 1.0],
-            names: vec!["q".to_string()],
-            data: vec![vec![Some(0.0), Some(0.0), Some(1.0)]],
-            variable_meta: Some(vec![SimTraceVariableMeta {
-                name: "q".to_string(),
-                role: Some("algebraic".to_string()),
-                value_type: Some("Boolean".to_string()),
-                variability: Some("discrete".to_string()),
-                time_domain: Some("event-discrete".to_string()),
-            }]),
-        };
-
-        let metric = compare_model_traces("M", &rumoca, &omc)
-            .expect("discrete-only traces should still produce comparison metrics");
-        assert_eq!(metric.compared_variables, 1);
-        assert_eq!(metric.samples_compared, 4);
-        assert!(metric.bounded_normalized_l1_score < 1.0e-12);
-    }
-
-    #[test]
-    fn initial_condition_stats_use_first_comparable_sample() {
-        let rumoca = trace(
-            "M",
-            vec![0.0, 0.5, 1.0],
-            vec!["x", "y"],
-            vec![vec![1.0, 1.0, 1.0], vec![2.0, 2.0, 2.0]],
-        );
-        let omc = trace(
-            "M",
-            vec![0.0, 0.5, 1.0],
-            vec!["x", "y"],
-            vec![vec![0.0, 1.0, 1.0], vec![2.0, 2.0, 2.0]],
-        );
-
-        let metric = compare_model_traces("M", &rumoca, &omc).expect("model compare");
-
-        assert_eq!(metric.initial_condition.channels_compared, 2);
-        assert_eq!(metric.initial_condition.high_count, 1);
-        assert_eq!(metric.initial_condition.deviation_count, 1);
-        assert!(metric.initial_condition.violation_mass_total > 0.0);
-        assert!(
-            metric
-                .worst_variables
-                .iter()
-                .any(|channel| channel.initial_bounded_normalized_error.is_some())
-        );
-    }
-
-    #[test]
-    fn agreement_band_thresholds_classify_score_as_expected() {
-        assert_eq!(
-            classify_trace_score(0.01, 0.02, 0.05),
-            AgreementBand::HighAgreement
-        );
-        assert_eq!(
-            classify_trace_score(0.03, 0.02, 0.05),
-            AgreementBand::MinorAgreement
-        );
-        assert_eq!(
-            classify_trace_score(0.2, 0.02, 0.05),
-            AgreementBand::Deviation
-        );
-    }
-
-    #[test]
-    fn agreement_band_thresholds_classify_model_rollups_as_expected() {
-        let high_metric = ModelDeviationMetric {
-            model_name: "high".to_string(),
-            compared_variables: 1,
-            samples_compared: 2,
-            bounded_normalized_l1_score: 0.01,
-            mean_channel_bounded_normalized_l1: 0.009,
-            max_channel_bounded_normalized_l1: 0.04,
-            channel_high_count: 1,
-            channel_minor_count: 0,
-            channel_deviation_count: 0,
-            channel_severe_count: 0,
-            channel_high_percent: 1.0,
-            channel_minor_percent: 0.0,
-            channel_deviation_percent: 0.0,
-            channel_severe_percent: 0.0,
-            channel_violation_mass: 0.0,
-            initial_condition: InitialConditionStats::default(),
-            worst_variables: Vec::new(),
-        };
-        assert_eq!(
-            classify_trace_metric(
-                &high_metric,
-                HIGH_AGREEMENT_MAX_CHANNEL_THRESHOLD,
-                HIGH_AGREEMENT_MEAN_CHANNEL_THRESHOLD,
-                MINOR_AGREEMENT_MAX_CHANNEL_THRESHOLD,
-                MINOR_AGREEMENT_MEAN_CHANNEL_THRESHOLD
-            ),
-            AgreementBand::HighAgreement
-        );
-
-        let near_metric = ModelDeviationMetric {
-            model_name: "near".to_string(),
-            compared_variables: 1,
-            samples_compared: 2,
-            bounded_normalized_l1_score: 0.01,
-            mean_channel_bounded_normalized_l1: 0.03,
-            max_channel_bounded_normalized_l1: 0.12,
-            channel_high_count: 0,
-            channel_minor_count: 1,
-            channel_deviation_count: 0,
-            channel_severe_count: 0,
-            channel_high_percent: 0.0,
-            channel_minor_percent: 1.0,
-            channel_deviation_percent: 0.0,
-            channel_severe_percent: 0.0,
-            channel_violation_mass: 0.0,
-            initial_condition: InitialConditionStats::default(),
-            worst_variables: Vec::new(),
-        };
-        assert_eq!(
-            classify_trace_metric(
-                &near_metric,
-                HIGH_AGREEMENT_MAX_CHANNEL_THRESHOLD,
-                HIGH_AGREEMENT_MEAN_CHANNEL_THRESHOLD,
-                MINOR_AGREEMENT_MAX_CHANNEL_THRESHOLD,
-                MINOR_AGREEMENT_MEAN_CHANNEL_THRESHOLD
-            ),
-            AgreementBand::MinorAgreement
-        );
-
-        let deviation_metric = ModelDeviationMetric {
-            model_name: "deviation".to_string(),
-            compared_variables: 1,
-            samples_compared: 2,
-            bounded_normalized_l1_score: 0.01,
-            mean_channel_bounded_normalized_l1: 0.01,
-            max_channel_bounded_normalized_l1: 0.30,
-            channel_high_count: 0,
-            channel_minor_count: 0,
-            channel_deviation_count: 1,
-            channel_severe_count: 0,
-            channel_high_percent: 0.0,
-            channel_minor_percent: 0.0,
-            channel_deviation_percent: 1.0,
-            channel_severe_percent: 0.0,
-            channel_violation_mass: 0.1,
-            initial_condition: InitialConditionStats::default(),
-            worst_variables: Vec::new(),
-        };
-        assert_eq!(
-            classify_trace_metric(
-                &deviation_metric,
-                HIGH_AGREEMENT_MAX_CHANNEL_THRESHOLD,
-                HIGH_AGREEMENT_MEAN_CHANNEL_THRESHOLD,
-                MINOR_AGREEMENT_MAX_CHANNEL_THRESHOLD,
-                MINOR_AGREEMENT_MEAN_CHANNEL_THRESHOLD
-            ),
-            AgreementBand::Deviation
-        );
-    }
-
-    #[test]
-    fn synthetic_metrics_produce_expected_agreement_counts() {
-        let high_rumoca = trace(
-            "high",
-            vec![0.0, 0.5, 1.0],
-            vec!["x"],
-            vec![vec![1.0, 1.0, 1.0]],
-        );
-        let high_omc = trace(
-            "high",
-            vec![0.0, 0.5, 1.0],
-            vec!["x"],
-            vec![vec![1.0, 1.0, 1.0]],
-        );
-        let high = compare_model_traces("high", &high_rumoca, &high_omc).expect("high compare");
-
-        let minor_rumoca = trace(
-            "minor",
-            vec![0.0, 0.5, 1.0],
-            vec!["x", "y", "z"],
-            vec![
-                vec![0.2, 1.2, 2.2],
-                vec![1.0, 1.0, 1.0],
-                vec![2.0, 2.0, 2.0],
-            ],
-        );
-        let minor_omc = trace(
-            "minor",
-            vec![0.0, 0.5, 1.0],
-            vec!["x", "y", "z"],
-            vec![
-                vec![0.0, 1.0, 2.0],
-                vec![1.0, 1.0, 1.0],
-                vec![2.0, 2.0, 2.0],
-            ],
-        );
-        let minor =
-            compare_model_traces("minor", &minor_rumoca, &minor_omc).expect("minor compare");
-        assert!(minor.max_channel_bounded_normalized_l1 <= MINOR_AGREEMENT_MAX_CHANNEL_THRESHOLD);
-        assert!(minor.max_channel_bounded_normalized_l1 > HIGH_AGREEMENT_MAX_CHANNEL_THRESHOLD);
-        assert!(minor.mean_channel_bounded_normalized_l1 <= MINOR_AGREEMENT_MEAN_CHANNEL_THRESHOLD);
-
-        let dev_rumoca = trace(
-            "dev",
-            vec![0.0, 0.5, 1.0],
-            vec!["x"],
-            vec![vec![1.0, 2.0, 3.0]],
-        );
-        let dev_omc = trace(
-            "dev",
-            vec![0.0, 0.5, 1.0],
-            vec!["x"],
-            vec![vec![0.0, 1.0, 2.0]],
-        );
-        let dev = compare_model_traces("dev", &dev_rumoca, &dev_omc).expect("dev compare");
-        assert!(dev.max_channel_bounded_normalized_l1 > MINOR_AGREEMENT_MAX_CHANNEL_THRESHOLD);
-
-        let metrics = [high, minor, dev];
-        let counts = count_agreement_bands_default(metrics.iter());
-        assert_eq!(counts.high_agreement, 1);
-        assert_eq!(counts.minor_agreement, 1);
-        assert_eq!(counts.deviation, 1);
-    }
-
-    #[test]
-    fn channel_distribution_thresholds_classify_model_as_expected() {
-        let high = channel_distribution_metric("high", 9, 1, 0, 0);
-        assert_eq!(
-            classify_trace_metric_channel_distribution(
-                &high,
-                MODEL_HIGH_MIN_HIGH_CHANNEL_SHARE,
-                MODEL_HIGH_MAX_DEVIATION_CHANNEL_SHARE,
-                MODEL_MINOR_MIN_HIGH_PLUS_MINOR_CHANNEL_SHARE,
-                MODEL_MINOR_MAX_DEVIATION_CHANNEL_SHARE
-            ),
-            AgreementBand::HighAgreement
-        );
-
-        let near = channel_distribution_metric("near", 4, 5, 1, 0);
-        assert_eq!(
-            classify_trace_metric_channel_distribution(
-                &near,
-                MODEL_HIGH_MIN_HIGH_CHANNEL_SHARE,
-                MODEL_HIGH_MAX_DEVIATION_CHANNEL_SHARE,
-                MODEL_MINOR_MIN_HIGH_PLUS_MINOR_CHANNEL_SHARE,
-                MODEL_MINOR_MAX_DEVIATION_CHANNEL_SHARE
-            ),
-            AgreementBand::MinorAgreement
-        );
-
-        let near_exact_boundary = channel_distribution_metric("near-exact-boundary", 2, 7, 1, 0);
-        assert_eq!(
-            classify_trace_metric_channel_distribution(
-                &near_exact_boundary,
-                MODEL_HIGH_MIN_HIGH_CHANNEL_SHARE,
-                MODEL_HIGH_MAX_DEVIATION_CHANNEL_SHARE,
-                MODEL_MINOR_MIN_HIGH_PLUS_MINOR_CHANNEL_SHARE,
-                MODEL_MINOR_MAX_DEVIATION_CHANNEL_SHARE
-            ),
-            AgreementBand::MinorAgreement
-        );
-
-        let deviation = channel_distribution_metric("deviation", 2, 5, 3, 1);
-        assert_eq!(
-            classify_trace_metric_channel_distribution(
-                &deviation,
-                MODEL_HIGH_MIN_HIGH_CHANNEL_SHARE,
-                MODEL_HIGH_MAX_DEVIATION_CHANNEL_SHARE,
-                MODEL_MINOR_MIN_HIGH_PLUS_MINOR_CHANNEL_SHARE,
-                MODEL_MINOR_MAX_DEVIATION_CHANNEL_SHARE
-            ),
-            AgreementBand::Deviation
-        );
-    }
-
-    fn channel_distribution_metric(
-        name: &str,
-        high: usize,
-        minor: usize,
-        deviation: usize,
-        severe: usize,
-    ) -> ModelDeviationMetric {
-        let total = high + minor + deviation;
-        let total = total.max(1) as f64;
-        ModelDeviationMetric {
-            model_name: name.to_string(),
-            compared_variables: total as usize,
-            samples_compared: total as usize,
-            bounded_normalized_l1_score: 0.0,
-            mean_channel_bounded_normalized_l1: 0.0,
-            max_channel_bounded_normalized_l1: 0.0,
-            channel_high_count: high,
-            channel_minor_count: minor,
-            channel_deviation_count: deviation,
-            channel_severe_count: severe,
-            channel_high_percent: high as f64 / total,
-            channel_minor_percent: minor as f64 / total,
-            channel_deviation_percent: deviation as f64 / total,
-            channel_severe_percent: severe as f64 / total,
-            channel_violation_mass: deviation as f64,
-            initial_condition: InitialConditionStats::default(),
-            worst_variables: Vec::new(),
-        }
-    }
-
-    fn fixture_path(rel: &str) -> PathBuf {
-        let local = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests")
-            .join("fixtures")
-            .join("sim_traces")
-            .join(rel);
-        if local.is_file() {
-            return local;
-        }
-        let shared = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("rumoca")
-            .join("tests")
-            .join("fixtures")
-            .join("sim_traces")
-            .join(rel);
-        if shared.is_file() {
-            return shared;
-        }
-        local
-    }
-
-    #[test]
-    fn curated_fixture_traces_produce_expected_agreement_counts() {
-        let pairs = vec![
-            ("high_agreement", "Modelica.Fixture.HighAgreement"),
-            ("minor_agreement", "Modelica.Fixture.MinorAgreement"),
-            ("deviation", "Modelica.Fixture.Deviation"),
-        ];
-        let mut metrics = Vec::new();
-        for (slug, model_name) in pairs {
-            let rumoca = load_trace_json(&fixture_path(&format!("rumoca/{slug}.json")))
-                .expect("load rumoca curated fixture trace");
-            let omc = load_trace_json(&fixture_path(&format!("omc/{slug}.json")))
-                .expect("load omc curated fixture trace");
-            let metric = compare_model_traces(model_name, &rumoca, &omc)
-                .expect("compare curated fixture traces should succeed");
-            metrics.push(metric);
-        }
-
-        let counts = count_agreement_bands_default(metrics.iter());
-        assert_eq!(counts.high_agreement, 1);
-        assert_eq!(counts.minor_agreement, 0);
-        assert_eq!(counts.deviation, 2);
     }
 }

@@ -41,7 +41,8 @@ pub(crate) fn promote_parameter_variable_algebraics(dae: &mut dae::Dae) -> Resul
     // before promotion mutates the families below; the closing guard enforces that every
     // one of these was promoted via the template, never the literal-binding fallback or
     // a surviving cheapened equation.
-    let cheapened_algebraic_bases = cheapened_algebraic_family_bases(dae);
+    validate_stored_family_ranges(dae)?;
+    let cheapened_algebraic_bases = cheapened_algebraic_family_bases(dae)?;
     promote(dae, &cheapened_algebraic_bases)?;
     enforce_cheapened_algebraic_families_promoted(dae)?;
     Ok(())
@@ -101,7 +102,7 @@ fn promote(
         &dae.continuous.structured_equations,
         dae.continuous.equations.len(),
         dae,
-    );
+    )?;
     if family_removed.is_empty() {
         return Ok(());
     }
@@ -111,7 +112,7 @@ fn promote(
     // reference a value that does not exist at parameter-evaluation time (it is
     // still a solver algebraic). Iteratively drop candidates that reference a
     // non-promoted algebraic, then keep only the surviving variables' equations.
-    let promotion_order = dependency_ordered_promotions(&removable, &family_removed, dae);
+    let promotion_order = dependency_ordered_promotions(&removable, &family_removed, dae)?;
     let promoted_vars: HashSet<&str> = promotion_order.iter().map(String::as_str).collect();
     let removed: HashSet<usize> = family_removed
         .into_iter()
@@ -147,16 +148,18 @@ fn promote(
     // source family's symbolic template (so it stays tunable / array-native at init),
     // captured before the families are dropped and remapped below.
     let comprehension_starts =
-        comprehension_starts_from_families(&dae.continuous.structured_equations, &removed);
+        comprehension_starts_from_families(&dae.continuous.structured_equations, &removed)?;
 
     // Compact the equation vector and remap the structured families.
+    let mut remapped_families = dae.continuous.structured_equations.clone();
+    remap_structured_families(&mut remapped_families, &removed)?;
     let new_equations: Vec<dae::Equation> = std::mem::take(&mut dae.continuous.equations)
         .into_iter()
         .enumerate()
         .filter_map(|(index, eq)| (!removed.contains(&index)).then_some(eq))
         .collect();
     dae.continuous.equations = new_equations;
-    remap_structured_families(&mut dae.continuous.structured_equations, &removed);
+    dae.continuous.structured_equations = remapped_families;
 
     // Move each promoted variable into the parameter partition with a reconstructed
     // array binding (a scalar variable keeps its single binding).
@@ -228,17 +231,16 @@ fn promoted_start(
 /// it is correct ONLY if promotion rebuilds it from the comprehension template. A
 /// state-derivative family (also cheapened) carries a derivative leaf and is excluded —
 /// solve rebuilds its stencil from the corners, independent of promotion.
-fn cheapened_algebraic_families(dae: &dae::Dae) -> Vec<(String, rumoca_core::Span)> {
+fn cheapened_algebraic_families(
+    dae: &dae::Dae,
+) -> Result<Vec<(String, rumoca_core::Span)>, ToDaeError> {
     let mut out = Vec::new();
     for family in &dae.continuous.structured_equations {
         if family.interiors_materialized {
             continue;
         }
-        let total = family
-            .scalar_view_row_count()
-            .expect("validated structured family row count");
-        let start = family.first_equation_index;
-        let Some(equations) = dae.continuous.equations.get(start..start + total) else {
+        let range = stored_family_equation_range(family)?;
+        let Some(equations) = dae.continuous.equations.get(range) else {
             continue;
         };
         if equations.iter().any(|eq| eq.rhs.contains_der()) {
@@ -250,17 +252,17 @@ fn cheapened_algebraic_families(dae: &dae::Dae) -> Vec<(String, rumoca_core::Spa
             }
         }
     }
-    out
+    Ok(out)
 }
 
 /// Base names of algebraic arrays defined by a cheapened structured family (see
 /// [`cheapened_algebraic_families`]). Captured before promotion so the cheapen-aware
 /// reconstruction guard and `worthwhile` override can reference them.
-fn cheapened_algebraic_family_bases(dae: &dae::Dae) -> HashSet<String> {
-    cheapened_algebraic_families(dae)
+fn cheapened_algebraic_family_bases(dae: &dae::Dae) -> Result<HashSet<String>, ToDaeError> {
+    Ok(cheapened_algebraic_families(dae)?
         .into_iter()
         .map(|(target, _)| target)
-        .collect()
+        .collect())
 }
 
 /// Fail-early guard (defensive coding): after promotion, NO cheapened algebraic family
@@ -279,7 +281,7 @@ fn cheapened_algebraic_family_bases(dae: &dae::Dae) -> HashSet<String> {
 /// the guard exists to catch drift between those analyses before it becomes a silent
 /// miscompile.
 fn enforce_cheapened_algebraic_families_promoted(dae: &dae::Dae) -> Result<(), ToDaeError> {
-    let survivors = cheapened_algebraic_families(dae);
+    let survivors = cheapened_algebraic_families(dae)?;
     let Some(&(_, span)) = survivors.first() else {
         return Ok(());
     };
@@ -331,20 +333,20 @@ fn reconstructed_binding(
 fn comprehension_starts_from_families(
     families: &[dae::StructuredEquationFamily],
     removed: &HashSet<usize>,
-) -> HashMap<String, (rumoca_core::Expression, usize)> {
+) -> Result<HashMap<String, (rumoca_core::Expression, usize)>, ToDaeError> {
     let mut result = HashMap::new();
     for family in families {
-        let total = family
-            .scalar_view_row_count()
-            .expect("validated structured family row count");
-        let fully_removed = (family.first_equation_index..family.first_equation_index + total)
-            .all(|index| removed.contains(&index));
+        let fully_removed =
+            stored_family_equation_range(family)?.all(|index| removed.contains(&index));
         if !fully_removed {
             continue;
         }
         let Some(template) = family.template.as_ref() else {
             continue;
         };
+        if template.scalar_view != rumoca_core::ComprehensionScalarView::BinderSubstitution {
+            continue;
+        }
         if family.domain.binders.is_empty() {
             continue;
         }
@@ -390,7 +392,7 @@ fn comprehension_starts_from_families(
             }
         }
     }
-    result
+    Ok(result)
 }
 
 struct ComprehensionBinderRewriter<'a> {
@@ -676,14 +678,14 @@ fn dependency_ordered_promotions(
     removable: &HashMap<usize, (rumoca_core::VarName, rumoca_core::Expression)>,
     family_removed: &HashSet<usize>,
     dae: &dae::Dae,
-) -> Vec<String> {
+) -> Result<Vec<String>, ToDaeError> {
     let PromotionGraph {
         candidate_order,
         algebraic_refs,
         mut promoted,
     } = build_promotion_graph(removable, family_removed, dae);
 
-    let family_targets = structured_family_targets(removable, family_removed, dae);
+    let family_targets = structured_family_targets(removable, family_removed, dae)?;
     loop {
         prune_dangling_promotions(&mut promoted, &algebraic_refs);
 
@@ -704,7 +706,7 @@ fn dependency_ordered_promotions(
 
         let order = topological_promotion_order(&candidate_order, &algebraic_refs, &promoted);
         if order.len() == promoted.len() {
-            return order;
+            return Ok(order);
         }
         let acyclic: HashSet<&str> = order.iter().map(String::as_str).collect();
         promoted.retain(|name| acyclic.contains(name.as_str()));
@@ -715,27 +717,22 @@ fn structured_family_targets(
     removable: &HashMap<usize, (rumoca_core::VarName, rumoca_core::Expression)>,
     family_removed: &HashSet<usize>,
     dae: &dae::Dae,
-) -> Vec<HashSet<String>> {
-    dae.continuous
-        .structured_equations
-        .iter()
-        .filter_map(|family| {
-            let total = family
-                .scalar_view_row_count()
-                .expect("validated structured family row count");
-            let indices = family.first_equation_index..family.first_equation_index + total;
-            if !indices.clone().all(|index| family_removed.contains(&index)) {
-                return None;
-            }
-            Some(
-                indices
-                    .filter_map(|index| removable.get(&index))
-                    .map(|(target, _)| base(target.as_str()).to_string())
-                    .collect(),
-            )
-        })
-        .filter(|targets: &HashSet<String>| !targets.is_empty())
-        .collect()
+) -> Result<Vec<HashSet<String>>, ToDaeError> {
+    let mut result = Vec::new();
+    for family in &dae.continuous.structured_equations {
+        let indices = stored_family_equation_range(family)?;
+        if !indices.clone().all(|index| family_removed.contains(&index)) {
+            continue;
+        }
+        let targets = indices
+            .filter_map(|index| removable.get(&index))
+            .map(|(target, _)| base(target.as_str()).to_string())
+            .collect::<HashSet<_>>();
+        if !targets.is_empty() {
+            result.push(targets);
+        }
+    }
+    Ok(result)
 }
 
 fn topological_promotion_order(
@@ -770,14 +767,11 @@ fn removable_indices_respecting_families(
     families: &[dae::StructuredEquationFamily],
     equation_count: usize,
     dae: &dae::Dae,
-) -> HashSet<usize> {
+) -> Result<HashSet<usize>, ToDaeError> {
     // Map each equation index to its owning family (if any).
     let mut family_of: Vec<Option<usize>> = vec![None; equation_count];
     for (family_index, family) in families.iter().enumerate() {
-        let span = family
-            .scalar_view_row_count()
-            .expect("validated structured family row count");
-        for index in family.first_equation_index..family.first_equation_index + span {
+        for index in stored_family_equation_range(family)? {
             if let Some(slot) = family_of.get_mut(index) {
                 *slot = Some(family_index);
             }
@@ -786,17 +780,14 @@ fn removable_indices_respecting_families(
     // A family is fully promotable iff every one of its equations is removable.
     let mut family_all_removable: Vec<bool> = vec![true; families.len()];
     for (family_index, family) in families.iter().enumerate() {
-        let span = family
-            .scalar_view_row_count()
-            .expect("validated structured family row count");
-        for index in family.first_equation_index..family.first_equation_index + span {
+        for index in stored_family_equation_range(family)? {
             if !removable.contains_key(&index) {
                 family_all_removable[family_index] = false;
                 break;
             }
         }
     }
-    removable
+    Ok(removable
         .keys()
         .copied()
         .filter(|index| match family_of.get(*index).copied().flatten() {
@@ -814,7 +805,7 @@ fn removable_indices_respecting_families(
                         || (!variable.dims.is_empty() && equation.scalar_count > 1))
             }),
         })
-        .collect()
+        .collect())
 }
 
 /// Drop families whose equations were all removed and shift the survivors'
@@ -822,37 +813,105 @@ fn removable_indices_respecting_families(
 fn remap_structured_families(
     families: &mut Vec<dae::StructuredEquationFamily>,
     removed: &HashSet<usize>,
-) {
+) -> Result<(), ToDaeError> {
     // Prefix count of removed equations strictly before each index.
     let max_index = families
         .iter()
-        .map(|family| {
-            family.first_equation_index
-                + family
-                    .scalar_view_row_count()
-                    .expect("validated structured family row count")
-        })
+        .map(stored_family_equation_range)
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .map(|range| range.end)
         .max()
         .unwrap_or(0);
-    let mut removed_before = vec![0usize; max_index + 1];
+    let prefix_len = max_index.checked_add(1).ok_or_else(|| {
+        ToDaeError::runtime_contract_violation(
+            "structured equation family prefix length overflows usize",
+        )
+    })?;
+    let mut removed_before = vec![0usize; prefix_len];
     for index in 0..max_index {
         removed_before[index + 1] = removed_before[index] + usize::from(removed.contains(&index));
     }
-    families.retain(|family| {
-        let span = family
-            .scalar_view_row_count()
-            .expect("validated structured family row count");
+    let mut retained = Vec::with_capacity(families.len());
+    for mut family in std::mem::take(families) {
+        let mut range = stored_family_equation_range(&family)?;
         // Keep a family only if none of its equations were removed.
-        !(family.first_equation_index..family.first_equation_index + span)
-            .any(|index| removed.contains(&index))
-    });
-    for family in families.iter_mut() {
+        if range.any(|index| removed.contains(&index)) {
+            continue;
+        }
         let shift = removed_before
             .get(family.first_equation_index)
             .copied()
             .unwrap_or(0);
-        family.first_equation_index -= shift;
+        family.first_equation_index =
+            family
+                .first_equation_index
+                .checked_sub(shift)
+                .ok_or_else(|| {
+                    ToDaeError::runtime_contract_violation_with_span(
+                        "structured equation family remap underflows",
+                        family.span,
+                    )
+                })?;
+        retained.push(family);
     }
+    *families = retained;
+    Ok(())
+}
+
+/// Number of equations physically stored for a family at the canonical DAE
+/// stage. Binder-substitution families already own their derived scalar rows;
+/// a row-major projection family still owns one aggregate array equation and
+/// is expanded only at the structural scalar-view boundary.
+fn stored_family_equation_count(
+    family: &dae::StructuredEquationFamily,
+) -> Result<usize, ToDaeError> {
+    if family.template.as_ref().is_some_and(|template| {
+        template.scalar_view == rumoca_core::ComprehensionScalarView::RowMajorProjection
+    }) {
+        Ok(1)
+    } else {
+        family.scalar_view_row_count().map_err(|error| {
+            ToDaeError::runtime_contract_violation_with_span(
+                format!("invalid structured equation family domain: {error}"),
+                family.span,
+            )
+        })
+    }
+}
+
+fn stored_family_equation_range(
+    family: &dae::StructuredEquationFamily,
+) -> Result<std::ops::Range<usize>, ToDaeError> {
+    let count = stored_family_equation_count(family)?;
+    let end = family
+        .first_equation_index
+        .checked_add(count)
+        .ok_or_else(|| {
+            ToDaeError::runtime_contract_violation_with_span(
+                "structured equation family range overflows usize",
+                family.span,
+            )
+        })?;
+    Ok(family.first_equation_index..end)
+}
+
+fn validate_stored_family_ranges(dae: &dae::Dae) -> Result<(), ToDaeError> {
+    for family in &dae.continuous.structured_equations {
+        let range = stored_family_equation_range(family)?;
+        if range.end > dae.continuous.equations.len() {
+            return Err(ToDaeError::runtime_contract_violation_with_span(
+                format!(
+                    "structured equation family range {}..{} exceeds the {} stored equations",
+                    range.start,
+                    range.end,
+                    dae.continuous.equations.len()
+                ),
+                family.span,
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Strip a trailing array subscript so `sig[1,2]` and `sig` compare equal.
@@ -867,7 +926,13 @@ fn parameter_variable_algebraics(dae: &dae::Dae) -> HashSet<String> {
             .map(|k| base(k.as_str()).to_string())
             .collect::<HashSet<String>>()
     };
-    let mut static_references = base_names(&dae.variables.parameters);
+    let mut static_references = dae
+        .variables
+        .parameters
+        .keys()
+        .filter(|name| !rumoca_core::is_runtime_managed_slot(name.as_str()))
+        .map(|name| base(name.as_str()).to_string())
+        .collect::<HashSet<_>>();
     static_references.extend(base_names(&dae.variables.constants));
     static_references.extend(
         dae.symbols
@@ -1115,6 +1180,47 @@ mod tests {
             &parameter_variable,
             &static_references,
         ));
+    }
+
+    #[test]
+    fn invalid_structured_family_domain_is_rejected_without_mutation() {
+        let mut dae_model = dae::Dae::default();
+        dae_model
+            .continuous
+            .structured_equations
+            .push(dae::StructuredEquationFamily {
+                domain: rumoca_core::StructuredIndexDomain {
+                    binders: vec![rumoca_core::StructuredIndexBinder {
+                        id: 0,
+                        display_name: "i".to_string(),
+                        lower: 1,
+                        upper: 2,
+                        step: 0,
+                    }],
+                },
+                first_equation_index: 0,
+                equations_per_point: 1,
+                span: test_span(),
+                origin: "invalid promotion family".to_string(),
+                regular: None,
+                template: None,
+                interiors_materialized: false,
+            });
+
+        let error = promote_parameter_variable_algebraics(&mut dae_model)
+            .expect_err("invalid family domains must be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("invalid structured equation family")
+        );
+        assert!(dae_model.continuous.equations.is_empty());
+        assert_eq!(dae_model.continuous.structured_equations.len(), 1);
+        assert_eq!(
+            dae_model.continuous.structured_equations[0].domain.binders[0].step,
+            0
+        );
     }
 
     #[test]

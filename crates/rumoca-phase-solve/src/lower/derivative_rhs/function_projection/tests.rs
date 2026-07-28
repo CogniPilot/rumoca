@@ -143,6 +143,88 @@ fn scoped_full_binding_has_substituted_dimensions() {
 }
 
 #[test]
+fn indexed_scope_substitution_resolves_compile_time_loop_index_first() -> Result<(), LowerError> {
+    let dae_model = dae::Dae::default();
+    let structural_bindings = IndexMap::new();
+    let analysis = FunctionProjectionAnalysis::new(&dae_model, &structural_bindings);
+    let mut scope = FunctionProjectionScope::default();
+    scope.full.insert(
+        "k".to_string(),
+        rumoca_core::Expression::Literal {
+            value: Literal::Integer(2),
+            span: test_span(),
+        },
+    );
+    scope.dims.insert("v".to_string(), vec![3]);
+    scope
+        .scalars
+        .insert("v".to_string(), vec![real(1.0), real(2.0), real(3.0)]);
+    let expr = rumoca_core::Expression::Index {
+        base: Box::new(local_var("v")),
+        subscripts: vec![rumoca_core::Subscript::Expr {
+            expr: Box::new(local_var("k")),
+            span: test_span(),
+        }],
+        span: test_span(),
+    };
+
+    assert_eq!(analysis.substitute(&expr, &scope)?, real(2.0));
+    Ok(())
+}
+
+#[test]
+fn plain_projected_array_formal_substitutes_full_actual() -> Result<(), LowerError> {
+    let dae_model = dae::Dae::default();
+    let structural_bindings = IndexMap::new();
+    let analysis = FunctionProjectionAnalysis::new(&dae_model, &structural_bindings);
+    let mut scope = FunctionProjectionScope::default();
+    scope
+        .full
+        .insert("v".to_string(), local_var("body.r_rel_a"));
+    scope.dims.insert("v".to_string(), vec![3]);
+    scope
+        .scalars
+        .insert("v".to_string(), vec![real(1.0), real(2.0), real(3.0)]);
+
+    assert_eq!(
+        analysis.substitute(&local_var("v"), &scope)?,
+        local_var("body.r_rel_a")
+    );
+    Ok(())
+}
+
+#[test]
+fn projected_array_formal_materializes_inside_nested_call() -> Result<(), LowerError> {
+    let dae_model = dae::Dae::default();
+    let structural_bindings = IndexMap::new();
+    let analysis = FunctionProjectionAnalysis::new(&dae_model, &structural_bindings);
+    let mut scope = FunctionProjectionScope::default();
+    scope
+        .full
+        .insert("v".to_string(), local_var("body.r_rel_a"));
+    scope.dims.insert("v".to_string(), vec![3]);
+    scope
+        .scalars
+        .insert("v".to_string(), vec![real(1.0), real(2.0), real(3.0)]);
+    let call = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::Reference::new("nested"),
+        args: vec![local_var("v")],
+        is_constructor: false,
+        span: test_span(),
+    };
+
+    let substituted = analysis.substitute(&call, &scope)?;
+    let rumoca_core::Expression::FunctionCall { args, .. } = substituted else {
+        panic!("expected substituted function call");
+    };
+    assert_eq!(
+        args,
+        vec![array(vec![real(1.0), real(2.0), real(3.0)], false)]
+    );
+    Ok(())
+}
+
+#[test]
 fn projected_scope_dimensions_override_full_binding_dimensions() {
     let dae_model = dae::Dae::default();
     let structural_bindings = IndexMap::new();
@@ -319,6 +401,41 @@ fn substitution_reads_current_projected_indexed_assignment() -> Result<(), Lower
     };
 
     assert_eq!(analysis.substitute(&expr, &scope)?, real(3.0));
+    Ok(())
+}
+
+#[test]
+fn indexed_expression_dimensions_remove_static_indexed_axes() -> Result<(), LowerError> {
+    let dae_model = dae::Dae::default();
+    let structural_bindings = IndexMap::new();
+    let analysis = FunctionProjectionAnalysis::new(&dae_model, &structural_bindings);
+    let mut scope = FunctionProjectionScope::default();
+    scope.dims.insert("A".to_string(), vec![2, 3]);
+    let expr = rumoca_core::Expression::Index {
+        base: Box::new(local_var("A")),
+        subscripts: vec![rumoca_core::Subscript::Index {
+            value: 2,
+            span: test_span(),
+        }],
+        span: test_span(),
+    };
+
+    assert_eq!(
+        analysis.expr_dims(&expr, &scope, 0, test_span())?,
+        Some(vec![3])
+    );
+    let reference = rumoca_core::Expression::VarRef {
+        name: rumoca_core::Reference::new("A"),
+        subscripts: vec![rumoca_core::Subscript::Index {
+            value: 2,
+            span: test_span(),
+        }],
+        span: test_span(),
+    };
+    assert_eq!(
+        analysis.expr_dims(&reference, &scope, 0, test_span())?,
+        Some(vec![3])
+    );
     Ok(())
 }
 
@@ -1193,8 +1310,16 @@ fn procedure_call_projection_fixture() -> (dae::Dae, rumoca_core::Expression) {
         comp: rumoca_core::ComponentReference::from_flat_segments("My.split", test_span(), None),
         args: Vec::new(),
         outputs: vec![
-            rumoca_core::ComponentReference::from_flat_segments("values", test_span(), None),
-            rumoca_core::ComponentReference::from_flat_segments("ok", test_span(), None),
+            Some(rumoca_core::ComponentReference::from_flat_segments(
+                "values",
+                test_span(),
+                None,
+            )),
+            Some(rumoca_core::ComponentReference::from_flat_segments(
+                "ok",
+                test_span(),
+                None,
+            )),
         ],
         span: test_span(),
     });

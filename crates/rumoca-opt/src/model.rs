@@ -23,8 +23,8 @@ impl Default for OptOptions {
 }
 
 impl OptOptions {
-    pub(crate) fn settle(self) -> rumoca_eval_solve::AlgebraicSettle {
-        rumoca_eval_solve::AlgebraicSettle {
+    pub(crate) fn settle(self) -> rumoca_solver::AlgebraicSettle {
+        rumoca_solver::AlgebraicSettle {
             tol: self.settle_tol,
             max_iters: self.settle_max_iters,
         }
@@ -88,7 +88,7 @@ impl TrainableSet {
 
 /// A compiled, lowered, differentiable model with mutable parameter values.
 pub struct DifferentiableModel {
-    runtime: rumoca_eval_solve::SolveRuntime,
+    runtime: rumoca_solver::SolveRuntime,
     state: Vec<f64>,
     params: Vec<f64>,
     parameters: Vec<TrainableParameter>,
@@ -108,7 +108,7 @@ impl DifferentiableModel {
         let state = solve_model.initial_y[..solve_model.state_scalar_count()].to_vec();
         let params = solve_model.parameters.clone();
         let parameters = collect_model_parameter_slots(dae_model, &solve_model);
-        let runtime = rumoca_eval_solve::SolveRuntime::new(&solve_model)?;
+        let runtime = rumoca_solver::SolveRuntime::new(&solve_model)?;
         Ok(Self {
             runtime,
             state,
@@ -190,7 +190,7 @@ impl DifferentiableModel {
         self.runtime.solver_count == self.runtime.state_count
     }
 
-    pub(crate) fn runtime(&self) -> &rumoca_eval_solve::SolveRuntime {
+    pub(crate) fn runtime(&self) -> &rumoca_solver::SolveRuntime {
         &self.runtime
     }
 
@@ -198,8 +198,8 @@ impl DifferentiableModel {
         &mut self.params
     }
 
-    pub(crate) fn linearization(&self, t: f64) -> rumoca_eval_solve::AlgebraicLinearization<'_> {
-        rumoca_eval_solve::AlgebraicLinearization {
+    pub(crate) fn linearization(&self, t: f64) -> rumoca_solver::AlgebraicLinearization<'_> {
+        rumoca_solver::AlgebraicLinearization {
             t,
             params: &self.params,
             settle: self.options.settle(),

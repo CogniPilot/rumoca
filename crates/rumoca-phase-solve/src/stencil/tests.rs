@@ -1,4 +1,5 @@
 use super::*;
+use crate::tensor_declines::{TensorFallbackReason, TensorHeadroom};
 
 fn unspanned_stencil_test_span() -> rumoca_core::Span {
     rumoca_core::Span::DUMMY
@@ -10,8 +11,27 @@ fn push_structured_programs_fixture(
     structured_equations: &[dae::StructuredEquationFamily],
     dae_equations: &[dae::Equation],
 ) {
-    push_structured_programs(nodes, rows, structured_equations, dae_equations)
-        .expect("structured program fixture metadata should match row count");
+    push_structured_programs_journal(nodes, rows, structured_equations, dae_equations);
+}
+
+/// Same fixture, but keeps the decline journal so a test can assert which
+/// branch scalarized the family instead of only that it did.
+fn push_structured_programs_journal(
+    nodes: &mut Vec<solve::ComputeNode>,
+    rows: &mut Vec<StructuredProgram>,
+    structured_equations: &[dae::StructuredEquationFamily],
+    dae_equations: &[dae::Equation],
+) -> TensorDeclineJournal {
+    let mut declines = TensorDeclineJournal::new();
+    push_structured_programs(
+        nodes,
+        rows,
+        structured_equations,
+        dae_equations,
+        &mut declines,
+    )
+    .expect("structured program fixture metadata should match row count");
+    declines
 }
 
 fn load_y_range(op_position: usize, y_range: std::ops::Range<usize>) -> StructuredLoadYRange {
@@ -19,6 +39,23 @@ fn load_y_range(op_position: usize, y_range: std::ops::Range<usize>) -> Structur
         op_position,
         y_range,
     }
+}
+
+fn unit_producer_load_strides(
+    op_positions: impl IntoIterator<Item = usize>,
+) -> Option<Vec<solve::AffineStencilLoadStride>> {
+    Some(
+        op_positions
+            .into_iter()
+            .map(|op_position| solve::AffineStencilLoadStride {
+                op_position,
+                terms: vec![solve::AffineStencilIndexStrideTerm {
+                    dimension: 0,
+                    stride: 1,
+                }],
+            })
+            .collect(),
+    )
 }
 
 fn domain_scalar_count(domain: &rumoca_core::StructuredIndexDomain) -> usize {
@@ -102,6 +139,7 @@ fn structured_access_proof_rejects_string_literals() {
 fn decay_row(y: usize, p: usize, dae_equation_index: usize) -> StructuredProgram {
     StructuredProgram {
         dae_equation_index: Some(dae_equation_index),
+        producer_load_strides: unit_producer_load_strides([1]),
         access_proof: Some(access_proof(vec![
             StructuredAccessOperand::LoadP(p),
             StructuredAccessOperand::LoadY(y),
@@ -237,6 +275,7 @@ fn family_2d(start: usize, rows: usize, cols: usize) -> dae::StructuredEquationF
 fn stencil_row(y: usize, dae_equation_index: usize) -> StructuredProgram {
     StructuredProgram {
         dae_equation_index: Some(dae_equation_index),
+        producer_load_strides: unit_producer_load_strides([0, 1]),
         access_proof: Some(access_proof(vec![
             StructuredAccessOperand::LoadY(y),
             StructuredAccessOperand::LoadY(y + 1),
@@ -266,6 +305,7 @@ fn stencil_row(y: usize, dae_equation_index: usize) -> StructuredProgram {
 fn nonlinear_stencil_row(y: usize, dae_equation_index: usize) -> StructuredProgram {
     StructuredProgram {
         dae_equation_index: Some(dae_equation_index),
+        producer_load_strides: unit_producer_load_strides([0, 2]),
         access_proof: Some(access_proof(vec![
             StructuredAccessOperand::LoadY(y + 1),
             StructuredAccessOperand::LoadY(y),
@@ -308,6 +348,7 @@ fn nonlinear_stencil_row(y: usize, dae_equation_index: usize) -> StructuredProgr
 fn pointwise_row(y: usize, dae_equation_index: usize) -> StructuredProgram {
     StructuredProgram {
         dae_equation_index: Some(dae_equation_index),
+        producer_load_strides: unit_producer_load_strides([0]),
         access_proof: Some(access_proof(vec![StructuredAccessOperand::LoadY(y)])),
         output_index: y,
         pointwise_output_y_index: Some(y),
@@ -324,6 +365,7 @@ fn pointwise_row(y: usize, dae_equation_index: usize) -> StructuredProgram {
 fn scaled_row(y: usize, coefficient: f64, dae_equation_index: usize) -> StructuredProgram {
     StructuredProgram {
         dae_equation_index: Some(dae_equation_index),
+        producer_load_strides: unit_producer_load_strides([1]),
         access_proof: Some(access_proof(vec![
             StructuredAccessOperand::Const(coefficient),
             StructuredAccessOperand::LoadY(y),
@@ -353,6 +395,7 @@ fn scaled_row(y: usize, coefficient: f64, dae_equation_index: usize) -> Structur
 fn shifted_single_load_row(y: usize, dae_equation_index: usize) -> StructuredProgram {
     StructuredProgram {
         dae_equation_index: Some(dae_equation_index),
+        producer_load_strides: unit_producer_load_strides([0]),
         access_proof: Some(access_proof(vec![StructuredAccessOperand::LoadY(y + 1)])),
         output_index: y,
         pointwise_output_y_index: Some(y),
@@ -372,6 +415,7 @@ fn shifted_single_load_row(y: usize, dae_equation_index: usize) -> StructuredPro
 fn pointwise_other_array_row(y: usize, dae_equation_index: usize) -> StructuredProgram {
     StructuredProgram {
         dae_equation_index: Some(dae_equation_index),
+        producer_load_strides: unit_producer_load_strides([0]),
         access_proof: Some(access_proof(vec![StructuredAccessOperand::LoadY(y + 4)])),
         output_index: y,
         pointwise_output_y_index: Some(y),
@@ -391,6 +435,7 @@ fn pointwise_other_array_row(y: usize, dae_equation_index: usize) -> StructuredP
 fn shifted_other_array_row(y: usize, dae_equation_index: usize) -> StructuredProgram {
     StructuredProgram {
         dae_equation_index: Some(dae_equation_index),
+        producer_load_strides: unit_producer_load_strides([0]),
         access_proof: Some(access_proof(vec![StructuredAccessOperand::LoadY(y + 5)])),
         output_index: y,
         pointwise_output_y_index: Some(y),
@@ -682,7 +727,7 @@ fn leaves_single_structured_row_scalar() -> Result<(), LowerError> {
     let dae_equations = matching_dae_equations(1);
     assert_eq!(
         tensor_decline_at(rows.as_slice(), &[family(0, 1)], &dae_equations)?,
-        StructuredTensorDecline::TooFewStructuredRows
+        StructuredTensorDecline::SingletonFamilyDomain
     );
     let mut nodes = Vec::new();
     push_structured_programs_fixture(&mut nodes, &mut rows, &[family(0, 1)], &dae_equations);
@@ -881,6 +926,24 @@ fn preserves_same_domain_other_array_assignment_as_map_node() {
     assert!(matches!(
         &nodes[..],
         [solve::ComputeNode::Map { domain, .. }] if domain_scalar_count(domain) == 4
+    ));
+}
+
+#[test]
+fn preserves_non_y_target_family_as_stencil_node() {
+    let dae_equations = matching_dae_equations(4);
+    let mut rows = (0..4)
+        .map(|offset| {
+            let mut row = pointwise_row(offset, offset);
+            row.pointwise_output_y_index = None;
+            row
+        })
+        .collect();
+    let mut nodes = Vec::new();
+    push_structured_programs_fixture(&mut nodes, &mut rows, &[family(0, 4)], &dae_equations);
+    assert!(matches!(
+        &nodes[..],
+        [solve::ComputeNode::AffineStencil { domain, .. }] if domain_scalar_count(domain) == 4
     ));
 }
 
@@ -1154,6 +1217,232 @@ fn corner_rows_reproduce_full_row_affine_strides_for_2d_family() {
 }
 
 #[test]
+fn producer_affine_metadata_is_compact_and_uses_recorded_array_access_strides() {
+    let extent = 1_000usize;
+    let scalar_count = extent * extent;
+    let layout = solve::VarLayout::from_parts_with_shapes(
+        IndexMap::from([(
+            "u".to_string(),
+            solve::ScalarSlot::Y {
+                index: 0,
+                byte_offset: 0,
+            },
+        )]),
+        IndexMap::from([("u".to_string(), vec![extent, extent])]),
+        scalar_count,
+        0,
+    )
+    .expect("compact producer metadata fixture layout should be valid");
+    let domain = test_domain_2d(extent, extent);
+    let family = dae::StructuredEquationFamily {
+        domain: domain.clone(),
+        first_equation_index: 0,
+        equations_per_point: 1,
+        span: stencil_test_span(),
+        origin: "producer metadata fixture".to_string(),
+        regular: Some(rumoca_core::RegularForFamily {
+            binders: vec!["i".to_string(), "j".to_string()],
+            accesses: vec![rumoca_core::ArrayAccess {
+                var: "u".to_string(),
+                subscripts: vec![
+                    rumoca_core::AffineForm {
+                        constant: 0,
+                        coeffs: vec![1, 0],
+                    },
+                    rumoca_core::AffineForm {
+                        constant: 0,
+                        coeffs: vec![0, 1],
+                    },
+                ],
+            }],
+        }),
+        template: None,
+        interiors_materialized: true,
+    };
+    let ops = vec![
+        solve::LinearOp::LoadY { dst: 0, index: 0 },
+        solve::LinearOp::StoreOutput { src: 0 },
+    ];
+
+    let metadata =
+        producer_load_strides_for_family_row(&layout, &family, 0, &ops, stencil_test_span())
+            .expect("producer affine access metadata should lower")
+            .expect("regular family should carry producer load strides");
+
+    assert_eq!(domain_scalar_count(&domain), scalar_count);
+    assert_eq!(
+        metadata.len(),
+        1,
+        "metadata stays O(accesses), not O(cells)"
+    );
+    assert_eq!(
+        metadata[0]
+            .terms
+            .iter()
+            .map(|term| (term.dimension, term.stride))
+            .collect::<Vec<_>>(),
+        vec![(0, extent as isize), (1, 1)]
+    );
+    assert!(
+        producer_load_strides_for_family_row(
+            &layout,
+            &family,
+            scalar_count - 1,
+            &ops,
+            stencil_test_span(),
+        )
+        .expect("non-base producer metadata lookup should remain valid")
+        .is_none(),
+        "the producer table is anchored once, not copied over one million scalar-view rows"
+    );
+}
+
+#[test]
+fn producer_metadata_corner_disagreement_rejects_stencil_instead_of_reconstructing_it() {
+    let domain = test_domain_2d(3, 3);
+    let producer = vec![solve::AffineStencilLoadStride {
+        op_position: 0,
+        terms: vec![
+            solve::AffineStencilIndexStrideTerm {
+                dimension: 0,
+                stride: 3,
+            },
+            solve::AffineStencilIndexStrideTerm {
+                dimension: 1,
+                stride: 1,
+            },
+        ],
+    }];
+    let mut base = pointwise_row(0, 0);
+    let mut i_neighbor = pointwise_row(3, 3);
+    let mut j_neighbor = pointwise_row(1, 1);
+    for row in [&mut base, &mut i_neighbor, &mut j_neighbor] {
+        row.producer_load_strides = Some(producer.clone());
+    }
+    let tuples = vec![vec![1, 1], vec![2, 1], vec![1, 2]];
+    let rows = vec![&base, &i_neighbor, &j_neighbor];
+    assert!(
+        producer_affine_strides_from_selected_rows(&rows, &domain, &tuples, stencil_test_span(),)
+            .expect("matching producer metadata should validate")
+            .is_some()
+    );
+    assert!(
+        tensor_node_from_compact_corners(
+            &[base.clone(), i_neighbor.clone(), j_neighbor.clone()],
+            &domain,
+            stencil_test_span(),
+            true,
+        )
+        .expect("matching producer metadata should reach compact node construction")
+        .is_some()
+    );
+
+    let solve::LinearOp::LoadY { index, .. } = &mut i_neighbor.ops[0] else {
+        panic!("fixture must begin with a LoadY");
+    };
+    *index = 4;
+    let disagreeing_rows = vec![&base, &i_neighbor, &j_neighbor];
+    assert!(
+        producer_affine_strides_from_selected_rows(
+            &disagreeing_rows,
+            &domain,
+            &tuples,
+            stencil_test_span(),
+        )
+        .expect("metadata disagreement should be a safe tensor decline")
+        .is_none(),
+        "corner rows validate producer metadata; they must never replace it"
+    );
+    assert!(
+        tensor_node_from_compact_corners(
+            &[base, i_neighbor, j_neighbor],
+            &domain,
+            stencil_test_span(),
+            true,
+        )
+        .expect("metadata disagreement should safely decline compact node construction")
+        .is_none()
+    );
+}
+
+#[test]
+fn tensor_output_map_proof_accepts_dense_mixed_radix_mapping() {
+    let domain = test_domain_2d(3, 4);
+    let output_map = solve::TensorOutputMap {
+        start: 0,
+        strides: vec![
+            solve::AffineStencilIndexStrideTerm {
+                dimension: 0,
+                stride: 4,
+            },
+            solve::AffineStencilIndexStrideTerm {
+                dimension: 1,
+                stride: 1,
+            },
+        ],
+    };
+
+    assert!(
+        tensor_output_map_is_proven_injective(&domain, &output_map, stencil_test_span())
+            .expect("dense output-map proof should complete")
+    );
+}
+
+#[test]
+fn tensor_output_map_proof_rejects_overlapping_mapping() {
+    let domain = test_domain_2d(3, 3);
+    let output_map = solve::TensorOutputMap {
+        start: 0,
+        strides: vec![
+            solve::AffineStencilIndexStrideTerm {
+                dimension: 0,
+                stride: 1,
+            },
+            solve::AffineStencilIndexStrideTerm {
+                dimension: 1,
+                stride: 1,
+            },
+        ],
+    };
+
+    assert!(
+        !tensor_output_map_is_proven_injective(&domain, &output_map, stencil_test_span())
+            .expect("overlapping output-map proof should complete")
+    );
+}
+
+#[test]
+fn tensor_output_map_proof_accepts_empty_domain() {
+    let domain = test_domain_2d(0, 3);
+    let output_map = solve::TensorOutputMap {
+        start: 0,
+        strides: Vec::new(),
+    };
+
+    assert!(
+        tensor_output_map_is_proven_injective(&domain, &output_map, stencil_test_span())
+            .expect("empty-domain output-map proof should complete")
+    );
+}
+
+#[test]
+fn tensor_output_map_proof_rejects_invalid_stride_dimension_on_empty_domain() {
+    let domain = test_domain_2d(0, 3);
+    let output_map = solve::TensorOutputMap {
+        start: 0,
+        strides: vec![solve::AffineStencilIndexStrideTerm {
+            dimension: 2,
+            stride: 1,
+        }],
+    };
+
+    assert!(
+        !tensor_output_map_is_proven_injective(&domain, &output_map, stencil_test_span())
+            .expect("empty-domain output-map validation should complete")
+    );
+}
+
+#[test]
 fn corner_rows_support_singleton_dimensions() {
     // With j pinned to a single value its stride is irrelevant. The compact corner
     // selection needs only the base and the i-neighbor.
@@ -1184,7 +1473,7 @@ fn affine_strides_for_family_uses_corners_with_bounded_full_scan_oracle() {
         .expect("full-row strides should compute");
     assert!(full.is_some(), "3x3 family lowers as a stencil");
     assert_eq!(
-        affine_strides_for_family(&rows, &row_indices, &domain, span, true)
+        affine_strides_for_family(&rows, &row_indices, &domain, span, true, false)
             .expect("family strides should compute"),
         full,
         "with corners available the wrapper returns the corner result (== full)"
@@ -1203,7 +1492,7 @@ fn affine_strides_for_family_uses_corners_with_bounded_full_scan_oracle() {
         "singleton dimensions stay corner-derivable"
     );
     assert_eq!(
-        affine_strides_for_family(&rows, &row_indices, &domain, span, true)
+        affine_strides_for_family(&rows, &row_indices, &domain, span, true, false)
             .expect("family strides should compute"),
         affine_strides_from_access_proofs(&rows, &row_indices, &domain, span)
             .expect("full-row strides should compute"),
@@ -1257,8 +1546,277 @@ fn corner_rows_reproduce_full_row_node_for_3d_family() {
 
     // And the production wrapper returns the corner result for the 3-D family.
     assert_eq!(
-        affine_strides_for_family(&rows, &row_indices, &domain, span, true)
+        affine_strides_for_family(&rows, &row_indices, &domain, span, true, false)
             .expect("family strides should compute"),
         Some(full),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Tensor-fallback taxonomy: one test per reason the preservation report can
+// name, each proving the branch that produces it is reachable. A reason with no
+// such test would look authoritative while being unproduceable.
+// ---------------------------------------------------------------------------
+
+fn regular_marker() -> rumoca_core::RegularForFamily {
+    rumoca_core::RegularForFamily {
+        binders: vec!["i".to_string()],
+        accesses: Vec::new(),
+    }
+}
+
+fn regular_family_2d(start: usize, rows: usize, cols: usize) -> dae::StructuredEquationFamily {
+    dae::StructuredEquationFamily {
+        regular: Some(regular_marker()),
+        ..family_2d(start, rows, cols)
+    }
+}
+
+/// Lower `rows` against `families` and report the reason journaled for family 0.
+fn journaled_reason(
+    rows: &mut Vec<StructuredProgram>,
+    families: &[dae::StructuredEquationFamily],
+    dae_equations: &[dae::Equation],
+) -> TensorFallbackReason {
+    let mut nodes = Vec::new();
+    let journal = push_structured_programs_journal(&mut nodes, rows, families, dae_equations);
+    assert!(
+        journal.was_observed(0),
+        "family 0 rows should have reached structured lowering"
+    );
+    journal.reason_for_family(0)
+}
+
+#[test]
+fn journals_singleton_family_domain_for_one_point_family() {
+    let mut rows = vec![decay_row(0, 0, 0)];
+    assert_eq!(
+        journaled_reason(&mut rows, &[family(0, 1)], &matching_dae_equations(1)).code(),
+        "solve:singleton-family-domain"
+    );
+}
+
+#[test]
+fn journals_structured_rows_lost_when_the_row_block_does_not_arrive() {
+    // A four-point family whose lowering only ever saw one row: the compact
+    // metadata survived, the rows did not.
+    let mut rows = vec![decay_row(0, 0, 0)];
+    assert_eq!(
+        journaled_reason(&mut rows, &[family(0, 4)], &matching_dae_equations(4)).code(),
+        "solve:structured-rows-lost"
+    );
+}
+
+#[test]
+fn journals_structured_rows_lost_for_a_partially_lowered_regular_family() {
+    let family = dae::StructuredEquationFamily {
+        regular: Some(regular_marker()),
+        ..family(0, 4)
+    };
+    let mut rows: Vec<_> = (0..3).map(|offset| decay_row(offset, 0, offset)).collect();
+    assert_eq!(
+        journaled_reason(&mut rows, &[family], &matching_dae_equations(4)).code(),
+        "solve:structured-rows-lost"
+    );
+}
+
+#[test]
+fn journals_non_compact_candidate_domain_for_a_row_major_wrap() {
+    // Rows 2 and 3 of a 2x3 grid straddle a row boundary: `[(1,3), (2,1)]` is
+    // not a compact index box, and the shrinking-prefix search has no shorter
+    // candidate to fall back to.
+    let mut rows = vec![decay_row(2, 0, 2), decay_row(3, 0, 3)];
+    assert_eq!(
+        journaled_reason(&mut rows, &[family_2d(0, 2, 3)], &matching_dae_equations(4)).code(),
+        "solve:non-compact-candidate-domain"
+    );
+}
+
+#[test]
+fn journals_mismatched_dae_body_shape_when_bodies_differ_per_index() {
+    let mut rows: Vec<_> = (0..4).map(|offset| decay_row(offset, 0, offset)).collect();
+    assert_eq!(
+        journaled_reason(&mut rows, &[family(0, 4)], &[]).code(),
+        "solve:mismatched-dae-body-shape"
+    );
+}
+
+#[test]
+fn journals_missing_affine_access_proof_for_unproven_rows() {
+    let mut rows: Vec<_> = (0..4)
+        .map(|offset| {
+            let mut row = decay_row(offset, 0, offset);
+            row.access_proof = None;
+            row
+        })
+        .collect();
+    assert_eq!(
+        journaled_reason(&mut rows, &[family(0, 4)], &matching_dae_equations(4)).code(),
+        "solve:missing-affine-access-proof"
+    );
+}
+
+#[test]
+fn journals_non_affine_output_map_for_scattered_outputs() {
+    // Bodies match and every load is affine, so only the OUTPUT placement
+    // blocks the node: the row at grid position (2,1) writes slot 1 where the
+    // affine map requires slot 3.
+    let mut rows: Vec<_> = (0..6).map(|offset| decay_row(offset, 0, offset)).collect();
+    for row in &mut rows {
+        row.producer_load_strides = Some(vec![solve::AffineStencilLoadStride {
+            op_position: 1,
+            terms: vec![
+                solve::AffineStencilIndexStrideTerm {
+                    dimension: 0,
+                    stride: 3,
+                },
+                solve::AffineStencilIndexStrideTerm {
+                    dimension: 1,
+                    stride: 1,
+                },
+            ],
+        }]);
+    }
+    rows[3].output_index = 1;
+    assert_eq!(
+        journaled_reason(
+            &mut rows,
+            &[regular_family_2d(0, 2, 3)],
+            &matching_dae_equations(6)
+        )
+        .code(),
+        "solve:non-affine-output-map"
+    );
+}
+
+#[test]
+fn row_level_declines_are_not_attributed_to_a_family() {
+    // A row with no structured slot belongs to no family, so journaling it
+    // against one would invent a fact the code does not have.
+    let mut rows: Vec<_> = (0..2).map(|offset| decay_row(offset, 0, offset)).collect();
+    let mut nodes = Vec::new();
+    let journal = push_structured_programs_journal(&mut nodes, &mut rows, &[], &[]);
+    assert!(journal.records().is_empty());
+    assert!(!journal.was_observed(0));
+}
+
+// ---------------------------------------------------------------------------
+// What the preservation report says about the families these fixtures lower.
+// The journal and the report are only trustworthy together: a reason is a fact
+// recorded at the decline site, and a family with nothing left uncovered must
+// carry no reason at all.
+// ---------------------------------------------------------------------------
+
+/// Measure `nodes` against `families`, attributed with `journal`.
+fn report_for_families(
+    families: &[dae::StructuredEquationFamily],
+    nodes: Vec<solve::ComputeNode>,
+    journal: &TensorDeclineJournal,
+) -> crate::TensorPreservationReport {
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .continuous
+        .structured_equations
+        .extend(families.iter().cloned());
+    let problem = solve::SolveProblem::with_derivative_rhs(solve::ComputeBlock { nodes });
+    crate::tensor_preservation_report_with_declines(&dae_model, &problem, journal)
+        .expect("fixture report should measure compact family metadata")
+}
+
+#[test]
+fn a_family_split_into_sub_domain_nodes_is_preserved_not_reported_absent() {
+    // Same fixture as `splits_non_affine_family_into_affine_subdomains`: every
+    // row is consumed by a Preserve, into two sub-domain `Map` nodes. Nothing
+    // was scalarized, so nothing may be reported as a fallback -- and least of
+    // all `solve:family-rows-absent`, whose meaning ("no row carrying this
+    // family's slot metadata ever reached structured lowering") is the exact
+    // opposite of what happened here.
+    let dae_equations = matching_dae_equations(4);
+    let mut second = decay_row(1, 0, 1);
+    second
+        .ops
+        .insert(0, solve::LinearOp::Const { dst: 9, value: 1.0 });
+    let mut fourth = decay_row(9, 0, 3);
+    fourth
+        .ops
+        .insert(0, solve::LinearOp::Const { dst: 9, value: 2.0 });
+    let mut rows = vec![decay_row(0, 0, 0), second, decay_row(4, 0, 2), fourth];
+    let mut nodes = Vec::new();
+    let journal =
+        push_structured_programs_journal(&mut nodes, &mut rows, &[family(0, 4)], &dae_equations);
+    assert_eq!(
+        nodes.len(),
+        2,
+        "fixture must split the family into two sub-domain nodes"
+    );
+    assert!(journal.was_observed(0));
+
+    let report = report_for_families(&[family(0, 4)], nodes, &journal);
+
+    assert!(
+        report.fallbacks.is_empty(),
+        "a fully preserved family must report no fallback, got {:?}",
+        report
+            .fallbacks
+            .iter()
+            .map(|fallback| fallback.reason.code())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(report.preserved_family_bodies, 1);
+    assert_eq!(report.scalarized_family_bodies, 0);
+    assert_eq!(report.scalarized_family_rows, 0);
+    assert_eq!(report.preservation_percent(), Some(100.0));
+}
+
+#[test]
+fn a_shrunk_sub_domain_reports_the_check_that_rejected_the_full_domain() {
+    // Rows 0..2 share one DAE body shape; row 3's differs. The shrinking-prefix
+    // search therefore rejects the four-point candidate on the body-shape check
+    // and preserves the three-point prefix, leaving row 3 alone. That leftover
+    // row trips the "fewer than two rows" guard, whose decline is
+    // `structured-rows-lost` (real headroom) -- but the family's blocker is a
+    // per-index body shape, which is correctly scalar. The reason recorded when
+    // the domain shrank is the one that must win.
+    let mut dae_equations = matching_dae_equations(4);
+    dae_equations[3] =
+        residual_equation(der(var_ref("u", 4)), rhs_times_integer(2, var_ref("w", 4)));
+    let mut rows: Vec<_> = (0..4).map(|offset| decay_row(offset, 0, offset)).collect();
+    let mut nodes = Vec::new();
+    let journal =
+        push_structured_programs_journal(&mut nodes, &mut rows, &[family(0, 4)], &dae_equations);
+
+    assert!(
+        matches!(
+            &nodes[..],
+            [
+                solve::ComputeNode::Map { domain, .. },
+                solve::ComputeNode::ScalarPrograms(block),
+            ] if domain_scalar_count(domain) == 3 && block.programs.len() == 1
+        ),
+        "fixture must preserve a three-point prefix and scalarize the leftover row"
+    );
+    assert_eq!(
+        journal.reason_for_family(0).code(),
+        "solve:mismatched-dae-body-shape"
+    );
+    assert!(
+        journal
+            .records()
+            .iter()
+            .any(|record| record.reason == TensorFallbackReason::StructuredRowsLost),
+        "the leftover row still declines, it just is not the family's reason"
+    );
+
+    let report = report_for_families(&[family(0, 4)], nodes, &journal);
+
+    assert_eq!(report.preserved_family_bodies, 0);
+    assert_eq!(report.fallbacks.len(), 1);
+    assert_eq!(
+        report.fallbacks[0].reason.code(),
+        "solve:mismatched-dae-body-shape"
+    );
+    assert_eq!(
+        report.fallbacks[0].reason.headroom(),
+        TensorHeadroom::CorrectlyScalar
     );
 }

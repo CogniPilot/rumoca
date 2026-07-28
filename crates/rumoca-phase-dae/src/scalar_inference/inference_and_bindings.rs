@@ -357,6 +357,14 @@ pub(crate) fn extract_lhs_var_size_with_linearized_bases(
         return Some(size);
     }
 
+    // MLS §3.7.4: `der(e)` has the same shape as `e`, so a subscripted
+    // derivative target such as `der(x_scaled[1])` is a single scalar equation
+    // even when `x_scaled` is an array. Without this the subscript is dropped
+    // and the row is counted with the full array size, over-producing `f_x`.
+    if let Some(size) = subscripted_derivative_lhs_scalar_size(lhs, flat, prefix_counts) {
+        return Some(size);
+    }
+
     if let Expression::Index {
         base, subscripts, ..
     } = lhs.as_ref()
@@ -397,6 +405,40 @@ pub(crate) fn extract_lhs_var_size_with_linearized_bases(
     extract_lhs_var_size_from_var_name(lhs, flat, prefix_counts)
 }
 
+/// Scalar size of a derivative LHS whose argument carries explicit subscripts,
+/// e.g. `der(x_scaled[1])` or `der(x_scaled[2:nx])`.
+///
+/// `extract_var_from_lhs` deliberately refuses subscripted `der` arguments, so
+/// without this the row falls back to whole-variable inference and reports the
+/// full array size instead of the number of selected elements.
+fn subscripted_derivative_lhs_scalar_size(
+    lhs: &Expression,
+    flat: &Model,
+    prefix_counts: &FxHashMap<String, usize>,
+) -> Option<usize> {
+    let Expression::BuiltinCall { function, args, .. } = lhs else {
+        return None;
+    };
+    if !matches!(function, rumoca_core::BuiltinFunction::Der) {
+        return None;
+    }
+    let [arg] = args.as_slice() else {
+        return None;
+    };
+    match arg {
+        Expression::VarRef {
+            name, subscripts, ..
+        } if !subscripts.is_empty() => {
+            let var = flat.variables.get(name.var_name())?;
+            compute_subscripted_size_with_context(&var.dims, subscripts, flat)
+        }
+        Expression::Index {
+            base, subscripts, ..
+        } => indexed_lhs_scalar_size(base, subscripts, flat, prefix_counts),
+        _ => None,
+    }
+}
+
 fn indexed_lhs_scalar_size(
     base: &Expression,
     subscripts: &[Subscript],
@@ -409,38 +451,7 @@ fn indexed_lhs_scalar_size(
     }
 
     let total = *prefix_counts.get(base_name.as_str())?;
-    let full_name = format!(
-        "{}{}",
-        base_name.as_str(),
-        render_subscript_suffix(subscripts)?
-    );
-    Some(record_subscript_scalar_size(
-        &full_name,
-        base_name.as_str(),
-        total,
-        flat,
-    ))
-}
-
-fn render_subscript_suffix(subscripts: &[Subscript]) -> Option<String> {
-    let mut out = String::new();
-    for subscript in subscripts {
-        match subscript {
-            Subscript::Index { value, .. } => out.push_str(&format!("[{value}]")),
-            Subscript::Expr { expr, .. } => {
-                let Expression::Literal {
-                    value: Literal::Integer(value),
-                    ..
-                } = expr.as_ref()
-                else {
-                    return None;
-                };
-                out.push_str(&format!("[{value}]"));
-            }
-            Subscript::Colon { .. } => out.push_str("[:]"),
-        }
-    }
-    Some(out)
+    structured_record_subscript_scalar_size(base_name.as_str(), subscripts, total, flat)
 }
 
 /// Extract a variable name from an LHS expression.
@@ -513,12 +524,18 @@ pub(crate) fn resolve_missing_start_ref(
 pub(crate) fn rewrite_start_expr_missing_refs(
     expr: &Expression,
     known_var_names: &HashSet<String>,
+    enum_literal_ordinals: &IndexMap<String, i64>,
 ) -> Expression {
-    StartRefRewriter { known_var_names }.rewrite_expression(expr)
+    StartRefRewriter {
+        known_var_names,
+        enum_literal_ordinals,
+    }
+    .rewrite_expression(expr)
 }
 
 struct StartRefRewriter<'a> {
     known_var_names: &'a HashSet<String>,
+    enum_literal_ordinals: &'a IndexMap<String, i64>,
 }
 
 impl ExpressionRewriter for StartRefRewriter<'_> {
@@ -528,6 +545,13 @@ impl ExpressionRewriter for StartRefRewriter<'_> {
         subscripts: &[rumoca_core::Subscript],
         span: rumoca_core::Span,
     ) -> Expression {
+        if subscripts.is_empty() && self.enum_literal_ordinals.contains_key(name.as_str()) {
+            return Expression::VarRef {
+                name: name.clone(),
+                subscripts: Vec::new(),
+                span,
+            };
+        }
         let resolved_name = if let Some(resolved) =
             crate::path_utils::resolve_known_path_suffix(name.as_str(), self.known_var_names)
         {
@@ -549,39 +573,70 @@ pub(crate) fn create_dae_variable(
     name: &VarName,
     var: &flat::Variable,
     known_var_names: &HashSet<String>,
+    enum_literal_ordinals: &IndexMap<String, i64>,
 ) -> Result<Variable, ToDaeError> {
+    // An empty array has no scalar values to initialize or constrain. Keeping
+    // declaration attributes on it would make the solver-facing DAE validate
+    // references that can never be evaluated (for example `fill(eps, 0)`).
+    // Its dimensions and declaration provenance still preserve the empty
+    // source object.
+    let has_no_elements = !var.dims.is_empty() && var.dims.contains(&0);
+
     // MLS §4.4.1: declaration/modification bindings define parameter/constant values.
     // Start remains an initialization attribute and should not be used as the
     // primary value when a binding exists.
-    let start_source = match var.variability {
-        Variability::Parameter(_) | Variability::Constant(_) => {
-            var.binding.as_ref().or(var.start.as_ref())
+    let start_source = if has_no_elements {
+        None
+    } else {
+        match var.variability {
+            Variability::Parameter(_) | Variability::Constant(_) => {
+                var.binding.as_ref().or(var.start.as_ref())
+            }
+            _ => var.start.as_ref(),
         }
-        _ => var.start.as_ref(),
     };
     let start_span = start_source
         .map(|expr| variable_attribute_owner_span(name, "start", expr))
         .transpose()?;
     let start = if let Some(expr) = start_source {
         let owner_span = variable_attribute_owner_span(name, "start", expr)?;
-        let selected = select_scalar_start_record_alias(name, expr, known_var_names, owner_span);
-        let rewritten = rewrite_start_expr_missing_refs(&selected, known_var_names);
+        let selected = select_scalar_start_record_alias(
+            name,
+            expr,
+            known_var_names,
+            enum_literal_ordinals,
+            owner_span,
+        );
+        let rewritten =
+            rewrite_start_expr_missing_refs(&selected, known_var_names, enum_literal_ordinals);
         Some(flat_to_dae_expression(&rewritten))
     } else {
         None
     };
-    let min_span = var
-        .min
+    let min = if has_no_elements {
+        None
+    } else {
+        var.min.as_ref()
+    };
+    let max = if has_no_elements {
+        None
+    } else {
+        var.max.as_ref()
+    };
+    let nominal = if has_no_elements {
+        None
+    } else {
+        var.nominal.as_ref()
+    };
+    let min_span = min
         .as_ref()
         .map(|expr| variable_attribute_owner_span(name, "min", expr))
         .transpose()?;
-    let max_span = var
-        .max
+    let max_span = max
         .as_ref()
         .map(|expr| variable_attribute_owner_span(name, "max", expr))
         .transpose()?;
-    let nominal_span = var
-        .nominal
+    let nominal_span = nominal
         .as_ref()
         .map(|expr| variable_attribute_owner_span(name, "nominal", expr))
         .transpose()?;
@@ -601,11 +656,11 @@ pub(crate) fn create_dae_variable(
         start,
         start_span,
         fixed: var.fixed,
-        min: var.min.as_ref().map(flat_to_dae_expression),
+        min: min.map(flat_to_dae_expression),
         min_span,
-        max: var.max.as_ref().map(flat_to_dae_expression),
+        max: max.map(flat_to_dae_expression),
         max_span,
-        nominal: var.nominal.as_ref().map(flat_to_dae_expression),
+        nominal: nominal.map(flat_to_dae_expression),
         nominal_span,
         unit: var.unit.clone(),
         state_select: var.state_select,
@@ -649,8 +704,12 @@ fn select_scalar_start_record_alias(
     lhs_name: &VarName,
     expr: &Expression,
     known_var_names: &HashSet<String>,
+    enum_literal_ordinals: &IndexMap<String, i64>,
     owner_span: rumoca_core::Span,
 ) -> Expression {
+    if is_enum_literal_reference(expr, enum_literal_ordinals) {
+        return expr.clone();
+    }
     let lhs_path = rumoca_core::ComponentPath::from_flat_path(lhs_name.as_str());
     let leaf_field = lhs_path.parts().last();
     let Some(lhs_base) = flat::component_base_name(lhs_name.as_str()) else {
@@ -750,6 +809,20 @@ fn select_scalar_start_record_alias(
     }
 }
 
+fn is_enum_literal_reference(
+    expr: &Expression,
+    enum_literal_ordinals: &IndexMap<String, i64>,
+) -> bool {
+    matches!(
+        expr,
+        Expression::VarRef {
+            name,
+            subscripts,
+            ..
+        } if subscripts.is_empty() && enum_literal_ordinals.contains_key(name.as_str())
+    )
+}
+
 fn select_leaf_start_record_alias(
     expr: &Expression,
     leaf_field: Option<&String>,
@@ -842,7 +915,7 @@ mod tests {
         };
         let known_var_names = HashSet::from([name.as_str().to_string()]);
 
-        let dae_var = create_dae_variable(&name, &flat_var, &known_var_names)
+        let dae_var = create_dae_variable(&name, &flat_var, &known_var_names, &IndexMap::new())
             .unwrap_or_else(|err| panic!("DAE variable should build: {err}"));
 
         assert_eq!(
@@ -852,6 +925,47 @@ mod tests {
                 .and_then(|reference| reference.def_id),
             Some(component_def_id)
         );
+    }
+
+    #[test]
+    fn create_dae_variable_discards_attributes_for_empty_arrays() {
+        let name = VarName::new("empty");
+        let span = test_span();
+        let unresolved = Expression::VarRef {
+            name: rumoca_core::Reference::new("Missing.value"),
+            subscripts: vec![],
+            span,
+        };
+        let flat_var = flat::Variable {
+            name: name.clone(),
+            component_ref: Some(rumoca_core::ComponentReference {
+                local: false,
+                span,
+                parts: vec![rumoca_core::ComponentRefPart {
+                    ident: "empty".to_string(),
+                    span,
+                    subs: vec![],
+                }],
+                def_id: None,
+            }),
+            is_primitive: true,
+            dims: vec![0],
+            start: Some(unresolved.clone()),
+            min: Some(unresolved.clone()),
+            max: Some(unresolved.clone()),
+            nominal: Some(unresolved),
+            ..rumoca_ir_flat::Variable::empty_with_span(span)
+        };
+        let known_var_names = HashSet::from([name.as_str().to_string()]);
+
+        let dae_var = create_dae_variable(&name, &flat_var, &known_var_names, &IndexMap::new())
+            .unwrap_or_else(|err| panic!("empty array should build: {err}"));
+
+        assert_eq!(dae_var.dims, vec![0]);
+        assert!(dae_var.start.is_none());
+        assert!(dae_var.min.is_none());
+        assert!(dae_var.max.is_none());
+        assert!(dae_var.nominal.is_none());
     }
 
     #[test]
@@ -902,7 +1016,7 @@ mod tests {
         };
         let known_var_names = HashSet::from([name.as_str().to_string()]);
 
-        let dae_var = create_dae_variable(&name, &flat_var, &known_var_names)
+        let dae_var = create_dae_variable(&name, &flat_var, &known_var_names, &IndexMap::new())
             .unwrap_or_else(|err| panic!("DAE variable should build: {err}"));
 
         let Some(Expression::FunctionCall { args, .. }) = dae_var.start else {
@@ -950,7 +1064,7 @@ mod tests {
 
         let Expression::VarRef {
             name: rewritten, ..
-        } = rewrite_start_expr_missing_refs(&expr, &known_var_names)
+        } = rewrite_start_expr_missing_refs(&expr, &known_var_names, &IndexMap::new())
         else {
             panic!("expected structured VarRef");
         };
@@ -986,7 +1100,7 @@ mod tests {
 
         let Expression::VarRef {
             name: rewritten, ..
-        } = rewrite_start_expr_missing_refs(&expr, &known_var_names)
+        } = rewrite_start_expr_missing_refs(&expr, &known_var_names, &IndexMap::new())
         else {
             panic!("expected structured VarRef");
         };
@@ -1012,7 +1126,7 @@ mod tests {
         };
         let known_var_names = HashSet::from([name.as_str().to_string()]);
 
-        let dae_var = create_dae_variable(&name, &flat_var, &known_var_names)
+        let dae_var = create_dae_variable(&name, &flat_var, &known_var_names, &IndexMap::new())
             .unwrap_or_else(|err| panic!("DAE variable should build: {err}"));
 
         assert_eq!(dae_var.causality, rumoca_ir_dae::VariableCausality::Input);
@@ -1033,7 +1147,7 @@ mod tests {
         };
         let known_var_names = HashSet::from([name.as_str().to_string()]);
 
-        let dae_var = create_dae_variable(&name, &flat_var, &known_var_names)
+        let dae_var = create_dae_variable(&name, &flat_var, &known_var_names, &IndexMap::new())
             .unwrap_or_else(|err| panic!("DAE variable should build: {err}"));
 
         assert_eq!(
@@ -1060,7 +1174,7 @@ mod tests {
         };
         let known_var_names = HashSet::from([name.as_str().to_string()]);
 
-        let err = create_dae_variable(&name, &flat_var, &known_var_names)
+        let err = create_dae_variable(&name, &flat_var, &known_var_names, &IndexMap::new())
             .expect_err("unspanned start attribute should fail");
 
         assert!(matches!(err, ToDaeError::RuntimeMetadataViolation { .. }));

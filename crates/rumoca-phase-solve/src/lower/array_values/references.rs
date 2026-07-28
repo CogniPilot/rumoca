@@ -121,15 +121,18 @@ impl<'a> LowerBuilder<'a> {
         }
         let mut keys = IndexMap::new();
         for (binding_key, _slot) in self.layout.bindings() {
-            if let Some(indices) = indexed_record_field_key_indices(binding_key, base_key, field) {
-                keys.entry(indices).or_insert_with(|| binding_key.clone());
+            if let Some(indices) =
+                indexed_record_field_key_indices(binding_key.as_str(), base_key, field)
+            {
+                keys.entry(indices)
+                    .or_insert_with(|| binding_key.to_string());
             }
         }
         for assignment_key in self.direct_assignments.keys() {
             if let Some(indices) = indexed_record_field_key_indices(assignment_key, base_key, field)
             {
                 keys.entry(indices)
-                    .or_insert_with(|| assignment_key.clone());
+                    .or_insert_with(|| assignment_key.to_string());
             }
         }
         keys.sort_keys();

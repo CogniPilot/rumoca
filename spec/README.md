@@ -25,7 +25,10 @@ For setup and day-to-day usage, see [CONTRIBUTING.md](../CONTRIBUTING.md).
 | [SPEC_0029](SPEC_0029_CRATE_BOUNDARIES.md) | Crate Boundaries as Collaboration Guardrails | architecture | ~340 | ACCEPTED |
 | [SPEC_0031](SPEC_0031_COMPILER_PHILOSOPHY.md) | Compiler Scope and Philosophy | architecture | ~150 | ACCEPTED |
 | [SPEC_0032](SPEC_0032_RANGE_PRESERVING_TENSORS.md) | Range-Preserving Tensor IR | IR | ~85 | ACCEPTED |
+| [SPEC_0033](SPEC_0033_DEVELOPMENT_PROCESS.md) | Development Process | process | ~95 | ACCEPTED |
 | [SPEC_0034](SPEC_0034_GALEC_EFMI_EXPORT.md) | eFMI/GALEC Algorithm Code Export | target/codegen | ~180 | DRAFT |
+| [SPEC_0035](SPEC_0035_COMPLEX_NUMERIC_TYPES.md) | Complex Numeric Types in Solve IR | IR | ~135 | DRAFT |
+| [SPEC_0036](SPEC_0036_VALID_BY_CONSTRUCTION_IR.md) | Valid-by-Construction Compiler IR | IR | ~315 | DRAFT |
 
 ## Deferred Specifications
 
@@ -39,3 +42,4 @@ useful after the 0.9 stabilization work.
 | [SPEC_0014](archive/deferred/SPEC_0014_EVAL_MEMO.md) | Eval Memoization at Phase Boundaries | performance | ~200 | DEFERRED |
 | [SPEC_0015](archive/deferred/SPEC_0015_FORMATTER.md) | Token-Based Formatter | tooling | ~250 | DEFERRED |
 | [SPEC_0028](archive/deferred/SPEC_0028_CERTIFICATION_CODEGEN.md) | Safety-Oriented Code Generation | codegen | ~100 | DEFERRED |
+| [SPEC_0037](archive/deferred/SPEC_0037_FORMALLY_VERIFIED_COMPILER.md) | Formally Verified Compiler | verification | ~240 | DEFERRED |

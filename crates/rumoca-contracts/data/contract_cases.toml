@@ -1823,7 +1823,7 @@ outcome = 'Accept'
 
 [[cases]]
 contract_id = 'SIM-009'
-case_id = 'sim_009_sample_in_fx_lowers_to_internal_runtime_operator'
+case_id = 'sim_009_sample_in_fx_lowers_to_ordinary_dae_and_schedule_metadata'
 test_file = 'tests/sim_contracts.rs'
 kind = 'Compile'
 outcome = 'Accept'
@@ -2146,6 +2146,13 @@ outcome = 'Accept'
 [[cases]]
 contract_id = 'INST-013'
 case_id = 'inst_013_enclosing_non_constant_rejected'
+test_file = 'tests/inst_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'INST-013'
+case_id = 'inst_013_enclosing_parameter_rejected'
 test_file = 'tests/inst_contracts.rs'
 kind = 'Compile'
 outcome = 'Reject'
@@ -2536,62 +2543,6 @@ kind = 'Compile'
 outcome = 'Reject'
 
 [[cases]]
-contract_id = 'SM-002'
-case_id = 'sm_002_duplicate_outgoing_transition_priority_rejected'
-test_file = 'tests/sm_contracts.rs'
-kind = 'Compile'
-outcome = 'Reject'
-
-[[cases]]
-contract_id = 'SM-003'
-case_id = 'sm_003_missing_initial_state_rejected'
-test_file = 'tests/sm_contracts.rs'
-kind = 'Compile'
-outcome = 'Reject'
-
-[[cases]]
-contract_id = 'SM-003'
-case_id = 'sm_003_multiple_initial_states_rejected'
-test_file = 'tests/sm_contracts.rs'
-kind = 'Compile'
-outcome = 'Reject'
-
-[[cases]]
-contract_id = 'SM-004'
-case_id = 'sm_004_transition_priority_below_one_rejected'
-test_file = 'tests/sm_contracts.rs'
-kind = 'Compile'
-outcome = 'Reject'
-
-[[cases]]
-contract_id = 'SM-005'
-case_id = 'sm_005_state_machine_operator_forbidden_in_function'
-test_file = 'tests/sm_contracts.rs'
-kind = 'Compile'
-outcome = 'Reject'
-
-[[cases]]
-contract_id = 'SM-006'
-case_id = 'sm_006_transition_inside_when_equation_rejected'
-test_file = 'tests/sm_contracts.rs'
-kind = 'Compile'
-outcome = 'Reject'
-
-[[cases]]
-contract_id = 'SM-006'
-case_id = 'sm_006_initial_state_inside_nonparameter_if_rejected'
-test_file = 'tests/sm_contracts.rs'
-kind = 'Compile'
-outcome = 'Reject'
-
-[[cases]]
-contract_id = 'SM-007'
-case_id = 'sm_007_active_state_on_non_state_rejected'
-test_file = 'tests/sm_contracts.rs'
-kind = 'Compile'
-outcome = 'Reject'
-
-[[cases]]
 contract_id = 'ANN-003'
 case_id = 'ann_003_invalid_unit_expression_rejected'
 test_file = 'tests/ann_contracts.rs'
@@ -2851,13 +2802,6 @@ kind = 'Compile'
 outcome = 'Reject'
 
 [[cases]]
-contract_id = 'TYPE-002'
-case_id = 'type_002_redeclared_class_missing_member_rejected'
-test_file = 'tests/type_contracts.rs'
-kind = 'Compile'
-outcome = 'Reject'
-
-[[cases]]
 contract_id = 'TYPE-010'
 case_id = 'type_010_redeclared_class_flipped_causality_rejected'
 test_file = 'tests/type_contracts.rs'
@@ -3047,13 +2991,6 @@ kind = 'Compile'
 outcome = 'Reject'
 
 [[cases]]
-contract_id = 'FUNC-029'
-case_id = 'func_029_constructor_for_conditional_record_rejected'
-test_file = 'tests/func_contracts.rs'
-kind = 'Compile'
-outcome = 'Reject'
-
-[[cases]]
 contract_id = 'INST-040'
 case_id = 'inst_040_each_on_scalar_component_rejected'
 test_file = 'tests/inst_contracts.rs'
@@ -3174,7 +3111,14 @@ outcome = 'Reject'
 
 [[cases]]
 contract_id = 'TYPE-019'
-case_id = 'type_019_sibling_function_extra_output_rejected'
+case_id = 'type_019_sibling_function_trailing_output_accepted'
+test_file = 'tests/type_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'TYPE-019'
+case_id = 'type_019_sibling_function_interleaved_output_rejected'
 test_file = 'tests/type_contracts.rs'
 kind = 'Compile'
 outcome = 'Reject'
@@ -3192,13 +3136,6 @@ case_id = 'type_020_sibling_function_extra_input_with_default_accepted'
 test_file = 'tests/type_contracts.rs'
 kind = 'Compile'
 outcome = 'Accept'
-
-[[cases]]
-contract_id = 'TYPE-022'
-case_id = 'type_022_replacement_with_replaceable_member_rejected'
-test_file = 'tests/type_contracts.rs'
-kind = 'Compile'
-outcome = 'Reject'
 
 [[cases]]
 contract_id = 'INST-025'
@@ -3404,20 +3341,6 @@ kind = 'Compile'
 outcome = 'Reject'
 
 [[cases]]
-contract_id = 'CONN-012'
-case_id = 'conn_012_expandable_duplicate_sources_rejected'
-test_file = 'tests/conn_contracts.rs'
-kind = 'Compile'
-outcome = 'Reject'
-
-[[cases]]
-contract_id = 'CONN-021'
-case_id = 'conn_021_expandable_input_without_source_rejected'
-test_file = 'tests/conn_contracts.rs'
-kind = 'Compile'
-outcome = 'Reject'
-
-[[cases]]
 contract_id = 'FUNC-033'
 case_id = 'func_033_function_alias_of_record_rejected'
 test_file = 'tests/func_contracts.rs'
@@ -3619,27 +3542,6 @@ case_id = 'inst_032_disabled_conditional_outer_needs_no_inner'
 test_file = 'tests/inst_contracts.rs'
 kind = 'Compile'
 outcome = 'Accept'
-
-[[cases]]
-contract_id = 'SM-001'
-case_id = 'sm_001_mixed_clock_state_machine_rejected_as_unsupported'
-test_file = 'tests/sm_contracts.rs'
-kind = 'Compile'
-outcome = 'Reject'
-
-[[cases]]
-contract_id = 'SM-008'
-case_id = 'sm_008_parallel_machines_shared_assignment_rejected_as_unsupported'
-test_file = 'tests/sm_contracts.rs'
-kind = 'Compile'
-outcome = 'Reject'
-
-[[cases]]
-contract_id = 'TYPE-003'
-case_id = 'type_003_extra_input_without_default_rejected'
-test_file = 'tests/type_contracts.rs'
-kind = 'Compile'
-outcome = 'Reject'
 
 [[cases]]
 contract_id = 'TYPE-007'

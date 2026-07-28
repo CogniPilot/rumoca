@@ -240,7 +240,7 @@ fn container_checksums_recompute_from_written_bytes() {
     let recorded = sole_attribute_value(&container.content_xml(), "checksum");
     assert_eq!(
         recorded,
-        rumoca_galec_codegen::Sha1Hex::of_bytes(&manifest_bytes).as_str(),
+        rumoca_galec_codegen::Sha1Hex::of_bytes(&manifest_bytes).to_hex(),
         "__content.xml checksum must be the SHA-1 of the written manifest.xml"
     );
 
@@ -248,7 +248,7 @@ fn container_checksums_recompute_from_written_bytes() {
     let listed = sole_attribute_value(&container.manifest_xml(), "checksum");
     assert_eq!(
         listed,
-        rumoca_galec_codegen::Sha1Hex::of_bytes(&alg_bytes).as_str(),
+        rumoca_galec_codegen::Sha1Hex::of_bytes(&alg_bytes).to_hex(),
         "manifest.xml File checksum must be the SHA-1 of the written .alg"
     );
 }
@@ -430,7 +430,7 @@ fn rerunning_same_command_replaces_previous_container() {
     let recorded = sole_attribute_value(&second.content_xml(), "checksum");
     assert_eq!(
         recorded,
-        rumoca_galec_codegen::Sha1Hex::of_bytes(&second_manifest).as_str(),
+        rumoca_galec_codegen::Sha1Hex::of_bytes(&second_manifest).to_hex(),
         "the replaced container's checksum must recompute from its own bytes"
     );
     assert!(second.efmu_zip.is_file(), ".efmu zip must be rebuilt too");

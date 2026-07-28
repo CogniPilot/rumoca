@@ -288,7 +288,7 @@ fn galec_target_renders_alg_and_wellformed_manifest_for_discrete_fixture() {
     assert!(
         content
             .content
-            .contains(&format!("checksum=\"{}\"", manifest_sha1.as_str())),
+            .contains(&format!("checksum=\"{manifest_sha1}\"")),
         "__content.xml must carry the SHA-1 of the rendered manifest.xml:\n{}",
         content.content
     );

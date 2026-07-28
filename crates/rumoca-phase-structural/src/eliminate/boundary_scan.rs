@@ -12,16 +12,16 @@ pub(super) struct BoundaryScanCtx<'a> {
 
 pub(super) struct BoundaryScanState {
     pub(super) resolved: HashSet<VarName>,
-    pub(super) substitutions: Vec<Substitution>,
+    pub(super) substitutions: PlannedSubstitutions,
     pub(super) eliminated_eq_indices: Vec<usize>,
     pub(super) eliminated_eq_flags: Vec<bool>,
 }
 
 impl BoundaryScanState {
-    pub(super) fn new(equation_count: usize) -> Self {
+    pub(super) fn new(equation_count: usize, aggregate_constructor: Option<&Reference>) -> Self {
         Self {
             resolved: HashSet::new(),
-            substitutions: Vec::new(),
+            substitutions: PlannedSubstitutions::new(aggregate_constructor),
             eliminated_eq_indices: Vec::new(),
             eliminated_eq_flags: vec![false; equation_count],
         }
@@ -64,7 +64,11 @@ fn scan_boundary_equation(
     }
     let equation = &ctx.dae.continuous.equations[eq_idx];
     let expr = equation_analysis_expr(equation);
-    let eq_rhs = apply_substitutions_in_order(&expr, &state.substitutions)?;
+    let eq_rhs = apply_substitutions_in_order_with_plan(
+        &expr,
+        state.substitutions.as_slice(),
+        state.substitutions.plan(),
+    )?;
     let is_connection_eq = equation.origin.starts_with("connection equation:");
     let live = find_live_scalar_unknowns(&eq_rhs, ctx.unknown_index, &state.resolved)?;
     let aggregate_definition = aggregate_definition_for_elimination(

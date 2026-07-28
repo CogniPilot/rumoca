@@ -2,8 +2,9 @@ use super::{
     BuiltinFunction, ComponentPath, ComponentRefPart, ComponentReference, DefId, Expression,
     Function, FunctionParam, FunctionParamShapeContractError, FunctionShapeContractError, Literal,
     OpBinary, PRE_SLOT_NAMESPACE, Reference, SourceId, Span, Subscript, VarName,
-    component_path_base_name, component_path_trailing_index, expressions_semantically_equal,
-    is_pre_slot, parse_scalar_name, pre_slot_base, pre_slot_name, scoped_component_path_candidates,
+    component_path_base_name, component_path_trailing_index, expression_semantic_fingerprint,
+    expressions_semantically_equal, flat_expression_component_path, is_pre_slot, parse_scalar_name,
+    pre_slot_base, pre_slot_name, scoped_component_path_candidates,
     split_trailing_subscript_suffix, strip_trailing_subscript_suffix,
 };
 use std::collections::HashMap;
@@ -48,6 +49,35 @@ fn expression_require_span_rejects_dummy_span() {
         .expect_err("dummy span should be rejected");
 
     assert_eq!(err.context(), "literal expression");
+}
+
+#[test]
+fn flat_expression_component_path_preserves_projected_indices() {
+    let span = test_span();
+    let expression = Expression::FieldAccess {
+        base: Box::new(Expression::Index {
+            base: Box::new(Expression::FieldAccess {
+                base: Box::new(Expression::VarRef {
+                    name: Reference::new("stack"),
+                    subscripts: Vec::new(),
+                    span,
+                }),
+                field: "cellData".to_string(),
+                span,
+            }),
+            subscripts: vec![Subscript::index(1, span), Subscript::index(2, span)],
+            span,
+        }),
+        field: "nRC".to_string(),
+        span,
+    };
+
+    assert_eq!(
+        flat_expression_component_path(&expression)
+            .expect("projected expression should be path-shaped")
+            .to_flat_string(),
+        "stack.cellData[1,2].nRC"
+    );
 }
 
 #[test]
@@ -352,7 +382,7 @@ fn component_path_from_parts_preserves_presegmented_subscripts() {
 }
 
 #[test]
-fn component_path_supports_borrowed_part_slice_lookup() {
+fn component_path_supports_prefix_identity_lookup() {
     let mut paths = HashMap::new();
     paths.insert(
         ComponentPath::from_flat_path("stack.cellData"),
@@ -360,13 +390,54 @@ fn component_path_supports_borrowed_part_slice_lookup() {
     );
 
     let current = ComponentPath::from_flat_path("stack.cellData.nRC");
+    let prefix = current.prefix(2).expect("two-segment prefix should exist");
 
     assert_eq!(
-        paths
-            .get(&current.parts()[..2])
-            .map(ComponentPath::to_flat_string),
+        paths.get(&prefix).map(ComponentPath::to_flat_string),
         Some("cellData".to_string())
     );
+}
+
+/// `ComponentPath` is a live `HashMap`/`HashSet` key, so its `Hash` must not
+/// reach the `Vec<String>` payload. There is no way to observe "which bytes
+/// went into the hasher" from outside, so this pins the mechanism: the path's
+/// hash is exactly the hash of the interned name it already carries.
+#[test]
+fn component_path_hashes_its_interned_identity_not_its_parts() {
+    let path = ComponentPath::from_flat_path("stack.cellData[2].nRC");
+
+    let mut from_path = DefaultHasher::new();
+    path.hash(&mut from_path);
+    let mut from_identity = DefaultHasher::new();
+    VarName::new("stack.cellData[2].nRC").hash(&mut from_identity);
+
+    assert_eq!(
+        from_path.finish(),
+        from_identity.finish(),
+        "ComponentPath must hash its interned identity; hashing `parts` walks \
+         every segment of a flattened path on every map probe"
+    );
+    assert_ne!(
+        path.parts(),
+        &[path.as_str().to_string()],
+        "the payload this test guards against hashing must really be segmented"
+    );
+}
+
+/// Equal paths must still land in the same bucket after the switch from
+/// `parts`-hashing to identity-hashing.
+#[test]
+fn component_path_equal_paths_agree_on_hash() {
+    let from_flat = ComponentPath::from_flat_path("stack.cellData.nRC");
+    let from_parts = ComponentPath::from_parts(["stack", "cellData", "nRC"]);
+
+    assert_eq!(from_flat, from_parts);
+
+    let mut flat_hash = DefaultHasher::new();
+    from_flat.hash(&mut flat_hash);
+    let mut parts_hash = DefaultHasher::new();
+    from_parts.hash(&mut parts_hash);
+    assert_eq!(flat_hash.finish(), parts_hash.finish());
 }
 
 #[test]
@@ -447,6 +518,153 @@ fn expression_semantic_equality_ignores_spans() {
 
     assert!(expressions_semantically_equal(&lhs, &rhs));
     assert!(lhs.semantically_eq_ignoring_spans(&rhs));
+    assert_eq!(
+        expression_semantic_fingerprint(&lhs),
+        expression_semantic_fingerprint(&rhs),
+        "semantic fingerprints must ignore source-only spans like equality does"
+    );
+}
+
+/// A structured reference to `resistor.v` carrying the given declaration id.
+fn declaration_reference(def_id: Option<DefId>, span: Span) -> Reference {
+    let part = |ident: &str| ComponentRefPart {
+        ident: ident.to_string(),
+        span,
+        subs: Vec::new(),
+    };
+    Reference::with_component_reference(
+        "resistor.v",
+        ComponentReference {
+            local: false,
+            span,
+            parts: vec![part("resistor"), part("v")],
+            def_id,
+        },
+    )
+}
+
+fn var_ref(name: Reference) -> Expression {
+    Expression::VarRef {
+        name,
+        subscripts: vec![],
+        span: Span::DUMMY,
+    }
+}
+
+/// Two references that denote the same flat variable fingerprint equal however
+/// much resolution metadata they carry — including when one has no `def_id` at
+/// all.
+///
+/// This is the SPEC_0008 answer to "what if `def_id` is `None`": the fingerprint
+/// never reads `def_id`, so there is no absent identity to substitute for. It
+/// cannot read it, either. A `DefId` names a *declaration*, and one declaration
+/// backs many flat variables (`phase-flatten`'s `DefIdVarRefIndex` keeps a
+/// `Vec` per `DefId` precisely because the mapping is one-to-many), so a
+/// def-id-keyed fingerprint would equate `resistor1.v` with `resistor2.v` and
+/// contradict `expressions_semantically_equal`. The identity that *is*
+/// one-to-one with a flat variable is the interned `VarName`, and that is what
+/// both equality and this fingerprint use.
+#[test]
+fn fingerprint_is_stable_across_resolution_metadata_including_absent_def_id() {
+    let span = test_span();
+    let resolved = var_ref(declaration_reference(Some(DefId::new(11)), span));
+    let other_declaration = var_ref(declaration_reference(Some(DefId::new(12)), span));
+    let unresolved = var_ref(declaration_reference(None, span));
+    let bare = var_ref(Reference::new("resistor.v"));
+
+    for candidate in [&other_declaration, &unresolved, &bare] {
+        assert!(
+            expressions_semantically_equal(&resolved, candidate),
+            "same flat variable must stay semantically equal: {candidate:?}"
+        );
+        assert_eq!(
+            expression_semantic_fingerprint(&resolved),
+            expression_semantic_fingerprint(candidate),
+            "equal expressions must fingerprint equal, or fingerprint-bucketed \
+duplicate-equation removal would drop a real duplicate: {candidate:?}"
+        );
+    }
+}
+
+/// The `VarRef` arm hashes the interned identity, not the rendered spelling.
+///
+/// The property above cannot catch a revert to `name.as_str().hash(hasher)`:
+/// the interner is a bijection, so text-hashing and id-hashing induce the same
+/// partition and every equality-agreement property holds under both. What
+/// differs is the mechanism — id-hashing writes the `VarNameId` a `VarName`
+/// already carries, text-hashing walks the flattened path byte by byte on every
+/// fingerprint — and a mechanism is only pinned by recomputing it.
+///
+/// So: rebuild the expected value from the interned id alone. Any arm that
+/// reaches past the id to the bytes (or to `component_ref`, or to `def_id`)
+/// produces a different digest and fails here. Nothing platform- or
+/// order-dependent is asserted: no hash value is written down, the expected
+/// value is derived from the same interner in the same process.
+#[test]
+fn var_ref_fingerprint_hashes_the_interned_id_not_the_spelling() {
+    let name = "resistor.v";
+    let expr = Expression::VarRef {
+        name: Reference::new(name),
+        subscripts: vec![],
+        span: test_span(),
+    };
+
+    let mut expected = DefaultHasher::new();
+    std::mem::discriminant(&expr).hash(&mut expected);
+    VarName::new(name).id().hash(&mut expected);
+    0usize.hash(&mut expected);
+
+    assert_eq!(
+        expression_semantic_fingerprint(&expr),
+        expected.finish(),
+        "the VarRef fingerprint must be the interned `VarNameId`, the empty \
+subscript list and nothing else; hashing `name.as_str()` reaches past the id \
+the interner exists to provide, and hashing `component_ref`/`def_id` would \
+disagree with `expressions_semantically_equal`, which ignores both"
+    );
+}
+
+/// Two calls that *render* identically but resolve to different function
+/// instances fingerprint differently.
+///
+/// `FunctionInstanceId` distinguishes inherited and redeclared instances of one
+/// declaration, so these two calls are not equal — yet hashing the rendered
+/// name collapsed them into one bucket. Hashing the resolved instance id splits
+/// them, which is safe in the direction that matters: equality compares the
+/// whole `Reference`, so anything that is equal still hashes equal.
+#[test]
+fn fingerprint_separates_distinct_function_instances_that_render_alike() {
+    let callee = |instance: u32| {
+        Reference::new("Medium.density").with_resolved_function(super::ResolvedFunctionReference {
+            instance_id: super::FunctionInstanceId::new(instance),
+            base_part_count: 1,
+        })
+    };
+    let call = |instance: u32| Expression::FunctionCall {
+        name: callee(instance),
+        args: vec![],
+        is_constructor: false,
+        span: Span::DUMMY,
+    };
+    let inherited = call(1);
+    let redeclared = call(2);
+
+    assert_eq!(
+        callee(1).as_str(),
+        callee(2).as_str(),
+        "the two calls must render alike for this test to mean anything"
+    );
+    assert!(!expressions_semantically_equal(&inherited, &redeclared));
+    assert_ne!(
+        expression_semantic_fingerprint(&inherited),
+        expression_semantic_fingerprint(&redeclared),
+        "distinct resolved function instances must not share a fingerprint bucket"
+    );
+    assert_eq!(
+        expression_semantic_fingerprint(&inherited),
+        expression_semantic_fingerprint(&call(1)),
+        "the same resolved instance must fingerprint stably"
+    );
 }
 
 #[test]
@@ -589,4 +807,80 @@ fn pre_slot_detection_rejects_non_pre_names() {
         assert_eq!(pre_slot_base(name), None, "{name}");
         assert!(!is_pre_slot(name), "{name}");
     }
+}
+
+// ---------------------------------------------------------------------------
+// Location source identity (P4 parser allocation work)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn location_is_allocation_free() {
+    // `Location` must stay a plain POD struct: six `u32` plus a `SourceId`.
+    // Re-introducing an owned `String`/`Vec` field would put a heap allocation
+    // back into every parser token, which is exactly what P4 removed.
+    assert_eq!(std::mem::size_of::<super::Location>(), 32);
+    assert_eq!(std::mem::size_of::<super::Token>(), 56);
+    assert!(!std::mem::needs_drop::<super::Location>());
+}
+
+#[test]
+fn location_span_matches_manual_offsets() {
+    let source = SourceId::from_source_name("A.mo");
+    let location = super::Location {
+        start: 4,
+        end: 9,
+        source,
+        ..Default::default()
+    };
+    assert_eq!(location.span(), Span::from_offsets(source, 4, 9));
+    assert!(location.has_source());
+}
+
+#[test]
+fn default_location_has_no_source() {
+    let location = super::Location::default();
+    assert_eq!(location.source, SourceId::DUMMY);
+    assert!(!location.has_source());
+}
+
+#[test]
+fn location_with_empty_range_has_no_source() {
+    let location = super::Location {
+        start: 7,
+        end: 7,
+        source: SourceId::from_source_name("A.mo"),
+        ..Default::default()
+    };
+    assert!(!location.has_source());
+}
+
+#[test]
+fn merged_location_takes_start_from_self_and_end_from_other() {
+    let source = SourceId::from_source_name("Merge.mo");
+    let start = super::Location {
+        start_line: 3,
+        start_column: 5,
+        end_line: 3,
+        end_column: 7,
+        start: 40,
+        end: 42,
+        source,
+    };
+    let end = super::Location {
+        start_line: 9,
+        start_column: 1,
+        end_line: 9,
+        end_column: 4,
+        start: 100,
+        end: 103,
+        source,
+    };
+    let merged = start.merged_with(&end);
+    assert_eq!(merged.start_line, 3);
+    assert_eq!(merged.start_column, 5);
+    assert_eq!(merged.end_line, 9);
+    assert_eq!(merged.end_column, 4);
+    assert_eq!(merged.start, 40);
+    assert_eq!(merged.end, 103);
+    assert_eq!(merged.source, source);
 }

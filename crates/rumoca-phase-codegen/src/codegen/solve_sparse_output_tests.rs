@@ -133,10 +133,10 @@ fn scalar_solve_targets_write_sparse_output_indices() {
     )
     .expect("mlir template should render");
     assert!(mlir.contains("%drv_zero = arith.constant 0.0 : f64"));
-    assert!(mlir.contains("%drv_zero_i6 = arith.constant 6 : index"));
-    assert!(mlir.contains("%outi0 = arith.constant 2 : index"));
-    assert!(mlir.contains("%outi1 = arith.constant 4 : index"));
-    assert!(mlir.contains("%outi2 = arith.constant 6 : index"));
+    assert!(mlir.contains("%drv_zero_end = arith.constant 7 : index"));
+    assert!(mlir.contains("scf.for %drv_nf0_row"));
+    assert!(mlir.contains("%drv_nf0_output_base = arith.constant 2 : i64"));
+    assert!(mlir.contains("%drv_nf0_output_scale0 = arith.constant 2 : i64"));
 
     let layout = render_solve_template_with_name(
         &problem,

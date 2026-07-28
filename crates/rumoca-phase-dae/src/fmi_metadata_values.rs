@@ -21,29 +21,17 @@ type FmiEvalResult<T> = Result<T, FmiEvalError>;
 /// Prepare FMI modelDescription metadata: XML numeric attributes have no
 /// expression language, so every serialized start/min/max/nominal value must be
 /// a finite numeric value or value list under default parameter values.
+#[cfg(test)]
 pub(crate) fn fold_fmi_model_description_values_to_literals(
-    dae: &mut Dae,
+    target: &mut Dae,
 ) -> Result<(), ToDaeError> {
-    let dims = collect_variable_dims(dae)?;
-    let runtime =
-        rumoca_eval_dae::build_partial_runtime_parameter_tail_env_with_declared_slots_and_runtime(
-            dae,
-            &[],
-            0.0,
-            Arc::new(rumoca_eval_dae::EvalRuntimeState::new()),
-        )
-        .map_err(|err| {
-            ToDaeError::runtime_metadata_violation(format!(
-                "could not prepare default parameter evaluation for FMI modelDescription: {err}"
-            ))
-        })?;
-    let values = collect_best_effort_fmi_metadata_values(dae, &dims, &runtime)?;
-    rewrite_fmi_model_description_values(dae, &dims, &runtime, &values)
+    let source = target.clone();
+    fold_fmi_model_description_values_from_source(target, &source)
 }
 
 pub(crate) fn fold_fmi_model_description_values_from_source(
     target: &mut Dae,
-    source: &Dae,
+    source: &rumoca_ir_dae::Dae,
 ) -> Result<(), ToDaeError> {
     let dims = collect_variable_dims(source)?;
     let runtime =

@@ -673,7 +673,7 @@ fn remap_statements(
                 for arg in args {
                     remap_expression_with_locals(arg, ctx, locals)?;
                 }
-                for output in outputs {
+                for output in outputs.iter_mut().flatten() {
                     remap_component_reference(output, ctx, locals)?;
                 }
             }

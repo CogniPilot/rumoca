@@ -424,7 +424,7 @@ fn parse_required_state_select(
             Box::new(InstantiateError::InvalidTypeAttribute {
                 attribute: "stateSelect".to_string(),
                 value: value.to_string(),
-                span: rumoca_core::span_to_source_span(value.span()),
+                span: value.span(),
             })
         })
 }

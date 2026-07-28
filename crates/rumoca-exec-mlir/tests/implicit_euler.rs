@@ -18,6 +18,8 @@ use rumoca_ir_solve::{
     UnaryOp,
 };
 
+mod support;
+
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 fn compile_or_skip(solve: &SolveProblem, name: &str) -> Option<CompiledMlirResidual> {
@@ -26,7 +28,7 @@ fn compile_or_skip(solve: &SolveProblem, name: &str) -> Option<CompiledMlirResid
     match exec_compile_derivative_rhs(solve, &artifacts, name) {
         Ok(c) => Some(c),
         Err(MlirError::ToolNotFound { tool, .. }) => {
-            eprintln!("SKIP: {tool} not found");
+            support::missing_cpu_tool(tool);
             None
         }
         Err(e) => panic!("compile failed: {e}"),

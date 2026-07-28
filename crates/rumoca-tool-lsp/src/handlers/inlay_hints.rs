@@ -2,9 +2,24 @@
 
 use lsp_types::{InlayHint, InlayHintKind, InlayHintLabel, InlayHintTooltip, Position, Range};
 use rumoca_compile::parsing::ast;
+use rumoca_lsp_position::{byte_offset_to_position, char_column_to_utf16_column, line_text};
 use std::ops::ControlFlow;
 
 use crate::traversal_adapter;
+
+/// Resolve a location's LSP position from its byte offset, falling back to the
+/// lexer's 1-based character column when the location carries no byte span.
+/// Both branches yield UTF-16 columns, never raw character or byte counts.
+fn position_at(source: &str, line: u32, byte_offset: u32, char_column_1based: u32) -> Position {
+    if byte_offset > 0 && (byte_offset as usize) <= source.len() {
+        return byte_offset_to_position(source, byte_offset as usize);
+    }
+    let character = match line_text(source, line) {
+        Some(text) => char_column_to_utf16_column(text, char_column_1based),
+        None => char_column_1based.saturating_sub(1),
+    };
+    Position { line, character }
+}
 
 /// Handle inlay hints request.
 ///
@@ -16,7 +31,7 @@ pub fn handle_inlay_hints(
     source: &str,
     range: &Range,
 ) -> Vec<InlayHint> {
-    let mut collector = InlayHintCollector::new(range);
+    let mut collector = InlayHintCollector::new(range, source);
     // Also scan raw source lines for direct builtin calls not represented in AST sections.
     // This keeps hints useful even for partially parsed files during editing.
     collect_loose_builtin_call_hints(source, range, &mut collector.hints);
@@ -24,7 +39,11 @@ pub fn handle_inlay_hints(
     collector.hints
 }
 
-fn component_dimension_hint(comp: &ast::Component, range: &Range) -> Option<InlayHint> {
+fn component_dimension_hint(
+    comp: &ast::Component,
+    range: &Range,
+    source: &str,
+) -> Option<InlayHint> {
     let line = comp.name_token.location.end_line.saturating_sub(1);
     if line < range.start.line || line > range.end.line {
         return None;
@@ -51,10 +70,12 @@ fn component_dimension_hint(comp: &ast::Component, range: &Range) -> Option<Inla
     };
 
     Some(InlayHint {
-        position: Position {
+        position: position_at(
+            source,
             line,
-            character: comp.name_token.location.end_column.saturating_sub(1),
-        },
+            comp.name_token.location.end,
+            comp.name_token.location.end_column,
+        ),
         label: InlayHintLabel::String(format!(" [{}]", dims)),
         kind: Some(InlayHintKind::TYPE),
         text_edits: None,
@@ -67,13 +88,15 @@ fn component_dimension_hint(comp: &ast::Component, range: &Range) -> Option<Inla
 
 struct InlayHintCollector<'a> {
     range: &'a Range,
+    source: &'a str,
     hints: Vec<InlayHint>,
 }
 
 impl<'a> InlayHintCollector<'a> {
-    fn new(range: &'a Range) -> Self {
+    fn new(range: &'a Range, source: &'a str) -> Self {
         Self {
             range,
+            source,
             hints: Vec::new(),
         }
     }
@@ -85,7 +108,7 @@ impl ast::visitor::Visitor for InlayHintCollector<'_> {
     }
 
     fn visit_component(&mut self, component: &ast::Component) -> ControlFlow<()> {
-        if let Some(hint) = component_dimension_hint(component, self.range) {
+        if let Some(hint) = component_dimension_hint(component, self.range, self.source) {
             self.hints.push(hint);
         }
         traversal_adapter::walk_component_fields(self, component)
@@ -97,7 +120,7 @@ impl ast::visitor::Visitor for InlayHintCollector<'_> {
         args: &[ast::Expression],
         ctx: ast::visitor::FunctionCallContext,
     ) -> ControlFlow<()> {
-        collect_function_call_hints(comp, args, self.range, &mut self.hints);
+        collect_function_call_hints(comp, args, self.range, self.source, &mut self.hints);
         ast::visitor::walk_expr_function_call_ctx_default(self, comp, args, ctx)
     }
 
@@ -110,6 +133,7 @@ fn collect_function_call_hints(
     comp: &ast::ComponentReference,
     args: &[ast::Expression],
     range: &Range,
+    source: &str,
     hints: &mut Vec<InlayHint>,
 ) {
     let Some(function_name) = comp.parts.last().map(|p| p.ident.text.as_ref()) else {
@@ -135,10 +159,7 @@ fn collect_function_call_hints(
             continue;
         }
         hints.push(InlayHint {
-            position: Position {
-                line,
-                character: loc.start_column.saturating_sub(1),
-            },
+            position: position_at(source, line, loc.start, loc.start_column),
             label: InlayHintLabel::String(format!("{param_name}:")),
             kind: Some(InlayHintKind::PARAMETER),
             text_edits: None,
@@ -183,7 +204,9 @@ fn collect_loose_builtin_call_hints(source: &str, range: &Range, hints: &mut Vec
                 hints.push(InlayHint {
                     position: Position {
                         line: line_u32,
-                        character: abs as u32,
+                        // `abs` is a byte column within the line; LSP needs the
+                        // UTF-16 column, which differs on any non-ASCII line.
+                        character: byte_offset_to_position(line, abs).character,
                     },
                     label: InlayHintLabel::String("...".to_string()),
                     kind: Some(InlayHintKind::PARAMETER),

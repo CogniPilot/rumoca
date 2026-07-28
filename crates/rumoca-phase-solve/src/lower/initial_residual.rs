@@ -33,47 +33,46 @@ pub fn initial_residual_equations<'a>(
     // itself only uses the index for per-row temp namespacing (uniqueness) and
     // `row_idx >= state_scalar_count` comparisons (`state_scalar_count` is 0 in
     // initial mode, so the value beyond "is it < 0" is irrelevant there).
-    let continuous = dae_model
-        .continuous
-        .equations
-        .iter()
-        .enumerate()
-        .filter(|(row_idx, _)| {
-            !state_derivative_rows
-                .get(*row_idx)
-                .copied()
-                .unwrap_or(false)
-        });
+    let mut equations = Vec::new();
+    for (row_idx, equation) in dae_model.continuous.equations.iter().enumerate() {
+        if state_derivative_rows.get(row_idx).copied().unwrap_or(false) {
+            continue;
+        }
+        equations.push((row_idx, equation));
+    }
     // Initialization-specific equations are not part of the continuous system, so
     // they take indices past the continuous range: no structured family matches
     // (clean scalar fallback) while the index stays unique for temp namespacing.
     let continuous_len = dae_model.continuous.equations.len();
-    let initial = dae_model
-        .initialization
-        .equations
-        .iter()
-        .filter(|eq| initial_equation_constrains_solver_unknown(layout, eq))
-        .enumerate()
-        .map(move |(offset, eq)| (continuous_len + offset, eq));
-    Ok(continuous.chain(initial).collect())
+    for (offset, equation) in dae_model.initialization.equations.iter().enumerate() {
+        if super::discrete_updates::initial_update_equation(dae_model, layout, equation)?.is_none()
+            && initial_equation_constrains_solver_unknown(layout, equation)
+        {
+            equations.push((continuous_len + offset, equation));
+        }
+    }
+    Ok(equations)
 }
 
 fn initial_equation_constrains_solver_unknown(
     layout: &VarLayout,
     equation: &dae::Equation,
 ) -> bool {
-    equation
+    match equation
         .lhs
         .as_ref()
-        .is_some_and(|lhs| is_initialization_unknown(layout.binding(lhs.as_str())))
-        || expression_references_solver_unknown(layout, &equation.rhs)
+        .and_then(|lhs| layout.binding(lhs.as_str()))
+    {
+        Some(ScalarSlot::Y { .. } | ScalarSlot::P { .. }) => true,
+        _ => expression_references_initialization_unknown(layout, &equation.rhs),
+    }
 }
 
 fn is_initialization_unknown(slot: Option<ScalarSlot>) -> bool {
     matches!(slot, Some(ScalarSlot::Y { .. } | ScalarSlot::P { .. }))
 }
 
-fn expression_references_solver_unknown(layout: &VarLayout, expr: &Expression) -> bool {
+fn expression_references_initialization_unknown(layout: &VarLayout, expr: &Expression) -> bool {
     let mut checker = SolverUnknownReferenceChecker {
         layout,
         found: false,

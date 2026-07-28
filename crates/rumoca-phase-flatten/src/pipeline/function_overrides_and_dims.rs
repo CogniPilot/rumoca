@@ -8,10 +8,12 @@ use rustc_hash::FxHashSet;
 mod flat_rewrite;
 mod member_calls;
 mod named_args;
+mod scoped_member_name;
 
 pub(crate) use flat_rewrite::*;
 pub(crate) use member_calls::*;
 use named_args::{named_function_arg, named_function_arg_names};
+use scoped_member_name::scoped_override_component_member_name;
 
 pub(crate) type ComponentOverrideMap =
     rustc_hash::FxHashMap<ComponentPath, rustc_hash::FxHashMap<String, OverrideTarget>>;
@@ -759,6 +761,9 @@ pub(crate) fn override_context_for_component_path(
         update_function_override_entry(function_overrides, alias, target);
     }
 
+    if component_override_map.is_empty() {
+        return (Vec::new(), OverrideFunctionMap::default());
+    }
     let estimated_overrides = override_scope_entry_count(scope_path, component_override_map);
     let mut packages = Vec::new();
     let mut package_aliases = rustc_hash::FxHashMap::default();
@@ -766,8 +771,8 @@ pub(crate) fn override_context_for_component_path(
     packages.reserve(estimated_overrides);
     package_aliases.reserve(estimated_overrides);
     function_overrides.reserve(estimated_overrides);
-    for path_parts in scope_chain_inner_to_outer_parts(scope_path) {
-        if let Some(path_overrides) = component_override_map.get(path_parts) {
+    for path in scope_chain_inner_to_outer(scope_path) {
+        if let Some(path_overrides) = component_override_map.get(&path) {
             for (alias, target) in path_overrides {
                 apply_scope_override(
                     alias,
@@ -855,27 +860,35 @@ pub(crate) fn override_package_names_with_preferred_aliases(
     names
 }
 
-fn scope_chain_inner_to_outer_parts(
+/// Scope prefixes of `scope_path`, innermost first.
+///
+/// Yields owned paths rather than `&[String]` slices: a `ComponentPath` probes
+/// the override map by its interned identity, while a slice probe hashed every
+/// segment. Callers guard the walk with an emptiness check so the usual
+/// override-free model does no prefix work at all.
+fn scope_chain_inner_to_outer(
     scope_path: &ComponentPath,
-) -> impl Iterator<Item = &[String]> + '_ {
+) -> impl Iterator<Item = ComponentPath> + '_ {
     (1..=scope_path.len())
         .rev()
-        .map(|end| &scope_path.parts()[..end])
+        .filter_map(|end| scope_path.prefix(end))
 }
 
 fn root_override_entries(
     component_override_map: &ComponentOverrideMap,
 ) -> Option<&rustc_hash::FxHashMap<String, OverrideTarget>> {
-    let root: &[String] = &[];
-    component_override_map.get(root)
+    component_override_map.get(&ComponentPath::root())
 }
 
 fn override_scope_entry_count(
     scope_path: &ComponentPath,
     component_override_map: &ComponentOverrideMap,
 ) -> usize {
-    let scoped_count = scope_chain_inner_to_outer_parts(scope_path)
-        .filter_map(|path_parts| component_override_map.get(path_parts))
+    if component_override_map.is_empty() {
+        return 0;
+    }
+    let scoped_count = scope_chain_inner_to_outer(scope_path)
+        .filter_map(|path| component_override_map.get(&path))
         .map(rustc_hash::FxHashMap::len)
         .sum::<usize>();
     scoped_count
@@ -892,7 +905,7 @@ fn override_context_cache_key(
         let Some(prefix) = scope_path.prefix(end) else {
             continue;
         };
-        if component_override_map.contains_key(prefix.parts()) {
+        if component_override_map.contains_key(&prefix) {
             return prefix;
         }
     }
@@ -1312,6 +1325,11 @@ fn resolve_override_member_name(
     } else {
         ctx.unique_active_override_package()?
     };
+    if let Some(scoped_name) =
+        scoped_override_component_member_name(reference, package, &[member_leaf.to_string()], ctx)
+    {
+        return Some(scoped_name);
+    }
     resolve_member_in_package_chain_exposed(ctx.tree, ctx.class_index, package, member_leaf)
         .filter(|resolved| resolved != reference.as_str())
 }
@@ -1339,6 +1357,11 @@ fn resolve_override_member_projection_name(
         else {
             continue;
         };
+        if let Some(scoped_name) =
+            scoped_override_component_member_name(reference, package, &parts[member_index..], ctx)
+        {
+            return Some(scoped_name);
+        }
         let member_leaf = parts[member_index].as_str();
         let Some(resolved_member) = resolve_member_in_package_chain_exposed(
             ctx.tree,

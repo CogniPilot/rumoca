@@ -27,6 +27,23 @@ pub(super) fn log_eliminate_profile(
     );
 }
 
+#[cfg(feature = "tracing")]
+pub(super) fn log_blt_profile(enabled: bool, n_scalar: usize, n_loops: usize, max_loop: usize) {
+    if enabled {
+        tracing::debug!(
+            target: "rumoca_phase_structural::eliminate",
+            n_scalar,
+            n_loops,
+            max_loop,
+            "eliminate_trivial BLT shape"
+        );
+    }
+}
+
+#[cfg(not(feature = "tracing"))]
+pub(super) fn log_blt_profile(_enabled: bool, _n_scalar: usize, _n_loops: usize, _max_loop: usize) {
+}
+
 #[cfg(not(feature = "tracing"))]
 pub(super) fn log_eliminate_profile(
     _enabled: bool,

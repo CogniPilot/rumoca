@@ -244,7 +244,12 @@ fn initialization_projection_plan_includes_unfixed_states() {
         .projection_plan
         .blocks
         .iter()
-        .flat_map(|block| block.y_indices.iter().copied())
+        .flat_map(|block| {
+            block.unknowns.iter().filter_map(|unknown| match unknown {
+                solve::ScalarSlot::Y { index, .. } => Some(*index),
+                _ => None,
+            })
+        })
         .collect::<BTreeSet<_>>();
 
     assert!(
@@ -668,6 +673,96 @@ fn solve_problem_lowers_runtime_tail_alias_assignments_from_continuous_rows() {
         problem.discrete.runtime_assignment_targets[0],
         solve::ScalarSlot::P { .. }
     ));
+}
+
+#[test]
+fn solve_problem_partitions_common_target_conditional_runtime_assignment() {
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .discrete_valued
+        .insert(rumoca_core::VarName::new("mode"), scalar_var("mode"));
+    let branch_residual = |value| binary(rumoca_core::OpBinary::Sub, var("mode"), int_expr(value));
+    let conditional_residual = rumoca_core::Expression::If {
+        branches: vec![(
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Boolean(true),
+                span: solve_test_span(),
+            },
+            branch_residual(1),
+        )],
+        else_branch: Box::new(branch_residual(2)),
+        span: solve_test_span(),
+    };
+    dae_model.continuous.equations.push(dae::Equation::residual(
+        binary(
+            rumoca_core::OpBinary::Sub,
+            conditional_residual,
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Real(0.0),
+                span: solve_test_span(),
+            },
+        ),
+        solve_test_span(),
+        "conditional mode equation",
+    ));
+
+    let problem =
+        lower_solve_problem(&dae_model).expect("conditional runtime assignment should lower");
+
+    assert_eq!(problem.discrete.runtime_assignment_targets.len(), 1);
+    assert!(matches!(
+        problem.discrete.runtime_assignment_targets[0],
+        solve::ScalarSlot::P { .. }
+    ));
+    assert_eq!(problem.continuous.residual.len(), Ok(0));
+}
+
+#[test]
+fn solve_problem_partitions_conditional_initial_assignment_for_event_updated_target() {
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .discrete_valued
+        .insert(rumoca_core::VarName::new("mode"), scalar_var("mode"));
+    dae_model
+        .discrete
+        .valued_updates
+        .push(dae::Equation::explicit(
+            rumoca_core::Reference::new("mode"),
+            int_expr(3),
+            solve_test_span(),
+            "event mode update",
+        ));
+    let branch_residual = |value| binary(rumoca_core::OpBinary::Sub, var("mode"), int_expr(value));
+    dae_model
+        .initialization
+        .equations
+        .push(dae::Equation::residual(
+            rumoca_core::Expression::If {
+                branches: vec![(
+                    rumoca_core::Expression::Literal {
+                        value: rumoca_core::Literal::Boolean(true),
+                        span: solve_test_span(),
+                    },
+                    branch_residual(1),
+                )],
+                else_branch: Box::new(branch_residual(2)),
+                span: solve_test_span(),
+            },
+            solve_test_span(),
+            "conditional initial mode equation",
+        ));
+
+    let problem =
+        lower_solve_problem(&dae_model).expect("conditional initial assignment should lower");
+
+    assert_eq!(problem.initialization.update_targets.len(), 1);
+    assert!(matches!(
+        problem.initialization.update_targets[0],
+        solve::ScalarSlot::P { .. }
+    ));
+    assert_eq!(problem.initialization.residual.len(), Ok(0));
 }
 
 #[test]

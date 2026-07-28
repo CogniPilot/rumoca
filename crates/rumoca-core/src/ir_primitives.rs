@@ -3,6 +3,7 @@
 use indexmap::{IndexMap, IndexSet};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::cmp::Ordering;
+use std::collections::hash_map::DefaultHasher;
 use std::fmt::{Display, Formatter};
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, OnceLock, RwLock};
@@ -189,6 +190,10 @@ pub struct BytePos(pub usize);
 /// node in the flat IR.
 pub const NAMED_FUNCTION_ARG_PREFIX: &str = "__rumoca_named_arg__.";
 
+/// Marker prefix used to retain constraining-clause defaults until a
+/// replaceable declaration is redeclared during instantiation.
+pub const CONSTRAINEDBY_MOD_PREFIX: &str = "__constrainedby__.";
+
 /// A span in source code (source, start, end).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Span {
@@ -287,6 +292,16 @@ impl Span {
     }
 }
 
+/// A parser source location.
+///
+/// The owning file is identified by [`SourceId`], not by an owned path string:
+/// the id is computed once per file by the parser and copied into every token,
+/// so cloning a `Location` is a plain memcpy with no heap traffic. Resolve the
+/// human readable file name through [`crate::SourceMap`] when a diagnostic
+/// needs to print it.
+///
+/// `Copy` is deliberately NOT derived: ~100 existing call sites clone locations
+/// explicitly, and `clippy::clone_on_copy` would reject all of them at once.
 #[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Location {
     pub start_line: u32,
@@ -295,15 +310,49 @@ pub struct Location {
     pub end_column: u32,
     pub start: u32,
     pub end: u32,
-    pub file_name: String,
+    pub source: SourceId,
+}
+
+impl Location {
+    /// The span covered by this location.
+    ///
+    /// Callers that need to reject source-free locations should gate on
+    /// [`Location::has_source`] first; this method performs no validation.
+    pub fn span(&self) -> Span {
+        Span::from_offsets(self.source, self.start as usize, self.end as usize)
+    }
+
+    /// True when this location carries real parser provenance.
+    pub fn has_source(&self) -> bool {
+        self.source != SourceId::DUMMY && self.end > self.start
+    }
+
+    /// Build a location spanning from the start of `self` to the end of `end`.
+    ///
+    /// The source identity of `self` wins; merging locations from two different
+    /// files is a caller bug and is not detected here.
+    pub fn merged_with(&self, end: &Location) -> Location {
+        Location {
+            start_line: self.start_line,
+            start_column: self.start_column,
+            end_line: end.end_line,
+            end_column: end.end_column,
+            start: self.start,
+            end: end.end,
+            source: self.source,
+        }
+    }
 }
 
 impl Display for Location {
+    /// Debug-only rendering. The source is printed as its numeric id because a
+    /// `Location` cannot resolve its own file name; user-facing diagnostics must
+    /// resolve the name through [`crate::SourceMap::name`].
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "{}:{}:{}",
-            self.file_name, self.start_line, self.start_column
+            "source#{}:{}:{}",
+            self.source.0, self.start_line, self.start_column
         )
     }
 }
@@ -915,7 +964,7 @@ pub enum BuiltinFunction {
     Homotopy,
     /// Semi-linear: semiLinear(x, k1, k2) = if x >= 0 then k1*x else k2*x
     SemiLinear,
-    /// Delay: delay(expr, delayTime) - returns expr (no delay in continuous sim)
+    /// Transport delay: delay(expr, delayTime[, delayMax]).
     Delay,
     /// Integer conversion: integer(x)
     Integer,
@@ -1195,9 +1244,24 @@ impl std::fmt::Display for Literal {
             Literal::Real(v) => write!(f, "{}", v),
             Literal::Integer(v) => write!(f, "{}", v),
             Literal::Boolean(v) => write!(f, "{}", v),
-            Literal::String(v) => write!(f, "\"{}\"", v),
+            Literal::String(v) => write!(f, "\"{}\"", crate::escape_modelica_string(v)),
         }
     }
+}
+
+/// One structured annotation attached to an external function interface.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExternalFunctionAnnotation {
+    /// Structured annotation name segments, such as `["Library"]`.
+    pub name: Vec<String>,
+    /// Semantic annotation value; never a rendered source-expression string.
+    pub value: Expression,
+    /// Source span of the complete annotation modification.
+    #[serde(
+        default = "Span::source_free_serde_default",
+        skip_serializing_if = "Span::is_dummy"
+    )]
+    pub span: Span,
 }
 
 /// External function declaration (MLS §12.9).
@@ -1214,6 +1278,9 @@ pub struct ExternalFunction {
     pub output_name: Option<String>,
     /// Argument names passed to the external function.
     pub arg_names: Vec<String>,
+    /// Structured annotations attached to the external function interface.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub annotations: Vec<ExternalFunctionAnnotation>,
 }
 
 /// Function derivative annotation (MLS §12.7.1).
@@ -1382,6 +1449,57 @@ pub enum Expression {
         )]
         span: Span,
     },
+}
+
+/// Return the concrete component path denoted by a Flat/DAE expression.
+///
+/// Projected record fields and expanded component-array elements are represented
+/// structurally as `FieldAccess` and `Index` nodes. Evaluators must retain those
+/// indices when looking up a parameter such as `records[1,2].n`; rendering only
+/// the base field silently falls back to declaration defaults.
+pub fn flat_expression_component_path(expr: &Expression) -> Option<ComponentPath> {
+    match expr {
+        Expression::VarRef {
+            name, subscripts, ..
+        } => append_concrete_subscripts(ComponentPath::from_flat_path(name.as_str()), subscripts),
+        Expression::Index {
+            base, subscripts, ..
+        } => append_concrete_subscripts(flat_expression_component_path(base)?, subscripts),
+        Expression::FieldAccess { base, field, .. } => Some(
+            flat_expression_component_path(base)?.join(&ComponentPath::from_parts([field.clone()])),
+        ),
+        _ => None,
+    }
+}
+
+fn append_concrete_subscripts(
+    path: ComponentPath,
+    subscripts: &[Subscript],
+) -> Option<ComponentPath> {
+    if subscripts.is_empty() {
+        return Some(path);
+    }
+    let mut parts = path.into_parts();
+    let last = parts.last_mut()?;
+    let mut values = Vec::with_capacity(subscripts.len());
+    for subscript in subscripts {
+        let value = match subscript {
+            Subscript::Index { value, .. } => *value,
+            Subscript::Expr { expr, .. } => match expr.as_ref() {
+                Expression::Literal {
+                    value: Literal::Integer(value),
+                    ..
+                } => *value,
+                _ => return None,
+            },
+            Subscript::Colon { .. } => return None,
+        };
+        values.push(value.to_string());
+    }
+    last.push('[');
+    last.push_str(&values.join(","));
+    last.push(']');
+    Some(ComponentPath::from_parts(parts))
 }
 
 impl Expression {
@@ -1597,351 +1715,8 @@ impl crate::ExpressionVisitor for VarRefCollector<'_> {
     }
 }
 
-/// Structural expression equality for the shared Flat/DAE expression grammar.
-///
-/// This is a syntactic IR query, not expression evaluation: it never folds,
-/// resolves, or executes expressions. It exists in `rumoca-core` because
-/// multiple phases need one span-insensitive definition of shared-expression
-/// identity.
-pub fn expressions_semantically_equal(lhs: &Expression, rhs: &Expression) -> bool {
-    match (lhs, rhs) {
-        (Expression::Binary { .. }, Expression::Binary { .. }) => {
-            binary_expressions_semantically_equal(lhs, rhs)
-        }
-        (Expression::Unary { .. }, Expression::Unary { .. }) => {
-            unary_expressions_semantically_equal(lhs, rhs)
-        }
-        (Expression::VarRef { .. }, Expression::VarRef { .. }) => {
-            var_refs_semantically_equal(lhs, rhs)
-        }
-        (Expression::BuiltinCall { .. }, Expression::BuiltinCall { .. }) => {
-            builtin_calls_semantically_equal(lhs, rhs)
-        }
-        (Expression::FunctionCall { .. }, Expression::FunctionCall { .. }) => {
-            function_calls_semantically_equal(lhs, rhs)
-        }
-        (Expression::Literal { value: lhs, .. }, Expression::Literal { value: rhs, .. }) => {
-            lhs == rhs
-        }
-        (Expression::If { .. }, Expression::If { .. }) => {
-            if_expressions_semantically_equal(lhs, rhs)
-        }
-        (Expression::Array { .. }, Expression::Array { .. }) => arrays_semantically_equal(lhs, rhs),
-        (Expression::Tuple { .. }, Expression::Tuple { .. }) => tuples_semantically_equal(lhs, rhs),
-        (Expression::Range { .. }, Expression::Range { .. }) => ranges_semantically_equal(lhs, rhs),
-        (Expression::ArrayComprehension { .. }, Expression::ArrayComprehension { .. }) => {
-            array_comprehensions_semantically_equal(lhs, rhs)
-        }
-        (Expression::Index { .. }, Expression::Index { .. }) => {
-            index_expressions_semantically_equal(lhs, rhs)
-        }
-        (Expression::FieldAccess { .. }, Expression::FieldAccess { .. }) => {
-            field_accesses_semantically_equal(lhs, rhs)
-        }
-        (Expression::Empty { .. }, Expression::Empty { .. }) => true,
-        _ => false,
-    }
-}
-
-fn binary_expressions_semantically_equal(lhs: &Expression, rhs: &Expression) -> bool {
-    let (
-        Expression::Binary {
-            op: lhs_op,
-            lhs: lhs_lhs,
-            rhs: lhs_rhs,
-            ..
-        },
-        Expression::Binary {
-            op: rhs_op,
-            lhs: rhs_lhs,
-            rhs: rhs_rhs,
-            ..
-        },
-    ) = (lhs, rhs)
-    else {
-        return false;
-    };
-    lhs_op == rhs_op
-        && expressions_semantically_equal(lhs_lhs, rhs_lhs)
-        && expressions_semantically_equal(lhs_rhs, rhs_rhs)
-}
-
-fn unary_expressions_semantically_equal(lhs: &Expression, rhs: &Expression) -> bool {
-    let (
-        Expression::Unary {
-            op: lhs_op,
-            rhs: lhs_rhs,
-            ..
-        },
-        Expression::Unary {
-            op: rhs_op,
-            rhs: rhs_rhs,
-            ..
-        },
-    ) = (lhs, rhs)
-    else {
-        return false;
-    };
-    lhs_op == rhs_op && expressions_semantically_equal(lhs_rhs, rhs_rhs)
-}
-
-fn var_refs_semantically_equal(lhs: &Expression, rhs: &Expression) -> bool {
-    let (
-        Expression::VarRef {
-            name: lhs_name,
-            subscripts: lhs_subscripts,
-            ..
-        },
-        Expression::VarRef {
-            name: rhs_name,
-            subscripts: rhs_subscripts,
-            ..
-        },
-    ) = (lhs, rhs)
-    else {
-        return false;
-    };
-    // Flat names are globally unique — `flat::Model::variables` is keyed by
-    // VarName and flatten's name simplification fails loudly on rename
-    // collisions — so two references denote the same variable iff their
-    // rendered names match; attached resolution metadata (spans, def-ids,
-    // component structure) does not change the meaning.
-    lhs_name.var_name() == rhs_name.var_name()
-        && subscripts_semantically_equal(lhs_subscripts, rhs_subscripts)
-}
-
-fn builtin_calls_semantically_equal(lhs: &Expression, rhs: &Expression) -> bool {
-    let (
-        Expression::BuiltinCall {
-            function: lhs_function,
-            args: lhs_args,
-            ..
-        },
-        Expression::BuiltinCall {
-            function: rhs_function,
-            args: rhs_args,
-            ..
-        },
-    ) = (lhs, rhs)
-    else {
-        return false;
-    };
-    lhs_function == rhs_function && expression_slices_semantically_equal(lhs_args, rhs_args)
-}
-
-fn function_calls_semantically_equal(lhs: &Expression, rhs: &Expression) -> bool {
-    let (
-        Expression::FunctionCall {
-            name: lhs_name,
-            args: lhs_args,
-            is_constructor: lhs_constructor,
-            ..
-        },
-        Expression::FunctionCall {
-            name: rhs_name,
-            args: rhs_args,
-            is_constructor: rhs_constructor,
-            ..
-        },
-    ) = (lhs, rhs)
-    else {
-        return false;
-    };
-    lhs_name == rhs_name
-        && lhs_constructor == rhs_constructor
-        && expression_slices_semantically_equal(lhs_args, rhs_args)
-}
-
-fn if_expressions_semantically_equal(lhs: &Expression, rhs: &Expression) -> bool {
-    let (
-        Expression::If {
-            branches: lhs_branches,
-            else_branch: lhs_else,
-            ..
-        },
-        Expression::If {
-            branches: rhs_branches,
-            else_branch: rhs_else,
-            ..
-        },
-    ) = (lhs, rhs)
-    else {
-        return false;
-    };
-    lhs_branches.len() == rhs_branches.len()
-        && lhs_branches
-            .iter()
-            .zip(rhs_branches)
-            .all(expression_branch_pairs_semantically_equal)
-        && expressions_semantically_equal(lhs_else, rhs_else)
-}
-
-fn expression_branch_pairs_semantically_equal(
-    ((lhs_cond, lhs_value), (rhs_cond, rhs_value)): (
-        &(Expression, Expression),
-        &(Expression, Expression),
-    ),
-) -> bool {
-    expressions_semantically_equal(lhs_cond, rhs_cond)
-        && expressions_semantically_equal(lhs_value, rhs_value)
-}
-
-fn arrays_semantically_equal(lhs: &Expression, rhs: &Expression) -> bool {
-    let (
-        Expression::Array {
-            elements: lhs_elements,
-            is_matrix: lhs_matrix,
-            ..
-        },
-        Expression::Array {
-            elements: rhs_elements,
-            is_matrix: rhs_matrix,
-            ..
-        },
-    ) = (lhs, rhs)
-    else {
-        return false;
-    };
-    lhs_matrix == rhs_matrix && expression_slices_semantically_equal(lhs_elements, rhs_elements)
-}
-
-fn tuples_semantically_equal(lhs: &Expression, rhs: &Expression) -> bool {
-    let (
-        Expression::Tuple {
-            elements: lhs_elements,
-            ..
-        },
-        Expression::Tuple {
-            elements: rhs_elements,
-            ..
-        },
-    ) = (lhs, rhs)
-    else {
-        return false;
-    };
-    expression_slices_semantically_equal(lhs_elements, rhs_elements)
-}
-
-fn ranges_semantically_equal(lhs: &Expression, rhs: &Expression) -> bool {
-    let (
-        Expression::Range {
-            start: lhs_start,
-            step: lhs_step,
-            end: lhs_end,
-            ..
-        },
-        Expression::Range {
-            start: rhs_start,
-            step: rhs_step,
-            end: rhs_end,
-            ..
-        },
-    ) = (lhs, rhs)
-    else {
-        return false;
-    };
-    expressions_semantically_equal(lhs_start, rhs_start)
-        && optional_expressions_semantically_equal(lhs_step.as_deref(), rhs_step.as_deref())
-        && expressions_semantically_equal(lhs_end, rhs_end)
-}
-
-fn array_comprehensions_semantically_equal(lhs: &Expression, rhs: &Expression) -> bool {
-    let (
-        Expression::ArrayComprehension {
-            expr: lhs_expr,
-            indices: lhs_indices,
-            filter: lhs_filter,
-            ..
-        },
-        Expression::ArrayComprehension {
-            expr: rhs_expr,
-            indices: rhs_indices,
-            filter: rhs_filter,
-            ..
-        },
-    ) = (lhs, rhs)
-    else {
-        return false;
-    };
-    expressions_semantically_equal(lhs_expr, rhs_expr)
-        && lhs_indices.len() == rhs_indices.len()
-        && lhs_indices.iter().zip(rhs_indices).all(|(lhs, rhs)| {
-            lhs.name == rhs.name && expressions_semantically_equal(&lhs.range, &rhs.range)
-        })
-        && optional_expressions_semantically_equal(lhs_filter.as_deref(), rhs_filter.as_deref())
-}
-
-fn index_expressions_semantically_equal(lhs: &Expression, rhs: &Expression) -> bool {
-    let (
-        Expression::Index {
-            base: lhs_base,
-            subscripts: lhs_subscripts,
-            ..
-        },
-        Expression::Index {
-            base: rhs_base,
-            subscripts: rhs_subscripts,
-            ..
-        },
-    ) = (lhs, rhs)
-    else {
-        return false;
-    };
-    expressions_semantically_equal(lhs_base, rhs_base)
-        && subscripts_semantically_equal(lhs_subscripts, rhs_subscripts)
-}
-
-fn field_accesses_semantically_equal(lhs: &Expression, rhs: &Expression) -> bool {
-    let (
-        Expression::FieldAccess {
-            base: lhs_base,
-            field: lhs_field,
-            ..
-        },
-        Expression::FieldAccess {
-            base: rhs_base,
-            field: rhs_field,
-            ..
-        },
-    ) = (lhs, rhs)
-    else {
-        return false;
-    };
-    lhs_field == rhs_field && expressions_semantically_equal(lhs_base, rhs_base)
-}
-
-fn expression_slices_semantically_equal(lhs: &[Expression], rhs: &[Expression]) -> bool {
-    lhs.len() == rhs.len()
-        && lhs
-            .iter()
-            .zip(rhs)
-            .all(|(lhs, rhs)| expressions_semantically_equal(lhs, rhs))
-}
-
-fn optional_expressions_semantically_equal(
-    lhs: Option<&Expression>,
-    rhs: Option<&Expression>,
-) -> bool {
-    match (lhs, rhs) {
-        (Some(lhs), Some(rhs)) => expressions_semantically_equal(lhs, rhs),
-        (None, None) => true,
-        _ => false,
-    }
-}
-
-fn subscripts_semantically_equal(lhs: &[Subscript], rhs: &[Subscript]) -> bool {
-    lhs.len() == rhs.len()
-        && lhs.iter().zip(rhs).all(|(lhs, rhs)| match (lhs, rhs) {
-            (Subscript::Index { value: lhs, .. }, Subscript::Index { value: rhs, .. }) => {
-                lhs == rhs
-            }
-            (Subscript::Colon { .. }, Subscript::Colon { .. }) => true,
-            (Subscript::Expr { expr: lhs, .. }, Subscript::Expr { expr: rhs, .. }) => {
-                expressions_semantically_equal(lhs, rhs)
-            }
-            _ => false,
-        })
-}
+mod expression_semantics;
+pub use expression_semantics::{expression_semantic_fingerprint, expressions_semantically_equal};
 
 #[cfg(test)]
 mod tests;

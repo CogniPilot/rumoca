@@ -781,7 +781,7 @@ fn non_clock_when_guard_is_a_stable_unsupported_feature() {
     let errors = lower_to_algorithm_code(&input, &GalecOptions::default()).unwrap_err();
     assert!(
         errors.iter().any(|error| {
-            error.code() == "ET017"
+            error.code() == "EGT017"
                 && error
                     .to_string()
                     .contains("unsupported-feature:non-clock-when")
@@ -898,7 +898,7 @@ fn discrete_algebraic_loop_is_rejected_never_misordered() {
     let errors = lower_to_algorithm_code(&input, &GalecOptions::default()).unwrap_err();
     assert!(
         errors.iter().any(|error| {
-            error.code() == "ET017"
+            error.code() == "EGT017"
                 && error
                     .to_string()
                     .contains("unsupported-feature:discrete-algebraic-loop")

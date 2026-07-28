@@ -3,6 +3,9 @@ use rumoca_core::{
     ExpressionRewriter, FallibleExpressionRewriter, FallibleStatementRewriter, StatementRewriter,
 };
 
+mod constructor_calls;
+pub(crate) use constructor_calls::mark_record_constructor_calls;
+
 #[path = "postprocess_record_alias.rs"]
 mod record_alias;
 use record_alias::*;
@@ -36,7 +39,8 @@ pub(crate) use def_id::canonicalize_varrefs_via_instantiated_def_ids;
 #[path = "postprocess_field_access.rs"]
 mod field_access;
 pub(super) use field_access::{
-    drop_invalid_field_access_bindings, resolve_nested_constructor_field_access_bindings,
+    drop_invalid_field_access_bindings, normalize_record_array_field_access_bindings,
+    resolve_nested_constructor_field_access_bindings,
 };
 
 fn record_alias_rewrite_name(
@@ -56,171 +60,6 @@ fn record_alias_rewrite_name(
         known_variables.contains(&candidate).then_some(candidate)
     })
 }
-
-pub(super) fn mark_record_constructor_calls(flat: &mut flat::Model, tree: &ast::ClassTree) {
-    let constructor_def_ids = tree
-        .def_map
-        .keys()
-        .copied()
-        .filter(|def_id| {
-            tree.get_class_by_def_id(*def_id)
-                .is_some_and(|class_def| class_def.class_type == rumoca_core::ClassType::Record)
-        })
-        .collect::<HashSet<_>>();
-    let mut constructor_names: HashSet<String> = tree
-        .def_map
-        .iter()
-        .filter(|&(def_id, _qualified_name)| constructor_def_ids.contains(def_id))
-        .map(|(_def_id, qualified_name)| qualified_name.clone())
-        .collect();
-    constructor_names.extend(
-        flat.functions
-            .values()
-            .filter(|function| function.is_constructor)
-            .map(|function| function.name.as_str().to_string()),
-    );
-    if constructor_names.is_empty() && constructor_def_ids.is_empty() {
-        return;
-    }
-
-    let marker = ConstructorMarker {
-        constructor_names: &constructor_names,
-        constructor_def_ids: &constructor_def_ids,
-    };
-    for var in flat.variables.values_mut() {
-        marker.mark_opt_expr(&mut var.binding);
-        marker.mark_opt_expr(&mut var.start);
-        marker.mark_opt_expr(&mut var.min);
-        marker.mark_opt_expr(&mut var.max);
-        marker.mark_opt_expr(&mut var.nominal);
-    }
-    for eq in &mut flat.equations {
-        marker.mark_expr(&mut eq.residual);
-    }
-    for eq in &mut flat.initial_equations {
-        marker.mark_expr(&mut eq.residual);
-    }
-    for assert_eq in &mut flat.assert_equations {
-        marker.mark_expr(&mut assert_eq.condition);
-        marker.mark_expr(&mut assert_eq.message);
-        marker.mark_opt_expr(&mut assert_eq.level);
-    }
-    for assert_eq in &mut flat.initial_assert_equations {
-        marker.mark_expr(&mut assert_eq.condition);
-        marker.mark_expr(&mut assert_eq.message);
-        marker.mark_opt_expr(&mut assert_eq.level);
-    }
-    for algorithm in &mut flat.algorithms {
-        marker.mark_statements(&mut algorithm.statements);
-    }
-    for algorithm in &mut flat.initial_algorithms {
-        marker.mark_statements(&mut algorithm.statements);
-    }
-    for when_clause in &mut flat.when_clauses {
-        marker.mark_expr(&mut when_clause.condition);
-        marker.mark_when_equations(&mut when_clause.equations);
-    }
-    for function in flat.functions.values_mut() {
-        for input in &mut function.inputs {
-            marker.mark_opt_expr(&mut input.default);
-        }
-        for output in &mut function.outputs {
-            marker.mark_opt_expr(&mut output.default);
-        }
-        for local in &mut function.locals {
-            marker.mark_opt_expr(&mut local.default);
-        }
-        marker.mark_statements(&mut function.body);
-    }
-}
-
-#[derive(Clone, Copy)]
-struct ConstructorMarker<'a> {
-    constructor_names: &'a HashSet<String>,
-    constructor_def_ids: &'a HashSet<rumoca_core::DefId>,
-}
-
-impl ConstructorMarker<'_> {
-    fn mark_opt_expr(self, expr: &mut Option<rumoca_core::Expression>) {
-        if let Some(expr) = expr {
-            self.mark_expr(expr);
-        }
-    }
-
-    fn mark_expr(mut self, expr: &mut rumoca_core::Expression) {
-        *expr = self.rewrite_expression(expr);
-    }
-
-    fn mark_statements(mut self, statements: &mut [rumoca_core::Statement]) {
-        for statement in statements {
-            *statement = self.rewrite_statement(statement);
-        }
-    }
-
-    fn mark_when_equations(self, equations: &mut [rumoca_ir_flat::WhenEquation]) {
-        for equation in equations {
-            match equation {
-                rumoca_ir_flat::WhenEquation::Assign { value, .. }
-                | rumoca_ir_flat::WhenEquation::Reinit { value, .. } => self.mark_expr(value),
-                rumoca_ir_flat::WhenEquation::Assert {
-                    condition, message, ..
-                } => {
-                    self.mark_expr(condition);
-                    self.mark_expr(message);
-                }
-                rumoca_ir_flat::WhenEquation::Conditional {
-                    branches,
-                    else_branch,
-                    ..
-                } => self.mark_conditional_when_equation(branches, else_branch),
-                rumoca_ir_flat::WhenEquation::FunctionCallOutputs { function, .. } => {
-                    self.mark_expr(function);
-                }
-                rumoca_ir_flat::WhenEquation::Terminate { message, .. } => self.mark_expr(message),
-            }
-        }
-    }
-
-    fn mark_conditional_when_equation(
-        self,
-        branches: &mut [(rumoca_core::Expression, Vec<rumoca_ir_flat::WhenEquation>)],
-        else_branch: &mut [rumoca_ir_flat::WhenEquation],
-    ) {
-        for (condition, branch_equations) in branches {
-            self.mark_expr(condition);
-            self.mark_when_equations(branch_equations);
-        }
-        self.mark_when_equations(else_branch);
-    }
-
-    fn is_constructor_call(self, name: &rumoca_core::Reference) -> bool {
-        name.target_def_id()
-            .is_some_and(|def_id| self.constructor_def_ids.contains(&def_id))
-            || self.constructor_names.contains(name.as_str())
-    }
-}
-
-impl ExpressionRewriter for ConstructorMarker<'_> {
-    fn rewrite_expression(&mut self, expr: &rumoca_core::Expression) -> rumoca_core::Expression {
-        if let rumoca_core::Expression::FunctionCall {
-            name,
-            args,
-            is_constructor,
-            span,
-        } = expr
-        {
-            return rumoca_core::Expression::FunctionCall {
-                name: name.clone(),
-                args: self.rewrite_expressions(args),
-                is_constructor: *is_constructor || self.is_constructor_call(name),
-                span: *span,
-            };
-        }
-        self.walk_expression(expr)
-    }
-}
-
-impl StatementRewriter for ConstructorMarker<'_> {}
 
 pub(super) fn collapse_index_refs_to_known_varrefs(flat: &mut flat::Model) {
     let known_flat_vars = KnownFlatVars::build(flat);
@@ -541,6 +380,10 @@ fn collapse_index_expr(expr: &mut rumoca_core::Expression, known_flat_vars: &Kno
 /// only flat variables are the `.re`/`.im` leaves).
 struct KnownFlatVars {
     names: std::collections::BTreeMap<String, Option<rumoca_core::ComponentReference>>,
+    /// Compile-time integer values of `constant`/`parameter` variables, used to
+    /// fold subscripts that are written as a symbolic reference (MLS §4.5
+    /// requires array subscripts to be evaluable at compile time).
+    integer_values: rustc_hash::FxHashMap<String, i64>,
 }
 
 impl KnownFlatVars {
@@ -550,11 +393,27 @@ impl KnownFlatVars {
             .iter()
             .map(|(name, var)| (name.as_str().to_string(), var.component_ref.clone()))
             .collect();
-        Self { names }
+        let integer_values = flat
+            .variables
+            .iter()
+            .filter_map(|(name, var)| {
+                rumoca_eval_flat::flat_int::structural_integer_value(var, flat)
+                    .map(|value| (name.as_str().to_string(), value))
+            })
+            .collect();
+        Self {
+            names,
+            integer_values,
+        }
     }
 
     fn contains(&self, name: &str) -> bool {
         self.names.contains_key(name)
+    }
+
+    /// Compile-time integer value of a `constant`/`parameter` flat variable.
+    fn integer_value(&self, name: &str) -> Option<i64> {
+        self.integer_values.get(name).copied()
     }
 
     /// Structured reference for a scalarized record base: `path` names no flat
@@ -612,18 +471,8 @@ impl ExpressionRewriter for CollapseIndexRewriter<'_> {
         {
             let base = self.rewrite_expression(base);
             let subscripts = self.rewrite_subscripts(subscripts);
-            if let rumoca_core::Expression::VarRef {
-                name,
-                subscripts: base_subscripts,
-                ..
-            } = &base
-                && let Some(collapsed) = collapse_indexed_var_ref_to_known_var(
-                    name,
-                    base_subscripts,
-                    &subscripts,
-                    *span,
-                    self.known_flat_vars,
-                )
+            if let Some(collapsed) =
+                collapse_indexed_expression(&base, &subscripts, *span, self.known_flat_vars)
             {
                 return collapsed;
             }
@@ -639,6 +488,64 @@ impl ExpressionRewriter for CollapseIndexRewriter<'_> {
 
 impl StatementRewriter for CollapseIndexRewriter<'_> {}
 
+/// Collapse `<base>[i...]` onto a known flat variable, for whichever shape the
+/// already-rewritten base has.
+fn collapse_indexed_expression(
+    base: &rumoca_core::Expression,
+    subscripts: &[rumoca_core::Subscript],
+    span: rumoca_core::Span,
+    known_flat_vars: &KnownFlatVars,
+) -> Option<rumoca_core::Expression> {
+    if let rumoca_core::Expression::VarRef {
+        name,
+        subscripts: base_subscripts,
+        ..
+    } = base
+    {
+        return collapse_indexed_var_ref_to_known_var(
+            name,
+            base_subscripts,
+            subscripts,
+            span,
+            known_flat_vars,
+        );
+    }
+    collapse_indexed_field_access_to_known_var(base, subscripts, span, known_flat_vars)
+}
+
+/// Collapse `<field-access chain>[i]` onto a known flat variable.
+///
+/// A component that is itself an array element keeps a subscripted part in the
+/// middle of its path (`plugToPins_p.plugToPin_p[1].plug_p.pin`), so flatten
+/// leaves the reference as a field-access chain rather than a single dotted
+/// `VarRef`. Rendering the chain to its flat path lets the same
+/// known-variable/record-base collapse apply.
+fn collapse_indexed_field_access_to_known_var(
+    base: &rumoca_core::Expression,
+    subscripts: &[rumoca_core::Subscript],
+    span: rumoca_core::Span,
+    known_flat_vars: &KnownFlatVars,
+) -> Option<rumoca_core::Expression> {
+    let base_path = rumoca_core::flat_expression_component_path(base)?.to_flat_string();
+    let candidate = format!(
+        "{base_path}{}",
+        subscript_suffix(subscripts, known_flat_vars)?
+    );
+    if known_flat_vars.contains(candidate.as_str()) {
+        return Some(rumoca_core::Expression::VarRef {
+            name: rumoca_core::Reference::new(candidate),
+            subscripts: vec![],
+            span,
+        });
+    }
+    let reference = known_flat_vars.record_base_reference(&candidate)?;
+    Some(rumoca_core::Expression::VarRef {
+        name: rumoca_core::Reference::with_component_reference(&candidate, reference),
+        subscripts: vec![],
+        span,
+    })
+}
+
 fn collapse_indexed_var_ref_to_known_var(
     name: &rumoca_core::Reference,
     base_subscripts: &[rumoca_core::Subscript],
@@ -648,7 +555,7 @@ fn collapse_indexed_var_ref_to_known_var(
 ) -> Option<rumoca_core::Expression> {
     let mut merged = base_subscripts.to_vec();
     merged.extend_from_slice(subscripts);
-    if let Some(suffix) = subscript_suffix(&merged) {
+    if let Some(suffix) = subscript_suffix(&merged, known_flat_vars) {
         let candidate = format!("{}{}", name.as_str(), suffix);
         if known_flat_vars.contains(candidate.as_str()) {
             return Some(rumoca_core::Expression::VarRef {
@@ -734,30 +641,10 @@ pub(crate) fn field_access_flat_path(
     base: &rumoca_core::Expression,
     field: &str,
 ) -> Option<String> {
-    Some(format!("{}.{}", expr_flat_path(base)?, field))
-}
-
-fn expr_flat_path(expr: &rumoca_core::Expression) -> Option<String> {
-    match expr {
-        rumoca_core::Expression::VarRef {
-            name, subscripts, ..
-        } => Some(format!(
-            "{}{}",
-            name.as_str(),
-            subscript_suffix(subscripts)?
-        )),
-        rumoca_core::Expression::Index {
-            base, subscripts, ..
-        } => Some(format!(
-            "{}{}",
-            expr_flat_path(base)?,
-            subscript_suffix(subscripts)?
-        )),
-        rumoca_core::Expression::FieldAccess { base, field, .. } => {
-            Some(format!("{}.{}", expr_flat_path(base)?, field))
-        }
-        _ => None,
-    }
+    Some(format!(
+        "{}.{field}",
+        rumoca_core::flat_expression_component_path(base)?.to_flat_string()
+    ))
 }
 
 fn collapse_var_field_access(
@@ -767,7 +654,7 @@ fn collapse_var_field_access(
     span: rumoca_core::Span,
     known_flat_vars: &KnownFlatVars,
 ) -> Option<rumoca_core::Expression> {
-    let subscript_suffix = subscript_suffix(subscripts)?;
+    let subscript_suffix = subscript_suffix(subscripts, known_flat_vars)?;
     for candidate in [
         format!("{base_name}{subscript_suffix}.{field}"),
         format!("{base_name}.{field}{subscript_suffix}"),
@@ -783,7 +670,10 @@ fn collapse_var_field_access(
     None
 }
 
-fn subscript_suffix(subscripts: &[rumoca_core::Subscript]) -> Option<String> {
+fn subscript_suffix(
+    subscripts: &[rumoca_core::Subscript],
+    known_flat_vars: &KnownFlatVars,
+) -> Option<String> {
     if subscripts.is_empty() {
         return Some(String::new());
     }
@@ -794,19 +684,48 @@ fn subscript_suffix(subscripts: &[rumoca_core::Subscript]) -> Option<String> {
                 values.push(value.to_string());
             }
             rumoca_core::Subscript::Expr { expr, .. } => {
-                let rumoca_core::Expression::Literal {
-                    value: rumoca_core::Literal::Integer(value),
-                    ..
-                } = expr.as_ref()
-                else {
-                    return None;
-                };
+                let value = fold_subscript_expr(expr, known_flat_vars, 0)?;
                 values.push(value.to_string());
             }
             rumoca_core::Subscript::Colon { .. } => return None,
         }
     }
     Some(format!("[{}]", values.join(",")))
+}
+
+/// Maximum expression depth folded while resolving one subscript.
+const MAX_SUBSCRIPT_FOLD_DEPTH: u8 = 8;
+
+/// Fold a subscript expression to its compile-time integer value.
+///
+/// MLS §4.5 requires an array subscript to be evaluable at compile time, so a
+/// subscript is either an integer literal, a reference to a `constant` or
+/// `parameter` with a known binding, or arithmetic over those. Anything else
+/// (a discrete/continuous variable, an unbound parameter, a `for` index that
+/// survived expansion) yields `None`, leaving the reference untouched.
+fn fold_subscript_expr(
+    expr: &rumoca_core::Expression,
+    known_flat_vars: &KnownFlatVars,
+    depth: u8,
+) -> Option<i64> {
+    if depth > MAX_SUBSCRIPT_FOLD_DEPTH {
+        return None;
+    }
+    match expr {
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Integer(value),
+            ..
+        } => Some(*value),
+        rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } if subscripts.is_empty() => known_flat_vars.integer_value(name.as_str()),
+        rumoca_core::Expression::Binary { op, lhs, rhs, .. } => {
+            let lhs = fold_subscript_expr(lhs, known_flat_vars, depth + 1)?;
+            let rhs = fold_subscript_expr(rhs, known_flat_vars, depth + 1)?;
+            rumoca_eval_flat::flat_int::eval_binary_op_i64(op, lhs, rhs)
+        }
+        _ => None,
+    }
 }
 
 pub(super) fn substitute_known_constants_in_flat(
@@ -1047,41 +966,34 @@ fn substitute_known_constants_expr_with_options(
     scope: &str,
     prefer_scoped_parameters: bool,
 ) -> Result<rumoca_core::Expression, FlattenError> {
-    KnownConstantSubstituter {
-        env: ConstantSubstitutionEnv {
+    substitute_with_env(
+        expr,
+        ConstantSubstitutionEnv {
             ctx,
             live_vars,
             locals,
             scope,
             prefer_scoped_parameters,
+            expanding: None,
         },
-    }
-    .rewrite_expression(&expr)
+    )
 }
+
+/// Fold known constants in `expr` while keeping the caller's in-progress
+/// constant-expansion chain, so a binding that expands into itself is reported
+/// instead of recursing forever.
+fn substitute_with_env(
+    expr: rumoca_core::Expression,
+    env: ConstantSubstitutionEnv<'_>,
+) -> Result<rumoca_core::Expression, FlattenError> {
+    KnownConstantSubstituter { env }.rewrite_expression(&expr)
+}
+
+mod constant_expansion;
+use constant_expansion::{ConstantExpansion, ConstantSubstitutionEnv};
 
 struct KnownConstantSubstituter<'a> {
     env: ConstantSubstitutionEnv<'a>,
-}
-
-#[derive(Clone, Copy)]
-struct ConstantSubstitutionEnv<'a> {
-    ctx: &'a Context,
-    live_vars: &'a rustc_hash::FxHashSet<String>,
-    locals: &'a HashSet<String>,
-    scope: &'a str,
-    prefer_scoped_parameters: bool,
-}
-
-impl<'a> ConstantSubstitutionEnv<'a> {
-    fn with_scope<'b>(&'b self, scope: &'b str) -> ConstantSubstitutionEnv<'b> {
-        ConstantSubstitutionEnv {
-            ctx: self.ctx,
-            live_vars: self.live_vars,
-            locals: self.locals,
-            scope,
-            prefer_scoped_parameters: self.prefer_scoped_parameters,
-        }
-    }
 }
 
 impl FallibleExpressionRewriter for KnownConstantSubstituter<'_> {
@@ -1204,6 +1116,7 @@ impl KnownConstantSubstituter<'_> {
         } = &rewritten_base
             && subscripts.is_empty()
             && !self.env.live_vars.contains(name.as_str())
+            && !flat_member_is_live(name.as_str(), field, self.env.live_vars)
             && !reference_root_is_local(name, self.env.locals)
             && let Some(resolved) =
                 resolve_constant_field_access(name.as_str(), field, span, self.env.ctx)
@@ -1216,6 +1129,19 @@ impl KnownConstantSubstituter<'_> {
             span,
         })
     }
+}
+
+/// True when `<base>.<field>` is itself a variable of the instantiated flat model.
+///
+/// That variable already carries the component modification, so the declaration
+/// default recorded for the whole record `<base>` must not be folded in its
+/// place (MLS §7.2.4).
+fn flat_member_is_live(base: &str, field: &str, live_vars: &rustc_hash::FxHashSet<String>) -> bool {
+    let mut member = String::with_capacity(base.len() + field.len() + 1);
+    member.push_str(base);
+    member.push('.');
+    member.push_str(field);
+    live_vars.contains(&member)
 }
 
 fn resolve_indexed_constant_field_access(
@@ -1379,6 +1305,9 @@ fn substitute_scalar_var_ref(
     if env.live_vars.contains(key) || reference_root_is_local(name, env.locals) {
         return Ok(None);
     }
+    if env.ctx.expanded_component_keys.contains(key) {
+        return Ok(None);
+    }
     if inline_index_base_is_live_or_local(key, env.live_vars, env.locals) {
         return Ok(None);
     }
@@ -1402,14 +1331,22 @@ fn substitute_scalar_var_ref(
         return Ok(Some(expr));
     }
     if let Some(expr) = resolve_projected_constant_path(key, span, env.ctx) {
-        return Ok(Some(substitute_known_constants_expr_with_options(
-            expr,
-            env.ctx,
-            env.live_vars,
-            env.locals,
-            env.scope,
-            env.prefer_scoped_parameters,
-        )?));
+        if env.is_expanding(key) {
+            return Err(FlattenError::cyclic_constant_binding(
+                key,
+                env.expansion_chain(key),
+                span,
+            ));
+        }
+        let frame = ConstantExpansion {
+            key,
+            parent: env.expanding,
+        };
+        let inner = ConstantSubstitutionEnv {
+            expanding: Some(&frame),
+            ..env
+        };
+        return Ok(Some(substitute_with_env(expr, inner)?));
     }
     if !env.prefer_scoped_parameters
         && !env.scope.is_empty()
@@ -1467,20 +1404,32 @@ fn substitute_resolved_constant_expr(
     span: rumoca_core::Span,
     env: ConstantSubstitutionEnv<'_>,
 ) -> Result<rumoca_core::Expression, FlattenError> {
+    if env.is_expanding(key) {
+        return Err(FlattenError::cyclic_constant_binding(
+            key,
+            env.expansion_chain(key),
+            span,
+        ));
+    }
     let declaration_scope = parent_component_scope(key);
     let scope = if declaration_scope.is_empty() {
         env.scope
     } else {
         &declaration_scope
     };
-    substitute_known_constants_expr_with_options(
-        expr.clone().with_span(span),
-        env.ctx,
-        env.live_vars,
-        env.locals,
+    let frame = ConstantExpansion {
+        key,
+        parent: env.expanding,
+    };
+    let inner = ConstantSubstitutionEnv {
+        ctx: env.ctx,
+        live_vars: env.live_vars,
+        locals: env.locals,
         scope,
-        env.prefer_scoped_parameters,
-    )
+        prefer_scoped_parameters: env.prefer_scoped_parameters,
+        expanding: Some(&frame),
+    };
+    substitute_with_env(expr.clone().with_span(span), inner)
 }
 
 fn constant_expr_preserves_array_shape(expr: &rumoca_core::Expression) -> bool {
@@ -1912,6 +1861,7 @@ fn substitute_known_constants_statement(
             locals,
             scope,
             prefer_scoped_parameters: false,
+            expanding: None,
         },
     }
     .rewrite_statement(statement)?;

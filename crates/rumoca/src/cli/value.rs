@@ -24,7 +24,7 @@ use super::{
     compile_str_dae_with_inferred_model, compile_str_early_ir_with_inferred_model,
     compile_str_with_inferred_model, diffsol_method_for_solver_label, direct_sim_t_end,
     render_early_ir_as_modelica_ast, render_early_ir_as_modelica_flat, render_ir_as_modelica,
-    simulate_solver_or_auto, target_manifest,
+    simulate_solver_or_auto, simulation_failure_error, target_manifest,
 };
 
 /// Compile `source` (inline Modelica text) according to `args` and return the
@@ -172,9 +172,11 @@ pub fn simulate_to_value(args: &SimCommandArgs, source: &str) -> Result<Value> {
     let sim_started = Instant::now();
     // Dispatch on `opts.solver_mode` (auto / bdf / rk-like) exactly like the
     // binary's direct-sim path. The plain `simulate_dae` alias resolves to the
-    // diffsol/BDF-only entry, so it would silently ignore `--solver`.
+    // diffsol/BDF-only entry, so it would silently ignore `--solver`. The
+    // failure is rendered by the shared `[CODE] message` helper so the typed
+    // error's SPEC_0008 code survives the conversion to `anyhow`.
     let sim = rumoca_sim::simulate_dae_with_diagnostics(result.dae.as_ref(), &opts)
-        .map_err(|e| anyhow::anyhow!("Simulation error: {e}"))?;
+        .map_err(|error| simulation_failure_error(&error))?;
 
     let request = SimulationRequestSummary {
         solver: solver.as_label().to_string(),

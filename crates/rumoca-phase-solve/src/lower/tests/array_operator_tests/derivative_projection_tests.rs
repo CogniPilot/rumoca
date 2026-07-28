@@ -364,7 +364,6 @@ fn lower_derivative_rhs_keeps_structured_map_through_direct_coefficient_assignme
         block.nodes
     );
 
-    let rows = scalar_program_block_fixture(&block);
     let mut y = vec![0.0; layout.y_scalars()];
     let mut p = vec![0.0; layout.p_scalars()];
     for idx in 1..=3 {
@@ -372,15 +371,18 @@ fn lower_derivative_rhs_keeps_structured_map_through_direct_coefficient_assignme
         set_p_value(&layout, &mut p, &format!("mass_source[{idx}]"), idx as f64);
     }
 
-    let outputs = rows
-        .programs
-        .iter()
-        .map(|row| {
-            eval_linear_ops(row, &y, &p, 0.0)
-                .1
-                .expect("derivative output")
-        })
-        .collect::<Vec<_>>();
+    let prepared = rumoca_eval_solve::PreparedComputeBlock::new(&block)
+        .expect("structured derivative block should prepare");
+    let mut outputs = vec![0.0; prepared.len()];
+    prepared
+        .eval_with_context(
+            &y,
+            &p,
+            0.0,
+            rumoca_eval_solve::RowEvalContext::default(),
+            &mut outputs,
+        )
+        .expect("structured derivative block should evaluate by output index");
     assert_eq!(outputs, vec![12.0, 12.0, 12.0]);
 }
 
@@ -479,7 +481,6 @@ fn lower_derivative_rhs_keeps_structured_stencil_through_chained_flux_assignment
         block.nodes
     );
 
-    let rows = scalar_program_block_fixture(&block);
     let mut y = vec![0.0; layout.y_scalars()];
     let mut p = vec![0.0; layout.p_scalars()];
     for (idx, value) in [(1, 10.0), (2, 8.0), (3, 5.0), (4, 1.0), (5, -4.0)] {
@@ -492,15 +493,18 @@ fn lower_derivative_rhs_keeps_structured_stencil_through_chained_flux_assignment
         set_p_value(&layout, &mut p, &format!("area[{idx}]"), 1.0);
     }
 
-    let outputs = rows
-        .programs
-        .iter()
-        .map(|row| {
-            eval_linear_ops(row, &y, &p, 0.0)
-                .1
-                .expect("derivative output")
-        })
-        .collect::<Vec<_>>();
+    let prepared = rumoca_eval_solve::PreparedComputeBlock::new(&block)
+        .expect("structured derivative block should prepare");
+    let mut outputs = vec![0.0; prepared.len()];
+    prepared
+        .eval_with_context(
+            &y,
+            &p,
+            0.0,
+            rumoca_eval_solve::RowEvalContext::default(),
+            &mut outputs,
+        )
+        .expect("structured derivative block should evaluate by output index");
     assert_eq!(outputs[0], 0.0);
     assert!((outputs[1] + 0.5).abs() < 1.0e-12);
     assert!((outputs[2] + 1.0 / 3.0).abs() < 1.0e-12);

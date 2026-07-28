@@ -48,11 +48,89 @@ fn one_by_one_matmul_node(lhs: f64, rhs: f64, span: rumoca_core::Span) -> solve:
     }
 }
 
+fn one_by_one_matmul_with_compare(span: rumoca_core::Span) -> solve::ComputeNode {
+    solve::ComputeNode::MatMul {
+        lhs_ops: vec![
+            solve::LinearOp::Const { dst: 0, value: 2.0 },
+            solve::LinearOp::Const { dst: 1, value: 1.0 },
+            solve::LinearOp::Compare {
+                dst: 2,
+                op: solve::CompareOp::Gt,
+                lhs: 0,
+                rhs: 1,
+            },
+        ],
+        lhs_start: 2,
+        rhs_ops: vec![solve::LinearOp::Const { dst: 3, value: 3.0 }],
+        rhs_start: 3,
+        m: 1,
+        k: 1,
+        n: 1,
+        lhs_sparsity: solve::SparsityPattern::Dense,
+        rhs_sparsity: solve::SparsityPattern::Dense,
+        metadata: solve::TensorNodeMetadata::default(),
+        span,
+    }
+}
+
+fn one_by_one_linsolve_with_compare(span: rumoca_core::Span) -> solve::ComputeNode {
+    solve::ComputeNode::LinSolve {
+        setup_ops: vec![
+            solve::LinearOp::Const { dst: 0, value: 2.0 },
+            solve::LinearOp::Const { dst: 1, value: 1.0 },
+            solve::LinearOp::Compare {
+                dst: 2,
+                op: solve::CompareOp::Gt,
+                lhs: 0,
+                rhs: 1,
+            },
+            solve::LinearOp::Const { dst: 3, value: 6.0 },
+        ],
+        matrix_start: 2,
+        rhs_start: 3,
+        n: 1,
+        next_reg: 4,
+        metadata: solve::TensorNodeMetadata::default(),
+        span,
+    }
+}
+
 fn const_store_row(value: f64) -> Vec<solve::LinearOp> {
     vec![
         solve::LinearOp::Const { dst: 0, value },
         solve::LinearOp::StoreOutput { src: 0 },
     ]
+}
+
+#[test]
+fn template_partition_keeps_native_family_rows_out_of_fallback_programs() {
+    let span = fixture_span("compact_map_then_scalar.mo");
+    let domain = tensor_domain(3);
+    let map = solve::ComputeNode::Map {
+        output_map: solve::TensorOutputMap::dense_contiguous(0, &domain)
+            .expect("valid dense output map"),
+        domain,
+        base_ops: const_store_row(2.0),
+        load_strides: Vec::new(),
+        const_strides: Vec::new(),
+        metadata: solve::TensorNodeMetadata::default(),
+        span,
+    };
+    let scalar = solve::ComputeNode::ScalarPrograms(solve::ScalarProgramBlock::with_source_span(
+        vec![const_store_row(7.0)],
+        span,
+    ));
+
+    let partition = native_family_template_partition(&solve::ComputeBlock {
+        nodes: vec![map, scalar],
+    })
+    .expect("native family followed by scalar fallback should partition");
+
+    assert_eq!(partition.families.len(), 1);
+    assert_eq!(partition.fallback_programs, vec![const_store_row(7.0)]);
+    assert_eq!(partition.scalar_fallback_rows.len(), 1);
+    assert_eq!(partition.scalar_fallback_rows[0].row_index, 0);
+    assert_eq!(partition.scalar_fallback_rows[0].output_index, 3);
 }
 
 #[test]
@@ -111,6 +189,34 @@ fn template_partition_tracks_multi_output_tensor_fallback_program() {
         .collect::<Vec<_>>();
 
     assert_eq!(rows, vec![(0, 0, 0), (0, 1, 1), (0, 2, 2), (0, 3, 3)]);
+}
+
+#[test]
+fn template_partition_retains_fallback_for_unsupported_mlir_dense_ops() {
+    let span = fixture_span("matmul_compare_fallback.mo");
+    let partition = native_family_template_partition(&solve::ComputeBlock {
+        nodes: vec![one_by_one_matmul_with_compare(span)],
+    })
+    .expect("unsupported native MLIR setup should still scalarize");
+
+    assert!(partition.native_dense_nodes.is_empty());
+    assert_eq!(partition.fallback_programs.len(), 1);
+    assert_eq!(partition.scalar_fallback_rows.len(), 1);
+    assert!(!partition.scalar_fallback_rows[0].native_dense);
+}
+
+#[test]
+fn template_partition_retains_linsolve_fallback_for_unsupported_mlir_dense_ops() {
+    let span = fixture_span("linsolve_compare_fallback.mo");
+    let partition = native_family_template_partition(&solve::ComputeBlock {
+        nodes: vec![one_by_one_linsolve_with_compare(span)],
+    })
+    .expect("unsupported native MLIR setup should still scalarize");
+
+    assert!(partition.native_dense_nodes.is_empty());
+    assert_eq!(partition.fallback_programs.len(), 1);
+    assert_eq!(partition.scalar_fallback_rows.len(), 1);
+    assert!(!partition.scalar_fallback_rows[0].native_dense);
 }
 
 #[test]
@@ -488,6 +594,42 @@ fn native_family_const_stride_error_reports_op_kind() {
 
     assert!(err.contains("native family const stride targets a non-const op: LoadY"));
     assert!(!err.contains("LoadY {"));
+}
+
+#[test]
+fn wgsl_native_family_combines_duplicate_stride_descriptors() {
+    let mut family = native_family_with_base_ops(vec![
+        solve::LinearOp::LoadY { dst: 0, index: 0 },
+        solve::LinearOp::StoreOutput { src: 0 },
+    ]);
+    family.load_strides = vec![
+        solve::AffineStencilLoadStride {
+            op_position: 0,
+            terms: vec![solve::AffineStencilIndexStrideTerm {
+                dimension: 0,
+                stride: isize::MAX,
+            }],
+        },
+        solve::AffineStencilLoadStride {
+            op_position: 0,
+            terms: vec![solve::AffineStencilIndexStrideTerm {
+                dimension: 0,
+                stride: 1,
+            }],
+        },
+        solve::AffineStencilLoadStride {
+            op_position: 0,
+            terms: vec![solve::AffineStencilIndexStrideTerm {
+                dimension: 0,
+                stride: -isize::MAX,
+            }],
+        },
+    ];
+
+    let rendered = render_native_family_expr_wgsl(&family, &Value::from_serialize(()))
+        .expect("the combined stride is representable in WGSL");
+    assert!(rendered.contains("* 1"), "{rendered}");
+    assert!(!rendered.contains(&isize::MAX.to_string()), "{rendered}");
 }
 
 #[test]

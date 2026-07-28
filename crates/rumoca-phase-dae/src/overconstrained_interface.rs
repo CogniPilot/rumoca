@@ -1,7 +1,7 @@
 use crate::ToDaeError;
 use crate::path_utils::{normalized_top_level_names, path_is_in_top_level_set};
 use indexmap::IndexSet;
-use rumoca_core::SourceSpan;
+use rumoca_core::Span;
 use rumoca_ir_flat as flat;
 use rustc_hash::FxHashMap;
 use std::collections::HashSet;
@@ -327,7 +327,7 @@ pub(crate) fn validate_connection_graph(flat: &flat::Model) -> Result<(), ToDaeE
 
 /// Span of a variable under the given connector path, for pointing the user
 /// at the offending part of the connection graph.
-fn connection_graph_span(flat: &flat::Model, path: &str) -> Result<SourceSpan, ToDaeError> {
+fn connection_graph_span(flat: &flat::Model, path: &str) -> Result<Span, ToDaeError> {
     let variable = flat
         .variables
         .values()
@@ -343,7 +343,7 @@ fn connection_graph_span(flat: &flat::Model, path: &str) -> Result<SourceSpan, T
             variable.name
         )));
     }
-    Ok(rumoca_core::span_to_source_span(variable.source_span))
+    Ok(variable.source_span)
 }
 
 #[cfg(test)]

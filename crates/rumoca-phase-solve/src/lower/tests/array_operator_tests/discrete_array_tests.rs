@@ -1353,6 +1353,129 @@ fn lower_expression_rows_emits_matmul_node_for_matrix_matrix_multiply() {
 }
 
 #[test]
+fn continuous_algebraic_residual_preserves_z_equals_w_times_x_as_native_matmul() {
+    let dae_model = native_matmul_residual_fixture();
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
+    let residual_rows =
+        lower_residual(&dae_model, &layout).expect("scalar residual oracle should lower");
+    let targets = vec![
+        layout.binding("a"),
+        layout.binding("z[1]"),
+        layout.binding("z[2]"),
+        layout.binding("b"),
+    ];
+    let equations = dae_model
+        .continuous
+        .equations
+        .iter()
+        .enumerate()
+        .collect::<Vec<_>>();
+    let mut declines = crate::tensor_declines::TensorDeclineJournal::new();
+    let block = crate::residual_compute_block::build_residual_compute_block(
+        &dae_model,
+        &layout,
+        &residual_rows,
+        &targets,
+        &equations,
+        &mut declines,
+    )
+    .expect("continuous residual should preserve native MatMul");
+
+    assert!(
+        matches!(
+            block.nodes.as_slice(),
+            [
+                ComputeNode::ScalarPrograms(_),
+                ComputeNode::MatMul {
+                    m: 2,
+                    k: 4,
+                    n: 1,
+                    ..
+                },
+                ComputeNode::ScalarPrograms(_)
+            ]
+        ),
+        "expected scalar/native/scalar ownership around exact [I,-W]*[z;x], got {:?}",
+        block.nodes
+    );
+    let counts = block.compute_node_counts();
+    assert_eq!(counts.matmul, 1);
+    assert_eq!(counts.scalar_programs, 2);
+
+    let scalar = rumoca_eval_solve::to_scalar_program_block(&block)
+        .expect("native residual must retain the shared exact scalar fallback");
+    let mut y = vec![0.0; layout.y_scalars()];
+    let mut p = vec![0.0; layout.p_scalars()];
+    set_y_value(&layout, &mut y, "a", 7.0);
+    set_y_value(&layout, &mut y, "z[1]", 10.0);
+    set_y_value(&layout, &mut y, "z[2]", 20.0);
+    set_y_value(&layout, &mut y, "b", 11.0);
+    set_p_value(&layout, &mut p, "W[1,1]", 1.0);
+    set_p_value(&layout, &mut p, "W[1,2]", 2.0);
+    set_p_value(&layout, &mut p, "W[2,1]", 3.0);
+    set_p_value(&layout, &mut p, "W[2,2]", 4.0);
+    set_p_value(&layout, &mut p, "x[1]", 1.0);
+    set_p_value(&layout, &mut p, "x[2]", 2.0);
+    let mut outputs = vec![0.0; 4];
+    rumoca_eval_solve::eval_scalar_program_block(&scalar, &y, &p, 0.0, None, &mut outputs)
+        .expect("native residual scalar fallback should evaluate");
+    assert_eq!(outputs, vec![5.0, 5.0, 9.0, 8.0]);
+}
+
+fn native_matmul_residual_fixture() -> dae::Dae {
+    let mut dae_model = dae::Dae::default();
+    for name in ["a", "b"] {
+        dae_model
+            .variables
+            .algebraics
+            .insert(rumoca_core::VarName::new(name), scalar_var(name));
+    }
+    dae_model.variables.parameters.insert(
+        rumoca_core::VarName::new("W"),
+        dae::Variable {
+            dims: vec![2, 2],
+            ..scalar_var("W")
+        },
+    );
+    dae_model.variables.parameters.insert(
+        rumoca_core::VarName::new("x"),
+        dae::Variable {
+            dims: vec![2],
+            ..scalar_var("x")
+        },
+    );
+    dae_model.variables.algebraics.insert(
+        rumoca_core::VarName::new("z"),
+        dae::Variable {
+            dims: vec![2],
+            ..scalar_var("z")
+        },
+    );
+    dae_model.continuous.equations.push(dae::Equation {
+        lhs: Some(rumoca_core::Reference::new("a")),
+        rhs: int_lit_with_span(2, lower_test_span()),
+        span: lower_test_span(),
+        origin: "a = 2".to_string(),
+        scalar_count: 1,
+    });
+    dae_model.continuous.equations.push(dae::Equation {
+        lhs: Some(rumoca_core::Reference::new("z")),
+        rhs: mul(var("W"), var("x")),
+        span: lower_test_span(),
+        origin: "z = W*x".to_string(),
+        scalar_count: 2,
+    });
+    dae_model.continuous.equations.push(dae::Equation {
+        lhs: Some(rumoca_core::Reference::new("b")),
+        rhs: int_lit_with_span(3, lower_test_span()),
+        span: lower_test_span(),
+        origin: "b = 3".to_string(),
+        scalar_count: 1,
+    });
+    dae_model
+}
+
+#[test]
 fn lower_expression_rows_rejects_unspanned_matmul_node() {
     let mut dae_model = dae::Dae::default();
     dae_model.variables.parameters.insert(

@@ -9,6 +9,7 @@ use rumoca_compile::compile::{
     StrictCompileReport, VarName, Variable, compile_phase_timing_stats, core as rumoca_core,
     reset_compile_phase_timing_stats,
 };
+use rumoca_compile::phase_structural::{analyze_structure, scalarize_equations};
 use rumoca_compile::source_roots::parse_source_root_with_cache;
 use rumoca_sim::simulate_dae;
 use rumoca_sim::{SimOptions, SimResult, SimSolverMode};
@@ -67,6 +68,9 @@ struct Args {
 }
 
 fn compile_report_to_result(report: StrictCompileReport) -> Result<Box<CompilationResult>> {
+    if !report.requested_succeeded() {
+        print_strict_failures(&report);
+    }
     match report.requested_result {
         Some(PhaseResult::Success(result)) => Ok(result),
         Some(PhaseResult::NeedsInner { missing_inners, .. }) => bail!(
@@ -85,6 +89,32 @@ fn compile_report_to_result(report: StrictCompileReport) -> Result<Box<Compilati
             bail!("compilation failed in {phase}: {error}");
         }
         None => bail!("{}", report.failure_summary(8)),
+    }
+}
+
+fn print_strict_failures(report: &StrictCompileReport) {
+    for failure in &report.failures {
+        let location = failure
+            .primary_label
+            .as_ref()
+            .and_then(|label| report.source_map.as_ref().map(|map| (map, label.span)))
+            .and_then(|(map, span)| {
+                let (name, source) = map.get_source(span.source)?;
+                let offset = span.start.0.min(source.len());
+                let prefix = &source[..offset];
+                let line = prefix.bytes().filter(|byte| *byte == b'\n').count() + 1;
+                let column = prefix
+                    .rsplit_once('\n')
+                    .map_or(prefix.len(), |(_, tail)| tail.len())
+                    + 1;
+                Some(format!("{name}:{line}:{column}"))
+            })
+            .unwrap_or_else(|| "<unknown>".to_string());
+        eprintln!(
+            "{location}: {}: {}",
+            failure.error_code.as_deref().unwrap_or("error"),
+            failure.error
+        );
     }
 }
 
@@ -176,11 +206,51 @@ fn load_profiled_model(
     let detail = balance_detail(&result.dae)?;
     println!("Balance detail:\n{detail}");
     println!("Balance result: {}", balance(&result.dae)?);
-    debug_log_balance_summary(&result.dae);
-    debug_log_unknown_summary(&result.dae);
     if let Some(artifact_dir) = artifact_dir {
         write_artifacts(artifact_dir, &result)?;
     }
+    let mut scalar_dae = result.dae.clone();
+    scalarize_equations(&mut scalar_dae)?;
+    let structural = analyze_structure(&scalar_dae);
+    println!(
+        "Structural matching: matched={} equations={} unknowns={}",
+        structural.matching_size, structural.n_equations, structural.n_unknowns
+    );
+    const MAX_STRUCTURAL_DIAGNOSTICS: usize = 128;
+    if !structural.unmatched_unknowns.is_empty() {
+        println!("Structurally unmatched unknowns:");
+        for name in structural
+            .unmatched_unknowns
+            .iter()
+            .take(MAX_STRUCTURAL_DIAGNOSTICS)
+        {
+            println!("  {name}");
+        }
+        if structural.unmatched_unknowns.len() > MAX_STRUCTURAL_DIAGNOSTICS {
+            println!(
+                "  ... {} more",
+                structural.unmatched_unknowns.len() - MAX_STRUCTURAL_DIAGNOSTICS
+            );
+        }
+    }
+    if !structural.unmatched_equations.is_empty() {
+        println!("Structurally unmatched equations:");
+        for origin in structural
+            .unmatched_equations
+            .iter()
+            .take(MAX_STRUCTURAL_DIAGNOSTICS)
+        {
+            println!("  {origin}");
+        }
+        if structural.unmatched_equations.len() > MAX_STRUCTURAL_DIAGNOSTICS {
+            println!(
+                "  ... {} more",
+                structural.unmatched_equations.len() - MAX_STRUCTURAL_DIAGNOSTICS
+            );
+        }
+    }
+    debug_log_balance_summary(&result.dae);
+    debug_log_unknown_summary(&result.dae);
     Ok(result)
 }
 

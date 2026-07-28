@@ -18,7 +18,11 @@ use crate::{
     flat_to_dae_expression_with_refs, flat_to_dae_var_name, remap_flat_structured_equations,
 };
 
+mod record_fields;
 mod tuple_outputs;
+use record_fields::{
+    RecordFieldSpec, record_field_specs_for_call, record_field_specs_for_reference_equation,
+};
 use tuple_outputs::tuple_function_output_expressions;
 
 pub(super) fn is_input_input_connection(eq: &flat::Equation, dae: &dae::Dae) -> bool {
@@ -492,178 +496,6 @@ fn compute_scalar_count(
     Some(scalar_count)
 }
 
-fn record_field_specs_for_call(
-    name: &rumoca_core::Reference,
-    is_constructor: bool,
-    flat: &flat::Model,
-) -> Result<Option<Vec<RecordFieldSpec>>, ToDaeError> {
-    let Some(resolved) = name.resolved_function() else {
-        return Ok(None);
-    };
-    let function =
-        rumoca_core::resolve_function_instance(flat.functions.values(), resolved.instance_id)
-            .map_err(|error| {
-                name.span().map_or_else(
-                    || ToDaeError::runtime_contract_violation(error.to_string()),
-                    |span| ToDaeError::runtime_contract_violation_at(error.to_string(), span),
-                )
-            })?;
-    let fields = if is_constructor || function.is_constructor {
-        function.inputs.clone()
-    } else {
-        let [output] = function.outputs.as_slice() else {
-            return Ok(None);
-        };
-        if output.type_class != Some(rumoca_core::ClassType::Record) {
-            return Ok(None);
-        }
-        let type_def_id = output.type_def_id.ok_or_else(|| {
-            ToDaeError::runtime_contract_violation_at(
-                format!(
-                    "record output `{}.{}` lacks resolved type identity",
-                    function.name, output.name
-                ),
-                output.span,
-            )
-        })?;
-        rumoca_core::resolve_record_constructor(
-            flat.functions.values(),
-            &output.type_name,
-            type_def_id,
-        )
-        .map(|constructor| constructor.inputs.clone())
-        .map_err(|error| {
-            ToDaeError::runtime_contract_violation_at(
-                format!(
-                    "record output `{}.{}` constructor lookup failed: {error}",
-                    function.name, output.name,
-                ),
-                output.span,
-            )
-        })?
-    };
-    RecordFieldSpec::from_params(fields)
-}
-
-#[derive(Debug, Clone)]
-struct RecordFieldSpec {
-    name: String,
-    def_id: rumoca_core::DefId,
-    dims: Vec<i64>,
-    default: Option<rumoca_core::Expression>,
-}
-
-impl RecordFieldSpec {
-    fn from_params(
-        params: Vec<rumoca_core::FunctionParam>,
-    ) -> Result<Option<Vec<Self>>, ToDaeError> {
-        for param in &params {
-            if param.def_id.is_none() {
-                return Err(ToDaeError::runtime_contract_violation_at(
-                    format!(
-                        "record field `{}` lacks resolved identity required for equation expansion",
-                        param.name
-                    ),
-                    param.span,
-                ));
-            }
-        }
-        Ok((!params.is_empty()).then(|| {
-            params
-                .into_iter()
-                .map(|param| Self {
-                    name: param.name,
-                    def_id: param.def_id.expect("record field identity checked above"),
-                    dims: param.dims,
-                    default: param.default,
-                })
-                .collect::<Vec<_>>()
-        }))
-    }
-
-    fn from_record_type(record_type: &flat::RecordType) -> Vec<Self> {
-        record_type
-            .fields
-            .iter()
-            .map(|field| Self {
-                name: field.name.clone(),
-                def_id: field.def_id,
-                dims: field.dims.clone(),
-                default: None,
-            })
-            .collect()
-    }
-
-    fn name(&self) -> &str {
-        self.name.as_str()
-    }
-
-    fn default(&self) -> Option<rumoca_core::Expression> {
-        self.default.clone()
-    }
-
-    fn is_statically_empty(&self) -> bool {
-        !self.dims.is_empty() && self.dims.contains(&0)
-    }
-
-    fn matches_component_ref(
-        &self,
-        field_ref: &rumoca_core::ComponentReference,
-        symbol_ancestry: &flat::SymbolAncestryMap,
-    ) -> bool {
-        let expected = self.def_id;
-        field_ref.def_id == Some(expected)
-            || field_ref.def_id.is_some_and(|actual| {
-                symbol_ancestry
-                    .get(&actual)
-                    .is_some_and(|ancestry| ancestry.contains(&expected))
-            })
-    }
-}
-
-fn record_field_specs_for_reference_equation(
-    lhs_name: &rumoca_core::Reference,
-    rhs_name: &rumoca_core::Reference,
-    flat: &flat::Model,
-    span: rumoca_core::Span,
-) -> Result<Option<Vec<RecordFieldSpec>>, ToDaeError> {
-    let Some(lhs_record) = flat.record_instances.get(lhs_name.var_name()) else {
-        return Ok(None);
-    };
-    let Some(rhs_record) = flat.record_instances.get(rhs_name.var_name()) else {
-        return Ok(None);
-    };
-    if lhs_record.canonical_type_id.is_unknown()
-        || rhs_record.canonical_type_id.is_unknown()
-        || lhs_record.canonical_type_id != rhs_record.canonical_type_id
-        || lhs_record.dims != rhs_record.dims
-    {
-        return Err(ToDaeError::runtime_contract_violation_at(
-            format!(
-                "record equation `{}` = `{}` lacks compatible resolved type and shape identity",
-                lhs_name.as_str(),
-                rhs_name.as_str()
-            ),
-            span,
-        ));
-    }
-    let record_type = flat
-        .record_types
-        .get(&lhs_record.type_def_id)
-        .ok_or_else(|| {
-            ToDaeError::runtime_contract_violation_at(
-                format!(
-                    "record equation for `{}` lacks field metadata for `{}` ({})",
-                    lhs_name.as_str(),
-                    lhs_record.type_name,
-                    lhs_record.type_def_id,
-                ),
-                span,
-            )
-        })?;
-    Ok(Some(RecordFieldSpec::from_record_type(record_type)))
-}
-
 fn record_field_specs_for_rhs(
     lhs_name: &rumoca_core::Reference,
     rhs: &rumoca_core::Expression,
@@ -682,6 +514,21 @@ fn record_field_specs_for_rhs(
             ..
         } if subscripts.is_empty() => {
             record_field_specs_for_reference_equation(lhs_name, rhs_name, flat, span)
+        }
+        // `r = if cond then a else b` over record-valued branches: every branch
+        // has the record type of `r`, so the field list is whichever branch can
+        // supply it (MLS §3.7.1 requires all branches to share the type).
+        rumoca_core::Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => {
+            for (_, value) in branches {
+                if let Some(specs) = record_field_specs_for_rhs(lhs_name, value, flat, span)? {
+                    return Ok(Some(specs));
+                }
+            }
+            record_field_specs_for_rhs(lhs_name, else_branch, flat, span)
         }
         _ => Ok(None),
     }
@@ -773,7 +620,7 @@ fn rhs_field_expression(
     }
     rumoca_core::Expression::FieldAccess {
         base: Box::new(selected),
-        field: field.name.clone(),
+        field: field.name().to_string(),
         span,
     }
 }
@@ -832,6 +679,67 @@ fn field_scalar_count(field_vars: &[&flat::Variable]) -> usize {
         .map(|field_var| super::compute_var_size(&field_var.dims).max(1))
         .sum::<usize>()
         .max(1)
+}
+
+/// Everything the record-equation expansion needs to project one field of the
+/// right-hand side, kept together so the recursive projection stays within the
+/// argument budget.
+struct RecordFieldProjection<'a> {
+    lhs_name: &'a rumoca_core::Reference,
+    field: &'a RecordFieldSpec,
+    field_vars: &'a [&'a flat::Variable],
+    index: usize,
+    span: rumoca_core::Span,
+}
+
+/// Project the right-hand side of a record equation onto a single record field.
+///
+/// A record reference projects to that record's own field variables; a record
+/// constructor projects to the matching constructor argument; an `if`
+/// expression projects branch-wise so the scalarized field equation keeps the
+/// conditional instead of reaching the DAE as an opaque record row.
+fn project_record_field_rhs(
+    rhs: &rumoca_core::Expression,
+    projection: &RecordFieldProjection<'_>,
+    flat: &flat::Model,
+) -> Result<rumoca_core::Expression, ToDaeError> {
+    if let rumoca_core::Expression::If {
+        branches,
+        else_branch,
+        span,
+    } = rhs
+    {
+        let mut projected_branches = Vec::with_capacity(branches.len());
+        for (condition, value) in branches {
+            projected_branches.push((
+                condition.clone(),
+                project_record_field_rhs(value, projection, flat)?,
+            ));
+        }
+        return Ok(rumoca_core::Expression::If {
+            branches: projected_branches,
+            else_branch: Box::new(project_record_field_rhs(else_branch, projection, flat)?),
+            span: *span,
+        });
+    }
+    if let Some(projected) = record_reference_field_rhs(
+        rhs,
+        projection.field,
+        projection.field_vars,
+        flat,
+        projection.span,
+    )? {
+        return Ok(projected);
+    }
+    Ok(rhs_field_expression(
+        rhs,
+        projection.lhs_name,
+        projection.field,
+        projection.field_vars,
+        projection.index,
+        flat,
+        projection.span,
+    ))
 }
 
 fn record_reference_field_rhs(
@@ -1094,10 +1002,17 @@ pub(crate) fn expand_record_field_equation(
             return Err(record_field_expansion_error(lhs_name, field, eq.span));
         }
         let scalar_count = field_scalar_count(&field_vars);
-        let rhs_field = record_reference_field_rhs(rhs, field, &field_vars, flat, eq.span)?
-            .unwrap_or_else(|| {
-                rhs_field_expression(rhs, lhs_name, field, &field_vars, index, flat, eq.span)
-            });
+        let rhs_field = project_record_field_rhs(
+            rhs,
+            &RecordFieldProjection {
+                lhs_name,
+                field,
+                field_vars: &field_vars,
+                index,
+                span: eq.span,
+            },
+            flat,
+        )?;
         equations.push(flat::Equation::new_array(
             field_residual(
                 field_lhs_expression(&field_vars, eq.span),
@@ -1344,9 +1259,7 @@ fn pre_of_target(
     }
 }
 
-/// Shared with `algorithm_lowering::target_names`, which must name array
-/// elements the same way explicit assignment targets do.
-pub(crate) fn const_subscript_index_expr(expr: &rumoca_core::Expression) -> Option<i64> {
+fn const_subscript_index_expr(expr: &rumoca_core::Expression) -> Option<i64> {
     let value = match expr {
         rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Integer(value),
@@ -1962,8 +1875,11 @@ pub(super) fn classify_equations(
         }
     }
 
-    dae.continuous.structured_equations =
-        remap_flat_structured_equations(&flat.structured_equations, &flat_to_fx_index);
+    dae.continuous.structured_equations = remap_flat_structured_equations(
+        &flat.structured_equations,
+        &flat_to_fx_index,
+        &dae.continuous.equations,
+    );
 
     if debug_eq_filter {
         stats.log();
@@ -1979,19 +1895,66 @@ fn collect_discrete_valued_lhs_target_counts(
     for target in dae.variables.discrete_valued.keys() {
         counts.insert(crate::dae_to_flat_var_name(target), 0);
     }
+    let families = discrete_valued_family_members(dae);
     for equation in &flat.equations {
-        if classify_residual_discrete_bucket(dae, &equation.residual)
-            != Some(ResidualDiscreteBucket::DiscreteValued)
-        {
-            continue;
-        }
+        let direct = classify_residual_discrete_bucket(dae, &equation.residual)
+            == Some(ResidualDiscreteBucket::DiscreteValued);
         for target in crate::discrete_partition::residual_lhs_targets(&equation.residual) {
-            if is_discrete_valued_target(dae, &target) {
-                *counts.entry(target).or_insert(0) += 1;
-            }
+            count_discrete_valued_definition(dae, &families, direct, target, &mut counts);
         }
     }
     counts
+}
+
+/// Credit one definition of `target` to the discrete-valued variables it
+/// writes: the target itself when the equation already classifies as a
+/// discrete-valued update, otherwise the array-family members it expands to.
+fn count_discrete_valued_definition(
+    dae: &dae::Dae,
+    families: &HashMap<rumoca_core::VarName, Vec<rumoca_core::VarName>>,
+    direct: bool,
+    target: rumoca_core::VarName,
+    counts: &mut HashMap<rumoca_core::VarName, usize>,
+) {
+    if direct {
+        if is_discrete_valued_target(dae, &target) {
+            *counts.entry(target).or_insert(0) += 1;
+        }
+        return;
+    }
+    for member in families.get(&target).into_iter().flatten() {
+        *counts.entry(member.clone()).or_insert(0) += 1;
+    }
+}
+
+/// Index the scalarized discrete-valued variables by the array-family name
+/// that an unexpanded equation writes to.
+///
+/// MSL `Modelica.StateGraph.Parallel` defines its branch connectors with
+/// `split.set = fill(inPort.set, nBranches)`, whose target `split.set` is not
+/// a DAE variable — `split[1].set`, `split[2].set`, … are. That definition is
+/// only materialized later, by
+/// `dae_lowering::scalarize_phantom_vector_equations`, so the count that
+/// decides alias orientation has to credit the members here. Without it a
+/// `connect` on the same member looks like the member's only definition and
+/// gets oriented to solve for it, colliding with the expanded family row.
+fn discrete_valued_family_members(
+    dae: &dae::Dae,
+) -> HashMap<rumoca_core::VarName, Vec<rumoca_core::VarName>> {
+    let mut families: HashMap<rumoca_core::VarName, Vec<rumoca_core::VarName>> = HashMap::new();
+    for name in dae.variables.discrete_valued.keys() {
+        let member = crate::dae_to_flat_var_name(name);
+        let base =
+            rumoca_core::VarName::new(crate::path_utils::strip_all_subscripts(member.as_str()));
+        if base == member {
+            continue;
+        }
+        families.entry(base).or_default().push(member);
+    }
+    // A family name that is itself a declared variable is an ordinary
+    // reference, not an array-family write target.
+    families.retain(|base, _| !is_discrete_valued_target(dae, base));
+    families
 }
 
 #[cfg(test)]

@@ -17,7 +17,7 @@ pub(crate) struct MergeSemanticError {
 
 #[derive(Debug, Clone)]
 pub(crate) struct MergeSemanticLabel {
-    pub file_name: String,
+    pub source: rumoca_core::SourceId,
     pub start: usize,
     pub end: usize,
     pub primary: bool,
@@ -36,7 +36,7 @@ impl MergeSemanticError {
             end = start.saturating_add(1);
         }
         MergeSemanticLabel {
-            file_name: token.location.file_name.clone(),
+            source: token.location.source,
             start,
             end,
             primary,
@@ -439,7 +439,7 @@ fn class_has_source_location(class: &ast::ClassDef) -> bool {
 }
 
 fn source_location_is_nonempty(location: &rumoca_core::Location) -> bool {
-    !location.file_name.is_empty() && location.start < location.end
+    location.has_source()
 }
 
 fn classes_semantically_identical(existing: &ast::ClassDef, new: &ast::ClassDef) -> bool {
@@ -692,11 +692,17 @@ mod tests {
         .expect("merge package tree");
 
         let pkg = merged.classes.get("Pkg").expect("Pkg package");
-        assert_eq!(pkg.location.file_name, "workspace/Pkg/package.mo");
+        assert_eq!(
+            pkg.location.source,
+            rumoca_core::SourceId::from_source_name("workspace/Pkg/package.mo")
+        );
         assert!(pkg.location.start < pkg.location.end);
 
         let sub = pkg.classes.get("Sub").expect("Sub package");
-        assert_eq!(sub.location.file_name, "workspace/Pkg/Sub/package.mo");
+        assert_eq!(
+            sub.location.source,
+            rumoca_core::SourceId::from_source_name("workspace/Pkg/Sub/package.mo")
+        );
         assert!(sub.location.start < sub.location.end);
         assert!(sub.classes.contains_key("A"));
     }
@@ -713,7 +719,10 @@ mod tests {
         .expect("merge within-qualified model");
 
         let examples = merged.classes.get("Examples").expect("Examples package");
-        assert_eq!(examples.location.file_name, "workspace/Examples/Ball.mo");
+        assert_eq!(
+            examples.location.source,
+            rumoca_core::SourceId::from_source_name("workspace/Examples/Ball.mo")
+        );
         assert!(examples.location.start < examples.location.end);
         assert!(examples.classes.contains_key("Ball"));
     }
@@ -806,5 +815,34 @@ mod tests {
         // If merge order is deterministic by file path, "z.mo" is always the duplicate
         // that conflicts with the earlier "a.mo" definition.
         assert!(err.to_string().contains("z.mo"));
+    }
+
+    #[test]
+    fn merged_duplicate_declaration_labels_keep_per_file_source_ids() {
+        let def1 = parse_definition("model M\n  Real x;\nend M;", "a.mo");
+        let def2 = parse_definition("model M\n  Real y;\nend M;", "b.mo");
+
+        let err =
+            merge_stored_definitions(vec![("a.mo".to_string(), def1), ("b.mo".to_string(), def2)])
+                .expect_err("conflicting duplicates should fail");
+        let semantic = err
+            .downcast_ref::<MergeSemanticError>()
+            .expect("merge failure should carry semantic labels");
+        assert!(!semantic.labels.is_empty(), "expected at least one label");
+
+        let a_id = rumoca_core::SourceId::from_source_name("a.mo");
+        let b_id = rumoca_core::SourceId::from_source_name("b.mo");
+        assert_ne!(a_id, b_id);
+        for label in &semantic.labels {
+            assert!(
+                label.source == a_id || label.source == b_id,
+                "label carries an unexpected source id: {:?}",
+                label.source
+            );
+        }
+        assert!(
+            semantic.labels.iter().any(|label| label.source == b_id),
+            "the duplicate declaration in b.mo must be labelled with its own source id"
+        );
     }
 }

@@ -226,7 +226,7 @@ pub fn render_web(
                     need.of, file.path
                 )
             })?;
-            checksums.insert(need.as_key.clone(), digest.as_str().to_string());
+            checksums.insert(need.as_key.clone(), digest.to_hex());
         }
         let path = render(&file.path, &checksums)
             .with_context(|| format!("Render target output path '{}'", file.path))?
@@ -612,7 +612,7 @@ template = "root-template"
         let leaf_bytes = std::fs::read(out_dir.join("leaf.txt")).expect("leaf written");
         let expected = Sha1Hex::of_bytes(&leaf_bytes);
         let root = std::fs::read_to_string(out_dir.join("root.txt")).expect("root written");
-        assert_eq!(root, format!("root sees leaf={}", expected.as_str()));
+        assert_eq!(root, format!("root sees leaf={}", expected.to_hex()));
         let license =
             std::fs::read_to_string(out_dir.join("schemas/LICENSE")).expect("asset copied");
         assert_eq!(license, "license bytes");

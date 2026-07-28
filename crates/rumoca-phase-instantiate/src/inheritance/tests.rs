@@ -12,7 +12,7 @@ fn test_location() -> rumoca_core::Location {
         end_column: 2,
         start: 0,
         end: 1,
-        file_name: TEST_FILE.to_string(),
+        source: rumoca_core::SourceId::from_source_name(TEST_FILE),
     }
 }
 
@@ -85,6 +85,89 @@ fn make_int_expr(value: &str) -> ast::Expression {
         token: make_token(value),
         span: rumoca_core::Span::DUMMY,
     }
+}
+
+fn make_resolved_ref_expr(name: &str, def_id: DefId) -> ast::Expression {
+    let mut reference = make_component_ref(name);
+    reference.def_id = Some(def_id);
+    ast::Expression::ComponentReference(reference)
+}
+
+#[test]
+fn duplicate_inherited_components_require_equivalent_declarations() {
+    let type_def_id = DefId::new(100);
+    let mut existing = make_component("x", false, false);
+    existing.type_def_id = Some(type_def_id);
+    existing.type_name = make_name("Real");
+    existing.has_explicit_binding = true;
+    existing.binding = Some(make_int_expr("1"));
+
+    let mut incoming = existing.clone();
+    incoming.def_id = Some(DefId::new(102));
+    incoming.binding = Some(make_int_expr("2"));
+
+    assert!(
+        !components_are_compatible(&existing, &incoming),
+        "a shared resolved type must not hide conflicting bindings"
+    );
+
+    incoming.binding = existing.binding.clone();
+    incoming.variability = rumoca_core::Variability::Parameter(make_token("parameter"));
+    assert!(
+        !components_are_compatible(&existing, &incoming),
+        "a shared resolved type must not hide conflicting variability"
+    );
+}
+
+#[test]
+fn duplicate_inherited_components_distinguish_resolved_binding_identity() {
+    let mut existing = make_component("x", false, false);
+    existing.type_name = make_name("Real");
+    existing.has_explicit_binding = true;
+    existing.binding = Some(make_resolved_ref_expr("p", DefId::new(201)));
+
+    let mut incoming = existing.clone();
+    incoming.def_id = Some(DefId::new(202));
+    incoming.binding = Some(make_resolved_ref_expr("p", DefId::new(203)));
+
+    assert!(
+        !components_are_compatible(&existing, &incoming),
+        "equal source spelling must not hide different resolved declarations"
+    );
+}
+
+#[test]
+fn duplicate_inherited_components_from_same_source_keep_diamond_fast_path() {
+    let shared_def_id = DefId::new(101);
+    let mut existing = make_component("x", false, false);
+    existing.def_id = Some(shared_def_id);
+    existing.binding = Some(make_int_expr("1"));
+    let mut incoming = existing.clone();
+    incoming.binding = Some(make_int_expr("2"));
+
+    assert!(
+        components_are_compatible(&existing, &incoming),
+        "the same source declaration inherited through a diamond contributes once"
+    );
+}
+
+#[test]
+fn duplicate_inherited_components_ignore_documentation_and_annotations() {
+    let mut existing = make_component("system", false, false);
+    existing.type_def_id = Some(DefId::new(100));
+    existing.type_name = make_name("System");
+    existing.description = vec![make_token("System wide properties")];
+    existing.annotation = vec![make_int_expr("1")];
+
+    let mut incoming = existing.clone();
+    incoming.def_id = Some(DefId::new(102));
+    incoming.description = vec![make_token("System properties")];
+    incoming.annotation = vec![make_int_expr("2")];
+
+    assert!(
+        components_are_compatible(&existing, &incoming),
+        "documentation and annotations do not change component declaration semantics"
+    );
 }
 
 #[test]

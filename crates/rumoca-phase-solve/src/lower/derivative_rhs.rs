@@ -1,3 +1,4 @@
+mod direct_family;
 mod direct_matmul;
 mod equation_collection;
 #[path = "derivative_rhs/function_projection.rs"]
@@ -21,6 +22,7 @@ use rumoca_ir_solve::{BinaryOp, ComputeBlock, ComputeNode, LinearOp, Reg, Scalar
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use direct_family::*;
 use function_projection::{
     function_call_projected_scalars_with_owner, function_projected_residuals_with_owner,
 };
@@ -39,6 +41,36 @@ pub(in crate::lower) struct DerivativeEquation {
     rhs: rumoca_core::Expression,
     span: rumoca_core::Span,
     dae_equation_index: Option<usize>,
+    projection_index: Option<usize>,
+}
+
+impl DerivativeEquation {
+    fn structured_dae_equation_index(&self) -> Option<usize> {
+        self.projection_index
+            .is_none()
+            .then_some(self.dae_equation_index)
+            .flatten()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ContinuousEquationRowProjection {
+    Source,
+    FunctionOutput { index: usize },
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ContinuousEquationRow {
+    pub(crate) source_equation_index: usize,
+    pub(crate) projection: ContinuousEquationRowProjection,
+    pub(crate) equation: dae::Equation,
+    pub(crate) is_derivative: bool,
+}
+
+#[derive(Debug, Clone)]
+struct DerivativeComponent {
+    state_indices: Vec<usize>,
+    equation_indices: Vec<usize>,
 }
 
 pub(in crate::lower) struct DerivativeLinearCtx<'a> {
@@ -53,20 +85,14 @@ pub(crate) struct DerivativeRhsAnalysis {
     direct_equations: IndexMap<String, usize>,
     direct_assignments: Arc<IndexMap<String, DirectAssignmentValue>>,
     component_roots: Vec<usize>,
-    components: IndexMap<usize, Vec<usize>>,
+    components: IndexMap<usize, DerivativeComponent>,
     structural_bindings: Arc<IndexMap<String, f64>>,
-    equation_flags: Vec<bool>,
+    continuous_rows: Vec<ContinuousEquationRow>,
 }
 
 impl DerivativeRhsAnalysis {
-    pub(crate) fn equation_flags(&self) -> &[bool] {
-        &self.equation_flags
-    }
-
-    pub(crate) fn direct_dae_equation_index_for_state(&self, state_name: &str) -> Option<usize> {
-        self.direct_equations
-            .get(state_name)
-            .and_then(|equation| self.equations[*equation].dae_equation_index)
+    pub(crate) fn take_continuous_rows(&mut self) -> Vec<ContinuousEquationRow> {
+        std::mem::take(&mut self.continuous_rows)
     }
 
     /// Drop direct-assignment definitions for algebraics that are retained solver
@@ -102,13 +128,14 @@ pub(crate) fn analyze_derivative_rhs(
     // O(equations x states) — quadratic in grid size for tensor PDE families.
     let state_names: HashSet<String> = states.iter().map(|state| state.name.clone()).collect();
     let structural_bindings = compile_time::structural_bindings(dae_model)?;
-    let (equations, equation_flags) =
-        collect_derivative_equations(dae_model, &state_names, &structural_bindings)?;
-    let direct_equations = collect_direct_derivative_equations(&equations);
+    let (continuous_rows, equations, _) =
+        collect_continuous_equation_rows(dae_model, &state_names, &structural_bindings)?;
     let direct_assignments =
-        collect_direct_assignments(dae_model, &equation_flags, &structural_bindings)?;
+        collect_direct_assignments(dae_model, &continuous_rows, &structural_bindings)?;
     let (component_roots, components) =
-        derivative_state_components(dae_model, &states, &equations)?;
+        derivative_state_components(dae_model, &states, &equations, &structural_bindings)?;
+    let direct_equations =
+        collect_direct_derivative_equations(dae_model, &states, &equations, &components)?;
     Ok(DerivativeRhsAnalysis {
         states,
         equations,
@@ -117,7 +144,7 @@ pub(crate) fn analyze_derivative_rhs(
         component_roots,
         components,
         structural_bindings: Arc::new(structural_bindings),
-        equation_flags,
+        continuous_rows,
     })
 }
 
@@ -131,10 +158,10 @@ pub(in crate::lower) fn collect_runtime_direct_assignments(
         .keys()
         .map(|name| name.as_str().to_string())
         .collect::<HashSet<_>>();
-    let (_, equation_flags) =
-        collect_derivative_equations(dae_model, &state_names, structural_bindings)?;
+    let (continuous_rows, _, _) =
+        collect_continuous_equation_rows(dae_model, &state_names, structural_bindings)?;
     let mut assignments =
-        collect_direct_assignments(dae_model, &equation_flags, structural_bindings)?;
+        collect_direct_assignments(dae_model, &continuous_rows, structural_bindings)?;
     for (name, parameter) in &dae_model.variables.parameters {
         if parameter.causality != dae::VariableCausality::CalculatedParameter {
             continue;
@@ -288,15 +315,6 @@ fn derivative_row_span(
     }
 }
 
-fn derivative_rows_span(
-    rows: &[&DerivativeEquation],
-    fallback_span: rumoca_core::Span,
-) -> rumoca_core::Span {
-    rows.iter()
-        .find_map(|row| (!row.span.is_dummy()).then_some(row.span))
-        .unwrap_or(fallback_span)
-}
-
 fn derivative_state_span(
     dae_model: &dae::Dae,
     state: &StateScalar,
@@ -323,7 +341,8 @@ pub(super) fn lower_derivative_rhs(
     layout: &VarLayout,
 ) -> Result<ComputeBlock, LowerError> {
     let analysis = analyze_derivative_rhs(dae_model)?;
-    lower_derivative_rhs_with_analysis(dae_model, layout, &analysis)
+    let mut declines = crate::tensor_declines::TensorDeclineJournal::new();
+    lower_derivative_rhs_with_analysis(dae_model, layout, &analysis, &mut declines)
 }
 
 // SPEC_0021: Exception - derivative RHS lowering owns block assembly across
@@ -333,6 +352,7 @@ pub(crate) fn lower_derivative_rhs_with_analysis(
     dae_model: &dae::Dae,
     layout: &VarLayout,
     analysis: &DerivativeRhsAnalysis,
+    declines: &mut crate::tensor_declines::TensorDeclineJournal,
 ) -> Result<ComputeBlock, LowerError> {
     if analysis.states.is_empty() {
         return Ok(ComputeBlock::default());
@@ -357,9 +377,26 @@ pub(crate) fn lower_derivative_rhs_with_analysis(
         span,
     )?;
     processed.resize(analysis.states.len(), false);
+    let mut direct_family_nodes =
+        lower_direct_derivative_families(&mut processed, analysis, &lowering_ctx, &y_slot_ranges)?;
     let mut i = 0;
 
     while i < analysis.states.len() {
+        if let Some(mut family_nodes) = direct_family_nodes.shift_remove(&i) {
+            flush_pending_derivative_programs(
+                &mut block.nodes,
+                &mut pending_derivative_programs,
+                dae_model,
+                declines,
+            )?;
+            reserve_derivative_capacity(
+                &mut block.nodes,
+                family_nodes.len(),
+                "ordered direct derivative family tensor node count",
+                derivative_state_or_context_span(dae_model, &analysis.states[i])?,
+            )?;
+            block.nodes.append(&mut family_nodes);
+        }
         if processed[i] {
             i += 1;
             continue;
@@ -375,30 +412,43 @@ pub(crate) fn lower_derivative_rhs_with_analysis(
             .components
             .get(&component_root)
             .ok_or_else(|| missing_derivative_component_error(dae_model, state, component_root))?;
-        if component.len() > 1 {
+        if component.state_indices.len() > 1 {
             flush_pending_derivative_programs(
                 &mut block.nodes,
                 &mut pending_derivative_programs,
                 dae_model,
+                declines,
             )?;
 
             let mut group = derivative_vec_with_capacity(
-                component.len(),
+                component.state_indices.len(),
                 "coupled derivative group state count",
                 derivative_state_or_context_span(dae_model, state)?,
             )?;
-            for idx in component {
+            for idx in &component.state_indices {
                 group.push(analysis.states[*idx].clone());
             }
-            let node = lower_linsolve_group(&group, &lowering_ctx)?;
+            let span = derivative_state_or_context_span(dae_model, state)?;
+            let node = if component_indices_are_contiguous_from(&component.state_indices, i) {
+                lower_linsolve_group(&group, component, &lowering_ctx)?
+            } else {
+                let program = lower_linsolve_group_program(&group, component, &lowering_ctx)?;
+                ComputeNode::ScalarPrograms(
+                    rumoca_ir_solve::ScalarProgramBlock::with_output_indices(
+                        vec![program],
+                        vec![span],
+                        component.state_indices.clone(),
+                    )?,
+                )
+            };
             reserve_derivative_capacity(
                 &mut block.nodes,
                 1,
                 "derivative compute node count",
-                derivative_state_or_context_span(dae_model, state)?,
+                span,
             )?;
             block.nodes.push(node);
-            for idx in component.iter().copied() {
+            for idx in component.state_indices.iter().copied() {
                 processed[idx] = true;
             }
             i += 1;
@@ -412,6 +462,7 @@ pub(crate) fn lower_derivative_rhs_with_analysis(
                         &mut block.nodes,
                         &mut pending_derivative_programs,
                         dae_model,
+                        declines,
                     )?;
                     let span = derivative_state_or_context_span(dae_model, state)?;
                     let output_indices = (i..i + group_len).collect::<Vec<_>>();
@@ -437,6 +488,7 @@ pub(crate) fn lower_derivative_rhs_with_analysis(
                         &mut block.nodes,
                         &mut pending_derivative_programs,
                         dae_model,
+                        declines,
                     )?;
                     reserve_derivative_capacity(
                         &mut block.nodes,
@@ -457,7 +509,7 @@ pub(crate) fn lower_derivative_rhs_with_analysis(
         let dae_equation_index = analysis
             .direct_equations
             .get(&state.name)
-            .and_then(|equation| analysis.equations[*equation].dae_equation_index);
+            .and_then(|equation| analysis.equations[*equation].structured_dae_equation_index());
         let span = dae_equation_index
             .and_then(|index| dae_model.continuous.equations.get(index))
             .map(|equation| equation.span)
@@ -465,6 +517,16 @@ pub(crate) fn lower_derivative_rhs_with_analysis(
             .map(Ok)
             .unwrap_or_else(|| derivative_state_or_context_span(dae_model, state))?;
         let row = lower_state_derivative_row(state, &analysis.direct_equations, &lowering_ctx)?;
+        let producer_load_strides = match dae_equation_index {
+            Some(equation_index) => crate::stencil::producer_load_strides_for_dae_equation(
+                layout,
+                &dae_model.continuous.structured_equations,
+                equation_index,
+                &row,
+                span,
+            )?,
+            None => None,
+        };
         reserve_derivative_capacity(
             &mut pending_derivative_programs,
             1,
@@ -479,6 +541,7 @@ pub(crate) fn lower_derivative_rhs_with_analysis(
             span,
             output_y_range: state_output_y_range(dae_model, state, i)?,
             dae_equation_index,
+            producer_load_strides,
             access_proof: derivative_row_access_proof(
                 state,
                 &analysis.direct_equations,
@@ -493,53 +556,16 @@ pub(crate) fn lower_derivative_rhs_with_analysis(
         &mut block.nodes,
         &mut pending_derivative_programs,
         dae_model,
+        declines,
     )?;
+    if !direct_family_nodes.is_empty() {
+        return Err(LowerError::contract_violation(
+            "direct derivative family nodes were not placed in state-output order",
+            span,
+        ));
+    }
 
     Ok(block)
-}
-
-fn flush_pending_derivative_programs(
-    nodes: &mut Vec<ComputeNode>,
-    pending: &mut Vec<crate::stencil::StructuredProgram>,
-    dae_model: &dae::Dae,
-) -> Result<(), LowerError> {
-    if !pending.is_empty() {
-        crate::stencil::push_structured_programs(
-            nodes,
-            pending,
-            &dae_model.continuous.structured_equations,
-            &dae_model.continuous.equations,
-        )?;
-    }
-    Ok(())
-}
-
-fn state_output_y_range(
-    dae_model: &dae::Dae,
-    state: &StateScalar,
-    output_index: usize,
-) -> Result<std::ops::Range<usize>, LowerError> {
-    let start = output_index.checked_sub(state.component).ok_or_else(|| {
-        derivative_component_contract_error(
-            dae_model,
-            state,
-            format!(
-                "derivative output index {output_index} is before component {} for state `{}`",
-                state.component, state.name
-            ),
-        )
-    })?;
-    let end = start.checked_add(state.base_size).ok_or_else(|| {
-        derivative_component_contract_error(
-            dae_model,
-            state,
-            format!(
-                "derivative output range overflows for state `{}` with base size {}",
-                state.name, state.base_size
-            ),
-        )
-    })?;
-    Ok(start..end)
 }
 
 pub(super) fn lower_derivative_rhs_scalar_programs(
@@ -573,18 +599,19 @@ pub(super) fn lower_derivative_rhs_scalar_programs(
             .components
             .get(&component_root)
             .ok_or_else(|| missing_derivative_component_error(dae_model, state, component_root))?;
-        if component.len() > 1 {
+        if component.state_indices.len() > 1 {
             let mut group = derivative_vec_with_capacity(
-                component.len(),
+                component.state_indices.len(),
                 "coupled derivative scalar group state count",
                 derivative_state_or_context_span(dae_model, state)?,
             )?;
-            for state_idx in component {
+            for state_idx in &component.state_indices {
                 group.push(analysis.states[*state_idx].clone());
             }
             rows.push(lower_linsolve_group_component(
                 state,
                 &group,
+                component,
                 &lowering_ctx,
             )?);
         } else {
@@ -663,10 +690,25 @@ fn is_slot_backed_projection_algebraic(
     )
 }
 
+/// Initialization-only source ownership summary: one omission flag per
+/// continuous DAE equation. A flag is true only when every normalized
+/// projection is a state derivative row, so a mixed source remains intact in
+/// the initialization residual.
+///
+/// Runtime assignment, residual, and direct-assignment lowering must classify
+/// `ContinuousEquationRow` records instead of consulting this source summary.
 pub(super) fn state_derivative_equation_flags(
     dae_model: &dae::Dae,
 ) -> Result<Vec<bool>, LowerError> {
-    Ok(analyze_derivative_rhs(dae_model)?.equation_flags)
+    let states = collect_state_scalars(dae_model)?;
+    let state_names = states
+        .iter()
+        .map(|state| state.name.clone())
+        .collect::<HashSet<_>>();
+    let structural_bindings = compile_time::structural_bindings(dae_model)?;
+    let (_, _, source_equations_all_derivative) =
+        collect_continuous_equation_rows(dae_model, &state_names, &structural_bindings)?;
+    Ok(source_equations_all_derivative)
 }
 
 fn lower_state_derivative_row(
@@ -680,7 +722,13 @@ fn lower_state_derivative_row(
     {
         return lower_direct_row(row, state, ctx);
     }
-    lower_coupled_row(state, ctx)
+    Err(LowerError::contract_violation(
+        format!(
+            "singleton derivative component for `{}` has no checked direct equation",
+            state.name
+        ),
+        derivative_state_or_context_span(ctx.dae_model, state)?,
+    ))
 }
 
 fn derivative_row_access_proof(
@@ -851,25 +899,77 @@ fn checked_direct_assignment_scalar_count(
 }
 
 fn collect_direct_derivative_equations(
+    dae_model: &dae::Dae,
+    states: &[StateScalar],
     equations: &[DerivativeEquation],
-) -> IndexMap<String, usize> {
+    components: &IndexMap<usize, DerivativeComponent>,
+) -> Result<IndexMap<String, usize>, LowerError> {
     let mut direct = IndexMap::new();
-    for (idx, equation) in equations.iter().enumerate() {
-        if equation.coefficients.len() == 1
-            && let Some(state_name) = equation.coefficients.keys().next()
-        {
-            direct.insert(state_name.clone(), idx);
+    if states.is_empty() {
+        return Ok(direct);
+    }
+    let state_span = first_derivative_state_span(dae_model, states)?;
+    direct.try_reserve(states.len()).map_err(|_| {
+        LowerError::contract_violation(
+            "direct derivative equation map capacity exceeds host memory limits",
+            state_span,
+        )
+    })?;
+    for component in components.values() {
+        if component.state_indices.len() != 1 {
+            continue;
+        }
+        let state_index = component.state_indices[0];
+        let equation_index = component.equation_indices[0];
+        let state = states.get(state_index).ok_or_else(|| {
+            LowerError::contract_violation(
+                format!("derivative component references missing state index {state_index}"),
+                state_span,
+            )
+        })?;
+        let state_context_span = derivative_state_or_context_span(dae_model, state)?;
+        let equation = equations.get(equation_index).ok_or_else(|| {
+            LowerError::contract_violation(
+                format!("derivative component references missing equation index {equation_index}"),
+                state_context_span,
+            )
+        })?;
+        if equation.coefficients.len() != 1 || !equation.coefficients.contains_key(&state.name) {
+            return Err(LowerError::contract_violation(
+                format!(
+                    "singleton derivative component for `{}` does not own one matching coefficient",
+                    state.name
+                ),
+                derivative_row_span(equation, state_context_span),
+            ));
+        }
+        if direct.insert(state.name.clone(), equation_index).is_some() {
+            return Err(LowerError::contract_violation(
+                format!(
+                    "singleton derivative component for `{}` was constructed more than once",
+                    state.name
+                ),
+                derivative_row_span(equation, state_context_span),
+            ));
         }
     }
-    direct
+    Ok(direct)
 }
 
-type DerivativeStateComponents = (Vec<usize>, IndexMap<usize, Vec<usize>>);
+type DerivativeStateComponents = (Vec<usize>, IndexMap<usize, DerivativeComponent>);
+
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct DerivativeEquationOrderKey {
+    owner_span: (u64, usize, usize),
+    coefficients: Vec<(usize, u64, (u64, usize, usize))>,
+    rhs: (u64, (u64, usize, usize)),
+}
 
 fn derivative_state_components(
     dae_model: &dae::Dae,
     states: &[StateScalar],
     equations: &[DerivativeEquation],
+    structural_bindings: &IndexMap<String, f64>,
 ) -> Result<DerivativeStateComponents, LowerError> {
     if states.is_empty() {
         return Ok((Vec::new(), IndexMap::new()));
@@ -910,7 +1010,7 @@ fn derivative_state_components(
 
     let mut roots =
         derivative_vec_with_capacity(states.len(), "derivative component root count", span)?;
-    let mut components = IndexMap::<usize, Vec<usize>>::new();
+    let mut components = IndexMap::<usize, DerivativeComponent>::new();
     components.try_reserve(states.len()).map_err(|_| {
         LowerError::contract_violation(
             "derivative component map capacity exceeds host memory limits",
@@ -920,24 +1020,532 @@ fn derivative_state_components(
     for idx in 0..states.len() {
         let root = find_component_root(&mut parent, idx);
         if let Some(component) = components.get_mut(&root) {
-            reserve_derivative_capacity(component, 1, "derivative component member count", span)?;
-            component.push(idx);
+            reserve_derivative_capacity(
+                &mut component.state_indices,
+                1,
+                "derivative component member count",
+                span,
+            )?;
+            component.state_indices.push(idx);
         } else {
-            let mut component =
+            let mut state_indices =
                 derivative_vec_with_capacity(1, "derivative component member count", span)?;
-            component.push(idx);
-            components.insert(root, component);
+            state_indices.push(idx);
+            components.insert(
+                root,
+                DerivativeComponent {
+                    state_indices,
+                    equation_indices: Vec::new(),
+                },
+            );
         }
         roots.push(root);
     }
+    assign_and_validate_derivative_component_rows(
+        dae_model,
+        states,
+        equations,
+        &state_indices,
+        &roots,
+        &mut components,
+        structural_bindings,
+    )?;
     Ok((roots, components))
+}
+
+fn assign_and_validate_derivative_component_rows(
+    dae_model: &dae::Dae,
+    states: &[StateScalar],
+    equations: &[DerivativeEquation],
+    state_indices: &IndexMap<&str, usize>,
+    roots: &[usize],
+    components: &mut IndexMap<usize, DerivativeComponent>,
+    structural_bindings: &IndexMap<String, f64>,
+) -> Result<(), LowerError> {
+    for (equation_index, equation) in equations.iter().enumerate() {
+        let mut row_root = None;
+        for name in equation.coefficients.keys() {
+            let state_index = state_indices.get(name.as_str()).copied().ok_or_else(|| {
+                LowerError::contract_violation(
+                    format!("derivative equation references non-state derivative `{name}`"),
+                    equation.span,
+                )
+            })?;
+            let root = roots.get(state_index).copied().ok_or_else(|| {
+                LowerError::contract_violation(
+                    format!("derivative equation state `{name}` is missing a component root"),
+                    equation.span,
+                )
+            })?;
+            match row_root {
+                Some(expected) if expected != root => {
+                    return Err(LowerError::contract_violation(
+                        "derivative equation spans disconnected derivative components",
+                        equation.span,
+                    ));
+                }
+                Some(_) => {}
+                None => row_root = Some(root),
+            }
+        }
+        let root = row_root.ok_or_else(|| {
+            LowerError::contract_violation(
+                "collected derivative equation has no derivative coefficients",
+                equation.span,
+            )
+        })?;
+        let component = components.get_mut(&root).ok_or_else(|| {
+            LowerError::contract_violation(
+                format!("derivative equation references missing component root {root}"),
+                equation.span,
+            )
+        })?;
+        reserve_derivative_capacity(
+            &mut component.equation_indices,
+            1,
+            "derivative component equation count",
+            equation.span,
+        )?;
+        component.equation_indices.push(equation_index);
+    }
+
+    for component in components.values_mut() {
+        let state_count = component.state_indices.len();
+        let equation_count = component.equation_indices.len();
+        if equation_count != state_count {
+            let span =
+                derivative_component_diagnostic_span(dae_model, states, equations, component)?;
+            let names = derivative_component_state_summary(states, component, span)?;
+            return Err(super::unsupported_at(
+                format!(
+                    "derivative component [{names}] has {equation_count} derivative-containing equations for {state_count} state derivatives; lowering requires one complete square derivative system and does not discard extra equations or select rows by encounter order"
+                ),
+                span,
+            ));
+        }
+        if equation_count > 1 {
+            canonicalize_derivative_component_rows(
+                equations,
+                state_indices,
+                &mut component.equation_indices,
+            )?;
+        }
+        reject_singular_constant_derivative_component(
+            dae_model,
+            states,
+            equations,
+            component,
+            structural_bindings,
+        )?;
+    }
+    Ok(())
+}
+
+fn canonicalize_derivative_component_rows(
+    equations: &[DerivativeEquation],
+    state_indices: &IndexMap<&str, usize>,
+    equation_indices: &mut Vec<usize>,
+) -> Result<(), LowerError> {
+    let span = equation_indices
+        .iter()
+        .filter_map(|index| equations.get(*index))
+        .find_map(|equation| (!equation.span.is_dummy()).then_some(equation.span))
+        .unwrap_or(rumoca_core::Span::DUMMY);
+    reject_duplicate_derivative_coefficient_rows(equations, equation_indices, span)?;
+    let mut ordered = derivative_vec_with_capacity(
+        equation_indices.len(),
+        "canonical derivative component row count",
+        span,
+    )?;
+    for equation_index in equation_indices.iter().copied() {
+        let equation = equations.get(equation_index).ok_or_else(|| {
+            LowerError::contract_violation(
+                format!("derivative component references missing equation index {equation_index}"),
+                span,
+            )
+        })?;
+        let mut coefficients = derivative_vec_with_capacity(
+            equation.coefficients.len(),
+            "canonical derivative coefficient count",
+            derivative_row_span(equation, span),
+        )?;
+        for (name, coefficient) in &equation.coefficients {
+            let state_index = state_indices.get(name.as_str()).copied().ok_or_else(|| {
+                LowerError::contract_violation(
+                    format!("derivative equation references non-state derivative `{name}`"),
+                    equation.span,
+                )
+            })?;
+            coefficients.push((
+                state_index,
+                rumoca_core::expression_semantic_fingerprint(coefficient),
+                expression_span_order_key(coefficient),
+            ));
+        }
+        coefficients.sort_unstable();
+        ordered.push((
+            DerivativeEquationOrderKey {
+                owner_span: span_order_key(equation.span),
+                coefficients,
+                rhs: (
+                    rumoca_core::expression_semantic_fingerprint(&equation.rhs),
+                    expression_span_order_key(&equation.rhs),
+                ),
+            },
+            equation_index,
+        ));
+    }
+    ordered.sort_by(|(lhs, _), (rhs, _)| lhs.cmp(rhs));
+    reject_derivative_order_key_ties(&ordered, equations, span)?;
+    equation_indices.clear();
+    reserve_derivative_capacity(
+        equation_indices,
+        ordered.len(),
+        "canonical derivative component row count",
+        span,
+    )?;
+    equation_indices.extend(ordered.into_iter().map(|(_, index)| index));
+    Ok(())
+}
+
+fn reject_duplicate_derivative_coefficient_rows(
+    equations: &[DerivativeEquation],
+    equation_indices: &[usize],
+    fallback_span: rumoca_core::Span,
+) -> Result<(), LowerError> {
+    let mut duplicate_span: Option<rumoca_core::Span> = None;
+    for (position, lhs_index) in equation_indices.iter().copied().enumerate() {
+        let lhs = equations.get(lhs_index).ok_or_else(|| {
+            LowerError::contract_violation(
+                format!(
+                    "duplicate derivative row check references missing equation index {lhs_index}"
+                ),
+                fallback_span,
+            )
+        })?;
+        for rhs_index in equation_indices[position + 1..].iter().copied() {
+            let rhs = equations.get(rhs_index).ok_or_else(|| {
+                LowerError::contract_violation(
+                    format!(
+                        "duplicate derivative row check references missing equation index {rhs_index}"
+                    ),
+                    fallback_span,
+                )
+            })?;
+            if !derivative_coefficients_semantically_equal(lhs, rhs) {
+                continue;
+            }
+            let span = [lhs.span, rhs.span]
+                .into_iter()
+                .filter(|span| !span.is_dummy())
+                .min_by_key(|span| span_order_key(*span))
+                .unwrap_or(fallback_span);
+            duplicate_span = Some(
+                duplicate_span
+                    .map(|current| {
+                        if span_order_key(span) < span_order_key(current) {
+                            span
+                        } else {
+                            current
+                        }
+                    })
+                    .unwrap_or(span),
+            );
+        }
+    }
+    let Some(span) = duplicate_span else {
+        return Ok(());
+    };
+    Err(super::unsupported_at(
+        "duplicate equivalent derivative coefficient rows make the derivative system singular"
+            .to_string(),
+        span,
+    ))
+}
+
+fn derivative_coefficients_semantically_equal(
+    lhs: &DerivativeEquation,
+    rhs: &DerivativeEquation,
+) -> bool {
+    lhs.coefficients.len() == rhs.coefficients.len()
+        && lhs.coefficients.iter().all(|(name, lhs_coefficient)| {
+            rhs.coefficients.get(name).is_some_and(|rhs_coefficient| {
+                rumoca_core::expressions_semantically_equal(lhs_coefficient, rhs_coefficient)
+            })
+        })
+}
+
+fn reject_derivative_order_key_ties(
+    ordered: &[(DerivativeEquationOrderKey, usize)],
+    equations: &[DerivativeEquation],
+    fallback_span: rumoca_core::Span,
+) -> Result<(), LowerError> {
+    let mut group_start = 0usize;
+    while group_start < ordered.len() {
+        let mut group_end = group_start + 1;
+        while group_end < ordered.len() && ordered[group_end].0 == ordered[group_start].0 {
+            group_end += 1;
+        }
+        if group_end - group_start > 1 {
+            reject_derivative_order_key_tie_group(
+                &ordered[group_start..group_end],
+                equations,
+                fallback_span,
+            )?;
+        }
+        group_start = group_end;
+    }
+    Ok(())
+}
+
+fn reject_derivative_order_key_tie_group(
+    group: &[(DerivativeEquationOrderKey, usize)],
+    equations: &[DerivativeEquation],
+    fallback_span: rumoca_core::Span,
+) -> Result<(), LowerError> {
+    let mut rows = derivative_vec_with_capacity(
+        group.len(),
+        "canonical derivative tie row count",
+        fallback_span,
+    )?;
+    for (_, equation_index) in group {
+        rows.push(equations.get(*equation_index).ok_or_else(|| {
+            LowerError::contract_violation(
+                format!(
+                    "canonical derivative tie references missing equation index {equation_index}"
+                ),
+                fallback_span,
+            )
+        })?);
+    }
+    let span = rows
+        .iter()
+        .map(|row| row.span)
+        .filter(|span| !span.is_dummy())
+        .min_by_key(|span| span_order_key(*span))
+        .unwrap_or(fallback_span);
+    let first = rows[0];
+    let all_equivalent = rows[1..]
+        .iter()
+        .all(|row| derivative_rows_semantically_equal(first, row));
+    let reason = if all_equivalent {
+        "duplicate equivalent derivative rows make the derivative system singular"
+    } else {
+        "derivative row semantic fingerprints and source spans collide without exact equality; canonical ordering is unresolved"
+    };
+    Err(super::unsupported_at(reason.to_string(), span))
+}
+
+fn derivative_rows_semantically_equal(lhs: &DerivativeEquation, rhs: &DerivativeEquation) -> bool {
+    derivative_coefficients_semantically_equal(lhs, rhs)
+        && rumoca_core::expressions_semantically_equal(&lhs.rhs, &rhs.rhs)
+}
+
+fn reject_singular_constant_derivative_component(
+    dae_model: &dae::Dae,
+    states: &[StateScalar],
+    equations: &[DerivativeEquation],
+    component: &DerivativeComponent,
+    structural_bindings: &IndexMap<String, f64>,
+) -> Result<(), LowerError> {
+    let span = derivative_component_diagnostic_span(dae_model, states, equations, component)?;
+    let Some(matrix) =
+        constant_derivative_component_matrix(states, equations, component, structural_bindings)?
+    else {
+        return Ok(());
+    };
+    if constant_matrix_has_proven_singular_rows(&matrix) {
+        let names = derivative_component_state_summary(states, component, span)?;
+        return Err(super::unsupported_at(
+            format!(
+                "compile-time derivative coefficient matrix for component [{names}] is singular"
+            ),
+            span,
+        ));
+    }
+    Ok(())
+}
+
+fn constant_derivative_component_matrix(
+    states: &[StateScalar],
+    equations: &[DerivativeEquation],
+    component: &DerivativeComponent,
+    structural_bindings: &IndexMap<String, f64>,
+) -> Result<Option<Vec<Vec<f64>>>, LowerError> {
+    let span = component
+        .equation_indices
+        .iter()
+        .filter_map(|index| equations.get(*index))
+        .find_map(|equation| (!equation.span.is_dummy()).then_some(equation.span))
+        .unwrap_or(rumoca_core::Span::DUMMY);
+    let mut matrix = derivative_vec_with_capacity(
+        component.equation_indices.len(),
+        "constant derivative matrix row count",
+        span,
+    )?;
+    for equation_index in &component.equation_indices {
+        let equation = equations.get(*equation_index).ok_or_else(|| {
+            LowerError::contract_violation(
+                format!(
+                    "constant derivative matrix references missing equation index {equation_index}"
+                ),
+                span,
+            )
+        })?;
+        let mut row = derivative_vec_with_capacity(
+            component.state_indices.len(),
+            "constant derivative matrix column count",
+            derivative_row_span(equation, span),
+        )?;
+        for state_index in &component.state_indices {
+            let state = states.get(*state_index).ok_or_else(|| {
+                LowerError::contract_violation(
+                    format!(
+                        "constant derivative matrix references missing state index {state_index}"
+                    ),
+                    span,
+                )
+            })?;
+            let value = match equation.coefficients.get(&state.name) {
+                Some(coefficient) => {
+                    let Some(value) = eval_derivative_constant(coefficient, structural_bindings)
+                    else {
+                        return Ok(None);
+                    };
+                    value
+                }
+                None => 0.0,
+            };
+            if !value.is_finite() {
+                return Err(super::unsupported_at(
+                    "compile-time derivative coefficient matrix contains a non-finite value"
+                        .to_string(),
+                    derivative_row_span(equation, span),
+                ));
+            }
+            row.push(value);
+        }
+        matrix.push(row);
+    }
+    Ok(Some(matrix))
+}
+
+fn eval_derivative_constant(
+    expr: &rumoca_core::Expression,
+    structural_bindings: &IndexMap<String, f64>,
+) -> Option<f64> {
+    rumoca_eval_dae::constant::eval_scalar_const_expr_with(expr, &|name, subscripts| {
+        let key = derivative_constant_binding_key(name, subscripts)?;
+        structural_bindings
+            .get(&key)
+            .copied()
+            .map(rumoca_eval_dae::constant::ConstValue::Real)
+    })
+}
+
+fn derivative_constant_binding_key(
+    name: &rumoca_core::Reference,
+    subscripts: &[rumoca_core::Subscript],
+) -> Option<String> {
+    if subscripts.is_empty() {
+        return Some(name.as_str().to_string());
+    }
+    let indices = subscripts
+        .iter()
+        .map(|subscript| match subscript {
+            rumoca_core::Subscript::Index { value, .. } if *value > 0 => {
+                usize::try_from(*value).ok()
+            }
+            rumoca_core::Subscript::Colon { .. } | rumoca_core::Subscript::Expr { .. } => None,
+            rumoca_core::Subscript::Index { .. } => None,
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some(dae::format_subscript_key(name.as_str(), &indices))
+}
+
+/// Conservatively proves singularity without performing floating arithmetic.
+///
+/// Every coefficient is already a finite represented `f64`. An all-zero row
+/// or two exactly equal rows is therefore a proof of linear dependence over
+/// those represented constants. Other constant matrices stay on the runtime
+/// `LinSolve` path: floating elimination could underflow or round a nonzero
+/// pivot to zero and is not a proof of mathematical singularity.
+fn constant_matrix_has_proven_singular_rows(matrix: &[Vec<f64>]) -> bool {
+    matrix.iter().enumerate().any(|(row_index, row)| {
+        row.iter().all(|coefficient| *coefficient == 0.0)
+            || matrix[..row_index].iter().any(|previous| previous == row)
+    })
+}
+
+fn expression_span_order_key(expr: &rumoca_core::Expression) -> (u64, usize, usize) {
+    expr.span()
+        .map_or(span_order_key(rumoca_core::Span::DUMMY), span_order_key)
+}
+
+fn span_order_key(span: rumoca_core::Span) -> (u64, usize, usize) {
+    (span.source.0, span.start.0, span.end.0)
+}
+
+fn derivative_component_diagnostic_span(
+    dae_model: &dae::Dae,
+    states: &[StateScalar],
+    equations: &[DerivativeEquation],
+    component: &DerivativeComponent,
+) -> Result<rumoca_core::Span, LowerError> {
+    if let Some(span) = component
+        .equation_indices
+        .iter()
+        .filter_map(|index| equations.get(*index))
+        .map(|equation| equation.span)
+        .filter(|span| !span.is_dummy())
+        .min_by_key(|span| span_order_key(*span))
+    {
+        return Ok(span);
+    }
+    let Some(state) = component
+        .state_indices
+        .first()
+        .and_then(|index| states.get(*index))
+    else {
+        return Err(LowerError::UnspannedContractViolation {
+            reason: "derivative component has neither source equations nor states".to_string(),
+        });
+    };
+    derivative_state_or_context_span(dae_model, state)
+}
+
+fn derivative_component_state_summary(
+    states: &[StateScalar],
+    component: &DerivativeComponent,
+    span: rumoca_core::Span,
+) -> Result<String, LowerError> {
+    let mut names = derivative_vec_with_capacity(
+        component.state_indices.len(),
+        "derivative component state summary count",
+        span,
+    )?;
+    for state_index in &component.state_indices {
+        let state = states.get(*state_index).ok_or_else(|| {
+            LowerError::contract_violation(
+                format!("derivative component references missing state index {state_index}"),
+                span,
+            )
+        })?;
+        names.push(state.name.as_str());
+    }
+    Ok(names.join(", "))
 }
 
 fn union_components(parent: &mut [usize], lhs: usize, rhs: usize) {
     let lhs_root = find_component_root(parent, lhs);
     let rhs_root = find_component_root(parent, rhs);
     if lhs_root != rhs_root {
-        parent[rhs_root] = lhs_root;
+        let (root, child) = if lhs_root < rhs_root {
+            (lhs_root, rhs_root)
+        } else {
+            (rhs_root, lhs_root)
+        };
+        parent[child] = root;
     }
 }
 
@@ -1333,7 +1941,7 @@ fn direct_vector_group_len(
             return None;
         }
         let component = analysis.components.get(&analysis.component_roots[idx])?;
-        if component.len() > 1 {
+        if component.state_indices.len() > 1 {
             return None;
         }
         let eq_idx = *analysis.direct_equations.get(&state.name)?;
@@ -1471,31 +2079,18 @@ fn lower_row_rhs_expr(
     ))
 }
 
-fn lower_coupled_row(
-    state: &StateScalar,
-    ctx: &DerivativeRhsLoweringContext<'_>,
-) -> Result<Vec<LinearOp>, LowerError> {
-    let base_rows = coupled_rows_for_base(ctx.equations, state, ctx.dae_model)?;
-    if base_rows.len() < state.base_size {
-        return Err(LowerError::Unsupported {
-            reason: format!("missing explicit derivative equation for `{}`", state.name),
-        });
-    }
-    lower_dense_solve_component(state, &base_rows[..state.base_size], ctx)
-}
-
 /// Build a `ComputeNode::LinSolve` for a connected group of n state scalars
 /// that are coupled by a dense linear system.
 ///
 /// The setup ops compute the n×n coefficient matrix A and the n-vector RHS b
-/// into contiguous register ranges, exactly as `lower_dense_solve_component`
-/// does for one component. Unlike that function, we do it once and emit a
-/// single tensor node that backends can execute without repeating the solve.
+/// into contiguous register ranges. The component was checked during analysis,
+/// so lowering consumes its complete row set without encounter-order selection.
 fn lower_linsolve_group(
     states: &[StateScalar],
+    component: &DerivativeComponent,
     ctx: &DerivativeRhsLoweringContext<'_>,
 ) -> Result<ComputeNode, LowerError> {
-    let setup = build_dense_group_solve_setup(states, ctx)?;
+    let setup = build_dense_group_solve_setup(states, component, ctx)?;
 
     Ok(ComputeNode::LinSolve {
         setup_ops: setup.ops,
@@ -1508,12 +2103,42 @@ fn lower_linsolve_group(
     })
 }
 
+fn lower_linsolve_group_program(
+    states: &[StateScalar],
+    component: &DerivativeComponent,
+    ctx: &DerivativeRhsLoweringContext<'_>,
+) -> Result<Vec<LinearOp>, LowerError> {
+    let mut setup = build_dense_group_solve_setup(states, component, ctx)?;
+    for component in 0..setup.n {
+        let dst = setup.next_reg;
+        setup.next_reg = setup.next_reg.checked_add(1).ok_or_else(|| {
+            LowerError::contract_violation(
+                format!(
+                    "Solve register allocation overflow after r{}",
+                    setup.next_reg
+                ),
+                setup.span,
+            )
+        })?;
+        setup.ops.push(LinearOp::LinearSolveComponent {
+            dst,
+            matrix_start: setup.matrix_start,
+            rhs_start: setup.rhs_start,
+            n: setup.n,
+            component,
+        });
+        setup.ops.push(LinearOp::StoreOutput { src: dst });
+    }
+    Ok(setup.ops)
+}
+
 fn lower_linsolve_group_component(
     state: &StateScalar,
     states: &[StateScalar],
+    derivative_component: &DerivativeComponent,
     ctx: &DerivativeRhsLoweringContext<'_>,
 ) -> Result<Vec<LinearOp>, LowerError> {
-    let mut setup = build_dense_group_solve_setup(states, ctx)?;
+    let mut setup = build_dense_group_solve_setup(states, derivative_component, ctx)?;
     let component = states
         .iter()
         .position(|group_state| group_state.name == state.name)
@@ -1562,25 +2187,27 @@ struct DenseGroupSolveSetup {
 
 fn build_dense_group_solve_setup(
     states: &[StateScalar],
+    component: &DerivativeComponent,
     ctx: &DerivativeRhsLoweringContext<'_>,
 ) -> Result<DenseGroupSolveSetup, LowerError> {
     let n = states.len();
-    let span = first_derivative_state_span(ctx.dae_model, states)?;
-    let state_names: HashSet<&str> = states.iter().map(|state| state.name.as_str()).collect();
-    let rows = coupled_rows_for_states(ctx.equations, &state_names, span)?;
-    let span = derivative_rows_span(&rows, span);
-    if rows.len() < n {
-        let state_summary = derivative_state_name_summary(states, span)?;
-        let key_summary = derivative_row_key_summary(&rows, span)?;
-        return Err(LowerError::Unsupported {
-            reason: format!(
-                "missing explicit derivative equations for coupled group `{}`: found {}/{} rows with coefficient keys {}",
-                state_summary,
-                rows.len(),
+    let fallback_span = first_derivative_state_span(ctx.dae_model, states)?;
+    let span = component
+        .equation_indices
+        .iter()
+        .filter_map(|index| ctx.equations.get(*index))
+        .find_map(|equation| (!equation.span.is_dummy()).then_some(equation.span))
+        .unwrap_or(fallback_span);
+    if component.state_indices.len() != n || component.equation_indices.len() != n {
+        return Err(LowerError::contract_violation(
+            format!(
+                "checked derivative component changed shape before lowering: {} states, {} component states, {} equations",
                 n,
-                key_summary
+                component.state_indices.len(),
+                component.equation_indices.len()
             ),
-        });
+            span,
+        ));
     }
 
     let mut builder = row_builder(
@@ -1605,7 +2232,15 @@ fn build_dense_group_solve_setup(
     let mut rhs_regs =
         derivative_vec_with_capacity(n, "dense derivative RHS register count", span)?;
 
-    for (row_idx, row) in rows[..n].iter().enumerate() {
+    for (row_idx, equation_index) in component.equation_indices.iter().copied().enumerate() {
+        let row = ctx.equations.get(equation_index).ok_or_else(|| {
+            LowerError::contract_violation(
+                format!(
+                    "checked derivative component references missing equation index {equation_index}"
+                ),
+                span,
+            )
+        })?;
         let row_span = derivative_row_span(row, span);
         for state in states {
             matrix_regs.push(
@@ -1644,127 +2279,6 @@ fn build_dense_group_solve_setup(
         next_reg: builder.next_reg,
         span,
     })
-}
-
-fn derivative_state_name_summary(
-    states: &[StateScalar],
-    span: rumoca_core::Span,
-) -> Result<String, LowerError> {
-    let mut names =
-        derivative_vec_with_capacity(states.len(), "derivative state summary count", span)?;
-    for state in states {
-        names.push(state.name.as_str());
-    }
-    Ok(names.join(", "))
-}
-
-fn derivative_row_key_summary(
-    rows: &[&DerivativeEquation],
-    span: rumoca_core::Span,
-) -> Result<String, LowerError> {
-    if rows.is_empty() {
-        return Ok("[]".to_string());
-    }
-    let mut row_summaries =
-        derivative_vec_with_capacity(rows.len(), "derivative row summary count", span)?;
-    for row in rows {
-        let mut keys = derivative_vec_with_capacity(
-            row.coefficients.len(),
-            "derivative row key summary count",
-            row.span,
-        )?;
-        for key in row.coefficients.keys() {
-            keys.push(key.as_str());
-        }
-        row_summaries.push(format!("[{}]", keys.join(", ")));
-    }
-    Ok(format!("[{}]", row_summaries.join(", ")))
-}
-
-fn lower_dense_solve_component(
-    state: &StateScalar,
-    rows: &[&DerivativeEquation],
-    ctx: &DerivativeRhsLoweringContext<'_>,
-) -> Result<Vec<LinearOp>, LowerError> {
-    let mut builder = row_builder(
-        ctx.dae_model,
-        ctx.layout,
-        ctx.direct_assignments,
-        ctx.structural_bindings,
-        ctx.indexed_bindings,
-    );
-    let scope = Scope::new();
-    let span = derivative_rows_span(
-        rows,
-        derivative_state_or_context_span(ctx.dae_model, state)?,
-    );
-    let matrix_reg_count = rows.len().checked_mul(state.base_size).ok_or_else(|| {
-        LowerError::contract_violation(
-            format!(
-                "dense derivative matrix register count overflows for state `{}`",
-                state.name
-            ),
-            span,
-        )
-    })?;
-    let mut matrix_regs = derivative_vec_with_capacity(
-        matrix_reg_count,
-        "dense derivative component matrix register count",
-        span,
-    )?;
-    let mut rhs_regs = derivative_vec_with_capacity(
-        rows.len(),
-        "dense derivative component RHS register count",
-        span,
-    )?;
-    for (row_idx, row) in rows.iter().enumerate() {
-        let row_span = derivative_row_span(row, span);
-        for component in 0..state.base_size {
-            let name = format!("{}[{}]", state.base, component + 1);
-            matrix_regs.push(
-                lower_inlined_or_zero(
-                    &mut builder,
-                    row.coefficients.get(&name),
-                    row_span,
-                    ctx,
-                    &scope,
-                )
-                .map_err(|err| {
-                    err.with_context(format!(
-                        "lower derivative coefficient row {row_idx} for `{name}`"
-                    ))
-                })?,
-            );
-        }
-        rhs_regs.push(
-            lower_inlined_row_rhs_expr(
-                &mut builder,
-                &row.rhs,
-                row_idx,
-                state.base_size,
-                row_span,
-                ctx,
-                &scope,
-            )
-            .map_err(|err| err.with_context(format!("lower derivative RHS row {row_idx}")))?,
-        );
-    }
-    builder.ensure_reg_capacity(
-        checked_dense_solve_reg_count(matrix_regs.len(), rhs_regs.len(), 1, span)?,
-        span,
-    )?;
-    let matrix_start = builder.try_pack_registers(&matrix_regs, span)?;
-    let rhs_start = builder.try_pack_registers(&rhs_regs, span)?;
-    let dst = builder.try_alloc_reg(span)?;
-    builder.ops.push(LinearOp::LinearSolveComponent {
-        dst,
-        matrix_start,
-        rhs_start,
-        n: state.base_size,
-        component: state.component,
-    });
-    builder.ops.push(LinearOp::StoreOutput { src: dst });
-    Ok(builder.ops)
 }
 
 fn lower_inlined_or_zero(
@@ -1843,48 +2357,6 @@ fn row_builder<'a>(
     .with_dedup_access_ops(false)
 }
 
-fn coupled_rows_for_base<'a>(
-    equations: &'a [DerivativeEquation],
-    state: &StateScalar,
-    dae_model: &dae::Dae,
-) -> Result<Vec<&'a DerivativeEquation>, LowerError> {
-    let mut rows = derivative_vec_with_capacity(
-        equations.len(),
-        "coupled derivative base row count",
-        derivative_state_or_context_span(dae_model, state)?,
-    )?;
-    for equation in equations {
-        if equation
-            .coefficients
-            .keys()
-            .all(|name| dae::component_base_name(name).as_deref() == Some(state.base.as_str()))
-        {
-            rows.push(equation);
-        }
-    }
-    Ok(rows)
-}
-
-fn coupled_rows_for_states<'a>(
-    equations: &'a [DerivativeEquation],
-    state_names: &HashSet<&str>,
-    span: rumoca_core::Span,
-) -> Result<Vec<&'a DerivativeEquation>, LowerError> {
-    let mut rows =
-        derivative_vec_with_capacity(equations.len(), "coupled derivative row count", span)?;
-    for equation in equations {
-        if !equation.coefficients.is_empty()
-            && equation
-                .coefficients
-                .keys()
-                .all(|name| state_names.contains(&name.as_str()))
-        {
-            rows.push(equation);
-        }
-    }
-    Ok(rows)
-}
-
 fn expanded_direct_derivative_equations(
     target: &rumoca_core::Expression,
     rhs: &rumoca_core::Expression,
@@ -1920,6 +2392,7 @@ fn expanded_direct_derivative_equations(
             rhs,
             span,
             dae_equation_index: None,
+            projection_index: None,
         });
     }
     Ok(Some(equations))
@@ -1946,5 +2419,6 @@ fn derivative_equation_from_if_residual(
         rhs: rhs_without_remainder(zero_expr_with_span(span), remainder, span),
         span,
         dae_equation_index: None,
+        projection_index: None,
     }))
 }

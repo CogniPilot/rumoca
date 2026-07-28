@@ -129,18 +129,7 @@ pub(crate) fn expression_from_ast_with_context(
 
         ast::Expression::ArrayIndex {
             base, subscripts, ..
-        } => {
-            let base_flat = Box::new(expression_from_ast_with_context(base, context)?);
-            let flat_subs = subscripts
-                .iter()
-                .map(|sub| subscript_from_ast(sub, expr.span()))
-                .collect::<LowerResult<Vec<_>>>()?;
-            Ok(rumoca_core::Expression::Index {
-                base: base_flat,
-                subscripts: flat_subs,
-                span: expr.span(),
-            })
-        }
+        } => convert_array_index_with_context(base, subscripts, expr.span(), context),
 
         ast::Expression::FieldAccess { base, field, .. } => {
             Ok(rumoca_core::Expression::FieldAccess {
@@ -150,6 +139,25 @@ pub(crate) fn expression_from_ast_with_context(
             })
         }
     }
+}
+
+fn convert_array_index_with_context(
+    base: &ast::Expression,
+    subscripts: &[ast::Subscript],
+    span: rumoca_core::Span,
+    context: LoweringContext<'_>,
+) -> LowerResult<rumoca_core::Expression> {
+    let base = Box::new(expression_from_ast_with_context(base, context)?);
+    let subscripts = subscripts
+        .iter()
+        .enumerate()
+        .map(|(dimension, sub)| subscript_from_ast_for_base(sub, &base, dimension, span))
+        .collect::<LowerResult<Vec<_>>>()?;
+    Ok(rumoca_core::Expression::Index {
+        base,
+        subscripts,
+        span,
+    })
 }
 
 #[cfg(test)]
@@ -251,10 +259,7 @@ fn statement_from_ast_with_span(
             outputs: outputs
                 .iter()
                 .map(|output| output_component_reference_from_ast(output, context.def_map))
-                .collect::<LowerResult<Vec<_>>>()?
-                .into_iter()
-                .flatten()
-                .collect(),
+                .collect::<LowerResult<Vec<_>>>()?,
             span,
         }),
         ast::Statement::Reinit { variable, value } => Ok(rumoca_core::Statement::Reinit {
@@ -596,12 +601,14 @@ fn component_ref_with_structured_subscripts(
             }
         };
 
+        let flat_subscripts = subs
+            .iter()
+            .enumerate()
+            .map(|(dimension, sub)| subscript_from_ast_for_base(sub, &base, dimension, span))
+            .collect::<LowerResult<Vec<_>>>()?;
         current = Some(rumoca_core::Expression::Index {
             base: Box::new(base),
-            subscripts: subs
-                .iter()
-                .map(|sub| subscript_from_ast_with_fallback(sub, span))
-                .collect::<LowerResult<Vec<_>>>()?,
+            subscripts: flat_subscripts,
             span,
         });
     }
@@ -681,6 +688,153 @@ fn subscript_from_ast_with_fallback(
             Ok(rumoca_core::Subscript::colon(fallback_span))
         }
     }
+}
+
+fn subscript_from_ast_for_base(
+    sub: &ast::Subscript,
+    base: &rumoca_core::Expression,
+    dimension: usize,
+    owner_span: rumoca_core::Span,
+) -> LowerResult<rumoca_core::Subscript> {
+    match sub {
+        ast::Subscript::Expression(expr) => {
+            let span = expr.span();
+            if let Some(val) = try_constant_integer(expr) {
+                return Ok(rumoca_core::Subscript::index(val, span));
+            }
+            Ok(rumoca_core::Subscript::expr(
+                Box::new(expression_from_ast_in_subscript(
+                    expr, base, dimension, owner_span,
+                )?),
+                span,
+            ))
+        }
+        ast::Subscript::Range { .. } | ast::Subscript::Empty => {
+            Ok(rumoca_core::Subscript::colon(owner_span))
+        }
+    }
+}
+
+fn expression_from_ast_in_subscript(
+    expr: &ast::Expression,
+    base: &rumoca_core::Expression,
+    dimension: usize,
+    owner_span: rumoca_core::Span,
+) -> LowerResult<rumoca_core::Expression> {
+    match expr {
+        ast::Expression::Terminal {
+            terminal_type: ast::TerminalType::End,
+            ..
+        } => end_subscript_expression(base, dimension, expr.span(), owner_span),
+        ast::Expression::Binary { op, lhs, rhs, .. } => Ok(rumoca_core::Expression::Binary {
+            op: op.clone(),
+            lhs: Box::new(expression_from_ast_in_subscript(
+                lhs, base, dimension, owner_span,
+            )?),
+            rhs: Box::new(expression_from_ast_in_subscript(
+                rhs, base, dimension, owner_span,
+            )?),
+            span: expr.span(),
+        }),
+        ast::Expression::Unary { op, rhs, .. } => Ok(rumoca_core::Expression::Unary {
+            op: op.clone(),
+            rhs: Box::new(expression_from_ast_in_subscript(
+                rhs, base, dimension, owner_span,
+            )?),
+            span: expr.span(),
+        }),
+        ast::Expression::Parenthesized { inner, .. } => {
+            expression_from_ast_in_subscript(inner, base, dimension, owner_span)
+        }
+        ast::Expression::Range {
+            start, step, end, ..
+        } => Ok(rumoca_core::Expression::Range {
+            start: Box::new(expression_from_ast_in_subscript(
+                start, base, dimension, owner_span,
+            )?),
+            step: step
+                .as_ref()
+                .map(|step| {
+                    expression_from_ast_in_subscript(step, base, dimension, owner_span)
+                        .map(Box::new)
+                })
+                .transpose()?,
+            end: Box::new(expression_from_ast_in_subscript(
+                end, base, dimension, owner_span,
+            )?),
+            span: expr.span(),
+        }),
+        ast::Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => Ok(rumoca_core::Expression::If {
+            branches: branches
+                .iter()
+                .map(|(condition, value)| {
+                    Ok((
+                        expression_from_ast_in_subscript(condition, base, dimension, owner_span)?,
+                        expression_from_ast_in_subscript(value, base, dimension, owner_span)?,
+                    ))
+                })
+                .collect::<LowerResult<Vec<_>>>()?,
+            else_branch: Box::new(expression_from_ast_in_subscript(
+                else_branch,
+                base,
+                dimension,
+                owner_span,
+            )?),
+            span: expr.span(),
+        }),
+        ast::Expression::Array {
+            elements,
+            is_matrix,
+            ..
+        } => Ok(rumoca_core::Expression::Array {
+            elements: elements
+                .iter()
+                .map(|element| {
+                    expression_from_ast_in_subscript(element, base, dimension, owner_span)
+                })
+                .collect::<LowerResult<Vec<_>>>()?,
+            is_matrix: *is_matrix,
+            span: expr.span(),
+        }),
+        // Nested component/index expressions establish their own nearest-array
+        // context, so their `end` tokens are resolved by normal lowering.
+        ast::Expression::ComponentReference(_) | ast::Expression::ArrayIndex { .. } => {
+            expression_from_ast(expr)
+        }
+        _ => expression_from_ast(expr),
+    }
+}
+
+fn end_subscript_expression(
+    base: &rumoca_core::Expression,
+    dimension: usize,
+    span: rumoca_core::Span,
+    owner_span: rumoca_core::Span,
+) -> LowerResult<rumoca_core::Expression> {
+    let dimension = i64::try_from(dimension)
+        .ok()
+        .and_then(|value| value.checked_add(1))
+        .ok_or_else(|| {
+            FlattenError::unsupported_equation(
+                "array subscript dimension exceeds Modelica Integer range",
+                owner_span,
+            )
+        })?;
+    Ok(rumoca_core::Expression::BuiltinCall {
+        function: rumoca_core::BuiltinFunction::Size,
+        args: vec![
+            base.clone(),
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Integer(dimension),
+                span,
+            },
+        ],
+        span,
+    })
 }
 
 fn component_part_subscripts_from_ast_with_fallback(
@@ -907,7 +1061,11 @@ fn convert_terminal(
             token.text.eq_ignore_ascii_case("true"),
         )),
         ast::TerminalType::String => Ok(rumoca_core::Literal::String(strip_quotes(&token.text))),
-        ast::TerminalType::End | ast::TerminalType::Empty => Ok(rumoca_core::Literal::Integer(0)),
+        ast::TerminalType::End => Err(FlattenError::unsupported_equation(
+            "`end` is only valid inside an array subscript with a known base dimension",
+            span,
+        )),
+        ast::TerminalType::Empty => Ok(rumoca_core::Literal::Integer(0)),
     }
 }
 
@@ -1350,6 +1508,74 @@ mod tests {
 
         assert_eq!(name.as_str(), "leg_v_b");
         assert_eq!(subscripts.len(), 2);
+    }
+
+    #[test]
+    fn end_subscript_lowers_to_size_of_selected_base_dimension() {
+        let mut indexed = part("v");
+        indexed.subs = Some(vec![ast::Subscript::Expression(
+            ast::Expression::Terminal {
+                terminal_type: ast::TerminalType::End,
+                token: rumoca_core::Token {
+                    text: Arc::from("end"),
+                    ..rumoca_core::Token::default()
+                },
+                span: test_span(),
+            },
+        )]);
+        let comp = ast::ComponentReference {
+            local: false,
+            parts: vec![indexed],
+            span: test_span(),
+            def_id: None,
+        };
+
+        let lowered = expression_from_component_ref_with_def_map(&comp, None)
+            .expect("end should lower in a valid subscript context");
+        let rumoca_core::Expression::Index {
+            base, subscripts, ..
+        } = lowered
+        else {
+            panic!("expected indexed expression");
+        };
+        let [rumoca_core::Subscript::Expr { expr, .. }] = subscripts.as_slice() else {
+            panic!("expected expression subscript");
+        };
+        let rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Size,
+            args,
+            ..
+        } = expr.as_ref()
+        else {
+            panic!("end should become size(base, dimension)");
+        };
+        assert_eq!(args[0], *base);
+        assert!(matches!(
+            args[1],
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Integer(1),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn end_outside_subscript_is_rejected_instead_of_becoming_zero() {
+        let expr = ast::Expression::Terminal {
+            terminal_type: ast::TerminalType::End,
+            token: rumoca_core::Token {
+                text: Arc::from("end"),
+                ..rumoca_core::Token::default()
+            },
+            span: test_span(),
+        };
+
+        let err = expression_from_ast(&expr).expect_err("bare end is invalid");
+        assert!(
+            err.to_string()
+                .contains("only valid inside an array subscript"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

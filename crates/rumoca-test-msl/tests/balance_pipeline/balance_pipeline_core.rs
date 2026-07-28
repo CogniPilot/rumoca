@@ -1,5 +1,6 @@
 use super::*;
 mod streaming_workers;
+mod timeout_recheck;
 
 use rumoca_worker::{
     MODEL_WORKER_PARTIAL_RESULT_FILE, MODEL_WORKER_PROTOCOL_VERSION, MODEL_WORKER_RESULT_FILE,
@@ -8,6 +9,7 @@ use rumoca_worker::{
     write_model_worker_request_file,
 };
 use streaming_workers::*;
+use timeout_recheck::{TimeoutRecheckContext, apply_timeout_recheck, timeout_recheck_budget_secs};
 
 /// Run full MSL compile pipeline using Session for parallel compilation.
 ///
@@ -16,6 +18,7 @@ const COMPILE_CHUNK_PROGRESS_INTERVAL_SECS: u64 = 15;
 const COMPILE_CHUNK_PROGRESS_POLL_MILLIS: u64 = 250;
 const MODEL_ATTEMPT_TIMEOUT_ERROR_CODE: &str = "EMSL_TIMEOUT_MODEL_ATTEMPT";
 const MODEL_WORKER_ERROR_CODE: &str = "EMSL_MODEL_WORKER";
+const MODEL_WORKER_MEMORY_LIMIT_ERROR_CODE: &str = "EMSL_MODEL_WORKER_MEMORY_LIMIT";
 const COMPILE_PIPELINE_STAGE_BUDGETS: f64 = 4.0;
 /// Slow-compile logging threshold (None = off). Edit to enable.
 const SLOW_COMPILE_LOG_THRESHOLD_SECS: Option<f64> = None;
@@ -519,12 +522,22 @@ fn work_queue_waves(model_count: usize, worker_threads: usize) -> u64 {
     model_count.max(1).div_ceil(workers) as u64
 }
 
+/// Wall allowance one queue wave needs for a diagnostic re-check.
+///
+/// A wave runs one model per worker, so at most one killed model per worker can
+/// be re-checked in it. The queue watchdog is an abort safety, not a
+/// measurement budget, so it must cover the re-check rather than fire on it.
+fn queue_wave_recheck_allowance_secs(model_budget_secs: f64) -> u64 {
+    timeout_recheck_budget_secs(model_budget_secs).ceil() as u64
+}
+
 fn global_queue_compile_timeout_secs(
     model_count: usize,
     worker_threads: usize,
     model_budget_secs: f64,
 ) -> u64 {
-    let per_wave_secs = model_worker_wall_timeout_secs(model_budget_secs).ceil() as u64;
+    let per_wave_secs = (model_worker_wall_timeout_secs(model_budget_secs).ceil() as u64)
+        .saturating_add(queue_wave_recheck_allowance_secs(model_budget_secs));
     work_queue_waves(model_count, worker_threads)
         .saturating_mul(per_wave_secs.max(1))
         .max(300)
@@ -535,7 +548,8 @@ fn global_queue_sim_timeout_secs(
     worker_threads: usize,
     model_budget_secs: f64,
 ) -> u64 {
-    let compile_secs = model_worker_wall_timeout_secs(model_budget_secs).ceil() as u64;
+    let compile_secs = (model_worker_wall_timeout_secs(model_budget_secs).ceil() as u64)
+        .saturating_add(queue_wave_recheck_allowance_secs(model_budget_secs));
     let sim_secs = sim_timeout_secs().ceil() as u64;
     let per_wave_secs = compile_secs.saturating_add(sim_secs).saturating_add(5);
     work_queue_waves(model_count, worker_threads)
@@ -763,6 +777,7 @@ fn worker_model_result_to_msl(result: WorkerModelResult) -> MslModelResult {
         ir_flat_file: result.ir_flat_file,
         sim_status: result.sim_status,
         sim_error: result.sim_error,
+        sim_error_code: result.sim_error_code,
         sim_error_span: result.sim_error_span,
         ic_status: result.ic_status,
         ic_error: result.ic_error,
@@ -773,6 +788,11 @@ fn worker_model_result_to_msl(result: WorkerModelResult) -> MslModelResult {
         ir_solve_seconds: result.ir_solve_seconds,
         ir_solve_structural_dae_seconds: result.ir_solve_structural_dae_seconds,
         ir_solve_lower_seconds: result.ir_solve_lower_seconds,
+        tensor_family_bodies: result.tensor_family_bodies,
+        tensor_preserved_family_bodies: result.tensor_preserved_family_bodies,
+        tensor_scalarized_family_rows: result.tensor_scalarized_family_rows,
+        tensor_preservation_percent: result.tensor_preservation_percent,
+        tensor_preservation_error: result.tensor_preservation_error,
         sim_backend_build_seconds: result.sim_backend_build_seconds,
         sim_run_seconds: result.sim_run_seconds,
         sim_wall_seconds: result.sim_wall_seconds,
@@ -782,8 +802,11 @@ fn worker_model_result_to_msl(result: WorkerModelResult) -> MslModelResult {
         ir_dae_file: result.ir_dae_file,
         ir_solve_file: result.ir_solve_file,
         ir_solve_error: result.ir_solve_error,
+        ir_solve_error_code: result.ir_solve_error_code,
         timeout_phase: result.timeout_phase,
         timeout_seconds: result.timeout_seconds,
+        timeout_recheck: None,
+        balance_detail: result.balance_detail,
     }
 }
 
@@ -901,6 +924,60 @@ fn simulation_timeout_model_result(
     Some(result)
 }
 
+fn memory_limit_message(
+    model_name: &str,
+    elapsed_secs: f64,
+    memory_limit_mb: usize,
+    active_phase: Option<WorkerProgressPhase>,
+) -> String {
+    let active_phase = active_phase
+        .map(|phase| phase.to_string())
+        .unwrap_or_else(|| "Unknown".to_string());
+    format!(
+        "model worker exceeded {memory_limit_mb} MB resident-plus-swap limit after {elapsed_secs:.3}s in phase {active_phase} ({model_name})"
+    )
+}
+
+fn simulation_memory_limit_model_result(
+    model_name: &str,
+    output_dir: &Path,
+    elapsed_secs: f64,
+    memory_limit_mb: usize,
+    active_phase: Option<WorkerProgressPhase>,
+) -> Option<MslModelResult> {
+    let partial_path = output_dir.join(MODEL_WORKER_PARTIAL_RESULT_FILE);
+    let mut result =
+        worker_model_result_to_msl(read_model_worker_response_file(&partial_path).ok()?.result);
+    if result.phase_reached != "Success" {
+        return None;
+    }
+    let message = memory_limit_message(model_name, elapsed_secs, memory_limit_mb, active_phase);
+    match active_phase {
+        Some(WorkerProgressPhase::Solve) => {
+            result.ir_solve_error = Some(message.clone());
+            result.sim_status = Some("sim_solver_fail".to_string());
+            result.sim_error = Some(message);
+        }
+        Some(WorkerProgressPhase::SimBuild) => {
+            result.sim_status = Some("sim_solver_fail".to_string());
+            result.sim_error = Some(message);
+        }
+        Some(WorkerProgressPhase::IC) => {
+            result.ic_status = Some("ic_solver_fail".to_string());
+            result.ic_error = Some(message.clone());
+            result.sim_status = Some("sim_solver_fail".to_string());
+            result.sim_error = Some(message);
+        }
+        Some(WorkerProgressPhase::Sim) => {
+            result.ic_status = Some("ic_ok".to_string());
+            result.sim_status = Some("sim_solver_fail".to_string());
+            result.sim_error = Some(message);
+        }
+        _ => return None,
+    }
+    Some(result)
+}
+
 #[derive(Clone, Copy)]
 struct InProcessWorkerRequest<'a> {
     source_root_path: &'a Path,
@@ -928,6 +1005,7 @@ fn run_compile_model_in_process_worker(
             plan.source_root_path,
             plan.startup_timeout_secs,
             plan.cpu_core_id,
+            model_worker_memory_limit_mb(),
         ) {
             Ok(spawned) => *worker = Some(spawned),
             Err(error) => {
@@ -957,6 +1035,22 @@ fn run_compile_model_in_process_worker(
     if let Some(session) = perf_session {
         session.finish();
     }
+    finish_in_process_worker_outcome(
+        worker,
+        plan,
+        &output_dir,
+        compile_perf_artifacts.as_ref(),
+        outcome,
+    )
+}
+
+fn finish_in_process_worker_outcome(
+    worker: &mut Option<ModelWorkerDaemon>,
+    plan: InProcessWorkerRequest<'_>,
+    output_dir: &Path,
+    compile_perf_artifacts: Option<&CompilePerfArtifacts>,
+    outcome: ModelWorkerRunOutcome,
+) -> (MslModelResult, bool) {
     match outcome {
         ModelWorkerRunOutcome::Completed(response) => {
             let response = *response;
@@ -967,7 +1061,7 @@ fn run_compile_model_in_process_worker(
                     .as_deref()
                     .is_some_and(|status| status != "sim_ok");
             result.compile_perf_profile_file = retain_compile_perf_profile_if(
-                compile_perf_artifacts.as_ref(),
+                compile_perf_artifacts,
                 response.elapsed_secs,
                 force_keep,
             );
@@ -980,10 +1074,10 @@ fn run_compile_model_in_process_worker(
         } => {
             *worker = None;
             let compile_perf_profile_file =
-                retain_compile_timeout_perf_profile(compile_perf_artifacts.as_ref(), elapsed_secs);
+                retain_compile_timeout_perf_profile(compile_perf_artifacts, elapsed_secs);
             let mut result = simulation_timeout_model_result(
                 plan.model_name,
-                &output_dir,
+                output_dir,
                 elapsed_secs,
                 phase_timeout_secs,
                 active_phase,
@@ -994,6 +1088,43 @@ fn run_compile_model_in_process_worker(
                     elapsed_secs,
                     phase_timeout_secs,
                     active_phase,
+                )
+            });
+            result.compile_perf_profile_file = compile_perf_profile_file;
+            let result = apply_timeout_recheck(
+                result,
+                TimeoutRecheckContext {
+                    model_name: plan.model_name,
+                    killed_phase: active_phase,
+                    primary_budget_secs: phase_timeout_secs,
+                    primary_elapsed_secs: elapsed_secs,
+                },
+                |budget_secs| run_timeout_recheck_request(worker, plan, budget_secs),
+            );
+            (result, false)
+        }
+        ModelWorkerRunOutcome::MemoryLimitExceeded {
+            elapsed_secs,
+            active_phase,
+            memory_limit_mb,
+        } => {
+            *worker = None;
+            let compile_perf_profile_file =
+                retain_compile_timeout_perf_profile(compile_perf_artifacts, elapsed_secs);
+            let message =
+                memory_limit_message(plan.model_name, elapsed_secs, memory_limit_mb, active_phase);
+            let mut result = simulation_memory_limit_model_result(
+                plan.model_name,
+                output_dir,
+                elapsed_secs,
+                memory_limit_mb,
+                active_phase,
+            )
+            .unwrap_or_else(|| {
+                model_worker_failure_result(
+                    plan.model_name,
+                    MODEL_WORKER_MEMORY_LIMIT_ERROR_CODE,
+                    message,
                 )
             });
             result.compile_perf_profile_file = compile_perf_profile_file;
@@ -1011,6 +1142,49 @@ fn run_compile_model_in_process_worker(
             )
         }
     }
+}
+
+/// Re-run one killed model in a freshly spawned worker under `budget_secs`.
+///
+/// The primary attempt's worker was killed by the monitor, so a re-check always
+/// starts a new one. A re-check that survives is left in `worker` for the next
+/// model, which keeps the re-check's cost to the models that were killed.
+fn run_timeout_recheck_request(
+    worker: &mut Option<ModelWorkerDaemon>,
+    plan: InProcessWorkerRequest<'_>,
+    budget_secs: f64,
+) -> ModelWorkerRunOutcome {
+    let (_output_dir, progress_jsonl, request) = match prepare_model_worker_request(plan) {
+        Ok(prepared) => prepared,
+        Err(result) => {
+            return ModelWorkerRunOutcome::Failed(
+                result
+                    .error
+                    .unwrap_or_else(|| "failed to prepare timeout re-check request".to_string()),
+            );
+        }
+    };
+    match ModelWorkerDaemon::spawn(
+        plan.source_root_path,
+        plan.startup_timeout_secs,
+        plan.cpu_core_id,
+        model_worker_memory_limit_mb(),
+    ) {
+        Ok(spawned) => *worker = Some(spawned),
+        Err(error) => {
+            return ModelWorkerRunOutcome::Failed(format!(
+                "model worker failed to start for timeout re-check: {error}"
+            ));
+        }
+    }
+    let worker_ref = worker
+        .as_mut()
+        .expect("model worker should be available after spawn");
+    let outcome = worker_ref.run_request(&request, budget_secs, &progress_jsonl);
+    if !matches!(outcome, ModelWorkerRunOutcome::Completed(_)) {
+        *worker = None;
+    }
+    outcome
 }
 
 fn prepare_model_worker_request(
@@ -1031,6 +1205,7 @@ fn prepare_model_worker_request(
         run_simulation: plan.run_simulation,
         selected_for_simulation: plan.selected_for_simulation,
         explicit_sim_target: plan.explicit_sim_target,
+        sim_timeout_secs: Some(sim_timeout_secs()),
         emit_json: false,
         allow_unbalanced_for_diagnostics: false,
         nan_trace: false,
@@ -1415,7 +1590,7 @@ pub(super) fn run_msl_test(run_simulation: bool) -> MslSummary {
         total_mo_files: parsed.total_mo_files,
         parse_errors: parsed.parse_errors,
         total_models: selection.compile_scope_count,
-        class_type_counts,
+        class_type_counts: class_type_counts.into_iter().collect(),
     };
 
     finalize_msl_summary_from_results(

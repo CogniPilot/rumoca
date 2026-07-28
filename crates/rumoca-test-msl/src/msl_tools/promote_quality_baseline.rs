@@ -8,7 +8,7 @@ use super::common::MslPaths;
 const DEFAULT_BASELINE_REL: &str =
     "crates/rumoca-test-msl/tests/msl_tests/msl_quality_baseline.json";
 const DEFAULT_CURRENT_REL: &str = "msl_quality_current.json";
-const EXPECTED_QUALITY_GATE_VERSION: u64 = 1;
+const EXPECTED_QUALITY_GATE_VERSION: u64 = 2;
 const RUN_SCOPE_FULL: &str = "full";
 const RUN_SCOPE_PARTIAL: &str = "partial";
 
@@ -123,7 +123,7 @@ mod tests {
 
     fn full_snapshot() -> serde_json::Value {
         json!({
-            "quality_gate_version": 1,
+            "quality_gate_version": 2,
             "run_scope": "full",
             "omc_version": "OpenModelica 1.26.1",
             "sim_ok": 120
@@ -146,7 +146,7 @@ mod tests {
         let source = PathBuf::from("msl_quality_current.json");
         let err = ensure_promotable_quality_snapshot(
             &json!({
-                "quality_gate_version": 1,
+                "quality_gate_version": 2,
                 "run_scope": "partial"
             }),
             &source,
@@ -182,7 +182,7 @@ mod tests {
         );
 
         let err =
-            ensure_promotable_quality_snapshot(&json!({ "quality_gate_version": 1 }), &source)
+            ensure_promotable_quality_snapshot(&json!({ "quality_gate_version": 2 }), &source)
                 .expect_err("run_scope is required");
         assert!(
             err.to_string().contains("run_scope"),
@@ -195,7 +195,7 @@ mod tests {
         let source = PathBuf::from("msl_quality_current.json");
         let err = ensure_promotable_quality_snapshot(
             &json!({
-                "quality_gate_version": 1,
+                "quality_gate_version": 2,
                 "run_scope": "full"
             }),
             &source,

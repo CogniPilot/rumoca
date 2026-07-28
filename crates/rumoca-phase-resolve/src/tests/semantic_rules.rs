@@ -1,0 +1,207 @@
+//! Resolve-phase semantic checks: cardinality operands, loop-index shadowing,
+//! `Evaluate` annotation scope, single-assignment `when` targets, and
+//! unsupported state-machine operators.
+
+use super::*;
+
+#[test]
+fn test_cardinality_allows_indexed_connector_array_element() {
+    let source = r#"
+connector Port
+  Real p;
+end Port;
+
+model UsesIndexedCardinality
+  Port ports[2];
+equation
+  if cardinality(ports[1]) == 0 then
+ports[1].p = 0;
+  end if;
+end UsesIndexedCardinality;
+"#;
+    resolve_test_source(source).expect("indexed connector array element is scalar");
+}
+
+#[test]
+fn test_cardinality_rejects_unindexed_connector_array() {
+    let source = r#"
+connector Port
+  Real p;
+end Port;
+
+model UsesArrayCardinality
+  Port ports[2];
+equation
+  if cardinality(ports) == 0 then
+ports[1].p = 0;
+  end if;
+end UsesArrayCardinality;
+"#;
+    let diags = resolve_test_source(source).expect_err("connector array target must fail");
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code.as_deref() == Some("ER057")
+                && d.message.contains("connector array 'ports'")),
+        "expected cardinality connector-array diagnostic, got: {diags:?}"
+    );
+}
+
+#[test]
+fn test_loop_index_named_like_class_does_not_trigger_class_used_as_value() {
+    let source = r#"
+package P
+  model j
+  end j;
+end P;
+
+model UsesLoopIndexJ
+  Integer y;
+equation
+  for j in 1:2 loop
+y = j;
+  end for;
+end UsesLoopIndexJ;
+"#;
+    resolve_test_source(source)
+        .expect("loop index `j` must resolve as a value, not as global class `j`");
+}
+
+#[test]
+fn test_evaluate_on_non_parameter_component_is_error_by_default() {
+    let source = r#"
+model EvaluateScopeWarning
+  Real x annotation(Evaluate=true);
+equation
+  x = 1;
+end EvaluateScopeWarning;
+"#;
+    let diagnostics = resolve_test_source(source)
+        .expect_err("Evaluate annotation scope should fail by default in strict mode");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diag| diag.code.as_deref() == Some("ER070")),
+        "expected ER070 for invalid Evaluate annotation, got: {diagnostics:?}"
+    );
+}
+
+#[test]
+fn test_evaluate_on_function_local_component_is_allowed() {
+    let source = r#"
+function F
+  input Real x[:];
+  output Real y;
+protected
+  Integer m=size(x, 1) annotation(Evaluate=true);
+algorithm
+  y := m;
+end F;
+"#;
+    resolve_test_source(source)
+        .expect("Evaluate annotation on function local component should be accepted");
+}
+
+#[test]
+fn test_when_single_assign_allows_distinct_indexed_targets() {
+    let source = r#"
+model IndexedWhenTargets
+  Boolean open1;
+  Boolean open2;
+  Real t0[2];
+equation
+  when edge(open1) then
+t0[1] = time;
+  end when;
+  when edge(open2) then
+t0[2] = time;
+  end when;
+end IndexedWhenTargets;
+"#;
+    resolve_test_source(source)
+        .expect("distinct indexed targets in separate when-equations should be allowed");
+}
+
+#[test]
+fn test_when_single_assign_rejects_same_target_across_when_equations() {
+    let source = r#"
+model DuplicateWhenTarget
+  Boolean open1;
+  Boolean open2;
+  Real t0;
+equation
+  when edge(open1) then
+t0 = time;
+  end when;
+  when edge(open2) then
+t0 = time;
+  end when;
+end DuplicateWhenTarget;
+"#;
+    let result = resolve_test_source(source);
+    assert!(result.is_err(), "duplicate when target should fail");
+    let diagnostics = result.expect_err("expected diagnostics");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diag| diag.code.as_deref() == Some("ER053")),
+        "expected ER053 for duplicate when target, got: {diagnostics:?}"
+    );
+}
+#[test]
+fn test_state_machine_operator_reports_explicit_unsupported_diagnostic() {
+    let source = r#"
+model UnsupportedStateMachine
+Real a;
+equation
+transition(a, a, true);
+end UnsupportedStateMachine;
+"#;
+
+    let diagnostics =
+        resolve_test_source(source).expect_err("state-machine operators are unsupported");
+    assert!(
+        diagnostics.iter().any(|diag| {
+            diag.code.as_deref() == Some("ER073")
+                && diag
+                    .message
+                    .contains("transition() requires Modelica state-machine")
+        }),
+        "expected explicit state-machine unsupported diagnostic, got: {diagnostics:?}"
+    );
+}
+
+#[test]
+fn test_qualified_initial_state_function_is_not_state_machine_operator() {
+    let source = r#"
+package P
+function initialState
+    output Real y;
+algorithm
+    y := 1;
+end initialState;
+
+model M
+    Real x = P.initialState();
+end M;
+end P;
+"#;
+
+    let resolved = resolve_test_source(source).expect("qualified function should resolve");
+    let model = resolved
+        .inner()
+        .definitions
+        .classes
+        .get("P")
+        .and_then(|package| package.classes.get("M"))
+        .expect("P.M should exist");
+    let binding = model
+        .components
+        .get("x")
+        .and_then(|component| component.binding.as_ref())
+        .expect("x should have a binding");
+    let ast::Expression::FunctionCall { comp, .. } = binding else {
+        panic!("x binding should remain a function call");
+    };
+    assert_eq!(comp.to_string(), "P.initialState");
+}

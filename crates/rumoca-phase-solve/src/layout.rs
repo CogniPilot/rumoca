@@ -1,11 +1,13 @@
 use indexmap::IndexMap;
-use rumoca_core::Span;
+use rumoca_core::{ExpressionVisitor, Span};
 use rumoca_ir_dae as dae;
+use rumoca_ir_dae::{DaeVisitor, StatementVisitor};
 
 use crate::lower::LowerError;
 use rumoca_ir_solve::{ComponentReferenceKey, IndexedScalarSlot, ScalarSlot, VarLayout};
 
 pub(crate) const INITIAL_EVENT_PARAMETER_NAME: &str = "__rumoca.initial_event";
+pub(crate) const HOMOTOPY_LAMBDA_PARAMETER_NAME: &str = "__rumoca.homotopy_lambda";
 const F64_BYTES: usize = std::mem::size_of::<f64>();
 
 #[derive(Debug, Clone, Copy)]
@@ -53,6 +55,13 @@ pub fn build_var_layout_with_solver_len(
         synthetic_scalar_slot(SlotStorage::P, p_scalars, INITIAL_EVENT_PARAMETER_NAME)?,
     );
     p_scalars = add_synthetic_slot_count(p_scalars, 1, INITIAL_EVENT_PARAMETER_NAME)?;
+    if dae_uses_homotopy(dae_model) {
+        bindings.insert(
+            HOMOTOPY_LAMBDA_PARAMETER_NAME.to_string(),
+            synthetic_scalar_slot(SlotStorage::P, p_scalars, HOMOTOPY_LAMBDA_PARAMETER_NAME)?,
+        );
+        p_scalars = add_synthetic_slot_count(p_scalars, 1, HOMOTOPY_LAMBDA_PARAMETER_NAME)?;
+    }
     map_enum_literal_bindings(dae_model, &mut bindings);
     map_constant_bindings(
         dae_model,
@@ -81,6 +90,51 @@ pub fn build_var_layout_with_solver_len(
         )
     })
 }
+
+fn dae_uses_homotopy(dae_model: &dae::Dae) -> bool {
+    let mut finder = HomotopyFinder { found: false };
+    finder.visit_dae(dae_model);
+    for statement in dae_model
+        .symbols
+        .functions
+        .values()
+        .flat_map(|function| &function.body)
+    {
+        if finder.found {
+            break;
+        }
+        StatementVisitor::visit_statement(&mut finder, statement);
+    }
+    finder.found
+}
+
+struct HomotopyFinder {
+    found: bool,
+}
+
+impl DaeVisitor for HomotopyFinder {
+    fn visit_expression(&mut self, expression: &rumoca_core::Expression) {
+        ExpressionVisitor::visit_expression(self, expression);
+    }
+}
+
+impl ExpressionVisitor for HomotopyFinder {
+    fn visit_builtin_call(
+        &mut self,
+        function: &rumoca_core::BuiltinFunction,
+        args: &[rumoca_core::Expression],
+    ) {
+        if *function == rumoca_core::BuiltinFunction::Homotopy {
+            self.found = true;
+            return;
+        }
+        if !self.found {
+            self.walk_builtin_call(function, args);
+        }
+    }
+}
+
+impl StatementVisitor for HomotopyFinder {}
 
 fn layout_contract_violation(reason: impl Into<String>, span: Span) -> LowerError {
     let reason = reason.into();
@@ -871,6 +925,32 @@ mod tests {
             args: vec![real(-5.5), real(2.0)],
             span: test_span(),
         }
+    }
+
+    #[test]
+    fn homotopy_models_receive_a_dedicated_lambda_parameter_slot() {
+        let mut dae_model = dae::Dae::default();
+        dae_model.continuous.equations.push(dae::Equation::residual(
+            builtin(rumoca_core::BuiltinFunction::Homotopy),
+            test_span(),
+            "homotopy layout row",
+        ));
+
+        let layout = build_var_layout(&dae_model).expect("homotopy layout should build");
+
+        assert!(matches!(
+            layout.binding(HOMOTOPY_LAMBDA_PARAMETER_NAME),
+            Some(ScalarSlot::P { index: 1, .. })
+        ));
+        assert_eq!(layout.p_scalars(), 2);
+    }
+
+    #[test]
+    fn models_without_homotopy_do_not_pay_for_a_lambda_slot() {
+        let layout = build_var_layout(&dae::Dae::default()).expect("empty layout should build");
+
+        assert_eq!(layout.binding(HOMOTOPY_LAMBDA_PARAMETER_NAME), None);
+        assert_eq!(layout.p_scalars(), 1);
     }
 
     #[test]

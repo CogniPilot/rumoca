@@ -1,11 +1,13 @@
 use super::*;
-use indexmap::IndexSet;
+use indexmap::{IndexMap, IndexSet};
 
 mod cache;
+mod runtime_cohort;
 mod status;
 #[cfg(test)]
 mod tests;
 use cache::*;
+use runtime_cohort::*;
 use status::*;
 
 // =============================================================================
@@ -43,9 +45,23 @@ pub(super) const RUNTIME_RATIO_MEDIAN_REL_TOLERANCE: f64 = 0.35;
 /// rumoca, so a larger budget only lets more OMC models complete (the measured
 /// `timeSimulation` it reports is unchanged, so the timing comparison stays fair).
 pub(super) const OMC_SIM_REFERENCE_BATCH_TIMEOUT_SECONDS: u64 = 120;
+/// Ratio of the rumoca solver budget the OMC reference is given. The default
+/// 120s vs 10s ratio covers OMC's C codegen + gcc invocation; keeping it
+/// proportional means a long-budget lane that raises the rumoca budget does not
+/// silently starve the OMC side and turn real deviations into missing baselines.
+const OMC_SIM_REFERENCE_BUDGET_RATIO: u64 = 12;
+
+/// OMC per-model budget, scaled with the (possibly raised) rumoca budget.
+pub(super) fn omc_sim_reference_timeout_secs() -> u64 {
+    let scaled =
+        (sim_timeout_secs().ceil().max(0.0) as u64).saturating_mul(OMC_SIM_REFERENCE_BUDGET_RATIO);
+    OMC_SIM_REFERENCE_BATCH_TIMEOUT_SECONDS.max(scaled)
+}
 /// Force low-impact OpenMP/BLAS threading in OMC child processes.
 pub(super) const OMC_PARITY_THREADS_DEFAULT: usize = 1;
-pub(super) const MSL_QUALITY_GATE_VERSION: u32 = 1;
+/// Version 2 makes tensor-preservation evidence mandatory and records the
+/// corrected cumulative-stage attribution for pre-flatten `ER0xx` failures.
+pub(super) const MSL_QUALITY_GATE_VERSION: u32 = 2;
 pub(super) const MSL_QUALITY_RUN_SCOPE_FULL: &str = "full";
 pub(super) const MSL_QUALITY_RUN_SCOPE_PARTIAL: &str = "partial";
 pub(super) const MSL_QUALITY_BASELINE_FILE_REL: &str = "tests/msl_tests/msl_quality_baseline.json";
@@ -67,6 +83,12 @@ pub(super) struct MslDistributionStats {
 pub(super) struct MslRuntimeRatioStatsBaseline {
     system_ratio_both_success: MslDistributionStats,
     wall_ratio_both_success: MslDistributionStats,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct MslRuntimeModelRatio {
+    system: f64,
+    wall: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -165,8 +187,55 @@ pub(super) struct MslStateSelectionStatsBaseline {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub(super) struct MslTensorPreservationBaseline {
+    models_reported: usize,
+    family_bodies: usize,
+    preserved_family_bodies: usize,
+    scalarized_family_rows: usize,
+    report_errors: usize,
+    preservation_percent: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(super) struct MslMetricSchemaMigration {
+    from_quality_gate_version: u32,
+    to_quality_gate_version: u32,
+    flatten_models_before: usize,
+    flatten_models_after: usize,
+    reattributed_error_code: String,
+    reattributed_models: Vec<String>,
+    tensor_preservation_source_git_commit: String,
+}
+
+fn quality_gate_v2_metric_schema_migration() -> MslMetricSchemaMigration {
+    MslMetricSchemaMigration {
+        from_quality_gate_version: 1,
+        to_quality_gate_version: MSL_QUALITY_GATE_VERSION,
+        flatten_models_before: 565,
+        flatten_models_after: 555,
+        reattributed_error_code: "ER002".to_string(),
+        reattributed_models: [
+            "Modelica.Fluid.Examples.AST_BatchPlant.BatchPlant_StandardWater",
+            "Modelica.Fluid.Examples.AST_BatchPlant.Test.OneTank",
+            "Modelica.Fluid.Examples.AST_BatchPlant.Test.TankWithEmptyingPipe1",
+            "Modelica.Fluid.Examples.AST_BatchPlant.Test.TankWithEmptyingPipe2",
+            "Modelica.Fluid.Examples.AST_BatchPlant.Test.TanksWithEmptyingPipe1",
+            "Modelica.Fluid.Examples.AST_BatchPlant.Test.TanksWithEmptyingPipe2",
+            "Modelica.Fluid.Examples.AST_BatchPlant.Test.TwoTanks",
+            "Modelica.Fluid.Examples.Explanatory.MeasuringTemperature",
+            "Modelica.Fluid.Examples.Explanatory.MomentumBalanceFittings",
+            "Modelica.Fluid.Examples.InverseParameterization",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect(),
+        tensor_preservation_source_git_commit: "a966d9e8e781ff7154d25a7cf4e74eb2b14ac4df"
+            .to_string(),
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct MslQualityBaseline {
-    #[serde(default = "default_msl_quality_gate_version")]
     quality_gate_version: u32,
     #[serde(default = "default_msl_quality_run_scope")]
     run_scope: String,
@@ -205,12 +274,13 @@ pub(super) struct MslQualityBaseline {
     runtime_context: Option<MslParityRuntimeContext>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     runtime_ratio_stats: Option<MslRuntimeRatioStatsBaseline>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    runtime_ratio_cohort_models: Option<IndexSet<String>>,
     #[serde(default)]
     trace_accuracy_stats: Option<MslTraceAccuracyStatsBaseline>,
-}
-
-fn default_msl_quality_gate_version() -> u32 {
-    MSL_QUALITY_GATE_VERSION
+    tensor_preservation: MslTensorPreservationBaseline,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    metric_schema_migration: Option<MslMetricSchemaMigration>,
 }
 
 fn default_msl_quality_run_scope() -> String {
@@ -231,6 +301,7 @@ pub(super) struct MslParityGateInput {
     omc_version: Option<String>,
     runtime_context: Option<MslParityRuntimeContext>,
     runtime_ratio_stats: Option<MslRuntimeRatioStatsBaseline>,
+    runtime_model_ratios: IndexMap<String, MslRuntimeModelRatio>,
     trace_accuracy_stats: Option<MslTraceAccuracyStatsBaseline>,
     omc_assertion_failure_models: usize,
     omc_assertion_failure_examples: Vec<String>,
@@ -257,6 +328,48 @@ pub(super) struct MslQualityGateInput<'a> {
     ic_ok: usize,
     ic_solver_fail: usize,
     sim_ok: usize,
+    tensor_models_reported: usize,
+    tensor_family_bodies: usize,
+    tensor_preserved_family_bodies: usize,
+    tensor_scalarized_family_rows: usize,
+    tensor_report_errors: usize,
+}
+
+/// Compile phases in pipeline order, with `Success` ranking after all of them.
+///
+/// `MslModelResult::phase_reached` names the phase that *failed* (or `Success`),
+/// so this is the only honest way to answer "did this model get past phase P?".
+/// Keep it in step with the dispatch in `summarize_msl_results`.
+const COMPILE_PHASE_ORDER: &[&str] = &[
+    "Parse",
+    "Resolve",
+    "NeedsInner",
+    "Instantiate",
+    "Typecheck",
+    "Flatten",
+    "ToDae",
+    "Success",
+];
+
+/// True when `phase_reached` shows the model got *past* `phase`.
+///
+/// The stage floors (`flatten_models`, `dae_models`) are cumulative pass counts,
+/// so a model counts towards the Flatten floor only if it completed flattening —
+/// i.e. it failed strictly later, or succeeded outright.
+///
+/// This used to be spelled as the literal set `{"ToDae", "Success"}`. That set
+/// was written when the worker attributed *every* marker-free compile summary to
+/// `ToDae`, which silently swept parse/resolve failures into the "flattened"
+/// cohort. Now that the worker reports the real failing phase, the set has to be
+/// derived from the phase order instead of restated, or a newly-correct
+/// attribution reads as a compiler regression. An unknown phase string ranks
+/// before everything and therefore never counts towards a floor.
+fn completed_compile_phase(phase_reached: &str, phase: &str) -> bool {
+    let rank = |name: &str| COMPILE_PHASE_ORDER.iter().position(|entry| *entry == name);
+    match (rank(phase_reached), rank(phase)) {
+        (Some(reached), Some(target)) => reached > target,
+        _ => false,
+    }
 }
 
 impl<'a> From<&'a MslSummary> for MslQualityGateInput<'a> {
@@ -274,12 +387,12 @@ impl<'a> From<&'a MslSummary> for MslQualityGateInput<'a> {
         let flatten_models = summary
             .model_results
             .iter()
-            .filter(|result| matches!(result.phase_reached.as_str(), "ToDae" | "Success"))
+            .filter(|result| completed_compile_phase(&result.phase_reached, "Flatten"))
             .count();
         let dae_models = summary
             .model_results
             .iter()
-            .filter(|result| result.phase_reached == "Success")
+            .filter(|result| completed_compile_phase(&result.phase_reached, "ToDae"))
             .count();
         let solve_models = summary
             .model_results
@@ -306,6 +419,11 @@ impl<'a> From<&'a MslSummary> for MslQualityGateInput<'a> {
             ic_ok: summary.ic_ok,
             ic_solver_fail: summary.ic_solver_fail,
             sim_ok: summary.sim_ok,
+            tensor_models_reported: summary.tensor_models_reported,
+            tensor_family_bodies: summary.tensor_family_bodies,
+            tensor_preserved_family_bodies: summary.tensor_preserved_family_bodies,
+            tensor_scalarized_family_rows: summary.tensor_scalarized_family_rows,
+            tensor_report_errors: summary.tensor_report_errors,
         }
     }
 }
@@ -315,6 +433,10 @@ pub(super) fn sim_success_rate(sim_ok: usize, sim_attempted: usize) -> Option<f6
         return None;
     }
     Some(sim_ok as f64 / sim_attempted as f64)
+}
+
+fn tensor_preservation_percent(preserved: usize, total: usize) -> Option<f64> {
+    (total != 0).then(|| 100.0 * preserved as f64 / total as f64)
 }
 
 pub(super) fn compile_success_rate(
@@ -604,6 +726,7 @@ pub(super) fn load_msl_parity_gate_input(path: &Path) -> io::Result<MslParityGat
         omc_version: parse_omc_version(&payload),
         runtime_context: parse_runtime_context(&payload),
         runtime_ratio_stats: parse_runtime_ratio_stats(&payload),
+        runtime_model_ratios: parse_runtime_model_ratios(&payload),
         trace_accuracy_stats: parse_trace_accuracy_stats(&payload),
         omc_assertion_failure_models: parse_omc_assertion_failure_models(&payload),
         omc_assertion_failure_examples: parse_omc_assertion_failure_examples(&payload),
@@ -864,18 +987,21 @@ fn run_simulation_parity_reference_command(
         sim_targets_arg,
         "--results-dir".to_string(),
         msl_results_dir().to_string_lossy().to_string(),
-        // CI restricts the OMC baseline to models rumoca already simulates to
-        // keep the gate fast; local runs default to all targets so newly
-        // passing models already have an OMC baseline.
-        "--rumoca-sim-ok-only".to_string(),
         "--use-experiment-stop-time".to_string(),
         "--model-timeout-seconds".to_string(),
-        OMC_SIM_REFERENCE_BATCH_TIMEOUT_SECONDS.to_string(),
+        omc_sim_reference_timeout_secs().to_string(),
         "--workers".to_string(),
         context.workers.to_string(),
         "--omc-threads".to_string(),
         context.omc_threads.to_string(),
     ];
+    // The canonical flow restricts the OMC baseline to models rumoca already
+    // simulates, which keeps the gate fast. The long-budget diagnostic lanes opt
+    // out via `all_omc_targets` because their whole point is to compare models
+    // that are not yet `sim_ok`, and those need an OMC reference to compare to.
+    if parity_config().all_omc_targets != Some(true) {
+        args.push("--rumoca-sim-ok-only".to_string());
+    }
     // The tool reuses cached OMC results by default (keyed on OMC + MSL source).
     // On a parity cache miss we want a fresh OMC run, so force it; on a cache hit
     // (`resume`) we let the default cache reuse stand.
@@ -1065,7 +1191,23 @@ pub(super) fn current_msl_quality_baseline(
             .unwrap_or(0.0),
         runtime_context: parity_input.and_then(|parity| parity.runtime_context.clone()),
         runtime_ratio_stats: parity_input.and_then(|parity| parity.runtime_ratio_stats.clone()),
+        runtime_ratio_cohort_models: parity_input.and_then(|parity| {
+            (!parity.runtime_model_ratios.is_empty())
+                .then(|| parity.runtime_model_ratios.keys().cloned().collect())
+        }),
         trace_accuracy_stats: parity_input.and_then(|parity| parity.trace_accuracy_stats.clone()),
+        tensor_preservation: MslTensorPreservationBaseline {
+            models_reported: gate_input.tensor_models_reported,
+            family_bodies: gate_input.tensor_family_bodies,
+            preserved_family_bodies: gate_input.tensor_preserved_family_bodies,
+            scalarized_family_rows: gate_input.tensor_scalarized_family_rows,
+            report_errors: gate_input.tensor_report_errors,
+            preservation_percent: tensor_preservation_percent(
+                gate_input.tensor_preserved_family_bodies,
+                gate_input.tensor_family_bodies,
+            ),
+        },
+        metric_schema_migration: Some(quality_gate_v2_metric_schema_migration()),
     }
 }
 
@@ -1122,6 +1264,8 @@ fn current_msl_quality_snapshot_json(
             "sim_nan": summary.sim_nan,
             "sim_solver_fail": summary.sim_solver_fail,
             "sim_timeout": summary.sim_timeout,
+            "timeout_recheck": &summary.timeout_recheck,
+            "tensor_preservation": baseline.tensor_preservation,
             "error_code_counts": &summary.error_code_counts,
             "unsupported_feature_counts": &summary.unsupported_feature_counts,
             "unsupported_feature_counts_by_backend": &summary.unsupported_feature_counts_by_backend,
@@ -1174,7 +1318,28 @@ pub(super) fn write_current_msl_quality_snapshot(summary: &MslSummary) -> io::Re
         baseline_path.display(),
         msl_quality_baseline_path().display()
     );
+    print_timeout_recheck_promotion_warning(summary);
     Ok(())
+}
+
+/// Warn that a snapshot containing reclassified phase kills is not comparable
+/// to a baseline promoted before the re-check existed.
+///
+/// A killed attempt is recorded from whatever the worker had already written,
+/// so it carries neither the phase timings nor the reached phase the run would
+/// have produced: a Solve kill has no `ir_solve_seconds` and is therefore
+/// absent from `solve_models`. The larger-budget re-run reaches the real
+/// diagnostic and records both, which can lift the stage counters with no
+/// compiler change behind it. That is a measurement change, not progress, and
+/// promoting it unannounced would bake the difference into the ratchet.
+fn print_timeout_recheck_promotion_warning(summary: &MslSummary) {
+    let reclassified = summary.timeout_recheck.diagnostic;
+    if reclassified == 0 {
+        return;
+    }
+    println!(
+        "WARNING: {reclassified} phase-kill(s) were reclassified from sim_timeout to their real diagnostic by the larger-budget re-check. Counters derived from the reached phase and its timings (flatten_models, dae_models, compiled_models, solve_models, and ic_attempted/ic_solver_fail for an IC-stage diagnostic) can move purely from this reclassification. Do not promote this snapshot as a baseline without confirming each moved counter against the previous baseline."
+    );
 }
 
 pub(super) fn sim_rate_gate_override_enabled() -> bool {
@@ -1266,9 +1431,51 @@ pub(super) fn msl_quality_regression_reasons(
     let mut reasons = Vec::new();
     push_compile_balance_regression_reasons(&mut reasons, gate_input, baseline);
     push_sim_rate_regression_reason(&mut reasons, gate_input, baseline);
+    push_tensor_preservation_regression_reasons(&mut reasons, gate_input, baseline);
     push_trace_regression_reasons(&mut reasons, baseline, parity_input);
     push_runtime_ratio_regression_reasons(&mut reasons, baseline, parity_input);
     reasons
+}
+
+fn push_tensor_preservation_regression_reasons(
+    reasons: &mut Vec<String>,
+    gate_input: MslQualityGateInput<'_>,
+    baseline: &MslQualityBaseline,
+) {
+    if gate_input.tensor_report_errors != 0 {
+        reasons.push(format!(
+            "tensor-preservation report failures must be zero, got {}",
+            gate_input.tensor_report_errors
+        ));
+    }
+    let baseline_tensor = &baseline.tensor_preservation;
+    let allowed_drop = solve_stage_count_allowed_drop(gate_input.simulatable_attempted);
+    if stage_count_regressed(
+        gate_input.tensor_models_reported,
+        baseline_tensor.models_reported,
+        allowed_drop,
+    ) {
+        reasons.push(format!(
+            "tensor-preservation model coverage regressed: current={} < baseline={} (allowed drop={allowed_drop})",
+            gate_input.tensor_models_reported, baseline_tensor.models_reported
+        ));
+    }
+    let current_percent = tensor_preservation_percent(
+        gate_input.tensor_preserved_family_bodies,
+        gate_input.tensor_family_bodies,
+    );
+    if let (Some(current), Some(baseline_percent)) =
+        (current_percent, baseline_tensor.preservation_percent)
+        && current + SIM_RATE_GATE_EPSILON < baseline_percent
+    {
+        reasons.push(format!(
+            "tensor preservation regressed: current={current:.2}% ({}/{}) < baseline={baseline_percent:.2}% ({}/{})",
+            gate_input.tensor_preserved_family_bodies,
+            gate_input.tensor_family_bodies,
+            baseline_tensor.preserved_family_bodies,
+            baseline_tensor.family_bodies
+        ));
+    }
 }
 
 pub(super) fn push_compile_balance_regression_reasons(
@@ -1491,46 +1698,6 @@ fn solve_stage_count_allowed_drop(denominator: usize) -> usize {
         MSL_SOLVE_STAGE_COUNT_ALLOWED_DROP
     } else {
         0
-    }
-}
-
-pub(super) fn push_runtime_ratio_regression_reasons(
-    reasons: &mut Vec<String>,
-    baseline: &MslQualityBaseline,
-    parity_input: Option<&MslParityGateInput>,
-) {
-    let (Some(current_runtime), Some(baseline_runtime)) = (
-        parity_input.and_then(|parity| parity.runtime_ratio_stats.as_ref()),
-        baseline.runtime_ratio_stats.as_ref(),
-    ) else {
-        return;
-    };
-
-    let allowed_system_median = baseline_runtime.system_ratio_both_success.median
-        * (1.0 - RUNTIME_RATIO_MEDIAN_REL_TOLERANCE);
-    if current_runtime.system_ratio_both_success.median + SIM_RATE_GATE_EPSILON
-        < allowed_system_median
-    {
-        reasons.push(format!(
-            "runtime system speedup median regressed: current={:.6e} < floor={:.6e} (baseline={:.6e}, tolerance={:.1}%)",
-            current_runtime.system_ratio_both_success.median,
-            allowed_system_median,
-            baseline_runtime.system_ratio_both_success.median,
-            RUNTIME_RATIO_MEDIAN_REL_TOLERANCE * 100.0
-        ));
-    }
-
-    let allowed_wall_median = baseline_runtime.wall_ratio_both_success.median
-        * (1.0 - RUNTIME_RATIO_MEDIAN_REL_TOLERANCE);
-    if current_runtime.wall_ratio_both_success.median + SIM_RATE_GATE_EPSILON < allowed_wall_median
-    {
-        reasons.push(format!(
-            "runtime wall speedup median regressed: current={:.6e} < floor={:.6e} (baseline={:.6e}, tolerance={:.1}%)",
-            current_runtime.wall_ratio_both_success.median,
-            allowed_wall_median,
-            baseline_runtime.wall_ratio_both_success.median,
-            RUNTIME_RATIO_MEDIAN_REL_TOLERANCE * 100.0
-        ));
     }
 }
 

@@ -191,11 +191,42 @@ impl BuiltinFunction {
     }
 }
 
+/// Apply the MLS §3.7.1 three-way `sign` function to a scalar Real.
+pub fn modelica_sign(value: f64) -> f64 {
+    if value > 0.0 {
+        1.0
+    } else if value < 0.0 {
+        -1.0
+    } else {
+        0.0
+    }
+}
+
+/// Escape decoded string contents for a Modelica source string literal.
+pub fn escape_modelica_string(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '"' => escaped.push_str("\\\""),
+            '\\' => escaped.push_str("\\\\"),
+            '\x07' => escaped.push_str("\\a"),
+            '\x08' => escaped.push_str("\\b"),
+            '\x0c' => escaped.push_str("\\f"),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            '\x0b' => escaped.push_str("\\v"),
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
+}
+
 /// Apply a unary scalar math builtin.
 pub fn apply_scalar_unary_math(function: BuiltinFunction, arg: f64) -> Option<f64> {
     match function {
         BuiltinFunction::Abs => Some(arg.abs()),
-        BuiltinFunction::Sign => Some(arg.signum()),
+        BuiltinFunction::Sign => Some(modelica_sign(arg)),
         BuiltinFunction::Sqrt => Some(arg.sqrt()),
         BuiltinFunction::Floor => Some(arg.floor()),
         BuiltinFunction::Ceil => Some(arg.ceil()),
@@ -257,5 +288,21 @@ mod tests {
         assert!(is_predefined_component_attribute("Boolean", "start"));
         assert!(!is_predefined_component_attribute("Boolean", "min"));
         assert!(!is_predefined_component_attribute("Boolean", "unit"));
+    }
+
+    #[test]
+    fn modelica_sign_is_zero_for_both_signed_zeros() {
+        assert_eq!(modelica_sign(0.0), 0.0);
+        assert_eq!(modelica_sign(-0.0), 0.0);
+        assert_eq!(modelica_sign(2.0), 1.0);
+        assert_eq!(modelica_sign(-2.0), -1.0);
+    }
+
+    #[test]
+    fn modelica_string_escaping_is_canonical() {
+        assert_eq!(
+            escape_modelica_string("quote \" slash \\ line\n"),
+            "quote \\\" slash \\\\ line\\n"
+        );
     }
 }

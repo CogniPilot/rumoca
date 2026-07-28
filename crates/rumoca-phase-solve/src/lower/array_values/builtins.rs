@@ -762,10 +762,23 @@ impl<'a> LowerBuilder<'a> {
             ));
         }
         let value_expr = &args[0];
-        let count = self.fill_element_count(&args[1..], call_span)?;
+        let prefix_count = self.fill_element_count(&args[1..], call_span)?;
+        if prefix_count == 0 {
+            return Ok(Vec::new());
+        }
+        let seed_values = self.lower_array_like_values(value_expr, scope, call_depth)?;
+        let count = prefix_count.checked_mul(seed_values.len()).ok_or_else(|| {
+            array_builtin_contract_error(
+                "fill result scalar count overflows host index range",
+                value_expr
+                    .span()
+                    .or_else(|| (!call_span.is_dummy()).then_some(call_span)),
+            )
+        })?;
         let mut values = reg_vec_with_capacity(count, "fill value count", value_expr.span())?;
-        let value = self.lower_expr(value_expr, scope, call_depth)?;
-        values.resize(count, value);
+        for _ in 0..prefix_count {
+            values.extend(seed_values.iter().copied());
+        }
         Ok(values)
     }
 

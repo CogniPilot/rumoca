@@ -5,7 +5,7 @@
 //! function. This pass replaces `pre(x)` with a parameter variable `__pre__.x`
 //! that the simulation driver updates at each event boundary.
 
-use indexmap::IndexMap;
+use indexmap::{IndexMap, IndexSet};
 use rumoca_core::{ExpressionRewriter, ExpressionVisitor};
 use rumoca_ir_dae::{self as dae, DaeVisitor};
 
@@ -30,6 +30,11 @@ pub(crate) fn lower_pre_operator(dae: &mut dae::Dae) -> Result<(), ToDaeError> {
     // IndexMap for deterministic parameter insertion order (SPEC_0021).
     let mut pre_targets: IndexMap<rumoca_core::VarName, PreTarget> = IndexMap::new();
     collect_pre_targets_from_equations(&dae.continuous.equations, &mut pre_targets, false)?;
+    collect_pre_targets_from_structured_equations(
+        &dae.continuous.structured_equations,
+        &mut pre_targets,
+        false,
+    )?;
     collect_pre_targets_from_equations(&dae.discrete.real_updates, &mut pre_targets, true)?;
     collect_pre_targets_from_equations(&dae.discrete.valued_updates, &mut pre_targets, true)?;
     collect_pre_targets_from_equations(&dae.conditions.equations, &mut pre_targets, true)?;
@@ -41,6 +46,11 @@ pub(crate) fn lower_pre_operator(dae: &mut dae::Dae) -> Result<(), ToDaeError> {
     }
     collect_pre_targets_from_event_actions(&dae.events.event_actions, &mut pre_targets)?;
     collect_pre_targets_from_equations(&dae.initialization.equations, &mut pre_targets, true)?;
+    collect_pre_targets_from_structured_equations(
+        &dae.initialization.structured_equations,
+        &mut pre_targets,
+        true,
+    )?;
 
     discard_enum_literal_pre_targets(dae, &mut pre_targets);
     resolve_pre_targets(dae, &mut pre_targets)?;
@@ -72,42 +82,61 @@ pub(crate) fn lower_pre_operator(dae: &mut dae::Dae) -> Result<(), ToDaeError> {
     }
 
     let relation_memories = relation_memory_exprs(dae)?;
+    let clocked_names = dae.clocks.timings.keys().cloned().collect::<IndexSet<_>>();
 
     rewrite_equations(
         &mut dae.continuous.equations,
         &pre_targets,
         &relation_memories,
+        &clocked_names,
+    )?;
+    rewrite_structured_equations(
+        &mut dae.continuous.structured_equations,
+        &pre_targets,
+        &relation_memories,
+        &clocked_names,
     )?;
     rewrite_equations(
         &mut dae.discrete.real_updates,
         &pre_targets,
         &relation_memories,
+        &clocked_names,
     )?;
     rewrite_equations(
         &mut dae.discrete.valued_updates,
         &pre_targets,
         &relation_memories,
+        &clocked_names,
     )?;
     rewrite_equations(
         &mut dae.conditions.equations,
         &pre_targets,
         &relation_memories,
+        &clocked_names,
     )?;
     for expr in &mut dae.conditions.relations {
-        *expr = rewrite_pre_expr(expr, &pre_targets, &relation_memories)?;
+        *expr = rewrite_pre_expr(expr, &pre_targets, &relation_memories, &clocked_names)?;
     }
     for expr in &mut dae.clocks.triggered_conditions {
-        *expr = rewrite_pre_expr(expr, &pre_targets, &relation_memories)?;
+        *expr = rewrite_pre_expr(expr, &pre_targets, &relation_memories, &clocked_names)?;
     }
     rewrite_event_actions(
         &mut dae.events.event_actions,
         &pre_targets,
         &relation_memories,
+        &clocked_names,
     )?;
     rewrite_equations(
         &mut dae.initialization.equations,
         &pre_targets,
         &relation_memories,
+        &clocked_names,
+    )?;
+    rewrite_structured_equations(
+        &mut dae.initialization.structured_equations,
+        &pre_targets,
+        &relation_memories,
+        &clocked_names,
     )?;
     Ok(())
 }
@@ -126,6 +155,21 @@ fn collect_pre_targets_from_equations(
 ) -> Result<(), ToDaeError> {
     for eq in equations {
         collect_pre_targets_from_expr(&eq.rhs, targets, allow_continuous_target)?;
+    }
+    Ok(())
+}
+
+fn collect_pre_targets_from_structured_equations(
+    families: &[dae::StructuredEquationFamily],
+    targets: &mut IndexMap<rumoca_core::VarName, PreTarget>,
+    allow_continuous_target: bool,
+) -> Result<(), ToDaeError> {
+    for expression in families
+        .iter()
+        .filter_map(|family| family.template.as_ref())
+        .flat_map(|template| &template.body)
+    {
+        collect_pre_targets_from_expr(expression, targets, allow_continuous_target)?;
     }
     Ok(())
 }
@@ -630,9 +674,26 @@ fn rewrite_equations(
     equations: &mut [dae::Equation],
     targets: &IndexMap<rumoca_core::VarName, PreTarget>,
     relation_memories: &[(rumoca_core::Expression, rumoca_core::Expression)],
+    clocked_names: &IndexSet<String>,
 ) -> Result<(), ToDaeError> {
     for eq in equations {
-        eq.rhs = rewrite_pre_expr(&eq.rhs, targets, relation_memories)?;
+        eq.rhs = rewrite_pre_expr(&eq.rhs, targets, relation_memories, clocked_names)?;
+    }
+    Ok(())
+}
+
+fn rewrite_structured_equations(
+    families: &mut [dae::StructuredEquationFamily],
+    targets: &IndexMap<rumoca_core::VarName, PreTarget>,
+    relation_memories: &[(rumoca_core::Expression, rumoca_core::Expression)],
+    clocked_names: &IndexSet<String>,
+) -> Result<(), ToDaeError> {
+    for expression in families
+        .iter_mut()
+        .filter_map(|family| family.template.as_mut())
+        .flat_map(|template| &mut template.body)
+    {
+        *expression = rewrite_pre_expr(expression, targets, relation_memories, clocked_names)?;
     }
     Ok(())
 }
@@ -824,9 +885,11 @@ fn rewrite_event_actions(
     actions: &mut [dae::DaeEventAction],
     targets: &IndexMap<rumoca_core::VarName, PreTarget>,
     relation_memories: &[(rumoca_core::Expression, rumoca_core::Expression)],
+    clocked_names: &IndexSet<String>,
 ) -> Result<(), ToDaeError> {
     for action in actions {
-        action.condition = rewrite_pre_expr(&action.condition, targets, relation_memories)?;
+        action.condition =
+            rewrite_pre_expr(&action.condition, targets, relation_memories, clocked_names)?;
     }
     Ok(())
 }
@@ -835,10 +898,12 @@ fn rewrite_pre_expr(
     expr: &rumoca_core::Expression,
     targets: &IndexMap<rumoca_core::VarName, PreTarget>,
     relation_memories: &[(rumoca_core::Expression, rumoca_core::Expression)],
+    clocked_names: &IndexSet<String>,
 ) -> Result<rumoca_core::Expression, ToDaeError> {
     let mut rewriter = PreExpressionRewriter {
         targets,
         relation_memories,
+        clocked_names,
         error: None,
     };
     let rewritten = rewriter.rewrite_expression(expr);
@@ -851,6 +916,7 @@ fn rewrite_pre_expr(
 struct PreExpressionRewriter<'a> {
     targets: &'a IndexMap<rumoca_core::VarName, PreTarget>,
     relation_memories: &'a [(rumoca_core::Expression, rumoca_core::Expression)],
+    clocked_names: &'a IndexSet<String>,
     error: Option<ToDaeError>,
 }
 
@@ -880,6 +946,14 @@ impl ExpressionRewriter for PreExpressionRewriter<'_> {
                 args,
                 span,
             } => self.rewrite_sample_builtin(args, *span),
+            rumoca_core::Expression::FunctionCall {
+                name,
+                args,
+                is_constructor: _,
+                span,
+            } if name.as_str() == rumoca_core::INTERNAL_SAMPLE_FUNCTION_NAME => {
+                self.rewrite_sample_builtin(args, *span)
+            }
             rumoca_core::Expression::FunctionCall {
                 name,
                 args,
@@ -1026,9 +1100,12 @@ impl PreExpressionRewriter<'_> {
         args: &[rumoca_core::Expression],
         span: rumoca_core::Span,
     ) -> rumoca_core::Expression {
-        if rumoca_core::sample_call_is_inferred_clock_value_form(args)
+        if sample_call_is_clock_value_form(args, self.clocked_names)
             && let Some(value) = args.first()
         {
+            if args.len() == 2 {
+                return self.rewrite_expression(value);
+            }
             return self.rewrite_pre_value(value);
         }
         rumoca_core::Expression::FunctionCall {
@@ -1082,6 +1159,28 @@ impl PreExpressionRewriter<'_> {
                 }
             }
         }
+    }
+}
+
+fn sample_call_is_clock_value_form(
+    args: &[rumoca_core::Expression],
+    clocked_names: &IndexSet<String>,
+) -> bool {
+    if rumoca_core::sample_call_is_inferred_clock_value_form(args) {
+        return true;
+    }
+    let [_, clock] = args else {
+        return false;
+    };
+    match clock {
+        rumoca_core::Expression::VarRef {
+            name, subscripts, ..
+        } => subscripts.is_empty() && clocked_names.contains(name.as_str()),
+        rumoca_core::Expression::FunctionCall { name, .. } => matches!(
+            name.last_segment(),
+            "Clock" | "subSample" | "superSample" | "shiftSample" | "backSample"
+        ),
+        _ => false,
     }
 }
 

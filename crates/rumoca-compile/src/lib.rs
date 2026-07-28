@@ -142,6 +142,8 @@ pub mod codegen {
         render_ast_template_with_name, render_dae_template, render_dae_template_with_json,
         render_dae_template_with_json_and_name, render_dae_template_with_name,
         render_flat_template_with_name, render_solve_template_with_name,
+        render_structured_dae_template_with_name, validate_dae_scalar_residual_view,
+        validate_dae_structured_ownership,
     };
     pub mod targets {
         pub use crate::codegen_target::{
@@ -185,7 +187,9 @@ pub mod galec {
 
 /// Read-only DAE analysis helpers exposed through the compile facade.
 pub mod analysis {
-    pub use rumoca_phase_dae::balance::BalanceDetail;
+    pub use rumoca_phase_dae::balance::{
+        BalanceBreakdown, BalanceClamps, BalanceDetail, BalanceExclusionCounts,
+    };
     pub use rumoca_phase_dae::{balance, balance_detail, equations_unknowns, is_balanced};
 }
 
@@ -195,10 +199,10 @@ pub mod phase_structural {
     pub use rumoca_phase_structural::{
         AlgebraicLoop, BltBlock, CausalStep, EliminationResult, EquationRef, IcBlock,
         IcRelaxationHint, Incidence, SortedDae, StructuralDiagnostics, StructuralError,
-        Substitution, TearingResult, UnknownId, analyze_structure, build_blt_from_incidence,
-        build_ic_plan, build_ic_relaxation_hint, build_solver_sparsity_triplets,
-        runtime_defined_continuous_unknown_names, runtime_defined_unknown_names, sort_dae,
-        tear_algebraic_loop,
+        StructuredScalarBlock, Substitution, TearingResult, UnknownId, analyze_structure,
+        build_blt_from_incidence, build_ic_plan, build_ic_relaxation_hint,
+        build_solver_sparsity_triplets, runtime_defined_continuous_unknown_names,
+        runtime_defined_unknown_names, sort_dae, tear_algebraic_loop,
     };
 }
 
@@ -280,9 +284,9 @@ pub mod compile {
         ParsedSourceRootLoad, PhaseResult, SemanticDiagnosticsMode, Session, SessionChange,
         SessionConfig, SessionSnapshot, SourceRootActivityKind, SourceRootActivityPhase,
         SourceRootActivitySnapshot, SourceRootDurability, SourceRootKind, SourceRootLoadMode,
-        SourceRootLoadReport, SourceRootStatusSnapshot, StrictCheckTiming, StrictCompileReport,
-        StructuralOverride, WorkspaceSymbol, WorkspaceSymbolKind, WorkspaceSymbolSnapshotTiming,
-        compile_phase_timing_stats, install_compile_phase_observer,
+        SourceRootLoadReport, SourceRootStatusSnapshot, StrictCheckTiming, StrictCompileFailure,
+        StrictCompileReport, StructuralOverride, WorkspaceSymbol, WorkspaceSymbolKind,
+        WorkspaceSymbolSnapshotTiming, compile_phase_timing_stats, install_compile_phase_observer,
         reset_compile_phase_timing_stats,
     };
 }

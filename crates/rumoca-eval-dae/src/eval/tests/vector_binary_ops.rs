@@ -69,6 +69,19 @@ fn test_eval_binary_exp() {
 }
 
 #[test]
+fn elementwise_vector_power_broadcasts_scalar_exponent() {
+    let mut env = VarEnv::new();
+    set_array_entries(&mut env, "x", &[3], &[2.0, 3.0, 4.0]);
+    std::sync::Arc::make_mut(&mut env.dims).insert("x".to_string(), vec![3]);
+    let expr = binop(OpBinary::ExpElem, var("x"), lit(2.0));
+
+    assert_eq!(
+        eval_array_values::<f64>(&expr, &env).unwrap(),
+        vec![4.0, 9.0, 16.0]
+    );
+}
+
+#[test]
 fn row_slice_quadratic_form_evaluates_to_scalar() {
     // coeff[2, :] * (P * coeff[2, :]) with P = identity(4) is the squared
     // norm of row 2 — a scalar, evaluated through the checked scalar path.
@@ -155,5 +168,43 @@ fn identity_builtin_infers_square_runtime_dims() {
     assert_eq!(
         try_infer_runtime_expr_dims::<f64>(&identity_call, &VarEnv::new()).unwrap(),
         vec![2, 2]
+    );
+}
+
+/// MLS §10.4.2: `[a, b; c, d]` concatenates operands promoted to two
+/// dimensions, so a vector operand is an `n x 1` block. A row of three
+/// 2-vectors is therefore `2 x 3`, and two such rows stack to `4 x 3` — not the
+/// `2 x 3` that counting the syntactic rows and entries would report.
+#[test]
+fn matrix_literal_of_vector_blocks_reports_concatenated_dims() {
+    let mut env = VarEnv::<f64>::new();
+    set_array_entries(&mut env, "v", &[2], &[1.0, 2.0]);
+    let row = || arr(vec![var("v"), var("v"), var("v")], false);
+    let matrix_literal = arr(vec![row(), row()], true);
+
+    assert_eq!(
+        try_infer_runtime_expr_dims(&matrix_literal, &env).unwrap(),
+        vec![4, 3]
+    );
+    assert_eq!(
+        eval_array_values::<f64>(&matrix_literal, &env)
+            .unwrap()
+            .len(),
+        12
+    );
+}
+
+/// The shape a matrix literal reports must match the values it produces, or the
+/// binary-operand shape check rejects a well-formed product.
+#[test]
+fn scalar_times_matrix_literal_of_vector_blocks_keeps_every_value() {
+    let mut env = VarEnv::<f64>::new();
+    set_array_entries(&mut env, "v", &[2], &[1.0, 2.0]);
+    let matrix_literal = arr(vec![arr(vec![var("v"), var("v")], false)], true);
+    let scaled = binop(OpBinary::Mul, lit(2.0), matrix_literal);
+
+    assert_eq!(
+        eval_array_values::<f64>(&scaled, &env).unwrap(),
+        vec![2.0, 2.0, 4.0, 4.0]
     );
 }

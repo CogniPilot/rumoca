@@ -3,7 +3,7 @@
 //! This module contains the TryFrom implementation for ElementList,
 //! which handles conversion from parser AST to rumoca_ir::ast.
 
-use super::definitions::{ElementList, validate_annotation_modifiers};
+use super::definitions::{ElementList, ElementListPayload, validate_annotation_modifiers};
 use super::helpers::{loc_info, location_span, span_location};
 use crate::errors::{semantic_error_from_component_reference, semantic_error_from_token};
 use crate::generated::modelica_grammar_trait;
@@ -215,7 +215,7 @@ fn check_outer_component_restrictions(
 
 /// Check for duplicate component declaration.
 fn check_duplicate_component(
-    def: &ElementList,
+    def: &ElementListPayload,
     comp_name: &str,
     ident: &rumoca_core::Token,
 ) -> anyhow::Result<()> {
@@ -453,7 +453,7 @@ fn extract_extends_mods(
 
 /// Process a nested class definition element.
 fn process_class_definition(
-    def: &mut ElementList,
+    def: &mut ElementListPayload,
     class: &modelica_grammar_trait::ElementDefinitionGroupClassDefinition,
     is_final: bool,
     is_inner: bool,
@@ -501,7 +501,7 @@ struct ComponentContext {
 
 /// Process a single component declaration.
 fn process_single_component(
-    def: &mut ElementList,
+    def: &mut ElementListPayload,
     c: &modelica_grammar_trait::ComponentDeclaration,
     ctx: &ComponentContext,
     type_spec: &modelica_grammar_trait::TypeSpecifier,
@@ -541,8 +541,8 @@ fn process_single_component(
         start_has_each: false,
         has_explicit_binding: false,
         binding: None,
-        shape: ctx.type_level_shape.clone(),
-        shape_expr: ctx.type_level_shape_expr.clone(),
+        shape: Vec::new(),
+        shape_expr: Vec::new(),
         shape_is_modification: false,
         annotation,
         source_modifications: Vec::new(),
@@ -564,7 +564,7 @@ fn process_single_component(
         is_structural: false,
     };
 
-    // Append declaration-level subscripts
+    // MLS §10.1: component-name dimensions precede type-name dimensions.
     if let Some(decl_opt) = &c.declaration.declaration_opt {
         for subscript in &decl_opt.array_subscripts.subscripts {
             value.shape_expr.push(subscript.clone());
@@ -573,6 +573,10 @@ fn process_single_component(
             }
         }
     }
+    value.shape.extend(ctx.type_level_shape.iter().copied());
+    value
+        .shape_expr
+        .extend(ctx.type_level_shape_expr.iter().cloned());
 
     // Handle component modification
     if let Some(modif) = &c.declaration.declaration_opt0 {
@@ -593,7 +597,7 @@ fn process_single_component(
 
 /// Process a component clause element.
 fn process_component_clause(
-    def: &mut ElementList,
+    def: &mut ElementListPayload,
     clause: &modelica_grammar_trait::ElementDefinitionGroupComponentClause,
     is_final: bool,
     is_inner: bool,
@@ -627,11 +631,12 @@ fn process_component_clause(
 
 /// Process a replaceable element.
 fn process_replaceable_element(
-    def: &mut ElementList,
+    def: &mut ElementListPayload,
     repl: &modelica_grammar_trait::ElementDefinitionGroupReplaceableElementDefinitionGroupGroupElementDefinitionOpt3,
     is_final: bool,
     is_inner: bool,
     is_outer: bool,
+    is_redeclare: bool,
 ) -> anyhow::Result<()> {
     let constrainedby = repl
         .element_definition_opt3
@@ -649,7 +654,7 @@ fn process_replaceable_element(
             nested_class.is_inner = is_inner;
             nested_class.is_outer = is_outer;
             nested_class.is_replaceable = true;
-            nested_class.is_redeclare = false;
+            nested_class.is_redeclare = is_redeclare;
             nested_class.constrainedby = constrainedby;
             let name = nested_class.name.text.to_string();
             def.classes.insert(name, nested_class);
@@ -669,7 +674,7 @@ fn process_replaceable_element(
                 is_inner,
                 is_outer,
                 is_replaceable: true,
-                is_redeclare: false,
+                is_redeclare,
                 constrainedby: constrainedby.clone(),
             };
 
@@ -733,7 +738,7 @@ fn merge_constraining_clause_modifications(
             continue;
         };
 
-        let key = format!("__constrainedby__.{target_name}");
+        let key = format!("{}{target_name}", rumoca_core::CONSTRAINEDBY_MOD_PREFIX);
         if value.modifications.contains_key(&key) {
             continue;
         }
@@ -801,7 +806,7 @@ fn normalized_constraining_arg_value(
 
 /// Process an extends clause element.
 fn process_extends_clause(
-    def: &mut ElementList,
+    def: &mut ElementListPayload,
     clause: &modelica_grammar_trait::ElementExtendsClause,
 ) -> anyhow::Result<()> {
     let extend_location = clause
@@ -835,20 +840,20 @@ impl TryFrom<&modelica_grammar_trait::ElementList> for ElementList {
     fn try_from(
         ast: &modelica_grammar_trait::ElementList,
     ) -> std::result::Result<Self, Self::Error> {
-        let mut def = ElementList {
+        let mut def = ElementListPayload {
             components: IndexMap::default(),
             ..Default::default()
         };
         for elem_list in &ast.element_list_list {
             process_element(&mut def, &elem_list.element)?;
         }
-        Ok(def)
+        Ok(ElementList::new(def))
     }
 }
 
 /// Process a single element from the element list.
 fn process_element(
-    def: &mut ElementList,
+    def: &mut ElementListPayload,
     element: &modelica_grammar_trait::Element,
 ) -> anyhow::Result<()> {
     match element {
@@ -868,7 +873,7 @@ fn process_element(
 
 /// Process an element definition (class, component, or replaceable).
 fn process_element_definition(
-    def: &mut ElementList,
+    def: &mut ElementListPayload,
     edef: &modelica_grammar_trait::ElementElementDefinition,
 ) -> anyhow::Result<()> {
     let is_redeclare = edef.element_definition.element_definition_opt.is_some();
@@ -884,7 +889,14 @@ fn process_element_definition(
             process_component_clause(def, clause, is_final, is_inner, is_outer, is_redeclare)?;
         }
         modelica_grammar_trait::ElementDefinitionGroup::ReplaceableElementDefinitionGroupGroupElementDefinitionOpt3(repl) => {
-            process_replaceable_element(def, repl, is_final, is_inner, is_outer)?;
+            process_replaceable_element(
+                def,
+                repl,
+                is_final,
+                is_inner,
+                is_outer,
+                is_redeclare,
+            )?;
         }
     }
     Ok(())
@@ -1225,5 +1237,22 @@ fn preserve_component_source_modification(
     value.source_modifications = opt.argument_list.args.clone();
     value.source_modification_each_flags = opt.argument_list.each_flags.clone();
     value.source_modification_final_flags = opt.argument_list.final_flags.clone();
-    value.source_modification_redeclare_flags = opt.argument_list.redeclare_flags.clone();
+    // MLS §7.3: an element modifier carrying `replaceable` is itself a
+    // redeclaration. Preserve the semantic fact on the component instead of
+    // forcing instantiation to infer redeclare intent from expression shape.
+    value.source_modification_redeclare_flags = (0..value.source_modifications.len())
+        .map(|index| {
+            opt.argument_list
+                .redeclare_flags
+                .get(index)
+                .copied()
+                .unwrap_or(false)
+                || opt
+                    .argument_list
+                    .replaceable_flags
+                    .get(index)
+                    .copied()
+                    .unwrap_or(false)
+        })
+        .collect();
 }

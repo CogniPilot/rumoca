@@ -61,6 +61,7 @@ where
                     RuntimeEventBoundary {
                         event_t: t_root,
                         horizon_t: t_root,
+                        tolerance: 0.0,
                         event: RuntimeEventStop::static_event(EventPreMode::EventEntry),
                     },
                     backend,
@@ -80,6 +81,7 @@ where
                     RuntimeEventBoundary {
                         event_t: state_after_step.t,
                         horizon_t: state_after_step.t,
+                        tolerance: 0.0,
                         event: RuntimeEventStop::static_event(EventPreMode::FollowCurrent),
                     },
                     backend,

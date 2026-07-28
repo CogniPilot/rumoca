@@ -4742,6 +4742,7 @@ pub struct OutputExpressionList {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct OutputExpressionListList {
+    pub comma: crate::ParserToken, /* , */
     pub output_expression_list_opt0: Option<OutputExpressionListOpt0>,
 }
 
@@ -5167,7 +5168,7 @@ pub struct Stream {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct String {
-    pub string: crate::ParserToken, /* "([^"\\]|\\[\s\S])*" */
+    pub string: crate::ParserToken, /* "([^"\\]|\\['"?\\abfnrtv])*" */
 }
 
 ///
@@ -7009,7 +7010,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
 
     /// Semantic action for production 61:
     ///
-    /// `string: /"([^"\\]|\\[\s\S])*"/;`
+    /// `string: /"([^"\\]|\\['"?\\abfnrtv])*"/;`
     ///
     #[parol_runtime::function_name::named]
     fn string(&mut self, string: &ParseTreeType<'t>) -> Result<()> {
@@ -16783,17 +16784,21 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
 
     /// Semantic action for production 496:
     ///
-    /// `output_expression_listList /* Vec<T>::Push */: ','^ /* Clipped */ output_expression_listOpt0 /* Option */ output_expression_listList;`
+    /// `output_expression_listList /* Vec<T>::Push */: ',' output_expression_listOpt0 /* Option */ output_expression_listList;`
     ///
     #[parol_runtime::function_name::named]
     fn output_expression_list_list_0(
         &mut self,
-        _comma: &ParseTreeType<'t>,
+        comma: &ParseTreeType<'t>,
         _output_expression_list_opt0: &ParseTreeType<'t>,
         _output_expression_list_list: &ParseTreeType<'t>,
     ) -> Result<()> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
+        let comma = comma
+            .token()?
+            .try_into()
+            .map_err(parol_runtime::ParolError::UserError)?;
         let mut output_expression_list_list = pop_item!(
             self,
             output_expression_list_list,
@@ -16808,6 +16813,7 @@ impl<'t, 'u> ModelicaGrammarAuto<'t, 'u> {
         );
         let output_expression_list_list_0_built = OutputExpressionListList {
             output_expression_list_opt0,
+            comma,
         };
         // Add an element to the vector
         output_expression_list_list.push(output_expression_list_list_0_built);

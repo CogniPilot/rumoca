@@ -73,6 +73,38 @@ pub fn span_to_range(source: &str, start_byte: usize, end_byte: usize) -> Range 
     Range { start, end }
 }
 
+/// Return the text of a 0-based `line` of `source`, with a trailing `\r`
+/// stripped so CRLF documents behave like LF documents.
+#[must_use]
+pub fn line_text(source: &str, line: u32) -> Option<&str> {
+    let raw = source.split('\n').nth(line as usize)?;
+    Some(raw.strip_suffix('\r').unwrap_or(raw))
+}
+
+/// Convert a UTF-16 column *within a single line* into a UTF-8 byte column of
+/// that same line. Always lands on a `char` boundary, so the result is safe to
+/// use as a slice index; a column past the end of the line clamps to
+/// `line.len()`.
+#[must_use]
+pub fn utf16_column_to_byte_column(line: &str, character: u32) -> usize {
+    position_to_byte_offset(line, Position::new(0, character)).min(line.len())
+}
+
+/// Convert a 1-based **character** column (what the Modelica lexer records in
+/// `Location::start_column`/`end_column`: one increment per Unicode scalar)
+/// into a 0-based UTF-16 column for LSP. Clamps past-end-of-line columns to the
+/// line's UTF-16 length.
+///
+/// This is the fallback for locations that carry no usable byte span; prefer
+/// [`span_to_range`] whenever byte offsets are available.
+#[must_use]
+pub fn char_column_to_utf16_column(line: &str, char_column_1based: u32) -> u32 {
+    let chars_before = char_column_1based.saturating_sub(1) as usize;
+    line.chars()
+        .take(chars_before)
+        .fold(0u32, |acc, ch| acc.saturating_add(ch.len_utf16() as u32))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -149,5 +181,42 @@ mod tests {
         assert_eq!(position_to_byte_offset(source, Position::new(0, 1)), 4);
         // Past the end of the line maps to the document length.
         assert_eq!(position_to_byte_offset(source, Position::new(0, 3)), 5);
+    }
+
+    #[test]
+    fn char_column_to_utf16_column_counts_surrogate_pairs() {
+        // `𝔸` is one Unicode scalar (one lexer column) but two UTF-16 units.
+        let line = "𝔸x";
+        // Lexer column 1 = the `𝔸` itself -> UTF-16 column 0.
+        assert_eq!(char_column_to_utf16_column(line, 1), 0);
+        // Lexer column 2 = `x` -> UTF-16 column 2, not 1.
+        assert_eq!(char_column_to_utf16_column(line, 2), 2);
+        // Past the end clamps to the line's UTF-16 length.
+        assert_eq!(char_column_to_utf16_column(line, 99), 3);
+        // A degenerate 0 column behaves like column 1.
+        assert_eq!(char_column_to_utf16_column(line, 0), 0);
+    }
+
+    #[test]
+    fn utf16_column_to_byte_column_clamps_forward() {
+        let line = "𝔸x";
+        // Column 1 lands mid-surrogate: clamp forward to the char boundary.
+        assert_eq!(utf16_column_to_byte_column(line, 1), 4);
+        assert_eq!(utf16_column_to_byte_column(line, 2), 4);
+        // Past the end of the line clamps to the line length.
+        assert_eq!(utf16_column_to_byte_column(line, 99), line.len());
+        // The result is always a valid slice index.
+        for character in 0..8u32 {
+            let byte = utf16_column_to_byte_column(line, character);
+            assert!(line.is_char_boundary(byte), "byte {byte} is not a boundary");
+        }
+    }
+
+    #[test]
+    fn line_text_strips_crlf() {
+        let source = "alpha\r\nbeta\r\n";
+        assert_eq!(line_text(source, 0), Some("alpha"));
+        assert_eq!(line_text(source, 1), Some("beta"));
+        assert_eq!(line_text(source, 3), None);
     }
 }

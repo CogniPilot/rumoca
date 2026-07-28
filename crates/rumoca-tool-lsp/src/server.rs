@@ -7,9 +7,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use rumoca_compile::compile::{
-    CompilePhaseTimingSnapshot, Document, ParsedSourceRootLoad, PhaseResult, Session,
-    SessionCacheStatsSnapshot, SessionChange, SessionConfig, SessionSnapshot, SourceRootKind,
-    compile_phase_timing_stats, session_cache_stats, source_span_location,
+    CompilePhaseTimingSnapshot, Document, ParsedSourceRootLoad, Session, SessionCacheStatsSnapshot,
+    SessionChange, SessionConfig, SessionSnapshot, SourceRootKind, compile_phase_timing_stats,
+    session_cache_stats, source_span_location,
 };
 use rumoca_compile::parsing::{
     ast, collect_compile_unit_source_files, collect_model_names, parse_source_to_ast,
@@ -52,18 +52,26 @@ mod diagnostics;
 mod lanes;
 mod navigation;
 mod preview;
+mod preview_cache;
 mod scenario_commands;
 mod simulation_jobs;
 mod source_root_runtime;
 mod support;
+mod tool_config;
 use completion::*;
 use lanes::*;
+use preview::render_flattened_preview;
 use preview::{
-    append_markdown_hover, class_target_definition, class_target_hover,
-    flattened_preview_for_model, is_hover_preview_candidate, local_component_hover,
+    append_markdown_hover, class_target_definition_in_snapshot, class_target_hover,
+    is_hover_preview_candidate, local_component_hover,
 };
-use simulation_jobs::{SimulationCompileKey, SimulationPrewarmKey, SimulationPrewarmState};
+use preview_cache::HoverPreviewCache;
+use simulation_jobs::{
+    SimulationCompileContext, SimulationCompileKey, SimulationPrewarmKey, SimulationPrewarmState,
+    simulate_dae_with_parameter_overrides,
+};
 use support::*;
+use tool_config::ToolConfigEntry;
 
 fn simulation_error_diagnostic(
     error: &SimulationDiagnosticError,
@@ -87,7 +95,9 @@ fn simulation_error_diagnostic(
         "uri": uri,
         "range": range,
         "source": "Rumoca Simulation",
-        "code": "simulation",
+        // SPEC_0008 stable code (EL0xx/ES0xx/EX0xx), so LSP diagnostics carry
+        // the same identity the CLI renders.
+        "code": error.diagnostic_code(),
     }))
 }
 
@@ -130,6 +140,13 @@ pub struct ModelicaLanguageServer {
     startup_timing_path: Arc<RwLock<Option<PathBuf>>>,
     simulation_compile_cache:
         Arc<RwLock<HashMap<SimulationCompileKey, rumoca_compile::compile::DaeCompilationResult>>>,
+    /// Rendered hover previews keyed exactly like `simulation_compile_cache`,
+    /// so a hover never re-runs a strict compile for an unchanged model. `None`
+    /// memoizes "this model does not compile", which is what keeps a broken
+    /// model from recompiling on every mouse move.
+    hover_preview_cache: Arc<RwLock<HoverPreviewCache>>,
+    /// SPEC_0018 formatter/linter configuration, cached per directory.
+    tool_config_cache: Arc<RwLock<HashMap<PathBuf, ToolConfigEntry>>>,
     simulation_prewarm_state:
         Arc<RwLock<HashMap<SimulationPrewarmKey, Arc<SimulationPrewarmState>>>>,
     selected_simulation_models: Arc<RwLock<HashMap<String, String>>>,
@@ -178,6 +195,8 @@ impl ModelicaLanguageServer {
             navigation_timing_path: Arc::new(RwLock::new(timing_paths.navigation)),
             startup_timing_path: Arc::new(RwLock::new(timing_paths.startup)),
             simulation_compile_cache: Arc::new(RwLock::new(HashMap::new())),
+            hover_preview_cache: Arc::new(RwLock::new(HoverPreviewCache::default())),
+            tool_config_cache: Arc::new(RwLock::new(HashMap::new())),
             simulation_prewarm_state: Arc::new(RwLock::new(HashMap::new())),
             selected_simulation_models: Arc::new(RwLock::new(HashMap::new())),
             background_request_sequence: Arc::new(AtomicU64::new(0)),
@@ -221,7 +240,15 @@ impl ModelicaLanguageServer {
                 resolve_provider: Some(true),
             }),
             code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
-            inlay_hint_provider: None,
+            // Inlay hints are AST-only (array dimensions and builtin parameter
+            // names) and cheap; their positions are byte-span derived, so they
+            // are UTF-16-correct on non-ASCII lines.
+            inlay_hint_provider: Some(OneOf::Right(InlayHintServerCapabilities::Options(
+                InlayHintOptions {
+                    resolve_provider: Some(false),
+                    work_done_progress_options: WorkDoneProgressOptions::default(),
+                },
+            ))),
             document_link_provider: Some(DocumentLinkOptions {
                 resolve_provider: Some(false),
                 work_done_progress_options: WorkDoneProgressOptions::default(),
@@ -640,12 +667,14 @@ impl ModelicaLanguageServer {
         uri_path: &str,
         error: String,
     ) -> Value {
+        let tool_options = self.tool_options_for_document_or_default(uri_path).await;
         let mut diagnostics = {
             let mut session = self.session.write().await;
-            handlers::compute_diagnostics_with_mode(
+            handlers::compute_diagnostics_with_options(
                 source,
                 uri_path,
                 Some(&mut session),
+                &tool_options.lint,
                 rumoca_compile::compile::SemanticDiagnosticsMode::Save,
             )
         };
@@ -673,20 +702,7 @@ impl ModelicaLanguageServer {
         let parameter_overrides = parameter_overrides.to_vec();
         let sim_start = std::time::Instant::now();
         let sim = match tokio::task::spawn_blocking(move || {
-            if parameter_overrides.is_empty() {
-                return simulate_dae_with_diagnostics(&compiled_dae, &sim_opts);
-            }
-            let mut solve_model = rumoca_sim::lower_dae_for_simulation(&compiled_dae, &sim_opts)
-                .map_err(SimulationDiagnosticError::SolveLowering)?;
-            let (initial_y, parameters) = rumoca_sim::refresh_prepared_vectors(
-                &solve_model,
-                sim_opts.t_start,
-                &parameter_overrides,
-            )
-            .map_err(|error| SimulationDiagnosticError::Solver(error.to_string()))?;
-            solve_model.initial_y = initial_y;
-            solve_model.parameters = parameters;
-            rumoca_sim::simulate_solve_model(&solve_model, &sim_opts)
+            simulate_dae_with_parameter_overrides(&compiled_dae, &sim_opts, &parameter_overrides)
         })
         .await
         {
@@ -1122,6 +1138,7 @@ impl LanguageServer for ModelicaLanguageServer {
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
         let uri = params.text_document.uri;
         let uri_path = session_document_uri_key(&uri);
+        self.invalidate_tool_config_for_uri(&uri).await;
         self.record_open_document_version(&uri_path, params.text_document.version)
             .await;
         let text = params.text_document.text;
@@ -1154,6 +1171,7 @@ impl LanguageServer for ModelicaLanguageServer {
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
         let uri = params.text_document.uri;
         let uri_path = session_document_uri_key(&uri);
+        self.invalidate_tool_config_for_uri(&uri).await;
         if !self
             .try_accept_document_version(&uri_path, params.text_document.version)
             .await
@@ -1219,6 +1237,7 @@ impl LanguageServer for ModelicaLanguageServer {
         if is_scenario_config_uri(&uri) {
             self.reload_scenario_config().await;
         }
+        self.invalidate_tool_config_for_uri(&uri).await;
         if let Some(text) = params.text {
             self.publish_diagnostics(uri, &text, DiagnosticsTrigger::Save, session_cache_stats())
                 .await;
@@ -1274,10 +1293,9 @@ impl LanguageServer for ModelicaLanguageServer {
             }
             if let (Some(ast), Some(word)) = (ast, get_word_at_position(source, pos))
                 && is_hover_preview_candidate(ast, &word)
-                && let Some(preview) = {
-                    let mut session = self.session.write().await;
-                    flattened_preview_for_model(&mut session, &word)
-                }
+                && let Some(preview) = self
+                    .hover_flat_preview(&word, &uri_path, request_token)
+                    .await
             {
                 request_path = NavigationRequestPath::FlatPreview;
                 semantic_layer = "flat_model";
@@ -1431,7 +1449,12 @@ impl LanguageServer for ModelicaLanguageServer {
             if self.analysis_request_is_stale(request_token).await {
                 return Ok(None);
             }
-            return Ok(handlers::handle_document_symbols(symbols));
+            // Outline ranges are measured against the document's own text so
+            // they carry UTF-16 columns, not lexer character columns.
+            let Some(doc) = self.document_snapshot(&uri_path).await else {
+                return Ok(None);
+            };
+            return Ok(handlers::handle_document_symbols(symbols, &doc.content));
         }
         Ok(None)
     }
@@ -1445,7 +1468,7 @@ impl LanguageServer for ModelicaLanguageServer {
             && let Some(doc) = self.document_snapshot(&uri_path).await
             && let Some(ast) = doc.parsed()
         {
-            return Ok(handlers::handle_semantic_tokens(ast));
+            return Ok(handlers::handle_semantic_tokens(ast, &doc.content));
         }
         Ok(None)
     }
@@ -1471,15 +1494,24 @@ impl LanguageServer for ModelicaLanguageServer {
                 snapshot.local_component_info_query(&uri_path, pos.line, pos.character)
             {
                 semantic_layer = "class_body_semantics";
-                response = class_target_definition(&uri_path, &info.declaration_location, uri);
+                response = class_target_definition_in_snapshot(
+                    &snapshot,
+                    &uri_path,
+                    &info.declaration_location,
+                    uri,
+                );
             }
             if response.is_none()
                 && let Some(info) =
                     snapshot.navigation_class_target_query(&uri_path, pos.line, pos.character)
             {
                 semantic_layer = "class_interface";
-                response =
-                    class_target_definition(&info.target_uri, &info.declaration_location, uri);
+                response = class_target_definition_in_snapshot(
+                    &snapshot,
+                    &info.target_uri,
+                    &info.declaration_location,
+                    uri,
+                );
             }
         }
         let stats_after = session_cache_stats();
@@ -1576,7 +1608,8 @@ impl LanguageServer for ModelicaLanguageServer {
             return Ok(None);
         }
         let format_started = Instant::now();
-        let symbols = handlers::handle_workspace_symbols(&symbols);
+        let mut sources = SnapshotSourceTexts::new(&snapshot);
+        let symbols = handlers::handle_workspace_symbols(&symbols, |uri| sources.source_for(uri));
         timing.format_ms = Some(format_started.elapsed().as_millis() as u64);
         self.write_workspace_symbol_timing(
             request_token,
@@ -1618,7 +1651,14 @@ impl LanguageServer for ModelicaLanguageServer {
         let uri = &params.text_document.uri;
         let uri_path = session_document_uri_key(uri);
         if let Some(doc) = self.document_snapshot(&uri_path).await {
-            return Ok(handlers::handle_formatting(&doc.content));
+            // SPEC_0018: the editor's own options are the base layer and the
+            // project's `.rumoca_fmt.toml` overrides them, so `rumoca fmt` and
+            // format-on-save produce identical bytes.
+            let options = self
+                .effective_format_options(&uri_path, &params.options)
+                .await
+                .map_err(|error| tower_lsp::jsonrpc::Error::invalid_params(error.to_string()))?;
+            return Ok(handlers::handle_formatting(&doc.content, &options));
         }
         Ok(None)
     }
@@ -1644,7 +1684,7 @@ impl LanguageServer for ModelicaLanguageServer {
         let Some(ast) = doc.parsed() else {
             return Ok(None);
         };
-        Ok(Some(handlers::handle_code_lens(ast, uri)))
+        Ok(Some(handlers::handle_code_lens(ast, &doc.content, uri)))
     }
 
     async fn code_lens_resolve(&self, mut params: CodeLens) -> Result<CodeLens> {
@@ -1690,6 +1730,7 @@ impl LanguageServer for ModelicaLanguageServer {
         {
             return Ok(params);
         }
+        let tool_options = self.tool_options_for_document_or_default(&uri_path).await;
         let _strict_guard = self.work_lanes.strict.lock().await;
         if self.analysis_request_is_stale(request_token).await {
             return Ok(params);
@@ -1703,10 +1744,11 @@ impl LanguageServer for ModelicaLanguageServer {
             arguments: None,
         });
         if strict_failed {
-            let mut diagnostics = handlers::compute_diagnostics_with_mode(
+            let mut diagnostics = handlers::compute_diagnostics_with_options(
                 &doc_snapshot.content,
                 &uri_path,
                 Some(&mut session),
+                &tool_options.lint,
                 rumoca_compile::compile::SemanticDiagnosticsMode::Save,
             );
             drop(session);

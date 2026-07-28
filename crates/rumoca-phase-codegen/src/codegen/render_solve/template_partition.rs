@@ -82,7 +82,7 @@ pub(in crate::codegen) struct SolveNativeFamilyValue {
 }
 
 impl SolveNativeFamilyValue {
-    fn family(&self) -> &RenderNativeAffineFamily {
+    pub(in crate::codegen) fn family(&self) -> &RenderNativeAffineFamily {
         &self.families[self.index]
     }
 }
@@ -119,17 +119,15 @@ fn output_map_for_template(
     family: &RenderNativeAffineFamily,
 ) -> Result<serde_json::Value, minijinja::Error> {
     let layout = template_domain_layout(&family.domain)?;
+    let combined = combined_affine_index_terms(&family.output_map.strides, &family.domain)?;
     let mut compact_strides =
         render_vec_with_capacity(layout.shape.len(), "template output-map stride count")?;
     compact_strides.extend(std::iter::repeat_n(0isize, layout.shape.len()));
-    for term in &family.output_map.strides {
-        if term.stride == 0 {
-            continue;
-        }
+    for term in &combined {
         let Some(Some(dimension)) = layout.dimensions.get(term.dimension) else {
             continue;
         };
-        compact_strides[*dimension] += term.stride;
+        compact_strides[*dimension] = term.stride;
     }
     let mut strides = render_vec_with_capacity(
         compact_strides.len(),
@@ -224,6 +222,78 @@ pub(in crate::codegen) struct RenderScalarFallbackRow {
     pub(in crate::codegen) row_index: usize,
     pub(in crate::codegen) output_index: usize,
     pub(in crate::codegen) output_ordinal: usize,
+    pub(in crate::codegen) native_dense: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(in crate::codegen) struct RenderNativeDenseNode {
+    pub(in crate::codegen) node: solve::ComputeNode,
+    pub(in crate::codegen) node_id: usize,
+    pub(in crate::codegen) output_offset: usize,
+}
+
+#[derive(Debug)]
+pub(in crate::codegen) struct SolveNativeDenseNodesValue {
+    nodes: Arc<Vec<RenderNativeDenseNode>>,
+}
+
+impl SolveNativeDenseNodesValue {
+    pub(in crate::codegen) fn new(nodes: Vec<RenderNativeDenseNode>) -> Self {
+        Self {
+            nodes: Arc::new(nodes),
+        }
+    }
+}
+
+impl Object for SolveNativeDenseNodesValue {
+    fn repr(self: &Arc<Self>) -> ObjectRepr {
+        ObjectRepr::Seq
+    }
+
+    fn get_value(self: &Arc<Self>, key: &Value) -> Option<Value> {
+        let index = key.as_usize()?;
+        (index < self.nodes.len()).then(|| {
+            Value::from_object(SolveNativeDenseNodeValue {
+                nodes: self.nodes.clone(),
+                index,
+            })
+        })
+    }
+
+    fn enumerate(self: &Arc<Self>) -> Enumerator {
+        Enumerator::Seq(self.nodes.len())
+    }
+}
+
+#[derive(Debug)]
+struct SolveNativeDenseNodeValue {
+    nodes: Arc<Vec<RenderNativeDenseNode>>,
+    index: usize,
+}
+
+impl SolveNativeDenseNodeValue {
+    fn node(&self) -> &RenderNativeDenseNode {
+        &self.nodes[self.index]
+    }
+}
+
+impl Object for SolveNativeDenseNodeValue {
+    fn repr(self: &Arc<Self>) -> ObjectRepr {
+        ObjectRepr::Map
+    }
+
+    fn get_value(self: &Arc<Self>, key: &Value) -> Option<Value> {
+        match key.as_str()? {
+            "node" => Some(Value::from_serialize(&self.node().node)),
+            "node_id" => Some(Value::from(self.node().node_id)),
+            "output_offset" => Some(Value::from(self.node().output_offset)),
+            _ => None,
+        }
+    }
+
+    fn enumerate(self: &Arc<Self>) -> Enumerator {
+        Enumerator::Str(&["node", "node_id", "output_offset"])
+    }
 }
 #[derive(Debug)]
 pub(in crate::codegen) struct SolveScalarFallbackRowsValue {
@@ -284,12 +354,18 @@ impl Object for SolveScalarFallbackRowValue {
             "row_index" => Some(Value::from(self.row().row_index)),
             "output_index" => Some(Value::from(self.row().output_index)),
             "output_ordinal" => Some(Value::from(self.row().output_ordinal)),
+            "native_dense" => Some(Value::from(self.row().native_dense)),
             _ => None,
         }
     }
 
     fn enumerate(self: &Arc<Self>) -> Enumerator {
-        Enumerator::Str(&["row_index", "output_index", "output_ordinal"])
+        Enumerator::Str(&[
+            "row_index",
+            "output_index",
+            "output_ordinal",
+            "native_dense",
+        ])
     }
 }
 
@@ -558,6 +634,8 @@ fn wgsl_native_family_inventory_entry(
 
 pub(in crate::codegen) struct NativeFamilyTemplatePartition {
     pub(in crate::codegen) families: Vec<RenderNativeAffineFamily>,
+    pub(in crate::codegen) native_dense_nodes: Vec<RenderNativeDenseNode>,
+    pub(in crate::codegen) fallback_programs: Vec<Vec<solve::LinearOp>>,
     pub(in crate::codegen) scalar_fallback_rows: Vec<RenderScalarFallbackRow>,
     pub(in crate::codegen) map_family_count: usize,
     pub(in crate::codegen) stencil_family_count: usize,
@@ -568,19 +646,15 @@ pub(in crate::codegen) fn native_family_template_partition(
 ) -> Result<NativeFamilyTemplatePartition, rumoca_eval_solve::ScalarizeError> {
     let mut partition = NativeFamilyTemplatePartition {
         families: Vec::new(),
+        native_dense_nodes: Vec::new(),
+        fallback_programs: Vec::new(),
         scalar_fallback_rows: Vec::new(),
         map_family_count: 0,
         stencil_family_count: 0,
     };
-    let mut scalar_row_index = 0;
     let mut output_cursor = 0;
     for node in &block.nodes {
-        partition_node_for_template(
-            &mut partition,
-            node,
-            &mut scalar_row_index,
-            &mut output_cursor,
-        )?;
+        partition_node_for_template(&mut partition, node, &mut output_cursor)?;
     }
     Ok(partition)
 }
@@ -591,7 +665,6 @@ pub(in crate::codegen) fn native_family_template_partition(
 fn partition_node_for_template(
     partition: &mut NativeFamilyTemplatePartition,
     node: &solve::ComputeNode,
-    scalar_row_index: &mut usize,
     output_cursor: &mut usize,
 ) -> Result<(), rumoca_eval_solve::ScalarizeError> {
     match node {
@@ -605,9 +678,8 @@ fn partition_node_for_template(
             ..
         } => {
             let span = required_compute_node_span(*span, "native map family")?;
-            let output_indices =
-                rumoca_eval_solve::tensor_output_indices(domain, output_map, "map", span)?;
             let scalar_count = render_domain_scalar_count(domain, "map", span)?;
+            let output_count = compact_tensor_output_count(domain, output_map, "map", span)?;
             push_native_affine_family(
                 partition,
                 "map",
@@ -620,18 +692,7 @@ fn partition_node_for_template(
                 span,
             )?;
             partition.map_family_count += 1;
-            *scalar_row_index = rumoca_eval_solve::checked_contiguous_output_count(
-                *scalar_row_index,
-                scalar_count,
-                "map scalar rows",
-                span,
-            )?;
-            *output_cursor = (*output_cursor).max(rumoca_eval_solve::checked_tensor_output_count(
-                &output_indices,
-                *output_cursor,
-                "map",
-                span,
-            )?);
+            *output_cursor = (*output_cursor).max(output_count);
         }
         solve::ComputeNode::AffineStencil {
             domain,
@@ -643,12 +704,8 @@ fn partition_node_for_template(
             ..
         } => {
             let span = required_compute_node_span(*span, "native affine stencil family")?;
-            let output_indices = rumoca_eval_solve::tensor_output_indices(
-                domain,
-                output_map,
-                "affine stencil",
-                span,
-            )?;
+            let output_count =
+                compact_tensor_output_count(domain, output_map, "affine stencil", span)?;
             let scalar_count = render_domain_scalar_count(domain, "affine stencil", span)?;
             push_native_affine_family(
                 partition,
@@ -662,18 +719,7 @@ fn partition_node_for_template(
                 span,
             )?;
             partition.stencil_family_count += 1;
-            *scalar_row_index = rumoca_eval_solve::checked_contiguous_output_count(
-                *scalar_row_index,
-                scalar_count,
-                "affine stencil scalar rows",
-                span,
-            )?;
-            *output_cursor = (*output_cursor).max(rumoca_eval_solve::checked_tensor_output_count(
-                &output_indices,
-                *output_cursor,
-                "affine stencil",
-                span,
-            )?);
+            *output_cursor = (*output_cursor).max(output_count);
         }
         solve::ComputeNode::ScalarPrograms(block) => {
             let block_span = scalar_program_block_source_span(block)?;
@@ -682,19 +728,7 @@ fn partition_node_for_template(
                 *output_cursor,
                 "scalar fallback",
             )?;
-            push_scalar_program_block_fallback_rows(
-                partition,
-                block,
-                *scalar_row_index,
-                &output_indices,
-                block_span,
-            )?;
-            *scalar_row_index = rumoca_eval_solve::checked_contiguous_output_count(
-                *scalar_row_index,
-                block.row_count(),
-                "scalar fallback rows",
-                block_span,
-            )?;
+            push_scalar_program_block_fallback_rows(partition, block, &output_indices, block_span)?;
             *output_cursor = rumoca_eval_solve::scalar_program_output_count(
                 block,
                 *output_cursor,
@@ -704,26 +738,50 @@ fn partition_node_for_template(
         solve::ComputeNode::MatMul { m, n, span, .. } => {
             let span = required_compute_node_span(*span, "matmul scalar fallback")?;
             let count = checked_product(*m, *n, "matmul scalar fallback", span)?;
+            let native_dense = mlir_native_dense_node_supported(node);
+            if native_dense {
+                push_native_dense_node(partition, node, *output_cursor, span)?;
+            }
             push_multi_output_tensor_fallback_program(
                 partition,
-                scalar_row_index,
                 output_cursor,
+                node,
                 count,
+                native_dense,
                 span,
             )?;
         }
         solve::ComputeNode::LinSolve { n, span, .. } => {
             let span = required_compute_node_span(*span, "linsolve scalar fallback")?;
+            let native_dense = mlir_native_dense_node_supported(node);
+            if native_dense {
+                push_native_dense_node(partition, node, *output_cursor, span)?;
+            }
             push_multi_output_tensor_fallback_program(
                 partition,
-                scalar_row_index,
                 output_cursor,
+                node,
                 *n,
+                native_dense,
                 span,
             )?;
         }
     }
     Ok(())
+}
+
+fn compact_tensor_output_count(
+    domain: &rumoca_core::StructuredIndexDomain,
+    output_map: &solve::TensorOutputMap,
+    kind: &'static str,
+    span: rumoca_core::Span,
+) -> Result<usize, rumoca_eval_solve::ScalarizeError> {
+    output_map.output_count(domain).map_err(|error| {
+        rumoca_eval_solve::ScalarizeError::ShapeContract {
+            message: format!("{kind} output map is invalid: {error:?}"),
+            span: Some(span),
+        }
+    })
 }
 
 fn required_compute_node_span(
@@ -757,7 +815,6 @@ pub(in crate::codegen) fn scalar_program_row_span(
 fn push_scalar_program_block_fallback_rows(
     partition: &mut NativeFamilyTemplatePartition,
     block: &solve::ScalarProgramBlock,
-    row_start: usize,
     output_indices: &[usize],
     block_span: rumoca_core::Span,
 ) -> Result<(), rumoca_eval_solve::ScalarizeError> {
@@ -767,17 +824,16 @@ fn push_scalar_program_block_fallback_rows(
         "scalar fallback template row count",
         Some(block_span),
     )?;
+    reserve_partition_capacity(
+        &mut partition.fallback_programs,
+        block.programs.len(),
+        "scalar fallback program count",
+        Some(block_span),
+    )?;
     let mut output_ordinal = 0usize;
     for (program_offset, program) in block.programs.iter().enumerate() {
         let program_span = scalar_program_row_span(block, program_offset, block_span);
-        let row_index = row_start.checked_add(program_offset).ok_or(
-            rumoca_eval_solve::ScalarizeError::ContiguousOutputOverflow {
-                kind: "scalar fallback row",
-                start: row_start,
-                count: program_offset,
-                span: program_span,
-            },
-        )?;
+        let row_index = partition.fallback_programs.len();
         push_program_output_fallback_rows(
             &mut partition.scalar_fallback_rows,
             program,
@@ -786,6 +842,7 @@ fn push_scalar_program_block_fallback_rows(
             &mut output_ordinal,
             program_span,
         )?;
+        partition.fallback_programs.push(program.clone());
     }
     Ok(())
 }
@@ -813,6 +870,7 @@ fn push_program_output_fallback_rows(
             row_index,
             output_index,
             output_ordinal: program_output_ordinal,
+            native_dense: false,
         });
         *output_ordinal = output_ordinal.checked_add(1).ok_or(
             rumoca_eval_solve::ScalarizeError::OutputCountOverflow {
@@ -840,17 +898,12 @@ fn render_domain_scalar_count(
 
 fn push_multi_output_tensor_fallback_program(
     partition: &mut NativeFamilyTemplatePartition,
-    scalar_row_index: &mut usize,
     output_cursor: &mut usize,
+    node: &solve::ComputeNode,
     count: usize,
+    native_dense: bool,
     span: rumoca_core::Span,
 ) -> Result<(), rumoca_eval_solve::ScalarizeError> {
-    let next_scalar_row_index = rumoca_eval_solve::checked_contiguous_output_count(
-        *scalar_row_index,
-        usize::from(count > 0),
-        "scalar fallback rows",
-        span,
-    )?;
     let next_output_cursor = rumoca_eval_solve::checked_contiguous_output_count(
         *output_cursor,
         count,
@@ -863,17 +916,60 @@ fn push_multi_output_tensor_fallback_program(
         "scalar fallback template row count",
         Some(span),
     )?;
+    let local = solve::ComputeBlock {
+        nodes: vec![node.clone()],
+    };
+    let scalar = rumoca_eval_solve::to_scalar_program_block(&local)?;
+    let expected_program_count = usize::from(count > 0);
+    if scalar.programs.len() != expected_program_count {
+        return Err(rumoca_eval_solve::ScalarizeError::ShapeContract {
+            message: format!(
+                "native dense fallback expected {expected_program_count} programs, got {}",
+                scalar.programs.len()
+            ),
+            span: Some(span),
+        });
+    }
+    reserve_partition_capacity(
+        &mut partition.fallback_programs,
+        scalar.programs.len(),
+        "native dense fallback program count",
+        Some(span),
+    )?;
+    let row_index = partition.fallback_programs.len();
     for offset in 0..count {
         partition
             .scalar_fallback_rows
             .push(RenderScalarFallbackRow {
-                row_index: *scalar_row_index,
+                row_index,
                 output_index: *output_cursor + offset,
                 output_ordinal: offset,
+                native_dense,
             });
     }
-    *scalar_row_index = next_scalar_row_index;
+    partition.fallback_programs.extend(scalar.programs);
     *output_cursor = next_output_cursor;
+    Ok(())
+}
+
+fn push_native_dense_node(
+    partition: &mut NativeFamilyTemplatePartition,
+    node: &solve::ComputeNode,
+    output_offset: usize,
+    span: rumoca_core::Span,
+) -> Result<(), rumoca_eval_solve::ScalarizeError> {
+    reserve_partition_capacity(
+        &mut partition.native_dense_nodes,
+        1,
+        "native dense template node count",
+        Some(span),
+    )?;
+    let node_id = partition.native_dense_nodes.len();
+    partition.native_dense_nodes.push(RenderNativeDenseNode {
+        node: node.clone(),
+        node_id,
+        output_offset,
+    });
     Ok(())
 }
 

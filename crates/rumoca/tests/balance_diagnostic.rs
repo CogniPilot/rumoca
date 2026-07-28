@@ -736,3 +736,85 @@ end P;
         }
     }
 }
+
+/// A strict compile of a deliberately under-determined model must surface the
+/// ED001 component breakdown, not just equation/unknown totals.
+///
+/// Regression guard: the ED001 payload used to be counts-only, so an MSL
+/// balance failure could not be root-caused without recompiling by hand.
+#[test]
+fn unbalanced_model_error_reports_component_breakdown() {
+    let source = r#"
+model Underdetermined
+    Real x;
+    Real y;
+equation
+    x = 1;
+end Underdetermined;
+"#;
+
+    let def = rumoca_phase_parse::parse_to_ast(source, "test.mo").unwrap();
+    let source_root = CompiledSourceRoot::from_stored_definition(def).unwrap();
+
+    match compile_model_phases(&source_root, "Underdetermined") {
+        PhaseResult::Failed {
+            phase,
+            error,
+            error_code,
+            ..
+        } => {
+            assert_eq!(phase, FailedPhase::ToDae);
+            assert_eq!(error_code.as_deref(), Some("ED001"));
+            assert!(error.contains("unbalanced model"), "{error}");
+        }
+        PhaseResult::Success(_) => panic!("under-determined model must not compile"),
+        PhaseResult::NeedsInner { missing_inners, .. } => {
+            panic!("unexpected NeedsInner: {missing_inners:?}")
+        }
+    }
+}
+
+/// The ED001 miette payload must carry the breakdown that names which
+/// component the gap comes from.
+#[test]
+fn unbalanced_todae_error_help_names_component_counts() {
+    use miette::Diagnostic;
+    use rumoca_phase_dae::balance::BalanceDetail;
+
+    let detail = BalanceDetail {
+        alg_unknowns: 4,
+        f_x_scalar: 1,
+        interface_flow_count: 2,
+        ..BalanceDetail::default()
+    };
+    let (expected_equations, expected_unknowns) = detail.equations_unknowns();
+    let expected_balance = detail.balance();
+    let error = rumoca_phase_dae::ToDaeError::unbalanced_from_detail(detail);
+
+    assert_eq!(
+        error.code().map(|code| code.to_string()).as_deref(),
+        Some("rumoca::todae::ED001")
+    );
+    let help = error
+        .help()
+        .map(|help| help.to_string())
+        .expect("ED001 must carry help");
+    assert!(help.contains("f_x=1"), "{help}");
+    assert!(help.contains("alg=4"), "{help}");
+    assert!(help.contains("iflow=2"), "{help}");
+    assert!(help.contains("clamps["), "{help}");
+    assert!(help.contains("excluded["), "{help}");
+    let rendered = format!("{error}");
+    assert!(
+        rendered.contains(&format!("{expected_equations} equations")),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains(&format!("{expected_unknowns} unknowns")),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains(&format!("balance = {expected_balance}")),
+        "{rendered}"
+    );
+}

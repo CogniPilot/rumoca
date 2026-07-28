@@ -840,8 +840,20 @@ end PlugToPinsNLike;
     }
 
     /// Regression pattern from Electrical.Batteries.Utilities.BusTranscription:
-    /// an output connector member defined by a component equation and additionally
-    /// connected to a non-unknown expandable-bus member must not be double-counted.
+    /// a component output connected to an expandable-bus member contributes
+    /// exactly one connection equation, never two.
+    ///
+    /// `outBus.x` is *used* by `connect(g.y, outBus.x)`, so MLS §9.1.3 keeps it
+    /// in the expanded `outBus` connector (only members that no `connect`
+    /// mentions are dropped) and it stays an ordinary continuous-time `Real`
+    /// (MLS §3.8.3 — `Real` in a connector has no `discrete` prefix). Its
+    /// connection equation is therefore its *only* defining equation and belongs
+    /// in the continuous partition: the system is exactly determined with three
+    /// unknowns (`g.u`, `g.y`, `outBus.x`) against `g.y = g.u` plus the two
+    /// connection equations, `inBus.x` being the unwritten external bus input.
+    /// Dropping the `outBus` connection equation would leave `outBus.x`
+    /// unconstrained (balance -1), so "not double-counted" means exactly one
+    /// occurrence, not zero.
     #[test]
     fn t10k_07_expandable_bus_output_connection_not_double_counted() {
         let source = r#"
@@ -873,7 +885,7 @@ end MiniBusTranscriptionArr;
         let r = assert_compiles(source, "MiniBusTranscriptionArr");
         assert_eq!(
             r.balance, 0,
-            "output-to-bus connection should not overconstrain when output already has a defining equation"
+            "the bus member and its single connection equation must balance"
         );
         let origins = r
             .dae
@@ -888,13 +900,10 @@ end MiniBusTranscriptionArr;
                 .any(|origin| origin.contains("equation from g")),
             "canonical DAE should retain the component output equation; origins={origins:?}"
         );
-        assert!(
-            origins.iter().all(|origin| {
-                !(origin.contains("connection equation")
-                    && origin.contains("g")
-                    && origin.contains("outBus.x"))
-            }),
-            "redundant output-to-known bus connection should be skipped; origins={origins:?}"
+        assert_eq!(
+            count_out_bus_connection_origins(&origins),
+            1,
+            "output-to-bus connection must contribute exactly one equation; origins={origins:?}"
         );
 
         let projection_dae = rumoca_compile::galec::dae_for_galec_projection(&r.dae);
@@ -904,20 +913,33 @@ end MiniBusTranscriptionArr;
             .iter()
             .map(|eq| eq.origin.as_str())
             .collect::<Vec<_>>();
-        assert!(
-            projection_origins
-                .iter()
-                .all(|origin| !origin.contains("equation from g")),
-            "GALEC projection should inline the hidden component output equation; origins={projection_origins:?}"
+        // The hidden-component-output fold only removes a producer residual
+        // whose target no continuous or initialization equation reads. Here the
+        // `outBus` connection equation reads `g[1,1].y`, so folding it away
+        // would delete the equation that defines `g[1,1].y` and unbalance the
+        // projection: the residual must survive.
+        assert_eq!(
+            projection_origins, origins,
+            "GALEC projection must keep the component output equation that the bus connection reads"
         );
-        assert!(
-            projection_origins.iter().all(|origin| {
-                !(origin.contains("connection equation")
+        assert_eq!(
+            count_out_bus_connection_origins(&projection_origins),
+            1,
+            "GALEC projection must keep exactly one output-to-bus connection equation; origins={projection_origins:?}"
+        );
+    }
+
+    /// Count equation origins that describe the `g[..].y` to `outBus.x`
+    /// connection, in either orientation.
+    fn count_out_bus_connection_origins(origins: &[&str]) -> usize {
+        origins
+            .iter()
+            .filter(|origin| {
+                origin.contains("connection equation")
                     && origin.contains("g")
-                    && origin.contains("outBus.x"))
-            }),
-            "GALEC projection should keep the redundant output-to-known bus connection skipped; origins={projection_origins:?}"
-        );
+                    && origin.contains("outBus.x")
+            })
+            .count()
     }
 }
 

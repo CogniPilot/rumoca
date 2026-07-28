@@ -91,6 +91,30 @@ impl TypeOverrideMap {
         })
     }
 
+    /// Materialize the effective virtual-class selections for instance IR.
+    ///
+    /// Identity mappings describe locally declared classes, not overrides, so
+    /// only changed declaration slots are retained.
+    pub(super) fn class_overrides(&self, tree: &ast::ClassTree) -> ast::ClassOverrideMap {
+        self.targets_by_alias_def_id
+            .iter()
+            .filter_map(|(alias_def_id, target_def_id)| {
+                if alias_def_id == target_def_id {
+                    return None;
+                }
+                let alias = tree
+                    .get_class_by_def_id(*alias_def_id)?
+                    .name
+                    .text
+                    .to_string();
+                Some((
+                    *alias_def_id,
+                    ast::ClassOverride::new(alias, *alias_def_id, *target_def_id, None),
+                ))
+            })
+            .collect()
+    }
+
     fn target_for_name(&self, name: &ast::Name) -> Option<DefId> {
         let exact_def_id = (name.name.len() == 1)
             .then_some(name.def_id)
@@ -104,6 +128,62 @@ impl TypeOverrideMap {
 
     fn target_for_path(&self, path: &ast::QualifiedName) -> Option<DefId> {
         self.targets_by_alias_path.get(path).copied()
+    }
+
+    /// Specialize inherited nested type identities for one effective package.
+    ///
+    /// A package alias such as `Medium` can select a derived package while the
+    /// selected `BaseProperties` model is declared in an ancestor package.
+    /// Components inherited by that model still carry the ancestor's resolved
+    /// `DefId` (for example `PartialMedium.ThermodynamicState`). Once the
+    /// package is selected for a concrete component instance, map every
+    /// declaration of a nested member in its extends chain to the member that
+    /// is effective in the selected package.
+    pub(super) fn specialize_inherited_nested_types(
+        &mut self,
+        tree: &ast::ClassTree,
+        effective_package_def_id: DefId,
+    ) {
+        let Some(effective_package) = tree.get_class_by_def_id(effective_package_def_id) else {
+            return;
+        };
+        let mut hierarchy = vec![effective_package];
+        let mut visited = std::collections::HashSet::new();
+
+        for index in 0..hierarchy.len() {
+            let class = hierarchy[index];
+            if let Some(def_id) = class.def_id
+                && !visited.insert(def_id)
+            {
+                continue;
+            }
+            hierarchy.extend(extends_base_classes(tree, class));
+        }
+
+        let member_names: std::collections::HashSet<String> = hierarchy
+            .iter()
+            .flat_map(|class| class.classes.keys().cloned())
+            .collect();
+        for member_name in member_names {
+            let Some(effective_member_def_id) =
+                find_member_type_in_class(tree, effective_package, &member_name)
+                    .and_then(|member| member.def_id)
+            else {
+                continue;
+            };
+            for inherited_member_def_id in hierarchy.iter().filter_map(|class| {
+                class
+                    .classes
+                    .get(&member_name)
+                    .and_then(|member| member.def_id)
+            }) {
+                self.insert_alias(
+                    ast::QualifiedName::from_ident(&member_name),
+                    Some(inherited_member_def_id),
+                    effective_member_def_id,
+                );
+            }
+        }
     }
 }
 
@@ -406,10 +486,22 @@ pub(super) fn apply_type_override<'a>(
     //
     // This must apply to package-member model types too (e.g.
     // `Medium.BaseProperties`), not only primitive/record members.
-    let exact_override = comp
+    let exact_override = comp.type_def_id.and_then(|source_def_id| {
+        type_overrides
+            .target_for_alias_def_id(source_def_id)
+            .filter(|target_def_id| {
+                exact_type_override_preserves_declaration_slot(tree, source_def_id, *target_def_id)
+            })
+    });
+    // A resolved type identity is authoritative. Name-only lookup is solely a
+    // fallback for unresolved declarations; otherwise an active outer scope
+    // containing an unrelated same-named type can capture an inherited
+    // component after resolve.
+    let unresolved_name_override = comp
         .type_def_id
-        .and_then(|def_id| type_overrides.target_for_alias_def_id(def_id))
-        .or_else(|| type_overrides.target_for_name(&comp.type_name));
+        .is_none()
+        .then(|| type_overrides.target_for_name(&comp.type_name))
+        .flatten();
     // Instance-level package redeclarations in active mod_env are more specific
     // than enclosing-class defaults when resolving dotted member types.
     let mod_env_override = resolve_dotted_type_from_mod_env(tree, &comp.type_name, mod_env);
@@ -424,7 +516,10 @@ pub(super) fn apply_type_override<'a>(
             .or(Some(prefix_override))
     })();
 
-    let override_def_id = exact_override.or(mod_env_override).or(prefix_override);
+    let override_def_id = exact_override
+        .or(unresolved_name_override)
+        .or(mod_env_override)
+        .or(prefix_override);
     if let Some(override_def_id) = override_def_id
         && comp.type_def_id != Some(override_def_id)
     {
@@ -437,6 +532,63 @@ pub(super) fn apply_type_override<'a>(
         return Ok(std::borrow::Cow::Owned(overridden));
     }
     Ok(std::borrow::Cow::Borrowed(comp))
+}
+
+fn exact_type_override_preserves_declaration_slot(
+    tree: &ast::ClassTree,
+    source_def_id: DefId,
+    target_def_id: DefId,
+) -> bool {
+    if source_def_id == target_def_id {
+        return true;
+    }
+    let (Some(source), Some(target)) = (
+        tree.get_class_by_def_id(source_def_id),
+        tree.get_class_by_def_id(target_def_id),
+    ) else {
+        return false;
+    };
+
+    // Differently named targets are explicit class/package aliases. For
+    // same-named declarations, require a structural redeclaration or extends
+    // relationship so unrelated lexical collisions cannot masquerade as an
+    // override.
+    source.name.text != target.name.text
+        || class_identity_reaches(tree, target, source_def_id)
+        || class_identity_reaches(tree, source, target_def_id)
+}
+
+fn class_identity_reaches(
+    tree: &ast::ClassTree,
+    root: &ast::ClassDef,
+    target_def_id: DefId,
+) -> bool {
+    const MAX_DEPTH: usize = 32;
+    let mut pending = vec![root];
+    let mut visited = std::collections::HashSet::new();
+
+    for _ in 0..MAX_DEPTH {
+        let Some(class) = pending.pop() else {
+            return false;
+        };
+        let Some(def_id) = class.def_id else {
+            continue;
+        };
+        if def_id == target_def_id {
+            return true;
+        }
+        if !visited.insert(def_id) {
+            continue;
+        }
+        if let Some(redeclare_target) = class
+            .redeclare_target_def_id
+            .and_then(|def_id| tree.get_class_by_def_id(def_id))
+        {
+            pending.push(redeclare_target);
+        }
+        pending.extend(extends_base_classes(tree, class));
+    }
+    false
 }
 
 fn resolve_dotted_type_from_mod_env(
@@ -535,13 +687,14 @@ pub(super) fn find_nested_class_in_hierarchy<'a>(
 
 /// Extract active class/package redeclare overrides from a component's modifiers.
 ///
-fn validate_component_class_redeclare_target(
+pub(super) fn validate_component_class_redeclare_target(
     tree: &ast::ClassTree,
     target_name: &str,
     nested_class: &ast::ClassDef,
     mod_expr: &ast::Expression,
+    replacement_def_id: DefId,
 ) -> InstantiateResult<()> {
-    let Some(target_ref) = class_redeclare_target_ref(mod_expr) else {
+    let Some(target_ref) = class_redeclare_alias_ref(mod_expr) else {
         return Err(Box::new(InstantiateError::redeclare_error(
             target_name,
             "redeclare target is missing source span",
@@ -582,7 +735,86 @@ fn validate_component_class_redeclare_target(
         )));
     }
 
+    validate_component_redeclare_constraint(
+        tree,
+        target_name,
+        nested_class,
+        replacement_def_id,
+        span,
+    )?;
+
     Ok(())
+}
+
+fn validate_component_redeclare_constraint(
+    tree: &ast::ClassTree,
+    target_name: &str,
+    nested_class: &ast::ClassDef,
+    replacement_def_id: DefId,
+    span: rumoca_core::Span,
+) -> InstantiateResult<()> {
+    let Some(constraint_def_id) = component_redeclare_constraint_def_id(nested_class) else {
+        return Err(Box::new(InstantiateError::redeclare_error(
+            target_name,
+            "resolved replaceable declaration has no constraining-type identity",
+            span,
+        )));
+    };
+    let replacement_name = tree
+        .def_map
+        .get(&replacement_def_id)
+        .cloned()
+        .or_else(|| {
+            tree.get_class_by_def_id(replacement_def_id)
+                .map(|class| class.name.text.to_string())
+        })
+        .ok_or_else(|| {
+            Box::new(InstantiateError::redeclare_error(
+                target_name,
+                "resolved redeclare value has no class identity",
+                span,
+            ))
+        })?;
+    let constraint_name = tree
+        .def_map
+        .get(&constraint_def_id)
+        .cloned()
+        .or_else(|| {
+            tree.get_class_by_def_id(constraint_def_id)
+                .map(|class| class.name.text.to_string())
+        })
+        .ok_or_else(|| {
+            Box::new(InstantiateError::redeclare_error(
+                target_name,
+                "resolved constraining type has no class identity",
+                span,
+            ))
+        })?;
+
+    if !crate::inheritance::is_type_subtype(tree, &replacement_name, &constraint_name) {
+        return Err(Box::new(InstantiateError::redeclare_constraint_violation(
+            target_name,
+            &replacement_name,
+            &constraint_name,
+            span,
+        )));
+    }
+
+    Ok(())
+}
+
+fn component_redeclare_constraint_def_id(nested_class: &ast::ClassDef) -> Option<DefId> {
+    nested_class
+        .constrainedby
+        .as_ref()
+        .and_then(|constraint| constraint.def_id)
+        .or_else(|| {
+            nested_class
+                .extends
+                .first()
+                .and_then(|extend| extend.base_def_id.or(extend.base_name.def_id))
+        })
+        .or(nested_class.def_id)
 }
 
 /// MLS §7.3: component-level redeclare modifiers can target replaceable nested
@@ -599,19 +831,28 @@ pub(super) fn extract_component_class_overrides(
         return Ok(overrides);
     };
 
-    for (target_name, mod_expr) in &comp.modifications {
-        if class_redeclare_target_ref(mod_expr).is_none() {
+    validate_component_source_modifier_metadata(tree, comp)?;
+    for (index, mod_expr) in comp.source_modifications.iter().enumerate() {
+        let is_redeclare = comp
+            .source_modification_redeclare_flags
+            .get(index)
+            .copied()
+            .unwrap_or(false);
+        let Some(target_name) = component_source_modifier_target_name(mod_expr) else {
             continue;
-        }
+        };
 
-        let Some(nested_class) = find_nested_class_in_hierarchy(tree, target_class, target_name)
+        let Some(nested_class) = find_nested_class_in_hierarchy(tree, target_class, &target_name)
         else {
             continue;
         };
-        validate_component_class_redeclare_target(tree, target_name, nested_class, mod_expr)?;
+        if !is_redeclare {
+            reject_unmarked_component_class_replacement(tree, &target_name, mod_expr)?;
+            continue;
+        }
         let Some(alias_def_id) = nested_class.def_id else {
             return Err(Box::new(InstantiateError::redeclare_error(
-                target_name,
+                &target_name,
                 "resolved redeclare target has no DefId",
                 location_to_span(
                     &nested_class.location,
@@ -620,27 +861,117 @@ pub(super) fn extract_component_class_overrides(
                 )?,
             )));
         };
-        let resolved_def_id =
-            resolve_redeclare_value_def_id(tree, mod_expr, mod_env).or_else(|| {
+        if is_forwarding_component_redeclare(mod_expr, &target_name) {
+            // The enclosing override is instance-local and is applied by
+            // `resolve_component_nested_type_overrides`; validating the
+            // lexical alias itself would compare the wrong class identity.
+            continue;
+        }
+        // `source_modifications` owns the redeclare keyword and source span;
+        // the corresponding normalized modification owns resolved `DefId`
+        // metadata. Keep those roles paired by the structured target key.
+        let resolved_mod_expr = comp.modifications.get(&target_name).unwrap_or(mod_expr);
+        let Some(def_id) = resolve_redeclare_value_def_id(tree, resolved_mod_expr, mod_env)
+            .or_else(|| {
+                class_redeclare_target_ref(resolved_mod_expr)
+                    .and_then(|target| target.def_id.or_else(|| resolve_cref_def_id(tree, &target)))
+            })
+            .or_else(|| resolve_redeclare_value_def_id(tree, mod_expr, mod_env))
+            .or_else(|| {
                 class_redeclare_target_ref(mod_expr)
                     .and_then(|target| target.def_id.or_else(|| resolve_cref_def_id(tree, &target)))
-            });
-
-        if let Some(def_id) = resolved_def_id {
-            overrides.insert(
+            })
+        else {
+            return Err(Box::new(InstantiateError::redeclare_error(
+                &target_name,
+                "component redeclare value did not resolve to a class",
+                mod_expr.span(),
+            )));
+        };
+        validate_component_class_redeclare_target(
+            tree,
+            &target_name,
+            nested_class,
+            mod_expr,
+            def_id,
+        )?;
+        overrides.insert(
+            alias_def_id,
+            ast::ClassOverride::new(
+                target_name,
                 alias_def_id,
-                ast::ClassOverride::new(
-                    target_name.clone(),
-                    alias_def_id,
-                    def_id,
-                    class_redeclare_target_ref(mod_expr),
-                )
-                .with_modifier_args(class_redeclare_modifier_args(mod_expr)),
-            );
-        }
+                def_id,
+                class_redeclare_target_ref(mod_expr),
+            )
+            .with_modifier_args(class_redeclare_modifier_args(mod_expr)),
+        );
     }
 
     Ok(overrides)
+}
+
+fn is_forwarding_component_redeclare(mod_expr: &ast::Expression, target_name: &str) -> bool {
+    let Some(target) = class_redeclare_target_ref(mod_expr) else {
+        return false;
+    };
+    let [part] = target.parts.as_slice() else {
+        return false;
+    };
+    part.subs.is_none() && part.ident.text.as_ref() == target_name
+}
+
+fn validate_component_source_modifier_metadata(
+    tree: &ast::ClassTree,
+    comp: &ast::Component,
+) -> InstantiateResult<()> {
+    if comp.source_modifications.len() == comp.source_modification_redeclare_flags.len() {
+        return Ok(());
+    }
+    Err(Box::new(InstantiateError::redeclare_error(
+        &comp.name,
+        "component source modifiers lost their redeclare metadata",
+        location_to_span(
+            &comp.location,
+            &tree.source_map,
+            "component source modifier metadata",
+        )?,
+    )))
+}
+
+fn component_source_modifier_target_name(mod_expr: &ast::Expression) -> Option<String> {
+    class_redeclare_alias_ref(mod_expr)?
+        .parts
+        .first()
+        .map(|part| part.ident.text.to_string())
+}
+
+fn reject_unmarked_component_class_replacement(
+    tree: &ast::ClassTree,
+    target_name: &str,
+    mod_expr: &ast::Expression,
+) -> InstantiateResult<()> {
+    let ast::Expression::Modification { value, .. } = mod_expr else {
+        return Ok(());
+    };
+    if resolve_redeclare_value_def_id(tree, value, None).is_none() {
+        return Ok(());
+    }
+    let span = class_redeclare_alias_ref(mod_expr)
+        .expect("source modifier target was validated before replacement checking")
+        .span;
+    Err(Box::new(InstantiateError::redeclare_error(
+        target_name,
+        "changing a class or package requires the `redeclare` keyword",
+        span,
+    )))
+}
+
+fn class_redeclare_alias_ref(mod_expr: &ast::Expression) -> Option<&ast::ComponentReference> {
+    match mod_expr {
+        ast::Expression::Modification { target, .. }
+        | ast::Expression::ClassModification { target, .. } => Some(target),
+        _ => None,
+    }
 }
 
 fn class_redeclare_target_ref(mod_expr: &ast::Expression) -> Option<ast::ComponentReference> {
@@ -655,7 +986,7 @@ fn class_redeclare_target_ref(mod_expr: &ast::Expression) -> Option<ast::Compone
     }
 }
 
-fn class_redeclare_modifier_args(mod_expr: &ast::Expression) -> Vec<ast::Expression> {
+pub(super) fn class_redeclare_modifier_args(mod_expr: &ast::Expression) -> Vec<ast::Expression> {
     match mod_expr {
         ast::Expression::Modification { value, .. } => class_redeclare_modifier_args(value),
         ast::Expression::ClassModification { modifications, .. } => modifications.clone(),
@@ -669,6 +1000,7 @@ mod tests {
     use super::{
         TypeOverrideMap, apply_type_override, build_type_override_map, resolve_cref_def_id,
     };
+    use miette::Diagnostic;
     use rumoca_core::DefId;
     use rumoca_ir_ast as ast;
     use std::sync::Arc;
@@ -694,8 +1026,258 @@ mod tests {
         )
     }
 
+    const COMPONENT_REDECLARE_SOURCE: &str = r"
+package Constraint
+  constant Real k = 10.0;
+end Constraint;
+
+package Good
+  extends Constraint(k = 20.0);
+end Good;
+
+package Bad
+  constant Real k = 30.0;
+end Bad;
+
+model Inner
+  replaceable package Medium = Constraint
+    constrainedby Constraint;
+  Real y = Medium.k;
+end Inner;
+
+model FinalInner
+  final package Medium = Constraint;
+  Real y = Medium.k;
+end FinalInner;
+
+model NonReplaceableInner
+  package Medium = Constraint;
+  Real y = Medium.k;
+end NonReplaceableInner;
+
+model ComponentGood
+  Inner i(redeclare package Medium = Good);
+end ComponentGood;
+
+model ComponentReplaceableGood
+  Inner i(replaceable package Medium = Good);
+end ComponentReplaceableGood;
+
+model ComponentExplicit
+  Inner i(redeclare package Medium = Good(k = 25.0));
+end ComponentExplicit;
+
+model ComponentBad
+  Inner i(redeclare package Medium = Bad);
+end ComponentBad;
+
+model ExtendsBad
+  extends Inner(redeclare package Medium = Bad);
+end ExtendsBad;
+
+model ComponentFinal
+  FinalInner i(redeclare package Medium = Good);
+end ComponentFinal;
+
+model ComponentNonReplaceable
+  NonReplaceableInner i(redeclare package Medium = Good);
+end ComponentNonReplaceable;
+
+model ComponentWithoutRedeclare
+  Inner i(Medium = Good);
+end ComponentWithoutRedeclare;
+
+model ComponentClassModification
+  Inner i(Medium(k = 15.0));
+end ComponentClassModification;
+";
+
+    fn resolved_component_redeclare_tree() -> ast::ClassTree {
+        let file_name = "<component_redeclare_test>";
+        let stored = rumoca_phase_parse::parse_to_ast(COMPONENT_REDECLARE_SOURCE, file_name)
+            .expect("component redeclare fixture should parse");
+        let mut tree = ast::ClassTree::from_parsed(stored);
+        tree.source_map.add(file_name, COMPONENT_REDECLARE_SOURCE);
+        rumoca_phase_resolve::resolve(ast::ParsedTree::new(tree))
+            .expect("component redeclare fixture should resolve")
+            .into_inner()
+    }
+
+    fn instantiate_component_redeclare_error(model: &str) -> Box<crate::InstantiateError> {
+        crate::instantiate_model(&resolved_component_redeclare_tree(), model)
+            .expect_err("component redeclare fixture should fail")
+    }
+
+    fn diagnostic_code(error: &crate::InstantiateError) -> Option<String> {
+        error.code().map(|code| code.to_string())
+    }
+
     #[test]
-    fn test_redeclared_nested_type_remaps_inherited_type_def_id() {
+    fn component_redeclare_is_source_marked_and_selects_the_resolved_target() {
+        let tree = resolved_component_redeclare_tree();
+        let component_declaration = tree
+            .get_class_by_qualified_name("ComponentGood")
+            .and_then(|class| class.components.get("i"))
+            .expect("component declaration i");
+        assert_eq!(
+            component_declaration.source_modification_redeclare_flags,
+            vec![true]
+        );
+        let overlay = crate::instantiate_model(&tree, "ComponentGood")
+            .expect("valid component redeclare should instantiate");
+        let component = overlay
+            .components
+            .values()
+            .find(|component| component.qualified_name.to_flat_string() == "i")
+            .expect("component instance i");
+        let class_override = component
+            .class_overrides
+            .values()
+            .find(|class_override| class_override.alias == "Medium")
+            .expect("source-marked Medium redeclare");
+
+        assert_eq!(
+            tree.def_map.get(&class_override.target_def_id),
+            Some(&"Good".to_string())
+        );
+        assert!(class_override.modifier_args.is_empty());
+    }
+
+    #[test]
+    fn replaceable_component_modifier_is_a_source_marked_redeclare() {
+        let tree = resolved_component_redeclare_tree();
+        let component_declaration = tree
+            .get_class_by_qualified_name("ComponentReplaceableGood")
+            .and_then(|class| class.components.get("i"))
+            .expect("component declaration i");
+        assert_eq!(
+            component_declaration.source_modification_redeclare_flags,
+            vec![true]
+        );
+        let overlay = crate::instantiate_model(&tree, "ComponentReplaceableGood")
+            .expect("replaceable modifier should act as a redeclare");
+        let class_override = overlay
+            .components
+            .values()
+            .find(|component| component.qualified_name.to_flat_string() == "i")
+            .and_then(|component| {
+                component
+                    .class_overrides
+                    .values()
+                    .find(|class_override| class_override.alias == "Medium")
+            })
+            .expect("source-marked Medium redeclare");
+
+        assert_eq!(
+            tree.def_map.get(&class_override.target_def_id),
+            Some(&"Good".to_string())
+        );
+    }
+
+    #[test]
+    fn component_redeclare_rejects_constraining_type_violation() {
+        let component_error = instantiate_component_redeclare_error("ComponentBad");
+        let extends_error = instantiate_component_redeclare_error("ExtendsBad");
+        assert_eq!(
+            diagnostic_code(&component_error),
+            Some("rumoca::instantiate::EI027".to_string())
+        );
+        assert_eq!(
+            diagnostic_code(&extends_error),
+            Some("rumoca::instantiate::EI027".to_string())
+        );
+    }
+
+    #[test]
+    fn component_redeclare_preserves_explicit_replacement_modifiers() {
+        let tree = resolved_component_redeclare_tree();
+        let overlay = crate::instantiate_model(&tree, "ComponentExplicit")
+            .expect("valid modified component redeclare should instantiate");
+        let class_override = overlay
+            .components
+            .values()
+            .find(|component| component.qualified_name.to_flat_string() == "i")
+            .and_then(|component| {
+                component
+                    .class_overrides
+                    .values()
+                    .find(|class_override| class_override.alias == "Medium")
+            })
+            .expect("source-marked Medium redeclare");
+
+        assert_eq!(class_override.modifier_args.len(), 1);
+        let ast::Expression::Modification { target, .. } = &class_override.modifier_args[0] else {
+            panic!("explicit replacement modifier should remain a modification");
+        };
+        assert_eq!(target.to_string(), "k");
+    }
+
+    #[test]
+    fn component_redeclare_rejects_final_and_nonreplaceable_targets() {
+        let final_error = instantiate_component_redeclare_error("ComponentFinal");
+        assert_eq!(
+            diagnostic_code(&final_error),
+            Some("rumoca::instantiate::EI028".to_string())
+        );
+
+        let nonreplaceable_error = instantiate_component_redeclare_error("ComponentNonReplaceable");
+        assert_eq!(
+            diagnostic_code(&nonreplaceable_error),
+            Some("rumoca::instantiate::EI014".to_string())
+        );
+    }
+
+    #[test]
+    fn class_replacement_without_redeclare_is_not_inferred_from_expression_shape() {
+        let tree = resolved_component_redeclare_tree();
+        let component_declaration = tree
+            .get_class_by_qualified_name("ComponentWithoutRedeclare")
+            .and_then(|class| class.components.get("i"))
+            .expect("component declaration i");
+        assert_eq!(
+            component_declaration.source_modification_redeclare_flags,
+            vec![false]
+        );
+        let error = crate::instantiate_model(&tree, "ComponentWithoutRedeclare")
+            .expect_err("unmarked class replacement should fail");
+        assert_eq!(
+            diagnostic_code(&error),
+            Some("rumoca::instantiate::EI007".to_string())
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("requires the `redeclare` keyword")
+        );
+    }
+
+    #[test]
+    fn ordinary_class_modification_without_redeclare_does_not_select_a_new_target() {
+        let tree = resolved_component_redeclare_tree();
+        let component_declaration = tree
+            .get_class_by_qualified_name("ComponentClassModification")
+            .and_then(|class| class.components.get("i"))
+            .expect("component declaration i");
+        assert_eq!(
+            component_declaration.source_modification_redeclare_flags,
+            vec![false]
+        );
+        let overlay = crate::instantiate_model(&tree, "ComponentClassModification")
+            .expect("ordinary nested class modification should instantiate");
+        let component = overlay
+            .components
+            .values()
+            .find(|component| component.qualified_name.to_flat_string() == "i")
+            .expect("component instance i");
+        assert!(
+            component
+                .class_overrides
+                .values()
+                .all(|class_override| class_override.alias != "Medium")
+        );
+    }
+
+    fn nested_type_override_fixture() -> (ast::ClassTree, DefId, DefId) {
         let base_package_id = DefId::new(1);
         let base_state_id = DefId::new(2);
         let derived_package_id = DefId::new(3);
@@ -724,6 +1306,8 @@ mod tests {
             def_id: Some(derived_state_id),
             class_type: rumoca_core::ClassType::Record,
             is_replaceable: true,
+            is_redeclare: true,
+            redeclare_target_def_id: Some(base_state_id),
             ..Default::default()
         };
         let base_properties = ast::ClassDef {
@@ -783,7 +1367,12 @@ mod tests {
             tree.name_map.insert(name.to_string(), def_id);
             tree.def_map.insert(def_id, name.to_string());
         }
+        (tree, base_state_id, derived_state_id)
+    }
 
+    #[test]
+    fn test_redeclared_nested_type_remaps_inherited_type_def_id() {
+        let (tree, base_state_id, derived_state_id) = nested_type_override_fixture();
         let base_properties = tree
             .get_class_by_qualified_name("DerivedMedium.BaseProperties")
             .expect("base properties class");
@@ -1029,6 +1618,157 @@ mod tests {
             overridden.type_def_id,
             Some(base_properties_id),
             "dotted type names with partial first-segment DefIds must resolve to the concrete member"
+        );
+    }
+
+    #[test]
+    fn test_selected_package_specializes_types_in_inherited_member_models() {
+        let partial_medium_id = DefId::new(30);
+        let partial_state_id = DefId::new(31);
+        let base_properties_id = DefId::new(32);
+        let concrete_medium_id = DefId::new(33);
+        let concrete_state_id = DefId::new(34);
+
+        let partial_state = ast::ClassDef {
+            name: make_token("ThermodynamicState"),
+            class_type: rumoca_core::ClassType::Record,
+            def_id: Some(partial_state_id),
+            ..Default::default()
+        };
+        let base_properties = ast::ClassDef {
+            name: make_token("BaseProperties"),
+            class_type: rumoca_core::ClassType::Model,
+            def_id: Some(base_properties_id),
+            ..Default::default()
+        };
+        let mut partial_medium = ast::ClassDef {
+            name: make_token("PartialMedium"),
+            class_type: rumoca_core::ClassType::Package,
+            def_id: Some(partial_medium_id),
+            ..Default::default()
+        };
+        partial_medium
+            .classes
+            .insert("ThermodynamicState".to_string(), partial_state);
+        partial_medium
+            .classes
+            .insert("BaseProperties".to_string(), base_properties);
+
+        let concrete_state = ast::ClassDef {
+            name: make_token("ThermodynamicState"),
+            class_type: rumoca_core::ClassType::Record,
+            def_id: Some(concrete_state_id),
+            is_redeclare: true,
+            redeclare_target_def_id: Some(partial_state_id),
+            ..Default::default()
+        };
+        let mut concrete_medium = ast::ClassDef {
+            name: make_token("ConcreteMedium"),
+            class_type: rumoca_core::ClassType::Package,
+            def_id: Some(concrete_medium_id),
+            extends: vec![ast::Extend {
+                base_name: make_name("PartialMedium"),
+                base_def_id: Some(partial_medium_id),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        concrete_medium
+            .classes
+            .insert("ThermodynamicState".to_string(), concrete_state);
+
+        let mut tree = ast::ClassTree::default();
+        tree.definitions
+            .classes
+            .insert("PartialMedium".to_string(), partial_medium);
+        tree.definitions
+            .classes
+            .insert("ConcreteMedium".to_string(), concrete_medium);
+        for (name, def_id) in [
+            ("PartialMedium", partial_medium_id),
+            ("PartialMedium.ThermodynamicState", partial_state_id),
+            ("PartialMedium.BaseProperties", base_properties_id),
+            ("ConcreteMedium", concrete_medium_id),
+            ("ConcreteMedium.ThermodynamicState", concrete_state_id),
+        ] {
+            tree.name_map.insert(name.to_string(), def_id);
+            tree.def_map.insert(def_id, name.to_string());
+        }
+
+        let inherited_state_component = ast::Component {
+            name: "state".to_string(),
+            type_name: make_name("ThermodynamicState"),
+            type_def_id: Some(partial_state_id),
+            ..ast::Component::empty_with_span(test_span())
+        };
+        let mut type_overrides = TypeOverrideMap::new();
+        type_overrides.insert_alias(
+            ast::QualifiedName::from_ident("Medium"),
+            None,
+            concrete_medium_id,
+        );
+        type_overrides.specialize_inherited_nested_types(&tree, concrete_medium_id);
+
+        let overridden =
+            apply_type_override(&tree, &inherited_state_component, &type_overrides, None)
+                .expect("selected package should specialize inherited member types");
+        assert_eq!(
+            overridden.type_def_id,
+            Some(concrete_state_id),
+            "an inherited BaseProperties model must use the selected medium's state type"
+        );
+    }
+
+    #[test]
+    fn test_resolved_type_identity_rejects_unrelated_same_named_override() {
+        let internal_constants_id = DefId::new(40);
+        let unrelated_constants_id = DefId::new(41);
+        let internal_constants = ast::ClassDef {
+            name: make_token("SpiceConstants"),
+            class_type: rumoca_core::ClassType::Record,
+            def_id: Some(internal_constants_id),
+            ..Default::default()
+        };
+        let unrelated_constants = ast::ClassDef {
+            name: make_token("SpiceConstants"),
+            class_type: rumoca_core::ClassType::Record,
+            def_id: Some(unrelated_constants_id),
+            ..Default::default()
+        };
+        let mut tree = ast::ClassTree::default();
+        tree.definitions
+            .classes
+            .insert("InternalConstants".to_string(), internal_constants);
+        tree.definitions
+            .classes
+            .insert("UnrelatedConstants".to_string(), unrelated_constants);
+        for (name, def_id) in [
+            ("Root.Internal.SpiceConstants", internal_constants_id),
+            ("Root.Examples.Test.SpiceConstants", unrelated_constants_id),
+        ] {
+            tree.name_map.insert(name.to_string(), def_id);
+            tree.def_map.insert(def_id, name.to_string());
+        }
+
+        let component = ast::Component {
+            name: "constants".to_string(),
+            type_name: make_name("SpiceConstants"),
+            type_def_id: Some(internal_constants_id),
+            ..ast::Component::empty_with_span(test_span())
+        };
+        let mut type_overrides = TypeOverrideMap::new();
+        type_overrides.insert_alias(
+            ast::QualifiedName::from_ident("SpiceConstants"),
+            Some(internal_constants_id),
+            unrelated_constants_id,
+        );
+
+        let overridden = apply_type_override(&tree, &component, &type_overrides, None)
+            .expect("unrelated type collision should be ignored");
+        assert_eq!(
+            overridden.type_def_id,
+            Some(internal_constants_id),
+            "resolve's exact type identity must survive unrelated same-named outer types"
         );
     }
 }

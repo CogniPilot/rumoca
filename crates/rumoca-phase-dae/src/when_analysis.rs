@@ -95,7 +95,7 @@ fn collect_statement_assignment(
             insert_when_target(targets, &target);
         }
         rumoca_core::Statement::FunctionCall { outputs, .. } => {
-            for output in outputs.iter().filter_map(extract_output_varname) {
+            for output in outputs.iter().flatten().filter_map(extract_output_varname) {
                 insert_when_target(targets, &output);
             }
         }
@@ -241,7 +241,7 @@ mod tests {
                         subscripts: vec![],
                         span,
                     }],
-                    outputs: vec![rumoca_core::ComponentReference {
+                    outputs: vec![Some(rumoca_core::ComponentReference {
                         local: false,
                         span,
                         parts: vec![rumoca_core::ComponentRefPart {
@@ -250,7 +250,7 @@ mod tests {
                             subs: vec![rumoca_core::Subscript::generated_colon(span)],
                         }],
                         def_id: None,
-                    }],
+                    })],
                     span,
                 }],
             }],

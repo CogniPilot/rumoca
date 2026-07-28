@@ -909,4 +909,62 @@ end SimulationResult;
             "/tmp/Modelica.Blocks.Examples.PID_Controller_res.csv"
         );
     }
+
+    /// `SimVariableMeta::nominal` is `format!("{expr:?}")` of the DAE
+    /// `Expression` — a Rust `Debug` dump, never a numeric literal. A trace
+    /// producer that tried to `parse::<f64>()` it silently yielded `None` for
+    /// every real model, so the trace schema deliberately carries no nominal
+    /// scale at all rather than a field that only works on hand-written
+    /// fixtures.
+    ///
+    /// This test compiles a real model with `nominal = 1000` and pins that
+    /// fact, so re-introducing a string-parsed nominal fails here instead of
+    /// shipping as a silently dead feature.
+    #[test]
+    fn compiled_model_nominal_metadata_is_not_a_numeric_literal() {
+        const SOURCE: &str = "\
+model NominalScaled
+  Real T(start = 300.0, nominal = 1000.0);
+equation
+  der(T) = -T;
+end NominalScaled;
+";
+        let ast = rumoca_compile::parsing::parse_source_to_ast(SOURCE, "NominalScaled.mo")
+            .expect("fixture model parses");
+        let mut session = Session::new(SessionConfig::default());
+        session.add_parsed_batch(vec![("NominalScaled.mo".to_string(), ast)]);
+        let compiled = session
+            .compile_model_dae_strict_reachable_uncached_with_recovery("NominalScaled")
+            .expect("fixture model compiles to DAE");
+
+        let meta = rumoca_sim::build_variable_meta(&compiled.dae, &["T".to_string()], 1);
+        let entry = meta.first().expect("one variable");
+        let nominal = entry
+            .nominal
+            .as_deref()
+            .expect("the model declares nominal = 1000");
+
+        assert!(
+            nominal.parse::<f64>().is_err(),
+            "producer-side nominal is a rendered Expression, not a literal: {nominal:?}"
+        );
+        assert!(
+            nominal.contains("Literal") || nominal.contains("Real"),
+            "expected a Debug-rendered Expression, got {nominal:?}"
+        );
+
+        // The trace schema therefore exposes no nominal scale; the comparison
+        // normalizes degenerate channels against their own magnitude instead.
+        // This exhaustive struct literal is the compile-time half of the guard:
+        // re-adding a `nominal` field to the trace schema stops compiling here
+        // until a producer can actually populate it.
+        let trace_meta = SimTraceVariableMeta {
+            name: entry.name.clone(),
+            role: Some(entry.role.clone()),
+            value_type: entry.value_type.clone(),
+            variability: entry.variability.clone(),
+            time_domain: entry.time_domain.clone(),
+        };
+        assert_eq!(trace_meta.name, "T");
+    }
 }

@@ -15,9 +15,32 @@ fn enum_literal_to_string(lit: &EnumLiteral) -> String {
     if lit.description.is_empty() {
         lit.ident.text.to_string()
     } else {
-        let desc: Vec<_> = lit.description.iter().map(|t| t.text.to_string()).collect();
-        format!("{} \"{}\"", lit.ident.text, desc.join(""))
+        format!(
+            "{} \"{}\"",
+            lit.ident.text,
+            rumoca_core::escape_modelica_string(&description_text(&lit.description))
+        )
     }
+}
+
+fn description_text(description: &[rumoca_core::Token]) -> String {
+    let mut text = String::new();
+    for token in description {
+        text.push_str(&token.text);
+    }
+    text
+}
+
+fn write_description(out: &mut String, description: &[rumoca_core::Token]) {
+    if description.is_empty() {
+        return;
+    }
+    write!(
+        out,
+        " \"{}\"",
+        rumoca_core::escape_modelica_string(&description_text(description))
+    )
+    .expect("write to String never fails");
 }
 
 /// Write equations with proper indentation for multi-line equations.
@@ -232,15 +255,7 @@ impl ClassDef {
         write!(out, "{} {}", self.class_type.as_str(), self.name.text)
             .expect("write to String never fails");
 
-        // Description string
-        if !self.description.is_empty() {
-            let desc: Vec<_> = self
-                .description
-                .iter()
-                .map(|t| t.text.to_string())
-                .collect();
-            write!(out, " \"{}\"", desc.join("")).expect("write to String never fails");
-        }
+        write_description(&mut out, &self.description);
 
         writeln!(out).expect("write to String never fails");
 
@@ -430,15 +445,7 @@ impl Component {
             write!(out, " constrainedby {}", constrainedby).expect("write to String never fails");
         }
 
-        // Description
-        if !self.description.is_empty() {
-            let desc: Vec<_> = self
-                .description
-                .iter()
-                .map(|t| t.text.to_string())
-                .collect();
-            write!(out, " \"{}\"", desc.join("")).expect("write to String never fails");
-        }
+        write_description(&mut out, &self.description);
 
         // Annotation
         if !self.annotation.is_empty() {

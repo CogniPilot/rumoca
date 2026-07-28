@@ -266,6 +266,62 @@ fn no_state_root_at_target_tolerance_applies_at_target() {
     assert_eq!(result.data, vec![vec![0.0, 2.0]]);
 }
 
+#[test]
+fn no_state_runtime_uses_dt_as_a_resolution_bounded_root_scan_ceiling() {
+    let model = oscillatory_root_event_model();
+    let resolved_options = SimOptions {
+        t_end: 1.0,
+        dt: Some(0.2),
+        ..Default::default()
+    };
+    let mut resolved =
+        crate::runtime::initialize_no_state_runtime(&model, &resolved_options, 1, false)
+            .expect("bounded zero-state root session should initialize");
+
+    crate::runtime::advance_no_state_runtime_to(
+        &model,
+        &resolved_options,
+        &mut resolved,
+        1.0,
+        1.0e-10,
+    )
+    .expect("interior root scans should process both sign transitions");
+
+    assert_eq!(
+        resolved.params[0], 2.0,
+        "the two relation crossings at 0.25 and 0.75 must be processed in order"
+    );
+    assert!(
+        resolved
+            .last_event_t
+            .is_some_and(|event| (event - 0.75).abs() <= 1.0e-9)
+    );
+
+    let unresolved_options = SimOptions {
+        t_end: 1.0,
+        dt: Some(1.0),
+        ..Default::default()
+    };
+    let mut unresolved =
+        crate::runtime::initialize_no_state_runtime(&model, &unresolved_options, 1, false)
+            .expect("coarse zero-state root session should initialize");
+
+    crate::runtime::advance_no_state_runtime_to(
+        &model,
+        &unresolved_options,
+        &mut unresolved,
+        1.0,
+        1.0e-10,
+    )
+    .expect("coarse endpoint scan should remain a valid bounded simulation");
+
+    assert_eq!(
+        unresolved.params[0], 0.0,
+        "equal endpoint signs may hide both roots when dt is coarser than the relation changes"
+    );
+    assert_eq!(unresolved.last_event_t, None);
+}
+
 fn root_event_update_model(root_time: f64) -> solve::SolveModel {
     let mut model = solve::SolveModel::default();
     model.problem.solve_layout.parameter_count = 0;
@@ -311,6 +367,92 @@ fn root_event_update_model(root_time: f64) -> solve::SolveModel {
                 if_false: 4,
             },
             solve::LinearOp::StoreOutput { src: 5 },
+        ]],
+        fixture_span!(),
+    );
+    model.parameters = vec![0.0];
+    model.visible_names = vec!["m".to_string()];
+    model
+}
+
+fn oscillatory_root_event_model() -> solve::SolveModel {
+    let mut model = solve::SolveModel::default();
+    model.problem.solve_layout.parameter_count = 0;
+    model.problem.solve_layout.compiled_parameter_len = 1;
+    model.problem.solve_layout.discrete_valued_scalar_names = vec!["m".to_string()];
+    model.problem.discrete.update_targets = vec![solve::scalar_slot_p(0)];
+    model.problem.events.root_conditions = solve::ScalarProgramBlock::with_source_span(
+        vec![vec![
+            solve::LinearOp::LoadTime { dst: 0 },
+            solve::LinearOp::Const {
+                dst: 1,
+                value: 0.25,
+            },
+            solve::LinearOp::Binary {
+                dst: 2,
+                op: solve::BinaryOp::Sub,
+                lhs: 0,
+                rhs: 1,
+            },
+            solve::LinearOp::Const {
+                dst: 3,
+                value: 0.75,
+            },
+            solve::LinearOp::Binary {
+                dst: 4,
+                op: solve::BinaryOp::Sub,
+                lhs: 0,
+                rhs: 3,
+            },
+            solve::LinearOp::Binary {
+                dst: 5,
+                op: solve::BinaryOp::Mul,
+                lhs: 2,
+                rhs: 4,
+            },
+            solve::LinearOp::StoreOutput { src: 5 },
+        ]],
+        fixture_span!(),
+    );
+    model.problem.discrete.rhs = solve::ScalarProgramBlock::with_source_span(
+        vec![vec![
+            solve::LinearOp::LoadTime { dst: 0 },
+            solve::LinearOp::Const {
+                dst: 1,
+                value: 0.25,
+            },
+            solve::LinearOp::Compare {
+                dst: 2,
+                op: solve::CompareOp::Ge,
+                lhs: 0,
+                rhs: 1,
+            },
+            solve::LinearOp::Const {
+                dst: 3,
+                value: 0.75,
+            },
+            solve::LinearOp::Compare {
+                dst: 4,
+                op: solve::CompareOp::Ge,
+                lhs: 0,
+                rhs: 3,
+            },
+            solve::LinearOp::Const { dst: 5, value: 0.0 },
+            solve::LinearOp::Const { dst: 6, value: 1.0 },
+            solve::LinearOp::Const { dst: 7, value: 2.0 },
+            solve::LinearOp::Select {
+                dst: 8,
+                cond: 2,
+                if_true: 6,
+                if_false: 5,
+            },
+            solve::LinearOp::Select {
+                dst: 9,
+                cond: 4,
+                if_true: 7,
+                if_false: 8,
+            },
+            solve::LinearOp::StoreOutput { src: 9 },
         ]],
         fixture_span!(),
     );
@@ -703,7 +845,11 @@ fn solve_model_initial_projection_indices_use_solve_ir_slots() {
     model.problem.solve_layout.state_scalar_count = 3;
     model.problem.solve_layout.algebraic_scalar_count = 1;
     model.problem.solve_layout.output_scalar_count = 1;
-    model.problem.initialization.projection_indices = vec![0, 2, 3];
+    model.problem.initialization.projection_unknowns = vec![
+        solve::scalar_slot_y(0),
+        solve::scalar_slot_y(2),
+        solve::scalar_slot_y(3),
+    ];
     model.variable_meta = vec![
         solve::SolveVariableMeta {
             name: "x".to_string(),
@@ -737,7 +883,14 @@ fn solve_model_initial_projection_indices_use_solve_ir_slots() {
         },
     ];
 
-    assert_eq!(model.initialization_projection_indices(), vec![0, 2, 3]);
+    assert_eq!(
+        model.initialization_projection_unknowns(),
+        [
+            solve::scalar_slot_y(0),
+            solve::scalar_slot_y(2),
+            solve::scalar_slot_y(3)
+        ]
+    );
 }
 
 #[test]

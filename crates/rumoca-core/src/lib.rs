@@ -6,15 +6,14 @@
 //!
 //! This crate provides common error infrastructure for compiler phases:
 //!
-//! - [`SourceSpan`] - Re-exported from miette for span conversion
+//! - [`Span`] - Source-identified spans retained by phase errors
 //! - [`BoxedResult`] - Type alias for `Result<T, Box<E>>` pattern
 //! - [`error_constructor!`] - Macro for generating error constructors
 //!
 //! ## Example Usage
 //!
 //! ```ignore
-//! use rumoca_core::{BoxedResult, SourceSpan, error_constructor};
-//! use rumoca_core::Span;
+//! use rumoca_core::{BoxedResult, Span, error_constructor};
 //!
 //! pub type FlattenResult<T> = BoxedResult<T, FlattenError>;
 //!
@@ -22,7 +21,7 @@
 //! pub enum FlattenError {
 //!     #[error("undefined variable: {name}")]
 //!     #[diagnostic(code(rumoca::flatten::EF001))]
-//!     UndefinedVariable { name: String, span: SourceSpan },
+//!     UndefinedVariable { name: String, span: Span },
 //! }
 //!
 //! impl FlattenError {
@@ -39,6 +38,7 @@ use std::sync::Arc;
 
 // IR vocabulary and foundation primitives (DefId, Span, Expression, ...).
 // Previously lived in `rumoca-ir-core`; merged here per SPEC_0029 §3a.
+mod clock_lattice;
 mod expression_rewriter;
 mod expression_visitor;
 mod ir_primitives;
@@ -46,20 +46,30 @@ mod modelica_builtins;
 mod statement_rewriter;
 mod structured_domain;
 mod subscript;
+pub use clock_lattice::{ClockLattice, ClockLatticeError, ClockLatticeErrorKind, ClockRational};
 pub use expression_rewriter::{ExpressionRewriter, FallibleExpressionRewriter};
 pub use expression_visitor::{ExpressionScope, ExpressionVisitor, FallibleExpressionVisitor};
 pub use ir_primitives::*;
 pub use modelica_builtins::*;
 pub use statement_rewriter::{FallibleStatementRewriter, StatementRewriter};
 pub use structured_domain::{
-    AffineForm, ArrayAccess, ComprehensionTemplate, RegularForFamily, StructuredIndexBinder,
-    StructuredIndexDomain, StructuredIndexDomainError, row_major_strides,
+    AffineForm, ArrayAccess, ComprehensionScalarView, ComprehensionTemplate, RegularForFamily,
+    StructuredIndexBinder, StructuredIndexDomain, StructuredIndexDomainError, row_major_strides,
 };
 pub use subscript::Subscript;
 
 /// Internal DAE-level sample tick callable emitted after source `sample(...)`
 /// has been lowered out of the DAE expression language.
 pub const INTERNAL_SAMPLE_FUNCTION_NAME: &str = "__rumoca_sample";
+/// Relative tolerance used by the scheduler and lowered clock-tick predicates.
+///
+/// Both compare dimensionless tick coordinates using
+/// `tol * (1 + max(abs(a), abs(b)))`; keeping the constant here prevents
+/// clocked rows and runtime scheduling from recognizing different instants.
+pub const SCHEDULE_TIME_RELATIVE_TOLERANCE: f64 = 1.0e-12;
+
+/// Relative tolerance for accepting a compile-time clock ratio as an integer.
+pub const CLOCK_FACTOR_INTEGER_TOLERANCE: f64 = 1.0e-9;
 
 /// MLS §16.5.1: `sample(u)` is the clocked value-sampling operator with an
 /// inferred clock. It is not the event-generating `sample(start, interval)`
@@ -80,6 +90,26 @@ pub fn source_temporal_function_name(name: &str) -> Option<&'static str> {
         "reinit" => Some("reinit"),
         _ => None,
     }
+}
+
+/// Return the canonical name for any source-level temporal or synchronous
+/// function-call operator forbidden in solver-facing DAE expressions.
+///
+/// Callers with a structured [`Reference`] should pass `reference.last_segment()`;
+/// this exact-name table is the shared vocabulary owner and does not recover
+/// hierarchy from rendered strings.
+pub fn source_dae_forbidden_function_name(name: &str) -> Option<&'static str> {
+    source_temporal_function_name(name).or(match name {
+        "Clock" => Some("Clock"),
+        "hold" => Some("hold"),
+        "subSample" => Some("subSample"),
+        "superSample" => Some("superSample"),
+        "shiftSample" => Some("shiftSample"),
+        "backSample" => Some("backSample"),
+        "noClock" => Some("noClock"),
+        "firstTick" => Some("firstTick"),
+        _ => None,
+    })
 }
 
 /// Return the canonical name for source temporal function-call operators after
@@ -486,6 +516,12 @@ pub fn span_to_source_span(span: Span) -> SourceSpan {
     (start, len).into()
 }
 
+impl From<Span> for SourceSpan {
+    fn from(span: Span) -> Self {
+        span_to_source_span(span)
+    }
+}
+
 // =============================================================================
 // Modelica Built-in Types and Functions (MLS §3.7, §4.9, §16)
 // =============================================================================
@@ -715,6 +751,38 @@ pub fn is_builtin_variable(name: &str) -> bool {
 // Source Map
 // =============================================================================
 
+/// Prefix of the canonical `SourceMap` name for a source whose path is unknown.
+const PLACEHOLDER_SOURCE_NAME_PREFIX: &str = "<source-id:";
+
+/// Canonical `SourceMap` name for a source identity with no known path.
+///
+/// SPEC_0029 §3a and SPEC_0008 "Source Identity" require every `SourceMap`
+/// entry to be keyed by a name that *derives* its [`SourceId`]. Parser spans fix
+/// the id before the session knows a path for the AST, so those entries are
+/// filed under this name: [`source_id_for_name`] decodes it back to the same id,
+/// which keeps the invariant true for path-less registrations as well.
+pub fn placeholder_source_name(id: SourceId) -> String {
+    format!("{PLACEHOLDER_SOURCE_NAME_PREFIX}{:016x}>", id.0)
+}
+
+/// The `SourceId` that a `SourceMap` name derives.
+///
+/// Identical to [`SourceId::from_source_name`] for real file names, and also
+/// decodes the placeholder names produced by [`placeholder_source_name`].
+pub fn source_id_for_name(name: &str) -> SourceId {
+    decode_placeholder_source_name(name).unwrap_or_else(|| SourceId::from_source_name(name))
+}
+
+fn decode_placeholder_source_name(name: &str) -> Option<SourceId> {
+    let hex = name
+        .strip_prefix(PLACEHOLDER_SOURCE_NAME_PREFIX)?
+        .strip_suffix('>')?;
+    if hex.len() != 16 {
+        return None;
+    }
+    u64::from_str_radix(hex, 16).ok().map(SourceId)
+}
+
 /// Maps file names to SourceIds and stores source content for diagnostics.
 ///
 /// This enables diagnostics to point to the correct source file when
@@ -749,43 +817,27 @@ impl SourceMap {
     /// This lets LSP/session caches share source text with diagnostics instead
     /// of copying whole files into every `SourceMap`.
     pub fn add_shared(&mut self, name: &str, content: Arc<str>) -> SourceId {
-        if let Some(&id) = self.name_to_id.get(name) {
-            return id;
-        }
-        if let Some((id, _, _)) = self
-            .files
-            .iter()
-            .find(|(_, file_name, _)| file_name == name)
-        {
-            self.name_to_id.insert(name.to_string(), *id);
-            return *id;
-        }
-        let id = SourceId::from_source_name(name);
-        if self.id_to_index.contains_key(&id)
-            || self.files.iter().any(|(source_id, _, _)| *source_id == id)
-        {
-            self.name_to_id.insert(name.to_string(), id);
+        let id = source_id_for_name(name);
+        self.name_to_id.insert(name.to_string(), id);
+        if self.get_source(id).is_some() {
             return id;
         }
         let index = self.files.len();
         self.files.push((id, name.to_string(), content));
-        self.name_to_id.insert(name.to_string(), id);
         self.id_to_index.insert(id, index);
         id
     }
 
     /// Look up a SourceId by file name.
+    ///
+    /// The answer is derived from `name` itself, so it cannot depend on
+    /// insertion order or on whether [`SourceMap::rebuild_index`] has run.
     pub fn get_id(&self, name: &str) -> Option<SourceId> {
-        self.name_to_id.get(name).copied().or_else(|| {
-            self.files
-                .iter()
-                .find(|(_, file_name, _)| file_name == name)
-                .map(|(id, _, _)| *id)
-                .or_else(|| {
-                    let id = SourceId::from_source_name(name);
-                    self.get_source(id).map(|_| id)
-                })
-        })
+        if let Some(&id) = self.name_to_id.get(name) {
+            return Some(id);
+        }
+        let id = source_id_for_name(name);
+        self.get_source(id).map(|_| id)
     }
 
     /// Get (name, content) for a SourceId.
@@ -802,16 +854,60 @@ impl SourceMap {
         self.files.first().map(|(id, _, _)| *id)
     }
 
+    /// Register `content` under an explicit `SourceId`.
+    ///
+    /// This entry point exists for ASTs handed to the compiler without their
+    /// original path: parser spans have already fixed the `SourceId`, and
+    /// `display_name` is only a caller-supplied stand-in.
+    ///
+    /// The entry is still filed under a name that derives `id`, as required by
+    /// SPEC_0029 §3a: `display_name` is used only when it already derives `id`,
+    /// otherwise [`placeholder_source_name`] is. That keeps a stand-in label
+    /// from shadowing a real file of the same name in the name index and keeps
+    /// [`SourceMap::get_id`] stable across [`SourceMap::rebuild_index`].
+    ///
+    /// Returns `false` when the id (or its derived name) is already registered;
+    /// the existing entry always wins.
+    pub fn register_id(&mut self, id: SourceId, display_name: &str, content: Arc<str>) -> bool {
+        let name = if source_id_for_name(display_name) == id {
+            display_name.to_string()
+        } else {
+            placeholder_source_name(id)
+        };
+        if self.get_source(id).is_some() || self.name_to_id.contains_key(&name) {
+            return false;
+        }
+        let index = self.files.len();
+        self.files.push((id, name.clone(), content));
+        self.name_to_id.insert(name, id);
+        self.id_to_index.insert(id, index);
+        true
+    }
+
+    /// Get the registered file name for a `SourceId`.
+    pub fn name(&self, id: SourceId) -> Option<&str> {
+        self.get_source(id).map(|(name, _)| name)
+    }
+
+    /// Try to create a `Span` from a `SourceId` and byte offsets.
+    ///
+    /// Returns `None` when the source is not registered in this map, matching
+    /// the registered-source semantics of [`SourceMap::try_location_to_span`].
+    pub fn try_span(&self, source: SourceId, start: usize, end: usize) -> Option<Span> {
+        self.get_source(source)?;
+        Some(Span::from_offsets(source, start, end))
+    }
+
     /// Try to create a Span from a file name and byte offsets.
     pub fn try_location_to_span(&self, file_name: &str, start: usize, end: usize) -> Option<Span> {
-        let source_id = self.name_to_id.get(file_name).copied().or_else(|| {
-            self.get_source(SourceId::from_source_name(file_name))
-                .map(|_| SourceId::from_source_name(file_name))
-        })?;
+        let source_id = self.get_id(file_name)?;
         Some(Span::from_offsets(source_id, start, end))
     }
 
     /// Rebuild the name_to_id index after deserialization.
+    ///
+    /// Every entry is keyed by a name that derives its id (see
+    /// [`SourceMap::register_id`]), so this reproduces the live index exactly.
     pub fn rebuild_index(&mut self) {
         self.name_to_id.clear();
         self.id_to_index.clear();
@@ -921,6 +1017,20 @@ impl From<PrimaryLabel> for Label {
             message: value.message,
             primary: true,
         }
+    }
+}
+
+/// Normalize a miette-namespaced diagnostic code to its bare SPEC_0008 form.
+///
+/// Phase errors render their codes as `rumoca::<phase>::<CODE>` (for example
+/// `rumoca::todae::ED001`), but SPEC_0008 defines the canonical code as the
+/// bare `ED001`. Artifact writers that key maps or taxonomies by code must
+/// normalize first, otherwise the same failure appears under two names.
+/// Codes that are already bare pass through unchanged.
+pub fn short_phase_error_code(code: &str) -> &str {
+    match code.rsplit("::").next() {
+        Some(short) if !short.is_empty() => short,
+        _ => code,
     }
 }
 
@@ -1128,6 +1238,65 @@ pub trait PhaseError {
     fn to_diagnostic(&self) -> Diagnostic;
 }
 
+/// Convert a miette-derived phase error without discarding Rumoca source ids.
+///
+/// Miette labels retain byte offsets but do not identify which source in a
+/// multi-file [`SourceMap`] owns those offsets. Phase-local error enums keep
+/// the original [`Span`] values and pass them here in the same order as their
+/// `#[label]` fields. The miette representation remains useful for standalone
+/// rendering while the common diagnostic remains source-identifiable.
+#[must_use]
+pub fn miette_phase_error_to_diagnostic(
+    error: &dyn MietteDiagnostic,
+    source_spans: &[Span],
+) -> Diagnostic {
+    let code = error
+        .code()
+        .map(|code| short_phase_error_code(&code.to_string()).to_string())
+        .expect("phase-local user errors must have a SPEC_0008 diagnostic code");
+    let severity = match error.severity().unwrap_or(Severity::Error) {
+        Severity::Error => DiagnosticSeverity::Error,
+        Severity::Warning => DiagnosticSeverity::Warning,
+        Severity::Advice => DiagnosticSeverity::Note,
+    };
+    let mut labels = Vec::new();
+    if let Some(miette_labels) = error.labels() {
+        for (index, miette_label) in miette_labels.enumerate() {
+            let Some(span) = source_spans.get(index).copied() else {
+                continue;
+            };
+            if span.is_dummy() {
+                continue;
+            }
+            debug_assert_eq!(miette_label.offset(), span.start.0);
+            debug_assert_eq!(miette_label.len(), span.end.0.saturating_sub(span.start.0));
+            labels.push(Label {
+                span,
+                message: miette_label.label().map(str::to_string),
+                primary: miette_label.primary() || index == 0,
+            });
+        }
+    }
+    let mut notes = Vec::new();
+    if let Some(help) = error.help() {
+        notes.push(help.to_string());
+    }
+    if !source_spans.is_empty() && labels.is_empty() {
+        notes.push(
+            "source provenance was unavailable for this diagnostic; the producing phase must \
+             preserve a non-dummy owner span"
+                .to_string(),
+        );
+    }
+    Diagnostic {
+        severity,
+        code: Some(code),
+        message: error.to_string(),
+        labels,
+        notes,
+    }
+}
+
 /// A collection of diagnostics.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct Diagnostics {
@@ -1196,12 +1365,12 @@ pub use miette::SourceSpan;
 /// ```
 pub type BoxedResult<T, E> = Result<T, Box<E>>;
 
-/// Macro for generating error constructor methods with span conversion.
+/// Macro for generating error constructor methods.
 ///
 /// This macro generates constructor methods for error enum variants that
-/// contain a `span: SourceSpan` field. It handles the common pattern of:
+/// contain a `span: Span` field. It handles the common pattern of:
 /// 1. Taking `impl Into<String>` for string fields
-/// 2. Taking `Span` and converting to `SourceSpan`
+/// 2. Retaining the source-identified `Span`
 ///
 /// # Syntax
 ///
@@ -1209,7 +1378,7 @@ pub type BoxedResult<T, E> = Result<T, Box<E>>;
 /// error_constructor!(method_name, VariantName { field1: Type1, field2: Type2 });
 /// ```
 ///
-/// The last field is assumed to be `span: Span` which gets converted to `SourceSpan`.
+/// The last field is assumed to be `span: Span`, retaining source identity.
 ///
 /// # Example
 ///
@@ -1230,7 +1399,7 @@ macro_rules! error_constructor {
         pub fn $fn_name($field: impl Into<String>, span: $crate::Span) -> Self {
             Self::$variant {
                 $field: $field.into(),
-                span: $crate::span_to_source_span(span),
+                span,
             }
         }
     };
@@ -1246,7 +1415,7 @@ macro_rules! error_constructor {
             Self::$variant {
                 $f1: $f1.into(),
                 $f2: $f2.into(),
-                span: $crate::span_to_source_span(span),
+                span,
             }
         }
     };
@@ -1264,7 +1433,7 @@ macro_rules! error_constructor {
                 $f1: $f1.into(),
                 $f2: $f2.into(),
                 $f3: $f3.into(),
-                span: $crate::span_to_source_span(span),
+                span,
             }
         }
     };
@@ -1284,7 +1453,7 @@ macro_rules! error_constructor {
                 $f2: $f2.into(),
                 $f3: $f3.into(),
                 $f4: $f4.into(),
-                span: $crate::span_to_source_span(span),
+                span,
             }
         }
     };
@@ -1306,7 +1475,7 @@ macro_rules! error_constructor {
                 $f3: $f3.into(),
                 $f4: $f4.into(),
                 $f5: $f5.into(),
-                span: $crate::span_to_source_span(span),
+                span,
             }
         }
     };
@@ -1315,9 +1484,7 @@ macro_rules! error_constructor {
     ($fn_name:ident, $variant:ident {}) => {
         /// Create an error with the given span.
         pub fn $fn_name(span: $crate::Span) -> Self {
-            Self::$variant {
-                span: $crate::span_to_source_span(span),
-            }
+            Self::$variant { span }
         }
     };
 
@@ -1514,18 +1681,9 @@ pub mod error_macro_tests {
     // Test enum for the macro
     #[derive(Debug, Clone)]
     pub enum TestError {
-        SingleField {
-            name: String,
-            span: SourceSpan,
-        },
-        TwoFields {
-            a: String,
-            b: String,
-            span: SourceSpan,
-        },
-        SpanOnly {
-            span: SourceSpan,
-        },
+        SingleField { name: String, span: Span },
+        TwoFields { a: String, b: String, span: Span },
+        SpanOnly { span: Span },
     }
 
     impl TestError {
@@ -1547,8 +1705,9 @@ pub mod error_macro_tests {
         match err {
             TestError::SingleField { name, span: s } => {
                 assert_eq!(name, "test_name");
-                assert_eq!(s.offset(), 10);
-                assert_eq!(s.len(), 10);
+                assert_eq!(s.source, span.source);
+                assert_eq!(s.start.0, 10);
+                assert_eq!(s.end.0, 20);
             }
             _ => panic!("Wrong variant"),
         }
@@ -1562,7 +1721,9 @@ pub mod error_macro_tests {
             TestError::TwoFields { a, b, span: s } => {
                 assert_eq!(a, "first");
                 assert_eq!(b, "second");
-                assert_eq!(s.offset(), 10);
+                assert_eq!(s.source, span.source);
+                assert_eq!(s.start.0, 10);
+                assert_eq!(s.end.0, 20);
             }
             _ => panic!("Wrong variant"),
         }
@@ -1574,8 +1735,9 @@ pub mod error_macro_tests {
         let err = TestError::span_only(span);
         match err {
             TestError::SpanOnly { span: s } => {
-                assert_eq!(s.offset(), 10);
-                assert_eq!(s.len(), 10);
+                assert_eq!(s.source, span.source);
+                assert_eq!(s.start.0, 10);
+                assert_eq!(s.end.0, 20);
             }
             _ => panic!("Wrong variant"),
         }
@@ -1595,5 +1757,142 @@ mod builtin_registry_tests {
                 builtin.name()
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod short_phase_error_code_tests {
+    use super::short_phase_error_code;
+
+    #[test]
+    fn short_phase_error_code_strips_miette_namespace() {
+        assert_eq!(short_phase_error_code("rumoca::todae::ED001"), "ED001");
+        assert_eq!(short_phase_error_code("rumoca::resolve::ER003"), "ER003");
+    }
+
+    #[test]
+    fn short_phase_error_code_passes_bare_codes_through() {
+        assert_eq!(short_phase_error_code("ED001"), "ED001");
+        assert_eq!(short_phase_error_code(""), "");
+        // A trailing separator has no bare code to extract; keep the input.
+        assert_eq!(short_phase_error_code("rumoca::todae::"), "rumoca::todae::");
+    }
+}
+
+#[cfg(test)]
+mod source_map_source_id_tests {
+    use super::{SourceId, SourceMap, Span};
+
+    #[test]
+    fn try_span_rejects_unregistered_source() {
+        let map = SourceMap::new();
+        assert!(
+            map.try_span(SourceId::from_source_name("missing.mo"), 0, 1)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn try_span_matches_try_location_to_span() {
+        let mut map = SourceMap::new();
+        map.add("pkg/A.mo", "model A end A;");
+        let source = SourceId::from_source_name("pkg/A.mo");
+        assert_eq!(
+            map.try_span(source, 6, 7),
+            map.try_location_to_span("pkg/A.mo", 6, 7)
+        );
+        assert_eq!(
+            map.try_span(source, 6, 7),
+            Some(Span::from_offsets(source, 6, 7))
+        );
+    }
+
+    #[test]
+    fn name_resolves_registered_source_id() {
+        let mut map = SourceMap::new();
+        let id = map.add("pkg/A.mo", "model A end A;");
+        assert_eq!(map.name(id), Some("pkg/A.mo"));
+        assert_eq!(map.name(SourceId::from_source_name("other.mo")), None);
+    }
+
+    #[test]
+    fn every_registered_name_derives_its_source_id() {
+        let mut map = SourceMap::new();
+        map.add("pkg/A.mo", "model A end A;");
+        let parser_id = SourceId::from_source_name("original/path/A.mo");
+        assert!(map.register_id(
+            parser_id,
+            "<parsed-source-root>",
+            std::sync::Arc::from("body")
+        ));
+        for (id, name, _) in &map.files {
+            assert_eq!(
+                super::source_id_for_name(name),
+                *id,
+                "entry `{name}` is filed under a name that does not derive its id"
+            );
+            assert_eq!(map.get_id(name), Some(*id));
+        }
+        // The parser's spans resolve without ever knowing the original path.
+        assert_eq!(
+            map.try_span(parser_id, 0, 3),
+            Some(Span::from_offsets(parser_id, 0, 3))
+        );
+        // Re-registration never overwrites an existing entry.
+        assert!(!map.register_id(parser_id, "other", std::sync::Arc::from("")));
+        assert_eq!(
+            map.get_source(parser_id).map(|(_, text)| text),
+            Some("body")
+        );
+    }
+
+    #[test]
+    fn placeholder_source_names_round_trip_to_their_id() {
+        let interior = SourceId::from_source_name("pkg/RoundTrip.mo");
+        for id in [SourceId::DUMMY, interior, SourceId(u64::MAX)] {
+            let name = super::placeholder_source_name(id);
+            assert_eq!(super::source_id_for_name(&name), id, "{name}");
+        }
+        // A real path is never mistaken for a placeholder.
+        assert_eq!(
+            super::source_id_for_name("pkg/A.mo"),
+            SourceId::from_source_name("pkg/A.mo")
+        );
+    }
+
+    #[test]
+    fn register_id_display_name_never_shadows_a_real_file() {
+        let mut map = SourceMap::new();
+        let document_id = map.add("<parsed-source-root>", "model A end A;");
+        let parser_id = SourceId::from_source_name("original/path/A.mo");
+        assert_ne!(document_id, parser_id);
+        assert!(map.register_id(parser_id, "<parsed-source-root>", std::sync::Arc::from("")));
+
+        assert_eq!(map.get_id("<parsed-source-root>"), Some(document_id));
+        map.rebuild_index();
+        assert_eq!(
+            map.get_id("<parsed-source-root>"),
+            Some(document_id),
+            "rebuild_index must not change what a file name resolves to"
+        );
+        assert_eq!(
+            map.get_source(document_id).map(|(_, text)| text),
+            Some("model A end A;")
+        );
+        assert!(map.get_source(parser_id).is_some());
+    }
+
+    #[test]
+    fn duplicate_name_registration_keeps_the_first_entry() {
+        let mut map = SourceMap::new();
+        let first = map.add("pkg/A.mo", "model A end A;");
+        assert_eq!(map.add("pkg/A.mo", "replacement"), first);
+        // `register_id` obeys the same guard through the derived name.
+        assert!(!map.register_id(first, "pkg/A.mo", std::sync::Arc::from("replacement")));
+        assert_eq!(
+            map.get_source(first).map(|(_, text)| text),
+            Some("model A end A;")
+        );
+        assert_eq!(map.files.len(), 1);
     }
 }

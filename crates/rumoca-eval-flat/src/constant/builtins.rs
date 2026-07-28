@@ -218,13 +218,31 @@ fn eval_ceil(args: &[Value], span: Span) -> Result<Value, EvalError> {
     }
 }
 
+/// Collect the scalar elements of an array of any rank in row-major order.
+///
+/// MLS §3.7.2.4 defines `min(A)`/`max(A)` over an array expression with any
+/// number of dimensions, so a matrix such as `[a; b]` (a `Value::Array` of
+/// row `Value::Array`s) must be reduced element-wise, not row-wise.
+fn collect_array_scalars<'a>(value: &'a Value, out: &mut Vec<&'a Value>) {
+    match value.as_array() {
+        Some(elements) => {
+            for element in elements {
+                collect_array_scalars(element, out);
+            }
+        }
+        None => out.push(value),
+    }
+}
+
 // min/max: works on two values or array
 fn eval_min_max(args: &[Value], is_min: bool, span: Span) -> Result<Value, EvalError> {
     if args.len() == 1 {
-        // Array version
-        let arr = args[0]
-            .as_array()
-            .ok_or_else(|| EvalError::type_mismatch("Array", args[0].type_name(), span))?;
+        // Array version (any rank; MLS §3.7.2.4)
+        if args[0].as_array().is_none() {
+            return Err(EvalError::type_mismatch("Array", args[0].type_name(), span));
+        }
+        let mut arr: Vec<&Value> = Vec::new();
+        collect_array_scalars(&args[0], &mut arr);
         if arr.is_empty() {
             return Err(EvalError::function_error("min/max on empty array", span));
         }
@@ -232,14 +250,13 @@ fn eval_min_max(args: &[Value], is_min: bool, span: Span) -> Result<Value, EvalE
         // Check if all Integer
         let all_int = arr.iter().all(|v| matches!(v, Value::Integer(_)));
         if all_int {
-            let result =
-                arr[1..]
-                    .iter()
-                    .try_fold(integer_value(&arr[0], span)?, |acc, value| {
-                        let value = integer_value(value, span)?;
-                        let result = select_min_max_integer(acc, value, is_min);
-                        Ok(result)
-                    })?;
+            let result = arr[1..]
+                .iter()
+                .try_fold(integer_value(arr[0], span)?, |acc, value| {
+                    let value = integer_value(value, span)?;
+                    let result = select_min_max_integer(acc, value, is_min);
+                    Ok(result)
+                })?;
             return Ok(Value::Integer(result));
         }
 

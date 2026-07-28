@@ -87,6 +87,7 @@ fn process_nested_test_modifications(
         effective_components: &effective_components,
         tree: &tree,
         source_scope,
+        imports: &[],
     };
     process_nested_modifications_recursive(ctx, prefix, modifications, &nested_ctx, flags)
 }

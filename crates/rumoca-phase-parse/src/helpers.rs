@@ -1,16 +1,38 @@
 //! Helper functions for grammar conversion.
 
 use crate::generated::modelica_grammar_trait;
-use rumoca_core::{SourceId, Span};
+use rumoca_core::Span;
 use std::sync::Arc;
 
-/// Helper to format location info from a token for error messages
+/// Helper to format location info from a token for error messages.
+///
+/// SPEC_0008 requires source-backed diagnostics to carry their origin. These
+/// conversion failures are bare `anyhow` strings whose fallback spans are
+/// source-free, so the message is the only carrier and must name the file.
+/// A `Location` cannot resolve its own name, so the file the parser is
+/// currently tokenizing is used when its identity matches, and the stable
+/// `SourceId` placeholder name otherwise; both identify the same file.
 pub(crate) fn loc_info(token: &rumoca_core::Token) -> String {
     let loc = &token.location;
     format!(
-        " at {}:{}:{}",
-        loc.file_name, loc.start_line, loc.start_column
+        " at line {}:{} in `{}`",
+        loc.start_line,
+        loc.start_column,
+        source_display_name(loc.source)
     )
+}
+
+fn source_display_name(source: rumoca_core::SourceId) -> String {
+    current_parse_file_name(source).unwrap_or_else(|| rumoca_core::placeholder_source_name(source))
+}
+
+/// Path of the file being tokenized, when it is the file `source` came from.
+fn current_parse_file_name(source: rumoca_core::SourceId) -> Option<String> {
+    crate::PARSE_SOURCE_ID.with(|cell| {
+        let memo = cell.borrow();
+        let (path, id) = memo.as_ref()?;
+        (*id == source).then(|| path.to_string_lossy().into_owned())
+    })
 }
 
 /// Create a location spanning from the start of one token to the end of another
@@ -18,26 +40,12 @@ pub(crate) fn span_location(
     start: &rumoca_core::Token,
     end: &rumoca_core::Token,
 ) -> rumoca_core::Location {
-    rumoca_core::Location {
-        start_line: start.location.start_line,
-        start_column: start.location.start_column,
-        end_line: end.location.end_line,
-        end_column: end.location.end_column,
-        start: start.location.start,
-        end: end.location.end,
-        file_name: start.location.file_name.clone(),
-    }
+    start.location.merged_with(&end.location)
 }
 
 pub(crate) fn location_span(location: &rumoca_core::Location) -> anyhow::Result<Span> {
-    let start = location.start as usize;
-    let end = location.end as usize;
-    if end > start && !location.file_name.is_empty() {
-        Ok(Span::from_offsets(
-            SourceId::from_source_name(&location.file_name),
-            start,
-            end,
-        ))
+    if location.has_source() {
+        Ok(location.span())
     } else {
         anyhow::bail!("missing parser source location at {location}")
     }
@@ -181,6 +189,56 @@ mod tests {
         assert!(
             err.to_string().contains("missing parser source location"),
             "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn loc_info_keeps_the_file_identity_outside_a_parse() {
+        let source = rumoca_core::SourceId::from_source_name("pkg/A.mo");
+        let token = rumoca_core::Token {
+            text: Arc::from("x"),
+            location: rumoca_core::Location {
+                start_line: 3,
+                start_column: 7,
+                end_line: 3,
+                end_column: 8,
+                start: 10,
+                end: 11,
+                source,
+            },
+            token_number: 0,
+            token_type: 0,
+        };
+
+        let info = loc_info(&token);
+        assert!(
+            info.contains("line 3:7"),
+            "unexpected location info: {info}"
+        );
+        let placeholder = rumoca_core::placeholder_source_name(source);
+        assert!(
+            info.contains(&placeholder),
+            "location info must identify the file: {info}"
+        );
+        assert_eq!(
+            rumoca_core::source_id_for_name(&placeholder),
+            source,
+            "the printed identity must resolve back to the originating file"
+        );
+    }
+
+    #[test]
+    fn conversion_errors_name_the_file_being_parsed() {
+        // MLS §7.3.1: attributes of basic types may not be redeclared. The
+        // conversion rejects it with a bare `anyhow` message, which is the only
+        // place the offending file can still be named.
+        let source = "model M\n  A a(redeclare Real start = 1.0);\nend M;\n";
+        let err = crate::parse_to_ast(source, "pkg/Redeclare.mo")
+            .expect_err("redeclaring `start` must be rejected");
+        let rendered = format!("{err:?}");
+        assert!(
+            rendered.contains("pkg/Redeclare.mo"),
+            "conversion error lost its file: {rendered}"
         );
     }
 }

@@ -82,7 +82,7 @@ pub(super) fn connection_component_fixed_defining_expr(
                 .equations
                 .iter()
                 .filter(|eq| !is_connection_equation_origin(&eq.origin))
-                .filter_map(|eq| equation_defining_expr_for_unknown(eq, &name))
+                .filter_map(|eq| equation_defining_expr_for_unknown(dae, eq, &name))
                 .filter(|expr| expr_refs_only_parameters_constants_or_time(dae, expr)),
         );
     }

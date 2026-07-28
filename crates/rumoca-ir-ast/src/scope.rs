@@ -7,6 +7,16 @@ use crate::AstIndexMap as IndexMap;
 use rumoca_core::{ComponentPath, DefId, ScopeId};
 use serde::{Deserialize, Serialize};
 
+/// Effective visibility of one inherited name in a class scope.
+///
+/// Ambiguity is distinct from absence: lookup must stop at the class boundary
+/// without selecting a declaration or falling through to an enclosing scope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum InheritedMember {
+    Unique(DefId),
+    Ambiguous,
+}
+
 /// MLS §5.3: Scope tree for name lookup.
 ///
 /// The scope tree tracks the hierarchical structure of scopes and
@@ -15,6 +25,9 @@ use serde::{Deserialize, Serialize};
 pub struct ScopeTree {
     /// All scopes indexed by ScopeId.
     scopes: Vec<Scope>,
+    /// Predefined names that remain visible at an encapsulated boundary.
+    #[serde(default)]
+    predefined_members: IndexMap<ComponentPath, DefId>,
 }
 
 impl ScopeTree {
@@ -27,6 +40,7 @@ impl ScopeTree {
             parent: None,
             members: IndexMap::default(),
             imports: Vec::new(),
+            inherited_members: IndexMap::default(),
         });
         tree
     }
@@ -44,6 +58,7 @@ impl ScopeTree {
             parent: Some(parent),
             members: IndexMap::default(),
             imports: Vec::new(),
+            inherited_members: IndexMap::default(),
         });
         id
     }
@@ -65,10 +80,33 @@ impl ScopeTree {
         }
     }
 
+    /// Register a predefined name in the global scope and in the restricted
+    /// fallback used at encapsulated boundaries (MLS §5.3.1).
+    pub fn add_predefined_member(&mut self, name: ComponentPath, def_id: DefId) {
+        self.predefined_members.insert(name.clone(), def_id);
+        self.add_member(ScopeId::GLOBAL, name, def_id);
+    }
+
     /// Add an import to a scope.
     pub fn add_import(&mut self, scope: ScopeId, import: Import) {
         if let Some(s) = self.get_mut(scope) {
             s.imports.push(import);
+        }
+    }
+
+    /// Replace the effective inherited-member view for a class scope.
+    ///
+    /// A present `InheritedMember::Ambiguous` value records an ambiguous
+    /// inherited name. Lookup stops at that scope rather than selecting an
+    /// arbitrary base declaration or continuing to an unrelated enclosing
+    /// declaration.
+    pub fn set_inherited_members(
+        &mut self,
+        scope: ScopeId,
+        members: IndexMap<ComponentPath, InheritedMember>,
+    ) {
+        if let Some(s) = self.get_mut(scope) {
+            s.inherited_members = members;
         }
     }
 
@@ -94,7 +132,19 @@ impl ScopeTree {
                 return Some(def_id);
             }
 
-            // MLS §5.3.1: encapsulated scopes do not see enclosing scopes.
+            if let Some(inherited) = s.inherited_members.get(name) {
+                return match inherited {
+                    InheritedMember::Unique(def_id) => Some(*def_id),
+                    InheritedMember::Ambiguous => None,
+                };
+            }
+
+            // MLS §5.3.1: an encapsulated boundary exposes predefined names,
+            // but neither enclosing scopes nor arbitrary top-level classes.
+            if s.is_encapsulated() {
+                return self.predefined_members.get(name).copied();
+            }
+
             current = self.next_lookup_scope(scope_id, s);
         }
 
@@ -104,6 +154,25 @@ impl ScopeTree {
     /// Look up a name only in the given scope (no parent search).
     pub fn lookup_local(&self, scope: ScopeId, name: &ComponentPath) -> Option<DefId> {
         self.get(scope).and_then(|s| s.members.get(name).copied())
+    }
+
+    /// Whether `target` is declared directly in `scope`.
+    ///
+    /// This identity query lets post-resolution checks use `DefId` directly
+    /// instead of reconstructing a member name from rendered source text.
+    pub fn declares(&self, scope: ScopeId, target: DefId) -> bool {
+        self.get(scope)
+            .is_some_and(|scope| scope.members.values().any(|def_id| *def_id == target))
+    }
+
+    /// Whether `target` is the unique inherited declaration visible in `scope`.
+    pub fn inherits_unique(&self, scope: ScopeId, target: DefId) -> bool {
+        self.get(scope).is_some_and(|scope| {
+            scope
+                .inherited_members
+                .values()
+                .any(|member| *member == InheritedMember::Unique(target))
+        })
     }
 
     /// Look up a name, optionally excluding a specific DefId from results.
@@ -145,7 +214,23 @@ impl ScopeTree {
                 return import_result;
             }
 
-            // MLS §5.3.1: encapsulated scopes do not see enclosing scopes.
+            if let Some(inherited) = s.inherited_members.get(name) {
+                return match inherited {
+                    InheritedMember::Unique(def_id) => {
+                        Some(*def_id).filter(|&id| exclude.is_none_or(|ex| id != ex))
+                    }
+                    InheritedMember::Ambiguous => None,
+                };
+            }
+
+            if s.is_encapsulated() {
+                return self
+                    .predefined_members
+                    .get(name)
+                    .copied()
+                    .filter(|&id| exclude.is_none_or(|ex| id != ex));
+            }
+
             current = self.next_lookup_scope(scope_id, s);
         }
 
@@ -157,12 +242,18 @@ impl ScopeTree {
         self.get(scope).and_then(|s| s.parent)
     }
 
+    /// Read the inherited-name state recorded directly on one scope.
+    pub fn inherited_member(
+        &self,
+        scope: ScopeId,
+        name: &ComponentPath,
+    ) -> Option<InheritedMember> {
+        self.get(scope)?.inherited_members.get(name).copied()
+    }
+
     fn next_lookup_scope(&self, scope_id: ScopeId, scope: &Scope) -> Option<ScopeId> {
-        if scope.is_encapsulated() && scope_id != ScopeId::GLOBAL {
-            Some(ScopeId::GLOBAL)
-        } else {
-            scope.parent
-        }
+        debug_assert!(!scope.is_encapsulated() || scope_id == ScopeId::GLOBAL);
+        scope.parent
     }
 
     /// Get the number of scopes.
@@ -187,6 +278,12 @@ pub struct Scope {
     pub members: IndexMap<ComponentPath, DefId>,
     /// Imports in this scope (MLS §13.2).
     pub imports: Vec<Import>,
+    /// Effective members contributed by resolved extends clauses.
+    ///
+    /// `InheritedMember::Ambiguous` records an ambiguous inherited name
+    /// without choosing one base.
+    #[serde(default)]
+    pub inherited_members: IndexMap<ComponentPath, InheritedMember>,
 }
 
 impl Scope {

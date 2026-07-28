@@ -849,7 +849,7 @@ fn validate_when_statement_references(
 
 fn validate_function_call_statement_references(
     args: &[Expression],
-    outputs: &[ComponentReference],
+    outputs: &[Option<ComponentReference>],
     dae: &Dae,
     span: Span,
     function_scope: Option<&HashSet<&str>>,
@@ -858,7 +858,7 @@ fn validate_function_call_statement_references(
     for arg in args {
         validate_expression_references(arg, dae, span, function_scope, known_refs)?;
     }
-    for output in outputs {
+    for output in outputs.iter().flatten() {
         validate_component_reference_target(output, dae, span, function_scope, known_refs)?;
     }
     Ok(())

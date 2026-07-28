@@ -161,6 +161,7 @@ fn native_simulation_updates_condition_memory_after_clocked_sample_time() {
         "MLS §16.5.1 sample(time) should refresh before dependent if-expression projection at the first clock tick; got {}",
         y[1]
     );
+    assert_first_clock_assignment_reads_same_tick_input(&sim, "native");
 }
 
 #[test]
@@ -189,6 +190,16 @@ fn rk_like_simulation_updates_condition_memory_after_clocked_sample_time() {
     assert!(
         (y[1] - 0.1).abs() <= 1.0e-12,
         "RK-like sample(time) should refresh before dependent projection at the first clock tick; got {}",
+        y[1]
+    );
+    assert_first_clock_assignment_reads_same_tick_input(&sim, "RK-like");
+}
+
+fn assert_first_clock_assignment_reads_same_tick_input(sim: &rumoca_sim::SimResult, backend: &str) {
+    let y = trace_values(sim, "assignClock.y");
+    assert!(
+        (y[1] - 0.1).abs() <= 1.0e-12,
+        "{backend} clocked assignments must read upstream values propagated during the same tick; got {}",
         y[1]
     );
 }

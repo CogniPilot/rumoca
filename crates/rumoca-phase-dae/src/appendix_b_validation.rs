@@ -67,10 +67,20 @@ fn solver_facing_dae_expressions(
 ) -> Result<Vec<(String, &rumoca_core::Expression, rumoca_core::Span)>, ToDaeError> {
     let mut exprs = Vec::new();
     push_partition_exprs(&mut exprs, "f_x", &dae_model.continuous.equations);
+    push_structured_template_exprs(
+        &mut exprs,
+        "f_x.structured_equations",
+        &dae_model.continuous.structured_equations,
+    );
     push_partition_exprs(
         &mut exprs,
         "initial_equations",
         &dae_model.initialization.equations,
+    );
+    push_structured_template_exprs(
+        &mut exprs,
+        "initial_equations.structured_equations",
+        &dae_model.initialization.structured_equations,
     );
     push_partition_exprs(&mut exprs, "f_z", &dae_model.discrete.real_updates);
     push_partition_exprs(&mut exprs, "f_m", &dae_model.discrete.valued_updates);
@@ -90,6 +100,34 @@ fn solver_facing_dae_expressions(
             &action.condition,
             action.span,
         ));
+        let message = match &action.kind {
+            dae::DaeEventActionKind::Assert { message }
+            | dae::DaeEventActionKind::Terminate { message } => message,
+        };
+        exprs.push((
+            format!("event_actions[{idx}].message"),
+            message,
+            action.span,
+        ));
+    }
+    for (idx, channel) in dae_model.events.delay_channels.iter().enumerate() {
+        exprs.push((
+            format!("delay_channels[{idx}].source"),
+            &channel.source,
+            channel.span,
+        ));
+        exprs.push((
+            format!("delay_channels[{idx}].delay_time"),
+            &channel.delay_time,
+            channel.span,
+        ));
+        if let Some(delay_max) = &channel.delay_max {
+            exprs.push((
+                format!("delay_channels[{idx}].delay_max"),
+                delay_max,
+                channel.span,
+            ));
+        }
     }
     for (idx, expr) in dae_model.clocks.triggered_conditions.iter().enumerate() {
         let Some(span) = expr.span() else {
@@ -100,6 +138,31 @@ fn solver_facing_dae_expressions(
         exprs.push((format!("clocks.triggered_conditions[{idx}]"), expr, span));
     }
     Ok(exprs)
+}
+
+fn push_structured_template_exprs<'a>(
+    exprs: &mut Vec<(String, &'a rumoca_core::Expression, rumoca_core::Span)>,
+    partition: &str,
+    families: &'a [dae::StructuredEquationFamily],
+) {
+    for (family_index, family) in families.iter().enumerate() {
+        let Some(template) = &family.template else {
+            continue;
+        };
+        exprs.extend(
+            template
+                .body
+                .iter()
+                .enumerate()
+                .map(|(body_index, expression)| {
+                    (
+                        format!("{partition}[{family_index}].template.body[{body_index}]"),
+                        expression,
+                        family.span,
+                    )
+                }),
+        );
+    }
 }
 
 fn push_partition_exprs<'a>(
@@ -202,9 +265,7 @@ impl ExpressionVisitor for SourceTemporalOperatorChecker {
                 }
             }
             rumoca_core::Expression::FunctionCall { name, span, .. } => {
-                if let Some(operator) =
-                    rumoca_core::source_temporal_function_short_name(name.as_str())
-                {
+                if let Some(operator) = dae_temporal_function_name(name) {
                     self.found = Some(SourceTemporalOperatorOccurrence {
                         operator,
                         span: real_span(*span),
@@ -240,7 +301,7 @@ impl ExpressionVisitor for SourceTemporalOperatorChecker {
         args: &[rumoca_core::Expression],
         is_constructor: bool,
     ) {
-        if let Some(operator) = rumoca_core::source_temporal_function_short_name(name.as_str()) {
+        if let Some(operator) = dae_temporal_function_name(name) {
             self.found = Some(SourceTemporalOperatorOccurrence {
                 operator,
                 span: None,
@@ -249,6 +310,16 @@ impl ExpressionVisitor for SourceTemporalOperatorChecker {
         }
         self.walk_function_call(name, args, is_constructor);
     }
+}
+
+fn dae_temporal_function_name(name: &rumoca_core::Reference) -> Option<&'static str> {
+    if name.as_str() == rumoca_core::INTERNAL_SAMPLE_FUNCTION_NAME {
+        return Some("sample");
+    }
+    if name.is_generated() {
+        return None;
+    }
+    rumoca_core::source_dae_forbidden_function_name(name.last_segment())
 }
 
 fn real_span(span: rumoca_core::Span) -> Option<rumoca_core::Span> {
@@ -397,6 +468,9 @@ fn forbidden_synchronous_construct(expr: &rumoca_core::Expression) -> Option<&'s
             None
         }
         rumoca_core::Expression::FunctionCall { name, .. } => {
+            if name.is_generated() {
+                return None;
+            }
             let short = name.last_segment();
             forbidden_sync_name(short)
         }
@@ -762,6 +836,70 @@ fn dfs_cycle(
 }
 
 fn validate_runtime_metadata_invariants(dae_model: &dae::Dae) -> Result<(), ToDaeError> {
+    validate_terminal_metadata(dae_model)?;
+    validate_delay_metadata(dae_model)?;
+    validate_clock_metadata(dae_model)?;
+    validate_scheduled_roots(dae_model)?;
+    validate_unique_synthetic_roots(dae_model)
+}
+
+fn validate_terminal_metadata(dae_model: &dae::Dae) -> Result<(), ToDaeError> {
+    let terminal_name = rumoca_core::VarName::new(rumoca_core::TERMINAL_EVENT_PARAMETER_NAME);
+    match (
+        dae_model.events.has_terminal_event,
+        dae_model.variables.parameters.get(&terminal_name),
+    ) {
+        (true, Some(parameter)) => {
+            validate_runtime_parameter(parameter, "terminal-event")?;
+        }
+        (true, None) => {
+            return Err(ToDaeError::runtime_metadata_violation(
+                "terminal-event metadata requires the runtime-managed terminal parameter",
+            ));
+        }
+        (false, Some(_)) => {
+            return Err(ToDaeError::runtime_metadata_violation(
+                "runtime-managed terminal parameter exists without terminal-event metadata",
+            ));
+        }
+        (false, None) => {}
+    }
+    Ok(())
+}
+
+fn validate_delay_metadata(dae_model: &dae::Dae) -> Result<(), ToDaeError> {
+    let mut delay_parameters = HashSet::new();
+    for channel in &dae_model.events.delay_channels {
+        let Some(parameter) = dae_model.variables.parameters.get(&channel.value_parameter) else {
+            return Err(ToDaeError::runtime_metadata_violation(format!(
+                "delay channel parameter `{}` is missing from the DAE parameter partition",
+                channel.value_parameter
+            )));
+        };
+        validate_runtime_parameter(parameter, "delay channel")?;
+        if !delay_parameters.insert(&channel.value_parameter) {
+            return Err(ToDaeError::runtime_metadata_violation(format!(
+                "delay channel parameter `{}` is assigned by more than one history channel",
+                channel.value_parameter
+            )));
+        }
+    }
+    for (name, parameter) in &dae_model.variables.parameters {
+        if rumoca_core::delay_slot_index(name.as_str()).is_some()
+            && !delay_parameters.contains(name)
+        {
+            return Err(ToDaeError::runtime_metadata_violation(format!(
+                "runtime-managed delay parameter `{name}` has no delay channel metadata"
+            )));
+        }
+        if rumoca_core::is_runtime_managed_slot(name.as_str()) {
+            validate_runtime_parameter(parameter, "runtime-managed")?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_clock_metadata(dae_model: &dae::Dae) -> Result<(), ToDaeError> {
     for schedule in &dae_model.clocks.schedules {
         if !schedule.period_seconds.is_finite() || schedule.period_seconds <= 0.0 {
             return Err(ToDaeError::runtime_metadata_violation(format!(
@@ -788,7 +926,10 @@ fn validate_runtime_metadata_invariants(dae_model: &dae::Dae) -> Result<(), ToDa
             )));
         }
     }
+    Ok(())
+}
 
+fn validate_scheduled_roots(dae_model: &dae::Dae) -> Result<(), ToDaeError> {
     for pair in dae_model.events.scheduled_time_events.windows(2) {
         if pair[1] <= pair[0] {
             return Err(ToDaeError::runtime_metadata_violation(format!(
@@ -824,7 +965,10 @@ fn validate_runtime_metadata_invariants(dae_model: &dae::Dae) -> Result<(), ToDa
             )));
         }
     }
+    Ok(())
+}
 
+fn validate_unique_synthetic_roots(dae_model: &dae::Dae) -> Result<(), ToDaeError> {
     let mut seen_roots: Vec<&rumoca_core::Expression> = Vec::new();
     for root in &dae_model.events.synthetic_root_conditions {
         if seen_roots.contains(&root) {
@@ -835,6 +979,19 @@ fn validate_runtime_metadata_invariants(dae_model: &dae::Dae) -> Result<(), ToDa
         seen_roots.push(root);
     }
 
+    Ok(())
+}
+
+fn validate_runtime_parameter(parameter: &dae::Variable, owner: &str) -> Result<(), ToDaeError> {
+    if parameter.origin != dae::VariableOrigin::Generated
+        || parameter.causality != dae::VariableCausality::CalculatedParameter
+        || !parameter.dims.is_empty()
+    {
+        return Err(ToDaeError::runtime_metadata_violation(format!(
+            "{owner} parameter `{}` must be a generated scalar calculated parameter",
+            parameter.name
+        )));
+    }
     Ok(())
 }
 
@@ -945,6 +1102,15 @@ mod tests {
     fn call(name: &str, args: Vec<rumoca_core::Expression>) -> rumoca_core::Expression {
         rumoca_core::Expression::FunctionCall {
             name: rumoca_core::VarName::new(name).into(),
+            args,
+            is_constructor: false,
+            span: test_span(),
+        }
+    }
+
+    fn generated_call(name: &str, args: Vec<rumoca_core::Expression>) -> rumoca_core::Expression {
+        rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::Reference::generated(name),
             args,
             is_constructor: false,
             span: test_span(),
@@ -1129,7 +1295,7 @@ mod tests {
             .valued_updates
             .push(dae::Equation::explicit(
                 rumoca_core::VarName::new("a"),
-                call("hold", vec![var_ref("b")]),
+                generated_call("hold", vec![var_ref("b")]),
                 test_span(),
                 "a = hold(b)",
             ));
@@ -1243,6 +1409,34 @@ mod tests {
 
         let err = validate_appendix_b_invariants(&dae_model)
             .expect_err("raw source temporal operator must fail the DAE boundary validation gate");
+        assert!(matches!(
+            err,
+            ToDaeError::SourceTemporalOperatorSurvivedDaeBoundary { .. }
+        ));
+    }
+
+    #[test]
+    fn internal_sample_name_cannot_bypass_dae_temporal_gate() {
+        let mut dae_model = dae::Dae::default();
+        dae_model
+            .variables
+            .discrete_valued
+            .insert(rumoca_core::VarName::new("tick"), bool_var("tick"));
+        dae_model
+            .discrete
+            .valued_updates
+            .push(dae::Equation::explicit(
+                rumoca_core::VarName::new("tick"),
+                call(
+                    rumoca_core::INTERNAL_SAMPLE_FUNCTION_NAME,
+                    vec![lit(0.0), lit(0.1)],
+                ),
+                test_span(),
+                "generated sample alias",
+            ));
+
+        let err = validate_appendix_b_invariants(&dae_model)
+            .expect_err("a textual sample alias must not evade SPEC_0007 validation");
         assert!(matches!(
             err,
             ToDaeError::SourceTemporalOperatorSurvivedDaeBoundary { .. }

@@ -74,9 +74,14 @@ const WORKSPACE_TEST_EXCLUDES: &[&str] = &[
     "rumoca-bind-wasm",
 ];
 
+/// Required Cargo-feature-selected regressions that plain workspace defaults
+/// do not discover. CI stages the pinned MSL cache before this command.
+const WORKSPACE_TEST_FEATURES: &[&str] = &["--features", "rumoca/msl-sim-tests"];
+
 pub(crate) fn run_workspace_tests(root: &Path) -> Result<()> {
     let mut args = vec!["test", "--workspace", "--verbose"];
     args.extend_from_slice(WORKSPACE_TEST_EXCLUDES);
+    args.extend_from_slice(WORKSPACE_TEST_FEATURES);
     run_cargo(root, &args)
 }
 
@@ -86,6 +91,7 @@ pub(crate) fn run_workspace_tests(root: &Path) -> Result<()> {
 pub(crate) fn run_workspace_doctests(root: &Path) -> Result<()> {
     let mut args = vec!["test", "--doc", "--workspace", "--verbose"];
     args.extend_from_slice(WORKSPACE_TEST_EXCLUDES);
+    args.extend_from_slice(WORKSPACE_TEST_FEATURES);
     run_cargo(root, &args)
 }
 
@@ -97,6 +103,7 @@ pub(crate) fn run_workspace_nextest_partition(root: &Path, partition: &str) -> R
     let partition_arg = format!("count:{partition}");
     let mut args = vec!["nextest", "run", "--workspace", "--verbose"];
     args.extend_from_slice(WORKSPACE_TEST_EXCLUDES);
+    args.extend_from_slice(WORKSPACE_TEST_FEATURES);
     args.push("--partition");
     args.push(&partition_arg);
     run_cargo(root, &args)

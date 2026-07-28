@@ -28,18 +28,26 @@ pub fn compute_diagnostics(
     file_name: &str,
     session: Option<&mut Session>,
 ) -> Vec<Diagnostic> {
-    compute_diagnostics_with_mode(
+    compute_diagnostics_with_options(
         source,
         file_name,
         session,
+        &LintOptions::default(),
         SemanticDiagnosticsMode::Standard,
     )
 }
 
-pub(crate) fn compute_diagnostics_with_mode(
+/// Compute diagnostics using an explicit linter configuration.
+///
+/// The server resolves `lint_options` from the `.rumoca_lint.toml` that applies
+/// to the document (SPEC_0018), so editor diagnostics and `rumoca lint` agree.
+/// Callers with no configuration (WASM, tests) go through
+/// [`compute_diagnostics`], which passes the defaults.
+pub(crate) fn compute_diagnostics_with_options(
     source: &str,
     file_name: &str,
     session: Option<&mut Session>,
+    lint_options: &LintOptions,
     mode: SemanticDiagnosticsMode,
 ) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
@@ -57,8 +65,7 @@ pub(crate) fn compute_diagnostics_with_mode(
     };
 
     // Run linter on successfully parsed source
-    let lint_options = LintOptions::default();
-    let lint_messages = lint(source, file_name, &lint_options);
+    let lint_messages = lint(source, file_name, lint_options);
     for msg in lint_messages {
         diagnostics.push(lint_to_diagnostic(&msg));
     }

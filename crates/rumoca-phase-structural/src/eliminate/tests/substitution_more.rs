@@ -1490,7 +1490,17 @@ fn test_eliminate_trivial_rewrites_eliminated_complex_field_parent_ref() {
         })
         .collect::<Vec<_>>();
 
-    let rewritten = structural_ok(apply_substitutions_to_expr(&expr, &substitutions));
+    let constructor =
+        Reference::new("Complex").with_resolved_function(rumoca_core::ResolvedFunctionReference {
+            instance_id: rumoca_core::FunctionInstanceId::new(17),
+            base_part_count: 0,
+        });
+    let rewritten = structural_ok(apply_substitutions_to_expr_with_derivatives(
+        &expr,
+        &substitutions,
+        Some(&constructor),
+        |_| Ok(None),
+    ));
     assert!(
         !contains_exact_var_ref(&rewritten, "z"),
         "parent Complex reference should be rewritten when eliminated fields define the full value"
@@ -1623,4 +1633,79 @@ fn test_eliminate_structurally_singular_boundary_resolution() {
             ..
         } if origin == "eq2"
     ));
+}
+
+/// Symbolic `der()` expansion must read the DAE as it stood before the pass
+/// started rewriting it.
+///
+/// The pass used to guarantee that with a whole-DAE `dae.clone()`; it now
+/// guarantees it by computing every replacement while only a shared borrow of
+/// the DAE is held. The fixture is built so the two answers differ: rewriting
+/// equation 0 makes `u`'s relaxed derivative unresolvable, so a rewriter that
+/// differentiated against the partially-mutated DAE would emit a bare `der(u)`
+/// instead of the pre-pass expansion.
+#[test]
+fn derivative_expansion_uses_the_pre_mutation_dae() {
+    let mut dae = Dae::new();
+    dae.variables
+        .states
+        .insert(VarName::new("x"), test_dae_variable("x"));
+    for name in ["u", "a", "f"] {
+        dae.variables
+            .algebraics
+            .insert(VarName::new(name), test_dae_variable(name));
+    }
+    dae.variables
+        .parameters
+        .insert(VarName::new("k"), test_dae_variable("k"));
+
+    // `u` is defined through the alias `a`, so substituting `a := u` rewrites
+    // this row into a self-reference.
+    dae.continuous.equations.push(residual(
+        var_ref("u"),
+        binary(
+            OpBinary::Add,
+            var_ref("a"),
+            binary(OpBinary::Mul, var_ref("k"), var_ref("x")),
+        ),
+        1,
+        "u definition",
+    ));
+    dae.continuous
+        .equations
+        .push(residual(der(var_ref("a")), var_ref("f"), 1, "alias rate"));
+
+    let pre_pass_derivative =
+        crate::dae_prepare::symbolic_time_derivative_for_expr(&dae, &var_ref("u"))
+            .expect("relaxed derivative map builds for the fixture")
+            .expect("`u` has a resolvable relaxed derivative before the rewrite");
+    assert!(
+        expr_contains_der_of(&pre_pass_derivative, &VarName::new("x")),
+        "fixture must expand through the state derivative: {pre_pass_derivative:?}"
+    );
+
+    let substitutions = [test_substitution("a", var_ref("u"))];
+    structural_ok(apply_elimination_substitutions_to_dae(
+        &mut dae,
+        &substitutions,
+    ));
+
+    let rewritten = &dae.continuous.equations[1].rhs;
+    assert!(
+        expr_contains_der_of(rewritten, &VarName::new("x")),
+        "der(a) must expand through the pre-pass derivative of `u`: {rewritten:?}"
+    );
+
+    // Prove the fixture actually discriminates: the same query against the
+    // rewritten DAE no longer reaches `der(x)`.
+    let post_pass_derivative =
+        crate::dae_prepare::symbolic_time_derivative_for_expr(&dae, &var_ref("u"))
+            .expect("relaxed derivative map builds after the rewrite");
+    assert!(
+        post_pass_derivative
+            .as_ref()
+            .is_none_or(|derivative| !expr_contains_der_of(derivative, &VarName::new("x"))),
+        "fixture no longer discriminates pre/post-mutation derivatives: \
+         {post_pass_derivative:?}"
+    );
 }

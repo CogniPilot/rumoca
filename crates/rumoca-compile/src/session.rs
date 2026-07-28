@@ -9,7 +9,7 @@ use rayon::prelude::*;
 use rumoca_core::{DefId, Span};
 use rumoca_core::{
     Diagnostic as CommonDiagnostic, Diagnostics as CommonDiagnostics, Label, OptionalTimer,
-    PrimaryLabel, SourceMap, maybe_elapsed_duration, maybe_start_timer,
+    PhaseError, PrimaryLabel, SourceMap, maybe_elapsed_duration, maybe_start_timer,
 };
 use rumoca_ir_ast as ast;
 use rumoca_ir_dae as dae;
@@ -121,7 +121,7 @@ use compile_support::{
 mod compiled_source_root;
 pub use compiled_source_root::CompiledSourceRoot;
 mod diagnostic_adapters;
-use diagnostic_adapters::{merge_error_to_common, miette_error_to_common};
+use diagnostic_adapters::{diagnostic_message_with_primary_location, merge_error_to_common};
 mod model_diagnostics;
 use model_diagnostics::{
     global_resolution_failure_diagnostics, merge_model_diagnostics, model_diagnostics_for_tree,
@@ -130,6 +130,7 @@ use model_diagnostics::{
 mod reachability;
 use reachability::{ReachabilityPlanner, ReachableModelClosure};
 mod strict_compile_diagnostics;
+pub use strict_compile_diagnostics::StrictCompileFailure;
 use strict_compile_diagnostics::{
     class_primary_span, collect_parse_error_diagnostics, collect_parse_failures_for_files,
     collect_resolve_failures_for_files, collect_target_source_files, dae_phase_result_to_failures,
@@ -190,16 +191,21 @@ pub enum SemanticDiagnosticsMode {
     Save,
 }
 
+/// Cache key for one model's semantic diagnostics run.
+///
+/// The model name is a Modelica class path supplied per request; interning it
+/// makes the cache probe hash an id and keeps one copy of the path however many
+/// times it is looked up.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct SemanticDiagnosticsCacheKey {
-    model_name: String,
+    model_name: rumoca_core::VarName,
     mode: SemanticDiagnosticsMode,
 }
 
 impl SemanticDiagnosticsCacheKey {
     fn new(model_name: &str, mode: SemanticDiagnosticsMode) -> Self {
         Self {
-            model_name: model_name.to_string(),
+            model_name: rumoca_core::VarName::intern(model_name),
             mode,
         }
     }
@@ -1776,10 +1782,10 @@ pub(crate) enum DaePhaseResult {
         phase: FailedPhase,
         error: String,
         error_code: Option<String>,
-        /// Structured spanned diagnostics from the failing phase, when the
-        /// phase produces them (typecheck today). Empty means only the
-        /// stringified `error` is available.
+        /// Structured diagnostics from the failing semantic phase.
         diagnostics: Vec<CommonDiagnostic>,
+        /// Breakdown carried by an unbalanced (ED001) ToDae failure; else None.
+        balance_detail: Option<Box<rumoca_phase_dae::balance::BalanceDetail>>,
     },
 }
 
@@ -1822,9 +1828,7 @@ pub enum PhaseResult {
         phase: FailedPhase,
         error: String,
         error_code: Option<String>,
-        /// Structured spanned diagnostics from the failing phase, when the
-        /// phase produces them (typecheck today). Empty means only the
-        /// stringified `error` is available.
+        /// Structured diagnostics from the failing semantic phase.
         #[serde(default)]
         diagnostics: Vec<CommonDiagnostic>,
     },

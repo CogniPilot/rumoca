@@ -214,9 +214,11 @@ pub(super) fn ode_rhs_for_state_function(
     let name_str = state_name.to_string().trim_matches('"').to_string();
 
     // Iterate through equations to find the one whose LHS is der(state_name)
-    let Ok(iter) = equations.try_iter() else {
-        return Ok("0.0".to_string());
-    };
+    let iter = equations.try_iter().map_err(|err| {
+        render_err(format!(
+            "ODE equation collection for `der({name_str})` is not iterable: {err}"
+        ))
+    })?;
     for eq in iter {
         if let Some(rhs_expr) = find_derivative_rhs(&eq, &name_str, &cfg)? {
             return Ok(rhs_expr);
@@ -229,19 +231,9 @@ pub(super) fn ode_rhs_for_state_function(
         return Ok(rhs_expr);
     }
 
-    // No matching equation found — emit warning so it's visible in generated code
-    // Use Python-style comment when power is "**" (Python backends)
-    if cfg.power == "**" {
-        Ok(format!(
-            "0.0  # WARNING: no ODE equation found for der({})",
-            name_str
-        ))
-    } else {
-        Ok(format!(
-            "0.0 /* WARNING: no ODE equation found for der({}) */",
-            name_str
-        ))
-    }
+    Err(render_err(format!(
+        "no ODE equation found for `der({name_str})`"
+    )))
 }
 
 /// Extract the explicit RHS for an algebraic variable from f_x equations.
@@ -263,37 +255,31 @@ pub(super) fn alg_rhs_for_var_function(
     let cfg = ExprConfig::from_value(&config);
     let name_str = var_name.to_string().trim_matches('"').to_string();
 
-    let Ok(iter) = equations.try_iter() else {
-        return Ok("0.0".to_string());
-    };
+    let iter = equations.try_iter().map_err(|err| {
+        render_err(format!(
+            "algebraic equation collection for `{name_str}` is not iterable: {err}"
+        ))
+    })?;
     for eq in iter {
         if let Some(rhs_expr) = find_algebraic_rhs_direct(&eq, &name_str, &cfg)? {
             return Ok(rhs_expr);
         }
     }
 
-    let Ok(iter) = equations.try_iter() else {
-        return Ok("0.0".to_string());
-    };
+    let iter = equations.try_iter().map_err(|err| {
+        render_err(format!(
+            "algebraic equation collection for `{name_str}` is not iterable: {err}"
+        ))
+    })?;
     for eq in iter {
         if let Some(rhs_expr) = find_algebraic_rhs(&eq, &name_str, &cfg)? {
             return Ok(rhs_expr);
         }
     }
 
-    // No matching equation found — emit warning so it's visible in generated code
-    // Use Python-style comment when power is "**" (Python backends)
-    if cfg.power == "**" {
-        Ok(format!(
-            "0.0  # WARNING: no equation found for {}",
-            name_str
-        ))
-    } else {
-        Ok(format!(
-            "0.0 /* WARNING: no equation found for {} */",
-            name_str
-        ))
-    }
+    Err(render_err(format!(
+        "no algebraic equation found for `{name_str}`"
+    )))
 }
 
 /// Extract algebraic RHS like `alg_rhs_for_var`, but if no matching equation is

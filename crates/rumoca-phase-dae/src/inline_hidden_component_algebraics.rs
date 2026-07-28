@@ -24,7 +24,12 @@ struct HiddenDefinition {
 }
 
 pub(crate) fn inline_hidden_component_algebraics(dae: &mut dae::Dae) {
-    let protected_indices = structured_equation_indices(dae);
+    let Some(protected_indices) = structured_equation_indices(dae) else {
+        // This pass is an optional projection optimization. Malformed family
+        // metadata is diagnosed by the canonical IR validators; conservatively
+        // leave the DAE unchanged here rather than risking a split family.
+        return;
+    };
     let declared = declared_runtime_names(dae);
     let removable = removable_hidden_variables(dae);
     let definitions = hidden_scalar_definitions(dae, &declared, &removable, &protected_indices);
@@ -344,15 +349,23 @@ fn removable_hidden_variables(dae: &dae::Dae) -> HashSet<String> {
         .collect()
 }
 
-fn structured_equation_indices(dae: &dae::Dae) -> HashSet<usize> {
+fn structured_equation_indices(dae: &dae::Dae) -> Option<HashSet<usize>> {
     let mut indices = HashSet::new();
     for family in &dae.continuous.structured_equations {
-        let count = family
-            .scalar_view_row_count()
-            .expect("validated structured family row count");
-        indices.extend(family.first_equation_index..family.first_equation_index + count);
+        let count = if family.template.as_ref().is_some_and(|template| {
+            template.scalar_view == rumoca_core::ComprehensionScalarView::RowMajorProjection
+        }) {
+            1
+        } else {
+            family.scalar_view_row_count().ok()?
+        };
+        let end = family.first_equation_index.checked_add(count)?;
+        if end > dae.continuous.equations.len() {
+            return None;
+        }
+        indices.extend(family.first_equation_index..end);
     }
-    indices
+    Some(indices)
 }
 
 struct HiddenAlgebraicSubstituter<'a> {
@@ -539,6 +552,46 @@ mod tests {
 
         assert_eq!(dae.continuous.equations.len(), 1);
         assert_eq!(dae.continuous.equations[0].scalar_count, 2);
+    }
+
+    #[test]
+    fn invalid_structured_family_metadata_leaves_projection_dae_unchanged() {
+        let mut dae = dae::Dae::default();
+        dae.variables.outputs.insert(
+            VarName::new("gain.y"),
+            output_var("gain.y", dae::VariableCausality::Output),
+        );
+        dae.continuous.equations.push(dae::Equation::residual(
+            sub(var_ref("gain.y"), var_ref("gain.u")),
+            Span::DUMMY,
+            "equation from gain",
+        ));
+        dae.continuous
+            .structured_equations
+            .push(dae::StructuredEquationFamily {
+                domain: rumoca_core::StructuredIndexDomain {
+                    binders: vec![rumoca_core::StructuredIndexBinder {
+                        id: 0,
+                        display_name: "i".to_string(),
+                        lower: 1,
+                        upper: 2,
+                        step: 0,
+                    }],
+                },
+                first_equation_index: 0,
+                equations_per_point: 1,
+                span: Span::DUMMY,
+                origin: "invalid projection family".to_string(),
+                regular: None,
+                template: None,
+                interiors_materialized: true,
+            });
+
+        inline_hidden_component_algebraics(&mut dae);
+
+        assert!(dae.variables.outputs.contains_key(&VarName::new("gain.y")));
+        assert_eq!(dae.continuous.equations.len(), 1);
+        assert_eq!(dae.continuous.structured_equations.len(), 1);
     }
 
     #[test]

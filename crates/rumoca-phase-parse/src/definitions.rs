@@ -5,6 +5,7 @@ use super::helpers::{merge_spans, span_location, token_span};
 use super::sections::{AlgorithmSection, EquationSection};
 use crate::errors::semantic_error_from_token;
 use crate::generated::modelica_grammar_trait;
+use crate::take_cell::TakeCell;
 use rumoca_ir_ast::AstIndexMap as IndexMap;
 use std::sync::Arc;
 
@@ -220,7 +221,7 @@ fn merge_extends(
 }
 
 /// Process equation section, adding equations to appropriate list.
-fn process_equation_section(comp: &mut Composition, sec: &EquationSection) {
+fn process_equation_section(comp: &mut CompositionPayload, sec: &EquationSection) {
     for eq in &sec.equations {
         if sec.initial {
             comp.initial_equations.push(eq.clone());
@@ -241,7 +242,7 @@ fn process_equation_section(comp: &mut Composition, sec: &EquationSection) {
 }
 
 /// Process algorithm section, adding algorithms to appropriate list.
-fn process_algorithm_section(comp: &mut Composition, sec: &AlgorithmSection) {
+fn process_algorithm_section(comp: &mut CompositionPayload, sec: &AlgorithmSection) {
     let algo = sec.statements.to_vec();
     let keyword = sec
         .initial_keyword
@@ -319,6 +320,12 @@ impl TryFrom<&modelica_grammar_trait::StoredDefinition> for rumoca_ir_ast::Store
             if rumoca_core::is_predefined_user_redeclaration(class_name) {
                 return Err(semantic_error_from_token(
                     format!("Cannot redeclare predefined type '{class_name}'"),
+                    &class.class_definition.name,
+                ));
+            }
+            if def.classes.contains_key(class_name.as_ref()) {
+                return Err(semantic_error_from_token(
+                    format!("Duplicate top-level class definition '{class_name}'"),
                     &class.class_definition.name,
                 ));
             }
@@ -597,6 +604,9 @@ fn convert_standard_class_specifier(
     spec: &modelica_grammar_trait::StandardClassSpecifier,
     ctx: &ClassConversionContext,
 ) -> Result<rumoca_ir_ast::ClassDef, anyhow::Error> {
+    // Move the class body out of the grammar payload instead of deep-copying
+    // it at every nesting level.
+    let body = spec.composition.take();
     let class_def = rumoca_ir_ast::ClassDef {
         def_id: None,
         scope_id: None,
@@ -605,14 +615,14 @@ fn convert_standard_class_specifier(
         class_type_token: ctx.class_type_token.clone(),
         description: spec.description_string.tokens.clone(),
         location: span_location(&spec.name, &spec.ident),
-        extends: spec.composition.extends.clone(),
-        imports: spec.composition.imports.clone(),
-        classes: spec.composition.classes.clone(),
-        equations: spec.composition.equations.clone(),
-        algorithms: spec.composition.algorithms.clone(),
-        initial_equations: spec.composition.initial_equations.clone(),
-        initial_algorithms: spec.composition.initial_algorithms.clone(),
-        components: spec.composition.components.clone(),
+        extends: body.extends,
+        imports: body.imports,
+        classes: body.classes,
+        equations: body.equations,
+        algorithms: body.algorithms,
+        initial_equations: body.initial_equations,
+        initial_algorithms: body.initial_algorithms,
+        components: body.components,
         encapsulated: ctx.encapsulated,
         partial: ctx.partial,
         expandable: ctx.expandable,
@@ -620,22 +630,23 @@ fn convert_standard_class_specifier(
         pure: ctx.pure,
         purity_declared: ctx.purity_declared,
         causality: rumoca_core::Causality::Empty,
-        equation_keyword: spec.composition.equation_keyword.clone(),
-        initial_equation_keyword: spec.composition.initial_equation_keyword.clone(),
-        algorithm_keyword: spec.composition.algorithm_keyword.clone(),
-        initial_algorithm_keyword: spec.composition.initial_algorithm_keyword.clone(),
+        equation_keyword: body.equation_keyword,
+        initial_equation_keyword: body.initial_equation_keyword,
+        algorithm_keyword: body.algorithm_keyword,
+        initial_algorithm_keyword: body.initial_algorithm_keyword,
         end_name_token: Some(spec.ident.clone()),
         enum_literals: vec![],
-        annotation: spec.composition.annotation.clone(),
+        annotation: body.annotation,
         is_protected: false,
         is_final: false,
         is_inner: false,
         is_outer: false,
         is_replaceable: false,
         is_redeclare: false,
+        redeclare_target_def_id: None,
         constrainedby: None,
         array_subscripts: vec![],
-        external: spec.composition.external.clone(),
+        external: body.external,
     };
     validate_class_restrictions(&class_def)?;
     Ok(class_def)
@@ -662,9 +673,11 @@ fn convert_extends_class_specifier(
         annotation: vec![],
     };
 
-    // Combine inherited extends with composition extends
+    // Combine inherited extends with composition extends. The class body is
+    // moved out of the grammar payload, not deep-copied.
+    let body = spec.composition.take();
     let mut all_extends = vec![inherited_extends];
-    all_extends.extend(spec.composition.extends.clone());
+    all_extends.extend(body.extends);
 
     let class_def = rumoca_ir_ast::ClassDef {
         def_id: None,
@@ -675,13 +688,13 @@ fn convert_extends_class_specifier(
         description: spec.description_string.tokens.clone(),
         location: span_location(&spec.ident, &spec.ident0),
         extends: all_extends,
-        imports: spec.composition.imports.clone(),
-        classes: spec.composition.classes.clone(),
-        equations: spec.composition.equations.clone(),
-        algorithms: spec.composition.algorithms.clone(),
-        initial_equations: spec.composition.initial_equations.clone(),
-        initial_algorithms: spec.composition.initial_algorithms.clone(),
-        components: spec.composition.components.clone(),
+        imports: body.imports,
+        classes: body.classes,
+        equations: body.equations,
+        algorithms: body.algorithms,
+        initial_equations: body.initial_equations,
+        initial_algorithms: body.initial_algorithms,
+        components: body.components,
         encapsulated: ctx.encapsulated,
         partial: ctx.partial,
         expandable: ctx.expandable,
@@ -689,22 +702,23 @@ fn convert_extends_class_specifier(
         pure: ctx.pure,
         purity_declared: ctx.purity_declared,
         causality: rumoca_core::Causality::Empty,
-        equation_keyword: spec.composition.equation_keyword.clone(),
-        initial_equation_keyword: spec.composition.initial_equation_keyword.clone(),
-        algorithm_keyword: spec.composition.algorithm_keyword.clone(),
-        initial_algorithm_keyword: spec.composition.initial_algorithm_keyword.clone(),
+        equation_keyword: body.equation_keyword,
+        initial_equation_keyword: body.initial_equation_keyword,
+        algorithm_keyword: body.algorithm_keyword,
+        initial_algorithm_keyword: body.initial_algorithm_keyword,
         end_name_token: Some(spec.ident0.clone()),
         enum_literals: vec![],
-        annotation: spec.composition.annotation.clone(),
+        annotation: body.annotation,
         is_protected: false,
         is_final: false,
         is_inner: false,
         is_outer: false,
         is_replaceable: false,
         is_redeclare: false,
+        redeclare_target_def_id: None,
         constrainedby: None,
         array_subscripts: vec![],
-        external: spec.composition.external.clone(),
+        external: body.external,
     };
     validate_class_restrictions(&class_def)?;
     Ok(class_def)
@@ -752,6 +766,7 @@ fn convert_enum_class_specifier(
         is_outer: false,
         is_replaceable: false,
         is_redeclare: false,
+        redeclare_target_def_id: None,
         constrainedby: None,
         array_subscripts: vec![],
         external: None, // Enums don't have external declarations
@@ -814,6 +829,7 @@ fn convert_type_class_specifier(
         is_outer: false,
         is_replaceable: false,
         is_redeclare: false,
+        redeclare_target_def_id: None,
         constrainedby: None,
         array_subscripts,
         external: None, // Type aliases don't have external declarations
@@ -893,6 +909,7 @@ fn convert_function_partial_class_specifier(
         is_outer: false,
         is_replaceable: false,
         is_redeclare: false,
+        redeclare_target_def_id: None,
         constrainedby: None,
         array_subscripts: vec![],
         external: None, // Function partial applications don't have external declarations
@@ -957,6 +974,7 @@ fn convert_der_class_specifier(
         is_outer: false,
         is_replaceable: false,
         is_redeclare: false,
+        redeclare_target_def_id: None,
         constrainedby: None,
         array_subscripts: vec![],
         external: None,
@@ -1007,29 +1025,53 @@ impl TryFrom<&modelica_grammar_trait::ClassDefinition> for rumoca_ir_ast::ClassD
 }
 
 //-----------------------------------------------------------------------------
+/// Everything a `composition` production contributes to a class body.
 #[derive(Debug, Default, Clone)]
-
-pub struct Composition {
-    pub extends: Vec<rumoca_ir_ast::Extend>,
-    pub imports: Vec<rumoca_ir_ast::Import>,
-    pub components: IndexMap<String, rumoca_ir_ast::Component>,
-    pub classes: IndexMap<String, rumoca_ir_ast::ClassDef>,
-    pub equations: Vec<rumoca_ir_ast::Equation>,
-    pub initial_equations: Vec<rumoca_ir_ast::Equation>,
-    pub algorithms: Vec<Vec<rumoca_ir_ast::Statement>>,
-    pub initial_algorithms: Vec<Vec<rumoca_ir_ast::Statement>>,
+pub(crate) struct CompositionPayload {
+    pub(crate) extends: Vec<rumoca_ir_ast::Extend>,
+    pub(crate) imports: Vec<rumoca_ir_ast::Import>,
+    pub(crate) components: IndexMap<String, rumoca_ir_ast::Component>,
+    pub(crate) classes: IndexMap<String, rumoca_ir_ast::ClassDef>,
+    pub(crate) equations: Vec<rumoca_ir_ast::Equation>,
+    pub(crate) initial_equations: Vec<rumoca_ir_ast::Equation>,
+    pub(crate) algorithms: Vec<Vec<rumoca_ir_ast::Statement>>,
+    pub(crate) initial_algorithms: Vec<Vec<rumoca_ir_ast::Statement>>,
     /// Token for "equation" keyword (if present)
-    pub equation_keyword: Option<rumoca_core::Token>,
+    pub(crate) equation_keyword: Option<rumoca_core::Token>,
     /// Token for "initial equation" keyword (if present)
-    pub initial_equation_keyword: Option<rumoca_core::Token>,
+    pub(crate) initial_equation_keyword: Option<rumoca_core::Token>,
     /// Token for "algorithm" keyword (if present)
-    pub algorithm_keyword: Option<rumoca_core::Token>,
+    pub(crate) algorithm_keyword: Option<rumoca_core::Token>,
     /// Token for "initial algorithm" keyword (if present)
-    pub initial_algorithm_keyword: Option<rumoca_core::Token>,
+    pub(crate) initial_algorithm_keyword: Option<rumoca_core::Token>,
     /// Annotation clause for this class
-    pub annotation: Vec<rumoca_ir_ast::Expression>,
+    pub(crate) annotation: Vec<rumoca_ir_ast::Expression>,
     /// External function declaration (MLS §12.9)
-    pub external: Option<rumoca_ir_ast::ExternalFunction>,
+    pub(crate) external: Option<rumoca_ir_ast::ExternalFunction>,
+}
+
+/// Grammar payload for `composition`, consumed exactly once by the enclosing
+/// class specifier conversion.
+///
+/// Moving the payload out through a shared reference is sound because parol
+/// pops each nonterminal payload once, converts it once, and drops it; see the
+/// `take_cell` module docs.
+#[derive(Debug, Default, Clone)]
+pub struct Composition {
+    payload: TakeCell<CompositionPayload>,
+}
+
+impl Composition {
+    pub(crate) fn new(payload: CompositionPayload) -> Self {
+        Self {
+            payload: TakeCell::new(payload),
+        }
+    }
+
+    /// Move the class body out. Callable exactly once.
+    pub(crate) fn take(&self) -> CompositionPayload {
+        self.payload.take()
+    }
 }
 
 impl TryFrom<&modelica_grammar_trait::Composition> for Composition {
@@ -1038,58 +1080,24 @@ impl TryFrom<&modelica_grammar_trait::Composition> for Composition {
     fn try_from(
         ast: &modelica_grammar_trait::Composition,
     ) -> std::result::Result<Self, Self::Error> {
-        let mut comp = Composition {
+        // Move the unqualified element list in instead of copying it; the
+        // grammar payload is dead as soon as this conversion returns.
+        let ElementListPayload {
+            components,
+            classes,
+            imports,
+            extends,
+        } = ast.element_list.take();
+        let mut comp = CompositionPayload {
+            components,
+            classes,
+            imports,
+            extends,
             ..Default::default()
         };
 
-        comp.components = ast.element_list.components.clone();
-        comp.classes = ast.element_list.classes.clone();
-        comp.extends = ast.element_list.extends.clone();
-        comp.imports = ast.element_list.imports.clone();
-
         for comp_list in &ast.composition_list {
-            match &comp_list.composition_list_group {
-                modelica_grammar_trait::CompositionListGroup::PublicElementList(elem_list) => {
-                    // Merge public elements into composition (default visibility)
-                    merge_components(
-                        &mut comp.components,
-                        elem_list.element_list.components.clone(),
-                        false,
-                    )?;
-                    comp.classes.extend(elem_list.element_list.classes.clone());
-                    merge_extends(
-                        &mut comp.extends,
-                        elem_list.element_list.extends.clone(),
-                        false,
-                    );
-                    comp.imports.extend(elem_list.element_list.imports.clone());
-                }
-                modelica_grammar_trait::CompositionListGroup::ProtectedElementList(elem_list) => {
-                    // Merge protected elements into composition
-                    merge_components(
-                        &mut comp.components,
-                        elem_list.element_list.components.clone(),
-                        true,
-                    )?;
-                    merge_classes(
-                        &mut comp.classes,
-                        elem_list.element_list.classes.clone(),
-                        true,
-                    );
-                    merge_extends(
-                        &mut comp.extends,
-                        elem_list.element_list.extends.clone(),
-                        true,
-                    );
-                    comp.imports.extend(elem_list.element_list.imports.clone());
-                }
-                modelica_grammar_trait::CompositionListGroup::EquationSection(eq_sec) => {
-                    process_equation_section(&mut comp, &eq_sec.equation_section);
-                }
-                modelica_grammar_trait::CompositionListGroup::AlgorithmSection(alg_sec) => {
-                    process_algorithm_section(&mut comp, &alg_sec.algorithm_section);
-                }
-            }
+            merge_composition_list_group(&mut comp, &comp_list.composition_list_group)?;
         }
 
         // Extract annotation from composition_opt0
@@ -1108,17 +1116,62 @@ impl TryFrom<&modelica_grammar_trait::Composition> for Composition {
 
         // Extract external function declaration (MLS §12.9)
         if let Some(external_opt) = &ast.composition_opt {
-            comp.external = Some(extract_external_function(external_opt));
+            comp.external = Some(extract_external_function(external_opt)?);
         }
 
-        Ok(comp)
+        Ok(Composition::new(comp))
     }
+}
+
+/// Merge one `public`/`protected`/`equation`/`algorithm` section into `comp`.
+fn merge_composition_list_group(
+    comp: &mut CompositionPayload,
+    group: &modelica_grammar_trait::CompositionListGroup,
+) -> Result<(), anyhow::Error> {
+    match group {
+        modelica_grammar_trait::CompositionListGroup::PublicElementList(elem_list) => {
+            merge_element_section(comp, elem_list.element_list.take(), false)?;
+        }
+        modelica_grammar_trait::CompositionListGroup::ProtectedElementList(elem_list) => {
+            merge_element_section(comp, elem_list.element_list.take(), true)?;
+        }
+        modelica_grammar_trait::CompositionListGroup::EquationSection(eq_sec) => {
+            process_equation_section(comp, &eq_sec.equation_section);
+        }
+        modelica_grammar_trait::CompositionListGroup::AlgorithmSection(alg_sec) => {
+            process_algorithm_section(comp, &alg_sec.algorithm_section);
+        }
+    }
+    Ok(())
+}
+
+/// Merge one visibility section's elements into the composition payload.
+fn merge_element_section(
+    comp: &mut CompositionPayload,
+    section: ElementListPayload,
+    is_protected: bool,
+) -> Result<(), anyhow::Error> {
+    let ElementListPayload {
+        components,
+        classes,
+        imports,
+        extends,
+    } = section;
+    merge_components(&mut comp.components, components, is_protected)?;
+    if is_protected {
+        merge_classes(&mut comp.classes, classes, true);
+    } else {
+        comp.classes.extend(classes);
+    }
+    merge_extends(&mut comp.extends, extends, is_protected);
+    comp.imports.extend(imports);
+    Ok(())
 }
 
 /// Extract external function information from the composition.
 fn extract_external_function(
     external_opt: &modelica_grammar_trait::CompositionOpt,
-) -> rumoca_ir_ast::ExternalFunction {
+) -> Result<rumoca_ir_ast::ExternalFunction, anyhow::Error> {
     let mut external = rumoca_ir_ast::ExternalFunction::default();
 
     // Extract language specification (e.g., "C")
@@ -1157,15 +1210,53 @@ fn extract_external_function(
         }
     }
 
-    external
+    // The annotation before the external-clause semicolon belongs to the
+    // external function interface (MLS §12.9.4), not to the containing class.
+    if let Some(annotation_opt) = &external_opt.composition_opt3
+        && let Some(class_mod_opt) = &annotation_opt
+            .annotation_clause
+            .class_modification
+            .class_modification_opt
+    {
+        validate_annotation_modifiers(
+            &class_mod_opt.argument_list,
+            &annotation_opt.annotation_clause.annotation.annotation,
+        )?;
+        external.annotation = class_mod_opt.argument_list.args.clone();
+    }
+
+    Ok(external)
 }
 
 //-----------------------------------------------------------------------------
+/// Elements collected from one `element_list` production.
 #[derive(Debug, Default, Clone)]
+pub(crate) struct ElementListPayload {
+    pub(crate) components: IndexMap<String, rumoca_ir_ast::Component>,
+    pub(crate) classes: IndexMap<String, rumoca_ir_ast::ClassDef>,
+    pub(crate) imports: Vec<rumoca_ir_ast::Import>,
+    pub(crate) extends: Vec<rumoca_ir_ast::Extend>,
+}
 
+/// Grammar payload for `element_list`, consumed exactly once by `Composition`.
+///
+/// Moving the payload out through a shared reference is sound because parol
+/// pops each nonterminal payload once, converts it once, and drops it; see the
+/// `take_cell` module docs.
+#[derive(Debug, Default, Clone)]
 pub struct ElementList {
-    pub components: IndexMap<String, rumoca_ir_ast::Component>,
-    pub classes: IndexMap<String, rumoca_ir_ast::ClassDef>,
-    pub imports: Vec<rumoca_ir_ast::Import>,
-    pub extends: Vec<rumoca_ir_ast::Extend>,
+    payload: TakeCell<ElementListPayload>,
+}
+
+impl ElementList {
+    pub(crate) fn new(payload: ElementListPayload) -> Self {
+        Self {
+            payload: TakeCell::new(payload),
+        }
+    }
+
+    /// Move the collected elements out. Callable exactly once.
+    pub(crate) fn take(&self) -> ElementListPayload {
+        self.payload.take()
+    }
 }

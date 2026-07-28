@@ -13,19 +13,28 @@ use sha1::{Digest, Sha1};
 
 use crate::manifest_context::diagnostic::EfmiError;
 
-/// A SHA-1 digest rendered as exactly 40 lowercase hex characters.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Sha1Hex(String);
+/// Length in bytes of a SHA-1 digest (FIPS 180-4: 160 bits).
+const SHA1_BYTES: usize = 20;
+
+/// Number of characters in the lowercase-hex rendering of a SHA-1 digest.
+const SHA1_HEX_CHARS: usize = SHA1_BYTES * 2;
+
+/// A SHA-1 digest.
+///
+/// The type holds the **digest**, not its rendering: 20 raw bytes, with the
+/// 40-character lowercase hex form produced on demand by [`Display`] and
+/// [`Sha1Hex::to_hex`]. That is what makes this value an identity rather than a
+/// name — the bytes come from SHA-1 over exact content and are therefore
+/// reproducible across processes and machines, whereas the hex string is one
+/// possible spelling of them (upper- vs. lowercase differ as text but denote
+/// the same digest). Equality, ordering, and hashing are over the digest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Sha1Hex([u8; SHA1_BYTES]);
 
 impl Sha1Hex {
     /// Compute the SHA-1 of the given bytes, exactly as provided.
     pub fn of_bytes(bytes: &[u8]) -> Self {
-        let digest = Sha1::digest(bytes);
-        let mut hex = String::with_capacity(40);
-        for byte in digest {
-            write!(hex, "{byte:02x}").expect("writing to a String cannot fail");
-        }
-        Self(hex)
+        Self(Sha1::digest(bytes).into())
     }
 
     /// Parse a checksum this crate (or a peer tool following the same
@@ -36,27 +45,51 @@ impl Sha1Hex {
             value: value.to_owned(),
             reason: reason.to_owned(),
         };
-        if value.len() != 40 {
+        if value.len() != SHA1_HEX_CHARS {
             return Err(invalid("must be exactly 40 characters"));
         }
-        if !value
-            .chars()
-            .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c))
-        {
-            return Err(invalid("must contain only lowercase hex characters"));
+        let mut digest = [0u8; SHA1_BYTES];
+        for (byte, pair) in digest.iter_mut().zip(value.as_bytes().chunks_exact(2)) {
+            let Some(value) = lowercase_hex_byte(pair) else {
+                return Err(invalid("must contain only lowercase hex characters"));
+            };
+            *byte = value;
         }
-        Ok(Self(value.to_owned()))
+        Ok(Self(digest))
     }
 
-    /// The validated hex text.
-    pub fn as_str(&self) -> &str {
+    /// The digest bytes.
+    pub fn as_bytes(&self) -> &[u8; SHA1_BYTES] {
         &self.0
     }
+
+    /// The canonical 40-character lowercase hex rendering.
+    pub fn to_hex(&self) -> String {
+        let mut hex = String::with_capacity(SHA1_HEX_CHARS);
+        for byte in self.0 {
+            write!(hex, "{byte:02x}").expect("writing to a String cannot fail");
+        }
+        hex
+    }
+}
+
+/// Decode one lowercase-hex digit pair, rejecting uppercase and non-hex.
+fn lowercase_hex_byte(pair: &[u8]) -> Option<u8> {
+    let digit = |byte: u8| match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        _ => None,
+    };
+    let (high, low) = (digit(*pair.first()?)?, digit(*pair.get(1)?)?);
+    Some((high << 4) | low)
 }
 
 impl fmt::Display for Sha1Hex {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
+        for byte in self.0 {
+            write!(f, "{byte:02x}")?;
+        }
+        Ok(())
     }
 }
 
@@ -68,13 +101,24 @@ mod tests {
     #[test]
     fn sha1_known_vectors() {
         assert_eq!(
-            Sha1Hex::of_bytes(b"abc").as_str(),
+            Sha1Hex::of_bytes(b"abc").to_hex(),
             "a9993e364706816aba3e25717850c26c9cd0d89d"
         );
         assert_eq!(
-            Sha1Hex::of_bytes(b"").as_str(),
+            Sha1Hex::of_bytes(b"").to_hex(),
             "da39a3ee5e6b4b0d3255bfef95601890afd80709"
         );
+    }
+
+    /// The digest, not its spelling, is the identity: parsing the rendering of
+    /// a digest yields the same value, and rendering round-trips exactly.
+    #[test]
+    fn sha1_round_trips_through_its_hex_rendering() {
+        let digest = Sha1Hex::of_bytes(b"eFMI manifest content");
+        let hex = digest.to_hex();
+        assert_eq!(Sha1Hex::parse(&hex), Ok(digest));
+        assert_eq!(digest.to_string(), hex);
+        assert_eq!(hex.len(), 40);
     }
 
     /// No normalization: CRLF and LF content hash differently.

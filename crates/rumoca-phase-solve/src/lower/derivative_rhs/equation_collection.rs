@@ -1,46 +1,85 @@
 use super::*;
 
-pub(in crate::lower) fn collect_derivative_equations(
+pub(in crate::lower) fn collect_continuous_equation_rows(
     dae_model: &dae::Dae,
     state_names: &HashSet<String>,
     structural_bindings: &IndexMap<String, f64>,
-) -> Result<(Vec<DerivativeEquation>, Vec<bool>), LowerError> {
+) -> Result<
+    (
+        Vec<ContinuousEquationRow>,
+        Vec<DerivativeEquation>,
+        Vec<bool>,
+    ),
+    LowerError,
+> {
+    let mut continuous_rows = Vec::new();
     let mut equations = Vec::new();
-    let mut flags = Vec::new();
+    let mut source_equations_all_derivative = Vec::new();
     if !dae_model.continuous.equations.is_empty() {
         reserve_derivative_vec_capacity(
-            &mut flags,
+            &mut source_equations_all_derivative,
             dae_model.continuous.equations.len(),
-            "derivative equation flags",
+            "initialization source-equation derivative summary",
             first_continuous_equation_span(dae_model)?,
         )?;
     }
     for (equation_index, equation) in dae_model.continuous.equations.iter().enumerate() {
-        let before = equations.len();
-        if let Some(projected) = function_projected_residuals_with_owner(
+        let projected = function_projected_residuals_with_owner(
             &equation.rhs,
             dae_model,
             structural_bindings,
             equation.span,
-        )? {
-            for residual in projected {
-                append_derivative_rows_for_residual(
+        )?;
+        if let Some(projected) = projected {
+            reserve_derivative_vec_capacity(
+                &mut continuous_rows,
+                projected.len(),
+                "normalized function projection row count",
+                equation.span,
+            )?;
+            let mut all_derivative = true;
+            for (projection_index, residual) in projected.into_iter().enumerate() {
+                let normalized =
+                    projected_continuous_equation(equation, residual, projection_index);
+                let is_derivative = append_derivative_rows_for_residual(
                     &mut equations,
-                    &residual,
+                    &normalized.rhs,
                     state_names,
                     dae_model,
                     structural_bindings,
                     ResidualDerivativeRowsContext {
                         scalar_count: Some(1),
                         dae_equation_index: equation_index,
+                        projection_index: Some(projection_index),
                         owner_span: equation.span,
                     },
                 )?;
+                all_derivative &= is_derivative;
+                continuous_rows.push(ContinuousEquationRow {
+                    source_equation_index: equation_index,
+                    projection: ContinuousEquationRowProjection::FunctionOutput {
+                        index: projection_index,
+                    },
+                    equation: normalized,
+                    is_derivative,
+                });
             }
-            flags.push(equations.len() > before);
+            // Initialization still consumes source equations so it can retain
+            // their structured-family identity. It may omit a source only when
+            // every normalized projection is a derivative row. A mixed source
+            // must remain: dropping it would also drop its algebraic projection.
+            // Continuous residual and direct-assignment lowering classify only
+            // the normalized `continuous_rows` above.
+            source_equations_all_derivative.push(all_derivative);
             continue;
         }
-        append_derivative_rows_for_residual(
+        reserve_derivative_vec_capacity(
+            &mut continuous_rows,
+            1,
+            "normalized source equation row count",
+            equation.span,
+        )?;
+        let is_derivative = append_derivative_rows_for_residual(
             &mut equations,
             &equation.rhs,
             state_names,
@@ -49,18 +88,47 @@ pub(in crate::lower) fn collect_derivative_equations(
             ResidualDerivativeRowsContext {
                 scalar_count: Some(equation.scalar_count),
                 dae_equation_index: equation_index,
+                projection_index: None,
                 owner_span: equation.span,
             },
         )?;
-        flags.push(equations.len() > before);
+        continuous_rows.push(ContinuousEquationRow {
+            source_equation_index: equation_index,
+            projection: ContinuousEquationRowProjection::Source,
+            equation: equation.clone(),
+            is_derivative,
+        });
+        source_equations_all_derivative.push(is_derivative);
     }
-    Ok((equations, flags))
+    Ok((continuous_rows, equations, source_equations_all_derivative))
+}
+
+fn projected_continuous_equation(
+    source: &dae::Equation,
+    residual: rumoca_core::Expression,
+    projection_index: usize,
+) -> dae::Equation {
+    let span = residual
+        .span()
+        .filter(|span| !span.is_dummy())
+        .unwrap_or(source.span);
+    dae::Equation {
+        lhs: None,
+        rhs: residual,
+        span,
+        origin: format!(
+            "{} (function output projection {projection_index})",
+            source.origin
+        ),
+        scalar_count: 1,
+    }
 }
 
 #[derive(Clone, Copy)]
 pub(in crate::lower) struct ResidualDerivativeRowsContext {
     scalar_count: Option<usize>,
     dae_equation_index: usize,
+    projection_index: Option<usize>,
     owner_span: rumoca_core::Span,
 }
 
@@ -71,7 +139,8 @@ pub(in crate::lower) fn append_derivative_rows_for_residual(
     dae_model: &dae::Dae,
     structural_bindings: &IndexMap<String, f64>,
     context: ResidualDerivativeRowsContext,
-) -> Result<(), LowerError> {
+) -> Result<bool, LowerError> {
+    let before = equations.len();
     if let Some(mut rows) = derivative_equations_from_residual(
         residual,
         state_names,
@@ -80,6 +149,7 @@ pub(in crate::lower) fn append_derivative_rows_for_residual(
         context.scalar_count,
         context.owner_span,
     )? {
+        remove_proven_zero_derivative_coefficients(&mut rows, structural_bindings);
         reserve_derivative_vec_capacity(
             equations,
             rows.len(),
@@ -88,43 +158,36 @@ pub(in crate::lower) fn append_derivative_rows_for_residual(
         )?;
         for row in &mut rows {
             row.dae_equation_index = Some(context.dae_equation_index);
+            row.projection_index = context.projection_index;
         }
         equations.append(&mut rows);
     }
-    Ok(())
+    Ok(equations.len() > before)
+}
+
+fn remove_proven_zero_derivative_coefficients(
+    rows: &mut Vec<DerivativeEquation>,
+    structural_bindings: &IndexMap<String, f64>,
+) {
+    for row in rows.iter_mut() {
+        row.coefficients.retain(|_, coefficient| {
+            eval_derivative_constant(coefficient, structural_bindings) != Some(0.0)
+        });
+    }
+    rows.retain(|row| !row.coefficients.is_empty());
 }
 
 pub(in crate::lower) fn collect_direct_assignments(
     dae_model: &dae::Dae,
-    equation_flags: &[bool],
+    continuous_rows: &[ContinuousEquationRow],
     structural_bindings: &IndexMap<String, f64>,
 ) -> Result<IndexMap<String, DirectAssignmentValue>, LowerError> {
     let mut assignments = IndexMap::new();
-    for (idx, equation) in dae_model.continuous.equations.iter().enumerate() {
-        let Some(handled_by_derivative) = equation_flags.get(idx).copied() else {
-            return Err(LowerError::contract_violation(
-                format!("missing derivative-equation flag for continuous equation {idx}"),
-                equation.span,
-            ));
-        };
-        if handled_by_derivative {
+    for row in continuous_rows {
+        if row.is_derivative {
             continue;
         }
-        if let Some(projected) = function_projected_residuals_with_owner(
-            &equation.rhs,
-            dae_model,
-            structural_bindings,
-            equation.span,
-        )? {
-            insert_projected_direct_assignments(
-                dae_model,
-                &mut assignments,
-                &projected,
-                structural_bindings,
-                equation.span,
-            )?;
-            continue;
-        }
+        let equation = &row.equation;
         let Some((target, rhs)) = direct_assignment_target_rhs(equation)? else {
             continue;
         };
@@ -141,40 +204,16 @@ pub(in crate::lower) fn collect_direct_assignments(
     Ok(assignments)
 }
 
-fn insert_projected_direct_assignments(
-    dae_model: &dae::Dae,
-    assignments: &mut IndexMap<String, DirectAssignmentValue>,
-    residuals: &[rumoca_core::Expression],
-    structural_bindings: &IndexMap<String, f64>,
-    span: rumoca_core::Span,
-) -> Result<(), LowerError> {
-    for residual in residuals {
-        let Some((target, rhs)) = direct_assignment_residual_target_rhs(residual)? else {
-            continue;
-        };
-        insert_direct_assignment(
-            dae_model,
-            assignments,
-            target,
-            rhs,
-            1,
-            structural_bindings,
-            span,
-        )?;
-    }
-    Ok(())
-}
-
 pub(in crate::lower) fn collect_missing_indexed_record_field_assignments(
     dae_model: &dae::Dae,
     state_names: &HashSet<String>,
     layout: &VarLayout,
     structural_bindings: &IndexMap<String, f64>,
 ) -> Result<IndexMap<String, DirectAssignmentValue>, LowerError> {
-    let (_, equation_flags) =
-        collect_derivative_equations(dae_model, state_names, structural_bindings)?;
+    let (continuous_rows, _, _) =
+        collect_continuous_equation_rows(dae_model, state_names, structural_bindings)?;
     let direct_assignments =
-        collect_direct_assignments(dae_model, &equation_flags, structural_bindings)?;
+        collect_direct_assignments(dae_model, &continuous_rows, structural_bindings)?;
     let mut missing = IndexMap::new();
     if !direct_assignments.is_empty() {
         reserve_derivative_index_map_capacity(
@@ -668,6 +707,7 @@ pub(in crate::lower) fn derivative_equation_from_residual(
                 rhs: rhs_without_remainder(rhs.clone(), remainder, residual_span),
                 span: residual_span,
                 dae_equation_index: None,
+                projection_index: None,
             }));
         }
         if let Some((coefficients, remainder)) =
@@ -679,6 +719,7 @@ pub(in crate::lower) fn derivative_equation_from_residual(
                 rhs: rhs_without_remainder(lhs.clone(), remainder, residual_span),
                 span: residual_span,
                 dae_equation_index: None,
+                projection_index: None,
             }));
         }
     }
@@ -694,6 +735,7 @@ pub(in crate::lower) fn derivative_equation_from_residual(
             ),
             span: residual_span,
             dae_equation_index: None,
+            projection_index: None,
         }));
     }
     Ok(None)
@@ -1107,6 +1149,7 @@ pub(in crate::lower) fn build_affine_vector_derivative_equations(
             rhs,
             span,
             dae_equation_index: None,
+            projection_index: None,
         });
     }
     Ok(Some(equations))
@@ -1304,6 +1347,7 @@ pub(in crate::lower) fn build_matrix_derivative_equations(
             rhs,
             span,
             dae_equation_index: None,
+            projection_index: None,
         });
     }
     Ok(Some(equations))
@@ -1591,12 +1635,12 @@ mod tests {
             "test",
         ));
 
-        let (_, equation_flags) =
-            collect_derivative_equations(&dae_model, &HashSet::new(), &IndexMap::new())?;
-        assert_eq!(equation_flags, vec![false]);
+        let (continuous_rows, _, source_equations_all_derivative) =
+            collect_continuous_equation_rows(&dae_model, &HashSet::new(), &IndexMap::new())?;
+        assert_eq!(source_equations_all_derivative, vec![false]);
 
         let assignments =
-            collect_direct_assignments(&dae_model, &equation_flags, &IndexMap::new())?;
+            collect_direct_assignments(&dae_model, &continuous_rows, &IndexMap::new())?;
         let assignment = assignments.get("x").expect("x assignment");
         assert!(
             matches!(
@@ -1609,6 +1653,165 @@ mod tests {
             "projected function result should replace the original call: {:?}",
             assignment.rhs
         );
+        Ok(())
+    }
+
+    #[test]
+    fn mixed_function_projections_are_classified_and_retained_per_row() -> Result<(), LowerError> {
+        let owner_span = span(20, 40);
+        let mut function = rumoca_core::Function::new("My.mixed", owner_span);
+        function
+            .inputs
+            .push(rumoca_core::FunctionParam::new("u", "Real", owner_span));
+        function
+            .inputs
+            .push(rumoca_core::FunctionParam::new("v", "Real", owner_span));
+        let mut output = rumoca_core::FunctionParam::new("y", "Real", owner_span);
+        output.dims = vec![2];
+        function.outputs.push(output);
+        function.body.push(rumoca_core::Statement::Assignment {
+            comp: rumoca_core::ComponentReference::from_flat_segments("y", owner_span, None),
+            value: rumoca_core::Expression::Array {
+                elements: vec![
+                    var_ref("u", Vec::new(), owner_span),
+                    var_ref("v", Vec::new(), owner_span),
+                ],
+                is_matrix: false,
+                span: owner_span,
+            },
+            span: owner_span,
+        });
+
+        let derivative = rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Der,
+            args: vec![var_ref("x", Vec::new(), owner_span)],
+            span: owner_span,
+        };
+        let call = rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::Reference::new("My.mixed"),
+            args: vec![derivative, var_ref("a", Vec::new(), owner_span)],
+            is_constructor: false,
+            span: owner_span,
+        };
+        let mut dae_model = dae::Dae::default();
+        dae_model.variables.states.insert(
+            rumoca_core::VarName::new("x"),
+            dae::Variable {
+                name: rumoca_core::VarName::new("x"),
+                ..dae::Variable::empty_with_span(owner_span)
+            },
+        );
+        dae_model.variables.algebraics.insert(
+            rumoca_core::VarName::new("a"),
+            dae::Variable {
+                name: rumoca_core::VarName::new("a"),
+                ..dae::Variable::empty_with_span(owner_span)
+            },
+        );
+        dae_model.variables.discrete_reals.insert(
+            rumoca_core::VarName::new("q"),
+            dae::Variable {
+                name: rumoca_core::VarName::new("q"),
+                component_ref: Some(rumoca_core::ComponentReference {
+                    local: false,
+                    span: owner_span,
+                    parts: vec![rumoca_core::ComponentRefPart {
+                        ident: "q".to_string(),
+                        span: owner_span,
+                        subs: Vec::new(),
+                    }],
+                    def_id: Some(rumoca_core::DefId::new(1)),
+                }),
+                dims: vec![2],
+                ..dae::Variable::empty_with_span(owner_span)
+            },
+        );
+        dae_model
+            .symbols
+            .functions
+            .insert(function.name.clone(), function);
+        dae_model.continuous.equations.push(dae::Equation::residual(
+            rumoca_core::Expression::Binary {
+                op: rumoca_core::OpBinary::Sub,
+                lhs: Box::new(var_ref("q", Vec::new(), owner_span)),
+                rhs: Box::new(call),
+                span: owner_span,
+            },
+            owner_span,
+            "mixed projected equation",
+        ));
+
+        let state_names = HashSet::from(["x".to_string()]);
+        let (rows, derivative_rows, source_equations_all_derivative) =
+            collect_continuous_equation_rows(&dae_model, &state_names, &IndexMap::new())?;
+        assert_eq!(rows.len(), 2);
+        assert_eq!(derivative_rows.len(), 1);
+        assert_eq!(
+            source_equations_all_derivative,
+            vec![false],
+            "initialization must preserve a mixed source equation because not all projections are derivatives"
+        );
+        assert!(rows[0].is_derivative);
+        assert!(!rows[1].is_derivative);
+        assert_eq!(
+            rows.iter().map(|row| row.projection).collect::<Vec<_>>(),
+            vec![
+                ContinuousEquationRowProjection::FunctionOutput { index: 0 },
+                ContinuousEquationRowProjection::FunctionOutput { index: 1 },
+            ]
+        );
+        let runtime_assignments = crate::runtime_assignments::runtime_assignment_equations(
+            &dae_model,
+            &HashSet::new(),
+            &rows,
+        )?;
+        assert_eq!(runtime_assignments.len(), 1);
+        assert_eq!(
+            runtime_assignments[0].lhs.as_ref().map(|lhs| lhs.as_str()),
+            Some("q[2]"),
+            "runtime assignment lowering must select only the non-derivative projection"
+        );
+        let solver_residuals =
+            crate::solver_residual_equations(&dae_model, &HashSet::new(), &rows)?;
+        assert!(
+            solver_residuals.is_empty(),
+            "the derivative projection belongs only to derivative analysis and the algebraic projection is already owned by runtime assignment lowering"
+        );
+        assert_eq!(
+            derivative_rows.len() + runtime_assignments.len() + solver_residuals.len(),
+            rows.len(),
+            "each normalized projection must have exactly one primary continuous owner"
+        );
+
+        let assignments = collect_direct_assignments(&dae_model, &rows, &IndexMap::new())?;
+        assert_eq!(assignments.len(), 1);
+        assert!(
+            assignments.contains_key("q[2]"),
+            "the algebraic sibling projection must remain available to direct-assignment lowering"
+        );
+        assert!(
+            !assignments.contains_key("q[1]"),
+            "the derivative projection must not be duplicated as a direct assignment"
+        );
+        assert!(
+            rumoca_core::expressions_semantically_equal(
+                &runtime_assignments[0].rhs,
+                &assignments.get("q[2]").expect("q[2] assignment").rhs
+            ),
+            "runtime and direct-assignment lowering must consume the same normalized algebraic projection"
+        );
+        let layout = crate::build_var_layout(&dae_model)?;
+        let initial_equations = crate::lower::initial_residual_equations(&dae_model, &layout)?;
+        assert_eq!(
+            initial_equations.len(),
+            1,
+            "initialization must retain the mixed source rather than dropping its algebraic projection"
+        );
+        assert!(std::ptr::eq(
+            initial_equations[0].1,
+            &dae_model.continuous.equations[0]
+        ));
+
         Ok(())
     }
 }

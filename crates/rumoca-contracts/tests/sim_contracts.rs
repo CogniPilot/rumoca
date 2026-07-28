@@ -299,7 +299,7 @@ fn sim_with_when_clause() {
 }
 
 #[test]
-fn sim_009_sample_in_fx_lowers_to_internal_runtime_operator() {
+fn sim_009_sample_in_fx_lowers_to_ordinary_dae_and_schedule_metadata() {
     let result = expect_success(
         r#"
         model Test
@@ -312,7 +312,7 @@ fn sim_009_sample_in_fx_lowers_to_internal_runtime_operator() {
     );
 
     assert!(
-        result
+        !result
             .dae
             .continuous
             .equations
@@ -321,7 +321,7 @@ fn sim_009_sample_in_fx_lowers_to_internal_runtime_operator() {
                 &eq.rhs,
                 rumoca_core::INTERNAL_SAMPLE_FUNCTION_NAME
             )),
-        "sample() in f_x should lower to the internal runtime sample operator"
+        "the internal sample operator must not survive the DAE boundary"
     );
     assert!(
         !result
@@ -331,6 +331,18 @@ fn sim_009_sample_in_fx_lowers_to_internal_runtime_operator() {
             .iter()
             .any(|eq| expression_contains_builtin_sample(&eq.rhs)),
         "source-level BuiltinFunction::Sample must not survive the DAE boundary"
+    );
+    assert!(
+        result
+            .dae
+            .clocks
+            .schedules
+            .iter()
+            .any(
+                |schedule| (schedule.period_seconds - 0.1).abs() < f64::EPSILON
+                    && schedule.phase_seconds.abs() < f64::EPSILON
+            ),
+        "the periodic sample must remain represented by canonical DAE schedule metadata"
     );
 }
 

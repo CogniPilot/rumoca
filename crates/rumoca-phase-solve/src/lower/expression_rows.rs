@@ -16,6 +16,11 @@ use super::{
     unsupported_at,
 };
 
+mod native_residual;
+#[cfg(test)]
+mod reciprocal_tests;
+pub(super) use native_residual::{NativeResidualNode, lower_native_algebraic_residual_nodes};
+
 pub(super) type LoweredRowsAndTargets = (Vec<Vec<LinearOp>>, Vec<Option<ScalarSlot>>);
 
 struct RowLoweringContext<'a> {
@@ -627,7 +632,7 @@ fn scalarized_record_fields(base: &str, layout: &VarLayout) -> Option<Vec<Scalar
     let prefix = format!("{base}.");
     let mut fields = Vec::new();
     for name in layout.bindings().keys() {
-        let Some(suffix) = name.strip_prefix(prefix.as_str()) else {
+        let Some(suffix) = name.as_str().strip_prefix(prefix.as_str()) else {
             continue;
         };
         if crate::path_utils::is_nested_name(suffix) {
@@ -858,7 +863,9 @@ fn scalar_update_targets(
     let mut targets =
         expression_vec_with_capacity(scalar_count, "scalar update target count", equation.span)?;
     for (name, slot) in layout.bindings() {
-        if name != lhs.as_str() && dae::component_base_name(name).as_deref() == Some(lhs.as_str()) {
+        if name.as_str() != lhs.as_str()
+            && dae::component_base_name(name.as_str()).as_deref() == Some(lhs.as_str())
+        {
             if targets.len() == scalar_count {
                 return Ok(None);
             }
@@ -1079,6 +1086,36 @@ pub(super) fn lower_residual_rows_and_targets_from_equations_with_mode<'a>(
     Ok((rows, targets))
 }
 
+pub(super) fn lower_compact_residual_expressions(
+    dae_model: &dae::Dae,
+    layout: &VarLayout,
+    expressions: &[rumoca_core::Expression],
+    owner_span: rumoca_core::Span,
+) -> Result<Vec<Vec<LinearOp>>, LowerError> {
+    let equations = expressions
+        .iter()
+        .enumerate()
+        .map(|(index, expression)| dae::Equation {
+            lhs: None,
+            rhs: expression.clone(),
+            span: expression
+                .span()
+                .filter(|span| !span.is_dummy())
+                .unwrap_or(owner_span),
+            origin: format!("compact structured residual corner {index}"),
+            scalar_count: 1,
+        })
+        .collect::<Vec<_>>();
+    lower_residual_rows_from_equations_core(
+        dae_model,
+        layout,
+        equations.iter().enumerate(),
+        0,
+        false,
+        |_, _| Ok(()),
+    )
+}
+
 fn lower_residual_rows_from_equations_core<'a>(
     dae_model: &dae::Dae,
     layout: &VarLayout,
@@ -1189,6 +1226,109 @@ fn validate_equation_row_count(eq: &dae::Equation, actual: usize) -> Result<(), 
     ))
 }
 
+/// Clear a literal-numerator reciprocal out of an initialization residual row.
+///
+/// A reciprocal defining equation (`a = c/b`, MLS §3.4 division) has exactly the
+/// same solution set as `a*b = c` when `c` is a nonzero literal: both forms
+/// require `b <> 0`, and neither admits `b = 0`. The two forms are not equally
+/// solvable numerically. The initialization projection seeds each unknown from
+/// its declared `start` (MLS §4.9); an unknown that occurs only as a denominator
+/// usually declares none and therefore starts at zero, where `c/b` is infinite.
+/// A non-finite residual carries no descent direction, so the projection block
+/// that owns that unknown can never take a first step and the unknown stays at
+/// zero forever. The cleared form is finite at zero and linear in `b`, so the
+/// same block converges in one Newton step.
+///
+/// This is confined to the initialization residual: the continuous projection
+/// starts from converged initial values, where the denominator is already
+/// nonzero and the original form is well scaled.
+fn denominator_cleared_initial_residual(
+    expr: &rumoca_core::Expression,
+) -> Option<rumoca_core::Expression> {
+    let rumoca_core::Expression::Binary {
+        op: OpBinary::Sub,
+        lhs,
+        rhs,
+        span,
+    } = expr
+    else {
+        return None;
+    };
+    if let Some((numerator, denominator)) = literal_numerator_reciprocal(rhs) {
+        let scaled = residual_product(lhs, denominator, *span);
+        return Some(residual_difference(scaled, numerator.clone(), *span));
+    }
+    if let Some((numerator, denominator)) = literal_numerator_reciprocal(lhs) {
+        let scaled = residual_product(rhs, denominator, *span);
+        return Some(residual_difference(numerator.clone(), scaled, *span));
+    }
+    None
+}
+
+/// Split `c/b` into its literal numerator and its plain variable denominator.
+fn literal_numerator_reciprocal(
+    expr: &rumoca_core::Expression,
+) -> Option<(&rumoca_core::Expression, &rumoca_core::Expression)> {
+    let rumoca_core::Expression::Binary {
+        op: OpBinary::Div,
+        lhs,
+        rhs,
+        ..
+    } = expr
+    else {
+        return None;
+    };
+    if !is_nonzero_numeric_literal(lhs) {
+        return None;
+    }
+    // Only a plain scalar reference is multiplied through. A subscripted or
+    // computed denominator would need the array-native path to agree that the
+    // row still has the same element shape.
+    let rumoca_core::Expression::VarRef { subscripts, .. } = rhs.as_ref() else {
+        return None;
+    };
+    subscripts
+        .is_empty()
+        .then_some((lhs.as_ref(), rhs.as_ref()))
+}
+
+fn is_nonzero_numeric_literal(expr: &rumoca_core::Expression) -> bool {
+    match expr {
+        rumoca_core::Expression::Literal { value, .. } => match value {
+            rumoca_core::Literal::Real(value) => value.is_normal(),
+            rumoca_core::Literal::Integer(value) => *value != 0,
+            rumoca_core::Literal::Boolean(_) | rumoca_core::Literal::String(_) => false,
+        },
+        _ => false,
+    }
+}
+
+fn residual_product(
+    lhs: &rumoca_core::Expression,
+    rhs: &rumoca_core::Expression,
+    span: rumoca_core::Span,
+) -> rumoca_core::Expression {
+    rumoca_core::Expression::Binary {
+        op: OpBinary::Mul,
+        lhs: Box::new(lhs.clone()),
+        rhs: Box::new(rhs.clone()),
+        span,
+    }
+}
+
+fn residual_difference(
+    lhs: rumoca_core::Expression,
+    rhs: rumoca_core::Expression,
+    span: rumoca_core::Span,
+) -> rumoca_core::Expression {
+    rumoca_core::Expression::Binary {
+        op: OpBinary::Sub,
+        lhs: Box::new(lhs),
+        rhs: Box::new(rhs),
+        span,
+    }
+}
+
 fn lower_equation_residual_rows(
     eq: &dae::Equation,
     row_idx: usize,
@@ -1221,6 +1361,16 @@ fn lower_equation_residual_rows(
     };
 
     let scalar_count = eq.scalar_count.max(1);
+    let denominator_cleared;
+    let expr = if scalar_count == 1
+        && ctx.is_initial_mode
+        && let Some(rewritten) = denominator_cleared_initial_residual(expr)
+    {
+        denominator_cleared = rewritten;
+        &denominator_cleared
+    } else {
+        expr
+    };
     let values = if scalar_count == 1 {
         let mut values = expression_vec_with_capacity(1, "scalar residual value count", eq.span)?;
         values.push(
@@ -1383,6 +1533,22 @@ fn lower_expression_row(
         value
     };
     builder.ops.push(LinearOp::StoreOutput { src: value });
+    if tracing::enabled!(
+        target: "rumoca_phase_solve::direct_assignment",
+        tracing::Level::DEBUG
+    ) && (builder.direct_assignment_cache_hits > 0
+        || builder.direct_assignment_cache_misses >= 16)
+    {
+        tracing::debug!(
+            target: "rumoca_phase_solve::direct_assignment",
+            expanded = builder.direct_assignment_cache_misses,
+            cache_hits = builder.direct_assignment_cache_hits,
+            current_nodes = builder.direct_assignment_current_cache.len(),
+            pre_nodes = builder.direct_assignment_pre_cache.len(),
+            operations = builder.ops.len(),
+            "lowered direct-assignment DAG row"
+        );
+    }
     Ok(builder.ops)
 }
 

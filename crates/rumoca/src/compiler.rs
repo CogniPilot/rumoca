@@ -44,7 +44,8 @@ use rumoca_compile::codegen::{
     dae_for_fmi_native_implementation_context, dae_for_solve_template_context,
     dae_to_template_json, fmi3_native_projection_available, render_ast_template_with_name,
     render_dae_template_with_json, render_dae_template_with_json_and_name,
-    render_flat_template_with_name,
+    render_flat_template_with_name, render_structured_dae_template_with_name,
+    validate_dae_scalar_residual_view,
 };
 use rumoca_compile::compile::{
     Dae, DaeCompilationResult as CompileDaeCompilationResult, FlatModel, PhaseResult, ResolvedTree,
@@ -385,6 +386,17 @@ impl CompilationResult {
             .map_err(CompilerError::TemplateError)
     }
 
+    /// Render a DAE template that explicitly consumes the canonical
+    /// `structured_equations` owner for non-materialized families.
+    pub fn render_structured_dae_template_str_with_name(
+        &self,
+        template: &str,
+        model_name: &str,
+    ) -> Result<String, CompilerError> {
+        render_structured_dae_template_with_name(&self.dae, template, model_name)
+            .map_err(CompilerError::TemplateError)
+    }
+
     pub fn render_template_str_with_name_and_ir(
         &self,
         template: &str,
@@ -512,6 +524,7 @@ impl CompilationResult {
 
     /// Convert the DAE to JSON.
     pub fn to_json(&self) -> Result<String, CompilerError> {
+        validate_dae_scalar_residual_view(&self.dae).map_err(CompilerError::TemplateError)?;
         let mut p = self.dae.variables.parameters.clone();
         // MLS Appendix B groups parameters and constants together in p.
         for (name, var) in &self.dae.variables.constants {
@@ -1734,6 +1747,49 @@ mod tests {
             .expect("DAE template should render from native DAE context");
 
         assert_eq!(rendered.trim(), "1 2");
+    }
+
+    #[test]
+    fn non_materialized_family_cannot_leak_placeholder_residuals_to_dae_template() {
+        let source = r#"
+            model CascadedDaeTemplate
+              constant Integer N = 8;
+              Real x[N](each start = 1.0);
+            equation
+              der(x[1]) = 1.0 - x[1];
+              for i in 2:N loop
+                der(x[i]) = x[i - 1] - x[i];
+              end for;
+            end CascadedDaeTemplate;
+        "#;
+        let result = Compiler::new()
+            .model("CascadedDaeTemplate")
+            .compile_str(source, "CascadedDaeTemplate.mo")
+            .expect("cascaded family should compile");
+
+        let error = result
+            .render_template_str("{% for equation in dae.f_x %}{{ equation.rhs }}{% endfor %}")
+            .expect_err("scalar DAE template must not observe placeholder interiors");
+        assert!(matches!(
+            error,
+            CompilerError::TemplateError(CodegenError::NonMaterializedStructuredFamily { .. })
+        ));
+
+        let template = rumoca_compile::codegen::templates::builtin_template_source(
+            "dae-modelica",
+            "dae_modelica.mo.jinja",
+        )
+        .expect("built-in DAE Modelica template");
+        let rendered = result
+            .render_structured_dae_template_str_with_name(template, "CascadedDaeTemplate")
+            .expect("family-aware DAE Modelica target should consume the canonical template");
+        assert!(
+            rendered.contains("der(x[2:8])")
+                && rendered.contains("for i in 2:8")
+                && rendered.contains("x[(i - 1)]")
+                && !rendered.contains("der(x[2]) = 0.0"),
+            "family-aware rendering must preserve the cascaded body:\n{rendered}"
+        );
     }
 
     #[test]

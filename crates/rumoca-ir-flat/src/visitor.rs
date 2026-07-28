@@ -119,13 +119,13 @@ pub trait StatementVisitor: ExpressionVisitor {
         &mut self,
         comp: &ComponentReference,
         args: &[Expression],
-        outputs: &[ComponentReference],
+        outputs: &[Option<ComponentReference>],
     ) {
         self.visit_component_reference(comp);
         for arg in args {
             self.visit_expression(arg);
         }
-        for output in outputs {
+        for output in outputs.iter().flatten() {
             self.visit_component_reference(output);
         }
     }
@@ -267,13 +267,13 @@ pub trait FallibleStatementVisitor: FallibleExpressionVisitor {
         &mut self,
         comp: &ComponentReference,
         args: &[Expression],
-        outputs: &[ComponentReference],
+        outputs: &[Option<ComponentReference>],
     ) -> Result<(), Self::Error> {
         self.visit_component_reference(comp)?;
         for arg in args {
             self.visit_expression(arg)?;
         }
-        for output in outputs {
+        for output in outputs.iter().flatten() {
             self.visit_component_reference(output)?;
         }
         Ok(())
@@ -421,13 +421,13 @@ impl StatementVisitor for AlgorithmOutputCollector {
         &mut self,
         comp: &ComponentReference,
         args: &[Expression],
-        outputs: &[ComponentReference],
+        outputs: &[Option<ComponentReference>],
     ) {
         self.visit_component_reference(comp);
         for arg in args {
             self.visit_expression(arg);
         }
-        for output in outputs {
+        for output in outputs.iter().flatten() {
             self.insert_output(rumoca_core::component_ref_to_base_reference(output));
             self.visit_component_reference(output);
         }

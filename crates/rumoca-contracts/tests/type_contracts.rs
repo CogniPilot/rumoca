@@ -4,8 +4,8 @@
 
 use rumoca_compile::compile::FailedPhase;
 use rumoca_contracts::test_support::{
-    expect_balanced, expect_failure_in_phase_with_code, expect_resolve_failure_with_code,
-    expect_success,
+    expect_balanced, expect_failure_in_phase_reporting_code, expect_failure_in_phase_with_code,
+    expect_resolve_failure_with_code, expect_success,
 };
 
 // =============================================================================
@@ -469,11 +469,12 @@ fn type_012_redeclared_class_conditional_member_rejected() {
     expect_failure_in_phase_with_code(
         r#"
         model M
-            parameter Boolean has = true;
             block Base
+                parameter Boolean has = true;
                 Real y = 1;
             end Base;
             block Bad
+                parameter Boolean has = true;
                 Real y = 1 if has;
             end Bad;
             model Holder
@@ -859,8 +860,8 @@ fn type_018_sibling_function_missing_named_input_rejected() {
 // =============================================================================
 
 #[test]
-fn type_019_sibling_function_extra_output_rejected() {
-    expect_failure_in_phase_with_code(
+fn type_019_sibling_function_trailing_output_accepted() {
+    expect_success(
         r#"
         model M
             partial function FCommon
@@ -877,6 +878,46 @@ fn type_019_sibling_function_extra_output_rejected() {
                 output Real z;
             algorithm
                 y := u;
+                z := 2 * u;
+            end FBad;
+            model Holder
+                replaceable function F = FBase;
+                Real z = F(1.0);
+            end Holder;
+            model Use
+                extends Holder(redeclare function F = FBad);
+            end Use;
+            Use u;
+        end M;
+    "#,
+        "M",
+    );
+}
+
+#[test]
+fn type_019_sibling_function_interleaved_output_rejected() {
+    expect_failure_in_phase_with_code(
+        r#"
+        model M
+            partial function FCommon
+                input Real u;
+            end FCommon;
+            function FBase
+                extends FCommon;
+                output Real y;
+                output Real z;
+            algorithm
+                y := u;
+                z := 2 * u;
+            end FBase;
+            function FBad
+                extends FCommon;
+                output Real y;
+                output Real diagnostic;
+                output Real z;
+            algorithm
+                y := u;
+                diagnostic := 0;
                 z := 2 * u;
             end FBad;
             model Holder
@@ -1043,9 +1084,14 @@ fn type_026_final_constraint_requires_final_replacement_rejected() {
 // same named elements
 // =============================================================================
 
+// Type checking reports two distinct codes here: the generic branch-type
+// mismatch (`ET002`) and the if-expression record-compatibility check
+// (`ET009`, MLS 3.7 §10.6.1). The summary `PhaseResult::error_code` is
+// therefore the `ET000` multi-code sentinel, so this case asserts on the
+// reported diagnostics.
 #[test]
 fn type_032_if_expression_mixing_record_types_rejected() {
-    expect_failure_in_phase_with_code(
+    expect_failure_in_phase_reporting_code(
         r#"
         model M
             record RA
@@ -1073,9 +1119,12 @@ fn type_032_if_expression_mixing_record_types_rejected() {
 // have same one
 // =============================================================================
 
+// Same two-diagnostic shape as TYPE-032: `ET002` for the branch-type mismatch
+// plus `ET009` for the operator-record compatibility check, collapsing the
+// summary code to the `ET000` multi-code sentinel.
 #[test]
 fn type_035_if_expression_mixing_operator_records_rejected() {
-    expect_failure_in_phase_with_code(
+    expect_failure_in_phase_reporting_code(
         r#"
         model M
             operator record CA

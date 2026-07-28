@@ -10,7 +10,7 @@
 
 use rayon::prelude::*;
 use rumoca_compile::{
-    compile::core::{msl_cache_dir_from_manifest, workspace_root_from_manifest_dir},
+    compile::core::{VarName, msl_cache_dir_from_manifest, workspace_root_from_manifest_dir},
     compile::{
         CompiledSourceRoot, Dae, FailedPhase, PhaseResult, StrictCompileReport,
         compile_phase_timing_stats, reset_compile_phase_timing_stats,
@@ -19,7 +19,7 @@ use rumoca_compile::{
 };
 use rumoca_phase_flatten::{flatten_phase_timing_stats, reset_flatten_phase_timing_stats};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{self, Cursor, Read, Write};
 use std::path::{Path, PathBuf};
@@ -230,83 +230,112 @@ fn names_match_via_component_prefix(active_name: &str, discrete_name: &str) -> b
         || has_component_boundary_prefix(active_name, discrete_name)
 }
 
-fn collect_active_refs_from_dae(dae: &Dae, active: &mut HashSet<String>) {
-    for eq in &dae.continuous.equations {
-        if let Some(lhs) = &eq.lhs {
-            active.insert(lhs.as_str().to_string());
-        }
-        let mut refs = HashSet::new();
-        eq.rhs.collect_var_refs(&mut refs);
-        active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
+/// A sorted, deduplicated index of every variable name that appears anywhere in
+/// the DAE or the flat model's `when` clauses.
+///
+/// The naive form of this check was `O(D x A)`: for each discrete variable it
+/// scanned every active name and re-ran a prefix comparison. On large MSL models
+/// (thousands of active names, hundreds of discrete variables) that dominated
+/// the per-model accounting. Sorting once turns each lookup into a bounded
+/// number of binary searches.
+struct ActiveNameIndex {
+    names: Vec<VarName>,
+}
+
+impl ActiveNameIndex {
+    fn build(flat: &rumoca_ir_flat::Model, dae: &Dae) -> Self {
+        let mut names = Vec::new();
+        collect_active_refs_from_dae(dae, &mut names);
+        collect_active_refs_from_flat(flat, &mut names);
+        names.sort_unstable_by(|a, b| a.as_str().cmp(b.as_str()));
+        names.dedup_by(|a, b| a.as_str() == b.as_str());
+        Self { names }
     }
-    for eq in &dae.initialization.equations {
-        if let Some(lhs) = &eq.lhs {
-            active.insert(lhs.as_str().to_string());
-        }
-        let mut refs = HashSet::new();
-        eq.rhs.collect_var_refs(&mut refs);
-        active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
+
+    /// True when `name` is active: equal to an indexed name, an ancestor of one,
+    /// or a descendant of one, with `.`/`[` as the component boundary.
+    ///
+    /// Equivalent to `self.names.iter().any(|active|
+    /// names_match_via_component_prefix(active.as_str(), name))`, which
+    /// `active_name_index_matches_reference_prefix_semantics` pins.
+    fn matches_component(&self, name: &str) -> bool {
+        self.contains_exact(name) || self.has_indexed_ancestor(name) || self.has_descendant(name)
     }
-    for eq in &dae.discrete.real_updates {
-        if let Some(lhs) = &eq.lhs {
-            active.insert(lhs.as_str().to_string());
-        }
-        let mut refs = HashSet::new();
-        eq.rhs.collect_var_refs(&mut refs);
-        active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
+
+    fn contains_exact(&self, name: &str) -> bool {
+        self.names
+            .binary_search_by(|probe| probe.as_str().cmp(name))
+            .is_ok()
     }
-    for eq in &dae.discrete.valued_updates {
-        if let Some(lhs) = &eq.lhs {
-            active.insert(lhs.as_str().to_string());
-        }
-        let mut refs = HashSet::new();
-        eq.rhs.collect_var_refs(&mut refs);
-        active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
+
+    /// Some indexed name is a strict component-boundary prefix of `name`.
+    fn has_indexed_ancestor(&self, name: &str) -> bool {
+        name.char_indices()
+            .filter(|(_, ch)| *ch == '.' || *ch == '[')
+            .any(|(offset, _)| self.contains_exact(&name[..offset]))
     }
-    for eq in &dae.conditions.equations {
-        if let Some(lhs) = &eq.lhs {
-            active.insert(lhs.as_str().to_string());
+
+    /// Some indexed name extends `name` past a component boundary. Names sharing
+    /// a prefix are contiguous under lexicographic order, so one probe per
+    /// separator is exhaustive.
+    fn has_descendant(&self, name: &str) -> bool {
+        ['.', '['].into_iter().any(|sep| {
+            let key = format!("{name}{sep}");
+            let idx = self
+                .names
+                .partition_point(|probe| probe.as_str() < key.as_str());
+            self.names
+                .get(idx)
+                .is_some_and(|probe| probe.as_str().starts_with(&key))
+        })
+    }
+}
+
+fn push_var_ref(names: &mut Vec<VarName>, name: &VarName) {
+    names.push(name.clone());
+}
+
+fn collect_active_refs_from_dae(dae: &Dae, active: &mut Vec<VarName>) {
+    for equations in [
+        &dae.continuous.equations,
+        &dae.initialization.equations,
+        &dae.discrete.real_updates,
+        &dae.discrete.valued_updates,
+        &dae.conditions.equations,
+    ] {
+        for eq in equations {
+            if let Some(lhs) = &eq.lhs {
+                push_var_ref(active, lhs.var_name());
+            }
+            eq.rhs.collect_var_refs(active);
         }
-        let mut refs = HashSet::new();
-        eq.rhs.collect_var_refs(&mut refs);
-        active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
     }
     for relation in &dae.conditions.relations {
-        let mut refs = HashSet::new();
-        relation.collect_var_refs(&mut refs);
-        active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
+        relation.collect_var_refs(active);
     }
 }
 
 fn collect_active_refs_from_flat_when_equation(
     equation: &rumoca_ir_flat::WhenEquation,
-    active: &mut HashSet<String>,
+    active: &mut Vec<VarName>,
 ) {
     match equation {
         rumoca_ir_flat::WhenEquation::Assign { target, value, .. } => {
-            active.insert(target.as_str().to_string());
-            let mut refs = HashSet::new();
-            value.collect_var_refs(&mut refs);
-            active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
+            push_var_ref(active, target);
+            value.collect_var_refs(active);
         }
         rumoca_ir_flat::WhenEquation::Reinit { state, value, .. } => {
-            active.insert(state.as_str().to_string());
-            let mut refs = HashSet::new();
-            value.collect_var_refs(&mut refs);
-            active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
+            push_var_ref(active, state);
+            value.collect_var_refs(active);
         }
         rumoca_ir_flat::WhenEquation::Assert {
             condition, message, ..
         } => {
-            let mut refs = HashSet::new();
-            condition.collect_var_refs(&mut refs);
-            message.collect_var_refs(&mut refs);
-            active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
+            condition.collect_var_refs(active);
+            message.collect_var_refs(active);
         }
         rumoca_ir_flat::WhenEquation::Terminate { message, .. } => {
-            let mut refs = HashSet::new();
-            message.collect_var_refs(&mut refs);
-            active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
+            message.collect_var_refs(active);
         }
         rumoca_ir_flat::WhenEquation::Conditional {
             branches,
@@ -314,9 +343,7 @@ fn collect_active_refs_from_flat_when_equation(
             ..
         } => {
             for (condition, equations) in branches {
-                let mut refs = HashSet::new();
-                condition.collect_var_refs(&mut refs);
-                active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
+                condition.collect_var_refs(active);
                 for nested in equations {
                     collect_active_refs_from_flat_when_equation(nested, active);
                 }
@@ -329,20 +356,16 @@ fn collect_active_refs_from_flat_when_equation(
             outputs, function, ..
         } => {
             for out in outputs {
-                active.insert(out.as_str().to_string());
+                push_var_ref(active, out);
             }
-            let mut refs = HashSet::new();
-            function.collect_var_refs(&mut refs);
-            active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
+            function.collect_var_refs(active);
         }
     }
 }
 
-fn collect_active_refs_from_flat(flat: &rumoca_ir_flat::Model, active: &mut HashSet<String>) {
+fn collect_active_refs_from_flat(flat: &rumoca_ir_flat::Model, active: &mut Vec<VarName>) {
     for when in &flat.when_clauses {
-        let mut refs = HashSet::new();
-        when.condition.collect_var_refs(&mut refs);
-        active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
+        when.condition.collect_var_refs(active);
         for equation in &when.equations {
             collect_active_refs_from_flat_when_equation(equation, active);
         }
@@ -350,32 +373,16 @@ fn collect_active_refs_from_flat(flat: &rumoca_ir_flat::Model, active: &mut Hash
 }
 
 fn active_discrete_scalar_count(flat: &rumoca_ir_flat::Model, dae: &Dae) -> i64 {
-    let mut active: HashSet<String> = HashSet::new();
-    collect_active_refs_from_dae(dae, &mut active);
-    collect_active_refs_from_flat(flat, &mut active);
+    let active = ActiveNameIndex::build(flat, dae);
 
     let active_discrete = dae
         .variables
         .discrete_reals
         .iter()
-        .filter(|(name, _)| {
-            active
-                .iter()
-                .any(|active_name| names_match_via_component_prefix(active_name, name.as_str()))
-        })
+        .chain(dae.variables.discrete_valued.iter())
+        .filter(|(name, _)| active.matches_component(name.as_str()))
         .map(|(_, v)| v.size())
-        .sum::<usize>()
-        + dae
-            .variables
-            .discrete_valued
-            .iter()
-            .filter(|(name, _)| {
-                active
-                    .iter()
-                    .any(|active_name| names_match_via_component_prefix(active_name, name.as_str()))
-            })
-            .map(|(_, v)| v.size())
-            .sum::<usize>();
+        .sum::<usize>();
 
     active_discrete as i64
 }
@@ -457,6 +464,79 @@ fn extract_undefined_var(error: &str) -> Option<String> {
     None
 }
 
+/// Verdict of the larger-budget re-run performed after the per-phase monitor
+/// killed a model attempt.
+///
+/// The primary per-phase budget bounds *scheduling*, not *truth*: a model that
+/// needs longer than the budget to reach a hard compiler diagnostic used to be
+/// filed as `sim_timeout`, hiding a structural-failure cohort inside what read
+/// as a performance pool. The re-run records which of the two it is. It never
+/// upgrades a result: a re-run that finally succeeds is still reported as the
+/// timeout it was at the measured budget (see [`MSL_TIMEOUT_RECHECK_COMPLETED`]).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct MslTimeoutRecheck {
+    /// One of the `MSL_TIMEOUT_RECHECK_*` outcomes.
+    outcome: String,
+    /// Phase the primary attempt was killed in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    killed_phase: Option<rumoca_worker::WorkerProgressPhase>,
+    /// Per-phase budget the primary attempt was killed at.
+    primary_budget_seconds: f64,
+    /// Wall seconds the primary attempt had run when it was killed.
+    primary_elapsed_seconds: f64,
+    /// Per-phase budget granted to the re-run.
+    recheck_budget_seconds: f64,
+    /// Wall seconds the re-run took.
+    recheck_elapsed_seconds: f64,
+    /// Stable diagnostic code the re-run reached, when it reached one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    diagnostic_code: Option<String>,
+    /// Pipeline stage the re-run's diagnostic came from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    diagnostic_phase: Option<String>,
+    /// Why the re-run could not decide, for [`MSL_TIMEOUT_RECHECK_UNAVAILABLE`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    detail: Option<String>,
+}
+
+/// The re-run reached a real failure: the model *failed slowly*, and the
+/// recorded result is that failure rather than `sim_timeout`.
+const MSL_TIMEOUT_RECHECK_DIAGNOSTIC: &str = "diagnostic";
+/// The re-run hit the larger budget too (or timed out inside the solver): the
+/// model is *too slow*, and stays `sim_timeout`.
+const MSL_TIMEOUT_RECHECK_TIMEOUT: &str = "timeout";
+/// The re-run finished without a failure inside the larger budget. The model
+/// still exceeded the measured budget, so it stays `sim_timeout`; adopting the
+/// pass would be reporting a result the budget never bought.
+const MSL_TIMEOUT_RECHECK_COMPLETED: &str = "completed";
+/// The re-run could not be carried out (worker spawn/transport/memory kill).
+const MSL_TIMEOUT_RECHECK_UNAVAILABLE: &str = "unavailable";
+
+/// Run-level tally of the phase-kill re-checks.
+///
+/// `diagnostic` is the number of models that used to be counted as
+/// `sim_timeout` and are now reported with the error they actually produce, so
+/// the split between a performance pool and a failure cohort is readable
+/// without walking `model_results`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+struct MslTimeoutRecheckStats {
+    /// Models killed inside a compiler phase and re-run once.
+    #[serde(default)]
+    rechecked: usize,
+    /// Re-runs that reached a real failure ("failed slowly").
+    #[serde(default)]
+    diagnostic: usize,
+    /// Re-runs that ran out of time again ("too slow").
+    #[serde(default)]
+    timeout: usize,
+    /// Re-runs that finished cleanly above the measured budget.
+    #[serde(default)]
+    completed: usize,
+    /// Re-runs that could not be carried out.
+    #[serde(default)]
+    unavailable: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct MslModelResult {
     model_name: String,
@@ -508,6 +588,8 @@ struct MslModelResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     sim_error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    sim_error_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     sim_error_span: Option<rumoca_compile::compile::core::Span>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     ic_status: Option<String>,
@@ -528,6 +610,16 @@ struct MslModelResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     ir_solve_lower_seconds: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    tensor_family_bodies: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tensor_preserved_family_bodies: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tensor_scalarized_family_rows: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tensor_preservation_percent: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tensor_preservation_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     sim_backend_build_seconds: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     sim_run_seconds: Option<f64>,
@@ -546,9 +638,21 @@ struct MslModelResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     ir_solve_error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    ir_solve_error_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     timeout_phase: Option<rumoca_worker::WorkerProgressPhase>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     timeout_seconds: Option<f64>,
+    /// Verdict of the larger-budget re-run of a phase-monitor kill. Present
+    /// only for models the monitor killed inside a compiler phase; it is what
+    /// separates "too slow" from "failed slowly".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    timeout_recheck: Option<MslTimeoutRecheck>,
+    /// Component breakdown for an unbalanced (ED001) ToDae failure. Present
+    /// only for balance failures; this is what makes the balance cohort
+    /// distinguishable from every other ToDae failure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    balance_detail: Option<Box<rumoca_compile::analysis::BalanceDetail>>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -663,6 +767,94 @@ fn msl_cache_layout_valid_requires_complex_and_modelica_package() {
         msl_cache_layout_valid(&cache_root),
         "cache root with Complex.mo and Modelica package must be accepted"
     );
+}
+
+/// `ActiveNameIndex` replaces an `O(D x A)` scan with binary searches, so it has
+/// to agree with the retained reference predicate on every probe — a subtle
+/// prefix-boundary bug here would silently shift the `active_discrete_scalar`
+/// column of `msl_results.json` and with it the balance accounting.
+#[test]
+fn active_name_index_matches_reference_prefix_semantics() {
+    let active_names = [
+        "a",
+        "a.b",
+        "a.b[2]",
+        "a.bc",
+        "ab",
+        "controller.pid.I.y",
+        "tank[1].level",
+        "z",
+    ];
+    let index = ActiveNameIndex {
+        names: active_names
+            .iter()
+            .map(|name| VarName::new(*name))
+            .collect(),
+    };
+    // Sorted + deduplicated is the index's invariant; the literal above is
+    // already in lexicographic byte order, so assert it rather than re-sorting.
+    let mut sorted = index.names.clone();
+    sorted.sort_unstable_by(|a, b| a.as_str().cmp(b.as_str()));
+    assert_eq!(
+        index.names.iter().map(VarName::as_str).collect::<Vec<_>>(),
+        sorted.iter().map(VarName::as_str).collect::<Vec<_>>(),
+        "fixture must already be sorted"
+    );
+
+    let probes = [
+        "a",
+        "a.b",
+        "a.b[2]",
+        "a.b[3]",
+        "a.bc",
+        "a.bcd",
+        "ab",
+        "abc",
+        "b",
+        "controller",
+        "controller.pid",
+        "controller.pid.I",
+        "controller.pid.I.y",
+        "controller.pid.I.yy",
+        "tank",
+        "tank[1]",
+        "tank[1].level",
+        "tank[2]",
+        "z",
+        "zz",
+        "",
+    ];
+    for probe in probes {
+        let expected = index
+            .names
+            .iter()
+            .any(|active| names_match_via_component_prefix(active.as_str(), probe));
+        assert_eq!(
+            index.matches_component(probe),
+            expected,
+            "index disagreed with the reference predicate for probe '{probe}'"
+        );
+    }
+}
+
+#[test]
+fn active_name_index_deduplicates_and_sorts_on_build() {
+    let mut names = ["b.c", "a", "b.c", "a"]
+        .iter()
+        .map(|name| VarName::new(*name))
+        .collect::<Vec<_>>();
+    names.sort_unstable_by(|a, b| a.as_str().cmp(b.as_str()));
+    names.dedup_by(|a, b| a.as_str() == b.as_str());
+    let index = ActiveNameIndex { names };
+
+    assert_eq!(
+        index.names.iter().map(VarName::as_str).collect::<Vec<_>>(),
+        vec!["a", "b.c"]
+    );
+    assert!(index.matches_component("a"));
+    assert!(index.matches_component("b"));
+    assert!(index.matches_component("b.c"));
+    assert!(!index.matches_component("c"));
 }
 
 mod balance_pipeline;

@@ -12,7 +12,9 @@ fn test_eval_clock_special_functions_are_finite() {
         "shiftSample",
         vec![clock_expr.clone(), lit(1.0), lit(100.0)],
     );
-    let back_expr = fn_call("backSample", vec![clock_expr.clone(), lit(1.0), lit(100.0)]);
+    // MLS §16.5.2 Operator 16.12 makes it an error for the back-sampled clock
+    // to start before its base clock, so the shifted clock is the legal source.
+    let back_expr = fn_call("backSample", vec![shift_expr.clone(), lit(1.0), lit(100.0)]);
     let hold_expr = fn_call("hold", vec![lit(7.0)]);
     let previous_expr = fn_call("previous", vec![lit(3.0)]);
     let interval_expr = fn_call("interval", vec![clock_expr.clone()]);
@@ -82,10 +84,14 @@ fn test_eval_builtin_sample_with_clock_alias_varref_uses_clock_metadata() {
 }
 
 #[test]
-fn test_eval_subsample_counter_clock_uses_factor_resolution_ratio() {
+fn test_eval_subsample_counter_clock_multiplies_the_base_period() {
+    // MLS §16.5.2 Operator 16.9: subSample(u, factor) is factor times *slower*
+    // than u. This is the MSL 4.1.0 PeriodicExactClock shape with
+    // factor = 20 and resolution = Resolution.min (resolutionFactor = 60), so
+    // the clock ticks every 20 * 60 = 1200 s.
     let mut env = VarEnv::<f64>::new();
     env.set("factor", 20.0);
-    env.set("resolutionFactor", 1000.0);
+    env.set("resolutionFactor", 60.0);
 
     let sub_expr = fn_call(
         "subSample",
@@ -97,10 +103,10 @@ fn test_eval_subsample_counter_clock_uses_factor_resolution_ratio() {
 
     for (time, expected_tick) in [
         (0.0, true),
-        (0.01, false),
-        (0.02, true),
-        (0.03, false),
-        (0.04, true),
+        (600.0, false),
+        (1200.0, true),
+        (1800.0, false),
+        (2400.0, true),
     ] {
         env.set("time", time);
         let value = eval_expr_value::<f64>(&sub_expr, &env);
@@ -215,15 +221,23 @@ fn test_eval_builtin_sample_internal_three_arg_form_uses_start_and_interval() {
 }
 
 #[test]
-fn test_eval_stream_special_functions_passthrough() {
+fn test_eval_rejects_unlowered_stream_special_functions() {
     let mut env = VarEnv::<f64>::new();
     env.set("port.h_outflow", 123.0);
 
     let actual_stream = fn_call("actualStream", vec![var("port.h_outflow")]);
     let in_stream = fn_call("inStream", vec![var("port.h_outflow")]);
 
-    assert_eq!(eval_expr_value::<f64>(&actual_stream, &env), 123.0);
-    assert_eq!(eval_expr_value::<f64>(&in_stream, &env), 123.0);
+    for expression in [&actual_stream, &in_stream] {
+        let error = eval_expr::<f64>(expression, &env)
+            .expect_err("stream operators must be eliminated before DAE evaluation");
+        assert!(
+            error
+                .to_string()
+                .contains("not lowered during Flat connection expansion"),
+            "{error}"
+        );
+    }
 }
 
 #[test]

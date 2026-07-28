@@ -330,7 +330,7 @@ pub(in crate::eval) fn resolved_function_param_dims<T: SimFloat>(
     env: &VarEnv<T>,
 ) -> Result<Option<Vec<i64>>, EvalError> {
     if !param.shape_expr.is_empty() {
-        return eval_function_shape_expr(&param.shape_expr, env).map(Some);
+        return eval_function_shape_expr(&param.shape_expr, env);
     }
     if param.dims.is_empty() {
         return Ok(None);
@@ -345,20 +345,24 @@ pub(in crate::eval) fn resolved_function_param_dims<T: SimFloat>(
     Ok(Some(param.dims.clone()))
 }
 
+/// Resolve a declared function-variable shape, or report that the declaration
+/// does not fix it.
+///
+/// MLS §12.4.4: a function variable may declare an unspecified `[:]` dimension,
+/// whose size is determined by the variable's binding equation (or, for inputs,
+/// by the actual argument) rather than by the declaration. Such a shape is not a
+/// translation-time error — it is simply not known from the declaration, so this
+/// returns `Ok(None)` and every caller resolves it from the value it binds.
 fn eval_function_shape_expr<T: SimFloat>(
     shape_expr: &[Subscript],
     env: &VarEnv<T>,
-) -> Result<Vec<i64>, EvalError> {
+) -> Result<Option<Vec<i64>>, EvalError> {
     let mut dims = Vec::with_capacity(shape_expr.len());
     for subscript in shape_expr {
         let dim = match subscript {
             Subscript::Index { value, .. } => *value,
             Subscript::Expr { expr, .. } => eval_shape_expr_dim(expr, env)?,
-            Subscript::Colon { .. } => {
-                return Err(EvalError::UnsupportedExpression {
-                    kind: "dynamic function shape colon",
-                });
-            }
+            Subscript::Colon { .. } => return Ok(None),
         };
         if dim < 0 {
             return Err(EvalError::UnsupportedExpression {
@@ -367,7 +371,60 @@ fn eval_function_shape_expr<T: SimFloat>(
         }
         dims.push(dim);
     }
-    Ok(dims)
+    Ok(Some(dims))
+}
+
+fn shape_expr_has_unspecified_dimension(param: &FunctionParam) -> bool {
+    param
+        .shape_expr
+        .iter()
+        .any(|subscript| matches!(subscript, Subscript::Colon { .. }))
+}
+
+/// Size a `[:]`-declared function variable from the value of its binding.
+///
+/// MLS §12.4.4: the unspecified dimensions are those of the binding expression.
+/// A single unspecified axis is recovered exactly from the declared axes and the
+/// element count; otherwise the binding expression's own shape is inferred.
+fn binding_derived_param_dims<T: SimFloat>(
+    param: &FunctionParam,
+    binding: &Expression,
+    env: &VarEnv<T>,
+    value_count: usize,
+) -> Result<Vec<i64>, EvalError> {
+    let mut dims = Vec::with_capacity(param.shape_expr.len());
+    let mut unspecified_axes = Vec::new();
+    let mut declared_product = 1usize;
+    for (axis, subscript) in param.shape_expr.iter().enumerate() {
+        let dim = match subscript {
+            Subscript::Colon { .. } => {
+                unspecified_axes.push(axis);
+                dims.push(0);
+                continue;
+            }
+            Subscript::Index { value, .. } => *value,
+            Subscript::Expr { expr, .. } => eval_shape_expr_dim(expr, env)?,
+        };
+        let dim = usize::try_from(dim).map_err(|_| EvalError::InvalidShape {
+            context: "function variable dimensions",
+            reason: format!("dimension must be non-negative: {dim}"),
+        })?;
+        declared_product =
+            declared_product
+                .checked_mul(dim)
+                .ok_or(EvalError::UnsupportedExpression {
+                    kind: "function variable shape overflow",
+                })?;
+        dims.push(dim as i64);
+    }
+    if let [axis] = unspecified_axes.as_slice()
+        && declared_product > 0
+        && value_count.is_multiple_of(declared_product)
+    {
+        dims[*axis] = (value_count / declared_product) as i64;
+        return Ok(dims);
+    }
+    infer_array_arg_dims(binding, env, value_count)
 }
 
 fn eval_shape_expr_dim<T: SimFloat>(expr: &Expression, env: &VarEnv<T>) -> Result<i64, EvalError> {
@@ -386,6 +443,18 @@ fn initialize_user_function_scope_values<T: SimFloat>(
     locals: &[FunctionParam],
 ) -> Result<(), EvalError> {
     for param in outputs.iter().chain(locals.iter()) {
+        // MLS §12.4.4: a `[:]` axis is sized by the binding, so the declared
+        // dimensions (which carry a placeholder for that axis) must not be used
+        // to shape the value. Bind the value first and take the shape from it.
+        if shape_expr_has_unspecified_dimension(param)
+            && let Some(default) = param.default.as_ref()
+        {
+            let values = eval_array_values::<T>(default, local_env)?;
+            let dims = binding_derived_param_dims(param, default, local_env, values.len())?;
+            set_array_entries(local_env, &param.name, &dims, &values);
+            std::sync::Arc::make_mut(&mut local_env.dims).insert(param.name.clone(), dims);
+            continue;
+        }
         let dims = local_env
             .dims
             .get(param.name.as_str())
@@ -712,6 +781,17 @@ fn eval_user_function_call<T: SimFloat>(
         initialize_user_function_scope_values(&mut local_env, &outputs, &locals)?;
         crate::statement::eval_statements(&body, &mut local_env)
     });
+    if trace_call && let Err(error) = &eval_result {
+        tracing::debug!(
+            target: "rumoca_eval_dae::function_match",
+            requested = %name.as_str(),
+            resolved = %resolved_name.as_str(),
+            ?error,
+            ?inputs,
+            ?args,
+            "function-call evaluation failed"
+        );
+    }
     eval_result?;
     trace_function_call_outputs(trace_call, &local_env, &outputs);
     maybe_trace_interpolation_coefficients_state(&resolved_name, &local_env, &body);

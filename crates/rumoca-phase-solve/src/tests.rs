@@ -1,3 +1,5 @@
+//! Solve-IR lowering regression tests and shared fixtures.
+
 use super::*;
 use std::collections::BTreeSet;
 
@@ -202,33 +204,16 @@ fn algebraic_projection_plan_reports_range_underflow_without_dummy_span() {
 }
 
 #[test]
-fn solve_identity_mass_matrix_reports_capacity_overflow_with_span() -> Result<(), LowerError> {
-    let span = solve_numbered_span(97, 2, 6);
+fn solve_artifacts_keep_identity_mass_matrix_compact_for_large_state_counts() {
     let mut problem = solve::SolveProblem::default();
     problem.solve_layout.state_scalar_count = usize::MAX;
-    problem.continuous.derivative_rhs = solve::ComputeBlock {
-        nodes: vec![solve::ComputeNode::ScalarPrograms(
-            solve::ScalarProgramBlock::with_source_span(vec![Vec::new()], span),
-        )],
-    };
+    let artifacts = lower_solve_artifacts(&problem)
+        .expect("identity mass matrix should not allocate per state");
 
-    let err = match solve_identity_mass_matrix(&problem) {
-        Ok(_) => {
-            return Err(LowerError::ContractViolation {
-                reason: "oversized identity mass matrix should fail before allocating".to_string(),
-                span,
-            });
-        }
-        Err(err) => err,
-    };
-
-    assert_eq!(err.source_span(), Some(span));
-    assert!(
-        err.reason()
-            .contains("identity mass matrix rows capacity exceeds host memory limits"),
-        "unexpected error: {err}"
+    assert_eq!(
+        artifacts.continuous.mass_matrix,
+        solve::MassMatrix::Identity
     );
-    Ok(())
 }
 
 #[test]
@@ -465,6 +450,25 @@ fn discrete_update_scalar_name_reports_missing_array_lhs_without_dummy_span() {
 }
 
 #[test]
+fn discrete_update_scalar_name_accepts_array_pre_memory_parameter() {
+    let span = solve_numbered_span(10, 32, 41);
+    let name = rumoca_core::VarName::new("__pre__.u");
+    let mut dae_model = dae::Dae::new();
+    let mut variable = dae::Variable::new(name.clone(), span);
+    variable.dims = vec![2];
+    dae_model
+        .variables
+        .parameters
+        .insert(name.clone(), variable);
+
+    assert_eq!(
+        super::discrete_update_scalar_name(&dae_model, &name, 1, 2, span)
+            .expect("array pre-memory parameters are valid discrete update targets"),
+        "__pre__.u[2]"
+    );
+}
+
+#[test]
 fn target_expr_scalar_name_accepts_spanned_index_base_ref() -> Result<(), LowerError> {
     let dae_model = dae::Dae::new();
     let span = solve_numbered_span(11, 5, 12);
@@ -482,6 +486,43 @@ fn target_expr_scalar_name_accepts_spanned_index_base_ref() -> Result<(), LowerE
 
     assert_eq!(name.as_deref(), Some("tail[2]"));
     Ok(())
+}
+
+#[test]
+fn conditional_residual_keeps_common_solver_target() {
+    let span = solve_test_span();
+    let mut dae_model = dae::Dae::new();
+    dae_model
+        .variables
+        .algebraics
+        .insert(rumoca_core::VarName::new("y"), scalar_var("y"));
+    let branch_residual = |value| rumoca_core::Expression::Binary {
+        op: rumoca_core::OpBinary::Sub,
+        lhs: Box::new(source_var("y")),
+        rhs: Box::new(int_expr(value)),
+        span,
+    };
+    let equation = dae::Equation::residual(
+        rumoca_core::Expression::If {
+            branches: vec![(
+                rumoca_core::Expression::Literal {
+                    value: rumoca_core::Literal::Boolean(true),
+                    span,
+                },
+                branch_residual(1),
+            )],
+            else_branch: Box::new(branch_residual(2)),
+            span,
+        },
+        span,
+        "conditional assignment",
+    );
+    let layout = build_var_layout(&dae_model).expect("conditional fixture layout should build");
+
+    let targets = lower_continuous_row_targets_for_equation(&dae_model, &equation, &layout, 1)
+        .expect("common conditional target should lower");
+
+    assert_eq!(targets, vec![layout.binding("y")]);
 }
 
 #[test]
@@ -545,7 +586,9 @@ fn projection_incidence_uses_store_output_slice() {
     ];
     let projection_set = BTreeSet::from([10, 11, 12]);
 
-    let y_indices = super::collect_algebraic_y_indices_for_row(&row, &projection_set);
+    let y_indices =
+        super::collect_projection_indices_for_row(&row, &projection_set, None, solve_test_span())
+            .expect("valid row incidence should collect");
 
     assert_eq!(y_indices, BTreeSet::from([12]));
 }
@@ -651,9 +694,87 @@ fn projection_incidence_keeps_coupled_residual_variables() {
     ];
     let projection_set = BTreeSet::from([10, 11]);
 
-    let y_indices = super::collect_algebraic_y_indices_for_row(&row, &projection_set);
+    let y_indices =
+        super::collect_projection_indices_for_row(&row, &projection_set, None, solve_test_span())
+            .expect("valid row incidence should collect");
 
     assert_eq!(y_indices, BTreeSet::from([10, 11]));
+}
+
+#[test]
+fn projection_incidence_rejects_indexed_parameter_range_overflow() {
+    let span = solve_test_span();
+    let row = vec![
+        solve::LinearOp::Const { dst: 0, value: 1.0 },
+        solve::LinearOp::LoadIndexedP {
+            dst: 1,
+            base: 1,
+            count: usize::MAX,
+            index: 0,
+        },
+        solve::LinearOp::StoreOutput { src: 1 },
+    ];
+
+    let err = super::collect_projection_indices_for_row(&row, &BTreeSet::from([1]), Some(0), span)
+        .expect_err("overflowing P-load range must fail lowering");
+
+    assert!(matches!(
+        err,
+        super::LowerError::ContractViolation {
+            span: err_span,
+            ..
+        } if err_span == span
+    ));
+}
+
+#[test]
+fn projection_incidence_treats_zero_count_indexed_parameter_as_base_slot() {
+    let row = vec![
+        solve::LinearOp::Const { dst: 0, value: 9.0 },
+        solve::LinearOp::LoadIndexedP {
+            dst: 1,
+            base: 3,
+            count: 0,
+            index: 0,
+        },
+        solve::LinearOp::StoreOutput { src: 1 },
+    ];
+
+    let indices = super::collect_projection_indices_for_row(
+        &row,
+        &BTreeSet::from([13]),
+        Some(10),
+        solve_test_span(),
+    )
+    .expect("zero-count indexed load should retain its base-slot dependency");
+
+    assert_eq!(indices, BTreeSet::from([13]));
+}
+
+#[test]
+fn projection_incidence_rejects_linear_solve_register_range_overflow() {
+    let span = solve_test_span();
+    let row = vec![
+        solve::LinearOp::LinearSolveComponent {
+            dst: 0,
+            matrix_start: 0,
+            rhs_start: 0,
+            n: usize::MAX,
+            component: 0,
+        },
+        solve::LinearOp::StoreOutput { src: 0 },
+    ];
+
+    let err = super::collect_projection_indices_for_row(&row, &BTreeSet::new(), None, span)
+        .expect_err("overflowing linear-solve register range must fail lowering");
+
+    assert!(matches!(
+        err,
+        super::LowerError::ContractViolation {
+            span: err_span,
+            ..
+        } if err_span == span
+    ));
 }
 
 #[test]
@@ -1485,6 +1606,56 @@ fn solver_name_index_aliases_do_not_reintroduce_runtime_discrete_names() {
 }
 
 #[test]
+fn solve_problem_lowers_delay_history_metadata_to_runtime_programs() {
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .states
+        .insert(rumoca_core::VarName::new("x"), scalar_var("x"));
+    let value_parameter = rumoca_core::VarName::new("__runtime__.delay.0");
+    dae_model.variables.parameters.insert(
+        value_parameter.clone(),
+        scalar_var(value_parameter.as_str()),
+    );
+    dae_model.events.delay_channels.push(dae::DaeDelayChannel {
+        value_parameter,
+        source: source_var("x"),
+        delay_time: int_expr(2),
+        delay_max: Some(int_expr(3)),
+        source_is_discrete: false,
+        span: solve_test_span(),
+    });
+
+    let layout = build_var_layout(&dae_model).expect("delay fixture layout should build");
+    let delay = lower_delay_partition(&dae_model, &layout)
+        .expect("delay metadata should lower to Solve IR");
+
+    assert_eq!(delay.value_parameter_indices, vec![0]);
+    assert_eq!(delay.source_is_discrete, vec![false]);
+    assert!(matches!(
+        delay.source_rhs.programs[0].as_slice(),
+        [
+            solve::LinearOp::LoadY { index: 0, .. },
+            solve::LinearOp::StoreOutput { .. }
+        ]
+    ));
+    assert!(matches!(
+        delay.delay_time_rhs.programs[0].as_slice(),
+        [
+            solve::LinearOp::Const { value: 2.0, .. },
+            solve::LinearOp::StoreOutput { .. }
+        ]
+    ));
+    assert!(matches!(
+        delay.delay_max_rhs.programs[0].as_slice(),
+        [
+            solve::LinearOp::Const { value: 3.0, .. },
+            solve::LinearOp::StoreOutput { .. }
+        ]
+    ));
+}
+
+#[test]
 fn solve_problem_lowers_appendix_b_condition_memory_as_initial_updates() {
     let mut dae_model = dae::Dae::default();
     dae_model
@@ -1700,255 +1871,22 @@ fn solve_problem_keeps_input_driven_algebraic_equation_implicit() {
 }
 
 #[test]
-fn solve_problem_lowers_structured_continuous_residual_to_map() {
-    let span = solve_test_span();
+fn clocked_pre_binding_retains_owning_schedule_for_scalar_array_member() {
     let mut dae_model = dae::Dae::default();
-    dae_model
-        .variables
-        .states
-        .insert(rumoca_core::VarName::new("x"), source_scalar_var("x"));
-    dae_model
-        .variables
-        .algebraics
-        .insert(rumoca_core::VarName::new("z"), source_array_var("z", &[3]));
-    dae_model
-        .variables
-        .algebraics
-        .insert(rumoca_core::VarName::new("w"), source_array_var("w", &[3]));
-    dae_model.continuous.equations.push(dae::Equation::residual(
-        binary(rumoca_core::OpBinary::Sub, der(var("x")), int_expr(0)),
-        span,
-        "state derivative",
-    ));
-    for index in 1..=3 {
-        dae_model.continuous.equations.push(dae::Equation::residual(
-            binary(
-                rumoca_core::OpBinary::Sub,
-                source_indexed_var(
-                    "z",
-                    vec![rumoca_core::Subscript::generated_index(index, span)],
-                ),
-                source_indexed_var(
-                    "w",
-                    vec![rumoca_core::Subscript::generated_index(index, span)],
-                ),
-            ),
-            span,
-            "structured z=w residual",
-        ));
-    }
-    dae_model
-        .continuous
-        .structured_equations
-        .push(dae::StructuredEquationFamily {
-            domain: rumoca_core::StructuredIndexDomain {
-                binders: vec![rumoca_core::StructuredIndexBinder {
-                    id: 0,
-                    display_name: "i".to_string(),
-                    lower: 1,
-                    upper: 3,
-                    step: 1,
-                }],
-            },
-            first_equation_index: 1,
-            equations_per_point: 1,
-            span,
-            origin: "structured z=w residual".to_string(),
-            regular: None,
-            template: None,
-            interiors_materialized: true,
-        });
-
-    let problem = lower_solve_problem(&dae_model).expect("structured residual should lower");
-    let report = tensor_preservation_report(&dae_model, &problem)
-        .expect("tensor preservation report should inspect compact metadata");
-
-    assert_eq!(problem.continuous.residual.len(), Ok(3));
-    assert_eq!(report.compact_family_count, 1);
-    assert_eq!(report.compact_domain_points, 3);
-    assert_eq!(report.preserved_family_bodies, 1);
-    assert_eq!(report.scalarized_family_rows, 0);
-    assert!(report.fallbacks.is_empty());
-    assert!(matches!(
-        problem.continuous.residual.nodes.as_slice(),
-        [solve::ComputeNode::Map { .. }]
-    ));
-    let residual_rows = scalar_program_block_fixture(&problem.continuous.residual);
-    assert_eq!(residual_rows.programs.len(), 3);
-    assert_eq!(residual_rows.output_indices, vec![0, 1, 2]);
-    assert!(matches!(
-        problem.continuous.implicit_rhs.nodes.as_slice(),
-        [
-            solve::ComputeNode::ScalarPrograms(_),
-            solve::ComputeNode::Map {
-                output_map: solve::TensorOutputMap { start: 1, .. },
-                ..
-            },
-            solve::ComputeNode::ScalarPrograms(_)
-        ]
-    ));
-    let implicit_rows = scalar_program_block_fixture(&problem.continuous.implicit_rhs);
-    assert_eq!(implicit_rows.output_indices, vec![0, 1, 2, 3, 4, 5, 6]);
-}
-
-#[test]
-fn solve_problem_lowers_structured_continuous_residual_with_scalar_math_to_map() {
-    let span = solve_test_span();
-    let mut dae_model = dae::Dae::default();
-    dae_model
-        .variables
-        .states
-        .insert(rumoca_core::VarName::new("x"), source_scalar_var("x"));
-    dae_model
-        .variables
-        .algebraics
-        .insert(rumoca_core::VarName::new("z"), source_array_var("z", &[3]));
-    dae_model
-        .variables
-        .algebraics
-        .insert(rumoca_core::VarName::new("w"), source_array_var("w", &[3]));
-    dae_model
-        .variables
-        .parameters
-        .insert(rumoca_core::VarName::new("theta"), scalar_var("theta"));
-    dae_model.continuous.equations.push(dae::Equation::residual(
-        binary(rumoca_core::OpBinary::Sub, der(var("x")), int_expr(0)),
-        span,
-        "state derivative",
-    ));
-    for index in 1..=3 {
-        let subscript = rumoca_core::Subscript::generated_index(index, span);
-        let trig_scaled_source = binary(
-            rumoca_core::OpBinary::Add,
-            binary(
-                rumoca_core::OpBinary::Mul,
-                builtin_call(rumoca_core::BuiltinFunction::Sin, vec![var("theta")]),
-                source_indexed_var("w", vec![subscript.clone()]),
-            ),
-            builtin_call(rumoca_core::BuiltinFunction::Cos, vec![var("theta")]),
-        );
-        dae_model.continuous.equations.push(dae::Equation::residual(
-            binary(
-                rumoca_core::OpBinary::Sub,
-                source_indexed_var("z", vec![subscript]),
-                trig_scaled_source,
-            ),
-            span,
-            "structured trig residual",
-        ));
-    }
-    dae_model
-        .continuous
-        .structured_equations
-        .push(dae::StructuredEquationFamily {
-            domain: rumoca_core::StructuredIndexDomain {
-                binders: vec![rumoca_core::StructuredIndexBinder {
-                    id: 0,
-                    display_name: "i".to_string(),
-                    lower: 1,
-                    upper: 3,
-                    step: 1,
-                }],
-            },
-            first_equation_index: 1,
-            equations_per_point: 1,
-            span,
-            origin: "structured trig residual".to_string(),
-            regular: None,
-            template: None,
-            interiors_materialized: true,
-        });
-
-    let problem = lower_solve_problem(&dae_model).expect("structured trig residual should lower");
-
-    assert_eq!(problem.continuous.residual.len(), Ok(3));
-    assert!(matches!(
-        problem.continuous.residual.nodes.as_slice(),
-        [solve::ComputeNode::Map { .. }]
-    ));
-}
-
-#[test]
-fn solve_problem_lowers_structured_continuous_residual_with_guard_to_map() {
-    let span = solve_test_span();
-    let mut dae_model = dae::Dae::default();
-    dae_model
-        .variables
-        .states
-        .insert(rumoca_core::VarName::new("x"), source_scalar_var("x"));
-    dae_model
-        .variables
-        .algebraics
-        .insert(rumoca_core::VarName::new("z"), source_array_var("z", &[3]));
-    dae_model
-        .variables
-        .algebraics
-        .insert(rumoca_core::VarName::new("w"), source_array_var("w", &[3]));
-    dae_model.variables.algebraics.insert(
-        rumoca_core::VarName::new("mask"),
-        source_array_var("mask", &[3]),
+    dae_model.clocks.timings.insert(
+        "sampled".to_string(),
+        dae::ClockSchedule {
+            period_seconds: 0.125,
+            phase_seconds: 0.025,
+            source_span: solve_test_span(),
+        },
     );
-    dae_model.variables.parameters.insert(
-        rumoca_core::VarName::new("fallback"),
-        scalar_var("fallback"),
-    );
-    dae_model.continuous.equations.push(dae::Equation::residual(
-        binary(rumoca_core::OpBinary::Sub, der(var("x")), int_expr(0)),
-        span,
-        "state derivative",
-    ));
-    for index in 1..=3 {
-        let subscript = rumoca_core::Subscript::generated_index(index, span);
-        let guarded_source = rumoca_core::Expression::If {
-            branches: vec![(
-                binary(
-                    rumoca_core::OpBinary::Gt,
-                    source_indexed_var("mask", vec![subscript.clone()]),
-                    int_expr(0),
-                ),
-                source_indexed_var("w", vec![subscript.clone()]),
-            )],
-            else_branch: Box::new(var("fallback")),
-            span,
-        };
-        dae_model.continuous.equations.push(dae::Equation::residual(
-            binary(
-                rumoca_core::OpBinary::Sub,
-                source_indexed_var("z", vec![subscript]),
-                guarded_source,
-            ),
-            span,
-            "structured guarded residual",
-        ));
-    }
-    dae_model
-        .continuous
-        .structured_equations
-        .push(dae::StructuredEquationFamily {
-            domain: rumoca_core::StructuredIndexDomain {
-                binders: vec![rumoca_core::StructuredIndexBinder {
-                    id: 0,
-                    display_name: "i".to_string(),
-                    lower: 1,
-                    upper: 3,
-                    step: 1,
-                }],
-            },
-            first_equation_index: 1,
-            equations_per_point: 1,
-            span,
-            origin: "structured guarded residual".to_string(),
-            regular: None,
-            template: None,
-            interiors_materialized: true,
-        });
 
-    let problem =
-        lower_solve_problem(&dae_model).expect("structured guarded residual should lower");
+    let schedule = pre_source_clock_schedule(&dae_model, "sampled[2]")
+        .expect("scalarized pre source must inherit its base variable clock");
 
-    assert_eq!(problem.continuous.residual.len(), Ok(3));
-    assert!(matches!(
-        problem.continuous.residual.nodes.as_slice(),
-        [solve::ComputeNode::Map { .. }]
-    ));
+    assert_eq!(schedule.period_seconds, 0.125);
+    assert_eq!(schedule.phase_seconds, 0.025);
 }
+
+mod structured_families;

@@ -100,12 +100,13 @@ or a `::`-sub-target, e.g. --trace=rumoca_solver_diffsol::bdf):
   rumoca_solver_diffsol       ::bdf (event/root tracing) ::bdf_eval (eval counts)
   rumoca_solver_rk45          ::eval (RK eval counts/events)
   rumoca_solver               ::hotpath (solver step/root counters)
+                              ::driver (backend-neutral event/root driver)
   rumoca_eval_solve           ::refresh (algebraic refresh) ::row (row-eval stats)
   rumoca_eval_dae             ::sim ::introspect ::function_inputs ::function_match
   rumoca_sim                  ::external_interface ::autopilot (child stdio passthrough)
   rumoca_transport_websocket  ::ws ::viewer_input
   rumoca_tool_lsp             ::completion
-Short aliases: bdf, rk45, hotpath (e.g. --trace=bdf).
+Short aliases: bdf, rk45, hotpath, driver (e.g. --trace=bdf).
 
 Add --trace-profile for phase timing/profiling targets
 (rumoca_phase_dae::profile, rumoca_phase_dae::runtime_precompute,
@@ -1174,9 +1175,15 @@ fn render_ir_as_modelica(
         rumoca_compile::codegen::templates::builtin_template_source(target, template_file)
             .ok_or_else(|| anyhow::anyhow!("missing built-in {target} template"))?;
     let model_identifier = model.replace('.', "_");
-    result
-        .render_template_str_with_name_and_ir(template, &model_identifier, phase.into())
-        .map_err(Into::into)
+    if phase == CompilePhase::Dae {
+        result
+            .render_structured_dae_template_str_with_name(template, &model_identifier)
+            .map_err(Into::into)
+    } else {
+        result
+            .render_template_str_with_name_and_ir(template, &model_identifier, phase.into())
+            .map_err(Into::into)
+    }
 }
 
 fn run_sim(args: SimCommandArgs) -> Result<()> {
@@ -1464,6 +1471,7 @@ const TRACE_PHASE_ALIASES: &[(&str, &str)] = &[
     ("bdf", "rumoca_solver_diffsol::bdf"),
     ("rk45", "rumoca_solver_rk45::eval"),
     ("hotpath", "rumoca_solver::hotpath"),
+    ("driver", "rumoca_solver::driver"),
 ];
 
 /// Expand short phase aliases in a `--trace` filter. Each comma-separated token
@@ -1648,6 +1656,18 @@ fn print_summary(model: &str, result: &CompilationResult) {
     );
 }
 
+/// Render a typed simulation failure for the CLI, keeping the SPEC_0008 code
+/// (`EL0xx` / `ES0xx` / `EX0xx`) the error already carries in the same
+/// `[CODE] message` form the compile paths print. Flattening the error with
+/// `anyhow::Error::msg` drops the code, leaving a CLI user with no triage
+/// handle for a defect the LSP reports by code.
+///
+/// Shared with the value-returning `sim` entry point (`cli::value`) so both
+/// surfaces render one identity for the same failure.
+fn simulation_failure_error(error: &rumoca_sim::SimulationDiagnosticError) -> anyhow::Error {
+    anyhow::anyhow!("[{}] {error}", error.diagnostic_code())
+}
+
 struct SimulationRun<'a> {
     dae: &'a Dae,
     model: &'a str,
@@ -1696,8 +1716,8 @@ fn run_simulation(run: SimulationRun<'_>) -> Result<()> {
     // On a non-finite-suggestive failure (e.g. a model divide-by-zero showing up
     // as "step size too small"), this re-runs once with NaN tracing so the
     // offending variable(s) are named for the user.
-    let sim =
-        simulate_with_diagnostics_auto_nan_trace(run.dae, &opts).map_err(anyhow::Error::msg)?;
+    let sim = simulate_with_diagnostics_auto_nan_trace(run.dae, &opts)
+        .map_err(|error| simulation_failure_error(&error))?;
     eprintln!(
         "Simulation complete: {} time points, {} variables",
         sim.times.len(),

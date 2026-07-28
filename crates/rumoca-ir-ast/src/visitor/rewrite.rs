@@ -11,6 +11,24 @@ pub trait ExpressionTransformer {
         self.walk_expression(expr)
     }
 
+    /// Transform an `Arc`-held child without deep-copying the subtree.
+    ///
+    /// When the `Arc` is uniquely owned (the overwhelmingly common case for a
+    /// rewrite pass that owns its tree) the existing allocation is reused and
+    /// the child is transformed in place. When the node is shared, the trait
+    /// falls back to copy-on-write so the other holder keeps the old subtree.
+    fn transform_arc(&mut self, mut arc: Arc<Expression>) -> Arc<Expression> {
+        let Some(slot) = Arc::get_mut(&mut arc) else {
+            return Arc::new(self.transform_expression((*arc).clone()));
+        };
+        // The placeholder only has to survive until the line below overwrites
+        // it; it reuses the child's own span so no dummy provenance is minted.
+        let placeholder = Expression::Empty { span: slot.span() };
+        let taken = std::mem::replace(slot, placeholder);
+        *slot = self.transform_expression(taken);
+        arc
+    }
+
     /// Recursively transform an expression using the default traversal.
     // SPEC_0021: Exception - exhaustive visitor transform over AST expression variants.
     #[allow(clippy::too_many_lines)]
@@ -32,26 +50,29 @@ pub trait ExpressionTransformer {
                 end,
                 span,
             } => Expression::Range {
-                start: Arc::new(self.transform_expression((*start).clone())),
-                step: step.map(|s| Arc::new(self.transform_expression((*s).clone()))),
-                end: Arc::new(self.transform_expression((*end).clone())),
+                start: self.transform_arc(start),
+                step: step.map(|s| self.transform_arc(s)),
+                end: self.transform_arc(end),
                 span,
             },
             Expression::Unary { op, rhs, span } => Expression::Unary {
                 op,
-                rhs: Arc::new(self.transform_expression((*rhs).clone())),
+                rhs: self.transform_arc(rhs),
                 span,
             },
             Expression::Binary { op, lhs, rhs, span } => Expression::Binary {
                 op,
-                lhs: Arc::new(self.transform_expression((*lhs).clone())),
-                rhs: Arc::new(self.transform_expression((*rhs).clone())),
+                lhs: self.transform_arc(lhs),
+                rhs: self.transform_arc(rhs),
                 span,
             },
             Expression::ComponentReference(cr) => self.transform_component_reference(cr),
-            Expression::FunctionCall { comp, args, span } => {
-                self.transform_function_call(comp, args, span)
-            }
+            Expression::FunctionCall {
+                comp,
+                args,
+                is_partial_application,
+                span,
+            } => self.transform_function_call(comp, args, is_partial_application, span),
             Expression::ClassModification {
                 target,
                 modifications,
@@ -72,7 +93,7 @@ pub trait ExpressionTransformer {
             },
             Expression::NamedArgument { name, value, span } => Expression::NamedArgument {
                 name,
-                value: Arc::new(self.transform_expression((*value).clone())),
+                value: self.transform_arc(value),
                 span,
             },
             Expression::Modification {
@@ -81,7 +102,7 @@ pub trait ExpressionTransformer {
                 span,
             } => Expression::Modification {
                 target: self.transform_component_ref_inner(target),
-                value: Arc::new(self.transform_expression((*value).clone())),
+                value: self.transform_arc(value),
                 span,
             },
             Expression::Array {
@@ -112,11 +133,11 @@ pub trait ExpressionTransformer {
                     .into_iter()
                     .map(|(c, t)| (self.transform_expression(c), self.transform_expression(t)))
                     .collect(),
-                else_branch: Arc::new(self.transform_expression((*else_branch).clone())),
+                else_branch: self.transform_arc(else_branch),
                 span,
             },
             Expression::Parenthesized { inner, span } => Expression::Parenthesized {
-                inner: Arc::new(self.transform_expression((*inner).clone())),
+                inner: self.transform_arc(inner),
                 span,
             },
             Expression::ArrayComprehension {
@@ -125,12 +146,12 @@ pub trait ExpressionTransformer {
                 filter,
                 span,
             } => Expression::ArrayComprehension {
-                expr: Arc::new(self.transform_expression((*expr).clone())),
+                expr: self.transform_arc(expr),
                 indices: indices
                     .into_iter()
                     .map(|idx| self.transform_for_index(idx))
                     .collect(),
-                filter: filter.map(|f| Arc::new(self.transform_expression((*f).clone()))),
+                filter: filter.map(|f| self.transform_arc(f)),
                 span,
             },
             Expression::ArrayIndex {
@@ -138,7 +159,7 @@ pub trait ExpressionTransformer {
                 subscripts,
                 span,
             } => Expression::ArrayIndex {
-                base: Arc::new(self.transform_expression((*base).clone())),
+                base: self.transform_arc(base),
                 subscripts: subscripts
                     .into_iter()
                     .map(|s| self.transform_subscript(s))
@@ -146,7 +167,7 @@ pub trait ExpressionTransformer {
                 span,
             },
             Expression::FieldAccess { base, field, span } => Expression::FieldAccess {
-                base: Arc::new(self.transform_expression((*base).clone())),
+                base: self.transform_arc(base),
                 field,
                 span,
             },
@@ -176,6 +197,7 @@ pub trait ExpressionTransformer {
         &mut self,
         comp: ComponentReference,
         args: Vec<Expression>,
+        is_partial_application: bool,
         span: rumoca_core::Span,
     ) -> Expression {
         Expression::FunctionCall {
@@ -184,6 +206,7 @@ pub trait ExpressionTransformer {
                 .into_iter()
                 .map(|a| self.transform_expression(a))
                 .collect(),
+            is_partial_application,
             span,
         }
     }

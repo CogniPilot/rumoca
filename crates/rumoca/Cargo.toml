@@ -174,6 +174,9 @@ rumoca-phase-resolve = { workspace = true }
 rumoca-phase-codegen = { workspace = true }
 rumoca-phase-dae = { workspace = true }
 rumoca-eval-solve = { workspace = true }
+# Runtime state machine + backend-neutral simulation driver (SPEC_0029 §3b);
+# the AD/sensitivity integration tests drive `SolveRuntime` directly.
+rumoca-solver = { workspace = true }
 rumoca-phase-solve = { workspace = true }
 rumoca-phase-typecheck = { workspace = true }
 # GALEC target CI (tests only): recompute the SHA-1 checksum web and check

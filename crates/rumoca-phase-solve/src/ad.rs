@@ -60,19 +60,44 @@ pub fn lower_initial_residual_full_ad(
 /// For `Map` and `AffineStencil` nodes: transforms the compact base program once
 /// and remaps its affine load/constant strides to the generated dual program.
 pub fn lower_compute_block_jvp(block: &ComputeBlock) -> Result<ComputeBlock, LowerError> {
+    lower_compute_block_jvp_with_seed_mode(block, SeedMode::SolverYOnly)
+}
+
+/// Compute a JVP whose seed vector contains solver Y followed by P.
+///
+/// Initialization uses this form because fixed=false parameters are genuine
+/// initialization unknowns and must contribute Jacobian columns.
+pub fn lower_compute_block_full_jvp(
+    block: &ComputeBlock,
+    p_seed_offset: usize,
+) -> Result<ComputeBlock, LowerError> {
+    lower_compute_block_jvp_with_seed_mode(block, SeedMode::SolverYAndP { p_seed_offset })
+}
+
+fn lower_compute_block_jvp_with_seed_mode(
+    block: &ComputeBlock,
+    seed_mode: SeedMode,
+) -> Result<ComputeBlock, LowerError> {
     let span = compute_block_context_span(block);
     let mut nodes = ad_vec_with_capacity(block.nodes.len(), "compute block JVP node count", span)?;
     for node in &block.nodes {
-        nodes.push(lower_compute_node_jvp(node)?);
+        nodes.push(lower_compute_node_jvp(node, seed_mode)?);
     }
     Ok(ComputeBlock { nodes })
 }
 
-fn lower_compute_node_jvp(node: &ComputeNode) -> Result<ComputeNode, LowerError> {
+fn lower_compute_node_jvp(
+    node: &ComputeNode,
+    seed_mode: SeedMode,
+) -> Result<ComputeNode, LowerError> {
     match node {
         ComputeNode::ScalarPrograms(rows) => {
-            let jvp_rows =
-                lower_scalar_program_block_ad_with_spans(&rows.programs, &rows.program_spans)?;
+            let jvp_rows = lower_scalar_program_rows_ad(
+                &rows.programs,
+                &rows.program_spans,
+                seed_mode,
+                "spanned compute block AD row count",
+            )?;
             Ok(ComputeNode::ScalarPrograms(
                 ScalarProgramBlock::with_output_indices(
                     jvp_rows,
@@ -81,7 +106,7 @@ fn lower_compute_node_jvp(node: &ComputeNode) -> Result<ComputeNode, LowerError>
                 )?,
             ))
         }
-        ComputeNode::MatMul { .. } => lower_matmul_jvp_node(node),
+        ComputeNode::MatMul { .. } => lower_matmul_jvp_node(node, seed_mode),
         ComputeNode::LinSolve {
             setup_ops,
             matrix_start,
@@ -97,6 +122,7 @@ fn lower_compute_node_jvp(node: &ComputeNode) -> Result<ComputeNode, LowerError>
             *n,
             metadata.clone(),
             *span,
+            seed_mode,
         ),
         ComputeNode::Map {
             domain,
@@ -107,7 +133,8 @@ fn lower_compute_node_jvp(node: &ComputeNode) -> Result<ComputeNode, LowerError>
             metadata,
             span,
         } => {
-            let lowered = lower_affine_jvp_ops(base_ops, load_strides, const_strides, *span)?;
+            let lowered =
+                lower_affine_jvp_ops(base_ops, load_strides, const_strides, *span, seed_mode)?;
             Ok(ComputeNode::Map {
                 domain: domain.clone(),
                 output_map: output_map.clone(),
@@ -127,7 +154,8 @@ fn lower_compute_node_jvp(node: &ComputeNode) -> Result<ComputeNode, LowerError>
             metadata,
             span,
         } => {
-            let lowered = lower_affine_jvp_ops(base_ops, load_strides, const_strides, *span)?;
+            let lowered =
+                lower_affine_jvp_ops(base_ops, load_strides, const_strides, *span, seed_mode)?;
             Ok(ComputeNode::AffineStencil {
                 domain: domain.clone(),
                 output_map: output_map.clone(),
@@ -152,9 +180,10 @@ fn lower_affine_jvp_ops(
     load_strides: &[AffineStencilLoadStride],
     const_strides: &[AffineStencilConstStride],
     span: rumoca_core::Span,
+    seed_mode: SeedMode,
 ) -> Result<AffineJvpOps, LowerError> {
     validate_affine_jvp_stride_targets(base_ops, load_strides, const_strides, span)?;
-    let mut builder = AdBuilder::new_with_span(SeedMode::SolverYOnly, span);
+    let mut builder = AdBuilder::new_with_span(seed_mode, span);
     let mut lowered_load_strides = Vec::new();
     let mut lowered_const_strides = Vec::new();
 
@@ -255,7 +284,10 @@ fn validate_affine_jvp_stride_targets(
     Ok(())
 }
 
-fn lower_matmul_jvp_node(node: &ComputeNode) -> Result<ComputeNode, LowerError> {
+fn lower_matmul_jvp_node(
+    node: &ComputeNode,
+    seed_mode: SeedMode,
+) -> Result<ComputeNode, LowerError> {
     let ComputeNode::MatMul {
         lhs_ops,
         lhs_start,
@@ -282,11 +314,12 @@ fn lower_matmul_jvp_node(node: &ComputeNode) -> Result<ComputeNode, LowerError> 
 
     let lhs_len = checked_ad_product(*m, *k, *span, "MatMul JVP lhs value count")?;
     let rhs_len = checked_ad_product(*k, *n, *span, "MatMul JVP rhs value count")?;
-    let lhs_depends_on_y = ops_reference_y(lhs_ops);
-    let rhs_depends_on_y = ops_reference_y(rhs_ops);
+    let lhs_depends_on_seed = ops_reference_seeded_inputs(lhs_ops, seed_mode);
+    let rhs_depends_on_seed = ops_reference_seeded_inputs(rhs_ops, seed_mode);
 
-    let (mut lhs_builder, lhs) = lower_tensor_operand(lhs_ops, *lhs_start, lhs_len, 0, *span)?;
-    let (jvp_lhs_start, jvp_k, jvp_lhs_sparsity) = if lhs_depends_on_y && rhs_depends_on_y {
+    let (mut lhs_builder, lhs) =
+        lower_tensor_operand(lhs_ops, *lhs_start, lhs_len, 0, *span, seed_mode)?;
+    let (jvp_lhs_start, jvp_k, jvp_lhs_sparsity) = if lhs_depends_on_seed && rhs_depends_on_seed {
         let regs = block_product_lhs_regs(&lhs, *m, *k, *span)?;
         (
             lhs_builder.pack_registers(&regs)?,
@@ -294,7 +327,7 @@ fn lower_matmul_jvp_node(node: &ComputeNode) -> Result<ComputeNode, LowerError> 
             rumoca_ir_solve::SparsityPattern::Dense,
         )
     } else {
-        let regs = if lhs_depends_on_y {
+        let regs = if lhs_depends_on_seed {
             dual_regs(&lhs, DualPart::Tangent, "MatMul JVP lhs tangent", *span)?
         } else {
             dual_regs(&lhs, DualPart::Primal, "MatMul JVP lhs primal", *span)?
@@ -304,15 +337,15 @@ fn lower_matmul_jvp_node(node: &ComputeNode) -> Result<ComputeNode, LowerError> 
 
     let rhs_next_reg = lhs_builder.next_reg;
     let (mut rhs_builder, rhs) =
-        lower_tensor_operand(rhs_ops, *rhs_start, rhs_len, rhs_next_reg, *span)?;
-    let (jvp_rhs_start, jvp_rhs_sparsity) = if lhs_depends_on_y && rhs_depends_on_y {
+        lower_tensor_operand(rhs_ops, *rhs_start, rhs_len, rhs_next_reg, *span, seed_mode)?;
+    let (jvp_rhs_start, jvp_rhs_sparsity) = if lhs_depends_on_seed && rhs_depends_on_seed {
         let regs = block_product_rhs_regs(&rhs, *span)?;
         (
             rhs_builder.pack_registers(&regs)?,
             rumoca_ir_solve::SparsityPattern::Dense,
         )
     } else {
-        let regs = if rhs_depends_on_y || !lhs_depends_on_y {
+        let regs = if rhs_depends_on_seed || !lhs_depends_on_seed {
             dual_regs(&rhs, DualPart::Tangent, "MatMul JVP rhs tangent", *span)?
         } else {
             dual_regs(&rhs, DualPart::Primal, "MatMul JVP rhs primal", *span)?
@@ -341,8 +374,9 @@ fn lower_tensor_operand(
     value_count: usize,
     next_reg: Reg,
     span: rumoca_core::Span,
+    seed_mode: SeedMode,
 ) -> Result<(AdBuilder, Vec<DualReg>), LowerError> {
-    let mut builder = AdBuilder::new_with_span(SeedMode::SolverYOnly, span);
+    let mut builder = AdBuilder::new_with_span(seed_mode, span);
     builder.next_reg = next_reg;
     for op in ops {
         builder.lower_op(*op)?;
@@ -452,9 +486,12 @@ fn compute_node_context_span(node: &ComputeNode) -> Option<rumoca_core::Span> {
     }
 }
 
-/// Returns true if any op in the slice is `LoadY`.
-fn ops_reference_y(ops: &[LinearOp]) -> bool {
-    ops.iter().any(|op| matches!(op, LinearOp::LoadY { .. }))
+fn ops_reference_seeded_inputs(ops: &[LinearOp], seed_mode: SeedMode) -> bool {
+    ops.iter().any(|op| {
+        matches!(op, LinearOp::LoadY { .. })
+            || matches!(seed_mode, SeedMode::SolverYAndP { .. })
+                && matches!(op, LinearOp::LoadP { .. } | LinearOp::LoadIndexedP { .. })
+    })
 }
 
 fn lower_linsolve_jvp_node(
@@ -464,12 +501,13 @@ fn lower_linsolve_jvp_node(
     n: usize,
     metadata: rumoca_ir_solve::TensorNodeMetadata,
     span: rumoca_core::Span,
+    seed_mode: SeedMode,
 ) -> Result<ComputeNode, LowerError> {
     if n == 0 {
         return Err(unsupported("invalid zero-sized LinSolve in JVP"));
     }
 
-    let mut builder = AdBuilder::new_with_span(SeedMode::SolverYOnly, span);
+    let mut builder = AdBuilder::new_with_span(seed_mode, span);
     for op in setup_ops {
         builder.lower_op(*op)?;
     }
@@ -567,6 +605,7 @@ pub fn lower_scalar_program_block_full_ad_with_spans(
     )
 }
 
+#[cfg(test)]
 fn lower_scalar_program_block_ad_with_spans(
     primal_rows: &[Vec<LinearOp>],
     row_spans: &[rumoca_core::Span],
@@ -788,7 +827,6 @@ impl AdBuilder {
         state_len: usize,
         state_index: usize,
     ) -> Result<(), LowerError> {
-        self.ensure_solver_y_random_ad()?;
         let local_seed = self.lookup(local_seed)?.re;
         let global_seed = self.lookup(global_seed)?.re;
         let re = self.alloc_reg()?;
@@ -811,7 +849,6 @@ impl AdBuilder {
         state_start: Reg,
         state_len: usize,
     ) -> Result<(), LowerError> {
-        self.ensure_solver_y_random_ad()?;
         let state_start = self.pack_random_primal_state(state_start, state_len)?;
         let re = self.alloc_reg()?;
         self.ops.push(LinearOp::RandomResult {
@@ -832,7 +869,6 @@ impl AdBuilder {
         state_len: usize,
         state_index: usize,
     ) -> Result<(), LowerError> {
-        self.ensure_solver_y_random_ad()?;
         let state_start = self.pack_random_primal_state(state_start, state_len)?;
         let re = self.alloc_reg()?;
         self.ops.push(LinearOp::RandomState {
@@ -844,15 +880,6 @@ impl AdBuilder {
         });
         let du = self.zero_reg()?;
         self.bind(dst, DualReg { re, du })
-    }
-
-    fn ensure_solver_y_random_ad(&self) -> Result<(), LowerError> {
-        match self.seed_mode {
-            SeedMode::SolverYOnly => Ok(()),
-            SeedMode::SolverYAndP { .. } => Err(unsupported(
-                "deterministic random ops do not define parameter sensitivities",
-            )),
-        }
     }
 
     fn pack_random_primal_state(

@@ -160,10 +160,10 @@ pub struct Model {
     /// unlike sub-component inputs from type interfaces (MLS §4.4.2.2).
     #[serde(default)]
     pub top_level_input_components: IndexSet<String>,
-    /// Scalar count of excess equations from VCG break edges (MLS §9.4).
-    /// Break edges in the overconstrained connection graph generate equality equations
-    /// that should be replaced by `equalityConstraint()` calls. Until that's implemented,
-    /// this correction tracks how many excess equation scalars exist.
+    /// Conservative scalar budget for VCG break-edge equations (MLS §9.4).
+    /// Break edges are lowered to their declared `equalityConstraint` equations
+    /// during connection generation. Balance accounting retains this metadata
+    /// to validate the resulting equation inventory.
     #[serde(default)]
     pub oc_break_edge_scalar_count: usize,
     /// Enumeration literal ordinal map (MLS §4.9.5, 1-based ordinals).
@@ -279,6 +279,7 @@ impl Model {
                 if matches!(var.variability, Variability::Parameter(_))
                     && var.fixed.unwrap_or(true)
                     && var.binding.is_none()
+                    && !matches!(var.shape_size(), Ok(0))
                 {
                     Some(name.clone())
                 } else {
@@ -294,6 +295,7 @@ impl Model {
             matches!(var.variability, Variability::Parameter(_))
                 && var.fixed.unwrap_or(true)
                 && var.binding.is_none()
+                && !matches!(var.shape_size(), Ok(0))
         })
     }
 
@@ -338,6 +340,11 @@ impl Model {
             }
         }
         Ok(())
+    }
+
+    /// Validate the complete finalized Flat-IR stage contract.
+    pub fn validate(&self) -> Result<(), ModelShapeContractError> {
+        self.validate_shape_contract()
     }
 }
 
@@ -419,7 +426,7 @@ pub struct Variable {
     pub flow: bool,
     /// Stream prefix.
     pub stream: bool,
-    /// Resolved array dimensions (preserved per SPEC_0019).
+    /// Resolved array dimensions (preserved per SPEC_0007 and SPEC_0032).
     pub dims: Vec<i64>,
     /// True if this variable is used in connection equations.
     pub connected: bool,
@@ -969,7 +976,7 @@ impl AssertEquation {
     }
 }
 
-/// Algorithm section with preserved structure (SPEC_0020).
+/// Algorithm section with preserved structure (SPEC_0007 / MLS §11).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Algorithm {
     /// The statements in this algorithm section.

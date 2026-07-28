@@ -9,13 +9,10 @@ pub(crate) fn resolve_function_reference<'a>(
     functions: &'a indexmap::IndexMap<rumoca_core::VarName, rumoca_core::Function>,
     name: &rumoca_core::Reference,
 ) -> Option<(&'a rumoca_core::VarName, &'a rumoca_core::Function)> {
-    if let Some(resolved) = name.resolved_function() {
-        let function =
-            rumoca_core::resolve_function_instance(functions.values(), resolved.instance_id)
-                .ok()?;
-        return Some((&function.name, function));
-    }
-    None
+    let resolved = name.resolved_function()?;
+    let function =
+        rumoca_core::resolve_function_instance(functions.values(), resolved.instance_id).ok()?;
+    Some((&function.name, function))
 }
 
 pub(crate) fn output_projection_suffix(
@@ -238,5 +235,70 @@ mod tests {
             });
 
         assert!(resolve_function_reference(&functions, &name).is_none());
+    }
+
+    fn colliding_projection_functions()
+    -> indexmap::IndexMap<rumoca_core::VarName, rumoca_core::Function> {
+        let span = rumoca_core::Span::DUMMY;
+        let mut functions = indexmap::IndexMap::new();
+        let mut projected_function = rumoca_core::Function::new("Outer.Pkg.f", span);
+        projected_function.def_id = Some(rumoca_core::DefId::new(40));
+        projected_function.instance_id = Some(rumoca_core::FunctionInstanceId::new(40));
+        projected_function
+            .outputs
+            .push(rumoca_core::FunctionParam::new("out", "Real", span));
+        functions.insert(projected_function.name.clone(), projected_function);
+
+        let mut colliding_function = rumoca_core::Function::new("Outer.Pkg.f.out", span);
+        colliding_function.def_id = Some(rumoca_core::DefId::new(41));
+        colliding_function.instance_id = Some(rumoca_core::FunctionInstanceId::new(41));
+        colliding_function
+            .outputs
+            .push(rumoca_core::FunctionParam::new("other", "Real", span));
+        functions.insert(colliding_function.name.clone(), colliding_function);
+        functions
+    }
+
+    #[test]
+    fn rendered_projection_collision_without_identity_is_rejected() {
+        let functions = colliding_projection_functions();
+        let name = rumoca_core::Reference::from_component_reference(
+            rumoca_core::component_reference_from_flat_name(
+                &rumoca_core::VarName::new("Outer.Pkg.f.out"),
+                rumoca_core::Span::DUMMY,
+            )
+            .expect("structured rendered reference"),
+        );
+
+        assert!(resolve_function_reference(&functions, &name).is_none());
+    }
+
+    #[test]
+    fn nested_projection_uses_instance_identity_despite_exact_name_collision() {
+        let functions = colliding_projection_functions();
+        let mut component_ref = rumoca_core::component_reference_from_flat_name(
+            &rumoca_core::VarName::new("Outer.Pkg.f.out"),
+            rumoca_core::Span::DUMMY,
+        )
+        .expect("structured projected reference");
+        component_ref.def_id = Some(rumoca_core::DefId::new(40));
+        let name = rumoca_core::Reference::from_component_reference(component_ref)
+            .with_resolved_function(rumoca_core::ResolvedFunctionReference {
+                instance_id: rumoca_core::FunctionInstanceId::new(40),
+                base_part_count: 3,
+            });
+
+        let (key, function) =
+            resolve_function_reference(&functions, &name).expect("typed projection resolves");
+
+        assert_eq!(key.as_str(), "Outer.Pkg.f");
+        assert_eq!(
+            output_projection_suffix(function, &name),
+            Some(OutputProjectionSuffix {
+                output_name: "out".to_string(),
+                output_fields: Vec::new(),
+                indices: Vec::new(),
+            })
+        );
     }
 }

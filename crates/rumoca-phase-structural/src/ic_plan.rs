@@ -189,6 +189,9 @@ pub fn build_ic_plan(dae: &Dae, n_x: usize) -> Result<Vec<IcBlock>, StructuralEr
             unmatched_equations,
             unmatched_unknowns,
             unmatched_unknown_spans,
+            // The IC projection subsystem names its rows by local slot, so a
+            // block witness here would repeat the slot list it already prints.
+            over_determined_block: Box::default(),
         });
     }
 
@@ -321,6 +324,14 @@ fn convert_blt_blocks_to_ic(
 
                 let block = build_loop_block(dae, &eq_indices, &var_info, var_name_to_idx);
                 ic_blocks.push(block);
+            }
+            // Unreachable: the IC path builds its incidence through
+            // `Incidence::new`, which leaves `structured_matching` empty.
+            // Report rather than silently dropping the family's rows.
+            BltBlock::StructuredScalar(family) => {
+                return Err(StructuralError::UnspannedContractViolation {
+                    reason: family.unsupported_by("IC planning"),
+                });
             }
         }
     }
@@ -919,7 +930,7 @@ fn project_relaxed_ic_incidence(
     let mut eq_unknowns = Vec::with_capacity(kept_eqs.len());
     for old_eq_idx in kept_eqs {
         let mut cols = HashSet::new();
-        for old_col in incidence.eq_unknowns[old_eq_idx].iter().copied() {
+        for old_col in incidence.eq_unknowns.row(old_eq_idx).iter().copied() {
             if let Some(new_col) = old_to_new_var[old_col] {
                 cols.insert(new_col);
             }
@@ -1242,6 +1253,10 @@ fn resolve_unknown(
         UnknownId::Variable(vn) => vn.as_str().to_string(),
         UnknownId::DerState(vn) => format!("der({})", vn.as_str()),
         UnknownId::SolverY(index) => format!("y[{index}]"),
+        // An unmatched unknown has no solver identity by construction, so it
+        // falls through to `InvalidIcPlanUnknown` below with a name that says
+        // which equation it came from.
+        UnknownId::Unmatched { equation } => format!("<unmatched f_x[{equation}]>"),
     };
 
     // Try direct lookup first
@@ -1730,18 +1745,9 @@ mod tests {
                 .unwrap_or_else(|| panic!("missing algebraic slot {name}"))
         };
 
-        assert_eq!(
-            incidence.eq_unknowns[0],
-            HashSet::from([local_idx("M[1,2]")])
-        );
-        assert_eq!(
-            incidence.eq_unknowns[1],
-            HashSet::from([local_idx("M[2,2]")])
-        );
-        assert_eq!(
-            incidence.eq_unknowns[2],
-            HashSet::from([local_idx("M[3,2]")])
-        );
+        assert_eq!(incidence.eq_unknowns.row(0), &[local_idx("M[1,2]")]);
+        assert_eq!(incidence.eq_unknowns.row(1), &[local_idx("M[2,2]")]);
+        assert_eq!(incidence.eq_unknowns.row(2), &[local_idx("M[3,2]")]);
     }
 
     #[test]
@@ -1771,10 +1777,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("missing algebraic slot {name}"))
         };
 
-        assert_eq!(
-            incidence.eq_unknowns[0],
-            HashSet::from([local_idx("M[1,2]")])
-        );
+        assert_eq!(incidence.eq_unknowns.row(0), &[local_idx("M[1,2]")]);
     }
 
     #[test]

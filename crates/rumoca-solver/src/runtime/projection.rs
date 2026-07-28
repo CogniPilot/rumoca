@@ -4,6 +4,25 @@ use nalgebra::{DMatrix, DVector};
 use rumoca_ir_solve as solve;
 
 use super::solve_ops::RuntimeSolveError;
+use scaling::{
+    algebraic_block_scales, algebraic_plan_row_scales, initial_block_fallback_scales,
+    initial_residual_scales, jacobian_row_scales, model_variable_scale, scaled_newton_delta,
+    scaled_residual_converged, scaled_residual_norm, scaled_tolerance,
+};
+use singleton::{SingletonAssignmentStep, initial_row_target_name, singleton_assignment_improves};
+
+mod homotopy;
+mod manifold;
+mod plan;
+mod scaling;
+mod singleton;
+
+pub use manifold::{ManifoldProjectionModel, project_state_manifold};
+
+use plan::{
+    algebraic_tail_len, require_square_projection_block, validate_algebraic_projection_plan,
+    validate_initial_projection_plan,
+};
 
 const ALGEBRAIC_PROJECTION_MAX_ITERS: usize = 32;
 
@@ -37,6 +56,21 @@ pub trait ImplicitProjectionModel {
     fn algebraic_projection_plan(&self) -> &solve::AlgebraicProjectionPlan;
     fn target_name_for_row(&self, row_idx: usize) -> Option<&str>;
 
+    /// Return the diagnostic name for a solver variable. Implementations may
+    /// omit names without changing projection semantics.
+    fn variable_name_for_y_index(&self, _y_index: usize) -> Option<&str> {
+        None
+    }
+
+    /// Return a finite positive characteristic scale for one solver variable.
+    ///
+    /// Implementations backed by Solve IR should combine the declared
+    /// `nominal` attribute with the variable's start magnitude. The default
+    /// preserves unit scaling for third-party projection models.
+    fn variable_scale_for_y_index(&self, _y_index: usize) -> f64 {
+        1.0
+    }
+
     /// Evaluate one logical implicit residual without evaluating the complete
     /// residual block. Models may return `None` when the row has no scalar view.
     fn eval_implicit_residual_row(
@@ -47,6 +81,40 @@ pub trait ImplicitProjectionModel {
         _t: f64,
     ) -> Result<Option<f64>, RuntimeSolveError> {
         Ok(None)
+    }
+
+    /// Evaluate one logical implicit Jacobian-vector product row without
+    /// evaluating the complete JVP block. Models may return `None` when the
+    /// row has no scalar view.
+    fn eval_implicit_jacobian_v_row(
+        &self,
+        _row_idx: usize,
+        _y: &[f64],
+        _p: &[f64],
+        _t: f64,
+        _v: &[f64],
+    ) -> Result<Option<f64>, RuntimeSolveError> {
+        Ok(None)
+    }
+
+    /// Evaluate the complete gradient of one scalar implicit residual with
+    /// respect to solver `y`. Returning `false` keeps the exact forward-JVP
+    /// construction available for models without reverse-row support.
+    fn eval_implicit_jacobian_row(
+        &self,
+        _row_idx: usize,
+        _y: &[f64],
+        _p: &[f64],
+        _t: f64,
+        _gradient: &mut [f64],
+    ) -> Result<bool, RuntimeSolveError> {
+        Ok(false)
+    }
+
+    /// Report exact structural dependence of one residual JVP row on a seed
+    /// column. The conservative default keeps third-party models correct.
+    fn implicit_jacobian_v_row_depends_on(&self, _row_idx: usize, _seed_index: usize) -> bool {
+        true
     }
 
     fn eval_implicit_target_value(
@@ -198,10 +266,10 @@ pub fn project_algebraic_seed_with_plan<M: ImplicitProjectionModel>(
             y.len()
         )));
     }
-    let snapshot = seed[args.state_count..y.len()].to_vec();
+    let snapshot = projection_unknown_values(plan, seed);
     let result = project_algebraic_seed_with_plan_inner(model, plan, y, args, seed, unit_seed);
     if result.is_err() {
-        seed[args.state_count..y.len()].copy_from_slice(&snapshot);
+        restore_projection_unknown_values(plan, seed, &snapshot);
     }
     result
 }
@@ -214,27 +282,27 @@ fn project_algebraic_seed_with_plan_inner<M: ImplicitProjectionModel>(
     seed: &mut [f64],
     unit_seed: &mut [f64],
 ) -> Result<(), RuntimeSolveError> {
-    seed[args.state_count..y.len()].fill(0.0);
-    let mut jvp = vec![0.0; y.len()];
     for block in &plan.blocks {
-        model.eval_jacobian_v(y, args.parameters, args.time, seed, &mut jvp)?;
-        let rhs = DVector::from_iterator(
-            block.rows.len(),
-            block
-                .rows
-                .iter()
-                .map(|row| residual_at(&jvp, *row, "algebraic seed projection").map(|v| -v))
-                .collect::<Result<Vec<_>, _>>()?,
-        );
-        let jacobian = algebraic_seed_block_jacobian(
+        for &y_index in &block.y_indices {
+            seed[y_index] = 0.0;
+        }
+    }
+    for block in &plan.blocks {
+        let block_residual = implicit_selected_jacobian_v_rows(
             model,
             y,
             args.parameters,
             args.time,
-            block,
-            unit_seed,
-            &mut jvp,
+            seed,
+            &block.rows,
+            "algebraic seed projection",
         )?;
+        let rhs = DVector::from_iterator(
+            block.rows.len(),
+            block_residual.into_iter().map(|value| -value),
+        );
+        let jacobian =
+            algebraic_seed_block_jacobian(model, y, args.parameters, args.time, block, unit_seed)?;
         let Some(solution) = jacobian.lu().solve(&rhs) else {
             return Err(RuntimeSolveError::solve_ir(
                 "algebraic projection sensitivity matrix is singular".to_string(),
@@ -254,15 +322,23 @@ fn project_algebraic_seed_with_plan_inner<M: ImplicitProjectionModel>(
             seed[y_index] = value;
         }
     }
-    model.eval_jacobian_v(y, args.parameters, args.time, seed, &mut jvp)?;
-    let residual = projection_residual_tail(&jvp, args.state_count)?;
+    let rows = projection_rows(plan);
+    let residual = implicit_selected_jacobian_v_rows(
+        model,
+        y,
+        args.parameters,
+        args.time,
+        seed,
+        &rows,
+        "algebraic projection sensitivity",
+    )?;
     if residual_converged(&residual, args.tolerance) {
         return Ok(());
     }
-    Err(projection_error(
+    Err(projection_error_for_rows(
         model,
-        args.state_count,
-        "algebraic projection sensitivity did not satisfy the complete residual system",
+        "algebraic projection sensitivity did not satisfy the selected residual system",
+        &rows,
         &residual,
     ))
 }
@@ -274,16 +350,29 @@ fn algebraic_seed_block_jacobian<M: ImplicitProjectionModel>(
     t: f64,
     block: &solve::AlgebraicProjectionBlock,
     unit_seed: &mut [f64],
-    jvp: &mut [f64],
 ) -> Result<DMatrix<f64>, RuntimeSolveError> {
     let mut jacobian = DMatrix::zeros(block.rows.len(), block.y_indices.len());
     for (column, y_index) in block.y_indices.iter().copied().enumerate() {
         unit_seed.fill(0.0);
         unit_seed[y_index] = 1.0;
-        model.eval_jacobian_v(y, p, t, unit_seed, jvp)?;
         for (row_pos, row) in block.rows.iter().copied().enumerate() {
-            jacobian[(row_pos, column)] =
-                residual_at(jvp, row, "algebraic seed projection Jacobian")?;
+            if !model.implicit_jacobian_v_row_depends_on(row, y_index) {
+                continue;
+            }
+            let Some(value) = model.eval_implicit_jacobian_v_row(row, y, p, t, unit_seed)? else {
+                let mut jvp = vec![0.0; y.len()];
+                model.eval_jacobian_v(y, p, t, unit_seed, &mut jvp)?;
+                fill_jacobian_column_from_jvp(
+                    &mut jacobian,
+                    column,
+                    &block.rows,
+                    &jvp,
+                    None,
+                    "algebraic seed projection Jacobian",
+                )?;
+                break;
+            };
+            jacobian[(row_pos, column)] = value;
         }
     }
     unit_seed.fill(0.0);
@@ -298,10 +387,10 @@ pub fn project_algebraics_with_plan<M: ImplicitProjectionModel>(
     max_iters: usize,
 ) -> Result<(), RuntimeSolveError> {
     validate_algebraic_projection_plan(plan, args.state_count, y.len())?;
-    let snapshot = y[args.state_count..].to_vec();
+    let snapshot = projection_unknown_values(plan, y);
     let result = project_algebraics_with_plan_inner(model, plan, y, args, max_iters);
     if result.is_err() {
-        y[args.state_count..].copy_from_slice(&snapshot);
+        restore_projection_unknown_values(plan, y, &snapshot);
     }
     result
 }
@@ -313,15 +402,11 @@ fn project_algebraics_with_plan_inner<M: ImplicitProjectionModel>(
     args: AlgebraicProjectionArgs<'_>,
     max_iters: usize,
 ) -> Result<(), RuntimeSolveError> {
-    let mut rhs = vec![0.0; y.len()];
-    for _ in 0..max_iters {
-        seed_nonfinite_algebraics(y, args.state_count);
-        model.eval_residual(y, args.parameters, args.time, &mut rhs)?;
-        let residual = projection_residual_tail(&rhs, args.state_count)?;
-        if residual_converged(&residual, args.tolerance) {
-            return Ok(());
-        }
+    let rows = projection_rows(plan);
+    for iteration in 0..max_iters {
+        seed_nonfinite_projection_unknowns(y, plan);
         let mut changed = false;
+        let mut all_settled = true;
         for block in &plan.blocks {
             let update = project_algebraic_block(
                 model,
@@ -332,141 +417,44 @@ fn project_algebraics_with_plan_inner<M: ImplicitProjectionModel>(
                 args.tolerance,
             )?;
             changed |= update.changed;
+            all_settled &= update.settled;
+        }
+        if all_settled {
+            tracing::debug!(
+                target: "rumoca_solver::projection",
+                iteration,
+                "algebraic projection converged"
+            );
+            return Ok(());
         }
         if !changed {
+            tracing::debug!(
+                target: "rumoca_solver::projection",
+                iteration,
+                "algebraic projection made no accepted update"
+            );
             break;
         }
     }
-    seed_nonfinite_algebraics(y, args.state_count);
-    model.eval_residual(y, args.parameters, args.time, &mut rhs)?;
-    let residual = projection_residual_tail(&rhs, args.state_count)?;
-    if residual_converged(&residual, args.tolerance) {
+    seed_nonfinite_projection_unknowns(y, plan);
+    let residual = implicit_selected_residuals(
+        model,
+        y,
+        args.parameters,
+        args.time,
+        &rows,
+        "selected algebraic projection",
+    )?;
+    let row_scales = algebraic_plan_row_scales(model, y, args.parameters, args.time, plan)?;
+    if scaled_residual_converged(&residual, &row_scales, args.tolerance) {
         return Ok(());
     }
-    Err(projection_error(
+    Err(projection_error_for_rows(
         model,
-        args.state_count,
         "algebraic projection did not converge at event boundary",
+        &rows,
         &residual,
     ))
-}
-
-fn projection_residual_tail(
-    rhs: &[f64],
-    state_count: usize,
-) -> Result<Vec<f64>, RuntimeSolveError> {
-    let _ = algebraic_tail_len(rhs.len(), state_count, "projection residual tail")?;
-    Ok(rhs[state_count..].to_vec())
-}
-
-fn validate_algebraic_projection_plan(
-    plan: &solve::AlgebraicProjectionPlan,
-    state_count: usize,
-    solver_count: usize,
-) -> Result<(), RuntimeSolveError> {
-    let algebraic_count =
-        algebraic_tail_len(solver_count, state_count, "algebraic projection plan")?;
-    let mut row_seen = vec![false; algebraic_count];
-    let mut y_seen = vec![false; algebraic_count];
-    for block in &plan.blocks {
-        require_square_projection_block(block.rows.len(), block.y_indices.len(), "algebraic")?;
-        mark_projection_indices(
-            &block.rows,
-            state_count,
-            solver_count,
-            &mut row_seen,
-            "algebraic projection",
-            "residual row",
-        )?;
-        mark_projection_indices(
-            &block.y_indices,
-            state_count,
-            solver_count,
-            &mut y_seen,
-            "algebraic projection",
-            "unknown",
-        )?;
-    }
-    Ok(())
-}
-
-fn validate_initial_projection_plan(
-    plan: &solve::AlgebraicProjectionPlan,
-    residual_count: usize,
-    solver_count: usize,
-) -> Result<(), RuntimeSolveError> {
-    let mut row_seen = vec![false; residual_count];
-    let mut y_seen = vec![false; solver_count];
-    for block in &plan.blocks {
-        require_square_projection_block(block.rows.len(), block.y_indices.len(), "initial")?;
-        mark_projection_indices(
-            &block.rows,
-            0,
-            residual_count,
-            &mut row_seen,
-            "initial projection",
-            "residual row",
-        )?;
-        mark_projection_indices(
-            &block.y_indices,
-            0,
-            solver_count,
-            &mut y_seen,
-            "initial projection",
-            "unknown",
-        )?;
-    }
-    Ok(())
-}
-
-fn require_square_projection_block(
-    row_count: usize,
-    unknown_count: usize,
-    kind: &str,
-) -> Result<(), RuntimeSolveError> {
-    if row_count == unknown_count {
-        return Ok(());
-    }
-    Err(RuntimeSolveError::solve_ir(format!(
-        "{kind} projection block has {row_count} residual rows but {unknown_count} unknowns"
-    )))
-}
-
-fn mark_projection_indices(
-    indices: &[usize],
-    lower_bound: usize,
-    upper_bound: usize,
-    seen: &mut [bool],
-    context: &str,
-    role: &str,
-) -> Result<(), RuntimeSolveError> {
-    for &index in indices {
-        if index < lower_bound || index >= upper_bound {
-            return Err(RuntimeSolveError::solve_ir(format!(
-                "{context} {role} {index} is outside {lower_bound}..{upper_bound}"
-            )));
-        }
-        let slot = &mut seen[index - lower_bound];
-        if *slot {
-            return Err(RuntimeSolveError::solve_ir(format!(
-                "{context} {role} {index} appears more than once"
-            )));
-        }
-        *slot = true;
-    }
-    Ok(())
-}
-
-fn algebraic_tail_len(
-    total: usize,
-    state_count: usize,
-    context: &'static str,
-) -> Result<usize, RuntimeSolveError> {
-    total.checked_sub(state_count).ok_or_else(|| {
-        RuntimeSolveError::solve_ir(format!(
-            "{context} state count {state_count} exceeds vector length {total}"
-        ))
-    })
 }
 
 fn project_algebraic_block<M: ImplicitProjectionModel>(
@@ -488,18 +476,18 @@ fn project_algebraic_block<M: ImplicitProjectionModel>(
     if let Some(update) = project_algebraic_singleton_assignment(model, y, p, t, block, tol)? {
         return Ok(update);
     }
-    let mut rhs = vec![0.0; y.len()];
-    model.eval_residual(y, p, t, &mut rhs)?;
-    let residual = block
-        .rows
-        .iter()
-        .map(|row| residual_at(&rhs, *row, "algebraic projection block"))
-        .collect::<Result<Vec<_>, _>>()?;
-    if residual_converged(&residual, tol) {
-        return Ok(ProjectionBlockUpdate {
-            changed,
-            settled: true,
-        });
+    let mut residual =
+        implicit_selected_residuals(model, y, p, t, &block.rows, "algebraic projection block")?;
+    if !residual.iter().all(|value| value.is_finite()) {
+        changed |= seed_algebraic_block_assignments(model, y, p, t, block, tol)?;
+        residual = implicit_selected_residuals(
+            model,
+            y,
+            p,
+            t,
+            &block.rows,
+            "seeded algebraic projection block",
+        )?;
     }
     if !residual.iter().all(|value| value.is_finite()) {
         return Ok(ProjectionBlockUpdate {
@@ -508,12 +496,15 @@ fn project_algebraic_block<M: ImplicitProjectionModel>(
         });
     }
     let jacobian = algebraic_block_jacobian(model, y, p, t, &block.rows, &block.y_indices)?;
-    let solve_rhs = DVector::from_vec(residual.into_iter().map(|value| -value).collect());
-    let delta = jacobian
-        .clone()
-        .lu()
-        .solve(&solve_rhs)
-        .or_else(|| jacobian.clone().svd(true, true).solve(&solve_rhs, tol).ok());
+    let (row_scales, variable_scales) = algebraic_block_scales(model, block, &jacobian);
+    if scaled_residual_converged(&residual, &row_scales, tol) {
+        return Ok(ProjectionBlockUpdate {
+            changed,
+            settled: true,
+        });
+    }
+    let before_norm = scaled_residual_norm(&residual, &row_scales);
+    let delta = scaled_newton_delta(&jacobian, &residual, &row_scales, &variable_scales, tol);
     let Some(delta) = delta else {
         return Ok(ProjectionBlockUpdate {
             changed,
@@ -521,12 +512,130 @@ fn project_algebraic_block<M: ImplicitProjectionModel>(
         });
     };
 
-    let update = accept_algebraic_block_delta(model, y, p, t, block, delta.as_slice(), tol)?;
+    let update = accept_algebraic_block_delta(
+        AlgebraicBlockDeltaContext {
+            model,
+            parameters: p,
+            time: t,
+            block,
+            before: before_norm,
+            tolerance: tol,
+            row_scales: &row_scales,
+        },
+        y,
+        delta.as_slice(),
+    )?;
     changed |= update.changed;
     Ok(ProjectionBlockUpdate {
         changed,
         settled: update.settled,
     })
+}
+
+fn seed_algebraic_block_assignments<M: ImplicitProjectionModel>(
+    model: &M,
+    y: &mut [f64],
+    p: &[f64],
+    t: f64,
+    block: &solve::AlgebraicProjectionBlock,
+    tol: f64,
+) -> Result<bool, RuntimeSolveError> {
+    let mut seeded_rows = vec![false; block.rows.len()];
+    let mut seeded_targets = vec![false; block.y_indices.len()];
+    let mut changed = false;
+    let context = AlgebraicSeedContext {
+        model,
+        parameters: p,
+        time: t,
+        y_indices: &block.y_indices,
+        tolerance: tol,
+    };
+    for _ in 0..block.rows.len() {
+        let mut seeded_in_pass = false;
+        for (row_pos, row) in block.rows.iter().copied().enumerate() {
+            if seeded_rows[row_pos] {
+                continue;
+            }
+            let Some((target_pos, target_changed)) =
+                seed_algebraic_row_assignment(&context, y, &seeded_targets, row)?
+            else {
+                continue;
+            };
+            changed |= target_changed;
+            seeded_rows[row_pos] = true;
+            seeded_targets[target_pos] = true;
+            seeded_in_pass = true;
+        }
+        if !seeded_in_pass {
+            break;
+        }
+    }
+    Ok(changed)
+}
+
+struct AlgebraicSeedContext<'a, M> {
+    model: &'a M,
+    parameters: &'a [f64],
+    time: f64,
+    y_indices: &'a [usize],
+    tolerance: f64,
+}
+
+fn seed_algebraic_row_assignment<M: ImplicitProjectionModel>(
+    context: &AlgebraicSeedContext<'_, M>,
+    y: &mut [f64],
+    seeded_targets: &[bool],
+    row: usize,
+) -> Result<Option<(usize, bool)>, RuntimeSolveError> {
+    for (target_pos, y_index) in context.y_indices.iter().copied().enumerate() {
+        if seeded_targets[target_pos] {
+            continue;
+        }
+        let Some(changed) = try_seed_algebraic_target(context, y, row, y_index)? else {
+            continue;
+        };
+        return Ok(Some((target_pos, changed)));
+    }
+    Ok(None)
+}
+
+fn try_seed_algebraic_target<M: ImplicitProjectionModel>(
+    context: &AlgebraicSeedContext<'_, M>,
+    y: &mut [f64],
+    row: usize,
+    y_index: usize,
+) -> Result<Option<bool>, RuntimeSolveError> {
+    let Some(value) = context.model.eval_implicit_target_value(
+        row,
+        y_index,
+        y,
+        context.parameters,
+        context.time,
+    )?
+    else {
+        return Ok(None);
+    };
+    if !value.is_finite() {
+        return Ok(None);
+    }
+    let previous = y[y_index];
+    y[y_index] = value;
+    let accepted = context
+        .model
+        .eval_implicit_residual_row(row, y, context.parameters, context.time)?
+        .is_some_and(|after| {
+            after.is_finite()
+                && after.abs()
+                    <= scaled_tolerance(
+                        context.tolerance,
+                        model_variable_scale(context.model, y_index),
+                    )
+        });
+    if accepted {
+        return Ok(Some(previous != value));
+    }
+    y[y_index] = previous;
+    Ok(None)
 }
 
 fn project_algebraic_singleton_assignment<M: ImplicitProjectionModel>(
@@ -543,43 +652,60 @@ fn project_algebraic_singleton_assignment<M: ImplicitProjectionModel>(
     let Some(before) = model.eval_implicit_residual_row(*row, y, p, t)? else {
         return Ok(None);
     };
-    if before.abs() <= tol || !before.is_finite() {
+    let scale = model_variable_scale(model, *y_index);
+    let variable_tol = scaled_tolerance(tol, scale);
+    if !before.is_finite() {
         return Ok(Some(ProjectionBlockUpdate {
             changed: false,
-            settled: before.is_finite(),
+            settled: false,
         }));
     }
-    let Some(value) = model.eval_implicit_target_value(*row, *y_index, y, p, t)? else {
+    let Some(value) = model
+        .eval_implicit_target_value(*row, *y_index, y, p, t)?
+        .filter(|value| value.is_finite())
+    else {
         return Ok(None);
     };
-    if !value.is_finite() {
-        return Ok(None);
-    }
     let previous = y[*y_index];
     y[*y_index] = value;
     let after = model.eval_implicit_residual_row(*row, y, p, t)?;
-    if let Some(after) = after.filter(|after| after.is_finite() && after.abs() + tol < before.abs())
+    if let Some(after) =
+        after.filter(|after| after.is_finite() && after.abs() + variable_tol < before.abs())
     {
         return Ok(Some(ProjectionBlockUpdate {
-            changed: (previous - value).abs() > tol,
-            settled: after.abs() <= tol,
+            changed: (previous - value).abs() > variable_tol,
+            settled: after.abs() <= variable_tol,
         }));
     }
     y[*y_index] = previous;
     Ok(None)
 }
 
+struct AlgebraicBlockDeltaContext<'a, M> {
+    model: &'a M,
+    parameters: &'a [f64],
+    time: f64,
+    block: &'a solve::AlgebraicProjectionBlock,
+    before: f64,
+    tolerance: f64,
+    row_scales: &'a [f64],
+}
+
 fn accept_algebraic_block_delta<M: ImplicitProjectionModel>(
-    model: &M,
+    context: AlgebraicBlockDeltaContext<'_, M>,
     y: &mut [f64],
-    p: &[f64],
-    t: f64,
-    block: &solve::AlgebraicProjectionBlock,
     delta: &[f64],
-    tol: f64,
 ) -> Result<ProjectionBlockUpdate, RuntimeSolveError> {
+    let AlgebraicBlockDeltaContext {
+        model,
+        parameters,
+        time,
+        block,
+        before,
+        tolerance,
+        row_scales,
+    } = context;
     let snapshot = y.to_vec();
-    let before = algebraic_selected_residual_norm(model, y, p, t, &block.rows)?;
     if !before.is_finite() {
         return Ok(ProjectionBlockUpdate {
             changed: false,
@@ -626,11 +752,12 @@ fn accept_algebraic_block_delta<M: ImplicitProjectionModel>(
                 settled: false,
             });
         }
-        let after = algebraic_selected_residual_norm(model, y, p, t, &block.rows)?;
-        if after.is_finite() && (after <= tol || (!step_at_resolution && after < before)) {
+        let after =
+            algebraic_selected_residual_norm(model, y, parameters, time, &block.rows, row_scales)?;
+        if after.is_finite() && (after <= tolerance || (!step_at_resolution && after < before)) {
             return Ok(ProjectionBlockUpdate {
                 changed: true,
-                settled: after <= tol,
+                settled: after <= tolerance,
             });
         }
         if step_at_resolution {
@@ -659,18 +786,58 @@ fn algebraic_selected_residual_norm<M: ImplicitProjectionModel>(
     p: &[f64],
     t: f64,
     rows: &[usize],
+    row_scales: &[f64],
 ) -> Result<f64, RuntimeSolveError> {
-    let mut residual = vec![0.0; y.len()];
-    model.eval_residual(y, p, t, &mut residual)?;
-    rows.iter().try_fold(0.0_f64, |norm, row| {
-        residual_at(&residual, *row, "selected algebraic projection rows").map(|value| {
-            if value.is_finite() {
-                norm.max(value.abs())
-            } else {
-                f64::INFINITY
-            }
-        })
-    })
+    let residual =
+        implicit_selected_residuals(model, y, p, t, rows, "selected algebraic projection rows")?;
+    Ok(scaled_residual_norm(&residual, row_scales))
+}
+
+fn implicit_selected_residuals<M: ImplicitProjectionModel + ?Sized>(
+    model: &M,
+    y: &[f64],
+    p: &[f64],
+    t: f64,
+    rows: &[usize],
+    context: &str,
+) -> Result<Vec<f64>, RuntimeSolveError> {
+    let mut selected = Vec::with_capacity(rows.len());
+    for row in rows {
+        let Some(value) = model.eval_implicit_residual_row(*row, y, p, t)? else {
+            let mut residual = vec![0.0; y.len()];
+            model.eval_residual(y, p, t, &mut residual)?;
+            return rows
+                .iter()
+                .map(|row| residual_at(&residual, *row, context))
+                .collect();
+        };
+        selected.push(value);
+    }
+    Ok(selected)
+}
+
+fn implicit_selected_jacobian_v_rows<M: ImplicitProjectionModel + ?Sized>(
+    model: &M,
+    y: &[f64],
+    p: &[f64],
+    t: f64,
+    v: &[f64],
+    rows: &[usize],
+    context: &str,
+) -> Result<Vec<f64>, RuntimeSolveError> {
+    let mut selected = Vec::with_capacity(rows.len());
+    for row in rows {
+        let Some(value) = model.eval_implicit_jacobian_v_row(*row, y, p, t, v)? else {
+            let mut jvp = vec![0.0; y.len()];
+            model.eval_jacobian_v(y, p, t, v, &mut jvp)?;
+            return rows
+                .iter()
+                .map(|row| residual_at(&jvp, *row, context))
+                .collect();
+        };
+        selected.push(value);
+    }
+    Ok(selected)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -679,52 +846,300 @@ struct ProjectionBlockUpdate {
     settled: bool,
 }
 
+struct CombinedInitializationProjectionModel<'a, M> {
+    model: &'a M,
+    y_len: usize,
+    parameter_scales: Vec<f64>,
+}
+
+impl<M> CombinedInitializationProjectionModel<'_, M> {
+    fn split_values<'a>(
+        &self,
+        values: &'a [f64],
+    ) -> Result<(&'a [f64], &'a [f64]), RuntimeSolveError> {
+        if values.len() < self.y_len {
+            return Err(RuntimeSolveError::solve_ir(format!(
+                "combined initialization vector has {} values, but Y requires {}",
+                values.len(),
+                self.y_len
+            )));
+        }
+        Ok(values.split_at(self.y_len))
+    }
+}
+
+impl<M: AlgebraicProjectionModel> ImplicitProjectionModel
+    for CombinedInitializationProjectionModel<'_, M>
+{
+    fn eval_residual(
+        &self,
+        values: &[f64],
+        _p: &[f64],
+        t: f64,
+        out: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        let (y, p) = self.split_values(values)?;
+        self.model.eval_residual(y, p, t, out)
+    }
+
+    fn eval_jacobian_v(
+        &self,
+        values: &[f64],
+        _p: &[f64],
+        t: f64,
+        v: &[f64],
+        out: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        let (y, p) = self.split_values(values)?;
+        let y_seed = v.get(..self.y_len).ok_or_else(|| {
+            RuntimeSolveError::solve_ir(format!(
+                "combined initialization seed has {} values, but Y requires {}",
+                v.len(),
+                self.y_len
+            ))
+        })?;
+        self.model.eval_jacobian_v(y, p, t, y_seed, out)
+    }
+
+    fn implicit_target(&self, row_idx: usize) -> Option<solve::ScalarSlot> {
+        self.model.implicit_target(row_idx)
+    }
+
+    fn algebraic_projection_plan(&self) -> &solve::AlgebraicProjectionPlan {
+        self.model.algebraic_projection_plan()
+    }
+
+    fn target_name_for_row(&self, row_idx: usize) -> Option<&str> {
+        self.model.target_name_for_row(row_idx)
+    }
+
+    fn variable_name_for_y_index(&self, index: usize) -> Option<&str> {
+        (index < self.y_len)
+            .then(|| self.model.variable_name_for_y_index(index))
+            .flatten()
+    }
+
+    fn variable_scale_for_y_index(&self, index: usize) -> f64 {
+        if index < self.y_len {
+            self.model.variable_scale_for_y_index(index)
+        } else {
+            self.parameter_scales
+                .get(index - self.y_len)
+                .copied()
+                .unwrap_or(1.0)
+        }
+    }
+}
+
+impl<M: AlgebraicProjectionModel> AlgebraicProjectionModel
+    for CombinedInitializationProjectionModel<'_, M>
+{
+    fn eval_initial_residual(
+        &self,
+        values: &[f64],
+        _p: &[f64],
+        t: f64,
+        out: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        let (y, p) = self.split_values(values)?;
+        self.model.eval_initial_residual(y, p, t, out)
+    }
+
+    fn initial_residual_len(&self) -> usize {
+        self.model.initial_residual_len()
+    }
+
+    fn initial_target(&self, row_idx: usize) -> Option<solve::ScalarSlot> {
+        self.model.initial_target(row_idx)
+    }
+
+    fn eval_initial_jacobian_v(
+        &self,
+        values: &[f64],
+        _p: &[f64],
+        t: f64,
+        v: &[f64],
+        out: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        let (y, p) = self.split_values(values)?;
+        self.model.eval_initial_jacobian_v(y, p, t, v, out)
+    }
+
+    fn eval_initial_target_value(
+        &self,
+        row_idx: usize,
+        target_index: usize,
+        values: &[f64],
+        _p: &[f64],
+        t: f64,
+    ) -> Result<Option<f64>, RuntimeSolveError> {
+        if target_index >= self.y_len {
+            return Ok(None);
+        }
+        let (y, p) = self.split_values(values)?;
+        self.model
+            .eval_initial_target_value(row_idx, target_index, y, p, t)
+    }
+
+    fn eval_initial_residual_row(
+        &self,
+        row_idx: usize,
+        values: &[f64],
+        _p: &[f64],
+        t: f64,
+    ) -> Result<Option<f64>, RuntimeSolveError> {
+        let (y, p) = self.split_values(values)?;
+        self.model.eval_initial_residual_row(row_idx, y, p, t)
+    }
+}
+
 pub fn project_initial_variables_with_plan<M: AlgebraicProjectionModel>(
     model: &M,
     y: &mut [f64],
-    p: &[f64],
+    p: &mut [f64],
     t: f64,
-    plan: &solve::AlgebraicProjectionPlan,
+    plan: &solve::InitializationProjectionPlan,
     tol: f64,
 ) -> Result<(), RuntimeSolveError> {
-    validate_initial_projection_plan(plan, model.initial_residual_len(), y.len())?;
+    let combined_len = y.len().checked_add(p.len()).ok_or_else(|| {
+        RuntimeSolveError::solve_ir(
+            "combined initialization Y/P vector length exceeds host index range".to_string(),
+        )
+    })?;
+    let combined_plan = combined_initial_projection_plan(plan, y.len(), p.len())?;
+    validate_initial_projection_plan(&combined_plan, model.initial_residual_len(), combined_len)?;
     if model.initial_residual_len() == 0 {
         return Ok(());
     }
-    let projection_indices = initial_plan_projection_indices(plan);
-    let snapshot = projection_indices
-        .iter()
-        .copied()
-        .map(|index| {
-            y.get(index).copied().map(|value| (index, value)).ok_or_else(|| {
-                RuntimeSolveError::solve_ir(format!(
-                    "initial projection plan references y index {index}, but the model has only {} variables",
-                    y.len()
-                ))
+    let mut values = Vec::with_capacity(combined_len);
+    values.extend_from_slice(y);
+    values.extend_from_slice(p);
+    let combined_model = CombinedInitializationProjectionModel {
+        model,
+        y_len: y.len(),
+        parameter_scales: p
+            .iter()
+            .map(|value| {
+                if value.is_finite() {
+                    value.abs().max(1.0)
+                } else {
+                    1.0
+                }
             })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let result = project_initial_variables_by_plan(model, y, p, t, plan, tol);
-    if result.is_err() {
-        for (index, value) in snapshot {
-            y[index] = value;
-        }
-    }
-    result
+            .collect(),
+    };
+    project_initial_variables_by_plan(&combined_model, &mut values, &[], t, &combined_plan, tol)?;
+    let (projected_y, projected_p) = values.split_at(y.len());
+    y.copy_from_slice(projected_y);
+    p.copy_from_slice(projected_p);
+    Ok(())
 }
 
-fn seed_nonfinite_algebraics(y: &mut [f64], state_count: usize) {
-    for value in &mut y[state_count..] {
-        if !value.is_finite() {
-            *value = 0.0;
+fn combined_initial_projection_plan(
+    plan: &solve::InitializationProjectionPlan,
+    y_len: usize,
+    p_len: usize,
+) -> Result<solve::AlgebraicProjectionPlan, RuntimeSolveError> {
+    let mut blocks = Vec::with_capacity(plan.blocks.len());
+    for block in &plan.blocks {
+        let mut indices = Vec::with_capacity(block.unknowns.len());
+        for unknown in &block.unknowns {
+            let index = match *unknown {
+                solve::ScalarSlot::Y { index, .. } if index < y_len => index,
+                solve::ScalarSlot::P { index, .. } if index < p_len => {
+                    combined_parameter_seed_index(y_len, index)?
+                }
+                _ => {
+                    return Err(RuntimeSolveError::solve_ir(format!(
+                        "initial projection contains invalid unknown {unknown:?} for \
+                         Y/P lengths {y_len}/{p_len}"
+                    )));
+                }
+            };
+            indices.push(index);
         }
+        blocks.push(solve::AlgebraicProjectionBlock {
+            rows: block.rows.clone(),
+            y_indices: indices,
+        });
     }
+    Ok(solve::AlgebraicProjectionPlan { blocks })
 }
 
-fn projection_error<M: ImplicitProjectionModel>(
+fn combined_parameter_seed_index(
+    y_len: usize,
+    parameter_index: usize,
+) -> Result<usize, RuntimeSolveError> {
+    y_len.checked_add(parameter_index).ok_or_else(|| {
+        RuntimeSolveError::solve_ir(
+            "initial projection P-slot seed index exceeds host index range".to_string(),
+        )
+    })
+}
+
+pub fn project_initial_variables_with_homotopy<M: AlgebraicProjectionModel>(
     model: &M,
-    state_count: usize,
+    y: &mut [f64],
+    p: &mut [f64],
+    t: f64,
+    plan: &solve::InitializationProjectionPlan,
+    homotopy_parameter_index: Option<usize>,
+    tol: f64,
+) -> Result<(), RuntimeSolveError> {
+    homotopy::project_initial_variables_with_homotopy(
+        model,
+        y,
+        p,
+        t,
+        plan,
+        homotopy_parameter_index,
+        tol,
+    )
+}
+
+fn projection_rows(plan: &solve::AlgebraicProjectionPlan) -> Vec<usize> {
+    plan.blocks
+        .iter()
+        .flat_map(|block| block.rows.iter().copied())
+        .collect()
+}
+
+fn projection_unknown_values(plan: &solve::AlgebraicProjectionPlan, y: &[f64]) -> Vec<f64> {
+    plan.blocks
+        .iter()
+        .flat_map(|block| block.y_indices.iter().map(|&index| y[index]))
+        .collect()
+}
+
+fn restore_projection_unknown_values(
+    plan: &solve::AlgebraicProjectionPlan,
+    y: &mut [f64],
+    values: &[f64],
+) {
+    for (index, value) in plan
+        .blocks
+        .iter()
+        .flat_map(|block| block.y_indices.iter().copied())
+        .zip(values.iter().copied())
+    {
+        y[index] = value;
+    }
+}
+
+fn seed_nonfinite_projection_unknowns(y: &mut [f64], plan: &solve::AlgebraicProjectionPlan) {
+    for block in &plan.blocks {
+        for &index in &block.y_indices {
+            if !y[index].is_finite() {
+                y[index] = 0.0;
+            }
+        }
+    }
+}
+
+fn projection_error_for_rows<M: ImplicitProjectionModel>(
+    model: &M,
     message: &str,
+    rows: &[usize],
     residual: &[f64],
 ) -> RuntimeSolveError {
     let worst = residual
@@ -733,9 +1148,10 @@ fn projection_error<M: ImplicitProjectionModel>(
         .enumerate()
         .max_by(|(_, lhs), (_, rhs)| residual_sort_key(*lhs).total_cmp(&residual_sort_key(*rhs)));
     match worst {
-        Some((row, value)) => {
+        Some((offset, value)) => {
+            let row = rows.get(offset).copied().unwrap_or(offset);
             let target = model
-                .target_name_for_row(state_count + row)
+                .target_name_for_row(row)
                 .map_or(String::new(), |name| format!(" target={name}"));
             RuntimeSolveError::solve_ir(format!(
                 "{message}: max residual row={row}{target} value={value:.6e} norm={:.6e}",
@@ -756,14 +1172,45 @@ fn project_initial_variables_by_plan<M: AlgebraicProjectionModel>(
 ) -> Result<(), RuntimeSolveError> {
     let mut residual = vec![0.0; model.initial_residual_len()];
     let projection_indices = initial_plan_projection_indices(plan);
-    for _ in 0..ALGEBRAIC_PROJECTION_MAX_ITERS {
+    let projection_rows = initial_plan_rows(plan);
+    for iteration in 0..ALGEBRAIC_PROJECTION_MAX_ITERS {
         seed_nonfinite_projection_values(y, &projection_indices);
         model.eval_initial_residual(y, p, t, &mut residual)?;
-        if residual_converged(&residual, tol) {
+        if iteration > 0 && residual_converged(&residual, tol) {
             return Ok(());
         }
         let selected = initial_plan_residual(&residual, plan)?;
-        if selected.is_empty() || residual_converged(&selected, tol) {
+        if tracing::enabled!(target: "rumoca_solver::projection", tracing::Level::DEBUG) {
+            let worst_row = residual
+                .iter()
+                .enumerate()
+                .max_by(|(_, lhs), (_, rhs)| {
+                    residual_sort_key(**lhs).total_cmp(&residual_sort_key(**rhs))
+                })
+                .map(|(row, _)| row);
+            let worst_block = worst_row
+                .and_then(|row| plan.blocks.iter().find(|block| block.rows.contains(&row)));
+            let worst_initial_target = worst_row
+                .and_then(|row| model.initial_target(row))
+                .and_then(y_index_for_slot)
+                .and_then(|index| model.variable_name_for_y_index(index));
+            tracing::debug!(
+                target: "rumoca_solver::projection",
+                iteration,
+                full_norm = residual_norm(&residual),
+                selected_norm = residual_norm(&selected),
+                worst_row,
+                worst_row_selected = worst_row.is_some_and(|row| projection_rows.contains(&row)),
+                worst_target = worst_initial_target,
+                worst_slot = ?worst_row.and_then(|row| model.initial_target(row)),
+                worst_block_rows = ?worst_block.map(|block| block.rows.as_slice()),
+                worst_block_y_indices = ?worst_block.map(|block| block.y_indices.as_slice()),
+                blocks = plan.blocks.len(),
+                projected_variables = projection_indices.len(),
+                "initial algebraic projection iteration"
+            );
+        }
+        if selected.is_empty() {
             break;
         }
         let mut changed = false;
@@ -780,8 +1227,13 @@ fn project_initial_variables_by_plan<M: AlgebraicProjectionModel>(
     if residual_converged(&residual, tol) {
         return Ok(());
     }
+    let residual_scales = initial_residual_scales(model, y, p, t, plan)?;
+    if scaled_residual_converged(&residual, &residual_scales, tol) {
+        return Ok(());
+    }
     let rows = (0..residual.len()).collect::<Vec<_>>();
     Err(initial_projection_error(
+        model,
         "initial variable projection did not satisfy the complete residual system",
         &rows,
         &residual,
@@ -840,6 +1292,21 @@ fn project_initial_block<M: AlgebraicProjectionModel>(
     let mut changed = false;
     let rows = &block.rows;
     let y_indices = &block.y_indices;
+    let variable_scales = y_indices
+        .iter()
+        .map(|&index| model_variable_scale(model, index))
+        .collect::<Vec<_>>();
+    let fallback_scales = initial_block_fallback_scales(model, block, &variable_scales);
+    let assignment_context = InitialBlockDeltaCtx {
+        model,
+        p,
+        t,
+        rows,
+        y_indices,
+        tol,
+        row_scales: &fallback_scales,
+        variable_scales: &variable_scales,
+    };
     require_square_projection_block(rows.len(), y_indices.len(), "initial")?;
     if rows.is_empty() || y_indices.is_empty() {
         return Ok(ProjectionBlockUpdate {
@@ -847,18 +1314,7 @@ fn project_initial_block<M: AlgebraicProjectionModel>(
             settled: !changed,
         });
     }
-    if let Some(update) = project_initial_singleton_assignment(
-        InitialBlockDeltaCtx {
-            model,
-            p,
-            t,
-            rows,
-            y_indices,
-            tol,
-        },
-        y,
-        changed,
-    )? {
+    if let Some(update) = project_initial_singleton_assignment(assignment_context, y, changed)? {
         return Ok(update);
     }
     let mut residual = vec![0.0; model.initial_residual_len()];
@@ -867,62 +1323,180 @@ fn project_initial_block<M: AlgebraicProjectionModel>(
         .iter()
         .map(|row| initial_residual_at(&residual, *row, "algebraic projection block"))
         .collect::<Result<Vec<_>, _>>()?;
-    if residual_converged(&selected, tol) || !selected.iter().all(|value| value.is_finite()) {
+    if !selected.iter().all(|value| value.is_finite()) {
         return Ok(ProjectionBlockUpdate {
             changed: false,
-            settled: selected.iter().all(|value| value.is_finite()),
+            settled: false,
         });
     }
-    let delta_ctx = InitialBlockDeltaCtx {
-        model,
-        p,
-        t,
-        rows,
-        y_indices,
-        tol,
+    let jacobian = initial_block_jacobian(model, y, p, t, rows, y_indices, &residual)?;
+    let row_scales = jacobian_row_scales(&jacobian, &variable_scales, &fallback_scales);
+    let context = InitialBlockDeltaCtx {
+        row_scales: &row_scales,
+        ..assignment_context
     };
+    if scaled_residual_converged(&selected, &row_scales, tol) {
+        return Ok(ProjectionBlockUpdate {
+            changed: false,
+            settled: true,
+        });
+    }
+    tracing::debug!(
+        target: "rumoca_solver::projection",
+        rows = ?rows,
+        y_indices = ?y_indices,
+        residual_norm = residual_norm(&selected),
+        "solving coupled initial projection block"
+    );
     if let Some(update) =
-        project_initial_full_residual_singleton_assignment(&delta_ctx, y, &selected, changed)?
+        project_initial_full_residual_singleton_assignment(&context, y, &selected, changed)?
     {
         return Ok(update);
     }
-    let jacobian = initial_block_jacobian(model, y, p, t, rows, y_indices, &residual)?;
-    if rows.len() == 1 && relax_initial_block_from_row_targets(delta_ctx, y, &selected, &jacobian)?
-    {
+    trace_initial_projection_block(model, rows, y_indices, &selected, &jacobian, tol);
+    if rows.len() == 1 && relax_initial_block_from_row_targets(context, y, &selected, &jacobian)? {
         return Ok(ProjectionBlockUpdate {
             changed: true,
             settled: false,
         });
     }
-    let solve_rhs = DVector::from_vec(selected.iter().map(|value| -*value).collect());
-    let delta = jacobian
-        .clone()
-        .lu()
-        .solve(&solve_rhs)
-        .or_else(|| jacobian.clone().svd(true, true).solve(&solve_rhs, tol).ok());
-    let Some(delta) = delta else {
-        return Ok(ProjectionBlockUpdate {
-            changed: false,
-            settled: false,
-        });
-    };
-    let update = accept_initial_block_delta(
-        InitialBlockDeltaCtx {
-            model,
-            p,
-            t,
-            rows,
-            y_indices,
-            tol,
-        },
-        y,
-        delta.as_slice(),
-    )?;
+    let update = solve_coupled_initial_block(context, y, &selected, jacobian)?;
     changed |= update.changed;
     Ok(ProjectionBlockUpdate {
         changed,
         settled: update.settled,
     })
+}
+
+fn solve_coupled_initial_block<M: AlgebraicProjectionModel>(
+    context: InitialBlockDeltaCtx<'_, M>,
+    y: &mut [f64],
+    residual: &[f64],
+    jacobian: DMatrix<f64>,
+) -> Result<ProjectionBlockUpdate, RuntimeSolveError> {
+    let delta = scaled_newton_delta(
+        &jacobian,
+        residual,
+        context.row_scales,
+        context.variable_scales,
+        context.tol,
+    );
+    let Some(delta) = delta else {
+        tracing::debug!(
+            target: "rumoca_solver::projection",
+            rows = ?context.rows,
+            y_indices = ?context.y_indices,
+            "coupled initial projection block Jacobian is unsolvable"
+        );
+        return Ok(ProjectionBlockUpdate {
+            changed: false,
+            settled: false,
+        });
+    };
+    let update = accept_initial_block_delta(context, y, delta.as_slice())?;
+    tracing::debug!(
+        target: "rumoca_solver::projection",
+        rows = ?context.rows,
+        y_indices = ?context.y_indices,
+        changed = update.changed,
+        settled = update.settled,
+        "coupled initial projection block update"
+    );
+    Ok(update)
+}
+
+fn trace_initial_projection_block<M: AlgebraicProjectionModel>(
+    model: &M,
+    rows: &[usize],
+    y_indices: &[usize],
+    residual: &[f64],
+    jacobian: &DMatrix<f64>,
+    tolerance: f64,
+) {
+    if !tracing::enabled!(target: "rumoca_solver::projection", tracing::Level::DEBUG) {
+        return;
+    }
+    let variables = y_indices
+        .iter()
+        .map(|&index| {
+            model
+                .variable_name_for_y_index(index)
+                .unwrap_or("<unnamed>")
+        })
+        .collect::<Vec<_>>();
+    let targets = rows
+        .iter()
+        .map(|&row| {
+            model
+                .initial_target(row)
+                .and_then(y_index_for_slot)
+                .and_then(|index| model.variable_name_for_y_index(index))
+                .unwrap_or("<none>")
+        })
+        .collect::<Vec<_>>();
+    let decomposition = jacobian.clone().svd(true, true);
+    let singular_values = &decomposition.singular_values;
+    let largest = singular_values.iter().copied().fold(0.0_f64, f64::max);
+    let rank_threshold = tolerance.max(f64::EPSILON * largest * rows.len() as f64);
+    let numerical_rank = singular_values
+        .iter()
+        .filter(|value| value.is_finite() && **value > rank_threshold)
+        .count();
+    tracing::debug!(
+        target: "rumoca_solver::projection",
+        rows = ?rows,
+        variables = ?variables,
+        row_targets = ?targets,
+        residual = ?residual,
+        singular_values = ?singular_values.as_slice(),
+        numerical_rank,
+        rank_threshold,
+        "coupled initial projection block diagnostics"
+    );
+    if numerical_rank < rows.len().min(y_indices.len()) {
+        trace_initial_projection_nullspace(
+            model,
+            rows,
+            &variables,
+            decomposition.u.as_ref(),
+            decomposition.v_t.as_ref(),
+        );
+    }
+}
+
+fn trace_initial_projection_nullspace<M: AlgebraicProjectionModel>(
+    model: &M,
+    rows: &[usize],
+    variables: &[&str],
+    left_vectors: Option<&DMatrix<f64>>,
+    right_vectors_transposed: Option<&DMatrix<f64>>,
+) {
+    let null_index = rows.len().min(variables.len()).saturating_sub(1);
+    let left_null = left_vectors.map(|vectors| {
+        rows.iter()
+            .enumerate()
+            .map(|(index, &row)| {
+                let target = model
+                    .initial_target(row)
+                    .and_then(y_index_for_slot)
+                    .and_then(|y_index| model.variable_name_for_y_index(y_index));
+                (row, target, vectors[(index, null_index)])
+            })
+            .collect::<Vec<_>>()
+    });
+    let right_null = right_vectors_transposed.map(|vectors| {
+        variables
+            .iter()
+            .enumerate()
+            .map(|(index, &variable)| (variable, vectors[(null_index, index)]))
+            .collect::<Vec<_>>()
+    });
+    tracing::debug!(
+        target: "rumoca_solver::projection",
+        left_null = ?left_null,
+        right_null = ?right_null,
+        "rank-deficient initial projection block nullspace"
+    );
 }
 
 fn project_initial_singleton_assignment<M: AlgebraicProjectionModel>(
@@ -936,30 +1510,36 @@ fn project_initial_singleton_assignment<M: AlgebraicProjectionModel>(
     let Some(before) = ctx.model.eval_initial_residual_row(*row, y, ctx.p, ctx.t)? else {
         return Ok(None);
     };
-    if before.abs() <= ctx.tol || !before.is_finite() {
+    let row_tol = scaled_tolerance(ctx.tol, ctx.row_scales[0]);
+    let variable_tol = scaled_tolerance(ctx.tol, ctx.variable_scales[0]);
+    if !before.is_finite() {
         return Ok(Some(ProjectionBlockUpdate {
             changed,
-            settled: before.is_finite(),
+            settled: false,
         }));
     }
     let Some(value) = ctx
         .model
         .eval_initial_target_value(*row, *y_index, y, ctx.p, ctx.t)?
+        .filter(|value| value.is_finite())
     else {
         return Ok(None);
     };
-    if !value.is_finite() {
-        return Ok(None);
-    }
     let previous = y[*y_index];
     y[*y_index] = value;
     let after = ctx.model.eval_initial_residual_row(*row, y, ctx.p, ctx.t)?;
-    if let Some(after) =
-        after.filter(|after| after.is_finite() && after.abs() + ctx.tol < before.abs())
-    {
+    if let Some(after) = after.filter(|after| {
+        singleton_assignment_improves(SingletonAssignmentStep {
+            before,
+            after: *after,
+            step: previous - value,
+            row_tol,
+            variable_tol,
+        })
+    }) {
         return Ok(Some(ProjectionBlockUpdate {
-            changed: changed || (previous - value).abs() > ctx.tol,
-            settled: after.abs() <= ctx.tol,
+            changed: changed || (previous - value).abs() > variable_tol,
+            settled: after.abs() <= row_tol,
         }));
     }
     y[*y_index] = previous;
@@ -994,17 +1574,18 @@ fn project_initial_full_residual_singleton_assignment<M: AlgebraicProjectionMode
         *row,
         "initial singleton assignment validation",
     )?;
-    if after.is_finite() && after.abs() + ctx.tol < before.abs() {
+    let row_tol = scaled_tolerance(ctx.tol, ctx.row_scales[0]);
+    let variable_tol = scaled_tolerance(ctx.tol, ctx.variable_scales[0]);
+    if after.is_finite() && after.abs() + row_tol < before.abs() {
         return Ok(Some(ProjectionBlockUpdate {
-            changed: changed || (previous - value).abs() > ctx.tol,
-            settled: after.abs() <= ctx.tol,
+            changed: changed || (previous - value).abs() > variable_tol,
+            settled: after.abs() <= row_tol,
         }));
     }
     y[*y_index] = previous;
     Ok(None)
 }
 
-#[derive(Clone, Copy)]
 struct InitialBlockDeltaCtx<'a, M: AlgebraicProjectionModel> {
     model: &'a M,
     p: &'a [f64],
@@ -1012,6 +1593,16 @@ struct InitialBlockDeltaCtx<'a, M: AlgebraicProjectionModel> {
     rows: &'a [usize],
     y_indices: &'a [usize],
     tol: f64,
+    row_scales: &'a [f64],
+    variable_scales: &'a [f64],
+}
+
+impl<M: AlgebraicProjectionModel> Copy for InitialBlockDeltaCtx<'_, M> {}
+
+impl<M: AlgebraicProjectionModel> Clone for InitialBlockDeltaCtx<'_, M> {
+    fn clone(&self) -> Self {
+        *self
+    }
 }
 
 fn accept_initial_block_delta<M: AlgebraicProjectionModel>(
@@ -1020,7 +1611,8 @@ fn accept_initial_block_delta<M: AlgebraicProjectionModel>(
     delta: &[f64],
 ) -> Result<ProjectionBlockUpdate, RuntimeSolveError> {
     let snapshot = y.to_vec();
-    let before = initial_selected_residual_norm(ctx.model, y, ctx.p, ctx.t, ctx.rows)?;
+    let before =
+        initial_selected_residual_norm(ctx.model, y, ctx.p, ctx.t, ctx.rows, ctx.row_scales)?;
     let mut alpha = 1.0;
     for _ in 0..12 {
         y.copy_from_slice(&snapshot);
@@ -1052,7 +1644,8 @@ fn accept_initial_block_delta<M: AlgebraicProjectionModel>(
                 settled: false,
             });
         }
-        let after = initial_selected_residual_norm(ctx.model, y, ctx.p, ctx.t, ctx.rows)?;
+        let after =
+            initial_selected_residual_norm(ctx.model, y, ctx.p, ctx.t, ctx.rows, ctx.row_scales)?;
         if after.is_finite() && (after <= ctx.tol || after < before) {
             return Ok(ProjectionBlockUpdate {
                 changed: true,
@@ -1095,7 +1688,8 @@ fn relax_initial_block_from_row_targets<M: AlgebraicProjectionModel>(
             continue;
         }
         let delta = -residual_value / derivative;
-        if !delta.is_finite() || delta.abs() <= ctx.tol {
+        let variable_tol = scaled_tolerance(ctx.tol, ctx.variable_scales[column]);
+        if !delta.is_finite() || delta.abs() <= variable_tol {
             continue;
         }
         y[ctx.y_indices[column]] += delta;
@@ -1110,10 +1704,14 @@ fn relax_initial_block_from_row_targets<M: AlgebraicProjectionModel>(
     ctx.model
         .eval_initial_residual(y, ctx.p, ctx.t, &mut residual_after)?;
     let target_rows_improved = updated_rows.iter().all(|(row, before)| {
+        let row_pos = ctx.rows.iter().position(|candidate| candidate == row);
+        let row_tol = row_pos
+            .and_then(|position| ctx.row_scales.get(position).copied())
+            .map_or(ctx.tol, |scale| scaled_tolerance(ctx.tol, scale));
         residual_after
             .get(*row)
             .copied()
-            .is_some_and(|after| after.is_finite() && after.abs() + ctx.tol < *before)
+            .is_some_and(|after| after.is_finite() && after.abs() + row_tol < *before)
     });
     if target_rows_improved {
         Ok(true)
@@ -1129,21 +1727,23 @@ fn initial_selected_residual_norm<M: AlgebraicProjectionModel>(
     p: &[f64],
     t: f64,
     rows: &[usize],
+    row_scales: &[f64],
 ) -> Result<f64, RuntimeSolveError> {
     let mut residual = vec![0.0; model.initial_residual_len()];
     model.eval_initial_residual(y, p, t, &mut residual)?;
-    let mut norm = 0.0;
+    let mut selected = Vec::with_capacity(rows.len());
     for row in rows {
         let value = initial_residual_at(&residual, *row, "selected initial projection rows")?;
         if !value.is_finite() {
             return Ok(f64::INFINITY);
         }
-        norm = f64::max(norm, value.abs());
+        selected.push(value);
     }
-    Ok(norm)
+    Ok(scaled_residual_norm(&selected, row_scales))
 }
 
-fn initial_projection_error(
+fn initial_projection_error<M: AlgebraicProjectionModel>(
+    model: &M,
     message: &str,
     selected_rows: &[usize],
     residual: &[f64],
@@ -1156,8 +1756,13 @@ fn initial_projection_error(
     match worst {
         Some((row, value)) => {
             let original_row = selected_rows.get(row).copied().unwrap_or(row);
+            // Naming the row's target turns "row 51 is NaN" into the variable a
+            // model author can act on; the row index alone is meaningless
+            // outside the lowered IR.
+            let target = initial_row_target_name(model, original_row)
+                .map_or(String::new(), |name| format!(" target={name}"));
             RuntimeSolveError::solve_ir(format!(
-                "{message}: max selected residual row={row} original_row={original_row} value={value:.6e} norm={:.6e}",
+                "{message}: max selected residual row={row} original_row={original_row}{target} value={value:.6e} norm={:.6e}",
                 residual_norm(residual)
             ))
         }
@@ -1207,6 +1812,13 @@ fn initial_projection_target_column(
         .position(|projection_index| *projection_index == index)
 }
 
+fn y_index_for_slot(slot: solve::ScalarSlot) -> Option<usize> {
+    match slot {
+        solve::ScalarSlot::Y { index, .. } => Some(index),
+        _ => None,
+    }
+}
+
 fn algebraic_block_jacobian(
     model: &dyn ImplicitProjectionModel,
     y: &[f64],
@@ -1216,21 +1828,75 @@ fn algebraic_block_jacobian(
     y_indices: &[usize],
 ) -> Result<DMatrix<f64>, RuntimeSolveError> {
     let mut jacobian = DMatrix::<f64>::zeros(rows.len(), y_indices.len());
+    let mut reverse_gradient = vec![0.0; y.len()];
+    let mut needs_forward_jvp = vec![true; rows.len()];
+    for (row, residual_idx) in rows.iter().copied().enumerate() {
+        if !model.eval_implicit_jacobian_row(residual_idx, y, p, t, &mut reverse_gradient)? {
+            continue;
+        }
+        needs_forward_jvp[row] = false;
+        for (col, y_idx) in y_indices.iter().copied().enumerate() {
+            if model.implicit_jacobian_v_row_depends_on(residual_idx, y_idx) {
+                jacobian[(row, col)] = reverse_gradient[y_idx];
+            }
+        }
+    }
+    if needs_forward_jvp.iter().all(|needs_forward| !needs_forward) {
+        return Ok(jacobian);
+    }
+
     let mut seed = vec![0.0; y.len()];
-    let mut jv = vec![0.0; y.len()];
     for (col, y_idx) in y_indices.iter().copied().enumerate() {
         if y_idx >= seed.len() {
             continue;
         }
         seed[y_idx] = 1.0;
-        model.eval_jacobian_v(y, p, t, &seed, &mut jv)?;
+        let mut selected_complete = true;
         for (row, residual_idx) in rows.iter().copied().enumerate() {
-            jacobian[(row, col)] =
-                residual_at(&jv, residual_idx, "algebraic block jacobian-vector product")?;
+            if !needs_forward_jvp[row]
+                || !model.implicit_jacobian_v_row_depends_on(residual_idx, y_idx)
+            {
+                continue;
+            }
+            let Some(value) = model.eval_implicit_jacobian_v_row(residual_idx, y, p, t, &seed)?
+            else {
+                selected_complete = false;
+                break;
+            };
+            jacobian[(row, col)] = value;
+        }
+        if !selected_complete {
+            let mut jv = vec![0.0; y.len()];
+            model.eval_jacobian_v(y, p, t, &seed, &mut jv)?;
+            fill_jacobian_column_from_jvp(
+                &mut jacobian,
+                col,
+                rows,
+                &jv,
+                Some(&needs_forward_jvp),
+                "algebraic block jacobian-vector product",
+            )?;
         }
         seed[y_idx] = 0.0;
     }
     Ok(jacobian)
+}
+
+fn fill_jacobian_column_from_jvp(
+    jacobian: &mut DMatrix<f64>,
+    column: usize,
+    rows: &[usize],
+    jvp: &[f64],
+    selected_rows: Option<&[bool]>,
+    context: &str,
+) -> Result<(), RuntimeSolveError> {
+    for (row, residual_idx) in rows.iter().copied().enumerate() {
+        if selected_rows.is_some_and(|selected| !selected[row]) {
+            continue;
+        }
+        jacobian[(row, column)] = residual_at(jvp, residual_idx, context)?;
+    }
+    Ok(())
 }
 
 fn initial_block_jacobian(

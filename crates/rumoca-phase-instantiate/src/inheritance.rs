@@ -1,3 +1,8 @@
+//! SPEC_0021 file-size exception: inheritance expansion still combines base
+//! collection, redeclaration, modifier propagation, and merge ordering.
+//! split plan: extract redeclaration application and inherited-component
+//! merging into sibling modules while keeping traversal orchestration here.
+//!
 //! Inheritance processing for the instantiate phase (MLS §7.1).
 //!
 //! This module handles the `extends` clause processing, merging inherited
@@ -30,13 +35,22 @@ use rumoca_ir_ast as ast;
 use rumoca_ir_ast::AstIndexMap as IndexMap;
 use std::sync::Arc;
 
+#[cfg(test)]
+use rumoca_ir_ast::{
+    classes_are_semantically_compatible as classes_are_compatible,
+    components_are_semantically_compatible as components_are_compatible,
+};
+
+mod duplicate_identity;
+
 use crate::errors::{InstantiateError, InstantiateResult};
 use crate::traversal_adapter::{
     redeclare_target_value, walk_extend_modifications, walk_nested_classes,
 };
 use crate::type_overrides::find_nested_class_in_hierarchy;
-
-const CONSTRAINEDBY_MOD_PREFIX: &str = "__constrainedby__.";
+use duplicate_identity::{
+    inherited_components_are_identical, merged_declared_names, merged_element_names,
+};
 
 /// Cache for inheritance results to avoid recomputation.
 ///
@@ -1210,20 +1224,25 @@ pub fn location_to_span(
     source_map: &SourceMap,
     context: &str,
 ) -> InstantiateResult<Span> {
-    if loc.file_name.is_empty() || loc.start >= loc.end {
+    if !loc.has_source() {
         return Err(Box::new(InstantiateError::missing_source_context(format!(
             "{context} is missing a non-empty source location"
         ))));
     }
     source_map
-        .try_location_to_span(&loc.file_name, loc.start as usize, loc.end as usize)
+        .try_span(loc.source, loc.start as usize, loc.end as usize)
         .ok_or_else(|| {
+            let file_name = source_map
+                .name(loc.source)
+                .unwrap_or(UNKNOWN_SOURCE_DISPLAY_NAME);
             Box::new(InstantiateError::missing_source_context(format!(
-                "source file `{}` for {context} was not found",
-                loc.file_name
+                "source file `{file_name}` for {context} was not found"
             )))
         })
 }
+
+/// Placeholder used when a `SourceId` has no registered name in the source map.
+pub(crate) const UNKNOWN_SOURCE_DISPLAY_NAME: &str = "<unknown source>";
 
 /// Create a Span from an Option<rumoca_core::Location> using the source map.
 pub(crate) fn required_location_to_span(
@@ -1237,96 +1256,6 @@ pub(crate) fn required_location_to_span(
         )))
     })?;
     location_to_span(loc, source_map, context)
-}
-
-/// Compare variability by semantic kind (ignoring rumoca_core::Token locations).
-fn variability_eq(a: &rumoca_core::Variability, b: &rumoca_core::Variability) -> bool {
-    matches!(
-        (a, b),
-        (
-            rumoca_core::Variability::Empty,
-            rumoca_core::Variability::Empty
-        ) | (
-            rumoca_core::Variability::Constant(_),
-            rumoca_core::Variability::Constant(_)
-        ) | (
-            rumoca_core::Variability::Discrete(_),
-            rumoca_core::Variability::Discrete(_)
-        ) | (
-            rumoca_core::Variability::Parameter(_),
-            rumoca_core::Variability::Parameter(_)
-        ) | (
-            rumoca_core::Variability::Continuous(_),
-            rumoca_core::Variability::Continuous(_)
-        )
-    )
-}
-
-/// Compare causality by semantic kind (ignoring rumoca_core::Token locations).
-fn causality_eq(a: &rumoca_core::Causality, b: &rumoca_core::Causality) -> bool {
-    matches!(
-        (a, b),
-        (rumoca_core::Causality::Empty, rumoca_core::Causality::Empty)
-            | (
-                rumoca_core::Causality::Input(_),
-                rumoca_core::Causality::Input(_)
-            )
-            | (
-                rumoca_core::Causality::Output(_),
-                rumoca_core::Causality::Output(_)
-            )
-    )
-}
-
-/// Check if two components are compatible for diamond inheritance or equivalent declarations.
-///
-/// MLS §5.6: If the same element is inherited multiple times (diamond inheritance),
-/// it should only contribute one element. Components are also compatible if they
-/// have "equivalent" declarations (same type, variability, and causality).
-///
-/// Compatible conditions (in priority order):
-/// 1. Same def_id (same original declaration) - always OK (diamond inheritance)
-/// 2. Same type_def_id (same resolved type class) - OK for type aliases
-/// 3. Same type_name string + same variability + same causality - equivalent declarations
-///
-/// Returns true if the components are from the same origin or have compatible types.
-fn components_are_compatible(existing: &ast::Component, incoming: &ast::Component) -> bool {
-    // Fast path: same def_id means same original declaration (diamond inheritance)
-    if let (Some(existing_def_id), Some(incoming_def_id)) = (existing.def_id, incoming.def_id)
-        && existing_def_id == incoming_def_id
-    {
-        return true;
-    }
-
-    // Check type compatibility via type_def_id (handles import aliases)
-    if let (Some(existing_type), Some(incoming_type)) = (existing.type_def_id, incoming.type_def_id)
-        && existing_type == incoming_type
-    {
-        return true;
-    }
-
-    // MLS §5.6: Components with equivalent declarations are compatible.
-    // Compare by string representation (avoids rumoca_core::Location/token_number differences in rumoca_core::Token).
-    // Also verify variability and causality match for true equivalence.
-    // Use semantic comparison for variability/causality (ignoring rumoca_core::Token internals).
-    existing.type_name.to_string() == incoming.type_name.to_string()
-        && variability_eq(&existing.variability, &incoming.variability)
-        && causality_eq(&existing.causality, &incoming.causality)
-}
-
-/// Check if two inherited child classes are semantically identical.
-///
-/// MLS §5.6.1.4: duplicate inherited children are valid only when they denote the
-/// same declaration. Compare canonical AST rendering rather than token/source
-/// locations so equivalent declarations from different bases remain compatible.
-fn classes_are_compatible(existing: &ast::ClassDef, incoming: &ast::ClassDef) -> bool {
-    if let (Some(existing_def_id), Some(incoming_def_id)) = (existing.def_id, incoming.def_id)
-        && existing_def_id == incoming_def_id
-    {
-        return true;
-    }
-
-    existing.to_modelica("") == incoming.to_modelica("")
 }
 
 fn nested_class_redeclaration_replaces_existing(
@@ -1356,6 +1285,10 @@ fn merge_inherited(
     extend: &ast::Extend,
     source_map: &SourceMap,
 ) -> InstantiateResult<()> {
+    // MLS §5.6.1.4 collapses same-named elements from several bases into one,
+    // so identity is decided on the merged class, not on each base in isolation.
+    let merged = merged_element_names(target, &base);
+
     // Merge components, checking for conflicts
     for (name, comp) in base.components {
         // Check if this component is deselected via `break`
@@ -1365,7 +1298,7 @@ fn merge_inherited(
 
         if let Some(existing) = target.components.get(&name) {
             // MLS §5.6: Check if components are from same origin or have compatible types
-            if !components_are_compatible(existing, &comp) {
+            if !inherited_components_are_identical(existing, &comp, &merged) {
                 return Err(Box::new(InstantiateError::conflicting_inheritance(
                     name.clone(),
                     "previous base",
@@ -1436,7 +1369,7 @@ fn merge_inherited_nested_class(
         return Ok(NestedClassMerge::Inserted);
     };
 
-    if classes_are_compatible(existing, &class)
+    if ast::classes_are_semantically_compatible(existing, &class)
         || nested_class_existing_redeclaration_shadows_inherited(existing, &class)
     {
         return Ok(NestedClassMerge::Skipped);
@@ -1559,6 +1492,10 @@ fn merge_class_content(
     // MLS §7.3: Validate redeclarations and collect type changes
     let redeclare_types = collect_redeclarations(tree, class, extend, extend_span)?;
 
+    // MLS §5.6.1.4: same-named elements from several bases become one element,
+    // so identity is decided on the merged class rather than on each base.
+    let merged = merged_declared_names(target, class);
+
     // Merge components
     for (name, comp) in &class.components {
         // Check if this component is deselected via `break`
@@ -1568,7 +1505,7 @@ fn merge_class_content(
 
         if let Some(existing) = target.components.get(name) {
             // MLS §5.6: Check if components are from same origin or have compatible types
-            if !components_are_compatible(existing, comp) {
+            if !inherited_components_are_identical(existing, comp, &merged) {
                 return Err(Box::new(InstantiateError::conflicting_inheritance(
                     name.clone(),
                     "previous base",
@@ -1629,7 +1566,7 @@ fn merge_class_content(
     // Merge nested classes
     walk_nested_classes(class, |name, nested| {
         if let Some(existing) = target.classes.get(name) {
-            if classes_are_compatible(existing, nested) {
+            if ast::classes_are_semantically_compatible(existing, nested) {
                 return;
             }
             if nested_class_redeclaration_replaces_existing(existing, nested) {
@@ -1730,7 +1667,7 @@ fn activate_constrainedby_defaults_for_redeclare(comp: &mut ast::Component) {
     let mut prefixed_keys: Vec<String> = Vec::new();
 
     for (key, value) in &comp.modifications {
-        let Some(target_name) = key.strip_prefix(CONSTRAINEDBY_MOD_PREFIX) else {
+        let Some(target_name) = key.strip_prefix(rumoca_core::CONSTRAINEDBY_MOD_PREFIX) else {
             continue;
         };
         prefixed_keys.push(key.clone());
@@ -1742,7 +1679,7 @@ fn activate_constrainedby_defaults_for_redeclare(comp: &mut ast::Component) {
 
     for (target_name, value) in inserts {
         comp.modifications.insert(target_name.clone(), value);
-        let prefixed_key = format!("{CONSTRAINEDBY_MOD_PREFIX}{target_name}");
+        let prefixed_key = format!("{}{target_name}", rumoca_core::CONSTRAINEDBY_MOD_PREFIX);
         if comp.each_modifications.contains(&prefixed_key) {
             comp.each_modifications.insert(target_name.clone());
         }

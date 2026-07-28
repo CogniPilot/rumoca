@@ -32,24 +32,32 @@
 
 mod constant_collection;
 mod enum_context;
+mod function_signatures;
 mod instanced;
 mod modifier_targets;
 mod path_utils;
+mod semantic_scope;
 mod typechecker;
 pub mod unit_syntax;
 
-use rumoca_core::{ComponentPath, DefId, ScopeId, Span, TypeId};
+use rumoca_core::{ComponentPath, DefId, ScopeId, SourceId, Span, TypeId};
 use rumoca_core::{
     Diagnostic as CommonDiagnostic, Diagnostics, PhaseError, PrimaryLabel, SourceMap,
 };
+
+/// Placeholder used when a `SourceId` has no registered name in the source map.
+pub(crate) const UNKNOWN_SOURCE_DISPLAY_NAME: &str = "<unknown source>";
 use rumoca_ir_ast::{
-    ClassDef, ClassKind, ClassTree, Component, EnumerationType, Expression, InstanceOverlay,
-    ResolvedTree, ScopeImport, StoredDefinition, Type, TypeAlias, TypeClassType, TypeTable,
-    TypedTree,
+    ClassDef, ClassKind, ClassTree, Component, EnumerationType, Expression, InstanceId,
+    InstanceOverlay, ResolvedTree, ScopeImport, StoredDefinition, Type, TypeAlias, TypeClassType,
+    TypeTable, TypedTree,
 };
+use semantic_scope::{ComponentSemantics, InstanceSemanticScope, SemanticLookup};
 use std::collections::{HashMap, HashSet};
 use thiserror::Error;
-use typechecker::traversal_adapter::walk_equations;
+use typechecker::traversal_adapter::{
+    walk_equation, walk_equations, walk_expression, walk_statement, walk_statements,
+};
 
 pub use typechecker::api::{typecheck, typecheck_instanced};
 
@@ -250,6 +258,8 @@ pub struct TypeChecker {
     def_qualified_names: HashMap<DefId, String>,
     /// Resolved TypeId map for user-defined type DefIds.
     type_ids_by_def_id: HashMap<DefId, TypeId>,
+    /// Direct class inheritance edges used for nominal subtype compatibility.
+    class_base_def_ids: HashMap<DefId, Vec<DefId>>,
     /// Unique dotted-suffix index for type-name fallback lookup.
     ///
     /// Key examples:
@@ -264,15 +274,21 @@ pub struct TypeChecker {
     /// This unwraps aliases and trivial class wrappers (e.g. operator-record
     /// unit wrappers) so assignment checks compare semantic roots.
     type_roots: HashMap<TypeId, TypeId>,
-    /// Component type ids visible in the current class scope.
-    current_component_types: HashMap<String, TypeId>,
-    /// Component shapes visible in the current class scope.
-    ///
-    /// `Some(shape)` is a known shape (empty = scalar); `None` means the
-    /// component declares dimensions that are not evaluated here. Per
-    /// SPEC_0008, an absent or `None` entry must be treated as unknown,
-    /// never as scalar.
-    current_component_shapes: HashMap<String, Option<Vec<usize>>>,
+    /// Source-declaration component metadata for standalone resolved-tree checks.
+    current_declaration_semantics: HashMap<DefId, ComponentSemantics>,
+    /// Concrete component metadata keyed by `InstanceId`.
+    current_instance_semantics: InstanceSemanticScope,
+    /// Concrete class instance whose body is currently being checked.
+    current_class_instance_id: Option<InstanceId>,
+    /// Concrete instance scope used for lexical lookup in instanced bodies and
+    /// bindings.
+    current_instance_scope: Option<ComponentPath>,
+    /// Lexically active `for` iterators. These are Integer locals, not
+    /// component references, and may shadow a component with the same name.
+    current_integer_iterators: Vec<String>,
+    /// Array domain contributed by the current structured class instance.
+    /// Declaration-body equations are scalar over this implicit outer domain.
+    current_instance_domain_shape: Vec<usize>,
     /// Allowed first-segment modifier targets per class DefId.
     ///
     /// Includes direct and inherited members (components and nested classes),
@@ -283,6 +299,17 @@ pub struct TypeChecker {
     /// Keys are class DefIds; values map component member names to their TypeIds
     /// (including inherited members, with extends `break` names removed).
     component_modifier_member_types: HashMap<DefId, HashMap<String, TypeId>>,
+    /// Complete function signatures after inherited inputs and outputs are
+    /// merged in declaration order.
+    function_signatures: HashMap<DefId, function_signatures::FunctionSignature>,
+    /// Instance-context type specialization for calls through package aliases.
+    ///
+    /// Replaceable package functions can be inherited from a base package
+    /// while their unqualified input/output record types are redeclared by the
+    /// selected package. The outer key is the source alias (`Medium`); the
+    /// inner map preserves the declaration slot from base type DefId to the
+    /// effective instance type DefId.
+    current_call_type_overrides: function_signatures::CallTypeOverrides,
     /// Type aliases whose targets could not be resolved during type-table
     /// construction (e.g. an MSL alias into a library that is not loaded).
     ///
@@ -301,12 +328,19 @@ impl TypeChecker {
             source_map: SourceMap::default(),
             def_qualified_names: HashMap::new(),
             type_ids_by_def_id: HashMap::new(),
+            class_base_def_ids: HashMap::new(),
             type_suffix_index: HashMap::new(),
             type_roots: HashMap::new(),
-            current_component_types: HashMap::new(),
-            current_component_shapes: HashMap::new(),
+            current_declaration_semantics: HashMap::new(),
+            current_instance_semantics: InstanceSemanticScope::default(),
+            current_class_instance_id: None,
+            current_instance_scope: None,
+            current_integer_iterators: Vec::new(),
+            current_instance_domain_shape: Vec::new(),
             component_modifier_targets: HashMap::new(),
             component_modifier_member_types: HashMap::new(),
+            function_signatures: HashMap::new(),
+            current_call_type_overrides: function_signatures::CallTypeOverrides::default(),
             deferred_alias_errors: HashMap::new(),
         }
     }
@@ -320,16 +354,20 @@ impl TypeChecker {
         location: &rumoca_core::Location,
         context: &str,
     ) -> Option<Span> {
-        match self.source_map.try_location_to_span(
-            &location.file_name,
+        match self.source_map.try_span(
+            location.source,
             location.start as usize,
             location.end as usize,
         ) {
             Some(span) => Some(span),
             None => {
+                let name = self
+                    .source_map
+                    .name(location.source)
+                    .unwrap_or(UNKNOWN_SOURCE_DISPLAY_NAME)
+                    .to_string();
                 self.emit_typecheck_error(TypeCheckError::missing_source_context(format!(
-                    "source file `{}` for {context} was not found",
-                    location.file_name
+                    "source file `{name}` for {context} was not found"
                 )));
                 None
             }
@@ -344,6 +382,8 @@ impl TypeChecker {
             .iter()
             .map(|(def_id, name)| (*def_id, name.clone()))
             .collect();
+        self.populate_nominal_class_context(tree);
+        self.function_signatures = function_signatures::build_function_signatures(tree);
         let (type_table, type_ids_by_def_id) = match self.build_type_context(tree) {
             Ok(context) => context,
             Err(error) => {
@@ -374,6 +414,23 @@ impl TypeChecker {
         self.flush_eval_warnings();
     }
 
+    fn populate_nominal_class_context(&mut self, tree: &ClassTree) {
+        self.class_base_def_ids = tree
+            .name_map
+            .values()
+            .filter_map(|def_id| {
+                let class = tree.get_class_by_def_id(*def_id)?;
+                let bases = class
+                    .extends
+                    .iter()
+                    .filter_map(|extends| extends.base_def_id)
+                    .chain(class.redeclare_target_def_id)
+                    .collect::<Vec<_>>();
+                Some((*def_id, bases))
+            })
+            .collect();
+    }
+
     /// Collect constants from instance-level class/package redeclare overrides.
     ///
     /// Example:
@@ -388,11 +445,14 @@ impl TypeChecker {
         overlay: &InstanceOverlay,
         ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
     ) {
-        let component_index: HashMap<String, &rumoca_ir_ast::InstanceData> = overlay
-            .components
-            .values()
-            .map(|data| (data.qualified_name.to_flat_string(), data))
-            .collect();
+        let mut component_index =
+            HashMap::<ComponentPath, Vec<&rumoca_ir_ast::InstanceData>>::new();
+        for data in overlay.components.values() {
+            component_index
+                .entry(data.qualified_name.to_component_path())
+                .or_default()
+                .push(data);
+        }
 
         const MAX_PASSES: usize = 5;
         for _ in 0..MAX_PASSES {
@@ -419,15 +479,15 @@ impl TypeChecker {
 
     fn apply_instance_class_overrides(
         tree: &ClassTree,
-        component_index: &HashMap<String, &rumoca_ir_ast::InstanceData>,
+        component_index: &HashMap<ComponentPath, Vec<&rumoca_ir_ast::InstanceData>>,
         data: &rumoca_ir_ast::InstanceData,
         ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
     ) {
         if data.class_overrides.is_empty() {
             return;
         }
-        let comp_scope = data.qualified_name.to_flat_string();
-        if comp_scope.is_empty() {
+        let comp_path = data.qualified_name.to_component_path();
+        if comp_path.is_root() {
             return;
         }
 
@@ -436,7 +496,7 @@ impl TypeChecker {
             Self::apply_class_override_alias(
                 tree,
                 component_index,
-                &comp_scope,
+                &comp_path,
                 active_alias.as_deref(),
                 &class_override.alias,
                 class_override.target_def_id,
@@ -447,8 +507,8 @@ impl TypeChecker {
 
     fn apply_class_override_alias(
         tree: &ClassTree,
-        component_index: &HashMap<String, &rumoca_ir_ast::InstanceData>,
-        comp_scope: &str,
+        component_index: &HashMap<ComponentPath, Vec<&rumoca_ir_ast::InstanceData>>,
+        comp_path: &ComponentPath,
         active_alias: Option<&str>,
         alias: &str,
         def_id: DefId,
@@ -457,7 +517,7 @@ impl TypeChecker {
         if Self::try_apply_forwarded_parent_alias_constants(
             tree,
             component_index,
-            comp_scope,
+            comp_path,
             active_alias,
             alias,
             def_id,
@@ -468,6 +528,7 @@ impl TypeChecker {
 
         let is_active_alias = active_alias == Some(alias);
 
+        let comp_scope = comp_path.to_flat_string();
         let alias_scope = format!("{comp_scope}.{alias}");
         // MLS §7.3: instance-level redeclare overrides must replace inherited/default
         // package constants in the local alias scope.
@@ -477,14 +538,14 @@ impl TypeChecker {
         // For declarations like `Medium.BaseProperties medium`, expose
         // unqualified constants (`medium.nX`) from the active alias only.
         if is_active_alias {
-            Self::extract_override_class_constants(tree, comp_scope, def_id, ctx);
+            Self::extract_override_class_constants(tree, &comp_scope, def_id, ctx);
         }
     }
 
     fn try_apply_forwarded_parent_alias_constants(
         tree: &ClassTree,
-        component_index: &HashMap<String, &rumoca_ir_ast::InstanceData>,
-        comp_scope: &str,
+        component_index: &HashMap<ComponentPath, Vec<&rumoca_ir_ast::InstanceData>>,
+        comp_path: &ComponentPath,
         active_alias: Option<&str>,
         alias: &str,
         def_id: DefId,
@@ -497,19 +558,22 @@ impl TypeChecker {
             return false;
         }
 
-        let enclosing = Self::enclosing_scope_or_root(comp_scope);
-        if enclosing.is_empty() {
+        let Some(enclosing) = comp_path.parent() else {
             return false;
-        }
-        let Some(parent_data) = component_index.get(enclosing) else {
+        };
+        let Some(parent_candidates) = component_index.get(&enclosing) else {
+            return false;
+        };
+        let [parent_data] = parent_candidates.as_slice() else {
             return false;
         };
         if Self::class_override_by_alias(parent_data, alias).is_none() {
             return false;
         }
 
+        let comp_scope = comp_path.to_flat_string();
         let source_alias = format!("{comp_scope}.{alias}");
-        let target_alias = format!("{enclosing}.{alias}");
+        let target_alias = format!("{}.{alias}", enclosing.to_flat_string());
         let alias_pair = [(source_alias, target_alias.clone())];
         Self::propagate_alias_values_in_ctx(&alias_pair, ctx);
 
@@ -565,90 +629,6 @@ impl TypeChecker {
         data.class_overrides
             .values()
             .find(|class_override| class_override.alias == alias)
-    }
-
-    /// Build lookup keys for top-level model components from instanced overlay data.
-    fn build_instanced_component_type_scope(
-        overlay: &InstanceOverlay,
-        full_prefix: &str,
-        short_model: &str,
-    ) -> HashMap<String, TypeId> {
-        let mut out = HashMap::new();
-        let short_prefix = format!("{short_model}.");
-
-        for data in overlay.components.values() {
-            let qn = data.qualified_name.to_flat_string();
-            let canonical_type = overlay
-                .type_roots
-                .get(&data.type_id)
-                .copied()
-                .unwrap_or(data.type_id);
-            out.insert(qn.clone(), canonical_type);
-            if let Some(rest) = qn.strip_prefix(full_prefix) {
-                Self::insert_instanced_aliases(&mut out, rest, canonical_type, Some(short_model));
-                continue;
-            }
-            if let Some(rest) = qn.strip_prefix(&short_prefix) {
-                Self::insert_instanced_aliases(&mut out, rest, canonical_type, None);
-                continue;
-            }
-            if !path_utils::is_qualified_class_name(&qn) {
-                out.insert(qn, canonical_type);
-            }
-        }
-
-        out
-    }
-
-    /// Shape map keyed like `build_instanced_component_type_scope`. The model
-    /// prefixes are passed in so the textual-path handling stays in one place.
-    fn build_instanced_component_shape_scope(
-        overlay: &InstanceOverlay,
-        full_prefix: &str,
-        short_model: &str,
-    ) -> HashMap<String, Option<Vec<usize>>> {
-        let mut out = HashMap::new();
-        let short_prefix = format!("{short_model}.");
-        for data in overlay.components.values() {
-            let shape = if !data.dims.is_empty() {
-                Some(data.dims.iter().map(|&d| d as usize).collect::<Vec<_>>())
-            } else if data.dims_expr.is_empty() {
-                Some(Vec::new())
-            } else {
-                None
-            };
-            let qn = data.qualified_name.to_flat_string();
-            if let Some(rest) = qn.strip_prefix(full_prefix) {
-                out.insert(rest.to_string(), shape.clone());
-            } else if let Some(rest) = qn.strip_prefix(&short_prefix) {
-                out.insert(rest.to_string(), shape.clone());
-            }
-            out.insert(qn, shape);
-        }
-        out
-    }
-
-    /// Model-name prefix and short model name shared by the instanced scope
-    /// builders, so the textual-path handling happens exactly once.
-    fn instanced_scope_prefixes(model_name: &str) -> (String, String) {
-        let full_prefix = format!("{model_name}.");
-        let short_model = path_utils::class_name_leaf(model_name).to_string();
-        (full_prefix, short_model)
-    }
-
-    fn insert_instanced_aliases(
-        out: &mut HashMap<String, TypeId>,
-        rest: &str,
-        type_id: TypeId,
-        short_model: Option<&str>,
-    ) {
-        if path_utils::is_qualified_class_name(rest) {
-            return;
-        }
-        out.insert(rest.to_string(), type_id);
-        if let Some(short_model) = short_model {
-            out.insert(format!("{short_model}.{rest}"), type_id);
-        }
     }
 
     /// Build a type context that includes user-defined classes, enums, and aliases.
@@ -914,18 +894,22 @@ impl TypeChecker {
             )));
         };
         let last = name.name.last().unwrap_or(first);
-        let file_name = if !first.location.file_name.is_empty() {
-            first.location.file_name.as_str()
+        let source = if first.location.source != SourceId::DUMMY {
+            first.location.source
         } else {
-            last.location.file_name.as_str()
+            last.location.source
         };
         self.source_map
-            .try_location_to_span(
-                file_name,
+            .try_span(
+                source,
                 first.location.start as usize,
                 last.location.end as usize,
             )
             .ok_or_else(|| {
+                let file_name = self
+                    .source_map
+                    .name(source)
+                    .unwrap_or(UNKNOWN_SOURCE_DISPLAY_NAME);
                 Box::new(TypeCheckError::missing_source_context(format!(
                     "source file `{file_name}` for type alias target name was not found"
                 )))
@@ -934,15 +918,18 @@ impl TypeChecker {
 
     fn location_span(&self, location: &rumoca_core::Location) -> TypeCheckResult<Span> {
         self.source_map
-            .try_location_to_span(
-                &location.file_name,
+            .try_span(
+                location.source,
                 location.start as usize,
                 location.end as usize,
             )
             .ok_or_else(|| {
+                let file_name = self
+                    .source_map
+                    .name(location.source)
+                    .unwrap_or(UNKNOWN_SOURCE_DISPLAY_NAME);
                 Box::new(TypeCheckError::missing_source_context(format!(
-                    "source file `{}` for typecheck location was not found",
-                    location.file_name
+                    "source file `{file_name}` for typecheck location was not found"
                 )))
             })
     }

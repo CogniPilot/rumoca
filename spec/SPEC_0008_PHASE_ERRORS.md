@@ -137,7 +137,30 @@ Error codes use mnemonic prefixes for readability:
 | EF0xx | flatten | **F**latten | Connection errors |
 | ED0xx | todae | **D**AE | Equation errors |
 | EC0xx | codegen | **C**odegen | Code generation errors |
+| EM0xx | class merge | **M**erge | Class-tree merge errors |
+| ES0xx | structural | **S**tructural | Matching/BLT/singularity (`ES001`-`ES002` warnings, `ES01x` errors) |
+| EL0xx | solve lowering | so**L**ve | DAE → Solve-IR lowering (`EL001`-`EL011` rows, `EL02x` assembly, `EL03x` overrides) |
+| EX0xx | sim runtime | e**X**ecution | Solver, runtime-preparation, parameter-override |
+| EG0xx | GALEC IR | **G**ALEC | GALEC IR parse/validation errors |
+| EGT0xx | GALEC target projection | **G**ALEC **T**arget | DAE-to-GALEC projection/export errors |
+| EFM0xx | eFMI packaging | e**FM**I | eFMI manifest/packaging errors |
 | WP/WR/WT/etc | (same) | | Warnings per phase |
+
+The leading letter is the severity: a warning MUST NOT be minted in an `E`
+range, nor an error in a `W` range. The stable identity of a diagnostic is its
+bare mnemonic (`ED001`); `miette` phases render it as
+`rumoca::<phase>::<MNEMONIC>` and others emit the bare form, so consumers MUST
+match by mnemonic **suffix**. Contract tests implement this comparison locally
+in `crates/rumoca-contracts/src/test_support.rs`. A shipped code is stable:
+retire it rather than renumber or reuse.
+
+The former GALEC-target meanings of `ET001`–`ET023` are retired because they
+collided with typecheck. GALEC target projection now emits `EGT001`–`EGT023`;
+the typecheck meanings of `ET0xx` are unchanged.
+
+**Known drift**, tracked separately: `rumoca-phase-structural` emits
+`ES001`/`ES002` at warning severity. For these, severity MUST be read from the
+diagnostic's `severity` field, never inferred.
 
 ### PhaseError Trait
 
@@ -202,33 +225,9 @@ impl PhaseError for ResolveError {
 }
 ```
 
-### Typecheck Phase Example
-
-```rust
-//! rumoca-phase-typecheck/src/errors.rs
-
-use rumoca_core::{Diagnostic, Label, PhaseError, Span};
-
-pub enum TypecheckError {
-    TypeMismatch { expected: String, found: String, span: Span },
-    VariabilityViolation { msg: String, span: Span },
-    DimensionMismatch { expected: String, found: String, span: Span },
-    UnknownType { name: String, span: Span },
-}
-
-impl PhaseError for TypecheckError {
-    fn to_diagnostic(&self) -> Diagnostic {
-        match self {
-            Self::TypeMismatch { expected, found, span } => {
-                Diagnostic::error(format!("expected `{expected}`, found `{found}`"))
-                    .with_code("ET001")
-                    .with_label(Label::primary(*span))
-            }
-            // ...
-        }
-    }
-}
-```
+Every phase follows this same shape. Typecheck currently defines
+`TypeCheckError` and its `PhaseError` implementation in
+`crates/rumoca-phase-typecheck/src/lib.rs`.
 
 ### Usage in Phase Implementation
 

@@ -13,14 +13,14 @@ fn compile_failure_report_handles_missing_primary_label() {
     let failure = ModelFailureDiagnostic {
         model_name: "Broken".to_string(),
         phase: None,
-        error_code: Some("EX999".to_string()),
+        error_code: Some("ZZ999".to_string()),
         error: "phase failed before labeling source".to_string(),
         primary_label: None,
     };
     let report = build_compile_failure_report(&failure, &SourceMap::new());
     let rendered = format!("{report:?}");
 
-    assert!(rendered.contains("EX999"));
+    assert!(rendered.contains("ZZ999"));
     assert!(rendered.contains("missing a primary source label"));
 }
 
@@ -29,7 +29,7 @@ fn compile_failure_report_handles_missing_label_source() {
     let failure = ModelFailureDiagnostic {
         model_name: "Broken".to_string(),
         phase: None,
-        error_code: Some("EX998".to_string()),
+        error_code: Some("ZZ998".to_string()),
         error: "phase emitted stale source id".to_string(),
         primary_label: Some(Label::primary(Span::from_offsets(
             SourceId::from_source_name("rumoca_main_tests_source_99.mo"),
@@ -40,7 +40,7 @@ fn compile_failure_report_handles_missing_label_source() {
     let report = build_compile_failure_report(&failure, &SourceMap::new());
     let rendered = format!("{report:?}");
 
-    assert!(rendered.contains("EX998"));
+    assert!(rendered.contains("ZZ998"));
     assert!(rendered.contains("references a missing source file"));
 }
 
@@ -89,6 +89,28 @@ fn expand_trace_filter_expands_short_phase_aliases() {
         expand_trace_filter("resolve:debug,solve:info"),
         "rumoca_phase_resolve=debug,rumoca_phase_solve=info"
     );
+}
+
+/// The backend-neutral simulation driver traces under `rumoca_solver::driver`,
+/// not under a concrete backend's namespace (SPEC_0029 §3b). The `bdf` alias
+/// must keep pointing at the diffsol backend's own target.
+#[test]
+fn expand_trace_filter_exposes_backend_neutral_driver_target() {
+    assert_eq!(expand_trace_filter("driver"), "rumoca_solver::driver=debug");
+    assert_eq!(
+        expand_trace_filter("driver:trace"),
+        "rumoca_solver::driver=trace"
+    );
+    assert_eq!(
+        expand_trace_filter("bdf"),
+        "rumoca_solver_diffsol::bdf=debug"
+    );
+    assert_eq!(
+        expand_trace_filter("driver"),
+        format!("{}=debug", rumoca_solver::DRIVER_TRACE_TARGET),
+        "the `driver` alias must track the constant the driver actually traces under"
+    );
+    assert!(TRACE_LONG_HELP.contains("::driver"));
 }
 
 #[test]
@@ -671,5 +693,47 @@ fn compile_target_flat_modelica_uses_flat_template_context() {
     assert!(
         rendered.contains("class Test"),
         "flat-modelica output should contain the rendered flat model: {rendered}"
+    );
+}
+
+/// SPEC_0008: a simulation failure must reach a CLI user with its stable code.
+/// Flattening the typed error (`anyhow::Error::msg` / `anyhow!("…: {e}")`)
+/// discards the `EL0xx`/`ES0xx`/`EX0xx` identity the LSP already publishes, so
+/// both `sim` surfaces render it as `[CODE] message`.
+#[test]
+fn simulate_to_value_failure_carries_its_spec_0008_code() {
+    // A model with nothing to solve compiles but declines deterministically in
+    // solve lowering, so this pins the rendering without depending on solver
+    // numerics.
+    let source = "model Empty\nend Empty;\n";
+    let cli = Cli::try_parse_from(["rumoca", "sim", "Empty.mo"]).expect("parse direct sim");
+    let Commands::Sim(args) = cli.command else {
+        panic!("expected the sim command");
+    };
+
+    let error = simulate_to_value(&args, source).expect_err("empty model must fail to simulate");
+    let message = error.to_string();
+    let Some((code, _)) = message
+        .strip_prefix('[')
+        .and_then(|rest| rest.split_once(']'))
+    else {
+        panic!("simulation failure must render its code as `[CODE] message`: {message}");
+    };
+    let digits = code.trim_start_matches(|c: char| c.is_ascii_uppercase());
+    assert!(
+        code.starts_with('E') && digits.len() == 3 && digits.chars().all(|c| c.is_ascii_digit()),
+        "expected a SPEC_0008 mnemonic such as `[EL005]`, got `[{code}]` in: {message}"
+    );
+}
+
+#[test]
+fn simulation_failure_error_renders_the_code_prefix() {
+    let error = simulation_failure_error(&rumoca_sim::SimulationDiagnosticError::InvalidOverride {
+        message: "`k` is not a parameter of this model".to_string(),
+    });
+
+    assert_eq!(
+        error.to_string(),
+        "[EX003] `k` is not a parameter of this model"
     );
 }

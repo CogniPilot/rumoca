@@ -38,15 +38,15 @@ pub(super) fn is_root_msl_example_model_name(model_name: &str) -> bool {
 /// Root standalone MSL examples:
 /// - root example by package name
 /// - non-partial
-/// - no top-level input connectors requiring external bindings
-/// - no unbound fixed parameters (fixed=true by default for parameters)
+/// - no top-level input scalars requiring external bindings
+/// - no unbound fixed-parameter scalars (fixed=true by default for parameters)
 pub(super) fn is_root_standalone_msl_example_model(
     model_name: &str,
     result: &rumoca_compile::compile::CompilationResult,
 ) -> bool {
     is_root_msl_example_model_name(model_name)
         && !result.dae.metadata.is_partial
-        && result.dae.variables.inputs.is_empty()
+        && !result.dae.variables.has_input_scalars()
         && !result.flat.has_unbound_fixed_parameters()
 }
 
@@ -56,7 +56,7 @@ pub(super) fn is_root_standalone_msl_example_dae_model(
 ) -> bool {
     is_root_msl_example_model_name(model_name)
         && !result.dae.metadata.is_partial
-        && result.dae.variables.inputs.is_empty()
+        && !result.dae.variables.has_input_scalars()
         && !result.has_unbound_fixed_parameters
 }
 
@@ -140,6 +140,7 @@ fn is_root_msl_example_path(path: &[ClassPathFrame<'_>]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rumoca_compile::compile::Session;
 
     fn class(name: &str, class_type: rumoca_compile::compile::core::ClassType) -> ast::ClassDef {
         ast::ClassDef {
@@ -204,5 +205,49 @@ mod tests {
             root_msl_example_model_names(&tree, &names),
             vec!["Modelica.Mechanics.Examples.Elementary.PointGravityWithPointMasses2"]
         );
+    }
+
+    #[test]
+    fn zero_sized_inputs_and_fixed_parameters_remain_standalone() {
+        let mut session = Session::default();
+        session
+            .add_document(
+                "EmptyBindings.mo",
+                r#"
+                    model EmptyBindings
+                      input Real u[0];
+                      parameter Real p[0];
+                      Real x(start = 1);
+                    equation
+                      der(x) = -x;
+                    end EmptyBindings;
+                "#,
+            )
+            .expect("parse zero-sized standalone model");
+        let mut result = session
+            .compile_model_dae_strict_reachable_uncached_with_recovery("EmptyBindings")
+            .expect("compile zero-sized standalone model");
+        let input_name = rumoca_compile::compile::core::VarName::new("u");
+        std::sync::Arc::make_mut(&mut result.dae)
+            .variables
+            .inputs
+            .insert(
+                input_name.clone(),
+                rumoca_compile::compile::Variable {
+                    name: input_name,
+                    dims: vec![0],
+                    ..rumoca_compile::compile::Variable::empty_with_span(
+                        rumoca_compile::compile::core::Span::DUMMY,
+                    )
+                },
+            );
+
+        assert!(!result.dae.variables.inputs.is_empty());
+        assert!(!result.dae.variables.has_input_scalars());
+        assert!(!result.has_unbound_fixed_parameters);
+        assert!(is_root_standalone_msl_example_dae_model(
+            "Modelica.Test.Examples.EmptyBindings",
+            &result
+        ));
     }
 }

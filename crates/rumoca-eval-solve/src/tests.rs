@@ -80,34 +80,6 @@ fn time_table() -> (f64, Vec<rumoca_core::ExternalTableData>) {
 }
 
 #[test]
-fn apply_discrete_slot_value_reports_out_of_bounds_target() {
-    let mut y = [0.0];
-    let mut p = [];
-
-    let err = apply_discrete_slot_value(
-        rumoca_ir_solve::ScalarSlot::Y {
-            index: 2,
-            byte_offset: 16,
-        },
-        1.0,
-        &mut y,
-        &mut p,
-        1e-12,
-    )
-    .expect_err("out-of-bounds discrete target must be reported");
-
-    assert_eq!(
-        err,
-        EvalSolveError::MissingInput {
-            vector: "y",
-            index: 2,
-            len: 1,
-            span: None,
-        }
-    );
-}
-
-#[test]
 fn projected_random_value_reports_missing_state_lane() {
     let err = projected_random_value(&[10.0, 20.0], 2)
         .expect_err("missing random state lane must be reported");
@@ -364,7 +336,7 @@ fn eval_row_hydrates_serialized_external_table_data() {
 }
 
 #[test]
-fn eval_row_guarded_division_matches_jit_semantics() {
+fn eval_row_division_uses_ieee_semantics() {
     let row = vec![
         LinearOp::Const { dst: 0, value: 0.0 },
         LinearOp::Const { dst: 1, value: 0.0 },
@@ -379,7 +351,45 @@ fn eval_row_guarded_division_matches_jit_semantics() {
 
     let value = eval_row(&row, &[], &[], 0.0, None).expect("0/0 row should evaluate");
 
-    assert_eq!(value, 0.0);
+    assert!(value.is_nan());
+
+    let negative_over_zero = vec![
+        LinearOp::Const {
+            dst: 0,
+            value: -1.0,
+        },
+        LinearOp::Const { dst: 1, value: 0.0 },
+        LinearOp::Binary {
+            dst: 2,
+            op: BinaryOp::Div,
+            lhs: 0,
+            rhs: 1,
+        },
+        LinearOp::StoreOutput { src: 2 },
+    ];
+    let value =
+        eval_row(&negative_over_zero, &[], &[], 0.0, None).expect("-1/0 row should evaluate");
+    assert_eq!(value, f64::NEG_INFINITY);
+}
+
+#[test]
+fn eval_row_sign_is_zero_at_zero() {
+    for input in [0.0, -0.0] {
+        let row = vec![
+            LinearOp::Const {
+                dst: 0,
+                value: input,
+            },
+            LinearOp::Unary {
+                dst: 1,
+                op: UnaryOp::Sign,
+                arg: 0,
+            },
+            LinearOp::StoreOutput { src: 1 },
+        ];
+        let value = eval_row(&row, &[], &[], 0.0, None).expect("sign row should evaluate");
+        assert_eq!(value, 0.0);
+    }
 }
 
 #[test]

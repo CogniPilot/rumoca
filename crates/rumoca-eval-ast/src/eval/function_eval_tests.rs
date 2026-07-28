@@ -66,11 +66,19 @@ fn cref_expr(name: &str) -> Expression {
     Expression::ComponentReference(cref(name))
 }
 
+fn field_expr(base: &str, field: &str) -> Expression {
+    Expression::FieldAccess {
+        base: Arc::new(cref_expr(base)),
+        field: field.to_string(),
+        span: rumoca_core::Span::DUMMY,
+    }
+}
+
 fn call(name: &str, args: Vec<Expression>) -> Expression {
     Expression::FunctionCall {
         comp: cref(name),
         args,
-
+        is_partial_application: false,
         span: rumoca_core::Span::DUMMY,
     }
 }
@@ -81,6 +89,18 @@ fn binary(op: OpBinary, lhs: Expression, rhs: Expression) -> Expression {
         lhs: Arc::new(lhs),
         rhs: Arc::new(rhs),
 
+        span: rumoca_core::Span::DUMMY,
+    }
+}
+
+fn if_expr(
+    condition: Expression,
+    then_expression: Expression,
+    else_expression: Expression,
+) -> Expression {
+    Expression::If {
+        branches: vec![(condition, then_expression)],
+        else_branch: Arc::new(else_expression),
         span: rumoca_core::Span::DUMMY,
     }
 }
@@ -283,6 +303,99 @@ fn eval_integer_with_scope_exp_elem_uses_shared_binary_semantics() {
     let ctx = TypeCheckEvalContext::new();
     let expr = binary(OpBinary::ExpElem, int_expr(2), int_expr(5));
     assert_eq!(eval_integer_with_scope(&expr, &ctx, ""), Some(32));
+}
+
+#[test]
+fn eval_integer_if_with_unknown_condition_folds_equal_outcomes() {
+    let mut ctx = TypeCheckEvalContext::new();
+    ctx.add_integer("left.nRC", 2);
+    ctx.add_integer("right.nRC", 2);
+    let expression = if_expr(
+        cref_expr("unresolvedCondition"),
+        cref_expr("left.nRC"),
+        cref_expr("right.nRC"),
+    );
+
+    assert_eq!(eval_integer_with_scope(&expression, &ctx, ""), Some(2));
+}
+
+#[test]
+fn eval_integer_if_with_unknown_condition_rejects_distinct_outcomes() {
+    let mut ctx = TypeCheckEvalContext::new();
+    ctx.add_integer("left.nRC", 1);
+    ctx.add_integer("right.nRC", 2);
+    let expression = if_expr(
+        cref_expr("unresolvedCondition"),
+        cref_expr("left.nRC"),
+        cref_expr("right.nRC"),
+    );
+
+    assert_eq!(eval_integer_with_scope(&expression, &ctx, ""), None);
+}
+
+#[test]
+fn eval_real_if_requires_exactly_equal_unknown_outcomes() {
+    let ctx = TypeCheckEvalContext::new();
+    let expression = if_expr(
+        cref_expr("unresolvedCondition"),
+        real_expr(1.0),
+        real_expr(f64::from_bits(1.0f64.to_bits() + 1)),
+    );
+
+    assert_eq!(eval_real_with_scope(&expression, &ctx, ""), None);
+}
+
+#[test]
+fn eval_real_equality_does_not_merge_adjacent_values() {
+    let ctx = TypeCheckEvalContext::new();
+    let expression = binary(
+        OpBinary::Eq,
+        real_expr(1.0),
+        real_expr(f64::from_bits(1.0f64.to_bits() + 1)),
+    );
+
+    assert_eq!(eval_boolean_with_scope(&expression, &ctx, ""), Some(false));
+}
+
+#[test]
+fn typecheck_scalar_evaluation_preserves_deep_expression_support() {
+    let ctx = TypeCheckEvalContext::new();
+    let mut expression = int_expr(7);
+    for _ in 0..32 {
+        expression = Expression::Parenthesized {
+            inner: Arc::new(expression),
+            span: rumoca_core::Span::DUMMY,
+        };
+    }
+
+    assert_eq!(eval_integer_with_scope(&expression, &ctx, ""), Some(7));
+}
+
+#[test]
+fn scoped_evaluators_resolve_projected_field_paths() {
+    let mut ctx = TypeCheckEvalContext::new();
+    ctx.add_integer("source.nRC", 2);
+    ctx.add_real("source.ratio", 0.5);
+    ctx.booleans.insert("source.enabled".to_string(), true);
+    ctx.enums
+        .insert("source.mode".to_string(), "Mode.active".to_string());
+
+    assert_eq!(
+        eval_integer_with_scope(&field_expr("source", "nRC"), &ctx, ""),
+        Some(2)
+    );
+    assert_eq!(
+        eval_real_with_scope(&field_expr("source", "ratio"), &ctx, ""),
+        Some(0.5)
+    );
+    assert_eq!(
+        eval_boolean_with_scope(&field_expr("source", "enabled"), &ctx, ""),
+        Some(true)
+    );
+    assert_eq!(
+        eval_enum_with_scope(&field_expr("source", "mode"), &ctx, ""),
+        Some("Mode.active".to_string())
+    );
 }
 
 #[test]

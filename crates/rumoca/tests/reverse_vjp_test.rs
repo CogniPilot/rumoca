@@ -4,8 +4,8 @@
 //! (roadmap §9.1), checked here against the existing forward parameter-seed AD.
 
 use rumoca::Compiler;
-use rumoca_eval_solve::{AlgebraicLinearization, AlgebraicSettle, SolveRuntime};
 use rumoca_sim::SimOptions;
+use rumoca_solver::{AlgebraicLinearization, AlgebraicSettle, SolveRuntime};
 
 // Smooth, pure-ODE model (no algebraics → solver_y == states, no projection):
 //   der(x) = sin(a*x) + b*y^2

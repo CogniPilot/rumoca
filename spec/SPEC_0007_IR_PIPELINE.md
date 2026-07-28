@@ -5,10 +5,10 @@ ACCEPTED
 
 ## Summary
 
-Rumoca transforms Modelica through AST → Flat → DAE → Solve IRs. Each
-stage has a contract: contents, ownership, boundary leaks.
+Rumoca transforms Modelica through AST → Flat → DAE → Solve IRs. Each stage
+defines its contents, ownership, and boundary.
 
-## The Four IR Stages
+## Specification
 
 ```
 Modelica source (.mo)
@@ -52,7 +52,7 @@ DAE lowering, structural rewrites, or template policy.
 
 ### Stage 1 — AST (`rumoca-ir-ast`)
 
-**What it is:** The parser output: concrete syntax with comments and spans.
+**What it is:** Parser output: concrete syntax, comments, and spans.
 
 **Contract:**
 - Represents source text structure, not language semantics.
@@ -69,8 +69,7 @@ equation manipulation.
 
 ### Stage 2 — Flat (`rumoca-ir-flat`)
 
-**What it is:** The instantiated, modified class hierarchy: variables,
-equations, and algorithms with fully-qualified names.
+**What it is:** The instantiated class hierarchy with fully-qualified names.
 
 **Contract:**
 - No unresolved class references.
@@ -80,12 +79,9 @@ equations, and algorithms with fully-qualified names.
 - `pre()`, `der()`, `initial()`, and other Modelica built-ins are still present
   as expression nodes — semantic lowering has not occurred.
 
-**What to do here:** Name resolution, instantiation, post-instantiation
-type checking, flattening, structural transformations that preserve Modelica
-expression form.
-
-**What NOT to do here:** Solving equations, eliminating Modelica-specific
-operators, generating simulation code.
+**Do here:** Resolution, instantiation, post-instantiation type checking, and
+flattening. **Do not:** solve equations, eliminate Modelica operators, or
+generate simulation code.
 
 **Cross-cutting rules (Flat through DAE):**
 
@@ -95,16 +91,16 @@ operators, generating simulation code.
 | Arrays stay symbolic through Flat and DAE | Backends requesting scalar form call scalarization in structural/solver layers with shape metadata, not via display-string parsing |
 | Function algorithms remain structured in `Flat.functions`/`Dae.functions` | Function bodies are not lowered into solver equation buckets |
 | Model algorithms lower to DAE only when they fit the declarative subset | Unsupported forms fail explicitly with `ED013` |
-| Post-resolution compiler identity is keyed by `DefId`, not strings | Hashing rendered names, `VarName`, flat names, cached display strings, rendered `ComponentPath`, or rendered `ComponentReference` after resolution is a phase-boundary bug. Carry `DefId`; semantic keys may be `DefId` or structured keys whose identity fields are all `DefId` values. |
+| Post-resolution declaration identity is keyed by `DefId`, not strings | Hashing rendered names, `VarName`, flat names, cached display strings, rendered `ComponentPath`, or rendered `ComponentReference` after resolution is a phase-boundary bug. Carry `DefId` for declarations and structured instance identity where one declaration has multiple instantiated meanings. |
+| Flat `TypeId` is the resolved effective type of that concrete instance | Two instances originating from one `DefId` may have different effective types after redeclare or modification. DAE type catalogs key by this identity and retain `DefId` only as declaration provenance. |
 | Semantic phases do not recover name hierarchy by tokenizing flattened strings | The AST, `QualifiedName`, `ComponentReference`, `DefId`, scope tree, and phase metadata carry name structure. Splitting `a.b.c` text inside compiler/evaluator/lowering logic means structure was lost too early. Textual path parsing is allowed only at source/protocol/config/display boundaries while structured IR replaces it. |
 
 ---
 
 ### Stage 3 — DAE (`rumoca-ir-dae`)
 
-**What it is:** A computable mathematical representation matching the MLS
-Appendix B canonical DAE. Modelica-specific operators have been eliminated.
-The result is a set of pure functions over the variable vector
+**What it is:** The computable MLS Appendix B canonical DAE after eliminating
+Modelica-specific operators: pure functions over
 `v := [p; t; ẋ; x; y; z; m; pre(z); pre(m)]`.
 
 **The four MLS B.1 functions:**
@@ -112,53 +108,65 @@ The result is a set of pure functions over the variable vector
 | ID   | Function           | Role                        |
 |------|--------------------|-----------------------------|
 | B.1a | `fx(v, c) = 0`    | Continuous DAE residual     |
-| B.1b | `fz(v, c) = 0`    | Discrete real update        |
-| B.1c | `fm(v, c) = 0`    | Discrete-valued update      |
+| B.1b | `fz(v, c) = 0`    | Coupled discrete Real residual |
+| B.1c | `m := fm(v, c)`   | Solved discrete-valued assignment |
 | B.1d | `fc(relation(v))` | Event conditions            |
 
-**DAE representation rule:** DAE is the lean canonical MLS Appendix B model,
-not a solver work cache. Variables stay partitioned by kind under
-`DaeVariables`; event behavior lives in `discrete`, `conditions`, `events`, and
-`clocks`. Serialized DAE exposes MLS/root template keys through serde
-flattening; Rust stays partitioned. The root `schema_version` is mandatory and
-unsupported versions are rejected.
+**DAE representation rule:** DAE is the canonical MLS Appendix B model, not a
+solver cache. One canonical variable catalog owns stable variable identity;
+typed views classify `p`, `x`, `y`, `z`, and `m`, while input/output causality
+is orthogonal metadata. Dedicated continuous, initialization, discrete,
+condition, event, and clock systems own their respective behavior. Schema
+version 11 is the only supported wire version; every other version is rejected
+without legacy readers or adapters.
 
-DAE fields represent Modelica semantics, source identity, or stable MLS Appendix
-B partitions. Backend products such as mass matrices, Jacobians, BLT orderings,
-tearing choices, state-selection reports, and scalarized variants belong in
-structural analysis results or Solve artifacts.
+Finalized DAE is valid by construction. Invariant-bearing fields are private,
+checked child constructors establish local expression/type/shape/domain
+contracts, and root construction establishes catalog membership and
+cross-object contracts. Production phases do not receive a weaker DAE-shaped
+draft and do not run a whole-root validation pass.
 
-`conditions.relations` owns MLS Appendix B relation surfaces. Runtime metadata
-passes must not rediscover roots from continuous equations. Non-Appendix-B
-runtime surfaces, such as numeric roots from `abs(...)` or `sign(...)`, belong
-in `events.synthetic_root_conditions`.
+`Dae::construct` lends sequential semantic-owner closures one generatively
+branded aggregate. All expressions use one DAE-wide dense arena with parallel
+node, provenance, and type columns plus packed variadic operands. Every source
+node carries its exact occurrence span; generated nodes carry typed generation
+and the nearest responsible source span.
 
-Optional same-version DAE fields may use `#[serde(default)]` only when absence
-has the same meaning as the default. Incompatible schema changes bump
-`schema_version`.
+DAE fields represent Modelica semantics, source identity, or stable Appendix B
+partitions. Mass matrices, Jacobians, BLT orderings, tearing choices,
+state-selection reports, and scalarized variants belong in structural results
+or Solve artifacts.
+
+The condition system independently owns typed relation and condition catalogs.
+Conditions refer to relation leaves by typed identity; relation and condition
+counts are not required to match. Runtime metadata passes must not rediscover
+roots from continuous equations. Non-Appendix-B event-generating numeric
+surfaces introduced by lowering belong to the event system as synthetic roots.
+The event-free MLS `abs(...)` and `sign(...)` functions do not create roots.
+
+Only private current-version wire records derive `Deserialize`. Decoding
+constructs checked children and then the checked root; derived counts and
+indexes are recomputed rather than accepted as wire inputs.
 
 **Contract:**
 
 | Rule | Where | Why |
 |---|---|---|
 | No source temporal operators (`pre`, `edge`, `change`, `sample`, `previous`) survive in f_x, f_z, f_m, f_c, relations, or initialization equations | DAE lowering rewrites them into Appendix B constructs: explicit `__pre__.*` inputs, relation/c variables, scheduled events, clock metadata, and ordinary equations over `v` | MLS Appendix B states the DAE as functions over `v` and `relation(v)`; source temporal operators are not computable DAE/Solve graph nodes |
-| No `der()` on RHS | derivatives flow via `dae.states` + equation structure | Inline `der()` would hide state identity |
+| `der(x)` denotes a state-derivative coordinate | MLS Appendix B includes `ẋ` in `v`; DAE keeps that coordinate explicit and structural analysis matches it to the owning state | Source derivative syntax must resolve to a declared state coordinate |
 | No `initial()` in f_x/f_z/f_m/f_c | initial phase is handled separately | Avoids mixing initialization into runtime equations |
-| `pre(z)` / `pre(m)` are `__pre__.*` entries in `dae.parameters` | runtime writes slots at event entry per Stage 4 (`SolveLayout::pre_param_bindings`) | The Modelica `pre()` operator exists only in AST and Flat |
-| `edge(b)` and `change(v)` are equations over current values and `__pre__.*` inputs | DAE lowering expands source operators before validation | Leaves no event operator for Solve lowering to interpret |
-| `sample(...)` and clocked `previous(...)` are represented by DAE event/clock metadata plus ordinary equations over current/pre slots | Runtime scheduling data is explicit DAE metadata; sampled values are `__pre__.*` reads where needed | Keeps clock semantics at DAE level while keeping compute functions ordinary |
-| `reinit(x, expr)` is lowered into guarded discrete state-update equations before DAE validation | DAE lowering converts state resets into ordinary Appendix B update equations over current/pre slots | Keeps state reset semantics in the numeric update system instead of exposing a source operator to runtimes |
+| `pre(z)` / `pre(m)` are typed coordinates paired with their current `z` / `m` identities | runtime writes their Solve slots at event entry, and clock-associated history only at its owning tick | `pre()` exists only in AST and Flat; MLS §16 `previous()` history must not advance at unrelated events |
+| `edge(b)` and `change(v)` are equations over typed current/pre coordinates | DAE lowering expands source operators before checked construction | Leaves no event operator for Solve lowering to interpret |
+| `sample(...)` and clocked `previous(...)` are represented by typed DAE event, clock, and temporal identities plus ordinary equations over current/history coordinates | Runtime scheduling data is explicit DAE ownership; `PreviousId` and typed pre coordinates retain the owning clock without generated-name recovery | Keeps clock semantics at DAE level, compute functions ordinary, and clock history advancing once per owning tick |
+| `terminal()` is represented by one typed `TerminalCoordinate` and terminal condition activation | The simulation driver writes the derived Solve slot only for the final event at the configured stop time | Preserves MLS §8.6 terminal-event behavior without embedding a phase-sensitive operator or generated parameter name in DAE graphs |
+| `delay(expr, delayTime[, delayMax])` is represented by a typed `DelayId` plus a checked delay owner containing the source and proof-bearing timing form | Solve lowering derives the runtime slot; the simulation runtime refreshes it from accepted-solution history before evaluating compute graphs | Keeps transport-delay state and interpolation in the runtime while enforcing MLS delay contracts at DAE construction |
+| `reinit(x, expr)` is lowered into checked guarded state updates during DAE construction | DAE lowering converts state resets into typed target/value updates over current/pre coordinates | Keeps state reset semantics in the event system instead of exposing a source operator to runtimes |
 | `assert(...)` and `terminate(...)` are represented as `events.event_actions`, not as residual/value expressions | DAE lowering converts integration-flow statements into guarded event actions with source spans | Keeps Appendix B compute graphs pure while preserving solver-visible runtime actions |
-| `appendix_b_validation` rejects any surviving source temporal operator | `phase-dae/src/appendix_b_validation.rs::validate_no_source_temporal_operator_survives` | Positive enforcement gate, not defensive code |
+| Checked DAE expression constructors cannot represent source temporal or flow-action operators | `rumoca-ir-dae` construction API | The Appendix-B boundary is enforced when a node is introduced, not by a later tree scan |
 
-**What to do here:** DAE-level passes such as pre-lowering and alias
-elimination; structural lowering/transformation such as index reduction and
-state selection; and structural analysis products that are returned separately
-from the DAE value.
-
-**What NOT to do here:** Register allocation, lowering expression trees to
-bytecode, FMI/MLIR template emission, or storing backend-specific solver
-artifacts in DAE.
+**Do here:** DAE lowering, structural transformation, and separately returned
+structural analysis. **Do not:** allocate registers, lower bytecode, emit
+templates, or store backend artifacts in DAE.
 
 **Prohibited:** mutable cache fields, merged variable-kind maps, solver row
 bytecode/layout, model-level `when_clauses`, and unlowered synchronous
@@ -168,14 +176,10 @@ operators in solver equation partitions.
 
 ### Stage 4 — Solve (`rumoca-ir-solve`)
 
-**What it is:** A register-machine representation of the DAE-IR functions.
-MLS B.1 functions lower into `ComputeBlock` graphs of scalar programs and
-tensor program nodes.
-Solve-IR does not add new mathematical content; it changes format. Tensor
-structure (matrix multiply, linear solve, affine stencils, future
-reductions/maps/broadcasts) is preserved as `ComputeNode` variants above the
-scalar layer so backends can choose scalar expansion or native tensor ops
-(BLAS/faer, Cranelift/LLVM kernels, CUDA, MLIR `linalg`).
+**What it is:** A register-machine format for DAE functions. MLS B.1 functions
+become `ComputeBlock` graphs of scalar programs and tensor nodes without new
+mathematical content. `ComputeNode` preserves matrix, stencil, reduction, map,
+and broadcast structure for native backends or scalar fallback.
 
 Canonical terminology:
 
@@ -186,25 +190,23 @@ Canonical terminology:
 | `TensorProgramNode` | `ComputeNode::{MatMul, LinSolve, AffineStencil, ...}` | A tensor-level kernel with explicit shape/layout metadata and scalar fallback |
 | `ComputeBlock` | `ComputeBlock` | Ordered mix of scalar program blocks and tensor program nodes |
 
-`ScalarProgramBlock` and `ComputeNode::ScalarPrograms` are the public source-code
-names. New Solve-IR APIs must use `ScalarProgram` / `ScalarProgramBlock`
-terminology and must not reintroduce `RowBlock` / `ScalarRows` naming.
+New Solve-IR APIs use `ScalarProgram` / `ScalarProgramBlock` terminology, not
+`RowBlock` / `ScalarRows`.
 
 `ComputeNode::AffineStencil` is source-proven: it comes from preserved DAE
 structured-family domains plus affine operand proofs. It carries the compact
 iteration domain and strides; Solve lowering must not recover stencils by
 scanning unstructured scalar rows after structured-family metadata is discarded.
 
-The root `schema_version` field is mandatory on serialized Solve payloads.
-Deserializers reject unsupported versions and the Solve wire format does not
-accept pre-versioned `ComputeBlock` row payloads.
+The root `schema_version` is mandatory on serialized Solve payloads.
+Deserializers reject unsupported versions and pre-versioned `ComputeBlock` row
+payloads.
 
 `SolveProblem` is the base lowered problem. Backend products that are expensive
-or not part of the canonical MLS DAE, such as mass-matrix form and
-Jacobian-vector scalar-program blocks, live in `SolveArtifacts` and are materialized by
-`rumoca-phase-solve` only when a backend/template/runtime boundary asks for
-them. Ordinary `lower_solve_problem` must not eagerly populate backend-specific
-Jacobian products.
+or outside the canonical MLS DAE (mass-matrix form, Jacobian-vector
+scalar-program blocks) live in `SolveArtifacts`, materialized by
+`rumoca-phase-solve` only when a backend/template/runtime boundary asks.
+`lower_solve_problem` must not eagerly populate them.
 
 **Contract:**
 
@@ -213,8 +215,9 @@ Jacobian products.
 | All ops are pure functions of `(y[], p[], t)`; only `LoadY`, `LoadP`, `Const`, math ops | No Modelica-specific ops remain |
 | No source temporal operators (`pre`, `edge`, `change`, `sample`, `previous`) in Solve-IR | Eliminated or represented as explicit DAE metadata before Solve lowering; surviving source temporal operators are upstream bugs |
 | No flow-action calls (`assert`, `terminate`, `reinit`) in Solve-IR scalar programs | `reinit` is already a guarded discrete update; `assert` and `terminate` lower from DAE `events.event_actions` into action metadata plus pure action-condition scalar programs |
-| `__pre__.*` parameters in `p[]` hold discrete/continuous pre-values | Runtime writes slots at event entry via `SolveLayout::pre_param_bindings` |
+| Solve slots projected from typed DAE pre/previous coordinates hold history values | Runtime writes event-owned pre slots at event entry and clock-owned history slots only when their `ClockId` ticks; generated display names do not define ownership |
 | Event timing is partitioned into root conditions, static arbitrary time instants, dynamic time-event rows, and periodic clock schedules | `events` owns zero-crossing and one-shot/dynamic time events; `clocks` owns periodic schedules derived from `sample`/clock metadata |
+| Terminal-event and transport-delay inputs use explicit runtime-managed P-slots | Solve metadata names and computes these inputs; numeric runtimes activate the terminal slot at the stop-time event and refresh delay slots from accepted-solution history |
 | Valid `ComputeBlock`s scalarize via fallible `rumoca-eval-solve::to_scalar_program_block(&block)` | Tensor-agnostic adapters call it and propagate span-bearing metadata errors |
 | Scalarization is a backend/evaluator choice, not an IR or lowering choice | Do not flatten tensor nodes in `rumoca-ir-solve` / `rumoca-phase-solve`; IR crates must not define scalarization helpers |
 | Forward and reverse AD products are Solve artifacts, not base Solve IR fields | Keeps base Solve payloads lean while allowing Rumoca-owned JVP/VJP/adjoint paths for runtime and generated targets |
@@ -236,11 +239,10 @@ rendering (those live in DAE-IR/upstream lowering, `rumoca-exec-*`, or
 
 ---
 
-## Key Invariants for Agents
+### Key Invariants for Agents
 
-1. **Source temporal operators are eliminated at the DAE boundary.** Any `pre`,
-   `edge`, `change`, `sample`, or `previous` callable expression past
-   `phase-dae` is a bug; Solve-IR is also free of these operators.
+1. **Eliminate source temporal operators at the DAE boundary.** Any callable
+   `pre`, `edge`, `change`, `sample`, or `previous` past `phase-dae` is a bug.
 
 1. **Runtime flow actions are not expression graph nodes.** DAE-IR lowers
    `reinit` into guarded updates and stores `assert`/`terminate` as guarded
@@ -257,11 +259,11 @@ rendering (those live in DAE-IR/upstream lowering, `rumoca-exec-*`, or
    Do not define scalarization helpers in IR crates, and do not
    flatten tensor nodes in `rumoca-phase-solve` lowering.
 
-4. **Each stage's output is serializable.** All IR types implement
-   `serde::Serialize` / `Deserialize`. Serialized DAE and Solve root payloads
-   carry a mandatory `schema_version`; deserializers reject unsupported
-   versions. `#[serde(default)]` is allowed only for documented optional
-   same-version fields where the default is semantically valid.
+4. **Each stage's output is serializable.** DAE and Solve roots carry mandatory
+   `schema_version`; unsupported versions are rejected. Compiler-owned wire
+   formats support only their current version; no legacy reader or migration
+   path is retained. Private wire decoders reconstruct checked stage values;
+   invariant-bearing IR children do not derive `Deserialize`.
 
 5. **The dependency direction is strictly downward.** AST → Flat → DAE → Solve.
    No stage imports from a later stage.
@@ -270,24 +272,24 @@ rendering (those live in DAE-IR/upstream lowering, `rumoca-exec-*`, or
    expression rewrites or new mathematical content in Solve-IR or solve
    lowering; add them to DAE-IR first.
 
-7. **Optional IR fields are explicit same-version omissions, not hidden work
-   caches.** DAE optional fields must still be canonical MLS/diagnostic data.
-   Solver-facing optional products belong in structural analysis results or
-   Solve artifacts. If a field changes the meaning of existing payloads, bump
-   `schema_version` instead of adding a defaulted field.
+7. **Optional IR fields are same-version omissions, not work caches.** DAE
+   optionals remain canonical MLS/diagnostic data; solver products belong in
+   structural results or Solve artifacts. Meaning changes bump `schema_version`.
 
-## Structural Lowering Scope
+### Structural Lowering Scope
 
 Rumoca performs OpenModelica-class structural lowering between DAE and Solve.
-Structural lowering is DAE-to-DAE: it rewrites or annotates mathematical
-structure for downstream lowering without changing IR stage. The supported
-transformations are listed here to keep scope and ownership clear.
+Structural lowering is DAE-to-DAE: each pass consumes a finalized DAE and
+returns another finalized DAE through root-owned checked changes. Partial
+mutation, independently replayable proof receipts, and mutable partition
+callbacks are prohibited. The supported transformations are listed here to
+keep scope and ownership clear.
 
 **In scope:**
 
 | Transformation | Owning module | Notes |
 |---|---|---|
-| Pre-lowering (`pre(v)` → `__pre__.v`) | `rumoca-phase-dae::pre_lowering` | Runs at DAE entry; applies to every partition (f_x, f_z, f_m, f_c). See Stage 3 Contract. |
+| Source pre-lowering (`pre(v)` → typed paired pre-coordinate) | `rumoca-phase-dae` | Runs before finalized DAE construction and applies to every Appendix-B partition. See Stage 3 Contract. |
 | Alias elimination | `rumoca-phase-dae` | Folds trivial equalities into the variable graph. |
 | Structural index reduction (Pantelides-style) | `rumoca-phase-structural` | For states without a `der(state)` equation, differentiate a non-ODE constraint referencing that state and substitute. Index-1 lift is supported; higher-index lifts are an explicit subset of Pantelides. |
 | State demotion | `rumoca-phase-structural` | Demote over-classified states whose derivative is structurally unreachable. |
@@ -314,7 +316,7 @@ accompany that DAE, but they are not stored as backend convenience fields on
 `ir-dae::Dae`. `rumoca-phase-solve` only lowers a finalized DAE to Solve-IR; it
 does not mutate DAE mathematical structure.
 
-## Relevant Specs
+## References
 
 - `SPEC_0029` — Crate boundary rules
 - `SPEC_0021` — Maintainability and deterministic collection rules

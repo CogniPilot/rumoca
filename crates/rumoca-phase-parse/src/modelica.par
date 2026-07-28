@@ -287,9 +287,8 @@ ident
 // ✅ S-ESCAPE = "\'" | "\"" | "\?" | "\\"
 //    | "\a" | "\b" | "\f" | "\n" | "\r" | "\t" | "\v"
 // ✅ STRING = """ { S-CHAR | S-ESCAPE } """ ;
-// Note: \\[\s\S] allows escape sequences including \<newline> for string continuation
 string
-    : /"([^"\\]|\\[\s\S])*"/
+    : /"([^"\\]|\\['"?\\abfnrtv])*"/
     ;
 
 // S-CHAR is any member of the Unicode character set
@@ -1073,7 +1072,7 @@ function_partial_application
 //✅ output-expression-list :
 //✅    [ expression ] { "," [ expression ] }
 output_expression_list
-    : [ expression ] { ','^ [ expression ] }
+    : [ expression ] { ',' [ expression ] }
     ;
 
 //✅ expression-list :

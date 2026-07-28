@@ -412,7 +412,7 @@ fn unsupported_galec_projection_diagnostic_points_at_source_expression() {
         "unsupported GALEC builtin should be rejected"
     );
     let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
-    assert!(stderr.contains("[ET017]"), "{stderr}");
+    assert!(stderr.contains("[EGT017]"), "{stderr}");
     assert!(stderr.contains("builtin:mod"), "{stderr}");
     assert!(
         stderr.contains("mod(3, 2)"),
@@ -672,7 +672,11 @@ fn container_checksum_web_recomputes_from_written_bytes() {
         );
         assert_eq!(
             entry.get("checksum").map(String::as_str),
-            Some(rumoca_galec_codegen::Sha1Hex::of_bytes(manifest_bytes).as_str()),
+            Some(
+                rumoca_galec_codegen::Sha1Hex::of_bytes(manifest_bytes)
+                    .to_hex()
+                    .as_str()
+            ),
             "__content.xml {name} checksum must be the SHA-1 of the written manifest.xml"
         );
         assert_eq!(
@@ -686,7 +690,7 @@ fn container_checksum_web_recomputes_from_written_bytes() {
     let alg_bytes = fs::read(container.alg_file()).expect("read .alg bytes");
     assert_eq!(
         sole_attribute_value(&container.ac_manifest(), "checksum"),
-        rumoca_galec_codegen::Sha1Hex::of_bytes(&alg_bytes).as_str(),
+        rumoca_galec_codegen::Sha1Hex::of_bytes(&alg_bytes).to_hex(),
         "AC manifest File checksum must be the SHA-1 of the written .alg"
     );
 
@@ -705,7 +709,11 @@ fn container_checksum_web_recomputes_from_written_bytes() {
         let code_bytes = fs::read(&path).expect("read code file bytes");
         assert_eq!(
             entry.get("checksum").map(String::as_str),
-            Some(rumoca_galec_codegen::Sha1Hex::of_bytes(&code_bytes).as_str()),
+            Some(
+                rumoca_galec_codegen::Sha1Hex::of_bytes(&code_bytes)
+                    .to_hex()
+                    .as_str()
+            ),
             "PC manifest File checksum for {name} must be the SHA-1 of the written bytes"
         );
     }
@@ -716,7 +724,11 @@ fn container_checksum_web_recomputes_from_written_bytes() {
     let reference = sole_element_attributes(&container.pc_manifest(), "ManifestReference");
     assert_eq!(
         reference.get("checksum").map(String::as_str),
-        Some(rumoca_galec_codegen::Sha1Hex::of_bytes(&ac_manifest_bytes).as_str()),
+        Some(
+            rumoca_galec_codegen::Sha1Hex::of_bytes(&ac_manifest_bytes)
+                .to_hex()
+                .as_str()
+        ),
         "PC ManifestReference checksum must be the SHA-1 of the written AC manifest"
     );
     assert_eq!(
@@ -1034,7 +1046,11 @@ fn rerunning_same_command_replaces_previous_container() {
         let manifest_bytes = fs::read(&manifest_path).expect("read replaced manifest");
         assert_eq!(
             entry.get("checksum").map(String::as_str),
-            Some(rumoca_galec_codegen::Sha1Hex::of_bytes(&manifest_bytes).as_str()),
+            Some(
+                rumoca_galec_codegen::Sha1Hex::of_bytes(&manifest_bytes)
+                    .to_hex()
+                    .as_str()
+            ),
             "the replaced container's {name} checksum must recompute from its own bytes"
         );
     }

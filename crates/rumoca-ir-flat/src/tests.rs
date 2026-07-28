@@ -105,6 +105,7 @@ fn make_der(var_name: &str) -> ast::Expression {
             span: DUMMY,
         },
         args: vec![make_var(var_name)],
+        is_partial_application: false,
         span: DUMMY,
     }
 }
@@ -292,6 +293,7 @@ fn test_function_call_named_arguments_preserved_as_internal_named_args() {
             make_named_arg("PRef", make_int(410)),
             make_named_arg("VRef", make_int(388)),
         ],
+        is_partial_application: false,
         span: DUMMY,
     };
 
@@ -508,6 +510,26 @@ fn test_unbound_fixed_parameters_detects_missing_bindings() {
 }
 
 #[test]
+fn test_unbound_fixed_parameters_ignore_zero_sized_parameters() {
+    let mut flat = Model::new();
+    let mut empty = make_parameter_var("p_empty", None, false);
+    empty.dims = vec![0, 3];
+    flat.add_variable(VarName::new("p_empty"), empty);
+
+    assert!(!flat.has_unbound_fixed_parameters());
+    assert!(flat.unbound_fixed_parameters().is_empty());
+
+    let mut nonempty = make_parameter_var("p_nonempty", None, false);
+    nonempty.dims = vec![1];
+    flat.add_variable(VarName::new("p_nonempty"), nonempty);
+    assert!(flat.has_unbound_fixed_parameters());
+    assert_eq!(
+        flat.unbound_fixed_parameters(),
+        vec![VarName::new("p_nonempty")]
+    );
+}
+
+#[test]
 fn test_extract_algorithm_outputs_drops_assignment_subscripts() {
     let stmts = vec![Statement::Assignment {
         comp: ComponentReference {
@@ -547,7 +569,7 @@ fn test_extract_algorithm_outputs_keeps_function_call_targets() {
             def_id: None,
         },
         args: Vec::new(),
-        outputs: vec![ComponentReference {
+        outputs: vec![Some(ComponentReference {
             local: false,
             span: rumoca_core::Span::DUMMY,
             parts: vec![ComponentRefPart {
@@ -556,7 +578,7 @@ fn test_extract_algorithm_outputs_keeps_function_call_targets() {
                 subs: vec![Subscript::generated_index(2, rumoca_core::Span::DUMMY)],
             }],
             def_id: None,
-        }],
+        })],
         span: rumoca_core::Span::DUMMY,
     }];
 

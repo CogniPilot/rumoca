@@ -471,7 +471,7 @@ fn eval_stmt_list(
 fn eval_fn_call_stmt(
     comp: &ComponentReference,
     args: &[Expression],
-    outputs: &[ComponentReference],
+    outputs: &[Option<ComponentReference>],
     env: &mut FunctionEnv,
     eval: &EvalState<'_>,
 ) -> Result<FlowControl, EvalError> {
@@ -499,7 +499,7 @@ fn eval_fn_call_stmt(
 
 /// Assign function outputs to variables.
 fn assign_fn_outputs(
-    outputs: &[ComponentReference],
+    outputs: &[Option<ComponentReference>],
     result: Value,
     env: &mut FunctionEnv,
     eval: &EvalState<'_>,
@@ -508,7 +508,13 @@ fn assign_fn_outputs(
         Value::Array(arr) if arr.len() == outputs.len() => {
             assign_multiple_outputs(outputs, arr, env, eval)
         }
-        _ if outputs.len() == 1 => assign_single_output(&outputs[0], result, env, eval),
+        _ if outputs.len() == 1 => {
+            if let Some(output) = &outputs[0] {
+                assign_single_output(output, result, env, eval)
+            } else {
+                Ok(())
+            }
+        }
         _ => Err(EvalError::function_error(
             format!(
                 "function output count mismatch: expected {}, got {:?}",
@@ -522,12 +528,15 @@ fn assign_fn_outputs(
 
 /// Assign multiple outputs from array result.
 fn assign_multiple_outputs(
-    outputs: &[ComponentReference],
+    outputs: &[Option<ComponentReference>],
     arr: &[Value],
     env: &mut FunctionEnv,
     eval: &EvalState<'_>,
 ) -> Result<(), EvalError> {
     for (output, val) in outputs.iter().zip(arr.iter()) {
+        let Some(output) = output else {
+            continue;
+        };
         let name = component_ref_to_name(output);
         if !env.set(&name, val.clone()) {
             return Err(EvalError::function_error(
@@ -782,7 +791,7 @@ fn eval_binary(
 ) -> Result<Value, EvalError> {
     let lhs_val = eval_expr_in_function(lhs, env, eval)?;
     let rhs_val = eval_expr_in_function(rhs, env, eval)?;
-    super::eval_binary_op(op, &lhs_val, &rhs_val, eval.span)
+    super::operators::eval_binary_op(op, &lhs_val, &rhs_val, eval.span)
 }
 
 /// Evaluate a unary expression.
@@ -793,7 +802,7 @@ fn eval_unary(
     eval: &EvalState<'_>,
 ) -> Result<Value, EvalError> {
     let rhs_val = eval_expr_in_function(rhs, env, eval)?;
-    super::eval_unary_op(op, &rhs_val, eval.span)
+    super::operators::eval_unary_op(op, &rhs_val, eval.span)
 }
 
 /// Evaluate a function call expression.
@@ -1040,20 +1049,9 @@ fn eval_range_values(
             return Err(EvalError::range_error("step cannot be zero", span));
         }
 
-        let mut values = Vec::new();
-        let mut i = s;
-        if step_int > 0 {
-            while i <= e {
-                values.push(Value::Integer(i));
-                i += step_int;
-            }
-        } else {
-            while i >= e {
-                values.push(Value::Integer(i));
-                i += step_int;
-            }
-        }
-        return Ok(Value::Array(values));
+        return Ok(Value::Array(super::range_eval::collect_int_range(
+            s, e, step_int,
+        )));
     }
 
     // Real range
@@ -1073,21 +1071,14 @@ fn eval_range_values(
     if step_f == 0.0 {
         return Err(EvalError::range_error("step cannot be zero", span));
     }
-
-    let mut values = Vec::new();
-    let mut v = s;
-    if step_f > 0.0 {
-        while v <= e + f64::EPSILON {
-            values.push(Value::Real(v));
-            v += step_f;
-        }
-    } else {
-        while v >= e - f64::EPSILON {
-            values.push(Value::Real(v));
-            v += step_f;
-        }
+    if !s.is_finite() || !e.is_finite() || !step_f.is_finite() {
+        return Err(EvalError::range_error(
+            "range bounds and step must be finite",
+            span,
+        ));
     }
-    Ok(Value::Array(values))
+
+    super::range_eval::collect_real_range(s, e, step_f, span).map(Value::Array)
 }
 
 /// Convert a ComponentReference to a simple name string.

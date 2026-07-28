@@ -11,6 +11,7 @@ residual_equations = true
 scalar_fallback = true
 initialization = true
 events = true
+runtime_events = false
 forward_ad = true
 dynamic_control_flow = true
 

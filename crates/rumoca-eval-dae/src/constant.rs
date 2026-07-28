@@ -97,6 +97,17 @@ where
         }
         Expression::BuiltinCall { function, args, .. } => eval_builtin(*function, args, lookup),
         Expression::FunctionCall { name, args, .. } => {
+            // A reference that resolved to a declared function instance denotes
+            // THAT function, never a builtin whose name happens to match its
+            // last segment. Genuine builtins arrive as `Expression::BuiltinCall`.
+            // Folding `Modelica.ComplexMath.exp(Complex(0, phi))` as the scalar
+            // real `exp` would be a silent wrong answer, and the same collision
+            // exists for `ComplexMath.abs`, `ComplexMath.sqrt` and any user
+            // function sharing a builtin's leaf name. Declining to fold is
+            // always safe; folding the wrong function is not.
+            if name.resolved_function().is_some() {
+                return None;
+            }
             eval_named_function(name.last_segment(), args, lookup)
         }
         Expression::If {

@@ -294,7 +294,8 @@ pub(super) fn scope_key_direct_child_suffix(
             ComponentReferenceKey::Source { parts: prefix, .. },
         ) => {
             let suffix = parts.strip_prefix(prefix.as_slice())?;
-            (suffix.len() == 1 && suffix[0].subscripts.is_empty()).then(|| suffix[0].ident.clone())
+            (suffix.len() == 1 && suffix[0].subscripts.is_empty())
+                .then(|| suffix[0].ident.as_str().to_string())
         }
         _ => None,
     }

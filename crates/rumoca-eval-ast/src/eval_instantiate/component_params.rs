@@ -1,14 +1,10 @@
 use super::{
     ConditionEvalEnv, InstantiateEvalCtx, ast, eval_scoped_string_condition_with_depth,
     get_enum_value_with_depth, resolve_component_ref_expr, try_eval_bool_literal,
-    try_eval_integer_expr_with_depth,
+    try_eval_integer_expr_with_depth, try_eval_real_expr_with_known,
 };
 use rumoca_ir_ast::AstIndexMap as IndexMap;
 use rustc_hash::FxHashMap;
-
-pub(super) fn component_condition_value_expr(comp: &ast::Component) -> &ast::Expression {
-    comp.binding.as_ref().unwrap_or(&comp.start)
-}
 
 /// Try to extract a string from an expression.
 pub fn expr_to_string(expr: &ast::Expression) -> Option<String> {
@@ -37,8 +33,12 @@ pub fn expr_to_string(expr: &ast::Expression) -> Option<String> {
     }
 }
 
-/// Try to evaluate an expression to a string/enum value without falling back to
-/// unresolved component references.
+/// Try to evaluate an expression to a `String` value (MLS §4.9).
+///
+/// Only a genuine `String` literal — directly, or reached through references
+/// that resolve to one — is returned. An enumeration literal keeps its
+/// enumeration identity and is not rewritten as text, and a reference this
+/// phase cannot resolve stays unknown rather than becoming its own spelling.
 pub fn try_eval_string_expr(ctx: &InstantiateEvalCtx, expr: &ast::Expression) -> Option<String> {
     let InstantiateEvalCtx {
         tree,
@@ -46,7 +46,7 @@ pub fn try_eval_string_expr(ctx: &InstantiateEvalCtx, expr: &ast::Expression) ->
         effective_components,
         resolve_class_components,
     } = ctx;
-    let value = get_enum_value_with_depth(
+    get_enum_value_with_depth(
         expr,
         mod_env,
         effective_components,
@@ -54,13 +54,8 @@ pub fn try_eval_string_expr(ctx: &InstantiateEvalCtx, expr: &ast::Expression) ->
         *resolve_class_components,
         None,
         0,
-    )?;
-    if let ast::Expression::ComponentReference(comp_ref) = expr
-        && value == comp_ref.to_string()
-    {
-        return None;
-    }
-    Some(value)
+    )?
+    .into_string_literal()
 }
 
 /// Evaluate an MLS predefined `StateSelect` attribute expression.
@@ -196,17 +191,12 @@ pub fn extract_binding(
     // Check if the component has an explicit binding from declaration
     // Use the dedicated `binding` field which preserves the binding even when
     // there's a separate start= modifier (e.g., `Real v(start=V0) = p.v - n.v`)
+    //
+    // MLS §4.9: `start` is an initialization attribute, not a binding equation,
+    // so there is deliberately no fallback to it here — a component without a
+    // binding contributes no binding equation.
     if let Some(binding) = &comp.binding {
         return (Some(binding.clone()), false, None);
-    }
-
-    // Fallback: check start when has_explicit_binding is true
-    // Handles code paths where binding may not be populated (e.g. modification-only declarations)
-    if comp.has_explicit_binding
-        && !comp.start_is_modification
-        && !matches!(comp.start, ast::Expression::Empty { .. })
-    {
-        return (Some(comp.start.clone()), false, None);
     }
 
     (None, false, None)
@@ -234,6 +224,38 @@ pub fn extract_bool_params_with_mods(
             return None;
         }
         try_eval_bool_literal(expr)
+    })
+}
+
+/// Extract scalar Real parameter values from a class's components (MLS §4.4.5).
+///
+/// Conditional-component conditions compare Real parameters — `Parts.Body` gates
+/// its `sphere` visualiser on `sphereDiameter > 0` — so an `inner` class's Real
+/// parameters must be known before a nested `outer` reference reads them.
+///
+/// Only scalar `parameter`/`constant` declarations whose value expression folds to
+/// a finite Real are recorded; anything else stays absent rather than acquiring a
+/// substitute value (SPEC_0008). Array declarations are excluded because a single
+/// dotted key cannot name one of their elements.
+///
+/// `known` supplies values already settled for this class — the modifications an
+/// enclosing scope wrote on the instance — so a declaration derived from a
+/// modified parameter (`defaultBodyDiameter = nominalLength/9`) folds against the
+/// modified value rather than the class default it replaced (MLS §7.2).
+pub fn extract_real_params_with_mods(
+    ctx: &InstantiateEvalCtx,
+    known: &FxHashMap<String, f64>,
+) -> FxHashMap<String, f64> {
+    extract_params_with_mods(ctx.effective_components, ctx.mod_env, |comp, expr| {
+        if !matches!(
+            comp.variability,
+            rumoca_core::Variability::Parameter(_) | rumoca_core::Variability::Constant(_)
+        ) || !comp.shape.is_empty()
+            || !comp.shape_expr.is_empty()
+        {
+            return None;
+        }
+        try_eval_real_expr_with_known(ctx, expr, known)
     })
 }
 
@@ -335,23 +357,20 @@ where
 
 /// Return the declaration-side value expression for structural evaluation.
 ///
-/// MLS §4.4.4 / §7.2: structural parameter values come from declaration bindings
-/// (`x = expr`) and applied modifications; `start` is only an initialization
-/// attribute for simulation variables and should be secondary for compile-time shape.
+/// MLS §4.4.4 / §7.2: a component's value comes from its declaration binding
+/// (`x = expr`) or from an applied modification. MLS §4.9 makes `start` an
+/// initial *guess* for a simulation variable, never a value, and the parser
+/// seeds `start` with the declared type's default (`0`, `0.0`, `false`) for
+/// every component — so reading it here would answer "what is this parameter?"
+/// with a number the model never wrote.
+///
+/// A component with no binding therefore has no compile-time value and this
+/// returns `None` (SPEC_0008: recovery by substituting an invented value is
+/// prohibited). Callers must treat `None` as undecidable.
 pub(crate) fn component_expr_for_structural_eval(
     comp: &ast::Component,
 ) -> Option<&ast::Expression> {
-    if let Some(binding) = comp.binding.as_ref() {
-        return Some(binding);
-    }
-    if comp.has_explicit_binding
-        && !comp.start_is_modification
-        && !matches!(comp.start, ast::Expression::Empty { .. })
-    {
-        return Some(&comp.start);
-    }
-    (!comp.start_is_modification && !matches!(comp.start, ast::Expression::Empty { .. }))
-        .then_some(&comp.start)
+    comp.binding.as_ref()
 }
 
 /// Generate enclosing-scope lookup paths for a dotted reference.
@@ -387,32 +406,98 @@ pub fn propagate_record_alias_integer_params(
             if alias_name == target_name {
                 continue;
             }
-
-            if let Some(value) = int_params.get(target_name).copied() {
-                let prev = int_params.insert(alias_name.clone(), value);
-                changed |= prev != Some(value);
-            }
-
-            let target_prefix = format!("{target_name}.");
-            let alias_prefix = format!("{alias_name}.");
-            let propagated: Vec<_> = int_params
-                .iter()
-                .filter_map(|(key, value)| {
-                    key.strip_prefix(&target_prefix)
-                        .map(|suffix| (format!("{alias_prefix}{suffix}"), *value))
-                })
-                .collect();
-
-            for (key, value) in propagated {
-                let prev = int_params.insert(key, value);
-                changed |= prev != Some(value);
-            }
+            changed |= propagate_integer_alias(int_params, alias_name, target_name);
         }
 
         if !changed {
             break;
         }
     }
+}
+
+/// Propagate record-field integer values through modifier aliases using the
+/// modifier's lexical source scope.
+///
+/// A nested instance can contain a textual modifier such as
+/// `cellData = cellData`, where the left-hand name belongs to the nested
+/// instance and the right-hand name belongs to an enclosing scope. The
+/// `ModificationValue::source_scope` metadata distinguishes those paths.
+pub fn propagate_scoped_record_alias_integer_params(
+    int_params: &mut FxHashMap<String, i64>,
+    mod_env: &ast::ModificationEnvironment,
+    instance_scope: &ast::QualifiedName,
+) {
+    let aliases = collect_scoped_record_aliases(mod_env, instance_scope);
+    if aliases.is_empty() {
+        return;
+    }
+
+    const MAX_ALIAS_PROPAGATION_PASSES: usize = 8;
+    for _ in 0..MAX_ALIAS_PROPAGATION_PASSES {
+        let mut changed = false;
+        for (alias_name, target_name) in &aliases {
+            if alias_name == target_name {
+                continue;
+            }
+            changed |= propagate_integer_alias(int_params, alias_name, target_name);
+        }
+        if !changed {
+            break;
+        }
+    }
+}
+
+fn collect_scoped_record_aliases(
+    mod_env: &ast::ModificationEnvironment,
+    instance_scope: &ast::QualifiedName,
+) -> Vec<(String, String)> {
+    let mut aliases = Vec::new();
+    for (target_qn, mod_value) in &mod_env.active {
+        if target_qn.parts.len() != 1 {
+            continue;
+        }
+        let source_expr = mod_value.source.as_ref().unwrap_or(&mod_value.value);
+        let ast::Expression::ComponentReference(comp_ref) = source_expr else {
+            continue;
+        };
+        let Some(target_relative) = component_ref_to_dotted_no_subscripts(comp_ref) else {
+            continue;
+        };
+        let alias_name = instance_scope.join(target_qn).to_flat_string();
+        let target_scope = mod_value.source_scope.as_ref().unwrap_or(instance_scope);
+        let target_name = target_scope
+            .join(&ast::QualifiedName::from_dotted(&target_relative))
+            .to_flat_string();
+        aliases.push((alias_name, target_name));
+    }
+    aliases
+}
+
+fn propagate_integer_alias(
+    int_params: &mut FxHashMap<String, i64>,
+    alias_name: &str,
+    target_name: &str,
+) -> bool {
+    let mut changed = false;
+    if let Some(value) = int_params.get(target_name).copied() {
+        let previous = int_params.insert(alias_name.to_string(), value);
+        changed |= previous != Some(value);
+    }
+
+    let target_prefix = format!("{target_name}.");
+    let alias_prefix = format!("{alias_name}.");
+    let propagated = int_params
+        .iter()
+        .filter_map(|(key, value)| {
+            key.strip_prefix(&target_prefix)
+                .map(|suffix| (format!("{alias_prefix}{suffix}"), *value))
+        })
+        .collect::<Vec<_>>();
+    for (key, value) in propagated {
+        let previous = int_params.insert(key, value);
+        changed |= previous != Some(value);
+    }
+    changed
 }
 
 fn collect_record_aliases(mod_env: &ast::ModificationEnvironment) -> Vec<(String, String)> {
@@ -475,6 +560,9 @@ mod tests {
         }
     }
 
+    /// A component carrying `value` only in its `start` attribute — the shape
+    /// the parser produces for `parameter Boolean b;` (MLS §4.9 default start)
+    /// and for `parameter Boolean b(start = value);`.
     fn bool_param_with_start(name: &str, type_name: &str, value: bool) -> ast::Component {
         ast::Component {
             name: name.to_string(),
@@ -496,28 +584,43 @@ mod tests {
         }
     }
 
+    fn component_ref_expr(name: &str) -> ast::Expression {
+        ast::Expression::ComponentReference(ast::ComponentReference {
+            local: false,
+            parts: vec![ast::ComponentRefPart {
+                ident: rumoca_core::Token {
+                    text: Arc::from(name),
+                    ..Default::default()
+                },
+                subs: None,
+            }],
+            def_id: None,
+            span: rumoca_core::Span::DUMMY,
+        })
+    }
+
     #[test]
     fn bool_param_extraction_requires_boolean_type_segment() {
         let mut components = IndexMap::default();
         components.insert(
             "plain".to_string(),
-            bool_param_with_start("plain", "Boolean", true),
+            bool_param_with_binding("plain", "Boolean", true),
         );
         components.insert(
             "qualified".to_string(),
-            bool_param_with_start("qualified", "Modelica.Boolean", false),
+            bool_param_with_binding("qualified", "Modelica.Boolean", false),
         );
         components.insert(
             "nested".to_string(),
-            bool_param_with_start("nested", "Pkg.Types.Boolean", true),
+            bool_param_with_binding("nested", "Pkg.Types.Boolean", true),
         );
         components.insert(
             "prefix_lookalike".to_string(),
-            bool_param_with_start("prefix_lookalike", "MyBoolean", true),
+            bool_param_with_binding("prefix_lookalike", "MyBoolean", true),
         );
         components.insert(
             "suffix_lookalike".to_string(),
-            bool_param_with_start("suffix_lookalike", "Pkg.BooleanAlias", true),
+            bool_param_with_binding("suffix_lookalike", "Pkg.BooleanAlias", true),
         );
 
         let bool_params =
@@ -528,6 +631,39 @@ mod tests {
         assert_eq!(bool_params.get("nested"), Some(&true));
         assert!(!bool_params.contains_key("prefix_lookalike"));
         assert!(!bool_params.contains_key("suffix_lookalike"));
+    }
+
+    /// MLS §4.9: `start` is an initial guess, not a value. The parser seeds
+    /// every `Boolean` declaration with `start = false`, so reading it would
+    /// invent `false` for a parameter the model never bound (SPEC_0008).
+    #[test]
+    fn bool_param_extraction_ignores_start_attribute_value() {
+        let mut components = IndexMap::default();
+        components.insert(
+            "unbound".to_string(),
+            bool_param_with_start("unbound", "Boolean", false),
+        );
+
+        let bool_params =
+            extract_bool_params_with_mods(&components, &ast::ModificationEnvironment::new());
+
+        assert!(!bool_params.contains_key("unbound"));
+    }
+
+    /// A `start = expr` modifier alongside a binding must not shadow the
+    /// binding (MLS §4.4.4: the binding equation supplies the value).
+    #[test]
+    fn bool_param_extraction_prefers_binding_over_start_modifier() {
+        let mut components = IndexMap::default();
+        let mut comp = bool_param_with_binding("useHeatPort", "Boolean", true);
+        comp.start = bool_literal(false);
+        comp.start_is_modification = true;
+        components.insert("useHeatPort".to_string(), comp);
+
+        let bool_params =
+            extract_bool_params_with_mods(&components, &ast::ModificationEnvironment::new());
+
+        assert_eq!(bool_params.get("useHeatPort"), Some(&true));
     }
 
     #[test]
@@ -555,5 +691,31 @@ mod tests {
             extract_bool_params_with_mods(&components, &ast::ModificationEnvironment::new());
 
         assert!(!bool_params.contains_key("useHeatPort"));
+    }
+
+    #[test]
+    fn scoped_record_alias_uses_modifier_source_scope() {
+        let source = component_ref_expr("cellData");
+        let mut mod_env = ast::ModificationEnvironment::new();
+        mod_env.add(
+            ast::QualifiedName::from_ident("cellData"),
+            ast::ModificationValue::with_source_scope(
+                source.clone(),
+                Some(source),
+                Some(ast::QualifiedName::new()),
+            ),
+        );
+        let mut int_params = FxHashMap::from_iter([
+            ("cellData.nRC".to_string(), 2),
+            ("cell.cell.cellData.nRC".to_string(), 1),
+        ]);
+
+        propagate_scoped_record_alias_integer_params(
+            &mut int_params,
+            &mod_env,
+            &ast::QualifiedName::from_dotted("cell.cell"),
+        );
+
+        assert_eq!(int_params.get("cell.cell.cellData.nRC"), Some(&2));
     }
 }

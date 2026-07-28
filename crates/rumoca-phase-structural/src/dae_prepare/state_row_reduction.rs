@@ -10,10 +10,11 @@ fn state_has_any_equation_reference(dae: &Dae, state_name: &VarName) -> bool {
 
 fn state_has_any_derivative_reference(dae: &Dae, state_name: &VarName) -> bool {
     let bindings = structural_scalar_bindings(dae);
+    let matcher = DerivativeNameMatcher::from_var_names([state_name]);
     dae.continuous
         .equations
         .iter()
-        .any(|eq| expr_contains_active_exact_der_of_state(&eq.rhs, state_name, &bindings))
+        .any(|eq| expr_contains_active_derivative(&eq.rhs, &matcher, &bindings))
 }
 
 fn try_match_state_to_row(
@@ -42,15 +43,23 @@ fn try_match_state_to_row(
 
 fn states_with_assignable_derivative_rows(dae: &Dae, state_names: &[VarName]) -> HashSet<usize> {
     let bindings = structural_scalar_bindings(dae);
+    let all_state_matcher = DerivativeNameMatcher::from_var_names(state_names);
     let state_to_rows: Vec<Vec<usize>> = state_names
         .iter()
         .map(|state_name| {
+            let state_matcher = DerivativeNameMatcher::from_var_names([state_name]);
             dae.continuous
                 .equations
                 .iter()
                 .enumerate()
                 .filter_map(|(row_idx, eq)| {
-                    if !state_derivative_row_is_assignable(eq, state_name, state_names, &bindings) {
+                    if !state_derivative_row_is_assignable(
+                        eq,
+                        state_name,
+                        &state_matcher,
+                        &all_state_matcher,
+                        &bindings,
+                    ) {
                         return None;
                     }
                     if let Some(alias) = try_extract_derivative_alias(eq, state_name)
@@ -83,16 +92,17 @@ fn states_with_assignable_derivative_rows(dae: &Dae, state_names: &[VarName]) ->
 fn state_derivative_row_is_assignable(
     eq: &Equation,
     state_name: &VarName,
-    state_names: &[VarName],
+    state_matcher: &DerivativeNameMatcher,
+    all_state_matcher: &DerivativeNameMatcher,
     bindings: &HashMap<String, f64>,
 ) -> bool {
-    if !all_active_derivative_args_are_states(&eq.rhs, state_names, bindings)
-        || !expr_contains_active_exact_der_of_state(&eq.rhs, state_name, bindings)
+    if !all_active_derivative_args_are_states(&eq.rhs, all_state_matcher, bindings)
+        || !expr_contains_active_derivative(&eq.rhs, state_matcher, bindings)
     {
         return false;
     }
     if let Some(value) = try_extract_der_value(&eq.rhs, state_name)
-        && expr_contains_active_exact_der_of_state(&value, state_name, bindings)
+        && expr_contains_active_derivative(&value, state_matcher, bindings)
     {
         return false;
     }
@@ -107,15 +117,47 @@ pub(super) fn expression_is_smooth_for_index_reduction(
     let mut checker = IndexReductionSmoothness {
         dae,
         bindings,
+        event_branches: EventBranches::Reject,
         smooth: true,
     };
     checker.visit_expression(expr);
     checker.smooth
 }
 
+/// Whether every value branch of an explicit conditional trajectory is smooth.
+///
+/// Direct state demotion does not differentiate an equation constraint across
+/// an event surface. It replaces `der(x)` after a total equation has already
+/// established `x = if c then a else b`, so Modelica's event semantics hold
+/// `c` fixed while selecting `der(a)` or `der(b)`. The certificate required
+/// here is therefore branch-local: every possible value must be
+/// differentiable, while the event predicate itself is deliberately not
+/// differentiated.
+pub(super) fn expression_has_piecewise_smooth_values(
+    expr: &Expression,
+    dae: &Dae,
+    bindings: &HashMap<String, f64>,
+) -> bool {
+    let mut checker = IndexReductionSmoothness {
+        dae,
+        bindings,
+        event_branches: EventBranches::AcceptValues,
+        smooth: true,
+    };
+    checker.visit_expression(expr);
+    checker.smooth
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EventBranches {
+    Reject,
+    AcceptValues,
+}
+
 struct IndexReductionSmoothness<'a> {
     dae: &'a Dae,
     bindings: &'a HashMap<String, f64>,
+    event_branches: EventBranches,
     smooth: bool,
 }
 
@@ -140,6 +182,13 @@ impl ExpressionVisitor for IndexReductionSmoothness<'_> {
     }
 
     fn visit_if(&mut self, branches: &[(Expression, Expression)], else_branch: &Expression) {
+        if self.event_branches == EventBranches::AcceptValues {
+            for (_, value) in branches {
+                self.visit_expression(value);
+            }
+            self.visit_expression(else_branch);
+            return;
+        }
         for (condition, value) in branches {
             match eval_static_bool(condition, self.bindings) {
                 Some(true) => {
@@ -147,6 +196,9 @@ impl ExpressionVisitor for IndexReductionSmoothness<'_> {
                     return;
                 }
                 Some(false) => continue,
+                None if condition_is_time_invariant(condition, self.dae) => {
+                    self.visit_expression(value);
+                }
                 None => {
                     self.smooth = false;
                     return;
@@ -157,13 +209,21 @@ impl ExpressionVisitor for IndexReductionSmoothness<'_> {
     }
 }
 
-fn expr_contains_active_exact_der_of_state(
+fn condition_is_time_invariant(condition: &Expression, dae: &Dae) -> bool {
+    let mut references = Vec::new();
+    condition.collect_var_refs(&mut references);
+    references.into_iter().all(|name| {
+        dae.variables.parameters.contains_key(&name) || dae.variables.constants.contains_key(&name)
+    })
+}
+
+fn expr_contains_active_derivative(
     expr: &Expression,
-    state_name: &VarName,
+    matcher: &DerivativeNameMatcher,
     bindings: &HashMap<String, f64>,
 ) -> bool {
-    let mut checker = ExactStateDerivativeChecker {
-        state_name,
+    let mut checker = ActiveDerivativeChecker {
+        matcher,
         bindings,
         found: false,
     };
@@ -171,13 +231,13 @@ fn expr_contains_active_exact_der_of_state(
     checker.found
 }
 
-struct ExactStateDerivativeChecker<'a> {
-    state_name: &'a VarName,
+struct ActiveDerivativeChecker<'a> {
+    matcher: &'a DerivativeNameMatcher,
     bindings: &'a HashMap<String, f64>,
     found: bool,
 }
 
-impl ExpressionVisitor for ExactStateDerivativeChecker<'_> {
+impl ExpressionVisitor for ActiveDerivativeChecker<'_> {
     fn visit_expression(&mut self, expr: &Expression) {
         if !self.found {
             self.walk_expression(expr);
@@ -188,7 +248,7 @@ impl ExpressionVisitor for ExactStateDerivativeChecker<'_> {
         if *function == BuiltinFunction::Der
             && args
                 .first()
-                .is_some_and(|arg| derivative_arg_matches_state(arg, self.state_name))
+                .is_some_and(|arg| self.matcher.expression_refers_to_match(arg))
         {
             self.found = true;
             return;
@@ -216,22 +276,13 @@ impl ExpressionVisitor for ExactStateDerivativeChecker<'_> {
     }
 }
 
-fn derivative_arg_matches_state(expr: &Expression, state_name: &VarName) -> bool {
-    let Some(exact_name) = expression_exact_name(expr) else {
-        return false;
-    };
-    exact_name == state_name.as_str()
-        || rumoca_core::parse_scalar_name(&exact_name)
-            .is_some_and(|scalar| scalar.base == state_name.as_str())
-}
-
 fn all_active_derivative_args_are_states(
     expr: &Expression,
-    state_names: &[VarName],
+    state_matcher: &DerivativeNameMatcher,
     bindings: &HashMap<String, f64>,
 ) -> bool {
     let mut checker = DerivativeArgsAreStatesChecker {
-        state_names,
+        state_matcher,
         bindings,
         all_are_states: true,
     };
@@ -240,7 +291,7 @@ fn all_active_derivative_args_are_states(
 }
 
 struct DerivativeArgsAreStatesChecker<'a> {
-    state_names: &'a [VarName],
+    state_matcher: &'a DerivativeNameMatcher,
     bindings: &'a HashMap<String, f64>,
     all_are_states: bool,
 }
@@ -254,11 +305,9 @@ impl ExpressionVisitor for DerivativeArgsAreStatesChecker<'_> {
 
     fn visit_builtin_call(&mut self, function: &BuiltinFunction, args: &[Expression]) {
         if *function == BuiltinFunction::Der {
-            let is_state_derivative = args.first().is_some_and(|arg| {
-                self.state_names
-                    .iter()
-                    .any(|state_name| derivative_arg_matches_state(arg, state_name))
-            });
+            let is_state_derivative = args
+                .first()
+                .is_some_and(|arg| self.state_matcher.expression_refers_to_match(arg));
             if !is_state_derivative {
                 self.all_are_states = false;
             }
@@ -287,7 +336,7 @@ impl ExpressionVisitor for DerivativeArgsAreStatesChecker<'_> {
     }
 }
 
-fn expression_exact_name(expr: &Expression) -> Option<String> {
+pub(super) fn expression_exact_name(expr: &Expression) -> Option<String> {
     match expr {
         Expression::VarRef {
             name, subscripts, ..
@@ -387,8 +436,22 @@ pub fn demote_states_without_derivative_refs(dae: &mut Dae) -> usize {
 /// The simulator's ODE row ordering needs at least one assignable derivative
 /// equation per retained state. We compute a maximum bipartite matching between
 /// states and derivative-bearing rows; unmatched states are demoted to
-/// algebraics.
-pub fn demote_states_without_assignable_derivative_rows(dae: &mut Dae) -> usize {
+/// algebraics. Each demotion round immediately normalizes derivatives of those
+/// newly algebraic targets before computing another matching: otherwise one
+/// legitimate dummy-state demotion can make a coupled derivative row appear
+/// unusable and incorrectly cascade into demoting every state in that row.
+pub fn demote_states_without_assignable_derivative_rows(
+    dae: &mut Dae,
+) -> Result<usize, StructuralError> {
+    let mut reduced = super::copy_accounting::clone_dae(dae);
+    let total_demoted = demote_states_without_assignable_derivative_rows_in_place(&mut reduced)?;
+    *dae = reduced;
+    Ok(total_demoted)
+}
+
+fn demote_states_without_assignable_derivative_rows_in_place(
+    dae: &mut Dae,
+) -> Result<usize, StructuralError> {
     let mut total_demoted = 0usize;
 
     loop {
@@ -425,22 +488,98 @@ pub fn demote_states_without_assignable_derivative_rows(dae: &mut Dae) -> usize 
             break;
         }
         total_demoted += demoted_this_round;
+
+        // Reclassifying a state changes the meaning of every derivative of that
+        // target. Resolve differentiable algebraic definitions now, before the
+        // next matching round examines coupled derivative rows. If no smooth
+        // definition exists, report the invalid IR contract instead of
+        // cascading the partition damage to otherwise assignable states.
+        expand_compound_derivatives(dae);
+        validate_derivatives_reference_retained_states(dae)?;
     }
 
-    total_demoted
+    Ok(total_demoted)
 }
 
 /// Final state cleanup after late prepare passes that can remove continuous rows.
 ///
-/// MLS Appendix B / SPEC_0003: retained states require retained derivative
+/// MLS Appendix B / SPEC_0022: retained states require retained derivative
 /// rows. This combines the existing no-derivative and no-assignable-row
 /// demotions without adding logging, timeout, or backend policy.
 pub fn demote_states_without_retained_derivative_rows(
     dae: &mut Dae,
 ) -> Result<(usize, usize), StructuralError> {
     let n_no_derivative_refs = demote_states_without_derivative_refs(dae);
-    let n_unassignable_derivative_rows = demote_states_without_assignable_derivative_rows(dae);
+    let n_unassignable_derivative_rows = demote_states_without_assignable_derivative_rows(dae)?;
+    // Any earlier prepare rewrite can also have changed the state partition
+    // before reaching this final cleanup. Normalize every `der(target)` against
+    // the current partition here even when this invocation did not itself
+    // demote a state. Algebraics with a smooth retained definition expand by
+    // the chain rule; genuinely unresolved derivatives are rejected by the
+    // validation below instead of crossing into matching or Solve lowering.
+    expand_compound_derivatives(dae);
+    validate_derivatives_reference_retained_states(dae)?;
     Ok((n_no_derivative_refs, n_unassignable_derivative_rows))
+}
+
+fn validate_derivatives_reference_retained_states(dae: &Dae) -> Result<(), StructuralError> {
+    let state_names: Vec<VarName> = dae.variables.states.keys().cloned().collect();
+    let state_matcher = DerivativeNameMatcher::from_var_names(&state_names);
+    let mut checker = NonStateDerivativeChecker {
+        state_matcher: &state_matcher,
+        found: None,
+    };
+    rumoca_ir_dae::DaeVisitor::visit_dae(&mut checker, dae);
+    let Some((name, span)) = checker.found else {
+        return Ok(());
+    };
+    let reason = format!(
+        "derivative reference `der({name})` survived after its target was removed from the state \
+         partition"
+    );
+    match span {
+        Some(span) if !span.is_dummy() => Err(StructuralError::ContractViolation { reason, span }),
+        Some(_) | None => Err(StructuralError::UnspannedContractViolation { reason }),
+    }
+}
+
+struct NonStateDerivativeChecker<'a> {
+    state_matcher: &'a DerivativeNameMatcher,
+    found: Option<(String, Option<rumoca_core::Span>)>,
+}
+
+impl rumoca_ir_dae::DaeVisitor for NonStateDerivativeChecker<'_> {
+    fn visit_expression(&mut self, expr: &Expression) {
+        ExpressionVisitor::visit_expression(self, expr);
+    }
+}
+
+impl ExpressionVisitor for NonStateDerivativeChecker<'_> {
+    fn visit_expression(&mut self, expr: &Expression) {
+        if self.found.is_some() {
+            return;
+        }
+        if let Expression::BuiltinCall {
+            function: BuiltinFunction::Der,
+            args,
+            ..
+        } = expr
+        {
+            let target = args.first();
+            let retained =
+                target.is_some_and(|target| self.state_matcher.expression_refers_to_match(target));
+            if !retained {
+                self.found = Some((
+                    target
+                        .and_then(expression_exact_name)
+                        .unwrap_or_else(|| "<non-state expression>".to_string()),
+                    expr.span().or_else(|| target.and_then(Expression::span)),
+                ));
+            }
+            return;
+        }
+        self.walk_expression(expr);
+    }
 }
 
 /// Phase-1 structural index reduction.
@@ -449,17 +588,67 @@ pub fn demote_states_without_retained_derivative_rows(
 /// referencing that state and differentiate it once with symbolic chain-rule.
 /// The differentiated equation must explicitly contain `der(state)` to be
 /// accepted; otherwise it is discarded.
+///
+/// # Two conventions, and when each one is available
+///
+/// [`super::constrained_dummy_derivative`] retains the original constraint in
+/// the continuous partition and funds the differentiated one with a generated
+/// `__dummyder__` unknown. This pass uses that same *naming* form wherever the
+/// exchange can be funded, and falls back to *consumption* — the original row
+/// is copied into `initialization` and the continuous row becomes its
+/// derivative — where it cannot.
+///
+/// The naming form pays for each appended row with one new unknown per demoted
+/// scalar state, so it is available exactly when the group of rows being
+/// differentiated is as wide as the state being reduced.
+/// [`super::dummy_row_group`] carries that arithmetic and the commit. It is not
+/// always fundable: a state of scalar width one reduced from a three-wide
+/// multibody residual would have to buy three rows with one unknown, and that
+/// reduction is declined by the group construction rather than mis-funded.
+///
+/// Consumption remains for those rows, and it keeps one known cost: `g = 0`
+/// holds only where initialization enforces it, and drifts afterwards.
+///
+/// # Rows that define a generated dummy derivative are never consumed
+///
+/// A row [`super::constrained_dummy_derivative`] wrote is the only continuous
+/// definition of its `__dummyder__` unknown. Consuming it leaves that unknown
+/// undetermined while the row and column counts stay exactly balanced — the
+/// moved row's width and the new derivative column cancel — so only a matching
+/// sees the loss. The equation-driven pass already declines such rows
+/// (`reason=defines_a_dummy_derivative`); this pass declines them too and
+/// reaches them through the naming form instead.
+///
+/// That gate is also what makes the leaf resolution below sound. Resolving
+/// `der(x)` through the `__dummyder__.x` leaf keeps each differentiated
+/// constraint the size of one constraint instead of re-expanding the whole
+/// chain (`MultiBody.Examples.Loops.Fourbar1`: 14978 continuous expression
+/// nodes down to ~4000), but a leaf only means what it says while the row
+/// defining it stays in the continuous partition. It now always does.
 pub fn index_reduce_missing_state_derivatives_once(
     dae: &mut Dae,
 ) -> Result<usize, StructuralError> {
-    let mut reduced = dae.clone();
-    let changed = index_reduce_missing_state_derivatives_once_in_place(&mut reduced)?;
+    let mut reduced = super::copy_accounting::clone_dae(dae);
+    let changed =
+        index_reduce_missing_state_derivatives_once_in_place(&mut reduced, &mut HashSet::new())?;
     *dae = reduced;
     Ok(changed)
 }
 
+/// Everything one round differentiates against, built once per round.
+struct RoundContext<'a> {
+    state_names: &'a [VarName],
+    state_name_set: &'a HashSet<String>,
+    state_derivative_matcher: &'a DerivativeNameMatcher,
+    defining_expr_index: &'a DefiningExprIndex,
+    structural_bindings: &'a HashMap<String, f64>,
+    /// `der(x)` values already named by a generated dummy derivative.
+    dummy_derivative_values: &'a HashMap<String, Expression>,
+}
+
 fn index_reduce_missing_state_derivatives_once_in_place(
     dae: &mut Dae,
+    funded_rows: &mut HashSet<usize>,
 ) -> Result<usize, StructuralError> {
     let state_names: Vec<VarName> = dae.variables.states.keys().cloned().collect();
     if state_names.is_empty() {
@@ -472,6 +661,16 @@ fn index_reduce_missing_state_derivatives_once_in_place(
     let state_derivative_matcher = DerivativeNameMatcher::from_var_names(&state_names);
     let defining_expr_index = collect_residual_defining_expr_index(dae);
     let structural_bindings = structural_scalar_bindings(dae);
+    let dummy_derivative_values =
+        super::dummy_derivative_group::generated_dummy_derivative_values(dae);
+    let context = RoundContext {
+        state_names: &state_names,
+        state_name_set: &state_name_set,
+        state_derivative_matcher: &state_derivative_matcher,
+        defining_expr_index: &defining_expr_index,
+        structural_bindings: &structural_bindings,
+        dummy_derivative_values: &dummy_derivative_values,
+    };
     let mut changed = 0usize;
     let mut used_eq = HashSet::new();
 
@@ -479,85 +678,386 @@ fn index_reduce_missing_state_derivatives_once_in_place(
         if state_has_standalone_der_equation(dae, state_name, &state_names)? {
             continue;
         }
-
-        let candidate_indices: Vec<usize> = dae
-            .continuous
-            .equations
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, eq)| {
-                if used_eq.contains(&idx) {
-                    return None;
-                }
-                if eq_contains_any_state_der_with_matcher(&eq.rhs, &state_derivative_matcher) {
-                    return None;
-                }
-                if dae
-                    .variables
-                    .algebraics
-                    .keys()
-                    .any(|alg_name| is_unsliced_algebraic_definition(eq, alg_name))
-                {
-                    return None;
-                }
-                if is_indexed_state_component_alias_definition(eq, state_name) {
-                    return None;
-                }
-                Some(idx)
-            })
-            .collect();
-
-        for idx in candidate_indices {
-            let seed_exprs = vec![dae.continuous.equations[idx].rhs.clone()];
-            let der_map = build_relaxed_derivative_map_for_exprs_with_index(
-                dae,
-                &defining_expr_index,
-                &seed_exprs,
-                None,
-            )?;
-            let differentiated =
-                symbolic_time_derivative(&dae.continuous.equations[idx].rhs, dae, &der_map);
-            let Some(new_rhs) = differentiated else {
-                continue;
-            };
-            let der_states = derivative_states_in_eq(&new_rhs, &state_names);
-            if !der_states.iter().any(|der_state| der_state == state_name) {
-                continue;
-            }
-            if expr_contains_der_of_non_state(&new_rhs, &state_name_set) {
-                continue;
-            }
-            if !expression_is_smooth_for_index_reduction(
-                &dae.continuous.equations[idx].rhs,
-                dae,
-                &structural_bindings,
-            ) || !expression_is_smooth_for_index_reduction(&new_rhs, dae, &structural_bindings)
-            {
-                continue;
-            }
-            // The differentiated equation preserves the constraint only after t=0.
-            // Retain the original equation to initialize on the same solution manifold.
-            dae.initialization
-                .equations
-                .push(dae.continuous.equations[idx].clone());
-            let old_origin = dae.continuous.equations[idx].origin.clone();
-            dae.continuous.equations[idx].rhs = new_rhs;
-            dae.continuous.equations[idx].origin = if old_origin.is_empty() {
-                format!("index_reduction:d_dt_for_{}", state_name.as_str())
-            } else {
-                format!(
-                    "{}|index_reduction:d_dt_for_{}",
-                    old_origin,
-                    state_name.as_str()
-                )
-            };
-            used_eq.insert(idx);
+        if reduce_one_missing_state_derivative(dae, state_name, &context, funded_rows)? {
+            // A naming-form commit rewrote the variable partitions and appended
+            // rows, so this round's cached indices no longer describe the DAE.
             changed += 1;
-            break;
+            return Ok(changed);
+        }
+        if consume_one_missing_state_derivative(dae, state_name, &context, &mut used_eq)? {
+            changed += 1;
         }
     }
 
     Ok(changed)
+}
+
+/// Rows this pass may differentiate for `state_name`, in equation order.
+fn candidate_rows_for_state(
+    dae: &Dae,
+    state_name: &VarName,
+    context: &RoundContext<'_>,
+    used_eq: &HashSet<usize>,
+) -> Vec<usize> {
+    dae.continuous
+        .equations
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, eq)| {
+            if used_eq.contains(&idx) {
+                return None;
+            }
+            if eq_contains_any_state_der_with_matcher(&eq.rhs, context.state_derivative_matcher) {
+                return None;
+            }
+            if dae.variables.algebraics.keys().any(|alg_name| {
+                is_unsliced_algebraic_definition(eq, alg_name)
+                    && !has_independent_exact_alias_equation(dae, idx, alg_name)
+            }) {
+                return None;
+            }
+            if is_indexed_state_component_alias_definition(eq, state_name) {
+                return None;
+            }
+            Some(idx)
+        })
+        .collect()
+}
+
+/// The time derivative of row `idx`, or `None` when it is inadmissible for
+/// reducing `state_name`.
+fn differentiated_candidate_row(
+    dae: &Dae,
+    idx: usize,
+    state_name: &VarName,
+    context: &RoundContext<'_>,
+) -> Result<Option<Expression>, StructuralError> {
+    differentiate_candidate_row_through(dae, idx, state_name, context, LeafResolution::Named)
+}
+
+/// Whether the derivative closure may stop at a generated `__dummyder__` leaf.
+///
+/// Stopping there is what keeps each differentiated constraint the size of one
+/// constraint instead of re-expanding the whole chain, and it is why the
+/// state-driven pass is affordable on `MultiBody` at all. But a leaf is opaque:
+/// the row that defines it still depends on the coordinates the inlined
+/// expression named, and the differentiated row no longer mentions them. When
+/// the *only* thing that matters about a row is whether its derivative reaches
+/// `der(state)`, a leaf can hide the answer.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LeafResolution {
+    /// Resolve `der(x)` to `__dummyder__.x` wherever an earlier round named it.
+    Named,
+    /// Expand every derivative through its defining row, as if nothing had been
+    /// named. Reserved for a second look at a row the leaf form already
+    /// rejected, so the compact form stays the one that is paid for.
+    Expanded,
+}
+
+fn differentiate_candidate_row_through(
+    dae: &Dae,
+    idx: usize,
+    state_name: &VarName,
+    context: &RoundContext<'_>,
+    leaves: LeafResolution,
+) -> Result<Option<Expression>, StructuralError> {
+    if residual_is_exact_identity(&dae.continuous.equations[idx].rhs) {
+        return Ok(trace_row_declined(
+            idx,
+            state_name,
+            "tautological_source_row",
+        ));
+    }
+    let seed_exprs = vec![dae.continuous.equations[idx].rhs.clone()];
+    let der_map = build_relaxed_derivative_map_for_exprs_with_index(
+        dae,
+        context.defining_expr_index,
+        &seed_exprs,
+        RelaxedDerivativeMapOptions {
+            canonical_state_derivative: Some(state_name),
+            rejected_state_derivative: None,
+            excluded_equations: &[idx],
+            selected_derivatives: match leaves {
+                LeafResolution::Named => Some(context.dummy_derivative_values),
+                LeafResolution::Expanded => None,
+            },
+        },
+    )?;
+    let Some(differentiated) =
+        symbolic_time_derivative(&dae.continuous.equations[idx].rhs, dae, &der_map)
+    else {
+        return Ok(trace_row_declined(idx, state_name, "not_differentiable"));
+    };
+    let new_rhs = crate::eliminate::simplify_arithmetic_identities(differentiated);
+    if differentiated_row_duplicates_existing_constraint(dae, idx, &new_rhs) {
+        return Ok(trace_row_declined(
+            idx,
+            state_name,
+            "duplicates_existing_constraint",
+        ));
+    }
+    let der_states = derivative_states_in_eq(&new_rhs, context.state_names);
+    if !der_states.iter().any(|der_state| der_state == state_name) {
+        return Ok(trace_row_declined(
+            idx,
+            state_name,
+            "state_derivative_absent",
+        ));
+    }
+    if expr_contains_der_of_non_state(&new_rhs, context.state_name_set) {
+        return Ok(trace_row_declined(
+            idx,
+            state_name,
+            "derivative_of_non_state",
+        ));
+    }
+    if !expression_is_smooth_for_index_reduction(
+        &dae.continuous.equations[idx].rhs,
+        dae,
+        context.structural_bindings,
+    ) || !expression_is_smooth_for_index_reduction(&new_rhs, dae, context.structural_bindings)
+    {
+        return Ok(None);
+    }
+    Ok(Some(new_rhs))
+}
+
+/// An exact residual identity carries no constraint and cannot fund index
+/// reduction.
+///
+/// These rows arise legitimately after an earlier derivative substitution
+/// (for example `w = der(phi)` becomes `w = w` while a separately
+/// differentiated position constraint supplies `w = 0`). Differentiating the
+/// identity would produce `der(w) = der(w)` and consume a finite candidate
+/// slot without adding information. The syntactic form plus semantic operand
+/// equality is a complete local certificate for this rejection.
+fn residual_is_exact_identity(expression: &Expression) -> bool {
+    let Expression::Binary {
+        op: OpBinary::Sub | OpBinary::SubElem,
+        lhs,
+        rhs,
+        ..
+    } = expression
+    else {
+        return false;
+    };
+    rumoca_core::expressions_semantically_equal(lhs, rhs)
+}
+
+/// Whether replacing `source_row` with `candidate` would discard a constraint.
+///
+/// Index reduction consumes the source row and retains its differentiated
+/// form. If that form already exists, the replacement reduces the number of
+/// distinct continuous constraints by one even though the raw row count is
+/// unchanged. Rejecting that transformation is an exact local certificate:
+/// every accepted consumption contributes a semantically new row of the same
+/// scalar width.
+fn differentiated_row_duplicates_existing_constraint(
+    dae: &Dae,
+    source_row: usize,
+    candidate: &Expression,
+) -> bool {
+    let Some(source_width) = dae
+        .continuous
+        .equations
+        .get(source_row)
+        .map(|equation| equation.scalar_count)
+    else {
+        return false;
+    };
+    dae.continuous
+        .equations
+        .iter()
+        .enumerate()
+        .any(|(index, equation)| {
+            index != source_row
+                && equation.scalar_count == source_width
+                && residuals_are_semantically_equivalent(&equation.rhs, candidate)
+        })
+}
+
+fn residuals_are_semantically_equivalent(lhs: &Expression, rhs: &Expression) -> bool {
+    if rumoca_core::expressions_semantically_equal(lhs, rhs) {
+        return true;
+    }
+    let (
+        Expression::Binary {
+            op: OpBinary::Sub,
+            lhs: lhs_positive,
+            rhs: lhs_negative,
+            ..
+        },
+        Expression::Binary {
+            op: OpBinary::Sub,
+            lhs: rhs_positive,
+            rhs: rhs_negative,
+            ..
+        },
+    ) = (lhs, rhs)
+    else {
+        return false;
+    };
+    rumoca_core::expressions_semantically_equal(lhs_positive, rhs_negative)
+        && rumoca_core::expressions_semantically_equal(lhs_negative, rhs_positive)
+}
+
+/// Record why a candidate row cannot reduce `state_name`, and report "no row".
+///
+/// A state that stays a state with no derivative row is the shape a matching
+/// later reports as an unmatched column, and the reason is always here: the row
+/// did not differentiate, or its derivative did not reach `der(state)`. Naming
+/// it is the difference between an operator seeing "the reduction was attempted
+/// and every row was rejected for this reason" and seeing nothing at all.
+fn trace_row_declined(idx: usize, state_name: &VarName, reason: &str) -> Option<Expression> {
+    crate::structural_trace!(
+        "[sim-trace] state-row reduction declined row={idx} state={} reason={reason}",
+        state_name.as_str()
+    );
+    None
+}
+
+/// The derivative of a candidate row for the *naming* form, looking past a
+/// `__dummyder__` leaf when the leaf hid `der(state_name)`.
+///
+/// The leaf form is tried first and is what nearly every row is accepted on, so
+/// the compact differentiated constraint stays the one that is paid for. It can
+/// answer "this row does not reach `der(state)`" for the wrong reason, though:
+/// the row's dependence on the state may run through a coordinate an earlier
+/// round named, and `__dummyder__.q` mentions none of it. Re-differentiating
+/// that row with every derivative expanded answers the question the leaf could
+/// not, and leaves the state reducible instead of stranding it as a column with
+/// no row (`Engine1a`: `crank2..4.body.v_0`, `connectingRod.body.v_0`).
+///
+/// The second look is bounded: the caller only offers rows that define a
+/// generated dummy derivative and fit inside the state's width, and only the
+/// rows the leaf form already rejected reach it.
+fn fundable_row_derivative(
+    dae: &Dae,
+    idx: usize,
+    state_name: &VarName,
+    context: &RoundContext<'_>,
+) -> Result<Option<Expression>, StructuralError> {
+    if let Some(new_rhs) =
+        differentiate_candidate_row_through(dae, idx, state_name, context, LeafResolution::Named)?
+    {
+        return Ok(Some(new_rhs));
+    }
+    differentiate_candidate_row_through(dae, idx, state_name, context, LeafResolution::Expanded)
+}
+
+/// Try the naming form for `state_name`: differentiate a group of
+/// dummy-defining rows whose combined width funds the state, append the
+/// derivatives, and demote the state.
+///
+/// Returns `true` when a group was committed.
+fn reduce_one_missing_state_derivative(
+    dae: &mut Dae,
+    state_name: &VarName,
+    context: &RoundContext<'_>,
+    funded_rows: &mut HashSet<usize>,
+) -> Result<bool, StructuralError> {
+    let Some(state_size) = dae
+        .variables
+        .states
+        .get(state_name)
+        .map(Variable::size)
+        .filter(|size| *size > 0)
+    else {
+        return Ok(false);
+    };
+    if !super::dummy_row_group::state_is_demotable(dae, state_name) {
+        return Ok(false);
+    }
+    let mut group: Vec<(usize, Expression)> = Vec::new();
+    let mut group_width = 0usize;
+    for idx in candidate_rows_for_state(dae, state_name, context, funded_rows) {
+        let width = dae.continuous.equations[idx].scalar_count;
+        if !super::dummy_row_group::row_defines_a_dummy_derivative(&dae.continuous.equations[idx])
+            || width == 0
+            || group_width + width > state_size
+        {
+            continue;
+        }
+        let Some(new_rhs) = fundable_row_derivative(dae, idx, state_name, context)? else {
+            continue;
+        };
+        group.push((idx, new_rhs));
+        group_width += width;
+        if group_width == state_size
+            && super::dummy_row_group::reduce_state_by_row_group(dae, state_name, &group)?
+        {
+            funded_rows.extend(group.iter().map(|(index, _)| *index));
+            return Ok(true);
+        }
+    }
+    crate::structural_trace!(
+        "[sim-trace] dummy row group not formed state={} width={state_size} \
+         funded={group_width} rows={:?}",
+        state_name.as_str(),
+        group.iter().map(|(index, _)| *index).collect::<Vec<_>>()
+    );
+    Ok(false)
+}
+
+/// Fall back to consumption: replace the source row with its derivative and
+/// retain the original in `initialization`.
+///
+/// Rows that define a generated dummy derivative are never consumed; they are
+/// only ever reached through [`reduce_one_missing_state_derivative`].
+///
+/// Every candidate that differentiates is staged in place and judged by
+/// [`super::demotion_rank_check::consumption_is_rank_justified`] before it is
+/// kept: consumption is the one step in this pass that *removes* a row's ability
+/// to determine anything, and a row that was some algebraic's only row must not
+/// be spent here. The reading it is judged against is taken lazily, once per
+/// call, so a state whose every candidate is rejected earlier — the common case
+/// — pays for no matching at all.
+fn consume_one_missing_state_derivative(
+    dae: &mut Dae,
+    state_name: &VarName,
+    context: &RoundContext<'_>,
+    used_eq: &mut HashSet<usize>,
+) -> Result<bool, StructuralError> {
+    let mut rank_before: Option<Option<usize>> = None;
+    for idx in candidate_rows_for_state(dae, state_name, context, used_eq) {
+        if super::dummy_row_group::row_defines_a_dummy_derivative(&dae.continuous.equations[idx]) {
+            crate::structural_trace!(
+                "[sim-trace] state-row reduction declined row={idx} state={} \
+                 reason=defines_a_dummy_derivative",
+                state_name.as_str()
+            );
+            continue;
+        }
+        let Some(new_rhs) = differentiated_candidate_row(dae, idx, state_name, context)? else {
+            continue;
+        };
+        let before =
+            *rank_before.get_or_insert_with(|| super::demotion_rank_check::row_rank_reading(dae));
+        let original_rhs = std::mem::replace(&mut dae.continuous.equations[idx].rhs, new_rhs);
+        if !super::demotion_rank_check::consumption_is_rank_justified(before, dae, state_name, idx)
+        {
+            dae.continuous.equations[idx].rhs = original_rhs;
+            continue;
+        }
+        // The differentiated equation preserves the constraint only after t=0.
+        // Retain the original equation to initialize on the same solution manifold.
+        let mut original = dae.continuous.equations[idx].clone();
+        original.rhs = original_rhs;
+        dae.initialization.equations.push(original);
+        let old_origin = dae.continuous.equations[idx].origin.clone();
+        dae.continuous.equations[idx].origin = if old_origin.is_empty() {
+            format!("index_reduction:d_dt_for_{}", state_name.as_str())
+        } else {
+            format!(
+                "{}|index_reduction:d_dt_for_{}",
+                old_origin,
+                state_name.as_str()
+            )
+        };
+        used_eq.insert(idx);
+        return Ok(true);
+    }
+    Ok(false)
 }
 
 fn is_unsliced_algebraic_definition(eq: &Equation, alg_name: &VarName) -> bool {
@@ -574,6 +1074,116 @@ fn is_unsliced_algebraic_definition(eq: &Equation, alg_name: &VarName) -> bool {
                 if name.var_name() == alg_name && subscripts.is_empty()
         )
     })
+}
+
+/// True when some row other than `defining_equation` still determines `name`
+/// through an exact alias `name = partner`.
+///
+/// An alias row only *supplies* a value when its partner has one. When the
+/// partner is a state the integrator supplies it, and the alias determines
+/// `name` outright. When the partner is an algebraic, the alias relates two
+/// unknowns and determines neither on its own: it can be assigned to `name`
+/// only if the partner is determined somewhere else again.
+///
+/// Ignoring that turns consumption into a rank loss the counting invariant
+/// cannot see. In `a = -x2 - x3; x1 = a`, once `x1` has been demoted to an
+/// algebraic the pair `{x1, a}` is carried by exactly those two rows; consuming
+/// the first — replacing it with a derivative that mentions neither name —
+/// leaves one row for two unknowns while rows and columns stay balanced.
+fn has_independent_exact_alias_equation(
+    dae: &Dae,
+    defining_equation: usize,
+    name: &VarName,
+) -> bool {
+    dae.continuous
+        .equations
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| *index != defining_equation)
+        .filter_map(|(index, equation)| {
+            let (lhs, rhs) = try_extract_state_alias_pair(&equation.rhs)?;
+            let partner = if lhs == *name {
+                rhs
+            } else if rhs == *name {
+                lhs
+            } else {
+                return None;
+            };
+            Some((index, partner))
+        })
+        .any(|(alias_row, partner)| {
+            alias_partner_is_determined_elsewhere(dae, alias_row, defining_equation, &partner)
+        })
+}
+
+/// True when `partner` has a value that does not come from `alias_row`.
+///
+/// A state is supplied by the integrator. An algebraic needs a continuous row of
+/// its own, and neither the alias row nor the row being consumed can be it.
+///
+/// # What the row test does and does not establish
+///
+/// For an algebraic this looks for a *witness row*: some other continuous row
+/// that reads `partner`. Reading a name is not the same as determining it, and
+/// the gap is reachable — `0 = y - 2*a` reads `a` while determining neither `y`
+/// nor `a`, so a witness that is itself two undetermined algebraics wide is no
+/// witness at all. [`witness_row_can_determine`] rejects that shape; anything
+/// wider is accepted, because deciding it properly is a matching question over
+/// the rows excluding `consumed_row`, not a predicate over one row.
+///
+/// So this remains a necessary condition rather than a sufficient one. It is
+/// where the cheap tests stop being able to tell the difference, and the
+/// counting invariant this gate protects is re-checked by the real matching
+/// downstream in any case.
+fn alias_partner_is_determined_elsewhere(
+    dae: &Dae,
+    alias_row: usize,
+    consumed_row: usize,
+    partner: &VarName,
+) -> bool {
+    if dae.variables.states.contains_key(partner) {
+        return true;
+    }
+    dae.continuous
+        .equations
+        .iter()
+        .enumerate()
+        .any(|(index, equation)| {
+            index != alias_row
+                && index != consumed_row
+                && expr_contains_var(&equation.rhs, partner)
+                && witness_row_can_determine(dae, equation)
+        })
+}
+
+/// Can this row plausibly be the row that determines `partner`?
+///
+/// It cannot when the row's only two continuous unknowns are `partner` and one
+/// other algebraic that nothing has determined either: such a row relates two
+/// free names and pins neither. `0 = y - 2*a` is the shape, and it is exactly
+/// the shape that makes "appears in another row" too weak to stand in for
+/// "determined elsewhere".
+///
+/// Anything grounded in the row — a state, a state derivative, a parameter, a
+/// constant, an input or a discrete — is enough for the row to be a candidate
+/// definition, and so is any third unknown, because a wider row is a matching
+/// question this predicate deliberately does not try to answer.
+///
+/// `partner` is not a parameter here: it is one of the free names by
+/// construction, so the count is what decides.
+fn witness_row_can_determine(dae: &Dae, equation: &Equation) -> bool {
+    let mut free = Vec::new();
+    for name in collect_rhs_var_refs(&equation.rhs) {
+        if dae.variables.algebraics.contains_key(&name) || dae.variables.outputs.contains_key(&name)
+        {
+            free.push(name);
+        } else {
+            // A state value, parameter, constant, input or discrete is known
+            // when the row is evaluated, so the row grounds `partner`.
+            return true;
+        }
+    }
+    free.len() != 2
 }
 
 fn is_indexed_state_component_alias_definition(eq: &Equation, state_name: &VarName) -> bool {
@@ -601,36 +1211,66 @@ fn is_indexed_component_of_state(expr: &Expression, state_name: &VarName) -> boo
             .is_some_and(|scalar| scalar.base == state_name.as_str())
 }
 
+/// Termination measure of the state-driven pass, ordered lexicographically.
+///
+/// Consumption leaves the state partition alone and turns one derivative-free
+/// row into a row carrying `der(state)`. The naming form does the opposite: it
+/// removes a state and *appends* rows that carry no state derivative at all,
+/// because `der(state)` has become a reference to the state's generated dummy.
+/// So neither component decreases on its own, and a single counter cannot bound
+/// the loop.
+///
+/// The pair does. States never come back — no pass here promotes an algebraic —
+/// so `(states, derivative_free_rows)` in lexicographic order is well founded
+/// on `ℕ × ℕ`, and every round must lower it.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct ReductionMeasure {
+    states: usize,
+    derivative_free_rows: usize,
+}
+
+impl ReductionMeasure {
+    fn of(dae: &Dae) -> Self {
+        let state_names = dae.variables.states.keys().cloned().collect::<Vec<_>>();
+        let matcher = DerivativeNameMatcher::from_var_names(&state_names);
+        Self {
+            states: state_names.len(),
+            derivative_free_rows: dae
+                .continuous
+                .equations
+                .iter()
+                .filter(|equation| !eq_contains_any_state_der_with_matcher(&equation.rhs, &matcher))
+                .count(),
+        }
+    }
+}
+
 pub fn index_reduce_missing_state_derivatives(dae: &mut Dae) -> Result<usize, StructuralError> {
-    let mut reduced = dae.clone();
-    let state_names = reduced.variables.states.keys().cloned().collect::<Vec<_>>();
-    let matcher = DerivativeNameMatcher::from_var_names(&state_names);
-    let mut derivative_free_rows = reduced
-        .continuous
-        .equations
-        .iter()
-        .filter(|equation| !eq_contains_any_state_der_with_matcher(&equation.rhs, &matcher))
-        .count();
+    let mut reduced = super::copy_accounting::clone_dae(dae);
+    let deficiency_before = super::demotion_rank_check::scalar_rank_deficiency(&reduced);
+    let mut measure = ReductionMeasure::of(&reduced);
+    let mut funded_rows = HashSet::new();
     let mut total_changed = 0usize;
     loop {
-        let changed = index_reduce_missing_state_derivatives_once_in_place(&mut reduced)?;
+        let changed =
+            index_reduce_missing_state_derivatives_once_in_place(&mut reduced, &mut funded_rows)?;
         if changed == 0 {
             break;
         }
-        let remaining = reduced
-            .continuous
-            .equations
-            .iter()
-            .filter(|equation| !eq_contains_any_state_der_with_matcher(&equation.rhs, &matcher))
-            .count();
-        if remaining >= derivative_free_rows {
+        let next = ReductionMeasure::of(&reduced);
+        if next >= measure {
             return Err(StructuralError::UnspannedContractViolation {
-                reason: "index reduction changed equations without reducing the finite set of derivative-free continuous rows".to_string(),
+                reason: "index reduction changed equations without lowering the number of states or the finite set of derivative-free continuous rows".to_string(),
             });
         }
-        derivative_free_rows = remaining;
+        measure = next;
         total_changed += changed;
     }
+    super::demotion_rank_check::trace_pass_rank_transition(
+        "index_reduce_missing_state_derivatives",
+        deficiency_before,
+        super::demotion_rank_check::scalar_rank_deficiency(&reduced),
+    );
     *dae = reduced;
     Ok(total_changed)
 }
@@ -734,7 +1374,24 @@ pub fn substitute_standalone_state_derivatives_in_non_ode_rows(dae: &mut Dae) ->
         return 0;
     }
 
-    let der_map = build_der_value_map(dae);
+    let mut der_map = build_der_value_map(dae);
+    // Multiple scalar equations may constrain the same derivative after
+    // boundary alias elimination (`der(x)=a`, `der(x)=b`). They are exactly
+    // equivalent to one defining derivative row plus algebraic equalities, so
+    // choose the first source-ordered assignment as the canonical definition.
+    // Ranked states remain on the stricter component-aware map path above.
+    for (state_name, variable) in &dae.variables.states {
+        if !variable.dims.is_empty() || der_map.contains_key(state_name.as_str()) {
+            continue;
+        }
+        let replacement = dae.continuous.equations.iter().find_map(|equation| {
+            let value = try_extract_der_value(&equation.rhs, state_name)?;
+            (!expr_contains_der_of(&value, state_name)).then_some(value)
+        });
+        if let Some(replacement) = replacement {
+            der_map.insert(state_name.as_str().to_string(), replacement);
+        }
+    }
     if der_map.is_empty() {
         return 0;
     }
@@ -779,28 +1436,203 @@ pub fn substitute_standalone_state_derivatives_in_non_ode_rows(dae: &mut Dae) ->
 
     let mut rewritten_rows = 0usize;
     for (index, eq) in dae.continuous.equations.iter_mut().enumerate() {
-        let mut rewritten = false;
-        for state_name in &state_names {
-            // Never rewrite the row that defines this state's derivative.
-            if defining_row.get(state_name.as_str()) == Some(&index) {
-                continue;
-            }
-            let Some(replacement) = der_map.get(state_name.as_str()) else {
-                continue;
-            };
-            if expression_contains_any_der_call(replacement) {
-                continue;
-            }
-            if !expr_contains_der_of(&eq.rhs, state_name) {
-                continue;
-            }
-            eq.rhs = substitute_der_of_state(&eq.rhs, state_name, replacement);
-            rewritten = true;
-        }
-        rewritten_rows += usize::from(rewritten);
+        rewritten_rows += usize::from(rewrite_known_state_derivatives(
+            eq,
+            &state_names,
+            &der_map,
+            Some((&defining_row, index)),
+        ));
     }
+    rewritten_rows += rewrite_state_derivatives_in_non_continuous_partitions(dae, &der_map);
 
     rewritten_rows
+}
+
+fn rewrite_known_state_derivatives(
+    equation: &mut Equation,
+    state_names: &[VarName],
+    derivative_values: &std::collections::HashMap<String, Expression>,
+    protected_rows: Option<(&std::collections::HashMap<&str, usize>, usize)>,
+) -> bool {
+    let mut rewritten = false;
+    for state_name in state_names {
+        if protected_rows.is_some_and(|(rows, index)| {
+            rows.get(state_name.as_str())
+                .is_some_and(|row| *row == index)
+        }) {
+            continue;
+        }
+        let Some(replacement) = derivative_values.get(state_name.as_str()) else {
+            continue;
+        };
+        if expression_contains_any_der_call(replacement)
+            || !expr_contains_der_of(&equation.rhs, state_name)
+        {
+            continue;
+        }
+        equation.rhs = substitute_der_of_state(&equation.rhs, state_name, replacement);
+        rewritten = true;
+    }
+    rewritten
+}
+
+/// Resolve state-derivative reads outside the continuous owner rows.
+///
+/// MLS permits `der(state)` in initialization constraints and in values
+/// captured by a `when` equation. Those partitions consume the derivative
+/// selected by the continuous system; they do not own another derivative row.
+/// Ranked state components are projected from the aggregate derivative value
+/// here so `der(v[2])` never reaches generic Solve-expression lowering.
+fn rewrite_state_derivatives_in_non_continuous_partitions(
+    dae: &mut Dae,
+    derivative_values: &std::collections::HashMap<String, Expression>,
+) -> usize {
+    let mut rewriter = NonOwnerStateDerivativeRewriter {
+        derivative_values,
+        replacements: 0,
+    };
+    rewriter.rewrite_equations(&mut dae.initialization.equations);
+    rewriter.rewrite_equations(&mut dae.discrete.real_updates);
+    rewriter.rewrite_equations(&mut dae.discrete.valued_updates);
+    rewriter.rewrite_equations(&mut dae.conditions.equations);
+    rewriter.rewrite_expression_slots(&mut dae.conditions.relations);
+    rewriter.rewrite_expression_slots(&mut dae.events.synthetic_root_conditions);
+    rewriter.rewrite_event_actions(&mut dae.events.event_actions);
+    rewriter.rewrite_delay_channels(&mut dae.events.delay_channels);
+    rewriter.rewrite_expression_slots(&mut dae.clocks.constructor_exprs);
+    rewriter.rewrite_expression_slots(&mut dae.clocks.triggered_conditions);
+    rewriter.replacements
+}
+
+struct NonOwnerStateDerivativeRewriter<'a> {
+    derivative_values: &'a std::collections::HashMap<String, Expression>,
+    replacements: usize,
+}
+
+impl ExpressionRewriter for NonOwnerStateDerivativeRewriter<'_> {
+    fn rewrite_expression(&mut self, expr: &Expression) -> Expression {
+        if let Expression::BuiltinCall {
+            function: BuiltinFunction::Der,
+            args,
+            ..
+        } = expr
+            && let [target] = args.as_slice()
+            && let Some(replacement) =
+                derivative_replacement_for_target(target, self.derivative_values)
+            && !expression_contains_any_der_call(&replacement)
+        {
+            self.replacements += 1;
+            return replacement;
+        }
+        self.walk_expression(expr)
+    }
+}
+
+impl DaeExpressionRewriter for NonOwnerStateDerivativeRewriter<'_> {}
+
+fn derivative_replacement_for_target(
+    target: &Expression,
+    derivative_values: &std::collections::HashMap<String, Expression>,
+) -> Option<Expression> {
+    if let Some(exact_name) = expression_exact_name(target)
+        && let Some(value) = derivative_values.get(&exact_name)
+    {
+        return Some(value.clone());
+    }
+
+    let (base_name, subscripts, span) = derivative_target_projection(target)?;
+    if let Some(value) = derivative_values.get(base_name.as_str()) {
+        return Some(project_derivative_value(value, &subscripts, span));
+    }
+
+    let scalar = rumoca_core::parse_scalar_name(base_name.as_str())?;
+    let value = derivative_values.get(scalar.base)?;
+    let provenance = span
+        .require_provenance("scalar derivative replacement projection")
+        .ok()?;
+    let subscripts = scalar
+        .indices
+        .iter()
+        .map(|index| Subscript::generated_index_with_provenance(*index, provenance))
+        .collect::<Vec<_>>();
+    Some(project_derivative_value(value, &subscripts, span))
+}
+
+fn derivative_target_projection(target: &Expression) -> Option<(VarName, Vec<Subscript>, Span)> {
+    match target {
+        Expression::VarRef {
+            name,
+            subscripts,
+            span,
+        } => Some((name.var_name().clone(), subscripts.clone(), *span)),
+        Expression::Index {
+            base,
+            subscripts,
+            span,
+        } => {
+            let Expression::VarRef {
+                name,
+                subscripts: base_subscripts,
+                ..
+            } = base.as_ref()
+            else {
+                return None;
+            };
+            let mut combined = base_subscripts.clone();
+            combined.extend_from_slice(subscripts);
+            Some((name.var_name().clone(), combined, *span))
+        }
+        _ => None,
+    }
+}
+
+fn project_derivative_value(
+    value: &Expression,
+    subscripts: &[Subscript],
+    span: Span,
+) -> Expression {
+    if subscripts.is_empty() {
+        return value.clone();
+    }
+    if let Some(projected) = project_static_array_value(value, subscripts) {
+        return projected;
+    }
+    Expression::Index {
+        base: Box::new(value.clone()),
+        subscripts: subscripts.to_vec(),
+        span,
+    }
+}
+
+fn project_static_array_value(value: &Expression, subscripts: &[Subscript]) -> Option<Expression> {
+    let mut selected = value;
+    for subscript in subscripts {
+        let index = static_one_based_subscript(subscript)?;
+        let Expression::Array { elements, .. } = selected else {
+            return None;
+        };
+        selected = elements.get(index.checked_sub(1)?)?;
+    }
+    Some(selected.clone())
+}
+
+fn static_one_based_subscript(subscript: &Subscript) -> Option<usize> {
+    let value = match subscript {
+        Subscript::Index { value, .. } => *value,
+        Subscript::Expr { expr, .. } => match expr.as_ref() {
+            Expression::Literal {
+                value: Literal::Integer(value),
+                ..
+            } => *value,
+            Expression::Literal {
+                value: Literal::Real(value),
+                ..
+            } if value.is_finite() && value.fract() == 0.0 => *value as i64,
+            _ => return None,
+        },
+        Subscript::Colon { .. } => return None,
+    };
+    usize::try_from(value).ok().filter(|value| *value > 0)
 }
 
 #[cfg(test)]
@@ -830,6 +1662,108 @@ mod tests {
             args: vec![var_ref(name, span)],
             span,
         }
+    }
+
+    #[test]
+    fn index_reduction_preserves_source_when_derivative_duplicates_existing_constraint() {
+        let span = test_span();
+        let mut dae = Dae::new();
+        dae.variables
+            .states
+            .insert(VarName::new("w"), Variable::new(VarName::new("w"), span));
+        for name in ["phi", "a"] {
+            dae.variables
+                .algebraics
+                .insert(VarName::new(name), Variable::new(VarName::new(name), span));
+        }
+        let source = Expression::Binary {
+            op: OpBinary::Sub,
+            lhs: Box::new(var_ref("w", span)),
+            rhs: Box::new(der_call("phi", span)),
+            span,
+        };
+        let existing_derivative = Expression::Binary {
+            op: OpBinary::Sub,
+            lhs: Box::new(der_call("w", span)),
+            rhs: Box::new(var_ref("a", span)),
+            span,
+        };
+        dae.continuous
+            .equations
+            .push(Equation::residual(source.clone(), span, "kinematic alias"));
+        dae.continuous.equations.push(Equation::residual(
+            existing_derivative,
+            span,
+            "existing acceleration row",
+        ));
+
+        let changed = index_reduce_missing_state_derivatives_once(&mut dae)
+            .expect("duplicate derivative must be declined without invalidating the DAE");
+
+        assert_eq!(changed, 0);
+        assert_eq!(dae.continuous.equations[0].rhs, source);
+        assert!(dae.initialization.equations.is_empty());
+    }
+
+    #[test]
+    fn index_reduction_skips_identity_and_differentiates_real_constraint() {
+        let span = test_span();
+        let mut dae = Dae::new();
+        dae.variables
+            .states
+            .insert(VarName::new("w"), Variable::new(VarName::new("w"), span));
+        dae.variables
+            .algebraics
+            .insert(VarName::new("a"), Variable::new(VarName::new("a"), span));
+        let identity = Expression::Binary {
+            op: OpBinary::Sub,
+            lhs: Box::new(var_ref("w", span)),
+            rhs: Box::new(var_ref("w", span)),
+            span,
+        };
+        dae.continuous.equations.push(Equation::residual(
+            identity.clone(),
+            span,
+            "collapsed derivative alias",
+        ));
+        dae.continuous.equations.push(Equation::residual(
+            Expression::Binary {
+                op: OpBinary::Sub,
+                lhs: Box::new(var_ref("w", span)),
+                rhs: Box::new(Expression::Literal {
+                    value: Literal::Integer(0),
+                    span,
+                }),
+                span,
+            },
+            span,
+            "fixed velocity constraint",
+        ));
+        dae.continuous.equations.push(Equation::residual(
+            Expression::Binary {
+                op: OpBinary::Sub,
+                lhs: Box::new(var_ref("a", span)),
+                rhs: Box::new(der_call("w", span)),
+                span,
+            },
+            span,
+            "acceleration alias",
+        ));
+
+        let changed = index_reduce_missing_state_derivatives_once(&mut dae)
+            .expect("the finite constraint should fund index reduction");
+
+        assert_eq!(changed, 1);
+        assert_eq!(dae.continuous.equations[0].rhs, identity);
+        assert!(
+            dae.continuous.equations[1]
+                .origin
+                .contains("index_reduction:d_dt_for_w")
+        );
+        assert!(expr_contains_der_of(
+            &dae.continuous.equations[1].rhs,
+            &VarName::new("w")
+        ));
     }
 
     #[test]
@@ -869,5 +1803,131 @@ mod tests {
             panic!("expected normalized unary minus");
         };
         assert_eq!(actual, span);
+    }
+
+    #[test]
+    fn substitutes_duplicate_scalar_derivative_assignments_with_first_value() {
+        let span = test_span();
+        let mut dae = Dae::new();
+        dae.variables
+            .states
+            .insert(VarName::new("s"), Variable::new(VarName::new("s"), span));
+        for value in ["v1", "v2", "v3"] {
+            dae.variables.algebraics.insert(
+                VarName::new(value),
+                Variable::new(VarName::new(value), span),
+            );
+            dae.continuous.equations.push(Equation::residual(
+                Expression::Binary {
+                    op: OpBinary::Sub,
+                    lhs: Box::new(der_call("s", span)),
+                    rhs: Box::new(var_ref(value, span)),
+                    span,
+                },
+                span,
+                "duplicate derivative assignment",
+            ));
+        }
+
+        let rewritten = substitute_standalone_state_derivatives_in_non_ode_rows(&mut dae);
+
+        assert_eq!(rewritten, 2);
+        assert!(expr_contains_der_of(
+            &dae.continuous.equations[0].rhs,
+            &VarName::new("s")
+        ));
+        for equation in &dae.continuous.equations[1..] {
+            assert!(!expr_contains_der_of(&equation.rhs, &VarName::new("s")));
+            assert!(expr_contains_var(&equation.rhs, &VarName::new("v1")));
+        }
+    }
+
+    #[test]
+    fn substitutes_selected_state_derivative_in_initialization_equation() {
+        let span = test_span();
+        let mut dae = Dae::new();
+        dae.variables
+            .states
+            .insert(VarName::new("s"), Variable::new(VarName::new("s"), span));
+        dae.variables
+            .algebraics
+            .insert(VarName::new("v"), Variable::new(VarName::new("v"), span));
+        dae.continuous.equations.push(Equation::residual(
+            Expression::Binary {
+                op: OpBinary::Sub,
+                lhs: Box::new(der_call("s", span)),
+                rhs: Box::new(var_ref("v", span)),
+                span,
+            },
+            span,
+            "selected ODE row",
+        ));
+        dae.initialization.equations.push(Equation::residual(
+            Expression::Binary {
+                op: OpBinary::Sub,
+                lhs: Box::new(der_call("s", span)),
+                rhs: Box::new(Expression::Literal {
+                    value: Literal::Integer(0),
+                    span,
+                }),
+                span,
+            },
+            span,
+            "steady-state initialization",
+        ));
+
+        let rewritten = substitute_standalone_state_derivatives_in_non_ode_rows(&mut dae);
+
+        assert_eq!(rewritten, 1);
+        assert!(expr_contains_der_of(
+            &dae.continuous.equations[0].rhs,
+            &VarName::new("s")
+        ));
+        assert!(!expr_contains_der_of(
+            &dae.initialization.equations[0].rhs,
+            &VarName::new("s")
+        ));
+        assert!(expr_contains_var(
+            &dae.initialization.equations[0].rhs,
+            &VarName::new("v")
+        ));
+    }
+
+    #[test]
+    fn substitutes_ranked_state_component_derivative_in_discrete_update() {
+        let span = test_span();
+        let mut dae = Dae::new();
+        let mut velocity = Variable::new(VarName::new("velocity"), span);
+        velocity.dims = vec![2];
+        dae.variables
+            .states
+            .insert(VarName::new("velocity"), velocity);
+        for (index, acceleration) in [(1, "a1"), (2, "a2")] {
+            dae.continuous.equations.push(Equation::residual(
+                Expression::Binary {
+                    op: OpBinary::Sub,
+                    lhs: Box::new(der_call(&format!("velocity[{index}]"), span)),
+                    rhs: Box::new(var_ref(acceleration, span)),
+                    span,
+                },
+                span,
+                "ranked ODE row",
+            ));
+        }
+        dae.discrete.real_updates.push(Equation::explicit(
+            Reference::new("captured_acceleration"),
+            der_call("velocity[1]", span),
+            span,
+            "when capture",
+        ));
+
+        let rewritten = substitute_standalone_state_derivatives_in_non_ode_rows(&mut dae);
+
+        assert_eq!(rewritten, 1);
+        assert_eq!(
+            dae.discrete.real_updates[0].rhs,
+            var_ref("a1", span),
+            "the discrete update should read the selected component ODE value"
+        );
     }
 }

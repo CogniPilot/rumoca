@@ -15,9 +15,9 @@
 //! cargo test --release --package rumoca-test-msl --features backend-stress-tests --test backend_stress_test -- --nocapture
 //! ```
 //!
-//! Environment variables:
-//! - `RUMOCA_STRESS_MATCH=pattern` — filter models by substring match
-//! - `RUMOCA_STRESS_LIMIT=N` — cap number of models tested
+//! This is an intentionally opt-in diagnostic survey: it reports every model
+//! outcome but only requires one end-to-end comparison per backend. Required
+//! backend correctness is owned by `cargo xtask verify template-runtimes`.
 
 use flate2::read::GzDecoder;
 use rumoca_compile::codegen::{render_dae_template_with_name, templates};

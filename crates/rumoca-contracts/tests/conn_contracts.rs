@@ -470,8 +470,43 @@ fn conn_011_expandable_connect_neither_declared_rejected() {
         end M;
     "#,
         "M",
-        FailedPhase::Typecheck,
-        "ET001",
+        FailedPhase::Flatten,
+        "EF020",
+    );
+}
+
+#[test]
+fn conn_011_declared_expandable_member_is_not_treated_as_virtual() {
+    expect_success(
+        r#"
+        model M
+            expandable connector Bus
+                Real sig;
+            end Bus;
+            Bus b1;
+            Bus b2;
+        equation
+            connect(b1.sig, b2.sig);
+        end M;
+    "#,
+        "M",
+    );
+}
+
+#[test]
+fn conn_011_empty_expandable_buses_can_connect_without_member_synthesis() {
+    expect_success(
+        r#"
+        model M
+            expandable connector Bus
+            end Bus;
+            Bus b1;
+            Bus b2;
+        equation
+            connect(b1, b2);
+        end M;
+    "#,
+        "M",
     );
 }
 
@@ -837,12 +872,12 @@ fn conn_022_overdetermined_type_with_flow_member_rejected() {
 
 // =============================================================================
 // CONN-012/021: expandable connector causality deduction. Member synthesis
-// from component connects is not implemented yet, so these models (and
-// therefore every deduction conflict) are rejected during typecheck.
+// from component connects is not implemented yet, so these models are rejected
+// explicitly at the pre-connection-set augmentation boundary.
 // =============================================================================
 
 #[test]
-fn conn_012_expandable_duplicate_sources_rejected() {
+fn unsupported_expandable_duplicate_sources_fail_closed() {
     expect_failure_in_phase_with_code(
         r#"
         model M
@@ -863,13 +898,13 @@ fn conn_012_expandable_duplicate_sources_rejected() {
         end M;
     "#,
         "M",
-        FailedPhase::Typecheck,
-        "ET001",
+        FailedPhase::Flatten,
+        "EF020",
     );
 }
 
 #[test]
-fn conn_021_expandable_input_without_source_rejected() {
+fn unsupported_expandable_input_without_source_fails_closed() {
     expect_failure_in_phase_with_code(
         r#"
         model M
@@ -886,7 +921,7 @@ fn conn_021_expandable_input_without_source_rejected() {
         end M;
     "#,
         "M",
-        FailedPhase::Typecheck,
-        "ET001",
+        FailedPhase::Flatten,
+        "EF020",
     );
 }

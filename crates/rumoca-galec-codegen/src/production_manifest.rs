@@ -136,10 +136,10 @@ pub struct EmittedCodeFile {
 ///
 /// # Errors
 ///
-/// `ET016` when the typed manifest model or the cross-manifest validator
+/// `EGT016` when the typed manifest model or the cross-manifest validator
 /// rejects the assembled manifest (e.g. an Algorithm Code variable with no
-/// C counterpart), `ET022` on C-name collisions, `ET023` for block shapes
-/// outside the C export, `ET018` for validator failures or violated
+/// C counterpart), `EGT022` on C-name collisions, `EGT023` for block shapes
+/// outside the C export, `EGT018` for validator failures or violated
 /// projection invariants (e.g. a manifest variable id outside the `V<i>`
 /// scheme).
 pub fn assemble_production_manifest(
@@ -384,7 +384,7 @@ fn code_container(
 ///
 /// # Errors
 ///
-/// `ET018` when the variable id is outside the positional `V<i>` scheme
+/// `EGT018` when the variable id is outside the positional `V<i>` scheme
 /// [`crate::manifest_vars`] owns — alignment would silently break, so scheme
 /// drift is a loud projection bug.
 fn component_id(variable_id: &Identifier) -> Result<Identifier, GalecTargetError> {
@@ -457,7 +457,7 @@ fn code_file_entry(id: &str, file: &EmittedCodeFile) -> Result<File, GalecTarget
         id: Identifier::new(id)?,
         name: file.name.clone(),
         path: FilePath::root(),
-        checksum: FileChecksum::Sha1(file.sha1.clone()),
+        checksum: FileChecksum::Sha1(file.sha1),
         role: FileRole::Code,
         description: None,
     })
@@ -880,7 +880,7 @@ mod tests {
         let ac_sha1 = Sha1Hex::of_bytes(b"rendered AC manifest bytes");
         let header = emitted("TestBlock.h", b"header bytes");
         let source = emitted("TestBlock.c", b"source bytes");
-        let pc = assemble_production_manifest(&package, &ac, ac_sha1.clone(), &header, &source)
+        let pc = assemble_production_manifest(&package, &ac, ac_sha1, &header, &source)
             .expect("assembles");
 
         let reference = &pc.parts().manifest_reference;
@@ -902,10 +902,10 @@ mod tests {
         );
         assert_eq!(files[0].0, "F_H");
         assert_eq!(files[0].1, "TestBlock.h");
-        assert_eq!(files[0].2, &FileChecksum::Sha1(header.sha1.clone()));
+        assert_eq!(files[0].2, &FileChecksum::Sha1(header.sha1));
         assert_eq!(files[1].0, "F_C");
         assert_eq!(files[1].1, "TestBlock.c");
-        assert_eq!(files[1].2, &FileChecksum::Sha1(source.sha1.clone()));
+        assert_eq!(files[1].2, &FileChecksum::Sha1(source.sha1));
 
         // The PC manifest gets its own fresh UUID, distinct from the AC one.
         assert_ne!(pc.parts().attributes.id, ac.parts().attributes.id);
@@ -914,7 +914,7 @@ mod tests {
     // ---- GAL-004 post-validation in the owning phase ---------------------
 
     /// An AC variable without a C counterpart fails cross-validation inside
-    /// the builder (ET016 wrapping EFM040) — never at container-write time.
+    /// the builder (EGT016 wrapping EFM040) — never at container-write time.
     #[test]
     fn unmapped_algorithm_code_variable_fails_here() {
         let package = base_package();
@@ -928,7 +928,7 @@ mod tests {
         ));
         let ac = ac_of(&widened);
         let error = assemble(&package, &ac).expect_err("V7 has no C counterpart");
-        assert_eq!(error.code(), "ET016", "{error}");
+        assert_eq!(error.code(), "EGT016", "{error}");
         let GalecTargetError::Manifest { source } = &error else {
             panic!("expected the EfmiError funnel, got: {error}");
         };
@@ -936,7 +936,7 @@ mod tests {
     }
 
     /// A manifest variable id outside the `V<i>` scheme breaks the `CO_<i>`
-    /// alignment — a loud ET018 projection bug, never a silent misalignment.
+    /// alignment — a loud EGT018 projection bug, never a silent misalignment.
     #[test]
     fn variable_id_outside_scheme_is_a_loud_projection_bug() {
         let package = base_package();
@@ -947,6 +947,6 @@ mod tests {
         };
         first.common.id = ident("X1");
         let error = assemble(&broken, &ac).expect_err("id scheme drift must fail");
-        assert_eq!(error.code(), "ET018", "{error}");
+        assert_eq!(error.code(), "EGT018", "{error}");
     }
 }

@@ -45,7 +45,7 @@ use crate::package::AlgorithmCodePackage;
 ///
 /// # Errors
 ///
-/// `ET018` for validator or printer rejections; for a package produced by
+/// `EGT018` for validator or printer rejections; for a package produced by
 /// the lowering entry point both are projection bugs.
 pub fn render_algorithm_code(package: &AlgorithmCodePackage) -> Result<String, GalecTargetError> {
     validated_alg_text(&package.block)
@@ -107,7 +107,7 @@ impl ManifestIdentity {
     ///
     /// # Errors
     ///
-    /// `ET018` if the constant tool string fails `NormalizedText` validation
+    /// `EGT018` if the constant tool string fails `NormalizedText` validation
     /// (impossible for a well-formed `CARGO_PKG_VERSION`).
     pub fn generated() -> Result<Self, GalecTargetError> {
         Ok(Self {
@@ -165,8 +165,8 @@ pub(crate) fn assemble_manifest(
 ///
 /// # Errors
 ///
-/// `ET016` when the typed manifest model rejects the assembled parts,
-/// `ET018` for validator/printer failures.
+/// `EGT016` when the typed manifest model rejects the assembled parts,
+/// `EGT018` for validator/printer failures.
 pub fn assemble_manifest_with_identity(
     package: &AlgorithmCodePackage,
     alg_checksum: Sha1Hex,
@@ -281,7 +281,7 @@ struct CMethods {
 }
 
 /// One lowered statement — an assignment, the only kind the lowering emits
-/// ([`crate::lower`]); other kinds fail with `ET023`, never drop.
+/// ([`crate::lower`]); other kinds fail with `EGT023`, never drop.
 #[derive(Serialize)]
 struct CStatement {
     kind: &'static str,
@@ -303,8 +303,8 @@ struct CStatement {
 ///
 /// # Errors
 ///
-/// `ET022` on C-name collisions, `ET023` for GALEC constructs the C
-/// export does not support, `ET018` for validator/printer rejections.
+/// `EGT022` on C-name collisions, `EGT023` for GALEC constructs the C
+/// export does not support, `EGT018` for validator/printer rejections.
 pub fn c_template_context(
     package: &AlgorithmCodePackage,
     model_name: &str,
@@ -357,7 +357,7 @@ pub fn c_template_context(
 ///
 /// # Errors
 ///
-/// `ET018`/`ET022`/`ET023` for validator, C-name, or unsupported C-export
+/// `EGT018`/`EGT022`/`EGT023` for validator, C-name, or unsupported C-export
 /// findings. Dimensioned variables are accepted when their dimensions are
 /// literal positive integers, matching the shape the current projection emits.
 pub fn c_template_context_for_block(
@@ -481,7 +481,7 @@ fn c_dimension(dimension: &Dimension) -> Result<u64, GalecTargetError> {
 }
 
 /// Reject block shapes the current lowering never produces before any C is
-/// printed (GAL-007: loud `ET023`, never a silent drop). Kept in lockstep
+/// printed (GAL-007: loud `EGT023`, never a silent drop). Kept in lockstep
 /// with [`crate::lower`]: it emits no compartments, user functions, error
 /// signals, method locals, or method `signals` clauses. Shared with the
 /// Production Code manifest builder ([`crate::production_manifest`]), whose
@@ -547,7 +547,7 @@ fn statements(
         .iter()
         .map(|statement| {
             let statement = &statement.node;
-            // Non-assignment kinds fail here with ET023 (the printer owns
+            // Non-assignment kinds fail here with EGT023 (the printer owns
             // that rejection); a kind the printer someday accepts still
             // needs a CStatement shape before it can pass below.
             let c_lines = printer.statement_lines(statement)?;

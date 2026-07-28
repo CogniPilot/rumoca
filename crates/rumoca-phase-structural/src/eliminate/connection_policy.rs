@@ -26,7 +26,7 @@ pub(super) fn should_skip_connection_equation(
     if has_aggregate_alias {
         return false;
     }
-    if !connection_alias_refs_are_continuous_scalar_algebraics(
+    if !connection_alias_refs_are_supported_continuous_scalars(
         dae,
         eq_rhs,
         runtime_defined_discrete_targets,
@@ -42,7 +42,7 @@ pub(super) fn should_skip_connection_equation(
         )
 }
 
-fn connection_alias_refs_are_continuous_scalar_algebraics(
+fn connection_alias_refs_are_supported_continuous_scalars(
     dae: &Dae,
     eq_rhs: &Expression,
     runtime_defined_discrete_targets: &HashSet<String>,
@@ -62,9 +62,19 @@ fn connection_alias_refs_are_continuous_scalar_algebraics(
     let Some(rhs_ref) = full_var_ref(rhs) else {
         return false;
     };
-    [lhs_ref.var_name(), rhs_ref.var_name()].iter().all(|name| {
+    let names = [lhs_ref.var_name(), rhs_ref.var_name()];
+    names.iter().all(|name| {
         can_eliminate_scalar_connection_alias_var(dae, name, runtime_defined_discrete_targets)
-    })
+    }) || (names
+        .iter()
+        .any(|name| independently_scalar_indexed_component_field(dae, name))
+        && names.iter().all(|name| {
+            can_participate_in_indexed_component_connection_alias(
+                dae,
+                name,
+                runtime_defined_discrete_targets,
+            )
+        }))
 }
 
 fn can_eliminate_continuous_connection_alias(
@@ -88,14 +98,15 @@ fn can_eliminate_continuous_connection_alias(
     let Some(rhs_ref) = full_var_ref(rhs) else {
         return false;
     };
-    [lhs_ref.var_name(), rhs_ref.var_name()].iter().all(|name| {
-        live.iter().any(|live_name| live_name == *name)
-            && can_eliminate_scalar_connection_alias_var(
-                dae,
-                name,
-                runtime_defined_discrete_targets,
-            )
-    })
+    let names = [lhs_ref.var_name(), rhs_ref.var_name()];
+    names
+        .iter()
+        .all(|name| live.iter().any(|live_name| live_name == *name))
+        && connection_alias_refs_are_supported_continuous_scalars(
+            dae,
+            eq_rhs,
+            runtime_defined_discrete_targets,
+        )
 }
 
 fn can_eliminate_scalar_connection_alias_var(
@@ -103,9 +114,32 @@ fn can_eliminate_scalar_connection_alias_var(
     var_name: &VarName,
     runtime_defined_discrete_targets: &HashSet<String>,
 ) -> bool {
-    !var_name.as_str().contains('[')
+    rumoca_core::strip_trailing_subscript_suffix(var_name.as_str()).is_none()
         && !unknown_is_fixed(dae, var_name)
         && dae.variables.algebraics.contains_key(var_name)
+        && !runtime_defined_discrete_targets.contains(var_name.as_str())
+        && !runtime_partition_or_event_refs_var(dae, var_name)
+}
+
+fn independently_scalar_indexed_component_field(dae: &Dae, var_name: &VarName) -> bool {
+    dae.variables
+        .algebraics
+        .get(var_name)
+        .is_some_and(|variable| variable.dims.is_empty())
+        && rumoca_core::strip_trailing_subscript_suffix(var_name.as_str()).is_none()
+        && super::DaeVariableScope::new(dae).is_indexed_component_variable(var_name)
+}
+
+fn can_participate_in_indexed_component_connection_alias(
+    dae: &Dae,
+    var_name: &VarName,
+    runtime_defined_discrete_targets: &HashSet<String>,
+) -> bool {
+    dae.variables
+        .algebraics
+        .get(var_name)
+        .or_else(|| dae.variables.outputs.get(var_name))
+        .is_some_and(|variable| variable.dims.is_empty())
         && !runtime_defined_discrete_targets.contains(var_name.as_str())
         && !runtime_partition_or_event_refs_var(dae, var_name)
 }

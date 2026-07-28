@@ -2,7 +2,7 @@
 //!
 //! Provides a visitor to find unresolved symbols after resolution.
 
-use rumoca_core::Location;
+use rumoca_core::{ComponentPath, DefId, Location, ScopeId};
 use rumoca_ir_ast as ast;
 use std::collections::HashSet;
 use std::ops::ControlFlow;
@@ -18,11 +18,12 @@ type Extend = ast::Extend;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnresolvedSymbol {
     pub name: String,
+    /// Structured source path, retained so later phase-policy decisions do not
+    /// reconstruct semantic lookup keys by splitting `name`.
+    pub path: ComponentPath,
     pub kind: UnresolvedKind,
-    /// Enclosing class path segments (outermost first) at the reference site.
-    /// Kept structured so consumers walk enclosing scopes by composing
-    /// prefixes instead of re-splitting a rendered path.
-    pub scope_path: Vec<String>,
+    /// Resolved lexical scope containing the unresolved source reference.
+    pub scope_id: ScopeId,
     pub source_location: Location,
 }
 
@@ -64,8 +65,10 @@ impl ValidationResult {
 /// Validate that a ClassTree has all symbols resolved.
 pub fn validate_resolution(tree: &ClassTree) -> ValidationResult {
     let mut v = Validator {
-        component_names: collect_component_names(&tree.definitions),
-        ..Validator::default()
+        tree,
+        component_def_ids: collect_component_def_ids(&tree.definitions),
+        current_scope: Some(tree.scope_tree.global()),
+        unresolved: Vec::new(),
     };
     let _ = ast::Visitor::visit_stored_definition(&mut v, &tree.definitions);
     ValidationResult {
@@ -73,22 +76,25 @@ pub fn validate_resolution(tree: &ClassTree) -> ValidationResult {
     }
 }
 
-#[derive(Default)]
-struct Validator {
-    path: Vec<String>,
-    component_names: HashSet<String>,
+struct Validator<'tree> {
+    tree: &'tree ClassTree,
+    current_scope: Option<ScopeId>,
+    component_def_ids: HashSet<DefId>,
     unresolved: Vec<UnresolvedSymbol>,
 }
 
-impl Validator {
-    fn add(&mut self, name: String, kind: UnresolvedKind, source_location: Location) {
+impl Validator<'_> {
+    fn add(&mut self, path: ComponentPath, kind: UnresolvedKind, source_location: Location) {
         if !has_valid_location(&source_location) {
             return;
         }
         self.unresolved.push(UnresolvedSymbol {
-            name,
+            name: path.as_str().to_owned(),
+            path,
             kind,
-            scope_path: self.path.clone(),
+            scope_id: self
+                .current_scope
+                .expect("post-resolution validation must have a lexical ScopeId"),
             source_location,
         });
     }
@@ -100,7 +106,11 @@ impl Validator {
         let Some(source_location) = name.name.first().map(|token| token.location.clone()) else {
             return;
         };
-        self.add(name.to_string(), kind, source_location);
+        self.add(
+            ComponentPath::from_parts(name.name.iter().map(|token| token.text.as_ref())),
+            kind,
+            source_location,
+        );
     }
 
     fn add_unresolved_component_reference(&mut self, cr: &ComponentReference) {
@@ -109,7 +119,7 @@ impl Validator {
         }
         let source_location = cr.parts[0].ident.location.clone();
         self.add(
-            cr.parts[0].ident.text.to_string(),
+            ComponentPath::from_parts(cr.parts.iter().map(|part| part.ident.text.as_ref())),
             UnresolvedKind::ComponentReference,
             source_location,
         );
@@ -124,7 +134,7 @@ impl Validator {
             }
             let source_location = cr.parts[0].ident.location.clone();
             self.add(
-                cr.parts[0].ident.text.to_string(),
+                ComponentPath::from_parts(cr.parts.iter().map(|part| part.ident.text.as_ref())),
                 UnresolvedKind::FunctionCall,
                 source_location,
             );
@@ -132,35 +142,50 @@ impl Validator {
     }
 
     fn is_likely_component_receiver_call(&self, cr: &ComponentReference) -> bool {
-        cr.parts.len() > 1
-            && cr
-                .parts
-                .first()
-                .is_some_and(|part| self.component_names.contains(part.ident.text.as_ref()))
+        let Some(scope) = self.current_scope else {
+            return false;
+        };
+        let [first, ..] = cr.parts.as_slice() else {
+            return false;
+        };
+        if cr.parts.len() == 1 {
+            return false;
+        }
+        let receiver = ComponentPath::from_parts([first.ident.text.as_ref()]);
+        self.tree
+            .scope_tree
+            .lookup(scope, &receiver)
+            .is_some_and(|def_id| self.component_def_ids.contains(&def_id))
     }
 }
 
-fn collect_component_names(definition: &ast::StoredDefinition) -> HashSet<String> {
-    let mut collector = ComponentNameCollector::default();
+fn collect_component_def_ids(definition: &ast::StoredDefinition) -> HashSet<DefId> {
+    let mut collector = ComponentDefIdCollector::default();
     let _ = ast::Visitor::visit_stored_definition(&mut collector, definition);
-    collector.names
+    collector.def_ids
 }
 
 #[derive(Default)]
-struct ComponentNameCollector {
-    names: HashSet<String>,
+struct ComponentDefIdCollector {
+    def_ids: HashSet<DefId>,
 }
 
-impl ast::Visitor for ComponentNameCollector {
+impl ast::Visitor for ComponentDefIdCollector {
     fn visit_component(&mut self, comp: &Component) -> ControlFlow<()> {
-        self.names.insert(comp.name.clone());
+        if let Some(def_id) = comp.def_id {
+            self.def_ids.insert(def_id);
+        }
         ControlFlow::Continue(())
     }
 }
 
-impl ast::Visitor for Validator {
+impl ast::Visitor for Validator<'_> {
     fn visit_class_def(&mut self, class: &ClassDef) -> ControlFlow<()> {
-        self.path.push(class.name.text.to_string());
+        let previous_scope = self.current_scope.replace(
+            class
+                .scope_id
+                .expect("post-resolution class must carry a lexical ScopeId"),
+        );
 
         if let Some(constrainedby) = &class.constrainedby {
             self.visit_type_name(constrainedby, ast::TypeNameContext::ClassConstrainedBy)?;
@@ -198,14 +223,16 @@ impl ast::Visitor for Validator {
             self.visit_class_def(nested)?;
         }
 
-        self.path.pop();
+        self.current_scope = previous_scope;
         ControlFlow::Continue(())
     }
 
     fn visit_extend(&mut self, ext: &Extend) -> ControlFlow<()> {
         if ext.base_def_id.is_none() {
             self.add(
-                ext.base_name.to_string(),
+                ComponentPath::from_parts(
+                    ext.base_name.name.iter().map(|token| token.text.as_ref()),
+                ),
                 UnresolvedKind::ExtendsBase,
                 ext.location.clone(),
             );
@@ -217,8 +244,6 @@ impl ast::Visitor for Validator {
     }
 
     fn visit_component(&mut self, comp: &Component) -> ControlFlow<()> {
-        self.path.push(comp.name.clone());
-
         self.visit_type_name(&comp.type_name, ast::TypeNameContext::ComponentType)?;
         if let Some(constrainedby) = &comp.constrainedby {
             self.visit_type_name(constrainedby, ast::TypeNameContext::ComponentConstrainedBy)?;
@@ -238,7 +263,6 @@ impl ast::Visitor for Validator {
             self.visit_expression(condition)?;
         }
 
-        self.path.pop();
         ControlFlow::Continue(())
     }
 
@@ -309,8 +333,7 @@ impl ast::Visitor for Validator {
 }
 
 fn has_valid_location(location: &Location) -> bool {
-    !location.file_name.is_empty()
-        && location.end > location.start
+    location.has_source()
         && location.start_line > 0
         && location.start_column > 0
         && location.end_line > 0
@@ -407,10 +430,36 @@ end M;
 "#,
         );
         assert!(
-            r.unresolved
-                .iter()
-                .any(|s| s.kind == UnresolvedKind::FunctionCall && s.name == "MissingPkg"),
+            r.unresolved.iter().any(|s| {
+                s.kind == UnresolvedKind::FunctionCall
+                    && s.path.parts().first().map(String::as_str) == Some("MissingPkg")
+            }),
             "package-qualified calls must still report unresolved leading names, got: {:?}",
+            r.unresolved
+        );
+    }
+
+    #[test]
+    fn unrelated_component_name_does_not_hide_unresolved_qualified_call() {
+        let r = resolve_for_validation(
+            r#"
+model Decoy
+  Real MissingPkg;
+end Decoy;
+
+model M
+  Real y;
+equation
+  y = MissingPkg.f(1.0);
+end M;
+"#,
+        );
+        assert!(
+            r.unresolved.iter().any(|s| {
+                s.kind == UnresolvedKind::FunctionCall
+                    && s.path.parts().first().map(String::as_str) == Some("MissingPkg")
+            }),
+            "receiver deferral must use the lexical ScopeId/DefId, not a global name set: {:?}",
             r.unresolved
         );
     }

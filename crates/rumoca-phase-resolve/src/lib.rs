@@ -15,7 +15,8 @@
 //! - `errors` - Error types for name resolution
 //! - `registration` - Phase 1: DefId allocation and scope creation
 //! - `extends` - Phase 2a: Import and extends resolution
-//! - `contents` - Phase 2b: Equation, statement, expression resolution
+//! - `inherited_scopes` - Phase 2b: Effective inherited scope entries
+//! - `contents` - Phase 2c: Equation, statement, expression resolution
 //! - `cycles` - Phase 3: Inheritance cycle detection
 //! - `lookup` - Name lookup helpers
 //! - [`validation`] - Post-resolution validation (unresolved symbol detection)
@@ -24,6 +25,7 @@ mod contents;
 mod cycles;
 mod errors;
 mod extends;
+mod inherited_scopes;
 mod lookup;
 mod path_utils;
 mod registration;
@@ -91,7 +93,7 @@ fn location_to_span(loc: &Location, source_map: &SourceMap) -> Option<Span> {
     if !location_has_valid_span(loc) {
         return None;
     }
-    source_map.try_location_to_span(&loc.file_name, loc.start as usize, loc.end as usize)
+    source_map.try_span(loc.source, loc.start as usize, loc.end as usize)
 }
 
 fn location_span_or_emit(
@@ -102,19 +104,21 @@ fn location_span_or_emit(
 ) -> Option<Span> {
     let span = location_to_span(loc, source_map);
     if span.is_none() {
-        diagnostics.emit(missing_source_context_diagnostic(context, loc));
+        diagnostics.emit(missing_source_context_diagnostic(context, loc, source_map));
     }
     span
 }
 
-fn missing_source_context_diagnostic(context: &str, loc: &Location) -> Diagnostic {
+fn missing_source_context_diagnostic(
+    context: &str,
+    loc: &Location,
+    source_map: &SourceMap,
+) -> Diagnostic {
+    let source = source_display_name(loc.source, source_map);
     let reason = if !location_has_valid_span(loc) {
-        format!("{context} is missing a non-empty source location")
+        format!("{context} in `{source}` is missing a non-empty source location")
     } else {
-        format!(
-            "source file `{}` for {context} was not found",
-            loc.file_name
-        )
+        format!("source file `{source}` for {context} was not found")
     };
     Diagnostic::global_error(
         ER098_MISSING_SOURCE_CONTEXT,
@@ -122,9 +126,21 @@ fn missing_source_context_diagnostic(context: &str, loc: &Location) -> Diagnosti
     )
 }
 
+/// The file name to print for a `SourceId`.
+///
+/// The registered path is used whenever the source map knows it. An
+/// unregistered id — exactly the case that reaches the "was not found" branch —
+/// still names its file through the stable placeholder form, so SPEC_0008
+/// source provenance is never reduced to an anonymous placeholder.
+fn source_display_name(source: rumoca_core::SourceId, source_map: &SourceMap) -> String {
+    source_map
+        .name(source)
+        .map(str::to_string)
+        .unwrap_or_else(|| rumoca_core::placeholder_source_name(source))
+}
+
 fn location_has_valid_span(loc: &Location) -> bool {
-    !loc.file_name.is_empty()
-        && loc.end > loc.start
+    loc.has_source()
         && loc.start_line > 0
         && loc.start_column > 0
         && loc.end_line > 0
@@ -239,8 +255,6 @@ pub struct Resolver {
     /// so enclosing-class walks traverse the scope tree instead of re-parsing
     /// qualified names.
     pub(crate) class_def_scopes: std::collections::HashMap<DefId, ScopeId>,
-    /// Fully qualified class names whose scopes are encapsulated.
-    pub(crate) encapsulated_class_names: std::collections::HashSet<String>,
     /// DefIds that can legitimately anchor partial type resolution (replaceable roots).
     pub(crate) partial_type_root_ids: std::collections::HashSet<DefId>,
     /// Exclusive upper bound for builtin DefIds. `DefId(0)` is root/global.
@@ -343,7 +357,6 @@ impl Resolver {
             class_to_bases: IndexMap::default(),
             scope_to_class_def: std::collections::HashMap::new(),
             class_def_scopes: std::collections::HashMap::new(),
-            encapsulated_class_names: std::collections::HashSet::new(),
             partial_type_root_ids: std::collections::HashSet::new(),
             builtin_count: 0,
             stats: ResolutionStats::default(),
@@ -362,8 +375,6 @@ impl Resolver {
     /// Builtins get DefIds 1..N, allowing O(1) builtin checks while reserving
     /// `DefId(0)` for root/global scope per SPEC_0001.
     fn register_builtins(&mut self) {
-        let global = ScopeId::GLOBAL;
-
         // Chain all builtins, deduplicating (types appear in both BUILTIN_TYPES and BUILTIN_FUNCTIONS)
         let all_builtins = BUILTIN_TYPES
             .iter()
@@ -374,7 +385,7 @@ impl Resolver {
             if !self.name_to_def.contains_key(name) {
                 let def_id = self.alloc_def_id(None, name);
                 self.scope_tree
-                    .add_member(global, ComponentPath::from_flat_path(name), def_id);
+                    .add_predefined_member(ComponentPath::from_flat_path(name), def_id);
             }
         }
 
@@ -465,15 +476,18 @@ impl Resolver {
         self.resolve_extends_all(&mut tree.definitions, "");
         let extends_ms = maybe_elapsed_ms(extends_start);
 
+        let cycle_check_start = maybe_start_timer();
+        // Reject cycles before recursively constructing effective inherited
+        // member views, then make inherited names participate in ordinary
+        // scope lookup before contents are resolved.
+        self.check_inheritance_cycles(&tree.definitions);
+        self.populate_inherited_scope_members(&tree.definitions);
+        let cycle_check_ms = maybe_elapsed_ms(cycle_check_start);
+
         let contents_start = maybe_start_timer();
-        // Phase 2b: Resolve equations, statements, expressions
+        // Phase 2c: Resolve equations, statements, expressions
         self.resolve_contents_all(&mut tree.definitions, global_scope, "");
         let contents_ms = maybe_elapsed_ms(contents_start);
-
-        let cycle_check_start = maybe_start_timer();
-        // Phase 3: Check for circular inheritance (detects indirect cycles)
-        self.check_inheritance_cycles(&tree.definitions);
-        let cycle_check_ms = maybe_elapsed_ms(cycle_check_start);
 
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -573,6 +587,11 @@ pub fn resolve_with_options_collect(
             .diagnostics
             .emit(apply_semantic_diagnostic_policy(diag, options));
     }
+    for diag in semantic_checks::check_resolved_semantics(&tree) {
+        resolver
+            .diagnostics
+            .emit(apply_semantic_diagnostic_policy(diag, options));
+    }
     let semantic_checks_ms = maybe_elapsed_ms(semantic_checks_start);
 
     // Validate unresolved symbols gathered by post-resolution visitor (MLS §5.3)
@@ -580,7 +599,7 @@ pub fn resolve_with_options_collect(
     let validation = validation::validate_resolution(&tree);
     let validation_ms = maybe_elapsed_ms(validation_start);
     let unresolved_emit_start = maybe_start_timer();
-    emit_unresolved_symbol_diagnostics(&mut resolver, &validation, options);
+    emit_unresolved_symbol_diagnostics(&mut resolver, &tree, &validation, options);
     let unresolved_emit_ms = maybe_elapsed_ms(unresolved_emit_start);
 
     #[cfg(target_arch = "wasm32")]
@@ -632,10 +651,21 @@ pub fn resolve_with_stats(parsed: ParsedTree) -> ResolveWithStatsResult {
             ResolveOptions::default(),
         ));
     }
+    for diag in semantic_checks::check_resolved_semantics(&tree) {
+        resolver.diagnostics.emit(apply_semantic_diagnostic_policy(
+            diag,
+            ResolveOptions::default(),
+        ));
+    }
 
     // Validate unresolved symbols gathered by post-resolution visitor (MLS §5.3)
     let validation = validation::validate_resolution(&tree);
-    emit_unresolved_symbol_diagnostics(&mut resolver, &validation, ResolveOptions::default());
+    emit_unresolved_symbol_diagnostics(
+        &mut resolver,
+        &tree,
+        &validation,
+        ResolveOptions::default(),
+    );
 
     let stats = resolver.stats.clone();
     let result = if resolver.has_errors() {
@@ -665,18 +695,26 @@ pub fn resolve_parsed(def: StoredDefinition) -> Result<ResolvedTree, Diagnostics
 /// MLS §5.3 name lookup failures are reported as resolve-phase diagnostics.
 fn emit_unresolved_symbol_diagnostics(
     resolver: &mut Resolver,
+    tree: &ClassTree,
     validation: &ValidationResult,
     options: ResolveOptions,
 ) {
     for unresolved in &validation.unresolved {
-        if unresolved.kind == UnresolvedKind::ComponentReference
-            && has_inherited_match(resolver, &unresolved.scope_path, &unresolved.name)
+        if unresolved.kind == UnresolvedKind::TypeReference
+            && unresolved.path.len() == 1
+            && tree
+                .scope_tree
+                .inherited_member(unresolved.scope_id, &unresolved.path)
+                == Some(rumoca_ir_ast::InheritedMember::Ambiguous)
         {
+            // Conflicting inherited children are a partially flattened-class
+            // error (MLS §5.6.1.4 / INST-037). Keep the structured ambiguity
+            // for instantiation's EI010 diagnostic instead of misreporting it
+            // as a static name-not-found error.
             continue;
         }
-
         let force_error = unresolved.kind == UnresolvedKind::ComponentReference
-            && unresolved_is_within_encapsulated_scope(resolver, &unresolved.scope_path);
+            && unresolved_is_within_encapsulated_scope(tree, unresolved.scope_id);
         let (kind, code, is_error) = match unresolved.kind {
             UnresolvedKind::TypeReference => ("type reference", "ER002", true),
             UnresolvedKind::ExtendsBase => ("extends base class", "ER003", true),
@@ -718,23 +756,64 @@ fn emit_unresolved_symbol_diagnostics(
     }
 }
 
-/// Qualified names of the reference site's class and every enclosing class,
-/// composed innermost-first from the structured scope segments.
-fn enclosing_scope_names(scope_path: &[String]) -> impl Iterator<Item = String> + '_ {
-    (1..=scope_path.len())
-        .rev()
-        .map(|end| scope_path[..end].join("."))
+fn unresolved_is_within_encapsulated_scope(tree: &ClassTree, scope: ScopeId) -> bool {
+    std::iter::successors(Some(scope), |current| tree.scope_tree.parent(*current)).any(|current| {
+        tree.scope_tree
+            .get(current)
+            .is_some_and(rumoca_ir_ast::Scope::is_encapsulated)
+    })
 }
 
-fn unresolved_is_within_encapsulated_scope(resolver: &Resolver, scope_path: &[String]) -> bool {
-    enclosing_scope_names(scope_path).any(|path| resolver.encapsulated_class_names.contains(&path))
-}
+#[cfg(test)]
+mod missing_source_context_tests {
+    use super::{Location, missing_source_context_diagnostic};
+    use rumoca_core::{SourceId, SourceMap};
 
-/// Check whether an unresolved simple name can be found in inherited members of
-/// the current class or any enclosing class.
-fn has_inherited_match(resolver: &Resolver, scope_path: &[String], name: &str) -> bool {
-    enclosing_scope_names(scope_path)
-        .any(|container| resolver.lookup_inherited_member(&container, name).is_some())
+    fn location(source: SourceId, start: u32, end: u32, line: u32) -> Location {
+        Location {
+            start_line: line,
+            start_column: line,
+            end_line: line,
+            end_column: line,
+            start,
+            end,
+            source,
+        }
+    }
+
+    #[test]
+    fn missing_source_context_names_the_registered_file() {
+        let mut source_map = SourceMap::new();
+        let source = source_map.add("pkg/Widget.mo", "model Widget end Widget;");
+        // Line/column are zero, so the location is rejected before the span
+        // lookup, but the file itself is registered and must be named.
+        let loc = location(source, 0, 5, 0);
+        let diag = missing_source_context_diagnostic("component reference", &loc, &source_map);
+        assert!(
+            diag.message.contains("`pkg/Widget.mo`"),
+            "diagnostic must interpolate the real path, got: {}",
+            diag.message
+        );
+    }
+
+    #[test]
+    fn missing_source_context_keeps_provenance_for_unregistered_sources() {
+        let source_map = SourceMap::new();
+        let source = SourceId::from_source_name("pkg/Missing.mo");
+        let loc = location(source, 0, 5, 1);
+        let diag = missing_source_context_diagnostic("type reference", &loc, &source_map);
+        let placeholder = rumoca_core::placeholder_source_name(source);
+        assert!(
+            diag.message.contains(&placeholder),
+            "diagnostic must name the source identity, got: {}",
+            diag.message
+        );
+        assert_eq!(
+            rumoca_core::source_id_for_name(&placeholder),
+            source,
+            "the printed identity must resolve back to the originating file"
+        );
+    }
 }
 
 #[cfg(test)]

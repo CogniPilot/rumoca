@@ -8,6 +8,9 @@ build = "fmu"
 completion_message = """FMU sources compiled to: {{ out_dir }}
 Run ./build.sh to compile and package the .fmu"""
 
+[capabilities]
+runtime_events = false
+
 [[files]]
 path = "modelDescription.xml"
 template = "modelDescription.xml.jinja"

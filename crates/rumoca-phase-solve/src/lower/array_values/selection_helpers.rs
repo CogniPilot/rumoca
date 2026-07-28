@@ -6,11 +6,13 @@ pub(in crate::lower) fn matmul_shape_from_dims(
     scalar_count: usize,
 ) -> Option<MatMulShape> {
     match (lhs_dims, rhs_dims) {
-        ([m, k], [rhs_inner, n]) if k == rhs_inner && m * n == scalar_count => Some(MatMulShape {
-            m: *m,
-            k: *k,
-            n: *n,
-        }),
+        ([m, k], [rhs_inner, n]) if k == rhs_inner && m.checked_mul(*n) == Some(scalar_count) => {
+            Some(MatMulShape {
+                m: *m,
+                k: *k,
+                n: *n,
+            })
+        }
         ([m, k], [rhs_inner]) if k == rhs_inner && *m == scalar_count => {
             Some(MatMulShape { m: *m, k: *k, n: 1 })
         }
@@ -145,6 +147,7 @@ pub(in crate::lower) fn build_scalarized_children_index(
 ) -> IndexMap<String, Vec<(ComponentReferenceKey, String)>> {
     let mut index: IndexMap<String, Vec<(ComponentReferenceKey, String)>> = IndexMap::new();
     for name in layout.bindings().keys() {
+        let name = name.as_str();
         let Some(dot) = name.rfind('.') else {
             continue;
         };
@@ -155,7 +158,33 @@ pub(in crate::lower) fn build_scalarized_children_index(
         index
             .entry(name[..dot].to_string())
             .or_default()
-            .push((generated_scope_key(name.clone()), name.clone()));
+            .push((generated_scope_key(name), name.to_string()));
     }
     index
+}
+
+#[cfg(test)]
+mod matmul_shape_tests {
+    use super::*;
+
+    #[test]
+    fn zero_inner_matrix_product_retains_nonempty_output_shape() {
+        assert_eq!(
+            matmul_shape_from_dims(&[2, 0], &[0, 3], 6).map(|shape| (shape.m, shape.k, shape.n)),
+            Some((2, 0, 3))
+        );
+    }
+
+    #[test]
+    fn zero_result_extent_is_a_valid_matrix_product_shape() {
+        assert_eq!(
+            matmul_shape_from_dims(&[0, 4], &[4, 3], 0).map(|shape| (shape.m, shape.k, shape.n)),
+            Some((0, 4, 3))
+        );
+    }
+
+    #[test]
+    fn matrix_product_shape_rejects_output_extent_overflow() {
+        assert!(matmul_shape_from_dims(&[usize::MAX, 1], &[1, 2], usize::MAX).is_none());
+    }
 }

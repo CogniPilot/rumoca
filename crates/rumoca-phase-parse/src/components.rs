@@ -2,16 +2,48 @@
 
 use crate::generated::modelica_grammar_trait;
 
+fn decode_modelica_string_literal(text: &str) -> anyhow::Result<String> {
+    let Some(contents) = text
+        .strip_prefix('"')
+        .and_then(|text| text.strip_suffix('"'))
+    else {
+        anyhow::bail!("malformed Modelica string literal");
+    };
+    let mut decoded = String::with_capacity(contents.len());
+    let mut chars = contents.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            decoded.push(ch);
+            continue;
+        }
+        let Some(escaped) = chars.next() else {
+            anyhow::bail!("unterminated Modelica string escape");
+        };
+        decoded.push(match escaped {
+            '\'' => '\'',
+            '"' => '"',
+            '?' => '?',
+            '\\' => '\\',
+            'a' => '\x07',
+            'b' => '\x08',
+            'f' => '\x0c',
+            'n' => '\n',
+            'r' => '\r',
+            't' => '\t',
+            'v' => '\x0b',
+            _ => anyhow::bail!("invalid Modelica string escape `\\{escaped}`"),
+        });
+    }
+    Ok(decoded)
+}
+
 //-----------------------------------------------------------------------------
 impl TryFrom<&modelica_grammar_trait::String> for rumoca_core::Token {
     type Error = anyhow::Error;
 
     fn try_from(ast: &modelica_grammar_trait::String) -> std::result::Result<Self, Self::Error> {
         let mut tok: rumoca_core::Token = ast.string.clone().into();
-        // remove quotes from string text (with bounds check for malformed input)
-        if tok.text.len() >= 2 {
-            tok.text = std::sync::Arc::from(&tok.text[1..tok.text.len() - 1]);
-        }
+        tok.text = std::sync::Arc::from(decode_modelica_string_literal(&tok.text)?);
         Ok(tok)
     }
 }

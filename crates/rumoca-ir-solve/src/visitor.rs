@@ -276,6 +276,7 @@ pub fn walk_continuous_system<V: SolveVisitor + ?Sized>(
 ) -> Result<(), V::Error> {
     visitor.visit_compute_block(&system.implicit_rhs)?;
     visitor.visit_compute_block(&system.residual)?;
+    visitor.visit_compute_block(&system.manifold_residual)?;
     visitor.visit_compute_block(&system.derivative_rhs)
 }
 
@@ -315,6 +316,7 @@ pub fn walk_continuous_artifacts<V: SolveVisitor + ?Sized>(
     artifacts: &ContinuousSolveArtifacts,
 ) -> Result<(), V::Error> {
     visitor.visit_compute_block(&artifacts.implicit_jacobian_v)?;
+    visitor.visit_compute_block(&artifacts.manifold_jacobian_v)?;
     visitor.visit_scalar_program_block(&artifacts.full_jacobian_v)
 }
 

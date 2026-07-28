@@ -4,7 +4,9 @@
 //! receive only `rumoca-ir-solve` data.
 //!
 use indexmap::{IndexMap, IndexSet};
-use rumoca_core::{ExpressionVisitor, Literal, OpBinary, OpUnary};
+#[cfg(test)]
+use rumoca_core::OpBinary;
+use rumoca_core::{Diagnostic, ExpressionVisitor, PhaseError, PrimaryLabel};
 use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
 use std::sync::Arc;
@@ -25,14 +27,8 @@ use rumoca_eval_dae::{
 };
 use std::collections::{HashMap, HashSet};
 
-mod state_derivative_ordering;
 mod variable_meta;
 mod visible;
-use state_derivative_ordering::order_state_derivative_rows;
-#[cfg(test)]
-use state_derivative_ordering::{
-    reserve_state_derivative_order_capacity, reserve_state_derivative_order_flags,
-};
 use variable_meta::{
     continuous_real_role_is_event_discontinuous, event_discontinuous_scalar_names,
     variable_meta_classification,
@@ -103,6 +99,23 @@ impl std::fmt::Display for SolveModelLowerError {
 
 impl std::error::Error for SolveModelLowerError {}
 
+impl PhaseError for SolveModelLowerError {
+    fn to_diagnostic(&self) -> Diagnostic {
+        match self {
+            Self::Lower(error) => error.to_diagnostic(),
+            Self::Structural { source } => source.to_diagnostic(),
+            Self::Evaluation { span, .. } | Self::MassMatrix { span, .. } => match span {
+                Some(span) if !span.is_dummy() => Diagnostic::error(
+                    self.code(),
+                    self.to_string(),
+                    PrimaryLabel::new(*span).with_message(self.diagnostic_label()),
+                ),
+                Some(_) | None => Diagnostic::global_error(self.code(), self.to_string()),
+            },
+        }
+    }
+}
+
 impl SolveModelLowerError {
     pub fn diagnostic_reason(&self) -> String {
         match self {
@@ -169,6 +182,7 @@ pub fn lower_dae_to_solve_model_owned(
         dae_model,
         None,
         None,
+        &[],
         SolveModelLoweringProfile::Runtime,
         &HashMap::new(),
     )
@@ -183,6 +197,7 @@ pub fn lower_dae_to_solve_model_owned_with_visible_expressions(
         dae_model,
         Some(visible_expressions),
         None,
+        &[],
         SolveModelLoweringProfile::Runtime,
         &HashMap::new(),
     )
@@ -216,6 +231,25 @@ pub fn lower_dae_to_solve_model_owned_with_visible_expressions_and_metadata_and_
         dae_model,
         Some(visible_expressions),
         Some(metadata_dae_model),
+        &[],
+        SolveModelLoweringProfile::Runtime,
+        param_overrides,
+    )
+}
+
+pub fn lower_dae_to_solve_model_owned_with_manifold_constraints_and_overrides(
+    dae_model: dae::Dae,
+    visible_expressions: Vec<VisibleExpression>,
+    metadata_dae_model: &dae::Dae,
+    manifold_constraints: Vec<rumoca_phase_structural::dae_prepare::IndexReducedConstraint>,
+    param_overrides: &HashMap<String, f64>,
+) -> Result<solve::SolveModel, SolveModelLowerError> {
+    crate::clear_solve_lowering_runtime_state();
+    lower_dae_to_solve_model_inner(
+        dae_model,
+        Some(visible_expressions),
+        Some(metadata_dae_model),
+        &manifold_constraints,
         SolveModelLoweringProfile::Runtime,
         param_overrides,
     )
@@ -245,6 +279,25 @@ pub fn lower_dae_to_solve_model_owned_value_only_with_visible_expressions_and_me
         dae_model,
         Some(visible_expressions),
         Some(metadata_dae_model),
+        &[],
+        SolveModelLoweringProfile::RuntimeValueOnly,
+        param_overrides,
+    )
+}
+
+pub fn lower_dae_to_solve_model_owned_value_only_with_manifold_constraints_and_overrides(
+    dae_model: dae::Dae,
+    visible_expressions: Vec<VisibleExpression>,
+    metadata_dae_model: &dae::Dae,
+    manifold_constraints: Vec<rumoca_phase_structural::dae_prepare::IndexReducedConstraint>,
+    param_overrides: &HashMap<String, f64>,
+) -> Result<solve::SolveModel, SolveModelLowerError> {
+    crate::clear_solve_lowering_runtime_state();
+    lower_dae_to_solve_model_inner(
+        dae_model,
+        Some(visible_expressions),
+        Some(metadata_dae_model),
+        &manifold_constraints,
         SolveModelLoweringProfile::RuntimeValueOnly,
         param_overrides,
     )
@@ -274,6 +327,7 @@ pub fn lower_dae_to_solve_model_owned_for_gpu_preparation_with_metadata_and_over
         dae_model,
         None,
         Some(metadata_dae_model),
+        &[],
         SolveModelLoweringProfile::GpuPreparation,
         param_overrides,
     )
@@ -361,9 +415,10 @@ fn lower_runtime_visible_outputs(
 }
 
 fn lower_dae_to_solve_model_inner(
-    mut dae_model: dae::Dae,
+    dae_model: dae::Dae,
     visible_expressions: Option<Vec<VisibleExpression>>,
     metadata_dae_model: Option<&dae::Dae>,
+    manifold_constraints: &[rumoca_phase_structural::dae_prepare::IndexReducedConstraint],
     profile: SolveModelLoweringProfile,
     param_overrides: &HashMap<String, f64>,
 ) -> Result<solve::SolveModel, SolveModelLowerError> {
@@ -387,65 +442,57 @@ fn lower_dae_to_solve_model_inner(
         param_overrides,
     )?;
     crate::timing::log_stage("model.default_parameter_values", timer);
-    if profile.needs_runtime_support() {
-        let timer = crate::timing::stage_start();
-        order_state_derivative_rows(
-            &mut dae_model,
-            state_count,
-            &base_parameters,
-            eval_runtime.clone(),
-        )?;
-        crate::timing::log_stage("model.order_state_derivative_rows", timer);
-    }
     let solver_len = profiled_solver_len(&dae_model, state_count, profile)?;
     let model_span = model_provenance_span(&dae_model, metadata_dae_model)?;
     let timer = crate::timing::stage_start();
-    let problem = lower_profiled_solve_problem(&dae_model, solver_len, model_span, profile)?;
+    let mut problem = lower_profiled_solve_problem(&dae_model, solver_len, model_span, profile)?;
+    if profile.needs_runtime_support() {
+        crate::attach_index_reduced_manifold_projection(
+            &dae_model,
+            &mut problem,
+            manifold_constraints,
+        )?;
+    }
     crate::timing::log_stage("model.lower_solve_problem", timer);
     let timer = crate::timing::stage_start();
-    let artifacts = if profile.needs_solve_artifacts() {
-        let mass_matrix = state_identity_mass_matrix(state_count, model_span)?;
+    let mut artifacts = if profile.needs_solve_artifacts() {
+        // derivative_rhs already solves the MLS §8.3 system for der(state), so
+        // runtime backends receive the explicit system x' = f(x, p, t).
+        let mass_matrix = solve::MassMatrix::Identity;
         crate::lower_solve_artifacts_with_mass_matrix(&problem, mass_matrix)?
     } else {
         solve::SolveArtifacts::default()
     };
+    if !problem.continuous.manifold_residual.is_empty()
+        && artifacts.continuous.manifold_jacobian_v.is_empty()
+    {
+        artifacts.continuous.manifold_jacobian_v = crate::lower_compute_block_jvp(
+            &problem.continuous.manifold_residual,
+        )
+        .map_err(|err| {
+            SolveModelLowerError::Lower(
+                err.with_context("lower manifold Jacobian rows for value-only runtime"),
+            )
+        })?;
+    }
     crate::timing::log_stage("model.lower_solve_artifacts", timer);
-    let timer = crate::timing::stage_start();
-    let mut parameters = compiled_parameter_values(
+    let initial = lower_initial_solver_data(
         &dae_model,
         metadata_dae_model,
-        &problem.solve_layout,
         base_parameters,
+        &problem,
         eval_runtime.clone(),
     )?;
-    crate::timing::log_stage("model.compiled_parameter_values", timer);
-    let timer = crate::timing::stage_start();
-    let mut initial_y = initial_solver_values(
-        &dae_model,
-        metadata_dae_model,
-        &parameters,
-        problem.solve_layout.solver_scalar_count(),
-        eval_runtime.clone(),
-    )?;
-    crate::timing::log_stage("model.initial_solver_values", timer);
-    let timer = crate::timing::stage_start();
-    apply_initial_equations_to_start_values(
-        &dae_model,
-        &problem.layout,
-        &mut parameters,
-        &mut initial_y,
-        eval_runtime.clone(),
-    )?;
-    crate::timing::log_stage("model.apply_initial_equations", timer);
     let timer = crate::timing::stage_start();
     let table_env = build_runtime_parameter_tail_env_with_declared_slots_and_runtime(
         &dae_model,
-        &parameters,
+        &initial.parameters,
         0.0,
         eval_runtime,
     )
     .map_err(|source| runtime_tail_error(&dae_model, source))?;
-    let external_tables = external_table_data_for_parameter_values_in(&table_env, &parameters);
+    let external_tables =
+        external_table_data_for_parameter_values_in(&table_env, &initial.parameters);
     crate::timing::log_stage("model.external_tables", timer);
     let (visible_names, visible_value_rows, variable_meta) = lower_runtime_visible_outputs(
         &dae_model,
@@ -458,12 +505,83 @@ fn lower_dae_to_solve_model_inner(
     Ok(solve::SolveModel {
         problem,
         artifacts,
-        initial_y,
-        parameters,
+        initial_y: initial.y,
+        solver_nominals: initial.nominals,
+        parameters: initial.parameters,
         external_tables: solve::ExternalTables::new(external_tables),
         visible_names,
         visible_value_rows,
         variable_meta,
+    })
+}
+
+struct InitialSolverData {
+    parameters: Vec<f64>,
+    y: Vec<f64>,
+    nominals: Vec<f64>,
+}
+
+fn lower_initial_solver_data(
+    dae_model: &dae::Dae,
+    metadata_dae_model: Option<&dae::Dae>,
+    base_parameters: Vec<f64>,
+    problem: &solve::SolveProblem,
+    eval_runtime: Arc<EvalRuntimeState>,
+) -> Result<InitialSolverData, SolveModelLowerError> {
+    let timer = crate::timing::stage_start();
+    let mut parameters = compiled_parameter_values(
+        dae_model,
+        metadata_dae_model,
+        &problem.solve_layout,
+        base_parameters,
+        eval_runtime.clone(),
+    )?;
+    if let Some(index) = problem.solve_layout.initial_homotopy_parameter_index {
+        let parameter_count = parameters.len();
+        let Some(lambda) = parameters.get_mut(index) else {
+            return Err(solve_model_contract_violation(
+                format!(
+                    "initial homotopy parameter index {index} is outside {parameter_count} \
+                     compiled parameters"
+                ),
+                model_provenance_span(dae_model, metadata_dae_model)?,
+            ));
+        };
+        *lambda = 0.0;
+    }
+    crate::timing::log_stage("model.compiled_parameter_values", timer);
+    let timer = crate::timing::stage_start();
+    let mut y = initial_solver_values(
+        dae_model,
+        metadata_dae_model,
+        &parameters,
+        problem.solve_layout.solver_scalar_count(),
+        eval_runtime.clone(),
+    )?;
+    crate::timing::log_stage("model.initial_solver_values", timer);
+    let timer = crate::timing::stage_start();
+    apply_initial_equations_to_start_values(
+        dae_model,
+        &problem.layout,
+        &mut parameters,
+        &mut y,
+        eval_runtime.clone(),
+    )?;
+    crate::timing::log_stage("model.apply_initial_equations", timer);
+    let timer = crate::timing::stage_start();
+    let nominals = initial_solver_nominals(
+        dae_model,
+        metadata_dae_model,
+        &parameters,
+        &y,
+        problem.solve_layout.solver_scalar_count(),
+        eval_runtime,
+    )?;
+    crate::timing::log_stage("model.initial_solver_nominals", timer);
+    Ok(InitialSolverData {
+        parameters,
+        y,
+        nominals,
     })
 }
 
@@ -613,6 +731,14 @@ impl std::fmt::Display for ParameterOverrideError {
 
 impl std::error::Error for ParameterOverrideError {}
 
+impl PhaseError for ParameterOverrideError {
+    fn to_diagnostic(&self) -> Diagnostic {
+        Diagnostic::global_error(self.code(), self.to_string()).with_note(
+            "the override is rejected rather than leaving dependent parameter values stale",
+        )
+    }
+}
+
 /// Propagate tunable parameter overrides to dependent parameters in place.
 ///
 /// The overridden (`pinned`) parameters' P-slots must already hold their new
@@ -649,13 +775,13 @@ pub fn propagate_parameter_overrides(
     for (name, slot) in solve_model.problem.layout.bindings() {
         match slot {
             solve::ScalarSlot::P { index, .. } => {
-                slot_index.insert(name.clone(), *index);
+                slot_index.insert(name.to_string(), *index);
                 if let Some(value) = solve_model.parameters.get(*index) {
-                    values.insert(name.clone(), *value);
+                    values.insert(name.to_string(), *value);
                 }
             }
             solve::ScalarSlot::Constant(value) => {
-                values.insert(name.clone(), *value);
+                values.insert(name.to_string(), *value);
             }
             _ => {}
         }
@@ -848,6 +974,123 @@ fn initial_solver_values(
     }
     resize_solve_model_values(&mut values, solver_len, "initial solver values", span)?;
     Ok(values)
+}
+
+fn initial_solver_nominals(
+    dae_model: &dae::Dae,
+    metadata_dae_model: Option<&dae::Dae>,
+    params: &[f64],
+    initial_y: &[f64],
+    solver_len: usize,
+    runtime: Arc<EvalRuntimeState>,
+) -> Result<Vec<f64>, SolveModelLowerError> {
+    let span = model_provenance_span(dae_model, metadata_dae_model)?;
+    let mut values = solve_model_vec_with_capacity(solver_len, "solver nominal values", span)?;
+    if solver_len == 0 {
+        return Ok(values);
+    }
+    let mut env = build_runtime_parameter_tail_env_with_declared_slots_and_runtime(
+        dae_model, params, 0.0, runtime,
+    )
+    .map_err(|source| runtime_tail_error(dae_model, source))?;
+    if let Some(metadata_dae_model) = metadata_dae_model {
+        seed_missing_default_values_for_all_variables(metadata_dae_model, &mut env)?;
+    }
+    let solver_variables = solver_variables(dae_model, span)?;
+    seed_default_values(dae_model, &mut env, &solver_variables)?;
+    let mut y_offset = 0usize;
+    for (name, var) in solver_variables {
+        let size = solve_model_variable_size(var)?;
+        let y_end = checked_solve_model_count_add(y_offset, size, "solver nominal layout", span)?;
+        let starts = initial_y.get(y_offset..y_end).ok_or_else(|| {
+            solve_model_contract_violation(
+                format!(
+                    "solver nominal layout range {y_offset}..{y_end} exceeds {} initial values",
+                    initial_y.len()
+                ),
+                span,
+            )
+        })?;
+        let nominal_var = metadata_variable(metadata_dae_model, name.as_str()).unwrap_or(var);
+        let nominal_values = nominal_values(nominal_var, &env)?;
+        append_values_for_var(&mut values, name.as_str(), var, &nominal_values)?;
+        y_offset = y_end;
+        if values.len() >= solver_len {
+            values.truncate(solver_len);
+            break;
+        }
+        seed_var_values(&mut env, name.as_str(), var, starts)?;
+    }
+    resize_solve_model_values(&mut values, solver_len, "solver nominal values", span)?;
+    for value in &mut values {
+        *value = finite_positive_nominal(*value);
+    }
+    Ok(values)
+}
+
+fn metadata_variable<'a>(dae_model: Option<&'a dae::Dae>, name: &str) -> Option<&'a dae::Variable> {
+    all_dae_variables(dae_model?)
+        .find_map(|(candidate, variable)| (candidate.as_str() == name).then_some(variable))
+}
+
+fn nominal_values(
+    var: &dae::Variable,
+    env: &rumoca_eval_dae::VarEnv<f64>,
+) -> Result<Vec<f64>, SolveModelLowerError> {
+    let size = solve_model_variable_size(var)?;
+    if size == 0 {
+        return Ok(Vec::new());
+    }
+    let Some(expr) = var.nominal.as_ref() else {
+        return nominal_defaults(var, size);
+    };
+    if start_expr_is_nonnumeric(expr, env) {
+        return nominal_defaults(var, size);
+    }
+    if size <= 1 && var.dims.is_empty() {
+        let value =
+            eval_expr::<f64>(expr, env).map_err(|source| nominal_eval_error(var, source))?;
+        return single_start_value(finite_positive_nominal(value), var);
+    }
+    let raw = match eval_shaped_array_values(expr, env, size) {
+        Ok(values) => values,
+        Err(EvalError::ShapeMismatch { actual: 1, .. }) if can_broadcast_start_value(expr, env) => {
+            let value =
+                eval_expr::<f64>(expr, env).map_err(|source| nominal_eval_error(var, source))?;
+            expand_values_to_size(
+                single_start_value(finite_positive_nominal(value), var)?,
+                size,
+                var.name.as_str(),
+                expr.span().unwrap_or(var.source_span),
+            )?
+        }
+        Err(source) => return Err(nominal_eval_error(var, source)),
+    };
+    Ok(raw.into_iter().map(finite_positive_nominal).collect())
+}
+
+fn nominal_defaults(var: &dae::Variable, size: usize) -> Result<Vec<f64>, SolveModelLowerError> {
+    default_start_values_for_size(var, 1.0, size)
+}
+
+fn finite_positive_nominal(value: f64) -> f64 {
+    if value.is_finite() && value > 0.0 {
+        value
+    } else {
+        1.0
+    }
+}
+
+fn nominal_eval_error(var: &dae::Variable, source: EvalError) -> SolveModelLowerError {
+    SolveModelLowerError::Evaluation {
+        context: format!("nominal value for `{}`", var.name),
+        source,
+        span: var
+            .nominal
+            .as_ref()
+            .and_then(|expr| expr.span())
+            .or(Some(var.source_span)),
+    }
 }
 
 fn runtime_parameter_variables(
@@ -1350,23 +1593,6 @@ fn checked_solve_model_count_add(
     })
 }
 
-fn state_identity_mass_matrix(
-    state_count: usize,
-    span: rumoca_core::Span,
-) -> Result<Vec<Vec<f64>>, SolveModelLowerError> {
-    // The solve-IR derivative RHS rows already solve the MLS §8.3 equation
-    // system for der(state), including coupled derivative rows. Concrete
-    // solvers therefore receive x' = f(x, p, t) for state rows.
-    let mut mass = solve_model_vec_with_capacity(state_count, "identity mass matrix rows", span)?;
-    for idx in 0..state_count {
-        let mut row = solve_model_vec_with_capacity(state_count, "identity mass matrix row", span)?;
-        resize_solve_model_values(&mut row, state_count, "identity mass matrix row", span)?;
-        row[idx] = 1.0;
-        mass.push(row);
-    }
-    Ok(mass)
-}
-
 pub(crate) fn scalar_names(
     name: &str,
     var: &dae::Variable,
@@ -1392,170 +1618,6 @@ fn scalar_names_for_size(
     Ok(names)
 }
 
-fn derivative_coefficient_expr(
-    expr: &rumoca_core::Expression,
-    state_name: &str,
-    owner_span: rumoca_core::Span,
-) -> Result<rumoca_core::Expression, String> {
-    let span = coefficient_expr_span(expr, owner_span)?;
-    match expr {
-        rumoca_core::Expression::BuiltinCall { function, args, .. }
-            if *function == rumoca_core::BuiltinFunction::Der =>
-        {
-            Ok(if der_arg_matches(args, state_name)? {
-                real_expr(1.0, span)
-            } else {
-                real_expr(0.0, span)
-            })
-        }
-        rumoca_core::Expression::Unary {
-            op: OpUnary::Minus | OpUnary::DotMinus,
-            rhs,
-            ..
-        } => Ok(neg_expr(
-            derivative_coefficient_expr(rhs, state_name, span)?,
-            span,
-        )),
-        rumoca_core::Expression::Binary {
-            op: OpBinary::Add | OpBinary::AddElem,
-            lhs,
-            rhs,
-            ..
-        } => Ok(binary_expr_with_span(
-            add_op(),
-            derivative_coefficient_expr(lhs, state_name, span)?,
-            derivative_coefficient_expr(rhs, state_name, span)?,
-            span,
-        )),
-        rumoca_core::Expression::Binary {
-            op: OpBinary::Sub | OpBinary::SubElem,
-            lhs,
-            rhs,
-            ..
-        } => Ok(binary_expr_with_span(
-            sub_op(),
-            derivative_coefficient_expr(lhs, state_name, span)?,
-            derivative_coefficient_expr(rhs, state_name, span)?,
-            span,
-        )),
-        rumoca_core::Expression::Binary {
-            op: OpBinary::Mul | OpBinary::MulElem,
-            lhs,
-            rhs,
-            ..
-        } => coefficient_product(lhs, rhs, state_name, span),
-        rumoca_core::Expression::Binary {
-            op: OpBinary::Div | OpBinary::DivElem,
-            lhs,
-            rhs,
-            ..
-        } => {
-            if rhs.contains_der() {
-                return Err("derivative appears in denominator".to_string());
-            }
-            Ok(binary_expr_with_span(
-                div_op(),
-                derivative_coefficient_expr(lhs, state_name, span)?,
-                rhs.as_ref().clone(),
-                span,
-            ))
-        }
-        _ if expr.contains_der() => Err("unsupported derivative expression shape".to_string()),
-        _ => Ok(real_expr(0.0, span)),
-    }
-}
-
-fn coefficient_product(
-    lhs: &rumoca_core::Expression,
-    rhs: &rumoca_core::Expression,
-    state_name: &str,
-    owner_span: rumoca_core::Span,
-) -> Result<rumoca_core::Expression, String> {
-    let lhs_has_der = lhs.contains_der();
-    let rhs_has_der = rhs.contains_der();
-    match (lhs_has_der, rhs_has_der) {
-        (true, true) => Err("nonlinear derivative product".to_string()),
-        (true, false) => Ok(binary_expr_with_span(
-            mul_op(),
-            derivative_coefficient_expr(lhs, state_name, owner_span)?,
-            rhs.clone(),
-            owner_span,
-        )),
-        (false, true) => Ok(binary_expr_with_span(
-            mul_op(),
-            lhs.clone(),
-            derivative_coefficient_expr(rhs, state_name, owner_span)?,
-            owner_span,
-        )),
-        (false, false) => Ok(real_expr(0.0, owner_span)),
-    }
-}
-
-fn coefficient_expr_span(
-    expr: &rumoca_core::Expression,
-    owner_span: rumoca_core::Span,
-) -> Result<rumoca_core::Span, String> {
-    expr.span()
-        .or_else(|| (!owner_span.is_dummy()).then_some(owner_span))
-        .ok_or_else(|| "derivative coefficient expression has no source provenance".to_string())
-}
-
-fn der_arg_matches(args: &[rumoca_core::Expression], state_name: &str) -> Result<bool, String> {
-    let Some(rumoca_core::Expression::VarRef {
-        name, subscripts, ..
-    }) = args.first()
-    else {
-        return Ok(false);
-    };
-    if subscripts.is_empty() {
-        return Ok(name.as_str() == state_name);
-    }
-    let mut indices = Vec::new();
-    indices.try_reserve_exact(subscripts.len()).map_err(|_| {
-        "derivative subscript index text count exceeds host memory limits".to_string()
-    })?;
-    for sub in subscripts {
-        let Some(text) = subscript_index_text(sub) else {
-            return Ok(false);
-        };
-        indices.push(text);
-    }
-    Ok(format!("{}[{}]", name.as_str(), indices.join(",")) == state_name)
-}
-
-fn subscript_index_text(sub: &rumoca_core::Subscript) -> Option<String> {
-    match sub {
-        rumoca_core::Subscript::Index { value: i, .. } => Some(i.to_string()),
-        rumoca_core::Subscript::Expr { expr, .. } => match expr.as_ref() {
-            rumoca_core::Expression::Literal {
-                value: Literal::Integer(i),
-                ..
-            } => Some(i.to_string()),
-            rumoca_core::Expression::Literal {
-                value: Literal::Real(v),
-                ..
-            } if v.is_finite() && v.fract() == 0.0 => Some((*v as i64).to_string()),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-fn real_expr(value: f64, span: rumoca_core::Span) -> rumoca_core::Expression {
-    rumoca_core::Expression::Literal {
-        value: Literal::Real(value),
-        span,
-    }
-}
-
-fn neg_expr(expr: rumoca_core::Expression, span: rumoca_core::Span) -> rumoca_core::Expression {
-    rumoca_core::Expression::Unary {
-        op: OpUnary::Minus,
-        rhs: Box::new(expr),
-        span,
-    }
-}
-
 #[cfg(test)]
 fn binary_expr(
     op: OpBinary,
@@ -1568,6 +1630,7 @@ fn binary_expr(
     binary_expr_with_span(op, lhs, rhs, span)
 }
 
+#[cfg(test)]
 fn binary_expr_with_span(
     op: OpBinary,
     lhs: rumoca_core::Expression,
@@ -1582,18 +1645,7 @@ fn binary_expr_with_span(
     }
 }
 
-fn add_op() -> OpBinary {
-    OpBinary::Add
-}
-
-fn sub_op() -> OpBinary {
-    OpBinary::Sub
-}
-
-fn mul_op() -> OpBinary {
-    OpBinary::Mul
-}
-
+#[cfg(test)]
 fn div_op() -> OpBinary {
     OpBinary::Div
 }

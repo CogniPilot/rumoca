@@ -3,6 +3,22 @@ mod navigation;
 pub(crate) use navigation::*;
 
 use super::*;
+
+/// Maximum number of related-model failures rendered into a strict summary.
+const STRICT_MAX_RELATED: usize = 8;
+
+/// Build the structured failure for a compile that never reached a model
+/// phase, i.e. parse or resolve failed first.
+fn strict_pre_phase_failure(
+    model_name: &str,
+    failures: Vec<ModelFailureDiagnostic>,
+) -> StrictCompileFailure {
+    let requested = requested_missing_result_message(model_name, &failures);
+    let summary =
+        format_strict_failure_summary(model_name, requested, &failures, STRICT_MAX_RELATED);
+    StrictCompileFailure::pre_phase(summary, failures)
+}
+
 impl Session {
     /// Return the current session revision token for snapshot/read coordination.
     pub fn revision(&self) -> u64 {
@@ -793,7 +809,7 @@ impl Session {
                     .model_stage_artifacts
                     .keys(),
             )
-            .any(|key| key.model_name == model_name)
+            .any(|key| key.model_name.as_str() == model_name)
     }
 
     /// Get component members for a class name from cached resolved state.
@@ -1094,7 +1110,9 @@ impl Session {
                 "{model_name} failed in Typecheck: {}",
                 diags
                     .iter()
-                    .map(|diag| diag.message.clone())
+                    .map(|diag| {
+                        diagnostic_message_with_primary_location(diag, &tree.source_map)
+                    })
                     .collect::<Vec<_>>()
                     .join("; ")
             )),
@@ -1300,6 +1318,21 @@ impl Session {
         &mut self,
         model_name: &str,
     ) -> std::result::Result<Box<DaeCompilationResult>, String> {
+        self.compile_model_dae_strict_reachable_uncached_with_recovery_detailed(model_name)
+            .map_err(|failure| failure.summary)
+    }
+
+    /// Same as [`Self::compile_model_dae_strict_reachable_uncached_with_recovery`]
+    /// but the failure carries structured facts (failing phase, SPEC_0008 error
+    /// code, balance breakdown) instead of only the rendered summary string.
+    ///
+    /// Failure-classifying consumers (the MSL worker, triage tooling) must use
+    /// this: re-deriving the phase by sniffing the summary text mislabels every
+    /// parse/resolve failure, because those summaries carry no phase marker.
+    pub fn compile_model_dae_strict_reachable_uncached_with_recovery_detailed(
+        &mut self,
+        model_name: &str,
+    ) -> std::result::Result<Box<DaeCompilationResult>, Box<StrictCompileFailure>> {
         let (resolved, resolve_diags) =
             match self.build_resolved_for_strict_compile_with_diagnostics() {
                 Ok(build) => build,
@@ -1314,10 +1347,7 @@ impl Session {
                             primary_label: diag.labels.iter().find(|label| label.primary).cloned(),
                         })
                         .collect();
-                    let requested = requested_missing_result_message(model_name, &failures);
-                    return Err(format_strict_failure_summary(
-                        model_name, requested, &failures, 8,
-                    ));
+                    return Err(Box::new(strict_pre_phase_failure(model_name, failures)));
                 }
             };
 
@@ -1342,10 +1372,7 @@ impl Session {
         failures.extend(resolve_failures);
 
         if target_has_resolve_failures {
-            let requested = requested_missing_result_message(model_name, &failures);
-            return Err(format_strict_failure_summary(
-                model_name, requested, &failures, 8,
-            ));
+            return Err(Box::new(strict_pre_phase_failure(model_name, failures)));
         }
 
         let requested_result = compile_model_dae_internal_with_options(
@@ -1360,17 +1387,25 @@ impl Session {
             &requested_result,
         ));
         if !failures.is_empty() {
-            return Err(format_strict_failure_summary(
-                model_name, requested, &failures, 8,
-            ));
+            let summary =
+                format_strict_failure_summary(model_name, requested, &failures, STRICT_MAX_RELATED);
+            return Err(Box::new(StrictCompileFailure::from_dae_phase_result(
+                summary,
+                &requested_result,
+                failures,
+            )));
         }
 
         match requested_result {
             DaePhaseResult::Success(result) => Ok(result),
-            DaePhaseResult::NeedsInner { .. } | DaePhaseResult::Failed { .. } => Err(
-                "strict DAE compile returned non-success requested result without collected diagnostics"
-                    .to_string(),
-            ),
+            DaePhaseResult::NeedsInner { .. } | DaePhaseResult::Failed { .. } => {
+                Err(Box::new(StrictCompileFailure::from_dae_phase_result(
+                    "strict DAE compile returned non-success requested result without collected diagnostics"
+                        .to_string(),
+                    &requested_result,
+                    Vec::new(),
+                )))
+            }
         }
     }
 

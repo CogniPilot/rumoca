@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+use std::time::Instant;
+
 use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
 
@@ -14,17 +17,156 @@ pub struct VisibleExpression {
     pub expr: rumoca_core::Expression,
 }
 
+type VisibleRowsCache = HashMap<u64, Vec<(usize, Vec<Vec<solve::LinearOp>>)>>;
+
+struct VisibleLoweringBatch<'a> {
+    dae_model: &'a dae::Dae,
+    layout: &'a solve::VarLayout,
+    expressions: &'a [VisibleExpression],
+    trace: bool,
+    context: Option<crate::lower::ObservationLoweringContext>,
+    cache: VisibleRowsCache,
+}
+
+impl<'a> VisibleLoweringBatch<'a> {
+    fn new(
+        dae_model: &'a dae::Dae,
+        layout: &'a solve::VarLayout,
+        expressions: &'a [VisibleExpression],
+        trace: bool,
+    ) -> Self {
+        Self {
+            dae_model,
+            layout,
+            expressions,
+            trace,
+            context: None,
+            cache: HashMap::new(),
+        }
+    }
+
+    fn lower(
+        &mut self,
+        visible_index: usize,
+        visible: &VisibleExpression,
+    ) -> Result<Vec<Vec<solve::LinearOp>>, LowerError> {
+        let fingerprint = rumoca_core::expression_semantic_fingerprint(&visible.expr);
+        if let Some(rows) = self.cached_rows(fingerprint, visible) {
+            self.trace_result(visible_index, visible, true, 0.0);
+            return Ok(rows);
+        }
+        self.ensure_context(visible_index, visible)?;
+        if self.trace {
+            tracing::debug!(
+                target: "rumoca_phase_solve::visible",
+                visible_index,
+                observation = %visible.name,
+                "starting uncached visible observation"
+            );
+        }
+        let start = Instant::now();
+        let Some(context) = self.context.as_ref() else {
+            return Err(LowerError::UnspannedContractViolation {
+                reason: "visible observation lowering context was not retained".to_string(),
+            });
+        };
+        let rows = crate::lower::lower_observation_rhs_with_context(
+            self.dae_model,
+            self.layout,
+            std::slice::from_ref(&visible.expr),
+            context,
+        )?;
+        let seconds = start.elapsed().as_secs_f64();
+        self.cache
+            .entry(fingerprint)
+            .or_default()
+            .push((visible_index, rows.clone()));
+        self.trace_result(visible_index, visible, false, seconds);
+        Ok(rows)
+    }
+
+    fn cached_rows(
+        &self,
+        fingerprint: u64,
+        visible: &VisibleExpression,
+    ) -> Option<Vec<Vec<solve::LinearOp>>> {
+        self.cache.get(&fingerprint).and_then(|bucket| {
+            bucket.iter().find_map(|(cached_index, rows)| {
+                rumoca_core::expressions_semantically_equal(
+                    &self.expressions[*cached_index].expr,
+                    &visible.expr,
+                )
+                .then(|| rows.clone())
+            })
+        })
+    }
+
+    fn ensure_context(
+        &mut self,
+        visible_index: usize,
+        visible: &VisibleExpression,
+    ) -> Result<(), LowerError> {
+        if self.context.is_some() {
+            return Ok(());
+        }
+        let start = Instant::now();
+        self.context = Some(crate::lower::observation_lowering_context(
+            self.dae_model,
+            self.layout,
+        )?);
+        if self.trace {
+            tracing::debug!(
+                target: "rumoca_phase_solve::visible",
+                elapsed_seconds = start.elapsed().as_secs_f64(),
+                visible_index,
+                observation = %visible.name,
+                "built visible-observation lowering context"
+            );
+        }
+        Ok(())
+    }
+
+    fn trace_result(
+        &self,
+        visible_index: usize,
+        visible: &VisibleExpression,
+        cache_hit: bool,
+        elapsed_seconds: f64,
+    ) {
+        if self.trace && (elapsed_seconds >= 0.05 || visible_index.is_multiple_of(100)) {
+            tracing::debug!(
+                target: "rumoca_phase_solve::visible",
+                visible_index,
+                observation = %visible.name,
+                elapsed_seconds,
+                cache_hit,
+                "lowered visible observation"
+            );
+        }
+    }
+}
+
 pub(super) fn lower_visible_observations(
     dae_model: &dae::Dae,
     layout: &solve::VarLayout,
     visible_expressions: &[VisibleExpression],
 ) -> Result<(Vec<String>, solve::ScalarProgramBlock), SolveModelLowerError> {
+    let trace_visible =
+        tracing::enabled!(target: "rumoca_phase_solve::visible", tracing::Level::DEBUG);
+    if trace_visible {
+        tracing::debug!(
+            target: "rumoca_phase_solve::visible",
+            observations = visible_expressions.len(),
+            bindings = layout.bindings().len(),
+            "starting visible-observation lowering"
+        );
+    }
     let mut names = Vec::new();
     let mut rows = Vec::new();
     let mut program_spans = Vec::new();
-    let structural_bindings = crate::lower::structural_bindings_for_dae(dae_model)?;
-    let indexed_bindings = crate::lower::indexed_bindings_for_layout(layout);
-    for visible in visible_expressions {
+    let mut lowering =
+        VisibleLoweringBatch::new(dae_model, layout, visible_expressions, trace_visible);
+    for (visible_index, visible) in visible_expressions.iter().enumerate() {
         if is_unbound_identity_observation(layout, visible) {
             continue;
         }
@@ -34,13 +176,7 @@ pub(super) fn lower_visible_observations(
             rows.push(row);
             continue;
         }
-        match crate::lower::lower_observation_rhs_with_structural_bindings(
-            dae_model,
-            layout,
-            std::slice::from_ref(&visible.expr),
-            &structural_bindings,
-            &indexed_bindings,
-        ) {
+        match lowering.lower(visible_index, visible) {
             Ok(mut lowered) => {
                 let span = visible_expression_span(visible)?;
                 append_visible_names(&mut names, &visible.name, lowered.len());

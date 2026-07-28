@@ -20,15 +20,26 @@ pub(super) fn lower_direct_dae_for_simulation(
         return Ok(None);
     }
 
+    // Both rejections are purely structural: they read variable-partition
+    // membership and equation LHS / residual `VarName`s. Reference-metadata
+    // attachment only fills in missing `component_ref` def-ids and enriches
+    // `Reference` payloads — it never moves a variable between partitions and
+    // never renames one — so running them on the borrowed input decides the
+    // same way while skipping a whole-DAE clone for every rejected model. A
+    // model whose metadata attachment would fail still reports that error,
+    // because the structural funnel this falls back to attaches the same
+    // metadata and maps the failure through the same conversion — pinned from
+    // both sides of the reordered pair by
+    // `metadata_attachment_failure_is_reported_whether_or_not_the_direct_path_rejects`.
+    if let Some(reason) = projected_slot_rejection(dae_model) {
+        trace_direct_rejection(reason);
+        return Ok(None);
+    }
+    if let Some(reason) = direct_state_value_assignment_rejection(dae_model) {
+        trace_direct_rejection(reason);
+        return Ok(None);
+    }
     let metadata_dae = attach_reference_metadata(dae_model)?;
-    if let Some(reason) = projected_slot_rejection(&metadata_dae) {
-        trace_direct_rejection(reason);
-        return Ok(None);
-    }
-    if let Some(reason) = direct_state_value_assignment_rejection(&metadata_dae) {
-        trace_direct_rejection(reason);
-        return Ok(None);
-    }
     let visible_expressions = match rumoca_phase_solve::visible_expressions_for_dae(&metadata_dae) {
         Ok(expressions) => expressions,
         Err(err) => {

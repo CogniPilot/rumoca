@@ -75,6 +75,7 @@ impl<'a> ScalarProjectionContext<'a> {
             constructor_input_map: self.constructor_input_map,
             expected_dims: self.expected_dims,
             allow_dynamic_function_projection: true,
+            cache: std::rc::Rc::new(super::index_projection::ProjectionCache::default()),
         }
     }
 
@@ -423,7 +424,7 @@ fn project_array_component(
     })
 }
 
-fn project_complex_component(
+pub(super) fn project_complex_component(
     expr: &Expression,
     field_idx: usize,
     projection: &ScalarProjectionContext<'_>,
@@ -480,6 +481,7 @@ fn project_complex_component(
 pub(super) fn project_rhs_for_scalar_target(
     rhs: &Expression,
     scalar_idx: usize,
+    scalar_count: usize,
     lhs_target: Option<&str>,
     target: Option<&ScalarizedLhsTarget>,
     span: Span,
@@ -527,7 +529,40 @@ pub(super) fn project_rhs_for_scalar_target(
         return Ok(projected);
     }
 
+    if scalar_count == 2 && expression_contains_complex_constructor(rhs, projection) {
+        return project_complex_component(rhs, scalar_idx, projection);
+    }
     projection.project_index(rhs, scalar_idx)
+}
+
+fn expression_contains_complex_constructor(
+    expr: &Expression,
+    projection: &ScalarProjectionContext<'_>,
+) -> bool {
+    match expr {
+        Expression::FunctionCall {
+            name,
+            is_constructor: true,
+            ..
+        } => super::constructor_inputs_for_call(name, projection.constructor_input_map)
+            .is_some_and(|inputs| matches!(inputs, [re, im] if re.name == "re" && im.name == "im")),
+        Expression::Binary { lhs, rhs, .. } => {
+            expression_contains_complex_constructor(lhs, projection)
+                || expression_contains_complex_constructor(rhs, projection)
+        }
+        Expression::Unary { rhs, .. } => expression_contains_complex_constructor(rhs, projection),
+        Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => {
+            branches
+                .iter()
+                .any(|(_, value)| expression_contains_complex_constructor(value, projection))
+                || expression_contains_complex_constructor(else_branch, projection)
+        }
+        _ => false,
+    }
 }
 
 pub(super) fn scalarized_equation_lhs(

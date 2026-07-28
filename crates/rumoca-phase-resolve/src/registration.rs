@@ -54,10 +54,6 @@ impl Resolver {
         };
         let class_scope = self.scope_tree.create_scope(enclosing, scope_kind);
         class.scope_id = Some(class_scope);
-        if class.encapsulated {
-            self.encapsulated_class_names
-                .insert(qualified_name.to_string());
-        }
         if let Some(class_def_id) = class.def_id {
             self.scope_to_class_def.insert(class_scope, class_def_id);
             self.class_def_scopes.insert(class_def_id, class_scope);

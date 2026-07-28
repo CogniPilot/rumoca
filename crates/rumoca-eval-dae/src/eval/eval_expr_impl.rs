@@ -19,6 +19,9 @@ pub enum EvalError {
     UnsupportedExpression {
         kind: &'static str,
     },
+    ClockLattice {
+        kind: rumoca_core::ClockLatticeErrorKind,
+    },
     ShapeMismatch {
         context: &'static str,
         expected: usize,
@@ -57,6 +60,7 @@ impl std::fmt::Display for EvalError {
             Self::UnsupportedExpression { kind } => {
                 write!(f, "unsupported expression in DAE evaluation: {kind}")
             }
+            Self::ClockLattice { kind } => write!(f, "invalid exact clock schedule: {kind}"),
             Self::ShapeMismatch {
                 context,
                 expected,
@@ -415,8 +419,41 @@ fn validate_size_call<T: SimFloat>(
     if size_arg_has_known_shape(array_arg, env) {
         return validate_expr_slice_checked(&args[1..], env);
     }
-    validate_array_argument(array_arg, env)?;
+    validate_size_shape_argument(array_arg, env)?;
     validate_expr_slice_checked(&args[1..], env)
+}
+
+/// Validate only what `size()` actually consumes from its array argument.
+///
+/// MLS §10.3.1: `size(A, d)` reads `A`'s dimensions, never its element values.
+/// Array/tuple literals carry their shape syntactically and `fill(s, n...)`
+/// takes it from `n...`, so in both cases the element values must not be
+/// validated as numeric expressions — [`array_eval::try_infer_runtime_expr_dims`]
+/// answers those shapes without them. This is what lets
+/// `size(Medium.substanceNames, 1)` and `size(Medium.extraPropertiesNames, 1)`
+/// evaluate after flattening inlines them as String literals.
+fn validate_size_shape_argument<T: SimFloat>(
+    expr: &rumoca_core::Expression,
+    env: &VarEnv<T>,
+) -> Result<(), EvalError> {
+    match expr {
+        rumoca_core::Expression::Array { elements, .. }
+        | rumoca_core::Expression::Tuple { elements, .. } => {
+            for element in elements {
+                if matches!(element, rumoca_core::Expression::Literal { .. }) {
+                    continue;
+                }
+                validate_size_shape_argument(element, env)?;
+            }
+            Ok(())
+        }
+        rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Fill,
+            args,
+            ..
+        } if args.len() >= 2 => validate_expr_slice_checked(&args[1..], env),
+        other => validate_array_argument(other, env),
+    }
 }
 
 fn size_arg_has_known_shape<T: SimFloat>(expr: &rumoca_core::Expression, env: &VarEnv<T>) -> bool {
@@ -1530,27 +1567,45 @@ fn try_eval_field_access<T: SimFloat>(
         is_constructor,
         ..
     } = base
+        && let Some(value) = try_eval_function_call_field(name, args, *is_constructor, field, env)?
     {
-        if *is_constructor
-            && let Some(value) =
-                eval_field_access_constructor_by_signature(name.var_name(), args, field, env)?
-        {
-            return Ok(value);
-        }
-        if let Some(value) = try_eval_function_record_scalar_field(name, args, field, env)? {
-            return Ok(value);
-        }
+        return Ok(value);
+    }
 
-        let selected = name.with_appended_field(field);
-        if function_call_supported(selected.var_name(), env) {
-            validate_expr_slice_checked(args, env)?;
-            return eval_function_call::<T>(&selected, args, false, env);
-        }
+    if let Some(value) =
+        super::complex_field_arithmetic::try_eval_arithmetic_field(base, field, env)?
+    {
+        return Ok(value);
     }
 
     Err(EvalError::UnsupportedExpression {
         kind: "field access",
     })
+}
+
+pub(super) fn try_eval_function_call_field<T: SimFloat>(
+    name: &rumoca_core::Reference,
+    args: &[rumoca_core::Expression],
+    is_constructor: bool,
+    field: &str,
+    env: &VarEnv<T>,
+) -> Result<Option<T>, EvalError> {
+    if is_constructor
+        && let Some(value) =
+            eval_field_access_constructor_by_signature(name.var_name(), args, field, env)?
+    {
+        return Ok(Some(value));
+    }
+    if let Some(value) = try_eval_function_record_scalar_field(name, args, field, env)? {
+        return Ok(Some(value));
+    }
+
+    let selected = name.with_appended_field(field);
+    if function_call_supported(selected.var_name(), env) {
+        validate_expr_slice_checked(args, env)?;
+        return eval_function_call::<T>(&selected, args, false, env).map(Some);
+    }
+    Ok(None)
 }
 
 fn try_eval_function_record_scalar_field<T: SimFloat>(

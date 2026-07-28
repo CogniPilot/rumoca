@@ -1,5 +1,20 @@
 use super::*;
+use std::collections::HashMap;
 use std::sync::Arc;
+
+/// Cache of record-projection bases, keyed by the address of the AST node they
+/// were built from.
+///
+/// Every field of a record binding projects off the *same* base expression (for
+/// example `f(...).out_c` for all fields of `r` in `Bjt3 r = f(...)`). Building
+/// that base once and sharing the `Arc` keeps the AST a DAG instead of cloning
+/// the whole record-returning call once per field, which for the Spice3 device
+/// records means one 80-argument call instead of 67 copies of it.
+///
+/// The keys are addresses of AST nodes reachable from `binding_expr`, which is
+/// borrowed for the whole projection and never mutated while the cache lives,
+/// so an address uniquely identifies a node for the cache's lifetime.
+type ProjectionBaseCache = HashMap<usize, Arc<ast::Expression>>;
 
 /// Propagate a record binding to scalar field bindings.
 ///
@@ -32,6 +47,7 @@ pub(crate) fn propagate_record_binding_to_fields(
     };
     let preserve_declared_defaults = is_default_record_constructor_call(binding_expr, nested_class);
     let mut projected_keys = IndexMap::default();
+    let mut base_cache = ProjectionBaseCache::new();
 
     for (field_name, field_comp) in components {
         let field_qn = ast::QualifiedName::from_ident(field_name);
@@ -75,6 +91,7 @@ pub(crate) fn propagate_record_binding_to_fields(
                 binding_source_scope.as_ref(),
                 nested_class,
                 field_name,
+                &mut base_cache,
             )?
         };
 
@@ -109,9 +126,21 @@ fn should_preserve_same_type_alias_field_default(
         return false;
     };
 
-    let source_component =
-        same_type_record_alias_source(binding_expr, target_record, effective_components);
-    !record_alias_source_explicitly_binds_field(source_name, source_component, mod_env, field_name)
+    let Some(source_component) =
+        same_type_record_alias_source(binding_expr, target_record, effective_components)
+    else {
+        // A reference from an outer scope, or one whose effective record type
+        // differs from the declared target, can carry different inherited
+        // defaults. Project the field instead of freezing the target record's
+        // default (for example a transient CellData subtype with nRC = 2).
+        return false;
+    };
+    !record_alias_source_explicitly_binds_field(
+        source_name,
+        Some(source_component),
+        mod_env,
+        field_name,
+    )
 }
 
 fn same_type_record_alias_source<'a>(
@@ -198,6 +227,7 @@ fn project_record_field_binding(
     binding_source_scope: Option<&ast::QualifiedName>,
     target_record: &ast::ClassDef,
     field_name: &str,
+    base_cache: &mut ProjectionBaseCache,
 ) -> InstantiateResult<ast::Expression> {
     Ok(match binding_expr {
         ast::Expression::If {
@@ -216,6 +246,7 @@ fn project_record_field_binding(
                             binding_source_scope,
                             target_record,
                             field_name,
+                            base_cache,
                         )?,
                     ))
                 })
@@ -226,6 +257,7 @@ fn project_record_field_binding(
                 binding_source_scope,
                 target_record,
                 field_name,
+                base_cache,
             )?),
             span: binding_expr.span(),
         },
@@ -236,6 +268,7 @@ fn project_record_field_binding(
                 binding_source_scope,
                 target_record,
                 field_name,
+                base_cache,
             )?),
             span: *span,
         },
@@ -248,20 +281,47 @@ fn project_record_field_binding(
             )? {
                 return Ok(field_binding);
             }
-            let base = constructor_record_projection_base(
-                tree,
-                binding_expr,
-                binding_source_scope,
-                target_record,
-            )?
-            .unwrap_or_else(|| binding_expr.clone());
             ast::Expression::FieldAccess {
-                base: Arc::new(base),
+                base: shared_projection_base(
+                    tree,
+                    binding_expr,
+                    binding_source_scope,
+                    target_record,
+                    base_cache,
+                )?,
                 field: field_name.to_string(),
                 span: binding_expr.span(),
             }
         }
     })
+}
+
+/// Return the shared `Arc` for the base every field of `binding_expr` projects
+/// off, building it on first use.
+///
+/// The base does not depend on the field name, so all fields of the record can
+/// point at one `Arc` instead of each owning a deep copy of the (possibly very
+/// large) record-returning expression.
+fn shared_projection_base(
+    tree: &ast::ClassTree,
+    binding_expr: &ast::Expression,
+    binding_source_scope: Option<&ast::QualifiedName>,
+    target_record: &ast::ClassDef,
+    base_cache: &mut ProjectionBaseCache,
+) -> InstantiateResult<Arc<ast::Expression>> {
+    let key = std::ptr::from_ref(binding_expr) as usize;
+    if let Some(cached) = base_cache.get(&key) {
+        return Ok(Arc::clone(cached));
+    }
+    let base = constructor_record_projection_base(
+        tree,
+        binding_expr,
+        binding_source_scope,
+        target_record,
+    )?
+    .map_or_else(|| Arc::new(binding_expr.clone()), Arc::new);
+    base_cache.insert(key, Arc::clone(&base));
+    Ok(base)
 }
 
 fn constructor_record_projection_base(

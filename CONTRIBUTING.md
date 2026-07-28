@@ -114,6 +114,27 @@ cargo xtask repo msl flamegraph --model Modelica.Electrical.Digital.Examples.DFF
 cargo xtask repo msl promote-quality-baseline
 ```
 
+Verification-surface classification:
+
+- `cargo xtask verify workspace` includes the two required
+  `rumoca/msl-sim-tests` MSL simulation regressions. It needs the pinned MSL
+  tree at `target/msl/ModelicaStandardLibrary-4.1.0`, which the CI workspace
+  job stages before running.
+- `backend-stress-tests` is an opt-in 30-model diagnostic survey, not a
+  correctness gate: it reports per-model failures and only requires one
+  end-to-end comparison for each selected backend.
+- `msl-external-tests` contains opt-in MSL corpus cross-checks for generated
+  backends. Nightly CI surveys FMI2, FMI3, embedded C, and CasADi under the Nix
+  development shell. `fmu_target_discovery` is a manual target-list maintenance
+  tool and is not a pass/fail verification gate.
+
+```bash
+nix develop --command cargo test --release -p rumoca-test-msl \
+  --features backend-stress-tests --test backend_stress_test -- --nocapture
+nix develop --command cargo test --release -p rumoca-test-msl \
+  --features msl-external-tests --test fmi2_msl_test -- --nocapture
+```
+
 Command discovery:
 
 ```bash

@@ -1205,7 +1205,10 @@ fn lower_expression_rejects_unlowered_runtime_special_function_statement_outputs
                     value: rumoca_core::Literal::String("memory.txt".to_string()),
                     span: lower_test_span(),
                 }],
-                outputs: vec![component_ref("line"), component_ref("endOfFile")],
+                outputs: vec![
+                    Some(component_ref("line")),
+                    Some(component_ref("endOfFile")),
+                ],
                 span: lower_test_span(),
             },
             rumoca_core::Statement::Assignment {

@@ -39,5 +39,5 @@ pub use handlers::{
     compute_diagnostics, get_semantic_token_legend, handle_code_actions, handle_code_lens,
     handle_completion, handle_document_symbols, handle_folding_ranges, handle_formatting,
     handle_goto_definition, handle_hover, handle_semantic_tokens, handle_signature_help,
-    handle_workspace_symbols,
+    handle_workspace_symbols, partial_format_options_from_client,
 };

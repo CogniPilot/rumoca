@@ -4,8 +4,8 @@
 
 use rumoca_compile::compile::FailedPhase;
 use rumoca_contracts::test_support::{
-    expect_balanced, expect_failure_in_phase_with_code, expect_resolve_failure_with_code,
-    expect_success,
+    expect_balanced, expect_failure_in_phase_reporting_code, expect_failure_in_phase_with_code,
+    expect_resolve_failure_with_code, expect_success,
 };
 
 // =============================================================================
@@ -751,9 +751,14 @@ fn arr_022_cat_real_dimension_rejected() {
 // ARR-031: a .^ b requires Real or Integer operands
 // =============================================================================
 
+// Type-checking reports two distinct codes for this one construct: the generic
+// operand check (`ET002`, MLS 3.7 §6.7 -- no implicit Boolean-to-Real
+// conversion) and the array-operator check (`ET009`, MLS 3.7 §10.6.7). The
+// summary `PhaseResult::error_code` is therefore the `ET000` multi-code
+// sentinel, so this case asserts on the reported diagnostics.
 #[test]
 fn arr_031_elementwise_power_on_boolean_rejected() {
-    expect_failure_in_phase_with_code(
+    expect_failure_in_phase_reporting_code(
         r#"
         model M
             Real x;
@@ -793,9 +798,17 @@ fn arr_033_matrix_power_non_square_rejected() {
 // must not use colon
 // =============================================================================
 
+// `b.sig` is neither declared in `Bus` nor added by any `connect`, so per MLS
+// 3.7 §9.1.3 the expandable connector has no such member and the reference is
+// an error; `size` then has no array to measure (MLS 3.7 §10.3.1). Type
+// checking rejects the reference directly (`ET001` unknown member), so the
+// model never reaches ToDae -- the earlier, named diagnostic supersedes the
+// downstream `ED008` "unresolved reference" this case used to expect. The phase
+// also emits a cascading `ET009`, making the summary code the `ET000`
+// multi-code sentinel, so this case asserts on the reported diagnostics.
 #[test]
 fn arr_013_size_of_undeclared_expandable_member_rejected() {
-    expect_failure_in_phase_with_code(
+    expect_failure_in_phase_reporting_code(
         r#"
         model M
             expandable connector Bus
@@ -805,8 +818,8 @@ fn arr_013_size_of_undeclared_expandable_member_rejected() {
         end M;
     "#,
         "M",
-        FailedPhase::ToDae,
-        "ED008",
+        FailedPhase::Typecheck,
+        "ET001",
     );
 }
 

@@ -1,4 +1,54 @@
 use super::*;
+use std::cell::RefCell;
+use std::rc::Rc;
+
+/// Memoizes [`IndexProjectionContext::expression_shape`] for one projection run.
+///
+/// Element `i` of a nested matrix product `A*B*C*...` is expanded as
+/// `sum_k project_at(A, (row, k)) * project_at(B*C*..., (k, col))`, and every one
+/// of those recursive steps first asks both operands for their shape.
+/// `expression_shape` is a full recursive walk of the operand subtree, so for a
+/// chain of `m` nested 3x3 products the shape analysis alone costs `O(3^m * n)`.
+/// Caching it per subtree makes it `O(n)`.
+///
+/// Only the *shape* is cached, never the projected expression. A projected
+/// element of an `m`-deep product is itself `O(3^m)` nodes, so a result cache
+/// would have to deep-copy exactly as many nodes as recomputing it builds — it
+/// buys no work and costs the memory of a second copy. (Sharing rather than
+/// copying results would need a DAG expression IR, which `Box`-based
+/// `ir_primitives::Expression` cannot express.)
+///
+/// # Key soundness
+///
+/// Entries are keyed on the *address* of the subtree. That is sound only because
+/// every cache instance is scoped to a single expression tree that stays alive
+/// and immutably borrowed for the cache's whole lifetime:
+///
+/// * every `IndexProjectionContext` literal creates its own fresh cache, so a
+///   cache never outlives the `&Expression` root handed to `project`;
+/// * `with_index` shares the cache only while recursing *into* that same root,
+///   so every key is the address of a live sub-node of it;
+/// * the few places that project a freshly built, locally owned expression call
+///   [`IndexProjectionContext::with_fresh_cache`] first, so a dropped temporary
+///   can never leave a stale entry that a later allocation at the same address
+///   could falsely hit.
+///
+/// Structural keying was rejected because hashing the subtree on every probe
+/// reintroduces the per-probe full traversal the cache exists to remove.
+#[derive(Default)]
+pub(super) struct ProjectionCache {
+    shapes: RefCell<HashMap<usize, ExpressionShape>>,
+}
+
+impl ProjectionCache {
+    fn shape(&self, key: usize) -> Option<ExpressionShape> {
+        self.shapes.borrow().get(&key).copied()
+    }
+
+    fn record_shape(&self, key: usize, shape: ExpressionShape) {
+        self.shapes.borrow_mut().insert(key, shape);
+    }
+}
 
 /// Recursively index into an expression tree at 1-based Modelica index `i`.
 ///
@@ -22,9 +72,27 @@ pub(super) struct IndexProjectionContext<'a> {
     pub(super) constructor_input_map: &'a ConstructorInputMap,
     pub(super) expected_dims: Option<&'a [i64]>,
     pub(super) allow_dynamic_function_projection: bool,
+    pub(super) cache: Rc<ProjectionCache>,
 }
 
 impl<'a> IndexProjectionContext<'a> {
+    fn scalar_projection_context(&self) -> ScalarProjectionContext<'a> {
+        ScalarProjectionContext {
+            context_span: self.context_span,
+            var_dims: self.var_dims,
+            var_spans: self.var_spans,
+            structural_values: self.structural_values,
+            complex_fields: self.complex_fields,
+            component_index_map: self.component_index_map,
+            function_output_index_map: self.function_output_index_map,
+            function_output_dims_map: self.function_output_dims_map,
+            dynamic_function_output_map: self.dynamic_function_output_map,
+            record_field_projection_map: self.record_field_projection_map,
+            constructor_input_map: self.constructor_input_map,
+            expected_dims: self.expected_dims,
+        }
+    }
+
     fn with_index(&self, i: usize) -> IndexProjectionContext<'a> {
         IndexProjectionContext {
             i,
@@ -41,13 +109,19 @@ impl<'a> IndexProjectionContext<'a> {
             constructor_input_map: self.constructor_input_map,
             expected_dims: self.expected_dims,
             allow_dynamic_function_projection: self.allow_dynamic_function_projection,
+            cache: Rc::clone(&self.cache),
         }
     }
 
-    fn nested(&self) -> IndexProjectionContext<'a> {
-        let mut nested = self.with_index(self.i);
-        nested.allow_dynamic_function_projection = false;
-        nested
+    /// Same context, but with a cache scoped to a locally owned expression.
+    ///
+    /// Required before projecting an expression this module just built: such a
+    /// value is dropped when the call returns, so its node addresses must not be
+    /// reachable as keys afterwards. See [`ProjectionCache`].
+    fn with_fresh_cache(&self) -> IndexProjectionContext<'a> {
+        let mut scoped = self.with_index(self.i);
+        scoped.cache = Rc::new(ProjectionCache::default());
+        scoped
     }
 
     fn project_at(&self, expr: &Expression, i: usize) -> Result<Expression, StructuralError> {
@@ -92,9 +166,13 @@ impl<'a> IndexProjectionContext<'a> {
         self.project_at(base, index).map(Some)
     }
 
+    /// Project a child of the node being projected, keeping the current index.
+    fn project_child(&self, expr: &Expression) -> Result<Expression, StructuralError> {
+        self.project_at(expr, self.i)
+    }
+
     fn map_exprs(&self, exprs: &[Expression]) -> Result<Vec<Expression>, StructuralError> {
-        let nested = self.nested();
-        exprs.iter().map(|expr| nested.project(expr)).collect()
+        exprs.iter().map(|expr| self.project_child(expr)).collect()
     }
 
     fn project_var_ref(
@@ -142,7 +220,22 @@ impl<'a> IndexProjectionContext<'a> {
         Ok(fallback.clone())
     }
 
+    /// Shape of `expr`, memoized per subtree for this projection run.
+    ///
+    /// The uncached walk is quadratic-to-exponential in a nested matrix product
+    /// because every recursion level re-derives the shape of its whole operand.
+    /// See [`ProjectionCache`] for why the key is an address.
     pub(super) fn expression_shape(&self, expr: &Expression) -> ExpressionShape {
+        let key = std::ptr::from_ref(expr) as usize;
+        if let Some(shape) = self.cache.shape(key) {
+            return shape;
+        }
+        let shape = self.uncached_expression_shape(expr);
+        self.cache.record_shape(key, shape);
+        shape
+    }
+
+    fn uncached_expression_shape(&self, expr: &Expression) -> ExpressionShape {
         match expr {
             Expression::Literal { value: _, .. } => ExpressionShape::Scalar,
             Expression::VarRef {
@@ -582,7 +675,9 @@ impl<'a> IndexProjectionContext<'a> {
                     && self.expression_shape(expr) == ExpressionShape::Scalar
                     && let Some(projected) = self.project_matrix_mul(lhs, rhs, *span)?
                 {
-                    return self.lower_scalar_linear_algebra(&projected);
+                    return self
+                        .with_fresh_cache()
+                        .lower_scalar_linear_algebra(&projected);
                 }
                 let lowered_lhs = self.lower_scalar_linear_algebra(lhs)?;
                 let lowered_rhs = self.lower_scalar_linear_algebra(rhs)?;
@@ -671,6 +766,23 @@ impl<'a> IndexProjectionContext<'a> {
                     span: *span,
                 })
             }
+            Expression::FieldAccess { base, field, span } => {
+                if let Some(field_index) = self.complex_field_index(base, field) {
+                    let projected = super::projection::project_complex_component(
+                        base,
+                        field_index,
+                        &self.scalar_projection_context(),
+                    )?;
+                    return self
+                        .with_fresh_cache()
+                        .lower_scalar_linear_algebra(&projected);
+                }
+                Ok(Expression::FieldAccess {
+                    base: Box::new(self.lower_scalar_linear_algebra(base)?),
+                    field: field.clone(),
+                    span: *span,
+                })
+            }
             Expression::ArrayComprehension {
                 expr,
                 indices,
@@ -686,6 +798,50 @@ impl<'a> IndexProjectionContext<'a> {
                 span: *span,
             }),
             _ => Ok(expr.clone()),
+        }
+    }
+
+    fn complex_field_index(&self, base: &Expression, field: &str) -> Option<usize> {
+        let field_index = match field {
+            "re" => 1,
+            "im" => 2,
+            _ => return None,
+        };
+        self.is_complex_expression(base).then_some(field_index)
+    }
+
+    fn is_complex_expression(&self, expr: &Expression) -> bool {
+        match expr {
+            Expression::VarRef { name, .. } => self.complex_fields.contains_key(name.as_str()),
+            Expression::Unary { rhs, .. } => self.is_complex_expression(rhs),
+            Expression::Binary { lhs, rhs, .. } => {
+                self.is_complex_expression(lhs) || self.is_complex_expression(rhs)
+            }
+            Expression::If {
+                branches,
+                else_branch,
+                ..
+            } => {
+                branches
+                    .iter()
+                    .any(|(_, value)| self.is_complex_expression(value))
+                    || self.is_complex_expression(else_branch)
+            }
+            Expression::FunctionCall {
+                name,
+                is_constructor: true,
+                ..
+            } => constructor_inputs_for_call(name, self.constructor_input_map).is_some_and(
+                |inputs| matches!(inputs, [re, im] if re.name == "re" && im.name == "im"),
+            ),
+            Expression::FunctionCall { name, .. } => name
+                .resolved_function()
+                .and_then(|resolved| self.function_output_index_map.get(&resolved.instance_id))
+                .is_some_and(|outputs| outputs.contains_key(&1) && outputs.contains_key(&2)),
+            Expression::Array { elements, .. } => elements
+                .iter()
+                .any(|element| self.is_complex_expression(element)),
+            _ => false,
         }
     }
 
@@ -791,7 +947,8 @@ impl<'a> IndexProjectionContext<'a> {
             values.insert(index.name.clone(), *value);
         }
         let body = StaticComprehensionSubstituter { values }.rewrite_expression(expr);
-        self.project_at(&body, flat_index % body_width + 1)
+        self.with_fresh_cache()
+            .project_at(&body, flat_index % body_width + 1)
             .map(Some)
     }
 
@@ -814,14 +971,14 @@ impl<'a> IndexProjectionContext<'a> {
                 }
                 Ok(Expression::Binary {
                     op: op.clone(),
-                    lhs: Box::new(self.nested().project(lhs)?),
-                    rhs: Box::new(self.nested().project(rhs)?),
+                    lhs: Box::new(self.project_child(lhs)?),
+                    rhs: Box::new(self.project_child(rhs)?),
                     span: *span,
                 })
             }
             Expression::Unary { op, rhs, span } => Ok(Expression::Unary {
                 op: op.clone(),
-                rhs: Box::new(self.nested().project(rhs)?),
+                rhs: Box::new(self.project_child(rhs)?),
                 span: *span,
             }),
             Expression::BuiltinCall {
@@ -836,9 +993,9 @@ impl<'a> IndexProjectionContext<'a> {
             } => Ok(Expression::If {
                 branches: branches
                     .iter()
-                    .map(|(cond, val)| Ok((cond.clone(), self.nested().project(val)?)))
+                    .map(|(cond, val)| Ok((cond.clone(), self.project_child(val)?)))
                     .collect::<Result<Vec<_>, StructuralError>>()?,
-                else_branch: Box::new(self.nested().project(else_branch)?),
+                else_branch: Box::new(self.project_child(else_branch)?),
                 span: *span,
             }),
             Expression::FunctionCall {
@@ -856,7 +1013,7 @@ impl<'a> IndexProjectionContext<'a> {
                     return Ok(projected);
                 }
                 Ok(Expression::Index {
-                    base: Box::new(self.nested().project(base)?),
+                    base: Box::new(self.project_child(base)?),
                     subscripts: subscripts.clone(),
                     span: *span,
                 })
@@ -920,11 +1077,11 @@ impl<'a> IndexProjectionContext<'a> {
     fn project_field_access(
         &self,
         expr: &Expression,
-        base: &Expression,
-        field: &str,
+        _base: &Expression,
+        _field: &str,
         span: Span,
     ) -> Result<Expression, StructuralError> {
-        if let Some(projected) = self.project_record_array_member_slice(base, field)? {
+        if let Some(projected) = self.project_record_array_member_slice(expr)? {
             return Ok(projected);
         }
         if let Some(projected) = self.project_record_function_field(expr)? {
@@ -1139,7 +1296,7 @@ impl<'a> IndexProjectionContext<'a> {
         }
         let fields = bind_constructor_fields(name, args, span, self.constructor_input_map)?;
         if let Some(field) = self.i.checked_sub(1).and_then(|index| fields.get(index)) {
-            return self.project(field);
+            return self.with_fresh_cache().project(field);
         }
         Ok(Expression::FunctionCall {
             name: name.clone(),
@@ -1150,19 +1307,19 @@ impl<'a> IndexProjectionContext<'a> {
     }
 
     /// Projects element `i` of a record-array member slice such as
-    /// `ac.pin[:].v` into the scalarized component variable `ac.pin[i].v`.
-    /// Declines when the selection is not a full one-dimensional colon slice
-    /// over a structured base or the element variable is unknown.
+    /// `states[:].X` into the scalarized component variable
+    /// `states[record_index].X[field_index]`.
+    ///
+    /// The equation target's dimensions define the row-major split between
+    /// record-array dimensions and member dimensions. This preserves
+    /// multidimensional record arrays and array-valued record members without
+    /// materializing an aggregate array expression.
     fn project_record_array_member_slice(
         &self,
-        base: &Expression,
-        field: &str,
+        expr: &Expression,
     ) -> Result<Option<Expression>, StructuralError> {
-        let Expression::Index {
-            base: inner,
-            subscripts,
-            span,
-        } = base
+        let mut fields = Vec::new();
+        let Some((inner, subscripts, span)) = record_array_member_slice_parts(expr, &mut fields)
         else {
             return Ok(None);
         };
@@ -1170,13 +1327,15 @@ impl<'a> IndexProjectionContext<'a> {
             name,
             subscripts: ref_subscripts,
             ..
-        } = inner.as_ref()
+        } = inner
         else {
             return Ok(None);
         };
         if !ref_subscripts.is_empty()
-            || subscripts.len() != 1
-            || !matches!(subscripts[0], Subscript::Colon { .. })
+            || subscripts.is_empty()
+            || subscripts
+                .iter()
+                .any(|subscript| !matches!(subscript, Subscript::Colon { .. }))
             || self.i == 0
         {
             return Ok(None);
@@ -1184,28 +1343,104 @@ impl<'a> IndexProjectionContext<'a> {
         let Some(component_ref) = name.component_ref() else {
             return Ok(None);
         };
+        let (record_indices, field_indices) =
+            self.record_member_projection_indices(subscripts.len(), span)?;
         let mut element_ref = component_ref.clone();
         let Some(part) = element_ref.parts.last_mut() else {
             return Ok(None);
         };
-        part.subs = vec![generated_index_subscript(
-            self.i,
-            *span,
-            "structural record-array member slice subscript",
-        )?];
-        element_ref.parts.push(rumoca_core::ComponentRefPart {
-            ident: field.to_string(),
-            span: *span,
-            subs: Vec::new(),
-        });
+        part.subs = record_indices
+            .into_iter()
+            .map(|index| {
+                generated_index_subscript(
+                    index,
+                    span,
+                    "structural record-array member slice subscript",
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        for field in fields {
+            element_ref.parts.push(rumoca_core::ComponentRefPart {
+                ident: field.to_string(),
+                span,
+                subs: Vec::new(),
+            });
+        }
+        if let Some(field_part) = element_ref.parts.last_mut() {
+            field_part.subs = field_indices
+                .into_iter()
+                .map(|index| {
+                    generated_index_subscript(
+                        index,
+                        span,
+                        "structural record-array member field subscript",
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+        }
         // Existence of the element variable is enforced by the Solve
         // reference resolver, which fails loudly on unknown references.
         let reference = rumoca_core::Reference::from_component_reference(element_ref);
         Ok(Some(Expression::VarRef {
             name: reference,
             subscripts: vec![],
-            span: *span,
+            span,
         }))
+    }
+
+    fn record_member_projection_indices(
+        &self,
+        record_rank: usize,
+        span: Span,
+    ) -> Result<(Vec<usize>, Vec<usize>), StructuralError> {
+        let Some(dims) = self.expected_dims else {
+            return if record_rank == 1 {
+                Ok((vec![self.i], Vec::new()))
+            } else {
+                Err(structural_contract_violation(
+                    "multidimensional record-array projection lacks target shape".to_string(),
+                    span,
+                ))
+            };
+        };
+        if dims.len() < record_rank {
+            return Err(structural_contract_violation(
+                format!(
+                    "record-array projection rank {record_rank} exceeds target rank {}",
+                    dims.len()
+                ),
+                span,
+            ));
+        }
+        let indices = dae::flat_index_to_subscripts(dims, self.i - 1).ok_or_else(|| {
+            structural_contract_violation(
+                "record-array member projection index exceeds target shape".to_string(),
+                span,
+            )
+        })?;
+        Ok((
+            indices[..record_rank].to_vec(),
+            indices[record_rank..].to_vec(),
+        ))
+    }
+}
+
+fn record_array_member_slice_parts<'a>(
+    expr: &'a Expression,
+    fields: &mut Vec<&'a str>,
+) -> Option<(&'a Expression, &'a [Subscript], Span)> {
+    match expr {
+        Expression::FieldAccess { base, field, .. } => {
+            let slice = record_array_member_slice_parts(base, fields)?;
+            fields.push(field);
+            Some(slice)
+        }
+        Expression::Index {
+            base,
+            subscripts,
+            span,
+        } => Some((base.as_ref(), subscripts, *span)),
+        _ => None,
     }
 }
 

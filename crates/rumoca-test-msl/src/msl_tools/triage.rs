@@ -7,6 +7,12 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+mod balance_cohort;
+use balance_cohort::{
+    BALANCE_ERROR_CODE, BalanceCohort, balance_record_from_scalar_columns, collect_balance_cohort,
+    push_balance_cohort, short_error_code,
+};
+
 #[derive(Debug, Clone, ClapArgs)]
 pub struct Args {
     /// Results directory containing MSL JSON artifacts.
@@ -96,6 +102,8 @@ struct TriageReport {
     taxonomy_coverage: TaxonomyCoverage,
     reason_counts: BTreeMap<String, usize>,
     compile_failures: Vec<TriageRecord>,
+    /// Measured ED001 cohort: what the ToDae bucket actually contains.
+    balance_cohort: BalanceCohort,
     balance_failures: Vec<TriageRecord>,
     simulation_failures: Vec<TriageRecord>,
     worst_trace_models: Vec<TraceTriageRecord>,
@@ -178,6 +186,7 @@ fn build_report(
 ) -> TriageReport {
     let model_results = model_results(rumoca);
     let compile_failures = collect_compile_failures(model_results);
+    let balance_cohort = build_balance_cohort(model_results);
     let balance_failures = collect_balance_failures(model_results);
     let simulation_failures = collect_simulation_failures(model_results);
     let worst_trace_models =
@@ -201,6 +210,7 @@ fn build_report(
         inputs: input_summary(paths),
         summary: build_summary(rumoca, quality, trace),
         taxonomy_coverage,
+        balance_cohort,
         reason_counts,
         compile_failures,
         balance_failures,
@@ -347,8 +357,15 @@ fn compile_phase_from_detail(detail: &str) -> Option<String> {
 }
 
 fn classify_compile_reason(phase: Option<&str>, error_code: Option<&str>) -> String {
-    if error_code.is_some_and(|code| code.starts_with("EP")) {
-        return "compile.parse".to_string();
+    // Miette renders codes namespaced (`rumoca::todae::ED001`); SPEC_0008
+    // defines the bare form, so normalize before any prefix test. Without this
+    // the `EP`/`ED` prefix branches never fire and every DAE failure collapses
+    // into one opaque `compile.dae` bucket.
+    if let Some(reason) = error_code
+        .map(short_error_code)
+        .and_then(reason_from_error_code)
+    {
+        return reason;
     }
     match phase.unwrap_or("unknown") {
         "Parse" => "compile.parse",
@@ -362,6 +379,52 @@ fn classify_compile_reason(phase: Option<&str>, error_code: Option<&str>) -> Str
         _ => "compile.unknown",
     }
     .to_string()
+}
+
+/// Map a bare SPEC_0008 code to a triage reason.
+///
+/// `ED001` (unbalanced) gets its own reason so the balance cohort is a first
+/// class taxonomy entry rather than a subset of `compile.dae`.
+fn reason_from_error_code(code: &str) -> Option<String> {
+    if code == BALANCE_ERROR_CODE {
+        return Some("compile.dae.unbalanced".to_string());
+    }
+    let prefix = code.get(..2)?;
+    if !code[2..].chars().all(|ch| ch.is_ascii_digit()) || code.len() < 3 {
+        return None;
+    }
+    let reason = match prefix {
+        "EP" => "compile.parse".to_string(),
+        "ER" => "compile.resolve".to_string(),
+        "EI" => "compile.instantiate".to_string(),
+        "ET" => "compile.typecheck".to_string(),
+        "EF" => "compile.flatten".to_string(),
+        "ED" => format!("compile.dae.{code}"),
+        // Solve lowering (`EL0xx`) and structural analysis (`ES0xx`) run inside
+        // the Solve stage, so a coded failure lands in the `compile.solve`
+        // family keyed by the code that identifies the defect.
+        "EL" | "ES" => format!("compile.solve.{code}"),
+        _ => return None,
+    };
+    Some(reason)
+}
+
+/// Map a bare SPEC_0008 code reported by the simulation stage to a triage
+/// reason. `EX0xx` codes are runtime failures; delegated `EL0xx`/`ES0xx` codes
+/// mean the defect was really a lowering/structural one surfaced at run time,
+/// so they keep the `sim.solve.*` family rather than being flattened into
+/// `sim.solver`.
+fn sim_reason_from_error_code(code: &str) -> Option<String> {
+    let prefix = code.get(..2)?;
+    let digits = code.get(2..)?;
+    if digits.is_empty() || !digits.chars().all(|ch| ch.is_ascii_digit()) {
+        return None;
+    }
+    match prefix {
+        "EX" => Some(format!("sim.runtime.{code}")),
+        "EL" | "ES" => Some(format!("sim.solve.{code}")),
+        _ => None,
+    }
 }
 
 fn collect_balance_failures(results: &[Value]) -> Vec<TriageRecord> {
@@ -430,28 +493,64 @@ fn simulation_record(entry: &Value) -> Option<TriageRecord> {
     if status == "sim_ok" {
         return None;
     }
-    let detail = get_str(entry, "sim_error")
-        .or_else(|| get_str(entry, "sim_trace_error"))
-        .map(truncate_detail);
-    let reason = classify_sim_reason(status, detail.as_deref());
+    let raw_detail = get_str(entry, "sim_error").or_else(|| get_str(entry, "sim_trace_error"));
+    let detail = raw_detail.map(truncate_detail);
+    // The Solve/Sim stages report a stable code alongside the free-form
+    // message. Prefer it over the text heuristics below only when the *producer*
+    // reported it; a synthesised fallback carries no more information than the
+    // message it was derived from, and preferring it would collapse the whole
+    // `sim.structural.*` / `sim.init` / `sim.event` / ... taxonomy into two
+    // buckets. See `rumoca_worker::sim_error_diagnostic_code`.
+    let error_code = get_str(entry, "sim_error_code")
+        .or_else(|| get_str(entry, "ir_solve_error_code"))
+        .map(short_error_code)
+        .map(str::to_string);
+    let reported_code = error_code
+        .as_deref()
+        .filter(|code| sim_code_is_producer_reported(code, raw_detail));
+    let reason = classify_sim_reason(status, detail.as_deref(), reported_code);
     Some(base_record(
         entry,
         "simulation",
         &reason,
         Some("Simulation".to_string()),
-        None,
+        error_code,
         detail,
         simulation_rank(status),
     ))
 }
 
-fn classify_sim_reason(status: &str, detail: Option<&str>) -> String {
+/// True when a simulation-stage code was genuinely reported by the producer
+/// rather than synthesised by `rumoca_worker::sim_error_diagnostic_code`.
+///
+/// The producer contract has exactly two shapes:
+///
+/// * `EL0xx`/`ES0xx` are delegated codes. They only ever exist because the
+///   phase that raised the defect minted them, so they are always real.
+/// * `EX0xx` runtime codes reach the schema only as a `[CODE] ` tag inside the
+///   failure text (that is why both simulation backends tag their lowering
+///   errors; the `SimError` `Display` impl prepends its own variant prefix, so
+///   the tag sits mid-string). An `EX0xx` code with no such tag is the
+///   `EX001`/`EX002` fallback: it names the surface that failed, not the defect,
+///   and must not shadow the text heuristics.
+fn sim_code_is_producer_reported(code: &str, detail: Option<&str>) -> bool {
+    match code.get(..2) {
+        Some("EL" | "ES") => true,
+        Some("EX") => detail.is_some_and(|text| text.contains(&format!("[{code}]"))),
+        _ => false,
+    }
+}
+
+fn classify_sim_reason(status: &str, detail: Option<&str>, error_code: Option<&str>) -> String {
     match status {
         "sim_timeout" => return "sim.timeout".to_string(),
         "sim_nan" => return "sim.nonfinite".to_string(),
         "sim_balance_fail" => return "sim.balance".to_string(),
         "sim_trace_fail" => return "sim.trace_output".to_string(),
         _ => {}
+    }
+    if let Some(reason) = error_code.and_then(sim_reason_from_error_code) {
+        return reason;
     }
     let detail = detail.unwrap_or_default().to_ascii_lowercase();
     // Structural-lowering singularities are the dominant solver-failure family;
@@ -698,6 +797,7 @@ fn render_markdown(report: &TriageReport) -> String {
     out.push_str("# MSL Triage Report\n\n");
     push_summary_table(&mut out, &report.summary, &report.taxonomy_coverage);
     push_reason_counts(&mut out, &report.reason_counts);
+    push_balance_cohort(&mut out, &report.balance_cohort);
     push_records(
         &mut out,
         "Compile Failures",
@@ -910,6 +1010,50 @@ fn reproduction_command(model_name: &str) -> String {
     format!("cargo run --bin xtask -- repo msl rerun --model '{model_name}'")
 }
 
+/// Single-model drill-down for an ED001 failure: recompiles with the balance
+/// gate relaxed and prints the full component breakdown.
+fn balance_reproduction_command(model_name: &str) -> String {
+    format!(
+        "cargo run -p rumoca-test-msl --bin rumoca-msl-tools -- debug-model --model '{model_name}' --allow-unbalanced"
+    )
+}
+
+/// Build the measured ED001 cohort, backfilling rows that predate the
+/// structured `balance_detail` column from the scalar columns.
+fn build_balance_cohort(results: &[Value]) -> BalanceCohort {
+    let mut cohort = collect_balance_cohort(results, balance_reproduction_command);
+    if cohort.records.len() == cohort.balance_failures {
+        return cohort;
+    }
+    let recorded: std::collections::HashSet<String> = cohort
+        .records
+        .iter()
+        .map(|record| record.model_name.clone())
+        .collect();
+    for entry in results {
+        let is_balance_failure = entry
+            .get("error_code")
+            .and_then(Value::as_str)
+            .map(short_error_code)
+            == Some(BALANCE_ERROR_CODE);
+        let name = entry.get("model_name").and_then(Value::as_str);
+        let Some(name) = name.filter(|name| is_balance_failure && !recorded.contains(*name)) else {
+            continue;
+        };
+        if let Some(record) =
+            balance_record_from_scalar_columns(entry, balance_reproduction_command(name))
+        {
+            cohort.records.push(record);
+        }
+    }
+    cohort.records.sort_by(|a, b| {
+        a.package
+            .cmp(&b.package)
+            .then_with(|| a.model_name.cmp(&b.model_name))
+    });
+    cohort
+}
+
 fn escape_md(value: &str) -> String {
     value.replace('|', "\\|").replace(['\n', '\r'], " ")
 }
@@ -1073,7 +1217,7 @@ mod tests {
         );
         assert_eq!(
             classify_compile_reason(Some("ToDae"), Some("ED007")),
-            "compile.dae"
+            "compile.dae.ED007"
         );
         assert_eq!(
             classify_compile_reason(Some("Parse"), Some("EP001")),
@@ -1082,6 +1226,212 @@ mod tests {
         assert_eq!(
             classify_compile_reason(Some("Unexpected"), None),
             "compile.unknown"
+        );
+    }
+
+    /// Solve-lowering (`EL0xx`) and structural (`ES0xx`) codes are Solve-stage
+    /// failures, so `compile.solve` has to receive them as coded buckets rather
+    /// than staying an opaque catch-all.
+    #[test]
+    fn solve_stage_codes_reach_the_compile_solve_bucket() {
+        assert_eq!(
+            classify_compile_reason(Some("Solve"), Some("rumoca::solve::EL001")),
+            "compile.solve.EL001"
+        );
+        assert_eq!(
+            classify_compile_reason(Some("Solve"), Some("ES010")),
+            "compile.solve.ES010"
+        );
+        // Uncoded Solve failures still fall back to the phase bucket.
+        assert_eq!(
+            classify_compile_reason(Some("Solve"), None),
+            "compile.solve"
+        );
+    }
+
+    /// A simulation failure that carries a code must be bucketed by the code,
+    /// not by keyword-matching the free-form message.
+    #[test]
+    fn simulation_taxonomy_is_driven_by_the_stage_error_code() {
+        let entry = serde_json::json!({
+            "model_name": "Modelica.A",
+            "sim_status": "sim_solver_fail",
+            "sim_error": "[EL006] scalarization budget exceeded",
+            "sim_error_code": "EL006",
+        });
+        let record = simulation_record(&entry).expect("simulation failure record");
+        assert_eq!(record.reason, "sim.solve.EL006");
+        assert_eq!(record.error_code.as_deref(), Some("EL006"));
+
+        // An `EX0xx` code counts as producer-reported when the backend tagged
+        // the message with it.
+        let runtime = serde_json::json!({
+            "model_name": "Modelica.B",
+            "sim_status": "sim_solver_fail",
+            "sim_error": "solve-IR evaluation failed: [EX003] override rejected for 'k'",
+            "sim_error_code": "rumoca::sim::EX003",
+        });
+        let record = simulation_record(&runtime).expect("simulation failure record");
+        assert_eq!(record.reason, "sim.runtime.EX003");
+        assert_eq!(record.error_code.as_deref(), Some("EX003"));
+    }
+
+    /// `sim_error_diagnostic_code` synthesises `EX002` for *any* untagged
+    /// `SolveIr` failure and `EX001` for *any* untagged `SolverError`. Those
+    /// fallbacks name the surface that failed, not the defect, so preferring
+    /// them would make the five-way `sim.structural.*` cluster map and the
+    /// `sim.init`/`event`/`table`/`external`/`nonfinite` buckets unreachable on
+    /// every fresh run — the triage would get coarser, not sharper.
+    #[test]
+    fn synthesized_fallback_code_does_not_shadow_a_heuristic_bucket() {
+        let structural = serde_json::json!({
+            "model_name": "Modelica.A",
+            "sim_status": "sim_solver_fail",
+            "sim_error": "solve-IR evaluation failed: system is structurally singular; \
+                          unmatched unknowns: body.frame_a.tau[1]",
+            // Synthesised: the message carries no `[EX002]` tag.
+            "sim_error_code": "EX002",
+        });
+        let record = simulation_record(&structural).expect("simulation failure record");
+        assert_eq!(record.reason, "sim.structural.connector_flow");
+        // The code is still recorded for reporting, it just does not classify.
+        assert_eq!(record.error_code.as_deref(), Some("EX002"));
+
+        let init = serde_json::json!({
+            "model_name": "Modelica.B",
+            "sim_status": "sim_solver_fail",
+            "sim_error": "solver error: initial system could not be solved",
+            "sim_error_code": "EX001",
+        });
+        let record = simulation_record(&init).expect("simulation failure record");
+        assert_eq!(record.reason, "sim.init");
+        assert_eq!(record.error_code.as_deref(), Some("EX001"));
+
+        let table = serde_json::json!({
+            "model_name": "Modelica.C",
+            "sim_status": "sim_solver_fail",
+            "sim_error": "solver error: combi table lookup out of range",
+            "sim_error_code": "EX001",
+        });
+        assert_eq!(
+            simulation_record(&table)
+                .expect("simulation failure record")
+                .reason,
+            "sim.table"
+        );
+    }
+
+    #[test]
+    fn producer_reported_codes_are_distinguished_from_synthesized_ones() {
+        // Delegated lowering/structural codes are always real.
+        assert!(sim_code_is_producer_reported("EL006", Some("no tag here")));
+        assert!(sim_code_is_producer_reported("ES010", None));
+        // Runtime codes need the tag the backends emit.
+        assert!(sim_code_is_producer_reported(
+            "EX003",
+            Some("solve-IR evaluation failed: [EX003] override rejected")
+        ));
+        assert!(!sim_code_is_producer_reported(
+            "EX002",
+            Some("solve-IR evaluation failed: runtime refresh failed")
+        ));
+        assert!(!sim_code_is_producer_reported("EX001", None));
+        assert!(!sim_code_is_producer_reported("EMSL_TIMEOUT", Some("x")));
+    }
+
+    /// Uncoded stages keep the historical text heuristics, and a timeout stays
+    /// a timeout even when a code is present.
+    #[test]
+    fn simulation_taxonomy_falls_back_to_text_heuristics_without_a_code() {
+        let entry = serde_json::json!({
+            "model_name": "Modelica.C",
+            "sim_status": "sim_solver_fail",
+            "sim_error": "initial system could not be solved",
+        });
+        let record = simulation_record(&entry).expect("simulation failure record");
+        assert_eq!(record.reason, "sim.init");
+        assert_eq!(record.error_code, None);
+
+        let timeout = serde_json::json!({
+            "model_name": "Modelica.D",
+            "sim_status": "sim_timeout",
+            "sim_error": "timeout after 10.000s",
+            "sim_error_code": "EX001",
+        });
+        let record = simulation_record(&timeout).expect("simulation failure record");
+        assert_eq!(record.reason, "sim.timeout");
+    }
+
+    /// The balance cohort must be its own taxonomy entry, and the code must be
+    /// authoritative over the phase string: the worker used to attribute
+    /// resolve failures to ToDae, so a phase-driven taxonomy mislabels them.
+    #[test]
+    fn compile_taxonomy_is_driven_by_the_normalized_error_code() {
+        assert_eq!(
+            classify_compile_reason(Some("ToDae"), Some("rumoca::todae::ED001")),
+            "compile.dae.unbalanced"
+        );
+        assert_eq!(
+            classify_compile_reason(Some("ToDae"), Some("ED001")),
+            "compile.dae.unbalanced"
+        );
+        // A resolve code wins over a stale `ToDae` phase string.
+        assert_eq!(
+            classify_compile_reason(Some("ToDae"), Some("rumoca::resolve::ER003")),
+            "compile.resolve"
+        );
+        assert_eq!(
+            classify_compile_reason(Some("ToDae"), Some("rumoca::flatten::EF012")),
+            "compile.flatten"
+        );
+        assert_eq!(
+            classify_compile_reason(Some("ToDae"), Some("rumoca::typecheck::ET004")),
+            "compile.typecheck"
+        );
+        // Non-SPEC_0008 codes fall back to the phase bucket.
+        assert_eq!(
+            classify_compile_reason(Some("ToDae"), Some("EMSL_TIMEOUT_MODEL_ATTEMPT")),
+            "compile.dae"
+        );
+        assert_eq!(
+            classify_compile_reason(Some("Flatten"), Some("unsupported-feature:random")),
+            "compile.flatten"
+        );
+    }
+
+    /// The cohort section is the report's answer to "is the ToDae bucket a
+    /// balance cohort?" — it must count both sides.
+    #[test]
+    fn balance_cohort_separates_ed001_from_other_todae_failures() {
+        let results = vec![
+            serde_json::json!({
+                "model_name": "Modelica.Fluid.Examples.A",
+                "phase_reached": "ToDae",
+                "error_code": "rumoca::todae::ED001",
+                "balance": -7,
+                "scalar_equations": 236,
+                "scalar_unknowns": 243,
+            }),
+            serde_json::json!({
+                "model_name": "Modelica.Electrical.Spice3.Examples.Graetz",
+                "phase_reached": "ToDae",
+                "error_code": "rumoca::todae::ED013",
+            }),
+        ];
+        let cohort = build_balance_cohort(&results);
+        assert_eq!(cohort.todae_failures, 2);
+        assert_eq!(cohort.balance_failures, 1);
+        // The scalar-column backfill still yields a record when `balance_detail` is
+        // absent from an older artifact.
+        assert_eq!(cohort.records.len(), 1);
+        assert_eq!(cohort.records[0].balance, -7);
+        assert_eq!(cohort.records[0].package, "Modelica.Fluid");
+        assert!(
+            cohort.records[0]
+                .reproduction
+                .contains("--allow-unbalanced"),
+            "{}",
+            cohort.records[0].reproduction
         );
     }
 

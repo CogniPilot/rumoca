@@ -478,8 +478,15 @@ impl<'a> LowerBuilder<'a> {
         scope: &Scope,
         call_depth: usize,
     ) -> Result<Option<Reg>, LowerError> {
-        // MLS §10.6.2: fill(s, ...) constructs an array whose every selected
-        // element is the scalar expression `s`.
+        // MLS §10.3.3 permits an array-valued seed. Its dimensions trail the
+        // fill-prefix dimensions, so selecting a result element must also
+        // project into the seed. The scalar shortcut below cannot prove that
+        // mapping; decline it and let generic array selection use the fully
+        // lowered row-major values.
+        if !self.infer_expr_dims(&args[0], scope)?.is_empty() {
+            return Ok(None);
+        }
+        // A scalar seed is repeated at every selected prefix point.
         let owner_span = expr_span_from_subscripts(subscripts).or_else(|| base.span());
         let value = self.lower_structural_index_leaf(
             &args[0],
@@ -966,11 +973,14 @@ impl<'a> LowerBuilder<'a> {
                 call_span,
             );
         }
-        if is_stream_passthrough_intrinsic(name.as_str()) {
-            return match args.first() {
-                Some(arg) => self.lower_array_like_values(arg, scope, call_depth),
-                None => Ok(Vec::new()),
-            };
+        if is_unlowered_stream_intrinsic(name.as_str()) {
+            return Err(unsupported_at(
+                format!(
+                    "{} must be lowered during Flat connection expansion before Solve-IR lowering",
+                    intrinsic_short_name(name.as_str())
+                ),
+                call_span,
+            ));
         }
         if is_modelica_array_constructor_function(name) {
             return self.lower_array_constructor_values(args, false, scope, call_depth);

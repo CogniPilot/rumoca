@@ -1,6 +1,6 @@
 //! SPEC_0008-shaped diagnostics for the DAE → GALEC projection.
 //!
-//! Error codes use the stable `ET0xx` range (GALEC **T**arget projection).
+//! Error codes use the stable `EGT0xx` range (**G**ALEC **T**arget projection).
 //! Variants carry the best available source [`Span`] from the canonical DAE
 //! (variable declaration spans, clock expression spans, function declaration
 //! spans); constructs without a source anchor report no span rather than a
@@ -13,14 +13,14 @@
 
 use rumoca_core::Span;
 
-/// Errors produced by the DAE → GALEC projection, with stable `ET0xx` codes.
+/// Errors produced by the DAE → GALEC projection, with stable `EGT0xx` codes.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum GalecTargetError {
     /// GAL-025: continuous dynamics are a projection-scope rejection.
     #[error(
         "model has continuous dynamics ({states} continuous state(s), \
          {equations} continuous equation(s)); continuous states are not yet \
-         supported by the Rumoca GALEC projection [ET001]"
+         supported by the Rumoca GALEC projection [EGT001]"
     )]
     ContinuousDynamics { states: usize, equations: usize },
 
@@ -28,7 +28,7 @@ pub enum GalecTargetError {
     #[error(
         "function `{function}` is declared external (language `{language}`); \
          external functions are not yet supported by the Rumoca GALEC \
-         projection [ET002]"
+         projection [EGT002]"
     )]
     ExternalFunction {
         function: String,
@@ -42,7 +42,7 @@ pub enum GalecTargetError {
     #[error(
         "model requires runtime event handling ({scheduled_time_events} \
          scheduled time event(s), {event_actions} event action(s)); runtime \
-         events are not yet supported by the Rumoca GALEC projection [ET003]"
+         events are not yet supported by the Rumoca GALEC projection [EGT003]"
     )]
     RuntimeEvents {
         scheduled_time_events: usize,
@@ -55,14 +55,14 @@ pub enum GalecTargetError {
     #[error(
         "model has {count} runtime-triggered clock condition(s); dynamic \
          clocks are not yet supported by the Rumoca GALEC projection \
-         (GALEC blocks are driven by exactly one fixed-period clock) [ET004]"
+         (GALEC blocks are driven by exactly one fixed-period clock) [EGT004]"
     )]
     DynamicClock { count: usize },
 
     /// GAL-016: exactly one fixed-period clock schedule is required.
     #[error(
         "model declares {count} periodic clock schedule(s); a GALEC block is \
-         driven by exactly one fixed-period clock [ET005]"
+         driven by exactly one fixed-period clock [EGT005]"
     )]
     ClockCountNotOne { count: usize },
 
@@ -70,18 +70,18 @@ pub enum GalecTargetError {
     /// period.
     #[error(
         "clock period {period_seconds} s is not a finite, strictly positive \
-         sample period [ET006]"
+         sample period [EGT006]"
     )]
     InvalidClockPeriod { period_seconds: f64, span: Span },
 
     /// MLS §4.7: partial models are incomplete by declaration.
-    #[error("partial models cannot be projected to a GALEC block [ET007]")]
+    #[error("partial models cannot be projected to a GALEC block [EGT007]")]
     PartialModel,
 
     /// Only complete simulation-model class types project to a block.
     #[error(
         "root class type `{class_type}` cannot be projected to a GALEC block \
-         (expected `model`, `block`, or `class`) [ET008]"
+         (expected `model`, `block`, or `class`) [EGT008]"
     )]
     UnsupportedClassType { class_type: &'static str },
 
@@ -91,7 +91,7 @@ pub enum GalecTargetError {
     #[error(
         "variable `{variable}` dimension {dimension} has size {size}; GALEC \
          array dimensions must be literal integers >= 1 \
-         (structurally-parametric array sizes are rejected) [ET009]"
+         (structurally-parametric array sizes are rejected) [EGT009]"
     )]
     NonPositiveDimension {
         variable: String,
@@ -105,7 +105,7 @@ pub enum GalecTargetError {
     #[error(
         "variable `{variable}` (causality `{causality}`, partition \
          `{partition}`, origin `{origin}`) does not match any GALEC variable \
-         class [ET010]"
+         class [EGT010]"
     )]
     UnclassifiableVariable {
         variable: String,
@@ -122,7 +122,7 @@ pub enum GalecTargetError {
         "cannot determine the GALEC scalar type of `{variable}` (partition \
          `{partition}`): the DAE partition does not fix a scalar type and no \
          type provenance was supplied; types are never inferred from start \
-         values [ET011]"
+         values [EGT011]"
     )]
     UnresolvedScalarType {
         variable: String,
@@ -131,7 +131,7 @@ pub enum GalecTargetError {
     },
 
     /// GAL-015: the name cannot be carried into GALEC (plain or quoted).
-    #[error("`{variable}` cannot be represented as a GALEC name: {reason} [ET012]")]
+    #[error("`{variable}` cannot be represented as a GALEC name: {reason} [EGT012]")]
     UnrepresentableName {
         variable: String,
         reason: &'static str,
@@ -142,7 +142,7 @@ pub enum GalecTargetError {
     /// parameter/constant defaults).
     #[error(
         "`{attribute}` of `{variable}` is not evaluable to a constant: \
-         {reason} [ET013]"
+         {reason} [EGT013]"
     )]
     AttributeNotEvaluable {
         variable: String,
@@ -155,7 +155,7 @@ pub enum GalecTargetError {
     /// scalar type (types come from the DAE, never from the value).
     #[error(
         "`{attribute}` of `{variable}` evaluates to a {found} value, but the \
-         variable's scalar type is {expected} [ET014]"
+         variable's scalar type is {expected} [EGT014]"
     )]
     AttributeTypeMismatch {
         variable: String,
@@ -167,11 +167,11 @@ pub enum GalecTargetError {
 
     /// Default expressions of parameters/constants reference each other in a
     /// cycle.
-    #[error("start expressions form a dependency cycle through `{through}` [ET015]")]
+    #[error("start expressions form a dependency cycle through `{through}` [EGT015]")]
     StartDependencyCycle { through: String },
 
     /// Typed manifest-model construction rejected projection output.
-    #[error("manifest construction failed: {source} [ET016]")]
+    #[error("manifest construction failed: {source} [EGT016]")]
     Manifest {
         #[from]
         source: crate::manifest_context::EfmiError,
@@ -183,7 +183,7 @@ pub enum GalecTargetError {
     /// wording in `detail`.
     #[error(
         "{detail}; not yet supported by the Rumoca GALEC projection \
-         [unsupported-feature:{feature}] [ET017]"
+         [unsupported-feature:{feature}] [EGT017]"
     )]
     UnsupportedFeature {
         feature: String,
@@ -194,13 +194,13 @@ pub enum GalecTargetError {
     /// A bug in the projection itself: lowering produced output that fails
     /// GALEC/manifest post-validation (GAL-004), or a canonical-DAE
     /// invariant the projection relies on did not hold.
-    #[error("internal GALEC projection error (please report): {detail} [ET018]")]
+    #[error("internal GALEC projection error (please report): {detail} [EGT018]")]
     LoweringInternal { detail: String },
 
     /// An expression references a variable that exists in no DAE partition.
     #[error(
         "expression references `{name}`, which is not a variable of any DAE \
-         partition [ET019]"
+         partition [EGT019]"
     )]
     UnknownVariableReference { name: String, span: Option<Span> },
 
@@ -208,7 +208,7 @@ pub enum GalecTargetError {
     /// that cannot be reconciled with an explicit widening cast fail.
     #[error(
         "type mismatch in {context}: expected {expected}, found {found} \
-         (GALEC has no implicit conversions) [ET020]"
+         (GALEC has no implicit conversions) [EGT020]"
     )]
     LoweringTypeMismatch {
         context: String,
@@ -223,7 +223,7 @@ pub enum GalecTargetError {
     #[error(
         "GALEC names `{first}` and `{second}` both mangle to the C \
          identifier `{c_name}`; the embedded C export never renames \
-         silently — rename one variable in the model [ET022]"
+         silently — rename one variable in the model [EGT022]"
     )]
     CNameCollision {
         first: String,
@@ -233,7 +233,7 @@ pub enum GalecTargetError {
 
     /// GAL-007: the embedded C export met a GALEC construct outside the
     /// shape the current lowering emits; rejected loudly, never dropped.
-    #[error("the embedded C export does not support {construct}: {detail} [ET023]")]
+    #[error("the embedded C export does not support {construct}: {detail} [EGT023]")]
     CExportUnsupported {
         construct: &'static str,
         detail: String,
@@ -247,7 +247,7 @@ pub enum GalecTargetError {
         "model has {equations} scalar initial equation(s) \
          ({structured_families} structured initial-equation famil(y/ies)); \
          initial equations are not yet supported by the Rumoca GALEC \
-         projection (Startup initializes from `start` values only) [ET021]"
+         projection (Startup initializes from `start` values only) [EGT021]"
     )]
     InitialEquations {
         equations: usize,
@@ -260,29 +260,29 @@ impl GalecTargetError {
     #[must_use]
     pub const fn code(&self) -> &'static str {
         match self {
-            Self::ContinuousDynamics { .. } => "ET001",
-            Self::ExternalFunction { .. } => "ET002",
-            Self::RuntimeEvents { .. } => "ET003",
-            Self::DynamicClock { .. } => "ET004",
-            Self::ClockCountNotOne { .. } => "ET005",
-            Self::InvalidClockPeriod { .. } => "ET006",
-            Self::PartialModel => "ET007",
-            Self::UnsupportedClassType { .. } => "ET008",
-            Self::NonPositiveDimension { .. } => "ET009",
-            Self::UnclassifiableVariable { .. } => "ET010",
-            Self::UnresolvedScalarType { .. } => "ET011",
-            Self::UnrepresentableName { .. } => "ET012",
-            Self::AttributeNotEvaluable { .. } => "ET013",
-            Self::AttributeTypeMismatch { .. } => "ET014",
-            Self::StartDependencyCycle { .. } => "ET015",
-            Self::Manifest { .. } => "ET016",
-            Self::UnsupportedFeature { .. } => "ET017",
-            Self::LoweringInternal { .. } => "ET018",
-            Self::UnknownVariableReference { .. } => "ET019",
-            Self::LoweringTypeMismatch { .. } => "ET020",
-            Self::InitialEquations { .. } => "ET021",
-            Self::CNameCollision { .. } => "ET022",
-            Self::CExportUnsupported { .. } => "ET023",
+            Self::ContinuousDynamics { .. } => "EGT001",
+            Self::ExternalFunction { .. } => "EGT002",
+            Self::RuntimeEvents { .. } => "EGT003",
+            Self::DynamicClock { .. } => "EGT004",
+            Self::ClockCountNotOne { .. } => "EGT005",
+            Self::InvalidClockPeriod { .. } => "EGT006",
+            Self::PartialModel => "EGT007",
+            Self::UnsupportedClassType { .. } => "EGT008",
+            Self::NonPositiveDimension { .. } => "EGT009",
+            Self::UnclassifiableVariable { .. } => "EGT010",
+            Self::UnresolvedScalarType { .. } => "EGT011",
+            Self::UnrepresentableName { .. } => "EGT012",
+            Self::AttributeNotEvaluable { .. } => "EGT013",
+            Self::AttributeTypeMismatch { .. } => "EGT014",
+            Self::StartDependencyCycle { .. } => "EGT015",
+            Self::Manifest { .. } => "EGT016",
+            Self::UnsupportedFeature { .. } => "EGT017",
+            Self::LoweringInternal { .. } => "EGT018",
+            Self::UnknownVariableReference { .. } => "EGT019",
+            Self::LoweringTypeMismatch { .. } => "EGT020",
+            Self::InitialEquations { .. } => "EGT021",
+            Self::CNameCollision { .. } => "EGT022",
+            Self::CExportUnsupported { .. } => "EGT023",
         }
     }
 

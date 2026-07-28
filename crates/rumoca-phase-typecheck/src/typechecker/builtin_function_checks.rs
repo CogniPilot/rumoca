@@ -18,9 +18,13 @@ impl TypeChecker {
         let Some(name) = (comp.parts.len() == 1).then(|| comp.parts[0].ident.text.as_ref()) else {
             return;
         };
+        if comp.def_id.is_some() && self.user_function_definition(comp, name).is_some() {
+            return;
+        }
 
         self.check_builtin_arity(comp, name, args);
         self.check_array_builtin_shapes(comp, name, args, type_table);
+        self.check_elementary_builtin_argument_types(comp, name, args, type_table);
         match name {
             "integer" => self.check_integer_builtin(comp, args, type_table),
             "delay" => self.check_delay_builtin(comp, args, type_table),
@@ -29,6 +33,60 @@ impl TypeChecker {
             "reinit" => self.check_reinit_builtin(comp, args, type_table),
             "homotopy" => self.check_homotopy_builtin(comp, args, type_table),
             _ => {}
+        }
+    }
+
+    fn check_elementary_builtin_argument_types(
+        &mut self,
+        comp: &rumoca_ir_ast::ComponentReference,
+        name: &str,
+        args: &[Expression],
+        type_table: &TypeTable,
+    ) {
+        let numeric_args: &[usize] = match name {
+            "abs" | "sign" | "sqrt" | "floor" | "ceil" | "exp" | "log" | "log10" | "sin"
+            | "cos" | "tan" | "asin" | "acos" | "atan" | "sinh" | "cosh" | "tanh" => &[0],
+            "atan2" | "div" | "mod" | "rem" => &[0, 1],
+            "semiLinear" => &[0, 1, 2],
+            "smooth" => &[1],
+            _ => &[],
+        };
+        for &index in numeric_args {
+            let Some(arg) = args.get(index) else {
+                continue;
+            };
+            self.require_builtin_argument_type(
+                comp,
+                arg,
+                type_table,
+                BuiltinArgumentRule {
+                    operator: "elementary function",
+                    argument_name: "argument",
+                    expected_type: "Real or Integer",
+                    predicate: Self::is_numeric_type,
+                },
+            );
+        }
+
+        if name == "edge"
+            && let Some(arg) = args.first()
+        {
+            self.require_builtin_argument_type(
+                comp,
+                arg,
+                type_table,
+                BuiltinArgumentRule {
+                    operator: "edge",
+                    argument_name: "argument",
+                    expected_type: "Boolean",
+                    predicate: |root, type_table| {
+                        matches!(
+                            type_table.get(root),
+                            Some(Type::Builtin(BuiltinType::Boolean))
+                        )
+                    },
+                },
+            );
         }
     }
 

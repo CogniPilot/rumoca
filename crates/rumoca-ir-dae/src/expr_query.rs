@@ -98,27 +98,82 @@ fn var_name_base_id(name: &VarName) -> Option<VarNameId> {
     cached_base_id(name)
 }
 
+fn cached_base_id(name: &VarName) -> Option<VarNameId> {
+    cached_match_keys(name).base
+}
+
+/// Derived match keys for one name, cached per [`VarNameId`].
+///
+/// `base` is the embedded-subscript-stripped component path (`x[3].b` -> `x.b`),
+/// `complex_base` strips a trailing `.re`/`.im` field suffix, and
+/// `base_complex_base` strips that suffix from `base`. Together with the name's
+/// own id these are exactly the identities [`var_ref_matches_unknown`] can
+/// compare across two names.
+#[derive(Debug, Clone, Copy, Default)]
+struct MatchKeys {
+    base: Option<VarNameId>,
+    complex_base: Option<VarNameId>,
+    base_complex_base: Option<VarNameId>,
+}
+
 thread_local! {
-    static BASE_NAME_ID_CACHE: RefCell<indexmap::IndexMap<VarNameId, Option<VarNameId>>> =
+    static MATCH_KEY_CACHE: RefCell<indexmap::IndexMap<VarNameId, MatchKeys>> =
         RefCell::new(indexmap::IndexMap::new());
 }
 
-fn cached_base_id(name: &VarName) -> Option<VarNameId> {
-    BASE_NAME_ID_CACHE.with(|cache| {
+fn cached_match_keys(name: &VarName) -> MatchKeys {
+    MATCH_KEY_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
-        if let Some(base_id) = cache.get(&name.id()) {
-            return *base_id;
+        if let Some(keys) = cache.get(&name.id()) {
+            return *keys;
         }
-        let base_id = base_name_for_valid_component(name.as_str()).map(|base_name| {
-            if base_name == name.as_str() {
-                name.id()
-            } else {
-                VarName::new(base_name).id()
-            }
-        });
-        cache.insert(name.id(), base_id);
-        base_id
+        let base_name = base_name_for_valid_component(name.as_str());
+        let keys = MatchKeys {
+            base: base_name.as_deref().map(|base| {
+                if base == name.as_str() {
+                    name.id()
+                } else {
+                    VarName::new(base).id()
+                }
+            }),
+            complex_base: split_complex_field_suffix(name.as_str())
+                .map(|(base, _)| VarName::new(base).id()),
+            base_complex_base: base_name
+                .as_deref()
+                .and_then(split_complex_field_suffix)
+                .map(|(base, _)| VarName::new(base).id()),
+        };
+        cache.insert(name.id(), keys);
+        keys
     })
+}
+
+/// Emit every candidate match key of `name`.
+///
+/// Contract (pinned by `match_keys_cover_var_ref_matches_unknown`): whenever
+/// `var_ref_matches_unknown(name, subscripts, unknown)` holds, the key sets
+/// produced by this function and by [`for_each_unknown_match_key`] intersect.
+/// The converse does not hold — the keys are a filter, never the decision.
+pub fn for_each_var_ref_match_key(name: &Reference, emit: impl FnMut(VarNameId)) {
+    for_each_match_key(name.var_name(), emit);
+}
+
+/// Emit every candidate match key of an eliminated variable name.
+///
+/// See [`for_each_var_ref_match_key`] for the contract these keys satisfy.
+pub fn for_each_unknown_match_key(unknown: &VarName, emit: impl FnMut(VarNameId)) {
+    for_each_match_key(unknown, emit);
+}
+
+fn for_each_match_key(name: &VarName, mut emit: impl FnMut(VarNameId)) {
+    emit(name.id());
+    let keys = cached_match_keys(name);
+    for key in [keys.base, keys.complex_base, keys.base_complex_base]
+        .into_iter()
+        .flatten()
+    {
+        emit(key);
+    }
 }
 
 /// Check if a `VarRef` expression with `name` and `subscripts` matches `unknown`.
@@ -586,6 +641,83 @@ mod tests {
 
         assert!(expr_contains_der_of_any(&indexed, &matcher));
         assert!(expr_contains_der_of_any(&embedded, &matcher));
+    }
+
+    fn var_ref_keys(name: &Reference) -> Vec<VarNameId> {
+        let mut keys = Vec::new();
+        for_each_var_ref_match_key(name, |key| keys.push(key));
+        keys
+    }
+
+    fn unknown_keys(name: &VarName) -> Vec<VarNameId> {
+        let mut keys = Vec::new();
+        for_each_unknown_match_key(name, |key| keys.push(key));
+        keys
+    }
+
+    #[test]
+    fn match_keys_cover_var_ref_matches_unknown() {
+        let names = [
+            "a",
+            "x",
+            "x[1]",
+            "x[2]",
+            "x[3]",
+            "z",
+            "z.re",
+            "z.im",
+            "x[1].re",
+            "p[2].q",
+            "p.q",
+            "sup.phi",
+            "sup[1].phi",
+        ];
+        let subscript_sets: [Vec<Subscript>; 3] = [
+            Vec::new(),
+            vec![Subscript::generated_index(1, rumoca_core::Span::DUMMY)],
+            vec![Subscript::generated_index(3, rumoca_core::Span::DUMMY)],
+        ];
+        let mut matched_pairs = 0usize;
+        for (name, unknown_name) in names
+            .iter()
+            .flat_map(|name| names.iter().map(move |unknown| (*name, *unknown)))
+        {
+            for subscripts in &subscript_sets {
+                matched_pairs +=
+                    usize::from(assert_keys_cover_match(name, unknown_name, subscripts));
+            }
+        }
+        assert!(
+            matched_pairs > 0,
+            "the table must exercise at least one true match"
+        );
+    }
+
+    fn assert_keys_cover_match(name: &str, unknown_name: &str, subscripts: &[Subscript]) -> bool {
+        let reference = Reference::new(name);
+        let unknown = VarName::new(unknown_name);
+        if !var_ref_matches_unknown(&reference, subscripts, &unknown) {
+            return false;
+        }
+        let ref_keys = var_ref_keys(&reference);
+        let unknown_key_set = unknown_keys(&unknown);
+        assert!(
+            ref_keys.iter().any(|key| unknown_key_set.contains(key)),
+            "match keys must intersect for `{name}` vs `{unknown_name}` \
+             (subscripts={subscripts:?}): {ref_keys:?} vs {unknown_key_set:?}"
+        );
+        true
+    }
+
+    #[test]
+    fn match_keys_include_complex_and_embedded_bases() {
+        let complex_field = var_ref_keys(&Reference::new("z.re"));
+        assert!(complex_field.contains(&VarName::new("z").id()));
+        let embedded_complex = var_ref_keys(&Reference::new("x[1].re"));
+        assert!(embedded_complex.contains(&VarName::new("x.re").id()));
+        assert!(embedded_complex.contains(&VarName::new("x").id()));
+        let embedded = unknown_keys(&VarName::new("p[2].q"));
+        assert!(embedded.contains(&VarName::new("p.q").id()));
     }
 
     #[test]

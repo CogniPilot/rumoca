@@ -7,10 +7,14 @@
 //! - Clock inference data
 
 use indexmap::{IndexMap, IndexSet};
-use rumoca_core::Span;
+use rumoca_core::{ClockLattice, ClockLatticeError, ClockLatticeErrorKind, ClockRational, Span};
 use serde::{Deserialize, Serialize};
 
 use crate::{Equation, VarName};
+
+/// Result of an exact base-clock lattice query, spanned at the clock
+/// expression that introduced the clock.
+pub type ClockLatticeResult<T> = Result<T, ClockLatticeError>;
 
 // =============================================================================
 // Clock Partitions (MLS §16.7)
@@ -161,13 +165,54 @@ impl BaseClock {
         }
     }
 
-    /// Create a new periodic clock.
+    /// Create a new periodic clock from a `Clock(interval)` argument.
+    ///
+    /// MLS §16.5 makes every derived clock an exact integer relation of its
+    /// base clock, so the base interval is stored as an exact rational whenever
+    /// `interval` has one. `ClockInterval::Seconds` is kept only for intervals
+    /// with no reduced rational form; that is the inexact `Clock(interval)`
+    /// case of §16.3 and it cannot participate in a lattice.
     pub fn periodic(interval: f64, source_span: Span) -> Self {
+        let base_interval = match ClockRational::from_seconds(interval) {
+            Ok(rational) => ClockInterval::Rational(rational),
+            Err(_) => ClockInterval::Seconds(interval),
+        };
         Self {
             kind: ClockKind::Periodic { interval },
             source_span,
-            base_interval: Some(ClockInterval::Seconds(interval)),
+            base_interval: Some(base_interval),
         }
+    }
+
+    /// MLS §16.3 `Clock(intervalCounter, resolution)`: an exactly rational
+    /// base clock of `intervalCounter / resolution` seconds.
+    pub fn rational(
+        interval_counter: i64,
+        resolution: i64,
+        source_span: Span,
+    ) -> ClockLatticeResult<Self> {
+        let lattice = ClockLattice::from_interval_counter(interval_counter, resolution)
+            .map_err(|kind| kind.at(source_span))?;
+        Ok(Self {
+            kind: ClockKind::Rational {
+                interval_counter,
+                resolution,
+            },
+            source_span,
+            base_interval: Some(ClockInterval::Rational(lattice.period())),
+        })
+    }
+
+    /// The exact lattice this base clock spans, or a spanned error when the
+    /// clock is not a statically periodic rational clock.
+    pub fn lattice(&self) -> ClockLatticeResult<ClockLattice> {
+        let interval = self.base_interval.as_ref().ok_or_else(|| {
+            ClockLatticeErrorKind::NotRationallyRepresentable.at(self.source_span)
+        })?;
+        let period = interval
+            .exact_period()
+            .map_err(|kind| kind.at(self.source_span))?;
+        ClockLattice::new(period, ClockRational::ZERO).map_err(|kind| kind.at(self.source_span))
     }
 }
 
@@ -260,15 +305,88 @@ impl SubClock {
             ..Self::empty_with_span(source_span)
         }
     }
+
+    /// Create a shifted clock (MLS §16.5.2 `shiftSample`).
+    pub fn shift_sample(counter: i64, resolution: i64, source_span: Span) -> Self {
+        Self {
+            shift_counter: Some(counter),
+            shift_resolution: Some(resolution),
+            ..Self::empty_with_span(source_span)
+        }
+    }
+
+    /// Create a back-shifted clock (MLS §16.5.2 `backSample`).
+    pub fn back_sample(counter: i64, resolution: i64, source_span: Span) -> Self {
+        Self {
+            back_counter: Some(counter),
+            back_resolution: Some(resolution),
+            ..Self::empty_with_span(source_span)
+        }
+    }
+
+    /// Derive this sub-clock's exact lattice from its base clock.
+    ///
+    /// MLS §16.5.2 defines all four conversions as integer relations over the
+    /// source clock, so the derivation is exact integer arithmetic and never a
+    /// floating-point scaling. `noClock()` has no periodic lattice.
+    pub fn derive(&self, base: ClockLattice) -> ClockLatticeResult<ClockLattice> {
+        if self.no_clock {
+            return Err(ClockLatticeErrorKind::NotRationallyRepresentable.at(self.source_span));
+        }
+        let mut derived = base;
+        if let Some(factor) = self.sub_factor {
+            derived = self.apply(derived.sub_sample(factor))?;
+        }
+        if let Some(factor) = self.super_factor {
+            derived = self.apply(derived.super_sample(factor))?;
+        }
+        // MLS §16.5.2 declares `resolution = 1` as the operator's own default,
+        // so an absent resolution is the spec value rather than a substitute.
+        if let Some(counter) = self.shift_counter {
+            let resolution = self.shift_resolution.unwrap_or(1);
+            derived = self.apply(derived.shift_sample(counter, resolution))?;
+        }
+        if let Some(counter) = self.back_counter {
+            let resolution = self.back_resolution.unwrap_or(1);
+            derived = self.apply(derived.back_sample(counter, resolution))?;
+        }
+        Ok(derived)
+    }
+
+    fn apply(
+        &self,
+        result: Result<ClockLattice, ClockLatticeErrorKind>,
+    ) -> ClockLatticeResult<ClockLattice> {
+        result.map_err(|kind| kind.at(self.source_span))
+    }
 }
 
 /// Clock interval representation.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum ClockInterval {
-    /// Interval in seconds.
+    /// Interval in seconds with no exact rational form (inexact §16.3
+    /// `Clock(interval)`); such a clock cannot anchor a rational lattice.
     Seconds(f64),
-    /// Rational interval as (numerator, denominator).
-    Rational { num: i64, denom: i64 },
+    /// Exact rational interval in seconds.
+    Rational(ClockRational),
+}
+
+impl ClockInterval {
+    /// The exact rational period, or the reason it has none.
+    pub fn exact_period(&self) -> Result<ClockRational, ClockLatticeErrorKind> {
+        match self {
+            Self::Rational(period) => Ok(*period),
+            Self::Seconds(_) => Err(ClockLatticeErrorKind::NotRationallyRepresentable),
+        }
+    }
+
+    /// The interval in seconds; exact rationals round exactly once.
+    pub fn seconds(&self) -> f64 {
+        match self {
+            Self::Rational(period) => period.to_f64(),
+            Self::Seconds(seconds) => *seconds,
+        }
+    }
 }
 
 // =============================================================================
@@ -301,3 +419,6 @@ impl ClockAssociations {
         self.variable_to_partition.get(var).copied()
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -119,7 +119,7 @@ fn switched_rlc_msl_retains_storage_states_through_step() {
     let msl_result = simulate_dae_with_diagnostics(&msl.dae, &opts)
         .expect("MSL switched RLC example should simulate");
 
-    // MLS Appendix B / SPEC_0003: variables appearing differentiated remain
+    // MLS Appendix B / SPEC_0022: variables appearing differentiated remain
     // states. The MSL capacitor voltage and inductor current are both physical
     // storage states and must survive simulator preparation.
     assert_eq!(simple_result.n_states, 2);

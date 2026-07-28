@@ -2,14 +2,22 @@
 //!
 //! This is the single canonical implementation of balance checking for the
 //! Rumoca DAE IR. All other crates must call these functions rather than
-//! reimplementing the formula (AGENTS.md: "Balance arithmetic lives in
-//! `rumoca-phase-dae`").
+//! reimplementing the formula (SPEC_0029 §3b).
 
 use std::collections::HashSet;
 
 use indexmap::{IndexMap, IndexSet};
 use rumoca_core::DefId;
 use rumoca_ir_dae as dae;
+
+pub mod breakdown;
+#[cfg(test)]
+mod instrumentation_tests;
+
+pub use breakdown::{
+    BalanceBreakdown, BalanceClamps, BalanceExclusionCounts, BalanceExclusionReason,
+};
+use breakdown::{BalanceEquationVerdict, equations_unknowns_and_clamps};
 
 pub type BalanceResult<T> = Result<T, BalanceError>;
 
@@ -31,7 +39,10 @@ impl BalanceError {
 }
 
 /// Detailed breakdown of balance calculation components.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+///
+/// `excluded` is diagnostic-only instrumentation (see [`breakdown`]); it is
+/// never read by the balance arithmetic.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct BalanceDetail {
     pub state_unknowns: usize,
     pub alg_unknowns: usize,
@@ -39,6 +50,7 @@ pub struct BalanceDetail {
     pub discrete_real_unknowns: usize,
     pub discrete_valued_unknowns: usize,
     pub f_x_scalar: usize,
+    pub f_x_aggregate_candidate_scalar: usize,
     pub f_z_scalar: usize,
     pub f_m_scalar: usize,
     pub f_c_scalar: usize,
@@ -47,6 +59,10 @@ pub struct BalanceDetail {
     pub interface_flow_count: usize,
     pub overconstrained_interface_count: i64,
     pub oc_break_edge_scalar_count: usize,
+    /// Continuous equation rows filtered out of the strict `f_x` count, by
+    /// reason. Diagnostic only; older artifacts deserialize as all-zero.
+    #[serde(default)]
+    pub excluded: BalanceExclusionCounts,
 }
 
 impl BalanceDetail {
@@ -60,6 +76,27 @@ impl BalanceDetail {
 
     pub fn equations_unknowns(&self) -> (usize, usize) {
         equations_unknowns_from_detail(self)
+    }
+
+    /// Raw unknown count (states + algebraics + outputs + discrete partitions).
+    pub fn raw_unknowns(&self) -> usize {
+        self.state_unknowns
+            + self.alg_unknowns
+            + self.output_unknowns
+            + self.discrete_real_unknowns
+            + self.discrete_valued_unknowns
+    }
+
+    /// How many rows each clamp in the balance formula discarded.
+    pub fn clamps(&self) -> BalanceClamps {
+        equations_unknowns_and_clamps(self).2
+    }
+
+    /// The single component whose count would have to change to close the
+    /// balance gap, for triage reporting. Returns `"balanced"` when the model
+    /// is already balanced.
+    pub fn dominant_term(&self) -> &'static str {
+        breakdown::dominant_balance_term(self)
     }
 }
 
@@ -85,8 +122,9 @@ impl std::fmt::Display for BalanceDetail {
         )?;
         write!(
             f,
-            "  Equations (raw): f_x({}) + f_z({}) + f_m({}) + f_c({}) + algo({}) + when({}) + iflow({}) + oc({}) - brk({})",
+            "  Equations (raw): f_x({}) + f_x_aggregate_candidate({}) + f_z({}) + f_m({}) + f_c({}) + algo({}) + when({}) + iflow({}) + oc({}) - brk({})",
             self.f_x_scalar,
+            self.f_x_aggregate_candidate_scalar,
             self.f_z_scalar,
             self.f_m_scalar,
             self.f_c_scalar,
@@ -114,6 +152,10 @@ pub fn is_balanced(dae_model: &dae::Dae) -> BalanceResult<bool> {
 
 /// Return detailed breakdown of the balance calculation components.
 pub fn balance_detail(dae_model: &dae::Dae) -> BalanceResult<BalanceDetail> {
+    balance_detail_impl(dae_model)
+}
+
+pub(crate) fn balance_detail_impl(dae_model: &dae::Dae) -> BalanceResult<BalanceDetail> {
     let state_unknowns: usize = dae_model.variables.states.values().map(|v| v.size()).sum();
     let alg_unknowns: usize = dae_model
         .variables
@@ -128,7 +170,8 @@ pub fn balance_detail(dae_model: &dae::Dae) -> BalanceResult<BalanceDetail> {
     // lowered B.1 rows by this phase, not counted as separate terms here.
     let algorithm_outputs = 0usize;
     let when_eq_scalar = 0usize;
-    let f_x_scalar = count_f_x_scalars_with_continuous_unknowns(dae_model);
+    let (f_x_scalar, f_x_aggregate_candidate_scalar, excluded) =
+        count_f_x_scalars_and_exclusions(dae_model);
     let f_z_scalar = count_discrete_real_update_scalars(dae_model);
     let f_m_scalar = count_discrete_valued_update_scalars(dae_model)?;
     let f_c_scalar = count_condition_memory_equation_scalars(dae_model);
@@ -139,6 +182,7 @@ pub fn balance_detail(dae_model: &dae::Dae) -> BalanceResult<BalanceDetail> {
         discrete_real_unknowns,
         discrete_valued_unknowns,
         f_x_scalar,
+        f_x_aggregate_candidate_scalar,
         f_z_scalar,
         f_m_scalar,
         f_c_scalar,
@@ -147,6 +191,7 @@ pub fn balance_detail(dae_model: &dae::Dae) -> BalanceResult<BalanceDetail> {
         interface_flow_count: dae_model.metadata.interface_flow_count,
         overconstrained_interface_count: dae_model.metadata.overconstrained_interface_count,
         oc_break_edge_scalar_count: dae_model.metadata.oc_break_edge_scalar_count,
+        excluded,
     })
 }
 
@@ -165,28 +210,7 @@ fn balance_from_detail(detail: &BalanceDetail) -> i64 {
 }
 
 fn equations_unknowns_from_detail(detail: &BalanceDetail) -> (usize, usize) {
-    let unknowns = detail.state_unknowns
-        + detail.alg_unknowns
-        + detail.output_unknowns
-        + detail.discrete_real_unknowns
-        + detail.discrete_valued_unknowns;
-    let brk = detail.oc_break_edge_scalar_count as i64;
-    let available_oc_interface = detail.overconstrained_interface_count.max(0);
-    let base_without_iflow = (detail.f_x_scalar
-        + detail.f_z_scalar
-        + detail.f_m_scalar
-        + detail.f_c_scalar
-        + detail.algorithm_outputs
-        + detail.when_eq_scalar) as i64;
-    let iflow_needed = (unknowns as i64 - base_without_iflow).max(0);
-    let effective_iflow = (detail.interface_flow_count as i64).min(iflow_needed);
-    let base_equations = base_without_iflow + effective_iflow;
-    let oc_needed = (unknowns as i64 - base_equations).max(0);
-    let effective_oc_interface = available_oc_interface.min(oc_needed);
-    let raw_equations = base_equations + effective_oc_interface;
-    let raw_balance = raw_equations - unknowns as i64;
-    let effective_brk = brk.min(raw_balance.max(0));
-    let equations = (raw_equations - effective_brk) as usize;
+    let (equations, unknowns, _clamps) = equations_unknowns_and_clamps(detail);
     (equations, unknowns)
 }
 
@@ -196,6 +220,11 @@ struct BalanceSymbolSet<'a> {
     /// component-level references count as referencing their scalarized
     /// members.
     prefixes: HashSet<rumoca_core::VarName>,
+    /// Index-free views of scalarized descendants. These let an aggregate
+    /// source reference such as `plug.pin.i` identify the candidate family
+    /// `plug.pin[1].i.re` without treating an explicitly indexed reference as
+    /// a wildcard.
+    normalized_names_and_prefixes: HashSet<rumoca_core::VarName>,
     def_ids: IndexSet<DefId>,
     ancestry: &'a dae::SymbolAncestryMap,
 }
@@ -207,20 +236,39 @@ impl<'a> BalanceSymbolSet<'a> {
             .filter_map(|name| variable_def_id(dae_model, name))
             .collect();
         let mut prefixes = HashSet::new();
+        let mut normalized_names_and_prefixes = HashSet::new();
         for name in names {
             prefixes.extend(name.structural_ancestors());
+            let normalized =
+                rumoca_core::VarName::new(rumoca_core::strip_all_subscripts(name.as_str()));
+            normalized_names_and_prefixes.insert(normalized.clone());
+            normalized_names_and_prefixes.extend(normalized.structural_ancestors());
         }
         Self {
             names,
             prefixes,
+            normalized_names_and_prefixes,
             def_ids,
             ancestry: &dae_model.metadata.symbol_ancestry,
         }
     }
 
     fn matches_reference(&self, reference: &rumoca_core::Reference) -> bool {
+        self.matches_reference_with_aggregate_candidates(reference, true)
+    }
+
+    fn matches_reference_with_aggregate_candidates(
+        &self,
+        reference: &rumoca_core::Reference,
+        allow_aggregate_candidates: bool,
+    ) -> bool {
         self.names.contains(reference.var_name())
             || self.prefixes.contains(reference.var_name())
+            || (allow_aggregate_candidates
+                && !reference.var_name().as_str().contains('[')
+                && self
+                    .normalized_names_and_prefixes
+                    .contains(reference.var_name()))
             || reference
                 .target_def_id()
                 .is_some_and(|def_id| self.matches_def_id(def_id))
@@ -272,29 +320,51 @@ fn find_variable<'a>(
         .or_else(|| dae_model.variables.constants.get(name))
 }
 
-pub(crate) fn count_f_x_scalars_with_continuous_unknowns(dae_model: &dae::Dae) -> usize {
+/// Strict `f_x` count plus the per-reason tally of rows the strict pass
+/// filtered out, and the extra scalars an aggregate-candidate pass would add.
+fn count_f_x_scalars_and_exclusions(
+    dae_model: &dae::Dae,
+) -> (usize, usize, BalanceExclusionCounts) {
+    let (strict, excluded) = count_f_x_scalars_with_continuous_unknowns_mode(dae_model, false);
+    let (with_aggregate_candidates, _) =
+        count_f_x_scalars_with_continuous_unknowns_mode(dae_model, true);
+    (
+        strict,
+        with_aggregate_candidates.saturating_sub(strict),
+        excluded,
+    )
+}
+
+fn count_f_x_scalars_with_continuous_unknowns_mode(
+    dae_model: &dae::Dae,
+    allow_aggregate_candidates: bool,
+) -> (usize, BalanceExclusionCounts) {
     let continuous_unknowns = collect_continuous_unknown_names(dae_model);
     let input_names = collect_input_names(dae_model);
     let continuous_unknown_symbols = BalanceSymbolSet::new(dae_model, &continuous_unknowns);
     let input_symbols = BalanceSymbolSet::new(dae_model, &input_names);
-    let component_defined_targets =
-        collect_component_defined_targets_for_balance(dae_model, &continuous_unknown_symbols);
+    let component_defined_targets = collect_component_defined_targets_for_balance(
+        dae_model,
+        &continuous_unknown_symbols,
+        allow_aggregate_candidates,
+    );
     let component_defined_symbols = BalanceSymbolSet::new(dae_model, &component_defined_targets);
-    dae_model
-        .continuous
-        .equations
-        .iter()
-        .filter(|eq| {
-            equation_counts_for_balance(
-                dae_model,
-                eq,
-                &continuous_unknown_symbols,
-                &input_symbols,
-                &component_defined_symbols,
-            )
-        })
-        .map(|eq| eq.scalar_count)
-        .sum()
+    let mut scalars = 0usize;
+    let mut excluded = BalanceExclusionCounts::default();
+    for eq in &dae_model.continuous.equations {
+        match equation_counts_for_balance(
+            dae_model,
+            eq,
+            &continuous_unknown_symbols,
+            &input_symbols,
+            &component_defined_symbols,
+            allow_aggregate_candidates,
+        ) {
+            BalanceEquationVerdict::Counted => scalars += eq.scalar_count,
+            BalanceEquationVerdict::Excluded(reason) => excluded.record(reason),
+        }
+    }
+    (scalars, excluded)
 }
 
 fn equation_counts_for_balance(
@@ -303,32 +373,38 @@ fn equation_counts_for_balance(
     continuous_unknowns: &BalanceSymbolSet,
     input_names: &BalanceSymbolSet,
     component_defined_targets: &BalanceSymbolSet,
-) -> bool {
+    allow_aggregate_candidates: bool,
+) -> BalanceEquationVerdict {
     if is_connection_origin(eq.origin.as_str())
         && is_redundant_connection_alias(
             dae_model,
             eq,
             continuous_unknowns,
             component_defined_targets,
+            allow_aggregate_candidates,
         )
     {
-        return false;
+        return BalanceEquationVerdict::Excluded(BalanceExclusionReason::RedundantConnectionAlias);
     }
-    if equation_references_continuous_unknown(eq, continuous_unknowns) {
-        return true;
+    if equation_references_continuous_unknown(eq, continuous_unknowns, allow_aggregate_candidates) {
+        return BalanceEquationVerdict::Counted;
     }
     // Connection aliases that do not constrain any continuous unknown should
     // not contribute to local continuous balance.
     if is_connection_origin(eq.origin.as_str()) {
-        return false;
+        return BalanceEquationVerdict::Excluded(BalanceExclusionReason::ConnectionNoContinuousRef);
     }
     // Binding equations for internal promoted inputs/discrete partitions can
     // be input-only aliases and should not inflate continuous balance.
     if eq.origin.starts_with("binding equation for") {
-        return false;
+        return BalanceEquationVerdict::Excluded(BalanceExclusionReason::BindingInputAlias);
     }
     // Preserve explicit user equations constraining interface inputs.
-    equation_references_input(eq, input_names)
+    if equation_references_input(eq, input_names, allow_aggregate_candidates) {
+        BalanceEquationVerdict::Counted
+    } else {
+        BalanceEquationVerdict::Excluded(BalanceExclusionReason::NoContinuousOrInputRef)
+    }
 }
 
 fn is_redundant_connection_alias(
@@ -336,6 +412,7 @@ fn is_redundant_connection_alias(
     eq: &dae::Equation,
     continuous_unknowns: &BalanceSymbolSet,
     component_defined_targets: &BalanceSymbolSet,
+    allow_aggregate_candidates: bool,
 ) -> bool {
     let refs = eq_binary_var_refs(&eq.rhs);
     if refs.len() != 2 {
@@ -344,10 +421,14 @@ fn is_redundant_connection_alias(
     let lhs = refs[0];
     let rhs = refs[1];
 
-    let lhs_component_defined = component_defined_targets.matches_reference(lhs);
-    let rhs_component_defined = component_defined_targets.matches_reference(rhs);
-    let lhs_is_continuous_unknown = continuous_unknowns.matches_reference(lhs);
-    let rhs_is_continuous_unknown = continuous_unknowns.matches_reference(rhs);
+    let lhs_component_defined = component_defined_targets
+        .matches_reference_with_aggregate_candidates(lhs, allow_aggregate_candidates);
+    let rhs_component_defined = component_defined_targets
+        .matches_reference_with_aggregate_candidates(rhs, allow_aggregate_candidates);
+    let lhs_is_continuous_unknown = continuous_unknowns
+        .matches_reference_with_aggregate_candidates(lhs, allow_aggregate_candidates);
+    let rhs_is_continuous_unknown = continuous_unknowns
+        .matches_reference_with_aggregate_candidates(rhs, allow_aggregate_candidates);
 
     (lhs_component_defined && !rhs_is_continuous_unknown)
         || (rhs_component_defined && !lhs_is_continuous_unknown)
@@ -356,6 +437,7 @@ fn is_redundant_connection_alias(
 fn collect_component_defined_targets_for_balance(
     dae_model: &dae::Dae,
     continuous_unknowns: &BalanceSymbolSet,
+    allow_aggregate_candidates: bool,
 ) -> HashSet<rumoca_core::VarName> {
     let mut targets = HashSet::new();
     for eq in &dae_model.continuous.equations {
@@ -364,7 +446,10 @@ fn collect_component_defined_targets_for_balance(
         }
         let unknown_refs = eq_binary_var_refs(&eq.rhs)
             .into_iter()
-            .filter(|name| continuous_unknowns.matches_reference(name))
+            .filter(|name| {
+                continuous_unknowns
+                    .matches_reference_with_aggregate_candidates(name, allow_aggregate_candidates)
+            })
             .collect::<Vec<_>>();
         if let [target] = unknown_refs.as_slice() {
             targets.insert(target.var_name().clone());
@@ -1011,32 +1096,38 @@ fn equation_lhs_matches_symbol(eq: &dae::Equation, names: &BalanceSymbolSet) -> 
 fn equation_references_continuous_unknown(
     eq: &dae::Equation,
     continuous_unknowns: &BalanceSymbolSet,
+    allow_aggregate_candidates: bool,
 ) -> bool {
-    if eq
-        .lhs
-        .as_ref()
-        .is_some_and(|name| continuous_unknowns.matches_reference(name))
-    {
+    if eq.lhs.as_ref().is_some_and(|name| {
+        continuous_unknowns
+            .matches_reference_with_aggregate_candidates(name, allow_aggregate_candidates)
+    }) {
         return true;
     }
 
     let refs = expression_var_refs(&eq.rhs);
-    refs.into_iter()
-        .any(|reference| continuous_unknowns.matches_reference(reference))
+    refs.into_iter().any(|reference| {
+        continuous_unknowns
+            .matches_reference_with_aggregate_candidates(reference, allow_aggregate_candidates)
+    })
 }
 
-fn equation_references_input(eq: &dae::Equation, input_names: &BalanceSymbolSet) -> bool {
-    if eq
-        .lhs
-        .as_ref()
-        .is_some_and(|name| input_names.matches_reference(name))
-    {
+fn equation_references_input(
+    eq: &dae::Equation,
+    input_names: &BalanceSymbolSet,
+    allow_aggregate_candidates: bool,
+) -> bool {
+    if eq.lhs.as_ref().is_some_and(|name| {
+        input_names.matches_reference_with_aggregate_candidates(name, allow_aggregate_candidates)
+    }) {
         return true;
     }
 
     let refs = expression_var_refs(&eq.rhs);
-    refs.into_iter()
-        .any(|reference| input_names.matches_reference(reference))
+    refs.into_iter().any(|reference| {
+        input_names
+            .matches_reference_with_aggregate_candidates(reference, allow_aggregate_candidates)
+    })
 }
 
 pub(crate) fn is_connection_origin(origin: &str) -> bool {
@@ -1645,5 +1736,44 @@ mod tests {
             0,
             "the connection still supplies the second equation for coupled unknowns"
         );
+    }
+
+    #[test]
+    fn aggregate_reference_is_a_candidate_for_indexed_descendants() {
+        let mut dae = dae::Dae::default();
+        dae.variables.algebraics.insert(
+            rumoca_core::VarName::new("plug.pin[1].i.re"),
+            discrete_var("plug.pin[1].i.re"),
+        );
+        dae.continuous
+            .equations
+            .push(scalar_eq_with_lhs("plug.pin.i", 1));
+        let names = HashSet::from_iter([rumoca_core::VarName::new("plug.pin[1].i.re")]);
+        let symbols = BalanceSymbolSet::new(&dae, &names);
+        let reference: rumoca_core::Reference = rumoca_core::VarName::new("plug.pin.i").into();
+
+        assert!(symbols.matches_reference(&reference));
+        assert!(!symbols.matches_reference_with_aggregate_candidates(&reference, false));
+        assert_eq!(balance(&dae).expect("valid aggregate balance fixture"), 0);
+    }
+
+    #[test]
+    fn aggregate_reference_candidate_does_not_prove_a_surplus() {
+        let mut dae = dae::Dae::default();
+        dae.variables.algebraics.insert(
+            rumoca_core::VarName::new("plug.pin[1].i.re"),
+            discrete_var("plug.pin[1].i.re"),
+        );
+        dae.continuous
+            .equations
+            .push(scalar_eq_with_lhs("plug.pin[1].i.re", 1));
+        dae.continuous
+            .equations
+            .push(scalar_eq_with_lhs("plug.pin.i", 1));
+
+        let detail = balance_detail(&dae).expect("valid aggregate balance fixture");
+        assert_eq!(detail.f_x_scalar, 1);
+        assert_eq!(detail.f_x_aggregate_candidate_scalar, 1);
+        assert_eq!(detail.balance(), 0);
     }
 }

@@ -5,6 +5,13 @@ fn unspanned_derivative_rhs_test_span() -> rumoca_core::Span {
 }
 
 #[test]
+fn native_linsolve_requires_contiguous_component_output_indices() {
+    assert!(component_indices_are_contiguous_from(&[2, 3, 4], 2));
+    assert!(!component_indices_are_contiguous_from(&[0, 1, 4], 0));
+    assert!(!component_indices_are_contiguous_from(&[3, 4], 2));
+}
+
+#[test]
 fn derivative_vec_with_capacity_reports_capacity_overflow() -> Result<(), LowerError> {
     let span = rumoca_core::Span::from_offsets(
         rumoca_core::SourceId::from_source_name(
@@ -109,6 +116,127 @@ fn derivative_rhs_function_param(name: &str) -> rumoca_core::FunctionParam {
         max: None,
         description: None,
     }
+}
+
+fn derivative_order_test_equation(
+    x_coefficient: rumoca_core::Expression,
+    y_coefficient: rumoca_core::Expression,
+    rhs: rumoca_core::Expression,
+) -> DerivativeEquation {
+    DerivativeEquation {
+        coefficients: IndexMap::from([
+            ("x".to_string(), x_coefficient),
+            ("y".to_string(), y_coefficient),
+        ]),
+        rhs,
+        span: derivative_rhs_test_span(),
+        dae_equation_index: None,
+        projection_index: None,
+    }
+}
+
+fn derivative_order_field(field: &str) -> rumoca_core::Expression {
+    let span = derivative_rhs_test_span();
+    rumoca_core::Expression::FieldAccess {
+        base: Box::new(var_ref("p")),
+        field: field.to_string(),
+        span,
+    }
+}
+
+#[test]
+fn canonical_derivative_rows_reject_equivalent_duplicates_before_span_ordering() {
+    let equation = derivative_order_test_equation(real(1.0), real(1.0), real(2.0));
+    let mut duplicate = equation.clone();
+    duplicate.span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("phase_solve_derivative_rhs_fixture.mo"),
+        3,
+        4,
+    );
+    let equations = vec![equation, duplicate];
+    let state_indices = IndexMap::from([("x", 0usize), ("y", 1usize)]);
+    let mut equation_indices = vec![0, 1];
+
+    let error =
+        canonicalize_derivative_component_rows(&equations, &state_indices, &mut equation_indices)
+            .expect_err("equivalent derivative coefficient rows are singular");
+    assert!(matches!(&error, LowerError::UnsupportedAt { .. }));
+    assert!(
+        error
+            .reason()
+            .contains("duplicate equivalent derivative coefficient rows")
+    );
+    assert_eq!(error.source_span(), Some(derivative_rhs_test_span()));
+}
+
+#[test]
+fn canonical_derivative_rows_reject_unresolved_fingerprint_collisions() {
+    let equations = vec![
+        derivative_order_test_equation(derivative_order_field("aa"), real(1.0), real(2.0)),
+        derivative_order_test_equation(derivative_order_field("bb"), real(1.0), real(2.0)),
+    ];
+    assert_eq!(
+        rumoca_core::expression_semantic_fingerprint(
+            equations[0].coefficients.get("x").expect("x coefficient")
+        ),
+        rumoca_core::expression_semantic_fingerprint(
+            equations[1].coefficients.get("x").expect("x coefficient")
+        ),
+        "fixture must exercise a real semantic-fingerprint collision"
+    );
+    let state_indices = IndexMap::from([("x", 0usize), ("y", 1usize)]);
+    let mut equation_indices = vec![0, 1];
+
+    let error =
+        canonicalize_derivative_component_rows(&equations, &state_indices, &mut equation_indices)
+            .expect_err("unresolved canonical collision must be rejected");
+    assert!(matches!(&error, LowerError::UnsupportedAt { .. }));
+    assert!(error.reason().contains("canonical ordering is unresolved"));
+    assert_eq!(error.source_span(), Some(derivative_rhs_test_span()));
+}
+
+#[test]
+fn canonical_derivative_row_order_is_permutation_invariant_without_row_loss() {
+    let equations = vec![
+        derivative_order_test_equation(real(2.0), real(1.0), real(7.0)),
+        derivative_order_test_equation(real(1.0), real(3.0), real(11.0)),
+    ];
+    let state_indices = IndexMap::from([("x", 0usize), ("y", 1usize)]);
+    let mut source_order = vec![0, 1];
+    let mut permuted_order = vec![1, 0];
+
+    canonicalize_derivative_component_rows(&equations, &state_indices, &mut source_order)
+        .expect("independent square derivative rows should canonicalize");
+    canonicalize_derivative_component_rows(&equations, &state_indices, &mut permuted_order)
+        .expect("permuted independent square derivative rows should canonicalize");
+
+    assert_eq!(source_order, permuted_order);
+    assert_eq!(source_order.len(), equations.len());
+    assert!(source_order.contains(&0));
+    assert!(source_order.contains(&1));
+}
+
+#[test]
+fn constant_matrix_singularity_proof_is_limited_to_zero_and_duplicate_rows() {
+    assert!(constant_matrix_has_proven_singular_rows(&[
+        vec![1.0, 0.0],
+        vec![0.0, -0.0],
+    ]));
+    assert!(constant_matrix_has_proven_singular_rows(&[
+        vec![1.0, 2.0],
+        vec![1.0, 2.0],
+    ]));
+    assert!(
+        !constant_matrix_has_proven_singular_rows(&[vec![1.0, 1.0], vec![2.0, 2.0],]),
+        "proportional rows require arithmetic to prove and must remain a runtime LinSolve"
+    );
+    assert!(
+        !constant_matrix_has_proven_singular_rows(&[
+            vec![f64::MIN_POSITIVE, 1.0],
+            vec![f64::MIN_POSITIVE + f64::MIN_POSITIVE * f64::EPSILON, 1.0],
+        ]),
+        "near-dependent represented rows must not be rejected by floating elimination"
+    );
 }
 
 #[test]
@@ -330,11 +458,16 @@ fn lower_derivative_rhs_reports_missing_component_root_with_state_span() {
         component_roots: vec![99],
         components: IndexMap::new(),
         structural_bindings: Arc::new(IndexMap::new()),
-        equation_flags: Vec::new(),
+        continuous_rows: Vec::new(),
     };
 
-    let err = lower_derivative_rhs_with_analysis(&dae_model, &layout, &analysis)
-        .expect_err("missing derivative RHS component root should fail");
+    let err = lower_derivative_rhs_with_analysis(
+        &dae_model,
+        &layout,
+        &analysis,
+        &mut crate::tensor_declines::TensorDeclineJournal::new(),
+    )
+    .expect_err("missing derivative RHS component root should fail");
 
     assert_eq!(err.source_span(), Some(span));
     assert!(
@@ -380,11 +513,16 @@ fn lower_derivative_rhs_reports_missing_component_root_entry_with_state_span() {
         component_roots: Vec::new(),
         components: IndexMap::new(),
         structural_bindings: Arc::new(IndexMap::new()),
-        equation_flags: Vec::new(),
+        continuous_rows: Vec::new(),
     };
 
-    let err = lower_derivative_rhs_with_analysis(&dae_model, &layout, &analysis)
-        .expect_err("missing derivative RHS component root entry should fail");
+    let err = lower_derivative_rhs_with_analysis(
+        &dae_model,
+        &layout,
+        &analysis,
+        &mut crate::tensor_declines::TensorDeclineJournal::new(),
+    )
+    .expect_err("missing derivative RHS component root entry should fail");
 
     assert_eq!(err.source_span(), Some(span));
     assert!(
@@ -434,11 +572,16 @@ fn lower_derivative_rhs_uses_equation_span_when_state_span_is_missing() {
         component_roots: Vec::new(),
         components: IndexMap::new(),
         structural_bindings: Arc::new(IndexMap::new()),
-        equation_flags: Vec::new(),
+        continuous_rows: Vec::new(),
     };
 
-    let err = lower_derivative_rhs_with_analysis(&dae_model, &layout, &analysis)
-        .expect_err("missing derivative RHS component root entry should fail");
+    let err = lower_derivative_rhs_with_analysis(
+        &dae_model,
+        &layout,
+        &analysis,
+        &mut crate::tensor_declines::TensorDeclineJournal::new(),
+    )
+    .expect_err("missing derivative RHS component root entry should fail");
 
     assert_eq!(err.source_span(), Some(span));
     assert!(

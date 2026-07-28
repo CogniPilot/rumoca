@@ -7,10 +7,6 @@
 //!
 //! The DAE tree-walk interpreter (`eval`, `dual`, `sim_float`, `statement`) lives
 //! in `rumoca-eval-dae`.
-//!
-//! SPEC_0021 file-size exception: phase-solve facade still owns exports,
-//! compatibility tests, and lowering integration. split plan: keep moving
-//! tests and integration-only helpers into focused modules.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
@@ -29,11 +25,12 @@ pub mod ad;
 mod appendix_b_validation;
 mod capacity;
 mod continuous_row_targets;
+pub mod diagnostic_codes;
 mod discrete_pre_modes;
-mod dummy_derivative;
 mod dynamic_events;
 mod event_actions;
 mod implicit_rhs;
+mod init_plan_trace;
 mod initial_values;
 pub mod layout;
 pub mod lower;
@@ -45,6 +42,7 @@ mod runtime_assignments;
 pub mod solve_model;
 mod stencil;
 mod subscript_indices;
+pub mod tensor_declines;
 mod tensor_report;
 #[cfg(test)]
 #[path = "tests/test_support.rs"]
@@ -67,6 +65,7 @@ use continuous_row_targets::{
 use continuous_row_targets::{
     lower_continuous_row_targets, lower_continuous_row_targets_for_equation,
 };
+pub use diagnostic_codes::SOLVE_LOWER_DIAGNOSTIC_CODES;
 use discrete_pre_modes::discrete_pre_mode_for_equation;
 #[cfg(test)]
 pub(crate) use discrete_pre_modes::expression_contains_event_entry_pre_operator;
@@ -75,7 +74,7 @@ use implicit_rhs::zero_rhs_row;
 use implicit_rhs::{
     build_implicit_rhs_compute_block, build_implicit_rhs_rows, state_only_implicit_rows_and_targets,
 };
-use layout::INITIAL_EVENT_PARAMETER_NAME;
+use layout::{HOMOTOPY_LAMBDA_PARAMETER_NAME, INITIAL_EVENT_PARAMETER_NAME};
 pub use layout::{build_var_layout, build_var_layout_with_solver_len};
 pub use lower::LowerError;
 use lower::{
@@ -96,16 +95,23 @@ pub use solve_model::{
     lower_dae_to_solve_model_owned,
     lower_dae_to_solve_model_owned_for_gpu_preparation_with_metadata,
     lower_dae_to_solve_model_owned_for_gpu_preparation_with_metadata_and_overrides,
+    lower_dae_to_solve_model_owned_value_only_with_manifold_constraints_and_overrides,
     lower_dae_to_solve_model_owned_value_only_with_visible_expressions_and_metadata,
     lower_dae_to_solve_model_owned_value_only_with_visible_expressions_and_metadata_and_overrides,
+    lower_dae_to_solve_model_owned_with_manifold_constraints_and_overrides,
     lower_dae_to_solve_model_owned_with_visible_expressions,
     lower_dae_to_solve_model_owned_with_visible_expressions_and_metadata,
     lower_dae_to_solve_model_owned_with_visible_expressions_and_metadata_and_overrides,
     propagate_parameter_overrides, visible_expressions_for_dae,
 };
 pub(crate) use subscript_indices::{checked_literal_positive_indices, subscript_source_span};
+pub use tensor_declines::{
+    LoweredContinuousFamilies, LoweredFamily, TensorDeclineJournal, TensorDeclineRecord,
+    TensorFallbackCount, TensorFallbackReason, TensorHeadroom,
+};
 pub use tensor_report::{
-    TensorFallback, TensorFallbackReason, TensorPreservationReport, tensor_preservation_report,
+    TensorFallback, TensorPreservationReport, TensorReportProvenance, tensor_preservation_report,
+    tensor_preservation_report_from_lowering, tensor_preservation_report_with_declines,
 };
 /// Reset DAE evaluator state used while lowering DAE into Solve IR.
 ///
@@ -147,6 +153,15 @@ fn lower_solve_layout_with_var_layout(
         Some(solve::ScalarSlot::P { index, .. }) => Some(index),
         _ => None,
     };
+    let terminal_event_parameter_index =
+        match layout.binding(rumoca_core::TERMINAL_EVENT_PARAMETER_NAME) {
+            Some(solve::ScalarSlot::P { index, .. }) => Some(index),
+            _ => None,
+        };
+    let initial_homotopy_parameter_index = match layout.binding(HOMOTOPY_LAMBDA_PARAMETER_NAME) {
+        Some(solve::ScalarSlot::P { index, .. }) => Some(index),
+        _ => None,
+    };
 
     Ok(solve::SolveLayout {
         solver_maps: build_solver_name_index_maps(dae_model, solver_len)?,
@@ -167,7 +182,9 @@ fn lower_solve_layout_with_var_layout(
         // backend-neutral solve-IR runtime parameter so all row renderers read
         // the same lowered representation.
         initial_event_parameter_index,
-        pre_param_bindings: build_pre_param_bindings(layout),
+        terminal_event_parameter_index,
+        initial_homotopy_parameter_index,
+        pre_param_bindings: build_pre_param_bindings(dae_model, layout),
     })
 }
 
@@ -185,10 +202,13 @@ fn checked_layout_remainder(
     })
 }
 
-fn build_pre_param_bindings(layout: &solve::VarLayout) -> Vec<solve::PreParamBinding> {
+fn build_pre_param_bindings(
+    dae_model: &dae::Dae,
+    layout: &solve::VarLayout,
+) -> Vec<solve::PreParamBinding> {
     let mut bindings = Vec::new();
     for (name, &slot) in layout.bindings() {
-        let Some(source_name) = rumoca_core::pre_slot_base(name) else {
+        let Some(source_name) = rumoca_core::pre_slot_base(name.as_str()) else {
             continue;
         };
         let solve::ScalarSlot::P {
@@ -206,9 +226,24 @@ fn build_pre_param_bindings(layout: &solve::VarLayout) -> Vec<solve::PreParamBin
         bindings.push(solve::PreParamBinding {
             dest_p_index,
             source,
+            clock_schedule: pre_source_clock_schedule(dae_model, source_name),
         });
     }
     bindings
+}
+
+fn pre_source_clock_schedule(
+    dae_model: &dae::Dae,
+    source_name: &str,
+) -> Option<solve::PeriodicEventSchedule> {
+    let timing = dae_model.clocks.timings.get(source_name).or_else(|| {
+        let scalar = rumoca_core::parse_scalar_name(source_name)?;
+        dae_model.clocks.timings.get(scalar.base)
+    })?;
+    Some(solve::PeriodicEventSchedule {
+        period_seconds: timing.period_seconds,
+        phase_seconds: timing.phase_seconds,
+    })
 }
 
 pub fn lower_solve_problem(dae_model: &dae::Dae) -> Result<solve::SolveProblem, LowerError> {
@@ -270,29 +305,69 @@ pub(crate) fn lower_solve_problem_with_solver_len_and_model_span(
     )
 }
 
-// SPEC_0021: Exception - implementation for the top-level Solve-IR lowering
-// entry point remains one unit so stage contracts are visible at the phase
-// boundary.
-#[allow(clippy::too_many_lines)]
 pub(crate) fn lower_solve_problem_with_solver_len_and_model_span_and_profile(
     dae_model: &dae::Dae,
     solver_len: usize,
     fallback_model_span: Option<rumoca_core::Span>,
     profile: SolveProblemLoweringProfile,
 ) -> Result<solve::SolveProblem, LowerError> {
-    if ir_boundary_validation_enabled() {
-        dae_model.validate_shape_contract().map_err(|err| {
-            lower_contract_violation(format!("invalid DAE IR shape contract: {err}"), err.span())
-        })?;
-    }
+    let mut declines = TensorDeclineJournal::new();
+    lower_solve_problem_with_declines(
+        dae_model,
+        solver_len,
+        fallback_model_span,
+        profile,
+        &mut declines,
+    )
+}
+
+/// Lower the continuous system and keep the journal of per-family tensor
+/// declines, so [`tensor_preservation_report_with_declines`] can name the
+/// branch that scalarized each structured family instead of restating that one
+/// did.
+pub fn lower_solve_problem_with_tensor_declines(
+    dae_model: &dae::Dae,
+) -> Result<(solve::SolveProblem, TensorDeclineJournal), LowerError> {
+    let mut declines = TensorDeclineJournal::new();
+    let problem = lower_solve_problem_with_declines(
+        dae_model,
+        usize::MAX,
+        None,
+        SolveProblemLoweringProfile::Runtime,
+        &mut declines,
+    )?;
+    Ok((problem, declines))
+}
+
+// SPEC_0021: Exception - implementation for the top-level Solve-IR lowering
+// entry point remains one unit so stage contracts are visible at the phase
+// boundary.
+#[allow(clippy::too_many_lines)]
+fn lower_solve_problem_with_declines(
+    dae_model: &dae::Dae,
+    solver_len: usize,
+    fallback_model_span: Option<rumoca_core::Span>,
+    profile: SolveProblemLoweringProfile,
+    declines: &mut TensorDeclineJournal,
+) -> Result<solve::SolveProblem, LowerError> {
     appendix_b_validation::validate_solve_input_appendix_b_invariants(dae_model)?;
-    // Eliminate dummy derivatives (`di = der(x)`) by substituting `der(x) -> di`
-    // in all non-defining equations, so `di` is determined as an algebraic
-    // unknown and `der(x) = di` is the trivial state-derivative link (matching
-    // OpenModelica). Without this the implicit Newton system is structurally
-    // singular for index-reduced models (e.g. mutually-coupled inductors).
-    let dummy_eliminated = dummy_derivative::eliminate_dummy_derivatives(dae_model);
+    // Consume the finalized output of the structural DAE-to-DAE alias pass.
+    // Keeping the pass in phase-structural enforces SPEC_0007's phase boundary:
+    // Solve lowering never owns mathematical DAE rewrites.
+    let dummy_eliminated =
+        rumoca_phase_structural::dae_prepare::eliminate_dummy_derivative_aliases(dae_model)
+            .map_err(|source| {
+                lower_contract_violation(
+                    format!("structural DAE transformation failed: {source}"),
+                    source.source_span().unwrap_or(rumoca_core::Span::DUMMY),
+                )
+            })?;
     let dae_model = dummy_eliminated.as_ref().unwrap_or(dae_model);
+    // Record the continuous families THIS lowering consumes, before any of it
+    // runs. Alias elimination above can already have rewritten the caller's
+    // DAE, and family attribution is positional, so the report must measure
+    // against the list lowering saw rather than one the caller kept a handle to.
+    declines.record_lowered_continuous(dae_model);
     if dae_model_has_no_solve_lowering_inputs(dae_model) {
         return Ok(solve::SolveProblem::default());
     }
@@ -314,29 +389,26 @@ pub(crate) fn lower_solve_problem_with_solver_len_and_model_span_and_profile(
 
     let timer = timing::stage_start();
     let runtime_tail_updates = runtime_tail_update_names(dae_model)?;
-    let runtime_assignment_equations =
-        runtime_assignment_equations(dae_model, &runtime_tail_updates)?;
     let discrete_update_equations = normalized_discrete_update_equations(dae_model)
         .map_err(|err| lower_problem_context(err, "collect discrete update equations"))?;
     timing::log_stage("problem.collect_runtime_equations", timer);
     let timer = timing::stage_start();
     let mut derivative_analysis = lower::analyze_derivative_rhs(dae_model)
         .map_err(|err| lower_problem_context(err, "analyze derivative RHS rows"))?;
-    let state_derivative_rows = lower_bool_slice_copy(
-        derivative_analysis.equation_flags(),
-        "state derivative row flag count",
-        model_span,
-    )?;
+    let continuous_rows = derivative_analysis.take_continuous_rows();
     timing::log_stage("problem.analyze_derivative_rhs", timer);
     let timer = timing::stage_start();
+    let runtime_assignment_equations =
+        runtime_assignment_equations(dae_model, &runtime_tail_updates, &continuous_rows)?;
     let residual_equations = if profile.lower_residual_equations() {
-        solver_residual_equations(dae_model, &runtime_tail_updates, &state_derivative_rows)?
+        solver_residual_equations(dae_model, &runtime_tail_updates, &continuous_rows)?
     } else {
         Vec::new()
     };
-    // `solver_residual_equations` has already removed state-derivative rows.
-    // The remaining original DAE indices are not a state-row prefix, so residual
-    // lowering must not infer derivative-row behavior from `row_idx < n_x`.
+    // `solver_residual_equations` has already removed derivative projections.
+    // Source rows retain their DAE index; projected rows receive a disjoint
+    // lowering namespace, so residual lowering must not infer derivative-row
+    // behavior from `row_idx < n_x`.
     let (residual, residual_targets) = lower_residual_rows_and_targets_from_equations(
         dae_model,
         &layout,
@@ -371,9 +443,13 @@ pub(crate) fn lower_solve_problem_with_solver_len_and_model_span_and_profile(
         derivative_analysis.load_retained_algebraics(&layout, &solved_algebraic_y);
     }
     let timer = timing::stage_start();
-    let derivative_rhs =
-        lower::lower_derivative_rhs_with_analysis(dae_model, &layout, &derivative_analysis)
-            .map_err(|err| lower_problem_context(err, "lower derivative RHS rows"))?;
+    let derivative_rhs = lower::lower_derivative_rhs_with_analysis(
+        dae_model,
+        &layout,
+        &derivative_analysis,
+        declines,
+    )
+    .map_err(|err| lower_problem_context(err, "lower derivative RHS rows"))?;
     timing::log_stage("problem.lower_derivative_rhs", timer);
     let state_scalar_count = solve_layout.state_scalar_count();
     let solver_scalar_count = solve_layout.solver_scalar_count();
@@ -445,6 +521,7 @@ pub(crate) fn lower_solve_problem_with_solver_len_and_model_span_and_profile(
             &residual,
             &residual_targets,
             &residual_equations,
+            declines,
         )?
     } else {
         solve::ComputeBlock::default()
@@ -468,6 +545,8 @@ pub(crate) fn lower_solve_problem_with_solver_len_and_model_span_and_profile(
             implicit_rhs,
             algebraic_projection_plan,
             residual: residual_block,
+            manifold_residual: solve::ComputeBlock::default(),
+            manifold_projection_plan: solve::AlgebraicProjectionPlan::default(),
             derivative_rhs,
         },
         initialization,
@@ -501,23 +580,13 @@ pub(crate) fn lower_solve_problem_with_solver_len_and_model_span_and_profile(
     };
 
     appendix_b_validation::validate_solve_problem_appendix_b_invariants(&problem)?;
-    if ir_boundary_validation_enabled() {
-        problem.validate_shape_contract().map_err(|err| {
-            lower_optional_contract_violation(
-                format!("invalid Solve IR shape contract: {err}"),
-                err.source_span(),
-            )
-        })?;
-    }
+    problem.validate().map_err(|err| {
+        lower_optional_contract_violation(
+            format!("invalid Solve IR stage contract: {err}"),
+            err.source_span(),
+        )
+    })?;
     Ok(problem)
-}
-
-fn ir_boundary_validation_enabled() -> bool {
-    cfg!(any(
-        debug_assertions,
-        test,
-        feature = "strict-ir-validation"
-    ))
 }
 
 struct DiscreteSystemInputs<'a> {
@@ -609,6 +678,73 @@ fn lower_event_partition_for_profile(
         )?,
         actions: event_actions::lower_event_actions(dae_model, layout)
             .map_err(|err| lower_problem_context(err, "lower event actions"))?,
+        has_terminal_event: dae_model.events.has_terminal_event,
+        delays: lower_delay_partition(dae_model, layout)?,
+    })
+}
+
+fn lower_delay_partition(
+    dae_model: &dae::Dae,
+    layout: &solve::VarLayout,
+) -> Result<solve::SolveDelayPartition, LowerError> {
+    let channels = &dae_model.events.delay_channels;
+    let sources: Vec<_> = channels
+        .iter()
+        .map(|channel| channel.source.clone())
+        .collect();
+    let delay_times: Vec<_> = channels
+        .iter()
+        .map(|channel| channel.delay_time.clone())
+        .collect();
+    let delay_maxima: Vec<_> = channels
+        .iter()
+        .map(|channel| {
+            channel
+                .delay_max
+                .clone()
+                .unwrap_or_else(|| channel.delay_time.clone())
+        })
+        .collect();
+    let spans: Vec<_> = channels.iter().map(|channel| channel.span).collect();
+    let lower_rows = |expressions: &[rumoca_core::Expression],
+                      label: &'static str|
+     -> Result<solve::ScalarProgramBlock, LowerError> {
+        solve::ScalarProgramBlock::with_program_spans(
+            lower::lower_expression_rows_from_expressions(
+                expressions,
+                layout,
+                &dae_model.symbols.functions,
+            )
+            .map_err(|err| lower_problem_context(err, label))?,
+            spans.clone(),
+        )
+        .map_err(LowerError::from)
+    };
+    let mut value_parameter_indices = Vec::with_capacity(channels.len());
+    for channel in channels {
+        let Some(solve::ScalarSlot::P { index, .. }) =
+            layout.binding(channel.value_parameter.as_str())
+        else {
+            return Err(lower_contract_violation(
+                format!(
+                    "delay channel value parameter `{}` is not bound to a Solve P slot",
+                    channel.value_parameter
+                ),
+                channel.span,
+            ));
+        };
+        value_parameter_indices.push(index);
+    }
+
+    Ok(solve::SolveDelayPartition {
+        source_rhs: lower_rows(&sources, "lower delay source rows")?,
+        delay_time_rhs: lower_rows(&delay_times, "lower delay-time rows")?,
+        delay_max_rhs: lower_rows(&delay_maxima, "lower delay-maximum rows")?,
+        value_parameter_indices,
+        source_is_discrete: channels
+            .iter()
+            .map(|channel| channel.source_is_discrete)
+            .collect(),
     })
 }
 
@@ -703,42 +839,78 @@ fn lower_initialization_system(
     layout: &solve::VarLayout,
     solve_layout: &solve::SolveLayout,
 ) -> Result<solve::InitializationSolveSystem, LowerError> {
+    let timer = timing::stage_start();
     let residual_equations = lower::initial_residual_equations(dae_model, layout)
         .map_err(|err| lower_problem_context(err, "collect initial residual equations"))?;
     let row_targets =
         lower_continuous_row_targets(dae_model, residual_equations.iter().copied(), layout)
             .map_err(|err| lower_problem_context(err, "lower initial row targets"))?;
-    let update_equations = lower::initial_condition_update_equations(dae_model)
+    let update_equations = lower::initial_condition_update_equations(dae_model, layout)
         .map_err(|err| lower_problem_context(err, "collect initial condition updates"))?;
     let update_targets = lower_update_targets_from_equations(dae_model, layout, &update_equations)
         .map_err(|err| lower_problem_context(err, "lower initial update targets"))?;
+    timing::log_stage("init.row_and_update_targets", timer);
 
+    let timer = timing::stage_start();
     let residual_rows = lower_initial_residual(dae_model, layout)
         .map_err(|err| lower_problem_context(err, "lower initial residual rows"))?;
-    let projection_indices = initial_projection_indices_for_layout(dae_model, solve_layout)?;
-    let projection_plan = lower_projection_plan(
+    timing::log_stage("init.lower_initial_residual", timer);
+    let timer = timing::stage_start();
+    let projection_unknowns =
+        initial_projection_unknowns_for_layout(dae_model, layout, solve_layout)?;
+    let initialization_span = dae_model_span(dae_model)?;
+    let combined_projection_indices = initialization_combined_projection_indices(
+        &projection_unknowns,
+        solve_layout.solver_scalar_count(),
+        initialization_span,
+    )?;
+    timing::log_stage("init.projection_unknowns", timer);
+    let timer = timing::stage_start();
+    let combined_projection_plan = lower_projection_plan(
         &residual_rows,
         &row_targets,
-        &projection_indices,
+        &combined_projection_indices,
         0..residual_rows.len(),
-        dae_model_span(dae_model)?,
+        initialization_span,
+        Some(solve_layout.solver_scalar_count()),
     )?;
+    let projection_plan = initialization_projection_plan_from_combined(
+        combined_projection_plan,
+        solve_layout.solver_scalar_count(),
+        initialization_span,
+    )?;
+    timing::log_stage("init.lower_projection_plan", timer);
 
     // Array-native residual: route through the same structured lowering the
     // continuous system uses, so grid `for`-loop equations (e.g. the immersed-mask
     // `sig[i,j]`) collapse into a few `Map`/`AffineStencil` tensor nodes instead of
     // one scalar program per cell. This is the dominant initialization cost on PDE
     // grids (it was ~80% of the whole Solve-IR before this change).
+    // The initialization residual reuses the continuous structured lowering, but
+    // the tensor-preservation KPI measures the CONTINUOUS system's nodes only.
+    // Journaling initialization declines against continuous family indices would
+    // attribute a reason to a family this report never scores, so the
+    // initialization pass gets its own journal and it is dropped here.
+    let mut initialization_declines = TensorDeclineJournal::new();
+    let timer = timing::stage_start();
     let residual = residual_compute_block::build_residual_compute_block(
         dae_model,
         layout,
         &residual_rows,
         &row_targets,
         &residual_equations,
+        &mut initialization_declines,
     )?;
+    timing::log_stage("init.build_residual_block", timer);
+    init_plan_trace::trace_initialization_plan(
+        layout,
+        &row_targets,
+        &projection_plan,
+        residual_rows.len(),
+    );
     Ok(solve::InitializationSolveSystem {
         row_targets,
-        projection_indices,
+        projection_unknowns,
         projection_plan,
         residual,
         update_rhs: solve::ScalarProgramBlock::with_program_spans(
@@ -754,7 +926,7 @@ fn lower_initialization_updates_only(
     dae_model: &dae::Dae,
     layout: &solve::VarLayout,
 ) -> Result<solve::InitializationSolveSystem, LowerError> {
-    let update_equations = lower::initial_condition_update_equations(dae_model)
+    let update_equations = lower::initial_condition_update_equations(dae_model, layout)
         .map_err(|err| lower_problem_context(err, "collect initial condition updates"))?;
     Ok(solve::InitializationSolveSystem {
         update_rhs: solve::ScalarProgramBlock::with_program_spans(
@@ -770,10 +942,11 @@ fn lower_initialization_updates_only(
     })
 }
 
-fn initial_projection_indices_for_layout(
+fn initial_projection_unknowns_for_layout(
     dae_model: &dae::Dae,
+    layout: &solve::VarLayout,
     solve_layout: &solve::SolveLayout,
-) -> Result<Vec<usize>, LowerError> {
+) -> Result<Vec<solve::ScalarSlot>, LowerError> {
     let span = dae_model_span(dae_model)?;
     let state_count = solve_layout.state_scalar_count();
     let solver_count = solve_layout.solver_scalar_count();
@@ -783,15 +956,15 @@ fn initial_projection_indices_for_layout(
             span,
         )
     })?;
-    let mut indices =
+    let mut unknowns =
         lower_vec_with_capacity(solver_count, "initial projection index count", span)?;
     reserve_lower_capacity(
-        &mut indices,
+        &mut unknowns,
         non_state_count,
         "initial projection non-state index count",
         span,
     )?;
-    indices.extend(state_count..solver_count);
+    unknowns.extend((state_count..solver_count).map(solve::scalar_slot_y));
     for (name, var) in dae_model
         .variables
         .states
@@ -800,37 +973,283 @@ fn initial_projection_indices_for_layout(
     {
         let scalar_names = var_scalar_names(name.as_str(), var)?;
         reserve_lower_capacity(
-            &mut indices,
+            &mut unknowns,
             scalar_names.len(),
             "initial projection state index count",
             var.source_span,
         )?;
         for scalar_name in scalar_names {
             if let Some(index) = solve_layout.solver_idx_for_target(scalar_name.as_str()) {
-                indices.push(index);
+                unknowns.push(solve::scalar_slot_y(index));
             }
         }
     }
+    for (name, var) in dae_model
+        .variables
+        .parameters
+        .iter()
+        .filter(|(_, var)| var.fixed == Some(false))
+    {
+        let scalar_names = var_scalar_names(name.as_str(), var)?;
+        reserve_lower_capacity(
+            &mut unknowns,
+            scalar_names.len(),
+            "initial projection parameter count",
+            var.source_span,
+        )?;
+        for scalar_name in scalar_names {
+            let Some(slot @ solve::ScalarSlot::P { .. }) = layout.binding(scalar_name.as_str())
+            else {
+                return Err(LowerError::MissingBinding { name: scalar_name });
+            };
+            unknowns.push(slot);
+        }
+    }
+    Ok(unknowns)
+}
+
+fn initialization_combined_projection_indices(
+    unknowns: &[solve::ScalarSlot],
+    p_seed_offset: usize,
+    span: rumoca_core::Span,
+) -> Result<Vec<usize>, LowerError> {
+    let mut indices = lower_vec_with_capacity(
+        unknowns.len(),
+        "initial combined projection index count",
+        span,
+    )?;
+    for unknown in unknowns {
+        let index = combined_projection_index(*unknown, Some(p_seed_offset)).ok_or_else(|| {
+            lower_contract_violation(
+                format!("initial projection unknown `{unknown:?}` is not a Y/P slot"),
+                span,
+            )
+        })?;
+        indices.push(index);
+    }
     Ok(indices)
+}
+
+fn combined_projection_index(
+    slot: solve::ScalarSlot,
+    p_seed_offset: Option<usize>,
+) -> Option<usize> {
+    match slot {
+        solve::ScalarSlot::Y { index, .. } => Some(index),
+        solve::ScalarSlot::P { index, .. } => p_seed_offset?.checked_add(index),
+        solve::ScalarSlot::Time | solve::ScalarSlot::Constant(_) => None,
+    }
+}
+
+fn initialization_projection_plan_from_combined(
+    plan: solve::AlgebraicProjectionPlan,
+    p_seed_offset: usize,
+    span: rumoca_core::Span,
+) -> Result<solve::InitializationProjectionPlan, LowerError> {
+    let mut blocks =
+        lower_vec_with_capacity(plan.blocks.len(), "initial projection block count", span)?;
+    for block in plan.blocks {
+        let mut unknowns = lower_vec_with_capacity(
+            block.y_indices.len(),
+            "initial projection block unknown count",
+            span,
+        )?;
+        for index in block.y_indices {
+            let unknown = if index < p_seed_offset {
+                solve::scalar_slot_y(index)
+            } else {
+                solve::scalar_slot_p(index - p_seed_offset)
+            };
+            unknowns.push(unknown);
+        }
+        blocks.push(solve::InitializationProjectionBlock {
+            rows: block.rows,
+            unknowns,
+        });
+    }
+    Ok(solve::InitializationProjectionPlan { blocks })
+}
+
+fn retained_manifold_equations(
+    constraints: &[rumoca_phase_structural::dae_prepare::IndexReducedConstraint],
+    span: rumoca_core::Span,
+) -> Result<Vec<&dae::Equation>, LowerError> {
+    let equation_capacity = constraints.len().checked_mul(2).ok_or_else(|| {
+        lower_contract_violation("manifold equation count overflows".into(), span)
+    })?;
+    let mut equations =
+        lower_vec_with_capacity(equation_capacity, "manifold equation count", span)?;
+    for constraint in constraints {
+        equations.push(&constraint.holonomic);
+        if let Some(velocity) = &constraint.velocity {
+            equations.push(velocity);
+        }
+    }
+    Ok(equations)
+}
+
+fn manifold_row_state_incidence(
+    scalar: &solve::ScalarProgramBlock,
+    state_count: usize,
+    span: rumoca_core::Span,
+) -> Result<Vec<BTreeSet<usize>>, LowerError> {
+    if !scalar.uses_local_contiguous_output_indices() {
+        return Err(lower_contract_violation(
+            "index-reduced manifold residual rows are not locally contiguous".to_string(),
+            span,
+        ));
+    }
+    let row_count = scalar.output_count();
+    if row_count == 0 {
+        return Err(lower_contract_violation(
+            "index reduction retained constraints but produced no manifold residual rows"
+                .to_string(),
+            span,
+        ));
+    }
+    let mut row_states = vec![BTreeSet::<usize>::new(); row_count];
+    let mut output_ordinal = 0usize;
+    for program in &scalar.programs {
+        let mut states = BTreeSet::new();
+        for op in program {
+            let solve::LinearOp::LoadY { index, .. } = op else {
+                continue;
+            };
+            if *index >= state_count {
+                return Err(lower_contract_violation(
+                    format!(
+                        "index-reduced manifold residual depends on non-state solver slot \
+                         Y[{index}]; this reduction cannot be simulated without silently \
+                         weakening its constraint"
+                    ),
+                    span,
+                ));
+            }
+            states.insert(*index);
+        }
+        let stored_outputs = solve::ScalarProgramBlock::program_output_count(program);
+        for _ in 0..stored_outputs {
+            let Some(&row) = scalar.output_indices.get(output_ordinal) else {
+                return Err(lower_contract_violation(
+                    "manifold scalar output inventory changed during projection planning"
+                        .to_string(),
+                    span,
+                ));
+            };
+            let Some(row_inventory) = row_states.get_mut(row) else {
+                return Err(lower_contract_violation(
+                    format!("manifold residual output row {row} is outside {row_count} rows"),
+                    span,
+                ));
+            };
+            row_inventory.extend(states.iter().copied());
+            output_ordinal += 1;
+        }
+    }
+    if output_ordinal != row_count {
+        return Err(lower_contract_violation(
+            format!(
+                "manifold residual stores {output_ordinal} outputs but declares {row_count} rows"
+            ),
+            span,
+        ));
+    }
+    Ok(row_states)
+}
+
+fn manifold_projection_plan_from_incidence(
+    row_states: Vec<BTreeSet<usize>>,
+    span: rumoca_core::Span,
+) -> Result<solve::AlgebraicProjectionPlan, LowerError> {
+    let mut components = Vec::<(Vec<usize>, BTreeSet<usize>)>::new();
+    for (row, states) in row_states.into_iter().enumerate() {
+        if states.is_empty() {
+            return Err(lower_contract_violation(
+                format!(
+                    "index-reduced manifold residual row {row} has no state dependence; \
+                     safe state projection is unavailable"
+                ),
+                span,
+            ));
+        }
+        let mut merged_rows = vec![row];
+        let mut merged_states = states;
+        let mut component = 0usize;
+        while component < components.len() {
+            if components[component].1.is_disjoint(&merged_states) {
+                component += 1;
+                continue;
+            }
+            let (rows, states) = components.remove(component);
+            merged_rows.extend(rows);
+            merged_states.extend(states);
+        }
+        components.push((merged_rows, merged_states));
+    }
+    components.sort_by_key(|(rows, _)| rows.first().copied().unwrap_or(usize::MAX));
+    let mut blocks =
+        lower_vec_with_capacity(components.len(), "manifold projection block count", span)?;
+    for (mut rows, states) in components {
+        rows.sort_unstable();
+        if states.len() < rows.len() {
+            return Err(lower_contract_violation(
+                format!(
+                    "index-reduced manifold block has {} residual rows but only {} participating \
+                     state coordinates; safe minimum-norm projection is unavailable",
+                    rows.len(),
+                    states.len()
+                ),
+                span,
+            ));
+        }
+        blocks.push(solve::AlgebraicProjectionBlock {
+            rows,
+            y_indices: states.into_iter().collect(),
+        });
+    }
+    Ok(solve::AlgebraicProjectionPlan { blocks })
+}
+
+pub(crate) fn attach_index_reduced_manifold_projection(
+    dae_model: &dae::Dae,
+    problem: &mut solve::SolveProblem,
+    constraints: &[rumoca_phase_structural::dae_prepare::IndexReducedConstraint],
+) -> Result<(), LowerError> {
+    if constraints.is_empty() {
+        return Ok(());
+    }
+    let span = dae_model_span(dae_model)?;
+    let equations = retained_manifold_equations(constraints, span)?;
+    let residual = lower::lower_manifold_residual(dae_model, &problem.layout, &equations)
+        .map_err(|err| lower_problem_context(err, "lower index-reduced manifold residuals"))?;
+    let scalar = rumoca_eval_solve::to_scalar_program_block(&residual)
+        .map_err(|err| lower_problem_context(err.into(), "scalarize manifold residuals"))?;
+    let state_count = problem.solve_layout.state_scalar_count();
+    let row_states = manifold_row_state_incidence(&scalar, state_count, span)?;
+    let plan = manifold_projection_plan_from_incidence(row_states, span)?;
+    problem.continuous.manifold_residual = residual;
+    problem.continuous.manifold_projection_plan = plan;
+    Ok(())
 }
 
 pub fn lower_solve_artifacts(
     problem: &solve::SolveProblem,
 ) -> Result<solve::SolveArtifacts, LowerError> {
-    lower_solve_artifacts_with_mass_matrix(problem, solve_identity_mass_matrix(problem)?)
+    lower_solve_artifacts_with_mass_matrix(problem, solve::MassMatrix::Identity)
 }
 
 pub fn lower_solve_artifacts_with_mass_matrix(
     problem: &solve::SolveProblem,
-    mass_matrix: Vec<Vec<f64>>,
+    mass_matrix: solve::MassMatrix,
 ) -> Result<solve::SolveArtifacts, LowerError> {
     let artifacts = solve::SolveArtifacts {
         continuous: lower_continuous_solve_artifacts(problem, mass_matrix)?,
         initialization: solve::InitializationSolveArtifacts {
-            residual_jacobian_v: lower_compute_block_jvp(&problem.initialization.residual)
-                .map_err(|err| {
-                    lower_problem_context(err, "lower initial residual Jacobian rows")
-                })?,
+            residual_jacobian_v: ad::lower_compute_block_full_jvp(
+                &problem.initialization.residual,
+                problem.solve_layout.solver_scalar_count(),
+            )
+            .map_err(|err| lower_problem_context(err, "lower initial residual Jacobian rows"))?,
         },
     };
     appendix_b_validation::validate_solve_artifacts_appendix_b_invariants(&artifacts)?;
@@ -839,10 +1258,12 @@ pub fn lower_solve_artifacts_with_mass_matrix(
 
 fn lower_continuous_solve_artifacts(
     problem: &solve::SolveProblem,
-    mass_matrix: Vec<Vec<f64>>,
+    mass_matrix: solve::MassMatrix,
 ) -> Result<solve::ContinuousSolveArtifacts, LowerError> {
     let implicit_jacobian_v = lower_compute_block_jvp(&problem.continuous.implicit_rhs)
         .map_err(|err| lower_problem_context(err, "lower implicit Jacobian rows"))?;
+    let manifold_jacobian_v = lower_compute_block_jvp(&problem.continuous.manifold_residual)
+        .map_err(|err| lower_problem_context(err, "lower manifold Jacobian rows"))?;
     // Row-aligned scalar JVP of `implicit_rhs`: the state-only path propagates the
     // state seed through the algebraic projection row by row, indexing by the same
     // `row_idx` as the scalarized value residual. The tensor `implicit_jacobian_v`
@@ -879,50 +1300,9 @@ fn lower_continuous_solve_artifacts(
         mass_matrix,
         implicit_jacobian_v,
         implicit_jacobian_v_scalar,
+        manifold_jacobian_v,
         full_jacobian_v,
     })
-}
-
-pub fn solve_identity_mass_matrix(
-    problem: &solve::SolveProblem,
-) -> Result<Vec<Vec<f64>>, LowerError> {
-    let state_count = problem.solve_layout.state_scalar_count();
-    let span = solve_problem_span(problem);
-    let mut matrix =
-        lower_vec_with_optional_capacity(state_count, "identity mass matrix rows", span)?;
-    for idx in 0..state_count {
-        let mut row =
-            lower_vec_with_optional_capacity(state_count, "identity mass matrix row", span)?;
-        row.resize(state_count, 0.0);
-        row[idx] = 1.0;
-        matrix.push(row);
-    }
-    Ok(matrix)
-}
-
-fn solve_problem_span(problem: &solve::SolveProblem) -> Option<rumoca_core::Span> {
-    compute_block_span(&problem.continuous.derivative_rhs)
-        .or_else(|| compute_block_span(&problem.continuous.implicit_rhs))
-        .or_else(|| compute_block_span(&problem.continuous.residual))
-}
-
-fn compute_block_span(block: &solve::ComputeBlock) -> Option<rumoca_core::Span> {
-    block.nodes.iter().find_map(compute_node_span)
-}
-
-fn compute_node_span(node: &solve::ComputeNode) -> Option<rumoca_core::Span> {
-    let span = match node {
-        solve::ComputeNode::ScalarPrograms(block) => block
-            .program_spans
-            .iter()
-            .copied()
-            .find(|span| !span.is_dummy())?,
-        solve::ComputeNode::MatMul { span, .. }
-        | solve::ComputeNode::LinSolve { span, .. }
-        | solve::ComputeNode::Map { span, .. }
-        | solve::ComputeNode::AffineStencil { span, .. } => *span,
-    };
-    (!span.is_dummy()).then_some(span)
 }
 
 fn lower_periodic_event_schedules(dae_model: &dae::Dae) -> Vec<solve::PeriodicEventSchedule> {
@@ -955,18 +1335,32 @@ fn lower_problem_context(err: LowerError, context: &str) -> LowerError {
 fn solver_residual_equations<'a>(
     dae_model: &'a dae::Dae,
     runtime_tail_updates: &HashSet<String>,
-    state_derivative_rows: &[bool],
+    continuous_rows: &'a [lower::ContinuousEquationRow],
 ) -> Result<Vec<(usize, &'a dae::Equation)>, LowerError> {
     let mut equations = Vec::new();
-    for (row_idx, eq) in dae_model.continuous.equations.iter().enumerate() {
-        let Some(&is_state_derivative_row) = state_derivative_rows.get(row_idx) else {
-            return Err(lower_contract_violation(
-                format!("missing state-derivative flag for residual equation {row_idx}"),
-                eq.span,
-            ));
-        };
-        if solver_residual_equation(dae_model, runtime_tail_updates, is_state_derivative_row, eq)? {
-            equations.push((row_idx, eq));
+    for (normalized_index, row) in continuous_rows.iter().enumerate() {
+        let eq = &row.equation;
+        if solver_residual_equation(dae_model, runtime_tail_updates, row.is_derivative, eq)? {
+            let row_namespace = match row.projection {
+                lower::ContinuousEquationRowProjection::Source => row.source_equation_index,
+                lower::ContinuousEquationRowProjection::FunctionOutput { index } => {
+                    dae_model
+                        .continuous
+                        .equations
+                        .len()
+                        .checked_add(normalized_index)
+                        .ok_or_else(|| {
+                            lower_contract_violation(
+                                format!(
+                                    "normalized function projection namespace overflows for source equation {} projection {index}",
+                                    row.source_equation_index
+                                ),
+                                eq.span,
+                            )
+                        })?
+                }
+            };
+            equations.push((row_namespace, eq));
         }
     }
     Ok(equations)
@@ -1013,6 +1407,7 @@ fn lower_algebraic_projection_plan(
         &projection_indices,
         state_scalar_count..solver_scalar_count,
         context_span,
+        None,
     )
 }
 
@@ -1022,16 +1417,24 @@ fn lower_projection_plan(
     projection_indices: &[usize],
     row_indices: std::ops::Range<usize>,
     context_span: rumoca_core::Span,
+    p_seed_offset: Option<usize>,
 ) -> Result<solve::AlgebraicProjectionPlan, LowerError> {
     let mut row_to_vars = BTreeMap::<usize, BTreeSet<usize>>::new();
     let projection_set = projection_indices.iter().copied().collect::<BTreeSet<_>>();
 
     for row_idx in row_indices {
-        let mut y_indices =
-            collect_algebraic_y_indices_for_row(rows[row_idx].as_slice(), &projection_set);
+        let mut y_indices = collect_projection_indices_for_row(
+            rows[row_idx].as_slice(),
+            &projection_set,
+            p_seed_offset,
+            context_span,
+        )?;
         if y_indices.is_empty()
-            && let Some(solve::ScalarSlot::Y { index, .. }) =
-                row_targets.get(row_idx).copied().flatten()
+            && let Some(index) = row_targets
+                .get(row_idx)
+                .copied()
+                .flatten()
+                .and_then(|target| combined_projection_index(target, p_seed_offset))
             && projection_set.contains(&index)
         {
             y_indices.insert(index);
@@ -1047,6 +1450,7 @@ fn lower_projection_plan(
         row_targets,
         projection_indices,
         context_span,
+        p_seed_offset,
     )?;
     let blocks = projection_blt_blocks(&projection_incidence, context_span)?;
     Ok(solve::AlgebraicProjectionPlan {
@@ -1074,14 +1478,16 @@ fn projection_blt_blocks(
     Ok(regular.blocks)
 }
 
-fn collect_algebraic_y_indices_for_row(
+fn collect_projection_indices_for_row(
     row: &[solve::LinearOp],
     projection_set: &BTreeSet<usize>,
-) -> BTreeSet<usize> {
+    p_seed_offset: Option<usize>,
+    context_span: rumoca_core::Span,
+) -> Result<BTreeSet<usize>, LowerError> {
     let mut defs = BTreeMap::<solve::Reg, RowDefUse>::new();
     let mut outputs = Vec::new();
     for op in row {
-        match row_def_use(op) {
+        match row_def_use(op, context_span)? {
             RowDefUseOp::Def { dst, def_use } => {
                 defs.insert(dst, def_use);
             }
@@ -1103,14 +1509,48 @@ fn collect_algebraic_y_indices_for_row(
         {
             y_indices.insert(index);
         }
+        if let (Some(offset), Some(index)) = (p_seed_offset, def_use.loaded_p)
+            && let Some(combined) = offset.checked_add(index)
+            && projection_set.contains(&combined)
+        {
+            y_indices.insert(combined);
+        }
+        if let (Some(offset), Some((base, count))) = (p_seed_offset, def_use.loaded_p_range) {
+            // Solve-IR defines a zero-count indexed load as the singleton
+            // base slot (the runtime clamps the index to offset zero).
+            let effective_count = count.max(1);
+            let end = base.checked_add(effective_count).ok_or_else(|| {
+                lower_contract_violation(
+                    "indexed P-load range exceeds host index range".to_string(),
+                    context_span,
+                )
+            })?;
+            let combined_base = offset.checked_add(base).ok_or_else(|| {
+                lower_contract_violation(
+                    "indexed P-load seed base exceeds host index range".to_string(),
+                    context_span,
+                )
+            })?;
+            let combined_end = offset.checked_add(end).ok_or_else(|| {
+                lower_contract_violation(
+                    "indexed P-load seed end exceeds host index range".to_string(),
+                    context_span,
+                )
+            })?;
+            for &combined in projection_set.range(combined_base..combined_end) {
+                y_indices.insert(combined);
+            }
+        }
         stack.extend(def_use.inputs.iter().copied());
     }
-    y_indices
+    Ok(y_indices)
 }
 
 #[derive(Debug)]
 struct RowDefUse {
     loaded_y: Option<usize>,
+    loaded_p: Option<usize>,
+    loaded_p_range: Option<(usize, usize)>,
     inputs: Vec<solve::Reg>,
 }
 
@@ -1119,17 +1559,23 @@ enum RowDefUseOp {
     Store { src: solve::Reg },
 }
 
-fn row_def_use(op: &solve::LinearOp) -> RowDefUseOp {
+fn row_def_use(
+    op: &solve::LinearOp,
+    context_span: rumoca_core::Span,
+) -> Result<RowDefUseOp, LowerError> {
     use solve::LinearOp as Op;
-    match *op {
-        Op::Const { dst, .. } | Op::LoadTime { dst } | Op::LoadP { dst, .. } => {
-            def_use(dst, None, Vec::new())
-        }
+    Ok(match *op {
+        Op::Const { dst, .. } | Op::LoadTime { dst } => def_use(dst, None, Vec::new()),
+        Op::LoadP { dst, index } => def_use_slots(dst, None, Some(index), None, Vec::new()),
         Op::LoadY { dst, index } => def_use(dst, Some(index), Vec::new()),
         Op::LoadSeed { dst, .. } => def_use(dst, None, Vec::new()),
-        Op::LoadIndexedP { dst, index, .. } | Op::LoadIndexedSeed { dst, index, .. } => {
-            def_use(dst, None, vec![index])
-        }
+        Op::LoadIndexedP {
+            dst,
+            base,
+            count,
+            index,
+        } => def_use_slots(dst, None, None, Some((base, count)), vec![index]),
+        Op::LoadIndexedSeed { dst, index, .. } => def_use(dst, None, vec![index]),
         Op::Move { dst, src } | Op::Unary { dst, arg: src, .. } => def_use(dst, None, vec![src]),
         Op::Binary { dst, lhs, rhs, .. } | Op::Compare { dst, lhs, rhs, .. } => {
             def_use(dst, None, vec![lhs, rhs])
@@ -1146,13 +1592,24 @@ fn row_def_use(op: &solve::LinearOp) -> RowDefUseOp {
             rhs_start,
             n,
             ..
-        } => def_use(
-            dst,
-            None,
-            reg_range(matrix_start, n * n)
-                .chain(reg_range(rhs_start, n))
-                .collect(),
-        ),
+        } => {
+            let matrix_len = n.checked_mul(n).ok_or_else(|| {
+                lower_contract_violation(
+                    "projection linear-solve matrix register count overflows".to_string(),
+                    context_span,
+                )
+            })?;
+            let mut inputs = projection_reg_range(matrix_start, matrix_len, context_span)?;
+            let rhs = projection_reg_range(rhs_start, n, context_span)?;
+            reserve_lower_capacity(
+                &mut inputs,
+                rhs.len(),
+                "projection linear-solve input register count",
+                context_span,
+            )?;
+            inputs.extend(rhs);
+            def_use(dst, None, inputs)
+        }
         Op::TableBounds { dst, table_id, .. } => def_use(dst, None, vec![table_id]),
         Op::TableLookup {
             dst,
@@ -1188,7 +1645,11 @@ fn row_def_use(op: &solve::LinearOp) -> RowDefUseOp {
             state_start,
             state_len,
             ..
-        } => def_use(dst, None, reg_range(state_start, state_len).collect()),
+        } => def_use(
+            dst,
+            None,
+            projection_reg_range(state_start, state_len, context_span)?,
+        ),
         Op::ImpureRandomInit { dst, seed } => def_use(dst, None, vec![seed]),
         Op::ImpureRandom { dst, id, .. } => def_use(dst, None, vec![id]),
         Op::ImpureRandomInteger {
@@ -1199,18 +1660,53 @@ fn row_def_use(op: &solve::LinearOp) -> RowDefUseOp {
             ..
         } => def_use(dst, None, vec![id, imin, imax]),
         Op::StoreOutput { src } => RowDefUseOp::Store { src },
-    }
+    })
 }
 
 fn def_use(dst: solve::Reg, loaded_y: Option<usize>, inputs: Vec<solve::Reg>) -> RowDefUseOp {
+    def_use_slots(dst, loaded_y, None, None, inputs)
+}
+
+fn def_use_slots(
+    dst: solve::Reg,
+    loaded_y: Option<usize>,
+    loaded_p: Option<usize>,
+    loaded_p_range: Option<(usize, usize)>,
+    inputs: Vec<solve::Reg>,
+) -> RowDefUseOp {
     RowDefUseOp::Def {
         dst,
-        def_use: RowDefUse { loaded_y, inputs },
+        def_use: RowDefUse {
+            loaded_y,
+            loaded_p,
+            loaded_p_range,
+            inputs,
+        },
     }
 }
 
-fn reg_range(start: solve::Reg, len: usize) -> impl Iterator<Item = solve::Reg> {
-    (0..len).filter_map(move |offset| start.checked_add(offset.try_into().ok()?))
+fn projection_reg_range(
+    start: solve::Reg,
+    len: usize,
+    span: rumoca_core::Span,
+) -> Result<Vec<solve::Reg>, LowerError> {
+    let mut registers = lower_vec_with_capacity(len, "projection register dependency count", span)?;
+    for offset in 0..len {
+        let offset = solve::Reg::try_from(offset).map_err(|_| {
+            lower_contract_violation(
+                format!("projection register offset {offset} exceeds Solve-IR register range"),
+                span,
+            )
+        })?;
+        let register = start.checked_add(offset).ok_or_else(|| {
+            lower_contract_violation(
+                format!("projection register range starting at {start} overflows"),
+                span,
+            )
+        })?;
+        registers.push(register);
+    }
+    Ok(registers)
 }
 
 struct ProjectionIncidence {
@@ -1224,6 +1720,7 @@ fn algebraic_projection_incidence(
     row_targets: &[Option<solve::ScalarSlot>],
     projection_indices: &[usize],
     context_span: rumoca_core::Span,
+    p_seed_offset: Option<usize>,
 ) -> Result<ProjectionIncidence, LowerError> {
     let mut unknown_y_set = row_to_vars
         .values()
@@ -1256,7 +1753,6 @@ fn algebraic_projection_incidence(
         .enumerate()
         .map(|(local_idx, y_idx)| (y_idx, local_idx))
         .collect::<BTreeMap<_, _>>();
-
     let mut equation_refs = lower_vec_with_capacity(
         row_to_vars.len(),
         "projection equation ref count",
@@ -1272,7 +1768,25 @@ fn algebraic_projection_incidence(
         "projection preferred unknown count",
         context_span,
     )?;
-    for (row_idx, vars) in row_to_vars {
+    let mut ordered_rows = lower_vec_with_capacity(
+        row_to_vars.len(),
+        "projection equation ordering count",
+        context_span,
+    )?;
+    ordered_rows.extend(row_to_vars.iter());
+    // Non-evaluable parameters and runtime delay slots are initialization
+    // unknowns with owning initial equations. Give those P-target equations
+    // first causal-preference priority, so a rectangular initialization system
+    // leaves genuinely free state starts unmatched instead of dropping a P
+    // owner and pinning a transport-history slot to an arbitrary seed.
+    ordered_rows.sort_unstable_by_key(|(row_idx, _)| {
+        let parameter_target = matches!(
+            row_targets.get(**row_idx).copied().flatten(),
+            Some(solve::ScalarSlot::P { .. })
+        );
+        (!parameter_target, **row_idx)
+    });
+    for (row_idx, vars) in ordered_rows {
         equation_refs.push(EquationRef(*row_idx));
         let mut unknowns =
             lower_hash_set_with_capacity(vars.len(), "projection row unknown count", context_span)?;
@@ -1287,9 +1801,9 @@ fn algebraic_projection_incidence(
                 .get(*row_idx)
                 .copied()
                 .flatten()
-                .and_then(|target| match target {
-                    solve::ScalarSlot::Y { index, .. } => unknown_positions.get(&index).copied(),
-                    _ => None,
+                .and_then(|target| {
+                    combined_projection_index(target, p_seed_offset)
+                        .and_then(|index| unknown_positions.get(&index).copied())
                 })
                 .filter(|local_idx| vars.contains(&unknown_y_indices[*local_idx])),
         );
@@ -1349,6 +1863,16 @@ fn lower_blt_projection_blocks(
                 projection_incidence,
                 context_span,
             )?,
+            // The projection incidence is built through `Incidence::new`, which
+            // leaves the structured-matching descriptors empty, so no compact
+            // family block can reach Solve lowering. Treat it as a hard
+            // contract violation rather than dropping the family's rows.
+            BltBlock::StructuredScalar(structured) => {
+                return Err(lower_contract_violation(
+                    structured.unsupported_by("projection BLT lowering"),
+                    context_span,
+                ));
+            }
         };
         lowered.push(block);
     }
@@ -1375,16 +1899,6 @@ fn scalar_projection_block(
     Ok(solve::AlgebraicProjectionBlock { rows, y_indices })
 }
 
-fn sorted_set_values(
-    values: BTreeSet<usize>,
-    context: &'static str,
-    context_span: rumoca_core::Span,
-) -> Result<Vec<usize>, LowerError> {
-    let mut out = lower_vec_with_capacity(values.len(), context, context_span)?;
-    out.extend(values);
-    Ok(out)
-}
-
 fn collect_equation_rows(
     equations: &[EquationRef],
     context_span: rumoca_core::Span,
@@ -1407,7 +1921,11 @@ fn lower_algebraic_loop_projection_block(
     context_span: rumoca_core::Span,
 ) -> Result<solve::AlgebraicProjectionBlock, LowerError> {
     let rows = collect_equation_rows(equations, context_span)?;
-    let mut unknown_indices = BTreeSet::new();
+    let mut loop_y_indices = lower_vec_with_capacity(
+        unknowns.len(),
+        "algebraic loop projection target count",
+        context_span,
+    )?;
     for unknown in unknowns {
         let y_index = projection_y_index(unknown, projection_incidence).ok_or_else(|| {
             lower_contract_violation(
@@ -1415,483 +1933,29 @@ fn lower_algebraic_loop_projection_block(
                 context_span,
             )
         })?;
-        unknown_indices.insert(y_index);
+        loop_y_indices.push(y_index);
     }
-    let y_indices = sorted_set_values(
-        unknown_indices,
-        "algebraic loop projection target count",
-        context_span,
-    )?;
-    if rows.len() != y_indices.len() {
+    if rows.len() != loop_y_indices.len() {
         return Err(lower_contract_violation(
             format!(
                 "projection BLT block has {} equations but {} solver-y unknowns",
                 rows.len(),
-                y_indices.len()
+                loop_y_indices.len()
             ),
             context_span,
         ));
     }
+    let mut y_indices = loop_y_indices.clone();
+    y_indices.sort_unstable();
     Ok(solve::AlgebraicProjectionBlock { rows, y_indices })
 }
 
-pub fn solver_vector_names(
-    dae_model: &dae::Dae,
-    n_total: usize,
-) -> Result<Vec<String>, LowerError> {
-    Ok(lower_solve_layout(dae_model, n_total)?.solver_maps.names)
-}
+mod solver_names;
+pub use solver_names::{build_solver_name_index_maps, solver_vector_names};
+use solver_names::{collect_scalar_names, scalar_count, var_scalar_names, variable_size};
 
-pub fn build_solver_name_index_maps(
-    dae_model: &dae::Dae,
-    y_len: usize,
-) -> Result<solve::SolverNameIndexMaps, LowerError> {
-    let solver_names = collect_solver_names(dae_model, y_len)?;
-    let span = dae_model_span(dae_model)?;
-    let mut name_to_idx = IndexMap::new();
-    reserve_lower_index_map_capacity(
-        &mut name_to_idx,
-        solver_names.len(),
-        "solver name index count",
-        span,
-    )?;
-    for (idx, name) in solver_names.iter().enumerate() {
-        name_to_idx.insert(name.clone(), idx);
-    }
-    insert_solver_name_aliases(dae_model, y_len, &mut name_to_idx)?;
-    let mut base_to_indices: IndexMap<String, Vec<usize>> = IndexMap::new();
-    for (idx, name) in solver_names.iter().enumerate() {
-        let base = dae::component_base_name(name).unwrap_or_else(|| name.to_string());
-        if let Some(indices) = base_to_indices.get_mut(&base) {
-            reserve_lower_capacity(indices, 1, "solver base-name scalar index count", span)?;
-            indices.push(idx);
-            continue;
-        }
-        reserve_lower_index_map_capacity(
-            &mut base_to_indices,
-            1,
-            "solver base-name index count",
-            span,
-        )?;
-        let mut indices = lower_vec_with_capacity(1, "solver base-name scalar index count", span)?;
-        indices.push(idx);
-        base_to_indices.insert(base, indices);
-    }
-
-    Ok(solve::SolverNameIndexMaps {
-        names: solver_names,
-        name_to_idx,
-        base_to_indices,
-    })
-}
-
-fn variable_size(var: &dae::Variable) -> Result<usize, LowerError> {
-    var.try_size()
-        .map_err(|err| lower_contract_violation(err.to_string(), err.span()))
-}
-
-fn scalar_count<'a>(
-    mut vars: impl Iterator<Item = &'a dae::Variable>,
-) -> Result<usize, LowerError> {
-    vars.try_fold(0usize, |acc, var| {
-        variable_size(var).and_then(|size| {
-            acc.checked_add(size).ok_or_else(|| {
-                lower_contract_violation(
-                    "DAE scalar count overflows usize".to_string(),
-                    var.source_span,
-                )
-            })
-        })
-    })
-}
-
-fn var_scalar_names(name: &str, var: &dae::Variable) -> Result<Vec<String>, LowerError> {
-    let size = variable_size(var)?;
-    if size <= 1 && var.dims.is_empty() {
-        let mut names = lower_vec_with_capacity(1, "variable scalar name count", var.source_span)?;
-        names.push(name.to_string());
-        return Ok(names);
-    }
-    let mut names = lower_vec_with_capacity(size, "variable scalar name count", var.source_span)?;
-    for idx in 0..size {
-        names.push(dae::scalar_name_text_for_flat_index(name, &var.dims, idx));
-    }
-    Ok(names)
-}
-
-fn collect_scalar_names<'a>(
-    vars: impl Iterator<Item = (&'a rumoca_core::VarName, &'a dae::Variable)>,
-) -> Result<Vec<String>, LowerError> {
-    let mut names = Vec::new();
-    for (name, var) in vars {
-        let var_names = var_scalar_names(name.as_str(), var)?;
-        reserve_lower_capacity(
-            &mut names,
-            var_names.len(),
-            "collected scalar name count",
-            var.source_span,
-        )?;
-        names.extend(var_names);
-    }
-    Ok(names)
-}
-
-fn collect_solver_names(
-    dae_model: &dae::Dae,
-    solver_len: usize,
-) -> Result<Vec<String>, LowerError> {
-    let mut names = collect_scalar_names(
-        dae_model
-            .variables
-            .states
-            .iter()
-            .chain(dae_model.variables.algebraics.iter())
-            .chain(dae_model.variables.outputs.iter())
-            .filter(|(name, _)| !layout::is_runtime_parameter_tail_variable(dae_model, name)),
-    )?;
-    names.truncate(solver_len);
-    Ok(names)
-}
-
-fn lower_discrete_update_targets(
-    dae_model: &dae::Dae,
-    layout: &solve::VarLayout,
-) -> Result<Vec<solve::ScalarSlot>, LowerError> {
-    let equations = normalized_discrete_update_equations(dae_model)?;
-    lower_update_targets_from_equations(dae_model, layout, &equations)
-}
-
-fn lower_update_targets_from_equations(
-    dae_model: &dae::Dae,
-    layout: &solve::VarLayout,
-    equations: &[dae::Equation],
-) -> Result<Vec<solve::ScalarSlot>, LowerError> {
-    let mut targets = lower_vec_with_capacity(
-        equations.len(),
-        "discrete update target count",
-        dae_model_span(dae_model)?,
-    )?;
-    for eq in equations {
-        let Some(lhs) = eq.lhs.as_ref() else {
-            return Err(LowerError::Unsupported {
-                reason: "discrete update equation is missing a target".to_string(),
-            });
-        };
-        let scalar_count = eq.scalar_count.max(1);
-        reserve_lower_capacity(
-            &mut targets,
-            scalar_count,
-            "discrete update target count",
-            eq.span,
-        )?;
-        for flat_index in 0..scalar_count {
-            let name = discrete_update_scalar_name(
-                dae_model,
-                lhs.var_name(),
-                flat_index,
-                scalar_count,
-                eq.span,
-            )?;
-            let Some(slot) = layout.binding(name.as_str()) else {
-                return Err(LowerError::MissingBinding { name });
-            };
-            targets.push(slot);
-        }
-    }
-    Ok(targets)
-}
-
-fn lower_discrete_pre_modes(
-    dae_model: &dae::Dae,
-) -> Result<Vec<solve::DiscreteEventPreMode>, LowerError> {
-    let equations = normalized_discrete_update_equations(dae_model)?;
-    let mut modes = lower_vec_with_capacity(
-        equations.len(),
-        "discrete pre-mode count",
-        dae_model_span(dae_model)?,
-    )?;
-    for eq in equations {
-        let scalar_count = eq.scalar_count.max(1);
-        let mode = discrete_pre_mode_for_equation(dae_model, &eq);
-        reserve_lower_capacity(&mut modes, scalar_count, "discrete pre-mode count", eq.span)?;
-        modes.extend(std::iter::repeat_n(mode, scalar_count));
-    }
-    Ok(modes)
-}
-
-fn collect_expression_read_slots(
-    dae_model: &dae::Dae,
-    layout: &solve::VarLayout,
-    expr: &rumoca_core::Expression,
-    out: &mut Vec<solve::ScalarSlot>,
-) -> Result<(), LowerError> {
-    struct ReadSlotCollector<'a, 'out> {
-        dae_model: &'a dae::Dae,
-        layout: &'a solve::VarLayout,
-        out: &'out mut Vec<solve::ScalarSlot>,
-        error: Option<LowerError>,
-    }
-
-    impl ExpressionVisitor for ReadSlotCollector<'_, '_> {
-        fn visit_var_ref(
-            &mut self,
-            name: &rumoca_core::Reference,
-            subscripts: &[rumoca_core::Subscript],
-        ) {
-            if self.error.is_none()
-                && let Err(err) = collect_var_ref_read_slots(
-                    self.dae_model,
-                    self.layout,
-                    name.var_name(),
-                    subscripts,
-                    name.span(),
-                    self.out,
-                )
-            {
-                self.error = Some(err);
-            }
-            for subscript in subscripts {
-                self.visit_subscript(subscript);
-            }
-        }
-    }
-
-    let mut collector = ReadSlotCollector {
-        dae_model,
-        layout,
-        out,
-        error: None,
-    };
-    collector.visit_expression(expr);
-    match collector.error {
-        Some(err) => Err(err),
-        None => Ok(()),
-    }
-}
-
-fn collect_var_ref_read_slots(
-    dae_model: &dae::Dae,
-    layout: &solve::VarLayout,
-    name: &rumoca_core::VarName,
-    subscripts: &[rumoca_core::Subscript],
-    owner_span: Option<rumoca_core::Span>,
-    out: &mut Vec<solve::ScalarSlot>,
-) -> Result<(), LowerError> {
-    if let Some(indices) = checked_literal_positive_indices(subscripts, owner_span)? {
-        let key = if indices.is_empty() {
-            name.as_str().to_string()
-        } else {
-            dae::format_subscript_key(name.as_str(), &indices)
-        };
-        if let Some(slot) = layout.binding(key.as_str()) {
-            reserve_lower_optional_capacity(out, 1, "expression read slot count", owner_span)?;
-            out.push(slot);
-        }
-        return Ok(());
-    }
-    collect_all_var_slots(dae_model, layout, name, owner_span, out)
-}
-
-fn collect_all_var_slots(
-    dae_model: &dae::Dae,
-    layout: &solve::VarLayout,
-    name: &rumoca_core::VarName,
-    owner_span: Option<rumoca_core::Span>,
-    out: &mut Vec<solve::ScalarSlot>,
-) -> Result<(), LowerError> {
-    let Some(var) = variable_by_name(dae_model, name) else {
-        if let Some(slot) = layout.binding(name.as_str()) {
-            reserve_lower_optional_capacity(out, 1, "expression read slot count", owner_span)?;
-            out.push(slot);
-        }
-        return Ok(());
-    };
-    let size = variable_size(var)?;
-    reserve_lower_capacity(
-        out,
-        size.max(1),
-        "expression read slot count",
-        var.source_span,
-    )?;
-    for idx in 0..size.max(1) {
-        let key = if size <= 1 && var.dims.is_empty() {
-            name.as_str().to_string()
-        } else {
-            dae::scalar_name_text_for_flat_index(name.as_str(), &var.dims, idx)
-        };
-        if let Some(slot) = layout.binding(key.as_str()) {
-            out.push(slot);
-        }
-    }
-    Ok(())
-}
-
-fn variable_by_name<'a>(
-    dae_model: &'a dae::Dae,
-    name: &rumoca_core::VarName,
-) -> Option<&'a dae::Variable> {
-    dae_model
-        .variables
-        .states
-        .get(name)
-        .or_else(|| dae_model.variables.algebraics.get(name))
-        .or_else(|| dae_model.variables.outputs.get(name))
-        .or_else(|| dae_model.variables.inputs.get(name))
-        .or_else(|| dae_model.variables.discrete_reals.get(name))
-        .or_else(|| dae_model.variables.discrete_valued.get(name))
-        .or_else(|| dae_model.variables.parameters.get(name))
-}
-
-fn condition_memory_base_name(dae_model: &dae::Dae) -> Option<String> {
-    let lhs = dae_model.conditions.equations.first()?.lhs.as_ref()?;
-    dae::component_base_name(lhs.as_str())
-}
-
-fn discrete_update_scalar_name(
-    dae_model: &dae::Dae,
-    lhs: &rumoca_core::VarName,
-    flat_index: usize,
-    scalar_count: usize,
-    span: rumoca_core::Span,
-) -> Result<String, LowerError> {
-    if scalar_count <= 1 {
-        return Ok(lhs.as_str().to_string());
-    }
-    let dims = discrete_update_dims(dae_model, lhs).ok_or_else(|| {
-        lower_contract_violation(
-            format!(
-                "discrete update array LHS `{}` must be a known DAE variable",
-                lhs.as_str()
-            ),
-            span,
-        )
-    })?;
-    Ok(dae::scalar_name_text_for_flat_index(
-        lhs.as_str(),
-        dims,
-        flat_index,
-    ))
-}
-
-fn discrete_update_dims<'a>(
-    dae_model: &'a dae::Dae,
-    lhs: &rumoca_core::VarName,
-) -> Option<&'a [i64]> {
-    dae_model
-        .variables
-        .states
-        .get(lhs)
-        .or_else(|| dae_model.variables.algebraics.get(lhs))
-        .or_else(|| dae_model.variables.outputs.get(lhs))
-        .or_else(|| dae_model.variables.inputs.get(lhs))
-        .or_else(|| dae_model.variables.discrete_reals.get(lhs))
-        .or_else(|| dae_model.variables.discrete_valued.get(lhs))
-        .map(|var| var.dims.as_slice())
-}
-
-fn insert_solver_name_aliases(
-    dae_model: &dae::Dae,
-    solver_len: usize,
-    name_to_idx: &mut IndexMap<String, usize>,
-) -> Result<(), LowerError> {
-    let span = dae_model_span(dae_model)?;
-    let mut solver_name_set = HashSet::new();
-    reserve_lower_hash_set_capacity(
-        &mut solver_name_set,
-        name_to_idx.len(),
-        "solver name alias lookup count",
-        span,
-    )?;
-    for name in name_to_idx.keys() {
-        solver_name_set.insert(name.clone());
-    }
-    let mut offset = 0usize;
-    for (name, var) in dae_model
-        .variables
-        .states
-        .iter()
-        .chain(dae_model.variables.algebraics.iter())
-        .chain(dae_model.variables.outputs.iter())
-    {
-        if layout::is_runtime_parameter_tail_variable(dae_model, name) {
-            continue;
-        }
-        let size = variable_size(var)?;
-        if size == 0 {
-            continue;
-        }
-        if offset >= solver_len {
-            break;
-        }
-
-        let visible_size = size.min(solver_len - offset);
-        if size > 1
-            && first_visible_scalar_name(name.as_str(), var)?
-                .as_deref()
-                .is_some_and(|scalar| solver_name_set.contains(scalar))
-            && !name_to_idx.contains_key(name.as_str())
-        {
-            reserve_lower_index_map_capacity(
-                name_to_idx,
-                1,
-                "solver name alias count",
-                var.source_span,
-            )?;
-            name_to_idx.insert(name.as_str().to_string(), offset);
-        }
-        for flat_idx in 0..visible_size {
-            let canonical_name = if size <= 1 && var.dims.is_empty() {
-                name.as_str().to_string()
-            } else {
-                dae::scalar_name_text_for_flat_index(name.as_str(), &var.dims, flat_idx)
-            };
-            if !solver_name_set.contains(canonical_name.as_str()) {
-                continue;
-            }
-            let scalar_index =
-                checked_solver_scalar_index(offset, flat_idx, canonical_name.as_str(), var)?;
-            if !name_to_idx.contains_key(canonical_name.as_str()) {
-                reserve_lower_index_map_capacity(
-                    name_to_idx,
-                    1,
-                    "solver scalar name alias count",
-                    var.source_span,
-                )?;
-                name_to_idx.insert(canonical_name, scalar_index);
-            }
-        }
-        offset = checked_solver_scalar_offset(offset, size, name.as_str(), var)?;
-    }
-    Ok(())
-}
-
-fn checked_solver_scalar_index(
-    offset: usize,
-    flat_idx: usize,
-    canonical_name: &str,
-    var: &dae::Variable,
-) -> Result<usize, LowerError> {
-    offset.checked_add(flat_idx).ok_or_else(|| {
-        lower_contract_violation(
-            format!("solver scalar index for `{canonical_name}` overflows host index range"),
-            var.source_span,
-        )
-    })
-}
-
-fn checked_solver_scalar_offset(
-    offset: usize,
-    size: usize,
-    name: &str,
-    var: &dae::Variable,
-) -> Result<usize, LowerError> {
-    offset.checked_add(size).ok_or_else(|| {
-        lower_contract_violation(
-            format!("solver scalar offset after `{name}` overflows host index range"),
-            var.source_span,
-        )
-    })
-}
+mod discrete_layout;
+use discrete_layout::*;
 
 fn first_visible_scalar_name(
     name: &str,

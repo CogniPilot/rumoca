@@ -72,10 +72,10 @@ fn dae_model_query_cache_is_reused_by_compile_and_diagnostics() {
     let warm_compile = session
         .compile_model_phases("Target")
         .expect("warm compile should return phase result");
-    assert_todae_failure(warm_compile, "rumoca::todae::ED003");
+    assert_todae_failure(warm_compile, "ED003");
 
     let warm_diagnostics = session.compile_model_diagnostics("Target");
-    assert_diagnostics_have_code(&warm_diagnostics, "rumoca::todae::ED003");
+    assert_diagnostics_have_code(&warm_diagnostics, "ED003");
 
     let parse_error = session.update_document(
         "target.mo",
@@ -92,5 +92,5 @@ fn dae_model_query_cache_is_reused_by_compile_and_diagnostics() {
     );
 
     let rebuilt_diagnostics = session.compile_model_diagnostics("Target");
-    assert_diagnostics_lack_code(&rebuilt_diagnostics, "rumoca::todae::ED003");
+    assert_diagnostics_lack_code(&rebuilt_diagnostics, "ED003");
 }

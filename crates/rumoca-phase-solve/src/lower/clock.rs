@@ -224,21 +224,28 @@ impl<'a> LowerBuilder<'a> {
     ) -> Result<Reg, LowerError> {
         let time = self.emit_load_time_at(span)?;
         let delta = self.emit_binary_at(BinaryOp::Sub, time, phase, span)?;
-        let one = self.emit_const_at(1.0, span)?;
-        let max_period = self.emit_binary_at(BinaryOp::Max, period, one, span)?;
-        let tol_scale = self.emit_const_at(1.0e-9, span)?;
-        let tol = self.emit_binary_at(BinaryOp::Mul, tol_scale, max_period, span)?;
-        let neg_tol = self.emit_unary_at(UnaryOp::Neg, tol, span)?;
-        let after_start = self.emit_compare_at(CompareOp::Ge, delta, neg_tol, span)?;
-
         let quotient = self.emit_binary_at(BinaryOp::Div, delta, period, span)?;
         let half = self.emit_const_at(0.5, span)?;
         let shifted = self.emit_binary_at(BinaryOp::Add, quotient, half, span)?;
         let tick_index = self.emit_unary_at(UnaryOp::Floor, shifted, span)?;
-        let nearest = self.emit_binary_at(BinaryOp::Mul, tick_index, period, span)?;
-        let diff = self.emit_binary_at(BinaryOp::Sub, delta, nearest, span)?;
+
+        // Match rumoca-solver::periodic_schedule_matches_time exactly:
+        // compare the dimensionless tick coordinate to its nearest integer
+        // using the scheduler's shared relative tolerance.
+        let diff = self.emit_binary_at(BinaryOp::Sub, quotient, tick_index, span)?;
         let abs_diff = self.emit_unary_at(UnaryOp::Abs, diff, span)?;
+        let abs_quotient = self.emit_unary_at(UnaryOp::Abs, quotient, span)?;
+        let abs_tick_index = self.emit_unary_at(UnaryOp::Abs, tick_index, span)?;
+        let max_coordinate =
+            self.emit_binary_at(BinaryOp::Max, abs_quotient, abs_tick_index, span)?;
+        let one = self.emit_const_at(1.0, span)?;
+        let tolerance_scale = self.emit_binary_at(BinaryOp::Add, one, max_coordinate, span)?;
+        let tolerance_constant =
+            self.emit_const_at(rumoca_core::SCHEDULE_TIME_RELATIVE_TOLERANCE, span)?;
+        let tol = self.emit_binary_at(BinaryOp::Mul, tolerance_constant, tolerance_scale, span)?;
         let at_tick = self.emit_compare_at(CompareOp::Le, abs_diff, tol, span)?;
+        let zero = self.emit_const_at(0.0, span)?;
+        let after_start = self.emit_compare_at(CompareOp::Ge, quotient, zero, span)?;
         self.emit_binary_at(BinaryOp::And, after_start, at_tick, span)
     }
 

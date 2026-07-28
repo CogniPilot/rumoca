@@ -9,7 +9,7 @@ use rumoca_ir_solve as solve;
 use super::render_solve;
 use super::{
     CodegenError, LazyDerivativeNodesValue, LazyScalarRowsValue, create_environment,
-    dae_template_json, reject_external_functions_for_simulation_template,
+    dae_template_json_for_solve_context, reject_external_functions_for_simulation_template,
     solve_template_blocks_value,
 };
 
@@ -30,7 +30,7 @@ impl LazyDaeTemplateJson {
     /// the access site — a visible failure, not a silent default.
     fn materialized(&self) -> Option<&Value> {
         self.value
-            .get_or_init(|| match dae_template_json(&self.dae) {
+            .get_or_init(|| match dae_template_json_for_solve_context(&self.dae) {
                 Ok(json) => Some(Value::from_serialize(&json)),
                 Err(_) => None,
             })

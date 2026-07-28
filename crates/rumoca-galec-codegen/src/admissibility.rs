@@ -2,7 +2,7 @@
 //!
 //! Every check inspects canonical DAE fields directly — nothing is prepared,
 //! rewritten, or erased before checking (destructive preparation would make
-//! the gates vacuous). All failures carry stable `ET0xx` codes; scope
+//! the gates vacuous). All failures carry stable `EGT0xx` codes; scope
 //! rejections use the GAL-025 wording ("not yet supported by the Rumoca
 //! GALEC projection").
 //!

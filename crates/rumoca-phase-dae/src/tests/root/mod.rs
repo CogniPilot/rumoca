@@ -74,6 +74,29 @@ fn make_structured_var_ref(name: &str) -> rumoca_core::Expression {
     }
 }
 
+fn resolved_function_reference(
+    flat: &flat::Model,
+    name: &str,
+    def_id: rumoca_core::DefId,
+) -> rumoca_core::Reference {
+    let function_name = VarName::new(name);
+    let instance_id = flat.functions[&function_name]
+        .instance_id
+        .expect("Flat function has instance identity");
+    let mut component_ref = rumoca_core::component_reference_from_flat_name(
+        &function_name,
+        crate::test_support::test_span(),
+    )
+    .expect("structured function reference");
+    component_ref.def_id = Some(def_id);
+    rumoca_core::Reference::from_component_reference(component_ref).with_resolved_function(
+        rumoca_core::ResolvedFunctionReference {
+            instance_id,
+            base_part_count: function_name.segments().len(),
+        },
+    )
+}
+
 fn add_connection_equation(flat: &mut Model, lhs: &str, rhs: &str) {
     flat.add_equation(rumoca_ir_flat::Equation {
         residual: rumoca_core::Expression::Binary {
@@ -450,6 +473,125 @@ fn test_todae_rejects_non_external_function_without_body() {
         matches!(err, ToDaeError::FunctionWithoutBody { ref name, .. } if name == "f"),
         "expected function-without-body diagnostic, got {err:?}"
     );
+}
+
+#[test]
+fn test_todae_rejects_runtime_operators_without_correct_semantics() {
+    let cases = [
+        (
+            "actualStream",
+            rumoca_core::Expression::FunctionCall {
+                name: VarName::new("actualStream").into(),
+                args: vec![make_var_ref("x")],
+                is_constructor: false,
+                span: crate::test_support::test_span(),
+            },
+        ),
+        (
+            "inStream",
+            rumoca_core::Expression::FunctionCall {
+                name: VarName::new("inStream").into(),
+                args: vec![make_var_ref("x")],
+                is_constructor: false,
+                span: crate::test_support::test_span(),
+            },
+        ),
+    ];
+
+    for (expected_operator, residual) in cases {
+        let mut flat = Model::new();
+        add_primitive_real(&mut flat, "x");
+        flat.add_equation(rumoca_ir_flat::Equation {
+            residual,
+            span: crate::test_support::test_span(),
+            origin: rumoca_ir_flat::EquationOrigin::ComponentEquation {
+                component: "probe".to_string(),
+            },
+            scalar_count: 1,
+        });
+
+        let err = to_dae_with_options(
+            &flat,
+            ToDaeOptions {
+                error_on_unbalanced: false,
+            },
+        )
+        .expect_err("unsupported runtime operator must fail in ToDae validation");
+
+        assert!(
+            matches!(&err, ToDaeError::UnsupportedRuntimeOperator { operator, .. }
+                if operator == expected_operator),
+            "expected unsupported `{expected_operator}` diagnostic, got {err:?}"
+        );
+    }
+}
+
+#[test]
+fn test_todae_lowers_delay_to_runtime_history_channel() {
+    let span = crate::test_support::test_span();
+    let mut flat = Model::new();
+    add_primitive_real(&mut flat, "x");
+    flat.add_equation(rumoca_ir_flat::Equation {
+        residual: rumoca_core::Expression::BuiltinCall {
+            function: BuiltinFunction::Delay,
+            args: vec![
+                make_var_ref("x"),
+                rumoca_core::Expression::Literal {
+                    value: rumoca_core::Literal::Real(1.0),
+                    span,
+                },
+            ],
+            span,
+        },
+        span,
+        origin: rumoca_ir_flat::EquationOrigin::ComponentEquation {
+            component: "probe".to_string(),
+        },
+        scalar_count: 1,
+    });
+
+    let dae = to_dae_with_options(
+        &flat,
+        ToDaeOptions {
+            error_on_unbalanced: false,
+        },
+    )
+    .expect("delay should lower to explicit DAE runtime metadata");
+
+    assert_eq!(dae.events.delay_channels.len(), 1);
+    let channel = &dae.events.delay_channels[0];
+    assert_eq!(
+        channel.value_parameter.as_str(),
+        rumoca_core::delay_slot_name(0).as_str()
+    );
+    assert!(
+        dae.variables
+            .parameters
+            .contains_key(&channel.value_parameter)
+    );
+    assert_eq!(
+        dae.variables.parameters[&channel.value_parameter].fixed,
+        Some(false),
+        "the runtime delay slot is solved by its initial identity"
+    );
+    assert!(
+        dae.initialization.equations.iter().any(|equation| {
+            matches!(
+                (&equation.lhs, &equation.rhs),
+                (
+                    Some(lhs),
+                    rumoca_core::Expression::VarRef { name: rhs, .. },
+                ) if lhs.var_name() == &channel.value_parameter
+                    && rhs.var_name().as_str() == "x"
+            )
+        }),
+        "delay lowering must emit delay(source, ...) = source at initialization"
+    );
+    assert!(matches!(
+        dae.continuous.equations[0].rhs,
+        rumoca_core::Expression::VarRef { ref name, .. }
+            if name.var_name() == &channel.value_parameter
+    ));
 }
 
 #[test]
@@ -1029,6 +1171,8 @@ fn test_todae_lowers_when_multi_output_function_call_to_selection_updates() {
     }
 
     let mut function = rumoca_core::Function::new("Noise.next", crate::test_support::test_span());
+    let function_def_id = rumoca_core::DefId::new(730);
+    function.def_id = Some(function_def_id);
     function.add_input(rumoca_core::FunctionParam::new(
         "seed",
         "Real",
@@ -1055,13 +1199,14 @@ fn test_todae_lowers_when_multi_output_function_call_to_selection_updates() {
         span: crate::test_support::test_span(),
     });
     flat.add_function(function);
+    let function_ref = resolved_function_reference(&flat, "Noise.next", function_def_id);
 
     let mut when_clause =
         rumoca_ir_flat::WhenClause::new(make_var_ref("trigger"), crate::test_support::test_span());
     when_clause.add_equation(rumoca_ir_flat::WhenEquation::function_call_outputs(
         vec![VarName::new("noise.r_raw"), VarName::new("noise.state")],
         rumoca_core::Expression::FunctionCall {
-            name: VarName::new("Noise.next").into(),
+            name: function_ref,
             args: vec![make_var_ref("seed")],
             is_constructor: false,
             span: crate::test_support::test_span(),

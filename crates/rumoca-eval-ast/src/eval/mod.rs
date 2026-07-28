@@ -5,12 +5,16 @@
 //! - enum/integer/boolean conditions in guarded expressions
 //! - shape inference before flattening produces Expression forms
 
-use rumoca_core::{Causality, ClassType, OpBinary, OpUnary};
+use crate::ast_scalar::{self, AstScalarContext};
+use crate::function_control::FunctionStmtFlow;
+use rumoca_core::{Causality, ClassType, OpBinary};
 use rumoca_core::{
     Diagnostic as CommonDiagnostic, IntegerBinaryOperator, PrimaryLabel, Span,
     eval_integer_binary as eval_common_integer_binary, eval_integer_div_builtin,
 };
-use rumoca_ir_ast::{ClassDef, Expression, Statement, StatementBlock, Subscript, TerminalType};
+#[cfg(test)]
+use rumoca_ir_ast::TerminalType;
+use rumoca_ir_ast::{ClassDef, Expression, Statement, StatementBlock, Subscript};
 use rustc_hash::FxHashMap;
 use std::borrow::Cow;
 use std::cell::RefCell;
@@ -529,18 +533,20 @@ fn build_func_eval_context(
             bind_local_scalar_value(&mut local, param_name, value, ctx, scope);
         }
     }
-    // Pass 3: fill remaining inputs with defaults
+    // Pass 3: fill remaining inputs from their declaration binding (MLS §12.4.1:
+    // an input not supplied by the call takes its default from the declaration).
+    //
+    // The `start` attribute is not a default argument. MLS §4.9 makes it an
+    // initial guess and the parser seeds it with the declared type's default, so
+    // reading it would hand an unsupplied input a value the function never
+    // declared (SPEC_0008). An input left unbound simply stays absent, and the
+    // fold that needs it declines.
     for (param_name, param_comp) in &inputs {
         if local_has_scalar(&local, param_name) {
             continue;
         }
         if let Some(binding) = &param_comp.binding {
             bind_local_scalar_value(&mut local, param_name, binding, ctx, scope);
-        }
-        if !local_has_scalar(&local, param_name)
-            && !matches!(param_comp.start, Expression::Empty { .. })
-        {
-            bind_local_scalar_value(&mut local, param_name, &param_comp.start, ctx, scope);
         }
     }
     Some(local)
@@ -580,13 +586,6 @@ fn eval_user_func_integer(
             .get(&output_name)
             .and_then(|v| integral_real_to_i64(*v, &local_ctx, span, "function return"))
     })
-}
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-enum FunctionStmtFlow {
-    Continue,
-    Break,
-    Return,
 }
 
 /// Interpret a sequence of algorithm statements (MLS §11.1).
@@ -795,6 +794,88 @@ fn eval_integer_array_with_scope(
     }
 }
 
+struct TypeCheckScalarAdapter<'a> {
+    ctx: &'a TypeCheckEvalContext,
+}
+
+impl AstScalarContext for TypeCheckScalarAdapter<'_> {
+    fn lookup_integer(&self, expr: &Expression, scope: &str, _depth: usize) -> Option<i64> {
+        let path = rumoca_ir_ast::expression_component_path(expr)?.to_flat_string();
+        lookup_with_scope(&path, scope, &self.ctx.integers)
+            .copied()
+            .or_else(|| lookup_with_scope(&path, scope, &self.ctx.enum_ordinals).copied())
+    }
+
+    fn lookup_real(&self, expr: &Expression, scope: &str, _depth: usize) -> Option<f64> {
+        let path = rumoca_ir_ast::expression_component_path(expr)?.to_flat_string();
+        lookup_by_scope(&path, scope, &self.ctx.reals)
+            .copied()
+            .or_else(|| {
+                lookup_by_scope(&path, scope, &self.ctx.integers).map(|value| *value as f64)
+            })
+    }
+
+    fn lookup_boolean(&self, expr: &Expression, scope: &str, _depth: usize) -> Option<bool> {
+        let path = rumoca_ir_ast::expression_component_path(expr)?.to_flat_string();
+        lookup_boolean_with_scope(&path, self.ctx, scope)
+    }
+
+    fn call_integer(
+        &self,
+        function: &rumoca_ir_ast::ComponentReference,
+        args: &[Expression],
+        scope: &str,
+        _depth: usize,
+        span: Span,
+    ) -> Option<i64> {
+        let function = component_reference_path(function);
+        eval_integer_func_with_scope(&function, args, self.ctx, scope, span)
+    }
+
+    fn call_real(
+        &self,
+        function: &rumoca_ir_ast::ComponentReference,
+        args: &[Expression],
+        scope: &str,
+        _depth: usize,
+        _span: Span,
+    ) -> Option<f64> {
+        let function = component_reference_path(function);
+        eval_real_func_with_scope(&function, args, self.ctx, scope)
+    }
+
+    fn enum_equal(
+        &self,
+        lhs: &Expression,
+        rhs: &Expression,
+        scope: &str,
+        _depth: usize,
+    ) -> Option<bool> {
+        eval_enum_comparison(lhs, rhs, self.ctx, scope)
+    }
+
+    fn coerce_integral_real(&self, value: f64, span: Span) -> Option<i64> {
+        checked_real_to_i64(value, self.ctx, span, "real literal")
+    }
+
+    fn integer_binary(&self, op: &OpBinary, lhs: i64, rhs: i64, span: Span) -> Option<i64> {
+        eval_integer_binary_with_warning(op, lhs, rhs, self.ctx, span)
+    }
+
+    fn negate_integer(&self, value: i64, span: Span) -> Option<i64> {
+        let value = value.checked_neg();
+        if value.is_none() {
+            self.ctx.emit_warning(
+                ET007_INT_FOLD_OVERFLOW,
+                "compile-time integer overflow while evaluating unary minus; skipping constant fold",
+                span,
+                "integer overflow during constant evaluation",
+            );
+        }
+        value
+    }
+}
+
 /// Try to evaluate an AST expression to an integer.
 pub fn eval_integer(expr: &Expression, ctx: &TypeCheckEvalContext) -> Option<i64> {
     eval_integer_with_scope(expr, ctx, "")
@@ -811,85 +892,7 @@ pub fn eval_real_with_scope(
     ctx: &TypeCheckEvalContext,
     scope: &str,
 ) -> Option<f64> {
-    match expr {
-        Expression::Terminal {
-            terminal_type,
-            token,
-            ..
-        } => match terminal_type {
-            TerminalType::UnsignedReal => token.text.parse().ok(),
-            TerminalType::UnsignedInteger => token.text.parse::<i64>().ok().map(|i| i as f64),
-            _ => None,
-        },
-
-        Expression::ComponentReference(cr) => {
-            if cr.parts.is_empty() {
-                return None;
-            }
-            let ref_path = component_reference_path(cr);
-
-            lookup_by_scope(&ref_path, scope, &ctx.reals)
-                .copied()
-                .or_else(|| lookup_by_scope(&ref_path, scope, &ctx.integers).map(|&i| i as f64))
-        }
-
-        Expression::Unary { op, rhs, .. } => {
-            let val = eval_real_with_scope(rhs, ctx, scope)?;
-            match op {
-                OpUnary::Plus | OpUnary::DotPlus | OpUnary::Empty => Some(val),
-                OpUnary::Minus | OpUnary::DotMinus => Some(-val),
-                _ => None,
-            }
-        }
-
-        Expression::Binary { op, lhs, rhs, .. } => {
-            let l = eval_real_with_scope(lhs, ctx, scope)?;
-            let r = eval_real_with_scope(rhs, ctx, scope)?;
-            match op {
-                OpBinary::Add | OpBinary::AddElem => Some(l + r),
-                OpBinary::Sub | OpBinary::SubElem => Some(l - r),
-                OpBinary::Mul | OpBinary::MulElem => Some(l * r),
-                OpBinary::Div | OpBinary::DivElem => {
-                    if r != 0.0 {
-                        Some(l / r)
-                    } else {
-                        None
-                    }
-                }
-                OpBinary::Exp | OpBinary::ExpElem => Some(l.powf(r)),
-                _ => None,
-            }
-        }
-
-        Expression::Parenthesized { inner, .. } => eval_real_with_scope(inner, ctx, scope),
-
-        Expression::FunctionCall { comp, args, .. } => {
-            let func_name = comp
-                .parts
-                .iter()
-                .map(|p| p.ident.text.as_ref())
-                .collect::<Vec<_>>()
-                .join(".");
-            eval_real_func_with_scope(&func_name, args, ctx, scope)
-        }
-
-        Expression::If {
-            branches,
-            else_branch,
-            ..
-        } => {
-            for (cond, then_expr) in branches {
-                match eval_boolean_with_scope(cond, ctx, scope) {
-                    Some(true) => return eval_real_with_scope(then_expr, ctx, scope),
-                    Some(false) => continue,
-                    None => return None,
-                }
-            }
-            eval_real_with_scope(else_branch, ctx, scope)
-        }
-
-        _ => None,
-    }
+    ast_scalar::eval_real(expr, &TypeCheckScalarAdapter { ctx }, scope, 0)
 }
 
 /// Scope-aware evaluation of real-valued function calls.
@@ -927,119 +930,13 @@ fn lookup_boolean_with_scope(
     lookup_with_scope(ref_path, scope, &ctx.booleans).copied()
 }
 
-/// Evaluate a numeric comparison (integer then real) with scope-aware lookup.
-fn eval_numeric_comparison_with_scope(
-    lhs: &Expression,
-    rhs: &Expression,
-    ctx: &TypeCheckEvalContext,
-    scope: &str,
-    int_cmp: fn(i64, i64) -> bool,
-    real_cmp: fn(f64, f64) -> bool,
-) -> Option<bool> {
-    if let (Some(l), Some(r)) = (
-        eval_integer_with_scope(lhs, ctx, scope),
-        eval_integer_with_scope(rhs, ctx, scope),
-    ) {
-        Some(int_cmp(l, r))
-    } else if let (Some(l), Some(r)) = (
-        eval_real_with_scope(lhs, ctx, scope),
-        eval_real_with_scope(rhs, ctx, scope),
-    ) {
-        Some(real_cmp(l, r))
-    } else {
-        None
-    }
-}
-
 /// Try to evaluate a boolean expression with scope-aware lookup.
 pub fn eval_boolean_with_scope(
     expr: &Expression,
     ctx: &TypeCheckEvalContext,
     scope: &str,
 ) -> Option<bool> {
-    match expr {
-        Expression::Terminal {
-            terminal_type: TerminalType::Bool,
-            token,
-            ..
-        } => match token.text.as_ref() {
-            "true" => Some(true),
-            "false" => Some(false),
-            _ => None,
-        },
-        Expression::Terminal { .. } => None,
-
-        Expression::ComponentReference(cr) if !cr.parts.is_empty() => {
-            let ref_path = component_reference_path(cr);
-            lookup_boolean_with_scope(&ref_path, ctx, scope)
-        }
-        Expression::ComponentReference(_) => None,
-
-        Expression::Unary {
-            op: OpUnary::Not,
-            rhs,
-            ..
-        } => eval_boolean_with_scope(rhs, ctx, scope).map(|b| !b),
-        Expression::Unary { .. } => None,
-
-        Expression::Binary { op, lhs, rhs, .. } => match op {
-            OpBinary::And => {
-                let l = eval_boolean_with_scope(lhs, ctx, scope)?;
-                let r = eval_boolean_with_scope(rhs, ctx, scope)?;
-                Some(l && r)
-            }
-            OpBinary::Or => {
-                let l = eval_boolean_with_scope(lhs, ctx, scope)?;
-                let r = eval_boolean_with_scope(rhs, ctx, scope)?;
-                Some(l || r)
-            }
-            OpBinary::Eq => eval_numeric_comparison_with_scope(
-                lhs,
-                rhs,
-                ctx,
-                scope,
-                |l, r| l == r,
-                |l, r| (l - r).abs() < REAL_COMPARISON_EPSILON,
-            )
-            .or_else(|| eval_enum_comparison(lhs, rhs, ctx, scope)),
-            OpBinary::Neq => eval_numeric_comparison_with_scope(
-                lhs,
-                rhs,
-                ctx,
-                scope,
-                |l, r| l != r,
-                |l, r| (l - r).abs() >= REAL_COMPARISON_EPSILON,
-            )
-            .or_else(|| eval_enum_comparison(lhs, rhs, ctx, scope).map(|v| !v)),
-            OpBinary::Lt => {
-                eval_numeric_comparison_with_scope(lhs, rhs, ctx, scope, |l, r| l < r, |l, r| l < r)
-            }
-            OpBinary::Le => eval_numeric_comparison_with_scope(
-                lhs,
-                rhs,
-                ctx,
-                scope,
-                |l, r| l <= r,
-                |l, r| l <= r,
-            ),
-            OpBinary::Gt => {
-                eval_numeric_comparison_with_scope(lhs, rhs, ctx, scope, |l, r| l > r, |l, r| l > r)
-            }
-            OpBinary::Ge => eval_numeric_comparison_with_scope(
-                lhs,
-                rhs,
-                ctx,
-                scope,
-                |l, r| l >= r,
-                |l, r| l >= r,
-            ),
-            _ => None,
-        },
-
-        Expression::Parenthesized { inner, .. } => eval_boolean_with_scope(inner, ctx, scope),
-
-        _ => None,
-    }
+    ast_scalar::eval_boolean(expr, &TypeCheckScalarAdapter { ctx }, scope, 0)
 }
 
 /// Try to evaluate an AST expression to a boolean.
@@ -1049,16 +946,7 @@ pub fn eval_boolean(expr: &Expression, ctx: &TypeCheckEvalContext) -> Option<boo
 
 /// Extract a component path from an expression (for size() calls).
 fn extract_component_path(expr: &Expression) -> Option<String> {
-    match expr {
-        Expression::ComponentReference(cr) => {
-            if cr.parts.is_empty() {
-                return None;
-            }
-            Some(cr.to_string())
-        }
-        Expression::Parenthesized { inner, .. } => extract_component_path(inner),
-        _ => None,
-    }
+    rumoca_ir_ast::expression_component_path(expr).map(|path| path.to_flat_string())
 }
 
 /// Evaluate an enumeration-valued expression using scope-aware parameter lookup.
@@ -1138,6 +1026,10 @@ fn get_enum_expr_value(
             // Single-part reference: look up as a variable
             lookup_enum_with_scope(&path, ctx, scope).map(|s| s.to_string())
         }
+        Expression::FieldAccess { .. } | Expression::ArrayIndex { .. } => {
+            let path = rumoca_ir_ast::expression_component_path(expr)?.to_flat_string();
+            lookup_enum_with_scope(&path, ctx, scope).map(ToString::to_string)
+        }
         Expression::Parenthesized { inner, .. } => get_enum_expr_value(inner, ctx, scope),
         _ => None,
     }
@@ -1185,12 +1077,8 @@ pub fn eval_dimension_with_scope(
 /// When an enumeration type is used as a dimension (e.g., `Real x[Logic]`),
 /// the size of that dimension is the number of enumeration literals.
 fn eval_enum_dimension(expr: &Expression, ctx: &TypeCheckEvalContext) -> Option<usize> {
-    if let Expression::ComponentReference(cr) = expr {
-        let ref_path = component_reference_path(cr);
-        ctx.enum_sizes.get(ref_path.as_ref()).copied()
-    } else {
-        None
-    }
+    let ref_path = rumoca_ir_ast::expression_component_path(expr)?.to_flat_string();
+    ctx.enum_sizes.get(ref_path.as_str()).copied()
 }
 
 /// Try to resolve a dimension expression as an enumeration type with scope-aware lookup.
@@ -1199,12 +1087,8 @@ fn eval_enum_dimension_with_scope(
     ctx: &TypeCheckEvalContext,
     scope: &str,
 ) -> Option<usize> {
-    if let Expression::ComponentReference(cr) = expr {
-        let ref_path = component_reference_path(cr);
-        lookup_with_scope(&ref_path, scope, &ctx.enum_sizes).copied()
-    } else {
-        None
-    }
+    let ref_path = rumoca_ir_ast::expression_component_path(expr)?.to_flat_string();
+    lookup_with_scope(&ref_path, scope, &ctx.enum_sizes).copied()
 }
 
 /// Try to evaluate an expression to an integer with scope-aware lookup.
@@ -1215,88 +1099,7 @@ pub fn eval_integer_with_scope(
     ctx: &TypeCheckEvalContext,
     scope: &str,
 ) -> Option<i64> {
-    match expr {
-        Expression::Terminal {
-            terminal_type: TerminalType::UnsignedInteger,
-            token,
-            ..
-        } => token.text.parse().ok(),
-        Expression::Terminal {
-            terminal_type: TerminalType::UnsignedReal,
-            token,
-            ..
-        } => {
-            let f: f64 = token.text.parse().ok()?;
-            (f.fract() == 0.0).then_some(f).and_then(|integral| {
-                checked_real_to_i64(integral, ctx, expr.span(), "real literal")
-            })
-        }
-        Expression::Terminal { .. } => None,
-
-        Expression::ComponentReference(cr) if !cr.parts.is_empty() => {
-            let ref_path = component_reference_path(cr);
-
-            lookup_with_scope(&ref_path, scope, &ctx.integers)
-                .copied()
-                .or_else(|| lookup_with_scope(&ref_path, scope, &ctx.enum_ordinals).copied())
-        }
-        Expression::ComponentReference(_) => None,
-
-        Expression::Unary { op, rhs, .. } => {
-            let val = eval_integer_with_scope(rhs, ctx, scope)?;
-            match op {
-                OpUnary::Not => None,
-                OpUnary::Plus | OpUnary::DotPlus | OpUnary::Empty => Some(val),
-                OpUnary::Minus | OpUnary::DotMinus => {
-                    let value = val.checked_neg();
-                    if value.is_none() {
-                        ctx.emit_warning(
-                            ET007_INT_FOLD_OVERFLOW,
-                            "compile-time integer overflow while evaluating unary minus; skipping constant fold",
-                            expr.span(),
-                            "integer overflow during constant evaluation",
-                        );
-                    }
-                    value
-                }
-            }
-        }
-
-        Expression::Binary { op, lhs, rhs, .. } => {
-            let l = eval_integer_with_scope(lhs, ctx, scope)?;
-            let r = eval_integer_with_scope(rhs, ctx, scope)?;
-            eval_integer_binary_with_warning(op, l, r, ctx, expr.span())
-        }
-
-        Expression::Parenthesized { inner, .. } => eval_integer_with_scope(inner, ctx, scope),
-
-        Expression::FunctionCall { comp, args, .. } => {
-            let func_name = comp
-                .parts
-                .iter()
-                .map(|p| p.ident.text.as_ref())
-                .collect::<Vec<_>>()
-                .join(".");
-            eval_integer_func_with_scope(&func_name, args, ctx, scope, expr.span())
-        }
-
-        Expression::If {
-            branches,
-            else_branch,
-            ..
-        } => {
-            for (cond, then_expr) in branches {
-                match eval_boolean_with_scope(cond, ctx, scope) {
-                    Some(true) => return eval_integer_with_scope(then_expr, ctx, scope),
-                    Some(false) => continue,
-                    None => return None,
-                }
-            }
-            eval_integer_with_scope(else_branch, ctx, scope)
-        }
-
-        _ => None,
-    }
+    ast_scalar::eval_integer(expr, &TypeCheckScalarAdapter { ctx }, scope, 0)
 }
 
 /// Infer dimensions from an array literal expression.

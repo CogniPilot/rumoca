@@ -435,59 +435,15 @@ fn render_builtin(builtin: &Value, cfg: &ExprConfig) -> RenderResult {
             return render_expression(&inner, cfg);
         }
         "Sample" => {
-            let args_val = get_field(builtin, "args")?;
-            match args_val.len() {
-                Some(0) => {
-                    return Err(render_err("BuiltinCall Sample missing required argument 0"));
-                }
-                Some(1) => {
-                    let inner = required_arg(&args_val, 0, "BuiltinCall Sample")?;
-                    return render_expression(&inner, cfg);
-                }
-                Some(count) => {
-                    return Err(render_err(format!(
-                        "BuiltinCall Sample with {count} arguments must be lowered before template rendering"
-                    )));
-                }
-                None => {
-                    return Err(render_err(
-                        "BuiltinCall Sample args field is not a sequence",
-                    ));
-                }
-            }
+            return Err(render_err(
+                "BuiltinCall Sample must be lowered into clock/event metadata and ordinary equations before template rendering",
+            ));
         }
-        "Clock" => {
-            // Clock() constructor (MLS §16.3). In continuous simulation
-            // context this is not meaningful; return 0 as a stub.
-            return Ok("0".to_string());
-        }
-        "Previous" => {
-            // previous(x) — clocked partition operator (MLS §16.4).
-            // In continuous simulation, treat like pre(): return the
-            // argument unchanged.
-            let args_val = get_field(builtin, "args")?;
-            let inner = required_arg(&args_val, 0, "BuiltinCall Previous")?;
-            return render_expression(&inner, cfg);
-        }
-        "Hold" => {
-            // hold(x) — clocked-to-continuous (MLS §16.5.1).
-            // Pass through the argument.
-            let args_val = get_field(builtin, "args")?;
-            let inner = required_arg(&args_val, 0, "BuiltinCall Hold")?;
-            return render_expression(&inner, cfg);
-        }
-        "FirstTick" => {
-            // firstTick(u) — true at the first clock tick (MLS §16.10).
-            // Stub: return false for continuous simulation.
-            require_min_arg_count(builtin, 1, "BuiltinCall FirstTick")?;
-            return Ok(cfg.false_val.clone());
-        }
-        "NoClock" | "SubSample" | "SuperSample" | "ShiftSample" | "BackSample" => {
-            // Clocked partition operators (MLS §16). In continuous
-            // simulation, pass through the first argument.
-            let args_val = get_field(builtin, "args")?;
-            let inner = required_arg(&args_val, 0, &format!("BuiltinCall {func_name}"))?;
-            return render_expression(&inner, cfg);
+        "Clock" | "Previous" | "Hold" | "FirstTick" | "NoClock" | "SubSample" | "SuperSample"
+        | "ShiftSample" | "BackSample" => {
+            return Err(render_err(format!(
+                "BuiltinCall {func_name} must be lowered with its clock schedule before template rendering"
+            )));
         }
         _ => {}
     }
@@ -563,20 +519,6 @@ fn required_arg(args: &Value, index: usize, context: &str) -> Result<Value, mini
         )));
     }
     Ok(arg)
-}
-
-fn require_min_arg_count(call: &Value, min: usize, context: &str) -> Result<(), minijinja::Error> {
-    let args = get_field(call, "args")
-        .map_err(|err| render_err(format!("{context} missing 'args' field: {err}")))?;
-    let len = args
-        .len()
-        .ok_or_else(|| render_err(format!("{context} args is not a sequence")))?;
-    if len < min {
-        return Err(render_err(format!(
-            "{context} expected at least {min} argument(s), got {len}"
-        )));
-    }
-    Ok(())
 }
 
 /// Render builtins using Modelica names (abs, min, max, etc.).
@@ -741,6 +683,23 @@ fn render_chained_minmaxsum(
 
 fn render_function_call(func_call: &Value, cfg: &ExprConfig) -> RenderResult {
     let raw_name = render_name_field(func_call, "name", "FunctionCall")?;
+
+    if matches!(
+        raw_name.as_str(),
+        "Clock"
+            | "previous"
+            | "hold"
+            | "firstTick"
+            | "noClock"
+            | "subSample"
+            | "superSample"
+            | "shiftSample"
+            | "backSample"
+    ) {
+        return Err(render_err(format!(
+            "FunctionCall {raw_name} must be lowered with its clock schedule before template rendering"
+        )));
+    }
 
     // Map Modelica standard library math functions to builtins
     if let Some(builtin) = resolve_modelica_math_function(&raw_name) {
@@ -1212,5 +1171,22 @@ mod tests {
 
         let rendered = render_expression(&Value::from_serialize(&condition_ref), &cfg).unwrap();
         assert_eq!(rendered, "(time < 1)");
+    }
+
+    #[test]
+    fn test_render_expr_rejects_unlowered_clock_semantics() {
+        let expression = rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::Reference::new("Clock"),
+            args: Vec::new(),
+            is_constructor: false,
+            span: rumoca_core::Span::DUMMY,
+        };
+        let error = render_expression(&Value::from_serialize(&expression), &ExprConfig::default())
+            .expect_err("clock constructors must never render as numeric stubs");
+        assert!(
+            error
+                .to_string()
+                .contains("must be lowered with its clock schedule")
+        );
     }
 }

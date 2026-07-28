@@ -20,6 +20,8 @@ use rumoca_ir_solve::{
 };
 use std::time::Instant;
 
+mod support;
+
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 fn fixture_span(label: &str) -> Span {
@@ -137,7 +139,7 @@ fn matmul_dense_numerics_match_analytical() {
     let compiled = match compile_derivative_rhs(&problem, "matmul_dense") {
         Ok(c) => c,
         Err(MlirError::ToolNotFound { tool, .. }) => {
-            eprintln!("SKIP: {tool} not found");
+            support::missing_cpu_tool(tool);
             return;
         }
         Err(e) => panic!("compile failed: {e}"),
@@ -172,7 +174,7 @@ fn matmul_diagonal_numerics_match_analytical() {
     let compiled = match compile_derivative_rhs(&problem, "matmul_diag") {
         Ok(c) => c,
         Err(MlirError::ToolNotFound { tool, .. }) => {
-            eprintln!("SKIP: {tool} not found");
+            support::missing_cpu_tool(tool);
             return;
         }
         Err(e) => panic!("compile failed: {e}"),
@@ -206,7 +208,7 @@ fn matmul_scalar_path_numerics_match_analytical() {
     let compiled = match compile_derivative_rhs(&problem, "matmul_scalar") {
         Ok(c) => c,
         Err(MlirError::ToolNotFound { tool, .. }) => {
-            eprintln!("SKIP: {tool} not found");
+            support::missing_cpu_tool(tool);
             return;
         }
         Err(e) => panic!("compile failed: {e}"),
@@ -247,7 +249,7 @@ fn all_three_paths_agree_at_multiple_points() {
         (Err(MlirError::ToolNotFound { tool, .. }), _, _)
         | (_, Err(MlirError::ToolNotFound { tool, .. }), _)
         | (_, _, Err(MlirError::ToolNotFound { tool, .. })) => {
-            eprintln!("SKIP: {tool} not found");
+            support::missing_cpu_tool(tool);
             return;
         }
         (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => panic!("compile failed: {e}"),
@@ -283,7 +285,7 @@ fn matmul_euler_integration_matches_analytical() {
     let compiled = match compile_derivative_rhs(&problem, "matmul_euler") {
         Ok(c) => c,
         Err(MlirError::ToolNotFound { tool, .. }) => {
-            eprintln!("SKIP: {tool} not found");
+            support::missing_cpu_tool(tool);
             return;
         }
         Err(e) => panic!("compile failed: {e}"),
@@ -411,7 +413,7 @@ fn explicit_sparse_numerics_match_expected() {
     let compiled = match compile_derivative_rhs(&problem, "sparse_explicit") {
         Ok(c) => c,
         Err(MlirError::ToolNotFound { tool, .. }) => {
-            eprintln!("SKIP: {tool} not found");
+            support::missing_cpu_tool(tool);
             return;
         }
         Err(e) => panic!("compile failed: {e}"),
@@ -455,7 +457,7 @@ fn explicit_sparse_agrees_with_dense_at_multiple_points() {
         (Ok(a), Ok(b)) => (a, b),
         (Err(MlirError::ToolNotFound { tool, .. }), _)
         | (_, Err(MlirError::ToolNotFound { tool, .. })) => {
-            eprintln!("SKIP: {tool} not found");
+            support::missing_cpu_tool(tool);
             return;
         }
         (Err(e), _) | (_, Err(e)) => panic!("compile failed: {e}"),

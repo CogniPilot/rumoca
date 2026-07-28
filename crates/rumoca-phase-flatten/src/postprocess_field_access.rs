@@ -1,8 +1,100 @@
 use super::*;
 use indexmap::{IndexMap, IndexSet};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 type ConstructorFieldGroupKey = (rumoca_core::VarName, String);
+
+/// Make implicit array-of-record member projection explicit.
+///
+/// Instantiation projects a record binding such as `target = records` onto
+/// primitive fields as `target.field = records.field`. When `records` is an
+/// expanded component array, Flat owns only `records[1].field`, ... rather
+/// than an aggregate `records.field` variable. Preserve the symbolic array
+/// operation by spelling the binding as `records[:].field`; structural
+/// scalarization can then select the corresponding record element.
+pub(crate) fn normalize_record_array_field_access_bindings(flat: &mut flat::Model) {
+    let record_array_ranks = collect_record_array_ranks(flat);
+    if record_array_ranks.is_empty() {
+        return;
+    }
+    let all_names: HashSet<rumoca_core::VarName> = flat.variables.keys().cloned().collect();
+
+    for var in flat.variables.values_mut() {
+        let Some(binding) = var.binding.as_mut() else {
+            continue;
+        };
+        if field_access_target_name(binding).is_some_and(|target| all_names.contains(&target)) {
+            continue;
+        }
+        insert_record_array_full_slice(binding, &record_array_ranks);
+    }
+}
+
+fn collect_record_array_ranks(flat: &flat::Model) -> HashMap<rumoca_core::DefId, usize> {
+    let mut ranks: HashMap<rumoca_core::DefId, usize> = HashMap::new();
+    for record in flat.record_instances.values() {
+        let rank = record
+            .component_ref
+            .parts
+            .last()
+            .map(|part| part.subs.len())
+            .unwrap_or(0);
+        if rank == 0 {
+            continue;
+        }
+        let Some(def_id) = record.component_ref.def_id else {
+            continue;
+        };
+        ranks
+            .entry(def_id)
+            .and_modify(|known| *known = (*known).max(rank))
+            .or_insert(rank);
+    }
+    ranks
+}
+
+fn insert_record_array_full_slice(
+    expr: &mut rumoca_core::Expression,
+    record_array_ranks: &HashMap<rumoca_core::DefId, usize>,
+) {
+    let rumoca_core::Expression::FieldAccess { base, span, .. } = expr else {
+        return;
+    };
+    insert_record_array_full_slice(base, record_array_ranks);
+
+    let rumoca_core::Expression::VarRef {
+        name, subscripts, ..
+    } = base.as_ref()
+    else {
+        return;
+    };
+    if !subscripts.is_empty()
+        || name
+            .parts()
+            .last()
+            .is_some_and(|part| !part.subs.is_empty())
+    {
+        return;
+    }
+    let Some(rank) = name
+        .target_def_id()
+        .and_then(|def_id| record_array_ranks.get(&def_id))
+        .copied()
+    else {
+        return;
+    };
+    let sliced_base = std::mem::replace(
+        base,
+        Box::new(rumoca_core::Expression::Empty { span: *span }),
+    );
+    **base = rumoca_core::Expression::Index {
+        base: sliced_base,
+        subscripts: (0..rank)
+            .map(|_| rumoca_core::Subscript::Colon { span: *span })
+            .collect(),
+        span: *span,
+    };
+}
 
 /// Drop FieldAccess bindings whose targets don't exist in the flat model.
 /// During modifier propagation, record bindings like `x = someRecord.field` may reference
@@ -194,7 +286,7 @@ fn field_access_target_name(expr: &rumoca_core::Expression) -> Option<rumoca_cor
     rendered_component_target(expr).map(rumoca_core::VarName::new)
 }
 
-fn rendered_component_target(expr: &rumoca_core::Expression) -> Option<String> {
+pub(crate) fn rendered_component_target(expr: &rumoca_core::Expression) -> Option<String> {
     match expr {
         rumoca_core::Expression::VarRef {
             name, subscripts, ..
@@ -257,22 +349,26 @@ fn append_flat_subscripts(
     rendered: &mut String,
     subscripts: &[rumoca_core::Subscript],
 ) -> Option<()> {
+    if subscripts.is_empty() {
+        return Some(());
+    }
+    rendered.push('[');
+    let mut separator = "";
     for subscript in subscripts {
+        rendered.push_str(separator);
         match subscript {
             rumoca_core::Subscript::Index { value, .. } => {
-                rendered.push('[');
                 rendered.push_str(&value.to_string());
-                rendered.push(']');
             }
             rumoca_core::Subscript::Expr { expr, .. } => {
                 let value = constant_integer_bound(expr)?;
-                rendered.push('[');
                 rendered.push_str(&value.to_string());
-                rendered.push(']');
             }
             rumoca_core::Subscript::Colon { .. } => return None,
         }
+        separator = ",";
     }
+    rendered.push(']');
     Some(())
 }
 
@@ -323,6 +419,85 @@ mod tests {
         }
     }
 
+    fn record_component_reference(
+        name: &str,
+        def_id: rumoca_core::DefId,
+        indices: &[i64],
+    ) -> rumoca_core::ComponentReference {
+        rumoca_core::ComponentReference {
+            local: false,
+            span: test_span(),
+            parts: vec![rumoca_core::ComponentRefPart {
+                ident: name.to_string(),
+                span: test_span(),
+                subs: indices
+                    .iter()
+                    .map(|index| rumoca_core::Subscript::Index {
+                        value: *index,
+                        span: test_span(),
+                    })
+                    .collect(),
+            }],
+            def_id: Some(def_id),
+        }
+    }
+
+    #[test]
+    fn normalizes_expanded_record_array_field_binding_to_full_slice() {
+        let mut flat = flat::Model::new();
+        let record_def_id = rumoca_core::DefId::new(7);
+        let record_type_def_id = rumoca_core::DefId::new(8);
+        for index in 1..=2 {
+            let component_ref = record_component_reference("records", record_def_id, &[index]);
+            flat.record_instances.insert(
+                component_ref.to_var_name(),
+                flat::RecordInstance {
+                    component_ref,
+                    source_span: test_span(),
+                    canonical_type_id: rumoca_core::TypeId::new(9),
+                    type_name: "R".to_string(),
+                    type_def_id: record_type_def_id,
+                    dims: Vec::new(),
+                },
+            );
+        }
+        let aggregate_ref = record_component_reference("records", record_def_id, &[]);
+        flat.add_variable(
+            rumoca_core::VarName::new("target.field"),
+            variable(
+                "target.field",
+                rumoca_core::Expression::FieldAccess {
+                    base: Box::new(rumoca_core::Expression::VarRef {
+                        name: rumoca_core::Reference::from_component_reference(aggregate_ref),
+                        subscripts: Vec::new(),
+                        span: test_span(),
+                    }),
+                    field: "field".to_string(),
+                    span: test_span(),
+                },
+            ),
+        );
+
+        normalize_record_array_field_access_bindings(&mut flat);
+        drop_invalid_field_access_bindings(&mut flat);
+
+        let binding = flat
+            .variables
+            .get(&rumoca_core::VarName::new("target.field"))
+            .and_then(|variable| variable.binding.as_ref())
+            .expect("record-array member projection must remain bound");
+        let rumoca_core::Expression::FieldAccess { base, .. } = binding else {
+            panic!("expected field access binding");
+        };
+        let rumoca_core::Expression::Index { subscripts, .. } = base.as_ref() else {
+            panic!("expected explicit full-slice base");
+        };
+        assert!(matches!(
+            subscripts.as_slice(),
+            [rumoca_core::Subscript::Colon { .. }]
+        ));
+    }
+
     #[test]
     fn resolves_direct_constructor_fields_through_unique_nested_record() {
         let mut flat = flat::Model::new();
@@ -369,5 +544,57 @@ mod tests {
             panic!("expected nested constructor field access");
         };
         assert_eq!(outer_field, "inner");
+    }
+
+    #[test]
+    fn retains_multidimensional_indexed_field_access_binding() {
+        let mut flat = flat::Model::new();
+        let index = rumoca_core::Expression::Index {
+            base: Box::new(rumoca_core::Expression::VarRef {
+                name: rumoca_core::Reference::new("stack.cell"),
+                subscripts: Vec::new(),
+                span: test_span(),
+            }),
+            subscripts: vec![
+                rumoca_core::Subscript::Index {
+                    value: 1,
+                    span: test_span(),
+                },
+                rumoca_core::Subscript::Index {
+                    value: 2,
+                    span: test_span(),
+                },
+            ],
+            span: test_span(),
+        };
+        let binding = rumoca_core::Expression::FieldAccess {
+            base: Box::new(rumoca_core::Expression::FieldAccess {
+                base: Box::new(index),
+                field: "limIntegrator".to_string(),
+                span: test_span(),
+            }),
+            field: "y".to_string(),
+            span: test_span(),
+        };
+        flat.add_variable(
+            rumoca_core::VarName::new("stack.cell[1,2].SOC"),
+            variable("stack.cell[1,2].SOC", binding),
+        );
+        flat.add_variable(
+            rumoca_core::VarName::new("stack.cell[1,2].limIntegrator.y"),
+            flat::Variable::empty_with_span(test_span()),
+        );
+
+        drop_invalid_field_access_bindings(&mut flat);
+
+        let binding = flat
+            .variables
+            .get(&rumoca_core::VarName::new("stack.cell[1,2].SOC"))
+            .and_then(|variable| variable.binding.as_ref())
+            .expect("valid indexed field binding must be retained");
+        assert_eq!(
+            rendered_component_target(binding).as_deref(),
+            Some("stack.cell[1,2].limIntegrator.y")
+        );
     }
 }

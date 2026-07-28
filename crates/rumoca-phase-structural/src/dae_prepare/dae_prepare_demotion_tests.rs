@@ -130,6 +130,95 @@ fn gt(lhs: Expression, rhs: Expression) -> Expression {
     }
 }
 
+#[test]
+fn scalar_projection_does_not_define_its_aggregate_owner() {
+    let mut dae = Dae::new();
+    let mut vector = test_variable("vector");
+    vector.dims = vec![3];
+    dae.variables
+        .algebraics
+        .insert(VarName::new("vector"), vector);
+    dae.variables
+        .outputs
+        .insert(VarName::new("scalar"), test_variable("scalar"));
+    dae.continuous
+        .equations
+        .push(eq(sub(var("scalar"), var_idx("vector", 2))));
+
+    let definitions = collect_residual_defining_expr_index(&dae);
+
+    assert!(
+        definitions.get("vector").is_none(),
+        "a scalar projection must not be indexed as a definition of its aggregate owner"
+    );
+    assert_eq!(
+        definitions
+            .get("scalar")
+            .and_then(|candidates| candidates.first())
+            .map(|candidate| &candidate.expr),
+        Some(&var_idx("vector", 2))
+    );
+}
+
+#[test]
+fn full_width_slice_defines_aggregate_but_component_slice_does_not() {
+    let mut dae = Dae::new();
+    let mut aux = test_variable("aux");
+    aux.dims = vec![2];
+    dae.variables.algebraics.insert(VarName::new("aux"), aux);
+    for name in ["p1", "p2"] {
+        dae.variables
+            .parameters
+            .insert(VarName::new(name), test_variable(name));
+    }
+    let slice = Expression::VarRef {
+        name: rumoca_core::Reference::new("aux"),
+        subscripts: vec![Subscript::Colon { span: test_span() }],
+        span: test_span(),
+    };
+    let mut definition = eq(sub(slice, array(vec![var("p1"), var("p2")])));
+    definition.scalar_count = 2;
+
+    assert!(
+        equation_defining_expr_for_unknown(&dae, &definition, &VarName::new("aux")).is_some(),
+        "a row covering the declared aggregate width is a complete definition"
+    );
+
+    definition.scalar_count = 1;
+    assert!(
+        equation_defining_expr_for_unknown(&dae, &definition, &VarName::new("aux")).is_none(),
+        "a partial slice cannot certify the aggregate value"
+    );
+
+    let component = Expression::VarRef {
+        name: rumoca_core::Reference::new("aux"),
+        subscripts: vec![Subscript::Index {
+            value: 1,
+            span: test_span(),
+        }],
+        span: test_span(),
+    };
+    let mut component_definition = eq(sub(component, var("p1")));
+    component_definition.scalar_count = 2;
+    assert!(
+        equation_defining_expr_for_unknown(&dae, &component_definition, &VarName::new("aux"),)
+            .is_none(),
+        "equation width cannot make one component cover a non-singleton aggregate"
+    );
+
+    dae.variables
+        .algebraics
+        .get_mut(&VarName::new("aux"))
+        .expect("test aggregate")
+        .dims = vec![1];
+    component_definition.scalar_count = 1;
+    assert!(
+        equation_defining_expr_for_unknown(&dae, &component_definition, &VarName::new("aux"),)
+            .is_some(),
+        "index one covers a declared singleton aggregate"
+    );
+}
+
 fn no_event(expr: Expression) -> Expression {
     Expression::BuiltinCall {
         function: BuiltinFunction::NoEvent,
@@ -283,6 +372,68 @@ fn compound_derivative_expansion_keeps_algebraic_derivative_path() {
 }
 
 #[test]
+fn compound_derivative_expansion_has_no_alias_depth_limit() {
+    let mut dae = Dae::new();
+    dae.variables
+        .states
+        .insert(VarName::new("x"), test_variable("x"));
+    for index in 0..25 {
+        let name = format!("alias{index}");
+        dae.variables
+            .algebraics
+            .insert(VarName::new(&name), test_variable(&name));
+        let source = if index == 24 {
+            "x".to_string()
+        } else {
+            format!("alias{}", index + 1)
+        };
+        dae.continuous
+            .equations
+            .push(eq(sub(var(&name), var(&source))));
+    }
+    dae.continuous.equations.push(eq(sub(der("x"), int(1))));
+    dae.continuous
+        .equations
+        .push(eq(sub(der("alias0"), int(0))));
+
+    expand_compound_derivatives(&mut dae);
+
+    assert!(
+        dae.continuous
+            .equations
+            .iter()
+            .all(|equation| !expr_contains_der_of(&equation.rhs, &VarName::new("alias0"))),
+        "valid connector/alias chains must not be truncated at an arbitrary depth"
+    );
+}
+
+#[test]
+fn compound_derivative_expansion_rewrites_initial_algebraic_derivatives() {
+    let mut dae = Dae::new();
+    dae.variables
+        .states
+        .insert(VarName::new("x"), test_variable("x"));
+    dae.variables
+        .algebraics
+        .insert(VarName::new("y"), test_variable("y"));
+    dae.continuous.equations.push(eq(sub(var("y"), var("x"))));
+    dae.continuous.equations.push(eq(sub(der("x"), int(1))));
+    dae.initialization.equations.push(eq(sub(der("y"), int(0))));
+
+    assert!(needs_compound_derivative_expansion(&dae));
+
+    expand_compound_derivatives(&mut dae);
+
+    assert!(
+        dae.initialization
+            .equations
+            .iter()
+            .all(|eq| !expr_contains_der_of(&eq.rhs, &VarName::new("y"))),
+        "initial der(y) should expand through the continuous definition y = x"
+    );
+}
+
+#[test]
 fn test_split_linear_target_zero_remainder_uses_context_span() {
     let span = Span::from_offsets(
         rumoca_core::SourceId::from_source_name(
@@ -309,7 +460,8 @@ fn test_assignable_derivative_rows_keep_rows_with_non_state_rhs_aliases() {
 
     dae.continuous.equations.push(eq(sub(var("dx"), der("x"))));
 
-    let demoted = demote_states_without_assignable_derivative_rows(&mut dae);
+    let demoted = demote_states_without_assignable_derivative_rows(&mut dae)
+        .expect("the derivative row is assignable");
     assert_eq!(demoted, 0);
     assert!(dae.variables.states.contains_key(&VarName::new("x")));
 }
@@ -417,7 +569,7 @@ fn test_demote_states_keeps_derivatives_in_static_active_if_branch() {
 }
 
 #[test]
-fn test_assignable_derivative_rows_reject_non_state_derivatives() {
+fn test_assignable_derivative_rows_reject_unresolved_non_state_derivatives() {
     let mut dae = Dae::new();
     dae.variables
         .states
@@ -428,11 +580,99 @@ fn test_assignable_derivative_rows_reject_non_state_derivatives() {
 
     dae.continuous.equations.push(eq(sub(der("x"), der("a"))));
 
-    let demoted = demote_states_without_assignable_derivative_rows(&mut dae);
+    let err = demote_states_without_assignable_derivative_rows(&mut dae)
+        .expect_err("unresolved algebraic derivatives must not cascade state demotion");
+
+    assert!(
+        err.to_string()
+            .contains("derivative reference `der(x)` survived")
+    );
+    assert!(dae.variables.states.contains_key(&VarName::new("x")));
+    assert!(!dae.variables.algebraics.contains_key(&VarName::new("x")));
+}
+
+#[test]
+fn retained_derivative_cleanup_rejects_derivatives_of_demoted_states() {
+    let mut dae = Dae::new();
+    dae.variables
+        .states
+        .insert(VarName::new("x"), test_variable("x"));
+    dae.variables
+        .algebraics
+        .insert(VarName::new("a"), test_variable("a"));
+    dae.continuous.equations.push(eq(sub(der("x"), der("a"))));
+
+    let err = demote_states_without_retained_derivative_rows(&mut dae)
+        .expect_err("a surviving der() of a demoted state must be rejected");
+
+    assert!(matches!(
+        err,
+        StructuralError::ContractViolation { span, .. } if span == test_span()
+    ));
+    assert!(
+        err.to_string()
+            .contains("derivative reference `der(x)` survived")
+    );
+}
+
+#[test]
+fn assignable_derivative_demotion_normalizes_before_the_next_matching_round() {
+    let mut dae = Dae::new();
+    dae.variables
+        .states
+        .insert(VarName::new("x"), test_variable("x"));
+    dae.variables
+        .states
+        .insert(VarName::new("y"), test_variable("y"));
+    dae.continuous.equations.push(eq(sub(var("y"), var("x"))));
+    dae.continuous.equations.push(eq(add(der("x"), der("y"))));
+
+    let demoted = demote_states_without_assignable_derivative_rows(&mut dae)
+        .expect("the retained state remains assignable after dummy-state normalization");
 
     assert_eq!(demoted, 1);
-    assert!(!dae.variables.states.contains_key(&VarName::new("x")));
-    assert!(dae.variables.algebraics.contains_key(&VarName::new("x")));
+    assert!(dae.variables.states.contains_key(&VarName::new("x")));
+    assert!(dae.variables.algebraics.contains_key(&VarName::new("y")));
+    assert!(
+        dae.continuous
+            .equations
+            .iter()
+            .all(|equation| !expr_contains_der_of(&equation.rhs, &VarName::new("y")))
+    );
+}
+
+#[test]
+fn retained_derivative_cleanup_normalizes_derivatives_after_earlier_demotion() {
+    let mut dae = Dae::new();
+    dae.variables
+        .states
+        .insert(VarName::new("y"), test_variable("y"));
+    dae.variables
+        .algebraics
+        .insert(VarName::new("x"), test_variable("x"));
+    dae.variables
+        .algebraics
+        .insert(VarName::new("q"), test_variable("q"));
+    dae.continuous.equations.push(eq(sub(var("x"), var("y"))));
+    dae.continuous.equations.push(eq(sub(var("q"), der("x"))));
+    dae.continuous.equations.push(eq(sub(der("y"), int(1))));
+
+    let demoted = demote_states_without_retained_derivative_rows(&mut dae)
+        .expect("an algebraic derivative with a retained definition should normalize");
+
+    assert_eq!(demoted, (0, 0));
+    assert!(
+        dae.continuous
+            .equations
+            .iter()
+            .all(|equation| !expr_contains_der_of(&equation.rhs, &VarName::new("x")))
+    );
+    assert!(
+        dae.continuous
+            .equations
+            .iter()
+            .any(|equation| expr_contains_der_of(&equation.rhs, &VarName::new("y")))
+    );
 }
 
 #[test]
@@ -506,6 +746,191 @@ fn test_demote_direct_assigned_states_keeps_state_defined_by_non_state_alias() {
 }
 
 #[test]
+fn direct_demotion_accepts_total_piecewise_smooth_trajectory() {
+    let mut dae = Dae::new();
+    dae.variables
+        .states
+        .insert(VarName::new("s"), test_variable("s"));
+    dae.variables
+        .algebraics
+        .insert(VarName::new("sd"), test_variable("sd"));
+    dae.variables
+        .parameters
+        .insert(VarName::new("switch_time"), test_variable("switch_time"));
+    dae.variables
+        .discrete_valued
+        .insert(VarName::new("choose_zero"), test_variable("choose_zero"));
+
+    let moving_trajectory = Expression::If {
+        branches: vec![(
+            lt(var("time"), var("switch_time")),
+            sub(var("s"), mul(var("time"), var("time"))),
+        )],
+        else_branch: Box::new(sub(var("s"), mul(real(2.0), var("time")))),
+        span: Span::DUMMY,
+    };
+    let trajectory = Expression::If {
+        branches: vec![(var("choose_zero"), sub(var("s"), real(0.0)))],
+        else_branch: Box::new(sub(moving_trajectory, real(0.0))),
+        span: Span::DUMMY,
+    };
+    dae.continuous.equations.push(eq(trajectory));
+    dae.continuous.equations.push(eq(sub(var("sd"), der("s"))));
+    let state_names = vec![VarName::new("s")];
+    let state_name_set = HashSet::from(["s".to_string()]);
+    assert!(
+        extract_state_direct_assignment_equation(
+            &dae.continuous.equations[0],
+            &state_names,
+            &state_name_set,
+        )
+        .is_some(),
+        "identity normalization must expose the common conditional target: {:?}",
+        crate::eliminate::simplify_arithmetic_identities(dae.continuous.equations[0].rhs.clone())
+    );
+
+    let demoted = demote_direct_assigned_states(&mut dae)
+        .expect("branch-local derivative proof should permit direct demotion");
+
+    assert_eq!(demoted, 1);
+    assert!(!dae.variables.states.contains_key(&VarName::new("s")));
+    assert!(dae.variables.algebraics.contains_key(&VarName::new("s")));
+    assert!(
+        dae.continuous
+            .equations
+            .iter()
+            .all(|equation| !expr_contains_der_of(&equation.rhs, &VarName::new("s"))),
+        "every derivative use must be replaced by the branch-local derivative"
+    );
+    assert!(
+        matches!(
+            &dae.continuous.equations[1].rhs,
+            Expression::Binary { rhs, .. } if matches!(rhs.as_ref(), Expression::If { .. })
+        ),
+        "the replacement must retain the source trajectory's event partition"
+    );
+}
+
+#[test]
+fn conditional_residual_does_not_define_target_missing_from_one_branch() {
+    let residual = eq(Expression::If {
+        branches: vec![(var("choose_s"), sub(var("s"), var("time")))],
+        else_branch: Box::new(sub(var("other"), var("time"))),
+        span: test_span(),
+    });
+
+    assert!(
+        residual_defining_expr(&residual, &VarName::new("s")).is_none(),
+        "a conditional equation defines a target only when every branch defines it"
+    );
+}
+
+#[test]
+fn piecewise_algebraic_derivative_closure_demotes_trajectory_state() {
+    let mut dae = Dae::new();
+    dae.variables
+        .algebraics
+        .insert(VarName::new("s"), test_variable("s"));
+    dae.variables
+        .states
+        .insert(VarName::new("sd"), test_variable("sd"));
+    dae.variables
+        .states
+        .insert(VarName::new("z"), test_variable("z"));
+    dae.variables
+        .algebraics
+        .insert(VarName::new("sdd"), test_variable("sdd"));
+    dae.variables
+        .parameters
+        .insert(VarName::new("switch_time"), test_variable("switch_time"));
+
+    dae.continuous.equations.push(eq(Expression::If {
+        branches: vec![(
+            lt(var("time"), var("switch_time")),
+            sub(var("s"), mul(var("time"), var("time"))),
+        )],
+        else_branch: Box::new(sub(var("s"), mul(real(2.0), var("time")))),
+        span: Span::DUMMY,
+    }));
+    dae.continuous.equations.push(eq(sub(var("sd"), der("s"))));
+    dae.continuous
+        .equations
+        .push(eq(sub(var("sdd"), der("sd"))));
+    dae.continuous.equations.push(eq(sub(der("z"), real(0.0))));
+
+    assert_eq!(
+        demote_direct_assigned_states(&mut dae).expect("first trajectory demotion"),
+        1
+    );
+    assert!(!dae.variables.states.contains_key(&VarName::new("sd")));
+    assert!(dae.variables.states.contains_key(&VarName::new("z")));
+    assert!(
+        residual_defining_expr(&dae.continuous.equations[0], &VarName::new("s")).is_some(),
+        "every conditional branch defines s"
+    );
+    assert!(
+        collect_residual_defining_expr_index(&dae).contains_key("s"),
+        "the total conditional definition must enter the derivative index"
+    );
+    assert!(
+        compute_full_derivative_map(&dae).contains_key("s"),
+        "the total conditional definition must certify a derivative for s"
+    );
+    expand_compound_derivatives(&mut dae);
+    assert_eq!(
+        demote_direct_assigned_states(&mut dae).expect("expanded trajectory demotion"),
+        0
+    );
+
+    assert_eq!(dae.variables.states.len(), 1);
+    assert!(dae.variables.states.contains_key(&VarName::new("z")));
+    assert!(
+        dae.continuous.equations.iter().all(|equation| {
+            !expr_contains_der_of(&equation.rhs, &VarName::new("s"))
+                && !expr_contains_der_of(&equation.rhs, &VarName::new("sd"))
+        }),
+        "the complete explicit trajectory chain must be algebraic: {:?}",
+        dae.continuous.equations
+    );
+}
+
+#[test]
+fn direct_demotion_rejects_discrete_value_branch() {
+    let mut dae = Dae::new();
+    dae.variables
+        .states
+        .insert(VarName::new("s"), test_variable("s"));
+    dae.variables
+        .algebraics
+        .insert(VarName::new("sd"), test_variable("sd"));
+    dae.variables
+        .discrete_reals
+        .insert(VarName::new("held"), test_variable("held"));
+    dae.variables
+        .discrete_valued
+        .insert(VarName::new("choose_held"), test_variable("choose_held"));
+
+    dae.continuous.equations.push(eq(Expression::If {
+        branches: vec![(var("choose_held"), sub(var("s"), var("held")))],
+        else_branch: Box::new(sub(var("s"), var("time"))),
+        span: Span::DUMMY,
+    }));
+    dae.continuous.equations.push(eq(sub(var("sd"), der("s"))));
+
+    let demoted = demote_direct_assigned_states(&mut dae)
+        .expect("a rejected candidate must leave the DAE unchanged");
+
+    assert_eq!(demoted, 0);
+    assert!(dae.variables.states.contains_key(&VarName::new("s")));
+    assert!(
+        dae.continuous
+            .equations
+            .iter()
+            .any(|equation| expr_contains_der_of(&equation.rhs, &VarName::new("s")))
+    );
+}
+
+#[test]
 fn test_demote_direct_assigned_states_allows_fixed_connection_alias() {
     let mut dae = Dae::new();
     let connection_span = Span::from_offsets(
@@ -568,6 +993,53 @@ fn test_demote_direct_assigned_states_allows_fixed_connection_alias() {
             .iter()
             .any(|eq| expr_contains_der_of(&eq.rhs, &VarName::new("support.phi"))),
         "demotion must replace derivative uses of a fixed connection state"
+    );
+}
+
+#[test]
+fn test_direct_demotion_uses_independent_constraint_not_own_derivative_alias() {
+    let mut dae = Dae::new();
+    for name in ["body.phi", "body.w"] {
+        dae.variables
+            .states
+            .insert(VarName::new(name), test_variable(name));
+    }
+    dae.variables.algebraics.insert(
+        VarName::new("body.flange.phi"),
+        test_variable("body.flange.phi"),
+    );
+    dae.variables
+        .parameters
+        .insert(VarName::new("fixed.phi0"), test_variable("fixed.phi0"));
+
+    dae.continuous
+        .equations
+        .push(eq(sub(var("body.phi"), var("body.flange.phi"))));
+    let derivative_alias = sub(var("body.w"), der("body.phi"));
+    dae.continuous.equations.push(eq(derivative_alias.clone()));
+    dae.continuous.equations.push(spanned_eq(
+        sub(var("body.flange.phi"), var("fixed.phi0")),
+        "connection equation: body.flange.phi = fixed.phi0",
+        test_span(),
+    ));
+
+    let demoted = demote_direct_assigned_states(&mut dae).expect("scan should remain valid");
+
+    assert_eq!(demoted, 2);
+    assert!(dae.variables.states.is_empty());
+    assert!(
+        !dae.continuous
+            .equations
+            .iter()
+            .any(|equation| equation.rhs == derivative_alias),
+        "the independent fixed constraint must replace der(body.phi)"
+    );
+    assert!(
+        dae.continuous.equations.iter().any(|equation| {
+            expr_contains_var(&equation.rhs, &VarName::new("body.w"))
+                && !expr_contains_der_of(&equation.rhs, &VarName::new("body.phi"))
+        }),
+        "the derivative definition must remain a usable algebraic constraint"
     );
 }
 
@@ -906,7 +1378,7 @@ fn test_demote_direct_assigned_states_keeps_state_with_other_state_in_alias_clos
         .algebraics
         .insert(VarName::new("z"), test_variable("z"));
 
-    // MLS Appendix B / SPEC_0003: variables that appear differentiated remain
+    // MLS Appendix B / SPEC_0022: variables that appear differentiated remain
     // states. A direct-assignment candidate is not a dummy trajectory when its
     // non-state alias closure depends on another state.
     dae.continuous.equations.push(eq(sub(der("x"), var("z"))));
@@ -1393,7 +1865,7 @@ fn test_demote_direct_assigned_states_skips_unsliced_array_state_alias() {
     tau.dims = vec![3];
     dae.variables.algebraics.insert(VarName::new("tau"), tau);
 
-    // MLS §10.1 / SPEC_0019: `omega = attitude.omega` is an array equation.
+    // MLS §10.1 / SPEC_0032: `omega = attitude.omega` is an array equation.
     // Direct state demotion must not treat the unsliced array alias as a scalar
     // trajectory assignment while the retained derivative rows are indexed.
     dae.continuous
@@ -1508,6 +1980,15 @@ fn test_index_reduction_differentiates_vector_function_constraint_with_structure
     );
 }
 
+fn assert_derivative_references_all_q_components(derivative: &Expression) {
+    assert!(
+        (1..=4).all(|index| {
+            expr_contains_der_of(derivative, &VarName::new(format!("Q[{index}]")))
+        }),
+        "the projected derivative must retain every state dependency"
+    );
+}
+
 #[test]
 fn test_symbolic_derivative_resolves_projected_single_function_output() {
     let constraint_span = Span::from_offsets(
@@ -1589,10 +2070,25 @@ fn test_symbolic_derivative_resolves_projected_single_function_output() {
     )
     .expect("projected single-output function call should be differentiable");
 
-    assert!(
-        (1..=4)
-            .all(|idx| { expr_contains_der_of(&derivative, &VarName::new(format!("Q[{idx}]"))) })
-    );
+    assert_derivative_references_all_q_components(&derivative);
+
+    let indexed_call = Expression::Index {
+        base: Box::new(resolved_call_with_span(
+            "orientationConstraint",
+            vec![var("Q")],
+            constraint_span,
+            4_102,
+        )),
+        subscripts: vec![Subscript::generated_index(1, constraint_span)],
+        span: constraint_span,
+    };
+    let indexed_derivative = symbolic_time_derivative(
+        &indexed_call,
+        &dae,
+        &build_relaxed_derivative_map(&dae).expect("relaxed derivative map should build"),
+    )
+    .expect("a static projection of a function result should be differentiable");
+    assert_derivative_references_all_q_components(&indexed_derivative);
 }
 
 #[test]
@@ -1691,3 +2187,5 @@ fn test_expand_derivative_preserves_initial_condition_span() {
 }
 
 mod vector_constraint_tests;
+
+mod power_coefficient_tests;

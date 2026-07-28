@@ -512,11 +512,13 @@ impl TypeChecker {
                 format!("{}.{}", prefix, name)
             };
             let type_name = comp.type_name.to_string();
-            let binding =
-                comp.binding
-                    .as_ref()
-                    .or((!matches!(comp.start, Expression::Empty { .. })).then_some(&comp.start));
-            let Some(expr) = binding else { continue };
+            // MLS §4.4.4: a constant's value is its declaration binding. `start`
+            // is an initial guess (MLS §4.9) that the parser seeds with the
+            // declared type's default, so it is not read here — a constant
+            // without a binding contributes no value (SPEC_0008).
+            let Some(expr) = comp.binding.as_ref() else {
+                continue;
+            };
             Self::insert_constant_value(&full_name, &type_name, expr, prefix, ctx);
             // Also extract array dimensions from bindings (e.g., substanceNames = {mediumName})
             Self::insert_constant_dimensions(&full_name, &comp.shape, expr, prefix, ctx);

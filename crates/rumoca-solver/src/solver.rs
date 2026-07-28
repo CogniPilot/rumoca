@@ -124,6 +124,10 @@ pub struct SimOptions {
     pub t_end: f64,
     pub rtol: f64,
     pub atol: f64,
+    /// Requested output interval. For zero-continuous-state models, a finite
+    /// positive value is also the maximum interval between relation-surface
+    /// observations. This makes root detection resolution-bounded; it does not
+    /// mathematically exclude multiple unobserved roots inside one interval.
     pub dt: Option<f64>,
     pub scalarize: bool,
     pub max_wall_seconds: Option<f64>,

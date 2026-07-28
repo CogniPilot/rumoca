@@ -1,5 +1,6 @@
 use super::*;
 
+mod assertions;
 mod current_values;
 
 fn test_span() -> rumoca_core::Span {
@@ -1958,7 +1959,7 @@ fn test_todae_lowers_multi_output_algorithm_function_call_to_output_selections()
         vec![rumoca_core::Statement::FunctionCall {
             comp: make_comp_ref("Pkg.multi"),
             args: vec![make_var_ref("u")],
-            outputs: vec![make_comp_ref("y1"), make_comp_ref("y2")],
+            outputs: vec![Some(make_comp_ref("y1")), Some(make_comp_ref("y2"))],
 
             span: test_span(),
         }],

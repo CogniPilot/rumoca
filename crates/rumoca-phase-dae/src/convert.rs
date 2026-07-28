@@ -23,6 +23,58 @@ pub(crate) fn flat_to_dae_expression_with_refs(
     DaeReferenceRewriter { flat }.rewrite_expression(expr)
 }
 
+pub(crate) fn resolved_flat_function_instance<'a>(
+    name: &rumoca_core::Reference,
+    span: rumoca_core::Span,
+    flat: &'a flat::Model,
+    context: &str,
+) -> Result<&'a rumoca_core::Function, ToDaeError> {
+    let resolved = name.resolved_function().ok_or_else(|| {
+        ToDaeError::runtime_contract_violation_at(
+            format!(
+                "{context} `{}` lacks resolved function identity",
+                name.as_str()
+            ),
+            span,
+        )
+    })?;
+    let component_ref = name.component_ref().ok_or_else(|| {
+        ToDaeError::runtime_contract_violation_at(
+            format!("{context} `{}` lacks a structured reference", name.as_str()),
+            span,
+        )
+    })?;
+    if component_ref.def_id.is_none() {
+        return Err(ToDaeError::runtime_contract_violation_at(
+            format!(
+                "{context} `{}` lacks source declaration identity",
+                name.as_str()
+            ),
+            span,
+        ));
+    }
+    if component_ref.parts.len() != resolved.base_part_count {
+        return Err(ToDaeError::runtime_contract_violation_at(
+            format!(
+                "{context} `{}` has an invalid resolved base boundary",
+                name.as_str()
+            ),
+            span,
+        ));
+    }
+    rumoca_core::resolve_function_instance(flat.functions.values(), resolved.instance_id).map_err(
+        |error| {
+            ToDaeError::runtime_contract_violation_at(
+                format!(
+                    "{context} `{}` has invalid identity: {error}",
+                    name.as_str()
+                ),
+                span,
+            )
+        },
+    )
+}
+
 pub fn attach_dae_reference_metadata(dae: &mut dae::Dae) -> Result<(), ToDaeError> {
     assign_missing_source_component_ref_def_ids(dae);
     let scope = DaeReferenceScope::new(dae);
@@ -189,6 +241,11 @@ fn flat_target_span(
         .get(target)
         .and_then(flat_variable_span)
         .or_else(|| {
+            flat.record_instances
+                .get(target)
+                .map(|record| record.source_span)
+        })
+        .or_else(|| {
             rumoca_core::parse_scalar_name(target.as_str()).and_then(|scalar| {
                 flat.variables
                     .get(&rumoca_core::VarName::new(scalar.base))
@@ -232,6 +289,11 @@ fn flat_component_ref_for_target(
     flat.variables
         .get(target)
         .and_then(|variable| variable.component_ref.clone())
+        .or_else(|| {
+            flat.record_instances
+                .get(target)
+                .map(|record| record.component_ref.clone())
+        })
         .map(|component_ref| component_ref_with_missing_spans(component_ref, owner.span()))
         .or_else(|| {
             let scalar = rumoca_core::parse_scalar_name(target.as_str())?;
@@ -688,6 +750,12 @@ impl DaeReferenceRewriter<'_> {
             .variables
             .get(name.var_name())
             .and_then(|var| var.component_ref.clone())
+            .or_else(|| {
+                self.flat
+                    .record_instances
+                    .get(name.var_name())
+                    .map(|record| record.component_ref.clone())
+            })
             .map(|component_ref| {
                 rumoca_core::Reference::with_component_reference(name.as_str(), component_ref)
             })
@@ -857,6 +925,9 @@ impl DaeReferenceScope {
             return self.reference_from_metadata(name.var_name(), name.as_str(), metadata, span);
         }
         if let Some(metadata) = self.aggregate_prefixes.get(name.var_name()) {
+            if name.target_def_id().is_some() {
+                return Ok(name.clone());
+            }
             return self.reference_from_metadata(name.var_name(), name.as_str(), metadata, span);
         }
         // Element reference to an aggregate variable (`sum.u[2]` while the
@@ -874,7 +945,7 @@ impl DaeReferenceScope {
         // producer bug, not something to recover by parsing the name.
         Err(ToDaeError::UnresolvedReference {
             name: name.as_str().to_string(),
-            span: rumoca_core::span_to_source_span(span),
+            span,
         })
     }
 
@@ -1107,10 +1178,20 @@ impl ExpressionRewriter for DaeMetadataReferenceRewriter {
 pub(crate) fn remap_flat_structured_equations(
     structured_equations: &[flat::StructuredEquationFamily],
     flat_to_dae_index: &IndexMap<usize, usize>,
+    dae_equations: &[dae::Equation],
 ) -> Vec<dae::StructuredEquationFamily> {
     structured_equations
         .iter()
-        .filter_map(|family| remap_flat_structured_equation(family, flat_to_dae_index))
+        .filter_map(|family| {
+            let is_compact_owner = family.template.as_ref().is_some_and(|template| {
+                template.scalar_view == rumoca_core::ComprehensionScalarView::RowMajorProjection
+            });
+            if is_compact_owner {
+                remap_compact_flat_structured_equation(family, flat_to_dae_index, dae_equations)
+            } else {
+                remap_flat_structured_equation(family, flat_to_dae_index)
+            }
+        })
         .collect()
 }
 
@@ -1125,8 +1206,9 @@ fn remap_flat_structured_equation(
     let mut equations_per_point = None;
 
     for _ in 0..point_count {
-        let mut dae_equation_count = 0;
-        for source_idx in flat_idx..flat_idx + family.equations_per_point {
+        let mut dae_equation_count = 0usize;
+        let point_end = flat_idx.checked_add(family.equations_per_point)?;
+        for source_idx in flat_idx..point_end {
             let dae_idx = *flat_to_dae_index.get(&source_idx)?;
             if let Some(expected) = expected_next_dae_index
                 && dae_idx != expected
@@ -1134,8 +1216,8 @@ fn remap_flat_structured_equation(
                 return None;
             }
             first_dae_index.get_or_insert(dae_idx);
-            expected_next_dae_index = Some(dae_idx + 1);
-            dae_equation_count += 1;
+            expected_next_dae_index = Some(dae_idx.checked_add(1)?);
+            dae_equation_count = dae_equation_count.checked_add(1)?;
         }
         if dae_equation_count == 0 {
             return None;
@@ -1146,13 +1228,40 @@ fn remap_flat_structured_equation(
         {
             return None;
         }
-        flat_idx += family.equations_per_point;
+        flat_idx = point_end;
     }
 
     Some(dae::StructuredEquationFamily {
         domain: family.domain.clone(),
         first_equation_index: first_dae_index?,
         equations_per_point: equations_per_point?,
+        span: family.span,
+        origin: family.origin.to_string(),
+        regular: family.regular.clone(),
+        template: family.template.clone(),
+        interiors_materialized: family.interiors_materialized,
+    })
+}
+
+fn remap_compact_flat_structured_equation(
+    family: &flat::StructuredEquationFamily,
+    flat_to_dae_index: &IndexMap<usize, usize>,
+    dae_equations: &[dae::Equation],
+) -> Option<dae::StructuredEquationFamily> {
+    let first_dae_index = *flat_to_dae_index.get(&family.first_equation_index)?;
+    let scalar_view_row_count = family
+        .domain
+        .scalar_count()
+        .ok()?
+        .checked_mul(family.equations_per_point)?;
+    let owner = dae_equations.get(first_dae_index)?;
+    if scalar_view_row_count <= 1 || owner.scalar_count != scalar_view_row_count {
+        return None;
+    }
+    Some(dae::StructuredEquationFamily {
+        domain: family.domain.clone(),
+        first_equation_index: first_dae_index,
+        equations_per_point: family.equations_per_point,
         span: family.span,
         origin: family.origin.to_string(),
         regular: family.regular.clone(),
@@ -1210,6 +1319,66 @@ mod tests {
                 2,
             ))
         }
+    }
+
+    #[test]
+    fn compact_array_family_remap_uses_only_the_aggregate_owner() {
+        let span = test_span(2, 8);
+        let domain = rumoca_core::StructuredIndexDomain {
+            binders: vec![rumoca_core::StructuredIndexBinder {
+                id: 0,
+                display_name: "i".to_string(),
+                lower: 1,
+                upper: 3,
+                step: 1,
+            }],
+        };
+        let family = flat::StructuredEquationFamily {
+            domain,
+            first_equation_index: 4,
+            equations_per_point: 1,
+            span,
+            origin: flat::EquationOrigin::ComponentEquation {
+                component: "array owner".to_string(),
+            },
+            regular: None,
+            template: Some(rumoca_core::ComprehensionTemplate {
+                body: vec![rumoca_core::Expression::Literal {
+                    value: rumoca_core::Literal::Real(0.0),
+                    span,
+                }],
+                scalar_view: rumoca_core::ComprehensionScalarView::RowMajorProjection,
+            }),
+            interiors_materialized: false,
+        };
+        let flat_to_dae_index = IndexMap::from([
+            (4usize, 1usize),
+            // These following mappings belong to unrelated flat equations.
+            // A compact aggregate owner must never claim them as family rows.
+            (5usize, 7usize),
+            (6usize, 9usize),
+        ]);
+        let dae_equations = (0..3)
+            .map(|_| dae::Equation {
+                lhs: None,
+                rhs: rumoca_core::Expression::Literal {
+                    value: rumoca_core::Literal::Real(0.0),
+                    span,
+                },
+                span,
+                origin: "fixture".to_string(),
+                scalar_count: 1,
+            })
+            .collect::<Vec<_>>();
+        let mut dae_equations = dae_equations;
+        dae_equations[1].scalar_count = 3;
+
+        let remapped =
+            remap_flat_structured_equations(&[family], &flat_to_dae_index, &dae_equations);
+
+        assert_eq!(remapped.len(), 1);
+        assert_eq!(remapped[0].first_equation_index, 1);
+        assert_eq!(remapped[0].equations_per_point, 1);
     }
 
     #[test]
@@ -1357,6 +1526,115 @@ mod tests {
             "DAE expression conversion should preserve exact Flat variable component references"
         );
         Ok(())
+    }
+
+    #[test]
+    fn flat_to_dae_expression_attaches_exact_record_instance_component_ref()
+    -> Result<(), ToDaeError> {
+        let mut flat = flat::Model::new();
+        let span = test_span(28, 35);
+        let aggregate_ref = rumoca_core::ComponentReference {
+            local: false,
+            span,
+            parts: vec![
+                rumoca_core::ComponentRefPart {
+                    ident: "source".to_string(),
+                    span,
+                    subs: Vec::new(),
+                },
+                rumoca_core::ComponentRefPart {
+                    ident: "value".to_string(),
+                    span,
+                    subs: Vec::new(),
+                },
+            ],
+            def_id: Some(rumoca_core::DefId::new(177)),
+        };
+        flat.record_instances.insert(
+            rumoca_core::VarName::new("source.value"),
+            flat::RecordInstance {
+                component_ref: aggregate_ref,
+                source_span: span,
+                canonical_type_id: rumoca_core::TypeId::new(7),
+                type_name: "Complex".to_string(),
+                type_def_id: rumoca_core::DefId::new(70),
+                dims: Vec::new(),
+            },
+        );
+        let expr = rumoca_core::Expression::VarRef {
+            name: rumoca_core::Reference::new("source.value"),
+            subscripts: Vec::new(),
+            span,
+        };
+
+        let rewritten = flat_to_dae_expression_with_refs(&expr, &flat)?;
+
+        assert!(matches!(
+            rewritten,
+            rumoca_core::Expression::VarRef { name, .. }
+                if name.target_def_id() == Some(rumoca_core::DefId::new(177))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn dae_metadata_attachment_preserves_resolved_record_aggregate_identity() {
+        let span = test_span(36, 43);
+        let aggregate_ref = rumoca_core::ComponentReference {
+            local: false,
+            span,
+            parts: vec![
+                rumoca_core::ComponentRefPart {
+                    ident: "source".to_string(),
+                    span,
+                    subs: Vec::new(),
+                },
+                rumoca_core::ComponentRefPart {
+                    ident: "value".to_string(),
+                    span,
+                    subs: Vec::new(),
+                },
+            ],
+            def_id: Some(rumoca_core::DefId::new(177)),
+        };
+        let mut field_ref = aggregate_ref.clone();
+        field_ref.parts.push(rumoca_core::ComponentRefPart {
+            ident: "re".to_string(),
+            span,
+            subs: Vec::new(),
+        });
+        field_ref.def_id = Some(rumoca_core::DefId::new(178));
+        let mut dae = dae::Dae::new();
+        dae.variables.algebraics.insert(
+            rumoca_core::VarName::new("source.value.re"),
+            dae::Variable {
+                name: rumoca_core::VarName::new("source.value.re"),
+                component_ref: Some(field_ref),
+                origin: dae::VariableOrigin::Source,
+                ..rumoca_ir_dae::Variable::empty_with_span(span)
+            },
+        );
+        dae.continuous.equations.push(dae::Equation {
+            lhs: None,
+            rhs: rumoca_core::Expression::VarRef {
+                name: rumoca_core::Reference::with_component_reference(
+                    "source.value",
+                    aggregate_ref,
+                ),
+                subscripts: Vec::new(),
+                span,
+            },
+            span,
+            origin: "record aggregate fixture".to_string(),
+            scalar_count: 1,
+        });
+
+        attach_dae_reference_metadata(&mut dae).expect("aggregate identity should remain resolved");
+
+        let rumoca_core::Expression::VarRef { name, .. } = &dae.continuous.equations[0].rhs else {
+            panic!("expected aggregate variable reference");
+        };
+        assert_eq!(name.target_def_id(), Some(rumoca_core::DefId::new(177)));
     }
 
     #[test]

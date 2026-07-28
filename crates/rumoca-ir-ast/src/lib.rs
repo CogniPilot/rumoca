@@ -44,6 +44,7 @@ pub mod instance;
 mod modelica;
 mod nodes;
 pub mod scope;
+mod semantic_identity;
 pub mod state_machines;
 pub mod types;
 pub mod visitor;
@@ -61,22 +62,26 @@ use std::{fmt::Debug, fmt::Display};
 pub use visitor::{
     ComponentReferenceContext, ExpressionContext, ExpressionTransformer, FunctionCallContext,
     NameContext, SubscriptContext, TypeNameContext, VisitScope, Visitor, collect_component_refs,
-    contains_component_ref, contains_function_call, walk_class_def_default, walk_component_default,
-    walk_component_reference_default, walk_equation_default, walk_expression_default,
-    walk_extend_default, walk_statement_default,
+    contains_component_ref, contains_function_call, expression_component_path,
+    walk_class_def_default, walk_component_default, walk_component_reference_default,
+    walk_equation_default, walk_expression_default, walk_extend_default, walk_statement_default,
 };
 
 pub type AstIndexMap<K, V> = IndexMap<K, V, rustc_hash::FxBuildHasher>;
 
 pub use nodes::*;
+pub use semantic_identity::{
+    classes_are_semantically_compatible, components_are_semantically_compatible,
+};
 
 // Re-export key types from submodules
 pub use instance::{
-    ClassInstanceData, ClassOverride, ClassOverrideMap, InstanceConnection, InstanceData,
+    ClassInstanceData, ClassOverride, ClassOverrideMap, InstanceComponentFamily,
+    InstanceConnection, InstanceConnectionEndpoint, InstanceConnectionFamily, InstanceData,
     InstanceEquation, InstanceId, InstanceOverlay, InstanceStatement, InstancedTree,
     ModificationEnvironment, ModificationValue, QualifiedName,
 };
-pub use scope::{Import as ScopeImport, Scope, ScopeKind, ScopeTree};
+pub use scope::{Import as ScopeImport, InheritedMember, Scope, ScopeKind, ScopeTree};
 pub use state_machines::{State, StateMachine, StateMachineState, StateMachines, Transition};
 pub use types::{
     ArrayType, BuiltinType, ClassKind, ClassType as TypeClassType, EnumerationType, FunctionType,

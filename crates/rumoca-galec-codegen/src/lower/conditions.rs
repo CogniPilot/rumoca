@@ -1,10 +1,10 @@
 //! The canonical condition surface (`f_c`) as the lowering slice sees it.
 //!
 //! MLS B.1d gives every event-generating relation a slot in one generated
-//! Boolean condition vector (e.g. `c[1]..c[4]`), and the sample tick of the
-//! single block clock is itself a condition: its `f_c` right-hand side is
-//! the internal `__rumoca_sample` call (see `rumoca_core::
-//! INTERNAL_SAMPLE_FUNCTION_NAME`). This table indexes the `f_c` equations
+//! Boolean condition vector (e.g. `c[1]..c[4]`). Periodic sample conditions
+//! are identified from canonical `scheduled_root_conditions` metadata after
+//! phase-dae has eliminated the source temporal call. This table indexes the
+//! `f_c` equations
 //! so that:
 //!
 //! - the guard unwrapper can recognize the sample-tick when-edge
@@ -14,10 +14,7 @@
 //!   relations) inline back to their defining Boolean expressions;
 //! - the clock wiring can read the sample call's period argument.
 
-use rumoca_core::{
-    Expression, Subscript, component_path_trailing_index, expressions_semantically_equal,
-    pre_slot_name,
-};
+use rumoca_core::{Expression, Subscript, component_path_trailing_index, pre_slot_name};
 use rumoca_ir_dae::Dae;
 
 use crate::admissibility::AdmittedClock;
@@ -31,7 +28,9 @@ pub(crate) struct ConditionEntry<'a> {
     pub index: usize,
     /// Defining Boolean expression (a relation, or the sample call).
     pub rhs: &'a Expression,
-    /// True when `rhs` is the clock sample-tick call.
+    /// Canonical periodic schedule for this condition, when present.
+    pub schedule: Option<&'a rumoca_ir_dae::DaeScheduledRootCondition>,
+    /// True when this condition is a periodic sample tick.
     pub is_sample: bool,
 }
 
@@ -42,13 +41,14 @@ pub(crate) struct ConditionTable<'a> {
     /// condition equations exist.
     pub base_name: Option<String>,
     pub entries: Vec<ConditionEntry<'a>>,
+    sample_period_expr: Option<&'a Expression>,
 }
 
 impl<'a> ConditionTable<'a> {
     /// Index the untouched DAE's `f_c` partition.
     pub(crate) fn build(dae: &'a Dae) -> Result<Self, GalecTargetError> {
         let mut table = Self::default();
-        for equation in &dae.conditions.equations {
+        for (root_index, equation) in dae.conditions.equations.iter().enumerate() {
             let Some(lhs) = &equation.lhs else {
                 return Err(GalecTargetError::LoweringInternal {
                     detail: "canonical f_c equation without an lhs target".to_owned(),
@@ -73,11 +73,30 @@ impl<'a> ConditionTable<'a> {
                 Some(_) => {}
                 None => table.base_name = Some(base),
             }
+            let schedule = dae
+                .events
+                .scheduled_root_conditions
+                .iter()
+                .find(|schedule| schedule.root_index == root_index);
+            let expression_is_sample = is_sample_call(&equation.rhs);
+            if table.sample_period_expr.is_none() && expression_is_sample {
+                table.sample_period_expr =
+                    sample_timing_args(&equation.rhs).map(|(_, period)| period);
+            }
             table.entries.push(ConditionEntry {
                 index,
                 rhs: &equation.rhs,
-                is_sample: is_sample_call(&equation.rhs),
+                schedule,
+                is_sample: schedule.is_some() || expression_is_sample,
             });
+        }
+        if table.sample_period_expr.is_none() {
+            table.sample_period_expr = dae
+                .clocks
+                .constructor_exprs
+                .iter()
+                .find_map(sample_timing_args)
+                .map(|(_, period)| period);
         }
         Ok(table)
     }
@@ -117,8 +136,7 @@ impl<'a> ConditionTable<'a> {
     /// The period argument expression of the sample-tick condition
     /// (`sample(start, period)` — argument 2).
     pub(crate) fn sample_period_expr(&self) -> Option<&'a Expression> {
-        let entry = self.entries.iter().find(|entry| entry.is_sample)?;
-        sample_timing_args(entry.rhs).map(|(_, interval)| interval)
+        self.sample_period_expr
     }
 }
 
@@ -127,19 +145,23 @@ fn same_sample_clock(
     env: &ConstEnv<'_>,
     clock: &AdmittedClock,
 ) -> bool {
-    if samples
-        .iter()
-        .all(|entry| sample_matches_admitted_clock(entry.rhs, env, clock))
-    {
-        return true;
-    }
-    let Some(first) = samples.first() else {
-        return true;
-    };
     samples
         .iter()
-        .skip(1)
-        .all(|entry| expressions_semantically_equal(first.rhs, entry.rhs))
+        .all(|entry| condition_matches_admitted_clock(entry, env, clock))
+}
+
+fn condition_matches_admitted_clock(
+    entry: &ConditionEntry<'_>,
+    env: &ConstEnv<'_>,
+    clock: &AdmittedClock,
+) -> bool {
+    entry.schedule.map_or_else(
+        || sample_matches_admitted_clock(entry.rhs, env, clock),
+        |schedule| {
+            same_time(schedule.phase_seconds, clock.phase_seconds)
+                && same_time(schedule.period_seconds, clock.period_seconds)
+        },
+    )
 }
 
 fn sample_matches_admitted_clock(
@@ -167,7 +189,16 @@ fn sample_matches_admitted_clock(
 
 fn sample_timing_args(expression: &Expression) -> Option<(&Expression, &Expression)> {
     let args = match expression {
-        Expression::FunctionCall { args, .. } | Expression::BuiltinCall { args, .. } => args,
+        Expression::FunctionCall { name, args, .. }
+            if name.as_str() == rumoca_core::INTERNAL_SAMPLE_FUNCTION_NAME =>
+        {
+            args
+        }
+        Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Sample,
+            args,
+            ..
+        } => args,
         _ => return None,
     };
     match args.as_slice() {
@@ -181,9 +212,8 @@ fn same_time(lhs: f64, rhs: f64) -> bool {
     lhs.is_finite() && rhs.is_finite() && (lhs - rhs).abs() <= 1.0e-12
 }
 
-/// True when `expr` is the lowered clock sample-tick call (brief fact 6:
-/// `sample(0.0, period)` becomes `FunctionCall{__rumoca_sample}`; the
-/// pre-lowering builtin form is accepted defensively).
+/// Compatibility recognition for pre-finalization or hand-built DAE fixtures.
+/// Production DAE identifies sample conditions through scheduled-root metadata.
 fn is_sample_call(expr: &Expression) -> bool {
     match expr {
         Expression::FunctionCall { name, .. } => {

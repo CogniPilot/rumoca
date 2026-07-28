@@ -614,6 +614,7 @@ fn lower_discrete_rhs_treats_sample_parameter_interval_as_periodic_tick() {
 
     let (_, before_start) = eval_linear_ops(&rows[0], &[], &p, 0.0);
     let (_, at_start) = eval_linear_ops(&rows[0], &[], &p, 0.3);
+    let (_, near_later_tick) = eval_linear_ops(&rows[0], &[], &p, 0.8 - 1.0e-10);
 
     assert_eq!(
         before_start.expect("periodic sample output before start"),
@@ -625,22 +626,25 @@ fn lower_discrete_rhs_treats_sample_parameter_interval_as_periodic_tick() {
         1.0,
         "sample(startTime, period) must tick at startTime"
     );
+    assert_eq!(
+        near_later_tick.expect("periodic sample output near a later tick"),
+        0.0,
+        "the lowered tick predicate must not use a wider window than the scheduler"
+    );
 }
 
 #[test]
-fn lower_expression_supports_terminal_builtin_as_runtime_false() {
+fn lower_expression_rejects_terminal_that_survives_dae_lowering() {
     let layout = VarLayout::default();
     let expr = rumoca_core::Expression::BuiltinCall {
         function: rumoca_core::BuiltinFunction::Terminal,
         args: vec![],
         span: test_span(),
     };
-    let lowered = lower_expression(&expr, &layout, &IndexMap::new())
-        .expect("MLS §8.6 terminal() should lower for ordinary simulation rows");
+    let error = lower_expression(&expr, &layout, &IndexMap::new())
+        .expect_err("terminal() must be replaced at the DAE boundary");
 
-    let (regs, _) = eval_linear_ops(&lowered.ops, &[], &[], 0.0);
-
-    assert_eq!(read_reg(&regs, lowered.result), 0.0);
+    assert!(error.to_string().contains("DAE runtime-operator lowering"));
 }
 
 #[test]
@@ -800,7 +804,7 @@ fn lower_expression_rejects_unlowered_streams_read_line_runtime_special() {
 }
 
 #[test]
-fn lower_expression_maps_stream_connector_intrinsics_to_source_value() {
+fn lower_expression_rejects_unlowered_stream_connector_intrinsics() {
     let mut bindings = IndexMap::new();
     bindings.insert("port.h_outflow".to_string(), ScalarSlot::Constant(123.0));
     let layout = VarLayout::from_parts(bindings, 0, 0);
@@ -815,10 +819,9 @@ fn lower_expression_maps_stream_connector_intrinsics_to_source_value() {
             is_constructor: false,
             span: test_span(),
         };
-        let lowered = lower_expression(&expr, &layout, &IndexMap::new())
-            .expect("stream connector intrinsic should lower");
-        let (regs, _) = eval_linear_ops(&lowered.ops, &[], &[], 0.0);
-        assert_eq!(read_reg(&regs, lowered.result), 123.0);
+        let err = lower_expression(&expr, &layout, &IndexMap::new())
+            .expect_err("stream connector intrinsic should be eliminated in Flat IR");
+        assert!(err.reason().contains("Flat connection expansion"), "{err}");
     }
 }
 
@@ -1017,6 +1020,52 @@ fn lower_discrete_rhs_supports_interval_intrinsic_for_clocked_varref_metadata() 
     let (_, output) = eval_linear_ops(&rows[0], &[], &[], 0.0);
 
     assert!((output.expect("row output") - 0.1).abs() < 1e-12);
+}
+
+#[test]
+fn lower_discrete_rhs_infers_interval_as_scalar_inside_arithmetic() {
+    let mut dae_model = dae::Dae::default();
+    dae_model
+        .variables
+        .discrete_reals
+        .insert(rumoca_core::VarName::new("pulse.u"), scalar_var("pulse.u"));
+    dae_model.variables.discrete_reals.insert(
+        rumoca_core::VarName::new("pulse.tol"),
+        scalar_var("pulse.tol"),
+    );
+    dae_model
+        .clocks
+        .intervals
+        .insert("pulse.u".to_string(), 0.1);
+    dae_model.discrete.real_updates.push(dae::Equation {
+        lhs: Some(rumoca_core::VarName::new("pulse.tol").into()),
+        rhs: rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Mul,
+            lhs: Box::new(rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Real(0.25),
+                span: test_span(),
+            }),
+            rhs: Box::new(rumoca_core::Expression::FunctionCall {
+                name: rumoca_core::VarName::new("interval").into(),
+                args: vec![rumoca_core::Expression::VarRef {
+                    name: rumoca_core::VarName::new("pulse.u").into(),
+                    subscripts: vec![],
+                    span: test_span(),
+                }],
+                is_constructor: false,
+                span: test_span(),
+            }),
+            span: test_span(),
+        },
+        span: test_span(),
+        origin: "test scalar interval arithmetic".to_string(),
+        scalar_count: 1,
+    });
+
+    let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
+    let rows = lower_discrete_rhs(&dae_model, &layout).expect("interval arithmetic should lower");
+    let (_, output) = eval_linear_ops(&rows[0], &[], &[], 0.0);
+    assert!((output.expect("row output") - 0.025).abs() < 1e-12);
 }
 
 #[test]

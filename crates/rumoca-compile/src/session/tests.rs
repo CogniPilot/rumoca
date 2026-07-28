@@ -19,6 +19,7 @@ mod instantiation_query_tests;
 mod model_closure_tests;
 mod package_def_map_tests;
 mod persisted_summary_tests;
+mod record_forwarding_tests;
 mod semantic_diagnostics_tests;
 mod source_root_tests;
 mod typed_model_query_tests;
@@ -1252,85 +1253,6 @@ fn test_typecheck_error_code_preserves_et004() {
             assert_eq!(error_code.as_deref(), Some("ET004"));
         }
         other => panic!("expected typecheck failure, got {:?}", other),
-    }
-}
-
-#[test]
-fn test_record_forwarding_rebinds_dependent_record_fields() {
-    let mut session = Session::default();
-    session
-        .add_document(
-            "test.mo",
-            r#"
-                package P
-                  record R
-                    parameter Real a = 2;
-                    final parameter Real b = a;
-                  end R;
-
-                  model Inner
-                    parameter R r;
-                    parameter Real x = r.b;
-                  end Inner;
-
-                  model Mid
-                    parameter R r;
-                    Inner i(r = r);
-                  end Mid;
-
-                  model Top
-                    parameter R r(a = 5);
-                    Mid mid(r = r);
-                  end Top;
-                end P;
-                "#,
-        )
-        .unwrap();
-
-    let result = session.compile_model("P.Top").unwrap();
-    let mid_rb = result
-        .dae
-        .variables
-        .parameters
-        .get(&rumoca_core::VarName::new("mid.r.b"))
-        .expect("mid.r.b must exist in DAE parameters");
-    let mid_irb = result
-        .dae
-        .variables
-        .parameters
-        .get(&rumoca_core::VarName::new("mid.i.r.b"))
-        .expect("mid.i.r.b must exist in DAE parameters");
-
-    let mid_rb_start = mid_rb.start.as_ref().expect("mid.r.b start expected");
-    let mid_irb_start = mid_irb.start.as_ref().expect("mid.i.r.b start expected");
-
-    match mid_rb_start {
-        rumoca_core::Expression::Literal {
-            value: rumoca_core::Literal::Integer(5),
-            ..
-        } => {}
-        rumoca_core::Expression::Literal {
-            value: rumoca_core::Literal::Real(v),
-            ..
-        } if (v - 5.0).abs() <= f64::EPSILON => {}
-        other => panic!(
-            "record forwarding must propagate dependent field b via overridden a, got {:?}",
-            other
-        ),
-    }
-    match mid_irb_start {
-        rumoca_core::Expression::Literal {
-            value: rumoca_core::Literal::Integer(5),
-            ..
-        } => {}
-        rumoca_core::Expression::Literal {
-            value: rumoca_core::Literal::Real(v),
-            ..
-        } if (v - 5.0).abs() <= f64::EPSILON => {}
-        other => panic!(
-            "nested forwarding must preserve dependent record field values, got {:?}",
-            other
-        ),
     }
 }
 

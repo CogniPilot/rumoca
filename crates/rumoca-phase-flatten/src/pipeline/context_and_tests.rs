@@ -26,6 +26,17 @@ fn is_array_literal_binding(binding: &Expression) -> bool {
     matches!(binding, Expression::Array { .. })
 }
 
+/// True when `binding` is a bare component reference rather than an
+/// enumeration literal path (MLS 3.7 §4.8.5) or a composed expression.
+fn is_plain_component_reference(binding: &Expression) -> bool {
+    matches!(
+        binding,
+        Expression::VarRef {
+            name, subscripts, ..
+        } if subscripts.is_empty() && !looks_like_enum_literal_path(name.as_str())
+    )
+}
+
 impl Context {
     /// Create a new flatten context.
     pub(crate) fn new() -> Self {
@@ -38,6 +49,7 @@ impl Context {
             target_def_names: rustc_hash::FxHashMap::default(),
             modified_constant_keys: rustc_hash::FxHashSet::default(),
             flat_parameter_constant_keys: rustc_hash::FxHashSet::default(),
+            expanded_component_keys: rustc_hash::FxHashSet::default(),
             array_dimensions: rustc_hash::FxHashMap::default(),
             structural_params: std::collections::HashSet::new(),
             non_structural_params: std::collections::HashSet::new(),
@@ -118,6 +130,8 @@ impl Context {
                 tree,
                 span,
             )?;
+            let inherited_dims = unexpanded_structured_parent_dims(instance_data, overlay);
+            let resolved_dims = normalize_inferred_dims_for_parent(&resolved_dims, &inherited_dims);
             let Some(flat_var) = flat.variables.get_mut(&var_name) else {
                 continue;
             };
@@ -282,6 +296,29 @@ impl Context {
                 })
                 .map(|(name, _)| name.to_string()),
         );
+        self.seed_expanded_component_keys(flat);
+    }
+
+    /// Record the component paths the flat model materialized only through their
+    /// members, so constant folding leaves references to them symbolic.
+    ///
+    /// A record-valued parameter such as `src.Phi` is instantiated as
+    /// `src.Phi.re` / `src.Phi.im`; the whole-record path never becomes a flat
+    /// variable, so `flat_parameter_constant_keys` does not cover it and folding
+    /// would fall back to the declaration default recorded from the class body,
+    /// discarding the component modification (MLS §7.2.4).
+    pub(crate) fn seed_expanded_component_keys(&mut self, flat: &Model) {
+        let names: rustc_hash::FxHashSet<String> =
+            flat.variables.keys().map(|name| name.to_string()).collect();
+        let prefixes = names
+            .iter()
+            .flat_map(|name| name.match_indices('.').map(|(offset, _)| &name[..offset]))
+            .filter(|prefix| !names.contains(*prefix));
+        for prefix in prefixes {
+            if !self.expanded_component_keys.contains(prefix) {
+                self.expanded_component_keys.insert(prefix.to_string());
+            }
+        }
     }
 
     /// Refresh enum parameter values after additional constants/booleans are injected.
@@ -697,6 +734,15 @@ impl Context {
             &self.array_dimensions,
             &self.functions,
         );
+        let mut param_evaluator = ParamEvaluator::new(&ParamEvalContext {
+            known_ints: &self.parameter_values,
+            known_reals: &self.real_parameter_values,
+            known_bools: &self.boolean_parameter_values,
+            known_enums: &self.enum_parameter_values,
+            array_dims: &self.array_dimensions,
+            functions: &self.functions,
+            var_context: None,
+        });
 
         let new_vals: Vec<(String, i64)> = params
             .iter()
@@ -715,17 +761,8 @@ impl Context {
                         return Some(((*name).to_string(), val));
                     }
 
-                    // Try evaluation with full context including functions
-                    let int_ctx = ParamEvalContext {
-                        known_ints: &self.parameter_values,
-                        known_reals: &self.real_parameter_values,
-                        known_bools: &self.boolean_parameter_values,
-                        known_enums: &self.enum_parameter_values,
-                        array_dims: &self.array_dimensions,
-                        functions: &self.functions,
-                        var_context: Some(name),
-                    };
-                    if let Some(val) = try_eval_integer_with_context(binding, &int_ctx) {
+                    // Try evaluation with full context including functions.
+                    if let Some(val) = param_evaluator.eval_integer(binding, Some(name)) {
                         return Some(((*name).to_string(), val));
                     }
 
@@ -768,19 +805,20 @@ impl Context {
 
     /// Try to evaluate boolean parameters in one pass.
     fn eval_boolean_params(&mut self, params: &[ParamBinding<'_>]) -> bool {
+        let mut param_evaluator = ParamEvaluator::new(&ParamEvalContext {
+            known_ints: &self.parameter_values,
+            known_reals: &self.real_parameter_values,
+            known_bools: &self.boolean_parameter_values,
+            known_enums: &self.enum_parameter_values,
+            array_dims: &self.array_dimensions,
+            functions: &self.functions,
+            var_context: None,
+        });
         let new_vals: Vec<(String, bool)> = params
             .iter()
             .filter_map(|ParamBinding { name, binding, .. }| {
-                let bool_ctx = ParamEvalContext {
-                    known_ints: &self.parameter_values,
-                    known_reals: &self.real_parameter_values,
-                    known_bools: &self.boolean_parameter_values,
-                    known_enums: &self.enum_parameter_values,
-                    array_dims: &self.array_dimensions,
-                    functions: &self.functions,
-                    var_context: Some(name),
-                };
-                try_eval_flat_expr_boolean_with_context(binding, &bool_ctx)
+                param_evaluator
+                    .eval_boolean(binding, Some(name))
                     .map(|v| ((*name).to_string(), v))
             })
             .collect();
@@ -797,19 +835,19 @@ impl Context {
 
     /// Try to evaluate real parameters in one pass.
     fn eval_real_params(&mut self, params: &[ParamBinding<'_>]) -> bool {
+        let mut param_evaluator = ParamEvaluator::new(&ParamEvalContext {
+            known_ints: &self.parameter_values,
+            known_reals: &self.real_parameter_values,
+            known_bools: &self.boolean_parameter_values,
+            known_enums: &self.enum_parameter_values,
+            array_dims: &self.array_dimensions,
+            functions: &self.functions,
+            var_context: None,
+        });
         let new_vals: Vec<(String, f64)> = params
             .iter()
             .filter_map(|ParamBinding { name, binding, .. }| {
-                let real_ctx = ParamEvalContext {
-                    known_ints: &self.parameter_values,
-                    known_reals: &self.real_parameter_values,
-                    known_bools: &self.boolean_parameter_values,
-                    known_enums: &self.enum_parameter_values,
-                    array_dims: &self.array_dimensions,
-                    functions: &self.functions,
-                    var_context: Some(name),
-                };
-                if let Some(val) = try_eval_real_with_context(binding, &real_ctx) {
+                if let Some(val) = param_evaluator.eval_real(binding, Some(name)) {
                     return Some(((*name).to_string(), val));
                 }
                 // Try user-defined function evaluation for function call bindings
@@ -939,6 +977,17 @@ impl Context {
     }
 
     fn try_eval_enum_binding(&self, binding: &Expression) -> Option<String> {
+        // A bare component reference is resolved structurally: its own
+        // composite name, then the record aliases that carry `outer`/inherited
+        // bindings. The shared flat evaluator would additionally accept a
+        // unique-suffix match found by dropping leading path segments, which
+        // MLS 3.7 §5.3.2 does not permit: every identifier after the first
+        // must name an element of the instance found so far, so `pipe1.system.x`
+        // is an element of `pipe1` and never the top-level `system.x` unless an
+        // alias states that `pipe1.system` *is* `system`.
+        if is_plain_component_reference(binding) {
+            return self.resolve_varref_enum_reference(binding);
+        }
         try_eval_flat_expr_enum(
             binding,
             &self.parameter_values,
@@ -1196,6 +1245,29 @@ impl Context {
         }
         None
     }
+}
+
+fn unexpanded_structured_parent_dims(
+    instance: &ast::InstanceData,
+    overlay: &ast::InstanceOverlay,
+) -> Vec<i64> {
+    let mut parents = overlay
+        .components
+        .values()
+        .filter(|candidate| !candidate.is_primitive && !candidate.dims.is_empty())
+        .filter(|candidate| {
+            candidate.qualified_name.parts.len() < instance.qualified_name.parts.len()
+                && instance
+                    .qualified_name
+                    .parts
+                    .starts_with(&candidate.qualified_name.parts)
+        })
+        .collect::<Vec<_>>();
+    parents.sort_by_key(|candidate| candidate.qualified_name.parts.len());
+    parents
+        .into_iter()
+        .flat_map(|candidate| candidate.dims.iter().copied())
+        .collect()
 }
 
 pub(crate) fn scoped_lookup_candidates(name: &str, scope: &str) -> Vec<String> {
@@ -1495,7 +1567,7 @@ fn process_class_instance_body(
         }
     }
 
-    // Convert algorithms (preserve structure per SPEC_0020)
+    // Convert algorithms (preserve structure per SPEC_0007 / MLS §11)
     for inst_algs in &class_data.algorithms {
         set_class_instance_imports_for_statement_block(
             ctx,
@@ -1574,7 +1646,7 @@ fn process_class_instance_body(
 
 /// Flatten an algorithm section.
 ///
-/// Per SPEC_0020: Algorithms are preserved as structured statements,
+/// Per SPEC_0007 / MLS §11: algorithms are preserved as structured statements,
 /// with variable names qualified and outputs identified.
 pub(crate) fn flatten_algorithm_section(
     statements: &[InstanceStatement],
@@ -1726,21 +1798,24 @@ fn instance_source_span(
     tree: &rumoca_ir_ast::ClassTree,
 ) -> Result<rumoca_core::Span, FlattenError> {
     let location = &instance_data.source_location;
-    if location.file_name.is_empty() || location.start >= location.end {
+    if !location.has_source() {
         return Err(FlattenError::missing_source_context(
             "symbolic component dimensions are missing a non-empty source location",
         ));
     }
     tree.source_map
-        .try_location_to_span(
-            &location.file_name,
+        .try_span(
+            location.source,
             location.start as usize,
             location.end as usize,
         )
         .ok_or_else(|| {
+            let file_name = tree
+                .source_map
+                .name(location.source)
+                .unwrap_or(crate::source_spans::UNKNOWN_SOURCE_DISPLAY_NAME);
             FlattenError::missing_source_context(format!(
-                "source file `{}` for symbolic component dimensions was not found",
-                location.file_name
+                "source file `{file_name}` for symbolic component dimensions was not found"
             ))
         })
 }

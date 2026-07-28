@@ -1125,9 +1125,10 @@ end SimpleODE;
     let sorted = sort_dae(&dae).expect("sort_dae should succeed for simple ODE");
 
     assert_eq!(sorted.blocks.len(), 1, "one scalar block for one ODE eq");
-    assert!(
-        matches!(&sorted.blocks[0], BltBlock::Scalar { .. }),
-        "single ODE should be a scalar block"
+    assert_eq!(
+        sorted.blocks[0].scalar_block_count(),
+        1,
+        "single ODE should be one scalar block"
     );
     assert_eq!(sorted.matching.len(), 1);
     assert!(sorted.diagnostics.is_empty(), "no warnings for simple ODE");
@@ -1150,11 +1151,13 @@ end Oscillator;
     let sorted = sort_dae(&dae).expect("sort_dae should succeed for oscillator");
 
     assert_eq!(sorted.blocks.len(), 2, "two scalar blocks for two ODE eqs");
-    assert!(
+    assert_eq!(
         sorted
             .blocks
             .iter()
-            .all(|b| matches!(b, BltBlock::Scalar { .. })),
+            .map(BltBlock::scalar_block_count)
+            .sum::<usize>(),
+        2,
         "oscillator should have no algebraic loops"
     );
     assert_eq!(sorted.matching.len(), 2);
@@ -1182,13 +1185,99 @@ end DaeModel;
     assert_eq!(sorted.matching.len(), 2);
 
     // Both blocks should be scalar (no algebraic loop: y can be computed first)
-    assert!(
+    assert_eq!(
         sorted
             .blocks
             .iter()
-            .all(|b| matches!(b, BltBlock::Scalar { .. })),
+            .map(BltBlock::scalar_block_count)
+            .sum::<usize>(),
+        2,
         "DAE model with causal ordering should have no algebraic loops"
     );
+}
+
+/// A whole-array first-order ODE must not produce one BLT block per array
+/// element: every row references only its own unknown, so the family is
+/// provably a run of singleton SCCs and BLT keeps it compact.
+#[test]
+fn test_sort_dae_whole_array_ode_stays_compact() {
+    const CELLS: usize = 512;
+    let source = format!(
+        r"
+model WholeArrayOde
+    Real x[{CELLS}](each start = 1.0);
+equation
+    for i in 1:{CELLS} loop
+      der(x[i]) = -x[i];
+    end for;
+end WholeArrayOde;
+"
+    );
+    let mut dae = compile_model(&source, "WholeArrayOde").expect("whole-array ODE compiles");
+    // `sort_dae` consumes the scalar view; the compiled DAE still holds the
+    // whole-array row.
+    rumoca_compile::phase_structural::scalarize_equations(&mut dae)
+        .expect("whole-array ODE scalarizes");
+    let sorted = sort_dae(&dae).expect("sort_dae should succeed for the whole-array ODE");
+
+    let scalar_blocks: usize = sorted.blocks.iter().map(BltBlock::scalar_block_count).sum();
+    assert_eq!(
+        scalar_blocks, CELLS,
+        "the decomposition must still cover every scalar row"
+    );
+    assert_eq!(sorted.matching.len(), CELLS);
+    // Exactly one block, not merely "fewer than one per element": the family is
+    // a single regular descriptor, so anything above 1 means compaction only
+    // partially applied and the loose bound would not have noticed.
+    assert_eq!(
+        sorted.blocks.len(),
+        1,
+        "the whole family must collapse to one block, got {:?}",
+        sorted
+            .blocks
+            .iter()
+            .map(BltBlock::scalar_block_count)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(sorted.blocks[0].scalar_block_count(), CELLS);
+}
+
+/// `sort_dae` must be reproducible: hash-iteration order may never leak into
+/// the matching or the block sequence, because these results feed MSL trace
+/// baselines.
+#[test]
+fn test_sort_dae_is_deterministic_across_repeat_runs() {
+    let source = r"
+model RepeatDeterminism
+    Real x(start = 1.0);
+    Real y;
+    Real z;
+    parameter Real k = 2.0;
+equation
+    der(x) = -k * y;
+    y = z + x;
+    z = 0.5 * x;
+end RepeatDeterminism;
+";
+    let dae = compile_model(source, "RepeatDeterminism").expect("model compiles");
+    let reference = sort_dae(&dae).expect("sort_dae succeeds");
+    let reference_matching: Vec<String> = reference
+        .matching
+        .iter()
+        .map(|(equation, unknown)| format!("{equation}<-{unknown}"))
+        .collect();
+    let reference_blocks = format!("{:?}", reference.blocks);
+
+    for _ in 0..8 {
+        let sorted = sort_dae(&dae).expect("sort_dae succeeds");
+        let matching: Vec<String> = sorted
+            .matching
+            .iter()
+            .map(|(equation, unknown)| format!("{equation}<-{unknown}"))
+            .collect();
+        assert_eq!(matching, reference_matching);
+        assert_eq!(format!("{:?}", sorted.blocks), reference_blocks);
+    }
 }
 
 /// Test that record field expansion works with replaceable type redeclarations.

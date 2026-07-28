@@ -1,4 +1,4 @@
-//! flat::Algorithm section flattening for SPEC_0020 compliance.
+//! `flat::Algorithm` section flattening for SPEC_0007 / MLS §11 compliance.
 //!
 //! This module handles:
 //! - Variable name qualification in algorithm statements (Task 3.1)
@@ -214,7 +214,7 @@ fn qualify_expr(
 
 /// Extract all output variables (left-hand sides of assignments) from statements.
 ///
-/// Per SPEC_0020: Track which variables are assigned in algorithms.
+/// Per SPEC_0007 / MLS §11: track variables assigned in algorithms.
 /// This is needed for balance checking and causality analysis.
 pub(crate) fn extract_outputs(
     statements: &[rumoca_core::Statement],

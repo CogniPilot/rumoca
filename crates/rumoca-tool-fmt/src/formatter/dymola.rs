@@ -20,7 +20,9 @@ pub(super) struct DymolaFormatState {
     paren_depth: usize,
     brace_depth: usize,
     bracket_depth: usize,
-    prev_char: char,
+    /// True when the previous character inside a string / quoted identifier was
+    /// an unconsumed `\`, so the current character is escaped (MLS §2.2).
+    escaped: bool,
     statement_continuation: bool,
     comment_anchored_layout: bool,
 }
@@ -185,10 +187,10 @@ fn should_preserve_unindented_layout_line(trimmed: &str) -> bool {
         || lower.starts_with("extends ")
         || lower.starts_with("import ")
         || lower.starts_with("within ")
-        || lower.starts_with("annotation")
+        || starts_with_keyword(&lower, "annotation")
         || lower.starts_with("connect(")
-        || lower.starts_with("public")
-        || lower.starts_with("protected")
+        || starts_with_keyword(&lower, "public")
+        || starts_with_keyword(&lower, "protected")
 }
 
 fn indented_line(trimmed: &str, options: &FormatOptions, visual_indent: usize) -> String {
@@ -234,7 +236,7 @@ fn should_preserve_leading_whitespace(trimmed: &str, state: &DymolaFormatState) 
         || state.brace_depth > 0
         || state.bracket_depth > 0
         || trimmed.starts_with('"')
-        || trimmed.starts_with("annotation")
+        || starts_with_keyword(&trimmed.to_ascii_lowercase(), "annotation")
         || trimmed.starts_with("/*")
         || trimmed.starts_with("//")
 }
@@ -251,60 +253,82 @@ fn is_comment_anchor_boundary(trimmed: &str) -> bool {
         || is_branch_keyword(&lower)
         || lower.starts_with("end if")
         || lower.starts_with("end when")
-        || lower.starts_with("annotation")
+        || starts_with_keyword(&lower, "annotation")
 }
 
 fn update_format_state(line: &str, state: &mut DymolaFormatState) {
     let was_in_block_comment = state.in_block_comment;
     update_format_section(line, state);
     let started_as_layout_comment = is_layout_comment_line(line, state);
+    scan_line_lexical_state(line, state);
+    finish_line_state(line, state);
+    update_comment_anchored_layout(line, state, was_in_block_comment, started_as_layout_comment);
+}
+
+/// Advance the string / comment / delimiter state machine over one source line.
+///
+/// Quoted regions consume `\` escapes so that a literal trailing backslash
+/// (`"a\\"`) does not leave `in_string` latched for the rest of the file.
+fn scan_line_lexical_state(line: &str, state: &mut DymolaFormatState) {
     let mut chars = line.chars().peekable();
     while let Some(c) = chars.next() {
         if state.in_block_comment {
             if c == '*' && matches!(chars.peek(), Some('/')) {
                 let _ = chars.next();
                 state.in_block_comment = false;
-                state.prev_char = '/';
-            } else {
-                state.prev_char = c;
             }
             continue;
         }
-        if !state.in_quoted_identifier && c == '"' && state.prev_char != '\\' {
-            state.in_string = !state.in_string;
-            state.prev_char = c;
+        if state.in_string || state.in_quoted_identifier {
+            advance_quoted_state(c, state);
             continue;
         }
-        if !state.in_string && c == '\'' {
-            state.in_quoted_identifier = !state.in_quoted_identifier;
-            state.prev_char = c;
+        if c == '"' {
+            state.in_string = true;
+            state.escaped = false;
             continue;
         }
-        if !state.in_string && !state.in_quoted_identifier {
-            if c == '/' && matches!(chars.peek(), Some('/')) {
-                state.prev_char = '/';
-                break;
-            }
-            if c == '/' && matches!(chars.peek(), Some('*')) {
-                let _ = chars.next();
-                state.in_block_comment = true;
-                state.prev_char = '*';
-                continue;
-            }
-            match c {
-                '(' => state.paren_depth += 1,
-                ')' => state.paren_depth = state.paren_depth.saturating_sub(1),
-                '{' => state.brace_depth += 1,
-                '}' => state.brace_depth = state.brace_depth.saturating_sub(1),
-                '[' => state.bracket_depth += 1,
-                ']' => state.bracket_depth = state.bracket_depth.saturating_sub(1),
-                _ => {}
-            }
+        if c == '\'' {
+            state.in_quoted_identifier = true;
+            state.escaped = false;
+            continue;
         }
-        state.prev_char = c;
+        if c == '/' && matches!(chars.peek(), Some('/')) {
+            break;
+        }
+        if c == '/' && matches!(chars.peek(), Some('*')) {
+            let _ = chars.next();
+            state.in_block_comment = true;
+            continue;
+        }
+        update_delimiter_depth(c, state);
     }
-    finish_line_state(line, state);
-    update_comment_anchored_layout(line, state, was_in_block_comment, started_as_layout_comment);
+}
+
+/// Consume one character inside a string literal or quoted identifier.
+fn advance_quoted_state(c: char, state: &mut DymolaFormatState) {
+    if state.escaped {
+        state.escaped = false;
+        return;
+    }
+    match c {
+        '\\' => state.escaped = true,
+        '"' if state.in_string => state.in_string = false,
+        '\'' if state.in_quoted_identifier => state.in_quoted_identifier = false,
+        _ => {}
+    }
+}
+
+fn update_delimiter_depth(c: char, state: &mut DymolaFormatState) {
+    match c {
+        '(' => state.paren_depth += 1,
+        ')' => state.paren_depth = state.paren_depth.saturating_sub(1),
+        '{' => state.brace_depth += 1,
+        '}' => state.brace_depth = state.brace_depth.saturating_sub(1),
+        '[' => state.bracket_depth += 1,
+        ']' => state.bracket_depth = state.bracket_depth.saturating_sub(1),
+        _ => {}
+    }
 }
 
 fn finish_line_state(line: &str, state: &mut DymolaFormatState) {
@@ -316,17 +340,31 @@ fn finish_line_state(line: &str, state: &mut DymolaFormatState) {
     state.previous_line_continues = continues;
 }
 
+/// True when `lower` opens with `keyword` as a whole Modelica keyword.
+///
+/// Guards against identifier prefixes: `equationCount a;` declares a component
+/// of type `equationCount` and must not switch the formatter into the equation
+/// section (MLS §2.3.3 reserves `equation`, but `equationCount` is a legal
+/// identifier).
+fn starts_with_keyword(lower: &str, keyword: &str) -> bool {
+    lower
+        .strip_prefix(keyword)
+        .is_some_and(|rest| !rest.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_'))
+}
+
 fn update_format_section(line: &str, state: &mut DymolaFormatState) {
-    if state.in_string || state.in_quoted_identifier {
+    if state.in_string || state.in_quoted_identifier || state.in_block_comment {
         return;
     }
     let lower = line.trim_start().to_ascii_lowercase();
-    if lower.starts_with("initial equation") || lower.starts_with("equation") {
+    if starts_with_keyword(&lower, "initial equation") || starts_with_keyword(&lower, "equation") {
         state.section = FormatSection::Equation;
-    } else if lower.starts_with("initial algorithm") || lower.starts_with("algorithm") {
+    } else if starts_with_keyword(&lower, "initial algorithm")
+        || starts_with_keyword(&lower, "algorithm")
+    {
         state.section = FormatSection::Algorithm;
-    } else if lower.starts_with("public")
-        || lower.starts_with("protected")
+    } else if starts_with_keyword(&lower, "public")
+        || starts_with_keyword(&lower, "protected")
         || is_class_end_keyword(&lower)
     {
         state.section = FormatSection::Declaration;

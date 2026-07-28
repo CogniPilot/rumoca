@@ -518,3 +518,37 @@ fn test_resolved_modelica_body_precedes_string_intrinsic_short_name() {
     assert_eq!(eval_expr::<f64>(&call, &env), Ok(5.0));
     assert_eq!(eval_array_values::<f64>(&call, &env), Ok(vec![5.0]));
 }
+
+/// MLS §12.4.4: a protected function variable declared with an unspecified
+/// `[:]` dimension takes its size from its binding equation. Declining to
+/// evaluate such a declaration (or trusting the `[0]` placeholder the
+/// declaration carries) loses the binding's elements entirely.
+#[test]
+fn function_local_with_unspecified_dimension_is_sized_by_its_binding() {
+    let mut env = VarEnv::<f64>::new();
+    let mut function = rumoca_core::Function::new("Pkg.thirdOfLocal", rumoca_core::Span::DUMMY);
+    set_test_function_instance(&mut function, 77);
+    function.add_output(rumoca_core::FunctionParam::new(
+        "y",
+        "Real",
+        rumoca_core::Span::DUMMY,
+    ));
+    function.add_local(
+        rumoca_core::FunctionParam::new("v", "Real", rumoca_core::Span::DUMMY)
+            .with_dims(vec![0])
+            .with_shape_expr(vec![rumoca_core::Subscript::Colon {
+                span: rumoca_core::Span::DUMMY,
+            }])
+            .with_default(arr(vec![lit(4.0), lit(5.0), lit(6.0)], false)),
+    );
+    function.body = vec![rumoca_core::Statement::Assignment {
+        comp: comp_ref("y"),
+        value: index_expr(var("v"), 3),
+        span: rumoca_core::Span::DUMMY,
+    }];
+    env.functions = Arc::new(IndexMap::from([("Pkg.thirdOfLocal".to_string(), function)]));
+
+    let call = resolved_fn_call("Pkg.thirdOfLocal", "Pkg.thirdOfLocal", 77, vec![]);
+
+    assert_eq!(eval_expr::<f64>(&call, &env), Ok(6.0));
+}

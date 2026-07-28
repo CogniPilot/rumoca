@@ -26,6 +26,264 @@ fn fixture_span() -> Span {
 }
 
 #[test]
+fn tensor_output_count_uses_compact_domain_bounds() {
+    let domain = test_tensor_domain(1_000_000);
+    let output_map = TensorOutputMap::dense_contiguous(7, &domain)
+        .expect("large domain has valid dense strides");
+
+    assert_eq!(
+        output_map.output_count(&domain),
+        Ok(1_000_007),
+        "output count should be derived from compact bounds"
+    );
+}
+
+#[test]
+fn tensor_output_count_combines_correlated_terms_per_dimension() {
+    let domain = test_tensor_domain(4);
+    let output_map = TensorOutputMap {
+        start: 3,
+        strides: vec![
+            AffineStencilIndexStrideTerm {
+                dimension: 0,
+                stride: -2,
+            },
+            AffineStencilIndexStrideTerm {
+                dimension: 0,
+                stride: 3,
+            },
+        ],
+    };
+
+    assert_eq!(output_map.output_count(&domain), Ok(7));
+}
+
+#[test]
+fn tensor_output_indices_combine_terms_before_checked_arithmetic() {
+    let domain = test_tensor_domain(3);
+    let output_map = TensorOutputMap {
+        start: 3,
+        strides: vec![
+            AffineStencilIndexStrideTerm {
+                dimension: 0,
+                stride: isize::MAX,
+            },
+            AffineStencilIndexStrideTerm {
+                dimension: 0,
+                stride: 1,
+            },
+            AffineStencilIndexStrideTerm {
+                dimension: 0,
+                stride: -isize::MAX,
+            },
+        ],
+    };
+
+    assert_eq!(output_map.output_indices(&domain), Ok(vec![3, 4, 5]));
+}
+
+#[test]
+fn tensor_shape_contract_validates_large_domain_without_scalarizing_it() {
+    let domain = test_tensor_domain(1_000_000_000);
+    let block = ComputeBlock {
+        nodes: vec![ComputeNode::Map {
+            output_map: TensorOutputMap::dense_contiguous(0, &domain)
+                .expect("large domain has valid dense strides"),
+            domain,
+            base_ops: vec![
+                LinearOp::Const { dst: 0, value: 1.0 },
+                LinearOp::StoreOutput { src: 0 },
+            ],
+            load_strides: Vec::new(),
+            const_strides: Vec::new(),
+            metadata: TensorNodeMetadata::default(),
+            span: fixture_span(),
+        }],
+    };
+
+    block
+        .validate_shape_contract("large compact tensor")
+        .expect("compact tensor validation must not materialize domain points");
+}
+
+#[test]
+fn tensor_shape_contract_accepts_empty_map_and_affine_stencil_domains() {
+    let domain = test_tensor_domain(0);
+    let output_map = TensorOutputMap::dense_contiguous(17, &domain)
+        .expect("empty domain has valid dense strides");
+    let node = |affine_stencil| {
+        let base_ops = vec![
+            LinearOp::Const { dst: 0, value: 1.0 },
+            LinearOp::StoreOutput { src: 0 },
+        ];
+        if affine_stencil {
+            ComputeNode::AffineStencil {
+                domain: domain.clone(),
+                output_map: output_map.clone(),
+                base_ops,
+                load_strides: Vec::new(),
+                const_strides: Vec::new(),
+                metadata: TensorNodeMetadata::default(),
+                span: fixture_span(),
+            }
+        } else {
+            ComputeNode::Map {
+                domain: domain.clone(),
+                output_map: output_map.clone(),
+                base_ops,
+                load_strides: Vec::new(),
+                const_strides: Vec::new(),
+                metadata: TensorNodeMetadata::default(),
+                span: fixture_span(),
+            }
+        }
+    };
+
+    for tensor_node in [node(false), node(true)] {
+        let block = ComputeBlock {
+            nodes: vec![tensor_node],
+        };
+        block
+            .validate_shape_contract("empty compact tensor")
+            .expect("empty Map and AffineStencil domains are valid zero-iteration tensors");
+        assert_eq!(block.len(), Ok(0));
+        assert!(block.is_empty());
+    }
+}
+
+#[test]
+fn tensor_shape_contract_combines_duplicate_load_strides_before_range_validation() {
+    let domain = test_tensor_domain(3);
+    let block = ComputeBlock {
+        nodes: vec![ComputeNode::Map {
+            output_map: TensorOutputMap::dense_contiguous(0, &domain)
+                .expect("three-element domain has valid dense strides"),
+            domain,
+            base_ops: vec![
+                LinearOp::LoadY { dst: 0, index: 0 },
+                LinearOp::StoreOutput { src: 0 },
+            ],
+            load_strides: vec![
+                AffineStencilLoadStride {
+                    op_position: 0,
+                    terms: vec![AffineStencilIndexStrideTerm {
+                        dimension: 0,
+                        stride: isize::MAX,
+                    }],
+                },
+                AffineStencilLoadStride {
+                    op_position: 0,
+                    terms: vec![AffineStencilIndexStrideTerm {
+                        dimension: 0,
+                        stride: 1,
+                    }],
+                },
+                AffineStencilLoadStride {
+                    op_position: 0,
+                    terms: vec![AffineStencilIndexStrideTerm {
+                        dimension: 0,
+                        stride: -isize::MAX,
+                    }],
+                },
+            ],
+            const_strides: Vec::new(),
+            metadata: TensorNodeMetadata::default(),
+            span: fixture_span(),
+        }],
+    };
+
+    block
+        .validate_shape_contract("correlated load strides")
+        .expect("the combined load stride is one");
+}
+
+#[test]
+fn tensor_shape_contract_rejects_stride_metadata_at_the_ir_boundary() {
+    let domain = test_tensor_domain(2);
+    let block = ComputeBlock {
+        nodes: vec![ComputeNode::Map {
+            output_map: TensorOutputMap::dense_contiguous(0, &domain)
+                .expect("two-element domain has valid dense strides"),
+            domain,
+            base_ops: vec![
+                LinearOp::Const { dst: 0, value: 1.0 },
+                LinearOp::StoreOutput { src: 0 },
+            ],
+            load_strides: vec![AffineStencilLoadStride {
+                op_position: 0,
+                terms: vec![AffineStencilIndexStrideTerm {
+                    dimension: 0,
+                    stride: 1,
+                }],
+            }],
+            const_strides: Vec::new(),
+            metadata: TensorNodeMetadata::default(),
+            span: fixture_span(),
+        }],
+    };
+
+    let error = block
+        .validate_shape_contract("invalid load stride")
+        .expect_err("a load stride on Const must fail in Solve IR");
+    assert!(
+        matches!(
+            error,
+            SolveProblemShapeContractError::AffineStrideOperation {
+                actual: Some("Const"),
+                ..
+            }
+        ),
+        "{error}"
+    );
+}
+
+#[test]
+fn tensor_shape_contract_rejects_non_finite_combined_constant_stride() {
+    let domain = test_tensor_domain(2);
+    let block = ComputeBlock {
+        nodes: vec![ComputeNode::Map {
+            output_map: TensorOutputMap::dense_contiguous(0, &domain)
+                .expect("two-element domain has valid dense strides"),
+            domain,
+            base_ops: vec![
+                LinearOp::Const { dst: 0, value: 1.0 },
+                LinearOp::StoreOutput { src: 0 },
+            ],
+            load_strides: Vec::new(),
+            const_strides: vec![
+                AffineStencilConstStride {
+                    op_position: 0,
+                    terms: vec![AffineStencilConstStrideTerm {
+                        dimension: 0,
+                        stride: f64::MAX,
+                    }],
+                },
+                AffineStencilConstStride {
+                    op_position: 0,
+                    terms: vec![AffineStencilConstStrideTerm {
+                        dimension: 0,
+                        stride: f64::MAX,
+                    }],
+                },
+            ],
+            metadata: TensorNodeMetadata::default(),
+            span: fixture_span(),
+        }],
+    };
+
+    assert!(matches!(
+        block.validate_shape_contract("constant stride overflow"),
+        Err(
+            SolveProblemShapeContractError::NonFiniteAffineConstantStride {
+                op_position: 0,
+                stride_dimension: 0,
+                ..
+            }
+        )
+    ));
+}
+
+#[test]
 fn scalar_program_block_with_source_span_preserves_explicit_fixture_span() {
     let block = ScalarProgramBlock::with_source_span(vec![vec![]], fixture_span());
     assert_eq!(block.program_spans, vec![fixture_span()]);
@@ -100,6 +358,7 @@ fn representative_solve_layout() -> SolveLayout {
         pre_param_bindings: vec![PreParamBinding {
             dest_p_index: 1,
             source: PreParamSource::Y { index: 2 },
+            clock_schedule: None,
         }],
         ..SolveLayout::default()
     }
@@ -128,7 +387,7 @@ fn representative_continuous_system() -> ContinuousSolveSystem {
         implicit_row_targets: vec![Some(scalar_slot_y(1))],
         algebraic_projection_plan: AlgebraicProjectionPlan {
             blocks: vec![AlgebraicProjectionBlock {
-                rows: vec![1],
+                rows: vec![0],
                 y_indices: vec![1],
             }],
         },
@@ -139,6 +398,8 @@ fn representative_continuous_system() -> ContinuousSolveSystem {
             ]],
             fixture_span(),
         )),
+        manifold_residual: ComputeBlock::default(),
+        manifold_projection_plan: AlgebraicProjectionPlan::default(),
         derivative_rhs: representative_derivative_rhs(),
     }
 }
@@ -171,8 +432,8 @@ fn representative_initialization_system() -> InitializationSolveSystem {
             ]],
             fixture_span(),
         )),
-        projection_indices: Vec::new(),
-        projection_plan: AlgebraicProjectionPlan::default(),
+        projection_unknowns: Vec::new(),
+        projection_plan: InitializationProjectionPlan::default(),
         update_rhs: ScalarProgramBlock::default(),
         update_targets: Vec::new(),
     }
@@ -572,6 +833,31 @@ fn solve_problem_json_has_supported_schema_version() {
 }
 
 #[test]
+fn mass_matrix_wire_format_stays_compact_and_roundtrips_sparse_entries() {
+    let identity = serde_json::to_value(MassMatrix::Identity).expect("serialize identity");
+    assert_eq!(identity, serde_json::json!({ "kind": "identity" }));
+
+    let sparse = MassMatrix::Sparse {
+        entries: vec![
+            MassMatrixEntry {
+                row: 0,
+                column: 0,
+                value: 2.0,
+            },
+            MassMatrixEntry {
+                row: 1,
+                column: 1,
+                value: 3.0,
+            },
+        ],
+    };
+    let json = serde_json::to_string(&sparse).expect("serialize sparse mass matrix");
+    let decoded: MassMatrix = serde_json::from_str(&json).expect("deserialize sparse mass matrix");
+
+    assert_eq!(decoded, sparse);
+}
+
+#[test]
 fn representative_solve_problem_json_roundtrip_preserves_schema_shape() {
     let problem = representative_solve_problem_fixture();
     let json = serde_json::to_string_pretty(&problem).expect("serialize SolveProblem");
@@ -615,6 +901,41 @@ fn solve_problem_shape_contract_rejects_bad_schema_version() {
 }
 
 #[test]
+fn solve_problem_shape_contract_rejects_rectangular_projection_block() {
+    let mut problem = representative_solve_problem_fixture();
+    problem.continuous.algebraic_projection_plan.blocks[0]
+        .y_indices
+        .clear();
+
+    assert_eq!(
+        problem.validate_shape_contract(),
+        Err(
+            SolveProblemShapeContractError::ProjectionBlockShapeMismatch {
+                context: "continuous.algebraic_projection_plan",
+                row_count: 1,
+                unknown_count: 0,
+                span: None,
+            }
+        )
+    );
+}
+
+#[test]
+fn solve_problem_shape_contract_rejects_duplicate_initial_projection_unknown() {
+    let mut problem = representative_solve_problem_fixture();
+    problem.initialization.projection_unknowns = vec![scalar_slot_y(1), scalar_slot_y(1)];
+
+    assert_eq!(
+        problem.validate_shape_contract(),
+        Err(SolveProblemShapeContractError::DuplicateProjectionUnknown {
+            context: "initialization.projection_unknowns",
+            unknown: format!("{:?}", scalar_slot_y(1)),
+            span: None,
+        })
+    );
+}
+
+#[test]
 fn solve_problem_shape_contract_rejects_unaligned_root_relation_memory() {
     let mut problem = representative_solve_problem_fixture();
     problem.events.root_relation_memory_targets.clear();
@@ -639,6 +960,54 @@ fn solve_problem_shape_contract_rejects_unaligned_root_zero_domains() {
         problem.validate_shape_contract(),
         Err(SolveProblemShapeContractError::ScalarProgramCountMismatch {
             context: "events.root_zero_domains",
+            expected: 1,
+            actual: 0,
+            span: None,
+        })
+    );
+}
+
+#[test]
+fn solve_problem_shape_contract_rejects_duplicate_delay_parameter_slots() {
+    let mut problem = representative_solve_problem_fixture();
+    let delay_rows = ScalarProgramBlock::with_source_span(
+        vec![
+            vec![
+                LinearOp::Const { dst: 0, value: 0.1 },
+                LinearOp::StoreOutput { src: 0 },
+            ],
+            vec![
+                LinearOp::Const { dst: 0, value: 0.2 },
+                LinearOp::StoreOutput { src: 0 },
+            ],
+        ],
+        fixture_span(),
+    );
+    problem.events.delays.source_rhs = delay_rows.clone();
+    problem.events.delays.delay_time_rhs = delay_rows.clone();
+    problem.events.delays.delay_max_rhs = delay_rows;
+    problem.events.delays.value_parameter_indices = vec![0, 0];
+    problem.events.delays.source_is_discrete = vec![false, false];
+
+    assert_eq!(
+        problem.validate_shape_contract(),
+        Err(SolveProblemShapeContractError::DuplicateIndex {
+            context: "events.delays.value_parameter_indices",
+            index: 0,
+            span: None,
+        })
+    );
+}
+
+#[test]
+fn solve_problem_shape_contract_requires_terminal_parameter_index() {
+    let mut problem = representative_solve_problem_fixture();
+    problem.events.has_terminal_event = true;
+
+    assert_eq!(
+        problem.validate_shape_contract(),
+        Err(SolveProblemShapeContractError::ScalarProgramCountMismatch {
+            context: "solve_layout.terminal_event_parameter_index",
             expected: 1,
             actual: 0,
             span: None,
@@ -714,4 +1083,18 @@ fn solve_problem_shape_contract_rejects_zero_step_tensor_domain() {
             span: Span::DUMMY,
         })
     );
+}
+
+#[test]
+fn solve_model_variable_scale_combines_nominal_and_start_magnitude() {
+    let model = SolveModel {
+        initial_y: vec![1.0e6, 1.0e-12, f64::NAN],
+        solver_nominals: vec![2.0, 1.0e-9, -1.0],
+        ..SolveModel::default()
+    };
+
+    assert_eq!(model.solver_variable_scale(0), 1.0e6);
+    assert_eq!(model.solver_variable_scale(1), 1.0e-9);
+    assert_eq!(model.solver_variable_scale(2), 1.0);
+    assert_eq!(model.solver_variable_scale(3), 1.0);
 }

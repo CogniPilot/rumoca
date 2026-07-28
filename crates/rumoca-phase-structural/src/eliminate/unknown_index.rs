@@ -305,7 +305,7 @@ fn var_ref_mentions_unknown_for_presence(
         return Ok(true);
     }
 
-    // MLS §10.6 / SPEC_0019: array equations stay aggregate before
+    // MLS §10.6 / SPEC_0032: array equations stay aggregate before
     // scalarization. Any indexed or sliced reference to an aggregate unknown is
     // still a live reference to that unknown at this phase.
     if unknown_scalar_size(dae, unknown)? <= 1 {

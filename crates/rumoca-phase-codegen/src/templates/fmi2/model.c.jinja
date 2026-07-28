@@ -442,10 +442,7 @@ static void compute_discrete_updates(ModelInstance* m);
 static void compute_event_indicators(ModelInstance* m);
 
 static double event_right_limit_time(double event_time) {
-    double scale = 1.0 + fabs(event_time);
-    double stepped = event_time + fmax(1.0e-6 * scale, 2.220446049250313e-16 * scale);
-    double adjacent = nextafter(event_time, INFINITY);
-    return stepped > adjacent ? stepped : adjacent;
+    return nextafter(event_time, INFINITY);
 }
 
 static int event_indicator_crossed(double previous, double current) {

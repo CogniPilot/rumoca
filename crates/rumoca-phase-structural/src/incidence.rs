@@ -1,10 +1,15 @@
 //! Incidence matrix construction for DAE structural analysis.
 
+pub(crate) mod corners;
+pub mod rows;
+
 use std::collections::{HashMap, HashSet};
 
 use rumoca_core::ExpressionVisitor;
 use rumoca_ir_dae as dae;
 
+use crate::incidence::corners::{CornerPlan, RowSource, cell_coordinate, uniform_translation};
+use crate::incidence::rows::{IncidenceRows, IncidenceRowsBuilder};
 use crate::types::{EquationRef, UnknownId};
 
 /// Incidence data for a DAE system.
@@ -14,8 +19,10 @@ pub struct Incidence {
     pub n_eq: usize,
     /// Number of unknowns.
     pub n_var: usize,
-    /// For each equation, the set of unknown indices it references.
-    pub eq_unknowns: Vec<HashSet<usize>>,
+    /// For each equation, the sorted unknown indices it references, stored as
+    /// compressed sparse rows so structural matching, Tarjan and BLT read
+    /// canonical `&[usize]` runs instead of per-row hash sets.
+    pub eq_unknowns: IncidenceRows,
     /// Ordered list of unknown identifiers (index → `UnknownId`).
     pub unknown_names: Vec<UnknownId>,
     /// Source span of each unknown (index → span), parallel to `unknown_names`,
@@ -24,10 +31,75 @@ pub struct Incidence {
     pub unknown_spans: Vec<Option<rumoca_core::Span>>,
     /// dae::Equation references (index → `EquationRef`).
     pub equation_refs: Vec<EquationRef>,
+    /// Compact, proof-derived matching candidates for regular equation
+    /// families. Scalar incidence remains the compatibility view; matching
+    /// consumes these affine candidates first without rediscovering family
+    /// structure from anonymous rows.
+    pub(crate) structured_matching: Vec<StructuredMatchingFamily>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct StructuredMatchingFamily {
+    pub(crate) first_equation_index: usize,
+    pub(crate) equations_per_point: usize,
+    pub(crate) point_count: usize,
+    pub(crate) extents: Vec<usize>,
+    pub(crate) cell_strides: Vec<usize>,
+    pub(crate) base_unknowns: Vec<usize>,
+    pub(crate) unknown_steps: Vec<Vec<i64>>,
+    /// Span of the `for`-equation that owns the family, so a contract failure
+    /// on any of its rows is reported against real source.
+    pub(crate) span: rumoca_core::Span,
+}
+
+impl StructuredMatchingFamily {
+    pub(crate) fn candidate(
+        &self,
+        point: usize,
+        equation_position: usize,
+    ) -> Option<(usize, usize)> {
+        if point >= self.point_count || equation_position >= self.equations_per_point {
+            return None;
+        }
+        let equation = point
+            .checked_mul(self.equations_per_point)?
+            .checked_add(equation_position)?
+            .checked_add(self.first_equation_index)?;
+        let mut unknown = i64::try_from(*self.base_unknowns.get(equation_position)?).ok()?;
+        for (dimension, step) in self
+            .unknown_steps
+            .get(equation_position)?
+            .iter()
+            .enumerate()
+        {
+            let coordinate = cell_coordinate(
+                point,
+                *self.cell_strides.get(dimension)?,
+                *self.extents.get(dimension)?,
+            );
+            unknown = unknown.checked_add(i64::try_from(coordinate).ok()?.checked_mul(*step)?)?;
+        }
+        Some((equation, usize::try_from(unknown).ok()?))
+    }
+
+    /// Number of scalar rows the family covers.
+    pub(crate) fn row_count(&self) -> Option<usize> {
+        self.point_count.checked_mul(self.equations_per_point)
+    }
+
+    /// The contiguous scalar row range the family owns.
+    pub(crate) fn row_range(&self) -> Option<std::ops::Range<usize>> {
+        let end = self.first_equation_index.checked_add(self.row_count()?)?;
+        Some(self.first_equation_index..end)
+    }
 }
 
 impl Incidence {
     /// Create a new incidence matrix from pre-built data.
+    ///
+    /// The `Vec<HashSet<usize>>` parameter is retained for the IC-projection and
+    /// Solve-projection builders, which assemble rows from unordered sources;
+    /// the rows are canonicalized into the compact CSR store on the way in.
     pub fn new(
         eq_unknowns: Vec<HashSet<usize>>,
         equation_refs: Vec<EquationRef>,
@@ -38,219 +110,340 @@ impl Incidence {
         Self {
             n_eq,
             n_var,
-            eq_unknowns,
+            eq_unknowns: IncidenceRows::from_sets(eq_unknowns),
             unknown_spans: vec![None; n_var],
             unknown_names,
             equation_refs,
+            structured_matching: Vec::new(),
         }
     }
 }
 
-/// Build incidence data from a DAE.
-pub(crate) fn build_incidence(dae: &dae::Dae) -> Incidence {
-    let (_unknown_map, unknown_names, unknown_spans) = build_unknown_map(dae);
-    let (der_resolver, variable_resolver) = build_unknown_resolvers(&unknown_names);
+/// Walks scalar equation bodies on demand, producing canonical CSR runs.
+struct EquationRowWalker<'a> {
+    equations: &'a [dae::Equation],
+    der_resolver: &'a ScalarUnknownResolver,
+    variable_resolver: &'a ScalarUnknownResolver,
+}
 
-    let mut equation_refs = Vec::new();
-    let mut equations = Vec::new();
-
-    for (i, eq) in dae.continuous.equations.iter().enumerate() {
-        equation_refs.push(EquationRef(i));
-        equations.push(eq);
+impl EquationRowWalker<'_> {
+    fn unknown_set(&self, row: usize) -> HashSet<usize> {
+        match self.equations.get(row) {
+            Some(equation) => {
+                collect_equation_unknowns(equation, self.der_resolver, self.variable_resolver)
+            }
+            None => HashSet::new(),
+        }
     }
 
-    let n_eq = equation_refs.len();
+    fn ordered_occurrences(&self, row: usize) -> Vec<usize> {
+        let Some(equation) = self.equations.get(row) else {
+            return Vec::new();
+        };
+        let mut occurrences = Vec::new();
 
-    let mut eq_unknowns: Vec<HashSet<usize>> = equations
-        .iter()
-        .map(|eq| collect_equation_unknowns(eq, &der_resolver, &variable_resolver))
-        .collect();
+        let mut der_collector = DerOperandCollector::default();
+        der_collector.visit_expression(&equation.rhs);
+        for (name, subscripts) in der_collector.operands {
+            occurrences.extend(self.der_resolver.resolve_var_ref_all(&name, &subscripts));
+        }
 
-    apply_regular_family_corner_incidence(dae, &mut eq_unknowns);
-    debug_check_regular_family_incidence(dae, &eq_unknowns);
+        if let Some(lhs) = equation.lhs.as_ref() {
+            occurrences.extend(self.variable_resolver.resolve_var_name_all(lhs.var_name()));
+        }
+        collect_expression_unknown_occurrences(
+            &equation.rhs,
+            self.variable_resolver,
+            &mut occurrences,
+        );
+        occurrences
+    }
+}
 
-    Incidence {
+impl RowSource for EquationRowWalker<'_> {
+    fn ordered_row(&self, row: usize) -> Vec<usize> {
+        self.ordered_occurrences(row)
+    }
+}
+
+/// Build incidence data from a DAE.
+pub(crate) fn build_incidence(dae: &dae::Dae) -> Result<Incidence, crate::StructuralError> {
+    let (_unknown_map, unknown_names, unknown_spans) = build_unknown_map(dae);
+    let (der_resolver, variable_resolver) = build_unknown_resolvers(dae, &unknown_names);
+
+    let n_eq = dae.continuous.equations.len();
+    let walker = EquationRowWalker {
+        equations: &dae.continuous.equations,
+        der_resolver: &der_resolver,
+        variable_resolver: &variable_resolver,
+    };
+    let plans = checked_non_materialized_family_plans(dae, n_eq)?;
+    let eq_unknowns = build_incidence_rows(&plans, &walker, n_eq)?;
+    let equation_refs: Vec<EquationRef> = (0..n_eq).map(EquationRef).collect();
+    let structured_matching = build_structured_matching_families(dae, &eq_unknowns);
+
+    Ok(Incidence {
         n_eq,
         n_var: unknown_names.len(),
         eq_unknowns,
         unknown_names,
         unknown_spans,
         equation_refs,
-    }
+        structured_matching,
+    })
 }
 
-/// Debug-only invariant guarding the P3 family-native lowering contract: every
-/// `regular` family's materialized incidence equals the incidence
-/// [`synthesize_regular_family_incidence`] reconstructs from its corner rows alone.
-/// Validated here while every cell is still present, so a classification bug (a
-/// family marked `regular` that is not corner-derivable) fails loudly in debug
-/// builds rather than silently lowering wrong once the interior rows are gone.
-fn debug_check_regular_family_incidence(dae: &dae::Dae, eq_unknowns: &[HashSet<usize>]) {
-    if !cfg!(debug_assertions) {
-        return;
-    }
-    for family in &dae.continuous.structured_equations {
-        // Only materialized families can be validated against their walked rows;
-        // cheapened families were just reconstructed from corners by the apply pass,
-        // so there is no independent materialized incidence to compare against.
-        if family.regular.is_some() && family.interiors_materialized {
-            debug_check_one_regular_family(family, eq_unknowns);
-        }
-    }
-}
-
-/// Production pass: for every regular family whose interior cells were NOT
-/// materialized (`interiors_materialized == false`), overwrite the placeholder
-/// interior incidence with the incidence reconstructed from the family's corner
-/// rows. Materialized families are left untouched (their walked incidence is
-/// authoritative and validated separately in debug builds).
-fn apply_regular_family_corner_incidence(dae: &dae::Dae, eq_unknowns: &mut [HashSet<usize>]) {
-    for family in &dae.continuous.structured_equations {
-        if family.regular.is_none() || family.interiors_materialized {
-            continue;
-        }
-        let Some(synthesized) = synthesize_regular_family_incidence(family, eq_unknowns) else {
-            // Flatten must only cheapen corner-derivable families; if one slipped
-            // through, fail loudly in debug and leave the placeholder rows in release
-            // (degraded, but no panic in production).
-            debug_assert!(
-                false,
-                "regular family `{}` interiors were cheapened but the family is not \
-                 corner-derivable",
-                family.origin
-            );
-            continue;
-        };
-        for (offset, synthesized_row) in synthesized.into_iter().enumerate() {
-            if let Some(slot) = eq_unknowns.get_mut(family.first_equation_index + offset) {
-                *slot = synthesized_row;
-            }
-        }
-    }
-}
-
-/// Assert one `regular` family's corner-synthesized incidence matches the rows
-/// actually materialized. Panics (debug builds only, via the single caller's
-/// `cfg!` guard) when the family is not corner-derivable or a synthesized row
-/// disagrees with the materialized one.
-fn debug_check_one_regular_family(
-    family: &dae::StructuredEquationFamily,
-    eq_unknowns: &[HashSet<usize>],
-) {
-    let Some(synthesized) = synthesize_regular_family_incidence(family, eq_unknowns) else {
-        return;
-    };
-    for (offset, synthesized_row) in synthesized.into_iter().enumerate() {
-        let row = family.first_equation_index + offset;
-        if eq_unknowns.get(row) != Some(&synthesized_row) {
-            return;
-        }
-    }
-}
-
-/// Reconstruct a `regular` family's per-row incidence from its CORNER rows alone --
-/// the base cell plus one neighbor per binder. Returns one unknown set per scalar
-/// row of the family, in row order (`first_equation_index + cell*per_cell + j`).
+/// Emit the scalar compatibility graph in equation order.
 ///
-/// This is the structural-incidence analogue of the Solve-IR corner-row stride
-/// derivation: once flatten stops materializing the interior cells, structural
-/// reconstructs their incidence from these corners. It reads only the base and
-/// neighbor cells -- never an interior row -- so it stays correct even when the
-/// interior rows carry no real body.
-///
-/// `None` when the corner model does not apply: a domain/row-count mismatch, a
-/// missing corner row, or a row whose
-/// incidence is not a uniform per-binder translation (i.e. not actually regular).
-fn synthesize_regular_family_incidence(
-    family: &dae::StructuredEquationFamily,
-    eq_unknowns: &[HashSet<usize>],
-) -> Option<Vec<HashSet<usize>>> {
-    // A uniform scalar equation count per domain point is what lets cell `p` occupy
-    // the contiguous row range `[first + p*per_cell .. first + (p+1)*per_cell)`.
-    let per_cell = family.equations_per_point;
-    if per_cell == 0 {
+/// Rows belonging to a non-materialized regular family are produced
+/// arithmetically from the family's corner rows; every other row is walked. A
+/// non-materialized family whose compact proof is incomplete is rejected:
+/// placeholder interiors are derived views, not authoritative equation bodies,
+/// so walking them would silently lose incidence.
+fn build_incidence_rows(
+    plans: &[CornerPlan],
+    walker: &EquationRowWalker<'_>,
+    n_eq: usize,
+) -> Result<IncidenceRows, crate::StructuralError> {
+    let mut builder = IncidenceRowsBuilder::with_row_capacity(n_eq);
+    let mut plan_cursor = 0usize;
+    let mut row = 0usize;
+    while row < n_eq {
+        if let Some(plan) = plan_starting_at(plans, &mut plan_cursor, row) {
+            row += emit_planned_family(&mut builder, plan, walker)?;
+        } else {
+            builder.push_unsorted(walker.unknown_set(row));
+            row += 1;
+        }
+    }
+    Ok(builder.finish())
+}
+
+/// The plan whose row block starts exactly at `row`, advancing the cursor past
+/// any plan that starts earlier (already consumed or degenerate).
+fn plan_starting_at<'a>(
+    plans: &'a [CornerPlan],
+    cursor: &mut usize,
+    row: usize,
+) -> Option<&'a CornerPlan> {
+    while plans.get(*cursor)?.first_equation_index < row {
+        *cursor += 1;
+    }
+    let plan = plans.get(*cursor)?;
+    if plan.first_equation_index != row {
         return None;
     }
-    let num_cells = family.point_count().ok()?;
+    *cursor += 1;
+    Some(plan)
+}
 
-    // Binder extents and row-major strides come directly from compact range
-    // arithmetic; structural analysis does not materialize the domain tuples.
-    let extents = family.domain.extents().ok()?;
-    let ndim = family.domain.binders.len();
-    let cell_strides = family.domain.ordinal_strides().ok()?;
-    let first = family.first_equation_index;
+/// Emit one proven family's rows, returning how many rows were emitted.
+fn emit_planned_family(
+    builder: &mut IncidenceRowsBuilder,
+    plan: &CornerPlan,
+    walker: &EquationRowWalker<'_>,
+) -> Result<usize, crate::StructuralError> {
+    let row_count = plan
+        .row_count()
+        .ok_or_else(|| crate::StructuralError::ContractViolation {
+            reason: "compact structural family row count overflows".to_string(),
+            span: plan.span,
+        })?;
+    corners::emit_family_rows(builder, plan, walker)?;
+    Ok(row_count)
+}
 
-    // The base cell's per-row unknown sets (corner: cell 0).
-    let mut base_rows: Vec<HashSet<usize>> = Vec::with_capacity(per_cell);
-    for offset in 0..per_cell {
-        base_rows.push(eq_unknowns.get(first + offset)?.clone());
+fn checked_non_materialized_family_plans(
+    dae: &dae::Dae,
+    n_eq: usize,
+) -> Result<Vec<CornerPlan>, crate::StructuralError> {
+    let mut plans = Vec::new();
+    for family in dae
+        .continuous
+        .structured_equations
+        .iter()
+        .filter(|family| !family.interiors_materialized)
+    {
+        if family.regular.is_none() {
+            return Err(compact_family_contract(
+                family,
+                "non-materialized equation family has no regular affine descriptor",
+            ));
+        }
+        let Some(template) = family.template.as_ref() else {
+            return Err(compact_family_contract(
+                family,
+                "non-materialized equation family has no authoritative comprehension template",
+            ));
+        };
+        if template.body.len() != family.equations_per_point {
+            return Err(compact_family_contract(
+                family,
+                format!(
+                    "comprehension template has {} body row(s), expected {}",
+                    template.body.len(),
+                    family.equations_per_point
+                ),
+            ));
+        }
+        if template.scalar_view == rumoca_core::ComprehensionScalarView::BinderSubstitution
+            && template
+                .body
+                .iter()
+                .any(|body| !binders_are_confined_to_subscripts(body, family))
+        {
+            return Err(compact_family_contract(
+                family,
+                "a domain binder occurs as a value outside an array subscript; corner incidence cannot prove the interior body",
+            ));
+        }
+        let Some(plan) = CornerPlan::from_family(family) else {
+            return Err(compact_family_contract(
+                family,
+                "compact domain does not describe a non-empty contiguous equation family",
+            ));
+        };
+        let Some(end) = plan.end_row() else {
+            return Err(compact_family_contract(
+                family,
+                "compact family row range overflows",
+            ));
+        };
+        if end > n_eq {
+            return Err(compact_family_contract(
+                family,
+                format!(
+                    "compact family row range {}..{end} exceeds the {n_eq} continuous rows",
+                    plan.first_equation_index
+                ),
+            ));
+        }
+        plans.push(plan);
+    }
+    plans.sort_by_key(|plan| plan.first_equation_index);
+    for pair in plans.windows(2) {
+        let previous_end =
+            pair[0]
+                .end_row()
+                .ok_or_else(|| crate::StructuralError::ContractViolation {
+                    reason: "compact structural family row range overflows".to_string(),
+                    span: pair[0].span,
+                })?;
+        if pair[1].first_equation_index < previous_end {
+            return Err(crate::StructuralError::ContractViolation {
+                reason: format!(
+                    "non-materialized structural families overlap at continuous row {}",
+                    pair[1].first_equation_index
+                ),
+                span: pair[1].span,
+            });
+        }
+    }
+    Ok(plans)
+}
+
+fn compact_family_contract(
+    family: &dae::StructuredEquationFamily,
+    reason: impl Into<String>,
+) -> crate::StructuralError {
+    crate::StructuralError::ContractViolation {
+        reason: reason.into(),
+        span: family.span,
+    }
+}
+
+fn binders_are_confined_to_subscripts(
+    expression: &rumoca_core::Expression,
+    family: &dae::StructuredEquationFamily,
+) -> bool {
+    let mut proof = BinderSubscriptUseProof {
+        binders: &family.domain.binders,
+        inside_subscript: false,
+        valid: true,
+    };
+    proof.visit_expression(expression);
+    proof.valid
+}
+
+struct BinderSubscriptUseProof<'a> {
+    binders: &'a [rumoca_core::StructuredIndexBinder],
+    inside_subscript: bool,
+    valid: bool,
+}
+
+impl ExpressionVisitor for BinderSubscriptUseProof<'_> {
+    fn visit_var_ref(
+        &mut self,
+        name: &rumoca_core::Reference,
+        subscripts: &[rumoca_core::Subscript],
+    ) {
+        if !self.inside_subscript
+            && self
+                .binders
+                .iter()
+                .any(|binder| binder.display_name == name.as_str())
+        {
+            self.valid = false;
+        }
+        self.walk_var_ref(name, subscripts);
     }
 
-    // Per-(row-offset, binder) translation unit, derived from each binder's neighbor
-    // cell. A row may shift differently per binder (its accesses can target distinct
-    // arrays), and an extent-1 binder contributes no shift.
-    let mut units = vec![vec![0i64; ndim]; per_cell];
-    for (k, &extent) in extents.iter().enumerate() {
+    fn visit_subscript(&mut self, subscript: &rumoca_core::Subscript) {
+        let was_inside = self.inside_subscript;
+        self.inside_subscript = true;
+        self.walk_subscript(subscript);
+        self.inside_subscript = was_inside;
+    }
+}
+
+fn build_structured_matching_families(
+    dae: &dae::Dae,
+    eq_unknowns: &IncidenceRows,
+) -> Vec<StructuredMatchingFamily> {
+    dae.continuous
+        .structured_equations
+        .iter()
+        .filter(|family| family.regular.is_some())
+        .filter_map(|family| structured_matching_family(family, eq_unknowns))
+        .collect()
+}
+
+fn structured_matching_family(
+    family: &dae::StructuredEquationFamily,
+    eq_unknowns: &IncidenceRows,
+) -> Option<StructuredMatchingFamily> {
+    let plan = CornerPlan::from_family(family)?;
+    let dimension_count = plan.extents.len();
+    let mut base_unknowns = Vec::with_capacity(plan.equations_per_point);
+    let mut unknown_steps = vec![vec![0i64; dimension_count]; plan.equations_per_point];
+
+    for equation_position in 0..plan.equations_per_point {
+        let row = plan.row_of(0, equation_position)?;
+        // Rows are stored ascending, so the first column is the minimum.
+        base_unknowns.push(*eq_unknowns.get(row)?.first()?);
+    }
+    for (dimension, &extent) in plan.extents.iter().enumerate() {
         if extent <= 1 {
             continue;
         }
-        let neighbor_cell = cell_strides[k];
-        for offset in 0..per_cell {
-            let neighbor = eq_unknowns.get(first + neighbor_cell * per_cell + offset)?;
-            units[offset][k] = uniform_translation(&base_rows[offset], neighbor)?;
+        let neighbor_point = *plan.cell_strides.get(dimension)?;
+        for (equation_position, steps) in unknown_steps.iter_mut().enumerate() {
+            let base_row = eq_unknowns.get(plan.row_of(0, equation_position)?)?;
+            let neighbor_row = eq_unknowns.get(plan.row_of(neighbor_point, equation_position)?)?;
+            steps[dimension] = uniform_translation(base_row, neighbor_row)?;
         }
     }
 
-    // Translate the base rows across the whole domain in row order.
-    let mut synthesized: Vec<HashSet<usize>> = Vec::with_capacity(num_cells * per_cell);
-    for cell in 0..num_cells {
-        for offset in 0..per_cell {
-            let shift: i64 = (0..ndim)
-                .map(|k| {
-                    cell_coordinate(cell, cell_strides[k], extents[k]) as i64 * units[offset][k]
-                })
-                .sum();
-            synthesized.push(
-                base_rows[offset]
-                    .iter()
-                    .map(|&unknown| (unknown as i64 + shift) as usize)
-                    .collect(),
-            );
-        }
-    }
-    Some(synthesized)
-}
-
-/// The position-count of cell `cell` along one binder, given that binder's
-/// row-major cell stride and extent: `(cell / stride) % extent`.
-fn cell_coordinate(cell: usize, stride: usize, extent: usize) -> usize {
-    if stride == 0 || extent == 0 {
-        return 0;
-    }
-    (cell / stride) % extent
-}
-
-/// If `neighbor` is `base` shifted by a single constant offset (the two sets have
-/// equal size and every sorted element differs by the same delta), return that
-/// delta. `None` means the two cells' incidence is not a pure translation. An
-/// empty base translates trivially by 0.
-fn uniform_translation(base: &HashSet<usize>, neighbor: &HashSet<usize>) -> Option<i64> {
-    if base.len() != neighbor.len() {
-        return None;
-    }
-    if base.is_empty() {
-        return Some(0);
-    }
-    let mut base_sorted: Vec<i64> = base.iter().map(|&x| x as i64).collect();
-    let mut neighbor_sorted: Vec<i64> = neighbor.iter().map(|&x| x as i64).collect();
-    base_sorted.sort_unstable();
-    neighbor_sorted.sort_unstable();
-    let delta = neighbor_sorted[0] - base_sorted[0];
-    base_sorted
-        .iter()
-        .zip(&neighbor_sorted)
-        .all(|(&b, &n)| n - b == delta)
-        .then_some(delta)
+    Some(StructuredMatchingFamily {
+        span: plan.span,
+        first_equation_index: plan.first_equation_index,
+        equations_per_point: plan.equations_per_point,
+        point_count: plan.point_count,
+        extents: plan.extents,
+        cell_strides: plan.cell_strides,
+        base_unknowns,
+        unknown_steps,
+    })
 }
 
 /// Build the unknown map: assign an index to each unknown in the DAE, recording
@@ -374,7 +567,7 @@ fn collect_equation_unknowns(
     // Collect `der(state)` unknowns from the residual, preserving any
     // subscripts on the differentiated operand. Using the un-subscripted base
     // name here (e.g. `der(p[1])` -> `p`) would resolve to *every* `der(p[i])`
-    // via the array fallback in `resolve_name_all`, spuriously coupling the
+    // via the array fallback in the resolver, spuriously coupling the
     // scalar `der(p[i]) = v[i]` rows into one SCC that tearing then finds
     // structurally singular. Resolving with the subscript pins each row to its
     // own scalar `der` unknown.
@@ -428,12 +621,13 @@ pub(crate) fn collect_equation_lhs_unknown(
     let Some(lhs) = lhs else {
         return;
     };
-    for idx in resolver.resolve_name_all(lhs.as_str()) {
+    for idx in resolver.resolve_var_name_all(lhs.var_name()) {
         cols.insert(idx);
     }
 }
 
 fn build_unknown_resolvers(
+    dae: &dae::Dae,
     unknown_names: &[UnknownId],
 ) -> (ScalarUnknownResolver, ScalarUnknownResolver) {
     let mut der_entries = Vec::new();
@@ -441,23 +635,37 @@ fn build_unknown_resolvers(
 
     for (idx, unknown) in unknown_names.iter().enumerate() {
         match unknown {
-            UnknownId::DerState(name) => der_entries.push((name.as_str().to_string(), idx)),
-            UnknownId::Variable(name) => variable_entries.push((name.as_str().to_string(), idx)),
-            UnknownId::SolverY(_) => {}
+            UnknownId::DerState(name) => der_entries.push((name.clone(), idx)),
+            UnknownId::Variable(name) => variable_entries.push((name.clone(), idx)),
+            UnknownId::SolverY(_) | UnknownId::Unmatched { .. } => {}
         }
     }
 
-    (
-        ScalarUnknownResolver::from_entries(der_entries),
-        ScalarUnknownResolver::from_entries(variable_entries),
-    )
+    let mut der_resolver = ScalarUnknownResolver::from_var_name_entries(der_entries);
+    let mut variable_resolver = ScalarUnknownResolver::from_var_name_entries(variable_entries);
+    der_resolver.register_variable_shapes(dae.variables.states.iter());
+    variable_resolver.register_variable_shapes(
+        dae.variables
+            .algebraics
+            .iter()
+            .chain(dae.variables.outputs.iter()),
+    );
+    (der_resolver, variable_resolver)
+}
+
+#[derive(Clone)]
+struct ShapedUnknownBinding {
+    start: usize,
+    dims: Vec<usize>,
+    size: usize,
 }
 
 #[derive(Default, Clone)]
 pub(crate) struct ScalarUnknownResolver {
-    exact: HashMap<String, usize>,
-    base_all: HashMap<String, Vec<usize>>,
-    base_unique: HashMap<String, usize>,
+    exact: HashMap<rumoca_core::VarName, usize>,
+    base_all: HashMap<rumoca_core::VarName, Vec<usize>>,
+    base_unique: HashMap<rumoca_core::VarName, usize>,
+    shaped: HashMap<rumoca_core::VarName, ShapedUnknownBinding>,
 }
 
 impl ScalarUnknownResolver {
@@ -474,29 +682,52 @@ impl ScalarUnknownResolver {
         {
             let sz = var.size();
             if sz <= 1 {
-                entries.push((name.as_str().to_string(), next_idx));
+                entries.push((name.clone(), next_idx));
                 next_idx = next_idx.saturating_add(1);
                 continue;
             }
 
             for i in 0..sz {
                 entries.push((
-                    dae::scalar_name_text_for_flat_index(name.as_str(), &var.dims, i),
+                    rumoca_core::VarName::new(dae::scalar_name_text_for_flat_index(
+                        name.as_str(),
+                        &var.dims,
+                        i,
+                    )),
                     next_idx,
                 ));
                 next_idx = next_idx.saturating_add(1);
             }
         }
 
-        Self::from_entries(entries)
+        let mut resolver = Self::from_var_name_entries(entries);
+        resolver.register_variable_shapes(
+            dae.variables
+                .states
+                .iter()
+                .chain(dae.variables.algebraics.iter())
+                .chain(dae.variables.outputs.iter()),
+        );
+        resolver
     }
 
     pub(crate) fn from_entries<I>(entries: I) -> Self
     where
         I: IntoIterator<Item = (String, usize)>,
     {
+        Self::from_var_name_entries(
+            entries
+                .into_iter()
+                .map(|(name, index)| (rumoca_core::VarName::new(name), index)),
+        )
+    }
+
+    fn from_var_name_entries<I>(entries: I) -> Self
+    where
+        I: IntoIterator<Item = (rumoca_core::VarName, usize)>,
+    {
         let mut exact = HashMap::new();
-        let mut base_all: HashMap<String, Vec<usize>> = HashMap::new();
+        let mut base_all: HashMap<rumoca_core::VarName, Vec<usize>> = HashMap::new();
         for (name, idx) in entries {
             Self::insert_name(&mut exact, &mut base_all, &name, idx);
         }
@@ -515,33 +746,75 @@ impl ScalarUnknownResolver {
             exact,
             base_all,
             base_unique,
+            shaped: HashMap::new(),
         }
     }
 
     fn insert_name(
-        exact: &mut HashMap<String, usize>,
-        base_all: &mut HashMap<String, Vec<usize>>,
-        name: &str,
+        exact: &mut HashMap<rumoca_core::VarName, usize>,
+        base_all: &mut HashMap<rumoca_core::VarName, Vec<usize>>,
+        name: &rumoca_core::VarName,
         idx: usize,
     ) {
-        exact.insert(name.to_string(), idx);
-        if let Some(base) = dae::component_base_name(name) {
-            base_all.entry(base).or_default().push(idx);
+        exact.insert(name.clone(), idx);
+        if let Some(base) = dae::component_base_name(name.as_str()) {
+            base_all
+                .entry(rumoca_core::VarName::new(base))
+                .or_default()
+                .push(idx);
         }
     }
 
-    fn resolve_name(&self, name: &str) -> Option<usize> {
+    fn register_variable_shapes<'a, I>(&mut self, variables: I)
+    where
+        I: IntoIterator<Item = (&'a rumoca_core::VarName, &'a dae::Variable)>,
+    {
+        for (name, variable) in variables {
+            let size = variable.size();
+            if size == 0 {
+                continue;
+            }
+            let Some(dims) = variable
+                .dims
+                .iter()
+                .map(|dimension| usize::try_from(*dimension).ok())
+                .collect::<Option<Vec<_>>>()
+            else {
+                continue;
+            };
+            let first_name = if size == 1 {
+                name.clone()
+            } else {
+                rumoca_core::VarName::new(dae::scalar_name_text_for_flat_index(
+                    name.as_str(),
+                    &variable.dims,
+                    0,
+                ))
+            };
+            let Some(start) = self.exact.get(&first_name).copied() else {
+                continue;
+            };
+            self.shaped
+                .insert(name.clone(), ShapedUnknownBinding { start, dims, size });
+        }
+    }
+
+    fn resolve_name(&self, name: &rumoca_core::VarName) -> Option<usize> {
         self.exact.get(name).copied().or_else(|| {
-            dae::component_base_name(name).and_then(|base| self.base_unique.get(&base).copied())
+            dae::component_base_name(name.as_str()).and_then(|base| {
+                self.base_unique
+                    .get(&rumoca_core::VarName::new(base))
+                    .copied()
+            })
         })
     }
 
-    pub(crate) fn resolve_name_all(&self, name: &str) -> Vec<usize> {
+    fn resolve_var_name_all(&self, name: &rumoca_core::VarName) -> Vec<usize> {
         if let Some(idx) = self.resolve_name(name) {
             return vec![idx];
         }
-        dae::component_base_name(name)
-            .and_then(|base| self.base_all.get(&base).cloned())
+        dae::component_base_name(name.as_str())
+            .and_then(|base| self.base_all.get(&rumoca_core::VarName::new(base)).cloned())
             .unwrap_or_default()
     }
 
@@ -550,14 +823,52 @@ impl ScalarUnknownResolver {
         name: &rumoca_core::Reference,
         subscripts: &[rumoca_core::Subscript],
     ) -> Vec<usize> {
+        if subscripts.is_empty() {
+            return self.resolve_var_name_all(name.var_name());
+        }
+        if let Some(indices) = constant_subscript_indices(subscripts)
+            && self.shaped.contains_key(name.var_name())
+        {
+            return self
+                .resolve_shaped_element(name.var_name(), &indices)
+                .into_iter()
+                .collect();
+        }
         if let Some(canonical) = canonical_var_ref_key(name, subscripts) {
-            let resolved = self.resolve_name_all(&canonical);
+            let resolved = self.resolve_var_name_all(&rumoca_core::VarName::new(canonical));
             if !resolved.is_empty() {
                 return resolved;
             }
         }
-        self.resolve_name_all(name.as_str())
+        self.resolve_var_name_all(name.var_name())
     }
+
+    fn resolve_shaped_element(
+        &self,
+        name: &rumoca_core::VarName,
+        indices: &[usize],
+    ) -> Option<usize> {
+        let binding = self.shaped.get(name)?;
+        if indices.len() != binding.dims.len() {
+            return None;
+        }
+        let mut flat_index = 0usize;
+        for (&index, &extent) in indices.iter().zip(&binding.dims) {
+            if index == 0 || index > extent {
+                return None;
+            }
+            flat_index = flat_index
+                .checked_mul(extent)?
+                .checked_add(index.checked_sub(1)?)?;
+        }
+        (flat_index < binding.size)
+            .then(|| binding.start.checked_add(flat_index))
+            .flatten()
+    }
+}
+
+fn constant_subscript_indices(subscripts: &[rumoca_core::Subscript]) -> Option<Vec<usize>> {
+    subscripts.iter().map(subscript_index_value).collect()
 }
 
 fn subscript_index_value(sub: &rumoca_core::Subscript) -> Option<usize> {
@@ -606,20 +917,31 @@ pub(crate) fn collect_expression_unknowns(
     collector.visit_expression(expr);
 }
 
-struct ExpressionUnknownCollector<'a> {
-    resolver: &'a ScalarUnknownResolver,
-    cols: &'a mut HashSet<usize>,
+fn collect_expression_unknown_occurrences(
+    expr: &rumoca_core::Expression,
+    resolver: &ScalarUnknownResolver,
+    occurrences: &mut Vec<usize>,
+) {
+    let mut collector = ExpressionUnknownCollector {
+        resolver,
+        cols: occurrences,
+    };
+    collector.visit_expression(expr);
 }
 
-impl ExpressionVisitor for ExpressionUnknownCollector<'_> {
+struct ExpressionUnknownCollector<'a, C> {
+    resolver: &'a ScalarUnknownResolver,
+    cols: &'a mut C,
+}
+
+impl<C: Extend<usize>> ExpressionVisitor for ExpressionUnknownCollector<'_, C> {
     fn visit_var_ref(
         &mut self,
         name: &rumoca_core::Reference,
         subscripts: &[rumoca_core::Subscript],
     ) {
-        for idx in self.resolver.resolve_var_ref_all(name, subscripts) {
-            self.cols.insert(idx);
-        }
+        self.cols
+            .extend(self.resolver.resolve_var_ref_all(name, subscripts));
         for subscript in subscripts {
             self.visit_subscript(subscript);
         }
@@ -640,9 +962,8 @@ impl ExpressionVisitor for ExpressionUnknownCollector<'_> {
             let mut combined = Vec::with_capacity(base_subscripts.len() + subscripts.len());
             combined.extend_from_slice(base_subscripts);
             combined.extend_from_slice(subscripts);
-            for idx in self.resolver.resolve_var_ref_all(name, &combined) {
-                self.cols.insert(idx);
-            }
+            self.cols
+                .extend(self.resolver.resolve_var_ref_all(name, &combined));
             for subscript in base_subscripts {
                 self.visit_subscript(subscript);
             }
@@ -660,9 +981,8 @@ impl ExpressionVisitor for ExpressionUnknownCollector<'_> {
 
     fn visit_field_access(&mut self, base: &rumoca_core::Expression, field: &str) {
         if let Some((reference, subscripts)) = dae::indexed_field_var_ref(base, field) {
-            for idx in self.resolver.resolve_var_ref_all(&reference, &subscripts) {
-                self.cols.insert(idx);
-            }
+            self.cols
+                .extend(self.resolver.resolve_var_ref_all(&reference, &subscripts));
             for subscript in &subscripts {
                 self.visit_subscript(subscript);
             }
@@ -710,15 +1030,16 @@ pub fn build_solver_sparsity_triplets(dae: &dae::Dae) -> Vec<(usize, usize)> {
 ///
 /// Edge `eq_a → eq_b` means equation `eq_a` references a variable matched to `eq_b`.
 pub fn build_dependency_graph(
-    eq_unknowns: &[HashSet<usize>],
+    eq_unknowns: &IncidenceRows,
     match_var: &[Option<usize>],
     n_eq: usize,
 ) -> Vec<Vec<usize>> {
     let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n_eq];
-    for (eq_a, unknowns) in eq_unknowns.iter().enumerate() {
-        let mut vars: Vec<usize> = unknowns.iter().copied().collect();
-        vars.sort_unstable();
-        for var_idx in vars {
+    for (eq_a, unknowns) in eq_unknowns.iter().enumerate().take(n_eq) {
+        // CSR runs are already ascending, so the old per-row collect + sort is
+        // gone. Matched owners are not sorted even when columns are, so the
+        // adjacency row still needs its own canonicalization.
+        for &var_idx in unknowns {
             let eq_b = match match_var.get(var_idx) {
                 Some(&Some(eq_b)) if eq_a != eq_b => eq_b,
                 _ => continue,
@@ -831,7 +1152,7 @@ mod tests {
             },
         )));
 
-        let incidence = build_incidence(&dae);
+        let incidence = build_incidence(&dae).expect("valid scalar incidence");
         let derivative = incidence
             .unknown_names
             .iter()
@@ -844,8 +1165,8 @@ mod tests {
             .expect("v unknown");
 
         assert_eq!(incidence.eq_unknowns.len(), 1);
-        assert!(incidence.eq_unknowns[0].contains(&derivative));
-        assert!(incidence.eq_unknowns[0].contains(&voltage));
+        assert!(incidence.eq_unknowns.contains(0, derivative));
+        assert!(incidence.eq_unknowns.contains(0, voltage));
     }
 
     #[test]
@@ -869,13 +1190,16 @@ mod tests {
             },
         )));
 
-        let incidence = build_incidence(&dae);
+        let incidence = build_incidence(&dae).expect("valid scalar incidence");
 
         assert_eq!(
             incidence.unknown_names,
             [UnknownId::Variable(rumoca_core::VarName::new("x"))]
         );
-        assert_eq!(incidence.eq_unknowns, [HashSet::from([0])]);
+        assert_eq!(
+            incidence.eq_unknowns,
+            IncidenceRows::from_sorted_rows(vec![vec![0]])
+        );
     }
 
     #[test]
@@ -988,6 +1312,32 @@ mod tests {
     }
 
     #[test]
+    fn shaped_resolver_does_not_widen_invalid_constant_subscript_to_whole_array() {
+        let mut dae = dae::Dae::new();
+        let mut u = dae::Variable::new(
+            rumoca_core::VarName::new("u"),
+            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
+        );
+        u.dims = vec![2];
+        dae.variables
+            .algebraics
+            .insert(rumoca_core::VarName::new("u"), u);
+        let resolver = ScalarUnknownResolver::from_dae(&dae);
+
+        assert!(
+            resolver
+                .resolve_var_ref_all(
+                    &rumoca_core::Reference::new("u"),
+                    &[rumoca_core::Subscript::Index {
+                        value: 3,
+                        span: test_span(),
+                    }],
+                )
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn test_build_solver_sparsity_triplets_resolves_indexed_record_field_arrays() {
         let mut dae = dae::Dae::new();
 
@@ -1005,45 +1355,6 @@ mod tests {
 
         let triplets = build_solver_sparsity_triplets(&dae);
         assert_eq!(triplets, vec![(0, 2)]);
-    }
-
-    fn set(values: &[usize]) -> HashSet<usize> {
-        values.iter().copied().collect()
-    }
-
-    #[test]
-    fn uniform_translation_detects_constant_shift() {
-        // A stencil cell {der(X[i]), X[i-1], X[i], X[i+1]} stepped by one position
-        // shifts every unknown index by the same array stride.
-        let base = set(&[10, 20, 21, 22]);
-        let neighbor = set(&[13, 23, 24, 25]);
-        assert_eq!(uniform_translation(&base, &neighbor), Some(3));
-    }
-
-    #[test]
-    fn uniform_translation_rejects_non_uniform_or_mismatched() {
-        // One element shifts by a different amount -> not a pure translation.
-        assert_eq!(
-            uniform_translation(&set(&[1, 2, 3]), &set(&[2, 3, 5])),
-            None
-        );
-        // Different cardinality -> not a translation.
-        assert_eq!(uniform_translation(&set(&[1, 2]), &set(&[2, 3, 4])), None);
-        // Empty cells translate trivially.
-        assert_eq!(uniform_translation(&set(&[]), &set(&[])), Some(0));
-    }
-
-    #[test]
-    fn cell_coordinate_decomposes_row_major_position() {
-        // 3x4 grid, row-major: strides [4, 1], extents [3, 4]. Cell 6 = (1, 2).
-        assert_eq!(cell_coordinate(6, 4, 3), 1);
-        assert_eq!(cell_coordinate(6, 1, 4), 2);
-        // Wrap-around at the extent boundary.
-        assert_eq!(cell_coordinate(11, 4, 3), 2);
-        assert_eq!(cell_coordinate(11, 1, 4), 3);
-        // Degenerate strides/extents stay at 0 rather than dividing by zero.
-        assert_eq!(cell_coordinate(5, 0, 3), 0);
-        assert_eq!(cell_coordinate(5, 2, 0), 0);
     }
 
     #[test]
@@ -1069,114 +1380,190 @@ mod tests {
         assert_eq!(domain.extents(), Ok(vec![2, 3]));
     }
 
-    /// A 1-D `regular` family of `cells` cells (`i = 1..cells`, one equation per
-    /// cell) with the given per-cell unknown sets, for exercising the corner check.
-    fn one_dim_family(cells: i64) -> dae::StructuredEquationFamily {
-        use rumoca_core::{StructuredIndexBinder, StructuredIndexDomain};
-        dae::StructuredEquationFamily {
-            domain: StructuredIndexDomain {
-                binders: vec![StructuredIndexBinder {
-                    id: 0,
-                    display_name: "i".to_string(),
-                    lower: 1,
-                    upper: cells,
-                    step: 1,
-                }],
-            },
-            first_equation_index: 0,
-            equations_per_point: 1,
-            span: test_span(),
-            origin: "corner_check_fixture".to_string(),
-            // The inner check does not gate on `regular`; production only reaches it
-            // for regular families, which this fixture stands in for.
-            regular: None,
-            template: None,
-            interiors_materialized: true,
-        }
+    /// A 1-D `regular` family of `cells` cells, non-materialized so
+    /// `build_incidence` takes the corner path.
+    fn compact_one_dim_family(cells: i64) -> dae::StructuredEquationFamily {
+        let mut family = corners::tests::one_dim_family(cells);
+        family.regular = Some(rumoca_core::RegularForFamily {
+            binders: vec!["i".to_string()],
+            accesses: Vec::new(),
+        });
+        family.template = Some(rumoca_core::ComprehensionTemplate {
+            body: vec![lit(0.0)],
+            scalar_view: rumoca_core::ComprehensionScalarView::BinderSubstitution,
+        });
+        family.interiors_materialized = false;
+        family
     }
 
-    /// A 2-D `regular` family over a `rows x cols` row-major domain, one equation
-    /// per cell.
-    fn two_dim_family(rows: i64, cols: i64) -> dae::StructuredEquationFamily {
-        use rumoca_core::{StructuredIndexBinder, StructuredIndexDomain};
-        let binder = |id, name: &str, upper| StructuredIndexBinder {
-            id,
-            display_name: name.to_string(),
-            lower: 1,
-            upper,
-            step: 1,
-        };
-        dae::StructuredEquationFamily {
-            domain: StructuredIndexDomain {
-                binders: vec![binder(0, "i", rows), binder(1, "j", cols)],
-            },
-            first_equation_index: 0,
-            equations_per_point: 1,
-            span: test_span(),
-            origin: "corner_check_fixture_2d".to_string(),
-            regular: None,
-            template: None,
-            interiors_materialized: true,
+    #[test]
+    fn structured_matching_family_keeps_affine_candidates_compact() {
+        let family = corners::tests::two_dim_family(1_000, 1_000);
+        // Only the base and one neighbor per dimension are needed. The backing
+        // store is sparse here to prove descriptor size is independent of the
+        // million-point domain.
+        let mut sparse = vec![Vec::new(); 1_001];
+        sparse[0] = vec![10, 20];
+        sparse[1] = vec![11, 21];
+        sparse[1_000] = vec![1_010, 1_020];
+        let eq_unknowns = IncidenceRows::from_sorted_rows(sparse);
+
+        let matching = structured_matching_family(&family, &eq_unknowns)
+            .expect("corner translations should produce a compact matching family");
+
+        assert_eq!(matching.base_unknowns, vec![10]);
+        assert_eq!(matching.unknown_steps, vec![vec![1_000, 1]]);
+        assert_eq!(matching.candidate(999_999, 0), Some((999_999, 1_000_009)));
+        assert_eq!(matching.row_range(), Some(0..1_000_000));
+    }
+
+    #[test]
+    fn structured_matching_family_declines_when_the_neighbor_is_not_a_translation() {
+        // Base {0,1}; neighbor {2,5} shifts its elements by 2 and 4 -- not a
+        // single constant offset -- so the per-binder unit cannot be derived and
+        // the compact matching optimization declines without affecting scalar
+        // compatibility matching.
+        let family = compact_one_dim_family(2);
+        let eq_unknowns = IncidenceRows::from_sorted_rows(vec![vec![0, 1], vec![2, 5]]);
+        assert!(structured_matching_family(&family, &eq_unknowns).is_none());
+    }
+
+    /// A DAE holding `cells` scalar rows over one non-materialized regular
+    /// family where only the base cell and its neighbor carry a real body; the
+    /// interior rows are literal placeholders, exactly as flatten emits them
+    /// when `interiors_materialized` is false.
+    fn corner_only_family_dae(cells: usize) -> dae::Dae {
+        let mut system = dae::Dae::new();
+        for index in 0..cells {
+            let name = rumoca_core::VarName::new(format!("x{index}").as_str());
+            system
+                .variables
+                .algebraics
+                .insert(name.clone(), dae::Variable::new(name, test_span()));
+        }
+        for index in 0..cells {
+            let rhs = if index < 2 {
+                var(&format!("x{index}"))
+            } else {
+                lit(0.0)
+            };
+            let mut equation = eq(rhs);
+            equation.origin = format!("corner_family[{index}]");
+            system.continuous.equations.push(equation);
+        }
+        system.continuous.structured_equations = vec![compact_one_dim_family(
+            i64::try_from(cells).expect("cell count fits i64"),
+        )];
+        system
+    }
+
+    #[test]
+    fn corner_derived_interiors_are_emitted_without_walking_bodies() {
+        // 100_000 interior rows carry no body at all. Walking them would produce
+        // empty rows; the corner model translates the base row instead, so the
+        // last row must reference the last unknown.
+        let cells = 100_000usize;
+        let dae = corner_only_family_dae(cells);
+        let incidence = build_incidence(&dae).expect("uniform corner family");
+
+        assert_eq!(incidence.eq_unknowns.len(), cells);
+        let base = incidence.eq_unknowns.row(0).to_vec();
+        assert_eq!(base, vec![0], "base row references exactly x0");
+        assert_eq!(
+            incidence.eq_unknowns.row(cells - 1),
+            &[cells - 1],
+            "interior rows are the base row translated by their cell offset"
+        );
+        assert_eq!(incidence.structured_matching.len(), 1);
+        assert_eq!(incidence.structured_matching[0].point_count, cells);
+    }
+
+    #[test]
+    fn materialized_family_rows_stay_authoritative() {
+        // The same DAE with `interiors_materialized = true` must keep the walked
+        // (placeholder) rows: materialized incidence is authoritative and the
+        // corner translation must not be applied behind its back.
+        let cells = 8usize;
+        let mut dae = corner_only_family_dae(cells);
+        dae.continuous.structured_equations[0].interiors_materialized = true;
+        let incidence = build_incidence(&dae).expect("materialized rows remain authoritative");
+
+        assert_eq!(incidence.eq_unknowns.len(), cells);
+        for row in 2..cells {
+            assert!(
+                incidence.eq_unknowns.row(row).is_empty(),
+                "materialized row {row} keeps its walked (empty) body"
+            );
         }
     }
 
     #[test]
-    fn synthesize_reconstructs_interior_incidence_from_corner_rows_only() {
-        // 4-cell 1-D family. Only the base (row 0) and its neighbor (row 1) carry
-        // real incidence; the interior rows 2 and 3 are EMPTY, standing in for
-        // cheapened interiors. Synthesis must still reconstruct the full per-row
-        // incidence by translating the base by the corner-derived unit (+2 here),
-        // reading neither interior row.
-        let family = one_dim_family(4);
-        let eq_unknowns = vec![set(&[5, 6]), set(&[7, 8]), set(&[]), set(&[])];
-        let synthesized = synthesize_regular_family_incidence(&family, &eq_unknowns)
-            .expect("a regular 1-D family is corner-derivable");
-        assert_eq!(
-            synthesized,
-            vec![set(&[5, 6]), set(&[7, 8]), set(&[9, 10]), set(&[11, 12])],
+    fn non_uniform_compact_family_is_rejected_instead_of_walking_placeholders() {
+        // A non-materialized family whose neighbor row is not a translation of
+        // the base has no authoritative interior rows to fall back to.
+        let cells = 6usize;
+        let mut dae = corner_only_family_dae(cells);
+        dae.continuous.equations[1].rhs = add(var("x1"), var("x3"));
+        let error = build_incidence(&dae).expect_err("mixed incidence strides are not proven");
+        assert!(
+            error
+                .to_string()
+                .contains("does not preserve its base-cell incidence cardinality"),
+            "the failure should identify the rejected corner proof, got {error}"
         );
     }
 
     #[test]
-    fn synthesize_reconstructs_2d_interior_from_two_corner_neighbors() {
-        // 2x2 row-major family. Corners: base cell0 (0,0), the j-neighbor cell1
-        // (0,1), and the i-neighbor cell2 (1,0). The interior corner cell3 (1,1) is
-        // EMPTY. The j-unit is +2 (cell0->cell1) and the i-unit is +10 (cell0->cell2),
-        // so cell3 must be base shifted by 10+2 = 12, reconstructed from the two
-        // neighbors without reading cell3.
-        let family = two_dim_family(2, 2);
-        let eq_unknowns = vec![set(&[10, 11]), set(&[12, 13]), set(&[20, 21]), set(&[])];
-        let synthesized = synthesize_regular_family_incidence(&family, &eq_unknowns)
-            .expect("a regular 2-D family is corner-derivable");
-        assert_eq!(
-            synthesized,
-            vec![
-                set(&[10, 11]),
-                set(&[12, 13]),
-                set(&[20, 21]),
-                set(&[22, 23])
-            ],
+    fn non_materialized_family_requires_an_authoritative_template() {
+        let mut dae = corner_only_family_dae(4);
+        dae.continuous.structured_equations[0].template = None;
+
+        let error = build_incidence(&dae).expect_err("placeholder rows cannot replace a template");
+        assert!(
+            error.to_string().contains("comprehension template"),
+            "the missing compact owner should be diagnosed, got {error}"
         );
     }
 
     #[test]
-    fn synthesis_exposes_when_an_interior_cell_breaks_the_translation() {
-        // Base {0,1}; neighbor cell 1 = {1,2} fixes a unit translation of +1, so
-        // synthesis predicts {2,3}. Supplying materialized row {2,9} is the
-        // mismatch the materialized-family debug check now treats as a decline.
-        let family = one_dim_family(3);
-        let eq_unknowns = vec![set(&[0, 1]), set(&[1, 2]), set(&[2, 9])];
-        let synthesized = synthesize_regular_family_incidence(&family, &eq_unknowns)
-            .expect("corners are derivable");
-        assert_ne!(synthesized[2], eq_unknowns[2]);
+    fn binder_value_use_is_rejected_before_corner_extrapolation() {
+        let mut dae = corner_only_family_dae(4);
+        dae.continuous.structured_equations[0]
+            .template
+            .as_mut()
+            .expect("fixture template")
+            .body = vec![add(var("x0"), var("i"))];
+
+        let error = build_incidence(&dae).expect_err("a binder-valued body is not corner-affine");
+        assert!(
+            error.to_string().contains("outside an array subscript"),
+            "binder confinement should be diagnosed, got {error}"
+        );
     }
 
     #[test]
-    fn synthesis_declines_when_the_neighbor_is_not_a_translation() {
-        // Base {0,1}; neighbor {2,5} shifts its elements by 2 and 4 -- not a single
-        // constant offset -- so the per-binder unit cannot be derived.
-        let family = one_dim_family(2);
-        let eq_unknowns = vec![set(&[0, 1]), set(&[2, 5])];
-        assert!(synthesize_regular_family_incidence(&family, &eq_unknowns).is_none());
+    fn fixed_and_varying_incidence_keeps_affine_zero_stride() {
+        let mut dae = corner_only_family_dae(4);
+        let captured = rumoca_core::VarName::new("z");
+        dae.variables
+            .algebraics
+            .insert(captured.clone(), dae::Variable::new(captured, test_span()));
+        dae.continuous.equations[0].rhs = add(var("x0"), var("z"));
+        dae.continuous.equations[1].rhs = add(var("x1"), var("z"));
+
+        let incidence =
+            build_incidence(&dae).expect("a captured scalar has zero affine binder stride");
+        assert_eq!(incidence.eq_unknowns.row(0), &[0, 4]);
+        assert_eq!(incidence.eq_unknowns.row(1), &[1, 4]);
+        assert_eq!(incidence.eq_unknowns.row(2), &[2, 4]);
+        assert_eq!(incidence.eq_unknowns.row(3), &[3, 4]);
+    }
+
+    #[test]
+    fn dependency_graph_reads_sorted_csr_rows() {
+        let eq_unknowns = IncidenceRows::from_sorted_rows(vec![vec![0], vec![0, 1], vec![1, 2]]);
+        let match_var = vec![Some(0), Some(1), Some(2)];
+        let adj = build_dependency_graph(&eq_unknowns, &match_var, 3);
+        assert_eq!(adj, vec![Vec::new(), vec![0], vec![1]]);
     }
 }

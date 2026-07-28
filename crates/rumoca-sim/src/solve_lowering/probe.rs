@@ -21,7 +21,7 @@ const EVAL_AT_REFRESH_MAX_ITERS: usize = 32;
 #[derive(Debug, Clone)]
 pub struct EvalAtProbe {
     /// Named solver values and state derivatives, with non-finite entries flagged.
-    pub report: rumoca_eval_solve::EvalAtReport,
+    pub report: rumoca_solver::EvalAtReport,
     /// State vector used for the evaluation, in model state order.
     pub state_used: Vec<f64>,
     /// State names in model order, aligned with `state_used` — the authoritative
@@ -49,8 +49,8 @@ pub fn eval_dae_at(
     let (state_used, state_names) =
         resolve_probe_state(&solve_model, state_overrides, "--inspect eval --at")?;
 
-    let runtime = rumoca_eval_solve::SolveRuntime::new(&solve_model)
-        .map_err(SimulationDiagnosticError::from)?;
+    let runtime =
+        rumoca_solver::SolveRuntime::new(&solve_model).map_err(SimulationDiagnosticError::from)?;
     let report = runtime.eval_at(
         t,
         &state_used,
@@ -105,7 +105,7 @@ fn resolve_probe_state(
 #[derive(Debug, Clone)]
 pub struct JacobianProbe {
     /// Named dense state Jacobian with singular-column / zero-pivot flags.
-    pub report: rumoca_eval_solve::JacobianReport,
+    pub report: rumoca_solver::JacobianReport,
     /// State vector used, in model state order.
     pub state_used: Vec<f64>,
     /// State names in model order, aligned with `state_used`.
@@ -128,13 +128,13 @@ pub fn jacobian_for_dae(
     let (state_used, state_names) =
         resolve_probe_state(&solve_model, state_overrides, "--inspect jacobian --at")?;
 
-    let runtime = rumoca_eval_solve::SolveRuntime::new(&solve_model)
-        .map_err(SimulationDiagnosticError::from)?;
+    let runtime =
+        rumoca_solver::SolveRuntime::new(&solve_model).map_err(SimulationDiagnosticError::from)?;
     let report = runtime.eval_state_jacobian(
         t,
         &state_used,
         &solve_model.parameters,
-        rumoca_eval_solve::AlgebraicSettle {
+        rumoca_solver::AlgebraicSettle {
             tol: EVAL_AT_REFRESH_TOL,
             max_iters: EVAL_AT_REFRESH_MAX_ITERS,
         },
@@ -151,7 +151,7 @@ pub fn jacobian_for_dae(
 #[derive(Debug, Clone)]
 pub struct ParameterJacobianProbe {
     /// Named dense `∂(der(state))/∂p` (rows = `der(state)`, cols = parameters).
-    pub report: rumoca_eval_solve::ParameterJacobianReport,
+    pub report: rumoca_solver::ParameterJacobianReport,
     /// State vector used, in model state order.
     pub state_used: Vec<f64>,
     /// State names in model order, aligned with `state_used`.
@@ -176,13 +176,13 @@ pub fn parameter_jacobian_for_dae(
     let (state_used, state_names) =
         resolve_probe_state(&solve_model, state_overrides, "--inspect jacobian --at")?;
 
-    let runtime = rumoca_eval_solve::SolveRuntime::new(&solve_model)
-        .map_err(SimulationDiagnosticError::from)?;
+    let runtime =
+        rumoca_solver::SolveRuntime::new(&solve_model).map_err(SimulationDiagnosticError::from)?;
     let report = runtime.eval_parameter_jacobian(
         t,
         &state_used,
         &solve_model.parameters,
-        rumoca_eval_solve::AlgebraicSettle {
+        rumoca_solver::AlgebraicSettle {
             tol: EVAL_AT_REFRESH_TOL,
             max_iters: EVAL_AT_REFRESH_MAX_ITERS,
         },
@@ -198,7 +198,7 @@ pub fn parameter_jacobian_for_dae(
 #[derive(Debug, Clone)]
 pub struct ObjectiveGradientProbe {
     /// Parameter-named steady-state gradient `d(objective)/dp`.
-    pub report: rumoca_eval_solve::ObjectiveGradientReport,
+    pub report: rumoca_solver::ObjectiveGradientReport,
     /// State vector used (should be at/near steady state), in model state order.
     pub state_used: Vec<f64>,
     /// State names in model order, aligned with `state_used`.
@@ -226,14 +226,14 @@ pub fn steady_state_objective_gradient_for_dae(
     let (state_used, state_names) =
         resolve_probe_state(&solve_model, state_overrides, "objective gradient --at")?;
 
-    let runtime = rumoca_eval_solve::SolveRuntime::new(&solve_model)
-        .map_err(SimulationDiagnosticError::from)?;
+    let runtime =
+        rumoca_solver::SolveRuntime::new(&solve_model).map_err(SimulationDiagnosticError::from)?;
     let report = runtime.steady_state_objective_gradient(
         t,
         &state_used,
         &solve_model.parameters,
         objective,
-        rumoca_eval_solve::AlgebraicSettle {
+        rumoca_solver::AlgebraicSettle {
             tol: EVAL_AT_REFRESH_TOL,
             max_iters: EVAL_AT_REFRESH_MAX_ITERS,
         },
@@ -262,14 +262,14 @@ pub fn steady_state_adjoint_objective_gradient_for_dae(
     let (state_used, state_names) =
         resolve_probe_state(&solve_model, state_overrides, "adjoint gradient --at")?;
 
-    let runtime = rumoca_eval_solve::SolveRuntime::new(&solve_model)
-        .map_err(SimulationDiagnosticError::from)?;
+    let runtime =
+        rumoca_solver::SolveRuntime::new(&solve_model).map_err(SimulationDiagnosticError::from)?;
     let report = runtime.steady_state_adjoint_objective_gradient(
         t,
         &state_used,
         &solve_model.parameters,
         objective,
-        rumoca_eval_solve::AlgebraicSettle {
+        rumoca_solver::AlgebraicSettle {
             tol: EVAL_AT_REFRESH_TOL,
             max_iters: EVAL_AT_REFRESH_MAX_ITERS,
         },
@@ -285,7 +285,7 @@ pub fn steady_state_adjoint_objective_gradient_for_dae(
 #[derive(Debug, Clone)]
 pub struct SteadyStateSensitivityProbe {
     /// Named dense steady-state sensitivity `∂y/∂p` (rows = states, cols = params).
-    pub report: rumoca_eval_solve::SteadyStateSensitivityReport,
+    pub report: rumoca_solver::SteadyStateSensitivityReport,
     /// State vector used (should be at/near steady state), in model state order.
     pub state_used: Vec<f64>,
     /// State names in model order, aligned with `state_used`.
@@ -311,13 +311,13 @@ pub fn steady_state_parameter_sensitivity_for_dae(
         "steady-state sensitivity --at",
     )?;
 
-    let runtime = rumoca_eval_solve::SolveRuntime::new(&solve_model)
-        .map_err(SimulationDiagnosticError::from)?;
+    let runtime =
+        rumoca_solver::SolveRuntime::new(&solve_model).map_err(SimulationDiagnosticError::from)?;
     let report = runtime.steady_state_parameter_sensitivity(
         t,
         &state_used,
         &solve_model.parameters,
-        rumoca_eval_solve::AlgebraicSettle {
+        rumoca_solver::AlgebraicSettle {
             tol: EVAL_AT_REFRESH_TOL,
             max_iters: EVAL_AT_REFRESH_MAX_ITERS,
         },
@@ -334,9 +334,9 @@ pub fn steady_state_parameter_sensitivity_for_dae(
 #[derive(Debug, Clone)]
 pub struct StateAndParameterJacobianProbe {
     /// Named dense state Jacobian `∂(der(state))/∂(state)`.
-    pub state: rumoca_eval_solve::JacobianReport,
+    pub state: rumoca_solver::JacobianReport,
     /// Named dense parameter sensitivity `∂(der(state))/∂p`.
-    pub parameter: rumoca_eval_solve::ParameterJacobianReport,
+    pub parameter: rumoca_solver::ParameterJacobianReport,
     /// State vector used, in model state order.
     pub state_used: Vec<f64>,
     /// State names in model order, aligned with `state_used`.
@@ -359,9 +359,9 @@ pub fn state_and_parameter_jacobian_for_dae(
     let (state_used, state_names) =
         resolve_probe_state(&solve_model, state_overrides, "--inspect jacobian --at")?;
 
-    let runtime = rumoca_eval_solve::SolveRuntime::new(&solve_model)
-        .map_err(SimulationDiagnosticError::from)?;
-    let settle = rumoca_eval_solve::AlgebraicSettle {
+    let runtime =
+        rumoca_solver::SolveRuntime::new(&solve_model).map_err(SimulationDiagnosticError::from)?;
+    let settle = rumoca_solver::AlgebraicSettle {
         tol: EVAL_AT_REFRESH_TOL,
         max_iters: EVAL_AT_REFRESH_MAX_ITERS,
     };

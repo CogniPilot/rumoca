@@ -433,10 +433,20 @@ fn lookup_variable_source<'a>(dae_model: &'a dae::Dae, name: &str) -> Option<Var
 
 fn truncate_meta_expr(expr: &rumoca_core::Expression) -> String {
     let rendered = format!("{expr:?}");
-    if rendered.len() <= 160 {
-        rendered
+    truncate_utf8_with_ellipsis(&rendered, 160)
+}
+
+fn truncate_utf8_with_ellipsis(value: &str, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
+        value.to_string()
     } else {
-        format!("{}...", &rendered[..160])
+        let end = value
+            .char_indices()
+            .map(|(index, _)| index)
+            .take_while(|index| *index <= max_bytes)
+            .last()
+            .unwrap_or(0);
+        format!("{}...", &value[..end])
     }
 }
 
@@ -564,7 +574,7 @@ pub fn build_tunable_parameter_meta(
             let solve::ScalarSlot::P { index, .. } = *slot else {
                 return None;
             };
-            let source = lookup_variable_source(dae_model, name)?;
+            let source = lookup_variable_source(dae_model, name.as_str())?;
             if source.role != "parameter" || !source.var.is_tunable {
                 return None;
             }
@@ -631,7 +641,7 @@ pub fn compiled_layout_related_bindings_debug(
         .bindings()
         .iter()
         .filter(|(binding_name, _)| {
-            binding_name.starts_with(prefix) && binding_name.as_str() != prefix
+            binding_name.as_str().starts_with(prefix) && binding_name.as_str() != prefix
         })
         .map(|(binding_name, slot)| (binding_name.to_string(), format!("{slot:?}")))
         .collect())
@@ -677,5 +687,24 @@ mod tests {
         assert!(meta.iter().all(|entry| entry.is_state));
         assert!(meta.iter().all(|entry| entry.role == "state"));
         assert!(meta.iter().all(|entry| entry.unit.as_deref() == Some("m")));
+    }
+
+    #[test]
+    fn truncate_meta_expr_never_slices_inside_utf8() {
+        let expr = rumoca_core::Expression::VarRef {
+            name: rumoca_core::Reference::new("é".repeat(200)),
+            subscripts: Vec::new(),
+            span: rumoca_core::Span::DUMMY,
+        };
+        let rendered = truncate_meta_expr(&expr);
+        assert!(rendered.ends_with("..."));
+        assert!(rendered.len() <= 163);
+    }
+
+    #[test]
+    fn truncate_meta_expr_cuts_before_a_character_crossing_the_limit() {
+        let name = format!("{}🙂suffix", "a".repeat(159));
+        let rendered = truncate_utf8_with_ellipsis(&name, 160);
+        assert_eq!(rendered, format!("{}...", "a".repeat(159)));
     }
 }

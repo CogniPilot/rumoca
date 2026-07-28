@@ -437,7 +437,7 @@ fn listed<'c, 'a>(
 ///
 /// # Errors
 ///
-/// `ET018` when the manifest-validated shape invariants (every dimension a
+/// `EGT018` when the manifest-validated shape invariants (every dimension a
 /// positive `usize`, flat element count = `product(dims)`) do not hold —
 /// admissibility and the manifest layer enforce them upstream, so a breach
 /// here is a projection bug and must never fabricate a wrong-shape literal
@@ -473,7 +473,7 @@ fn nested_literal<T>(
     }
 }
 
-/// A manifest dimension as a positive `usize`; `ET018` otherwise (validated
+/// A manifest dimension as a positive `usize`; `EGT018` otherwise (validated
 /// upstream — see [`start_literal`]).
 fn literal_dimension(size: u64) -> Result<usize, GalecTargetError> {
     usize::try_from(size)
@@ -502,7 +502,7 @@ fn broadcast_literal(
 
 /// Nest a row-major flat element list per the dimension sizes, re-checking
 /// the `values.len() == product(dims)` invariant the manifest layer
-/// enforced (`ET018` on breach — see [`start_literal`]).
+/// enforced (`EGT018` on breach — see [`start_literal`]).
 fn nest_row_major(
     dims: &[u64],
     values: &[gast::Expression],
@@ -540,7 +540,7 @@ fn nest_row_major(
 mod tests {
     //! The shape invariants (dims >= 1, element count = product(dims)) are
     //! enforced upstream by admissibility and the manifest layer; these
-    //! helpers must FAIL on a breach (ET018), never fabricate a wrong-shape
+    //! helpers must FAIL on a breach (EGT018), never fabricate a wrong-shape
     //! Startup literal (SPEC_0008: no silent defaults).
 
     use super::{

@@ -401,7 +401,7 @@ pub struct FileCtx {
 impl From<&File> for FileCtx {
     fn from(file: &File) -> Self {
         let (needs_checksum, checksum) = match &file.checksum {
-            FileChecksum::Sha1(sha1) => (true, Some(sha1.as_str().to_owned())),
+            FileChecksum::Sha1(sha1) => (true, Some(sha1.to_hex())),
             FileChecksum::NotNeeded => (false, None),
         };
         Self {
@@ -870,7 +870,7 @@ impl From<&ManifestReference> for ManifestReferenceCtx {
         Self {
             id: reference.id.as_str().to_owned(),
             manifest_ref_id: reference.manifest_ref_id.to_string(),
-            checksum: reference.checksum.as_str().to_owned(),
+            checksum: reference.checksum.to_hex(),
         }
     }
 }
@@ -1021,7 +1021,7 @@ impl From<&ModelRepresentation> for RepresentationCtx {
             name: representation.name.as_str().to_owned(),
             kind: representation.kind.as_str(),
             manifest: representation.manifest.as_str().to_owned(),
-            checksum: representation.checksum.as_str().to_owned(),
+            checksum: representation.checksum.to_hex(),
             manifest_ref_id: representation.manifest_ref_id.to_string(),
         }
     }

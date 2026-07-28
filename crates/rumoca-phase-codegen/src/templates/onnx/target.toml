@@ -5,6 +5,9 @@ description = "ONNX Python model builder export"
 execution_mode = "symbolic"
 deployment_class = "symbolic"
 
+[capabilities]
+runtime_events = false
+
 [[files]]
 path = "{{ model_name }}_onnx.py"
 template = "onnx.py.jinja"

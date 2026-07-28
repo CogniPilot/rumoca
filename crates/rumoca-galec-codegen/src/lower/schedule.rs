@@ -65,8 +65,8 @@ impl AccessKey {
 ///
 /// # Errors
 ///
-/// `unsupported-feature:discrete-algebraic-loop` (ET017) when rows read
-/// each other's current-tick values cyclically; `ET018` when a statement is
+/// `unsupported-feature:discrete-algebraic-loop` (EGT017) when rows read
+/// each other's current-tick values cyclically; `EGT018` when a statement is
 /// not the single-part flat assignment lowering produces.
 pub(crate) fn order_by_dependencies(
     statements: Vec<Spanned<Statement>>,
