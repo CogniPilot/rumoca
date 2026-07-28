@@ -60,11 +60,44 @@ fn continuous_variable<'a>(dae: &'a Dae, name: &VarName) -> Option<&'a Variable>
 /// projected onto their scalar components so the closure reaches the variables
 /// the row actually reads (MLS 4.7 / 10.6).
 fn closure_names_of_expr(dae: &Dae, expr: &Expression) -> IndexSet<VarName> {
-    let mut names = collect_rhs_var_refs(expr);
+    let mut names = derivative_value_dependencies(expr);
     names.extend(super::record_projection::record_field_projection_names(
         dae, expr,
     ));
     names
+}
+
+/// Variables whose values are differentiated by the symbolic chain rule.
+///
+/// An `if` predicate selects an event branch but is not itself differentiated;
+/// including predicate-only discrete variables in this closure falsely blocks
+/// an otherwise closed branch-local derivative.
+pub(super) fn derivative_value_dependencies(expr: &Expression) -> IndexSet<VarName> {
+    struct Collector {
+        names: IndexSet<VarName>,
+    }
+
+    impl ExpressionVisitor for Collector {
+        fn visit_if(&mut self, branches: &[(Expression, Expression)], else_branch: &Expression) {
+            for (_, value) in branches {
+                self.visit_expression(value);
+            }
+            self.visit_expression(else_branch);
+        }
+
+        fn visit_var_ref(&mut self, name: &Reference, subscripts: &[Subscript]) {
+            self.names.insert(name.var_name().clone());
+            for subscript in subscripts {
+                self.visit_subscript(subscript);
+            }
+        }
+    }
+
+    let mut collector = Collector {
+        names: IndexSet::new(),
+    };
+    collector.visit_expression(expr);
+    collector.names
 }
 
 /// Transitive variable closure of `seed_exprs` through defining expressions.
@@ -148,12 +181,11 @@ impl DerivativeClosureResolver<'_> {
             })
             .find_map(|candidate| {
                 let defining_expr = &candidate.expr;
-                let dependencies_resolved =
-                    collect_rhs_var_refs(defining_expr)
-                        .iter()
-                        .all(|dependency| {
-                            derivative_dependency_is_resolved(self.dae, closure_states, dependency)
-                        });
+                let dependencies_resolved = derivative_value_dependencies(defining_expr)
+                    .iter()
+                    .all(|dependency| {
+                        derivative_dependency_is_resolved(self.dae, closure_states, dependency)
+                    });
                 if !dependencies_resolved {
                     return None;
                 }

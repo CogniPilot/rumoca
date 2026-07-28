@@ -117,15 +117,47 @@ pub(super) fn expression_is_smooth_for_index_reduction(
     let mut checker = IndexReductionSmoothness {
         dae,
         bindings,
+        event_branches: EventBranches::Reject,
         smooth: true,
     };
     checker.visit_expression(expr);
     checker.smooth
 }
 
+/// Whether every value branch of an explicit conditional trajectory is smooth.
+///
+/// Direct state demotion does not differentiate an equation constraint across
+/// an event surface. It replaces `der(x)` after a total equation has already
+/// established `x = if c then a else b`, so Modelica's event semantics hold
+/// `c` fixed while selecting `der(a)` or `der(b)`. The certificate required
+/// here is therefore branch-local: every possible value must be
+/// differentiable, while the event predicate itself is deliberately not
+/// differentiated.
+pub(super) fn expression_has_piecewise_smooth_values(
+    expr: &Expression,
+    dae: &Dae,
+    bindings: &HashMap<String, f64>,
+) -> bool {
+    let mut checker = IndexReductionSmoothness {
+        dae,
+        bindings,
+        event_branches: EventBranches::AcceptValues,
+        smooth: true,
+    };
+    checker.visit_expression(expr);
+    checker.smooth
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EventBranches {
+    Reject,
+    AcceptValues,
+}
+
 struct IndexReductionSmoothness<'a> {
     dae: &'a Dae,
     bindings: &'a HashMap<String, f64>,
+    event_branches: EventBranches,
     smooth: bool,
 }
 
@@ -150,6 +182,13 @@ impl ExpressionVisitor for IndexReductionSmoothness<'_> {
     }
 
     fn visit_if(&mut self, branches: &[(Expression, Expression)], else_branch: &Expression) {
+        if self.event_branches == EventBranches::AcceptValues {
+            for (_, value) in branches {
+                self.visit_expression(value);
+            }
+            self.visit_expression(else_branch);
+            return;
+        }
         for (condition, value) in branches {
             match eval_static_bool(condition, self.bindings) {
                 Some(true) => {

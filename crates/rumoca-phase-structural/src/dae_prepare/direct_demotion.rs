@@ -56,6 +56,7 @@ pub(super) fn expression_contains_any_der_call(expr: &Expression) -> bool {
 }
 
 pub(super) fn equation_defining_expr_for_unknown(
+    dae: &Dae,
     eq: &Equation,
     unknown_name: &VarName,
 ) -> Option<Expression> {
@@ -67,11 +68,77 @@ pub(super) fn equation_defining_expr_for_unknown(
         }
         return Some(eq.rhs.clone());
     }
+    if let Expression::Binary { op, lhs, rhs, .. } = &eq.rhs
+        && *op == OpBinary::Sub
+    {
+        if full_width_aggregate_target(dae, eq, lhs, unknown_name)
+            && !expr_contains_var(rhs, unknown_name)
+            && !expression_contains_any_der_call(rhs)
+        {
+            return Some(*rhs.clone());
+        }
+        if full_width_aggregate_target(dae, eq, rhs, unknown_name)
+            && !expr_contains_var(lhs, unknown_name)
+            && !expression_contains_any_der_call(lhs)
+        {
+            return Some(*lhs.clone());
+        }
+    }
     let defining_expr = residual_defining_expr(eq, unknown_name)?;
     if expression_contains_any_der_call(&defining_expr) {
         return None;
     }
     Some(defining_expr)
+}
+
+/// Whether one indexed reference accounts for the target's complete scalar
+/// width in this equation.
+///
+/// The subscript coverage and scalar-count equality form the shape
+/// certificate. Every explicit subscript must retain the complete declared
+/// dimension, except that selecting index one of a singleton dimension is
+/// equivalent to selecting that complete dimension. This rejects a component
+/// row such as `x[1] = ...` for an aggregate `x[3]`, while accepting both
+/// ToDAE's compact `x[:]` rows and singleton aggregate rows.
+fn full_width_aggregate_target(
+    dae: &Dae,
+    equation: &Equation,
+    expr: &Expression,
+    target: &VarName,
+) -> bool {
+    let Expression::VarRef {
+        name, subscripts, ..
+    } = expr
+    else {
+        return false;
+    };
+    if subscripts.is_empty() || name.var_name() != target {
+        return false;
+    }
+    let variable = dae
+        .variables
+        .algebraics
+        .get(target)
+        .or_else(|| dae.variables.outputs.get(target))
+        .or_else(|| dae.variables.states.get(target));
+    variable.is_some_and(|variable| {
+        subscripts_cover_complete_shape(subscripts, &variable.dims)
+            && equation.scalar_count == variable.size()
+    })
+}
+
+fn subscripts_cover_complete_shape(subscripts: &[Subscript], dims: &[i64]) -> bool {
+    if subscripts.len() > dims.len() {
+        return false;
+    }
+    subscripts
+        .iter()
+        .zip(dims)
+        .all(|(subscript, dim)| match subscript {
+            Subscript::Colon { .. } => true,
+            Subscript::Index { value: 1, .. } => *dim == 1,
+            Subscript::Index { .. } | Subscript::Expr { .. } => false,
+        })
 }
 
 /// Value-closure well-foundedness over defining expressions.
@@ -97,6 +164,7 @@ pub(super) fn equation_defining_expr_for_unknown(
 ///   cycle never settles, and reading it as "no state found" would demote a
 ///   mass position that nothing determines.
 struct AliasClosureScan<'a> {
+    dae: &'a Dae,
     definitions: &'a DefiningExprIndex,
     state_name_set: &'a HashSet<String>,
     non_state_unknown_names: &'a HashSet<String>,
@@ -176,6 +244,66 @@ impl AliasClosureScan<'_> {
         }
     }
 
+    /// Names in `roots` whose value closure is independent of time, states,
+    /// inputs, and discrete storage.
+    ///
+    /// This is a constructive zero-derivative certificate. Each accepted name
+    /// has a defining candidate whose references are parameters, constants, or
+    /// names accepted by an earlier least-fixpoint round.
+    fn time_invariant_names(&self, roots: &IndexSet<VarName>) -> Option<HashSet<String>> {
+        let reachable = self.reachable_closure(roots);
+        let mut settled = HashSet::new();
+        loop {
+            let newly_settled = reachable
+                .iter()
+                .filter(|name| !settled.contains(name.as_str()))
+                .filter(|name| self.has_time_invariant_candidate(name, &settled))
+                .map(|name| name.as_str().to_string())
+                .collect::<Vec<_>>();
+            if newly_settled.is_empty() {
+                break;
+            }
+            settled.extend(newly_settled);
+        }
+        roots
+            .iter()
+            .all(|name| settled.contains(name.as_str()))
+            .then_some(settled)
+    }
+
+    fn has_time_invariant_candidate(&self, name: &VarName, settled: &HashSet<String>) -> bool {
+        self.usable_candidates(name)
+            .any(|candidate| self.candidate_is_time_invariant(candidate, settled))
+    }
+
+    fn candidate_is_time_invariant(
+        &self,
+        candidate: &Expression,
+        settled: &HashSet<String>,
+    ) -> bool {
+        super::derivative_map::derivative_value_dependencies(candidate)
+            .iter()
+            .all(|name| self.reference_is_time_invariant(name, settled))
+    }
+
+    fn reference_is_time_invariant(&self, name: &VarName, settled: &HashSet<String>) -> bool {
+        if self.state_name_set.contains(name.as_str()) || name.as_str() == "time" {
+            return false;
+        }
+        if self.non_state_unknown_names.contains(name.as_str()) {
+            return settled.contains(name.as_str());
+        }
+        self.definitions_are_compile_time_known(name)
+    }
+
+    fn definitions_are_compile_time_known(&self, name: &VarName) -> bool {
+        // Names outside the continuous-unknown set are accepted only when
+        // their declaration proves compile-time ownership. Inputs, discrete
+        // storage, and undeclared references are deliberately rejected.
+        self.dae.variables.parameters.contains_key(name)
+            || self.dae.variables.constants.contains_key(name)
+    }
+
     fn has_settled_candidate(&self, name: &VarName, settled: &HashSet<String>) -> bool {
         self.usable_candidates(name).any(|candidate| {
             let mut refs = IndexSet::new();
@@ -190,6 +318,7 @@ impl AliasClosureScan<'_> {
 }
 
 fn defining_expr_references_unsafe_non_state_alias_closure(
+    dae: &Dae,
     definitions: &DefiningExprIndex,
     defining_expr: &Expression,
     state_name_set: &HashSet<String>,
@@ -197,6 +326,7 @@ fn defining_expr_references_unsafe_non_state_alias_closure(
     excluded_eq_index: usize,
 ) -> bool {
     AliasClosureScan {
+        dae,
         definitions,
         state_name_set,
         non_state_unknown_names,
@@ -389,7 +519,7 @@ fn direct_demotion_plan_for_state(
             DirectDemotionReject::DerInDefiningExpr,
         ));
     }
-    if !super::state_row_reduction::expression_is_smooth_for_index_reduction(
+    if !super::state_row_reduction::expression_has_piecewise_smooth_values(
         &defining_expr,
         round.dae,
         &round.structural_bindings,
@@ -407,6 +537,7 @@ fn direct_demotion_plan_for_state(
     // dependencies on states or unsafe alias closures.
     let alias_scan_expr = mask_state_der_calls(&defining_expr, &round.state_name_set);
     if defining_expr_references_unsafe_non_state_alias_closure(
+        round.dae,
         &round.non_state_defining_exprs,
         &alias_scan_expr,
         &round.state_name_set,
@@ -430,25 +561,56 @@ fn direct_demotion_plan_for_state(
             DirectDemotionReject::UnslicedVectorRef,
         ));
     }
-    direct_demotion_replacement_plan(round, state_name, &defining_expr, counters)
+    direct_demotion_replacement_plan(round, eq_index, state_name, &defining_expr, counters)
 }
 
 /// Differentiate the accepted defining expression and check the result is a
 /// usable replacement for `der(state_name)`.
 fn direct_demotion_replacement_plan(
     round: &DirectDemotionRound<'_>,
+    defining_equation: usize,
     state_name: &VarName,
     defining_expr: &Expression,
     counters: &mut DirectDemotionCounters,
 ) -> Result<Option<DirectStateDemotionPlan>, StructuralError> {
-    let Some(mut der_expr) = choose_derivative_replacement(
+    let shared_derivative = choose_derivative_replacement(
         defining_expr,
         &round.state_name_set,
         round.dae,
         &round.der_map,
         counters,
-    ) else {
-        return Ok(None);
+    );
+    let mut der_expr = match shared_derivative {
+        Some(derivative) => derivative,
+        None => {
+            // The DAE-wide closure can choose a valid but circular definition
+            // for one member of a trajectory chain. Rebuild against this
+            // candidate alone, explicitly rejecting its own derivative
+            // relation. Acceptance then carries a stronger witness: the
+            // replacement is derivable without the relation it will rewrite.
+            let independent_map = build_independent_derivative_map_for_direct_state_definition(
+                round.dae,
+                defining_expr,
+                state_name,
+            )?;
+            let mut independent_map = independent_map;
+            seed_time_invariant_derivatives(
+                round,
+                defining_equation,
+                defining_expr,
+                &mut independent_map,
+            );
+            let Some(derivative) = choose_derivative_replacement(
+                defining_expr,
+                &round.state_name_set,
+                round.dae,
+                &independent_map,
+                counters,
+            ) else {
+                return Ok(None);
+            };
+            derivative
+        }
     };
     if expr_contains_der_of(&der_expr, state_name) {
         return Ok(reject_direct_demotion(
@@ -508,6 +670,39 @@ fn direct_demotion_replacement_plan(
         state_name: state_name.clone(),
         der_expr,
     }))
+}
+
+fn seed_time_invariant_derivatives(
+    round: &DirectDemotionRound<'_>,
+    defining_equation: usize,
+    defining_expr: &Expression,
+    derivative_map: &mut HashMap<String, Expression>,
+) {
+    let scan = AliasClosureScan {
+        dae: round.dae,
+        definitions: &round.non_state_defining_exprs,
+        state_name_set: &round.state_name_set,
+        non_state_unknown_names: &round.non_state_unknown_names,
+        excluded_eq_index: defining_equation,
+    };
+    let Some(roots) = scan.non_state_refs(defining_expr) else {
+        return;
+    };
+    let Some(time_invariant) = scan.time_invariant_names(&roots) else {
+        return;
+    };
+    for name in time_invariant {
+        let name = VarName::new(name);
+        let variable = round
+            .dae
+            .variables
+            .algebraics
+            .get(&name)
+            .or_else(|| round.dae.variables.outputs.get(&name));
+        if let Some(variable) = variable {
+            derivative_map.insert(name.as_str().to_string(), zero_expr(variable.source_span));
+        }
+    }
 }
 
 /// Whether the proposed replacement reads a variable whose defining row is

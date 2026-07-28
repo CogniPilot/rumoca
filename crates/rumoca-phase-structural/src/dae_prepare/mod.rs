@@ -226,9 +226,43 @@ fn direct_reference_targets_exact_unknown(expr: &Expression, target: &VarName) -
 /// difference form below never matches — so every current at a connection node
 /// looked like it had no defining row at all.
 pub(super) fn residual_defining_expr(eq: &Equation, alg_name: &VarName) -> Option<Expression> {
-    let (coef, remainder) = split_linear_target(&eq.rhs, alg_name, eq.span)?;
+    residual_defining_value(&eq.rhs, alg_name, eq.span)
+}
+
+/// Invert a total conditional residual only when every branch defines the
+/// same target.
+///
+/// This is a structural certificate, not a target guess: accepting one branch
+/// without the others would claim a value that the equation does not establish
+/// over its complete event partition.
+fn residual_defining_value(
+    residual: &Expression,
+    target: &VarName,
+    context_span: Span,
+) -> Option<Expression> {
+    if let Expression::If {
+        branches,
+        else_branch,
+        span,
+    } = residual
+    {
+        let mut defining_branches = Vec::with_capacity(branches.len());
+        for (condition, value) in branches {
+            defining_branches.push((
+                condition.clone(),
+                residual_defining_value(value, target, context_span)?,
+            ));
+        }
+        return Some(Expression::If {
+            branches: defining_branches,
+            else_branch: Box::new(residual_defining_value(else_branch, target, context_span)?),
+            span: *span,
+        });
+    }
+
+    let (coef, remainder) = split_linear_target(residual, target, context_span)?;
     match coef {
-        1 => Some(sub_expr(zero_expr(eq.span), remainder, eq.span)),
+        1 => Some(sub_expr(zero_expr(context_span), remainder, context_span)),
         -1 => Some(remainder),
         _ => None,
     }
@@ -260,6 +294,9 @@ fn extract_defining_expr(
         ResidualInversion::Difference => None,
         ResidualInversion::IncludingBareSums => residual_defining_expr(eq, alg_name),
     };
+    if matches!(eq.rhs, Expression::If { .. }) {
+        return conditional_residual_defining_expr(&eq.rhs, alg_name, eq.span, inversion);
+    }
     let Expression::Binary { op, lhs, rhs, .. } = &eq.rhs else {
         return fallback(eq);
     };
@@ -311,6 +348,51 @@ fn extract_defining_expr(
         });
     }
     None
+}
+
+fn conditional_residual_defining_expr(
+    residual: &Expression,
+    target: &VarName,
+    context_span: Span,
+    inversion: ResidualInversion,
+) -> Option<Expression> {
+    let Expression::If {
+        branches,
+        else_branch,
+        span,
+    } = residual
+    else {
+        if inversion == ResidualInversion::Difference
+            && !matches!(
+                residual,
+                Expression::Binary {
+                    op: OpBinary::Sub,
+                    ..
+                }
+            )
+        {
+            return None;
+        }
+        return residual_defining_value(residual, target, context_span);
+    };
+
+    let mut defining_branches = Vec::with_capacity(branches.len());
+    for (condition, value) in branches {
+        defining_branches.push((
+            condition.clone(),
+            conditional_residual_defining_expr(value, target, context_span, inversion)?,
+        ));
+    }
+    Some(Expression::If {
+        branches: defining_branches,
+        else_branch: Box::new(conditional_residual_defining_expr(
+            else_branch,
+            target,
+            context_span,
+            inversion,
+        )?),
+        span: *span,
+    })
 }
 
 fn push_indexed_defining_expr(
@@ -374,7 +456,7 @@ fn collect_non_derivative_defining_expr_index(dae: &Dae) -> DefiningExprIndex {
             if lhs_name.as_ref().is_some_and(|lhs| lhs == &ref_name) {
                 continue;
             }
-            if let Some(expr) = equation_defining_expr_for_unknown(eq, &ref_name) {
+            if let Some(expr) = equation_defining_expr_for_unknown(dae, eq, &ref_name) {
                 push_indexed_defining_expr(&mut index, &ref_name, equation_index, expr);
             }
         }
@@ -1348,6 +1430,13 @@ fn extract_state_direct_assignment(
     state_name_set: &HashSet<String>,
 ) -> Option<(VarName, Expression)> {
     match rhs {
+        Expression::VarRef {
+            name,
+            subscripts,
+            span,
+        } if subscripts.is_empty() && state_name_set.contains(name.as_str()) => {
+            Some((name.var_name().clone(), zero_expr(*span)))
+        }
         Expression::Binary {
             op: OpBinary::Sub,
             lhs,
@@ -1416,12 +1505,18 @@ fn extract_state_direct_assignment_equation(
             .contains(lhs.as_str())
             .then(|| (lhs.var_name().clone(), eq.rhs.clone()));
     }
+    // Flatten arithmetic identity wrappers before recognizing a conditional
+    // assignment. ToDAE preserves source grouping, so a total equation may
+    // arrive as `if c then x-a else ((if d then x-b else x-c) - 0)`.
+    // Removing the neutral wrapper is semantics-preserving and exposes the
+    // common-target certificate carried by every nested branch.
+    let normalized_rhs = crate::eliminate::simplify_arithmetic_identities(eq.rhs.clone());
     // Defining expressions may read `der(<other state>)` (differentiator
     // chains such as `y = der(x)` behind a closed-form ODE for `x`); the
     // per-candidate gates below and in `direct_demotion_plan_for_equation`
     // reject the unsafe cases (self-derivatives, derivative definitions that
     // feed back through the candidate).
-    if let Some(pair) = extract_state_direct_assignment(&eq.rhs, state_name_set)
+    if let Some(pair) = extract_state_direct_assignment(&normalized_rhs, state_name_set)
         && !expr_contains_der_of(&pair.1, &pair.0)
     {
         return Some(pair);
@@ -1430,11 +1525,12 @@ fn extract_state_direct_assignment_equation(
     // Residual form: 0 = expr. If expr is affine in exactly one state with
     // coefficient ±1, solve for that state.
     let mut solved: Option<(VarName, Expression)> = None;
-    for state_name in state_value_refs_outside_der(&eq.rhs, state_names) {
-        if expr_contains_der_of(&eq.rhs, &state_name) {
+    for state_name in state_value_refs_outside_der(&normalized_rhs, state_names) {
+        if expr_contains_der_of(&normalized_rhs, &state_name) {
             continue;
         }
-        let Some((coef, remainder)) = split_linear_target(&eq.rhs, &state_name, eq.span) else {
+        let Some((coef, remainder)) = split_linear_target(&normalized_rhs, &state_name, eq.span)
+        else {
             continue;
         };
         let defining_expr = match coef {
