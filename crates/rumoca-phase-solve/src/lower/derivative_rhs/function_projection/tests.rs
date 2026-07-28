@@ -173,6 +173,58 @@ fn indexed_scope_substitution_resolves_compile_time_loop_index_first() -> Result
 }
 
 #[test]
+fn plain_projected_array_formal_substitutes_full_actual() -> Result<(), LowerError> {
+    let dae_model = dae::Dae::default();
+    let structural_bindings = IndexMap::new();
+    let analysis = FunctionProjectionAnalysis::new(&dae_model, &structural_bindings);
+    let mut scope = FunctionProjectionScope::default();
+    scope
+        .full
+        .insert("v".to_string(), local_var("body.r_rel_a"));
+    scope.dims.insert("v".to_string(), vec![3]);
+    scope
+        .scalars
+        .insert("v".to_string(), vec![real(1.0), real(2.0), real(3.0)]);
+
+    assert_eq!(
+        analysis.substitute(&local_var("v"), &scope)?,
+        local_var("body.r_rel_a")
+    );
+    Ok(())
+}
+
+#[test]
+fn projected_array_formal_materializes_inside_nested_call() -> Result<(), LowerError> {
+    let dae_model = dae::Dae::default();
+    let structural_bindings = IndexMap::new();
+    let analysis = FunctionProjectionAnalysis::new(&dae_model, &structural_bindings);
+    let mut scope = FunctionProjectionScope::default();
+    scope
+        .full
+        .insert("v".to_string(), local_var("body.r_rel_a"));
+    scope.dims.insert("v".to_string(), vec![3]);
+    scope
+        .scalars
+        .insert("v".to_string(), vec![real(1.0), real(2.0), real(3.0)]);
+    let call = rumoca_core::Expression::FunctionCall {
+        name: rumoca_core::Reference::new("nested"),
+        args: vec![local_var("v")],
+        is_constructor: false,
+        span: test_span(),
+    };
+
+    let substituted = analysis.substitute(&call, &scope)?;
+    let rumoca_core::Expression::FunctionCall { args, .. } = substituted else {
+        panic!("expected substituted function call");
+    };
+    assert_eq!(
+        args,
+        vec![array(vec![real(1.0), real(2.0), real(3.0)], false)]
+    );
+    Ok(())
+}
+
+#[test]
 fn projected_scope_dimensions_override_full_binding_dimensions() {
     let dae_model = dae::Dae::default();
     let structural_bindings = IndexMap::new();

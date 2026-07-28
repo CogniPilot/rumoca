@@ -510,7 +510,7 @@ impl ExpressionRewriter for FunctionScopeSubstituter<'_> {
         if !subscripts.is_empty() {
             return self.walk_expression(expr);
         }
-        if self.scope.scalars.contains_key(name.as_str()) {
+        if self.materialize_arrays && self.scope.scalars.contains_key(name.as_str()) {
             return self.projected_array_binding(expr, name, *span);
         }
         if let Some(expr) = self.scope.full.get(name.as_str()) {
