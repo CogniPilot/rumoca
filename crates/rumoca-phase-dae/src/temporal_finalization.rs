@@ -8,7 +8,15 @@ use crate::ToDaeError;
 pub(crate) fn lower_internal_sample_ticks(dae_model: &mut dae::Dae) -> Result<(), ToDaeError> {
     let mut rewriter = InternalSampleTickRewriter { error: None };
     rewrite_equations(&mut dae_model.continuous.equations, &mut rewriter);
+    rewrite_structured_equations(
+        &mut dae_model.continuous.structured_equations,
+        &mut rewriter,
+    );
     rewrite_equations(&mut dae_model.initialization.equations, &mut rewriter);
+    rewrite_structured_equations(
+        &mut dae_model.initialization.structured_equations,
+        &mut rewriter,
+    );
     rewrite_equations(&mut dae_model.discrete.real_updates, &mut rewriter);
     rewrite_equations(&mut dae_model.discrete.valued_updates, &mut rewriter);
     rewrite_equations(&mut dae_model.conditions.equations, &mut rewriter);
@@ -29,6 +37,19 @@ pub(crate) fn lower_internal_sample_ticks(dae_model: &mut dae::Dae) -> Result<()
 fn rewrite_equations(equations: &mut [dae::Equation], rewriter: &mut InternalSampleTickRewriter) {
     for equation in equations {
         equation.rhs = rewriter.rewrite_expression(&equation.rhs);
+    }
+}
+
+fn rewrite_structured_equations(
+    families: &mut [dae::StructuredEquationFamily],
+    rewriter: &mut InternalSampleTickRewriter,
+) {
+    for expression in families
+        .iter_mut()
+        .filter_map(|family| family.template.as_mut())
+        .flat_map(|template| &mut template.body)
+    {
+        *expression = rewriter.rewrite_expression(expression);
     }
 }
 
@@ -75,21 +96,56 @@ impl ExpressionRewriter for InternalSampleTickRewriter {
             return expression.clone();
         }
         let Expression::FunctionCall {
-            name, args, span, ..
+            name,
+            args,
+            is_constructor,
+            span,
         } = expression
         else {
             return self.walk_expression(expression);
         };
-        if name.as_str() != rumoca_core::INTERNAL_SAMPLE_FUNCTION_NAME {
+        if name.as_str() == rumoca_core::INTERNAL_SAMPLE_FUNCTION_NAME {
+            let args = args
+                .iter()
+                .map(|arg| self.rewrite_expression(arg))
+                .collect::<Vec<_>>();
+            return match periodic_tick_expression(&args, *span) {
+                Ok(expression) => expression,
+                Err(error) => {
+                    self.error = Some(error);
+                    expression.clone()
+                }
+            };
+        }
+        let Some(intrinsic) = source_synchronous_intrinsic(name) else {
             return self.walk_expression(expression);
+        };
+        Expression::FunctionCall {
+            name: rumoca_core::Reference::generated(intrinsic),
+            args: args
+                .iter()
+                .map(|arg| self.rewrite_expression(arg))
+                .collect(),
+            is_constructor: *is_constructor,
+            span: *span,
         }
-        match periodic_tick_expression(args, *span) {
-            Ok(expression) => expression,
-            Err(error) => {
-                self.error = Some(error);
-                expression.clone()
-            }
-        }
+    }
+}
+
+fn source_synchronous_intrinsic(name: &rumoca_core::Reference) -> Option<&'static str> {
+    if name.is_generated() {
+        return None;
+    }
+    match name.last_segment() {
+        "Clock" => Some("Clock"),
+        "hold" => Some("hold"),
+        "subSample" => Some("subSample"),
+        "superSample" => Some("superSample"),
+        "shiftSample" => Some("shiftSample"),
+        "backSample" => Some("backSample"),
+        "noClock" => Some("noClock"),
+        "firstTick" => Some("firstTick"),
+        _ => None,
     }
 }
 
@@ -194,5 +250,50 @@ fn real_literal(value: f64, span: Span) -> Expression {
     Expression::Literal {
         value: Literal::Real(value),
         span,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_span() -> Span {
+        Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("temporal_finalization_test.mo"),
+            4,
+            16,
+        )
+    }
+
+    #[test]
+    fn source_synchronous_calls_become_generated_intrinsics() {
+        let span = test_span();
+        let mut dae_model = dae::Dae::new();
+        dae_model
+            .discrete
+            .real_updates
+            .push(dae::Equation::explicit(
+                rumoca_core::VarName::new("y"),
+                Expression::FunctionCall {
+                    name: rumoca_core::Reference::new("Modelica.Clocked.subSample"),
+                    args: vec![Expression::VarRef {
+                        name: rumoca_core::Reference::new("u"),
+                        subscripts: vec![],
+                        span,
+                    }],
+                    is_constructor: false,
+                    span,
+                },
+                span,
+                "clocked fixture",
+            ));
+
+        lower_internal_sample_ticks(&mut dae_model).expect("synchronous call should lower");
+
+        assert!(matches!(
+            &dae_model.discrete.real_updates[0].rhs,
+            Expression::FunctionCall { name, span: call_span, .. }
+                if name.as_str() == "subSample" && name.is_generated() && *call_span == span
+        ));
     }
 }

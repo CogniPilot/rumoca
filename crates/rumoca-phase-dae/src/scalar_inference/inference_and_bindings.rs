@@ -575,14 +575,25 @@ pub(crate) fn create_dae_variable(
     known_var_names: &HashSet<String>,
     enum_literal_ordinals: &IndexMap<String, i64>,
 ) -> Result<Variable, ToDaeError> {
+    // An empty array has no scalar values to initialize or constrain. Keeping
+    // declaration attributes on it would make the solver-facing DAE validate
+    // references that can never be evaluated (for example `fill(eps, 0)`).
+    // Its dimensions and declaration provenance still preserve the empty
+    // source object.
+    let has_no_elements = !var.dims.is_empty() && var.dims.contains(&0);
+
     // MLS §4.4.1: declaration/modification bindings define parameter/constant values.
     // Start remains an initialization attribute and should not be used as the
     // primary value when a binding exists.
-    let start_source = match var.variability {
-        Variability::Parameter(_) | Variability::Constant(_) => {
-            var.binding.as_ref().or(var.start.as_ref())
+    let start_source = if has_no_elements {
+        None
+    } else {
+        match var.variability {
+            Variability::Parameter(_) | Variability::Constant(_) => {
+                var.binding.as_ref().or(var.start.as_ref())
+            }
+            _ => var.start.as_ref(),
         }
-        _ => var.start.as_ref(),
     };
     let start_span = start_source
         .map(|expr| variable_attribute_owner_span(name, "start", expr))
@@ -602,18 +613,30 @@ pub(crate) fn create_dae_variable(
     } else {
         None
     };
-    let min_span = var
-        .min
+    let min = if has_no_elements {
+        None
+    } else {
+        var.min.as_ref()
+    };
+    let max = if has_no_elements {
+        None
+    } else {
+        var.max.as_ref()
+    };
+    let nominal = if has_no_elements {
+        None
+    } else {
+        var.nominal.as_ref()
+    };
+    let min_span = min
         .as_ref()
         .map(|expr| variable_attribute_owner_span(name, "min", expr))
         .transpose()?;
-    let max_span = var
-        .max
+    let max_span = max
         .as_ref()
         .map(|expr| variable_attribute_owner_span(name, "max", expr))
         .transpose()?;
-    let nominal_span = var
-        .nominal
+    let nominal_span = nominal
         .as_ref()
         .map(|expr| variable_attribute_owner_span(name, "nominal", expr))
         .transpose()?;
@@ -633,11 +656,11 @@ pub(crate) fn create_dae_variable(
         start,
         start_span,
         fixed: var.fixed,
-        min: var.min.as_ref().map(flat_to_dae_expression),
+        min: min.map(flat_to_dae_expression),
         min_span,
-        max: var.max.as_ref().map(flat_to_dae_expression),
+        max: max.map(flat_to_dae_expression),
         max_span,
-        nominal: var.nominal.as_ref().map(flat_to_dae_expression),
+        nominal: nominal.map(flat_to_dae_expression),
         nominal_span,
         unit: var.unit.clone(),
         state_select: var.state_select,
@@ -902,6 +925,47 @@ mod tests {
                 .and_then(|reference| reference.def_id),
             Some(component_def_id)
         );
+    }
+
+    #[test]
+    fn create_dae_variable_discards_attributes_for_empty_arrays() {
+        let name = VarName::new("empty");
+        let span = test_span();
+        let unresolved = Expression::VarRef {
+            name: rumoca_core::Reference::new("Missing.value"),
+            subscripts: vec![],
+            span,
+        };
+        let flat_var = flat::Variable {
+            name: name.clone(),
+            component_ref: Some(rumoca_core::ComponentReference {
+                local: false,
+                span,
+                parts: vec![rumoca_core::ComponentRefPart {
+                    ident: "empty".to_string(),
+                    span,
+                    subs: vec![],
+                }],
+                def_id: None,
+            }),
+            is_primitive: true,
+            dims: vec![0],
+            start: Some(unresolved.clone()),
+            min: Some(unresolved.clone()),
+            max: Some(unresolved.clone()),
+            nominal: Some(unresolved),
+            ..rumoca_ir_flat::Variable::empty_with_span(span)
+        };
+        let known_var_names = HashSet::from([name.as_str().to_string()]);
+
+        let dae_var = create_dae_variable(&name, &flat_var, &known_var_names, &IndexMap::new())
+            .unwrap_or_else(|err| panic!("empty array should build: {err}"));
+
+        assert_eq!(dae_var.dims, vec![0]);
+        assert!(dae_var.start.is_none());
+        assert!(dae_var.min.is_none());
+        assert!(dae_var.max.is_none());
+        assert!(dae_var.nominal.is_none());
     }
 
     #[test]

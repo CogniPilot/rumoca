@@ -316,6 +316,9 @@ fn dae_temporal_function_name(name: &rumoca_core::Reference) -> Option<&'static 
     if name.as_str() == rumoca_core::INTERNAL_SAMPLE_FUNCTION_NAME {
         return Some("sample");
     }
+    if name.is_generated() {
+        return None;
+    }
     rumoca_core::source_dae_forbidden_function_name(name.last_segment())
 }
 
@@ -465,6 +468,9 @@ fn forbidden_synchronous_construct(expr: &rumoca_core::Expression) -> Option<&'s
             None
         }
         rumoca_core::Expression::FunctionCall { name, .. } => {
+            if name.is_generated() {
+                return None;
+            }
             let short = name.last_segment();
             forbidden_sync_name(short)
         }
@@ -1102,6 +1108,15 @@ mod tests {
         }
     }
 
+    fn generated_call(name: &str, args: Vec<rumoca_core::Expression>) -> rumoca_core::Expression {
+        rumoca_core::Expression::FunctionCall {
+            name: rumoca_core::Reference::generated(name),
+            args,
+            is_constructor: false,
+            span: test_span(),
+        }
+    }
+
     fn sub(lhs: rumoca_core::Expression, rhs: rumoca_core::Expression) -> rumoca_core::Expression {
         rumoca_core::Expression::Binary {
             op: rumoca_core::OpBinary::Sub,
@@ -1280,7 +1295,7 @@ mod tests {
             .valued_updates
             .push(dae::Equation::explicit(
                 rumoca_core::VarName::new("a"),
-                call("hold", vec![var_ref("b")]),
+                generated_call("hold", vec![var_ref("b")]),
                 test_span(),
                 "a = hold(b)",
             ));
