@@ -7,6 +7,67 @@ fn builtin_template(target: &str, template: &str) -> &'static str {
         .expect("built-in target template must exist")
 }
 
+fn fixture_span() -> rumoca_core::Span {
+    rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("external_abi_fixture.mo"),
+        1,
+        2,
+    )
+}
+
+#[test]
+fn fmi_templates_render_typed_external_abi_arguments_in_order() {
+    let span = fixture_span();
+    let var = |name| rumoca_core::Expression::VarRef {
+        name: rumoca_core::Reference::new(name),
+        subscripts: Vec::new(),
+        span,
+    };
+    let mut function = rumoca_core::Function::new("linked", span);
+    function.add_input(rumoca_core::FunctionParam::new("u", "Real", span));
+    function.add_input(rumoca_core::FunctionParam::new("v", "Real", span));
+    function.add_output(rumoca_core::FunctionParam::new("y", "Real", span));
+    function.external = Some(rumoca_core::ExternalFunction {
+        language: "C".to_owned(),
+        function_name: Some("linked_call".to_owned()),
+        output_name: Some("y".to_owned()),
+        args: vec![
+            var("u"),
+            rumoca_core::Expression::Binary {
+                op: rumoca_core::OpBinary::Mul,
+                lhs: Box::new(rumoca_core::Expression::Literal {
+                    value: rumoca_core::Literal::Real(2.0),
+                    span,
+                }),
+                rhs: Box::new(var("v")),
+                span,
+            },
+        ],
+        annotations: Vec::new(),
+    });
+
+    let mut dae = dae::Dae::new();
+    dae.symbols
+        .functions
+        .insert(rumoca_core::VarName::new("linked"), function);
+
+    for target in ["fmi2", "fmi3"] {
+        let mut env = create_environment();
+        env.add_template("model", builtin_template(target, "model.c.jinja"))
+            .expect("built-in FMI template should parse");
+        let template = env
+            .get_template("model")
+            .expect("built-in FMI template should be registered");
+        let rendered = render_with_input_context(&template, CodegenInput::Dae(&dae), Some("M"))
+            .expect("typed external arguments should render");
+
+        assert!(
+            rendered.contains("return linked_call(u, (2.0 * v));"),
+            "{target} must preserve external ABI argument order and expression structure:\n{rendered}"
+        );
+    }
+}
+
 #[test]
 fn fmi_templates_do_not_emit_enum_aliases_into_the_c_preprocessor_namespace() {
     let mut dae = dae::Dae::new();

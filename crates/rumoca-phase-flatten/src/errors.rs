@@ -250,22 +250,6 @@ pub enum FlattenError {
         #[label("this reference expands into itself")]
         span: Span,
     },
-
-    /// An external-function call argument cannot be represented by the current
-    /// Flat IR metadata without changing its ABI position or meaning.
-    #[error("unsupported external-function argument {position}: {reason}")]
-    #[diagnostic(
-        code(rumoca::flatten::EF022),
-        help(
-            "MLS §12.9 external-call arguments are ordered expressions; flatten must preserve every argument or reject the interface"
-        )
-    )]
-    UnsupportedExternalFunctionArgument {
-        position: usize,
-        reason: String,
-        #[label("this argument cannot be represented without loss")]
-        span: Span,
-    },
 }
 
 impl FlattenError {
@@ -454,8 +438,7 @@ impl PhaseError for FlattenError {
             | Self::MissingResolvedClassMetadata { span, .. }
             | Self::InconsistentFunctionReference { span, .. }
             | Self::UnsupportedExpandableConnectorAugmentation { span, .. }
-            | Self::CyclicConstantBinding { span, .. }
-            | Self::UnsupportedExternalFunctionArgument { span, .. } => std::slice::from_ref(span),
+            | Self::CyclicConstantBinding { span, .. } => std::slice::from_ref(span),
             Self::MissingFlowVariable { .. }
             | Self::Internal(_)
             | Self::FunctionRewriteNoConverge { .. }

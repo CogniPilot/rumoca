@@ -1276,8 +1276,12 @@ pub struct ExternalFunction {
     pub function_name: Option<String>,
     /// Output variable that receives the return value (if any).
     pub output_name: Option<String>,
-    /// Argument names passed to the external function.
-    pub arg_names: Vec<String>,
+    /// Ordered argument expressions passed to the external function.
+    ///
+    /// MLS §12.9 permits arbitrary expressions here. Keeping the expressions
+    /// in Flat/DAE form preserves ABI position, shape, declaration identity,
+    /// and source provenance without recovering semantics from rendered text.
+    pub args: Vec<Expression>,
     /// Structured annotations attached to the external function interface.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub annotations: Vec<ExternalFunctionAnnotation>,

@@ -1600,13 +1600,13 @@ end Linked;
 }
 
 #[test]
-fn external_function_metadata_rejects_unrepresentable_argument_without_shifting_abi_slots() {
+fn external_function_metadata_preserves_ordered_argument_expressions() {
     let source = r#"
 pure function Linked
   input Real u;
   input Real v;
   output Real y;
-external "C" y = linked_call(u, 2.0, v);
+external "C" y = linked_call(u, size({u, v}, 1), 2.0 * v);
 end Linked;
 "#;
     let parsed =
@@ -1616,17 +1616,32 @@ end Linked;
         .get("Linked")
         .and_then(|class| class.external.as_ref())
         .expect("external declaration");
-    let error = convert_external_function(external, &crate::ResolveDefMap::default())
-        .expect_err("unrepresentable arguments must fail instead of being dropped");
+    let lowered = convert_external_function(external, &crate::ResolveDefMap::default())
+        .expect("all external ABI arguments must lower without loss");
 
-    let FlattenError::UnsupportedExternalFunctionArgument {
-        position, reason, ..
-    } = error
-    else {
-        panic!("expected a precise external-function argument error");
-    };
-    assert_eq!(position, 2);
-    assert!(reason.contains("literal expression"));
+    assert_eq!(lowered.args.len(), 3);
+    assert!(matches!(
+        lowered.args[0],
+        rumoca_core::Expression::VarRef { .. }
+    ));
+    assert!(matches!(
+        lowered.args[1],
+        rumoca_core::Expression::BuiltinCall { .. }
+    ));
+    assert!(matches!(
+        lowered.args[2],
+        rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Mul,
+            ..
+        }
+    ));
+    assert!(
+        lowered
+            .args
+            .iter()
+            .all(|argument| argument.span().is_some_and(|span| !span.is_dummy())),
+        "every ABI argument must retain its exact source provenance"
+    );
 }
 
 #[test]

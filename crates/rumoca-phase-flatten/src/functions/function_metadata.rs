@@ -51,11 +51,10 @@ pub(super) fn convert_external_function(
                 .collect::<Vec<_>>()
                 .join(".")
         }),
-        arg_names: ext
+        args: ext
             .args
             .iter()
-            .enumerate()
-            .map(|(index, arg)| external_argument_name(arg, index + 1))
+            .map(|argument| ast_lower::expression_from_ast_with_def_map(argument, Some(def_map)))
             .collect::<Result<Vec<_>, _>>()?,
         annotations: ext
             .annotation
@@ -63,54 +62,6 @@ pub(super) fn convert_external_function(
             .map(|annotation| convert_external_annotation(annotation, def_map))
             .collect::<Result<Vec<_>, _>>()?,
     })
-}
-
-fn external_argument_name(
-    argument: &ast::Expression,
-    position: usize,
-) -> Result<String, FlattenError> {
-    let ast::Expression::ComponentReference(reference) = argument else {
-        let kind = match argument {
-            ast::Expression::Terminal { .. } => "literal expression",
-            ast::Expression::Unary { .. } | ast::Expression::Binary { .. } => "operator expression",
-            ast::Expression::FunctionCall { .. } => "function-call expression",
-            ast::Expression::Array { .. }
-            | ast::Expression::ArrayComprehension { .. }
-            | ast::Expression::ArrayIndex { .. } => "array expression",
-            _ => "compound expression",
-        };
-        return Err(FlattenError::UnsupportedExternalFunctionArgument {
-            position,
-            reason: format!(
-                "{kind} cannot be represented by Flat external-function `arg_names` metadata"
-            ),
-            span: argument.span(),
-        });
-    };
-
-    if reference.parts.is_empty()
-        || reference
-            .parts
-            .iter()
-            .any(|part| part.subs.as_ref().is_some_and(|subs| !subs.is_empty()))
-    {
-        return Err(FlattenError::UnsupportedExternalFunctionArgument {
-            position,
-            reason: concat!(
-                "indexed or empty component references cannot be represented by Flat ",
-                "external-function `arg_names` metadata"
-            )
-            .to_string(),
-            span: argument.span(),
-        });
-    }
-
-    Ok(reference
-        .parts
-        .iter()
-        .map(|part| part.ident.text.to_string())
-        .collect::<Vec<_>>()
-        .join("."))
 }
 
 fn convert_external_annotation(

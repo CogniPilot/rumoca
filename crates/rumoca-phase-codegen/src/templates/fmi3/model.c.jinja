@@ -717,9 +717,9 @@ static int next_time_event(ModelInstance* m, double* next_time) {
 {% elif func.external %}
     /* External {{ func.external.language }} function */
 {% if func.external.output_name %}
-    return {{ func.external.function_name | default(symbol(symbols, func_name)) }}({% for arg in func.external.arg_names %}{{ symbol(symbols, arg) }}{{ ", " if not loop.last else "" }}{% endfor %});
+    return {{ func.external.function_name | default(symbol(symbols, func_name)) }}({% for arg in func.external.args %}{{ render_expr(arg, cfg) }}{{ ", " if not loop.last else "" }}{% endfor %});
 {% else %}
-    {{ func.external.function_name | default(symbol(symbols, func_name)) }}({% for arg in func.external.arg_names %}{{ symbol(symbols, arg) }}{{ ", " if not loop.last else "" }}{% endfor %});
+    {{ func.external.function_name | default(symbol(symbols, func_name)) }}({% for arg in func.external.args %}{{ render_expr(arg, cfg) }}{{ ", " if not loop.last else "" }}{% endfor %});
     return {{ return_expr }};
 {% endif %}
 {% else %}
