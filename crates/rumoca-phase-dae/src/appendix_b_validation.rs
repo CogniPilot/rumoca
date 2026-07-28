@@ -935,6 +935,7 @@ fn validate_scheduled_roots(dae_model: &dae::Dae) -> Result<(), ToDaeError> {
 
     let root_condition_count = dae_model
         .conditions
+        .relations
         .len()
         .checked_add(dae_model.events.synthetic_root_conditions.len())
         .and_then(|count| count.checked_add(dae_model.clocks.triggered_conditions.len()))

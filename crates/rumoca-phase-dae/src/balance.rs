@@ -748,7 +748,7 @@ fn count_condition_memory_equation_scalars(dae_model: &dae::Dae) -> usize {
     let discrete_valued_symbols = BalanceSymbolSet::new(dae_model, &discrete_valued_names);
     dae_model
         .conditions
-        .equations()
+        .equations
         .iter()
         .filter(|eq| equation_lhs_matches_symbol(eq, &discrete_valued_symbols))
         .map(|eq| eq.scalar_count)
