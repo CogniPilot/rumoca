@@ -256,8 +256,7 @@ fn test_lower_pre_is_idempotent_for_generated_pre_parameters() -> Result<(), ToD
 }
 
 #[test]
-fn test_lower_pre_allocates_sampled_value_parameter_without_rewriting_call()
--> Result<(), ToDaeError> {
+fn test_lower_pre_rewrites_explicit_clock_sample_to_current_value() -> Result<(), ToDaeError> {
     let mut dae = dae::Dae::new();
     dae.variables.discrete_valued.insert(
         rumoca_core::VarName::new("sampled.u"),
@@ -281,11 +280,47 @@ fn test_lower_pre_allocates_sampled_value_parameter_without_rewriting_call()
     assert!(
         matches!(
             &dae.discrete.valued_updates[0].rhs,
-            rumoca_core::Expression::FunctionCall { name, .. }
-                if name.as_str() == rumoca_core::INTERNAL_SAMPLE_FUNCTION_NAME
+            rumoca_core::Expression::VarRef { name, subscripts, .. }
+                if name.as_str() == "sampled.u" && subscripts.is_empty()
         ),
-        "sample(u, clock) must lower to the internal DAE sample-tick form"
+        "sample(u, clock) must lower to an ordinary current-value equation"
     );
+    Ok(())
+}
+
+#[test]
+fn test_lower_pre_uses_clock_metadata_for_explicit_clock_reference() -> Result<(), ToDaeError> {
+    let mut dae = dae::Dae::new();
+    dae.variables.discrete_valued.insert(
+        rumoca_core::VarName::new("sampled.u"),
+        discrete_valued_var("sampled.u"),
+    );
+    dae.clocks.timings.insert(
+        "sampled.clock".to_string(),
+        dae::ClockSchedule {
+            period_seconds: 0.02,
+            phase_seconds: 0.0,
+            source_span: test_span(20, 30),
+        },
+    );
+    dae.discrete.valued_updates.push(dae::Equation::explicit(
+        rumoca_core::VarName::new("sampled.y"),
+        rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Sample,
+            args: vec![var_ref("sampled.u"), var_ref("sampled.clock")],
+            span: test_span(1, 2),
+        },
+        test_span(1, 2),
+        "explicit clock-reference sample update".to_string(),
+    ));
+
+    lower_pre_operator(&mut dae)?;
+
+    assert!(matches!(
+        &dae.discrete.valued_updates[0].rhs,
+        rumoca_core::Expression::VarRef { name, subscripts, .. }
+            if name.as_str() == "sampled.u" && subscripts.is_empty()
+    ));
     Ok(())
 }
 
@@ -587,6 +622,49 @@ fn test_lower_pre_creates_parameter() -> Result<(), ToDaeError> {
         }
         other => panic!("Expected VarRef, got {:?}", other),
     }
+    Ok(())
+}
+
+#[test]
+fn test_lower_pre_revisits_internal_sample_after_clock_inference() -> Result<(), ToDaeError> {
+    let mut dae = dae::Dae::new();
+    dae.variables.discrete_valued.insert(
+        rumoca_core::VarName::new("sampled.u"),
+        discrete_valued_var("sampled.u"),
+    );
+    dae.discrete.valued_updates.push(dae::Equation::explicit(
+        rumoca_core::VarName::new("sampled.y"),
+        rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Sample,
+            args: vec![var_ref("sampled.u"), var_ref("sampled.clock")],
+            span: test_span(1, 2),
+        },
+        test_span(1, 2),
+        "explicit clock-reference sample update".to_string(),
+    ));
+
+    lower_pre_operator(&mut dae)?;
+    assert!(matches!(
+        &dae.discrete.valued_updates[0].rhs,
+        rumoca_core::Expression::FunctionCall { name, .. }
+            if name.as_str() == rumoca_core::INTERNAL_SAMPLE_FUNCTION_NAME
+    ));
+
+    dae.clocks.timings.insert(
+        "sampled.clock".to_string(),
+        dae::ClockSchedule {
+            period_seconds: 0.02,
+            phase_seconds: 0.0,
+            source_span: test_span(20, 30),
+        },
+    );
+    lower_pre_operator(&mut dae)?;
+
+    assert!(matches!(
+        &dae.discrete.valued_updates[0].rhs,
+        rumoca_core::Expression::VarRef { name, subscripts, .. }
+            if name.as_str() == "sampled.u" && subscripts.is_empty()
+    ));
     Ok(())
 }
 
