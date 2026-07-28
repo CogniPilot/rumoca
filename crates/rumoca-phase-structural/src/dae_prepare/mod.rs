@@ -37,6 +37,11 @@ struct IndexedDefiningExpr {
 mod connection_alias;
 use connection_alias::connection_component_fixed_defining_expr;
 pub mod copy_accounting;
+mod derivative_coordinates;
+use derivative_coordinates::{
+    derivative_coordinate_dependencies_with_bindings, derivative_coordinate_flat_index,
+    derivative_coordinate_indices, derivative_coordinate_name, normalize_derivative_coordinates,
+};
 mod derivative_map;
 #[cfg(test)]
 use derivative_map::needs_compound_derivative_expansion;
@@ -417,24 +422,38 @@ fn collect_rhs_var_refs(expr: &Expression) -> IndexSet<VarName> {
 }
 
 fn collect_residual_defining_expr_index(dae: &Dae) -> DefiningExprIndex {
-    collect_residual_defining_expr_index_with(dae, ResidualInversion::Difference)
+    let structural_bindings = crate::static_eval::structural_scalar_bindings(dae);
+    collect_residual_defining_expr_index_with_coordinates(
+        dae,
+        ResidualInversion::Difference,
+        &structural_bindings,
+    )
 }
 
 /// The same index, widened to bare-sum residuals.
 ///
 /// Only differentiation closures may use this: see [`ResidualInversion`].
 fn collect_differentiable_defining_expr_index(dae: &Dae) -> DefiningExprIndex {
-    collect_residual_defining_expr_index_with(dae, ResidualInversion::IncludingBareSums)
+    let structural_bindings = crate::static_eval::structural_scalar_bindings(dae);
+    collect_residual_defining_expr_index_with_coordinates(
+        dae,
+        ResidualInversion::IncludingBareSums,
+        &structural_bindings,
+    )
 }
 
-fn collect_residual_defining_expr_index_with(
+fn collect_residual_defining_expr_index_with_coordinates(
     dae: &Dae,
     inversion: ResidualInversion,
+    structural_bindings: &HashMap<String, f64>,
 ) -> DefiningExprIndex {
     let mut index = DefiningExprIndex::new();
     for (equation_index, eq) in dae.continuous.equations.iter().enumerate() {
-        for ref_name in collect_rhs_var_refs(&eq.rhs) {
-            if let Some(expr) = extract_defining_expr(eq, &ref_name, inversion) {
+        let mut coordinate_eq = eq.clone();
+        coordinate_eq.rhs =
+            normalize_derivative_coordinates(dae, structural_bindings, &coordinate_eq.rhs);
+        for ref_name in collect_rhs_var_refs(&coordinate_eq.rhs) {
+            if let Some(expr) = extract_defining_expr(&coordinate_eq, &ref_name, inversion) {
                 push_indexed_defining_expr(&mut index, &ref_name, equation_index, expr);
             }
         }
@@ -443,20 +462,24 @@ fn collect_residual_defining_expr_index_with(
 }
 
 fn collect_non_derivative_defining_expr_index(dae: &Dae) -> DefiningExprIndex {
+    let structural_bindings = crate::static_eval::structural_scalar_bindings(dae);
     let mut index = DefiningExprIndex::new();
     for (equation_index, eq) in dae.continuous.equations.iter().enumerate() {
-        let lhs_name = eq.lhs.as_ref().map(|lhs| lhs.var_name().clone());
+        let mut coordinate_eq = eq.clone();
+        coordinate_eq.rhs =
+            normalize_derivative_coordinates(dae, &structural_bindings, &coordinate_eq.rhs);
+        let lhs_name = coordinate_eq.lhs.as_ref().map(|lhs| lhs.var_name().clone());
         if let Some(name) = &lhs_name
-            && !expression_contains_any_der_call(&eq.rhs)
+            && !expression_contains_any_der_call(&coordinate_eq.rhs)
         {
-            push_indexed_defining_expr(&mut index, name, equation_index, eq.rhs.clone());
+            push_indexed_defining_expr(&mut index, name, equation_index, coordinate_eq.rhs.clone());
         }
 
-        for ref_name in collect_rhs_var_refs(&eq.rhs) {
+        for ref_name in collect_rhs_var_refs(&coordinate_eq.rhs) {
             if lhs_name.as_ref().is_some_and(|lhs| lhs == &ref_name) {
                 continue;
             }
-            if let Some(expr) = equation_defining_expr_for_unknown(dae, eq, &ref_name) {
+            if let Some(expr) = equation_defining_expr_for_unknown(dae, &coordinate_eq, &ref_name) {
                 push_indexed_defining_expr(&mut index, &ref_name, equation_index, expr);
             }
         }
@@ -1764,7 +1787,9 @@ fn choose_derivative_replacement(
     der_map: &HashMap<String, Expression>,
     counters: &mut DirectDemotionCounters,
 ) -> Option<Expression> {
-    let Some(symbolic) = symbolic_time_derivative(defining_expr, dae, der_map) else {
+    let Some(symbolic) =
+        symbolic::symbolic_time_derivative_projecting_state_values(defining_expr, dae, der_map)
+    else {
         counters.n_skip_no_der_expr += 1;
         return None;
     };

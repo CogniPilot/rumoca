@@ -8,6 +8,16 @@ mod shape_projection;
 mod zero_fold;
 use shape_projection::*;
 
+pub(super) fn project_derivative_flat_index(
+    expr: &Expression,
+    dims: &[i64],
+    flat_index: usize,
+    fallback_span: Option<Span>,
+    dae: &Dae,
+) -> Option<Expression> {
+    project_flat_index_with_span(expr, dims, flat_index, fallback_span, dae)
+}
+
 fn der_target<'a>(expr: &'a Expression, state_name: &VarName) -> Option<&'a Expression> {
     match expr {
         Expression::BuiltinCall {
@@ -155,6 +165,17 @@ fn split_linear_der_target(expr: &Expression, state_name: &VarName) -> Option<Li
                 }
                 None
             }
+            OpBinary::Div | OpBinary::DivElem => {
+                if expr_contains_der_of(rhs, state_name) {
+                    return None;
+                }
+                let split = split_linear_der_target(lhs, state_name)?;
+                Some(LinearDerivative {
+                    coefficient: make_binary(OpBinary::Div, split.coefficient, *rhs.clone(), span),
+                    remainder: make_binary(OpBinary::Div, split.remainder, *rhs.clone(), span),
+                    target: split.target,
+                })
+            }
             _ => None,
         },
         _ => None,
@@ -225,25 +246,27 @@ pub(super) fn build_der_value_map(dae: &Dae) -> HashMap<String, Expression> {
 }
 
 #[derive(Default)]
-struct DerivativeEquationIndex {
+pub(super) struct DerivativeEquationIndex {
     by_target: HashMap<String, Vec<usize>>,
     projected_owners: HashSet<String>,
 }
 
 impl DerivativeEquationIndex {
-    fn build(dae: &Dae) -> Self {
+    pub(super) fn build(dae: &Dae) -> Self {
         let mut index = Self::default();
+        let structural_bindings = crate::static_eval::structural_scalar_bindings(dae);
         for (equation_index, equation) in dae.continuous.equations.iter().enumerate() {
             let mut collector = DerivativeTargetCollector {
                 equation_index,
                 index: &mut index,
+                structural_bindings: &structural_bindings,
             };
             collector.visit_expression(&equation.rhs);
         }
         index
     }
 
-    fn equations_for(&self, target: &str) -> &[usize] {
+    pub(super) fn equations_for(&self, target: &str) -> &[usize] {
         self.by_target.get(target).map(Vec::as_slice).unwrap_or(&[])
     }
 }
@@ -251,6 +274,7 @@ impl DerivativeEquationIndex {
 struct DerivativeTargetCollector<'a> {
     equation_index: usize,
     index: &'a mut DerivativeEquationIndex,
+    structural_bindings: &'a HashMap<String, f64>,
 }
 
 impl rumoca_core::ExpressionVisitor for DerivativeTargetCollector<'_> {
@@ -258,7 +282,7 @@ impl rumoca_core::ExpressionVisitor for DerivativeTargetCollector<'_> {
         if *function == BuiltinFunction::Der
             && let [arg] = args
         {
-            match derivative_argument_key(arg) {
+            match derivative_argument_key_with_bindings(arg, self.structural_bindings) {
                 DerivativeArgumentKey::Reference(target) => self
                     .index
                     .by_target
@@ -339,7 +363,7 @@ fn build_ranked_der_value(
     build_array_der_value(dae, state_name, dims, &scalar_names, equation_index)
 }
 
-fn scalar_names_for_dims(state_name: &VarName, dims: &[i64]) -> Option<Vec<VarName>> {
+pub(super) fn scalar_names_for_dims(state_name: &VarName, dims: &[i64]) -> Option<Vec<VarName>> {
     let size = dims.iter().try_fold(1usize, |acc, dim| {
         (*dim > 0).then(|| acc.checked_mul(*dim as usize)).flatten()
     })?;
@@ -437,6 +461,8 @@ fn expression_sequence_span(elements: &[Expression]) -> Option<Span> {
 struct SymbolicDerivativeContext<'a> {
     dae: &'a Dae,
     der_map: &'a HashMap<String, Expression>,
+    project_state_values: bool,
+    structural_bindings: HashMap<String, f64>,
     active_derivative_args: RefCell<Vec<DerivativeArgumentKey>>,
 }
 
@@ -447,6 +473,13 @@ enum DerivativeArgumentKey {
 }
 
 fn derivative_argument_key(expr: &Expression) -> DerivativeArgumentKey {
+    derivative_argument_key_with_bindings(expr, &HashMap::new())
+}
+
+fn derivative_argument_key_with_bindings(
+    expr: &Expression,
+    structural_bindings: &HashMap<String, f64>,
+) -> DerivativeArgumentKey {
     let reference = match expr {
         Expression::VarRef {
             name, subscripts, ..
@@ -471,7 +504,8 @@ fn derivative_argument_key(expr: &Expression) -> DerivativeArgumentKey {
     if subscripts.is_empty() {
         return DerivativeArgumentKey::Reference(name);
     }
-    let Some(indices) = static_subscript_indices(subscripts) else {
+    let Some(indices) = super::derivative_coordinate_indices(subscripts, structural_bindings)
+    else {
         return DerivativeArgumentKey::Expression(expr.clone());
     };
     DerivativeArgumentKey::Reference(format!(
@@ -482,6 +516,56 @@ fn derivative_argument_key(expr: &Expression) -> DerivativeArgumentKey {
             .collect::<Vec<_>>()
             .join(",")
     ))
+}
+
+/// Canonicalize only one statically proven derivative coordinate.
+///
+/// Ranked ODEs commonly spell a coordinate with structural parameter
+/// arithmetic (`der(x[n + i - 1])`). The derivative-equation index proves that
+/// such an argument is the declared scalar `target`; the row inverter needs the
+/// same exact syntax to distinguish it from neighboring coordinates. No other
+/// reference is rewritten, so this is an analysis witness rather than general
+/// scalarization.
+pub(super) fn normalize_derivative_target(
+    expr: &Expression,
+    target: &VarName,
+    structural_bindings: &HashMap<String, f64>,
+) -> Expression {
+    struct TargetRewriter<'a> {
+        target: &'a VarName,
+        structural_bindings: &'a HashMap<String, f64>,
+    }
+
+    impl ExpressionRewriter for TargetRewriter<'_> {
+        fn rewrite_expression(&mut self, expr: &Expression) -> Expression {
+            if let Expression::BuiltinCall {
+                function: BuiltinFunction::Der,
+                args,
+                span,
+            } = expr
+                && let [arg] = args.as_slice()
+                && derivative_argument_key_with_bindings(arg, self.structural_bindings)
+                    == DerivativeArgumentKey::Reference(self.target.as_str().to_string())
+            {
+                return Expression::BuiltinCall {
+                    function: BuiltinFunction::Der,
+                    args: vec![Expression::VarRef {
+                        name: Reference::from_var_name(self.target.clone()),
+                        subscripts: Vec::new(),
+                        span: arg.span().unwrap_or(*span),
+                    }],
+                    span: *span,
+                };
+            }
+            self.walk_expression(expr)
+        }
+    }
+
+    TargetRewriter {
+        target,
+        structural_bindings,
+    }
+    .rewrite_expression(expr)
 }
 
 impl<'a> SymbolicDerivativeContext<'a> {
@@ -510,6 +594,25 @@ impl<'a> SymbolicDerivativeContext<'a> {
             } else {
                 zeros_for_dims(dims, span)
             });
+        }
+        if !subscripts.is_empty() {
+            let coordinate = super::derivative_coordinate_name(
+                self.dae,
+                &self.structural_bindings,
+                name,
+                subscripts,
+            );
+            if coordinate != *name
+                && let Some(derivative) = self.der_map.get(coordinate.as_str())
+            {
+                return Some(derivative.clone());
+            }
+            if self.project_state_values
+                && self.dae.variables.states.contains_key(name)
+                && let Some(derivative) = self.projected_mapped_derivative(name, subscripts)
+            {
+                return Some(derivative);
+            }
         }
         if !subscripts.is_empty()
             && !self.dae.variables.states.contains_key(name)
@@ -1011,6 +1114,25 @@ impl<'a> SymbolicDerivativeContext<'a> {
         span: Span,
         active_functions: &mut Vec<rumoca_core::FunctionInstanceId>,
     ) -> Option<Expression> {
+        if let Expression::VarRef {
+            name,
+            subscripts: base_subscripts,
+            ..
+        } = base
+            && base_subscripts.is_empty()
+        {
+            let coordinate = super::derivative_coordinate_name(
+                self.dae,
+                &self.structural_bindings,
+                name.var_name(),
+                subscripts,
+            );
+            if coordinate != *name.var_name()
+                && let Some(derivative) = self.der_map.get(coordinate.as_str())
+            {
+                return Some(derivative.clone());
+            }
+        }
         if static_subscript_indices(subscripts).is_some() {
             return Some(Expression::Index {
                 base: Box::new(self.differentiate(base, active_functions)?),
@@ -1079,10 +1201,39 @@ impl<'a> SymbolicDerivativeContext<'a> {
             return self.differentiate(arg, active_functions);
         };
         if !subscripts.is_empty() {
+            if let Some(first) = self.projected_mapped_derivative(name.var_name(), subscripts)
+                && !expr_contains_der_of(&first, name.var_name())
+            {
+                return Some(first);
+            }
             return self.differentiate(arg, active_functions);
         }
         let first = self.der_map.get(name.var_name().as_str()).cloned()?;
         (!expr_contains_der_of(&first, name.var_name())).then_some(first)
+    }
+
+    /// Project an explicit aggregate ODE value onto one static state element.
+    ///
+    /// A first derivative may remain a symbolic `der(x[i])` leaf, but taking
+    /// its derivative again requires the ODE right-hand side. Projection is
+    /// allowed only when the declared shape and structural indices identify
+    /// exactly one coordinate.
+    fn projected_mapped_derivative(
+        &self,
+        name: &VarName,
+        subscripts: &[Subscript],
+    ) -> Option<Expression> {
+        let derivative = self.der_map.get(name.as_str())?;
+        let dims = variable_dims_for_name(self.dae, name)?;
+        let indices = super::derivative_coordinate_indices(subscripts, &self.structural_bindings)?;
+        let flat_index = super::derivative_coordinate_flat_index(&dims, &indices)?;
+        project_flat_index_with_span(
+            derivative,
+            &dims,
+            flat_index,
+            subscripts.first().map(Subscript::span),
+            self.dae,
+        )
     }
 }
 
@@ -1233,9 +1384,28 @@ pub(super) fn symbolic_time_derivative(
     dae: &Dae,
     der_map: &HashMap<String, Expression>,
 ) -> Option<Expression> {
+    symbolic_time_derivative_with_state_projection(expr, dae, der_map, false)
+}
+
+pub(super) fn symbolic_time_derivative_projecting_state_values(
+    expr: &Expression,
+    dae: &Dae,
+    der_map: &HashMap<String, Expression>,
+) -> Option<Expression> {
+    symbolic_time_derivative_with_state_projection(expr, dae, der_map, true)
+}
+
+fn symbolic_time_derivative_with_state_projection(
+    expr: &Expression,
+    dae: &Dae,
+    der_map: &HashMap<String, Expression>,
+    project_state_values: bool,
+) -> Option<Expression> {
     SymbolicDerivativeContext {
         dae,
         der_map,
+        project_state_values,
+        structural_bindings: crate::static_eval::structural_scalar_bindings(dae),
         active_derivative_args: RefCell::new(Vec::new()),
     }
     .differentiate(expr, &mut Vec::new())

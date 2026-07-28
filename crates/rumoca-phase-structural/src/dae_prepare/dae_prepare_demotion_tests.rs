@@ -156,7 +156,7 @@ fn scalar_projection_does_not_define_its_aggregate_owner() {
             .get("scalar")
             .and_then(|candidates| candidates.first())
             .map(|candidate| &candidate.expr),
-        Some(&var_idx("vector", 2))
+        Some(&var("vector[2]"))
     );
 }
 
@@ -281,6 +281,14 @@ fn der_idx(name: &str, idx: i64) -> Expression {
     Expression::BuiltinCall {
         function: BuiltinFunction::Der,
         args: vec![var_idx(name, idx)],
+        span: rumoca_core::Span::DUMMY,
+    }
+}
+
+fn der_expr(expr: Expression) -> Expression {
+    Expression::BuiltinCall {
+        function: BuiltinFunction::Der,
+        args: vec![expr],
         span: rumoca_core::Span::DUMMY,
     }
 }
@@ -1040,6 +1048,54 @@ fn test_direct_demotion_uses_independent_constraint_not_own_derivative_alias() {
                 && !expr_contains_der_of(&equation.rhs, &VarName::new("body.phi"))
         }),
         "the derivative definition must remain a usable algebraic constraint"
+    );
+}
+
+#[test]
+fn candidate_derivative_map_certifies_complete_ranked_state_coordinates() {
+    let mut dae = Dae::new();
+    let mut ranked = test_variable("x");
+    ranked.dims = vec![2];
+    dae.variables.states.insert(VarName::new("x"), ranked);
+    dae.variables
+        .states
+        .insert(VarName::new("candidate"), test_variable("candidate"));
+
+    let mut index = test_variable("n");
+    index.start = Some(int(2));
+    index.is_tunable = false;
+    dae.variables.parameters.insert(VarName::new("n"), index);
+
+    // The first x[1] row re-enters the candidate and is therefore unusable.
+    // A later independent row is a valid coordinate witness. The x[2] row
+    // spells its coordinate through a structural parameter.
+    dae.continuous.equations.extend([
+        eq(sub(der_idx("x", 1), var("candidate"))),
+        eq(sub(der_idx("x", 1), var_idx_with_span("x", 1, test_span()))),
+        eq(sub(
+            der_expr(var_sub("x", var("n"))),
+            var_idx_with_span("x", 2, test_span()),
+        )),
+    ]);
+
+    let map = build_independent_derivative_map_for_direct_state_definition(
+        &dae,
+        &var_idx("x", 1),
+        &VarName::new("candidate"),
+    )
+    .expect("ranked derivative certificate should build");
+
+    let Some(Expression::Array { elements, .. }) = map.get("x") else {
+        panic!(
+            "complete coordinate witnesses must assemble an aggregate derivative value: {map:?}"
+        );
+    };
+    assert_eq!(
+        elements,
+        &vec![
+            var_idx_with_span("x", 1, test_span()),
+            var_idx_with_span("x", 2, test_span())
+        ]
     );
 }
 

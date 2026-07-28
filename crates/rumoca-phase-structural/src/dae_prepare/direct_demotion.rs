@@ -29,12 +29,26 @@ fn log_direct_demotion_scan_summary(
 }
 
 pub(super) fn collect_non_state_continuous_unknown_names(dae: &Dae) -> HashSet<String> {
-    dae.variables
+    let mut names = HashSet::new();
+    for (name, variable) in dae
+        .variables
         .algebraics
-        .keys()
-        .chain(dae.variables.outputs.keys())
-        .map(|name| name.as_str().to_string())
-        .collect()
+        .iter()
+        .chain(dae.variables.outputs.iter())
+    {
+        names.insert(name.as_str().to_string());
+        if variable.dims.is_empty() {
+            continue;
+        }
+        for flat_index in 0..variable.size() {
+            names.insert(dae::scalar_name_text_for_flat_index(
+                name.as_str(),
+                &variable.dims,
+                flat_index,
+            ));
+        }
+    }
+    names
 }
 
 pub(super) fn is_connection_equation_origin(origin: &str) -> bool {
@@ -168,10 +182,15 @@ struct AliasClosureScan<'a> {
     definitions: &'a DefiningExprIndex,
     state_name_set: &'a HashSet<String>,
     non_state_unknown_names: &'a HashSet<String>,
+    structural_bindings: &'a HashMap<String, f64>,
     excluded_eq_index: usize,
 }
 
 impl AliasClosureScan<'_> {
+    fn is_non_state_unknown(&self, name: &VarName) -> bool {
+        self.non_state_unknown_names.contains(name.as_str())
+    }
+
     fn value_is_undetermined_or_state_dependent(&self, defining_expr: &Expression) -> bool {
         let Some(roots) = self.non_state_refs(defining_expr) else {
             return true;
@@ -183,8 +202,11 @@ impl AliasClosureScan<'_> {
 
     /// Non-state unknowns read by `expr`, or `None` if `expr` reads a state.
     fn non_state_refs(&self, expr: &Expression) -> Option<IndexSet<VarName>> {
-        let mut refs = IndexSet::new();
-        expr.collect_var_refs(&mut refs);
+        let refs = derivative_coordinate_dependencies_with_bindings(
+            self.dae,
+            self.structural_bindings,
+            expr,
+        );
         let mut out = IndexSet::new();
         for ref_name in refs {
             if self.state_name_set.contains(ref_name.as_str()) {
@@ -215,14 +237,17 @@ impl AliasClosureScan<'_> {
                 .get_index(next)
                 .expect("closure index is bounded by the set length")
                 .clone();
-            let mut refs = IndexSet::new();
             for candidate in self.usable_candidates(&name) {
-                candidate.collect_var_refs(&mut refs);
+                let refs = derivative_coordinate_dependencies_with_bindings(
+                    self.dae,
+                    self.structural_bindings,
+                    candidate,
+                );
+                reachable.extend(
+                    refs.into_iter()
+                        .filter(|name| self.is_non_state_unknown(name)),
+                );
             }
-            reachable.extend(
-                refs.into_iter()
-                    .filter(|ref_name| self.non_state_unknown_names.contains(ref_name.as_str())),
-            );
             next += 1;
         }
         reachable
@@ -281,9 +306,13 @@ impl AliasClosureScan<'_> {
         candidate: &Expression,
         settled: &HashSet<String>,
     ) -> bool {
-        super::derivative_map::derivative_value_dependencies(candidate)
-            .iter()
-            .all(|name| self.reference_is_time_invariant(name, settled))
+        derivative_coordinate_dependencies_with_bindings(
+            self.dae,
+            self.structural_bindings,
+            candidate,
+        )
+        .iter()
+        .all(|name| self.reference_is_time_invariant(name, settled))
     }
 
     fn reference_is_time_invariant(&self, name: &VarName, settled: &HashSet<String>) -> bool {
@@ -306,8 +335,11 @@ impl AliasClosureScan<'_> {
 
     fn has_settled_candidate(&self, name: &VarName, settled: &HashSet<String>) -> bool {
         self.usable_candidates(name).any(|candidate| {
-            let mut refs = IndexSet::new();
-            candidate.collect_var_refs(&mut refs);
+            let refs = derivative_coordinate_dependencies_with_bindings(
+                self.dae,
+                self.structural_bindings,
+                candidate,
+            );
             refs.iter().all(|ref_name| {
                 !self.state_name_set.contains(ref_name.as_str())
                     && (!self.non_state_unknown_names.contains(ref_name.as_str())
@@ -323,6 +355,7 @@ fn defining_expr_references_unsafe_non_state_alias_closure(
     defining_expr: &Expression,
     state_name_set: &HashSet<String>,
     non_state_unknown_names: &HashSet<String>,
+    structural_bindings: &HashMap<String, f64>,
     excluded_eq_index: usize,
 ) -> bool {
     AliasClosureScan {
@@ -330,6 +363,7 @@ fn defining_expr_references_unsafe_non_state_alias_closure(
         definitions,
         state_name_set,
         non_state_unknown_names,
+        structural_bindings,
         excluded_eq_index,
     }
     .value_is_undetermined_or_state_dependent(defining_expr)
@@ -511,7 +545,7 @@ fn direct_demotion_plan_for_state(
             DirectDemotionReject::SelfDerDefiningExpr,
         ));
     }
-    if !state_ders_in_expr_independently_defined(&defining_expr, state_name, round) {
+    if !state_ders_in_expr_independently_defined(&defining_expr, state_name, round)? {
         return Ok(reject_direct_demotion(
             round,
             counters,
@@ -542,6 +576,7 @@ fn direct_demotion_plan_for_state(
         &alias_scan_expr,
         &round.state_name_set,
         &round.non_state_unknown_names,
+        &round.structural_bindings,
         eq_index,
     ) {
         return Ok(reject_direct_demotion(
@@ -562,6 +597,27 @@ fn direct_demotion_plan_for_state(
         ));
     }
     direct_demotion_replacement_plan(round, eq_index, state_name, &defining_expr, counters)
+}
+
+fn trace_independent_derivative_map(
+    round: &DirectDemotionRound<'_>,
+    state_name: &VarName,
+    independent_map: &HashMap<String, Expression>,
+) {
+    if !round.trace {
+        return;
+    }
+    for state in round.state_names.iter().take(8) {
+        crate::structural_trace!(
+            "[sim-trace] independent derivative replacement blocked candidate={} state={} value={}",
+            state_name.as_str(),
+            state.as_str(),
+            independent_map
+                .get(state.as_str())
+                .map(|value| truncate_debug(&format!("{value:?}"), 420))
+                .unwrap_or_else(|| "<missing>".to_string())
+        );
+    }
 }
 
 /// Differentiate the accepted defining expression and check the result is a
@@ -607,6 +663,7 @@ fn direct_demotion_replacement_plan(
                 &independent_map,
                 counters,
             ) else {
+                trace_independent_derivative_map(round, state_name, &independent_map);
                 return Ok(None);
             };
             derivative
@@ -683,6 +740,7 @@ fn seed_time_invariant_derivatives(
         definitions: &round.non_state_defining_exprs,
         state_name_set: &round.state_name_set,
         non_state_unknown_names: &round.non_state_unknown_names,
+        structural_bindings: &round.structural_bindings,
         excluded_eq_index: defining_equation,
     };
     let Some(roots) = scan.non_state_refs(defining_expr) else {
@@ -743,18 +801,57 @@ fn state_ders_in_expr_independently_defined(
     defining_expr: &Expression,
     candidate: &VarName,
     round: &DirectDemotionRound<'_>,
-) -> bool {
-    derivative_states_in_eq(defining_expr, &round.state_names)
-        .iter()
-        .all(|inner_state| {
-            round
-                .der_map
-                .get(inner_state.as_str())
-                .is_some_and(|value| {
-                    !expr_contains_der_of(value, inner_state)
-                        && !expr_contains_var(value, candidate)
-                })
-        })
+) -> Result<bool, StructuralError> {
+    let inner_states = derivative_states_in_eq(defining_expr, &round.state_names);
+    let shared_is_independent = |inner_state: &VarName| {
+        round
+            .der_map
+            .get(inner_state.as_str())
+            .is_some_and(|value| {
+                !expr_contains_der_of(value, inner_state) && !expr_contains_var(value, candidate)
+            })
+    };
+    if inner_states.iter().all(shared_is_independent) {
+        return Ok(true);
+    }
+
+    // The DAE-wide map may choose the connection row that feeds the candidate
+    // (`der1.y = der2.u`) even when an independently prolonged row also proves
+    // `der(der1.u)`. Rebuild with the candidate derivative forbidden. The
+    // resulting map is a local acyclicity certificate: every derivative read
+    // by this defining expression has a value that neither refers to itself
+    // nor reaches the state being considered for demotion.
+    let independent_map = build_independent_derivative_map_for_direct_state_definition(
+        round.dae,
+        defining_expr,
+        candidate,
+    )?;
+    let independent = inner_states.iter().all(|inner_state| {
+        independent_map
+            .get(inner_state.as_str())
+            .is_some_and(|value| {
+                !expr_contains_der_of(value, inner_state) && !expr_contains_var(value, candidate)
+            })
+    });
+    if !independent && round.trace {
+        for inner_state in &inner_states {
+            crate::structural_trace!(
+                "[sim-trace] derivative-reader certificate blocked candidate={} inner_state={} shared={} independent={}",
+                candidate.as_str(),
+                inner_state.as_str(),
+                round
+                    .der_map
+                    .get(inner_state.as_str())
+                    .map(|value| truncate_debug(&format!("{value:?}"), 320))
+                    .unwrap_or_else(|| "<missing>".to_string()),
+                independent_map
+                    .get(inner_state.as_str())
+                    .map(|value| truncate_debug(&format!("{value:?}"), 320))
+                    .unwrap_or_else(|| "<missing>".to_string())
+            );
+        }
+    }
+    Ok(independent)
 }
 
 fn collect_direct_demotion_plans(

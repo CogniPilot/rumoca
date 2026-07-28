@@ -31,6 +31,17 @@ fn var(name: &str) -> Expression {
     }
 }
 
+fn var_index(name: &str, index: i64) -> Expression {
+    Expression::VarRef {
+        name: rumoca_core::Reference::new(name),
+        subscripts: vec![Subscript::Index {
+            value: index,
+            span: test_span(),
+        }],
+        span: test_span(),
+    }
+}
+
 fn der(name: &str) -> Expression {
     Expression::BuiltinCall {
         function: BuiltinFunction::Der,
@@ -105,6 +116,38 @@ fn only_the_differentiable_index_inverts_a_bare_sum_residual() {
     assert!(
         wide.contains_key("p.i") && wide.contains_key("n.i"),
         "differentiation must be able to solve a flow sum for either flow"
+    );
+}
+
+#[test]
+fn differentiable_index_tracks_exact_array_coordinates() {
+    let mut dae = Dae::new();
+    let mut coordinates = test_variable("coordinates");
+    coordinates.dims = vec![2];
+    dae.variables
+        .algebraics
+        .insert(VarName::new("coordinates"), coordinates);
+    for name in ["left", "right"] {
+        dae.variables
+            .parameters
+            .insert(VarName::new(name), test_variable(name));
+    }
+    dae.continuous
+        .equations
+        .push(eq(sub(var_index("coordinates", 1), var("left"))));
+    dae.continuous
+        .equations
+        .push(eq(sub(var_index("coordinates", 2), var("right"))));
+
+    let index = collect_differentiable_defining_expr_index(&dae);
+
+    assert!(
+        index.contains_key("coordinates[1]") && index.contains_key("coordinates[2]"),
+        "each in-bounds scalar coordinate must retain its own defining row"
+    );
+    assert!(
+        !index.contains_key("coordinates"),
+        "component rows cannot certify a definition for the aggregate owner"
     );
 }
 

@@ -29,6 +29,14 @@ fn var(name: &str) -> Expression {
     }
 }
 
+fn var_index(name: &str, index: i64) -> Expression {
+    Expression::VarRef {
+        name: rumoca_core::Reference::new(name),
+        subscripts: vec![Subscript::generated_index(index, test_span())],
+        span: test_span(),
+    }
+}
+
 fn slice(name: &str, row: i64) -> Expression {
     Expression::Index {
         base: Box::new(var(name)),
@@ -60,6 +68,15 @@ fn power(base: Expression, exponent: Expression) -> Expression {
         op: OpBinary::Exp,
         lhs: Box::new(base),
         rhs: Box::new(exponent),
+        span: test_span(),
+    }
+}
+
+fn binary(op: OpBinary, lhs: Expression, rhs: Expression) -> Expression {
+    Expression::Binary {
+        op,
+        lhs: Box::new(lhs),
+        rhs: Box::new(rhs),
         span: test_span(),
     }
 }
@@ -120,6 +137,61 @@ fn matrix_row_slice_differentiates_element_by_element() {
         matches!(&derivative, Expression::Array { elements, .. } if elements.len() == 3),
         "the derivative of a 3-element row slice is a 3-element array"
     );
+}
+
+#[test]
+fn derivative_assignment_inverts_constant_quotient_coefficient() {
+    let residual = binary(
+        OpBinary::Sub,
+        binary(
+            OpBinary::Div,
+            binary(
+                OpBinary::Mul,
+                builtin(BuiltinFunction::Der, vec![var("x")]),
+                var("gain"),
+            ),
+            binary(OpBinary::Mul, var("gain"), var("gain")),
+        ),
+        var("rhs"),
+    );
+
+    let assignment = try_extract_der_assignment(&residual, &VarName::new("x"))
+        .expect("a derivative scaled by a target-free quotient is affine");
+
+    assert!(
+        !expr_contains_der_of(&assignment.value, &VarName::new("x")),
+        "solving the affine row must eliminate its derivative target"
+    );
+    assert!(
+        expr_refers_to_var(&assignment.target, &VarName::new("x")),
+        "the extracted target must retain the differentiated coordinate"
+    );
+}
+
+#[test]
+fn higher_derivative_projects_explicit_aggregate_ode_value() {
+    let mut dae = Dae::new();
+    state(&mut dae, "x", vec![2]);
+    state(&mut dae, "rate", Vec::new());
+    let der_map = HashMap::from([
+        (
+            "x".to_string(),
+            Expression::Array {
+                elements: vec![var("rate"), integer(0)],
+                is_matrix: false,
+                span: test_span(),
+            },
+        ),
+        ("rate".to_string(), integer(1)),
+    ]);
+    let second = symbolic_time_derivative(
+        &builtin(BuiltinFunction::Der, vec![var_index("x", 1)]),
+        &dae,
+        &der_map,
+    )
+    .expect("an indexed state with a complete aggregate ODE has a second derivative");
+
+    assert_eq!(second, integer(1));
 }
 
 #[test]

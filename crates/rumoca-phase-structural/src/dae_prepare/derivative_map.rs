@@ -59,45 +59,17 @@ fn continuous_variable<'a>(dae: &'a Dae, name: &VarName) -> Option<&'a Variable>
 /// selection, which is not a DAE variable at all. Record-linear selections are
 /// projected onto their scalar components so the closure reaches the variables
 /// the row actually reads (MLS 4.7 / 10.6).
-fn closure_names_of_expr(dae: &Dae, expr: &Expression) -> IndexSet<VarName> {
-    let mut names = derivative_value_dependencies(expr);
+fn closure_names_of_expr(
+    dae: &Dae,
+    structural_bindings: &HashMap<String, f64>,
+    expr: &Expression,
+) -> IndexSet<VarName> {
+    let mut names =
+        derivative_coordinate_dependencies_with_bindings(dae, structural_bindings, expr);
     names.extend(super::record_projection::record_field_projection_names(
         dae, expr,
     ));
     names
-}
-
-/// Variables whose values are differentiated by the symbolic chain rule.
-///
-/// An `if` predicate selects an event branch but is not itself differentiated;
-/// including predicate-only discrete variables in this closure falsely blocks
-/// an otherwise closed branch-local derivative.
-pub(super) fn derivative_value_dependencies(expr: &Expression) -> IndexSet<VarName> {
-    struct Collector {
-        names: IndexSet<VarName>,
-    }
-
-    impl ExpressionVisitor for Collector {
-        fn visit_if(&mut self, branches: &[(Expression, Expression)], else_branch: &Expression) {
-            for (_, value) in branches {
-                self.visit_expression(value);
-            }
-            self.visit_expression(else_branch);
-        }
-
-        fn visit_var_ref(&mut self, name: &Reference, subscripts: &[Subscript]) {
-            self.names.insert(name.var_name().clone());
-            for subscript in subscripts {
-                self.visit_subscript(subscript);
-            }
-        }
-    }
-
-    let mut collector = Collector {
-        names: IndexSet::new(),
-    };
-    collector.visit_expression(expr);
-    collector.names
 }
 
 /// Transitive variable closure of `seed_exprs` through defining expressions.
@@ -106,9 +78,24 @@ pub(super) fn derivative_closure_names(
     defining_expr_index: &DefiningExprIndex,
     seed_exprs: &[Expression],
 ) -> IndexSet<VarName> {
+    let structural_bindings = crate::static_eval::structural_scalar_bindings(dae);
+    derivative_closure_names_with_bindings(
+        dae,
+        defining_expr_index,
+        seed_exprs,
+        &structural_bindings,
+    )
+}
+
+fn derivative_closure_names_with_bindings(
+    dae: &Dae,
+    defining_expr_index: &DefiningExprIndex,
+    seed_exprs: &[Expression],
+    structural_bindings: &HashMap<String, f64>,
+) -> IndexSet<VarName> {
     let mut names = IndexSet::new();
     for expr in seed_exprs {
-        names.extend(closure_names_of_expr(dae, expr));
+        names.extend(closure_names_of_expr(dae, structural_bindings, expr));
     }
 
     let mut next = 0;
@@ -118,11 +105,36 @@ pub(super) fn derivative_closure_names(
             .expect("closure index is bounded by the set length")
             .clone();
         for defining_expr in defining_expr_candidates(defining_expr_index, &name) {
-            names.extend(closure_names_of_expr(dae, defining_expr));
+            names.extend(closure_names_of_expr(
+                dae,
+                structural_bindings,
+                defining_expr,
+            ));
+        }
+        if let Some(base_name) = aggregate_coordinate_base_name(dae, &name) {
+            for defining_expr in defining_expr_candidates(defining_expr_index, &base_name) {
+                names.extend(closure_names_of_expr(
+                    dae,
+                    structural_bindings,
+                    defining_expr,
+                ));
+            }
         }
         next += 1;
     }
     names
+}
+
+fn aggregate_coordinate_base_name(dae: &Dae, name: &VarName) -> Option<VarName> {
+    let scalar = rumoca_core::parse_scalar_name(name.as_str())?;
+    let base_name = VarName::new(scalar.base);
+    let variable = dae
+        .variables
+        .algebraics
+        .get(&base_name)
+        .or_else(|| dae.variables.outputs.get(&base_name))?;
+    derivative_coordinate_flat_index(&variable.dims, &scalar.indices)?;
+    Some(base_name)
 }
 
 fn derivative_dependency_is_resolved(
@@ -130,10 +142,16 @@ fn derivative_dependency_is_resolved(
     states: &IndexMap<String, DerivativeClosureState>,
     name: &VarName,
 ) -> bool {
-    name.as_str() == "time"
+    if name.as_str() == "time"
         || dae.variables.parameters.contains_key(name)
         || dae.variables.constants.contains_key(name)
-        || states.get(name.as_str()) == Some(&DerivativeClosureState::Resolved)
+    {
+        return true;
+    }
+    if let Some(state) = states.get(name.as_str()) {
+        return *state == DerivativeClosureState::Resolved;
+    }
+    dae.variables.states.contains_key(name)
 }
 
 /// How much of the closure a resolution pass is willing to accept.
@@ -158,6 +176,7 @@ struct DerivativeClosureResolver<'a> {
     dae: &'a Dae,
     defining_expr_index: &'a DefiningExprIndex,
     state_name_set: &'a HashSet<String>,
+    structural_bindings: &'a HashMap<String, f64>,
     options: RelaxedDerivativeMapOptions<'a>,
     pass: DerivativeClosurePass,
 }
@@ -169,7 +188,8 @@ impl DerivativeClosureResolver<'_> {
         map: &HashMap<String, Expression>,
         name: &VarName,
     ) -> Option<Expression> {
-        self.defining_expr_index
+        let direct = self
+            .defining_expr_index
             .get(name.as_str())
             .into_iter()
             .flatten()
@@ -180,18 +200,85 @@ impl DerivativeClosureResolver<'_> {
                     .contains(&candidate.equation_index)
             })
             .find_map(|candidate| {
-                let defining_expr = &candidate.expr;
-                let dependencies_resolved = derivative_value_dependencies(defining_expr)
-                    .iter()
-                    .all(|dependency| {
-                        derivative_dependency_is_resolved(self.dae, closure_states, dependency)
-                    });
-                if !dependencies_resolved {
-                    return None;
-                }
+                self.derivative_from_candidate(closure_states, map, name, candidate)
+            });
+        direct.or_else(|| self.derivative_from_aggregate_candidate(closure_states, map, name))
+    }
 
-                let derivative = symbolic_time_derivative(defining_expr, self.dae, map)?;
-                self.accepts(&derivative, name).then_some(derivative)
+    fn derivative_from_candidate(
+        &self,
+        closure_states: &IndexMap<String, DerivativeClosureState>,
+        map: &HashMap<String, Expression>,
+        name: &VarName,
+        candidate: &IndexedDefiningExpr,
+    ) -> Option<Expression> {
+        let defining_expr = &candidate.expr;
+        let dependencies_resolved =
+            closure_names_of_expr(self.dae, self.structural_bindings, defining_expr)
+                .iter()
+                .all(|dependency| {
+                    derivative_dependency_is_resolved(self.dae, closure_states, dependency)
+                });
+        if !dependencies_resolved {
+            return None;
+        }
+
+        let derivative = if self.options.rejected_state_derivative.is_some()
+            && self.options.selected_derivatives.is_none()
+        {
+            symbolic::symbolic_time_derivative_projecting_state_values(
+                defining_expr,
+                self.dae,
+                map,
+            )?
+        } else {
+            symbolic_time_derivative(defining_expr, self.dae, map)?
+        };
+        self.accepts(&derivative, name).then_some(derivative)
+    }
+
+    /// Derive one scalar coordinate from a certified whole-aggregate row.
+    ///
+    /// Component-normalized closure keys preserve exact use sites, but a legal
+    /// DAE may define the aggregate in one full-width equation (`a = b`) and
+    /// constrain only `a[3]` elsewhere. The parsed coordinate plus the declared
+    /// dimensions is the projection witness; candidates still obey the same
+    /// exclusion and acyclicity checks as direct scalar rows.
+    fn derivative_from_aggregate_candidate(
+        &self,
+        closure_states: &IndexMap<String, DerivativeClosureState>,
+        map: &HashMap<String, Expression>,
+        name: &VarName,
+    ) -> Option<Expression> {
+        let scalar = rumoca_core::parse_scalar_name(name.as_str())?;
+        let base_name = VarName::new(scalar.base);
+        let variable = self
+            .dae
+            .variables
+            .algebraics
+            .get(&base_name)
+            .or_else(|| self.dae.variables.outputs.get(&base_name))?;
+        let flat_index = derivative_coordinate_flat_index(&variable.dims, &scalar.indices)?;
+        self.defining_expr_index
+            .get(base_name.as_str())
+            .into_iter()
+            .flatten()
+            .filter(|candidate| {
+                !self
+                    .options
+                    .excluded_equations
+                    .contains(&candidate.equation_index)
+            })
+            .find_map(|candidate| {
+                let derivative =
+                    self.derivative_from_candidate(closure_states, map, &base_name, candidate)?;
+                symbolic::project_derivative_flat_index(
+                    &derivative,
+                    &variable.dims,
+                    flat_index,
+                    candidate.expr.span(),
+                    self.dae,
+                )
             })
     }
 
@@ -300,6 +387,131 @@ fn retain_closed_state_derivative_values(map: &mut HashMap<String, Expression>) 
     });
 }
 
+/// Keep extracted state derivatives that are acyclic for one nominated state.
+///
+/// A global relaxed map must discard mass-matrix rows containing other state
+/// derivatives because it has no transformation target against which to prove
+/// independence. A candidate-specific map does: a value is admissible exactly
+/// when it neither re-enters its own derivative nor reaches the state whose row
+/// may be rewritten. This admits triangular higher-derivative chains while a
+/// coupled row that feeds back through the candidate remains rejected.
+fn retain_candidate_independent_state_derivative_values(
+    map: &mut HashMap<String, Expression>,
+    candidate: &VarName,
+) {
+    map.retain(|name, value| {
+        let own_state = VarName::new(name.as_str());
+        !expr_contains_der_of(value, &own_state)
+            && !expr_contains_der_of(value, candidate)
+            && !expr_contains_var(value, candidate)
+    });
+}
+
+fn add_candidate_independent_state_derivative_values(
+    dae: &Dae,
+    candidate: &VarName,
+    map: &mut HashMap<String, Expression>,
+) {
+    let equation_index = symbolic::DerivativeEquationIndex::build(dae);
+    let structural_bindings = crate::static_eval::structural_scalar_bindings(dae);
+    for (state_name, variable) in &dae.variables.states {
+        let value = if variable.dims.is_empty() {
+            candidate_independent_derivative_value(
+                dae,
+                &equation_index,
+                &structural_bindings,
+                state_name,
+                state_name,
+                candidate,
+            )
+        } else {
+            candidate_independent_ranked_derivative_value(
+                dae,
+                &equation_index,
+                &structural_bindings,
+                state_name,
+                &variable.dims,
+                candidate,
+            )
+        };
+        if let Some(value) = value {
+            map.insert(state_name.as_str().to_string(), value);
+        }
+    }
+}
+
+fn candidate_independent_ranked_derivative_value(
+    dae: &Dae,
+    equation_index: &symbolic::DerivativeEquationIndex,
+    structural_bindings: &HashMap<String, f64>,
+    state_name: &VarName,
+    dims: &[i64],
+    candidate: &VarName,
+) -> Option<Expression> {
+    let scalar_names = symbolic::scalar_names_for_dims(state_name, dims)?;
+    let values = scalar_names
+        .iter()
+        .map(|scalar_name| {
+            candidate_independent_derivative_value(
+                dae,
+                equation_index,
+                structural_bindings,
+                scalar_name,
+                state_name,
+                candidate,
+            )
+        })
+        .collect::<Option<Vec<_>>>()?;
+    symbolic::array_expr_from_flat_values(values, dims)
+}
+
+/// Select an explicit derivative row that is acyclic for one demotion.
+///
+/// `target` is the exact scalar derivative named by the row; `owner` is its
+/// declared state and may be ranked. State values may appear in an ODE
+/// right-hand side; only a derivative of the owner would make the assembled
+/// coordinate values recursively depend on themselves.
+fn candidate_independent_derivative_value(
+    dae: &Dae,
+    equation_index: &symbolic::DerivativeEquationIndex,
+    structural_bindings: &HashMap<String, f64>,
+    target: &VarName,
+    owner: &VarName,
+    candidate: &VarName,
+) -> Option<Expression> {
+    for row in equation_index.equations_for(target.as_str()) {
+        let normalized = symbolic::normalize_derivative_target(
+            &dae.continuous.equations[*row].rhs,
+            target,
+            structural_bindings,
+        );
+        let Some(value) = try_extract_der_value(&normalized, target) else {
+            crate::structural_trace!(
+                "[sim-trace] candidate derivative row rejected target={} row={} reason=not_invertible",
+                target.as_str(),
+                row
+            );
+            continue;
+        };
+        let owner_derivative = expr_contains_der_of(&value, owner);
+        let candidate_derivative = expr_contains_der_of(&value, candidate);
+        let candidate_value = expr_contains_var(&value, candidate);
+        if owner_derivative || candidate_derivative || candidate_value {
+            crate::structural_trace!(
+                "[sim-trace] candidate derivative row rejected target={} row={} owner_derivative={} candidate_derivative={} candidate_value={}",
+                target.as_str(),
+                row,
+                owner_derivative,
+                candidate_derivative,
+                candidate_value
+            );
+            continue;
+        }
+        return Some(value);
+    }
+    None
+}
+
 /// True for a bare `der(name)` on an unsubscripted reference.
 fn is_plain_derivative_reference(expr: &Expression) -> bool {
     let Expression::BuiltinCall {
@@ -336,7 +548,14 @@ fn seed_derivative_closure(
     reachable: &IndexSet<VarName>,
 ) -> Result<ClosureSeed, StructuralError> {
     let mut map = build_der_value_map(dae);
-    retain_closed_state_derivative_values(&mut map);
+    if let Some(candidate) = options.rejected_state_derivative {
+        if options.selected_derivatives.is_none() {
+            add_candidate_independent_state_derivative_values(dae, candidate, &mut map);
+        }
+        retain_candidate_independent_state_derivative_values(&mut map, candidate);
+    } else {
+        retain_closed_state_derivative_values(&mut map);
+    }
     let selected_derivatives = options.selected_derivatives;
     if let Some(selected) = selected_derivatives {
         for (name, value) in selected {
@@ -366,7 +585,11 @@ fn seed_derivative_closure(
             {
                 return None;
             }
-            let state = if dae.variables.states.contains_key(name) {
+            let derive_unmapped_state = options.rejected_state_derivative.is_some()
+                && options.selected_derivatives.is_none()
+                && dae.variables.states.contains_key(name)
+                && !map.contains_key(name.as_str());
+            let state = if dae.variables.states.contains_key(name) && !derive_unmapped_state {
                 DerivativeClosureState::Resolved
             } else {
                 DerivativeClosureState::Unresolved
@@ -421,15 +644,26 @@ pub(super) fn build_relaxed_derivative_map_for_exprs_with_index(
     seed_exprs: &[Expression],
     options: RelaxedDerivativeMapOptions<'_>,
 ) -> Result<HashMap<String, Expression>, StructuralError> {
-    let reachable = derivative_closure_names(dae, defining_expr_index, seed_exprs);
+    let structural_bindings = crate::static_eval::structural_scalar_bindings(dae);
+    let reachable = derivative_closure_names_with_bindings(
+        dae,
+        defining_expr_index,
+        seed_exprs,
+        &structural_bindings,
+    );
     let ClosureSeed {
         mut map,
         state_name_set,
         mut closure_states,
     } = seed_derivative_closure(dae, options, &reachable)?;
 
+    let derive_unmapped_states =
+        options.rejected_state_derivative.is_some() && options.selected_derivatives.is_none();
     for name in &reachable {
         if !dae.variables.states.contains_key(name) || map.contains_key(name.as_str()) {
+            continue;
+        }
+        if derive_unmapped_states {
             continue;
         }
         let variable = dae.variables.states.get(name).ok_or_else(|| {
@@ -451,6 +685,7 @@ pub(super) fn build_relaxed_derivative_map_for_exprs_with_index(
             dae,
             defining_expr_index,
             state_name_set: &state_name_set,
+            structural_bindings: &structural_bindings,
             options,
             pass,
         };
