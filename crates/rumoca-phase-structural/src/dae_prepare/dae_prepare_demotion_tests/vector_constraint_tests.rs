@@ -536,6 +536,68 @@ fn test_constrained_dummy_derivative_reduction_reaches_fixed_point() {
 }
 
 #[test]
+fn test_direct_demotion_rebuilds_evidence_after_state_select_choice() {
+    let mut dae = Dae::new();
+    for name in ["accelerate.s", "accelerate.v"] {
+        let mut state = test_variable(name);
+        state.state_select = rumoca_core::StateSelect::Prefer;
+        dae.variables.states.insert(VarName::new(name), state);
+    }
+    for name in ["mass.s", "mass.v"] {
+        dae.variables
+            .states
+            .insert(VarName::new(name), test_variable(name));
+    }
+    for name in ["accelerate.a", "accelerate.a_ref", "mass.a"] {
+        dae.variables
+            .algebraics
+            .insert(VarName::new(name), test_variable(name));
+    }
+    dae.continuous
+        .equations
+        .push(eq(sub(var("accelerate.v"), der("accelerate.s"))));
+    dae.continuous
+        .equations
+        .push(eq(sub(var("mass.v"), der("mass.s"))));
+    dae.continuous
+        .equations
+        .push(eq(sub(var("accelerate.s"), sub(var("mass.s"), int(1)))));
+    dae.continuous
+        .equations
+        .push(eq(sub(var("accelerate.a"), der("accelerate.v"))));
+    dae.continuous
+        .equations
+        .push(eq(sub(var("mass.a"), der("mass.v"))));
+    dae.continuous
+        .equations
+        .push(eq(sub(var("accelerate.a"), var("accelerate.a_ref"))));
+    dae.continuous
+        .equations
+        .push(eq(sub(var("mass.a"), var("accelerate.a"))));
+    dae.continuous
+        .equations
+        .push(eq(sub(var("accelerate.a_ref"), int(1))));
+
+    let demoted = demote_direct_assigned_states(&mut dae)
+        .expect("direct demotion should preserve one velocity state");
+
+    assert_eq!(
+        demoted, 1,
+        "the shared velocity constraint funds one demotion, not a stale batch"
+    );
+    assert!(
+        dae.variables
+            .states
+            .contains_key(&VarName::new("accelerate.v"))
+    );
+    assert!(
+        dae.variables
+            .algebraics
+            .contains_key(&VarName::new("mass.v"))
+    );
+}
+
+#[test]
 fn test_constrained_dummy_derivative_reduction_handles_parameter_guarded_vector_constraint() {
     let mut dae = Dae::new();
     let mut constrained = test_variable("x");

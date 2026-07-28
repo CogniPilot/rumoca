@@ -369,17 +369,25 @@ fn defining_expr_references_unsafe_non_state_alias_closure(
     .value_is_undetermined_or_state_dependent(defining_expr)
 }
 
-fn apply_direct_demotion_plans(
+fn apply_next_direct_demotion_plan(
     dae: &mut Dae,
     substitutions: &HashMap<String, DirectStateDemotionPlan>,
 ) -> usize {
-    let mut demoted_this_round = 0usize;
     let mut plans: Vec<&DirectStateDemotionPlan> = substitutions.values().collect();
-    plans.sort_by(|a, b| a.state_name.as_str().cmp(b.state_name.as_str()));
-    for plan in plans {
-        demoted_this_round += apply_direct_demotion_plan(dae, plan);
-    }
-    demoted_this_round
+    plans.sort_by_key(|plan| {
+        let state = dae
+            .variables
+            .states
+            .get(&plan.state_name)
+            .expect("a direct-demotion plan owns a current state");
+        (
+            state_select_rank(state.state_select),
+            plan.state_name.as_str(),
+        )
+    });
+    plans
+        .first()
+        .map_or(0, |plan| apply_direct_demotion_plan(dae, plan))
 }
 
 pub(super) fn apply_direct_demotion_plan(dae: &mut Dae, plan: &DirectStateDemotionPlan) -> usize {
@@ -909,7 +917,12 @@ pub fn demote_direct_assigned_states(dae: &mut Dae) -> Result<usize, StructuralE
 
         let label = format!("direct_demotion.round[{round_index}].apply_plans");
         let timer = structural_timing_start(&label);
-        let demoted_this_round = apply_direct_demotion_plans(dae, &substitutions);
+        // A plan's derivative and independence certificates are valid for the
+        // exact state partition from which it was constructed. Commit one
+        // least-preferred state, then rebuild the round before another plan
+        // may act. Batch application would let mutually dependent candidates
+        // spend the same structural evidence twice.
+        let demoted_this_round = apply_next_direct_demotion_plan(dae, &substitutions);
         structural_timing_done(&label, timer);
 
         if demoted_this_round == 0 {
