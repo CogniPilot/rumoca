@@ -152,13 +152,26 @@ impl InstanceSemanticScope {
         current_scope: Option<&ComponentPath>,
     ) -> SemanticLookup<Option<Vec<usize>>> {
         let path = component_reference_prefix_path(reference, prefix_len, false);
-        match self.lookup_scoped_array_shape(&path, current_scope) {
-            SemanticLookup::Found(shape) => SemanticLookup::Found(shape),
-            SemanticLookup::Ambiguous => SemanticLookup::Ambiguous,
-            SemanticLookup::Missing => self
-                .lookup_reference(reference, prefix_len, class_instance_id, current_scope)
-                .map(|semantics| semantics.shape),
+        // Search one lexical candidate at a time. Array-family metadata and
+        // exact declaration identity are alternatives at the same scope; an
+        // exact local scalar must stop the search before a same-named array in
+        // an enclosing instance can contribute its domain.
+        for candidate in scoped_path_candidates(&path, current_scope) {
+            if let Some(shape) = self.array_shapes.get(&candidate) {
+                return shape.clone();
+            }
+            match self.exact_paths.get(&candidate).map(CandidateSet::ids) {
+                Some(SemanticLookup::Found(ids)) => {
+                    return self
+                        .consensus(SemanticLookup::Found(ids.to_vec()))
+                        .map(|semantics| semantics.shape);
+                }
+                Some(SemanticLookup::Ambiguous) => return SemanticLookup::Ambiguous,
+                _ => {}
+            }
         }
+        self.lookup_reference(reference, prefix_len, class_instance_id, current_scope)
+            .map(|semantics| semantics.shape)
     }
 
     fn index_classes(&mut self, overlay: &InstanceOverlay) {
@@ -411,19 +424,6 @@ impl InstanceSemanticScope {
             }
             if let Some(ids) = self.family_paths.get(&candidate) {
                 return SemanticLookup::Found(ids.clone());
-            }
-        }
-        SemanticLookup::Missing
-    }
-
-    fn lookup_scoped_array_shape(
-        &self,
-        path: &ComponentPath,
-        current_scope: Option<&ComponentPath>,
-    ) -> SemanticLookup<Option<Vec<usize>>> {
-        for candidate in scoped_path_candidates(path, current_scope) {
-            if let Some(shape) = self.array_shapes.get(&candidate) {
-                return shape.clone();
             }
         }
         SemanticLookup::Missing

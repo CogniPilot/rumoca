@@ -256,7 +256,7 @@ fn instance_identity_scope_uses_expanded_parent_domain() {
             scope.lookup_reference_shape(&source_v_indexed, 2, None, None),
             SemanticLookup::Found(Some(shape)) if shape.is_empty()
         ),
-        "expanded element remains scalar"
+        "an already rendered expanded-element identity remains scalar"
     );
     assert!(
         matches!(
@@ -264,6 +264,36 @@ fn instance_identity_scope_uses_expanded_parent_domain() {
             SemanticLookup::Found(Some(shape)) if shape == vec![2]
         ),
         "indexed parent segments must be stripped without losing a nested member's own domain"
+    );
+}
+
+#[test]
+fn exact_local_scalar_shape_precedes_same_named_parent_array_domain() {
+    let mut overlay = InstanceOverlay::default();
+    overlay.components.insert(
+        InstanceId::new(1),
+        InstanceData {
+            instance_id: InstanceId::new(1),
+            qualified_name: QualifiedName::from_dotted("owner.adapters[1].pin"),
+            dims: Vec::new(),
+            dims_expr: Vec::new(),
+            ..Default::default()
+        },
+    );
+    overlay
+        .array_parent_dims
+        .insert("owner.pin".to_string(), vec![3]);
+
+    let scope = InstanceSemanticScope::from_overlay(&overlay);
+    let reference = make_comp_ref("pin");
+    let current_scope = ComponentPath::from_flat_path("owner.adapters[1]");
+
+    assert!(
+        matches!(
+            scope.lookup_reference_shape(&reference, 1, None, Some(&current_scope)),
+            SemanticLookup::Found(Some(shape)) if shape.is_empty()
+        ),
+        "resolved local identity must not inherit an ancestor's same-named array domain"
     );
 }
 
