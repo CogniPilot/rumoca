@@ -20,7 +20,7 @@ use rumoca_ir_dae as dae;
 /// continuous equation substitutes `der(state)` with the dummy algebraic so
 /// the defining row becomes the unique state-derivative row and constitutive
 /// equations determine the dummy.
-#[must_use]
+#[must_use = "the optional rewritten DAE must replace the input seen by Solve lowering"]
 pub fn eliminate_dummy_derivative_aliases(
     dae_model: &dae::Dae,
 ) -> Result<Option<dae::Dae>, crate::StructuralError> {
@@ -88,9 +88,11 @@ fn collect_dummy_derivative_aliases(dae_model: &dae::Dae) -> DummyDerivativeAlia
     let mut state_to_dummy = HashMap::new();
     let mut dummy_used = HashSet::new();
     let mut defining_equation_indices = HashSet::new();
+    let structural_bindings = crate::static_eval::structural_scalar_bindings(dae_model);
 
     for (index, equation) in dae_model.continuous.equations.iter().enumerate() {
-        let Some((state, dummy)) = dummy_definition(dae_model, equation) else {
+        let Some((state, dummy)) = dummy_definition(dae_model, equation, &structural_bindings)
+        else {
             continue;
         };
         if state_to_dummy.contains_key(&state) || dummy_used.contains(&dummy) {
@@ -107,20 +109,24 @@ fn collect_dummy_derivative_aliases(dae_model: &dae::Dae) -> DummyDerivativeAlia
     }
 }
 
-fn dummy_definition(dae_model: &dae::Dae, equation: &dae::Equation) -> Option<(VarName, VarName)> {
+fn dummy_definition(
+    dae_model: &dae::Dae,
+    equation: &dae::Equation,
+    structural_bindings: &HashMap<String, f64>,
+) -> Option<(VarName, VarName)> {
     if let Some(lhs) = equation.lhs.as_ref() {
         let dummy = scalar_algebraic_name(dae_model, lhs.var_name())?;
-        let state = der_of_state(dae_model, &equation.rhs)?;
+        let state = unit_scaled_der_of_state(dae_model, &equation.rhs, structural_bindings)?;
         return Some((state, dummy));
     }
     let (lhs, rhs) = split_subtraction(&equation.rhs)?;
     if let Some(dummy) = scalar_algebraic_expr(dae_model, lhs)
-        && let Some(state) = der_of_state(dae_model, rhs)
+        && let Some(state) = unit_scaled_der_of_state(dae_model, rhs, structural_bindings)
     {
         return Some((state, dummy));
     }
     if let Some(dummy) = scalar_algebraic_expr(dae_model, rhs)
-        && let Some(state) = der_of_state(dae_model, lhs)
+        && let Some(state) = unit_scaled_der_of_state(dae_model, lhs, structural_bindings)
     {
         return Some((state, dummy));
     }
@@ -157,6 +163,78 @@ fn der_of_state(dae_model: &dae::Dae, expression: &Expression) -> Option<VarName
         .states
         .contains_key(&name)
         .then_some(name)
+}
+
+/// Prove that an expression is exactly `der(state)` after compile-time scalar
+/// factors are evaluated.
+///
+/// Symbolic differentiation can preserve unit arithmetic such as
+/// `(-der(x) * -1) / (-1 * -1)`. Treating this as a derivative alias is sound
+/// only when the expression has one derivative leaf and its accumulated
+/// coefficient is finite and exactly `+1`.
+fn unit_scaled_der_of_state(
+    dae_model: &dae::Dae,
+    expression: &Expression,
+    structural_bindings: &HashMap<String, f64>,
+) -> Option<VarName> {
+    let (state, coefficient) = scaled_der_of_state(dae_model, expression, structural_bindings)?;
+    (coefficient.is_finite() && coefficient == 1.0).then_some(state)
+}
+
+fn scaled_der_of_state(
+    dae_model: &dae::Dae,
+    expression: &Expression,
+    structural_bindings: &HashMap<String, f64>,
+) -> Option<(VarName, f64)> {
+    if let Some(state) = der_of_state(dae_model, expression) {
+        return Some((state, 1.0));
+    }
+    match expression {
+        Expression::Unary { op, rhs, .. } => {
+            let (state, coefficient) = scaled_der_of_state(dae_model, rhs, structural_bindings)?;
+            match op {
+                rumoca_core::OpUnary::Plus
+                | rumoca_core::OpUnary::DotPlus
+                | rumoca_core::OpUnary::Empty => Some((state, coefficient)),
+                rumoca_core::OpUnary::Minus | rumoca_core::OpUnary::DotMinus => {
+                    Some((state, -coefficient))
+                }
+                rumoca_core::OpUnary::Not => None,
+            }
+        }
+        Expression::Binary { op, lhs, rhs, .. } => {
+            scaled_der_binary(dae_model, op.clone(), lhs, rhs, structural_bindings)
+        }
+        _ => None,
+    }
+}
+
+fn scaled_der_binary(
+    dae_model: &dae::Dae,
+    op: rumoca_core::OpBinary,
+    lhs: &Expression,
+    rhs: &Expression,
+    structural_bindings: &HashMap<String, f64>,
+) -> Option<(VarName, f64)> {
+    use rumoca_core::OpBinary;
+
+    let lhs_derivative = scaled_der_of_state(dae_model, lhs, structural_bindings);
+    let rhs_derivative = scaled_der_of_state(dae_model, rhs, structural_bindings);
+    match (op, lhs_derivative, rhs_derivative) {
+        (OpBinary::Mul | OpBinary::MulElem, Some((state, coefficient)), None) => Some((
+            state,
+            coefficient * crate::static_eval::eval_static_number(rhs, structural_bindings)?,
+        )),
+        (OpBinary::Mul | OpBinary::MulElem, None, Some((state, coefficient))) => Some((
+            state,
+            crate::static_eval::eval_static_number(lhs, structural_bindings)? * coefficient,
+        )),
+        (OpBinary::Div | OpBinary::DivElem, Some((state, coefficient)), None) => Some((
+            state,
+            coefficient / crate::static_eval::eval_static_number(rhs, structural_bindings)?,
+        )),
+        _ => None,
+    }
 }
 
 fn scalar_algebraic_expr(dae_model: &dae::Dae, expression: &Expression) -> Option<VarName> {
@@ -245,6 +323,22 @@ mod tests {
         }
     }
 
+    fn real(value: f64) -> Expression {
+        Expression::Literal {
+            value: rumoca_core::Literal::Real(value),
+            span: span(),
+        }
+    }
+
+    fn binary(op: rumoca_core::OpBinary, lhs: Expression, rhs: Expression) -> Expression {
+        Expression::Binary {
+            op,
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+            span: span(),
+        }
+    }
+
     fn equation(lhs: Option<&str>, rhs: Expression) -> dae::Equation {
         dae::Equation {
             lhs: lhs.map(Reference::new),
@@ -327,6 +421,80 @@ mod tests {
         assert!(matches!(
             &body[1],
             Expression::VarRef { name, .. } if name.as_str() == "dummy"
+        ));
+    }
+
+    #[test]
+    fn proves_generated_unit_scaled_derivative_alias_before_rewriting() {
+        let mut model = dae::Dae::new();
+        model.variables.states.insert(
+            VarName::new("x"),
+            dae::Variable {
+                name: VarName::new("x"),
+                ..dae::Variable::empty_with_span(span())
+            },
+        );
+        model.variables.algebraics.insert(
+            VarName::new("dummy"),
+            dae::Variable {
+                name: VarName::new("dummy"),
+                ..dae::Variable::empty_with_span(span())
+            },
+        );
+        let negative_derivative = Expression::Unary {
+            op: rumoca_core::OpUnary::Minus,
+            rhs: Box::new(der("x")),
+            span: span(),
+        };
+        let generated_unit_derivative = binary(
+            rumoca_core::OpBinary::Div,
+            binary(rumoca_core::OpBinary::Mul, negative_derivative, real(-1.0)),
+            binary(rumoca_core::OpBinary::Mul, real(-1.0), real(-1.0)),
+        );
+        model.continuous.equations = vec![
+            equation(Some("dummy"), generated_unit_derivative),
+            equation(None, der("x")),
+        ];
+
+        assert!(eliminate_dummy_derivative_aliases_in_place(&mut model));
+        assert!(matches!(
+            &model.continuous.equations[1].rhs,
+            Expression::VarRef { name, .. } if name.as_str() == "dummy"
+        ));
+    }
+
+    #[test]
+    fn rejects_non_unit_scaled_derivative_alias() {
+        let mut model = dae::Dae::new();
+        model.variables.states.insert(
+            VarName::new("x"),
+            dae::Variable {
+                name: VarName::new("x"),
+                ..dae::Variable::empty_with_span(span())
+            },
+        );
+        model.variables.algebraics.insert(
+            VarName::new("dummy"),
+            dae::Variable {
+                name: VarName::new("dummy"),
+                ..dae::Variable::empty_with_span(span())
+            },
+        );
+        model.continuous.equations = vec![
+            equation(
+                Some("dummy"),
+                binary(rumoca_core::OpBinary::Mul, real(2.0), der("x")),
+            ),
+            equation(None, der("x")),
+        ];
+
+        assert!(!eliminate_dummy_derivative_aliases_in_place(&mut model));
+        assert!(matches!(
+            model.continuous.equations[1].rhs,
+            Expression::BuiltinCall {
+                function: BuiltinFunction::Der,
+                ..
+            }
         ));
     }
 }
