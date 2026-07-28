@@ -1341,29 +1341,37 @@ fn solver_residual_equations<'a>(
     for (normalized_index, row) in continuous_rows.iter().enumerate() {
         let eq = &row.equation;
         if solver_residual_equation(dae_model, runtime_tail_updates, row.is_derivative, eq)? {
-            let row_namespace = match row.projection {
-                lower::ContinuousEquationRowProjection::Source => row.source_equation_index,
-                lower::ContinuousEquationRowProjection::FunctionOutput { index } => {
-                    dae_model
-                        .continuous
-                        .equations
-                        .len()
-                        .checked_add(normalized_index)
-                        .ok_or_else(|| {
-                            lower_contract_violation(
-                                format!(
-                                    "normalized function projection namespace overflows for source equation {} projection {index}",
-                                    row.source_equation_index
-                                ),
-                                eq.span,
-                            )
-                        })?
-                }
-            };
+            let row_namespace =
+                normalized_row_namespace(dae_model, row, normalized_index, eq.span)?;
             equations.push((row_namespace, eq));
         }
     }
     Ok(equations)
+}
+
+fn normalized_row_namespace(
+    dae_model: &dae::Dae,
+    row: &lower::ContinuousEquationRow,
+    normalized_index: usize,
+    span: rumoca_core::Span,
+) -> Result<usize, LowerError> {
+    let lower::ContinuousEquationRowProjection::FunctionOutput { index } = row.projection else {
+        return Ok(row.source_equation_index);
+    };
+    dae_model
+        .continuous
+        .equations
+        .len()
+        .checked_add(normalized_index)
+        .ok_or_else(|| {
+            lower_contract_violation(
+                format!(
+                    "normalized function projection namespace overflows for source equation {} projection {index}",
+                    row.source_equation_index
+                ),
+                span,
+            )
+        })
 }
 
 fn solver_residual_equation(

@@ -1240,17 +1240,8 @@ fn reject_duplicate_derivative_coefficient_rows(
                 .filter(|span| !span.is_dummy())
                 .min_by_key(|span| span_order_key(*span))
                 .unwrap_or(fallback_span);
-            duplicate_span = Some(
-                duplicate_span
-                    .map(|current| {
-                        if span_order_key(span) < span_order_key(current) {
-                            span
-                        } else {
-                            current
-                        }
-                    })
-                    .unwrap_or(span),
-            );
+            duplicate_span =
+                Some(duplicate_span.map_or(span, |current| earlier_span(current, span)));
         }
     }
     let Some(span) = duplicate_span else {
@@ -1261,6 +1252,14 @@ fn reject_duplicate_derivative_coefficient_rows(
             .to_string(),
         span,
     ))
+}
+
+fn earlier_span(lhs: rumoca_core::Span, rhs: rumoca_core::Span) -> rumoca_core::Span {
+    if span_order_key(lhs) <= span_order_key(rhs) {
+        lhs
+    } else {
+        rhs
+    }
 }
 
 fn derivative_coefficients_semantically_equal(
@@ -1406,15 +1405,9 @@ fn constant_derivative_component_matrix(
                     span,
                 )
             })?;
-            let value = match equation.coefficients.get(&state.name) {
-                Some(coefficient) => {
-                    let Some(value) = eval_derivative_constant(coefficient, structural_bindings)
-                    else {
-                        return Ok(None);
-                    };
-                    value
-                }
-                None => 0.0,
+            let Some(value) = constant_derivative_coefficient(equation, state, structural_bindings)
+            else {
+                return Ok(None);
             };
             if !value.is_finite() {
                 return Err(super::unsupported_at(
@@ -1428,6 +1421,19 @@ fn constant_derivative_component_matrix(
         matrix.push(row);
     }
     Ok(Some(matrix))
+}
+
+fn constant_derivative_coefficient(
+    equation: &DerivativeEquation,
+    state: &StateScalar,
+    structural_bindings: &IndexMap<String, f64>,
+) -> Option<f64> {
+    equation
+        .coefficients
+        .get(&state.name)
+        .map_or(Some(0.0), |coefficient| {
+            eval_derivative_constant(coefficient, structural_bindings)
+        })
 }
 
 fn eval_derivative_constant(

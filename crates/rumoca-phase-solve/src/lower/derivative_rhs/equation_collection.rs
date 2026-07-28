@@ -1,17 +1,16 @@
 use super::*;
 
+type ContinuousEquationCollection = (
+    Vec<ContinuousEquationRow>,
+    Vec<DerivativeEquation>,
+    Vec<bool>,
+);
+
 pub(in crate::lower) fn collect_continuous_equation_rows(
     dae_model: &dae::Dae,
     state_names: &HashSet<String>,
     structural_bindings: &IndexMap<String, f64>,
-) -> Result<
-    (
-        Vec<ContinuousEquationRow>,
-        Vec<DerivativeEquation>,
-        Vec<bool>,
-    ),
-    LowerError,
-> {
+) -> Result<ContinuousEquationCollection, LowerError> {
     let mut continuous_rows = Vec::new();
     let mut equations = Vec::new();
     let mut source_equations_all_derivative = Vec::new();
@@ -1656,9 +1655,7 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn mixed_function_projections_are_classified_and_retained_per_row() -> Result<(), LowerError> {
-        let owner_span = span(20, 40);
+    fn mixed_projection_function(owner_span: rumoca_core::Span) -> rumoca_core::Function {
         let mut function = rumoca_core::Function::new("My.mixed", owner_span);
         function
             .inputs
@@ -1681,7 +1678,10 @@ mod tests {
             },
             span: owner_span,
         });
+        function
+    }
 
+    fn mixed_projection_dae(owner_span: rumoca_core::Span) -> dae::Dae {
         let derivative = rumoca_core::Expression::BuiltinCall {
             function: rumoca_core::BuiltinFunction::Der,
             args: vec![var_ref("x", Vec::new(), owner_span)],
@@ -1694,20 +1694,18 @@ mod tests {
             span: owner_span,
         };
         let mut dae_model = dae::Dae::default();
-        dae_model.variables.states.insert(
-            rumoca_core::VarName::new("x"),
-            dae::Variable {
-                name: rumoca_core::VarName::new("x"),
-                ..dae::Variable::empty_with_span(owner_span)
-            },
-        );
-        dae_model.variables.algebraics.insert(
-            rumoca_core::VarName::new("a"),
-            dae::Variable {
-                name: rumoca_core::VarName::new("a"),
-                ..dae::Variable::empty_with_span(owner_span)
-            },
-        );
+        for (name, variables) in [
+            ("x", &mut dae_model.variables.states),
+            ("a", &mut dae_model.variables.algebraics),
+        ] {
+            variables.insert(
+                rumoca_core::VarName::new(name),
+                dae::Variable {
+                    name: rumoca_core::VarName::new(name),
+                    ..dae::Variable::empty_with_span(owner_span)
+                },
+            );
+        }
         dae_model.variables.discrete_reals.insert(
             rumoca_core::VarName::new("q"),
             dae::Variable {
@@ -1726,10 +1724,10 @@ mod tests {
                 ..dae::Variable::empty_with_span(owner_span)
             },
         );
-        dae_model
-            .symbols
-            .functions
-            .insert(function.name.clone(), function);
+        dae_model.symbols.functions.insert(
+            rumoca_core::VarName::new("My.mixed"),
+            mixed_projection_function(owner_span),
+        );
         dae_model.continuous.equations.push(dae::Equation::residual(
             rumoca_core::Expression::Binary {
                 op: rumoca_core::OpBinary::Sub,
@@ -1740,7 +1738,12 @@ mod tests {
             owner_span,
             "mixed projected equation",
         ));
+        dae_model
+    }
 
+    #[test]
+    fn mixed_function_projections_are_classified_and_retained_per_row() -> Result<(), LowerError> {
+        let dae_model = mixed_projection_dae(span(20, 40));
         let state_names = HashSet::from(["x".to_string()]);
         let (rows, derivative_rows, source_equations_all_derivative) =
             collect_continuous_equation_rows(&dae_model, &state_names, &IndexMap::new())?;

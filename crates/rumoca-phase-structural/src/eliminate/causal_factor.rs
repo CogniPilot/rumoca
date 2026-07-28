@@ -115,10 +115,7 @@ impl<'a> CandidateConsumerCounter<'a> {
         let mut buckets = IndexMap::<u64, Vec<usize>>::new();
         for (index, candidate) in candidates.iter().enumerate() {
             for fingerprint in [candidate.fingerprint, candidate.normalized_fingerprint] {
-                let bucket = buckets.entry(fingerprint).or_default();
-                if !bucket.contains(&index) {
-                    bucket.push(index);
-                }
+                insert_candidate_bucket(&mut buckets, fingerprint, index);
             }
         }
         Self {
@@ -127,19 +124,35 @@ impl<'a> CandidateConsumerCounter<'a> {
             counts: vec![0; candidates.len()],
         }
     }
+
+    fn count_matches(&mut self, expression: &Expression, fingerprint: u64) {
+        let Some(indices) = self.buckets.get(&fingerprint) else {
+            return;
+        };
+        for &index in indices {
+            let candidate = &self.candidates[index];
+            if candidate_matches(candidate, expression, fingerprint) {
+                self.counts[index] += 1;
+            }
+        }
+    }
+}
+
+fn insert_candidate_bucket(
+    buckets: &mut IndexMap<u64, Vec<usize>>,
+    fingerprint: u64,
+    index: usize,
+) {
+    let bucket = buckets.entry(fingerprint).or_default();
+    if !bucket.contains(&index) {
+        bucket.push(index);
+    }
 }
 
 impl ExpressionVisitor for CandidateConsumerCounter<'_> {
     fn visit_expression(&mut self, expression: &Expression) {
         let fingerprint = rumoca_core::expression_semantic_fingerprint(expression);
-        if let Some(indices) = self.buckets.get(&fingerprint) {
-            for &index in indices {
-                let candidate = &self.candidates[index];
-                if candidate_matches(candidate, expression, fingerprint) {
-                    self.counts[index] += 1;
-                }
-            }
-        }
+        self.count_matches(expression, fingerprint);
         self.walk_expression(expression);
     }
 }
