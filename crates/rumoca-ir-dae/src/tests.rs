@@ -1,5 +1,6 @@
 mod derived_wire;
 mod function_wire;
+mod provenance;
 mod temporal_wire;
 mod wire_buffers;
 
