@@ -1,21 +1,108 @@
+{%- macro scalar_const(op) -%}
+{%- if op.value_class == "finite" -%}{{ op.value }}
+{%- elif op.value_class == "positive_infinity" -%}INFINITY
+{%- elif op.value_class == "negative_infinity" -%}(-INFINITY)
+{%- else -%}NAN
+{%- endif -%}
+{%- endmacro %}
+
+{%- macro unary(operator, arg) -%}
+{%- if operator == "Neg" -%}(-(__r{{ arg }}))
+{%- elif operator == "Not" -%}((__r{{ arg }}) == 0.0 ? 1.0 : 0.0)
+{%- elif operator == "Abs" -%}fabs(__r{{ arg }})
+{%- elif operator == "Sign" -%}((__r{{ arg }}) > 0.0 ? 1.0 : ((__r{{ arg }}) < 0.0 ? -1.0 : 0.0))
+{%- elif operator == "Sqrt" -%}sqrt(__r{{ arg }})
+{%- elif operator == "Floor" -%}floor(__r{{ arg }})
+{%- elif operator == "Ceil" -%}ceil(__r{{ arg }})
+{%- elif operator == "Trunc" -%}trunc(__r{{ arg }})
+{%- elif operator in ["Sin", "Cos", "Tan", "Asin", "Acos", "Atan", "Sinh", "Cosh", "Tanh", "Exp"] -%}{{ operator | lower }}(__r{{ arg }})
+{%- elif operator == "Log" -%}log(__r{{ arg }})
+{%- elif operator == "Log10" -%}log10(__r{{ arg }})
+{%- else -%}{{ fail("unsupported-feature:scalar.unary." ~ operator) }}
+{%- endif -%}
+{%- endmacro %}
+
+{%- macro binary(operator, lhs, rhs) -%}
+{%- if operator == "Add" -%}((__r{{ lhs }}) + (__r{{ rhs }}))
+{%- elif operator == "Sub" -%}((__r{{ lhs }}) - (__r{{ rhs }}))
+{%- elif operator == "Mul" -%}((__r{{ lhs }}) * (__r{{ rhs }}))
+{%- elif operator == "Div" -%}((__r{{ lhs }}) / (__r{{ rhs }}))
+{%- elif operator == "Pow" -%}pow(__r{{ lhs }}, __r{{ rhs }})
+{%- elif operator == "And" -%}(((__r{{ lhs }}) != 0.0 && (__r{{ rhs }}) != 0.0) ? 1.0 : 0.0)
+{%- elif operator == "Or" -%}(((__r{{ lhs }}) != 0.0 || (__r{{ rhs }}) != 0.0) ? 1.0 : 0.0)
+{%- elif operator == "Atan2" -%}atan2(__r{{ lhs }}, __r{{ rhs }})
+{%- elif operator == "Min" -%}fmin(__r{{ lhs }}, __r{{ rhs }})
+{%- elif operator == "Max" -%}fmax(__r{{ lhs }}, __r{{ rhs }})
+{%- else -%}{{ fail("unsupported-feature:scalar.binary." ~ operator) }}
+{%- endif -%}
+{%- endmacro %}
+
+{%- macro compare(operator, lhs, rhs) -%}
+{%- if operator == "Lt" -%}((__r{{ lhs }}) < (__r{{ rhs }}) ? 1.0 : 0.0)
+{%- elif operator == "Le" -%}((__r{{ lhs }}) <= (__r{{ rhs }}) ? 1.0 : 0.0)
+{%- elif operator == "Gt" -%}((__r{{ lhs }}) > (__r{{ rhs }}) ? 1.0 : 0.0)
+{%- elif operator == "Ge" -%}((__r{{ lhs }}) >= (__r{{ rhs }}) ? 1.0 : 0.0)
+{%- elif operator == "Eq" -%}((__r{{ lhs }}) == (__r{{ rhs }}) ? 1.0 : 0.0)
+{%- elif operator == "Ne" -%}((__r{{ lhs }}) != (__r{{ rhs }}) ? 1.0 : 0.0)
+{%- else -%}{{ fail("unsupported-feature:scalar.compare." ~ operator) }}
+{%- endif -%}
+{%- endmacro %}
+
+{%- macro scalar_op(op) %}
+{%- if op.kind == "Const" %}
+    const double __r{{ op.dst }} = {{ scalar_const(op) }};
+{%- elif op.kind == "LoadTime" %}
+    const double __r{{ op.dst }} = time;
+{%- elif op.kind == "LoadY" %}
+    const double __r{{ op.dst }} = y[{{ op.index }}];
+{%- elif op.kind == "LoadP" %}
+    const double __r{{ op.dst }} = p[{{ op.index }}];
+{%- elif op.kind == "LoadIndexedP" %}
+    const double __r{{ op.dst }} = p[{{ op.base }} + (size_t)fmin(fmax(round(__r{{ op.index_ref }}), 0.0), {{ op.count - 1 if op.count > 0 else 0 }}.0)];
+{%- elif op.kind == "Move" %}
+    const double __r{{ op.dst }} = __r{{ op.src }};
+{%- elif op.kind == "LinearSolveComponent" %}
+    double __r{{ op.dst }};
+    if (__rumoca_solve_linear_component(
+            (double[]){ {% for index in range(op.matrix_start, op.matrix_start + op.n * op.n) %}__r{{ index }}{{ ", " if not loop.last else "" }}{% endfor %} },
+            (double[]){ {% for index in range(op.rhs_start, op.rhs_start + op.n) %}__r{{ index }}{{ ", " if not loop.last else "" }}{% endfor %} },
+            {{ op.n }}, {{ op.component }}, &__r{{ op.dst }}) != 0) {
+        return 1;
+    }
+{%- elif op.kind == "Unary" %}
+    const double __r{{ op.dst }} = {{ unary(op.operator, op.arg) }};
+{%- elif op.kind == "Binary" %}
+    const double __r{{ op.dst }} = {{ binary(op.operator, op.lhs, op.rhs) }};
+{%- elif op.kind == "Compare" %}
+    const double __r{{ op.dst }} = {{ compare(op.operator, op.lhs, op.rhs) }};
+{%- elif op.kind == "Select" %}
+    const double __r{{ op.dst }} = (__r{{ op.cond }} != 0.0 ? __r{{ op.if_true }} : __r{{ op.if_false }});
+{%- elif op.kind == "StoreOutput" %}
+    __out[{{ op.output_index }}] = __r{{ op.src }};
+{%- else %}
+{{ fail("unsupported-feature:scalar.op." ~ op.kind) }}
+{%- endif %}
+{%- endmacro %}
+
 #include "{{ model_name }}_solve.h"
 
 #include <math.h>
 
-{%- if solve_blocks.continuous.derivative_rhs.scalar_programs_use_linear_solve_component %}
-static double __rumoca_solve_linear_component(
+{%- set plan = solve_blocks.continuous.derivative_rhs.scalar_plan %}
+{%- if plan.uses_linear_solve_component %}
+static int __rumoca_solve_linear_component(
     const double *matrix,
     const double *rhs,
     int n,
-    int component)
+    int component,
+    double *value)
 {
     if (n < 1 || component < 0 || component >= n) {
-        return 0.0;
+        return 1;
     }
 
     double a[(size_t)n * (size_t)n];
     double b[(size_t)n];
-
     for (int i = 0; i < n * n; ++i) {
         a[i] = matrix[i];
     }
@@ -34,7 +121,7 @@ static double __rumoca_solve_linear_component(
             }
         }
         if (best_abs == 0.0) {
-            return 0.0;
+            return 1;
         }
         if (best != pivot) {
             for (int col = pivot; col < n; ++col) {
@@ -58,21 +145,23 @@ static double __rumoca_solve_linear_component(
     }
 
     double x[(size_t)n];
-    for (int i = 0; i < n; ++i) {
-        x[i] = 0.0;
-    }
     for (int row = n - 1; row >= 0; --row) {
         double sum = b[row];
         for (int col = row + 1; col < n; ++col) {
             sum -= a[row * n + col] * x[col];
         }
-        x[row] = sum / a[row * n + row];
+        double diag = a[row * n + row];
+        if (diag == 0.0) {
+            return 1;
+        }
+        x[row] = sum / diag;
     }
-    return x[component];
+    *value = x[component];
+    return 0;
 }
 {%- endif %}
 
-void {{ model_name | sanitize }}_derivative_rhs(
+int {{ model_name | sanitize }}_derivative_rhs(
     double time,
     const double *y,
     const double *p,
@@ -81,15 +170,21 @@ void {{ model_name | sanitize }}_derivative_rhs(
     (void)time;
     (void)y;
     (void)p;
-{%- set cfg = {"time": "time", "y": "y[{}]", "p": "p[{}]"} %}
-{%- set output_indices = solve_blocks.continuous.derivative_rhs.scalar_programs.output_indices %}
+{%- if plan.output_count > 0 %}
+    double __out[RUMOCA_{{ model_name | upper | replace("-", "_") }}_DERIVATIVE_LEN];
     for (int i = 0; i < RUMOCA_{{ model_name | upper | replace("-", "_") }}_DERIVATIVE_LEN; ++i) {
-        out[i] = 0.0;
+        __out[i] = 0.0;
     }
-{%- set solve_body = render_solve_block_c(solve_blocks.continuous.derivative_rhs.scalar_programs.programs, cfg, "out[{}] = {}", output_indices) %}
-{%- if solve_body %}
-{{ solve_body }}
+{%- for program in plan.programs %}
+{%- for op in program.ops %}
+{{ scalar_op(op) }}
+{%- endfor %}
+{%- endfor %}
+    for (int i = 0; i < RUMOCA_{{ model_name | upper | replace("-", "_") }}_DERIVATIVE_LEN; ++i) {
+        out[i] = __out[i];
+    }
 {%- else %}
     (void)out;
 {%- endif %}
+    return 0;
 }

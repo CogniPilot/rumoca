@@ -16,20 +16,17 @@ mod render_expr;
 mod render_solve;
 mod render_solve_ops;
 mod render_stmt;
+mod scalar_program_plan;
 mod solve_lazy;
 mod symbol_alloc;
 
 pub(crate) use expr_config::{ExprConfig, IfStyle, get_str_attr};
 use render_expr::{get_field, is_variant, render_expression};
 use render_solve::{
-    render_linsolve_mlir_function, render_matmul_c_function, render_matmul_mlir_function,
-    render_optional_solve_slot_assign_c_function, render_solve_block_c_function,
-    render_solve_block_py_function, render_solve_block_rust_function,
-    render_solve_pre_param_binding_c_function, render_solve_row_c_function,
-    render_solve_row_output_wgsl_function, render_solve_row_rust_function,
-    render_solve_row_wgsl_function, render_solve_slot_assign_c_function,
+    render_linsolve_mlir_function, render_matmul_mlir_function,
+    render_solve_row_output_wgsl_function, render_solve_row_wgsl_function,
     render_wgsl_kernel_schedule_json_function, render_wgsl_kernel_workgroup_total_function,
-    render_wgsl_native_family_inventory_json_function, solve_block_output_count_function,
+    render_wgsl_native_family_inventory_json_function,
 };
 use render_stmt::{render_equation, render_flat_equation, render_statement, render_statements};
 use symbol_alloc::{
@@ -186,26 +183,16 @@ fn solve_template_blocks_value(
 
 #[derive(Debug)]
 struct LazyScalarProgramsValue {
-    block: std::sync::Arc<solve::ComputeBlock>,
-    scalar: std::sync::OnceLock<Option<std::sync::Arc<solve::ScalarProgramBlock>>>,
+    scalar: std::sync::Arc<solve::ScalarProgramBlock>,
 }
 
 impl LazyScalarProgramsValue {
-    fn new(block: solve::ComputeBlock) -> Self {
-        Self {
-            block: std::sync::Arc::new(block),
-            scalar: std::sync::OnceLock::new(),
-        }
+    fn new(scalar: std::sync::Arc<solve::ScalarProgramBlock>) -> Self {
+        Self { scalar }
     }
 
-    fn scalar(&self) -> Option<&std::sync::Arc<solve::ScalarProgramBlock>> {
-        self.scalar
-            .get_or_init(|| {
-                rumoca_eval_solve::to_scalar_program_block(&self.block)
-                    .ok()
-                    .map(std::sync::Arc::new)
-            })
-            .as_ref()
+    fn scalar(&self) -> &std::sync::Arc<solve::ScalarProgramBlock> {
+        &self.scalar
     }
 }
 
@@ -215,11 +202,11 @@ impl minijinja::value::Object for LazyScalarProgramsValue {
     }
 
     fn get_value(self: &std::sync::Arc<Self>, key: &Value) -> Option<Value> {
-        let scalar = self.scalar()?;
+        let scalar = self.scalar();
         match key.as_str()? {
-            "programs" => Some(Value::from_object(render_solve::SolveRowsValue::from_arc(
-                std::sync::Arc::new(scalar.programs().to_vec()),
-            ))),
+            "programs" => Some(Value::from_object(solve_lazy::SolveProgramsObject {
+                block: scalar.clone(),
+            })),
             "program_spans" => Some(Value::from_serialize(scalar.program_spans())),
             "output_indices" => Some(Value::from_serialize(scalar.output_indices())),
             _ => None,
@@ -330,7 +317,10 @@ fn solve_template_compute_block_json(block: &solve::ComputeBlock) -> Result<Valu
     // nodes contain large op programs don't materialize as eager Values.
     let nodes = solve_lazy::nodes_value(std::sync::Arc::new(block.clone()))?;
     let output_count = block.len()?;
-    let scalar_programs = Value::from_object(LazyScalarProgramsValue::new(block.clone()));
+    let scalar = std::sync::Arc::new(rumoca_eval_solve::to_scalar_program_block(block)?);
+    let scalar_plan =
+        Value::from_object(scalar_program_plan::ScalarProgramPlan::new(scalar.clone())?);
+    let scalar_programs = Value::from_object(LazyScalarProgramsValue::new(scalar));
     let fallback_programs = Value::from_object(render_solve::SolveRowsValue::new(
         partition.fallback_programs,
     ));
@@ -345,6 +335,7 @@ fn solve_template_compute_block_json(block: &solve::ComputeBlock) -> Result<Valu
     ));
     Ok(minijinja::context! {
         nodes => nodes,
+        scalar_plan => scalar_plan,
         scalar_programs => scalar_programs,
         fallback_programs => fallback_programs,
         native_families => native_families,
@@ -582,13 +573,6 @@ fn create_environment() -> Environment<'static> {
     // Custom functions for expression rendering
     env.add_function("render_expr", render_expr_function);
     env.add_function("render_event_indicator", render_event_indicator_function);
-    env.add_function("render_solve_row_c", render_solve_row_c_function);
-    render_solve::register_target_assignment_functions(&mut env);
-    env.add_function("render_solve_row_rust", render_solve_row_rust_function);
-    env.add_function("render_solve_block_c", render_solve_block_c_function);
-    env.add_function("render_solve_block_rust", render_solve_block_rust_function);
-    env.add_function("render_solve_block_py", render_solve_block_py_function);
-    env.add_function("store_output_count", solve_block_output_count_function);
     env.add_function("render_solve_row_wgsl", render_solve_row_wgsl_function);
     env.add_function(
         "render_solve_row_output_wgsl",
@@ -622,19 +606,6 @@ fn create_environment() -> Environment<'static> {
         "wgsl_native_family_inventory_json",
         render_wgsl_native_family_inventory_json_function,
     );
-    env.add_function(
-        "render_solve_slot_assign_c",
-        render_solve_slot_assign_c_function,
-    );
-    env.add_function(
-        "render_optional_solve_slot_assign_c",
-        render_optional_solve_slot_assign_c_function,
-    );
-    env.add_function(
-        "render_solve_pre_param_binding_c",
-        render_solve_pre_param_binding_c_function,
-    );
-    env.add_function("render_matmul_c", render_matmul_c_function);
     env.add_function("render_matmul_mlir", render_matmul_mlir_function);
     env.add_function("render_linsolve_mlir", render_linsolve_mlir_function);
     env.add_function("render_equation", render_equation_function);
@@ -1083,11 +1054,11 @@ use solve_renderer::solve_render_context_value;
 #[cfg(test)]
 mod checked_dae_tests;
 #[cfg(test)]
-mod codegen_block_render_tests;
-#[cfg(test)]
 mod codegen_test_support;
 #[cfg(test)]
 mod galec_manifest_template_tests;
+#[cfg(test)]
+mod scalar_plan_template_tests;
 #[cfg(test)]
 mod solve_sparse_output_tests;
 #[cfg(test)]

@@ -4649,6 +4649,7 @@ dependencies = [
  "rumoca-ir-flat",
  "rumoca-ir-solve",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
 ]
 

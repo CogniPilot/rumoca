@@ -1,3 +1,83 @@
+{%- macro scalar_const(op) -%}
+{%- if op.value_class == "finite" -%}{{ op.value }}
+{%- elif op.value_class == "positive_infinity" -%}f64::INFINITY
+{%- elif op.value_class == "negative_infinity" -%}f64::NEG_INFINITY
+{%- else -%}f64::NAN
+{%- endif -%}
+{%- endmacro %}
+
+{%- macro unary(operator, arg) -%}
+{%- if operator == "Neg" -%}(-__r{{ arg }})
+{%- elif operator == "Not" -%}if __r{{ arg }} == 0.0 { 1.0 } else { 0.0 }
+{%- elif operator == "Abs" -%}__r{{ arg }}.abs()
+{%- elif operator == "Sign" -%}if __r{{ arg }} > 0.0 { 1.0 } else if __r{{ arg }} < 0.0 { -1.0 } else { 0.0 }
+{%- elif operator == "Sqrt" -%}__r{{ arg }}.sqrt()
+{%- elif operator == "Floor" -%}__r{{ arg }}.floor()
+{%- elif operator == "Ceil" -%}__r{{ arg }}.ceil()
+{%- elif operator == "Trunc" -%}__r{{ arg }}.trunc()
+{%- elif operator in ["Sin", "Cos", "Tan", "Asin", "Acos", "Atan", "Sinh", "Cosh", "Tanh", "Exp"] -%}__r{{ arg }}.{{ operator | lower }}()
+{%- elif operator == "Log" -%}__r{{ arg }}.ln()
+{%- elif operator == "Log10" -%}__r{{ arg }}.log10()
+{%- else -%}{{ fail("unsupported-feature:scalar.unary." ~ operator) }}
+{%- endif -%}
+{%- endmacro %}
+
+{%- macro binary(operator, lhs, rhs) -%}
+{%- if operator == "Add" -%}(__r{{ lhs }} + __r{{ rhs }})
+{%- elif operator == "Sub" -%}(__r{{ lhs }} - __r{{ rhs }})
+{%- elif operator == "Mul" -%}(__r{{ lhs }} * __r{{ rhs }})
+{%- elif operator == "Div" -%}(__r{{ lhs }} / __r{{ rhs }})
+{%- elif operator == "Pow" -%}__r{{ lhs }}.powf(__r{{ rhs }})
+{%- elif operator == "And" -%}if __r{{ lhs }} != 0.0 && __r{{ rhs }} != 0.0 { 1.0 } else { 0.0 }
+{%- elif operator == "Or" -%}if __r{{ lhs }} != 0.0 || __r{{ rhs }} != 0.0 { 1.0 } else { 0.0 }
+{%- elif operator == "Atan2" -%}__r{{ lhs }}.atan2(__r{{ rhs }})
+{%- elif operator == "Min" -%}__r{{ lhs }}.min(__r{{ rhs }})
+{%- elif operator == "Max" -%}__r{{ lhs }}.max(__r{{ rhs }})
+{%- else -%}{{ fail("unsupported-feature:scalar.binary." ~ operator) }}
+{%- endif -%}
+{%- endmacro %}
+
+{%- macro compare(operator, lhs, rhs) -%}
+{%- if operator == "Lt" -%}if __r{{ lhs }} < __r{{ rhs }} { 1.0 } else { 0.0 }
+{%- elif operator == "Le" -%}if __r{{ lhs }} <= __r{{ rhs }} { 1.0 } else { 0.0 }
+{%- elif operator == "Gt" -%}if __r{{ lhs }} > __r{{ rhs }} { 1.0 } else { 0.0 }
+{%- elif operator == "Ge" -%}if __r{{ lhs }} >= __r{{ rhs }} { 1.0 } else { 0.0 }
+{%- elif operator == "Eq" -%}if __r{{ lhs }} == __r{{ rhs }} { 1.0 } else { 0.0 }
+{%- elif operator == "Ne" -%}if __r{{ lhs }} != __r{{ rhs }} { 1.0 } else { 0.0 }
+{%- else -%}{{ fail("unsupported-feature:scalar.compare." ~ operator) }}
+{%- endif -%}
+{%- endmacro %}
+
+{%- macro scalar_op(op) %}
+{%- if op.kind == "Const" %}
+    let __r{{ op.dst }}: f64 = {{ scalar_const(op) }};
+{%- elif op.kind == "LoadTime" %}
+    let __r{{ op.dst }}: f64 = time;
+{%- elif op.kind == "LoadY" %}
+    let __r{{ op.dst }}: f64 = y[{{ op.index }}];
+{%- elif op.kind == "LoadP" %}
+    let __r{{ op.dst }}: f64 = p[{{ op.index }}];
+{%- elif op.kind == "LoadIndexedP" %}
+    let __r{{ op.dst }}: f64 = p[{{ op.base }} + __r{{ op.index_ref }}.round().clamp(0.0, {{ op.count - 1 if op.count > 0 else 0 }} as f64) as usize];
+{%- elif op.kind == "Move" %}
+    let __r{{ op.dst }}: f64 = __r{{ op.src }};
+{%- elif op.kind == "LinearSolveComponent" %}
+{{ fail("unsupported-feature:tensor.linsolve: rust-fixed-solve does not support scalar-fallback LinSolve") }}
+{%- elif op.kind == "Unary" %}
+    let __r{{ op.dst }}: f64 = {{ unary(op.operator, op.arg) }};
+{%- elif op.kind == "Binary" %}
+    let __r{{ op.dst }}: f64 = {{ binary(op.operator, op.lhs, op.rhs) }};
+{%- elif op.kind == "Compare" %}
+    let __r{{ op.dst }}: f64 = {{ compare(op.operator, op.lhs, op.rhs) }};
+{%- elif op.kind == "Select" %}
+    let __r{{ op.dst }}: f64 = if __r{{ op.cond }} != 0.0 { __r{{ op.if_true }} } else { __r{{ op.if_false }} };
+{%- elif op.kind == "StoreOutput" %}
+    out[{{ op.output_index }}] = __r{{ op.src }};
+{%- else %}
+{{ fail("unsupported-feature:scalar.op." ~ op.kind) }}
+{%- endif %}
+{%- endmacro %}
+
 #![allow(dead_code, non_snake_case, unused_parens)]
 
 pub type Scalar = f64;
@@ -10,29 +90,36 @@ pub type State = [Scalar; Y_LEN];
 pub type Parameters = [Scalar; P_LEN];
 pub type Derivative = [Scalar; DERIVATIVE_LEN];
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SolveError;
+
 #[inline]
-pub fn derivative_rhs(time: Scalar, y: &State, p: &Parameters) -> Derivative {
+pub fn derivative_rhs(
+    time: Scalar,
+    y: &State,
+    p: &Parameters,
+) -> Result<Derivative, SolveError> {
     let mut out = [0.0; DERIVATIVE_LEN];
-    derivative_rhs_into(time, y, p, &mut out);
-    out
+    derivative_rhs_into(time, y, p, &mut out)?;
+    Ok(out)
 }
 
 #[inline]
-pub fn derivative_rhs_into(time: Scalar, y: &State, p: &Parameters, out: &mut Derivative) {
+pub fn derivative_rhs_into(
+    time: Scalar,
+    y: &State,
+    p: &Parameters,
+    out: &mut Derivative,
+) -> Result<(), SolveError> {
     let _ = time;
     let _ = y;
     let _ = p;
-{%- set cfg = {"time": "time", "y": "y[{}]", "p": "p[{}]"} %}
-{%- set output_indices = solve_blocks.continuous.derivative_rhs.scalar_programs.output_indices %}
     out.fill(0.0);
-{%- if solve_blocks.continuous.derivative_rhs.scalar_programs_use_linear_solve_component %}
-{{ fail("unsupported-feature:tensor.linsolve: rust-fixed-solve does not support scalar-fallback LinSolve; use rust-solve or add a native fixed-size linsolve target") }}
-{%- else %}
-{%- set solve_body = render_solve_block_rust(solve_blocks.continuous.derivative_rhs.scalar_programs.programs, cfg, "out[{}] = {}", output_indices) %}
-{%- if solve_body %}
-{{ solve_body }}
-{%- else %}
-    let _ = out;
-{%- endif %}
-{%- endif %}
+{%- set plan = solve_blocks.continuous.derivative_rhs.scalar_plan %}
+{%- for program in plan.programs %}
+{%- for op in program.ops %}
+{{ scalar_op(op) }}
+{%- endfor %}
+{%- endfor %}
+    Ok(())
 }

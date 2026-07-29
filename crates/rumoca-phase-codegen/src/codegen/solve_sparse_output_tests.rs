@@ -66,11 +66,11 @@ fn scalar_solve_targets_write_sparse_output_indices() {
         "SparseDemo",
     )
     .expect("c-solve template should render");
-    assert!(c.contains("out[i] = 0.0;"));
-    assert!(c.contains("out[2] ="));
-    assert!(c.contains("out[4] ="));
-    assert!(c.contains("out[6] ="));
-    assert!(!c.contains("out[0] ="), "C ignored output_indices:\n{c}");
+    assert!(c.contains("__out[i] = 0.0;"));
+    assert!(c.contains("__out[2] ="));
+    assert!(c.contains("__out[4] ="));
+    assert!(c.contains("__out[6] ="));
+    assert!(!c.contains("__out[0] ="), "C ignored output_indices:\n{c}");
 
     let rust = render_solve_template_with_name(
         &problem,
@@ -79,12 +79,12 @@ fn scalar_solve_targets_write_sparse_output_indices() {
         "SparseDemo",
     )
     .expect("rust-solve template should render");
-    assert!(rust.contains("out[..DERIVATIVE_LEN].fill(0.0);"));
-    assert!(rust.contains("out[2] ="));
-    assert!(rust.contains("out[4] ="));
-    assert!(rust.contains("out[6] ="));
+    assert!(rust.contains("let mut __out = vec![0.0; DERIVATIVE_LEN];"));
+    assert!(rust.contains("__out[2] ="));
+    assert!(rust.contains("__out[4] ="));
+    assert!(rust.contains("__out[6] ="));
     assert!(
-        !rust.contains("out[0] ="),
+        !rust.contains("__out[0] ="),
         "Rust ignored output_indices:\n{rust}"
     );
 

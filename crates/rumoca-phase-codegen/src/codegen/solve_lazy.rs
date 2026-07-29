@@ -322,12 +322,16 @@ fn linsolve_value(node: Arc<solve::ComputeNode>) -> Value {
 /// `scalar_programs` fallback and counts — matching `solve_template_blocks_value`.
 pub(super) fn compute_block_value(block: Arc<solve::ComputeBlock>) -> Result<Value, CodegenError> {
     let scalar = Arc::new(rumoca_eval_solve::to_scalar_program_block(&block)?);
+    let scalar_plan = Value::from_object(super::scalar_program_plan::ScalarProgramPlan::new(
+        scalar.clone(),
+    )?);
     let output_count = block.len()?;
     let uses_linear_solve = super::scalar_program_block_uses_linear_solve_component(&scalar);
     let nodes = nodes_value(block.clone())?;
     Ok(lazy_map(
         &[
             "nodes",
+            "scalar_plan",
             "scalar_programs",
             "output_count",
             "tensor_node_count",
@@ -335,6 +339,7 @@ pub(super) fn compute_block_value(block: Arc<solve::ComputeBlock>) -> Result<Val
         ],
         move |k| match k {
             "nodes" => Some(nodes.clone()),
+            "scalar_plan" => Some(scalar_plan.clone()),
             "scalar_programs" => Some(scalar_program_block_value(scalar.clone())),
             "output_count" => Some(Value::from(output_count)),
             "tensor_node_count" => Some(Value::from(block.tensor_node_count())),

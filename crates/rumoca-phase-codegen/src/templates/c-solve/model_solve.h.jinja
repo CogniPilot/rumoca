@@ -13,7 +13,8 @@ enum {
     RUMOCA_{{ model_name | upper | replace("-", "_") }}_DERIVATIVE_LEN = {{ solve_blocks.continuous.derivative_rhs.output_count }}
 };
 
-void {{ model_name | sanitize }}_derivative_rhs(
+/* Returns 0 on success. On failure, out is left unchanged. */
+int {{ model_name | sanitize }}_derivative_rhs(
     double time,
     const double *y,
     const double *p,
