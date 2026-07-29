@@ -167,6 +167,7 @@ fn build_checked<'dae>(
         comprehension_plans: &analysis.comprehension_plans,
         record_array_fields: &analysis.record_array_fields,
         constants: &analysis.constants,
+        reinit_state_pre: &analysis.reinit_state_pre,
     };
     let (coordinates, reserved) = reserve_variables(flat, analysis, construction, &value_types)?;
     define_functions(

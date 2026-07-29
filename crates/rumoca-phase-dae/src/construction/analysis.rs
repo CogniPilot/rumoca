@@ -14,6 +14,7 @@ mod record_array_fields;
 mod record_equations;
 mod source_balance;
 mod structured_families;
+mod when_clauses;
 use clocks::analyze_clocks;
 pub(super) use clocks::{ClockPlan, SampledValuePlan};
 use comprehensions::analyze_comprehensions;
@@ -38,6 +39,7 @@ use record_array_fields::{analyze_record_array_fields, expression_for_validation
 use record_equations::analyze_record_equations;
 use source_balance::source_balance;
 use structured_families::validate_structured_families;
+use when_clauses::validate_when_clauses;
 
 pub(super) struct Analysis {
     pub(super) constants: EvalContext,
@@ -46,6 +48,7 @@ pub(super) struct Analysis {
     pub(super) continuous_family_rows: HashSet<usize>,
     pub(super) initialization_family_rows: HashSet<usize>,
     pub(super) sample_lattices: Vec<(Span, ClockLattice)>,
+    pub(super) reinit_state_pre: HashSet<Span>,
     pub(super) clock_plans: HashMap<VarName, ClockPlan>,
     pub(super) clock_equation_rows: HashSet<usize>,
     pub(super) sampled_values: HashMap<VarName, SampledValuePlan>,
@@ -194,9 +197,13 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
         &record_array_fields,
     )?;
     let mut sample_lattices = Vec::new();
-    for clause in &flat.when_clauses {
-        validate_when_clause(clause, &roles, &states, &constants, &mut sample_lattices)?;
-    }
+    let reinit_state_pre = validate_when_clauses(
+        &flat.when_clauses,
+        &roles,
+        &states,
+        &constants,
+        &mut sample_lattices,
+    )?;
     for algorithm in &flat.algorithms {
         validate_model_algorithm(
             algorithm,
@@ -235,6 +242,7 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
         continuous_family_rows,
         initialization_family_rows,
         sample_lattices,
+        reinit_state_pre,
         clock_plans: clocks.plans,
         clock_equation_rows: clocks.equation_rows,
         sampled_values: clocks.sampled_values,
@@ -280,102 +288,6 @@ fn structured_template_expressions(
         .iter()
         .filter_map(|family| family.template.as_ref())
         .flat_map(|template| &template.body)
-}
-
-fn validate_when_clause(
-    clause: &flat::WhenClause,
-    roles: &HashMap<VarName, PlannedRole>,
-    states: &HashSet<VarName>,
-    constants: &EvalContext,
-    sample_lattices: &mut Vec<(Span, ClockLattice)>,
-) -> Result<(), ToDaeError> {
-    require_span(clause.span, "when clause")?;
-    validate_condition_expression(&clause.condition, roles, states, constants, sample_lattices)?;
-    validate_when_equations(&clause.equations, roles, states, constants, sample_lattices)
-}
-
-fn validate_when_equations(
-    equations: &[flat::WhenEquation],
-    roles: &HashMap<VarName, PlannedRole>,
-    states: &HashSet<VarName>,
-    constants: &EvalContext,
-    sample_lattices: &mut Vec<(Span, ClockLattice)>,
-) -> Result<(), ToDaeError> {
-    for equation in equations {
-        require_span(equation.span(), "when equation")?;
-        match equation {
-            flat::WhenEquation::Assign {
-                target,
-                value,
-                span,
-                ..
-            } => {
-                if !matches!(
-                    roles.get(target),
-                    Some(PlannedRole::DiscreteReal | PlannedRole::DiscreteValue)
-                ) {
-                    return Err(ToDaeError::unsupported_flat(
-                        "when assignment",
-                        format!("`{target}` is not a discrete coordinate"),
-                        *span,
-                    ));
-                }
-                validate_expression(value, roles, states)?;
-            }
-            flat::WhenEquation::Reinit {
-                state, value, span, ..
-            } => {
-                if !matches!(roles.get(state), Some(PlannedRole::State)) {
-                    return Err(ToDaeError::unsupported_flat(
-                        "reinit",
-                        format!("`{state}` is not a continuous state"),
-                        *span,
-                    ));
-                }
-                validate_expression(value, roles, states)?;
-            }
-            flat::WhenEquation::Assert {
-                condition, message, ..
-            } => {
-                validate_condition_expression(
-                    condition,
-                    roles,
-                    states,
-                    constants,
-                    sample_lattices,
-                )?;
-                validate_expression(message, roles, states)?;
-            }
-            flat::WhenEquation::Terminate { message, .. } => {
-                validate_expression(message, roles, states)?;
-            }
-            flat::WhenEquation::Conditional {
-                branches,
-                else_branch,
-                ..
-            } => {
-                for (condition, equations) in branches {
-                    validate_condition_expression(
-                        condition,
-                        roles,
-                        states,
-                        constants,
-                        sample_lattices,
-                    )?;
-                    validate_when_equations(equations, roles, states, constants, sample_lattices)?;
-                }
-                validate_when_equations(else_branch, roles, states, constants, sample_lattices)?;
-            }
-            flat::WhenEquation::FunctionCallOutputs { span, .. } => {
-                return Err(ToDaeError::unsupported_flat(
-                    "when function-call outputs",
-                    "multi-output event calls require a checked function-action owner",
-                    *span,
-                ));
-            }
-        }
-    }
-    Ok(())
 }
 
 fn validate_condition_expression(

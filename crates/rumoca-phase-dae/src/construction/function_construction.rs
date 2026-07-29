@@ -13,6 +13,7 @@ pub(super) struct FunctionRegistry<'shape, 'dae> {
     pub(super) comprehension_plans: &'shape HashMap<ComprehensionKey, ComprehensionPlan>,
     pub(super) record_array_fields: &'shape HashMap<Span, RecordArrayFieldPlan>,
     pub(super) constants: &'shape EvalContext,
+    pub(super) reinit_state_pre: &'shape HashSet<Span>,
 }
 
 impl<'dae> FunctionRegistry<'_, 'dae> {
