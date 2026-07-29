@@ -35,7 +35,7 @@ Modelica source (.mo)
   └──────────┘                           CUDA C/NVRTC, MLIR/LLVM, kernels
 ```
 
-**Codegen targets the lowest IR it needs — no lower.**
+**Codegen targets the lowest proven-valid IR it needs — no lower.**
 
 | Backend | IR level | Why |
 |---|---|---|
@@ -46,6 +46,26 @@ Modelica source (.mo)
 
 `rumoca-phase-codegen` renders text; execution adapters wrap toolchains and
 runtimes without owning compiler semantics.
+
+Every IR that crosses the code-generation boundary MUST already satisfy its
+stage invariants by construction. A target manifest selects the exact canonical
+or checked export IR it consumes; the compiler supplies a typed, read-only
+semantic view of that artifact to MiniJinja. Rendering MUST NOT resolve names,
+infer types or shapes, lower to another IR, mutate its input, or repair an
+invalid artifact.
+
+The code-generation architecture is therefore:
+
+```text
+proven-valid IR -> typed semantic template view -> target.toml + MiniJinja -> artifacts
+```
+
+This boundary applies uniformly to syntax, Resolve, Flat, DAE, Solve, and
+checked export IRs. Adding a target for an already-supported IR requires only a
+target directory. Supporting a new IR requires one target-neutral semantic view
+and capability vocabulary, never a target-language renderer in Rust. Export IRs
+remain projections and do not become canonical pipeline stages merely because a
+target manifest can select them.
 
 ---
 

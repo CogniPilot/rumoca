@@ -252,7 +252,7 @@ compiler/session → DAE structural → solve-IR lowering → runtime contracts 
 | DAE → solve-IR lowering | `rumoca-phase-solve` | Lowering only, not structural mutation |
 | Optimization/training orchestration | `rumoca-opt` | Consumes Solve/eval APIs; no Modelica semantics |
 | Textual generated artifacts and templates | `rumoca-phase-codegen` | Jinja/minijinja rendering owns generated C, Rust, CUDA C, MLIR, FMI/eFMI and FMU/eFMU packaging text |
-| GALEC `.alg` text (recorded exception) | `rumoca-ir-galec` | Typed AST printing per eFMI conformance; routed via template context (SPEC_0034 GAL-009) |
+| GALEC `.alg` text | `rumoca-phase-codegen` | MiniJinja renders a checked GALEC semantic view; the language IR owns no text emitter (SPEC_0034 GAL-009) |
 | eFMI packaging XML (`__content.xml`, manifests) | `rumoca-phase-codegen` | Rendered like FMI `modelDescription`; validators + generic checksum/container build step, not typed serializers (SPEC_0034 D3 amended) |
 | Compiled/JIT execution adapter crates | `rumoca-exec-*` | Invoke tools, load artifacts, wrap Cranelift/LLVM/CUDA/NVRTC APIs, expose ergonomic runtime calls; no compiler semantics |
 | Backend-neutral solver interface types | `rumoca-solver` | Single contract shared across backends |
@@ -270,6 +270,14 @@ encoders, JITs, toolchains, or device APIs. Textual target policy lives in
 IR capability probes. Unsupported capabilities report
 `unsupported-feature:<feature_id>`. JIT/device adapters consume Solve IR or
 generated artifacts through stable execution ABIs and equivalence tests.
+
+Each target manifest selects one proven-valid canonical or checked export IR.
+`rumoca-phase-codegen` exposes a typed, read-only semantic view for each
+supported IR and dispatches that view generically. Rendering never performs a
+compiler transformation or repairs an artifact. Adding another target over an
+existing view MUST require no Rust change; adding support for another IR adds
+only its target-neutral semantic view and capability vocabulary. An export IR
+selectable by a target remains outside the canonical compiler pipeline.
 
 `rumoca-phase-codegen` Rust may derive target-neutral typed contexts, schedules,
 shapes, dependency/bounds proofs, symbols, and provenance. It MUST NOT spell or
