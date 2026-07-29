@@ -160,13 +160,14 @@ pub(super) fn mark_member_function_calls_in_equation(
                 )
             }),
         },
-        rumoca_ir_ast::Equation::FunctionCall { comp, args } => {
+        rumoca_ir_ast::Equation::FunctionCall { comp, args, span } => {
             rumoca_ir_ast::Equation::FunctionCall {
                 comp: marker.mark_component_function_call(comp),
                 args: args
                     .into_iter()
                     .map(|arg| marker.transform_expression(arg))
                     .collect(),
+                span,
             }
         }
         rumoca_ir_ast::Equation::Assert {

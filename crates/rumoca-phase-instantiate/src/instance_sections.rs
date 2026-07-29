@@ -122,17 +122,20 @@ fn equation_owner_span(
     location: Option<&rumoca_core::Location>,
     source_map: &rumoca_core::SourceMap,
 ) -> InstantiateResult<rumoca_core::Span> {
-    let ast::Equation::Simple { lhs, rhs } = equation else {
-        return required_location_to_span(location, source_map, "equation");
-    };
-    let lhs = lhs.span();
-    let rhs = rhs.span();
-    if lhs.source != rhs.source || lhs.start > rhs.end {
-        return Err(Box::new(InstantiateError::missing_source_context(
-            "simple equation operands do not form one ordered source span",
-        )));
+    match equation {
+        ast::Equation::FunctionCall { span, .. } => Ok(*span),
+        ast::Equation::Simple { lhs, rhs } => {
+            let lhs = lhs.span();
+            let rhs = rhs.span();
+            if lhs.source != rhs.source || lhs.start > rhs.end {
+                return Err(Box::new(InstantiateError::missing_source_context(
+                    "simple equation operands do not form one ordered source span",
+                )));
+            }
+            Ok(rumoca_core::Span::new(lhs.source, lhs.start, rhs.end))
+        }
+        _ => required_location_to_span(location, source_map, "equation"),
     }
-    Ok(rumoca_core::Span::new(lhs.source, lhs.start, rhs.end))
 }
 
 /// Select an if-equation branch at instantiation time.

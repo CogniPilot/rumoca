@@ -116,7 +116,7 @@ fn flatten_when_body_equation(
                 .map(|opt| opt.into_iter().collect())
         }
 
-        ast::Equation::FunctionCall { comp, args } => {
+        ast::Equation::FunctionCall { comp, args, .. } => {
             flatten_when_function_call(ctx, comp, args, prefix, span, &ctx.current_imports, def_map)
                 .map(|opt| opt.into_iter().collect())
         }

@@ -99,7 +99,7 @@ fn scan_equations(
 ) {
     for eq in equations {
         match eq {
-            Equation::FunctionCall { comp, args } => {
+            Equation::FunctionCall { comp, args, .. } => {
                 scan_state_machine_call(comp, args, ctx, machine, diags);
             }
             Equation::For { equations, .. } => {

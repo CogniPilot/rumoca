@@ -795,6 +795,8 @@ model Test
   Real y;
   Real current = pre(y);
   Real empty = marker();
+equation
+  Connections.root(y);
 end Test;";
         let parsed = parse_to_ast(source, "test.mo").expect("Parse should succeed");
         let model = parsed.classes.get("Test").expect("Test should exist");
@@ -808,6 +810,10 @@ end Test;";
             };
             assert_eq!(source_slice(source, *span), expected);
         }
+        let ast::Equation::FunctionCall { span, .. } = &model.equations[0] else {
+            panic!("expected function-call equation");
+        };
+        assert_eq!(source_slice(source, *span), "Connections.root(y)");
     }
 
     #[test]

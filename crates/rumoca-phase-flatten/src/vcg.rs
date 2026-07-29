@@ -76,8 +76,8 @@ fn collect_vcg_from_equation(
     data: &mut VcgPreScanData,
 ) -> Result<(), FlattenError> {
     match eq {
-        ast::Equation::FunctionCall { comp, args } => {
-            collect_vcg_from_function_call(comp, args, prefix, data)?;
+        ast::Equation::FunctionCall { comp, args, span } => {
+            collect_vcg_from_function_call(comp, args, *span, prefix, data)?;
         }
         ast::Equation::For { indices, equations } => {
             collect_vcg_from_for(indices, equations, prefix, ctx, data)?;
@@ -163,6 +163,7 @@ fn scan_all_if_branches(
 fn collect_vcg_from_function_call(
     comp: &ast::ComponentReference,
     args: &[ast::Expression],
+    call_span: rumoca_core::Span,
     prefix: &ast::QualifiedName,
     data: &mut VcgPreScanData,
 ) -> Result<(), FlattenError> {
@@ -179,8 +180,8 @@ fn collect_vcg_from_function_call(
                 data.definite_roots.insert(build_qualified_name(prefix, cr));
             }
         }
-        "branch" => extract_branch(args, prefix, comp.span, data),
-        "potentialRoot" => extract_potential_root(args, prefix, comp.span, data)?,
+        "branch" => extract_branch(args, prefix, call_span, data),
+        "potentialRoot" => extract_potential_root(args, prefix, call_span, data)?,
         _ => {}
     }
     Ok(())
@@ -1219,6 +1220,7 @@ mod tests {
                     &["frame", "R"],
                     test_span(40, 47),
                 ))],
+                span: test_span(30, 48),
             }],
         }
     }

@@ -67,7 +67,7 @@ pub(crate) fn walk_equation<C: ResolveTraversalCallbacks>(
                 walk_equations(callbacks, &mut block.eqs, scope);
             }
         }
-        Equation::FunctionCall { comp, args } => {
+        Equation::FunctionCall { comp, args, .. } => {
             callbacks.on_function_reference(comp, scope);
             walk_expressions(callbacks, args, scope);
         }
