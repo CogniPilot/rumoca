@@ -363,25 +363,41 @@ fn collect_target_asset_paths(
         if file_type.is_dir() {
             collect_target_asset_paths(root, &entry.path(), out)?;
         } else if file_type.is_file() {
-            let relative_path = entry
-                .path()
-                .strip_prefix(root)
-                .expect("walked target asset is beneath root")
-                .components()
-                .map(|component| {
-                    component.as_os_str().to_str().with_context(|| {
-                        format!(
-                            "Target asset path must be UTF-8: '{}'",
-                            entry.path().display()
-                        )
-                    })
-                })
-                .collect::<Result<Vec<_>>>()?
-                .join("/");
+            let relative_path = target_asset_relative_path(root, &entry.path())?;
             out.push((relative_path, entry.path()));
         }
     }
     Ok(())
+}
+
+fn target_asset_relative_path(root: &Path, path: &Path) -> Result<String> {
+    let relative = path.strip_prefix(root).with_context(|| {
+        format!(
+            "Target asset '{}' is not beneath source root '{}'",
+            path.display(),
+            root.display()
+        )
+    })?;
+    let mut parts = Vec::new();
+    for component in relative.components() {
+        let Component::Normal(part) = component else {
+            bail!(
+                "Target asset path must contain only normal components: '{}'",
+                path.display()
+            );
+        };
+        let part = part
+            .to_str()
+            .with_context(|| format!("Target asset path must be UTF-8: '{}'", path.display()))?;
+        parts.push(part);
+    }
+    if parts.is_empty() {
+        bail!(
+            "Target asset path must identify a file beneath source root: '{}'",
+            path.display()
+        );
+    }
+    Ok(parts.join("/"))
 }
 
 impl TargetTemplateSource for TargetBundle {
@@ -1057,8 +1073,9 @@ mod tests {
     use super::{
         TargetFeatureSupport, TargetManifest, TargetTemplateIr, TensorCapability,
         TensorLayoutCapability, builtin_target_compatibility_matrix,
-        ensure_target_has_rendered_files, parse_target_manifest, safe_target_join, templates,
-        validate_dae_target_capabilities, validate_target_manifest,
+        ensure_target_has_rendered_files, parse_target_manifest, safe_target_join,
+        target_asset_relative_path, templates, validate_dae_target_capabilities,
+        validate_target_manifest,
     };
     use rumoca_core::{SourceMap, StructuredIndexBinder, StructuredIndexDomain};
     use rumoca_ir_dae::{Dae, DaeLiteral, DaeProvenance};
@@ -1869,6 +1886,31 @@ source = "schemas"
 dest = ""
 "#,
             "dest",
+        );
+    }
+
+    #[test]
+    fn target_asset_relative_path_is_portable_and_nested() {
+        let root = Path::new("target/assets");
+        let path = root.join("schémas").join("nested").join("model.xsd");
+
+        assert_eq!(
+            target_asset_relative_path(root, &path).expect("nested UTF-8 asset path"),
+            "schémas/nested/model.xsd"
+        );
+    }
+
+    #[test]
+    fn target_asset_relative_path_rejects_paths_outside_root() {
+        let error = target_asset_relative_path(
+            Path::new("target/assets"),
+            Path::new("target/templates/model.jinja"),
+        )
+        .expect_err("asset outside its declared root must fail");
+
+        assert!(
+            error.to_string().contains("is not beneath source root"),
+            "unexpected error: {error:#}"
         );
     }
 }
