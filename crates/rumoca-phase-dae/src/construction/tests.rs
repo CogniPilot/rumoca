@@ -114,12 +114,14 @@ fn source_priority_when_model(source: &TestSource) -> flat::Model {
         second_assignment_span,
         "second branch",
     ));
-    let mut chain = flat::WhenChain::new(source.span(
-        "when true then m = true; elsewhen true then m = false; end when",
-        0,
-    ));
-    chain.add_branch(first);
-    chain.add_branch(second);
+    let mut chain = flat::WhenChain::new(
+        first,
+        source.span(
+            "when true then m = true; elsewhen true then m = false; end when",
+            0,
+        ),
+    );
+    chain.push_else_when(second);
     model.when_chains.push(chain);
     model
 }
@@ -220,10 +222,10 @@ fn when_assert_level_reaches_checked_event_action_with_exact_provenance() {
         assertion_span,
         "assert in when-clause",
     ));
-    let mut chain = flat::WhenChain::new(
+    let chain = flat::WhenChain::new(
+        branch,
         source.span("when true then assert(false, \"failed\", 2); end when", 0),
     );
-    chain.add_branch(branch);
     let mut model = flat::Model::new();
     model.when_chains.push(chain);
     let dae = construct(&model, source.map, ToDaeOptions::default()).unwrap();

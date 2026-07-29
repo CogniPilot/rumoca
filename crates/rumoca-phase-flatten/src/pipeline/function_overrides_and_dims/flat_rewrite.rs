@@ -61,7 +61,7 @@ pub(crate) fn rewrite_function_overrides_in_when_chain_with_ctx(
     chain: &mut rumoca_ir_flat::WhenChain,
     ctx: &FunctionOverrideRewriteContext<'_>,
 ) {
-    for branch in &mut chain.branches {
+    for branch in chain.branches_mut() {
         rewrite_function_overrides_in_when_branch_with_ctx(branch, ctx);
     }
 }

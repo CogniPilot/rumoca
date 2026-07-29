@@ -50,12 +50,19 @@ pub(crate) fn flatten_when_blocks(
     span: rumoca_core::Span,
     def_map: Option<&crate::ResolveDefMap>,
 ) -> Result<flat::WhenChain, FlattenError> {
-    let mut chain = flat::WhenChain::new(span);
-    for block in blocks {
-        chain.add_branch(flatten_when_block(ctx, block, prefix, span, def_map)?);
+    let Some((first, else_when)) = blocks.split_first() else {
+        return Err(FlattenError::unsupported_equation(
+            "when-equation requires a first branch",
+            span,
+        ));
+    };
+    let first = flatten_when_block(ctx, first, prefix, span, def_map)?;
+    let mut chain = flat::WhenChain::new(first, span);
+    for block in else_when {
+        chain.push_else_when(flatten_when_block(ctx, block, prefix, span, def_map)?);
     }
 
-    validate_when_branch_targets(ctx, blocks, &chain.branches, prefix, span)?;
+    validate_when_branch_targets(ctx, blocks, &chain, prefix, span)?;
     Ok(chain)
 }
 
@@ -327,11 +334,11 @@ fn collect_when_eq_targets(
 fn validate_when_branch_targets(
     ctx: &Context,
     blocks: &[ast::EquationBlock],
-    branches: &[flat::WhenBranch],
+    chain: &flat::WhenChain,
     prefix: &ast::QualifiedName,
     span: rumoca_core::Span,
 ) -> Result<(), FlattenError> {
-    if branches.len() <= 1 {
+    if blocks.len() <= 1 {
         return Ok(());
     }
 
@@ -342,8 +349,8 @@ fn validate_when_branch_targets(
         return Ok(());
     }
 
-    let first_targets = collect_when_eq_targets(&branches[0].equations);
-    for (index, branch) in branches.iter().enumerate().skip(1) {
+    let first_targets = collect_when_eq_targets(&chain.first().equations);
+    for (index, branch) in chain.branches().skip(1).enumerate() {
         let targets = collect_when_eq_targets(&branch.equations);
         if targets != first_targets {
             return Err(FlattenError::unsupported_equation(
@@ -355,7 +362,7 @@ fn validate_when_branch_targets(
                         .map(|v| v.as_str())
                         .collect::<Vec<_>>()
                         .join(", "),
-                    index + 1,
+                    index + 2,
                     targets
                         .iter()
                         .map(|v| v.as_str())
@@ -865,23 +872,45 @@ mod tests {
         )
         .expect("flatten one when/elsewhen owner");
 
-        assert_eq!(chain.span, owner_span);
-        assert_eq!(chain.branches.len(), 2);
-        assert_eq!(chain.branches[0].span, first_span);
-        assert_eq!(chain.branches[1].span, second_span);
+        assert_eq!(chain.span(), owner_span);
+        assert_eq!(chain.branch_count(), 2);
+        let branches = chain.branches().collect::<Vec<_>>();
+        assert_eq!(branches[0].span, first_span);
+        assert_eq!(branches[1].span, second_span);
         assert!(matches!(
-            &chain.branches[0].condition,
+            &branches[0].condition,
             rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::Boolean(true),
                 ..
             }
         ));
         assert!(matches!(
-            &chain.branches[1].condition,
+            &branches[1].condition,
             rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::Boolean(false),
                 ..
             }
+        ));
+    }
+
+    #[test]
+    fn when_producer_rejects_an_empty_branch_list() {
+        let span = test_span();
+        let error = flatten_when_blocks(
+            &crate::Context::default(),
+            &[],
+            &ast::QualifiedName::new(),
+            span,
+            None,
+        )
+        .expect_err("source when owner requires its first branch");
+
+        assert!(matches!(
+            error,
+            FlattenError::UnsupportedEquation {
+                description,
+                span: error_span,
+            } if description == "when-equation requires a first branch" && error_span == span
         ));
     }
 

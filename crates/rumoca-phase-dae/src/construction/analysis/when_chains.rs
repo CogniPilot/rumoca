@@ -10,8 +10,8 @@ pub(super) fn validate_when_chains(
 ) -> Result<HashSet<Span>, ToDaeError> {
     let mut reinit_state_pre = HashSet::new();
     for chain in chains {
-        require_span(chain.span, "when chain")?;
-        for branch in &chain.branches {
+        require_span(chain.span(), "when chain")?;
+        for branch in chain.branches() {
             require_span(branch.span, "when branch")?;
             validate_condition_expression(
                 &branch.condition,

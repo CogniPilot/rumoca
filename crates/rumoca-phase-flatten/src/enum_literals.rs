@@ -40,7 +40,7 @@ pub(crate) fn canonicalize_flat_enum_literals(
     }
 
     for chain in &mut flat.when_chains {
-        for branch in &mut chain.branches {
+        for branch in chain.branches_mut() {
             canonicalize_expr(&mut branch.condition, &enum_literals, &variable_names);
             canonicalize_when_equations(&mut branch.equations, &enum_literals, &variable_names);
         }

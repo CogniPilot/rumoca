@@ -2,25 +2,54 @@ use super::*;
 
 /// MLS §8.3.5: one complete `when`/`elsewhen` equation owner.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WhenChain {
-    /// Source-priority ordered `when` and `elsewhen` branches.
-    pub branches: Vec<WhenBranch>,
+    /// First, mandatory `when` branch.
+    first: WhenBranch,
+    /// Remaining source-priority ordered `elsewhen` branches.
+    else_when: Vec<WhenBranch>,
     /// Source span of the complete `when`/`elsewhen` equation.
-    pub span: Span,
+    span: Span,
 }
 
 impl WhenChain {
-    /// Create an empty chain owned by one source `when` equation.
-    pub fn new(span: Span) -> Self {
+    /// Create one nonempty chain owned by a source `when` equation.
+    pub fn new(first: WhenBranch, span: Span) -> Self {
         Self {
-            branches: Vec::new(),
+            first,
+            else_when: Vec::new(),
             span,
         }
     }
 
-    /// Append the next source-priority branch.
-    pub fn add_branch(&mut self, branch: WhenBranch) {
-        self.branches.push(branch);
+    /// Append the next source-priority `elsewhen` branch.
+    pub fn push_else_when(&mut self, branch: WhenBranch) {
+        self.else_when.push(branch);
+    }
+
+    /// Return the mandatory first `when` branch.
+    pub fn first(&self) -> &WhenBranch {
+        &self.first
+    }
+
+    /// Iterate over every branch in source-priority order.
+    pub fn branches(&self) -> impl Iterator<Item = &WhenBranch> {
+        std::iter::once(&self.first).chain(self.else_when.iter())
+    }
+
+    /// Mutably iterate over every branch in source-priority order.
+    pub fn branches_mut(&mut self) -> impl Iterator<Item = &mut WhenBranch> {
+        std::iter::once(&mut self.first).chain(self.else_when.iter_mut())
+    }
+
+    /// Return the number of source branches.
+    pub fn branch_count(&self) -> usize {
+        1 + self.else_when.len()
+    }
+
+    /// Return the complete source `when`/`elsewhen` owner span.
+    pub fn span(&self) -> Span {
+        self.span
     }
 }
 

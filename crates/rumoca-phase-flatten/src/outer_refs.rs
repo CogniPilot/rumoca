@@ -29,7 +29,7 @@ pub(crate) fn redirect_outer_refs(
     }
     // Redirect each ordered branch without losing its source chain owner.
     for chain in &mut flat.when_chains {
-        for branch in &mut chain.branches {
+        for branch in chain.branches_mut() {
             redirect_flat_expr(&mut branch.condition, outer_to_inner);
             redirect_when_equations(&mut branch.equations, outer_to_inner);
         }
@@ -241,8 +241,7 @@ mod tests {
             span: Span::DUMMY,
             origin: "test".to_string(),
         });
-        let mut when_chain = WhenChain::new(Span::DUMMY);
-        when_chain.add_branch(when_branch);
+        let when_chain = WhenChain::new(when_branch, Span::DUMMY);
         flat.when_chains.push(when_chain);
         flat.algorithms.push(Algorithm {
             statements: Vec::new(),
@@ -310,14 +309,13 @@ mod tests {
         };
         assert_eq!(name.as_str(), "innerBus.start");
 
-        let rumoca_core::Expression::VarRef { name, .. } =
-            &flat.when_chains[0].branches[0].condition
+        let rumoca_core::Expression::VarRef { name, .. } = &flat.when_chains[0].first().condition
         else {
             panic!("expected when condition var ref");
         };
         assert_eq!(name.as_str(), "innerBus.trigger");
         let flat::WhenEquation::Assign { target, value, .. } =
-            &flat.when_chains[0].branches[0].equations[0]
+            &flat.when_chains[0].first().equations[0]
         else {
             panic!("expected assign equation");
         };

@@ -76,7 +76,7 @@ pub(crate) fn canonicalize_varrefs_via_instantiated_def_ids(flat: &mut flat::Mod
         canonicalize_def_id_opt_expr(&mut assert_eq.level, &def_id_index, &known_variables, None);
     }
     for chain in &mut flat.when_chains {
-        for branch in &mut chain.branches {
+        for branch in chain.branches_mut() {
             canonicalize_def_id_expr(&mut branch.condition, &def_id_index, &known_variables, None);
             canonicalize_def_id_when_equations(
                 &mut branch.equations,

@@ -1081,9 +1081,9 @@ fn lower_when_chain<'dae>(
     clocks: &LoweredClocks<'dae>,
     chain: &flat::WhenChain,
 ) -> Result<(), dae::DaeConstructionError> {
-    let mut guards = Vec::with_capacity(chain.branches.len());
+    let mut guards = Vec::with_capacity(chain.branch_count());
     let mut previous = None;
-    for (index, branch) in chain.branches.iter().enumerate() {
+    for (index, branch) in chain.branches().enumerate() {
         let (condition, owner_clock) = lower_when_condition(
             construction,
             coordinates,
@@ -1103,7 +1103,7 @@ fn lower_when_chain<'dae>(
             condition: action_condition,
             owner_clock,
         });
-        if index + 1 < chain.branches.len() {
+        if index + 1 < chain.branch_count() {
             previous = Some(if let Some(previous) = previous {
                 combine_conditions(construction, previous, condition, true, branch.span)?
             } else {
@@ -1111,12 +1111,12 @@ fn lower_when_chain<'dae>(
             });
         }
     }
-    for (branch, guard) in chain.branches.iter().zip(&guards) {
+    for (branch, guard) in chain.branches().zip(&guards) {
         if let Some(clock) = guard.owner_clock {
             own_clocked_targets(construction, coordinates, clock, &branch.equations)?;
         }
     }
-    for (branch, guard) in chain.branches.iter().zip(guards) {
+    for (branch, guard) in chain.branches().zip(guards) {
         lower_when_equations(
             construction,
             coordinates,

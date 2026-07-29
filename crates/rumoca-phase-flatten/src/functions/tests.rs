@@ -291,21 +291,17 @@ fn canonicalize_collected_function_calls_visits_when_chains() {
         span: Span::DUMMY,
         origin: "nested when branch".to_string(),
     });
-    let mut chain = flat::WhenChain::new(Span::DUMMY);
-    chain.add_branch(branch);
+    let chain = flat::WhenChain::new(branch, Span::DUMMY);
     flat.when_chains.push(chain);
 
     canonicalize_collected_function_calls(&mut flat).expect("canonicalize function calls");
 
-    assert_function_call_name(
-        &flat.when_chains[0].branches[0].condition,
-        "Pkg.Events.trip",
-    );
+    assert_function_call_name(&flat.when_chains[0].first().condition, "Pkg.Events.trip");
     let flat::WhenEquation::Conditional {
         branches,
         else_branch,
         ..
-    } = &flat.when_chains[0].branches[0].equations[0]
+    } = &flat.when_chains[0].first().equations[0]
     else {
         panic!("expected conditional when equation");
     };

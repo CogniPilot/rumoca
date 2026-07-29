@@ -1087,7 +1087,7 @@ fn rewrite_when_chains(
     rewriter: &mut StreamOperatorRewriter,
 ) -> Result<(), FlattenError> {
     for chain in &mut model.when_chains {
-        for branch in &mut chain.branches {
+        for branch in chain.branches_mut() {
             branch.condition = rewriter.rewrite_expression(&branch.condition)?;
             rewrite_when_equations(&mut branch.equations, rewriter)?;
         }

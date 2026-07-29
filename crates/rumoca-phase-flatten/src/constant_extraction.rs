@@ -209,7 +209,7 @@ pub(super) fn collect_referenced_class_scopes(
     }
 
     for chain in &flat.when_chains {
-        for branch in &chain.branches {
+        for branch in chain.branches() {
             collect_expression_class_scopes(&branch.condition, live_vars, def_map, scopes);
             for eq in &branch.equations {
                 collect_when_equation_class_scopes(eq, live_vars, def_map, scopes);

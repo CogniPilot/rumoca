@@ -22,7 +22,7 @@ pub(super) fn canonicalize_varrefs_via_record_aliases(flat: &mut flat::Model, ct
         canonicalize_record_alias_expr(&mut equation.residual, ctx, &known_variables);
     }
     for chain in &mut flat.when_chains {
-        for branch in &mut chain.branches {
+        for branch in chain.branches_mut() {
             canonicalize_record_alias_expr(&mut branch.condition, ctx, &known_variables);
             canonicalize_record_alias_when_equations(&mut branch.equations, ctx, &known_variables);
         }
@@ -106,7 +106,7 @@ pub(super) fn collapse_index_refs_to_known_varrefs(flat: &mut flat::Model) {
     }
 
     for chain in &mut flat.when_chains {
-        for branch in &mut chain.branches {
+        for branch in chain.branches_mut() {
             collapse_index_expr(&mut branch.condition, &known_flat_vars);
             collapse_index_when_equations(&mut branch.equations, &known_flat_vars);
         }
@@ -779,7 +779,7 @@ pub(super) fn substitute_known_constants_in_flat(
         &no_locals,
     )?;
     for chain in &mut flat.when_chains {
-        for branch in &mut chain.branches {
+        for branch in chain.branches_mut() {
             branch.condition = substitute_known_constants_expr(
                 branch.condition.clone(),
                 ctx,

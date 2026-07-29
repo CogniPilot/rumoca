@@ -158,7 +158,7 @@ impl ShapeAnalyzer<'_> {
             self.discover_statements(&algorithm.statements, &values)?;
         }
         for chain in &self.flat.when_chains {
-            for branch in &chain.branches {
+            for branch in chain.branches() {
                 self.discover_calls(&branch.condition, &values)?;
                 self.discover_when_equations(&branch.equations, &values)?;
             }

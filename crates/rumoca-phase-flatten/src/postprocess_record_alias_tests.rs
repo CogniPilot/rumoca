@@ -236,8 +236,7 @@ fn record_alias_canonicalization_visits_when_chains_and_algorithms() {
         span: Span::DUMMY,
         origin: "test".to_string(),
     });
-    let mut when_chain = flat::WhenChain::new(Span::DUMMY);
-    when_chain.add_branch(when_branch);
+    let when_chain = flat::WhenChain::new(when_branch, Span::DUMMY);
     model.when_chains.push(when_chain);
     model.algorithms.push(flat::Algorithm::new(
         vec![rumoca_core::Statement::Assignment {
@@ -251,7 +250,7 @@ fn record_alias_canonicalization_visits_when_chains_and_algorithms() {
 
     canonicalize_varrefs_via_record_aliases(&mut model, &context_with_alias());
 
-    let flat::WhenEquation::Assign { value, .. } = &model.when_chains[0].branches[0].equations[0]
+    let flat::WhenEquation::Assign { value, .. } = &model.when_chains[0].first().equations[0]
     else {
         panic!("expected when assignment");
     };

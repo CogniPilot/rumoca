@@ -444,7 +444,7 @@ fn remap_when_chains(
     ctx: &RenameContext<'_>,
 ) -> Result<(), crate::errors::FlattenError> {
     for chain in chains {
-        for branch in &mut chain.branches {
+        for branch in chain.branches_mut() {
             remap_expression(&mut branch.condition, ctx)?;
             remap_when_equations(&mut branch.equations, ctx)?;
         }

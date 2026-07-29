@@ -331,7 +331,7 @@ fn collect_function_call_requests(flat: &flat::Model) -> Vec<FunctionRequest> {
 
     // Collect from complete when/elsewhen owners in source-priority order.
     for chain in &flat.when_chains {
-        for branch in &chain.branches {
+        for branch in chain.branches() {
             collect_from_expression(&branch.condition, &mut calls);
             for eq in &branch.equations {
                 collect_from_when_equation(eq, &mut calls);
@@ -727,7 +727,7 @@ pub(crate) fn canonicalize_collected_function_calls(
         eq.residual = rewriter.rewrite_expression(&eq.residual);
     }
     for chain in &mut flat.when_chains {
-        for branch in &mut chain.branches {
+        for branch in chain.branches_mut() {
             branch.condition = rewriter.rewrite_expression(&branch.condition);
             canonicalize_when_equations(&mut branch.equations, &mut rewriter);
         }

@@ -414,7 +414,7 @@ fn collect_active_refs_from_flat_when_equation(
 
 fn collect_active_refs_from_flat(flat: &rumoca_ir_flat::Model, active: &mut Vec<VarName>) {
     for chain in &flat.when_chains {
-        for branch in &chain.branches {
+        for branch in chain.branches() {
             branch.condition.collect_var_refs(active);
             for equation in &branch.equations {
                 collect_active_refs_from_flat_when_equation(equation, active);

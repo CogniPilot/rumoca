@@ -496,7 +496,7 @@ pub(in crate::construction) fn event_targets(flat: &flat::Model) -> HashSet<VarN
 pub(in crate::construction) fn when_chain_targets(flat: &flat::Model) -> HashSet<VarName> {
     let mut written = HashSet::new();
     for chain in &flat.when_chains {
-        for branch in &chain.branches {
+        for branch in chain.branches() {
             collect_when_equation_targets(&branch.equations, &mut written);
         }
     }

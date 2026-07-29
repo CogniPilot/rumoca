@@ -382,6 +382,13 @@ fn checked_when_elsewhen_priority_blocks_later_rise_while_first_is_true() {
         ),
         "PersistentFirstPriority",
     );
+    dae.inspect(|view| {
+        assert_eq!(
+            view.event_action_count(),
+            3,
+            "the checked DAE must retain both chain branches and the independent witness"
+        );
+    });
     let options = SimOptions {
         t_end: 1.0,
         dt: Some(0.05),
@@ -434,6 +441,13 @@ fn checked_when_elsewhen_priority_selects_first_on_simultaneous_rise() {
         ),
         "SimultaneousPriority",
     );
+    dae.inspect(|view| {
+        assert_eq!(
+            view.event_action_count(),
+            2,
+            "the checked DAE must retain both simultaneous source branches"
+        );
+    });
     let options = SimOptions {
         t_end: 1.0,
         dt: Some(0.05),
@@ -453,6 +467,59 @@ fn checked_when_elsewhen_priority_selects_first_on_simultaneous_rise() {
         result.data[y].last().copied(),
         Some(1.0),
         "the first source branch must win when multiple conditions rise simultaneously"
+    );
+}
+
+#[test]
+fn checked_when_elsewhen_later_branch_executes_after_first_becomes_false() {
+    let dae = compile(
+        concat!(
+            "model SequentialPriority\n",
+            "  discrete Integer selected(start=0);\n",
+            "  Real x(start=0);\n",
+            "  output Real y;\n",
+            "equation\n",
+            "  der(x) = 1;\n",
+            "  y = selected;\n",
+            "  when x >= 0.2 and x < 0.4 then\n",
+            "    selected = 1;\n",
+            "  elsewhen x >= 0.6 then\n",
+            "    selected = 2;\n",
+            "  end when;\n",
+            "end SequentialPriority;\n",
+        ),
+        "SequentialPriority",
+    );
+    dae.inspect(|view| {
+        assert_eq!(
+            view.event_action_count(),
+            2,
+            "the checked DAE must retain both sequential source branches"
+        );
+    });
+    let options = SimOptions {
+        t_end: 0.8,
+        dt: Some(0.05),
+        solver_mode: crate::SimSolverMode::RkLike,
+        ..SimOptions::default()
+    };
+
+    let result = crate::rk45::simulate_dae(&dae, &options)
+        .expect("both checked when/elsewhen branches must execute in source order");
+    let y = result
+        .names
+        .iter()
+        .position(|name| name == "y")
+        .unwrap_or_else(|| panic!("priority output column; available={:?}", result.names));
+
+    assert!(
+        result.data[y].contains(&1.0),
+        "the trace must show the first branch executing before its condition becomes false"
+    );
+    assert_eq!(
+        result.data[y].last().copied(),
+        Some(2.0),
+        "the same chain's later branch must execute after the first condition becomes false"
     );
 }
 

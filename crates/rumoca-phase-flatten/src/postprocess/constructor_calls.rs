@@ -63,7 +63,7 @@ pub(crate) fn mark_record_constructor_calls(flat: &mut flat::Model, tree: &ast::
         marker.mark_statements(&mut algorithm.statements);
     }
     for chain in &mut flat.when_chains {
-        for branch in &mut chain.branches {
+        for branch in chain.branches_mut() {
             marker.mark_expr(&mut branch.condition);
             marker.mark_when_equations(&mut branch.equations);
         }

@@ -55,7 +55,7 @@ impl DelayAnalyzer<'_> {
             }
         }
         for chain in &flat.when_chains {
-            for branch in &chain.branches {
+            for branch in chain.branches() {
                 self.visit_expression(&branch.condition)?;
                 self.visit_when_equations(&branch.equations)?;
             }
