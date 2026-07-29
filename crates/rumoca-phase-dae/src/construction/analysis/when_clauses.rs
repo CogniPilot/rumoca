@@ -197,11 +197,7 @@ fn validate_reinitialization(
     reinit_state_pre: &mut HashSet<Span>,
 ) -> Result<(), ToDaeError> {
     if !matches!(roles.get(state), Some(PlannedRole::State)) {
-        return Err(ToDaeError::unsupported_flat(
-            "reinit",
-            format!("`{state}` is not a continuous state"),
-            span,
-        ));
+        return Err(ToDaeError::reinit_non_state(state.as_str(), span));
     }
     collect_state_pre(value, roles, reinit_state_pre);
     let validation = StatePreEraser {
