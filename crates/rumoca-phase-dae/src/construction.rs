@@ -31,10 +31,11 @@ use algorithm::{
 };
 use analysis::{
     Analysis, ComprehensionKey, ComprehensionPlan, DerivedParameterPlan, EquationPartition,
-    FunctionArrayAssemblyPlan, FunctionLoopLowering, FunctionPlan, FunctionRecordAssemblyPlan,
-    FunctionStatementPlan, ModelAlgorithmPlan, PlannedRole, RecordArrayFieldPlan,
-    RecordEquationPlan, analyze, defined_discrete_targets, effective_variable_scalar_type,
-    equation_partition, primitive_scalar_type, structured_assignment_names,
+    FunctionArrayAssemblyPlan, FunctionIntegerReduction, FunctionLoopLowering, FunctionPlan,
+    FunctionRecordAssemblyPlan, FunctionStatementPlan, ModelAlgorithmPlan, PlannedRole,
+    RecordArrayFieldPlan, RecordEquationPlan, analyze, defined_discrete_targets,
+    effective_variable_scalar_type, equation_partition, primitive_scalar_type,
+    structured_assignment_names,
 };
 use clocks::{LoweredClocks, lower_clocks, lower_sampled_value_clocks};
 use equation_systems::lower_equation_systems;
@@ -49,7 +50,7 @@ use function_array_assembly::lower_function_array_assembly;
 use function_body::{
     FunctionConditional, FunctionFold, TotalArrayDefinition, flattened_function_loop,
     function_value_coordinate, lower_function_conditional, lower_function_fold,
-    lower_guarded_function_return, lower_total_function_array_definition,
+    lower_guarded_function_return, lower_integer_reduction, lower_total_function_array_definition,
 };
 use function_construction::{FunctionRegistry, define_functions, reserve_functions};
 use function_record_assembly::lower_function_record_assembly;

@@ -8,6 +8,7 @@ mod function_array_assemblies;
 mod function_conditionals;
 mod function_ranges;
 mod function_record_assemblies;
+mod function_reductions;
 mod function_returns;
 mod function_value_types;
 mod model_algorithms;
@@ -34,6 +35,7 @@ use function_ranges::{
     immutable_integer_defaults, static_function_range, validate_function_range_expression,
 };
 use function_record_assemblies::validate_record_output_assembly;
+use function_reductions::validate_integer_reduction;
 use function_returns::validate_guarded_function_return;
 use function_value_types::validate_function_value_type;
 pub(super) use model_algorithms::ModelAlgorithmPlan;
@@ -81,6 +83,16 @@ pub(super) enum FunctionPlan {
         tail: Vec<FunctionStatementPlan>,
         targets: Vec<VarName>,
     },
+    IntegerReduction {
+        initial: Vec<FunctionStatementPlan>,
+        result: VarName,
+        reduction: FunctionIntegerReduction,
+    },
+}
+
+pub(super) enum FunctionIntegerReduction {
+    WhileExclusive,
+    ForInclusiveCapped,
 }
 
 pub(super) enum FunctionStatementPlan {
@@ -775,11 +787,14 @@ fn validate_functions(
             shapes: &certificate.values,
             shape_analysis: shapes,
         };
-        let plan = match validate_guarded_function_return(function, context)? {
-            Some(plan) => plan,
-            None => FunctionPlan::Statements {
+        let plan = if let Some(plan) = validate_guarded_function_return(function, context)? {
+            plan
+        } else if let Some(plan) = validate_integer_reduction(function, context)? {
+            plan
+        } else {
+            FunctionPlan::Statements {
                 statements: validate_function_statements(&function.body, context)?,
-            },
+            }
         };
         plans.insert(certificate.key.clone(), plan);
     }
