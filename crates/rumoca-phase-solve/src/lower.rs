@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use rumoca_core::{ComprehensionScalarView, Span};
 use rumoca_ir_dae as dae;
@@ -15,6 +15,7 @@ use scalar::{ScalarCompiler, ScalarSelector};
 
 pub(crate) fn lower_solve_problem<'dae>(
     view: dae::DaeView<'dae>,
+    manifold: &[dae::ExprId<'dae>],
 ) -> Result<solve::SolveProblem, LowerError> {
     if view.variable_count() == 0
         && view.continuous_owner_count() == 0
@@ -29,7 +30,7 @@ pub(crate) fn lower_solve_problem<'dae>(
     let lowered = lower_layout(view)?;
     let clocks = clocks::lower_clocks(view)?;
     let structural = structural_matching(view)?;
-    let continuous = lower_continuous(view, &lowered, &structural)?;
+    let continuous = lower_continuous(view, &lowered, &structural, manifold)?;
     let initialization = lower_initialization(view, &lowered)?;
     let (discrete, events) = events::lower_discrete_and_events(view, &lowered, &clocks)?;
     Ok(solve::SolveProblem {
@@ -172,6 +173,7 @@ fn lower_continuous<'dae>(
     view: dae::DaeView<'dae>,
     layout: &LoweredLayout<'dae>,
     structural: &StructuralMatching<'dae>,
+    manifold: &[dae::ExprId<'dae>],
 ) -> Result<solve::ContinuousSolveSystem, LowerError> {
     let mut residual = ScalarRows::default();
     let mut derivative = DerivativeRows::default();
@@ -229,13 +231,14 @@ fn lower_continuous<'dae>(
     let residual = residual.into_compute_block()?;
     let (implicit_row_targets, algebraic_projection_plan) =
         lower_algebraic_projection(view, layout, structural)?;
+    let (manifold_residual, manifold_projection_plan) = lower_manifold(view, layout, manifold)?;
     Ok(solve::ContinuousSolveSystem {
         implicit_rhs: residual.clone(),
         implicit_row_targets,
         algebraic_projection_plan,
         residual,
-        manifold_residual: solve::ComputeBlock::default(),
-        manifold_projection_plan: solve::AlgebraicProjectionPlan::default(),
+        manifold_residual,
+        manifold_projection_plan,
         derivative_rhs: derivative.into_compute_block(
             layout.solve_layout.state_scalar_count(),
             first_model_span(view),
@@ -321,6 +324,134 @@ fn lower_algebraic_projection<'dae>(
         ));
     }
     Ok((targets, solve::AlgebraicProjectionPlan { blocks }))
+}
+
+fn lower_manifold<'dae>(
+    view: dae::DaeView<'dae>,
+    layout: &LoweredLayout<'dae>,
+    expressions: &[dae::ExprId<'dae>],
+) -> Result<(solve::ComputeBlock, solve::AlgebraicProjectionPlan), LowerError> {
+    let mut residuals = ScalarRows::default();
+    let mut row_states = Vec::with_capacity(expressions.len());
+    for (row, expression) in expressions.iter().copied().enumerate() {
+        let node = view
+            .expression(expression)
+            .expect("prepared manifold expression resolves");
+        if !node.value_type().is_scalar() {
+            return Err(LowerError::non_computable(
+                "index-reduction manifold expression is not scalar",
+                node.provenance().span(),
+            ));
+        }
+        let program = ScalarCompiler::new(view, layout, None).program(expression, 0)?;
+        residuals.push(program, node.provenance().span(), row);
+        row_states.push(manifold_state_slots(view, layout, expression)?);
+    }
+    let plan = manifold_projection_plan(row_states, first_model_span(view))?;
+    Ok((residuals.into_compute_block()?, plan))
+}
+
+fn manifold_state_slots<'dae>(
+    view: dae::DaeView<'dae>,
+    layout: &LoweredLayout<'dae>,
+    expression: dae::ExprId<'dae>,
+) -> Result<BTreeSet<usize>, LowerError> {
+    let mut states = BTreeSet::new();
+    let mut failure = None;
+    dae::for_each_expression(view, expression, |_, node| {
+        let dae::ExpressionOperation::Coordinate(coordinate) = node.operation() else {
+            return;
+        };
+        match coordinate {
+            dae::CoordinateView::State(state) => {
+                let variable = view
+                    .variable(state.into())
+                    .expect("manifold state declaration resolves");
+                if let Err(error) = append_manifold_state_slots(
+                    layout,
+                    state,
+                    variable.scalar_count(),
+                    node.provenance().span(),
+                    &mut states,
+                ) {
+                    failure = Some(error);
+                }
+            }
+            dae::CoordinateView::Algebraic(_) | dae::CoordinateView::Derivative(_) => {
+                failure = Some(LowerError::non_computable(
+                    "retained manifold depends on an algebraic or derivative coordinate",
+                    node.provenance().span(),
+                ));
+            }
+            _ => {}
+        }
+    });
+    match failure {
+        Some(error) => Err(error),
+        None if states.is_empty() => Err(LowerError::non_computable(
+            "retained manifold has no state dependence",
+            view.expression(expression)
+                .expect("manifold expression resolves")
+                .provenance()
+                .span(),
+        )),
+        None => Ok(states),
+    }
+}
+
+fn append_manifold_state_slots(
+    layout: &LoweredLayout<'_>,
+    state: dae::StateId<'_>,
+    scalar_count: usize,
+    span: Span,
+    states: &mut BTreeSet<usize>,
+) -> Result<(), LowerError> {
+    for scalar in 0..scalar_count {
+        let solve::ScalarSlot::Y { index, .. } =
+            variable_scalar_slot(layout, state.index(), scalar, span)?
+        else {
+            unreachable!("state declarations are Y slots")
+        };
+        states.insert(index);
+    }
+    Ok(())
+}
+
+fn manifold_projection_plan(
+    row_states: Vec<BTreeSet<usize>>,
+    span: Span,
+) -> Result<solve::AlgebraicProjectionPlan, LowerError> {
+    let mut components = Vec::<(Vec<usize>, BTreeSet<usize>)>::new();
+    for (row, states) in row_states.into_iter().enumerate() {
+        let mut rows = vec![row];
+        let mut states = states;
+        let mut component = 0;
+        while component < components.len() {
+            if components[component].1.is_disjoint(&states) {
+                component += 1;
+                continue;
+            }
+            let (merged_rows, merged_states) = components.remove(component);
+            rows.extend(merged_rows);
+            states.extend(merged_states);
+        }
+        components.push((rows, states));
+    }
+    let mut blocks = Vec::with_capacity(components.len());
+    for (mut rows, states) in components {
+        rows.sort_unstable();
+        if states.len() < rows.len() {
+            return Err(LowerError::non_computable(
+                "retained manifold has fewer state coordinates than residual rows",
+                span,
+            ));
+        }
+        blocks.push(solve::AlgebraicProjectionBlock {
+            rows,
+            y_indices: states.into_iter().collect(),
+        });
+    }
+    Ok(solve::AlgebraicProjectionPlan { blocks })
 }
 
 fn lower_continuous_family<'dae>(

@@ -34,7 +34,7 @@ pub fn lower_solve_problem(dae: &dae::Dae) -> Result<solve::SolveProblem, LowerE
             span: error.source_span(),
         }
     })?;
-    prepared.as_dae().inspect(lower::lower_solve_problem)
+    prepared.inspect(lower::lower_solve_problem)
 }
 
 /// Materialize optional solver artifacts from an already-lowered problem.

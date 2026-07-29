@@ -13,14 +13,36 @@ use crate::{StructuralError, sort};
 /// A finalized DAE ready for Solve lowering.
 pub enum PreparedDae<'source> {
     Borrowed(&'source dae::Dae),
-    Transformed(Box<dae::Dae>),
+    Transformed {
+        dae: Box<dae::Dae>,
+        manifold: Box<[u32]>,
+    },
 }
 
 impl PreparedDae<'_> {
     pub fn as_dae(&self) -> &dae::Dae {
         match self {
             Self::Borrowed(dae) => dae,
-            Self::Transformed(dae) => dae,
+            Self::Transformed { dae, .. } => dae,
+        }
+    }
+
+    pub fn inspect<R>(
+        &self,
+        inspect: impl for<'dae> FnOnce(dae::DaeView<'dae>, &[dae::ExprId<'dae>]) -> R,
+    ) -> R {
+        match self {
+            Self::Borrowed(dae) => dae.inspect(|view| inspect(view, &[])),
+            Self::Transformed { dae, manifold } => dae.inspect(|view| {
+                let expressions = manifold
+                    .iter()
+                    .map(|index| {
+                        view.expression_id(*index as usize)
+                            .expect("prepared manifold expression resolves")
+                    })
+                    .collect::<Vec<_>>();
+                inspect(view, &expressions)
+            }),
         }
     }
 }
@@ -29,6 +51,12 @@ impl PreparedDae<'_> {
 struct DirectStateConstraint {
     state: u32,
     rhs: u32,
+    owner: dae::DaeProvenance,
+}
+
+#[derive(Clone, Copy)]
+struct HolonomicConstraint {
+    residual: u32,
     owner: dae::DaeProvenance,
 }
 
@@ -51,7 +79,21 @@ pub fn prepare_for_solve(model: &dae::Dae) -> Result<PreparedDae<'_>, Structural
             continue;
         };
         if rebuilt.inspect(|view| sort(view).map(|_| ())).is_ok() {
-            return Ok(PreparedDae::Transformed(Box::new(rebuilt)));
+            return Ok(PreparedDae::Transformed {
+                dae: Box::new(rebuilt),
+                manifold: Box::new([]),
+            });
+        }
+    }
+    for constraint in model.inspect(holonomic_constraints) {
+        let Some((rebuilt, manifold)) = rebuild_holonomic_constraint(model, constraint)? else {
+            continue;
+        };
+        if rebuilt.inspect(|view| sort(view).map(|_| ())).is_ok() {
+            return Ok(PreparedDae::Transformed {
+                dae: Box::new(rebuilt),
+                manifold: manifold.into_boxed_slice(),
+            });
         }
     }
     Err(singular)
@@ -124,6 +166,82 @@ fn direct_state_constraint<'dae>(
     })
 }
 
+fn holonomic_constraints(view: dae::DaeView<'_>) -> Vec<HolonomicConstraint> {
+    let definitions = explicit_derivative_definitions(view);
+    view.continuous_owners()
+        .filter_map(|owner| {
+            let dae::ContinuousOwnerView::Residual { equation, .. } = owner else {
+                return None;
+            };
+            let residual = equation.residual();
+            let mut has_state = false;
+            let mut forbidden = false;
+            dae::for_each_expression(view, residual, |_, expression| {
+                let dae::ExpressionOperation::Coordinate(coordinate) = expression.operation()
+                else {
+                    return;
+                };
+                match coordinate {
+                    dae::CoordinateView::State(_) => has_state = true,
+                    dae::CoordinateView::Derivative(_) | dae::CoordinateView::Algebraic(_) => {
+                        forbidden = true;
+                    }
+                    _ => {}
+                }
+            });
+            (has_state && !forbidden && can_differentiate_order(view, residual, 2, &definitions))
+                .then_some(HolonomicConstraint {
+                    residual: residual.index(),
+                    owner: equation.provenance(),
+                })
+        })
+        .collect()
+}
+
+fn can_differentiate_order<'dae>(
+    view: dae::DaeView<'dae>,
+    expression: dae::ExprId<'dae>,
+    order: u8,
+    definitions: &[Option<u32>],
+) -> bool {
+    let expression = view
+        .expression(expression)
+        .expect("checked differentiability expression resolves");
+    match expression.operation() {
+        dae::ExpressionOperation::Literal(_) => true,
+        dae::ExpressionOperation::Coordinate(coordinate) => match coordinate {
+            dae::CoordinateView::Parameter(_) | dae::CoordinateView::Time => true,
+            dae::CoordinateView::State(state) => {
+                definitions[state.index() as usize].is_some_and(|definition| {
+                    order == 1
+                        || can_differentiate_order(
+                            view,
+                            view.expression_id(definition as usize)
+                                .expect("derivative definition resolves"),
+                            order - 1,
+                            definitions,
+                        )
+                })
+            }
+            _ => false,
+        },
+        dae::ExpressionOperation::Unary {
+            operator: dae::UnaryOperator::Plus | dae::UnaryOperator::Negate,
+            operand,
+        } => can_differentiate_order(view, operand, order, definitions),
+        dae::ExpressionOperation::Binary { operator, lhs, rhs } => {
+            matches!(
+                operator,
+                dae::BinaryOperator::Add
+                    | dae::BinaryOperator::Subtract
+                    | dae::BinaryOperator::Multiply
+            ) && can_differentiate_order(view, lhs, order, definitions)
+                && can_differentiate_order(view, rhs, order, definitions)
+        }
+        _ => false,
+    }
+}
+
 fn is_differentiable<'dae>(
     view: dae::DaeView<'dae>,
     expression: dae::ExprId<'dae>,
@@ -165,6 +283,57 @@ fn is_differentiable<'dae>(
     }
 }
 
+fn rebuild_holonomic_constraint(
+    model: &dae::Dae,
+    constraint: HolonomicConstraint,
+) -> Result<Option<(dae::Dae, Vec<u32>)>, StructuralError> {
+    let supported = model.inspect(supports_common_reconstruction);
+    if !supported {
+        return Ok(None);
+    }
+    let mut manifold = Vec::with_capacity(2);
+    let rebuilt = model.inspect(|source| {
+        dae::Dae::construct(model.source_map().clone(), |target| {
+            let types = rebuild_types(source, target)?;
+            let mut variables = reserve_variables(source, target, &types, None)?;
+            let derivative_definitions = explicit_derivative_definitions(source);
+            let (expressions, replacement) = target.expressions(|expressions| {
+                let mut rebuilder = ExpressionRebuilder::new(
+                    source,
+                    expressions,
+                    &variables,
+                    &derivative_definitions,
+                    None,
+                );
+                let rebuilt = rebuilder.rebuild_all()?;
+                let source_residual = source
+                    .expression_id(constraint.residual as usize)
+                    .expect("holonomic residual resolves");
+                let provenance = dae::DaeProvenance::generated(
+                    dae::DaeGeneration::IndexReduction,
+                    constraint.owner.span(),
+                )?;
+                let first = rebuilder.differentiate_order(source_residual, 1, provenance)?;
+                let first = rebuilder.materialize_derivative(first, provenance)?;
+                let second = rebuilder.differentiate_order(source_residual, 2, provenance)?;
+                let second = rebuilder.materialize_derivative(second, provenance)?;
+                manifold.extend([rebuilt[constraint.residual as usize].index(), first.index()]);
+                Ok((rebuilt, second))
+            })?;
+            define_variables(source, target, &expressions, &mut variables)?;
+            rebuild_equations(
+                source,
+                target,
+                &expressions,
+                Some((constraint.residual, replacement)),
+            )
+        })
+    });
+    rebuilt
+        .map(|dae| Some((dae, manifold)))
+        .map_err(|error| construction_failure(model, error))
+}
+
 fn rebuild_with_state_demotion(
     model: &dae::Dae,
     candidate: DirectStateConstraint,
@@ -176,7 +345,7 @@ fn rebuild_with_state_demotion(
     let rebuilt = model.inspect(|source| {
         dae::Dae::construct(model.source_map().clone(), |target| {
             let types = rebuild_types(source, target)?;
-            let mut variables = reserve_variables(source, target, &types, candidate.state)?;
+            let mut variables = reserve_variables(source, target, &types, Some(candidate.state))?;
             let derivative_definitions = explicit_derivative_definitions(source);
             let expressions = target.expressions(|expressions| {
                 let mut rebuilder = ExpressionRebuilder::new(
@@ -184,12 +353,12 @@ fn rebuild_with_state_demotion(
                     expressions,
                     &variables,
                     &derivative_definitions,
-                    candidate,
+                    Some(candidate),
                 );
                 rebuilder.rebuild_all()
             })?;
             define_variables(source, target, &expressions, &mut variables)?;
-            rebuild_equations(source, target, &expressions)
+            rebuild_equations(source, target, &expressions, None)
         })
     });
     rebuilt
@@ -237,6 +406,35 @@ fn explicit_derivative_definitions(view: dae::DaeView<'_>) -> Vec<Option<u32>> {
 }
 
 fn supports_reconstruction(view: dae::DaeView<'_>, candidate: DirectStateConstraint) -> bool {
+    if !supports_common_reconstruction(view) {
+        return false;
+    }
+    (0..view.expression_count()).all(|index| {
+        let id = view
+            .expression_id(index)
+            .expect("finalized expression ordinal resolves");
+        match view
+            .expression(id)
+            .expect("finalized expression identity resolves")
+            .operation()
+        {
+            dae::ExpressionOperation::Coordinate(dae::CoordinateView::Derivative(state))
+                if state.index() == candidate.state =>
+            {
+                is_differentiable(
+                    view,
+                    view.expression_id(candidate.rhs as usize)
+                        .expect("candidate RHS resolves"),
+                    state,
+                    &mut vec![false; view.expression_count()],
+                )
+            }
+            _ => true,
+        }
+    })
+}
+
+fn supports_common_reconstruction(view: dae::DaeView<'_>) -> bool {
     let unsupported_owner = view.function_count() != 0
         || view.domain_count() != 0
         || view.continuous_family_count() != 0
@@ -286,24 +484,15 @@ fn supports_reconstruction(view: dae::DaeView<'_>, candidate: DirectStateConstra
             dae::ExpressionOperation::Literal(_)
             | dae::ExpressionOperation::Unary { .. }
             | dae::ExpressionOperation::Binary { .. } => true,
-            dae::ExpressionOperation::Coordinate(coordinate) => match coordinate {
+            dae::ExpressionOperation::Coordinate(coordinate) => matches!(
+                coordinate,
                 dae::CoordinateView::Parameter(_)
-                | dae::CoordinateView::Input(_)
-                | dae::CoordinateView::State(_)
-                | dae::CoordinateView::Algebraic(_)
-                | dae::CoordinateView::Time => true,
-                dae::CoordinateView::Derivative(state) => {
-                    state.index() != candidate.state
-                        || is_differentiable(
-                            view,
-                            view.expression_id(candidate.rhs as usize)
-                                .expect("candidate RHS resolves"),
-                            state,
-                            &mut vec![false; view.expression_count()],
-                        )
-                }
-                _ => false,
-            },
+                    | dae::CoordinateView::Input(_)
+                    | dae::CoordinateView::State(_)
+                    | dae::CoordinateView::Derivative(_)
+                    | dae::CoordinateView::Algebraic(_)
+                    | dae::CoordinateView::Time
+            ),
             _ => false,
         }
     })
@@ -374,7 +563,7 @@ fn reserve_variables<'target>(
     source: dae::DaeView<'_>,
     target: &mut dae::DaeConstruction<'target>,
     types: &[dae::ValueTypeId<'target>],
-    demoted: u32,
+    demoted: Option<u32>,
 ) -> Result<Vec<ReservedVariable<'target>>, dae::DaeConstructionError> {
     target.variables(|variables| {
         source
@@ -395,7 +584,7 @@ fn reserve_variable<'target>(
     variables: &mut dae::Variables<'_, 'target>,
     variable: dae::VariableView<'_>,
     value_type: dae::ValueTypeId<'target>,
-    demoted: u32,
+    demoted: Option<u32>,
 ) -> Result<ReservedVariable<'target>, dae::DaeConstructionError> {
     let name = variable.name().clone();
     let declaration = variable.declaration();
@@ -414,7 +603,7 @@ fn reserve_variable<'target>(
                 variables.reserve_input(name, value_type, variability, declaration)?;
             (TargetVariable::Input(id), reservation)
         }
-        dae::VariableRole::State if variable.id().index() == demoted => {
+        dae::VariableRole::State if Some(variable.id().index()) == demoted => {
             let (id, reservation) = variables.reserve_algebraic(name, value_type, declaration)?;
             (TargetVariable::Algebraic(id), reservation)
         }
@@ -490,16 +679,20 @@ fn rebuild_equations<'target>(
     source: dae::DaeView<'_>,
     target: &mut dae::DaeConstruction<'target>,
     expressions: &[dae::ExprId<'target>],
+    replacement: Option<(u32, dae::ExprId<'target>)>,
 ) -> Result<(), dae::DaeConstructionError> {
     target.continuous(|target| {
         for owner in source.continuous_owners() {
             let dae::ContinuousOwnerView::Residual { equation, .. } = owner else {
                 unreachable!("reconstruction preflight rejects structured families")
             };
-            target.value_equation(
-                equation.provenance(),
-                expressions[equation.residual().index() as usize],
-            )?;
+            let residual = replacement
+                .filter(|(source, _)| *source == equation.residual().index())
+                .map_or(
+                    expressions[equation.residual().index() as usize],
+                    |(_, target)| target,
+                );
+            target.value_equation(equation.provenance(), residual)?;
         }
         Ok(())
     })?;
@@ -522,7 +715,7 @@ struct ExpressionRebuilder<'source, 'borrow, 'storage, 'target> {
     target: &'borrow mut dae::Expressions<'storage, 'target>,
     variables: &'borrow [ReservedVariable<'target>],
     derivative_definitions: &'borrow [Option<u32>],
-    candidate: DirectStateConstraint,
+    candidate: Option<DirectStateConstraint>,
     rebuilt: Vec<Option<dae::ExprId<'target>>>,
     visiting: Vec<bool>,
 }
@@ -533,7 +726,7 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         target: &'borrow mut dae::Expressions<'storage, 'target>,
         variables: &'borrow [ReservedVariable<'target>],
         derivative_definitions: &'borrow [Option<u32>],
-        candidate: DirectStateConstraint,
+        candidate: Option<DirectStateConstraint>,
     ) -> Self {
         Self {
             source,
@@ -604,18 +797,18 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         coordinate: dae::CoordinateView<'source>,
         provenance: dae::DaeProvenance,
     ) -> Result<dae::ExprId<'target>, dae::DaeConstructionError> {
-        if matches!(
-            coordinate,
-            dae::CoordinateView::Derivative(state) if state.index() == self.candidate.state
-        ) {
+        if let (Some(candidate), dae::CoordinateView::Derivative(state)) =
+            (self.candidate, coordinate)
+            && state.index() == candidate.state
+        {
             let generated = dae::DaeProvenance::generated(
                 dae::DaeGeneration::IndexReduction,
-                self.candidate.owner.span(),
+                candidate.owner.span(),
             )?;
             return self
                 .differentiate(
                     self.source
-                        .expression_id(self.candidate.rhs as usize)
+                        .expression_id(candidate.rhs as usize)
                         .expect("candidate RHS resolves"),
                     generated,
                 )
@@ -666,6 +859,15 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         source_id: dae::ExprId<'source>,
         provenance: dae::DaeProvenance,
     ) -> Result<Derivative<'target>, dae::DaeConstructionError> {
+        self.differentiate_order(source_id, 1, provenance)
+    }
+
+    fn differentiate_order(
+        &mut self,
+        source_id: dae::ExprId<'source>,
+        order: u8,
+        provenance: dae::DaeProvenance,
+    ) -> Result<Derivative<'target>, dae::DaeConstructionError> {
         let source = self
             .source
             .expression(source_id)
@@ -674,38 +876,19 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             dae::ExpressionOperation::Literal(_) => Ok(Derivative::Zero),
             dae::ExpressionOperation::Coordinate(coordinate) => match coordinate {
                 dae::CoordinateView::Parameter(_) => Ok(Derivative::Zero),
-                dae::CoordinateView::Time => self
+                dae::CoordinateView::Time if order == 1 => self
                     .target
                     .at(provenance)
                     .literal(dae::DaeLiteral::Real(1.0))
                     .map(Derivative::Expression),
+                dae::CoordinateView::Time => Ok(Derivative::Zero),
                 dae::CoordinateView::State(state) => {
-                    if let Some(definition) = self.derivative_definitions[state.index() as usize] {
-                        let definition = self.rebuild(
-                            self.source
-                                .expression_id(definition as usize)
-                                .expect("explicit derivative definition resolves"),
-                        )?;
-                        return self
-                            .target
-                            .at(provenance)
-                            .unary(dae::UnaryOperator::Plus, definition)
-                            .map(Derivative::Expression);
-                    }
-                    let TargetVariable::State(state) =
-                        self.variables[state.index() as usize].identity
-                    else {
-                        unreachable!("candidate RHS cannot refer to the demoted state")
-                    };
-                    self.target
-                        .at(provenance)
-                        .coordinate(dae::CoordinateInput::Derivative(state))
-                        .map(Derivative::Expression)
+                    self.differentiate_state(state, order, provenance)
                 }
                 _ => unreachable!("differentiability preflight rejects this coordinate"),
             },
             dae::ExpressionOperation::Unary { operator, operand } => {
-                let derivative = self.differentiate(operand, provenance)?;
+                let derivative = self.differentiate_order(operand, order, provenance)?;
                 match (operator, derivative) {
                     (_, Derivative::Zero) => Ok(Derivative::Zero),
                     (dae::UnaryOperator::Plus, derivative) => Ok(derivative),
@@ -720,10 +903,41 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                 }
             }
             dae::ExpressionOperation::Binary { operator, lhs, rhs } => {
-                self.differentiate_binary(operator, lhs, rhs, provenance)
+                self.differentiate_binary(operator, lhs, rhs, order, provenance)
             }
             _ => unreachable!("differentiability preflight rejects this operation"),
         }
+    }
+
+    fn differentiate_state(
+        &mut self,
+        source_state: dae::StateId<'source>,
+        order: u8,
+        provenance: dae::DaeProvenance,
+    ) -> Result<Derivative<'target>, dae::DaeConstructionError> {
+        if let Some(definition) = self.derivative_definitions[source_state.index() as usize] {
+            let definition = self
+                .source
+                .expression_id(definition as usize)
+                .expect("explicit derivative definition resolves");
+            if order > 1 {
+                return self.differentiate_order(definition, order - 1, provenance);
+            }
+            let definition = self.rebuild(definition)?;
+            return self
+                .target
+                .at(provenance)
+                .unary(dae::UnaryOperator::Plus, definition)
+                .map(Derivative::Expression);
+        }
+        let TargetVariable::State(state) = self.variables[source_state.index() as usize].identity
+        else {
+            unreachable!("candidate RHS cannot refer to the demoted state")
+        };
+        self.target
+            .at(provenance)
+            .coordinate(dae::CoordinateInput::Derivative(state))
+            .map(Derivative::Expression)
     }
 
     fn differentiate_binary(
@@ -731,22 +945,30 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         operator: dae::BinaryOperator,
         lhs: dae::ExprId<'source>,
         rhs: dae::ExprId<'source>,
+        order: u8,
         provenance: dae::DaeProvenance,
     ) -> Result<Derivative<'target>, dae::DaeConstructionError> {
-        let lhs_derivative = self.differentiate(lhs, provenance)?;
-        let rhs_derivative = self.differentiate(rhs, provenance)?;
+        let lhs_derivative = self.differentiate_order(lhs, order, provenance)?;
+        let rhs_derivative = self.differentiate_order(rhs, order, provenance)?;
         match operator {
             dae::BinaryOperator::Add | dae::BinaryOperator::Subtract => {
                 self.combine_sum(operator, lhs_derivative, rhs_derivative, provenance)
             }
-            dae::BinaryOperator::Multiply => {
+            dae::BinaryOperator::Multiply if order == 1 => {
                 let lhs_value = self.rebuild(lhs)?;
                 let rhs_value = self.rebuild(rhs)?;
                 let left = self.multiply(lhs_derivative, rhs_value, provenance)?;
                 let right = self.multiply(rhs_derivative, lhs_value, provenance)?;
                 self.combine_sum(dae::BinaryOperator::Add, left, right, provenance)
             }
-            dae::BinaryOperator::Divide => {
+            dae::BinaryOperator::Multiply if order == 2 => self.differentiate_second_product(
+                lhs,
+                rhs,
+                lhs_derivative,
+                rhs_derivative,
+                provenance,
+            ),
+            dae::BinaryOperator::Divide if order == 1 => {
                 let lhs_value = self.rebuild(lhs)?;
                 let rhs_value = self.rebuild(rhs)?;
                 let left = self.multiply(lhs_derivative, rhs_value, provenance)?;
@@ -767,6 +989,65 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                     .map(Derivative::Expression)
             }
             _ => unreachable!("differentiability preflight rejects this binary operator"),
+        }
+    }
+
+    fn differentiate_second_product(
+        &mut self,
+        lhs: dae::ExprId<'source>,
+        rhs: dae::ExprId<'source>,
+        lhs_second: Derivative<'target>,
+        rhs_second: Derivative<'target>,
+        provenance: dae::DaeProvenance,
+    ) -> Result<Derivative<'target>, dae::DaeConstructionError> {
+        let lhs_value = self.rebuild(lhs)?;
+        let rhs_value = self.rebuild(rhs)?;
+        let lhs_first = self.differentiate_order(lhs, 1, provenance)?;
+        let rhs_first = self.differentiate_order(rhs, 1, provenance)?;
+        let left = self.multiply(lhs_second, rhs_value, provenance)?;
+        let right = self.multiply(rhs_second, lhs_value, provenance)?;
+        let middle = self.multiply_derivatives(lhs_first, rhs_first, provenance)?;
+        let outer = self.combine_sum(dae::BinaryOperator::Add, left, right, provenance)?;
+        self.combine_sum(dae::BinaryOperator::Add, outer, middle, provenance)
+    }
+
+    fn multiply_derivatives(
+        &mut self,
+        lhs: Derivative<'target>,
+        rhs: Derivative<'target>,
+        provenance: dae::DaeProvenance,
+    ) -> Result<Derivative<'target>, dae::DaeConstructionError> {
+        let (Derivative::Expression(lhs), Derivative::Expression(rhs)) = (lhs, rhs) else {
+            return Ok(Derivative::Zero);
+        };
+        let product = self
+            .target
+            .at(provenance)
+            .binary(dae::BinaryOperator::Multiply, lhs, rhs)?;
+        let two = self
+            .target
+            .at(provenance)
+            .literal(dae::DaeLiteral::Real(2.0))?;
+        self.target
+            .at(provenance)
+            .binary(dae::BinaryOperator::Multiply, two, product)
+            .map(Derivative::Expression)
+    }
+
+    fn materialize_derivative(
+        &mut self,
+        derivative: Derivative<'target>,
+        provenance: dae::DaeProvenance,
+    ) -> Result<dae::ExprId<'target>, dae::DaeConstructionError> {
+        match derivative {
+            Derivative::Zero => self
+                .target
+                .at(provenance)
+                .literal(dae::DaeLiteral::Real(0.0)),
+            Derivative::Expression(expression) => self
+                .target
+                .at(provenance)
+                .unary(dae::UnaryOperator::Plus, expression),
         }
     }
 
@@ -995,7 +1276,7 @@ mod tests {
     fn direct_state_demotion_reconstructs_a_finalized_dae_with_exact_provenance() {
         let (model, constraint) = constrained_state_model(false);
         let prepared = prepare_for_solve(&model).expect("index-one constraint is reducible");
-        assert!(matches!(prepared, PreparedDae::Transformed(_)));
+        assert!(matches!(prepared, PreparedDae::Transformed { .. }));
 
         prepared.as_dae().inspect(|view| {
             let x = view
