@@ -27,10 +27,12 @@ pub(crate) fn redirect_outer_refs(
     for eq in &mut flat.initial_equations {
         redirect_flat_expr(&mut eq.residual, outer_to_inner);
     }
-    // Redirect when clause conditions and equation targets/values.
-    for wc in &mut flat.when_clauses {
-        redirect_flat_expr(&mut wc.condition, outer_to_inner);
-        redirect_when_equations(&mut wc.equations, outer_to_inner);
+    // Redirect each ordered branch without losing its source chain owner.
+    for chain in &mut flat.when_chains {
+        for branch in &mut chain.branches {
+            redirect_flat_expr(&mut branch.condition, outer_to_inner);
+            redirect_when_equations(&mut branch.equations, outer_to_inner);
+        }
     }
     // Redirect algorithm output names.
     for algo in &mut flat.algorithms {
@@ -182,7 +184,7 @@ mod tests {
     use super::*;
     use rumoca_core::Span;
     use rumoca_core::{ComprehensionIndex, Literal};
-    use rumoca_ir_flat::{Algorithm, Equation, EquationOrigin, WhenClause};
+    use rumoca_ir_flat::{Algorithm, Equation, EquationOrigin, WhenBranch, WhenChain};
 
     fn test_span() -> Span {
         Span::from_offsets(
@@ -200,24 +202,7 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_redirect_name_string_handles_exact_and_prefixed_matches() {
-        let mut outer_to_inner = IndexMap::default();
-        outer_to_inner.insert("outerBus".to_string(), "innerBus".to_string());
-
-        assert_eq!(
-            redirect_name_string("outerBus", &outer_to_inner),
-            Some("innerBus".to_string())
-        );
-        assert_eq!(
-            redirect_name_string("outerBus.signal", &outer_to_inner),
-            Some("innerBus.signal".to_string())
-        );
-        assert_eq!(redirect_name_string("other.signal", &outer_to_inner), None);
-    }
-
-    #[test]
-    fn test_redirect_outer_refs_updates_equations_whens_algorithms_and_roots() {
+    fn outer_reference_model() -> (flat::Model, rumoca_core::VarName) {
         let mut flat = flat::Model::new();
         flat.equations.push(Equation::new(
             var_ref("outerBus.signal"),
@@ -232,25 +217,25 @@ mod tests {
                 step: None,
                 end: Box::new(rumoca_core::Expression::Literal {
                     value: Literal::Integer(1),
-                    span: rumoca_core::Span::DUMMY,
+                    span: Span::DUMMY,
                 }),
-                span: rumoca_core::Span::DUMMY,
+                span: Span::DUMMY,
             },
             Span::DUMMY,
             EquationOrigin::Binding {
                 variable: "x0".to_string(),
             },
         ));
-
-        let mut when_clause = WhenClause::new(var_ref("outerBus.trigger"), Span::DUMMY);
-        when_clause.add_equation(flat::WhenEquation::Assign {
+        let mut when_branch = WhenBranch::new(var_ref("outerBus.trigger"), Span::DUMMY);
+        when_branch.add_equation(flat::WhenEquation::Assign {
             target: rumoca_core::VarName::new("outerBus.target"),
             value: var_ref("outerBus.value"),
             span: Span::DUMMY,
             origin: "test".to_string(),
         });
-        flat.when_clauses.push(when_clause);
-
+        let mut when_chain = WhenChain::new(Span::DUMMY);
+        when_chain.add_branch(when_branch);
+        flat.when_chains.push(when_chain);
         flat.algorithms.push(Algorithm {
             statements: Vec::new(),
             outputs: vec![rumoca_core::Reference::new("outerBus.algOut")],
@@ -277,7 +262,28 @@ mod tests {
                 ..flat::Variable::empty_with_span(test_span())
             },
         );
+        (flat, x_name)
+    }
 
+    #[test]
+    fn test_redirect_name_string_handles_exact_and_prefixed_matches() {
+        let mut outer_to_inner = IndexMap::default();
+        outer_to_inner.insert("outerBus".to_string(), "innerBus".to_string());
+
+        assert_eq!(
+            redirect_name_string("outerBus", &outer_to_inner),
+            Some("innerBus".to_string())
+        );
+        assert_eq!(
+            redirect_name_string("outerBus.signal", &outer_to_inner),
+            Some("innerBus.signal".to_string())
+        );
+        assert_eq!(redirect_name_string("other.signal", &outer_to_inner), None);
+    }
+
+    #[test]
+    fn test_redirect_outer_refs_updates_equations_whens_algorithms_and_roots() {
+        let (mut flat, x_name) = outer_reference_model();
         let mut outer_to_inner = IndexMap::default();
         outer_to_inner.insert("outerBus".to_string(), "innerBus".to_string());
         redirect_outer_refs(&mut flat, &outer_to_inner);
@@ -296,11 +302,14 @@ mod tests {
         };
         assert_eq!(name.as_str(), "innerBus.start");
 
-        let rumoca_core::Expression::VarRef { name, .. } = &flat.when_clauses[0].condition else {
+        let rumoca_core::Expression::VarRef { name, .. } =
+            &flat.when_chains[0].branches[0].condition
+        else {
             panic!("expected when condition var ref");
         };
         assert_eq!(name.as_str(), "innerBus.trigger");
-        let flat::WhenEquation::Assign { target, value, .. } = &flat.when_clauses[0].equations[0]
+        let flat::WhenEquation::Assign { target, value, .. } =
+            &flat.when_chains[0].branches[0].equations[0]
         else {
             panic!("expected assign equation");
         };

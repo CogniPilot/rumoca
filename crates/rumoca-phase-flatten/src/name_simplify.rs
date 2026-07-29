@@ -38,7 +38,7 @@ fn simplify_flat_names_in_place(flat: &mut flat::Model) -> Result<(), crate::err
     remap_assert_equations(&mut flat.initial_assert_equations, &ctx)?;
     remap_algorithms(&mut flat.algorithms, &ctx)?;
     remap_algorithms(&mut flat.initial_algorithms, &ctx)?;
-    remap_when_clauses(&mut flat.when_clauses, &ctx)?;
+    remap_when_chains(&mut flat.when_chains, &ctx)?;
     Ok(())
 }
 
@@ -439,13 +439,15 @@ fn remap_algorithms(
     Ok(())
 }
 
-fn remap_when_clauses(
-    clauses: &mut [flat::WhenClause],
+fn remap_when_chains(
+    chains: &mut [flat::WhenChain],
     ctx: &RenameContext<'_>,
 ) -> Result<(), crate::errors::FlattenError> {
-    for clause in clauses {
-        remap_expression(&mut clause.condition, ctx)?;
-        remap_when_equations(&mut clause.equations, ctx)?;
+    for chain in chains {
+        for branch in &mut chain.branches {
+            remap_expression(&mut branch.condition, ctx)?;
+            remap_when_equations(&mut branch.equations, ctx)?;
+        }
     }
     Ok(())
 }

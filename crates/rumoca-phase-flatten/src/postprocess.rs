@@ -21,9 +21,11 @@ pub(super) fn canonicalize_varrefs_via_record_aliases(flat: &mut flat::Model, ct
     for equation in &mut flat.initial_equations {
         canonicalize_record_alias_expr(&mut equation.residual, ctx, &known_variables);
     }
-    for when_clause in &mut flat.when_clauses {
-        canonicalize_record_alias_expr(&mut when_clause.condition, ctx, &known_variables);
-        canonicalize_record_alias_when_equations(&mut when_clause.equations, ctx, &known_variables);
+    for chain in &mut flat.when_chains {
+        for branch in &mut chain.branches {
+            canonicalize_record_alias_expr(&mut branch.condition, ctx, &known_variables);
+            canonicalize_record_alias_when_equations(&mut branch.equations, ctx, &known_variables);
+        }
     }
     for algorithm in &mut flat.algorithms {
         canonicalize_record_alias_statements(&mut algorithm.statements, ctx, &known_variables);
@@ -103,9 +105,11 @@ pub(super) fn collapse_index_refs_to_known_varrefs(flat: &mut flat::Model) {
         }
     }
 
-    for when_clause in &mut flat.when_clauses {
-        collapse_index_expr(&mut when_clause.condition, &known_flat_vars);
-        collapse_index_when_equations(&mut when_clause.equations, &known_flat_vars);
+    for chain in &mut flat.when_chains {
+        for branch in &mut chain.branches {
+            collapse_index_expr(&mut branch.condition, &known_flat_vars);
+            collapse_index_when_equations(&mut branch.equations, &known_flat_vars);
+        }
     }
 
     for algorithm in &mut flat.algorithms {
@@ -766,16 +770,18 @@ pub(super) fn substitute_known_constants_in_flat(
         &live_vars,
         &no_locals,
     )?;
-    for when_clause in &mut flat.when_clauses {
-        when_clause.condition = substitute_known_constants_expr(
-            when_clause.condition.clone(),
-            ctx,
-            &live_vars,
-            &no_locals,
-            "",
-        )?;
-        for equation in &mut when_clause.equations {
-            substitute_known_constants_when_equation(equation, ctx, &live_vars, &no_locals)?;
+    for chain in &mut flat.when_chains {
+        for branch in &mut chain.branches {
+            branch.condition = substitute_known_constants_expr(
+                branch.condition.clone(),
+                ctx,
+                &live_vars,
+                &no_locals,
+                "",
+            )?;
+            for equation in &mut branch.equations {
+                substitute_known_constants_when_equation(equation, ctx, &live_vars, &no_locals)?;
+            }
         }
     }
     substitute_algorithms(&mut flat.algorithms, ctx, &live_vars, &no_locals)?;

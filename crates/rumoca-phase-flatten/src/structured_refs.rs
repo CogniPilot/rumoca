@@ -57,10 +57,12 @@ pub(crate) fn attach_structured_references(flat: &mut flat::Model) -> Result<(),
         assert_eq.message = rewriter.rewrite_expression(&assert_eq.message);
         rewrite_opt_expr(&mut assert_eq.level, &mut rewriter);
     }
-    for when_clause in &mut flat.when_clauses {
-        when_clause.condition = rewriter.rewrite_expression(&when_clause.condition);
-        for equation in &mut when_clause.equations {
-            rewrite_when_equation(equation, &mut rewriter);
+    for chain in &mut flat.when_chains {
+        for branch in &mut chain.branches {
+            branch.condition = rewriter.rewrite_expression(&branch.condition);
+            for equation in &mut branch.equations {
+                rewrite_when_equation(equation, &mut rewriter);
+            }
         }
     }
     for algorithm in flat

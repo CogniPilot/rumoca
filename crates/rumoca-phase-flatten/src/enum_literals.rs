@@ -39,9 +39,11 @@ pub(crate) fn canonicalize_flat_enum_literals(
         canonicalize_expr(&mut eq.residual, &enum_literals, &variable_names);
     }
 
-    for when_clause in &mut flat.when_clauses {
-        canonicalize_expr(&mut when_clause.condition, &enum_literals, &variable_names);
-        canonicalize_when_equations(&mut when_clause.equations, &enum_literals, &variable_names);
+    for chain in &mut flat.when_chains {
+        for branch in &mut chain.branches {
+            canonicalize_expr(&mut branch.condition, &enum_literals, &variable_names);
+            canonicalize_when_equations(&mut branch.equations, &enum_literals, &variable_names);
+        }
     }
 
     for algorithm in &mut flat.algorithms {

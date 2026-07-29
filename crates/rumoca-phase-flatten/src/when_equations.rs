@@ -18,24 +18,20 @@ use crate::equations::{build_qualified_name, expand_range_indices, substitute_in
 use crate::errors::FlattenError;
 use crate::{Context, qualify_expression_imports_with_def_map_ctx};
 
-/// Flatten a when-equation to a list of WhenClauses.
-///
-/// Each flat::WhenClause represents one "when" or "elsewhen" branch with its condition
-/// and the discrete equations that should be executed when the condition becomes true.
+/// Flatten one source when-equation to its complete semantic owner.
 pub(crate) fn flatten_when_equation(
     ctx: &Context,
     inst_eq: &ast::InstanceEquation,
     prefix: &ast::QualifiedName,
     def_map: Option<&crate::ResolveDefMap>,
-) -> Result<Vec<flat::WhenClause>, FlattenError> {
+) -> Result<Option<flat::WhenChain>, FlattenError> {
     let span = inst_eq.span;
 
     match &inst_eq.equation {
-        ast::Equation::When(blocks) => flatten_when_blocks(ctx, blocks, prefix, span, def_map),
-        _ => {
-            // Not a when-equation, return empty
-            Ok(vec![])
+        ast::Equation::When(blocks) => {
+            flatten_when_blocks(ctx, blocks, prefix, span, def_map).map(Some)
         }
+        _ => Ok(None),
     }
 }
 
@@ -50,25 +46,24 @@ pub(crate) fn flatten_when_blocks(
     prefix: &ast::QualifiedName,
     span: rumoca_core::Span,
     def_map: Option<&crate::ResolveDefMap>,
-) -> Result<Vec<flat::WhenClause>, FlattenError> {
-    let mut clauses = Vec::with_capacity(blocks.len());
+) -> Result<flat::WhenChain, FlattenError> {
+    let mut chain = flat::WhenChain::new(span);
     for block in blocks {
-        let clause = flatten_when_block(ctx, block, prefix, span, def_map)?;
-        clauses.push(clause);
+        chain.add_branch(flatten_when_block(ctx, block, prefix, span, def_map)?);
     }
 
-    validate_when_branch_targets(ctx, blocks, &clauses, prefix, span)?;
-    Ok(clauses)
+    validate_when_branch_targets(ctx, blocks, &chain.branches, prefix, span)?;
+    Ok(chain)
 }
 
-/// Flatten a single when/elsewhen block to a flat::WhenClause.
+/// Flatten a single ordered branch of a when/elsewhen chain.
 pub(crate) fn flatten_when_block(
     ctx: &Context,
     block: &ast::EquationBlock,
     prefix: &ast::QualifiedName,
     span: rumoca_core::Span,
     def_map: Option<&crate::ResolveDefMap>,
-) -> Result<flat::WhenClause, FlattenError> {
+) -> Result<flat::WhenBranch, FlattenError> {
     // Qualify the condition expression
     let condition = qualify_expression_imports_with_def_map_ctx(
         &block.cond,
@@ -79,17 +74,17 @@ pub(crate) fn flatten_when_block(
         None,
     )?;
 
-    let mut clause = flat::WhenClause::new(condition, span);
+    let mut branch = flat::WhenBranch::new(condition, block.cond.span());
 
     // Flatten each equation in the block
     for eq in &block.eqs {
         let when_eqs = flatten_when_body_equation(ctx, eq, prefix, span, def_map)?;
         for weq in when_eqs {
-            clause.add_equation(weq);
+            branch.add_equation(weq);
         }
     }
 
-    Ok(clause)
+    Ok(branch)
 }
 
 /// Flatten an equation inside a when-clause body.
@@ -304,11 +299,11 @@ fn collect_when_eq_targets(
 fn validate_when_branch_targets(
     ctx: &Context,
     blocks: &[ast::EquationBlock],
-    clauses: &[flat::WhenClause],
+    branches: &[flat::WhenBranch],
     prefix: &ast::QualifiedName,
     span: rumoca_core::Span,
 ) -> Result<(), FlattenError> {
-    if clauses.len() <= 1 {
+    if branches.len() <= 1 {
         return Ok(());
     }
 
@@ -319,9 +314,9 @@ fn validate_when_branch_targets(
         return Ok(());
     }
 
-    let first_targets = collect_when_eq_targets(&clauses[0].equations);
-    for (index, clause) in clauses.iter().enumerate().skip(1) {
-        let targets = collect_when_eq_targets(&clause.equations);
+    let first_targets = collect_when_eq_targets(&branches[0].equations);
+    for (index, branch) in branches.iter().enumerate().skip(1) {
+        let targets = collect_when_eq_targets(&branch.equations);
         if targets != first_targets {
             return Err(FlattenError::unsupported_equation(
                 format!(
@@ -638,7 +633,8 @@ fn extract_assignment_target(
 #[cfg(test)]
 mod tests {
     use super::{
-        extract_assignment_target, flatten_when_for_equation, is_known_streams_side_effect_call,
+        extract_assignment_target, flatten_when_blocks, flatten_when_for_equation,
+        is_known_streams_side_effect_call,
     };
     use crate::errors::FlattenError;
     use rumoca_ir_ast as ast;
@@ -677,6 +673,14 @@ mod tests {
         }
     }
 
+    fn bool_expr(value: bool, span: rumoca_core::Span) -> ast::Expression {
+        ast::Expression::Terminal {
+            terminal_type: TerminalType::Bool,
+            token: token(if value { "true" } else { "false" }),
+            span,
+        }
+    }
+
     fn test_span() -> rumoca_core::Span {
         rumoca_core::Span::from_offsets(
             rumoca_core::SourceId::from_source_name("when_equations_test.mo"),
@@ -696,6 +700,12 @@ mod tests {
 
     fn var_expr(name: &str) -> ast::Expression {
         ast::Expression::ComponentReference(comp_ref(name))
+    }
+
+    fn var_expr_with_span(name: &str, span: rumoca_core::Span) -> ast::Expression {
+        let mut reference = comp_ref(name);
+        reference.span = span;
+        ast::Expression::ComponentReference(reference)
     }
 
     fn for_index(name: &str, start: i64, end: i64) -> ast::ForIndex {
@@ -720,6 +730,100 @@ mod tests {
             def_id: None,
             span: rumoca_core::Span::DUMMY,
         })
+    }
+
+    #[test]
+    fn when_elsewhen_retains_one_owner_and_ordered_branch_spans() {
+        let source = rumoca_core::SourceId::from_source_name("when_chain_test.mo");
+        let owner_span = rumoca_core::Span::from_offsets(source, 5, 80);
+        let first_span = rumoca_core::Span::from_offsets(source, 10, 14);
+        let second_span = rumoca_core::Span::from_offsets(source, 40, 45);
+        let blocks = vec![
+            ast::EquationBlock {
+                cond: bool_expr(true, first_span),
+                eqs: vec![ast::Equation::Simple {
+                    lhs: var_expr("m"),
+                    rhs: int_expr(1),
+                }],
+            },
+            ast::EquationBlock {
+                cond: bool_expr(false, second_span),
+                eqs: vec![ast::Equation::Simple {
+                    lhs: var_expr("m"),
+                    rhs: int_expr(2),
+                }],
+            },
+        ];
+
+        let chain = flatten_when_blocks(
+            &crate::Context::default(),
+            &blocks,
+            &ast::QualifiedName::new(),
+            owner_span,
+            None,
+        )
+        .expect("flatten one when/elsewhen owner");
+
+        assert_eq!(chain.span, owner_span);
+        assert_eq!(chain.branches.len(), 2);
+        assert_eq!(chain.branches[0].span, first_span);
+        assert_eq!(chain.branches[1].span, second_span);
+        assert!(matches!(
+            &chain.branches[0].condition,
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Boolean(true),
+                ..
+            }
+        ));
+        assert!(matches!(
+            &chain.branches[1].condition,
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Boolean(false),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn when_chain_still_rejects_mismatched_dynamic_branch_targets() {
+        let source = rumoca_core::SourceId::from_source_name("when_chain_targets_test.mo");
+        let owner_span = rumoca_core::Span::from_offsets(source, 5, 80);
+        let blocks = vec![
+            ast::EquationBlock {
+                cond: var_expr_with_span(
+                    "first_trigger",
+                    rumoca_core::Span::from_offsets(source, 10, 23),
+                ),
+                eqs: vec![ast::Equation::Simple {
+                    lhs: var_expr("first_target"),
+                    rhs: int_expr(1),
+                }],
+            },
+            ast::EquationBlock {
+                cond: var_expr_with_span(
+                    "second_trigger",
+                    rumoca_core::Span::from_offsets(source, 40, 54),
+                ),
+                eqs: vec![ast::Equation::Simple {
+                    lhs: var_expr("second_target"),
+                    rhs: int_expr(2),
+                }],
+            },
+        ];
+
+        let error = flatten_when_blocks(
+            &crate::Context::default(),
+            &blocks,
+            &ast::QualifiedName::new(),
+            owner_span,
+            None,
+        )
+        .expect_err("dynamic branches with different targets violate EQN-013");
+
+        assert!(matches!(
+            error,
+            FlattenError::UnsupportedEquation { span, .. } if span == owner_span
+        ));
     }
 
     #[test]

@@ -1001,7 +1001,7 @@ fn rewrite_model_expressions(
     rewrite_variable_expressions(model, rewriter)?;
     rewrite_assertions(model, rewriter)?;
     rewrite_algorithms(model, rewriter)?;
-    rewrite_when_clauses(model, rewriter)?;
+    rewrite_when_chains(model, rewriter)?;
     Ok(())
 }
 
@@ -1082,13 +1082,15 @@ fn rewrite_algorithms(
     Ok(())
 }
 
-fn rewrite_when_clauses(
+fn rewrite_when_chains(
     model: &mut flat::Model,
     rewriter: &mut StreamOperatorRewriter,
 ) -> Result<(), FlattenError> {
-    for clause in &mut model.when_clauses {
-        clause.condition = rewriter.rewrite_expression(&clause.condition)?;
-        rewrite_when_equations(&mut clause.equations, rewriter)?;
+    for chain in &mut model.when_chains {
+        for branch in &mut chain.branches {
+            branch.condition = rewriter.rewrite_expression(&branch.condition)?;
+            rewrite_when_equations(&mut branch.equations, rewriter)?;
+        }
     }
     Ok(())
 }

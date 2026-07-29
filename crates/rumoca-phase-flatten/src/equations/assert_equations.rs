@@ -134,7 +134,7 @@ fn assert_equation_result(assert_eq: flat::AssertEquation) -> FlattenedEquations
         equations: vec![],
         structured_equations: vec![],
         assert_equations: vec![assert_eq],
-        when_clauses: vec![],
+        when_chains: vec![],
         definite_roots: vec![],
         branches: vec![],
         potential_roots: vec![],

@@ -1,18 +1,42 @@
 use super::*;
 
-/// MLS §8.3.5: When clause
+/// MLS §8.3.5: one complete `when`/`elsewhen` equation owner.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WhenClause {
+pub struct WhenChain {
+    /// Source-priority ordered `when` and `elsewhen` branches.
+    pub branches: Vec<WhenBranch>,
+    /// Source span of the complete `when`/`elsewhen` equation.
+    pub span: Span,
+}
+
+impl WhenChain {
+    /// Create an empty chain owned by one source `when` equation.
+    pub fn new(span: Span) -> Self {
+        Self {
+            branches: Vec::new(),
+            span,
+        }
+    }
+
+    /// Append the next source-priority branch.
+    pub fn add_branch(&mut self, branch: WhenBranch) {
+        self.branches.push(branch);
+    }
+}
+
+/// One ordered branch inside a [`WhenChain`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WhenBranch {
     /// The condition expression.
     pub condition: Expression,
     /// Equations active when the condition triggers.
     pub equations: Vec<WhenEquation>,
-    /// Source span for error reporting.
+    /// Exact source span of this branch's condition.
     pub span: Span,
 }
 
-impl WhenClause {
-    /// Create a new when clause with span information.
+impl WhenBranch {
+    /// Create a new branch with exact condition provenance.
     pub fn new(condition: Expression, span: Span) -> Self {
         Self {
             condition,
@@ -21,13 +45,13 @@ impl WhenClause {
         }
     }
 
-    /// Add an equation to this when clause.
+    /// Add an equation to this branch.
     pub fn add_equation(&mut self, eq: WhenEquation) {
         self.equations.push(eq);
     }
 }
 
-/// An equation inside a when clause (MLS §8.3.5).
+/// An equation inside a when-chain branch (MLS §8.3.5).
 ///
 /// When-clauses can contain:
 /// - Simple assignments: `v = expr`

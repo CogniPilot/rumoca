@@ -216,7 +216,7 @@ fn def_id_canonicalization_preserves_resolved_package_constant_refs() {
 }
 
 #[test]
-fn record_alias_canonicalization_visits_when_clauses_and_algorithms() {
+fn record_alias_canonicalization_visits_when_chains_and_algorithms() {
     let mut model = flat::Model::new();
     model.add_variable(
         rumoca_core::VarName::new("pipe.port_a.p"),
@@ -226,17 +226,19 @@ fn record_alias_canonicalization_visits_when_clauses_and_algorithms() {
             ..flat::Variable::empty_with_span(test_span())
         },
     );
-    let mut when_clause = flat::WhenClause::new(
+    let mut when_branch = flat::WhenBranch::new(
         rumoca_core::Expression::Empty { span: Span::DUMMY },
         Span::DUMMY,
     );
-    when_clause.add_equation(flat::WhenEquation::Assign {
+    when_branch.add_equation(flat::WhenEquation::Assign {
         target: rumoca_core::VarName::new("y"),
         value: var_ref("pipe.flowModel.port_a.p"),
         span: Span::DUMMY,
         origin: "test".to_string(),
     });
-    model.when_clauses.push(when_clause);
+    let mut when_chain = flat::WhenChain::new(Span::DUMMY);
+    when_chain.add_branch(when_branch);
+    model.when_chains.push(when_chain);
     model.algorithms.push(flat::Algorithm::new(
         vec![rumoca_core::Statement::Assignment {
             comp: component_ref("y"),
@@ -249,7 +251,8 @@ fn record_alias_canonicalization_visits_when_clauses_and_algorithms() {
 
     canonicalize_varrefs_via_record_aliases(&mut model, &context_with_alias());
 
-    let flat::WhenEquation::Assign { value, .. } = &model.when_clauses[0].equations[0] else {
+    let flat::WhenEquation::Assign { value, .. } = &model.when_chains[0].branches[0].equations[0]
+    else {
         panic!("expected when assignment");
     };
     let rumoca_core::Expression::VarRef { name, .. } = value else {

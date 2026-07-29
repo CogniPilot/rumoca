@@ -68,7 +68,7 @@ pub(super) fn source_balance(
             }
         }
     }
-    for target in when_clause_targets(flat) {
+    for target in when_chain_targets(flat) {
         add_algorithm_target(&mut detail, flat, roles, &target)?;
     }
     for algorithm in &flat.algorithms {

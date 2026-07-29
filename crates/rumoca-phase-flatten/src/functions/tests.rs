@@ -240,7 +240,7 @@ fn canonicalize_collected_function_calls_rejects_disagreeing_name_and_resolved_i
 }
 
 #[test]
-fn canonicalize_collected_function_calls_visits_when_clauses() {
+fn canonicalize_collected_function_calls_visits_when_chains() {
     let mut flat = flat::Model::new();
     let mut function = rumoca_core::Function::new("Pkg.Events.trip", Span::DUMMY);
     function
@@ -248,7 +248,7 @@ fn canonicalize_collected_function_calls_visits_when_clauses() {
         .push(rumoca_core::Statement::Return { span: Span::DUMMY });
     flat.add_function(function);
 
-    let mut when = flat::WhenClause::new(
+    let mut branch = flat::WhenBranch::new(
         rumoca_core::Expression::FunctionCall {
             name: rumoca_core::Reference::new("Pkg.Events.trip"),
             args: vec![],
@@ -257,7 +257,7 @@ fn canonicalize_collected_function_calls_visits_when_clauses() {
         },
         Span::DUMMY,
     );
-    when.add_equation(flat::WhenEquation::Conditional {
+    branch.add_equation(flat::WhenEquation::Conditional {
         branches: vec![(
             rumoca_core::Expression::FunctionCall {
                 name: rumoca_core::Reference::new("Pkg.Events.trip"),
@@ -291,16 +291,21 @@ fn canonicalize_collected_function_calls_visits_when_clauses() {
         span: Span::DUMMY,
         origin: "nested when branch".to_string(),
     });
-    flat.when_clauses.push(when);
+    let mut chain = flat::WhenChain::new(Span::DUMMY);
+    chain.add_branch(branch);
+    flat.when_chains.push(chain);
 
     canonicalize_collected_function_calls(&mut flat).expect("canonicalize function calls");
 
-    assert_function_call_name(&flat.when_clauses[0].condition, "Pkg.Events.trip");
+    assert_function_call_name(
+        &flat.when_chains[0].branches[0].condition,
+        "Pkg.Events.trip",
+    );
     let flat::WhenEquation::Conditional {
         branches,
         else_branch,
         ..
-    } = &flat.when_clauses[0].equations[0]
+    } = &flat.when_chains[0].branches[0].equations[0]
     else {
         panic!("expected conditional when equation");
     };

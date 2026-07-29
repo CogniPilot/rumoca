@@ -131,7 +131,7 @@ pub(super) fn print_flat_equation_summary(flat: &rumoca_ir_flat::Model) {
     println!("\n--- Flat equation count ---");
     println!("  equations: {}", flat.equations.len());
     println!("  initial_equations: {}", flat.initial_equations.len());
-    println!("  when_clauses: {}", flat.when_clauses.len());
+    println!("  when_chains: {}", flat.when_chains.len());
     println!("  algorithms: {}", flat.algorithms.len());
     println!("  top_level_connectors: {:?}", flat.top_level_connectors);
     println!("  definite_roots: {:?}", flat.definite_roots);

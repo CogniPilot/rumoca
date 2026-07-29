@@ -1,37 +1,40 @@
 use super::*;
 use rumoca_core::ExpressionRewriter;
 
-pub(super) fn validate_when_clauses(
-    clauses: &[flat::WhenClause],
+pub(super) fn validate_when_chains(
+    chains: &[flat::WhenChain],
     roles: &HashMap<VarName, PlannedRole>,
     states: &HashSet<VarName>,
     constants: &EvalContext,
     sample_lattices: &mut Vec<(Span, ClockLattice)>,
 ) -> Result<HashSet<Span>, ToDaeError> {
     let mut reinit_state_pre = HashSet::new();
-    for clause in clauses {
-        require_span(clause.span, "when clause")?;
-        validate_condition_expression(
-            &clause.condition,
-            roles,
-            states,
-            constants,
-            sample_lattices,
-        )?;
-        let clocked = matches!(
-            &clause.condition,
-            Expression::VarRef { name, .. }
-                if matches!(roles.get(name.var_name()), Some(PlannedRole::Clock))
-        );
-        validate_when_equations(
-            &clause.equations,
-            roles,
-            states,
-            constants,
-            sample_lattices,
-            &mut reinit_state_pre,
-            clocked,
-        )?;
+    for chain in chains {
+        require_span(chain.span, "when chain")?;
+        for branch in &chain.branches {
+            require_span(branch.span, "when branch")?;
+            validate_condition_expression(
+                &branch.condition,
+                roles,
+                states,
+                constants,
+                sample_lattices,
+            )?;
+            let clocked = matches!(
+                &branch.condition,
+                Expression::VarRef { name, .. }
+                    if matches!(roles.get(name.var_name()), Some(PlannedRole::Clock))
+            );
+            validate_when_equations(
+                &branch.equations,
+                roles,
+                states,
+                constants,
+                sample_lattices,
+                &mut reinit_state_pre,
+                clocked,
+            )?;
+        }
     }
     Ok(reinit_state_pre)
 }

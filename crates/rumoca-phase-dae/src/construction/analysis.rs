@@ -19,7 +19,7 @@ mod record_array_fields;
 mod record_equations;
 mod source_balance;
 mod structured_families;
-mod when_clauses;
+mod when_chains;
 use clocks::analyze_clocks;
 pub(super) use clocks::{ClockPlan, SampledValuePlan};
 use comprehensions::analyze_comprehensions;
@@ -45,7 +45,7 @@ use function_value_types::validate_function_value_type;
 pub(super) use model_algorithms::ModelAlgorithmPlan;
 use model_algorithms::analyze_model_algorithm;
 pub(super) use model_algorithms::{
-    algorithm_targets, event_targets, model_algorithm_targets, when_clause_targets,
+    algorithm_targets, event_targets, model_algorithm_targets, when_chain_targets,
 };
 use model_roles::{ModelRoles, analyze_model_roles};
 pub(super) use record_array_fields::RecordArrayFieldPlan;
@@ -53,7 +53,7 @@ use record_array_fields::{analyze_record_array_fields, expression_for_validation
 use record_equations::analyze_record_equations;
 use source_balance::source_balance;
 use structured_families::validate_structured_families;
-use when_clauses::validate_when_clauses;
+use when_chains::validate_when_chains;
 
 pub(super) struct Analysis {
     pub(super) constants: EvalContext,
@@ -233,8 +233,8 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
         &record_array_fields,
     )?;
     let mut sample_lattices = Vec::new();
-    let reinit_state_pre = validate_when_clauses(
-        &flat.when_clauses,
+    let reinit_state_pre = validate_when_chains(
+        &flat.when_chains,
         &roles,
         &states,
         &constants,

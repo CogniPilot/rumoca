@@ -54,9 +54,11 @@ impl DelayAnalyzer<'_> {
                 self.visit_statement(statement)?;
             }
         }
-        for clause in &flat.when_clauses {
-            self.visit_expression(&clause.condition)?;
-            self.visit_when_equations(&clause.equations)?;
+        for chain in &flat.when_chains {
+            for branch in &chain.branches {
+                self.visit_expression(&branch.condition)?;
+                self.visit_when_equations(&branch.equations)?;
+            }
         }
         self.visit_functions(flat)
     }

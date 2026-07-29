@@ -490,7 +490,7 @@ pub(crate) fn flatten_equation_with_def_map(
                 equations: vec![equation],
                 structured_equations,
                 assert_equations: vec![],
-                when_clauses: vec![],
+                when_chains: vec![],
                 definite_roots: vec![],
                 branches: vec![],
                 potential_roots: vec![],

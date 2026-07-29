@@ -75,18 +75,15 @@ pub(crate) fn canonicalize_varrefs_via_instantiated_def_ids(flat: &mut flat::Mod
         );
         canonicalize_def_id_opt_expr(&mut assert_eq.level, &def_id_index, &known_variables, None);
     }
-    for when_clause in &mut flat.when_clauses {
-        canonicalize_def_id_expr(
-            &mut when_clause.condition,
-            &def_id_index,
-            &known_variables,
-            None,
-        );
-        canonicalize_def_id_when_equations(
-            &mut when_clause.equations,
-            &def_id_index,
-            &known_variables,
-        );
+    for chain in &mut flat.when_chains {
+        for branch in &mut chain.branches {
+            canonicalize_def_id_expr(&mut branch.condition, &def_id_index, &known_variables, None);
+            canonicalize_def_id_when_equations(
+                &mut branch.equations,
+                &def_id_index,
+                &known_variables,
+            );
+        }
     }
     for algorithm in &mut flat.algorithms {
         canonicalize_def_id_statements(

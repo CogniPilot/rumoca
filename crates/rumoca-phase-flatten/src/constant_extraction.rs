@@ -208,10 +208,12 @@ pub(super) fn collect_referenced_class_scopes(
         collect_expression_class_scopes(&eq.residual, live_vars, def_map, scopes);
     }
 
-    for when in &flat.when_clauses {
-        collect_expression_class_scopes(&when.condition, live_vars, def_map, scopes);
-        for eq in &when.equations {
-            collect_when_equation_class_scopes(eq, live_vars, def_map, scopes);
+    for chain in &flat.when_chains {
+        for branch in &chain.branches {
+            collect_expression_class_scopes(&branch.condition, live_vars, def_map, scopes);
+            for eq in &branch.equations {
+                collect_when_equation_class_scopes(eq, live_vars, def_map, scopes);
+            }
         }
     }
 

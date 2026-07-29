@@ -230,13 +230,13 @@ fn build_checked<'dae>(
         &flat.algorithms,
         &analysis.model_algorithm_plans,
     )?;
-    lower_when_clauses(
+    lower_when_chains(
         construction,
         &coordinates,
         &functions,
         &analysis.sample_lattices,
         &clocks,
-        &flat.when_clauses,
+        &flat.when_chains,
     )
 }
 
@@ -1052,23 +1052,44 @@ fn always_condition<'dae>(
     Ok(condition)
 }
 
-fn lower_when_clauses<'dae>(
+fn lower_when_chains<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     coordinates: &HashMap<VarName, Coordinate<'dae>>,
     functions: &FunctionRegistry<'_, 'dae>,
     sample_lattices: &[(Span, ClockLattice)],
     clocks: &LoweredClocks<'dae>,
-    clauses: &[flat::WhenClause],
+    chains: &[flat::WhenChain],
 ) -> Result<(), dae::DaeConstructionError> {
-    let mut guards = Vec::with_capacity(clauses.len());
-    for clause in clauses {
+    for chain in chains {
+        lower_when_chain(
+            construction,
+            coordinates,
+            functions,
+            sample_lattices,
+            clocks,
+            chain,
+        )?;
+    }
+    Ok(())
+}
+
+fn lower_when_chain<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    coordinates: &HashMap<VarName, Coordinate<'dae>>,
+    functions: &FunctionRegistry<'_, 'dae>,
+    sample_lattices: &[(Span, ClockLattice)],
+    clocks: &LoweredClocks<'dae>,
+    chain: &flat::WhenChain,
+) -> Result<(), dae::DaeConstructionError> {
+    let mut guards = Vec::with_capacity(chain.branches.len());
+    for branch in &chain.branches {
         let (condition, owner_clock) = lower_when_condition(
             construction,
             coordinates,
             functions,
             sample_lattices,
             clocks,
-            &clause.condition,
+            &branch.condition,
         )?;
         guards.push(EventGuard {
             trigger: condition,
@@ -1076,19 +1097,19 @@ fn lower_when_clauses<'dae>(
             owner_clock,
         });
     }
-    for (clause, guard) in clauses.iter().zip(&guards) {
+    for (branch, guard) in chain.branches.iter().zip(&guards) {
         if let Some(clock) = guard.owner_clock {
-            own_clocked_targets(construction, coordinates, clock, &clause.equations)?;
+            own_clocked_targets(construction, coordinates, clock, &branch.equations)?;
         }
     }
-    for (clause, guard) in clauses.iter().zip(guards) {
+    for (branch, guard) in chain.branches.iter().zip(guards) {
         lower_when_equations(
             construction,
             coordinates,
             functions,
             sample_lattices,
             guard,
-            &clause.equations,
+            &branch.equations,
         )?;
     }
     Ok(())
