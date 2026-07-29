@@ -1,0 +1,333 @@
+use std::fs;
+use std::process::Command;
+
+use rumoca_ir_galec::ast as galec;
+use rumoca_ir_galec::package::CheckedAlgorithmBlock;
+use rumoca_phase_codegen::{render_checked_algorithm_block_template_with_artifact, templates};
+use serde_json::json;
+use tempfile::tempdir;
+
+const MODEL: &str = "ArrayProjection";
+
+fn array_declaration(
+    kind: galec::ScalarType,
+    name: &str,
+    extent: i64,
+) -> galec::VariableDeclaration {
+    let mut declaration = galec::VariableDeclaration::scalar(kind, galec::Name::ident(name));
+    declaration.dimensions = vec![galec::Dimension::Expr(galec::Expression::Integer(extent))];
+    declaration
+}
+
+fn interface(
+    kind: galec::InterfaceKind,
+    scalar: galec::ScalarType,
+    name: &str,
+    array: bool,
+) -> galec::InterfaceVariable {
+    galec::InterfaceVariable {
+        kind,
+        decl: if array {
+            array_declaration(scalar, name, 2)
+        } else {
+            galec::VariableDeclaration::scalar(scalar, galec::Name::ident(name))
+        },
+        start: None,
+    }
+}
+
+fn state(name: &str) -> galec::Reference {
+    galec::Reference::state(galec::Name::ident(name))
+}
+
+fn expression(name: &str) -> galec::Expression {
+    galec::Expression::Ref(state(name))
+}
+
+fn local(name: &str) -> galec::Reference {
+    galec::Reference::local(galec::Name::ident(name))
+}
+
+fn state_assignment(target: &str, value: galec::Expression) -> galec::Spanned<galec::Statement> {
+    galec::Spanned::dummy(galec::Statement::Assignment {
+        target: state(target),
+        value,
+    })
+}
+
+fn local_assignment(target: &str, value: galec::Expression) -> galec::Spanned<galec::Statement> {
+    galec::Spanned::dummy(galec::Statement::Assignment {
+        target: local(target),
+        value,
+    })
+}
+
+fn checked_array_block() -> CheckedAlgorithmBlock {
+    let mut block = galec::Block::new(galec::Name::ident(MODEL));
+    block.interface = vec![
+        interface(
+            galec::InterfaceKind::Input,
+            galec::ScalarType::Real,
+            "a",
+            true,
+        ),
+        interface(
+            galec::InterfaceKind::Input,
+            galec::ScalarType::Real,
+            "b",
+            true,
+        ),
+        interface(
+            galec::InterfaceKind::Input,
+            galec::ScalarType::Boolean,
+            "choose_a",
+            false,
+        ),
+        interface(
+            galec::InterfaceKind::Input,
+            galec::ScalarType::Real,
+            "gain",
+            false,
+        ),
+        interface(
+            galec::InterfaceKind::Output,
+            galec::ScalarType::Real,
+            "negated",
+            true,
+        ),
+        interface(
+            galec::InterfaceKind::Output,
+            galec::ScalarType::Real,
+            "difference",
+            true,
+        ),
+        interface(
+            galec::InterfaceKind::Output,
+            galec::ScalarType::Real,
+            "selected",
+            true,
+        ),
+        interface(
+            galec::InterfaceKind::Output,
+            galec::ScalarType::Real,
+            "lifted",
+            true,
+        ),
+    ];
+    block.do_step.locals = vec![array_declaration(galec::ScalarType::Real, "scratch", 2)];
+    block.do_step.statements = vec![
+        local_assignment("scratch", galec::Expression::Neg(state("a"))),
+        state_assignment("negated", galec::Expression::Ref(local("scratch"))),
+        state_assignment(
+            "difference",
+            galec::Expression::binary(galec::BinaryOp::Sub, expression("a"), expression("gain")),
+        ),
+        state_assignment(
+            "selected",
+            galec::Expression::If(galec::IfExpression {
+                branches: vec![(expression("choose_a"), expression("a"))],
+                else_value: Box::new(expression("b")),
+            }),
+        ),
+        state_assignment(
+            "lifted",
+            galec::Expression::Call(galec::FunctionCall {
+                function: galec::Name::ident("sin1D"),
+                arguments: vec![expression("a")],
+            }),
+        ),
+    ];
+    CheckedAlgorithmBlock::construct(block).expect("array projection fixture must be valid GALEC")
+}
+
+fn render(block: &CheckedAlgorithmBlock, path: &str) -> Result<String, String> {
+    let template = templates::builtin_template_source("embedded-c-galec", path)
+        .expect("embedded-C GALEC template");
+    render_checked_algorithm_block_template_with_artifact(block, &json!({}), template, MODEL)
+        .map_err(|error| error.to_string())
+}
+
+#[test]
+fn recursive_array_expressions_execute_with_checked_values() {
+    let block = checked_array_block();
+    let header = render(&block, "model.h.jinja").expect("checked header");
+    let source = render(&block, "model.c.jinja").expect("checked source");
+
+    for expected in [
+        "scratch[0] = (-self->a[0]);",
+        "scratch[1] = (-self->a[1]);",
+        "self->negated[0] = scratch[0];",
+        "self->negated[1] = scratch[1];",
+        "self->difference[0] = (self->a[0] - self->gain);",
+        "self->difference[1] = (self->a[1] - self->gain);",
+        "self->selected[0] = (self->choose_a ? self->a[0] : self->b[0]);",
+        "self->selected[1] = (self->choose_a ? self->a[1] : self->b[1]);",
+        "self->lifted[0] = sin(self->a[0]);",
+        "self->lifted[1] = sin(self->a[1]);",
+    ] {
+        assert!(
+            source.contains(expected),
+            "missing recursive scalar projection `{expected}`:\n{source}"
+        );
+    }
+
+    let directory = tempdir().expect("temporary generated-C directory");
+    let header_path = directory.path().join(format!("{MODEL}.h"));
+    let source_path = directory.path().join(format!("{MODEL}.c"));
+    let driver_path = directory.path().join("main.c");
+    let executable = directory.path().join("array-projection");
+    fs::write(&header_path, header).expect("write generated header");
+    fs::write(&source_path, &source).expect("write generated source");
+    fs::write(
+        &driver_path,
+        "\
+#include <math.h>
+#include \"ArrayProjection.h\"
+
+static int close_enough(double lhs, double rhs) {
+    return fabs(lhs - rhs) < 1.0e-12;
+}
+
+int main(void) {
+    ArrayProjectionState state = {0};
+    state.a[0] = 1.0;
+    state.a[1] = -2.0;
+    state.b[0] = 3.0;
+    state.b[1] = 4.0;
+    state.choose_a = false;
+    state.gain = 0.5;
+    ArrayProjection_dostep(&state);
+    return !(close_enough(state.negated[0], -1.0)
+        && close_enough(state.negated[1], 2.0)
+        && close_enough(state.difference[0], 0.5)
+        && close_enough(state.difference[1], -2.5)
+        && close_enough(state.selected[0], 3.0)
+        && close_enough(state.selected[1], 4.0)
+        && close_enough(state.lifted[0], sin(1.0))
+        && close_enough(state.lifted[1], sin(-2.0)));
+}
+",
+    )
+    .expect("write generated-C driver");
+
+    let compile = Command::new("cc")
+        .args([
+            "-std=c99",
+            "-pedantic",
+            "-Wall",
+            "-Wextra",
+            "-Wconversion",
+            "-Wsign-conversion",
+            "-Werror",
+        ])
+        .arg(&driver_path)
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&executable)
+        .arg("-lm")
+        .output()
+        .expect("run C compiler");
+    assert!(
+        compile.status.success(),
+        "strict generated-C compile failed:\n{}\nsource:\n{source}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let run = Command::new(&executable)
+        .output()
+        .expect("execute generated-C array harness");
+    assert!(
+        run.status.success(),
+        "generated-C array harness returned {:?}:\n{}",
+        run.status.code(),
+        String::from_utf8_lossy(&run.stderr)
+    );
+}
+
+#[test]
+fn unequal_extents_fail_before_c_rendering() {
+    let mut block = galec::Block::new(galec::Name::ident("UnequalExtents"));
+    block.interface = vec![
+        galec::InterfaceVariable {
+            kind: galec::InterfaceKind::Input,
+            decl: array_declaration(galec::ScalarType::Real, "source", 3),
+            start: None,
+        },
+        galec::InterfaceVariable {
+            kind: galec::InterfaceKind::Output,
+            decl: array_declaration(galec::ScalarType::Real, "target", 2),
+            start: None,
+        },
+    ];
+    block.do_step.statements = vec![state_assignment("target", expression("source"))];
+    let checked =
+        CheckedAlgorithmBlock::construct(block).expect("rank-only checker accepts this fixture");
+
+    let error = render(&checked, "model.c.jinja").expect_err("extent mismatch must fail closed");
+    assert!(
+        error.contains("checked assignment extent mismatch"),
+        "{error}"
+    );
+}
+
+#[test]
+fn unresolved_local_never_reaches_rendering() {
+    let mut block = galec::Block::new(galec::Name::ident("MissingLocal"));
+    block.interface = vec![interface(
+        galec::InterfaceKind::Output,
+        galec::ScalarType::Real,
+        "target",
+        false,
+    )];
+    block.do_step.statements = vec![state_assignment(
+        "target",
+        galec::Expression::Ref(local("missing")),
+    )];
+
+    let error = CheckedAlgorithmBlock::construct(block)
+        .expect_err("unresolved local must be unconstructable");
+    assert!(error.to_string().contains("unresolved"), "{error}");
+}
+
+#[test]
+fn multipart_state_shape_is_rejected_when_the_c_state_view_cannot_represent_it() {
+    let mut block = galec::Block::new(galec::Name::ident("MultipartState"));
+    block.compartments = vec![galec::StateCompartment {
+        name: galec::Name::ident("VectorRecord"),
+        entities: vec![galec::ProtectedEntity {
+            kind: galec::ProtectedKind::State,
+            decl: array_declaration(galec::ScalarType::Real, "values", 2),
+            start: None,
+        }],
+        span: rumoca_core::Span::DUMMY,
+    }];
+    block.protected = vec![galec::ProtectedEntity {
+        kind: galec::ProtectedKind::State,
+        decl: galec::VariableDeclaration {
+            ty: galec::TypeRef::Compartment(galec::Name::ident("VectorRecord")),
+            name: galec::Name::ident("record_state"),
+            dimensions: Vec::new(),
+            range: galec::RangeAttributes::default(),
+            span: rumoca_core::Span::DUMMY,
+        },
+        start: None,
+    }];
+    block.interface = vec![interface(
+        galec::InterfaceKind::Output,
+        galec::ScalarType::Real,
+        "target",
+        true,
+    )];
+    let source = galec::Reference::State(vec![
+        galec::RefPart::plain(galec::Name::ident("record_state")),
+        galec::RefPart::plain(galec::Name::ident("values")),
+    ]);
+    block.do_step.statements = vec![state_assignment("target", galec::Expression::Ref(source))];
+    let checked = CheckedAlgorithmBlock::construct(block).expect("valid multipart GALEC block");
+
+    let error =
+        render(&checked, "model.c.jinja").expect_err("unsupported C state layout must fail closed");
+    assert!(
+        error.contains("standalone target does not support compartment root"),
+        "{error}"
+    );
+}

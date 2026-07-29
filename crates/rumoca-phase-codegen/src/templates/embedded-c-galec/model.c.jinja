@@ -38,8 +38,8 @@
 {%- macro binary_operator(value) -%}
 {%- if value.kind == "mul" -%}*{%- elif value.kind == "div" -%}/{%- elif value.kind == "add" -%}+{%- elif value.kind == "sub" -%}-{%- elif value.kind == "lt" -%}<{%- elif value.kind == "gt" -%}>{%- elif value.kind == "le" -%}<={%- elif value.kind == "ge" -%}>={%- elif value.kind == "eq" -%}=={%- elif value.kind == "ne" -%}!={%- elif value.kind == "and" -%}&&{%- elif value.kind == "or" -%}||{%- else -%}{{ fail_closed_binary_operator }}{%- endif -%}
 {%- endmacro -%}
-{%- macro call(value) -%}
-{%- set function = value.function.value[0] -%}
+{%- macro call(value, indices=[]) -%}
+{%- set function = value.lifted_base if value.lifted_base is not none else value.function.value[0] -%}
 {%- if function == "absolute" -%}fabs
 {%- elif function == "sign" -%}rumoca_galec_sign
 {%- elif function == "sqrt" -%}sqrt
@@ -64,9 +64,10 @@
 {%- elif function == "imax" -%}rumoca_galec_imax
 {%- elif function == "real" -%}((double)
 {%- elif function == "divisionTowardsZero" -%}rumoca_galec_division_towards_zero
+{%- elif indices|length > 0 -%}{{ fail("unsupported-feature:embedded-c-array-expression:user-call") }}
 {%- else -%}{{ symbol(c_symbols, function) }}
 {%- endif -%}
-({% for argument in value.arguments %}{{ expr(argument) }}{% if not loop.last %}, {% endif %}{% endfor %}){% if function == "real" %}){% endif %}
+({% for argument in value.arguments %}{% if indices|length > 0 %}{{ scalar_source(argument, indices) }}{% else %}{{ expr(argument) }}{% endif %}{% if not loop.last %}, {% endif %}{% endfor %}){% if function == "real" %}){% endif %}
 {%- endmacro -%}
 {%- macro if_tail(branches, index, else_value) -%}
 ({{ expr(branches[index][0]) }} ? {{ expr(branches[index][1]) }} : {% if index + 1 < branches|length %}{{ if_tail(branches, index + 1, else_value) }}{% else %}{{ expr(else_value) }}{% endif %})
@@ -89,13 +90,36 @@
 {%- macro scalar_target(reference_value, indices) -%}
 {{ reference(reference_value) }}{% for index in indices %}[{{ index }}]{% endfor %}
 {%- endmacro -%}
+{%- macro scalar_reference(value, indices) -%}
+{{ reference(value) }}{%- if value.rank > 0 -%}{% for index in indices %}[{{ index }}]{% endfor %}{%- endif -%}
+{%- endmacro -%}
+{%- macro scalar_if_tail(branches, index, else_value, indices) -%}
+({{ expr(branches[index][0]) }} ? {{ scalar_source(branches[index][1], indices) }} : {% if index + 1 < branches|length %}{{ scalar_if_tail(branches, index + 1, else_value, indices) }}{% else %}{{ scalar_source(else_value, indices) }}{% endif %})
+{%- endmacro -%}
 {%- macro scalar_source(value, indices) -%}
+{%- if indices|length == 0 -%}{{ expr(value) }}
+{%- elif value.kind == "array" -%}
 {%- set current = namespace(value=value) -%}
 {%- for index in indices -%}
-{%- if current.value.kind == "array" -%}{%- set current.value = current.value.value[index] -%}{%- endif -%}
+{%- if current.value.kind != "array" -%}{{ fail("unsupported-feature:embedded-c-array-expression:constructor-rank") }}
+{%- else -%}{%- set current.value = current.value.value[index] -%}
+{%- endif -%}
 {%- endfor -%}
-{%- if current.value.kind == "ref" -%}{{ reference(current.value.value) }}{% for index in indices %}[{{ index }}]{% endfor %}
-{%- else -%}{{ expr(current.value) }}{%- endif -%}
+{%- if current.value.kind == "array" -%}{{ fail("unsupported-feature:embedded-c-array-expression:constructor-rank") }}
+{%- else -%}{{ expr(current.value) }}
+{%- endif -%}
+{%- elif value.kind == "ref" -%}{{ scalar_reference(value.value, indices) }}
+{%- elif value.kind == "neg" -%}(-{{ scalar_reference(value.value, indices) }})
+{%- elif value.kind == "paren" -%}({{ scalar_source(value.value, indices) }})
+{%- elif value.kind == "binary" -%}
+{%- if value.value.op.kind == "pow" -%}pow({{ scalar_source(value.value.lhs, indices) }}, {{ scalar_source(value.value.rhs, indices) }})
+{%- else -%}({{ scalar_source(value.value.lhs, indices) }} {{ binary_operator(value.value.op) }} {{ scalar_source(value.value.rhs, indices) }})
+{%- endif -%}
+{%- elif value.kind == "if" -%}{{ scalar_if_tail(value.value.branches, 0, value.value.else_value, indices) }}
+{%- elif value.kind == "call" -%}{{ call(value.value, indices) }}
+{%- elif value.kind == "bool" or value.kind == "integer" or value.kind == "real" or value.kind == "size" or value.kind == "not" -%}{{ expr(value) }}
+{%- else -%}{{ fail("unsupported-feature:embedded-c-array-expression:" ~ value.kind) }}
+{%- endif -%}
 {%- endmacro -%}
 {%- macro array_assignment(target, value, dimensions, depth, indices) -%}
 {%- if depth == dimensions|length -%}
@@ -114,17 +138,12 @@
 {%- for wrapped in values -%}
 {%- set value = wrapped.node -%}
 {%- if value.kind == "assignment" -%}
-{%- set expanded = namespace(value=false) -%}
-{%- if value.value.target.kind == "state" and value.value.target.value|length == 1 and value.value.target.value[0].subscripts|length == 0 -%}
-{%- set spelling = value.value.target.value[0].name.value[0] -%}
-{%- for variable in algorithm_code.variables -%}
-{%- if variable.name == spelling and variable.dimensions|length > 0 -%}
-{%- set expanded.value = true -%}
-{{ array_assignment(value.value.target, value.value.value, variable.dimensions, 0, []) }}
+{%- if value.value.target.rank > 0 -%}
+{%- if value.value.target.extents is none -%}{{ fail("unsupported-feature:embedded-c-array-expression:unknown-target-extents") }}
+{%- elif value.value.value.extents is none -%}{{ fail("unsupported-feature:embedded-c-array-expression:unproven-source-extents") }}
+{%- else -%}{{ array_assignment(value.value.target, value.value.value, value.value.target.extents, 0, []) }}
 {%- endif -%}
-{%- endfor -%}
-{%- endif -%}
-{%- if not expanded.value %}
+{%- else %}
     {{ reference(value.value.target) }} = {{ expr(value.value.value) }};
 {%- endif -%}
 {%- elif value.kind == "call" %}
@@ -136,6 +155,14 @@
 {{ statements(value.value.else_body) }}    }
 {%- endif -%}
 {%- else -%}{{ fail_closed_unsupported_c_statement }}{%- endif -%}
+{%- endfor -%}
+{%- endmacro -%}
+{%- macro c_type(kind) -%}
+{%- if kind == "real" -%}double{%- elif kind == "integer" -%}int32_t{%- elif kind == "boolean" -%}bool{%- else -%}{{ fail_closed_scalar_type }}{%- endif -%}
+{%- endmacro -%}
+{%- macro local_declarations(values) -%}
+{%- for declaration in values %}
+    {{ c_type(declaration.ty.value.kind) }} {{ symbol(c_symbols, name_text(declaration.name)) }}{% for dimension in declaration.dimensions %}{% if dimension.kind == "expr" and dimension.value.kind == "integer" %}[{{ dimension.value.value }}]{% else %}{{ fail("unsupported-feature:embedded-c-local-array-dimension") }}{% endif %}{% endfor %};
 {%- endfor -%}
 {%- endmacro -%}
 /* {{ algorithm_code.block_name | replace("*/", "* /") | replace("/*", "/ *") }}
@@ -160,12 +187,12 @@ static inline double rumoca_galec_max(double u1, double u2) {
 
 void {{ c_model }}_startup({{ c_model }}State *self) {
     (void)self;
-{{ statements(algorithm_code.package.block.startup.statements) }}}
+{{ local_declarations(algorithm_code.package.block.startup.locals) }}{{ statements(algorithm_code.package.block.startup.statements) }}}
 
 void {{ c_model }}_recalibrate({{ c_model }}State *self) {
     (void)self;
-{{ statements(algorithm_code.package.block.recalibrate.statements) }}}
+{{ local_declarations(algorithm_code.package.block.recalibrate.locals) }}{{ statements(algorithm_code.package.block.recalibrate.statements) }}}
 
 void {{ c_model }}_dostep({{ c_model }}State *self) {
     (void)self;
-{{ statements(algorithm_code.package.block.do_step.statements) }}}
+{{ local_declarations(algorithm_code.package.block.do_step.locals) }}{{ statements(algorithm_code.package.block.do_step.statements) }}}
