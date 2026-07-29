@@ -60,16 +60,15 @@ fn block_span_runs_from_header_name_to_footer_name() {
 }
 
 #[test]
-fn statement_span_slices_its_assignment_target() {
+fn statement_span_slices_the_complete_assignment() {
     let checked = parse(SAMPLE, "spans").expect("fixture parses");
     let parsed = checked.block();
 
-    // The single `self.y := self.u;` assignment: its span reconstructs from the
-    // target state reference (`self.y`), whose last part is `y` (D11 M1: the
-    // value expression is not yet spanned, so the target anchors the statement).
+    // The statement owner covers its complete source syntax, from the retained
+    // `self` owner token through the retained semicolon.
     let statement = &parsed.do_step.statements[0];
     assert!(matches!(statement.node, Statement::Assignment { .. }));
-    assert_eq!(slice(SAMPLE, statement.span), "y");
+    assert_eq!(slice(SAMPLE, statement.span), "self.y := self.u;");
 }
 
 #[test]
@@ -114,7 +113,13 @@ fn distinct_occurrences_get_distinct_spans() {
     // lexemes are at different byte offsets, so their spans must differ — proof
     // that spans track *occurrence*, not merely identity.
     let decl_y = parsed.interface[1].decl.span;
-    let assign_y = parsed.do_step.statements[0].span;
+    let Statement::Assignment { target, .. } = &parsed.do_step.statements[0].node else {
+        panic!("fixture statement must be an assignment");
+    };
+    let rumoca_ir_galec::ast::Reference::State(parts) = target else {
+        panic!("fixture assignment target must be a state reference");
+    };
+    let assign_y = parts.first().expect("state reference has a part").span;
     assert_eq!(slice(SAMPLE, decl_y), "y");
     assert_eq!(slice(SAMPLE, assign_y), "y");
     assert_ne!(
@@ -196,11 +201,9 @@ fn span_of_positions_a_statement_diagnostic() {
         .cloned()
         .expect("EG014 unresolved-reference present");
     let span = unresolved.span().expect("diagnostic is positioned");
-    // The statement span reconstructs from the assignment target `self.y` (M1).
+    // The statement-granular diagnostic covers the complete represented source
+    // statement, while reference-level diagnostics retain their own use spans.
     let sliced = slice(&text, span);
-    assert!(
-        !sliced.is_empty() && text.contains(sliced),
-        "in-bounds slice: {sliced:?}"
-    );
+    assert_eq!(sliced, "self.y := self.nope;");
     assert!(!span.is_dummy());
 }

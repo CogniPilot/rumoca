@@ -23,7 +23,7 @@ impl TryFrom<&g::Name> for rumoca_ir_galec::ast::Name {
         Ok(match ast {
             g::Name::Ident(n) => Self::Ident(
                 rumoca_ir_galec::ast::Identifier::new(n.ident.ident.text()),
-                n.ident.ident.span(),
+                n.ident.ident.span()?,
             ),
             g::Name::Quoted(n) => {
                 let text = n.quoted.quoted.text();
@@ -36,7 +36,7 @@ impl TryFrom<&g::Name> for rumoca_ir_galec::ast::Name {
                         ))
                         .into_anyhow()
                     })?;
-                Self::Quoted(content.to_string(), n.quoted.quoted.span())
+                Self::Quoted(content.to_string(), n.quoted.quoted.span()?)
             }
         })
     }

@@ -12,11 +12,14 @@ use crate::parse::generated::galec_grammar_trait as g;
 use crate::parse::refs::{
     computed_dimensions_to_vec, local_reference_ref_part, state_reference_tail_parts,
 };
-use crate::parse::span::{spanned_statement, statements_span};
+use crate::parse::span::union;
 use rumoca_ir_galec::ast::{
     Condition, ForLoop, Identifier, IfBranch, IfStatement, LimitTarget, Reference, SignalCheck,
     SignalTest, Spanned, Statement,
 };
+
+#[derive(Debug, Clone)]
+pub(crate) struct ParsedStatement(pub(crate) Spanned<Statement>);
 
 // ---------------------------------------------------------------------------
 // Statement
@@ -24,28 +27,53 @@ use rumoca_ir_galec::ast::{
 
 /// `statement : ( name_headed_statement | state_assignment | multi_assignment
 ///   | if_statement | for_loop | limit_statement | error_signal_statement ) ';'`.
-impl TryFrom<&g::Statement> for Statement {
+impl TryFrom<&g::Statement> for ParsedStatement {
     type Error = anyhow::Error;
 
     fn try_from(ast: &g::Statement) -> Result<Self, Self::Error> {
-        Ok(match &ast.statement_group {
+        let start = statement_start_span(&ast.statement_group)?;
+        let node = match &ast.statement_group {
             g::StatementGroup::NameHeadedStatement(s) => {
                 name_headed_statement(&s.name_headed_statement)
             }
-            g::StatementGroup::StateAssignment(s) => Self::Assignment {
+            g::StatementGroup::StateAssignment(s) => Statement::Assignment {
                 target: Reference::State(state_reference_tail_parts(
                     &s.state_assignment.state_reference.state_reference_tail,
                 )),
                 value: s.state_assignment.expression.clone(),
             },
             g::StatementGroup::MultiAssignment(s) => multi_assignment(&s.multi_assignment),
-            g::StatementGroup::IfStatement(s) => Self::If(if_statement(&s.if_statement)),
-            g::StatementGroup::ForLoop(s) => Self::For(for_loop(&s.for_loop)),
-            g::StatementGroup::LimitStatement(s) => Self::Limit(limit_targets(&s.limit_statement)),
-            g::StatementGroup::ErrorSignalStatement(s) => {
-                Self::Signal(idents(&s.error_signal_statement))
+            g::StatementGroup::IfStatement(s) => Statement::If(if_statement(&s.if_statement)?),
+            g::StatementGroup::ForLoop(s) => Statement::For(for_loop(&s.for_loop)),
+            g::StatementGroup::LimitStatement(s) => {
+                Statement::Limit(limit_targets(&s.limit_statement))
             }
-        })
+            g::StatementGroup::ErrorSignalStatement(s) => {
+                Statement::Signal(idents(&s.error_signal_statement))
+            }
+        };
+        Ok(Self(Spanned::new(
+            node,
+            union(start, ast.semicolon.span()?),
+        )))
+    }
+}
+
+fn statement_start_span(group: &g::StatementGroup) -> anyhow::Result<rumoca_core::Span> {
+    match group {
+        g::StatementGroup::NameHeadedStatement(value) => {
+            Ok(value.name_headed_statement.name.span())
+        }
+        g::StatementGroup::StateAssignment(value) => {
+            value.state_assignment.state_reference.owner.span()
+        }
+        g::StatementGroup::MultiAssignment(value) => value.multi_assignment.l_paren.span(),
+        g::StatementGroup::IfStatement(value) => value.if_statement.r#if.span(),
+        g::StatementGroup::ForLoop(value) => value.for_loop.r#for.span(),
+        g::StatementGroup::LimitStatement(value) => value.limit_statement.limit.span(),
+        g::StatementGroup::ErrorSignalStatement(value) => {
+            value.error_signal_statement.signal.span()
+        }
     }
 }
 
@@ -105,14 +133,16 @@ fn multi_assignment(ast: &g::MultiAssignment) -> Statement {
 
 /// `if_statement : 'if' condition 'then' { stmt }
 ///   { 'elseif' condition 'then' { stmt } } [ 'else' { stmt } ] 'end' 'if'`.
-fn if_statement(ast: &g::IfStatement) -> IfStatement {
+fn if_statement(ast: &g::IfStatement) -> anyhow::Result<IfStatement> {
     let mut branches = Vec::with_capacity(1 + ast.if_statement_list0.len());
     branches.push(if_branch(
+        ast.r#if.span()?,
         ast.condition.clone(),
         statements(ast.if_statement_list.iter().map(|s| &s.statement)),
     ));
     for elseif in &ast.if_statement_list0 {
         branches.push(if_branch(
+            elseif.r#elseif.span()?,
             elseif.condition.clone(),
             statements(elseif.if_statement_list0_list.iter().map(|s| &s.statement)),
         ));
@@ -121,10 +151,10 @@ fn if_statement(ast: &g::IfStatement) -> IfStatement {
         .if_statement_opt
         .as_ref()
         .map(|opt| statements(opt.if_statement_opt_list.iter().map(|s| &s.statement)));
-    IfStatement {
+    Ok(IfStatement {
         branches,
         else_body,
-    }
+    })
 }
 
 /// `for_loop : 'for' bounded_iteration 'loop' { stmt } 'end' 'for'`.
@@ -234,20 +264,23 @@ impl TryFrom<&g::ErrorSignalCheck> for SignalCheck {
 // Shared helpers over non-`%nt_type` repetition wrappers
 // ---------------------------------------------------------------------------
 
-/// Collect a spanned statement list from any generated repetition wrapper whose
-/// element exposes an already-converted `statement` field, reconstructing each
-/// statement's span from its spanned children (D11).
-fn statements<'a>(
-    items: impl Iterator<Item = &'a rumoca_ir_galec::ast::Statement>,
-) -> Vec<Spanned<Statement>> {
-    items.map(spanned_statement).collect()
+/// Collect a statement list whose source-backed spans were established during
+/// each statement's grammar conversion (D11).
+fn statements<'a>(items: impl Iterator<Item = &'a ParsedStatement>) -> Vec<Spanned<Statement>> {
+    items.map(|statement| statement.0.clone()).collect()
 }
 
-/// Build an [`IfBranch`] whose span is the union of its body statements (the
-/// condition is an expression / signal-check, which carry no span in M1).
-fn if_branch(condition: Condition, body: Vec<Spanned<Statement>>) -> IfBranch {
+/// Build an [`IfBranch`] from its exact branch keyword owner and body.
+fn if_branch(
+    owner: rumoca_core::Span,
+    condition: Condition,
+    body: Vec<Spanned<Statement>>,
+) -> IfBranch {
+    let span = body
+        .last()
+        .map_or(owner, |statement| union(owner, statement.span));
     IfBranch {
-        span: statements_span(&body),
+        span,
         condition,
         body,
     }

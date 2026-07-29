@@ -19,7 +19,7 @@
 
 use crate::parse::errors::GalecSyntaxError;
 use crate::parse::generated::galec_grammar_trait as g;
-use crate::parse::span::{spanned_statement, union};
+use crate::parse::span::union;
 use rumoca_ir_galec::ast::{
     Block, BlockMethod, BlockMethodKind, Dimension, Direction, FunctionKind, Identifier,
     InterfaceKind, InterfaceVariable, Name, Parameter, PredefinedSignal, ProtectedEntity,
@@ -264,7 +264,7 @@ fn locals(fd: &g::FunctionDeclaration) -> Vec<VariableDeclaration> {
 fn function_statements(fd: &g::FunctionDeclaration) -> Vec<Spanned<Statement>> {
     fd.function_declaration_list0
         .iter()
-        .map(|item| spanned_statement(&item.statement))
+        .map(|item| item.statement.0.clone())
         .collect()
 }
 

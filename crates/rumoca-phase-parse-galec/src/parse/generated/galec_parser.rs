@@ -1742,7 +1742,7 @@ pub const PRODUCTIONS: &[Production; 213] = &[
         lhs: 42,
         production: &[ParseType::T(14)],
     },
-    // 20 - function_declarationList0: statement : rumoca_ir_galec::ast::Statement  function_declarationList0;
+    // 20 - function_declarationList0: statement : crate::parse::stmt::ParsedStatement  function_declarationList0;
     Production {
         lhs: 44,
         production: &[ParseType::N(44), ParseType::N(116)],
@@ -1973,7 +1973,7 @@ pub const PRODUCTIONS: &[Production; 213] = &[
         lhs: 94,
         production: &[ParseType::N(37), ParseType::T(29), ParseType::N(48)],
     },
-    // 62 - statement: statementGroup ';'^ /* Clipped */;
+    // 62 - statement: statementGroup ';';
     Production {
         lhs: 116,
         production: &[ParseType::T(9), ParseType::N(117)],
@@ -2043,7 +2043,7 @@ pub const PRODUCTIONS: &[Production; 213] = &[
         lhs: 107,
         production: &[ParseType::N(37), ParseType::T(30), ParseType::N(113)],
     },
-    // 76 - multi_assignment: '('^ /* Clipped */ multi_assignmentOpt /* Option */ ')'^ /* Clipped */ ':='^ /* Clipped */ function_call : rumoca_ir_galec::ast::FunctionCall ;
+    // 76 - multi_assignment: '(' multi_assignmentOpt /* Option */ ')'^ /* Clipped */ ':='^ /* Clipped */ function_call : rumoca_ir_galec::ast::FunctionCall ;
     Production {
         lhs: 73,
         production: &[
@@ -2074,7 +2074,7 @@ pub const PRODUCTIONS: &[Production; 213] = &[
         lhs: 74,
         production: &[],
     },
-    // 81 - if_statement: 'if'^ /* Clipped */ condition : rumoca_ir_galec::ast::Condition  'then'^ /* Clipped */ if_statementList /* Vec */ if_statementList0 /* Vec */ if_statementOpt /* Option */ 'end'^ /* Clipped */ 'if'^ /* Clipped */;
+    // 81 - if_statement: 'if' condition : rumoca_ir_galec::ast::Condition  'then'^ /* Clipped */ if_statementList /* Vec */ if_statementList0 /* Vec */ if_statementOpt /* Option */ 'end'^ /* Clipped */ 'if'^ /* Clipped */;
     Production {
         lhs: 51,
         production: &[
@@ -2088,7 +2088,7 @@ pub const PRODUCTIONS: &[Production; 213] = &[
             ParseType::T(31),
         ],
     },
-    // 82 - if_statementList0: 'elseif'^ /* Clipped */ condition : rumoca_ir_galec::ast::Condition  'then'^ /* Clipped */ if_statementList0List /* Vec */ if_statementList0;
+    // 82 - if_statementList0: 'elseif' condition : rumoca_ir_galec::ast::Condition  'then'^ /* Clipped */ if_statementList0List /* Vec */ if_statementList0;
     Production {
         lhs: 53,
         production: &[
@@ -2099,7 +2099,7 @@ pub const PRODUCTIONS: &[Production; 213] = &[
             ParseType::T(33),
         ],
     },
-    // 83 - if_statementList0List: statement : rumoca_ir_galec::ast::Statement  if_statementList0List;
+    // 83 - if_statementList0List: statement : crate::parse::stmt::ParsedStatement  if_statementList0List;
     Production {
         lhs: 54,
         production: &[ParseType::N(54), ParseType::N(116)],
@@ -2114,7 +2114,7 @@ pub const PRODUCTIONS: &[Production; 213] = &[
         lhs: 53,
         production: &[],
     },
-    // 86 - if_statementList: statement : rumoca_ir_galec::ast::Statement  if_statementList;
+    // 86 - if_statementList: statement : crate::parse::stmt::ParsedStatement  if_statementList;
     Production {
         lhs: 52,
         production: &[ParseType::N(52), ParseType::N(116)],
@@ -2129,7 +2129,7 @@ pub const PRODUCTIONS: &[Production; 213] = &[
         lhs: 55,
         production: &[ParseType::N(56), ParseType::T(34)],
     },
-    // 89 - if_statementOptList: statement : rumoca_ir_galec::ast::Statement  if_statementOptList;
+    // 89 - if_statementOptList: statement : crate::parse::stmt::ParsedStatement  if_statementOptList;
     Production {
         lhs: 56,
         production: &[ParseType::N(56), ParseType::N(116)],
@@ -2219,7 +2219,7 @@ pub const PRODUCTIONS: &[Production; 213] = &[
         lhs: 29,
         production: &[],
     },
-    // 105 - error_signal_statement: 'signal'^ /* Clipped */ ident error_signal_statementList /* Vec */;
+    // 105 - error_signal_statement: 'signal' ident error_signal_statementList /* Vec */;
     Production {
         lhs: 35,
         production: &[ParseType::N(36), ParseType::N(48), ParseType::T(10)],
@@ -2234,7 +2234,7 @@ pub const PRODUCTIONS: &[Production; 213] = &[
         lhs: 36,
         production: &[],
     },
-    // 108 - for_loop: 'for'^ /* Clipped */ bounded_iteration 'loop'^ /* Clipped */ for_loopList /* Vec */ 'end'^ /* Clipped */ 'for'^ /* Clipped */;
+    // 108 - for_loop: 'for' bounded_iteration 'loop'^ /* Clipped */ for_loopList /* Vec */ 'end'^ /* Clipped */ 'for'^ /* Clipped */;
     Production {
         lhs: 38,
         production: &[
@@ -2246,7 +2246,7 @@ pub const PRODUCTIONS: &[Production; 213] = &[
             ParseType::T(38),
         ],
     },
-    // 109 - for_loopList: statement : rumoca_ir_galec::ast::Statement  for_loopList;
+    // 109 - for_loopList: statement : crate::parse::stmt::ParsedStatement  for_loopList;
     Production {
         lhs: 39,
         production: &[ParseType::N(39), ParseType::N(116)],
@@ -2287,7 +2287,7 @@ pub const PRODUCTIONS: &[Production; 213] = &[
         lhs: 11,
         production: &[],
     },
-    // 116 - limit_statement: 'limit'^ /* Clipped */ limit_target limit_statementList /* Vec */;
+    // 116 - limit_statement: 'limit' limit_target limit_statementList /* Vec */;
     Production {
         lhs: 58,
         production: &[ParseType::N(59), ParseType::N(60), ParseType::T(40)],
@@ -2332,7 +2332,7 @@ pub const PRODUCTIONS: &[Production; 213] = &[
         lhs: 100,
         production: &[ParseType::N(65)],
     },
-    // 125 - state_reference: 'self'^ /* Clipped */ state_reference_tail;
+    // 125 - state_reference: 'self' state_reference_tail;
     Production {
         lhs: 113,
         production: &[ParseType::N(114), ParseType::T(41)],

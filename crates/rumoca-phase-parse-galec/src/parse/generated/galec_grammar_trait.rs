@@ -1347,6 +1347,7 @@ pub struct ErrorSignalDeclaration {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ErrorSignalStatement {
+    pub signal: crate::parse::token::ParserToken, /* signal */
     pub ident: Ident,
     pub error_signal_statement_list: Vec<ErrorSignalStatementList>,
 }
@@ -1375,6 +1376,7 @@ pub struct Expression {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ForLoop {
+    pub r#for: crate::parse::token::ParserToken, /* for */
     pub bounded_iteration: BoundedIteration,
     pub for_loop_list: Vec<ForLoopList>,
 }
@@ -1385,7 +1387,7 @@ pub struct ForLoop {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ForLoopList {
-    pub statement: rumoca_ir_galec::ast::Statement,
+    pub statement: crate::parse::stmt::ParsedStatement,
 }
 
 ///
@@ -1438,7 +1440,7 @@ pub struct FunctionDeclarationList {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FunctionDeclarationList0 {
-    pub statement: rumoca_ir_galec::ast::Statement,
+    pub statement: crate::parse::stmt::ParsedStatement,
 }
 
 ///
@@ -1505,6 +1507,7 @@ pub struct IfExpressionList {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct IfStatement {
+    pub r#if: crate::parse::token::ParserToken, /* if */
     pub condition: rumoca_ir_galec::ast::Condition,
     pub if_statement_list: Vec<IfStatementList>,
     pub if_statement_list0: Vec<IfStatementList0>,
@@ -1517,7 +1520,7 @@ pub struct IfStatement {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct IfStatementList {
-    pub statement: rumoca_ir_galec::ast::Statement,
+    pub statement: crate::parse::stmt::ParsedStatement,
 }
 
 ///
@@ -1526,6 +1529,7 @@ pub struct IfStatementList {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct IfStatementList0 {
+    pub elseif: crate::parse::token::ParserToken, /* elseif */
     pub condition: rumoca_ir_galec::ast::Condition,
     pub if_statement_list0_list: Vec<IfStatementList0List>,
 }
@@ -1536,7 +1540,7 @@ pub struct IfStatementList0 {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct IfStatementList0List {
-    pub statement: rumoca_ir_galec::ast::Statement,
+    pub statement: crate::parse::stmt::ParsedStatement,
 }
 
 ///
@@ -1554,7 +1558,7 @@ pub struct IfStatementOpt {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct IfStatementOptList {
-    pub statement: rumoca_ir_galec::ast::Statement,
+    pub statement: crate::parse::stmt::ParsedStatement,
 }
 
 ///
@@ -1572,6 +1576,7 @@ pub struct Integer {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct LimitStatement {
+    pub limit: crate::parse::token::ParserToken, /* limit */
     pub limit_target: LimitTarget,
     pub limit_statement_list: Vec<LimitStatementList>,
 }
@@ -1715,6 +1720,7 @@ pub enum MulOperator {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct MultiAssignment {
+    pub l_paren: crate::parse::token::ParserToken, /* ( */
     pub multi_assignment_opt: Option<MultiAssignmentOpt>,
     pub function_call: rumoca_ir_galec::ast::FunctionCall,
 }
@@ -2112,6 +2118,7 @@ pub enum StateEntityDeclarationOptGroup {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct StateReference {
+    pub owner: crate::parse::token::ParserToken, /* self */
     pub state_reference_tail: StateReferenceTail,
 }
 
@@ -2141,6 +2148,7 @@ pub struct StateReferenceTailList {
 #[derive(Debug, Clone)]
 pub struct Statement {
     pub statement_group: StatementGroup,
+    pub semicolon: crate::parse::token::ParserToken, /* ; */
 }
 
 ///
@@ -3905,18 +3913,25 @@ impl<'t, 'u> GalecGrammarAuto<'t, 'u> {
 
     /// Semantic action for production 62:
     ///
-    /// `statement: statementGroup ';'^ /* Clipped */;`
+    /// `statement: statementGroup ';';`
     ///
     #[parol_runtime::function_name::named]
     fn statement(
         &mut self,
         _statement_group: &ParseTreeType<'t>,
-        _semicolon: &ParseTreeType<'t>,
+        semicolon: &ParseTreeType<'t>,
     ) -> Result<()> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
+        let semicolon = semicolon
+            .token()?
+            .try_into()
+            .map_err(parol_runtime::ParolError::UserError)?;
         let statement_group = pop_item!(self, statement_group, StatementGroup, context);
-        let statement_built = Statement { statement_group };
+        let statement_built = Statement {
+            statement_group,
+            semicolon,
+        };
         // Calling user action here
         self.user_grammar.statement(&statement_built)?;
         self.push(ASTType::Statement(statement_built), context);
@@ -4190,12 +4205,12 @@ impl<'t, 'u> GalecGrammarAuto<'t, 'u> {
 
     /// Semantic action for production 76:
     ///
-    /// `multi_assignment: '('^ /* Clipped */ multi_assignmentOpt /* Option */ ')'^ /* Clipped */ ':='^ /* Clipped */ function_call;`
+    /// `multi_assignment: '(' multi_assignmentOpt /* Option */ ')'^ /* Clipped */ ':='^ /* Clipped */ function_call;`
     ///
     #[parol_runtime::function_name::named]
     fn multi_assignment(
         &mut self,
-        _l_paren: &ParseTreeType<'t>,
+        l_paren: &ParseTreeType<'t>,
         _multi_assignment_opt: &ParseTreeType<'t>,
         _r_paren: &ParseTreeType<'t>,
         _colon_equ: &ParseTreeType<'t>,
@@ -4203,10 +4218,15 @@ impl<'t, 'u> GalecGrammarAuto<'t, 'u> {
     ) -> Result<()> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
+        let l_paren = l_paren
+            .token()?
+            .try_into()
+            .map_err(parol_runtime::ParolError::UserError)?;
         let function_call = pop_item!(self, function_call, FunctionCall, context);
         let multi_assignment_opt =
             pop_item!(self, multi_assignment_opt, MultiAssignmentOpt, context);
         let multi_assignment_built = MultiAssignment {
+            l_paren,
             multi_assignment_opt,
             function_call: (&function_call)
                 .try_into()
@@ -4315,12 +4335,12 @@ impl<'t, 'u> GalecGrammarAuto<'t, 'u> {
 
     /// Semantic action for production 81:
     ///
-    /// `if_statement: 'if'^ /* Clipped */ condition 'then'^ /* Clipped */ if_statementList /* Vec */ if_statementList0 /* Vec */ if_statementOpt /* Option */ 'end'^ /* Clipped */ 'if'^ /* Clipped */;`
+    /// `if_statement: 'if' condition 'then'^ /* Clipped */ if_statementList /* Vec */ if_statementList0 /* Vec */ if_statementOpt /* Option */ 'end'^ /* Clipped */ 'if'^ /* Clipped */;`
     ///
     #[parol_runtime::function_name::named]
     fn if_statement(
         &mut self,
-        _if: &ParseTreeType<'t>,
+        r#if: &ParseTreeType<'t>,
         _condition: &ParseTreeType<'t>,
         _then: &ParseTreeType<'t>,
         _if_statement_list: &ParseTreeType<'t>,
@@ -4331,6 +4351,10 @@ impl<'t, 'u> GalecGrammarAuto<'t, 'u> {
     ) -> Result<()> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
+        let r#if = r#if
+            .token()?
+            .try_into()
+            .map_err(parol_runtime::ParolError::UserError)?;
         let if_statement_opt = pop_item!(self, if_statement_opt, IfStatementOpt, context);
         let if_statement_list0 =
             pop_and_reverse_item!(self, if_statement_list0, IfStatementList0, context);
@@ -4338,6 +4362,7 @@ impl<'t, 'u> GalecGrammarAuto<'t, 'u> {
             pop_and_reverse_item!(self, if_statement_list, IfStatementList, context);
         let condition = pop_item!(self, condition, Condition, context);
         let if_statement_built = IfStatement {
+            r#if,
             condition: (&condition)
                 .try_into()
                 .map_err(parol_runtime::ParolError::UserError)?,
@@ -4353,12 +4378,12 @@ impl<'t, 'u> GalecGrammarAuto<'t, 'u> {
 
     /// Semantic action for production 82:
     ///
-    /// `if_statementList0 /* Vec<T>::Push */: 'elseif'^ /* Clipped */ condition 'then'^ /* Clipped */ if_statementList0List /* Vec */ if_statementList0;`
+    /// `if_statementList0 /* Vec<T>::Push */: 'elseif' condition 'then'^ /* Clipped */ if_statementList0List /* Vec */ if_statementList0;`
     ///
     #[parol_runtime::function_name::named]
     fn if_statement_list0_0(
         &mut self,
-        _elseif: &ParseTreeType<'t>,
+        elseif: &ParseTreeType<'t>,
         _condition: &ParseTreeType<'t>,
         _then: &ParseTreeType<'t>,
         _if_statement_list0_list: &ParseTreeType<'t>,
@@ -4366,6 +4391,10 @@ impl<'t, 'u> GalecGrammarAuto<'t, 'u> {
     ) -> Result<()> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
+        let elseif = elseif
+            .token()?
+            .try_into()
+            .map_err(parol_runtime::ParolError::UserError)?;
         let mut if_statement_list0 = pop_item!(self, if_statement_list0, IfStatementList0, context);
         let if_statement_list0_list =
             pop_and_reverse_item!(self, if_statement_list0_list, IfStatementList0List, context);
@@ -4375,6 +4404,7 @@ impl<'t, 'u> GalecGrammarAuto<'t, 'u> {
             condition: (&condition)
                 .try_into()
                 .map_err(parol_runtime::ParolError::UserError)?,
+            elseif,
         };
         // Add an element to the vector
         if_statement_list0.push(if_statement_list0_0_built);
@@ -4826,17 +4856,21 @@ impl<'t, 'u> GalecGrammarAuto<'t, 'u> {
 
     /// Semantic action for production 105:
     ///
-    /// `error_signal_statement: 'signal'^ /* Clipped */ ident error_signal_statementList /* Vec */;`
+    /// `error_signal_statement: 'signal' ident error_signal_statementList /* Vec */;`
     ///
     #[parol_runtime::function_name::named]
     fn error_signal_statement(
         &mut self,
-        _signal: &ParseTreeType<'t>,
+        signal: &ParseTreeType<'t>,
         _ident: &ParseTreeType<'t>,
         _error_signal_statement_list: &ParseTreeType<'t>,
     ) -> Result<()> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
+        let signal = signal
+            .token()?
+            .try_into()
+            .map_err(parol_runtime::ParolError::UserError)?;
         let error_signal_statement_list = pop_and_reverse_item!(
             self,
             error_signal_statement_list,
@@ -4845,6 +4879,7 @@ impl<'t, 'u> GalecGrammarAuto<'t, 'u> {
         );
         let ident = pop_item!(self, ident, Ident, context);
         let error_signal_statement_built = ErrorSignalStatement {
+            signal,
             ident,
             error_signal_statement_list,
         };
@@ -4906,12 +4941,12 @@ impl<'t, 'u> GalecGrammarAuto<'t, 'u> {
 
     /// Semantic action for production 108:
     ///
-    /// `for_loop: 'for'^ /* Clipped */ bounded_iteration 'loop'^ /* Clipped */ for_loopList /* Vec */ 'end'^ /* Clipped */ 'for'^ /* Clipped */;`
+    /// `for_loop: 'for' bounded_iteration 'loop'^ /* Clipped */ for_loopList /* Vec */ 'end'^ /* Clipped */ 'for'^ /* Clipped */;`
     ///
     #[parol_runtime::function_name::named]
     fn for_loop(
         &mut self,
-        _for: &ParseTreeType<'t>,
+        r#for: &ParseTreeType<'t>,
         _bounded_iteration: &ParseTreeType<'t>,
         _loop: &ParseTreeType<'t>,
         _for_loop_list: &ParseTreeType<'t>,
@@ -4920,9 +4955,14 @@ impl<'t, 'u> GalecGrammarAuto<'t, 'u> {
     ) -> Result<()> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
+        let r#for = r#for
+            .token()?
+            .try_into()
+            .map_err(parol_runtime::ParolError::UserError)?;
         let for_loop_list = pop_and_reverse_item!(self, for_loop_list, ForLoopList, context);
         let bounded_iteration = pop_item!(self, bounded_iteration, BoundedIteration, context);
         let for_loop_built = ForLoop {
+            r#for,
             bounded_iteration,
             for_loop_list,
         };
@@ -5084,21 +5124,26 @@ impl<'t, 'u> GalecGrammarAuto<'t, 'u> {
 
     /// Semantic action for production 116:
     ///
-    /// `limit_statement: 'limit'^ /* Clipped */ limit_target limit_statementList /* Vec */;`
+    /// `limit_statement: 'limit' limit_target limit_statementList /* Vec */;`
     ///
     #[parol_runtime::function_name::named]
     fn limit_statement(
         &mut self,
-        _limit: &ParseTreeType<'t>,
+        limit: &ParseTreeType<'t>,
         _limit_target: &ParseTreeType<'t>,
         _limit_statement_list: &ParseTreeType<'t>,
     ) -> Result<()> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
+        let limit = limit
+            .token()?
+            .try_into()
+            .map_err(parol_runtime::ParolError::UserError)?;
         let limit_statement_list =
             pop_and_reverse_item!(self, limit_statement_list, LimitStatementList, context);
         let limit_target = pop_item!(self, limit_target, LimitTarget, context);
         let limit_statement_built = LimitStatement {
+            limit,
             limit_target,
             limit_statement_list,
         };
@@ -5257,19 +5302,24 @@ impl<'t, 'u> GalecGrammarAuto<'t, 'u> {
 
     /// Semantic action for production 125:
     ///
-    /// `state_reference: 'self'^ /* Clipped */ state_reference_tail;`
+    /// `state_reference: 'self'@owner state_reference_tail;`
     ///
     #[parol_runtime::function_name::named]
     fn state_reference(
         &mut self,
-        _self: &ParseTreeType<'t>,
+        owner: &ParseTreeType<'t>,
         _state_reference_tail: &ParseTreeType<'t>,
     ) -> Result<()> {
         let context = function_name!();
         trace!("{}", self.trace_item_stack(context));
+        let owner = owner
+            .token()?
+            .try_into()
+            .map_err(parol_runtime::ParolError::UserError)?;
         let state_reference_tail =
             pop_item!(self, state_reference_tail, StateReferenceTail, context);
         let state_reference_built = StateReference {
+            owner,
             state_reference_tail,
         };
         // Calling user action here
