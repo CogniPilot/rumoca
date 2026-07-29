@@ -281,8 +281,8 @@ fn lower_guarded_return_value<'dae>(
         .find_map(|(statement, plan)| match (statement, plan) {
             (
                 rumoca_core::Statement::Assignment { value, .. },
-                FunctionStatementPlan::Assignment { target, .. },
-            ) if target == selected => Some(value),
+                FunctionStatementPlan::Assignment(assignment),
+            ) if assignment.target() == selected => Some(value),
             _ => None,
         })
         .expect("analysis proves every returning branch defines every output");
@@ -386,13 +386,7 @@ fn lower_conditional_branch_value<'dae>(
         assignment.value,
     )?;
     let provenance = dae::DaeProvenance::source(assignment.span)?;
-    let subscripts = &assignment
-        .component
-        .parts
-        .last()
-        .expect("function assignment target was validated")
-        .subs;
-    debug_assert_eq!(assignment.subscript_count, subscripts.len());
+    let subscripts = assignment.plan.subscripts();
     if !subscripts.is_empty() {
         let binders = HashMap::new();
         value = lower_function_array_update(
@@ -418,15 +412,14 @@ fn lower_conditional_branch_value<'dae>(
 }
 
 struct ConditionalBranchAssignment<'statement> {
-    component: &'statement rumoca_core::ComponentReference,
     value: &'statement Expression,
     span: Span,
-    subscript_count: usize,
+    plan: &'statement FunctionAssignmentPlan,
 }
 
 fn conditional_branch_assignment<'statement>(
     statements: &'statement [rumoca_core::Statement],
-    plans: &[FunctionStatementPlan],
+    plans: &'statement [FunctionStatementPlan],
     selected: &VarName,
 ) -> ConditionalBranchAssignment<'statement> {
     statements
@@ -434,18 +427,12 @@ fn conditional_branch_assignment<'statement>(
         .zip(plans)
         .find_map(|(statement, plan)| match (statement, plan) {
             (
-                rumoca_core::Statement::Assignment {
-                    comp, value, span, ..
-                },
-                FunctionStatementPlan::Assignment {
-                    target,
-                    subscript_count,
-                },
-            ) if target == selected => Some(ConditionalBranchAssignment {
-                component: comp,
+                rumoca_core::Statement::Assignment { value, span, .. },
+                FunctionStatementPlan::Assignment(assignment),
+            ) if assignment.target() == selected => Some(ConditionalBranchAssignment {
                 value,
                 span: *span,
-                subscript_count: *subscript_count,
+                plan: assignment,
             }),
             _ => None,
         })
@@ -458,7 +445,6 @@ pub(super) struct TotalArrayDefinition<'scope, 'statement, 'dae> {
     pub(super) binders: &'scope HashMap<VarName, dae::DomainBinderId<'dae>>,
     pub(super) statements: &'statement [rumoca_core::Statement],
     pub(super) plans: &'statement [FunctionStatementPlan],
-    pub(super) target: &'statement VarName,
     pub(super) owner: dae::DaeProvenance,
 }
 
@@ -469,17 +455,11 @@ pub(super) fn lower_total_function_array_definition<'dae>(
 ) -> Result<(), dae::DaeConstructionError> {
     let (
         [rumoca_core::Statement::Assignment { value, span, .. }],
-        [
-            FunctionStatementPlan::Assignment {
-                target: planned_target,
-                ..
-            },
-        ],
+        [FunctionStatementPlan::Assignment(assignment)],
     ) = (input.statements, input.plans)
     else {
         unreachable!("analysis proves one total array-definition statement")
     };
-    debug_assert_eq!(input.target, planned_target);
     let element = lower_function_expression_scoped(
         construction,
         input.symbols.coordinates,
@@ -498,9 +478,9 @@ pub(super) fn lower_total_function_array_definition<'dae>(
             .at(generated)
             .comprehension(input.domain, element)
     })?;
-    let assignment = dae::DaeProvenance::source(*span)?;
-    let target = function_value_coordinate(input.symbols.coordinates, input.target);
-    construction.functions(|functions| functions.assign(body, target, array, assignment))
+    let provenance = dae::DaeProvenance::source(*span)?;
+    let target = function_value_coordinate(input.symbols.coordinates, assignment.target());
+    construction.functions(|functions| functions.assign(body, target, array, provenance))
 }
 
 pub(super) struct FunctionFold<'scope, 'statement, 'dae> {
@@ -547,18 +527,13 @@ fn lower_function_loop_statements<'dae>(
     debug_assert_eq!(statements.len(), plans.len());
     for (statement, plan) in statements.iter().zip(plans) {
         let (
-            rumoca_core::Statement::Assignment {
-                comp, value, span, ..
-            },
-            FunctionStatementPlan::Assignment {
-                target,
-                subscript_count,
-            },
+            rumoca_core::Statement::Assignment { value, span, .. },
+            FunctionStatementPlan::Assignment(assignment),
         ) = (statement, plan)
         else {
             unreachable!("nested function loops are rejected during analysis")
         };
-        let target = function_value_coordinate(symbols.coordinates, target);
+        let target = function_value_coordinate(symbols.coordinates, assignment.target());
         let mut value = lower_function_expression_scoped(
             construction,
             symbols.coordinates,
@@ -569,12 +544,7 @@ fn lower_function_loop_statements<'dae>(
             value,
         )?;
         let provenance = dae::DaeProvenance::source(*span)?;
-        let subscripts = &comp
-            .parts
-            .last()
-            .expect("function assignment target was validated")
-            .subs;
-        debug_assert_eq!(*subscript_count, subscripts.len());
+        let subscripts = assignment.subscripts();
         if !subscripts.is_empty() {
             value = lower_function_array_update(
                 construction,

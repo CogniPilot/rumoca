@@ -42,7 +42,7 @@ fn collect_function_assignment_targets(
     for statement in statements {
         match statement {
             rumoca_core::Statement::Assignment { comp, .. } => {
-                if let Some(target) = comp.parts.last() {
+                if let [target] = comp.parts.as_slice() {
                     assigned.insert(target.ident.clone());
                 }
             }

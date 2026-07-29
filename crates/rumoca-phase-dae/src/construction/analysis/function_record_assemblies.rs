@@ -120,18 +120,17 @@ fn validate_field_assembly(
         })?;
     let mut scalars = vec![None; scalar_count];
     for (statement_offset, statement) in statements.iter().enumerate() {
-        let rumoca_core::Statement::Assignment {
-            comp, value, span, ..
-        } = statement
-        else {
+        let rumoca_core::Statement::Assignment { value, span, .. } = statement else {
             unreachable!("record assembly group contains assignments")
         };
-        let target = comp.parts.last().expect("record assignment has a field");
+        let Some((_, target)) = record_assignment_target(statement, context.function) else {
+            unreachable!("record assembly group has validated two-part record targets")
+        };
         if target.ident != field.name {
             continue;
         }
         require_span(*span, "record field assignment")?;
-        validate_function_assignment_subscripts(comp, context.roles, context.flat)?;
+        validate_function_subscripts(&target.subs, context)?;
         validate_function_expression_with_roles(value, context.roles, context.flat)?;
         reject_record_self_reference(value, output, *span)?;
         let selection = field_selection(&dimensions, &target.subs, *span)?;
