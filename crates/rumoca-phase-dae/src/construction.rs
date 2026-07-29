@@ -453,6 +453,7 @@ fn lower_function_assignment<'dae>(
                     shapes: symbols.shapes,
                     function_body: Some(body),
                     values: None,
+                    enumeration_literals: None,
                 },
                 binders: &binders,
                 target,
@@ -587,22 +588,20 @@ fn lower_attribute_expression<'dae>(
     value_type: dae::ValueTypeId<'dae>,
     expression: &Expression,
 ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
-    if let Expression::VarRef {
-        name,
-        subscripts,
-        span,
-    } = expression
-        && subscripts.is_empty()
-        && let Some(ordinal) = enum_literal_ordinals.get(name.as_str())
-    {
-        let provenance = dae::DaeProvenance::source(*span)?;
-        return construction.expressions(|expressions| {
-            expressions
-                .at(provenance)
-                .enumeration_literal(value_type, *ordinal)
-        });
-    }
-    lower_expression(construction, coordinates, functions, expression, None)
+    lower_expression_scoped(
+        construction,
+        LoweringSymbols {
+            coordinates,
+            functions,
+            shapes: functions.shapes.model_values(),
+            function_body: None,
+            values: None,
+            enumeration_literals: Some((enum_literal_ordinals, value_type)),
+        },
+        &HashMap::new(),
+        expression,
+        None,
+    )
 }
 
 fn lower_bindings<'dae>(
@@ -1177,6 +1176,7 @@ fn lower_when_equations<'dae>(
                         shapes: functions.shapes.model_values(),
                         function_body: None,
                         values: None,
+                        enumeration_literals: None,
                     },
                     sample_lattices,
                     guard,
@@ -1552,6 +1552,7 @@ fn lower_change_expression<'dae>(
         shapes: functions.shapes.model_values(),
         function_body: None,
         values: None,
+        enumeration_literals: None,
     };
     let current = lower_coordinate_reference(
         construction,
@@ -1661,6 +1662,7 @@ fn lower_structured_equations<'dae>(
                         shapes: functions.shapes.model_values(),
                         function_body: None,
                         values: None,
+                        enumeration_literals: None,
                     };
                     lower_structured_body(
                         construction,
@@ -1765,6 +1767,7 @@ fn lower_materialized_family_bodies<'dae>(
                 shapes: functions.shapes.model_values(),
                 function_body: None,
                 values: None,
+                enumeration_literals: None,
             };
             scalar_bodies.push(lower_structured_body(
                 construction,
