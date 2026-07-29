@@ -31,14 +31,15 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 #[cfg(feature = "scheduled-sim")]
 use rumoca_compile::codegen::targets::{AssetBundle, TargetAssetFile, safe_target_join};
-use rumoca_compile::codegen::targets::{
-    ChecksumAlgorithm, RenderedTargetFile, TargetFile,
-};
-use sha1::{Digest, Sha1};
+use rumoca_compile::codegen::targets::{ChecksumAlgorithm, RenderedTargetFile, TargetFile};
 use serde::Serialize;
+use sha1::{Digest, Sha1};
 use time::OffsetDateTime;
 use time::macros::format_description;
 use uuid::Uuid;
+
+#[cfg(all(test, feature = "scheduled-sim"))]
+mod tests;
 
 /// How the rendered files + assets are finalized on disk (contract §4b).
 #[cfg(feature = "scheduled-sim")]
@@ -54,6 +55,18 @@ pub struct PackageSpec {
 pub struct ZipPackage {
     /// Absolute path of the archive declared by the target.
     pub archive_path: PathBuf,
+}
+
+#[cfg(feature = "scheduled-sim")]
+struct PreparedProduct {
+    files: BTreeMap<PathBuf, Vec<u8>>,
+    required_files: Vec<PathBuf>,
+}
+
+#[cfg(feature = "scheduled-sim")]
+struct StagedArchive {
+    directory: tempfile::TempDir,
+    file: PathBuf,
 }
 
 /// Immutable facts shared by every artifact rendered in one invocation.
@@ -186,51 +199,50 @@ pub fn render_and_package(
     package: &PackageSpec,
     out_dir: &Path,
 ) -> Result<()> {
+    let out_dir = resolve_product_root(out_dir)?;
+    let archive_path = package
+        .zip
+        .as_ref()
+        .map(|zip| resolve_archive_path(&zip.archive_path, &out_dir))
+        .transpose()?;
+    let required_files = resolve_required_files(&package.required_files)?;
     let rendered = render_web(files, render)?;
     let resolved_assets = assets
         .iter()
         .map(|asset| {
             Ok((
-                asset,
-                asset_source(&asset.source).with_context(|| {
-                    format!("Resolve target asset source '{}'", asset.source)
-                })?,
+                asset.dest.clone(),
+                asset_source(&asset.source)
+                    .with_context(|| format!("Resolve target asset source '{}'", asset.source))?,
             ))
         })
         .collect::<Result<Vec<_>>>()?;
-    validate_required_files(&rendered, &resolved_assets, &package.required_files)?;
-    validate_existing_root(out_dir, &package.required_files)?;
+    let prepared = prepare_product(rendered, resolved_assets, required_files)?;
+    validate_existing_root(&out_dir, &prepared.required_files)?;
+    if let Some(archive_path) = &archive_path {
+        validate_existing_archive(archive_path, &prepared.required_files)?;
+    }
 
     let parent = out_dir
         .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
+        .expect("validated product root has a parent");
     fs::create_dir_all(parent)
         .with_context(|| format!("Create package parent '{}'", parent.display()))?;
-    let staging = tempfile::Builder::new()
+    let staged_root = tempfile::Builder::new()
         .prefix(".rumoca-package-")
         .tempdir_in(parent)
         .with_context(|| format!("Create package staging directory in '{}'", parent.display()))?;
-    let staged_root = staging.path().join("product");
-    fs::create_dir(&staged_root)
-        .with_context(|| format!("Create staged product '{}'", staged_root.display()))?;
-    write_rendered_files(&staged_root, &rendered)?;
-    for (asset, files) in &resolved_assets {
-        copy_asset_tree(&staged_root, asset, files)?;
-    }
-    let staged_archive = package
-        .zip
+    write_prepared_product(staged_root.path(), &prepared)?;
+    validate_staged_product(staged_root.path(), &prepared.required_files)?;
+    let staged_archive = archive_path
         .as_ref()
-        .map(|_| staging.path().join("archive.zip"));
-    if let Some(archive_path) = &staged_archive {
-        write_zip_package(&staged_root, archive_path).context("Build staged package archive")?;
-    }
+        .map(|archive_path| stage_archive(staged_root.path(), archive_path))
+        .transpose()?;
     install_staged_package(
-        &staged_root,
-        out_dir,
-        staged_archive.as_deref(),
-        package.zip.as_ref().map(|zip| zip.archive_path.as_path()),
-        staging.path(),
+        staged_root,
+        &out_dir,
+        staged_archive,
+        archive_path.as_deref(),
     )?;
     Ok(())
 }
@@ -270,11 +282,11 @@ pub fn render_web(
             let digest = digests
                 .get(&(need.of.clone(), need.algorithm))
                 .with_context(|| {
-                format!(
-                    "internal: producer '{}' hash missing while rendering '{}'",
-                    need.of, file.path
-                )
-            })?;
+                    format!(
+                        "internal: producer '{}' hash missing while rendering '{}'",
+                        need.of, file.path
+                    )
+                })?;
             checksums.insert(need.as_key.clone(), digest.clone());
         }
         let context = ArtifactRenderContext {
@@ -350,16 +362,160 @@ pub fn render_web_files(
         .collect()
 }
 
+#[cfg(feature = "scheduled-sim")]
+fn resolve_product_root(root: &Path) -> Result<PathBuf> {
+    validate_destination_path(root, "Package root")?;
+    std::path::absolute(root).with_context(|| format!("Resolve package root '{}'", root.display()))
+}
+
+#[cfg(feature = "scheduled-sim")]
+fn resolve_archive_path(archive: &Path, root: &Path) -> Result<PathBuf> {
+    validate_destination_path(archive, "Package archive path")?;
+    let archive = std::path::absolute(archive)
+        .with_context(|| format!("Resolve package archive '{}'", archive.display()))?;
+    if archive == root || archive.starts_with(root) || root.starts_with(&archive) {
+        bail!(
+            "Package archive '{}' must not overlap package root '{}'",
+            archive.display(),
+            root.display()
+        );
+    }
+    Ok(archive)
+}
+
+#[cfg(feature = "scheduled-sim")]
+fn validate_destination_path(path: &Path, label: &str) -> Result<()> {
+    if path.as_os_str().is_empty() {
+        bail!("{label} must not be empty");
+    }
+    let mut names_child = false;
+    for component in path.components() {
+        match component {
+            std::path::Component::Normal(_) => names_child = true,
+            std::path::Component::ParentDir => {
+                bail!("{label} '{}' must not contain traversal", path.display());
+            }
+            std::path::Component::CurDir
+            | std::path::Component::RootDir
+            | std::path::Component::Prefix(_) => {}
+        }
+    }
+    if !names_child {
+        bail!(
+            "{label} '{}' must name a child path, not the filesystem or current directory",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+#[cfg(feature = "scheduled-sim")]
+fn resolve_required_files(required_files: &[String]) -> Result<Vec<PathBuf>> {
+    if required_files.is_empty() {
+        bail!("[package] required_files must declare at least one product marker");
+    }
+    required_files
+        .iter()
+        .map(|required| resolve_relative_path(required, "[package] required file"))
+        .collect()
+}
+
+#[cfg(feature = "scheduled-sim")]
+fn resolve_relative_path(path: impl AsRef<Path>, label: &str) -> Result<PathBuf> {
+    let path = path.as_ref();
+    let joined = safe_target_join(Path::new("product"), path)
+        .with_context(|| format!("Resolve {label} '{}'", path.display()))?;
+    let relative = joined
+        .strip_prefix("product")
+        .expect("safe target join preserves its root");
+    let normalized: PathBuf = relative
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(segment) => Some(segment),
+            std::path::Component::CurDir => None,
+            _ => unreachable!("safe target join rejected non-relative components"),
+        })
+        .collect();
+    if normalized.as_os_str().is_empty() {
+        bail!("{label} '{}' must name a file or directory", path.display());
+    }
+    Ok(normalized)
+}
+
+#[cfg(feature = "scheduled-sim")]
+fn prepare_product(
+    rendered: Vec<(String, Vec<u8>)>,
+    assets: Vec<(String, Vec<TargetAssetFile>)>,
+    required_files: Vec<PathBuf>,
+) -> Result<PreparedProduct> {
+    let mut files = BTreeMap::new();
+    for (path, bytes) in rendered {
+        let path = resolve_relative_path(&path, "rendered file path")?;
+        insert_prepared_file(&mut files, path, bytes)?;
+    }
+    for (dest, asset_files) in assets {
+        let dest = resolve_relative_path(&dest, "asset destination")?;
+        for asset_file in asset_files {
+            let relative = resolve_relative_path(&asset_file.relative_path, "asset file path")?;
+            insert_prepared_file(&mut files, dest.join(relative), asset_file.bytes)?;
+        }
+    }
+    validate_file_tree(&files)?;
+    for required in &required_files {
+        if !files.contains_key(required) {
+            bail!(
+                "[package] required file '{}' is not produced by [[files]] or [[assets]]",
+                required.display()
+            );
+        }
+    }
+    Ok(PreparedProduct {
+        files,
+        required_files,
+    })
+}
+
+#[cfg(feature = "scheduled-sim")]
+fn insert_prepared_file(
+    files: &mut BTreeMap<PathBuf, Vec<u8>>,
+    path: PathBuf,
+    bytes: Vec<u8>,
+) -> Result<()> {
+    if files.insert(path.clone(), bytes).is_some() {
+        bail!(
+            "Package path '{}' is produced more than once",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+#[cfg(feature = "scheduled-sim")]
+fn validate_file_tree(files: &BTreeMap<PathBuf, Vec<u8>>) -> Result<()> {
+    for path in files.keys() {
+        let mut ancestor = path.parent();
+        while let Some(parent) = ancestor.filter(|parent| !parent.as_os_str().is_empty()) {
+            if files.contains_key(parent) {
+                bail!(
+                    "Package path '{}' is both a file and a parent directory",
+                    parent.display()
+                );
+            }
+            ancestor = parent.parent();
+        }
+    }
+    Ok(())
+}
+
 /// Make way for this run's product directory. A directory holding all declared
 /// marker files is a previous build and can be replaced; any other non-empty
 /// directory is treated as foreign.
 #[cfg(feature = "scheduled-sim")]
-fn validate_existing_root(out_dir: &Path, required_files: &[String]) -> Result<()> {
+fn validate_existing_root(out_dir: &Path, required_files: &[PathBuf]) -> Result<()> {
     if !out_dir.exists() {
         return Ok(());
     }
-    let previous_product = !required_files.is_empty()
-        && out_dir.is_dir()
+    let previous_product = out_dir.is_dir()
         && required_files
             .iter()
             .all(|required| out_dir.join(required).is_file());
@@ -367,7 +523,7 @@ fn validate_existing_root(out_dir: &Path, required_files: &[String]) -> Result<(
         return Ok(());
     }
     let empty = out_dir.is_dir()
-        && std::fs::read_dir(out_dir)
+        && fs::read_dir(out_dir)
             .with_context(|| format!("Read product directory `{}`", out_dir.display()))?
             .next()
             .is_none();
@@ -383,184 +539,266 @@ fn validate_existing_root(out_dir: &Path, required_files: &[String]) -> Result<(
 }
 
 #[cfg(feature = "scheduled-sim")]
-fn validate_required_files(
-    rendered: &[(String, Vec<u8>)],
-    assets: &[(&AssetBundle, Vec<TargetAssetFile>)],
-    required_files: &[String],
-) -> Result<()> {
+fn validate_existing_archive(archive_path: &Path, required_files: &[PathBuf]) -> Result<()> {
+    if !archive_path.exists() {
+        return Ok(());
+    }
+    let metadata = fs::symlink_metadata(archive_path)
+        .with_context(|| format!("Inspect package archive '{}'", archive_path.display()))?;
+    if !metadata.file_type().is_file() {
+        bail!(
+            "package archive path '{}' exists but is not a regular file",
+            archive_path.display()
+        );
+    }
+    let file = fs::File::open(archive_path)
+        .with_context(|| format!("Open previous package archive '{}'", archive_path.display()))?;
+    let mut archive = zip::ZipArchive::new(file).with_context(|| {
+        format!(
+            "package archive '{}' is not a recognized previous product",
+            archive_path.display()
+        )
+    })?;
     for required in required_files {
-        safe_target_join(Path::new("product"), required)?;
-        let rendered_match = rendered.iter().any(|(path, _)| path == required);
-        let asset_match = assets.iter().any(|(asset, files)| {
-            files.iter().any(|file| {
-                let dest = asset.dest.trim_end_matches('/');
-                format!("{dest}/{}", file.relative_path) == *required
-            })
-        });
-        if !rendered_match && !asset_match {
+        let marker = zip_entry_name(required)?;
+        let entry = archive.by_name(&marker).with_context(|| {
+            format!(
+                "package archive '{}' is not a recognized previous product: marker '{}' is missing",
+                archive_path.display(),
+                marker
+            )
+        })?;
+        if !entry.is_file() {
             bail!(
-                "[package] required file '{required}' is not produced by [[files]] or [[assets]]"
+                "package archive '{}' has non-file marker '{}'",
+                archive_path.display(),
+                marker
             );
         }
     }
     Ok(())
 }
 
-/// Write the exact rendered bytes that were hashed (contract §4c): the tuple
-/// list is the same `(path, bytes)` produced by the render loop.
 #[cfg(feature = "scheduled-sim")]
-fn write_rendered_files(out_dir: &Path, rendered: &[(String, Vec<u8>)]) -> Result<()> {
-    for (path, bytes) in rendered {
-        let output_path = safe_target_join(out_dir, path)?;
+fn zip_entry_name(path: &Path) -> Result<String> {
+    path.components()
+        .map(|component| {
+            component
+                .as_os_str()
+                .to_str()
+                .context("Package paths must be valid UTF-8")
+        })
+        .collect::<Result<Vec<_>>>()
+        .map(|segments| segments.join("/"))
+}
+
+#[cfg(feature = "scheduled-sim")]
+fn write_prepared_product(root: &Path, prepared: &PreparedProduct) -> Result<()> {
+    for (path, bytes) in &prepared.files {
+        let output_path = root.join(path);
         if let Some(parent) = output_path.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("Create directory for `{}`", output_path.display()))?;
+            fs::create_dir_all(parent)
+                .with_context(|| format!("Create directory for '{}'", output_path.display()))?;
         }
-        std::fs::write(&output_path, bytes)
-            .with_context(|| format!("Write `{}`", output_path.display()))?;
+        fs::write(&output_path, bytes)
+            .with_context(|| format!("Write '{}'", output_path.display()))?;
     }
     Ok(())
 }
 
-/// Copy one target-relative asset tree into `out_dir/<dest>` verbatim.
 #[cfg(feature = "scheduled-sim")]
-fn copy_asset_tree(
-    out_dir: &Path,
-    asset: &AssetBundle,
-    files: &[TargetAssetFile],
-) -> Result<()> {
-    let dest_root = safe_target_join(out_dir, &asset.dest)?;
-    for file in files {
-        let output_path = safe_target_join(&dest_root, &file.relative_path)?;
-        if let Some(parent) = output_path.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("Create directory for `{}`", output_path.display()))?;
+fn validate_staged_product(root: &Path, required_files: &[PathBuf]) -> Result<()> {
+    for required in required_files {
+        let marker = root.join(required);
+        if !marker.is_file() {
+            bail!(
+                "Staged package is incomplete: required marker '{}' is missing",
+                required.display()
+            );
         }
-        std::fs::write(&output_path, &file.bytes)
-            .with_context(|| format!("Write asset `{}`", output_path.display()))?;
     }
     Ok(())
+}
+
+#[cfg(feature = "scheduled-sim")]
+fn stage_archive(package_root: &Path, final_path: &Path) -> Result<StagedArchive> {
+    let parent = final_path
+        .parent()
+        .expect("validated archive path has a parent");
+    fs::create_dir_all(parent)
+        .with_context(|| format!("Create archive parent '{}'", parent.display()))?;
+    let directory = tempfile::Builder::new()
+        .prefix(".rumoca-archive-")
+        .tempdir_in(parent)
+        .with_context(|| format!("Create archive staging directory in '{}'", parent.display()))?;
+    let file = directory.path().join("package.zip");
+    write_zip_package(package_root, &file).context("Build staged package archive")?;
+    Ok(StagedArchive { directory, file })
 }
 
 #[cfg(feature = "scheduled-sim")]
 fn install_staged_package(
-    staged_root: &Path,
+    staged_root: tempfile::TempDir,
     final_root: &Path,
-    staged_archive: Option<&Path>,
+    staged_archive: Option<StagedArchive>,
     final_archive: Option<&Path>,
-    transaction_dir: &Path,
 ) -> Result<()> {
-    let previous_root = transaction_dir.join("previous-product");
+    let parent = final_root
+        .parent()
+        .expect("validated product root has a parent");
+    let transaction = tempfile::Builder::new()
+        .prefix(".rumoca-replace-")
+        .tempdir_in(parent)
+        .with_context(|| format!("Create replacement transaction in '{}'", parent.display()))?;
+    let previous_root = transaction.path().join("previous-product");
     let had_root = final_root.exists();
     if had_root {
-        fs::rename(final_root, &previous_root).with_context(|| {
-            format!(
-                "Move previous product '{}' into transaction",
-                final_root.display()
-            )
-        })?;
-    }
-    if let Err(error) = fs::rename(staged_root, final_root) {
-        if had_root {
-            let _ = fs::rename(&previous_root, final_root);
-        }
-        return Err(error).with_context(|| {
-            format!("Install staged product '{}'", final_root.display())
-        });
+        fs::rename(final_root, &previous_root)
+            .with_context(|| format!("Stage previous product '{}'", final_root.display()))?;
     }
 
-    let archive_result = install_staged_archive(
-        staged_archive,
-        final_archive,
-        transaction_dir.join("previous-archive"),
-    );
-    if let Err(error) = archive_result {
-        let _ = fs::remove_dir_all(final_root);
-        if had_root {
-            let _ = fs::rename(&previous_root, final_root);
-        }
-        return Err(error);
+    let previous_archive = staged_archive
+        .as_ref()
+        .map(|staged| staged.directory.path().join("previous"));
+    let had_archive = final_archive.is_some_and(Path::exists);
+    if let (Some(final_path), Some(previous)) = (final_archive, previous_archive.as_deref())
+        && had_archive
+        && let Err(error) = fs::rename(final_path, previous)
+    {
+        let primary = anyhow::Error::new(error)
+            .context(format!("Stage previous archive '{}'", final_path.display()));
+        let rollback =
+            collect_rollback_errors([restore_previous_root(had_root, &previous_root, final_root)]);
+        return Err(abort_install(
+            primary,
+            rollback,
+            staged_root,
+            transaction,
+            staged_archive,
+        ));
     }
-    if had_root {
-        fs::remove_dir_all(&previous_root).with_context(|| {
-            format!("Remove previous product '{}'", previous_root.display())
-        })?;
+
+    if let Err(error) = fs::rename(staged_root.path(), final_root) {
+        let primary = anyhow::Error::new(error)
+            .context(format!("Install staged product '{}'", final_root.display()));
+        let rollback = collect_rollback_errors([
+            restore_previous_archive(had_archive, previous_archive.as_deref(), final_archive),
+            restore_previous_root(had_root, &previous_root, final_root),
+        ]);
+        return Err(abort_install(
+            primary,
+            rollback,
+            staged_root,
+            transaction,
+            staged_archive,
+        ));
+    }
+
+    if let (Some(staged), Some(final_path)) = (staged_archive.as_ref(), final_archive)
+        && let Err(error) = fs::rename(&staged.file, final_path)
+    {
+        let primary = anyhow::Error::new(error).context(format!(
+            "Install package archive '{}'",
+            final_path.display()
+        ));
+        let rollback = collect_rollback_errors([
+            restore_staged_root(staged_root.path(), final_root),
+            restore_previous_archive(had_archive, previous_archive.as_deref(), final_archive),
+            restore_previous_root(had_root, &previous_root, final_root),
+        ]);
+        return Err(abort_install(
+            primary,
+            rollback,
+            staged_root,
+            transaction,
+            staged_archive,
+        ));
     }
     Ok(())
 }
 
 #[cfg(feature = "scheduled-sim")]
-fn install_staged_archive(
-    staged_archive: Option<&Path>,
+fn collect_rollback_errors<const N: usize>(results: [Result<()>; N]) -> Vec<anyhow::Error> {
+    results.into_iter().filter_map(Result::err).collect()
+}
+
+#[cfg(feature = "scheduled-sim")]
+fn abort_install(
+    primary: anyhow::Error,
+    rollback_errors: Vec<anyhow::Error>,
+    staged_root: tempfile::TempDir,
+    transaction: tempfile::TempDir,
+    staged_archive: Option<StagedArchive>,
+) -> anyhow::Error {
+    if rollback_errors.is_empty() {
+        return primary;
+    }
+    let mut recovery = vec![staged_root.keep(), transaction.keep()];
+    if let Some(staged_archive) = staged_archive {
+        recovery.push(staged_archive.directory.keep());
+    }
+    let recovery = recovery
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let rollback = rollback_errors
+        .iter()
+        .map(|error| format!("{error:#}"))
+        .collect::<Vec<_>>()
+        .join("; ");
+    primary.context(format!(
+        "replacement rollback was incomplete ({rollback}); recovery directories retained: {recovery}"
+    ))
+}
+
+#[cfg(feature = "scheduled-sim")]
+fn restore_staged_root(staged_root: &Path, final_root: &Path) -> Result<()> {
+    fs::rename(final_root, staged_root).with_context(|| {
+        format!(
+            "Rollback newly installed product '{}'",
+            final_root.display()
+        )
+    })
+}
+
+#[cfg(feature = "scheduled-sim")]
+fn restore_previous_root(had_root: bool, previous_root: &Path, final_root: &Path) -> Result<()> {
+    if had_root {
+        fs::rename(previous_root, final_root)
+            .with_context(|| format!("Restore previous product '{}'", final_root.display()))?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "scheduled-sim")]
+fn restore_previous_archive(
+    had_archive: bool,
+    previous_archive: Option<&Path>,
     final_archive: Option<&Path>,
-    previous_archive: PathBuf,
 ) -> Result<()> {
-    let (Some(staged), Some(final_path)) = (staged_archive, final_archive) else {
-        return Ok(());
-    };
-    if let Some(parent) = final_path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("Create archive parent '{}'", parent.display()))?;
-    }
-    let had_archive = final_path.exists();
     if had_archive {
-        fs::rename(final_path, &previous_archive).with_context(|| {
-            format!("Move previous archive '{}' into transaction", final_path.display())
-        })?;
-    }
-    if let Err(error) = fs::rename(staged, final_path) {
-        if had_archive {
-            let _ = fs::rename(&previous_archive, final_path);
-        }
-        return Err(error)
-            .with_context(|| format!("Install package archive '{}'", final_path.display()));
-    }
-    if had_archive {
-        fs::remove_file(&previous_archive).with_context(|| {
+        fs::rename(
+            previous_archive.expect("previous archive path exists"),
+            final_archive.expect("final archive path exists"),
+        )
+        .with_context(|| {
             format!(
-                "Remove previous package archive '{}'",
-                previous_archive.display()
+                "Restore previous archive '{}'",
+                final_archive.expect("final archive path exists").display()
             )
         })?;
     }
     Ok(())
 }
 
-/// Write a deterministic flat zip of `package_root` to a staging file and
-/// replace `archive_path` only after the archive is complete.
+/// Write a deterministic flat zip of `package_root` to a new staging file.
 #[cfg(feature = "scheduled-sim")]
 fn write_zip_package(package_root: &Path, archive_path: &Path) -> Result<()> {
     let mut relative_paths = Vec::new();
     collect_package_files(package_root, package_root, &mut relative_paths)?;
     relative_paths.sort();
-
-    if let Some(parent) = archive_path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("Create archive directory '{}'", parent.display()))?;
-    }
-    let mut staging_name = archive_path
-        .file_name()
-        .context("Package archive path must have a file name")?
-        .to_os_string();
-    staging_name.push(".part");
-    let staging_path = archive_path.with_file_name(staging_name);
-    write_zip_entries(package_root, archive_path, &staging_path, &relative_paths).inspect_err(
-        |_| {
-            let _ = fs::remove_file(&staging_path);
-        },
-    )?;
-    if archive_path.exists() {
-        fs::remove_file(archive_path).with_context(|| {
-            format!("Remove previous archive '{}'", archive_path.display())
-        })?;
-    }
-    fs::rename(&staging_path, archive_path).with_context(|| {
-        format!(
-            "Rename staged archive '{}' to '{}'",
-            staging_path.display(),
-            archive_path.display()
-        )
-    })
+    write_zip_entries(package_root, archive_path, &relative_paths)
 }
 
 #[cfg(feature = "scheduled-sim")]
@@ -568,14 +806,16 @@ fn collect_package_files(root: &Path, dir: &Path, out: &mut Vec<String>) -> Resu
     for entry in
         fs::read_dir(dir).with_context(|| format!("Read package directory '{}'", dir.display()))?
     {
-        let entry =
-            entry.with_context(|| format!("Read package entry in '{}'", dir.display()))?;
+        let entry = entry.with_context(|| format!("Read package entry in '{}'", dir.display()))?;
         let path = entry.path();
         let file_type = entry
             .file_type()
             .with_context(|| format!("Stat package entry '{}'", path.display()))?;
         if file_type.is_symlink() {
-            bail!("Package trees may not contain symlinks: '{}'", path.display());
+            bail!(
+                "Package trees may not contain symlinks: '{}'",
+                path.display()
+            );
         }
         if file_type.is_dir() {
             collect_package_files(root, &path, out)?;
@@ -605,11 +845,10 @@ fn relative_package_path(root: &Path, path: &Path) -> Result<String> {
 fn write_zip_entries(
     package_root: &Path,
     archive_path: &Path,
-    staging_path: &Path,
     relative_paths: &[String],
 ) -> Result<()> {
-    let file = fs::File::create(staging_path)
-        .with_context(|| format!("Create staged archive '{}'", staging_path.display()))?;
+    let file = fs::File::create(archive_path)
+        .with_context(|| format!("Create staged archive '{}'", archive_path.display()))?;
     let mut archive = zip::ZipWriter::new(file);
     let options = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated)
@@ -636,301 +875,4 @@ fn write_zip_entries(
         .finish()
         .with_context(|| format!("Finish archive '{}'", archive_path.display()))?;
     Ok(())
-}
-
-#[cfg(all(test, feature = "scheduled-sim"))]
-mod tests {
-    use super::*;
-    use rumoca_compile::codegen::targets::parse_target_manifest;
-
-    fn manifest_files(toml: &str) -> Vec<TargetFile> {
-        parse_target_manifest(toml)
-            .expect("manifest should parse")
-            .files
-    }
-
-    /// The eFMU checksum web (`alg -> ac -> pc`, `{h,c} -> pc`, `ac -> content`,
-    /// `pc -> content`) is a DAG; topo_sort orders every producer before its
-    /// consumers, with `content` a sink.
-    #[test]
-    fn topo_sort_orders_producers_before_consumers() {
-        let files = manifest_files(
-            r#"
-version = 1
-ir = "dae"
-name = "web"
-readiness_level = 2
-
-[capabilities]
-
-[[files]]
-id = "alg"
-path = "AlgorithmCode/M.alg"
-template = "a.jinja"
-
-[[files]]
-id = "c_header"
-path = "ProductionCode/M.h"
-template = "h.jinja"
-
-[[files]]
-id = "c_source"
-path = "ProductionCode/M.c"
-template = "c.jinja"
-
-[[files]]
-id = "ac_manifest"
-path = "AlgorithmCode/manifest.xml"
-template = "ac.jinja"
-  [[files.checksums]]
-  of = "alg"
-  algorithm = "sha1"
-  as = "alg_sha1"
-
-[[files]]
-id = "pc_manifest"
-path = "ProductionCode/manifest.xml"
-template = "pc.jinja"
-  [[files.checksums]]
-  of = "ac_manifest"
-  algorithm = "sha1"
-  as = "ac_manifest_sha1"
-  [[files.checksums]]
-  of = "c_header"
-  algorithm = "sha1"
-  as = "c_header_sha1"
-  [[files.checksums]]
-  of = "c_source"
-  algorithm = "sha1"
-  as = "c_source_sha1"
-
-[[files]]
-id = "content"
-path = "__content.xml"
-template = "content.jinja"
-  [[files.checksums]]
-  of = "ac_manifest"
-  algorithm = "sha1"
-  as = "ac_manifest_sha1"
-  [[files.checksums]]
-  of = "pc_manifest"
-  algorithm = "sha1"
-  as = "pc_manifest_sha1"
-"#,
-        );
-        let order = topo_sort(&files).expect("DAG should topo-sort");
-        let position: HashMap<&str, usize> = order
-            .iter()
-            .enumerate()
-            .map(|(rank, &index)| (files[index].id.as_deref().unwrap(), rank))
-            .collect();
-        assert!(position["alg"] < position["ac_manifest"]);
-        assert!(position["ac_manifest"] < position["pc_manifest"]);
-        assert!(position["c_header"] < position["pc_manifest"]);
-        assert!(position["c_source"] < position["pc_manifest"]);
-        assert!(position["ac_manifest"] < position["content"]);
-        assert!(position["pc_manifest"] < position["content"]);
-        // `content` is a sink.
-        assert_eq!(position["content"], files.len() - 1);
-    }
-
-    /// A mutual A<->B cycle renders nothing (parse allows it — both ids exist,
-    /// no self edge — so the topo sort is the guard).
-    #[test]
-    fn topo_sort_rejects_a_cycle() {
-        let files = manifest_files(
-            r#"
-version = 1
-ir = "dae"
-name = "cycle"
-readiness_level = 2
-
-[capabilities]
-
-[[files]]
-id = "a"
-path = "a.xml"
-template = "a.jinja"
-  [[files.checksums]]
-  of = "b"
-  algorithm = "sha1"
-  as = "b_sha1"
-
-[[files]]
-id = "b"
-path = "b.xml"
-template = "b.jinja"
-  [[files.checksums]]
-  of = "a"
-  algorithm = "sha1"
-  as = "a_sha1"
-"#,
-        );
-        let err = topo_sort(&files).expect_err("a mutual cycle must render nothing");
-        assert!(err.to_string().contains("cycle"), "{err}");
-    }
-
-    /// A self-hash edge is rejected at parse time (no file can embed its own
-    /// hash — the DAG-by-construction invariant).
-    #[test]
-    fn self_hash_edge_is_rejected_at_parse() {
-        let err = parse_target_manifest(
-            r#"
-version = 1
-ir = "dae"
-name = "self"
-readiness_level = 2
-
-[capabilities]
-
-[[files]]
-id = "m"
-path = "m.xml"
-template = "m.jinja"
-  [[files.checksums]]
-  of = "m"
-  algorithm = "sha1"
-  as = "m_sha1"
-"#,
-        )
-        .expect_err("a self-hash edge must be refused");
-        assert!(err.to_string().contains("checksums itself"), "{err}");
-    }
-
-    /// A checksum `of` naming no declared id is rejected at parse time.
-    #[test]
-    fn dangling_checksum_of_is_rejected_at_parse() {
-        let err = parse_target_manifest(
-            r#"
-version = 1
-ir = "dae"
-name = "dangling"
-readiness_level = 2
-
-[capabilities]
-
-[[files]]
-id = "c"
-path = "c.xml"
-template = "c.jinja"
-  [[files.checksums]]
-  of = "missing"
-  algorithm = "sha1"
-  as = "missing_sha1"
-"#,
-        )
-        .expect_err("a dangling checksum `of` must be refused");
-        assert!(err.to_string().contains("names no [[files]] id"), "{err}");
-    }
-
-    /// End-to-end: render in dependency order, inject each producer's real
-    /// SHA-1 downstream under its `as` key, and write the exact hashed bytes.
-    /// The consumer's rendered content carries the SHA-1 of the producer's
-    /// on-disk bytes — the no-placeholder guarantee, black-box.
-    #[test]
-    fn render_and_package_threads_real_producer_hashes() {
-        let files = manifest_files(
-            r#"
-version = 1
-ir = "dae"
-name = "e2e"
-readiness_level = 2
-
-[capabilities]
-
-[[assets]]
-source = "fake-assets"
-dest = "schemas/"
-
-[[files]]
-id = "leaf"
-path = "leaf.txt"
-template = "leaf-template"
-
-[[files]]
-id = "root"
-path = "root.txt"
-template = "root-template"
-  [[files.checksums]]
-  of = "leaf"
-  algorithm = "sha1"
-  as = "leaf_sha1"
-"#,
-        );
-        // Fake renderer: `leaf-template` -> fixed content; `root-template` ->
-        // text embedding the injected `leaf_sha1`; path templates -> the path.
-        let render = |template: &str, artifact: &ArtifactRenderContext<'_>| -> Result<String> {
-            Ok(match template {
-                "leaf-template" => "LEAF-BODY".to_string(),
-                "root-template" => format!(
-                    "root sees leaf={}",
-                    artifact
-                        .checksums
-                        .get("leaf_sha1")
-                        .expect("leaf_sha1 injected")
-                ),
-                other => other.to_string(), // path templates render to themselves
-            })
-        };
-        let asset_source = |source: &str| -> Result<Vec<TargetAssetFile>> {
-            assert_eq!(source, "fake-assets");
-            Ok(vec![TargetAssetFile {
-                relative_path: "LICENSE".to_string(),
-                bytes: b"license bytes".to_vec(),
-            }])
-        };
-        let dir = tempfile::tempdir().expect("temp dir");
-        let out_dir = dir.path().join("product");
-        let package = PackageSpec {
-            required_files: vec!["root.txt".to_string()],
-            zip: None,
-        };
-        let manifest = parse_target_manifest(
-            r#"
-version = 1
-ir = "dae"
-name = "e2e"
-readiness_level = 2
-
-[capabilities]
-
-[[assets]]
-source = "fake-assets"
-dest = "schemas/"
-
-[[files]]
-id = "leaf"
-path = "leaf.txt"
-template = "leaf-template"
-
-[[files]]
-id = "root"
-path = "root.txt"
-template = "root-template"
-  [[files.checksums]]
-  of = "leaf"
-  algorithm = "sha1"
-  as = "leaf_sha1"
-"#,
-        )
-        .expect("manifest parses");
-
-        render_and_package(
-            &files,
-            render,
-            &manifest.assets,
-            asset_source,
-            &package,
-            &out_dir,
-        )
-        .expect("declarative package build should succeed");
-
-        let leaf_bytes = std::fs::read(out_dir.join("leaf.txt")).expect("leaf written");
-        let expected = sha1_hex(&leaf_bytes);
-        let root = std::fs::read_to_string(out_dir.join("root.txt")).expect("root written");
-        assert_eq!(root, format!("root sees leaf={expected}"));
-        let license =
-            std::fs::read_to_string(out_dir.join("schemas/LICENSE")).expect("asset copied");
-        assert_eq!(license, "license bytes");
-    }
 }
