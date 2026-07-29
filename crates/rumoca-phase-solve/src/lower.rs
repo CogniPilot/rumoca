@@ -259,7 +259,12 @@ fn lower_algebraic_projection<'dae>(
 > {
     let solver_count = layout.solve_layout.solver_scalar_count();
     let state_count = layout.solve_layout.state_scalar_count();
-    let mut targets = vec![None; solver_count];
+    let implicit_output_count = if state_count == solver_count {
+        0
+    } else {
+        solver_count
+    };
+    let mut targets = vec![None; implicit_output_count];
     for unknown in structural.rows.values().copied() {
         let UnknownId::Algebraic { variable, scalar } = unknown else {
             continue;

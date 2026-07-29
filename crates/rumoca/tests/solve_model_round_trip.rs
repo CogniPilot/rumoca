@@ -31,6 +31,10 @@ fn solve_model_round_trip_simulates_identically() {
         ..Default::default()
     };
     let model = lower_dae_for_simulation(&compiled.dae, &opts).expect("lower solve model");
+    model
+        .problem
+        .validate()
+        .expect("lowered SolveProblem must satisfy its construction contract");
 
     // The addon boundary: hand the SolveModel across as JSON.
     let json = serde_json::to_string(&model).expect("serialize SolveModel");

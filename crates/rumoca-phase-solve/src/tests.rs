@@ -64,8 +64,11 @@ fn explicit_state_equation_lowers_to_derivative_program() {
     assert_eq!(solve.solve_layout.state_scalar_count(), 1);
     assert!(solve.continuous.residual.nodes.is_empty());
     assert!(solve.continuous.implicit_rhs.nodes.is_empty());
-    assert_eq!(solve.continuous.implicit_row_targets, [None]);
+    assert!(solve.continuous.implicit_row_targets.is_empty());
     assert!(solve.continuous.algebraic_projection_plan.is_empty());
+    solve
+        .validate()
+        .expect("lowered explicit state system satisfies the Solve shape contract");
     let [ComputeNode::ScalarPrograms(rows)] = solve.continuous.derivative_rhs.nodes.as_slice()
     else {
         panic!("one scalar derivative block expected");
