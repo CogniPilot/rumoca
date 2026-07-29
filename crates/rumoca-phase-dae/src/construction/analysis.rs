@@ -251,14 +251,13 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
 }
 
 fn reject_initial_algorithm(flat: &flat::Model) -> Result<(), ToDaeError> {
-    let Some(algorithm) = flat.initial_algorithms.first() else {
-        return Ok(());
-    };
-    Err(ToDaeError::unsupported_algorithm(
-        "initial",
-        &algorithm.origin,
-        algorithm.span,
-    ))
+    flat.initial_algorithms.first().map_or(Ok(()), |algorithm| {
+        Err(ToDaeError::unsupported_algorithm(
+            "initial",
+            &algorithm.origin,
+            algorithm.span,
+        ))
+    })
 }
 
 fn analyze_record_array_field_plans(
