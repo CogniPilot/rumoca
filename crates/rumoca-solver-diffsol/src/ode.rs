@@ -3,7 +3,7 @@ use std::{
     cell::RefCell,
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 
@@ -528,7 +528,10 @@ impl AlgebraicProjectionModel for OdeModel {
 }
 
 pub(crate) fn validate_model(model: &solve::SolveModel) -> Result<(), SimError> {
-    if model.state_scalar_count() > 0 && model.problem.continuous.implicit_rhs.is_empty() {
+    if model.state_scalar_count() > 0
+        && model.problem.continuous.implicit_rhs.is_empty()
+        && model.problem.continuous.derivative_rhs.is_empty()
+    {
         return Err(SimError::EmptySystem);
     }
     if model.initial_y.len() != model.solver_scalar_count() {
@@ -599,19 +602,25 @@ pub(crate) fn build_state_ode_problem_with_runtime_params_and_initial(
     let state_count = model.state_scalar_count();
     let params = model.parameters.clone();
     let atol = solver_absolute_tolerances(model, opts.atol, state_count.max(1));
-    let jac_runtime = input.rhs_runtime.clone();
     let root_runtime = input.rhs_runtime.clone();
     let rhs_counters = input.eval_counters.clone();
-    let jac_counters = input.eval_counters.clone();
-    let root_counters = input.eval_counters;
+    let root_counters = input.eval_counters.clone();
     let rhs_params = Some(input.runtime_params.clone());
-    let jac_params = Some(input.runtime_params.clone());
-    let root_params = Some(input.runtime_params);
+    let root_params = Some(input.runtime_params.clone());
     let rhs_warm_start = input.algebraic_warm_start.clone();
-    let jac_warm_start = input.algebraic_warm_start;
     let rhs_delay_params = RefCell::new(Vec::new());
-    let jac_delay_params = RefCell::new(Vec::new());
     let tol = opts.atol.max(1.0e-10);
+    let StructuralJacobianEvaluator {
+        evaluate: jac_fn,
+        probe: sparsity_probe,
+    } = state_jacobian_evaluator(StateJacobianEvaluatorInput {
+        runtime: input.rhs_runtime.clone(),
+        runtime_params: Some(input.runtime_params.clone()),
+        warm_start: input.algebraic_warm_start.clone(),
+        counters: input.eval_counters.clone(),
+        tolerance: tol,
+        pattern: derivative_jacobian_pattern(model)?,
+    });
 
     let rhs_fn = move |y: &Vector, p: &Vector, t: Scalar, out: &mut Vector| {
         let start = rhs_counters.as_ref().map(|_| Instant::now());
@@ -645,44 +654,10 @@ pub(crate) fn build_state_ode_problem_with_runtime_params_and_initial(
             counters.rhs(elapsed_nanos_u64(start));
         }
     };
-    let jac_fn = move |y: &Vector, p: &Vector, t: Scalar, v: &Vector, out: &mut Vector| {
-        let start = jac_counters.as_ref().map(|_| Instant::now());
-        with_runtime_params(&jac_params, p.as_slice(), |params| {
-            let mut solver_y = jac_warm_start.speculative();
-            let state_len = y.len().min(solver_y.len());
-            solver_y[..state_len].copy_from_slice(&y.as_slice()[..state_len]);
-            let result = with_delay_adjusted_params_mut(
-                jac_runtime.as_ref(),
-                &mut solver_y,
-                params,
-                t,
-                &jac_delay_params,
-                |solver_y, params| {
-                    jac_runtime.eval_state_jacobian_v_ad_with_guess_into(
-                        rumoca_solver::AlgebraicLinearization {
-                            t,
-                            params,
-                            settle: bdf_algebraic_settle(tol),
-                        },
-                        y.as_slice(),
-                        v.as_slice(),
-                        solver_y,
-                        out.as_mut_slice(),
-                    )
-                },
-            );
-            if !matches!(result, Ok(Ok(()))) {
-                fill_eval_error(out.as_mut_slice());
-            }
-        });
-        if let (Some(counters), Some(start)) = (jac_counters.as_ref(), start) {
-            counters.jacobian_vector(elapsed_nanos_u64(start));
-        }
-    };
     let root_count = root_runtime.root_condition_count().max(1);
     let root_fn = state_root_evaluator(root_runtime, root_params, root_counters, tol);
 
-    OdeBuilder::<Matrix>::new()
+    let problem = OdeBuilder::<Matrix>::new()
         .t0(input.t_start)
         .h0(opts.dt.unwrap_or(1.0e-3).abs().max(1.0e-9))
         .rtol(opts.rtol)
@@ -697,7 +672,73 @@ pub(crate) fn build_state_ode_problem_with_runtime_params_and_initial(
         )
         .root(root_fn, root_count)
         .build()
-        .map_err(|err| SimError::SolverError(format!("ODE problem builder failed: {err}")))
+        .map_err(|err| SimError::SolverError(format!("ODE problem builder failed: {err}")));
+    sparsity_probe.store(false, Ordering::Relaxed);
+    problem
+}
+
+struct StateJacobianEvaluatorInput {
+    runtime: Arc<SolveRuntime>,
+    runtime_params: Option<RuntimeParameters>,
+    warm_start: AlgebraicWarmStart,
+    counters: Option<Arc<BdfEvalCounters>>,
+    tolerance: f64,
+    pattern: solve::StructuralPattern,
+}
+
+struct StructuralJacobianEvaluator<F> {
+    evaluate: F,
+    probe: Arc<AtomicBool>,
+}
+
+fn state_jacobian_evaluator(
+    input: StateJacobianEvaluatorInput,
+) -> StructuralJacobianEvaluator<impl Fn(&Vector, &Vector, Scalar, &Vector, &mut Vector)> {
+    let probe = Arc::new(AtomicBool::new(true));
+    let evaluator_probe = probe.clone();
+    let delay_params = RefCell::new(Vec::new());
+    let evaluator = move |y: &Vector, p: &Vector, t: Scalar, v: &Vector, out: &mut Vector| {
+        if evaluator_probe.load(Ordering::Relaxed) {
+            apply_structural_jacobian_probe(&input.pattern, v.as_slice(), out.as_mut_slice());
+            return;
+        }
+        let start = input.counters.as_ref().map(|_| Instant::now());
+        with_runtime_params(&input.runtime_params, p.as_slice(), |params| {
+            let mut solver_y = input.warm_start.speculative();
+            let state_len = y.len().min(solver_y.len());
+            solver_y[..state_len].copy_from_slice(&y.as_slice()[..state_len]);
+            let result = with_delay_adjusted_params_mut(
+                input.runtime.as_ref(),
+                &mut solver_y,
+                params,
+                t,
+                &delay_params,
+                |solver_y, params| {
+                    input.runtime.eval_state_jacobian_v_ad_with_guess_into(
+                        rumoca_solver::AlgebraicLinearization {
+                            t,
+                            params,
+                            settle: bdf_algebraic_settle(input.tolerance),
+                        },
+                        y.as_slice(),
+                        v.as_slice(),
+                        solver_y,
+                        out.as_mut_slice(),
+                    )
+                },
+            );
+            if !matches!(result, Ok(Ok(()))) {
+                fill_eval_error(out.as_mut_slice());
+            }
+        });
+        if let (Some(counters), Some(start)) = (input.counters.as_ref(), start) {
+            counters.jacobian_vector(elapsed_nanos_u64(start));
+        }
+    };
+    StructuralJacobianEvaluator {
+        evaluate: evaluator,
+        probe,
+    }
 }
 
 fn state_root_evaluator(
@@ -780,39 +821,21 @@ fn build_ode_problem_with_initial(
     let (n_total, atol, mass) = ode_problem_storage(model, opts, &ode_model);
 
     let rhs_runtime_params = runtime_params.clone();
-    let jac_runtime_params = runtime_params.clone();
     let root_runtime_params = runtime_params.clone();
-    let jac_model = ode_model.clone();
-    let jac_delay_runtime = root_runtime.clone();
     let rhs_delay_runtime = root_runtime.clone();
-    let jac_delay_params = RefCell::new(Vec::new());
     let root_delay_params = RefCell::new(Vec::new());
     let rhs_delay_params = RefCell::new(Vec::new());
     let tol = opts.atol.max(1.0e-10);
     let root_count = root_runtime.root_condition_count().max(1);
-    let jac_fn = move |y: &Vector, p: &Vector, t: Scalar, v: &Vector, out: &mut Vector| {
-        with_runtime_params(&jac_runtime_params, p.as_slice(), |params| {
-            let result = with_delay_adjusted_params(
-                jac_delay_runtime.as_ref(),
-                y.as_slice(),
-                params,
-                t,
-                &jac_delay_params,
-                |params| {
-                    jac_model.eval_jacobian_v(
-                        y.as_slice(),
-                        params,
-                        t,
-                        v.as_slice(),
-                        out.as_mut_slice(),
-                    )
-                },
-            );
-            if !matches!(result, Ok(Ok(()))) {
-                fill_eval_error(out.as_mut_slice());
-            }
-        });
-    };
+    let StructuralJacobianEvaluator {
+        evaluate: jac_fn,
+        probe: sparsity_probe,
+    } = implicit_jacobian_evaluator(ImplicitJacobianEvaluatorInput {
+        model: ode_model.clone(),
+        runtime: root_runtime.clone(),
+        runtime_params: runtime_params.clone(),
+        pattern: implicit_jacobian_pattern(model)?,
+    });
     let root_fn = move |y: &Vector, p: &Vector, t: Scalar, out: &mut Vector| {
         with_runtime_params(&root_runtime_params, p.as_slice(), |params| {
             let result = with_delay_adjusted_params(
@@ -838,7 +861,7 @@ fn build_ode_problem_with_initial(
         });
     };
 
-    OdeBuilder::<Matrix>::new()
+    let problem = OdeBuilder::<Matrix>::new()
         .t0(t_start)
         .h0(opts.dt.unwrap_or(1.0e-3).abs().max(1.0e-9))
         .rtol(opts.rtol)
@@ -877,7 +900,105 @@ fn build_ode_problem_with_initial(
         )
         .root(root_fn, root_count)
         .build()
-        .map_err(|err| SimError::SolverError(format!("ODE problem builder failed: {err}")))
+        .map_err(|err| SimError::SolverError(format!("ODE problem builder failed: {err}")));
+    sparsity_probe.store(false, Ordering::Relaxed);
+    problem
+}
+
+struct ImplicitJacobianEvaluatorInput {
+    model: Arc<OdeModel>,
+    runtime: Arc<SolveRuntime>,
+    runtime_params: Option<RuntimeParameters>,
+    pattern: solve::StructuralPattern,
+}
+
+fn implicit_jacobian_evaluator(
+    input: ImplicitJacobianEvaluatorInput,
+) -> StructuralJacobianEvaluator<impl Fn(&Vector, &Vector, Scalar, &Vector, &mut Vector)> {
+    let probe = Arc::new(AtomicBool::new(true));
+    let evaluator_probe = probe.clone();
+    let delay_params = RefCell::new(Vec::new());
+    let evaluator = move |y: &Vector, p: &Vector, t: Scalar, v: &Vector, out: &mut Vector| {
+        if evaluator_probe.load(Ordering::Relaxed) {
+            apply_structural_jacobian_probe(&input.pattern, v.as_slice(), out.as_mut_slice());
+            return;
+        }
+        with_runtime_params(&input.runtime_params, p.as_slice(), |params| {
+            let result = with_delay_adjusted_params(
+                input.runtime.as_ref(),
+                y.as_slice(),
+                params,
+                t,
+                &delay_params,
+                |params| {
+                    input.model.eval_jacobian_v(
+                        y.as_slice(),
+                        params,
+                        t,
+                        v.as_slice(),
+                        out.as_mut_slice(),
+                    )
+                },
+            );
+            if !matches!(result, Ok(Ok(()))) {
+                fill_eval_error(out.as_mut_slice());
+            }
+        });
+    };
+    StructuralJacobianEvaluator {
+        evaluate: evaluator,
+        probe,
+    }
+}
+
+fn derivative_jacobian_pattern(
+    model: &solve::SolveModel,
+) -> Result<solve::StructuralPattern, SimError> {
+    let (continuous, _) =
+        solve_eval::derive_solve_structural_artifacts(&model.problem, &model.artifacts)
+            .map_err(|error| SimError::SolveIr(error.to_string()))?;
+    continuous
+        .derivative()
+        .map(|structure| structure.pattern().clone())
+        .ok_or_else(|| {
+            SimError::SolveIr(
+                "state ODE requires a derived derivative Jacobian pattern".to_string(),
+            )
+        })
+}
+
+fn implicit_jacobian_pattern(
+    model: &solve::SolveModel,
+) -> Result<solve::StructuralPattern, SimError> {
+    let (continuous, _) =
+        solve_eval::derive_solve_structural_artifacts(&model.problem, &model.artifacts)
+            .map_err(|error| SimError::SolveIr(error.to_string()))?;
+    continuous
+        .implicit()
+        .map(|structure| structure.pattern().clone())
+        .ok_or_else(|| {
+            SimError::SolveIr(
+                "implicit ODE requires a derived implicit Jacobian pattern".to_string(),
+            )
+        })
+}
+
+fn apply_structural_jacobian_probe(
+    pattern: &solve::StructuralPattern,
+    seed: &[f64],
+    output: &mut [f64],
+) {
+    output.fill(0.0);
+    for (column, magnitude) in seed.iter().copied().map(f64::abs).enumerate() {
+        if magnitude == 0.0 || column >= pattern.columns() as usize {
+            continue;
+        }
+        for (row, value) in output.iter_mut().enumerate() {
+            if pattern.contains(row as u32, column as u32) {
+                *value += magnitude;
+            }
+        }
+    }
 }
 
 fn solver_absolute_tolerances(
@@ -981,5 +1102,51 @@ mod tolerance_tests {
             solver_absolute_tolerances(&model, 1.0e-6, 2),
             vec![1.0e-15, 1.0]
         );
+    }
+}
+
+#[cfg(test)]
+mod structural_probe_tests {
+    use super::apply_structural_jacobian_probe;
+    use rumoca_ir_solve::{
+        PatternDerivation, PatternProvenance, StructuralPattern, source_span_from_offsets,
+    };
+
+    fn pattern(dependencies: &[Vec<usize>]) -> StructuralPattern {
+        let provenance = PatternProvenance::derived(
+            PatternDerivation::DependencyPropagation,
+            source_span_from_offsets(51, 0, 1),
+        )
+        .expect("fixture provenance is source-backed");
+        StructuralPattern::from_row_dependencies(
+            dependencies.len(),
+            dependencies.len(),
+            dependencies,
+            provenance,
+        )
+        .expect("fixture dependencies form a checked pattern")
+    }
+
+    #[test]
+    fn structural_probe_retains_derivative_that_is_zero_at_initial_point() {
+        // For f(x) = x², the numerical Jv is zero at x = 0 even though the
+        // derivative can be nonzero elsewhere. The builder probe must report
+        // the may-depend edge so Diffsol/Faer cannot permanently omit it.
+        let pattern = pattern(&[vec![0]]);
+        let mut output = [0.0];
+
+        apply_structural_jacobian_probe(&pattern, &[1.0], &mut output);
+
+        assert_eq!(output, [1.0]);
+    }
+
+    #[test]
+    fn structural_probe_preserves_checked_row_column_incidence() {
+        let pattern = pattern(&[vec![0, 1], vec![1]]);
+        let mut output = [0.0, 0.0];
+
+        apply_structural_jacobian_probe(&pattern, &[-2.0, 3.0], &mut output);
+
+        assert_eq!(output, [5.0, 3.0]);
     }
 }

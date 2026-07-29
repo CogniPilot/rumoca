@@ -36,9 +36,9 @@ impl FocusedClosureCompiler for FakeFocusedCompiler {
 }
 
 fn empty_compilation_result() -> CompilationResult {
-    let dae = dae::Dae::default();
-    let balance_detail =
-        rumoca_phase_dae::balance::balance_detail(&dae).expect("empty DAE metadata is valid");
+    let dae = dae::Dae::construct(rumoca_compile::compile::core::SourceMap::new(), |_| Ok(()))
+        .expect("an empty checked DAE is valid");
+    let balance_detail = rumoca_phase_dae::balance::BalanceDetail::default();
     CompilationResult {
         flat: flat::Model::default(),
         dae,

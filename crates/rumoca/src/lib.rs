@@ -48,7 +48,6 @@ pub(crate) mod container;
 #[cfg(feature = "scheduled-sim")]
 pub(crate) mod fmt_cli;
 #[cfg(feature = "scheduled-sim")]
-pub(crate) mod fmu;
 #[cfg(feature = "scheduled-sim")]
 pub(crate) mod main_helpers;
 pub(crate) mod packaging;

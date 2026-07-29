@@ -150,9 +150,10 @@ fn resolve_flat_output_type_name(tree: &ast::ClassTree, mut type_id: TypeId) -> 
 
 pub(crate) fn flat_output_type_name(
     instance: &ast::InstanceData,
+    canonical_type_id: TypeId,
     tree: &ast::ClassTree,
 ) -> Result<String, FlattenError> {
-    if let Some(type_name) = resolve_flat_output_type_name(tree, instance.type_id)
+    if let Some(type_name) = resolve_flat_output_type_name(tree, canonical_type_id)
         .or_else(|| (!instance.type_name.is_empty()).then(|| instance.type_name.clone()))
     {
         return Ok(type_name);
@@ -455,7 +456,7 @@ mod tests {
     use std::sync::Arc;
 
     fn test_tree() -> ast::ClassTree {
-        let mut tree = ast::ClassTree::default();
+        let mut tree = ast::ClassTree::new();
         tree.source_map.add(
             "variable_fixture.mo",
             "model M\n  Real d;\n  Real m_flow;\nend M;\n",
@@ -582,5 +583,19 @@ mod tests {
             }
             _ => panic!("expected max to become a qualified VarRef"),
         }
+    }
+
+    #[test]
+    fn flat_output_type_uses_the_canonical_type_root() {
+        let instance = ast::InstanceData {
+            type_name: "Modelica.Units.SI.Angle".to_string(),
+            ..ast::InstanceData::default()
+        };
+        let tree = test_tree();
+
+        let name = flat_output_type_name(&instance, tree.type_table.real(), &tree)
+            .expect("canonical primitive type");
+
+        assert_eq!(name, "Real");
     }
 }

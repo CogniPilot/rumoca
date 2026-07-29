@@ -399,7 +399,7 @@ pub fn flatten_ref_with_options(
 
 /// Connection-set construction is intentionally scalar today, but the
 /// instantiate IR keeps regular vectorized connects compact and authoritative
-/// (SPEC_0032 §1). Each consumer boundary derives the scalar compatibility view
+/// (SPEC_0032 §1). Each consumer boundary derives the scalar projection view
 /// on demand through `rumoca_eval_ast::connection::scalar_connection_view`
 /// instead of materializing a second copy of the whole overlay.
 /// Only classes that actually carry a compact family pay for a materialized

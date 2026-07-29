@@ -44,12 +44,7 @@ fn required_msl_sim_regressions_are_selected_by_workspace_verification() {
 #[test]
 fn nightly_selects_each_reproducible_external_msl_cross_check() {
     let workflow = repository_file(".github/workflows/nightly.yml");
-    for target in [
-        "fmi2_msl_test",
-        "fmi3_msl_test",
-        "embedded_c_msl_test",
-        "casadi_msl_test",
-    ] {
+    for target in ["c_solve_msl_test", "casadi_msl_test"] {
         assert!(
             workflow.contains(&format!("--features msl-external-tests --test {target}")),
             "nightly external-MSL diagnostics do not select `{target}`"

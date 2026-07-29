@@ -5,15 +5,25 @@ use rumoca_core::{ComponentPath, ExpressionRewriter, StatementRewriter, Token};
 use rumoca_ir_ast::ExpressionTransformer;
 use rustc_hash::FxHashSet;
 
+mod expression_rewrite;
 mod flat_rewrite;
 mod member_calls;
 mod named_args;
+mod replaceable_modifiers;
 mod scoped_member_name;
 
+use expression_rewrite::{
+    FunctionOverrideExpressionRewriter, expression_contains_function_call, function_local_def_ids,
+    rewritten_function_reference,
+};
 pub(crate) use flat_rewrite::*;
 pub(crate) use member_calls::*;
 use named_args::{named_function_arg, named_function_arg_names};
+use replaceable_modifiers::{append_replaceable_function_modifier_args, single_component_ref_name};
 use scoped_member_name::scoped_override_component_member_name;
+
+#[cfg(test)]
+mod tests;
 
 pub(crate) type ComponentOverrideMap =
     rustc_hash::FxHashMap<ComponentPath, rustc_hash::FxHashMap<String, OverrideTarget>>;
@@ -1315,6 +1325,9 @@ fn resolve_override_member_name(
     if let Some(resolved) = resolve_override_member_projection_name(reference, ctx) {
         return Some(resolved);
     }
+    if reference_has_resolved_package_prefix(reference, ctx.class_index) {
+        return None;
+    }
     let scope = reference.component_scope()?;
     let member_leaf = scope.leaf_ident()?;
     let package = if let Some(source_package_def_id) = reference
@@ -1332,6 +1345,27 @@ fn resolve_override_member_name(
     }
     resolve_member_in_package_chain_exposed(ctx.tree, ctx.class_index, package, member_leaf)
         .filter(|resolved| resolved != reference.as_str())
+}
+
+/// Whether the reference already names a class/package-owned member.
+///
+/// A missing terminal `DefId` does not make a qualified reference relative:
+/// `Modelica.Constants.eps`, for example, still carries a resolvable package
+/// prefix. Such a reference cannot be captured by the only active replaceable
+/// package merely because that package is unique. A path with no resolvable
+/// prefix remains eligible for the relative-reference fallback below.
+fn reference_has_resolved_package_prefix(
+    reference: &rumoca_core::Reference,
+    class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
+) -> bool {
+    let path = ComponentPath::from_reference(reference);
+    (1..path.parts().len()).rev().any(|member_index| {
+        path.prefix(member_index).is_some_and(|prefix| {
+            class_index
+                .get_by_qualified_name(&prefix.to_flat_string())
+                .is_some()
+        })
+    })
 }
 
 fn resolve_override_member_projection_name(
@@ -1785,216 +1819,5 @@ pub(crate) fn rewrite_function_overrides_in_expression_with_ctx(
     {
         return;
     }
-    *expr = FunctionOverrideExpressionRewriter { ctx }.rewrite_expression(expr);
+    *expr = FunctionOverrideExpressionRewriter::new(ctx).rewrite_expression(expr);
 }
-
-fn expression_contains_function_call(expr: &Expression) -> bool {
-    match expr {
-        Expression::FunctionCall { .. } => true,
-        Expression::Binary { lhs, rhs, .. } => {
-            expression_contains_function_call(lhs) || expression_contains_function_call(rhs)
-        }
-        Expression::Unary { rhs, .. } => expression_contains_function_call(rhs),
-        Expression::BuiltinCall { args, .. }
-        | Expression::Array { elements: args, .. }
-        | Expression::Tuple { elements: args, .. } => {
-            args.iter().any(expression_contains_function_call)
-        }
-        Expression::If {
-            branches,
-            else_branch,
-            ..
-        } => {
-            branches.iter().any(|(condition, value)| {
-                expression_contains_function_call(condition)
-                    || expression_contains_function_call(value)
-            }) || expression_contains_function_call(else_branch)
-        }
-        Expression::Range {
-            start, step, end, ..
-        } => {
-            expression_contains_function_call(start)
-                || step
-                    .as_deref()
-                    .is_some_and(expression_contains_function_call)
-                || expression_contains_function_call(end)
-        }
-        Expression::ArrayComprehension {
-            expr,
-            indices,
-            filter,
-            ..
-        } => {
-            expression_contains_function_call(expr)
-                || indices
-                    .iter()
-                    .any(|index| expression_contains_function_call(&index.range))
-                || filter
-                    .as_deref()
-                    .is_some_and(expression_contains_function_call)
-        }
-        Expression::Index {
-            base, subscripts, ..
-        } => {
-            expression_contains_function_call(base)
-                || subscripts.iter().any(subscript_contains_function_call)
-        }
-        Expression::FieldAccess { base, .. } => expression_contains_function_call(base),
-        Expression::VarRef { subscripts, .. } => {
-            subscripts.iter().any(subscript_contains_function_call)
-        }
-        Expression::Literal { .. } | Expression::Empty { .. } => false,
-    }
-}
-
-fn subscript_contains_function_call(subscript: &rumoca_core::Subscript) -> bool {
-    match subscript {
-        rumoca_core::Subscript::Expr { expr, .. } => expression_contains_function_call(expr),
-        rumoca_core::Subscript::Index { .. } | rumoca_core::Subscript::Colon { .. } => false,
-    }
-}
-
-struct FunctionOverrideExpressionRewriter<'a> {
-    ctx: &'a FunctionOverrideRewriteContext<'a>,
-}
-
-impl ExpressionRewriter for FunctionOverrideExpressionRewriter<'_> {
-    fn rewrite_expression(&mut self, expr: &Expression) -> Expression {
-        if let Expression::VarRef {
-            name,
-            subscripts,
-            span,
-        } = expr
-        {
-            let rewritten_subscripts = self.rewrite_subscripts(subscripts);
-            if reference_targets_function_local_def(name, self.ctx) {
-                return Expression::VarRef {
-                    name: name.clone(),
-                    subscripts: rewritten_subscripts,
-                    span: *span,
-                };
-            }
-            if let Some(resolved_name) = resolve_override_member_name(name, self.ctx) {
-                return Expression::VarRef {
-                    name: rewritten_reference(name, resolved_name, self.ctx),
-                    subscripts: rewritten_subscripts,
-                    span: *span,
-                };
-            }
-            if let Some(canonical_name) = canonical_instance_reference_name(name, self.ctx) {
-                return Expression::VarRef {
-                    name: canonical_name,
-                    subscripts: rewritten_subscripts,
-                    span: *span,
-                };
-            }
-            return Expression::VarRef {
-                name: name.clone(),
-                subscripts: rewritten_subscripts,
-                span: *span,
-            };
-        }
-
-        if let Expression::FunctionCall {
-            name,
-            args,
-            is_constructor,
-            span,
-        } = expr
-        {
-            let rewritten_args = self.rewrite_expressions(args);
-            if reference_targets_function_local_def(name, self.ctx) {
-                return Expression::FunctionCall {
-                    name: name.clone(),
-                    args: rewritten_args,
-                    is_constructor: *is_constructor,
-                    span: *span,
-                };
-            }
-            let Some(resolved_name) =
-                resolve_function_override_name(name, *is_constructor, self.ctx)
-            else {
-                return Expression::FunctionCall {
-                    name: name.clone(),
-                    args: rewritten_args,
-                    is_constructor: *is_constructor,
-                    span: *span,
-                };
-            };
-            let args = append_replaceable_function_modifier_args(
-                name,
-                &resolved_name,
-                rewritten_args,
-                self.ctx,
-            );
-            return Expression::FunctionCall {
-                name: rewritten_reference(name, resolved_name, self.ctx),
-                args,
-                is_constructor: *is_constructor,
-                span: *span,
-            };
-        }
-        self.walk_expression(expr)
-    }
-}
-
-impl StatementRewriter for FunctionOverrideExpressionRewriter<'_> {}
-
-fn function_local_def_ids(function: &rumoca_core::Function) -> FxHashSet<rumoca_core::DefId> {
-    function
-        .inputs
-        .iter()
-        .chain(function.outputs.iter())
-        .chain(function.locals.iter())
-        .filter_map(|param| param.def_id)
-        .collect()
-}
-
-fn reference_targets_function_local_def(
-    reference: &rumoca_core::Reference,
-    ctx: &FunctionOverrideRewriteContext<'_>,
-) -> bool {
-    reference
-        .target_def_id()
-        .is_some_and(|def_id| ctx.local_def_ids.contains(&def_id))
-}
-
-fn rewritten_reference(
-    original: &rumoca_core::Reference,
-    resolved_name: String,
-    ctx: &FunctionOverrideRewriteContext<'_>,
-) -> rumoca_core::Reference {
-    rewritten_function_reference(original, resolved_name, ctx.tree, ctx.class_index)
-}
-
-fn rewritten_function_reference(
-    original: &rumoca_core::Reference,
-    resolved_name: String,
-    tree: &ClassTree,
-    class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
-) -> rumoca_core::Reference {
-    let Some(mut component_ref) = original.component_ref().cloned() else {
-        return rumoca_core::Reference::new(resolved_name);
-    };
-    component_ref.def_id = tree.name_map.get(&resolved_name).copied().or_else(|| {
-        class_index
-            .get_by_qualified_name(&resolved_name)
-            .and_then(|class_def| class_def.def_id)
-    });
-    component_ref.parts = ComponentPath::from_flat_path(&resolved_name)
-        .parts()
-        .iter()
-        .map(|part| rumoca_core::ComponentRefPart {
-            ident: part.clone(),
-            span: component_ref.span,
-            subs: Vec::new(),
-        })
-        .collect();
-    rumoca_core::Reference::with_component_reference(resolved_name, component_ref)
-}
-
-mod replaceable_modifiers;
-use replaceable_modifiers::{append_replaceable_function_modifier_args, single_component_ref_name};
-
-#[cfg(test)]
-mod tests;

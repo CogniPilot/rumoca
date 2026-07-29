@@ -160,9 +160,11 @@ mod tests {
             source: solve::PreParamSource::Y {
                 index: source_y_index,
             },
-            clock_schedule: period_seconds.map(|period_seconds| solve::PeriodicEventSchedule {
-                period_seconds,
-                phase_seconds: 0.0,
+            clock_schedule: period_seconds.map(|period_seconds| {
+                solve::PeriodicEventSchedule::new(
+                    rumoca_core::ClockLattice::from_seconds(period_seconds, 0.0).unwrap(),
+                )
+                .unwrap()
             }),
         }
     }

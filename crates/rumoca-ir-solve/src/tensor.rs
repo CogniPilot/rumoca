@@ -1,21 +1,5 @@
 use super::*;
 
-/// Sparsity annotation for a tensor operand in a `ComputeNode`.
-///
-/// Used by backends to emit optimized kernels (e.g., diagonal multiply instead of GEMM)
-/// and by sparsity-aware Jacobian builders to skip probing for known-zero entries.
-/// `Dense` is always a conservative fallback — it never causes incorrect results.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum SparsityPattern {
-    /// All entries may be nonzero (conservative default).
-    #[default]
-    Dense,
-    /// Square matrix with nonzero entries only on the main diagonal.
-    Diagonal,
-    /// Explicit set of (row, col) nonzero positions in row-major order.
-    Explicit { nnz: Vec<(usize, usize)> },
-}
-
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TensorElementType {
     #[default]
@@ -294,11 +278,9 @@ pub enum ComputeNode {
         n: usize,
         /// Sparsity of the lhs (A) operand.  `Dense` unless the lowering phase
         /// can statically prove a sparser structure.
-        #[serde(default)]
-        lhs_sparsity: SparsityPattern,
+        lhs_pattern: StructuralPattern,
         /// Sparsity of the rhs (B) operand.  `Dense` unless statically known.
-        #[serde(default)]
-        rhs_sparsity: SparsityPattern,
+        rhs_pattern: StructuralPattern,
         metadata: TensorNodeMetadata,
         span: Span,
     },
@@ -315,6 +297,9 @@ pub enum ComputeNode {
         rhs_start: Reg,
         n: usize,
         next_reg: Reg,
+        /// Constructor-derived structural pattern of the square coefficient
+        /// matrix. Runtime values never redefine this relation.
+        matrix_pattern: StructuralPattern,
         metadata: TensorNodeMetadata,
         span: Span,
     },

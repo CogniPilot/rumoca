@@ -14,13 +14,12 @@ use std::{
 use clap::Parser;
 use rumoca_compile::compile::{
     CompilePhaseEvent, DaeCompilationResult, FailedPhase, Session, SessionConfig, SourceRootKind,
-    install_compile_phase_observer,
+    VariableRole, install_compile_phase_observer,
 };
-use rumoca_phase_solve::tensor_preservation_report;
 use rumoca_sim::{
     BuildSimulationTimings, PreparedSimulation, SimError, SimOptions, SimResult, SimSolverMode,
     build_simulation_with_stage_timing_and_solve_model, check_prepared_initialization,
-    run_prepared_simulation, structurally_lowered_dae_for_simulation_artifact,
+    run_prepared_simulation,
 };
 use rumoca_worker::{
     MODEL_WORKER_MEMORY_LIMIT_MB_DEFAULT, MODEL_WORKER_PARENT_DISCONNECTED_EXIT_CODE,
@@ -604,12 +603,29 @@ fn initialization_balance_check(
     scalar_equations: i64,
 ) -> (i64, i64, i64, i64, i64) {
     let deficit_before = (scalar_unknowns - scalar_equations).max(0);
-    let initial_equation_scalars = dae
-        .initialization
-        .equations
-        .iter()
-        .map(|eq| eq.scalar_count as i64)
-        .sum::<i64>();
+    let initial_equation_scalars = dae.inspect(|view| {
+        let residual_scalars = (0..view.initialization_equation_count())
+            .map(|index| {
+                let equation = view
+                    .initialization_equation(index)
+                    .expect("finalized initialization equation resolves");
+                view.expression(equation.residual())
+                    .expect("branded initialization residual resolves")
+                    .value_type()
+                    .scalar_count()
+                    .expect("checked initialization expression has scalar capacity")
+                    as i64
+            })
+            .sum::<i64>();
+        let family_scalars = (0..view.initialization_family_count())
+            .map(|index| {
+                view.initialization_family(index)
+                    .expect("finalized initialization family resolves")
+                    .scalar_rows() as i64
+            })
+            .sum::<i64>();
+        residual_scalars + family_scalars
+    });
     let initial_algorithm_scalars = 0;
     let closure_used = (initial_equation_scalars + initial_algorithm_scalars).min(deficit_before);
     let deficit_after = deficit_before - closure_used;
@@ -639,15 +655,14 @@ fn summarize_dae_success(
         deficit_after,
     ) = initialization_balance_check(result.dae.as_ref(), scalar_unknowns, scalar_equations);
     let scalar_equations_with_init = scalar_equations + closure_used;
-    let input_scalars = result
-        .dae
-        .variables
-        .inputs
-        .values()
-        .map(|v| v.size())
-        .sum::<usize>() as i64;
+    let input_scalars = result.dae.inspect(|view| {
+        view.variables()
+            .filter(|(_, variable)| variable.role() == VariableRole::Input)
+            .map(|(_, variable)| variable.scalar_count())
+            .sum::<usize>() as i64
+    });
     let balanced_discrete_scalars =
-        (detail.discrete_real_unknowns + detail.discrete_valued_unknowns) as i64;
+        (detail.discrete_real_unknowns + detail.discrete_value_unknowns) as i64;
     let extra_discrete_report_scalars =
         (result.active_discrete_scalar_count - balanced_discrete_scalars).max(0);
     let report_offset = input_scalars + extra_discrete_report_scalars;
@@ -657,13 +672,24 @@ fn summarize_dae_success(
 
     let mut row = WorkerModelResult::phase_failure(model_name.to_string(), "Success", "", None);
     row.error = None;
-    row.num_states = Some(result.dae.variables.states.len());
-    row.num_algebraics = Some(result.dae.variables.algebraics.len());
-    row.num_f_x = Some(result.dae.continuous.equations.len());
+    let (num_states, num_algebraics, num_f_x) = result.dae.inspect(|view| {
+        let num_states = view
+            .variables()
+            .filter(|(_, variable)| variable.role() == VariableRole::State)
+            .count();
+        let num_algebraics = view
+            .variables()
+            .filter(|(_, variable)| variable.role() == VariableRole::Algebraic)
+            .count();
+        (num_states, num_algebraics, view.continuous_equation_count())
+    });
+    row.num_states = Some(num_states);
+    row.num_algebraics = Some(num_algebraics);
+    row.num_f_x = Some(num_f_x);
     row.balance = Some(balance_for_report);
     row.is_balanced = Some(balance_for_report == 0);
-    row.is_partial = Some(result.dae.metadata.is_partial);
-    row.class_type = Some(result.dae.metadata.class_type.as_str().to_string());
+    row.is_partial = Some(result.flat.is_partial);
+    row.class_type = Some(result.flat.class_type.as_str().to_string());
     // Carry the breakdown whenever the continuous balance is non-zero, so the
     // `--allow-unbalanced-for-diagnostics` lane (which reaches this success
     // path) still exposes the component counts for triage.
@@ -749,15 +775,24 @@ fn should_simulate(
 ) -> bool {
     request.run_simulation
         && request.selected_for_simulation
-        && !result.dae.metadata.is_partial
+        && !result.flat.is_partial
         && (request.explicit_sim_target
             || (root_standalone_example_name(&request.model_name)
-                && !result.dae.variables.has_input_scalars()
+                && !result.dae.inspect(|view| {
+                    view.variables().any(|(_, variable)| {
+                        variable.role() == VariableRole::Input && variable.scalar_count() != 0
+                    })
+                })
                 && !result.has_unbound_fixed_parameters))
 }
 
 fn output_samples_for_model(dae: &rumoca_compile::compile::Dae) -> usize {
-    let n_state_scalars: usize = dae.variables.states.values().map(|v| v.size()).sum();
+    let n_state_scalars = dae.inspect(|view| {
+        view.variables()
+            .filter(|(_, variable)| variable.role() == VariableRole::State)
+            .map(|(_, variable)| variable.scalar_count())
+            .sum::<usize>()
+    });
     if n_state_scalars == 0 {
         SIM_OUTPUT_SAMPLES_NO_STATES
     } else {
@@ -974,8 +1009,8 @@ fn build_worker_prepared_simulation(
     let mut solve_error = initial_structural_dae_artifact_error(dae, opts, request);
     let solve_completed = Cell::new(false);
     let mut sim_build_started = false;
-    let mut tensor_kpi = None;
-    let mut tensor_error = None;
+    let tensor_kpi = None;
+    let tensor_error = None;
     let prepared = build_simulation_with_stage_timing_and_solve_model(
         dae,
         opts,
@@ -988,29 +1023,6 @@ fn build_worker_prepared_simulation(
             );
         },
         |solve_model| {
-            match tensor_preservation_report(dae, &solve_model.problem) {
-                Ok(report) => {
-                    match report
-                        .preserved_family_bodies
-                        .checked_add(report.scalarized_family_bodies)
-                    {
-                        Some(family_bodies) => {
-                            tensor_kpi = Some(WorkerTensorKpi {
-                                family_bodies,
-                                preserved_family_bodies: report.preserved_family_bodies,
-                                scalarized_family_rows: report.scalarized_family_rows,
-                                preservation_percent: report.preservation_percent(),
-                            });
-                        }
-                        None => {
-                            tensor_error = Some(
-                                "tensor family-body count exceeds host index range".to_string(),
-                            );
-                        }
-                    }
-                }
-                Err(error) => tensor_error = Some(error.to_string()),
-            }
             observe_solve_model_artifact(
                 solve_model,
                 progress,
@@ -1059,32 +1071,15 @@ fn initial_structural_dae_artifact_error(
     if !request.emit_json && !request.emit_modelica {
         return None;
     }
-    match structurally_lowered_dae_for_simulation_artifact(dae, opts) {
-        Ok(structural_dae) => {
-            let mut error = None;
-            if request.emit_modelica {
-                error = error.or(write_modelica_dae_artifact(
-                    request,
-                    "ir-structural-dae.mo",
-                    &structural_dae,
-                )
-                .err());
-            }
-            if request.emit_json {
-                error = error.or(write_artifact_json(
-                    request,
-                    "ir-structural-dae.json",
-                    &structural_dae,
-                )
-                .err());
-            }
-            error
-        }
-        // The structural lowering error keeps the code of the phase that raised
-        // it, so tag it inline: `ir_solve_error` is a plain string and the code
-        // would otherwise be lost before the MSL result schema sees it.
-        Err(error) => Some(format!("[{}] {error}", error.code())),
+    let _ = opts;
+    let mut error = None;
+    if request.emit_modelica {
+        error = error.or(write_modelica_dae_artifact(request, "ir-structural-dae.mo", dae).err());
     }
+    if request.emit_json {
+        error = error.or(write_artifact_json(request, "ir-structural-dae.json", dae).err());
+    }
+    error
 }
 
 fn observe_simulation_build_stage(
@@ -1246,36 +1241,28 @@ fn apply_solve_stage_diagnostic_code(row: &mut WorkerModelResult) {
 
 fn is_trivial_static_dae(result: &DaeCompilationResult) -> bool {
     total_dae_unknowns(result) == 0
-        && result.dae.continuous.equations.is_empty()
-        && result.dae.discrete.real_updates.is_empty()
-        && result.dae.discrete.valued_updates.is_empty()
-        && result.dae.conditions.equations.is_empty()
-        && result.dae.conditions.relations.is_empty()
-        && result.dae.initialization.equations.is_empty()
+        && result.dae.inspect(|view| {
+            view.continuous_owner_count() == 0
+                && view.discrete_real_equation_count() == 0
+                && view.discrete_assignment_count() == 0
+                && view.condition_count() == 0
+                && view.relation_count() == 0
+                && view.initialization_owner_count() == 0
+        })
 }
 
 fn total_dae_unknowns(result: &DaeCompilationResult) -> usize {
-    result
-        .dae
-        .variables
-        .states
-        .values()
-        .map(|v| v.size())
-        .sum::<usize>()
-        + result
-            .dae
-            .variables
-            .algebraics
-            .values()
-            .map(|v| v.size())
-            .sum::<usize>()
-        + result
-            .dae
-            .variables
-            .outputs
-            .values()
-            .map(|v| v.size())
-            .sum::<usize>()
+    result.dae.inspect(|view| {
+        view.variables()
+            .filter(|(_, variable)| {
+                matches!(
+                    variable.role(),
+                    VariableRole::State | VariableRole::Algebraic | VariableRole::Output
+                )
+            })
+            .map(|(_, variable)| variable.scalar_count())
+            .sum()
+    })
 }
 
 fn mark_trivial_static_success(row: &mut WorkerModelResult) {
@@ -1637,24 +1624,9 @@ mod tests {
                 "#,
             )
             .expect("parse zero-sized standalone model");
-        let mut result = session
+        session
             .compile_model_dae_strict_reachable_uncached_with_recovery("EmptyBindings")
-            .expect("compile zero-sized standalone model");
-        let input_name = rumoca_compile::compile::core::VarName::new("u");
-        std::sync::Arc::make_mut(&mut result.dae)
-            .variables
-            .inputs
-            .insert(
-                input_name.clone(),
-                rumoca_compile::compile::Variable {
-                    name: input_name,
-                    dims: vec![0],
-                    ..rumoca_compile::compile::Variable::empty_with_span(
-                        rumoca_compile::compile::core::Span::DUMMY,
-                    )
-                },
-            );
-        result
+            .expect("compile zero-sized standalone model")
     }
 
     fn simulation_request(model_name: &str) -> ModelWorkerRequest {
@@ -1690,8 +1662,14 @@ mod tests {
     #[test]
     fn worker_simulates_zero_sized_inputs_and_fixed_parameters() {
         let result = compile_zero_sized_standalone_model();
-        assert!(!result.dae.variables.inputs.is_empty());
-        assert!(!result.dae.variables.has_input_scalars());
+        result.dae.inspect(|view| {
+            let input = view
+                .variables()
+                .find(|(_, variable)| variable.role() == VariableRole::Input)
+                .map(|(_, variable)| variable)
+                .expect("zero-sized input declaration is retained");
+            assert_eq!(input.scalar_count(), 0);
+        });
         assert!(!result.has_unbound_fixed_parameters);
         assert!(should_simulate(
             &simulation_request("Modelica.Test.Examples.EmptyBindings"),

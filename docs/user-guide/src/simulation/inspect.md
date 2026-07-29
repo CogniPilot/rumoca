@@ -78,7 +78,7 @@ rumoca cache status                  # compilation cache usage
 ## Verbose Compilation
 
 ```bash
-rumoca compile Model.mo --target sympy -o out -v
+rumoca compile Model.mo --target c-solve -o out -v
 ```
 
 `-v` prints friendly `[rumoca] Phase ...` progress lines, which localizes

@@ -1479,13 +1479,12 @@ fn prepare_compiled_source_root(
     println!("Building tolerant source-root index...");
     let session_start = Instant::now();
     let _session_watchdog = StageAbortWatchdog::new("session_build", 300);
-    let source_root = match CompiledSourceRoot::from_parsed_batch_tolerant(parsed_successes) {
-        Ok(source_root) => std::sync::Arc::new(source_root),
+    let source_map = match rumoca_compile::parsing::source_map_for_parsed_files(&parsed_successes) {
+        Ok(source_map) => source_map,
         Err(error) => {
-            println!("Failed to build tolerant source-root index: {error}");
+            println!("Failed to preserve parsed source text: {error}");
             let mut summary = empty_summary(total_mo_files, parse_errors);
             summary.resolve_errors = 1;
-            timings.session_build_seconds = session_start.elapsed().as_secs_f64();
             return Err(Box::new(finalize_early_summary(
                 summary,
                 timings,
@@ -1494,6 +1493,22 @@ fn prepare_compiled_source_root(
             )));
         }
     };
+    let source_root =
+        match CompiledSourceRoot::from_parsed_batch_tolerant(parsed_successes, source_map) {
+            Ok(source_root) => std::sync::Arc::new(source_root),
+            Err(error) => {
+                println!("Failed to build tolerant source-root index: {error}");
+                let mut summary = empty_summary(total_mo_files, parse_errors);
+                summary.resolve_errors = 1;
+                timings.session_build_seconds = session_start.elapsed().as_secs_f64();
+                return Err(Box::new(finalize_early_summary(
+                    summary,
+                    timings,
+                    frontend_compile_start,
+                    core_start,
+                )));
+            }
+        };
     let model_names = source_root.model_names().to_vec();
     let class_type_counts = source_root.class_type_counts().clone();
     timings.session_build_seconds = session_start.elapsed().as_secs_f64();

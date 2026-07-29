@@ -184,8 +184,9 @@ fn validate_implicit_output_inventory(
     block: &solve::ScalarProgramBlock,
 ) -> Result<(), EvalSolveError> {
     let positions = output_row_positions(block)?;
+    let state_count = model.state_scalar_count();
     let solver_count = model.solver_scalar_count();
-    for output in 0..solver_count {
+    for output in state_count..solver_count {
         if !positions.contains_key(&output) {
             return Err(EvalSolveError::InvalidRow {
                 message: format!("implicit algebraic system is missing output row {output}"),

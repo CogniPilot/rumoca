@@ -1449,12 +1449,12 @@ fn test_flowmodel_modifier_keeps_enclosing_port_scope() {
         end Top;
     "#;
 
-    let compiled = rumoca::Compiler::new()
+    let flat = rumoca::Compiler::new()
         .model("Top")
-        .compile_str(source, "test.mo")
-        .expect("Top should compile");
+        .compile_str_flat(source, "test.mo")
+        .expect("Top should flatten");
 
-    let flat_dump = format!("{:#?}", compiled.flat);
+    let flat_dump = format!("{flat:#?}");
     assert!(
         !flat_dump.contains("pipe.flowModel.port_a.p"),
         "flowModel modifier should resolve port_a.p in enclosing scope, got over-qualified ref"

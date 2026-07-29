@@ -3,18 +3,16 @@ use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, ValueEnum};
-use rumoca_compile::analysis::{balance, balance_detail};
 use rumoca_compile::compile::{
-    CompilationResult, Dae, PhaseResult, Session, SessionConfig, SourceRootKind,
-    StrictCompileReport, VarName, Variable, compile_phase_timing_stats, core as rumoca_core,
+    CompilationResult, ContinuousOwnerView, CoordinateView, Dae, ExpressionOperation, PhaseResult,
+    Session, SessionConfig, SourceRootKind, StrictCompileReport, VariableId, VariableRole,
+    VariableView, compile_phase_timing_stats, core as rumoca_core,
     reset_compile_phase_timing_stats,
 };
-use rumoca_compile::phase_structural::{analyze_structure, scalarize_equations};
 use rumoca_compile::source_roots::parse_source_root_with_cache;
 use rumoca_sim::simulate_dae;
 use rumoca_sim::{SimOptions, SimResult, SimSolverMode};
 use rumoca_sim::{compiled_layout_binding_debug, compiled_layout_related_bindings_debug};
-use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum ProfileMode {
@@ -149,6 +147,38 @@ fn write_strict_flat_artifact(
     write_artifact(&artifact_dir.join("ir-flat.json"), &flat)
 }
 
+fn print_structural_summary(dae: &Dae) {
+    let structural = dae.inspect(rumoca_compile::phase_structural::analyze);
+    println!(
+        "Structural matching: matched={} equations={} unknowns={}",
+        structural.matching_size, structural.n_equations, structural.n_unknowns
+    );
+    const LIMIT: usize = 128;
+    print_bounded_names(
+        "Structurally unmatched unknowns:",
+        &structural.unmatched_unknowns,
+        LIMIT,
+    );
+    print_bounded_names(
+        "Structurally unmatched equations:",
+        &structural.unmatched_equations,
+        LIMIT,
+    );
+}
+
+fn print_bounded_names(heading: &str, names: &[String], limit: usize) {
+    if names.is_empty() {
+        return;
+    }
+    println!("{heading}");
+    for name in names.iter().take(limit) {
+        println!("  {name}");
+    }
+    if names.len() > limit {
+        println!("  ... {} more", names.len() - limit);
+    }
+}
+
 fn load_profiled_model(
     source_root: &std::path::Path,
     model: &str,
@@ -197,58 +227,26 @@ fn load_profiled_model(
         compile_elapsed, model
     );
     print_compile_phase_snapshot();
+    let (states, algebraics, equations) = result.dae.inspect(|view| {
+        (
+            view.variables()
+                .filter(|(_, variable)| variable.role() == VariableRole::State)
+                .count(),
+            view.variables()
+                .filter(|(_, variable)| variable.role() == VariableRole::Algebraic)
+                .count(),
+            view.continuous_owner_count(),
+        )
+    });
     println!(
-        "Compilation successful: states={} algebraics={} equations={}",
-        result.dae.variables.states.len(),
-        result.dae.variables.algebraics.len(),
-        result.dae.continuous.equations.len()
+        "Compilation successful: states={states} algebraics={algebraics} equations={equations}"
     );
-    let detail = balance_detail(&result.dae)?;
-    println!("Balance detail:\n{detail}");
-    println!("Balance result: {}", balance(&result.dae)?);
+    println!("Balance detail: {:#?}", result.balance_detail);
+    println!("Balance result: {}", result.balance_detail.balance());
     if let Some(artifact_dir) = artifact_dir {
         write_artifacts(artifact_dir, &result)?;
     }
-    let mut scalar_dae = result.dae.clone();
-    scalarize_equations(&mut scalar_dae)?;
-    let structural = analyze_structure(&scalar_dae);
-    println!(
-        "Structural matching: matched={} equations={} unknowns={}",
-        structural.matching_size, structural.n_equations, structural.n_unknowns
-    );
-    const MAX_STRUCTURAL_DIAGNOSTICS: usize = 128;
-    if !structural.unmatched_unknowns.is_empty() {
-        println!("Structurally unmatched unknowns:");
-        for name in structural
-            .unmatched_unknowns
-            .iter()
-            .take(MAX_STRUCTURAL_DIAGNOSTICS)
-        {
-            println!("  {name}");
-        }
-        if structural.unmatched_unknowns.len() > MAX_STRUCTURAL_DIAGNOSTICS {
-            println!(
-                "  ... {} more",
-                structural.unmatched_unknowns.len() - MAX_STRUCTURAL_DIAGNOSTICS
-            );
-        }
-    }
-    if !structural.unmatched_equations.is_empty() {
-        println!("Structurally unmatched equations:");
-        for origin in structural
-            .unmatched_equations
-            .iter()
-            .take(MAX_STRUCTURAL_DIAGNOSTICS)
-        {
-            println!("  {origin}");
-        }
-        if structural.unmatched_equations.len() > MAX_STRUCTURAL_DIAGNOSTICS {
-            println!(
-                "  ... {} more",
-                structural.unmatched_equations.len() - MAX_STRUCTURAL_DIAGNOSTICS
-            );
-        }
-    }
+    print_structural_summary(&result.dae);
     debug_log_balance_summary(&result.dae);
     debug_log_unknown_summary(&result.dae);
     Ok(result)
@@ -330,106 +328,135 @@ fn format_elapsed_summary(elapsed: &[std::time::Duration]) -> String {
 
 fn inspect_dae_names(dae: &Dae, names: &[String]) -> Result<()> {
     for name in names {
-        let key = VarName::new(name);
         println!("Inspect name: {name}");
-        inspect_dae_name_category("state", dae.variables.states.get_key_value(&key));
-        inspect_dae_name_category("algebraic", dae.variables.algebraics.get_key_value(&key));
-        inspect_dae_name_category("input", dae.variables.inputs.get_key_value(&key));
-        inspect_dae_name_category("output", dae.variables.outputs.get_key_value(&key));
-        inspect_dae_name_category("parameter", dae.variables.parameters.get_key_value(&key));
-        inspect_dae_name_category("constant", dae.variables.constants.get_key_value(&key));
-        inspect_dae_name_category(
-            "discrete_real",
-            dae.variables.discrete_reals.get_key_value(&key),
-        );
-        inspect_dae_name_category(
-            "discrete_valued",
-            dae.variables.discrete_valued.get_key_value(&key),
-        );
+        dae.inspect(|view| {
+            let matching = view
+                .variables()
+                .filter(|(_, variable)| variable.name().as_str() == name)
+                .collect::<Vec<_>>();
+            print_named_variables(view, &matching);
+            print_named_coordinate_uses(view, name, &matching);
+            print_named_functions(view, name);
+        });
         inspect_layout_binding(dae, name)?;
-        inspect_dae_name_uses(dae, name);
-        inspect_dae_function_matches(dae, name);
     }
     Ok(())
 }
 
-fn inspect_dae_function_matches(dae: &Dae, needle: &str) {
-    for (name, func) in &dae.symbols.functions {
-        if !name.as_str().contains(needle) {
-            continue;
-        }
-        let outputs = func
-            .outputs
-            .iter()
-            .map(|output| output.name.as_str())
-            .collect::<Vec<_>>()
-            .join(", ");
+fn print_named_variables<'dae>(
+    view: rumoca_compile::compile::DaeView<'dae>,
+    matching: &[(VariableId<'dae>, VariableView<'dae>)],
+) {
+    for (id, variable) in matching {
         println!(
-            "  function match: {} (inputs={}, outputs=[{}], body_stmts={})",
-            name.as_str(),
-            func.inputs.len(),
-            outputs,
-            func.body.len()
+            "  {:?}: {} id={} scalars={} dims={:?} has_start={}",
+            variable.role(),
+            variable.name(),
+            id.index(),
+            variable.scalar_count(),
+            variable.value_type().dimensions(),
+            variable.start().is_some(),
         );
+        print_variable_start(view, *variable);
     }
 }
 
-fn inspect_dae_name_category(label: &str, entry: Option<(&VarName, &Variable)>) {
-    let Some((name, var)) = entry else {
+fn print_variable_start<'dae>(
+    view: rumoca_compile::compile::DaeView<'dae>,
+    variable: VariableView<'dae>,
+) {
+    let Some(start) = variable.start() else {
+        return;
+    };
+    let Some(expression) = view.expression(start) else {
         return;
     };
     println!(
-        "  {label}: {} size={} dims={:?} has_start={}",
-        name,
-        var.size(),
-        var.dims,
-        var.start.is_some()
+        "    start={}",
+        view.source_text(expression.provenance())
+            .unwrap_or("<generated expression>")
     );
-    if let Some(start) = &var.start {
-        println!("    start={start:?}");
+}
+
+fn print_named_coordinate_uses<'dae>(
+    view: rumoca_compile::compile::DaeView<'dae>,
+    name: &str,
+    matching: &[(VariableId<'dae>, VariableView<'dae>)],
+) {
+    for (target, _) in matching {
+        print_coordinate_uses(view, name, target.index());
     }
 }
 
-fn inspect_dae_name_uses(dae: &Dae, name: &str) {
-    inspect_var_collection_uses("state", dae.variables.states.values(), name);
-    inspect_var_collection_uses("algebraic", dae.variables.algebraics.values(), name);
-    inspect_var_collection_uses("output", dae.variables.outputs.values(), name);
-    inspect_var_collection_uses("parameter", dae.variables.parameters.values(), name);
-    inspect_var_collection_uses("constant", dae.variables.constants.values(), name);
-    inspect_var_collection_uses("input", dae.variables.inputs.values(), name);
-    inspect_var_collection_uses("discrete_real", dae.variables.discrete_reals.values(), name);
-    inspect_var_collection_uses(
-        "discrete_valued",
-        dae.variables.discrete_valued.values(),
-        name,
-    );
+fn print_coordinate_uses(view: rumoca_compile::compile::DaeView<'_>, name: &str, target: u32) {
+    for index in 0..view.expression_count() {
+        let expression_id = view
+            .expression_id(index)
+            .expect("finalized expression has an identity");
+        let expression = view
+            .expression(expression_id)
+            .expect("branded expression resolves");
+        if coordinate_variable_index(expression.operation()) == Some(target) {
+            println!(
+                "  expression[{index}] uses {name}: {}",
+                view.source_text(expression.provenance())
+                    .unwrap_or("<generated expression>")
+            );
+        }
+    }
+}
 
-    for (idx, eq) in dae.continuous.equations.iter().enumerate() {
-        let rhs = format!("{:?}", eq.rhs);
-        if eq.lhs.as_ref().is_some_and(|lhs| lhs.as_str() == name) {
-            println!("  f_x[{idx}] lhs defines {name}: {rhs}");
-        }
-        if rhs.contains(name) {
-            println!("  f_x[{idx}] rhs uses {name}: {rhs}");
-        }
-    }
-    for (idx, eq) in dae.discrete.real_updates.iter().enumerate() {
-        let rhs = format!("{:?}", eq.rhs);
-        if eq.lhs.as_ref().is_some_and(|lhs| lhs.as_str() == name) {
-            println!("  f_z[{idx}] lhs defines {name}: {rhs}");
-        }
-        if rhs.contains(name) {
-            println!("  f_z[{idx}] rhs uses {name}: {rhs}");
+fn print_named_functions(view: rumoca_compile::compile::DaeView<'_>, name: &str) {
+    for index in 0..view.function_count() {
+        let function = view
+            .function_id(index)
+            .and_then(|id| view.function(id))
+            .expect("finalized function resolves");
+        if function.name().as_str().contains(name) {
+            println!(
+                "  function match: {} (inputs={}, outputs={})",
+                function.name(),
+                function.parameter_types().len(),
+                function.result_types().len(),
+            );
         }
     }
-    for (idx, eq) in dae.discrete.valued_updates.iter().enumerate() {
-        let rhs = format!("{:?}", eq.rhs);
-        if eq.lhs.as_ref().is_some_and(|lhs| lhs.as_str() == name) {
-            println!("  f_m[{idx}] lhs defines {name}: {rhs}");
-        }
-        if rhs.contains(name) {
-            println!("  f_m[{idx}] rhs uses {name}: {rhs}");
-        }
+}
+
+fn coordinate_variable_index(operation: ExpressionOperation<'_>) -> Option<u32> {
+    match operation {
+        ExpressionOperation::Coordinate(CoordinateView::Parameter(id)) => Some(id.index()),
+        ExpressionOperation::Coordinate(CoordinateView::Input(id)) => Some(id.index()),
+        ExpressionOperation::Coordinate(CoordinateView::State(id))
+        | ExpressionOperation::Coordinate(CoordinateView::Derivative(id)) => Some(id.index()),
+        ExpressionOperation::Coordinate(CoordinateView::Algebraic(id)) => Some(id.index()),
+        ExpressionOperation::Coordinate(CoordinateView::DiscreteReal(id))
+        | ExpressionOperation::Coordinate(CoordinateView::PreDiscreteReal(id)) => Some(id.index()),
+        ExpressionOperation::Coordinate(CoordinateView::DiscreteValue(id))
+        | ExpressionOperation::Coordinate(CoordinateView::PreDiscreteValue(id)) => Some(id.index()),
+        ExpressionOperation::Coordinate(
+            CoordinateView::Time
+            | CoordinateView::Condition(_)
+            | CoordinateView::Delay(_)
+            | CoordinateView::Previous(_)
+            | CoordinateView::Terminal(_)
+            | CoordinateView::Binder(_),
+        )
+        | ExpressionOperation::Literal(_)
+        | ExpressionOperation::Unary { .. }
+        | ExpressionOperation::Binary { .. }
+        | ExpressionOperation::Conditional(_)
+        | ExpressionOperation::Array(_)
+        | ExpressionOperation::ArrayUpdate { .. }
+        | ExpressionOperation::Range { .. }
+        | ExpressionOperation::Comprehension { .. }
+        | ExpressionOperation::Index { .. }
+        | ExpressionOperation::Builtin { .. }
+        | ExpressionOperation::Call { .. }
+        | ExpressionOperation::FunctionValue { .. }
+        | ExpressionOperation::FunctionFoldParameter { .. }
+        | ExpressionOperation::FunctionFoldOutput { .. }
+        | ExpressionOperation::Coordinate(CoordinateView::FunctionParameter(_)) => None,
     }
 }
 
@@ -441,27 +468,6 @@ fn inspect_layout_binding(dae: &Dae, name: &str) -> Result<()> {
         println!("  compiled_layout related {binding_name}: {slot:?}");
     }
     Ok(())
-}
-
-fn inspect_var_collection_uses<'a>(
-    label: &str,
-    vars: impl Iterator<Item = &'a Variable>,
-    name: &str,
-) {
-    for var in vars {
-        if let Some(start) = &var.start {
-            let start_text = format!("{start:?}");
-            if start_text.contains(name) {
-                println!("  {label} {} start uses {name}: {start_text}", var.name);
-            }
-        }
-        if let Some(nominal) = &var.nominal {
-            let nominal_text = format!("{nominal:?}");
-            if nominal_text.contains(name) {
-                println!("  {label} {} nominal uses {name}: {nominal_text}", var.name);
-            }
-        }
-    }
 }
 
 fn inspect_sim_result(sim: &SimResult, names: &[String], requested_times: &[f64]) {
@@ -563,76 +569,50 @@ fn main() -> Result<()> {
 }
 
 fn debug_log_balance_summary(dae: &Dae) {
-    let mut by_origin = BTreeMap::<String, (usize, usize)>::new();
-    let mut by_lhs = BTreeMap::<String, (usize, usize)>::new();
-    for eq in &dae.continuous.equations {
-        let origin_entry = by_origin.entry(eq.origin.clone()).or_default();
-        origin_entry.0 += 1;
-        origin_entry.1 += eq.scalar_count;
-
-        let lhs = eq
-            .lhs
-            .as_ref()
-            .map(|name| name.as_str().to_string())
-            .unwrap_or_else(|| "<none>".to_string());
-        let lhs_entry = by_lhs.entry(lhs).or_default();
-        lhs_entry.0 += 1;
-        lhs_entry.1 += eq.scalar_count;
-    }
-
-    println!("Continuous equation origins by scalar count:");
-    for (origin, rows, scalars) in sorted_balance_counts(by_origin).into_iter().take(24) {
-        println!("  scalars={scalars:>4} rows={rows:>4} origin={origin}");
-    }
-
-    let repeated_lhs = sorted_balance_counts(by_lhs)
-        .into_iter()
-        .filter(|(_, rows, _)| *rows > 1)
-        .take(24)
-        .collect::<Vec<_>>();
-    if repeated_lhs.is_empty() {
-        return;
-    }
-    println!("Repeated continuous equation lhs by scalar count:");
-    for (lhs, rows, scalars) in repeated_lhs {
-        println!("  scalars={scalars:>4} rows={rows:>4} lhs={lhs}");
-    }
-}
-
-fn sorted_balance_counts(counts: BTreeMap<String, (usize, usize)>) -> Vec<(String, usize, usize)> {
-    let mut entries = counts
-        .into_iter()
-        .map(|(name, (rows, scalars))| (name, rows, scalars))
-        .collect::<Vec<_>>();
-    entries.sort_by(|lhs, rhs| {
-        rhs.2
-            .cmp(&lhs.2)
-            .then_with(|| rhs.1.cmp(&lhs.1))
-            .then_with(|| lhs.0.cmp(&rhs.0))
+    dae.inspect(|view| {
+        println!("Continuous semantic owners:");
+        for (index, owner) in view.continuous_owners().take(24).enumerate() {
+            let (scalars, provenance) = match owner {
+                ContinuousOwnerView::Residual { equation, .. } => (
+                    view.expression(equation.residual())
+                        .expect("branded residual resolves")
+                        .value_type()
+                        .scalar_count()
+                        .expect("checked residual has scalar capacity"),
+                    equation.provenance(),
+                ),
+                ContinuousOwnerView::Structured { family, .. } => {
+                    (family.scalar_rows() as usize, family.provenance())
+                }
+            };
+            println!(
+                "  owner={index:>4} scalars={scalars:>4} source={}",
+                view.source_text(provenance).unwrap_or("<generated owner>")
+            );
+        }
     });
-    entries
 }
 
 fn debug_log_unknown_summary(dae: &Dae) {
-    let mut counts = BTreeMap::<String, usize>::new();
-    for variable in dae
-        .variables
-        .states
-        .values()
-        .chain(dae.variables.algebraics.values())
-        .chain(dae.variables.outputs.values())
-    {
-        let prefix = first_rendered_path_segment(variable.name.as_str())
-            .unwrap_or_else(|| "<root>".to_string());
-        *counts.entry(prefix).or_default() += variable.size();
-    }
-
-    let mut entries = counts.into_iter().collect::<Vec<_>>();
-    entries.sort_by(|lhs, rhs| rhs.1.cmp(&lhs.1).then_with(|| lhs.0.cmp(&rhs.0)));
-    println!("Continuous unknowns by top-level component:");
-    for (prefix, scalars) in entries.into_iter().take(24) {
-        println!("  scalars={scalars:>4} component={prefix}");
-    }
+    dae.inspect(|view| {
+        let mut counts = std::collections::BTreeMap::<String, usize>::new();
+        for (_, variable) in view.variables().filter(|(_, variable)| {
+            matches!(
+                variable.role(),
+                VariableRole::State | VariableRole::Algebraic | VariableRole::Output
+            )
+        }) {
+            let prefix = first_rendered_path_segment(variable.name().as_str())
+                .unwrap_or_else(|| "<root>".to_string());
+            *counts.entry(prefix).or_default() += variable.scalar_count();
+        }
+        let mut entries = counts.into_iter().collect::<Vec<_>>();
+        entries.sort_by(|lhs, rhs| rhs.1.cmp(&lhs.1).then_with(|| lhs.0.cmp(&rhs.0)));
+        println!("Continuous unknowns by top-level component:");
+        for (prefix, scalars) in entries.into_iter().take(24) {
+            println!("  scalars={scalars:>4} component={prefix}");
+        }
+    });
 }
 
 fn first_rendered_path_segment(path: &str) -> Option<String> {
@@ -675,7 +655,14 @@ end Lib;
         let source_root = write_library(&temp);
         let result =
             load_profiled_model(&source_root, "Lib.M", false, None).expect("focused compile");
-        assert_eq!(result.dae.variables.states.len(), 1);
+        assert_eq!(
+            result.dae.inspect(|view| {
+                view.variables()
+                    .filter(|(_, variable)| variable.role() == VariableRole::State)
+                    .count()
+            }),
+            1
+        );
         assert_eq!(result.experiment_stop_time, Some(1.5));
     }
 

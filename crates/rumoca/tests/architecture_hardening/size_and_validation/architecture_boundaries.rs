@@ -201,110 +201,83 @@ fn test_dae_structural_transforms_live_in_phase_structural() {
 (SPEC_0029 §12, SPEC_0007 §Structural Transformation Scope), not phase-solve: \
 {offenders:#?}"
     );
-
-    assert!(
-        root.join("crates/rumoca-phase-structural/src/dae_prepare")
-            .exists(),
-        "phase-structural must own the dae_prepare module after relocation"
-    );
 }
 
-/// SPEC_0007 Stage 3 Contract: source temporal operators are eliminated in every DAE partition.
-/// The `phase-dae::appendix_b_validation::validate_no_source_temporal_operator_survives`
-/// gate must exist as a positive runtime check (not just absent from compile).
 #[test]
-fn test_source_temporal_operator_validation_gate_exists() {
-    let path = workspace_root().join("crates/rumoca-phase-dae/src/appendix_b_validation.rs");
-    let content = fs::read_to_string(&path).expect("read appendix_b_validation.rs");
-
-    assert!(
-        content.contains("validate_no_source_temporal_operator_survives"),
-        "phase-dae::appendix_b_validation must define validate_no_source_temporal_operator_survives \
-to enforce SPEC_0007 Stage 3 Contract (no pre/edge/change/sample/previous in solver-facing DAE-IR)"
-    );
-
-    let error_path = workspace_root().join("crates/rumoca-phase-dae/src/errors.rs");
-    let error_content = fs::read_to_string(&error_path).expect("read errors.rs");
-    assert!(
-        error_content.contains("SourceTemporalOperatorSurvivedDaeBoundary"),
-        "ToDaeError must include SourceTemporalOperatorSurvivedDaeBoundary so the gate \
-produces a structured diagnostic per SPEC_0008"
-    );
-
-    let pre_lowering_path = workspace_root().join("crates/rumoca-phase-dae/src/pre_lowering.rs");
-    let pre_lowering_content =
-        fs::read_to_string(&pre_lowering_path).expect("read pre_lowering.rs");
-    for partition in [
-        "dae.continuous.equations",
-        "dae.discrete.real_updates",
-        "dae.discrete.valued_updates",
-        "dae.conditions.equations",
-    ] {
-        assert!(
-            pre_lowering_content.contains(partition),
-            "phase-dae::pre_lowering must process every DAE partition; missing {partition}"
-        );
-    }
-}
-
-/// SPEC_0007 Stage 4 Contract: Solve-IR is the register-machine form of
-/// Appendix B and must have a positive validation gate at the lowering boundary.
-#[test]
-fn test_solve_ir_appendix_b_validation_gate_exists() {
+fn test_checked_dae_is_the_only_production_dae_representation() {
     let root = workspace_root();
-    let path = root.join("crates/rumoca-phase-solve/src/appendix_b_validation.rs");
-    let content = fs::read_to_string(&path).expect("read phase-solve appendix_b_validation.rs");
-
-    for required in [
-        "validate_solve_input_appendix_b_invariants",
-        "validate_solve_problem_appendix_b_invariants",
-        "validate_solve_artifacts_appendix_b_invariants",
-        "find_source_temporal_operator",
-        "validate_function_calls_resolve",
-        "validate_row_ops",
-        "validate_compute_node",
-        "SeedUse::Forbidden",
-        "SeedUse::Allowed",
-    ] {
+    let dae_src = root.join("crates/rumoca-ir-dae/src");
+    for removed in ["checked", "types.rs", "visitor.rs", "clock_schedule.rs"] {
         assert!(
-            content.contains(required),
-            "phase-solve Appendix-B validation must define `{required}`"
+            !dae_src.join(removed).exists(),
+            "removed DAE representation path must not coexist with the canonical checked DAE: \
+             {removed}"
         );
     }
 
-    let lib_path = root.join("crates/rumoca-phase-solve/src/lib.rs");
-    let lib_content = fs::read_to_string(&lib_path).expect("read phase-solve lib.rs");
+    let mut offenders = Vec::new();
+    let mut rs_files = Vec::new();
+    collect_rs_files(&root.join("crates"), &mut rs_files);
+    for path in rs_files {
+        if path
+            .components()
+            .any(|component| component.as_os_str() == "tests")
+            || path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name == "tests.rs" || name.ends_with("_tests.rs"))
+        {
+            continue;
+        }
+        let Ok(content) = fs::read_to_string(&path) else {
+            continue;
+        };
+        for forbidden in [
+            "rumoca_ir_dae::checked",
+            "rumoca_ir_dae::DaeDraft",
+            "Dae::build(",
+            "deserialize_v10",
+            "schema_version = 10",
+        ] {
+            if content.contains(forbidden) {
+                offenders.push(format!("{}:{forbidden}", path.display()));
+            }
+        }
+    }
     assert!(
-        lib_content.contains("mod appendix_b_validation;")
-            && lib_content.contains("validate_solve_input_appendix_b_invariants(dae_model)")
-            && lib_content.contains("validate_solve_problem_appendix_b_invariants(&problem)")
-            && lib_content.contains("validate_solve_artifacts_appendix_b_invariants(&artifacts)"),
-        "lower_solve_problem must call the Solve-IR Appendix-B validation gate \
-at the DAE input, SolveProblem output, and SolveArtifacts output boundaries"
+        offenders.is_empty(),
+        "production code still references a removed DAE representation or wire path: \
+         {offenders:#?}"
     );
+}
+
+#[test]
+fn test_todae_uses_constructor_enforced_invariants_without_validation_passes() {
+    let root = workspace_root();
+    let phase_dae = root.join("crates/rumoca-phase-dae/src");
+    let construction =
+        fs::read_to_string(phase_dae.join("construction.rs")).expect("read DAE construction");
     assert!(
-        !lib_content.contains("pub fn lower_continuous_solve_artifacts"),
-        "continuous artifact helper must stay private so public callers use \
-the validated SolveArtifacts lowering path"
+        construction.contains("Dae::construct("),
+        "ToDAE must enter the canonical Dae::construct boundary"
     );
 
-    let solve_model_path = root.join("crates/rumoca-phase-solve/src/solve_model.rs");
-    let solve_model_content =
-        fs::read_to_string(&solve_model_path).expect("read phase-solve solve_model.rs");
-    let problem_lowering = solve_model_content
-        .find("crate::lower_solve_problem_with_solver_len(&dae_model, solver_len)?")
-        .or_else(|| {
-            solve_model_content.find("crate::lower_solve_problem_with_solver_len_and_model_span(")
-        })
-        .expect(
-            "lower_dae_to_solve_model_inner must lower through the validated SolveProblem path",
+    for removed in [
+        "appendix_b_validation.rs",
+        "reference_validation.rs",
+        "temporal_finalization.rs",
+    ] {
+        assert!(
+            !phase_dae.join(removed).exists(),
+            "constructor-enforced invariants replace obsolete validation pass {removed}"
         );
-    let artifact_lowering = solve_model_content
-        .find("crate::lower_solve_artifacts_with_mass_matrix(&problem, mass_matrix)?")
-        .expect("lower_dae_to_solve_model_inner must derive runtime artifacts from SolveProblem");
+    }
+
+    let dae_model =
+        fs::read_to_string(root.join("crates/rumoca-ir-dae/src/model.rs")).expect("read DAE model");
     assert!(
-        problem_lowering < artifact_lowering,
-        "lower_dae_to_solve_model_inner must run validated Solve-IR lowering before artifact lowering"
+        !dae_model.contains("pub fn validate(") && !dae_model.contains("pub fn insert_unchecked"),
+        "canonical DAE must not expose validation or unchecked insertion escape hatches"
     );
 }
 

@@ -73,7 +73,7 @@ pub fn build_simulation_with_stage_timing_and_solve_model(
     mut begin_stage: impl FnMut(&'static str),
     mut observe_solve_model: impl FnMut(&solve::SolveModel),
 ) -> Result<(PreparedSimulation, BuildSimulationTimings), SimError> {
-    let param_overrides = tunable_param_overrides(dae_model, opts);
+    let param_overrides = tunable_param_overrides(dae_model, opts).map_err(diagnostic_sim_error)?;
     let (mut solve_model, solve_timings) =
         lower_dae_for_simulation_with_stage_timing_and_param_overrides(
             dae_model,
@@ -81,7 +81,7 @@ pub fn build_simulation_with_stage_timing_and_solve_model(
             &param_overrides,
             &mut begin_stage,
         )
-        .map_err(solve_lowering_sim_error)?;
+        .map_err(diagnostic_sim_error)?;
     begin_stage("sim_overrides");
     let override_apply_start = Instant::now();
     crate::solve_lowering::apply_simulation_overrides(&mut solve_model, dae_model, opts)
@@ -95,9 +95,9 @@ pub fn build_simulation_with_stage_timing_and_solve_model(
     Ok((
         PreparedSimulation { inner },
         BuildSimulationTimings {
-            ir_solve_structural_dae_seconds: solve_timings.structural_dae_seconds,
-            ir_solve_lower_seconds: solve_timings.solve_ir_seconds,
-            ir_solve_seconds: solve_timings.total_seconds(),
+            ir_solve_structural_dae_seconds: solve_timings.ir_solve_structural_dae_seconds,
+            ir_solve_lower_seconds: solve_timings.ir_solve_lower_seconds,
+            ir_solve_seconds: solve_timings.ir_solve_seconds,
             override_apply_seconds,
             backend_build_seconds,
         },
@@ -214,17 +214,8 @@ impl SimulationSession {
     }
 }
 
-fn solve_lowering_sim_error(err: rumoca_phase_solve::SolveModelLowerError) -> SimError {
-    // `SimError` is a plain string carrier, so the bracketed prefix is the only
-    // channel through which the SPEC_0008 code of the phase that raised the
-    // defect (`EL0xx` from solve lowering, `ES0xx` from structural analysis)
-    // survives into downstream consumers — the MSL worker result schema and
-    // `rumoca-msl-tools triage`. It matches the CLI's `[{code}] {error}`
-    // rendering, so a user sees the same code in both places.
-    SimError::SolveIr(format!("[{}] {err}", err.code()))
-}
-
-/// Same contract as [`solve_lowering_sim_error`] for the structured simulation
+/// Preserve the originating diagnostic code when adapting to the backend's
+/// string-carrying error.
 /// diagnostic, which also carries the runtime `EX0xx` codes (notably `EX003`
 /// for a rejected parameter/start override — otherwise unreachable downstream,
 /// because a re-derivation from the stringified `SimError` can only ever

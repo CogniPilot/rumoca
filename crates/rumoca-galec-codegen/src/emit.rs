@@ -138,13 +138,7 @@ impl ManifestIdentity {
     }
 }
 
-/// Assemble the full typed manifest from the projection-owned fragment plus
-/// the `.alg` bytes, using an IDENTITY-FREE placeholder identity. This is the
-/// GAL-004 post-validation path (and the test-assembly helper): it only proves
-/// the manifest fragment assembles into a valid typed manifest, so it must NOT
-/// mint a real UUID/timestamp — that keeps the shared lowering/render path free
-/// of `Uuid::new_v4`/`SystemTime::now` and safe on `wasm32`. A real container
-/// gets its minted, shared identity via [`assemble_manifest_with_identity`].
+#[cfg(test)]
 pub(crate) fn assemble_manifest(
     package: &AlgorithmCodePackage,
     alg_bytes: &[u8],
@@ -556,6 +550,12 @@ fn statements(
                     kind: "assignment",
                     target: c_comment_text(&print_reference(target)?),
                     value: c_comment_text(&print_expression(value)?),
+                    c_lines,
+                }),
+                Statement::If(_) => Ok(CStatement {
+                    kind: "conditional",
+                    target: "conditional event update".to_owned(),
+                    value: "checked event guard".to_owned(),
                     c_lines,
                 }),
                 other => Err(GalecTargetError::CExportUnsupported {

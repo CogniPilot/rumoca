@@ -1,0 +1,814 @@
+//! Immutable template projection of the checked DAE.
+//!
+//! This is deliberately not the wire-v11 representation. Wire records exist
+//! for persistence and reconstruction; templates receive semantic arrays with
+//! explicit typed identities and systems.
+
+use rumoca_ir_dae as dae;
+use serde_json::{Value, json};
+
+pub(super) const TEMPLATE_SCHEMA_VERSION: u16 = 1;
+
+#[derive(Debug, thiserror::Error)]
+pub(super) enum DaeBackendError {
+    #[error("{0}")]
+    Numeric(#[from] rumoca_eval_dae::NumericEvaluationError),
+    #[error(
+        "numeric attribute `{attribute}` for `{variable}` contains {actual} scalars; expected one or {expected}"
+    )]
+    AttributeShape {
+        variable: String,
+        attribute: &'static str,
+        actual: usize,
+        expected: usize,
+        span: rumoca_core::Span,
+    },
+    #[error("array-update expression escaped its checked function assignment owner")]
+    EscapedArrayUpdate { span: rumoca_core::Span },
+    #[error("record value escaped the function-only checked DAE type boundary")]
+    EscapedRecord { span: rumoca_core::Span },
+}
+
+impl DaeBackendError {
+    pub(super) const fn span(&self) -> rumoca_core::Span {
+        match self {
+            Self::Numeric(error) => error.span(),
+            Self::AttributeShape { span, .. }
+            | Self::EscapedArrayUpdate { span }
+            | Self::EscapedRecord { span } => *span,
+        }
+    }
+}
+
+pub(super) fn project(model: &dae::Dae) -> Result<Value, DaeBackendError> {
+    model.inspect(project_view)
+}
+
+fn project_view(view: dae::DaeView<'_>) -> Result<Value, DaeBackendError> {
+    Ok(json!({
+        "schema": {
+            "name": "rumoca.checked-dae-template",
+            "version": TEMPLATE_SCHEMA_VERSION,
+        },
+        "value_types": project_value_types(view),
+        "variables": project_variables(view)?,
+        "functions": project_functions(view),
+        "domains": project_domains(view),
+        "expressions": project_expressions(view),
+        "modelica": super::checked_modelica::project(view)?,
+        "systems": {
+            "continuous": project_continuous(view),
+            "initialization": project_initialization(view),
+            "discrete_real": project_discrete_real(view),
+            "discrete_assignments": project_discrete_assignments(view),
+            "conditions": project_conditions(view),
+            "events": project_events(view),
+            "clocks": project_clocks(view),
+            "temporal": project_temporal(view),
+        },
+    }))
+}
+
+fn project_value_types(view: dae::DaeView<'_>) -> Vec<Value> {
+    (0..view.value_type_count())
+        .map(|index| {
+            let id = view
+                .value_type_id(index)
+                .expect("dense checked value-type identity resolves");
+            json!({
+                "id": id.index(),
+                "value_type": view
+                    .value_type(id)
+                    .expect("checked value type resolves"),
+                "effective_flat_type": view.effective_flat_type(id).map(|id| id.0),
+                "provenance": view
+                    .value_type_provenance(id)
+                    .expect("checked value type has provenance"),
+            })
+        })
+        .collect()
+}
+
+fn project_variables(view: dae::DaeView<'_>) -> Result<Vec<Value>, DaeBackendError> {
+    let mut evaluator = rumoca_eval_dae::NumericEvaluator::new(view);
+    let mut projected = Vec::with_capacity(view.variable_count());
+    for (id, variable) in view.variables() {
+        let static_binding = matches!(
+            variable.role(),
+            dae::VariableRole::Parameter | dae::VariableRole::Constant
+        )
+        .then_some(variable.binding())
+        .flatten();
+        let binding_values = numeric_values(&mut evaluator, variable, "binding", static_binding)?;
+        let start_values = numeric_values(&mut evaluator, variable, "start", variable.start())?;
+        let minimum_values =
+            numeric_values(&mut evaluator, variable, "minimum", variable.minimum())?;
+        let maximum_values =
+            numeric_values(&mut evaluator, variable, "maximum", variable.maximum())?;
+        let nominal_values =
+            numeric_values(&mut evaluator, variable, "nominal", variable.nominal())?;
+        projected.push(json!({
+            "id": id.index(),
+            "name": variable.name().as_str(),
+            "role": variable.role(),
+            "variability": variable.variability(),
+            "value_type": {
+                "scalar": variable.value_type().scalar_type(),
+                "dimensions": variable.value_type().dimensions(),
+            },
+            "scalar_count": variable.scalar_count(),
+            "scalar_names": (0..variable.scalar_count())
+                .filter_map(|scalar| variable.scalar_name(scalar))
+                .collect::<Vec<_>>(),
+            "declaration": variable.declaration(),
+            "attributes": {
+                "component_reference": variable.component_reference(),
+                "binding": variable.binding().map(|id| id.index()),
+                "binding_values": binding_values,
+                "start": variable.start().map(|id| id.index()),
+                "start_values": start_values,
+                "fixed": variable.fixed(),
+                "minimum": variable.minimum().map(|id| id.index()),
+                "minimum_values": minimum_values,
+                "maximum": variable.maximum().map(|id| id.index()),
+                "maximum_values": maximum_values,
+                "nominal": variable.nominal().map(|id| id.index()),
+                "nominal_values": nominal_values,
+                "unit": variable.unit(),
+                "state_select": variable.state_select(),
+                "description": variable.description(),
+                "causality": variable.causality(),
+                "tunable": variable.is_tunable(),
+                "origin": variable.origin(),
+            },
+        }));
+    }
+    Ok(projected)
+}
+
+fn numeric_values<'dae>(
+    evaluator: &mut rumoca_eval_dae::NumericEvaluator<'dae>,
+    variable: dae::VariableView<'dae>,
+    attribute: &'static str,
+    expression: Option<dae::ExprId<'dae>>,
+) -> Result<Option<Vec<f64>>, DaeBackendError> {
+    let numeric_expression = expression.filter(|_| {
+        matches!(
+            variable.value_type().scalar_type(),
+            dae::ScalarType::Real | dae::ScalarType::Integer
+        )
+    });
+    numeric_expression
+        .map(|expression| {
+            let mut values = evaluator.expression(expression)?;
+            if values.len() == 1 && variable.scalar_count() > 1 {
+                values.resize(variable.scalar_count(), values[0]);
+            }
+            if values.len() != variable.scalar_count() {
+                return Err(DaeBackendError::AttributeShape {
+                    variable: variable.name().to_string(),
+                    attribute,
+                    actual: values.len(),
+                    expected: variable.scalar_count(),
+                    span: variable.declaration().span(),
+                });
+            }
+            Ok(values)
+        })
+        .transpose()
+}
+
+fn project_functions(view: dae::DaeView<'_>) -> Vec<Value> {
+    (0..view.function_count())
+        .map(|index| {
+            let id = view
+                .function_id(index)
+                .expect("dense checked function identity resolves");
+            let function = view.function(id).expect("checked function resolves");
+            json!({
+                "id": id.index(),
+                "name": function.name().as_str(),
+                "parameters": function
+                    .parameters()
+                    .map(|parameter| json!({
+                        "ordinal": parameter.id().ordinal(),
+                        "name": parameter.name().as_str(),
+                        "value_type": parameter.value_type().index(),
+                        "declaration": parameter.declaration(),
+                    }))
+                    .collect::<Vec<_>>(),
+                "parameter_types": function
+                    .parameter_types()
+                    .iter()
+                    .map(|id| id.index())
+                    .collect::<Vec<_>>(),
+                "result_types": function
+                    .result_types()
+                    .iter()
+                    .map(|id| id.index())
+                    .collect::<Vec<_>>(),
+                "values": function
+                    .values()
+                    .map(|value| json!({
+                        "ordinal": value.id().ordinal(),
+                        "name": value.name().as_str(),
+                        "value_type": value.value_type().index(),
+                        "role": value.role(),
+                        "declaration": value.declaration(),
+                    }))
+                    .collect::<Vec<_>>(),
+                "statements": function
+                    .statements()
+                    .map(project_function_statement)
+                    .collect::<Vec<_>>(),
+                "folds": (0..function.fold_count())
+                    .map(|ordinal| {
+                        let fold = view
+                            .function_fold(function.fold_id(ordinal).unwrap())
+                            .expect("checked function fold resolves");
+                        json!({
+                            "ordinal": fold.id().ordinal(),
+                            "domain": fold.domain().index(),
+                            "targets": fold.targets().map(|target| target.ordinal()).collect::<Vec<_>>(),
+                            "initial_values": expression_ids(fold.initial_values()),
+                            "update_values": expression_ids(fold.update_values()),
+                            "provenance": fold.provenance(),
+                        })
+                    })
+                    .collect::<Vec<_>>(),
+                "results": function
+                    .result_values()
+                    .iter()
+                    .map(|id| id.index())
+                    .collect::<Vec<_>>(),
+                "declaration": function.declaration(),
+            })
+        })
+        .collect()
+}
+
+fn project_function_statement(statement: dae::FunctionStatementView<'_>) -> Value {
+    match statement {
+        dae::FunctionStatementView::Assignment {
+            target,
+            value,
+            provenance,
+        } => json!({
+            "kind": "assignment",
+            "target": target.ordinal(),
+            "value": value.index(),
+            "provenance": provenance,
+        }),
+        dae::FunctionStatementView::For {
+            fold,
+            statements,
+            provenance,
+        } => json!({
+            "kind": "for",
+            "fold": fold.ordinal(),
+            "statements": statements.map(project_function_statement).collect::<Vec<_>>(),
+            "provenance": provenance,
+        }),
+    }
+}
+
+fn project_domains(view: dae::DaeView<'_>) -> Vec<Value> {
+    (0..view.domain_count())
+        .map(|index| {
+            let id = view
+                .domain_id(index)
+                .expect("dense checked domain identity resolves");
+            let domain = view.domain(id).expect("checked domain resolves");
+            json!({
+                "id": id.index(),
+                "domain": domain.structured(),
+                "extents": domain.extents(),
+                "scalar_count": domain.scalar_count(),
+                "provenance": domain.provenance(),
+            })
+        })
+        .collect()
+}
+
+fn project_expressions(view: dae::DaeView<'_>) -> Vec<Value> {
+    (0..view.expression_count())
+        .map(|index| {
+            let id = view
+                .expression_id(index)
+                .expect("dense checked expression identity resolves");
+            let expression = view.expression(id).expect("checked expression resolves");
+            json!({
+                "id": id.index(),
+                "operation": project_expression_operation(expression.operation()),
+                "value_type": {
+                    "scalar": expression.value_type().scalar_type(),
+                    "dimensions": expression.value_type().dimensions(),
+                },
+                "variability": expression.variability(),
+                "binder_domain": expression.binder_domain().map(|id| id.index()),
+                "provenance": expression.provenance(),
+            })
+        })
+        .collect()
+}
+
+fn project_expression_operation(operation: dae::ExpressionOperation<'_>) -> Value {
+    match operation {
+        dae::ExpressionOperation::Literal(value) => json!({
+            "kind": "literal",
+            "value": value,
+        }),
+        dae::ExpressionOperation::Coordinate(coordinate) => json!({
+            "kind": "coordinate",
+            "coordinate": project_coordinate(coordinate),
+        }),
+        dae::ExpressionOperation::Unary { operator, operand } => json!({
+            "kind": "unary",
+            "operator": operator,
+            "operand": operand.index(),
+        }),
+        dae::ExpressionOperation::Binary { operator, lhs, rhs } => json!({
+            "kind": "binary",
+            "operator": operator,
+            "lhs": lhs.index(),
+            "rhs": rhs.index(),
+        }),
+        dae::ExpressionOperation::Conditional(operands) => json!({
+            "kind": "conditional",
+            "operands": expression_ids(operands),
+        }),
+        dae::ExpressionOperation::Array(elements) => json!({
+            "kind": "array",
+            "elements": expression_ids(elements),
+        }),
+        dae::ExpressionOperation::Record(fields) => json!({
+            "kind": "record",
+            "fields": expression_ids(fields),
+        }),
+        dae::ExpressionOperation::Field { base, field } => json!({
+            "kind": "field",
+            "base": base.index(),
+            "field": field,
+        }),
+        dae::ExpressionOperation::Range { start, step, stop } => json!({
+            "kind": "range",
+            "start": start,
+            "step": step,
+            "stop": stop,
+        }),
+        dae::ExpressionOperation::Comprehension { domain, body } => json!({
+            "kind": "comprehension",
+            "domain": domain.index(),
+            "body": body.index(),
+        }),
+        dae::ExpressionOperation::Index { base, subscripts } => json!({
+            "kind": "index",
+            "base": base.index(),
+            "subscripts": subscripts.iter().map(project_subscript).collect::<Vec<_>>(),
+        }),
+        dae::ExpressionOperation::ArrayUpdate {
+            base,
+            value,
+            subscripts,
+        } => json!({
+            "kind": "array_update",
+            "base": base.index(),
+            "value": value.index(),
+            "subscripts": subscripts.iter().map(project_subscript).collect::<Vec<_>>(),
+        }),
+        dae::ExpressionOperation::Builtin { builtin, arguments } => json!({
+            "kind": "builtin",
+            "builtin": builtin,
+            "arguments": expression_ids(arguments),
+        }),
+        dae::ExpressionOperation::Call {
+            function,
+            output,
+            arguments,
+        } => json!({
+            "kind": "call",
+            "function": function.index(),
+            "output": output,
+            "arguments": expression_ids(arguments),
+        }),
+        dae::ExpressionOperation::FunctionValue { value, definition } => json!({
+            "kind": "function_value",
+            "function": value.function().index(),
+            "value": value.ordinal(),
+            "definition": definition.index(),
+        }),
+        dae::ExpressionOperation::FunctionFoldParameter { fold, carried } => json!({
+            "kind": "function_fold_parameter",
+            "function": fold.function().index(),
+            "fold": fold.ordinal(),
+            "carried": carried,
+        }),
+        dae::ExpressionOperation::FunctionFoldOutput { fold, carried } => json!({
+            "kind": "function_fold_output",
+            "function": fold.function().index(),
+            "fold": fold.ordinal(),
+            "carried": carried,
+        }),
+    }
+}
+
+fn expression_ids(operands: dae::ExpressionOperands<'_>) -> Vec<u32> {
+    operands.iter().map(|id| id.index()).collect()
+}
+
+fn project_coordinate(coordinate: dae::CoordinateView<'_>) -> Value {
+    match coordinate {
+        dae::CoordinateView::Parameter(id) => coordinate_id("parameter", id.index()),
+        dae::CoordinateView::Input(id) => coordinate_id("input", id.index()),
+        dae::CoordinateView::State(id) => coordinate_id("state", id.index()),
+        dae::CoordinateView::Derivative(id) => coordinate_id("derivative", id.index()),
+        dae::CoordinateView::Algebraic(id) => coordinate_id("algebraic", id.index()),
+        dae::CoordinateView::DiscreteReal(id) => coordinate_id("discrete_real", id.index()),
+        dae::CoordinateView::DiscreteValue(id) => coordinate_id("discrete_value", id.index()),
+        dae::CoordinateView::PreDiscreteReal(id) => coordinate_id("pre_discrete_real", id.index()),
+        dae::CoordinateView::PreDiscreteValue(id) => {
+            coordinate_id("pre_discrete_value", id.index())
+        }
+        dae::CoordinateView::Time => json!({ "kind": "time" }),
+        dae::CoordinateView::Condition(id) => coordinate_id("condition", id.index()),
+        dae::CoordinateView::Delay(id) => coordinate_id("delay", id.index()),
+        dae::CoordinateView::Previous(id) => coordinate_id("previous", id.index()),
+        dae::CoordinateView::Terminal(id) => coordinate_id("terminal", id.index()),
+        dae::CoordinateView::Binder(id) => json!({
+            "kind": "binder",
+            "domain": id.domain().index(),
+            "ordinal": id.ordinal(),
+        }),
+        dae::CoordinateView::FunctionParameter(id) => json!({
+            "kind": "function_parameter",
+            "function": id.function().index(),
+            "ordinal": id.ordinal(),
+        }),
+    }
+}
+
+fn coordinate_id(kind: &'static str, id: u32) -> Value {
+    json!({ "kind": kind, "id": id })
+}
+
+fn project_subscript(subscript: dae::SubscriptView<'_>) -> Value {
+    match subscript {
+        dae::SubscriptView::Index {
+            expression,
+            provenance,
+        } => json!({
+            "kind": "index",
+            "expression": expression.index(),
+            "provenance": provenance,
+        }),
+        dae::SubscriptView::Whole { provenance } => json!({
+            "kind": "whole",
+            "provenance": provenance,
+        }),
+        dae::SubscriptView::Slice {
+            expression,
+            provenance,
+        } => json!({
+            "kind": "slice",
+            "expression": expression.index(),
+            "provenance": provenance,
+        }),
+    }
+}
+
+fn project_continuous(view: dae::DaeView<'_>) -> Value {
+    json!({
+        "owners": view
+            .continuous_owners()
+            .map(project_continuous_owner)
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn project_continuous_owner(owner: dae::ContinuousOwnerView<'_>) -> Value {
+    match owner {
+        dae::ContinuousOwnerView::Residual { id, equation } => json!({
+            "kind": "residual",
+            "id": id.index(),
+            "residual": equation.residual().index(),
+            "provenance": equation.provenance(),
+        }),
+        dae::ContinuousOwnerView::Structured { id, family } => {
+            project_family("structured", id.index(), family)
+        }
+    }
+}
+
+fn project_initialization(view: dae::DaeView<'_>) -> Value {
+    json!({
+        "owners": (0..view.initialization_owner_count())
+            .map(|index| {
+                let owner = view
+                    .initialization_owner(index)
+                    .expect("dense checked initialization owner resolves");
+                match owner {
+                    dae::InitializationOwnerView::Residual { id, equation } => json!({
+                        "kind": "residual",
+                        "id": id.index(),
+                        "residual": equation.residual().index(),
+                        "provenance": equation.provenance(),
+                    }),
+                    dae::InitializationOwnerView::Structured { id, family } => {
+                        project_family("structured", id.index(), family)
+                    }
+                }
+            })
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn project_family(kind: &'static str, id: u32, family: dae::StructuredFamilyView<'_>) -> Value {
+    json!({
+        "kind": kind,
+        "id": id,
+        "domain": family.domain().index(),
+        "scalar_view": family.scalar_view(),
+        "bodies": expression_ids(family.bodies()),
+        "scalar_rows": family.scalar_rows(),
+        "provenance": family.provenance(),
+    })
+}
+
+fn project_discrete_real(view: dae::DaeView<'_>) -> Value {
+    json!({
+        "residuals": (0..view.discrete_real_equation_count())
+            .map(|index| {
+                let equation = view
+                    .discrete_real_equation(index)
+                    .expect("dense checked discrete Real equation resolves");
+                json!({
+                    "id": index,
+                    "residual": equation.residual().index(),
+                    "provenance": equation.provenance(),
+                })
+            })
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn project_discrete_assignments(view: dae::DaeView<'_>) -> Vec<Value> {
+    (0..view.discrete_assignment_count())
+        .map(|index| {
+            let id = view
+                .discrete_assignment_id(index)
+                .expect("dense checked discrete assignment identity resolves");
+            let assignment = view
+                .discrete_assignment(id)
+                .expect("checked discrete assignment resolves");
+            json!({
+                "id": id.index(),
+                "target": assignment.target().index(),
+                "value": assignment.value().index(),
+                "provenance": assignment.provenance(),
+            })
+        })
+        .collect()
+}
+
+fn project_conditions(view: dae::DaeView<'_>) -> Value {
+    json!({
+        "relations": (0..view.relation_count())
+            .map(|index| {
+                let id = view
+                    .relation_id(index)
+                    .expect("dense checked relation identity resolves");
+                let relation = view.relation(id).expect("checked relation resolves");
+                json!({
+                    "id": id.index(),
+                    "expression": relation.expression().index(),
+                    "provenance": relation.provenance(),
+                })
+            })
+            .collect::<Vec<_>>(),
+        "conditions": (0..view.condition_count())
+            .map(|index| {
+                let id = view
+                    .condition_id(index)
+                    .expect("dense checked condition identity resolves");
+                let condition = view.condition(id).expect("checked condition resolves");
+                json!({
+                    "id": id.index(),
+                    "operation": project_condition_operation(condition.operation()),
+                    "provenance": condition.provenance(),
+                })
+            })
+            .collect::<Vec<_>>(),
+        "roots": (0..view.root_count())
+            .map(|index| {
+                let id = view
+                    .root_id(index)
+                    .expect("dense checked root identity resolves");
+                let root = view.root(id).expect("checked root resolves");
+                json!({
+                    "id": id.index(),
+                    "relation": root.relation().index(),
+                    "activation": root.activation().index(),
+                    "provenance": root.provenance(),
+                })
+            })
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn project_condition_operation(operation: dae::ConditionOperation<'_>) -> Value {
+    match operation {
+        dae::ConditionOperation::Relation(id) => {
+            json!({ "kind": "relation", "relation": id.index() })
+        }
+        dae::ConditionOperation::Discrete(id) => {
+            json!({ "kind": "discrete", "expression": id.index() })
+        }
+        dae::ConditionOperation::Clock(id) => {
+            json!({ "kind": "clock", "clock": id.index() })
+        }
+        dae::ConditionOperation::Not(id) => {
+            json!({ "kind": "not", "condition": id.index() })
+        }
+        dae::ConditionOperation::And(lhs, rhs) => json!({
+            "kind": "and",
+            "lhs": lhs.index(),
+            "rhs": rhs.index(),
+        }),
+        dae::ConditionOperation::Or(lhs, rhs) => json!({
+            "kind": "or",
+            "lhs": lhs.index(),
+            "rhs": rhs.index(),
+        }),
+    }
+}
+
+fn project_events(view: dae::DaeView<'_>) -> Value {
+    json!({
+        "time_events": (0..view.time_event_count())
+            .map(|index| {
+                let id = view
+                    .time_event_id(index)
+                    .expect("dense checked time-event identity resolves");
+                let event = view.time_event(id).expect("checked time event resolves");
+                json!({
+                    "id": id.index(),
+                    "instant": event.instant(),
+                    "provenance": event.provenance(),
+                })
+            })
+            .collect::<Vec<_>>(),
+        "actions": (0..view.event_action_count())
+            .map(|index| {
+                let id = view
+                    .event_action_id(index)
+                    .expect("dense checked event-action identity resolves");
+                let action = view.event_action(id).expect("checked event action resolves");
+                json!({
+                    "id": id.index(),
+                    "guard": action.guard().index(),
+                    "operation": project_event_action(action.operation()),
+                    "provenance": action.provenance(),
+                })
+            })
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn project_event_action(operation: dae::EventActionOperation<'_>) -> Value {
+    match operation {
+        dae::EventActionOperation::Assert { message, level } => json!({
+            "kind": "assert",
+            "message": message.index(),
+            "level": level.map(|id| id.index()),
+        }),
+        dae::EventActionOperation::Terminate { message } => json!({
+            "kind": "terminate",
+            "message": message.index(),
+        }),
+        dae::EventActionOperation::Reinitialize { state, value } => json!({
+            "kind": "reinitialize",
+            "state": state.index(),
+            "value": value.index(),
+        }),
+        dae::EventActionOperation::AssignDiscreteReal { target, value } => json!({
+            "kind": "assign_discrete_real",
+            "target": target.index(),
+            "value": value.index(),
+        }),
+        dae::EventActionOperation::AssignDiscreteValue { target, value } => json!({
+            "kind": "assign_discrete_value",
+            "target": target.index(),
+            "value": value.index(),
+        }),
+    }
+}
+
+fn project_clocks(view: dae::DaeView<'_>) -> Value {
+    json!({
+        "clocks": (0..view.clock_count())
+            .map(|index| {
+                let id = view
+                    .clock_id(index)
+                    .expect("dense checked clock identity resolves");
+                let clock = view.clock(id).expect("checked clock resolves");
+                let operation = match clock.operation() {
+                    dae::ClockOperation::Periodic(lattice) => json!({
+                        "kind": "periodic",
+                        "lattice": lattice,
+                    }),
+                    dae::ClockOperation::Triggered(condition) => json!({
+                        "kind": "triggered",
+                        "condition": condition.index(),
+                    }),
+                };
+                json!({
+                    "id": id.index(),
+                    "operation": operation,
+                    "provenance": clock.provenance(),
+                })
+            })
+            .collect::<Vec<_>>(),
+        "ownerships": (0..view.clock_ownership_count())
+            .map(|index| {
+                let id = view
+                    .clock_ownership_id(index)
+                    .expect("dense checked clock ownership identity resolves");
+                let ownership = view
+                    .clock_ownership(id)
+                    .expect("checked clock ownership resolves");
+                json!({
+                    "id": id.index(),
+                    "variable": ownership.variable().index(),
+                    "kind": match ownership.kind() {
+                        dae::ClockedVariableKind::DiscreteReal => "discrete_real",
+                        dae::ClockedVariableKind::DiscreteValue => "discrete_value",
+                    },
+                    "clock": ownership.clock().index(),
+                    "provenance": ownership.provenance(),
+                })
+            })
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn project_temporal(view: dae::DaeView<'_>) -> Value {
+    json!({
+        "previous": (0..view.previous_value_count())
+            .map(|index| {
+                let id = view
+                    .previous_id(index)
+                    .expect("dense checked previous identity resolves");
+                let previous = view.previous(id).expect("checked previous value resolves");
+                json!({
+                    "id": id.index(),
+                    "variable": previous.variable().index(),
+                    "clock": previous.clock().index(),
+                    "provenance": previous.provenance(),
+                })
+            })
+            .collect::<Vec<_>>(),
+        "terminals": (0..view.terminal_count())
+            .map(|index| {
+                let id = view
+                    .terminal_id(index)
+                    .expect("dense checked terminal identity resolves");
+                let terminal = view.terminal(id).expect("checked terminal resolves");
+                json!({
+                    "id": id.index(),
+                    "provenance": terminal.provenance(),
+                })
+            })
+            .collect::<Vec<_>>(),
+        "delays": (0..view.delay_count())
+            .map(|index| {
+                let id = view
+                    .delay_id(index)
+                    .expect("dense checked delay identity resolves");
+                let delay = view.delay(id).expect("checked delay resolves");
+                json!({
+                    "id": id.index(),
+                    "source": delay.source().index(),
+                    "delay_time": delay.delay_time().index(),
+                    "delay_time_evidence": delay
+                        .delay_time_evidence()
+                        .map(project_positive_parameter),
+                    "delay_max": delay.delay_max().map(project_positive_parameter),
+                    "value_type": {
+                        "scalar": delay.value_type().scalar_type(),
+                        "dimensions": delay.value_type().dimensions(),
+                    },
+                    "variability": delay.variability(),
+                    "provenance": delay.provenance(),
+                })
+            })
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn project_positive_parameter(parameter: dae::PositiveParameterView<'_>) -> Value {
+    json!({
+        "expression": parameter.expression().index(),
+        "value": parameter.value(),
+        "provenance": parameter.provenance(),
+    })
+}

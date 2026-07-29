@@ -532,9 +532,8 @@ fn resolve_scenario_codegen_target(uri_path: &Path, target: &str) -> PathBuf {
 
 /// Render a GALEC codegen target's inspectable sources for the scenario
 /// "Generate Code" flow: the `.alg` plus, for the C tracks, the `.h`/`.c`.
-/// Uses the shared identity-free renderer (the same one the WASM addon uses),
-/// which needs both the DAE and the Flat model — the generic DAE template
-/// render does not carry the GALEC projection context.
+/// Uses the shared identity-free renderer (the same one the WASM addon uses)
+/// over the checked DAE.
 fn galec_codegen_response(
     compiled: &rumoca_compile::compile::DaeCompilationResult,
     model: &str,
@@ -542,12 +541,7 @@ fn galec_codegen_response(
 ) -> Value {
     // GALEC identifiers and C names cannot contain dots.
     let model_id = model.replace('.', "_");
-    match rumoca_compile::galec::render_galec_sources(
-        compiled.dae.as_ref(),
-        compiled.flat.as_ref(),
-        &model_id,
-        target,
-    ) {
+    match rumoca_compile::galec::render_galec_sources(compiled.dae.as_ref(), &model_id, target) {
         Ok(sources) => {
             let mut files = vec![json!({
                 "path": format!("{model_id}.alg"),

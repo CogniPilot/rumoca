@@ -38,13 +38,15 @@ impl CompiledSourceRoot {
     /// Create a compiled source root from a ast::StoredDefinition.
     ///
     /// This resolves the AST once. Type checking happens after instantiation.
-    pub fn from_stored_definition(def: ast::StoredDefinition) -> Result<Self> {
+    pub fn from_stored_definition(
+        def: ast::StoredDefinition,
+        source_map: SourceMap,
+    ) -> Result<Self> {
         let mut session = Session::new(SessionConfig::default());
-        let parsed_source = stored_definition_source_id(&def);
         session.add_parsed(SYNTHETIC_SOURCE_ROOT_URI, def);
         session.build_resolved()?;
         let mut resolved = session.ensure_resolved()?.clone();
-        register_parsed_source_identity(&mut resolved, parsed_source);
+        Arc::make_mut(&mut resolved).0.source_map = source_map;
         let model_names = session.query_state.resolved.model_names.clone();
         let class_type_counts = collect_class_type_counts(&resolved.0.definitions);
         Ok(Self::from_indexed_state(
@@ -62,12 +64,14 @@ impl CompiledSourceRoot {
     /// resolve cleanly up front.
     pub fn from_parsed_batch_tolerant(
         documents: Vec<(String, ast::StoredDefinition)>,
+        source_map: SourceMap,
     ) -> Result<Self> {
         let mut session = Session::new(SessionConfig::default());
         session.add_parsed_batch(documents);
-        let (resolved, resolve_diagnostics) = session
+        let (mut resolved, resolve_diagnostics) = session
             .build_resolved_for_strict_compile_with_diagnostics()
             .map_err(|diags| diagnostics_to_anyhow(&diags))?;
+        Arc::make_mut(&mut resolved).0.source_map = source_map;
         Ok(Self::from_indexed_state(
             resolved.clone(),
             session.query_state.resolved.model_names.clone(),
@@ -462,89 +466,9 @@ impl CompiledSourceRoot {
     }
 }
 
-/// Display name used for an AST handed to the compiler without its file path.
-///
-/// `Location` identifies its file by `SourceId`, so the original path cannot be
-/// recovered from a bare `StoredDefinition`. The parser's `SourceId` is still
-/// recovered (see [`stored_definition_source_id`]) so spans stay resolvable.
+/// Display name used for an AST handed to the compiler as one stored
+/// definition. Its canonical source text is supplied separately.
 const SYNTHETIC_SOURCE_ROOT_URI: &str = "<parsed-source-root>";
-
-/// Recover the single parser `SourceId` shared by every class in `definition`.
-///
-/// Returns `None` when the definition spans more than one source file (or has
-/// no parser provenance at all), in which case no synthetic registration is
-/// possible or needed.
-fn stored_definition_source_id(
-    definition: &ast::StoredDefinition,
-) -> Option<rumoca_core::SourceId> {
-    let mut source = None;
-    for class in definition.classes.values() {
-        collect_single_class_source_id(class, &mut source)?;
-    }
-    source
-}
-
-fn collect_single_class_source_id(
-    class: &ast::ClassDef,
-    source: &mut Option<rumoca_core::SourceId>,
-) -> Option<()> {
-    for candidate in class_source_id_candidates(class) {
-        remember_single_source_id(source, candidate)?;
-    }
-    for nested in class.classes.values() {
-        collect_single_class_source_id(nested, source)?;
-    }
-    Some(())
-}
-
-fn class_source_id_candidates(class: &ast::ClassDef) -> [rumoca_core::SourceId; 3] {
-    [
-        class.location.source,
-        class.name.location.source,
-        class.class_type_token.location.source,
-    ]
-}
-
-fn remember_single_source_id(
-    source: &mut Option<rumoca_core::SourceId>,
-    candidate: rumoca_core::SourceId,
-) -> Option<()> {
-    if candidate == rumoca_core::SourceId::DUMMY {
-        return Some(());
-    }
-    match source {
-        Some(existing) if *existing != candidate => None,
-        Some(_) => Some(()),
-        None => {
-            *source = Some(candidate);
-            Some(())
-        }
-    }
-}
-
-/// Make the parser's source identity resolvable in the resolved tree.
-///
-/// The session registers the definition under [`SYNTHETIC_SOURCE_ROOT_URI`],
-/// whose hash does not match the parser id baked into every span. Registering
-/// the parser id (with the same empty content the session would have stored)
-/// keeps `try_span`/diagnostic rendering behaving exactly as it did when each
-/// token carried the path.
-fn register_parsed_source_identity(
-    resolved: &mut Arc<ast::ResolvedTree>,
-    parsed_source: Option<rumoca_core::SourceId>,
-) {
-    let Some(parsed_source) = parsed_source else {
-        return;
-    };
-    if resolved.0.source_map.get_source(parsed_source).is_some() {
-        return;
-    }
-    Arc::make_mut(resolved).0.source_map.register_id(
-        parsed_source,
-        SYNTHETIC_SOURCE_ROOT_URI,
-        Arc::<str>::from(""),
-    );
-}
 
 #[cfg(not(target_arch = "wasm32"))]
 fn drain_compile_results<F>(

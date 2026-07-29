@@ -45,8 +45,8 @@ pub(super) fn is_root_standalone_msl_example_model(
     result: &rumoca_compile::compile::CompilationResult,
 ) -> bool {
     is_root_msl_example_model_name(model_name)
-        && !result.dae.metadata.is_partial
-        && !result.dae.variables.has_input_scalars()
+        && !result.flat.is_partial
+        && !checked_dae_has_input_scalars(&result.dae)
         && !result.flat.has_unbound_fixed_parameters()
 }
 
@@ -55,8 +55,8 @@ pub(super) fn is_root_standalone_msl_example_dae_model(
     result: &rumoca_compile::compile::DaeCompilationResult,
 ) -> bool {
     is_root_msl_example_model_name(model_name)
-        && !result.dae.metadata.is_partial
-        && !result.dae.variables.has_input_scalars()
+        && !result.flat.is_partial
+        && !checked_dae_has_input_scalars(result.dae.as_ref())
         && !result.has_unbound_fixed_parameters
 }
 
@@ -208,7 +208,7 @@ mod tests {
     }
 
     #[test]
-    fn zero_sized_inputs_and_fixed_parameters_remain_standalone() {
+    fn zero_sized_inputs_and_fixed_parameters_are_erased_and_remain_standalone() {
         let mut session = Session::default();
         session
             .add_document(
@@ -224,26 +224,27 @@ mod tests {
                 "#,
             )
             .expect("parse zero-sized standalone model");
-        let mut result = session
+        let result = session
             .compile_model_dae_strict_reachable_uncached_with_recovery("EmptyBindings")
             .expect("compile zero-sized standalone model");
-        let input_name = rumoca_compile::compile::core::VarName::new("u");
-        std::sync::Arc::make_mut(&mut result.dae)
-            .variables
-            .inputs
-            .insert(
-                input_name.clone(),
-                rumoca_compile::compile::Variable {
-                    name: input_name,
-                    dims: vec![0],
-                    ..rumoca_compile::compile::Variable::empty_with_span(
-                        rumoca_compile::compile::core::Span::DUMMY,
-                    )
-                },
-            );
 
-        assert!(!result.dae.variables.inputs.is_empty());
-        assert!(!result.dae.variables.has_input_scalars());
+        let counts = checked_dae_counts(result.dae.as_ref());
+        assert!(
+            !result
+                .flat
+                .variables
+                .contains_key(&rumoca_compile::compile::core::VarName::new("u")),
+            "a zero-cardinality declaration must not create a runtime Flat coordinate"
+        );
+        assert!(
+            !result
+                .flat
+                .variables
+                .contains_key(&rumoca_compile::compile::core::VarName::new("p")),
+            "a zero-cardinality declaration must not create a runtime Flat coordinate"
+        );
+        assert_eq!(counts.input_variables, 0);
+        assert_eq!(counts.input_scalars, 0);
         assert!(!result.has_unbound_fixed_parameters);
         assert!(is_root_standalone_msl_example_dae_model(
             "Modelica.Test.Examples.EmptyBindings",

@@ -13,20 +13,6 @@
 
 use crate::incidence::rows::IncidenceRows;
 
-/// Find maximum matching in a bipartite graph using augmenting paths.
-///
-/// Returns `(match_eq, match_var)` where:
-/// - `match_eq[i] = Some(j)` means equation `i` is matched to variable `j`
-/// - `match_var[j] = Some(i)` means variable `j` is matched to equation `i`
-pub(crate) fn maximum_matching(
-    n_eq: usize,
-    n_var: usize,
-    eq_vars: &IncidenceRows,
-    preferred_vars: &[Option<usize>],
-) -> (Vec<Option<usize>>, Vec<Option<usize>>) {
-    maximum_matching_with_structured(n_eq, n_var, eq_vars, preferred_vars, &[])
-}
-
 pub(crate) fn maximum_matching_with_structured(
     n_eq: usize,
     n_var: usize,
@@ -652,6 +638,3 @@ fn commit_augment(stack: &[AugmentFrame], matching: &mut Matching<'_>) {
         matching.match_var[variable] = Some(frame.eq);
     }
 }
-
-#[cfg(test)]
-mod tests;

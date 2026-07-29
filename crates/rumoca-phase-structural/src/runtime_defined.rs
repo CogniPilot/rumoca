@@ -1,410 +1,243 @@
-//! Runtime-defined unknown name resolution.
+//! Runtime-defined unknown discovery over checked DAE identities.
 //!
-//! These functions identify which DAE unknowns are assigned at event/clock
-//! runtime (f_z, f_m equations, or f_x assignments using pre()/sample()/etc.)
-//! rather than solved by the continuous solver.
-//!
-//! SPEC_0029 §3b assigns the shared helper to this module.
+//! SPEC_0029 §3b assigns this shared query to the structural phase. The DAE
+//! grammar has already classified event and clock coordinates, so this module
+//! never parses names or guesses semantics from function-call spelling.
 
 use std::collections::HashSet;
 
 use indexmap::IndexSet;
-use rumoca_core::ExpressionVisitor;
 use rumoca_ir_dae as dae;
 
-/// Names of unknowns defined at runtime by event/clock evaluation.
-///
-/// Includes direct targets and expanded record fields.
-/// Returns an `IndexSet` to guarantee deterministic insertion-order iteration.
+/// Names of unknowns defined by discrete, event, or clock evaluation.
 pub fn runtime_defined_unknown_names(dae_model: &dae::Dae) -> IndexSet<String> {
     runtime_defined_impl(dae_model, true)
 }
 
-/// Names of continuous unknowns defined at runtime by event/clock evaluation.
-///
-/// Includes direct targets and expanded record fields in `algebraics`/`outputs`.
-/// Returns an `IndexSet` to guarantee deterministic insertion-order iteration.
+/// Names of continuous unknowns whose defining residual depends on event or
+/// clock state.
 pub fn runtime_defined_continuous_unknown_names(dae_model: &dae::Dae) -> IndexSet<String> {
     runtime_defined_impl(dae_model, false)
 }
 
 fn runtime_defined_impl(dae_model: &dae::Dae, include_discrete: bool) -> IndexSet<String> {
-    let mut defined = IndexSet::new();
+    dae_model.inspect(|view| {
+        let mut defined = HashSet::new();
+        collect_discrete_definitions(view, &mut defined);
+        collect_condition_dependencies(view, &mut defined);
+        collect_event_dependent_continuous_definitions(view, &mut defined);
 
-    for eq in dae_model
-        .discrete
-        .real_updates
-        .iter()
-        .chain(dae_model.discrete.valued_updates.iter())
-    {
-        if let Some(lhs) = eq.lhs.as_ref() {
-            extend_target(dae_model, &mut defined, lhs.var_name(), include_discrete);
-        }
-        for target in binary_var_refs(&eq.rhs) {
-            extend_target(dae_model, &mut defined, target, include_discrete);
+        view.variables()
+            .filter(|(id, variable)| {
+                defined.contains(id) && included_role(variable.role(), include_discrete)
+            })
+            .map(|(_, variable)| variable.name().to_string())
+            .collect()
+    })
+}
+
+fn collect_discrete_definitions<'dae>(
+    view: dae::DaeView<'dae>,
+    defined: &mut HashSet<dae::VariableId<'dae>>,
+) {
+    for index in 0..view.discrete_assignment_count() {
+        let assignment = view
+            .discrete_assignment(
+                view.discrete_assignment_id(index)
+                    .expect("dense B.1c assignment identity"),
+            )
+            .expect("dense B.1c assignment resolves");
+        defined.insert(view.variable(assignment.target().into()).unwrap().id());
+        collect_expression_variables(view, assignment.value(), defined);
+    }
+    for index in 0..view.discrete_real_equation_count() {
+        let equation = view
+            .discrete_real_equation(index)
+            .expect("dense B.1b equation resolves");
+        collect_expression_variables(view, equation.residual(), defined);
+    }
+}
+
+fn collect_condition_dependencies<'dae>(
+    view: dae::DaeView<'dae>,
+    defined: &mut HashSet<dae::VariableId<'dae>>,
+) {
+    for index in 0..view.relation_count() {
+        let relation = view
+            .relation(view.relation_id(index).expect("dense relation identity"))
+            .expect("dense relation resolves");
+        collect_expression_variables(view, relation.expression(), defined);
+    }
+    for index in 0..view.condition_count() {
+        let condition = view
+            .condition(view.condition_id(index).expect("dense condition identity"))
+            .expect("dense condition resolves");
+        if let dae::ConditionOperation::Discrete(expression) = condition.operation() {
+            collect_expression_variables(view, expression, defined);
         }
     }
+}
 
-    for expr in dae_model
-        .discrete
-        .real_updates
-        .iter()
-        .map(|eq| &eq.rhs)
-        .chain(dae_model.discrete.valued_updates.iter().map(|eq| &eq.rhs))
-        .chain(dae_model.conditions.equations.iter().map(|eq| &eq.rhs))
-        .chain(dae_model.conditions.relations.iter())
-    {
-        extend_refs_from_expr(dae_model, &mut defined, expr, include_discrete);
-    }
-
-    for eq in &dae_model.continuous.equations {
-        let Some(target) = binary_var_refs(&eq.rhs).into_iter().next() else {
+fn collect_event_dependent_continuous_definitions<'dae>(
+    view: dae::DaeView<'dae>,
+    defined: &mut HashSet<dae::VariableId<'dae>>,
+) {
+    for index in 0..view.continuous_equation_count() {
+        let residual = view
+            .continuous_equation(index)
+            .expect("dense continuous equation resolves")
+            .residual();
+        let Some((target, solution)) = solved_coordinate(view, residual) else {
             continue;
         };
-        let Some(solution) = binary_solution_expr(&eq.rhs) else {
-            continue;
-        };
-        if contains_clocked_or_event(solution) {
-            extend_target(dae_model, &mut defined, target, include_discrete);
-        }
-    }
-
-    defined
-}
-
-fn extend_refs_from_expr(
-    dae_model: &dae::Dae,
-    defined: &mut IndexSet<String>,
-    expr: &rumoca_core::Expression,
-    include_discrete: bool,
-) {
-    let mut refs = HashSet::new();
-    expr.collect_var_refs(&mut refs);
-    let mut refs: Vec<_> = refs.into_iter().collect();
-    refs.sort_by(|a, b| a.as_str().cmp(b.as_str()));
-    for name in refs {
-        extend_target(dae_model, defined, &name, include_discrete);
-    }
-}
-
-fn extend_target(
-    dae_model: &dae::Dae,
-    defined: &mut IndexSet<String>,
-    target: &rumoca_core::VarName,
-    include_discrete: bool,
-) {
-    use std::collections::VecDeque;
-
-    if !include_discrete
-        && (dae_model.variables.discrete_reals.contains_key(target)
-            || dae_model.variables.discrete_valued.contains_key(target))
-    {
-        return;
-    }
-
-    let raw_target = target.as_str();
-    let mut candidates = VecDeque::from([raw_target.to_string()]);
-    if let Some(base) = dae::component_base_name(raw_target)
-        && base != raw_target
-    {
-        candidates.push_back(base);
-    }
-
-    while let Some(candidate) = candidates.pop_front() {
-        let prefix = format!("{candidate}.");
-        if include_discrete {
-            insert_matching(
-                defined,
-                &candidate,
-                &prefix,
-                dae_model
-                    .variables
-                    .states
-                    .keys()
-                    .chain(dae_model.variables.algebraics.keys())
-                    .chain(dae_model.variables.outputs.keys())
-                    .chain(dae_model.variables.discrete_reals.keys())
-                    .chain(dae_model.variables.discrete_valued.keys()),
-            );
-        } else {
-            insert_matching(
-                defined,
-                &candidate,
-                &prefix,
-                dae_model
-                    .variables
-                    .algebraics
-                    .keys()
-                    .chain(dae_model.variables.outputs.keys()),
-            );
+        if contains_event_coordinate(view, solution) {
+            defined.insert(target);
         }
     }
 }
 
-fn insert_matching<'a, I>(defined: &mut IndexSet<String>, candidate: &str, prefix: &str, names: I)
-where
-    I: Iterator<Item = &'a rumoca_core::VarName>,
-{
-    for text in names
-        .map(rumoca_core::VarName::as_str)
-        .filter(|text| *text == candidate || text.starts_with(prefix))
-    {
-        defined.insert(text.to_string());
-    }
-}
-
-/// Extract the non-VarRef side of a `lhs - rhs` binary equation (the solution expr).
-fn binary_solution_expr(expr: &rumoca_core::Expression) -> Option<&rumoca_core::Expression> {
-    let rumoca_core::Expression::Binary {
-        op: rumoca_core::OpBinary::Sub,
+fn solved_coordinate<'dae>(
+    view: dae::DaeView<'dae>,
+    residual: dae::ExprId<'dae>,
+) -> Option<(dae::VariableId<'dae>, dae::ExprId<'dae>)> {
+    let dae::ExpressionOperation::Binary {
+        operator: dae::BinaryOperator::Subtract,
         lhs,
         rhs,
-        span: _,
-    } = expr
+    } = view.expression(residual)?.operation()
     else {
         return None;
     };
-
-    if matches!(lhs.as_ref(), rumoca_core::Expression::VarRef { .. }) {
-        return Some(rhs.as_ref());
-    }
-    if matches!(rhs.as_ref(), rumoca_core::Expression::VarRef { .. }) {
-        return Some(lhs.as_ref());
-    }
-    None
+    referenced_variable(view, lhs)
+        .map(|target| (target, rhs))
+        .or_else(|| referenced_variable(view, rhs).map(|target| (target, lhs)))
 }
 
-/// Extract VarName references from a `lhs - rhs` binary expression.
-fn binary_var_refs(expr: &rumoca_core::Expression) -> Vec<&rumoca_core::VarName> {
-    let rumoca_core::Expression::Binary {
-        op: rumoca_core::OpBinary::Sub,
-        lhs,
-        rhs,
-        span: _,
-    } = expr
-    else {
-        return Vec::new();
-    };
-
-    let mut names = Vec::with_capacity(2);
-    if let rumoca_core::Expression::VarRef { name, .. } = lhs.as_ref() {
-        names.push(name.var_name());
-    }
-    if let rumoca_core::Expression::VarRef { name, .. } = rhs.as_ref() {
-        names.push(name.var_name());
-    }
-    names
+fn referenced_variable<'dae>(
+    view: dae::DaeView<'dae>,
+    expression: dae::ExprId<'dae>,
+) -> Option<dae::VariableId<'dae>> {
+    let node = view.expression(expression)?;
+    node.variable_coordinate()
+        .or_else(|| match node.operation() {
+            dae::ExpressionOperation::Index { base, .. } => referenced_variable(view, base),
+            _ => None,
+        })
 }
 
-fn contains_clocked_or_event(expr: &rumoca_core::Expression) -> bool {
-    let mut checker = ClockedOrEventChecker { found: false };
-    checker.visit_expression(expr);
-    checker.found
+fn contains_event_coordinate<'dae>(
+    view: dae::DaeView<'dae>,
+    expression: dae::ExprId<'dae>,
+) -> bool {
+    let mut found = false;
+    dae::for_each_expression(view, expression, |_, node| {
+        found |= matches!(
+            node.operation(),
+            dae::ExpressionOperation::Coordinate(
+                dae::CoordinateView::PreDiscreteReal(_)
+                    | dae::CoordinateView::PreDiscreteValue(_)
+                    | dae::CoordinateView::Condition(_)
+                    | dae::CoordinateView::Previous(_)
+                    | dae::CoordinateView::Terminal(_)
+            )
+        );
+    });
+    found
 }
 
-struct ClockedOrEventChecker {
-    found: bool,
-}
-
-pub(crate) fn clocked_or_event_function_short_name(
-    name: &rumoca_core::Reference,
-) -> Option<&'static str> {
-    match name.last_segment() {
-        "previous" => Some("previous"),
-        "Clock" => Some("Clock"),
-        "hold" => Some("hold"),
-        "subSample" => Some("subSample"),
-        "superSample" => Some("superSample"),
-        "shiftSample" => Some("shiftSample"),
-        "backSample" => Some("backSample"),
-        "noClock" => Some("noClock"),
-        "firstTick" => Some("firstTick"),
-        "interval" => Some("interval"),
-        _ => None,
-    }
-}
-
-impl ExpressionVisitor for ClockedOrEventChecker {
-    fn visit_expression(&mut self, expr: &rumoca_core::Expression) {
-        if self.found {
-            return;
+fn collect_expression_variables<'dae>(
+    view: dae::DaeView<'dae>,
+    expression: dae::ExprId<'dae>,
+    variables: &mut HashSet<dae::VariableId<'dae>>,
+) {
+    dae::for_each_expression(view, expression, |_, node| {
+        if let Some(variable) = node.variable_coordinate() {
+            variables.insert(variable);
         }
-        match expr {
-            rumoca_core::Expression::BuiltinCall {
-                function:
-                    rumoca_core::BuiltinFunction::Pre
-                    | rumoca_core::BuiltinFunction::Sample
-                    | rumoca_core::BuiltinFunction::Edge
-                    | rumoca_core::BuiltinFunction::Change,
-                ..
-            } => {
-                self.found = true;
-            }
-            rumoca_core::Expression::FunctionCall { name, .. }
-                if clocked_or_event_function_short_name(name).is_some() =>
-            {
-                self.found = true;
-            }
-            _ => self.walk_expression(expr),
+    });
+}
+
+fn included_role(role: dae::VariableRole, include_discrete: bool) -> bool {
+    match role {
+        dae::VariableRole::State | dae::VariableRole::Algebraic | dae::VariableRole::Output => true,
+        dae::VariableRole::DiscreteReal | dae::VariableRole::DiscreteValue => include_discrete,
+        dae::VariableRole::Parameter | dae::VariableRole::Constant | dae::VariableRole::Input => {
+            false
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use rumoca_core::{SourceMap, Span, TypeId, VarName};
+
     use super::*;
-    use rumoca_core::Span;
 
     #[test]
-    fn test_runtime_defined_unknown_names_include_discrete_targets() {
-        let mut dae = dae::Dae::default();
-        dae.variables.algebraics.insert(
-            rumoca_core::VarName::new("a"),
-            dae::Variable {
-                name: rumoca_core::VarName::new("a"),
-                ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
-                    rumoca_core::SourceId::from_source_name(file!()),
-                    1,
-                    2,
+    fn runtime_defined_queries_use_checked_roles_and_targets() {
+        let mut sources = SourceMap::new();
+        let source = sources.add("runtime_defined.mo", "Real a; discrete Boolean enable;");
+        let a_at = dae::DaeProvenance::source(Span::from_offsets(source, 0, 6)).unwrap();
+        let enable_at = dae::DaeProvenance::source(Span::from_offsets(source, 8, 31)).unwrap();
+        let model = dae::Dae::construct(sources, |model| {
+            let real = model.types(|types| {
+                types.intern(
+                    TypeId::new(0),
+                    dae::ValueType::scalar(dae::ScalarType::Real),
+                    a_at,
+                )
+            })?;
+            let boolean = model.types(|types| {
+                types.intern(
+                    TypeId::new(1),
+                    dae::ValueType::scalar(dae::ScalarType::Boolean),
+                    enable_at,
+                )
+            })?;
+            let (a, enable) = model.variables(|variables| {
+                Ok((
+                    variables.algebraic(
+                        VarName::new("a"),
+                        real,
+                        a_at,
+                        dae::VariableAttributes::default(),
+                    )?,
+                    variables.discrete_value(
+                        VarName::new("enable"),
+                        boolean,
+                        enable_at,
+                        dae::VariableAttributes::default(),
+                    )?,
                 ))
-            },
-        );
-        dae.variables.discrete_valued.insert(
-            rumoca_core::VarName::new("enable"),
-            dae::Variable {
-                name: rumoca_core::VarName::new("enable"),
-                ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
-                    rumoca_core::SourceId::from_source_name(file!()),
-                    1,
-                    2,
+            })?;
+            let (a_use, enabled) = model.expressions(|expressions| {
+                Ok((
+                    expressions
+                        .at(a_at)
+                        .coordinate(dae::CoordinateInput::Algebraic(a))?,
+                    expressions
+                        .at(enable_at)
+                        .literal(dae::DaeLiteral::Boolean(true))?,
                 ))
-            },
-        );
-        dae.discrete.valued_updates.push(dae::Equation::explicit(
-            rumoca_core::VarName::new("a"),
-            rumoca_core::Expression::Literal {
-                value: rumoca_core::Literal::Real(1.0),
-                span: rumoca_core::Span::DUMMY,
-            },
-            Span::DUMMY,
-            "runtime-defined-a",
-        ));
-        dae.discrete.valued_updates.push(dae::Equation::explicit(
-            rumoca_core::VarName::new("enable"),
-            rumoca_core::Expression::Literal {
-                value: rumoca_core::Literal::Boolean(true),
-                span: rumoca_core::Span::DUMMY,
-            },
-            Span::DUMMY,
-            "runtime-defined-enable",
-        ));
+            })?;
+            model.discrete(|discrete| discrete.assignment(enable_at, enable, enabled))?;
+            let condition = model.conditions(|conditions| conditions.reserve(enable_at))?;
+            model.conditions(|conditions| {
+                conditions.define(condition, dae::ConditionInput::Discrete(enabled), enable_at)
+            })?;
+            model.expressions(|expressions| {
+                expressions
+                    .at(enable_at)
+                    .binary(dae::BinaryOperator::Equal, a_use, a_use)?;
+                Ok(())
+            })
+        })
+        .unwrap();
 
-        let all = runtime_defined_unknown_names(&dae);
-        assert!(all.contains("a"));
+        let all = runtime_defined_unknown_names(&model);
         assert!(all.contains("enable"));
-    }
-
-    #[test]
-    fn test_runtime_defined_continuous_unknown_names_exclude_discrete_targets() {
-        let mut dae = dae::Dae::default();
-        dae.variables.algebraics.insert(
-            rumoca_core::VarName::new("a"),
-            dae::Variable {
-                name: rumoca_core::VarName::new("a"),
-                ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
-                    rumoca_core::SourceId::from_source_name(file!()),
-                    1,
-                    2,
-                ))
-            },
-        );
-        dae.variables.discrete_valued.insert(
-            rumoca_core::VarName::new("enable"),
-            dae::Variable {
-                name: rumoca_core::VarName::new("enable"),
-                ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
-                    rumoca_core::SourceId::from_source_name(file!()),
-                    1,
-                    2,
-                ))
-            },
-        );
-        dae.discrete.valued_updates.push(dae::Equation::explicit(
-            rumoca_core::VarName::new("a"),
-            rumoca_core::Expression::Literal {
-                value: rumoca_core::Literal::Real(1.0),
-                span: rumoca_core::Span::DUMMY,
-            },
-            Span::DUMMY,
-            "runtime-defined-a",
-        ));
-        dae.discrete.valued_updates.push(dae::Equation::explicit(
-            rumoca_core::VarName::new("enable"),
-            rumoca_core::Expression::Literal {
-                value: rumoca_core::Literal::Boolean(true),
-                span: rumoca_core::Span::DUMMY,
-            },
-            Span::DUMMY,
-            "runtime-defined-enable",
-        ));
-
-        let continuous = runtime_defined_continuous_unknown_names(&dae);
-        assert!(continuous.contains("a"));
+        assert!(!all.contains("a"));
+        let continuous = runtime_defined_continuous_unknown_names(&model);
         assert!(!continuous.contains("enable"));
-    }
-
-    #[test]
-    fn test_runtime_defined_continuous_unknown_names_include_fx_pre_assignment_targets() {
-        let mut dae = dae::Dae::default();
-        dae.variables.algebraics.insert(
-            rumoca_core::VarName::new("gate.y"),
-            dae::Variable {
-                name: rumoca_core::VarName::new("gate.y"),
-                ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
-                    rumoca_core::SourceId::from_source_name(file!()),
-                    1,
-                    2,
-                ))
-            },
-        );
-        dae.variables.algebraics.insert(
-            rumoca_core::VarName::new("gate.aux"),
-            dae::Variable {
-                name: rumoca_core::VarName::new("gate.aux"),
-                ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
-                    rumoca_core::SourceId::from_source_name(file!()),
-                    1,
-                    2,
-                ))
-            },
-        );
-        dae.continuous.equations.push(dae::Equation::residual(
-            rumoca_core::Expression::Binary {
-                op: rumoca_core::OpBinary::Sub,
-                lhs: Box::new(rumoca_core::Expression::VarRef {
-                    name: rumoca_core::Reference::new("gate.y"),
-                    subscripts: vec![],
-                    span: rumoca_core::Span::DUMMY,
-                }),
-                rhs: Box::new(rumoca_core::Expression::BuiltinCall {
-                    function: rumoca_core::BuiltinFunction::Pre,
-                    args: vec![rumoca_core::Expression::VarRef {
-                        name: rumoca_core::Reference::new("gate.aux"),
-                        subscripts: vec![],
-                        span: rumoca_core::Span::DUMMY,
-                    }],
-                    span: rumoca_core::Span::DUMMY,
-                }),
-                span: rumoca_core::Span::DUMMY,
-            },
-            Span::DUMMY,
-            "equation from gate",
-        ));
-
-        let continuous = runtime_defined_continuous_unknown_names(&dae);
-        assert!(
-            continuous.contains("gate.y"),
-            "f_x assignment targets using pre() must remain runtime-defined"
-        );
     }
 }

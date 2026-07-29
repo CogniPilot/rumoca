@@ -838,56 +838,35 @@ mod tests {
         Args, WorkerErrorPhase, classify_worker_error, effective_output_dt, parse_dae_json,
         sample_grid_dt,
     };
-    use rumoca_compile::compile::{Dae, Session, SessionConfig};
+    use rumoca_compile::compile::{Session, SessionConfig};
     use rumoca_sim::{BuildSimulationTimings, SimError};
-    use serde_json::json;
     use std::path::PathBuf;
 
-    fn deep_add_expr_json(base_add_expr: &serde_json::Value, depth: usize) -> serde_json::Value {
-        let mut expr = base_add_expr.clone();
-        let add_op = expr
-            .get("Binary")
-            .and_then(|node| node.get("op"))
-            .cloned()
-            .expect("base add expression should have Binary.op");
-        let rhs_one = base_add_expr
-            .get("Binary")
-            .and_then(|node| node.get("rhs"))
-            .cloned()
-            .expect("base add expression should have Binary.rhs");
-
-        for _ in 0..depth {
-            expr = json!({
-                "Binary": {
-                    "op": add_op.clone(),
-                    "lhs": expr,
-                    "rhs": rhs_one.clone()
-                }
-            });
-        }
-
-        expr
-    }
-
     #[test]
-    fn parse_dae_json_handles_deeply_nested_expression_trees() {
-        let source = "model DeepBinary\n  Real x(start = 0);\nequation\n  der(x) = 0 + 1;\nend DeepBinary;\n";
+    fn parse_dae_json_handles_large_flat_expression_arenas() {
+        let sum = std::iter::repeat_n("1", 513)
+            .collect::<Vec<_>>()
+            .join(" + ");
+        let source = format!(
+            "model DeepBinary\n  Real x(start = 0);\nequation\n  der(x) = {sum};\nend DeepBinary;\n"
+        );
         let mut session = Session::new(SessionConfig::default());
         session
-            .add_document("deep_binary.mo", source)
+            .add_document("deep_binary.mo", &source)
             .expect("add source file");
         let compiled = session
             .compile_model("DeepBinary")
             .expect("compile deep nested expression model");
-        let mut dae_json = serde_json::to_value(&compiled.dae).expect("serialize deep DAE json");
-        let base_add_expr = dae_json["f_x"][0]["rhs"]["Binary"]["rhs"].clone();
-        dae_json["f_x"][0]["rhs"]["Binary"]["rhs"] = deep_add_expr_json(&base_add_expr, 512);
-        let deep_dae: Dae =
-            serde_json::from_value(dae_json).expect("deserialize mutated deep DAE value");
-        let payload = serde_json::to_vec(&deep_dae).expect("encode deep DAE JSON payload");
+        let payload = serde_json::to_vec(&compiled.dae).expect("encode wire-v11 DAE payload");
         let parsed =
             parse_dae_json(std::io::Cursor::new(payload), "in-memory").expect("parse deep DAE");
-        assert_eq!(parsed.continuous.equations.len(), 1);
+        parsed.inspect(|view| {
+            assert_eq!(view.continuous_equation_count(), 1);
+            assert!(
+                view.expression_count() > 512,
+                "wire-v11 should retain the large flat expression arena"
+            );
+        });
     }
 
     fn test_args() -> Args {

@@ -15,7 +15,7 @@ pub(super) fn maybe_render_model_outputs(
     if !msl_render_enabled() {
         return;
     }
-    let is_partial = result.dae.metadata.is_partial;
+    let is_partial = result.flat.is_partial;
     let should_render =
         !is_partial && (!ctx.run_simulation || is_standalone_sim_target(name, result, ctx));
     if !should_render {
@@ -137,6 +137,7 @@ pub(super) fn maybe_run_simulation(
     ) {
         Ok(settings) => settings,
         Err(_) => {
+            let counts = checked_dae_counts(&result.dae);
             return Some(MslSimModelResult {
                 name: name.to_string(),
                 status: SimStatus::Timeout,
@@ -146,8 +147,8 @@ pub(super) fn maybe_run_simulation(
                 ic_status: None,
                 ic_error: None,
                 ic_seconds: None,
-                n_states: Some(result.dae.variables.states.len()),
-                n_algebraics: Some(result.dae.variables.algebraics.len()),
+                n_states: Some(counts.state_variables),
+                n_algebraics: Some(counts.algebraic_variables),
                 sim_seconds: Some(0.0),
                 sim_build_seconds: Some(0.0),
                 ir_solve_seconds: Some(0.0),
@@ -173,7 +174,7 @@ fn is_standalone_sim_target(
     result: &rumoca_compile::compile::CompilationResult,
     ctx: &RenderSimContext<'_>,
 ) -> bool {
-    if result.dae.metadata.is_partial || !is_selected_sim_target(name, ctx) {
+    if result.flat.is_partial || !is_selected_sim_target(name, ctx) {
         return false;
     }
     if sim_targets_file_override().is_some() {

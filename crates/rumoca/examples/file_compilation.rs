@@ -57,9 +57,24 @@ fn main() -> anyhow::Result<()> {
         .model(model_name)
         .compile_file(path_to_str(&model_file)?)?;
 
-    println!("States: {}", result.dae.variables.states.len());
-    println!("Algebraics: {}", result.dae.variables.algebraics.len());
-    println!("f_x equations: {}", result.dae.continuous.equations.len());
+    let (states, algebraics, equations) = result.dae.inspect(|view| {
+        (
+            view.variables()
+                .filter(|(_, variable)| {
+                    variable.role() == rumoca_compile::compile::VariableRole::State
+                })
+                .count(),
+            view.variables()
+                .filter(|(_, variable)| {
+                    variable.role() == rumoca_compile::compile::VariableRole::Algebraic
+                })
+                .count(),
+            view.continuous_owner_count(),
+        )
+    });
+    println!("States: {states}");
+    println!("Algebraics: {algebraics}");
+    println!("f_x equations: {equations}");
     println!("Balanced: {}", result.is_balanced());
 
     if let Some(path) = cleanup_file {

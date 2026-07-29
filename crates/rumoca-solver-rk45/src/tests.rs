@@ -11,6 +11,10 @@ macro_rules! fixture_span {
     };
 }
 
+fn periodic_schedule(period: f64, phase: f64) -> solve::PeriodicEventSchedule {
+    solve::PeriodicEventSchedule::from_seconds(period, phase).unwrap()
+}
+
 fn advance_by(session: &mut SimulationSession, dt: f64, context: &str) {
     session.step(dt).expect(context);
 }
@@ -627,10 +631,7 @@ fn rk45_applies_periodic_event_update() {
     ]]);
     model.problem.solve_layout.compiled_parameter_len = 1;
     model.problem.solve_layout.discrete_valued_scalar_names = vec!["m".to_string()];
-    model.problem.clocks.periodic_event_schedules = vec![solve::PeriodicEventSchedule {
-        period_seconds: 0.05,
-        phase_seconds: 0.05,
-    }];
+    model.problem.clocks.periodic_event_schedules = vec![periodic_schedule(0.05, 0.05)];
     model.problem.discrete.update_targets = vec![solve::scalar_slot_p(0)];
     model.problem.discrete.rhs = const_scalar_program_block(3.0);
     model.parameters = vec![0.0];
@@ -663,16 +664,8 @@ fn rk45_periodic_event_seeds_scheduled_sample_relation_memory() {
         "m".to_string(),
     ];
     model.problem.solve_layout.relation_memory_parameter_indices = vec![0, 1];
-    model.problem.clocks.periodic_event_schedules = vec![
-        solve::PeriodicEventSchedule {
-            period_seconds: 0.05,
-            phase_seconds: 0.05,
-        },
-        solve::PeriodicEventSchedule {
-            period_seconds: 0.07,
-            phase_seconds: 0.07,
-        },
-    ];
+    model.problem.clocks.periodic_event_schedules =
+        vec![periodic_schedule(0.05, 0.05), periodic_schedule(0.07, 0.07)];
     model.problem.events.root_conditions = ScalarProgramBlock::with_source_span(
         vec![
             vec![
@@ -772,10 +765,7 @@ fn rk45_clears_scheduled_sample_relation_memory_between_ticks() {
             clock_schedule: None,
         },
     ];
-    model.problem.clocks.periodic_event_schedules = vec![solve::PeriodicEventSchedule {
-        period_seconds: 0.05,
-        phase_seconds: 0.0,
-    }];
+    model.problem.clocks.periodic_event_schedules = vec![periodic_schedule(0.05, 0.0)];
     model.problem.events.root_conditions = ScalarProgramBlock::with_source_span(
         vec![vec![
             LinearOp::Const { dst: 0, value: 1.0 },
@@ -1065,10 +1055,7 @@ fn rk45_session_extension_schedules_events_beyond_initial_end_time() {
     ]]);
     model.problem.solve_layout.compiled_parameter_len = 1;
     model.problem.solve_layout.discrete_valued_scalar_names = vec!["m".to_string()];
-    model.problem.clocks.periodic_event_schedules = vec![solve::PeriodicEventSchedule {
-        period_seconds: 0.05,
-        phase_seconds: 0.05,
-    }];
+    model.problem.clocks.periodic_event_schedules = vec![periodic_schedule(0.05, 0.05)];
     model.problem.discrete.update_targets = vec![solve::scalar_slot_p(0)];
     model.problem.discrete.rhs = const_scalar_program_block(3.0);
     model.parameters = vec![0.0];
@@ -1330,6 +1317,10 @@ fn stiff_contact_model() -> solve::SolveModel {
                     fixture_span!(),
                 ),
                 update_targets: vec![solve::scalar_slot_p(2)],
+                row_roles: vec![solve::DiscreteRowRole::ConditionMemory],
+                pre_modes: vec![solve::DiscreteEventPreMode::FollowCurrent],
+                observation_refresh: vec![false],
+                clock_owners: vec![None],
                 ..Default::default()
             },
             events: solve::SolveEventPartition {
@@ -1354,6 +1345,7 @@ fn stiff_contact_model() -> solve::SolveModel {
                         ("v".to_string(), vec![1]),
                     ]),
                 },
+                variable_base_slots: Vec::new(),
                 state_scalar_count: 2,
                 algebraic_scalar_count: 0,
                 output_scalar_count: 0,
@@ -1431,6 +1423,7 @@ fn single_state_model(rhs_rows: Vec<Vec<LinearOp>>) -> solve::SolveModel {
                     name_to_idx: IndexMap::from([("x".to_string(), 0)]),
                     base_to_indices: IndexMap::from([("x".to_string(), vec![0])]),
                 },
+                variable_base_slots: Vec::new(),
                 state_scalar_count: 1,
                 algebraic_scalar_count: 0,
                 output_scalar_count: 0,
@@ -1448,6 +1441,7 @@ fn single_state_model(rhs_rows: Vec<Vec<LinearOp>>) -> solve::SolveModel {
         },
         artifacts: solve::SolveArtifacts {
             continuous: solve::ContinuousSolveArtifacts {
+                structural: solve::ContinuousStructuralArtifacts::default(),
                 mass_matrix: solve::MassMatrix::Identity,
                 implicit_jacobian_v: ComputeBlock::from_scalar_program_block(zero.clone()),
                 implicit_jacobian_v_scalar: zero.clone(),
@@ -1651,6 +1645,10 @@ fn no_state_input_accumulator_model() -> solve::SolveModel {
                     fixture_span!(),
                 ),
                 update_targets: vec![solve::scalar_slot_y(0)],
+                row_roles: vec![solve::DiscreteRowRole::Equation],
+                pre_modes: vec![solve::DiscreteEventPreMode::FollowCurrent],
+                observation_refresh: vec![false],
+                clock_owners: vec![None],
                 ..Default::default()
             },
             events: solve::SolveEventPartition::default(),
@@ -1661,6 +1659,7 @@ fn no_state_input_accumulator_model() -> solve::SolveModel {
                     name_to_idx: IndexMap::from([("y".to_string(), 0)]),
                     base_to_indices: IndexMap::from([("y".to_string(), vec![0])]),
                 },
+                variable_base_slots: Vec::new(),
                 state_scalar_count: 0,
                 algebraic_scalar_count: 0,
                 output_scalar_count: 1,
@@ -1678,6 +1677,7 @@ fn no_state_input_accumulator_model() -> solve::SolveModel {
         },
         artifacts: solve::SolveArtifacts {
             continuous: solve::ContinuousSolveArtifacts {
+                structural: solve::ContinuousStructuralArtifacts::default(),
                 mass_matrix: solve::MassMatrix::Identity,
                 implicit_jacobian_v: ComputeBlock::from_scalar_program_block(zero.clone()),
                 implicit_jacobian_v_scalar: zero,

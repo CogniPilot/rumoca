@@ -1,10 +1,8 @@
 //! GALEC / eFMI Algorithm Code export facade (SPEC_0034 GAL-010).
 //!
 //! Frontends reach the `rumoca-galec-codegen` projection only through this
-//! module: it supplies the auxiliary provenance the canonical DAE does not
-//! carry — the [`ScalarTypeMap`] built from Flat-side declared types — runs
-//! the GALEC-only DAE projection preparation on a clone, and drives the
-//! projection into the CLI's declarative eFMU packaging step.
+//! module: it lends the immutable checked DAE directly to the projection and
+//! drives the result into the CLI's declarative eFMU packaging step.
 //!
 //! The container products are produced through [`GalecPackagingPlan`]: the
 //! `rumoca` crate's generic checksum/container build step renders each
@@ -19,32 +17,10 @@
 //! [`render_galec_c_export`] serves the non-eFMI `embedded-c-galec` target
 //! (GAL-024): the serialized typed C-layout context, no manifest mapping.
 //!
-//! # Scalar-type provenance rules
-//!
-//! `rumoca_ir_dae::Variable` deliberately carries no scalar type, and the
-//! projection refuses to guess (`EGT011`, S8). The facade contributes the
-//! one piece of provenance the projection cannot see: every Flat variable
-//! whose `type_id` resolves to the builtin `Real` / `Integer` / `Boolean`
-//! maps to the matching GALEC scalar type (flatten's
-//! `resolve_primitive_type_id` already collapsed type aliases down to
-//! these builtin ids).
-//!
-//! Generated variables the Flat model never declared — the when-condition
-//! vector (`f_c` targets, Boolean per MLS B.1d) and `__pre__.<base>` slots
-//! (inheriting their base variable's type) — are deliberately NOT entered
-//! here: `rumoca-galec-codegen`'s `classify` module owns those structural
-//! fallbacks, and map entries take precedence over them, so duplicating
-//! the rules in the facade would let a stale copy silently win on drift.
-//!
-//! Anything else — `String`/`Clock`/enumeration/record types, unresolved
-//! `TypeId::UNKNOWN` — stays absent from the map. Absence is loud, never a
-//! default: the projection rejects untypeable variables with `EGT011`.
-
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 
 use crate::codegen_target::{TargetBundle, TargetTemplateSource};
-use rumoca_core::TypeId;
 use rumoca_galec_codegen::manifest_context::algorithm_code_manifest::AlgorithmCodeManifest;
 use rumoca_galec_codegen::manifest_context::content::{
     Content, ContentParts, ModelRepresentation, ModelRepresentationKind,
@@ -53,14 +29,11 @@ use rumoca_galec_codegen::manifest_context::manifest_common::ManifestAttributes;
 use rumoca_galec_codegen::{
     AcManifestCtx, AlgorithmCodePackage, ContentCtx, EmittedCodeFile, GalecInput, GalecOptions,
     GalecTargetError, ManifestId, ManifestIdentity, NameWithoutSlashes, NormalizedText,
-    PcManifestCtx, ScalarTypeMap, Sha1Hex, UtcTimestamp, assemble_manifest_with_identity,
+    PcManifestCtx, Sha1Hex, UtcTimestamp, assemble_manifest_with_identity,
     assemble_production_manifest_with_identity, c_template_context, lower_to_algorithm_code,
     render_algorithm_code,
 };
-use rumoca_ir_ast::TypeTable;
 use rumoca_ir_dae::Dae;
-use rumoca_ir_flat::Model as FlatModel;
-use rumoca_ir_galec::ast::ScalarType;
 
 /// SPEC_0008-shaped failure of the export facade.
 #[derive(Debug, thiserror::Error)]
@@ -115,18 +88,6 @@ pub struct GalecCExport {
     pub context: serde_json::Value,
 }
 
-/// Return the DAE shape used by GALEC capability checks and projection.
-///
-/// The canonical DAE is left untouched. GALEC targets use this prepared clone
-/// so component-local output aliases that are only meaningful as intermediate
-/// equations do not trip the target's no-continuous-state capability gate.
-#[must_use]
-pub fn dae_for_galec_projection(dae: &Dae) -> Dae {
-    let mut projection_dae = dae.clone();
-    rumoca_phase_dae::fold_hidden_component_outputs_for_projection(&mut projection_dae);
-    projection_dae
-}
-
 /// Render the embedded C export context for a compiled model: the same
 /// projection every export shares, serialized through `c_template_context`
 /// instead of the `.alg`/manifest printers.
@@ -138,10 +99,9 @@ pub fn dae_for_galec_projection(dae: &Dae) -> Dae {
 /// C-printer failures on the validated package (`EGT018`/`EGT022`/`EGT023`).
 pub fn render_galec_c_export(
     dae: &Dae,
-    flat: &FlatModel,
     model_name: &str,
 ) -> Result<GalecCExport, GalecExportError> {
-    let package = lower_package(dae, flat, model_name)?;
+    let package = lower_package(dae, model_name)?;
     Ok(GalecCExport {
         context: c_template_context(&package, model_name)?,
     })
@@ -406,11 +366,10 @@ impl GalecPackagingPlan {
 /// failures.
 pub fn plan_galec_export(
     dae: &Dae,
-    flat: &FlatModel,
     model_identifier: &str,
     content_name: &str,
 ) -> Result<GalecPackagingPlan, GalecExportError> {
-    let package = lower_package(dae, flat, model_identifier)?;
+    let package = lower_package(dae, model_identifier)?;
     let alg_text = render_algorithm_code(&package)?;
     let identity = ManifestIdentity::generated()?;
     Ok(GalecPackagingPlan {
@@ -442,11 +401,10 @@ pub fn plan_galec_export(
 /// cannot be resolved or rendered.
 pub fn plan_galec_production_export(
     dae: &Dae,
-    flat: &FlatModel,
     model_identifier: &str,
     content_name: &str,
 ) -> Result<GalecPackagingPlan, GalecExportError> {
-    let package = lower_package(dae, flat, model_identifier)?;
+    let package = lower_package(dae, model_identifier)?;
     let alg_text = render_algorithm_code(&package)?;
     let c_context = c_template_context(&package, model_identifier)?;
     let bundle = embedded_c_layout_bundle()?;
@@ -520,16 +478,9 @@ fn as_render_error(error: impl Into<GalecTargetError>) -> GalecExportError {
 }
 
 /// Project a compiled model to the validated Algorithm Code package — the
-/// shared first step of every export facade: Flat-side scalar-type
-/// provenance plus a GALEC-prepared DAE clone through `lower_to_algorithm_code`.
-fn lower_package(
-    dae: &Dae,
-    flat: &FlatModel,
-    model_name: &str,
-) -> Result<AlgorithmCodePackage, GalecExportError> {
-    let projection_dae = dae_for_galec_projection(dae);
-    let scalar_types = build_scalar_type_map(flat);
-    let input = GalecInput::new(&projection_dae, model_name).with_scalar_types(&scalar_types);
+/// shared first step of every export facade over the immutable checked DAE.
+fn lower_package(dae: &Dae, model_name: &str) -> Result<AlgorithmCodePackage, GalecExportError> {
+    let input = GalecInput::new(dae, model_name);
     lower_to_algorithm_code(&input, &GalecOptions::default()).map_err(GalecExportError::Projection)
 }
 
@@ -700,14 +651,13 @@ fn galec_c_conformance(target: &str) -> Option<(&'static [&'static str], &'stati
 /// on printer/template failure.
 pub fn render_galec_sources(
     dae: &Dae,
-    flat: &FlatModel,
     model_name: &str,
     target: &str,
 ) -> Result<GalecSources, GalecExportError> {
     if !is_galec_target(target) {
         return Err(GalecExportError::UnknownTarget(target.to_string()));
     }
-    let package = lower_package(dae, flat, model_name)?;
+    let package = lower_package(dae, model_name)?;
     let alg = render_algorithm_code(&package)?;
     let (c_header, c_source) = match galec_c_conformance(target) {
         None => (String::new(), String::new()),
@@ -740,68 +690,10 @@ pub(crate) fn register_manifest_filters(env: &mut minijinja::Environment<'_>) {
     env.add_filter("xs_double", rumoca_galec_codegen::xs_double);
 }
 
-/// Build the [`ScalarTypeMap`] for a compiled model from Flat-side declared
-/// types (module docs). Generated condition/`__pre__` variables stay absent
-/// on purpose — the projection's `classify` fallbacks own them — and any
-/// other missing mapping is reported loudly by the projection's `EGT011`.
-#[must_use]
-pub fn build_scalar_type_map(flat: &FlatModel) -> ScalarTypeMap {
-    let builtins = BuiltinScalarTypeIds::resolve();
-    let mut map = ScalarTypeMap::new();
-    for variable in flat.variables.values() {
-        if let Some(scalar_type) = builtins.scalar_type(variable.type_id) {
-            map.insert(variable.name.clone(), scalar_type);
-        }
-    }
-    map
-}
-
-/// The builtin scalar `TypeId`s the Flat IR references.
-///
-/// `TypeTable::new()` registers the MLS predefined types first, in a fixed
-/// order, so the builtin ids are identical across every table the pipeline
-/// builds; instantiate's `resolve_primitive_type_id` collapses primitive
-/// component types (including type aliases like `SI.Voltage`) down to
-/// exactly these ids. The unit tests below pin this invariant against the
-/// real pipeline.
-struct BuiltinScalarTypeIds {
-    real: TypeId,
-    integer: TypeId,
-    boolean: TypeId,
-}
-
-impl BuiltinScalarTypeIds {
-    fn resolve() -> Self {
-        let table = TypeTable::new();
-        Self {
-            real: table.real(),
-            integer: table.integer(),
-            boolean: table.boolean(),
-        }
-    }
-
-    /// GALEC scalar type for a Flat `type_id`, when it is one of the three
-    /// GALEC-representable builtins. `String`/`Clock`/enumerations/records/
-    /// `UNKNOWN` return `None` — the caller leaves them absent.
-    fn scalar_type(&self, type_id: TypeId) -> Option<ScalarType> {
-        if type_id == self.real {
-            Some(ScalarType::Real)
-        } else if type_id == self.integer {
-            Some(ScalarType::Integer)
-        } else if type_id == self.boolean {
-            Some(ScalarType::Boolean)
-        } else {
-            None
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::compile::{CompilationResult, Session, SessionConfig};
-    use rumoca_core::{VarName, pre_slot_name};
-    use rumoca_ir_dae::component_base_name;
 
     /// Fixed-sample discrete fixture exercising every mapping rule:
     /// Real/Integer/Boolean parameters and constants, a `pre()` slot on an
@@ -832,89 +724,28 @@ end GalecFacadeDemo;
             .expect("fixture should compile")
     }
 
-    fn get(map: &ScalarTypeMap, name: &str) -> Option<ScalarType> {
-        map.get(&VarName::new(name)).copied()
-    }
-
-    #[test]
-    fn scalar_type_map_types_parameters_and_constants_from_flat() {
-        let result = compile(DISCRETE_SOURCE, "GalecFacadeDemo");
-        let map = build_scalar_type_map(&result.flat);
-
-        assert_eq!(get(&map, "samplePeriod"), Some(ScalarType::Real));
-        assert_eq!(get(&map, "gain"), Some(ScalarType::Real));
-        assert_eq!(get(&map, "countMax"), Some(ScalarType::Integer));
-        assert_eq!(get(&map, "enabled"), Some(ScalarType::Boolean));
-        assert_eq!(get(&map, "y"), Some(ScalarType::Real));
-        assert_eq!(get(&map, "count"), Some(ScalarType::Integer));
-    }
-
-    /// Generated condition/`__pre__` variables are typed by the
-    /// projection's `classify` fallbacks (condition targets Boolean per
-    /// MLS B.1d, pre-slots inheriting their base type), NOT by facade map
-    /// entries — a facade copy of those rules would shadow the projection's
-    /// own logic on drift (map hits take precedence). This pins both
-    /// halves: the map stays silent about generated names, and the
-    /// projection still types them (the export succeeds end-to-end).
-    #[test]
-    fn generated_condition_and_pre_slot_types_are_owned_by_the_projection() {
-        let result = compile(DISCRETE_SOURCE, "GalecFacadeDemo");
-        let map = build_scalar_type_map(&result.flat);
-
-        let pre_count = pre_slot_name("count");
-        assert_eq!(
-            get(&map, pre_count.as_str()),
-            None,
-            "facade must not duplicate the projection's pre-slot rule"
-        );
-        let condition_bases: Vec<String> = result
-            .dae
-            .conditions
-            .equations
-            .iter()
-            .filter_map(|equation| equation.lhs.as_ref())
-            .filter_map(|lhs| component_base_name(lhs.as_str()))
-            .collect();
-        assert!(
-            !condition_bases.is_empty(),
-            "when-equation fixture must generate condition targets"
-        );
-        for base in &condition_bases {
-            assert_eq!(
-                get(&map, base),
-                None,
-                "facade must not duplicate the projection's condition rule for '{base}'"
-            );
-        }
-
-        plan_galec_export(
-            &result.dae,
-            &result.flat,
-            "GalecFacadeDemo",
-            "GalecFacadeDemo",
-        )
-        .expect(
-            "projection's structural fallbacks must type generated condition/pre-slot variables",
-        );
-    }
-
-    #[test]
-    fn scalar_type_map_leaves_unmappable_names_absent() {
-        let result = compile(DISCRETE_SOURCE, "GalecFacadeDemo");
-        let map = build_scalar_type_map(&result.flat);
-        assert_eq!(get(&map, "no.such.variable"), None);
-    }
-
     #[test]
     fn plan_galec_export_pre_renders_the_alg_block() {
         let result = compile(DISCRETE_SOURCE, "GalecFacadeDemo");
-        let plan = plan_galec_export(
-            &result.dae,
-            &result.flat,
-            "GalecFacadeDemo",
-            "GalecFacadeDemo",
-        )
-        .expect("discrete fixture should project to GALEC");
+        result.dae.inspect(|view| {
+            assert_eq!(view.clock_count(), 1);
+            assert_eq!(
+                view.clock_ownership_count(),
+                2,
+                "both sample-clock assignment targets need explicit ownership"
+            );
+            assert_eq!(view.event_action_count(), 2);
+        });
+        let encoded = serde_json::to_string(&result.dae).expect("wire v11 encoding");
+        let decoded: rumoca_ir_dae::Dae =
+            serde_json::from_str(&encoded).expect("wire v11 reconstructs through constructors");
+        decoded.inspect(|view| {
+            assert_eq!(view.clock_count(), 1);
+            assert_eq!(view.clock_ownership_count(), 2);
+            assert_eq!(view.event_action_count(), 2);
+        });
+        let plan = plan_galec_export(&result.dae, "GalecFacadeDemo", "GalecFacadeDemo")
+            .expect("discrete fixture should project to GALEC");
 
         assert!(
             plan.alg_text().contains("GalecFacadeDemo"),
@@ -924,6 +755,30 @@ end GalecFacadeDemo;
         assert!(
             plan.alg_text().contains("DoStep"),
             "alg text should contain the DoStep method:\n{}",
+            plan.alg_text()
+        );
+        let count_update = plan
+            .alg_text()
+            .find("self.count := self.'previous(count)' + 1;")
+            .expect("pre(count) must lower to the protected previous-value state");
+        let output_update = plan
+            .alg_text()
+            .find("self.y := self.gain * real(self.count);")
+            .expect("the output update must read the current-tick count");
+        let pre_commit = plan
+            .alg_text()
+            .find("self.'previous(count)' := self.count;")
+            .expect("the previous-value state must commit at the end of DoStep");
+        assert!(
+            count_update < output_update && output_update < pre_commit,
+            "DoStep must be dependency ordered, then commit pre-state:\n{}",
+            plan.alg_text()
+        );
+        assert!(
+            plan.alg_text().contains("parameter Real gain;")
+                && plan.alg_text().contains("parameter Integer countMax;")
+                && plan.alg_text().contains("parameter Boolean enabled;"),
+            "source parameters must remain tunable GALEC interface parameters:\n{}",
             plan.alg_text()
         );
         // The AC manifest context assembles (validators pass) once the build
@@ -939,7 +794,7 @@ end GalecFacadeDemo;
     #[test]
     fn render_galec_c_export_produces_the_template_context() {
         let result = compile(DISCRETE_SOURCE, "GalecFacadeDemo");
-        let export = render_galec_c_export(&result.dae, &result.flat, "GalecFacadeDemo")
+        let export = render_galec_c_export(&result.dae, "GalecFacadeDemo")
             .expect("discrete fixture should project to the C context");
         let context = &export.context;
         assert_eq!(context["model_name"], "GalecFacadeDemo");
@@ -950,18 +805,26 @@ end GalecFacadeDemo;
                 .is_some_and(|statements| !statements.is_empty()),
             "DoStep must carry C statements: {context}"
         );
+        let startup_targets = context["methods"]["startup"]
+            .as_array()
+            .expect("Startup statements")
+            .iter()
+            .filter_map(|statement| statement["target"].as_str())
+            .collect::<Vec<_>>();
+        for parameter in ["self.gain", "self.countMax", "self.enabled"] {
+            assert!(
+                startup_targets.contains(&parameter),
+                "Startup must seed tunable parameter `{parameter}` from its checked start value: \
+                 {context}"
+            );
+        }
     }
 
     #[test]
     fn plan_galec_production_export_pre_renders_alg_and_c() {
         let result = compile(DISCRETE_SOURCE, "GalecFacadeDemo");
-        let plan = plan_galec_production_export(
-            &result.dae,
-            &result.flat,
-            "GalecFacadeDemo",
-            "GalecFacadeDemo",
-        )
-        .expect("discrete fixture should plan the production export");
+        let plan = plan_galec_production_export(&result.dae, "GalecFacadeDemo", "GalecFacadeDemo")
+            .expect("discrete fixture should plan the production export");
 
         for (name, text) in [
             ("alg_text", plan.alg_text()),
@@ -979,13 +842,8 @@ end GalecFacadeDemo;
     #[test]
     fn production_c_files_carry_the_production_code_conformance_header() {
         let result = compile(DISCRETE_SOURCE, "GalecFacadeDemo");
-        let plan = plan_galec_production_export(
-            &result.dae,
-            &result.flat,
-            "GalecFacadeDemo",
-            "GalecFacadeDemo",
-        )
-        .expect("discrete fixture should plan the production export");
+        let plan = plan_galec_production_export(&result.dae, "GalecFacadeDemo", "GalecFacadeDemo")
+            .expect("discrete fixture should plan the production export");
 
         for line in PRODUCTION_CONFORMANCE_LINES {
             assert!(
@@ -1041,12 +899,7 @@ end ContinuousDemo;
         // `GalecPackagingPlan` is intentionally not `Debug` (it holds the
         // interior-mutable typed manifest cache), so match rather than
         // `expect_err`.
-        let error = match plan_galec_export(
-            &result.dae,
-            &result.flat,
-            "ContinuousDemo",
-            "ContinuousDemo",
-        ) {
+        let error = match plan_galec_export(&result.dae, "ContinuousDemo", "ContinuousDemo") {
             Ok(_) => panic!("continuous dynamics must be rejected"),
             Err(error) => error,
         };

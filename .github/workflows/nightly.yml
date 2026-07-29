@@ -179,17 +179,9 @@ jobs:
       # CasADi Python package. Target-list discovery remains a manual maintenance
       # command because it writes proposed fixture files rather than asserting a
       # fixed correctness threshold.
-      - name: FMI2 MSL suite
+      - name: C Solve MSL suite
         continue-on-error: true
-        run: nix develop --command cargo test --release -p rumoca-test-msl --features msl-external-tests --test fmi2_msl_test -- --nocapture
-
-      - name: FMI3 MSL suite
-        continue-on-error: true
-        run: nix develop --command cargo test --release -p rumoca-test-msl --features msl-external-tests --test fmi3_msl_test -- --nocapture
-
-      - name: Embedded C MSL suite
-        continue-on-error: true
-        run: nix develop --command cargo test --release -p rumoca-test-msl --features msl-external-tests --test embedded_c_msl_test -- --nocapture
+        run: nix develop --command cargo test --release -p rumoca-test-msl --features msl-external-tests --test c_solve_msl_test -- --nocapture
 
       - name: CasADi MSL suite
         continue-on-error: true

@@ -1821,7 +1821,7 @@ fn apply_discrete_slot_value_reports_out_of_bounds_target() {
     let mut y = [0.0];
     let mut p = [];
 
-    let err = apply_discrete_slot_value(
+    let err = crate::apply_discrete_slot_value(
         solve::ScalarSlot::Y {
             index: 2,
             byte_offset: 16,

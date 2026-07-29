@@ -60,12 +60,11 @@ impl EnclosingReferenceVisitor<'_> {
     fn is_declared_in_enclosing_class(&self, current_scope: ScopeId, target: DefId) -> bool {
         let mut enclosing = self.tree.scope_tree.parent(current_scope);
         while let Some(scope) = enclosing {
-            if self.tree.scope_to_class.contains_key(&scope) {
-                if self.tree.scope_tree.declares(scope, target)
-                    || self.tree.scope_tree.inherits_unique(scope, target)
-                {
-                    return true;
-                }
+            let is_class_scope = self.tree.scope_to_class.contains_key(&scope);
+            let declares_target = self.tree.scope_tree.declares(scope, target)
+                || self.tree.scope_tree.inherits_unique(scope, target);
+            if is_class_scope && declares_target {
+                return true;
             }
             enclosing = self.tree.scope_tree.parent(scope);
         }

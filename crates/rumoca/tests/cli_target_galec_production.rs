@@ -204,7 +204,7 @@ algorithm
   when sample(0.0, dt) then
     filtered := lowPass(sample, pre(filtered), 0.5);
     segmentStart := waypoints[currentWaypoint, :];
-    horizontal := sample[1:2];
+    horizontal := lowPass(sample[1:2], pre(horizontal), 0.5);
     bounded := clip(vectorNorm(sample[1:2]), -1.0, 1.0);
     yaw := wrapAngle(pre(yaw) + 0.25);
     roll := rateLimit(clip(yaw, -1.0, 1.0), pre(roll), 0.1);
@@ -391,6 +391,9 @@ fn inline_helpers_vector_return_and_row_slice_compile() {
     .expect("read generated Algorithm Code");
     assert!(alg.contains("self.sample[1]"), "{alg}");
     assert!(alg.contains("self.waypoints["), "{alg}");
+    assert!(alg.contains("self.segmentStart[3] :="), "{alg}");
+    assert!(alg.contains("self.splitHigh :="), "{alg}");
+    assert!(alg.contains("self.currentWaypoint :="), "{alg}");
     assert!(!alg.contains("lowPass("), "{alg}");
     assert!(!alg.contains("vectorNorm("), "{alg}");
     assert!(!alg.contains("rateLimit("), "{alg}");
@@ -758,8 +761,9 @@ fn logical_data_cross_references_resolve_and_cover_the_algorithm_code() {
     ac_method_ids.sort();
     assert_eq!(
         ac_variable_ids.len(),
-        4,
-        "fixture projects four block variables, got {ac_variable_ids:?}"
+        5,
+        "fixture projects four model variables plus the explicit checked clock-period variable, \
+         got {ac_variable_ids:?}"
     );
     assert_eq!(
         ac_method_ids.len(),

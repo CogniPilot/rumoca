@@ -18,9 +18,15 @@ fn test_render_solve_block_c_emits_multi_output_and_shares_registers() {
         {"StoreOutput": {"src": 3}}
     ]]);
     let template = r#"{{ render_solve_block_c(dae.programs, {"time": "m->time", "y": "Y({})", "p": "P({})"}, "out[{}] = {}") }}"#;
-    let rendered =
-        render_template_with_dae_json(&serde_json::json!({ "programs": programs }), template)
-            .unwrap();
+    let mut environment = create_environment();
+    environment.add_template("test", template).unwrap();
+    let rendered = environment
+        .get_template("test")
+        .unwrap()
+        .render(minijinja::context! {
+            dae => serde_json::json!({ "programs": programs }),
+        })
+        .unwrap();
 
     assert!(
         rendered.contains("out[0] ="),

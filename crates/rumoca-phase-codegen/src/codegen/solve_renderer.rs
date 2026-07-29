@@ -9,57 +9,12 @@ use rumoca_ir_solve as solve;
 use super::render_solve;
 use super::{
     CodegenError, LazyDerivativeNodesValue, LazyScalarRowsValue, create_environment,
-    dae_template_json_for_solve_context, reject_external_functions_for_simulation_template,
-    solve_template_blocks_value,
+    dae_template_json_for_solve_context, solve_template_blocks_value,
 };
-
-/// Lazily materialized `dae` template entry for solve-target contexts.
-///
-/// FMI-style solve targets read DAE metadata in the `dae_template_json`
-/// shape; building that JSON costs seconds on large models while most solve
-/// targets never touch `dae` at all, so it is computed on first access.
-#[derive(Debug)]
-struct LazyDaeTemplateJson {
-    dae: std::sync::Arc<dae::Dae>,
-    value: std::sync::OnceLock<Option<Value>>,
-}
-
-impl LazyDaeTemplateJson {
-    /// Materialization failure surfaces as `None`/empty here, which the
-    /// strict-undefined template environment turns into a render error at
-    /// the access site — a visible failure, not a silent default.
-    fn materialized(&self) -> Option<&Value> {
-        self.value
-            .get_or_init(|| match dae_template_json_for_solve_context(&self.dae) {
-                Ok(json) => Some(Value::from_serialize(&json)),
-                Err(_) => None,
-            })
-            .as_ref()
-    }
-}
-
-impl minijinja::value::Object for LazyDaeTemplateJson {
-    fn repr(self: &std::sync::Arc<Self>) -> minijinja::value::ObjectRepr {
-        minijinja::value::ObjectRepr::Map
-    }
-
-    fn get_value(self: &std::sync::Arc<Self>, key: &Value) -> Option<Value> {
-        self.materialized()?.get_item(key).ok()
-    }
-
-    fn enumerate(self: &std::sync::Arc<Self>) -> minijinja::value::Enumerator {
-        match self.materialized().map(Value::try_iter) {
-            Some(Ok(iter)) => minijinja::value::Enumerator::Values(iter.collect()),
-            _ => minijinja::value::Enumerator::Empty,
-        }
-    }
-}
 
 #[derive(Debug)]
 pub struct SolveTemplateRenderer {
     context: Value,
-    /// Scalarized DAE retained for the per-template external-function guard.
-    guard_dae: Option<std::sync::Arc<dae::Dae>>,
 }
 
 impl SolveTemplateRenderer {
@@ -70,7 +25,6 @@ impl SolveTemplateRenderer {
     ) -> Result<Self, CodegenError> {
         Ok(Self {
             context: solve_render_context_value(problem, artifacts, Some(model_name))?,
-            guard_dae: None,
         })
     }
 
@@ -83,13 +37,9 @@ impl SolveTemplateRenderer {
         dae_model: dae::Dae,
     ) -> Result<Self, CodegenError> {
         let dae_model = std::sync::Arc::new(dae_model);
-        let dae_entry = Value::from_object(LazyDaeTemplateJson {
-            dae: dae_model.clone(),
-            value: std::sync::OnceLock::new(),
-        });
+        let dae_entry = checked_dae_template_value(&dae_model)?;
         Ok(Self {
             context: solve_render_context_value_with_dae(problem, artifacts, None, dae_entry)?,
-            guard_dae: Some(dae_model),
         })
     }
 
@@ -109,10 +59,7 @@ impl SolveTemplateRenderer {
         artifacts: solve::SolveArtifacts,
         dae_model: std::sync::Arc<dae::Dae>,
     ) -> Result<Self, CodegenError> {
-        let dae_entry = Value::from_object(LazyDaeTemplateJson {
-            dae: dae_model.clone(),
-            value: std::sync::OnceLock::new(),
-        });
+        let dae_entry = checked_dae_template_value(&dae_model)?;
         Ok(Self {
             context: solve_render_context_value_with_arcs(
                 std::sync::Arc::new(problem),
@@ -120,7 +67,6 @@ impl SolveTemplateRenderer {
                 None,
                 dae_entry,
             )?,
-            guard_dae: Some(dae_model),
         })
     }
 
@@ -136,9 +82,6 @@ impl SolveTemplateRenderer {
         template: &str,
         model_name: &str,
     ) -> Result<String, CodegenError> {
-        if let Some(dae_model) = &self.guard_dae {
-            reject_external_functions_for_simulation_template(dae_model, template)?;
-        }
         let mut env = create_environment();
         env.add_template("inline", template)?;
         let tmpl = env.get_template("inline")?;
@@ -147,6 +90,12 @@ impl SolveTemplateRenderer {
             ..self.context.clone()
         })?)
     }
+}
+
+fn checked_dae_template_value(dae: &dae::Dae) -> Result<Value, CodegenError> {
+    Ok(Value::from_serialize(dae_template_json_for_solve_context(
+        dae,
+    )?))
 }
 
 pub(super) fn solve_render_context_value(

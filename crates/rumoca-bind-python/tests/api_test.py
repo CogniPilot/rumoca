@@ -34,9 +34,6 @@ EXPECTED_PUBLIC = {
     "GeneratedFile",
     "Target",
     "SolverInfo",
-    "CasadiModel",
-    "JaxModel",
-    "SympyModel",
     "SolveExport",
     "Diagnostic",
     "RumocaError",
@@ -425,11 +422,11 @@ def test_codegen_file_helper() -> None:
         written = rm.Session(roots=[str(SOURCE_ROOT)]).codegen_file(
             MODEL_FILE,
             "UsesLib",
-            "sympy",
+            "c-solve",
             tmp,
         )
         assert written
-        assert any(path.endswith(".py") for path in written)
+        assert any(path.endswith(".c") for path in written)
         for path in written:
             assert Path(path).exists()
 
@@ -454,7 +451,7 @@ def test_run_codegen_scenario() -> None:
                     'name = "UsesLib"',
                     "",
                     "[codegen]",
-                    'target = "sympy"',
+                    'target = "c-solve"',
                     'output_dir = "generated"',
                     "",
                 ]

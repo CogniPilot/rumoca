@@ -418,21 +418,13 @@ fn compile_phase_maps_to_template_ir() {
 #[test]
 fn cli_parses_compile_manifest_target() {
     let cli = Cli::try_parse_from([
-        "rumoca",
-        "compile",
-        "model.mo",
-        "--model",
-        "M",
-        "--target",
-        "embedded-c",
-        "--output",
-        "out",
+        "rumoca", "compile", "model.mo", "--model", "M", "--target", "c-solve", "--output", "out",
     ])
     .expect("parse compile target");
     match cli.command {
         Commands::Compile(args) => {
             assert_eq!(args.input.options.model.as_deref(), Some("M"));
-            assert_eq!(args.target.as_deref(), Some("embedded-c"));
+            assert_eq!(args.target.as_deref(), Some("c-solve"));
             assert_eq!(args.output, Some(PathBuf::from("out")));
         }
         other => panic!("expected compile command, got {other:?}"),
@@ -442,14 +434,14 @@ fn cli_parses_compile_manifest_target() {
 #[test]
 fn cli_parses_compile_builtin_manifest_target() {
     let cli = Cli::try_parse_from([
-        "rumoca", "compile", "model.mo", "--model", "M", "--target", "sympy", "--output",
+        "rumoca", "compile", "model.mo", "--model", "M", "--target", "c-solve", "--output",
         "model.py",
     ])
     .expect("parse compile template target");
     match cli.command {
         Commands::Compile(args) => {
             assert_eq!(args.input.options.model.as_deref(), Some("M"));
-            assert_eq!(args.target.as_deref(), Some("sympy"));
+            assert_eq!(args.target.as_deref(), Some("c-solve"));
             assert_eq!(args.output, Some(PathBuf::from("model.py")));
         }
         other => panic!("expected compile command, got {other:?}"),
@@ -486,7 +478,7 @@ fn compile_flag_separation_is_enforced() {
     // --emit and --target are mutually exclusive (don't overload --target).
     assert!(
         Cli::try_parse_from([
-            "rumoca", "compile", "m.mo", "--emit", "dae-mo", "--target", "sympy"
+            "rumoca", "compile", "m.mo", "--emit", "dae-mo", "--target", "c-solve"
         ])
         .is_err()
     );
@@ -520,7 +512,7 @@ fn compile_flag_separation_is_enforced() {
 
 #[test]
 fn cli_rejects_compile_backend_option() {
-    let err = Cli::try_parse_from(["rumoca", "compile", "model.mo", "--backend", "sympy"])
+    let err = Cli::try_parse_from(["rumoca", "compile", "model.mo", "--backend", "c-solve"])
         .expect_err("backend option was unified into target");
     assert!(
         err.to_string().contains("unexpected argument '--backend'"),
@@ -532,28 +524,6 @@ fn cli_rejects_compile_backend_option() {
 fn compile_rejects_bare_json_flag() {
     // The old `--json` boolean is gone; JSON is selected via `--emit <stage>-json`.
     assert!(Cli::try_parse_from(["rumoca", "compile", "model.mo", "--json"]).is_err());
-}
-
-#[test]
-fn fmi3_build_uses_fmi3_platform_tuple() {
-    let (fmi2_platform, _) = crate::fmu::fmu_binary_platform(Some("fmi2")).expect("fmi2 platform");
-    let (fmi3_platform, _) = crate::fmu::fmu_binary_platform(Some("fmi3")).expect("fmi3 platform");
-
-    #[cfg(target_os = "linux")]
-    {
-        assert_eq!(fmi2_platform, "linux64");
-        assert_eq!(fmi3_platform, "x86_64-linux");
-    }
-    #[cfg(target_os = "macos")]
-    {
-        assert_eq!(fmi2_platform, "darwin64");
-        assert!(matches!(fmi3_platform, "aarch64-darwin" | "x86_64-darwin"));
-    }
-    #[cfg(target_os = "windows")]
-    {
-        assert_eq!(fmi2_platform, "win64");
-        assert_eq!(fmi3_platform, "x86_64-windows");
-    }
 }
 
 #[test]

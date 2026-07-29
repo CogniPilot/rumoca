@@ -28,7 +28,8 @@ For setup and day-to-day usage, see [CONTRIBUTING.md](../CONTRIBUTING.md).
 | [SPEC_0033](SPEC_0033_DEVELOPMENT_PROCESS.md) | Development Process | process | ~95 | ACCEPTED |
 | [SPEC_0034](SPEC_0034_GALEC_EFMI_EXPORT.md) | eFMI/GALEC Algorithm Code Export | target/codegen | ~180 | DRAFT |
 | [SPEC_0035](SPEC_0035_COMPLEX_NUMERIC_TYPES.md) | Complex Numeric Types in Solve IR | IR | ~135 | DRAFT |
-| [SPEC_0036](SPEC_0036_VALID_BY_CONSTRUCTION_IR.md) | Valid-by-Construction Compiler IR | IR | ~315 | DRAFT |
+| [SPEC_0036](SPEC_0036_VALID_BY_CONSTRUCTION_IR.md) | Valid-by-Construction Compiler IR | IR | ~320 | DRAFT |
+| [SPEC_0039](SPEC_0039_PROOF_CARRYING_SPARSITY.md) | Proof-Carrying Structural Sparsity | IR | ~150 | DRAFT |
 
 ## Deferred Specifications
 
@@ -43,3 +44,4 @@ useful after the 0.9 stabilization work.
 | [SPEC_0015](archive/deferred/SPEC_0015_FORMATTER.md) | Token-Based Formatter | tooling | ~250 | DEFERRED |
 | [SPEC_0028](archive/deferred/SPEC_0028_CERTIFICATION_CODEGEN.md) | Safety-Oriented Code Generation | codegen | ~100 | DEFERRED |
 | [SPEC_0037](archive/deferred/SPEC_0037_FORMALLY_VERIFIED_COMPILER.md) | Formally Verified Compiler | verification | ~240 | DEFERRED |
+| [SPEC_0038](archive/deferred/SPEC_0038_UNIFIED_FMI_EXECUTION.md) | Unified FMI Execution | target/runtime | ~85 | DEFERRED |

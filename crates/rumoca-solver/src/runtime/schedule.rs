@@ -216,8 +216,8 @@ fn merge_coincident_event(
 
 /// The instant of `schedule`'s tick at `t`, if `t` is one, compared in seconds.
 fn periodic_tick_time_at(schedule: &solve::PeriodicEventSchedule, t: f64) -> Option<f64> {
-    let period = schedule.period_seconds;
-    let phase = schedule.phase_seconds;
+    let period = schedule.period_seconds();
+    let phase = schedule.phase_seconds();
     if !period.is_finite() || !phase.is_finite() || period <= 0.0 || !t.is_finite() {
         return None;
     }
@@ -311,6 +311,13 @@ impl RuntimeStopSchedule {
 mod tests {
     use super::*;
 
+    fn periodic(period: f64, phase: f64) -> solve::PeriodicEventSchedule {
+        solve::PeriodicEventSchedule::new(
+            rumoca_core::ClockLattice::from_seconds(period, phase).unwrap(),
+        )
+        .unwrap()
+    }
+
     #[test]
     fn runtime_stop_schedule_advances_across_discontinuities() {
         let mut schedule = RuntimeStopSchedule::new(vec![0.2, 0.5], 0.0, 0.0, 1.0);
@@ -331,10 +338,7 @@ mod tests {
         problem
             .clocks
             .periodic_event_schedules
-            .push(solve::PeriodicEventSchedule {
-                period_seconds: 0.1,
-                phase_seconds: 0.0,
-            });
+            .push(periodic(0.1, 0.0));
         let mut schedule = SolveStopSchedule::new(&problem, 0.0, 0.3);
 
         let (stop, mode) = schedule.next_stop(0.0, 0.2);
@@ -352,10 +356,7 @@ mod tests {
         problem
             .clocks
             .periodic_event_schedules
-            .push(solve::PeriodicEventSchedule {
-                period_seconds: 0.05,
-                phase_seconds: 0.0,
-            });
+            .push(periodic(0.05, 0.0));
         let mut schedule = SolveStopSchedule::new(&problem, 0.0, 0.1);
 
         let (first_stop, first_mode) = schedule.next_stop(0.0, 0.05);
@@ -379,10 +380,7 @@ mod tests {
         problem
             .clocks
             .periodic_event_schedules
-            .push(solve::PeriodicEventSchedule {
-                period_seconds: 1.0e-4,
-                phase_seconds: 0.0,
-            });
+            .push(periodic(1.0e-4, 0.0));
         let mut schedule = SolveStopSchedule::new(&problem, 0.0, 100.0);
 
         let (stop, mode) = schedule.next_stop(20.000_05, 100.0);
@@ -401,10 +399,7 @@ mod tests {
         problem
             .clocks
             .periodic_event_schedules
-            .push(solve::PeriodicEventSchedule {
-                period_seconds: 0.1,
-                phase_seconds: 0.0,
-            });
+            .push(periodic(0.1, 0.0));
         let mut schedule = SolveStopSchedule::new(&problem, 0.0, 1.0);
 
         let (stop, mode) = schedule.next_stop(0.0, 1.0);
@@ -427,10 +422,7 @@ mod tests {
         problem
             .clocks
             .periodic_event_schedules
-            .push(solve::PeriodicEventSchedule {
-                period_seconds: 0.01,
-                phase_seconds: 0.01,
-            });
+            .push(periodic(0.01, 0.01));
 
         let found = coincident_scheduled_event(&problem, 0.009_999_999_999_642_817)
             .expect("root at the sample instant is a scheduled event");
@@ -445,10 +437,7 @@ mod tests {
         problem
             .clocks
             .periodic_event_schedules
-            .push(solve::PeriodicEventSchedule {
-                period_seconds: 0.01,
-                phase_seconds: 0.01,
-            });
+            .push(periodic(0.01, 0.01));
 
         assert!(coincident_scheduled_event(&problem, 0.010_002).is_none());
         assert!(coincident_scheduled_event(&problem, 0.015).is_none());
@@ -462,10 +451,7 @@ mod tests {
         problem
             .clocks
             .periodic_event_schedules
-            .push(solve::PeriodicEventSchedule {
-                period_seconds: 0.01,
-                phase_seconds: 0.01,
-            });
+            .push(periodic(0.01, 0.01));
 
         assert!(coincident_scheduled_event(&problem, 0.0).is_none());
     }

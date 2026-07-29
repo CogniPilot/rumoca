@@ -48,6 +48,109 @@ fn msl_render_enabled() -> bool {
     false
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct CheckedDaeCounts {
+    pub variables: usize,
+    pub state_variables: usize,
+    pub algebraic_variables: usize,
+    pub output_variables: usize,
+    pub input_variables: usize,
+    pub parameter_variables: usize,
+    pub constant_variables: usize,
+    pub discrete_real_variables: usize,
+    pub discrete_value_variables: usize,
+    pub state_scalars: usize,
+    pub algebraic_scalars: usize,
+    pub output_scalars: usize,
+    pub input_scalars: usize,
+    pub parameter_scalars: usize,
+    pub constant_scalars: usize,
+    pub discrete_real_scalars: usize,
+    pub discrete_value_scalars: usize,
+    pub continuous_equations: usize,
+    pub continuous_families: usize,
+    pub continuous_scalar_rows: usize,
+    pub initialization_equations: usize,
+    pub initialization_families: usize,
+    pub initialization_scalar_rows: usize,
+    pub discrete_real_equations: usize,
+    pub discrete_assignments: usize,
+    pub relations: usize,
+    pub conditions: usize,
+}
+
+pub(super) fn checked_dae_counts(dae: &Dae) -> CheckedDaeCounts {
+    dae.inspect(|view| {
+        let mut counts = CheckedDaeCounts {
+            variables: view.variable_count(),
+            continuous_equations: view.continuous_equation_count(),
+            continuous_families: view.continuous_family_count(),
+            initialization_equations: view.initialization_equation_count(),
+            initialization_families: view.initialization_family_count(),
+            discrete_real_equations: view.discrete_real_equation_count(),
+            discrete_assignments: view.discrete_assignment_count(),
+            relations: view.relation_count(),
+            conditions: view.condition_count(),
+            ..CheckedDaeCounts::default()
+        };
+        counts.continuous_scalar_rows = counts.continuous_equations
+            + (0..view.continuous_family_count())
+                .map(|index| {
+                    view.continuous_family(index)
+                        .expect("dense checked continuous family resolves")
+                        .scalar_rows() as usize
+                })
+                .sum::<usize>();
+        counts.initialization_scalar_rows = counts.initialization_equations
+            + (0..view.initialization_family_count())
+                .map(|index| {
+                    view.initialization_family(index)
+                        .expect("dense checked initialization family resolves")
+                        .scalar_rows() as usize
+                })
+                .sum::<usize>();
+        for (_, variable) in view.variables() {
+            let (variables, scalars) = match variable.role() {
+                rumoca_ir_dae::VariableRole::Parameter => (
+                    &mut counts.parameter_variables,
+                    &mut counts.parameter_scalars,
+                ),
+                rumoca_ir_dae::VariableRole::Constant => {
+                    (&mut counts.constant_variables, &mut counts.constant_scalars)
+                }
+                rumoca_ir_dae::VariableRole::Input => {
+                    (&mut counts.input_variables, &mut counts.input_scalars)
+                }
+                rumoca_ir_dae::VariableRole::State => {
+                    (&mut counts.state_variables, &mut counts.state_scalars)
+                }
+                rumoca_ir_dae::VariableRole::Algebraic => (
+                    &mut counts.algebraic_variables,
+                    &mut counts.algebraic_scalars,
+                ),
+                rumoca_ir_dae::VariableRole::Output => {
+                    (&mut counts.output_variables, &mut counts.output_scalars)
+                }
+                rumoca_ir_dae::VariableRole::DiscreteReal => (
+                    &mut counts.discrete_real_variables,
+                    &mut counts.discrete_real_scalars,
+                ),
+                rumoca_ir_dae::VariableRole::DiscreteValue => (
+                    &mut counts.discrete_value_variables,
+                    &mut counts.discrete_value_scalars,
+                ),
+            };
+            *variables += 1;
+            *scalars += variable.scalar_count();
+        }
+        counts
+    })
+}
+
+pub(super) fn checked_dae_has_input_scalars(dae: &Dae) -> bool {
+    checked_dae_counts(dae).input_scalars != 0
+}
+
 pub(super) const STAGE_WATCHDOG_LOG_INTERVAL_SECS: u64 = 15;
 /// Per-model, per-phase wall budget. Heavy MSL models (MultiBody, Machines, FFT
 /// rectifiers) take 10-19s to *lower* to Solve-IR on a shared 4-core CI runner,
@@ -792,10 +895,14 @@ pub(super) fn summarize_success_result(
     name: String,
     result: &rumoca_compile::compile::CompilationResult,
 ) -> MslModelResult {
-    let detail = rumoca_phase_dae::balance::balance_detail(&result.dae)
-        .expect("MSL success summary requires valid DAE metadata");
     let discrete_scalars = active_discrete_scalar_count(&result.flat, &result.dae);
-    summarize_dae_success_fields(name, &result.dae, &detail, discrete_scalars)
+    summarize_dae_success_fields(
+        name,
+        &result.dae,
+        &result.flat,
+        &result.balance_detail,
+        discrete_scalars,
+    )
 }
 
 pub(super) fn summarize_dae_success_result(
@@ -805,6 +912,7 @@ pub(super) fn summarize_dae_success_result(
     summarize_dae_success_fields(
         name,
         result.dae.as_ref(),
+        result.flat.as_ref(),
         &result.balance_detail,
         result.active_discrete_scalar_count,
     )
@@ -813,9 +921,11 @@ pub(super) fn summarize_dae_success_result(
 fn summarize_dae_success_fields(
     name: String,
     dae: &Dae,
+    flat: &rumoca_ir_flat::Model,
     detail: &rumoca_phase_dae::balance::BalanceDetail,
     discrete_scalars: i64,
 ) -> MslModelResult {
+    let counts = checked_dae_counts(dae);
     let (scalar_equations, scalar_unknowns) = detail.equations_unknowns();
     let scalar_equations = scalar_equations as i64;
     let scalar_unknowns = scalar_unknowns as i64;
@@ -827,14 +937,9 @@ fn summarize_dae_success_fields(
     // discrete outputs in local counts. It may also use initialization
     // equations to close local deficits. Include these in reported
     // comparison counts while preserving eq-var parity.
-    let input_scalars = dae
-        .variables
-        .inputs
-        .values()
-        .map(|v| v.size())
-        .sum::<usize>() as i64;
+    let input_scalars = counts.input_scalars as i64;
     let balanced_discrete_scalars =
-        (detail.discrete_real_unknowns + detail.discrete_valued_unknowns) as i64;
+        (detail.discrete_real_unknowns + detail.discrete_value_unknowns) as i64;
     let extra_discrete_report_scalars = (discrete_scalars - balanced_discrete_scalars).max(0);
     let report_offset = input_scalars + extra_discrete_report_scalars;
     let scalar_unknowns_for_report = scalar_unknowns + report_offset;
@@ -845,13 +950,13 @@ fn summarize_dae_success_fields(
         phase_reached: "Success".to_string(),
         error: None,
         error_code: None,
-        num_states: Some(dae.variables.states.len()),
-        num_algebraics: Some(dae.variables.algebraics.len()),
-        num_f_x: Some(dae.continuous.equations.len()),
+        num_states: Some(counts.state_variables),
+        num_algebraics: Some(counts.algebraic_variables),
+        num_f_x: Some(counts.continuous_scalar_rows),
         balance: Some(balance_for_report),
         is_balanced: Some(balance_for_report == 0),
-        is_partial: Some(dae.metadata.is_partial),
-        class_type: Some(dae.metadata.class_type.as_str().to_string()),
+        is_partial: Some(flat.is_partial),
+        class_type: Some(flat.class_type.as_str().to_string()),
         scalar_equations: usize::try_from(scalar_equations_for_report).ok(),
         scalar_unknowns: usize::try_from(scalar_unknowns_for_report).ok(),
         initial_equation_scalars: usize::try_from(init_check.initial_equation_scalars).ok(),

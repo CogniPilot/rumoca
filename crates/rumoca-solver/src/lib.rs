@@ -3,7 +3,6 @@
 pub mod report_payload;
 pub mod runtime;
 pub mod solver;
-pub mod sparsity;
 pub mod timeline;
 
 pub use report_payload::{
@@ -53,17 +52,18 @@ pub use runtime::solve_events::{
 };
 pub use runtime::solve_ops::{
     EventActionOutcome, EventPreMode, EventPreSources, RootCrossing, RuntimeSolveError,
-    build_sim_result_from_solve_model, convert_variable_meta, discrete_row_pre_mode,
-    event_eval_params_for_pre_mode, event_eval_params_for_row_pre_mode,
-    filter_scheduled_root_crossings, first_root_crossing, push_visible_values,
-    relation_memory_value_from_root, replace_last_visible_values, root_crossed, root_crossings,
-    root_crossings_with_relation_memory, root_value_crossed, row_reads_solver_or_time,
-    runtime_value_changed, runtime_values_changed, update_relation_memory_slots,
+    apply_discrete_slot_value, build_sim_result_from_solve_model, convert_variable_meta,
+    discrete_row_active_at, discrete_row_pre_mode, event_eval_params_for_pre_mode,
+    event_eval_params_for_row_pre_mode, filter_scheduled_root_crossings, first_root_crossing,
+    push_visible_values, relation_memory_value_from_root, replace_last_visible_values,
+    root_crossed, root_crossings, root_crossings_with_relation_memory, root_value_crossed,
+    row_reads_solver_or_time, runtime_value_changed, runtime_values_changed,
+    update_relation_memory_slots,
 };
 pub use runtime::solve_runtime::{
     AlgebraicLinearization, AlgebraicSettle, EventUpdateRowFilter, InitialEventObservation,
     ProjectedEventUpdateInput, ProjectedInitialEventInput, ProjectedInitialEventOutcome,
-    SolveRuntime, apply_discrete_slot_value,
+    SolveRuntime,
 };
 pub use runtime::time::{
     event_solver_step_cap, stop_time_reached_with_tol, time_advanced_with_tol, time_match_with_tol,

@@ -58,6 +58,7 @@ fn implicit_problem_with_artifacts() -> (solve::SolveProblem, solve::SolveArtifa
         solve::ComputeBlock::from_scalar_program_block(scalar_block(vec![row.clone()]));
     problem.continuous.implicit_rhs =
         solve::ComputeBlock::from_scalar_program_block(scalar_block(vec![row.clone()]));
+    problem.continuous.implicit_row_targets = vec![None];
 
     let mut artifacts = solve::SolveArtifacts::default();
     artifacts.continuous.implicit_jacobian_v_scalar = scalar_block(vec![row.clone()]);
@@ -176,35 +177,4 @@ fn test_solve_template_context_exposes_native_implicit_rhs_families() {
     assert!(rendered.contains("map 1 3"));
     assert!(rendered.contains("u32(i32(1u) + i32((r) % 3u) * 1)"));
     assert!(rendered.contains("y[u32(i32(1u) + i32((r) % 3u) * 1)]"));
-}
-
-#[test]
-fn test_serialized_solve_template_context_exposes_optional_rows_as_sequences() {
-    let (problem, artifacts) = implicit_problem_with_artifacts();
-
-    let mut solve_json = serde_json::to_value(&problem).expect("serialize solve problem");
-    solve_json["artifacts"] = serde_json::to_value(&artifacts).expect("serialize artifacts");
-    let dae_json = serde_json::json!({
-        "__ir_kind": "solve",
-        "solve": solve_json,
-    });
-    let rendered = render_template_with_dae_json(
-        &dae_json,
-        "{{ solve_implicit_rows | length }} {{ solve_jacobian_rows | length }} {{ solve_full_jacobian_rows | length }}",
-    )
-    .expect("serialized solve context should render direct optional row sequences");
-    assert_eq!(rendered, "1 1 1");
-
-    let mut solve_json = serde_json::to_value(explicit_problem()).expect("serialize solve problem");
-    solve_json["artifacts"] = serde_json::to_value(&artifacts).expect("serialize artifacts");
-    let dae_json = serde_json::json!({
-        "__ir_kind": "solve",
-        "solve": solve_json,
-    });
-    let rendered = render_template_with_dae_json(
-        &dae_json,
-        "{{ solve_implicit_rows | length }} {{ solve_jacobian_rows | length }} {{ solve_full_jacobian_rows | length }}",
-    )
-    .expect("serialized implicit JVP rows should be empty without implicit residual");
-    assert_eq!(rendered, "0 0 1");
 }

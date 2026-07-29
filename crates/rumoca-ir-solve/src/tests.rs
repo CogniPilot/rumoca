@@ -306,7 +306,11 @@ fn make_layout(y_shapes: &[(&str, Vec<usize>)], p_shapes: &[(&str, Vec<usize>)])
         shapes.insert(name.to_string(), shape.clone());
         p_offset += size;
     }
-    VarLayout::from_parts_with_shapes(bindings, shapes, y_offset, p_offset)
+    let shape_spans = shapes
+        .keys()
+        .map(|name| (name.clone(), fixture_span()))
+        .collect();
+    VarLayout::from_parts_with_shapes_and_spans(bindings, shapes, shape_spans, y_offset, p_offset)
         .expect("representative Solve fixture layout should satisfy shape contract")
 }
 
@@ -414,8 +418,8 @@ fn representative_derivative_rhs() -> ComputeBlock {
             m: 1,
             k: 1,
             n: 1,
-            lhs_sparsity: SparsityPattern::Diagonal,
-            rhs_sparsity: SparsityPattern::Dense,
+            lhs_pattern: crate::fixture_pattern(1, 1, true),
+            rhs_pattern: crate::fixture_pattern(1, 1, false),
             metadata: TensorNodeMetadata::default(),
             span: Span::DUMMY,
         }],
@@ -464,8 +468,10 @@ fn representative_discrete_system() -> DiscreteSolveSystem {
             fixture_span(),
         ),
         update_targets: vec![scalar_slot_y(2)],
+        row_roles: vec![DiscreteRowRole::Equation],
         pre_modes: vec![DiscreteEventPreMode::Fixed],
         observation_refresh: vec![true],
+        clock_owners: vec![None],
     }
 }
 
@@ -494,10 +500,10 @@ fn representative_event_partition() -> SolveEventPartition {
 
 fn representative_clock_partition() -> SolveClockPartition {
     SolveClockPartition {
-        periodic_event_schedules: vec![PeriodicEventSchedule {
-            period_seconds: 0.1,
-            phase_seconds: 0.0,
-        }],
+        periodic_event_schedules: vec![
+            PeriodicEventSchedule::new(rumoca_core::ClockLattice::from_seconds(0.1, 0.0).unwrap())
+                .unwrap(),
+        ],
     }
 }
 
@@ -674,8 +680,8 @@ fn serde_roundtrip_matmul_node() -> ComputeNode {
         m: 1,
         k: 1,
         n: 1,
-        lhs_sparsity: SparsityPattern::Diagonal,
-        rhs_sparsity: SparsityPattern::Dense,
+        lhs_pattern: crate::fixture_pattern(1, 1, true),
+        rhs_pattern: crate::fixture_pattern(1, 1, false),
         metadata: TensorNodeMetadata::default(),
         span: Span::DUMMY,
     }
@@ -693,6 +699,7 @@ fn serde_roundtrip_linsolve_node() -> ComputeNode {
         rhs_start: 3,
         n: 2,
         next_reg: 4,
+        matrix_pattern: crate::fixture_pattern(2, 2, false),
         metadata: TensorNodeMetadata::default(),
         span: Span::DUMMY,
     }
@@ -748,7 +755,7 @@ fn assert_tensor_node_tags_survive_json(json: &str) {
         "LinSolve",
         "Map",
         "AffineStencil",
-        "lhs_sparsity",
+        "lhs_pattern",
         "metadata",
     ] {
         assert!(json.contains(tag), "{tag} must appear in JSON: {json}");
@@ -776,20 +783,25 @@ fn assert_tensor_nodes_survive_roundtrip(back: &ComputeBlock) {
 }
 
 fn assert_roundtrip_matmul_shape(node: &ComputeNode) {
-    assert!(matches!(
-        node,
-        ComputeNode::MatMul {
-            m: 1,
-            k: 1,
-            n: 1,
-            lhs_sparsity: SparsityPattern::Diagonal,
-            metadata: TensorNodeMetadata {
+    let ComputeNode::MatMul {
+        m: 1,
+        k: 1,
+        n: 1,
+        lhs_pattern,
+        metadata:
+            TensorNodeMetadata {
                 element_type: TensorElementType::Real64,
                 layout: TensorLayout::RowMajorDense,
                 scalar_fallback: ScalarFallback::Exact,
             },
-            ..
-        }
+        ..
+    } = node
+    else {
+        panic!("round-tripped node should retain its MatMul shape and metadata");
+    };
+    assert!(matches!(
+        lhs_pattern.view(),
+        StructuralPatternView::Diagonal
     ));
 }
 
@@ -863,6 +875,27 @@ fn representative_solve_problem_json_roundtrip_preserves_schema_shape() {
     let json = serde_json::to_string_pretty(&problem).expect("serialize SolveProblem");
     let decoded: SolveProblem = serde_json::from_str(&json).expect("deserialize SolveProblem");
     assert_same_json_shape(&decoded, &problem);
+}
+
+#[test]
+fn solve_problem_json_rejects_omitted_layout_collections() {
+    let value =
+        serde_json::to_value(representative_solve_problem_fixture()).expect("serialize fixture");
+    for field in ["shapes", "shape_spans"] {
+        let mut omitted = value.clone();
+        omitted["layout"]
+            .as_object_mut()
+            .expect("fixture layout is an object")
+            .remove(field);
+        let error = serde_json::from_value::<SolveProblem>(omitted)
+            .expect_err("required layout collection must not default");
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("missing field `{field}`")),
+            "unexpected omission error for {field}: {error}"
+        );
+    }
 }
 
 #[test]
@@ -1025,6 +1058,7 @@ fn solve_problem_shape_contract_rejects_zero_tensor_dimension() {
             rhs_start: 0,
             n: 0,
             next_reg: 0,
+            matrix_pattern: crate::fixture_pattern(0, 0, false),
             metadata: TensorNodeMetadata::default(),
             span: Span::DUMMY,
         }],

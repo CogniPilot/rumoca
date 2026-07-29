@@ -870,10 +870,17 @@ impl ModelicaLanguageServer {
         };
         let opts = Self::simulation_options_from_settings(&settings, &compiled.compiled);
         match rumoca_sim::lower_dae_for_simulation(&compiled.compiled.dae, &opts) {
-            Ok(solve_model) => Some(json!({
-                "ok": true,
-                "parameters": build_tunable_parameter_meta(&compiled.compiled.dae, &solve_model),
-            })),
+            Ok(solve_model) => {
+                match build_tunable_parameter_meta(&compiled.compiled.dae, &solve_model) {
+                    Ok(parameters) => Some(json!({
+                        "ok": true,
+                        "parameters": parameters,
+                    })),
+                    Err(error) => Some(Self::simulation_error_value(format!(
+                        "failed to construct parameter metadata: {error}",
+                    ))),
+                }
+            }
             Err(error) => Some(Self::simulation_error_value(format!(
                 "failed to lower parameter metadata model: {error}",
             ))),

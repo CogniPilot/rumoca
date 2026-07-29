@@ -20,7 +20,7 @@ deployment_class = "efmi"
 readiness_level = 2
 # `build = "efmu"` packages this invocation's rendered files into the two
 # eFMU package forms (directory + .efmu zip) — the build-kind pattern is the
-# packaging mechanism, exactly like fmi3's `build = "fmu"`; no CLI flag.
+# packaging mechanism selected by the manifest; no CLI flag.
 build = "efmu"
 completion_message = """eFMI Algorithm Code eFMU written to: {{ out_dir }}
   {{ model_name }}/       eFMU container, directory form (__content.xml + schemas/ + AlgorithmCode/)

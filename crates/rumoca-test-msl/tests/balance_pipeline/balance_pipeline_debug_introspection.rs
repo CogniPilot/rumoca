@@ -4,46 +4,126 @@ use super::*;
 // Model-level introspection helpers for focused MSL debugging
 // =============================================================================
 
-/// Print unknowns that appear in no equation (diagnostic helper).
-pub(super) fn print_orphaned_unknowns(dae: &rumoca_ir_dae::Dae) {
-    use std::collections::HashSet as StdHashSet;
-    let mut eq_refs = StdHashSet::<rumoca_compile::compile::core::VarName>::new();
-    for eq in &dae.continuous.equations {
-        eq.rhs.collect_var_refs(&mut eq_refs);
+fn checked_expression_source<'dae>(
+    view: rumoca_ir_dae::DaeView<'dae>,
+    expression: rumoca_ir_dae::ExprId<'dae>,
+) -> &'dae str {
+    let node = view
+        .expression(expression)
+        .expect("checked expression identity resolves");
+    view.source_text(node.provenance())
+        .unwrap_or("<generated from unavailable source text>")
+}
+
+fn visit_semantic_expression_roots<'dae>(
+    view: rumoca_ir_dae::DaeView<'dae>,
+    mut visit: impl FnMut(rumoca_ir_dae::ExprId<'dae>),
+) {
+    for index in 0..view.continuous_equation_count() {
+        visit(
+            view.continuous_equation(index)
+                .expect("dense checked continuous equation resolves")
+                .residual(),
+        );
     }
-    for eq in dae
-        .discrete
-        .real_updates
-        .iter()
-        .chain(dae.discrete.valued_updates.iter())
-        .chain(dae.conditions.equations.iter())
-    {
-        eq.rhs.collect_var_refs(&mut eq_refs);
+    for index in 0..view.initialization_equation_count() {
+        visit(
+            view.initialization_equation(index)
+                .expect("dense checked initialization equation resolves")
+                .residual(),
+        );
     }
-    for relation in &dae.conditions.relations {
-        relation.collect_var_refs(&mut eq_refs);
+    for index in 0..view.discrete_real_equation_count() {
+        visit(
+            view.discrete_real_equation(index)
+                .expect("dense checked discrete equation resolves")
+                .residual(),
+        );
     }
-    println!("\n--- Orphaned unknowns (in no equation) ---");
-    let mut orphaned = Vec::new();
-    for (n, v) in &dae.variables.states {
-        if !eq_refs.contains(n) {
-            orphaned.push((n.clone(), "state", v.size()));
+    for index in 0..view.discrete_assignment_count() {
+        let id = view
+            .discrete_assignment_id(index)
+            .expect("dense checked discrete assignment identity resolves");
+        visit(
+            view.discrete_assignment(id)
+                .expect("dense checked discrete assignment resolves")
+                .value(),
+        );
+    }
+    for index in 0..view.relation_count() {
+        let id = view
+            .relation_id(index)
+            .expect("dense checked relation identity resolves");
+        visit(
+            view.relation(id)
+                .expect("dense checked relation resolves")
+                .expression(),
+        );
+    }
+}
+
+fn record_coordinate_identity(
+    expression: rumoca_ir_dae::ExpressionView<'_>,
+    referenced: &mut std::collections::HashSet<u32>,
+) {
+    if let Some(variable) = expression.variable_coordinate() {
+        referenced.insert(variable.index());
+    }
+}
+
+fn expression_references_continuous_unknown<'dae>(
+    view: rumoca_ir_dae::DaeView<'dae>,
+    root: rumoca_ir_dae::ExprId<'dae>,
+) -> bool {
+    let mut has_unknown = false;
+    rumoca_ir_dae::for_each_expression(view, root, |_, expression| {
+        has_unknown |= expression
+            .variable_coordinate()
+            .and_then(|id| view.variable(id))
+            .is_some_and(|variable| {
+                matches!(
+                    variable.role(),
+                    rumoca_ir_dae::VariableRole::State
+                        | rumoca_ir_dae::VariableRole::Algebraic
+                        | rumoca_ir_dae::VariableRole::Output
+                )
+            });
+    });
+    has_unknown
+}
+
+/// Print continuous unknown declarations that appear in no semantic expression.
+pub(super) fn print_orphaned_unknowns(dae: &Dae) {
+    dae.inspect(|view| {
+        let mut referenced = std::collections::HashSet::new();
+        visit_semantic_expression_roots(view, |root| {
+            rumoca_ir_dae::for_each_expression(view, root, |_, expression| {
+                record_coordinate_identity(expression, &mut referenced);
+            });
+        });
+
+        println!("\n--- Orphaned continuous unknowns (in no semantic expression) ---");
+        let mut count = 0;
+        for (id, variable) in view.variables().filter(|(_, variable)| {
+            matches!(
+                variable.role(),
+                rumoca_ir_dae::VariableRole::State
+                    | rumoca_ir_dae::VariableRole::Algebraic
+                    | rumoca_ir_dae::VariableRole::Output
+            )
+        }) {
+            if !referenced.contains(&id.index()) {
+                count += 1;
+                println!(
+                    "  {} [{:?}] scalars={}",
+                    variable.name(),
+                    variable.role(),
+                    variable.scalar_count()
+                );
+            }
         }
-    }
-    for (n, v) in &dae.variables.algebraics {
-        if !eq_refs.contains(n) {
-            orphaned.push((n.clone(), "alg", v.size()));
-        }
-    }
-    for (n, v) in &dae.variables.outputs {
-        if !eq_refs.contains(n) {
-            orphaned.push((n.clone(), "out", v.size()));
-        }
-    }
-    for (n, kind, sz) in &orphaned {
-        println!("  {} [{}] size={}", n, kind, sz);
-    }
-    println!("  Total orphaned: {}", orphaned.len());
+        println!("  Total orphaned declarations: {count}");
+    });
 }
 
 /// Print flat equation summary (diagnostic helper).
@@ -57,8 +137,8 @@ pub(super) fn print_flat_equation_summary(flat: &rumoca_ir_flat::Model) {
     println!("  definite_roots: {:?}", flat.definite_roots);
     println!("  potential_roots: {:?}", flat.potential_roots);
     println!("  branches: {}", flat.branches.len());
-    for (i, (a, b)) in flat.branches.iter().take(10).enumerate() {
-        println!("    [{}] {} -> {}", i, a, b);
+    for (index, (left, right)) in flat.branches.iter().take(10).enumerate() {
+        println!("    [{index}] {left} -> {right}");
     }
     println!(
         "  oc_break_edge_scalar_count: {}",
@@ -70,208 +150,156 @@ pub(super) fn print_flat_variables(flat: &rumoca_ir_flat::Model) {
     println!("\n--- Flat Variables (causality) ---");
     let mut primitive_scalars = 0usize;
     let mut non_primitive_scalars = 0usize;
-    for (name, var) in &flat.variables {
-        let scalar_size = if var.dims.is_empty() {
+    for (name, variable) in &flat.variables {
+        let scalar_size = if variable.dims.is_empty() {
             1usize
-        } else if var.dims.iter().any(|&d| d <= 0) {
+        } else if variable.dims.iter().any(|&extent| extent <= 0) {
             0usize
         } else {
-            var.dims
+            variable
+                .dims
                 .iter()
-                .fold(1usize, |acc, &d| acc.saturating_mul(d as usize))
+                .fold(1usize, |acc, &extent| acc.saturating_mul(extent as usize))
         };
-        if var.is_primitive {
+        if variable.is_primitive {
             primitive_scalars += scalar_size;
         } else {
             non_primitive_scalars += scalar_size;
         }
         println!(
-            "  {} causality={:?} flow={} stream={} primitive={} dims={:?}",
-            name, var.causality, var.flow, var.stream, var.is_primitive, var.dims
+            "  {name} causality={:?} flow={} stream={} primitive={} dims={:?}",
+            variable.causality,
+            variable.flow,
+            variable.stream,
+            variable.is_primitive,
+            variable.dims
         );
     }
     println!(
-        "  [summary] primitive_scalars={} non_primitive_scalars={}",
-        primitive_scalars, non_primitive_scalars
+        "  [summary] primitive_scalars={primitive_scalars} non_primitive_scalars={non_primitive_scalars}"
     );
 }
 
 pub(super) fn print_dae_variables(dae: &Dae) {
-    let state_scalars: usize = dae.variables.states.values().map(|v| v.size()).sum();
-    let algebraic_scalars: usize = dae.variables.algebraics.values().map(|v| v.size()).sum();
-    let output_scalars: usize = dae.variables.outputs.values().map(|v| v.size()).sum();
-    let input_scalars: usize = dae.variables.inputs.values().map(|v| v.size()).sum();
-    let discrete_real_scalars: usize = dae
-        .variables
-        .discrete_reals
-        .values()
-        .map(|v| v.size())
-        .sum();
-    let discrete_valued_scalars: usize = dae
-        .variables
-        .discrete_valued
-        .values()
-        .map(|v| v.size())
-        .sum();
-
+    let counts = checked_dae_counts(dae);
     println!(
-        "\n--- DAE Scalar Summary ---\n  states={} algebraics={} outputs={} inputs={} discrete_reals={} discrete_valued={}",
-        state_scalars,
-        algebraic_scalars,
-        output_scalars,
-        input_scalars,
-        discrete_real_scalars,
-        discrete_valued_scalars
+        "\n--- Checked DAE Scalar Summary ---\n  states={} algebraics={} outputs={} inputs={} parameters={} constants={} discrete_reals={} discrete_values={}",
+        counts.state_scalars,
+        counts.algebraic_scalars,
+        counts.output_scalars,
+        counts.input_scalars,
+        counts.parameter_scalars,
+        counts.constant_scalars,
+        counts.discrete_real_scalars,
+        counts.discrete_value_scalars,
     );
-
-    println!("\n--- States ---");
-    for (n, v) in &dae.variables.states {
-        println!("  {} (sc={})", n, v.size());
-    }
-    println!("\n--- Algebraics ---");
-    for (n, v) in &dae.variables.algebraics {
-        println!("  {} (sc={})", n, v.size());
-    }
-    println!("\n--- Outputs ---");
-    for (n, v) in &dae.variables.outputs {
-        println!("  {} (sc={})", n, v.size());
-    }
-    println!("\n--- Inputs ---");
-    for (n, v) in &dae.variables.inputs {
-        println!("  {} (dims={:?})", n, v.dims);
-    }
-    println!("\n--- Parameters ---");
-    for (n, _) in &dae.variables.parameters {
-        println!("  {}", n);
-    }
-    println!("\n--- Constants ---");
-    for (n, _) in &dae.variables.constants {
-        println!("  {}", n);
-    }
-    println!("\n--- Discrete Reals ---");
-    for (n, _) in &dae.variables.discrete_reals {
-        println!("  {}", n);
-    }
-    println!("\n--- Discrete Valued ---");
-    for (n, _) in &dae.variables.discrete_valued {
-        println!("  {}", n);
-    }
+    dae.inspect(|view| {
+        for role in [
+            rumoca_ir_dae::VariableRole::State,
+            rumoca_ir_dae::VariableRole::Algebraic,
+            rumoca_ir_dae::VariableRole::Output,
+            rumoca_ir_dae::VariableRole::Input,
+            rumoca_ir_dae::VariableRole::Parameter,
+            rumoca_ir_dae::VariableRole::Constant,
+            rumoca_ir_dae::VariableRole::DiscreteReal,
+            rumoca_ir_dae::VariableRole::DiscreteValue,
+        ] {
+            println!("\n--- {role:?} ---");
+            for (_, variable) in view
+                .variables()
+                .filter(|(_, variable)| variable.role() == role)
+            {
+                println!(
+                    "  {} (scalars={}, type={:?})",
+                    variable.name(),
+                    variable.scalar_count(),
+                    variable.value_type()
+                );
+            }
+        }
+    });
 }
 
-pub(super) fn print_dae_equations(dae: &Dae, eq_limit: usize) {
-    let shown = dae.continuous.equations.len().min(eq_limit);
-    println!(
-        "\n--- Continuous equations f_x ({}) showing {} ---",
-        dae.continuous.equations.len(),
-        shown
-    );
-    for (i, eq) in dae.continuous.equations.iter().take(eq_limit).enumerate() {
-        let lhs_name = match &eq.rhs {
-            rumoca_compile::compile::core::Expression::Binary { lhs, .. } => match lhs.as_ref() {
-                rumoca_compile::compile::core::Expression::VarRef { name, .. } => {
-                    name.as_str().to_string()
-                }
-                _ => "??".to_string(),
-            },
-            _ => "??".to_string(),
-        };
-        let s = format!("{:?}", eq.rhs);
-        if s.contains("from_Q")
-            || s.contains("orientationConstraint")
-            || s.contains("\"body.frame_a.R\"")
-        {
-            println!(
-                "  [f_x-{}] [sc={}] {} | first 300: {:.300}",
-                i, eq.scalar_count, eq.origin, s
-            );
-        } else if eq.scalar_count == 2 {
-            println!(
-                "  [sc={}] {} | lhs={:?} | rhs_preview={:.120}",
-                eq.scalar_count,
-                eq.origin,
-                eq.lhs,
-                format!("{:?}", eq.rhs)
-            );
-        } else {
-            println!(
-                "  [sc={}] {} | LHS={}",
-                eq.scalar_count, eq.origin, lhs_name
-            );
-        }
-    }
-    if dae.continuous.equations.len() > shown {
+pub(super) fn print_dae_equations(dae: &Dae, equation_limit: usize) {
+    dae.inspect(|view| {
+        let shown = view.continuous_equation_count().min(equation_limit);
         println!(
-            "  ... omitted {} equations",
-            dae.continuous.equations.len() - shown
+            "\n--- Checked continuous residuals ({}) showing {} ---",
+            view.continuous_equation_count(),
+            shown
         );
-    }
-}
-
-/// Print equations that do not reference any continuous unknown.
-pub(super) fn print_equations_without_unknowns(dae: &Dae) {
-    use std::collections::HashSet;
-
-    let unknowns: HashSet<rumoca_compile::compile::core::VarName> = dae
-        .variables
-        .states
-        .keys()
-        .chain(dae.variables.algebraics.keys())
-        .chain(dae.variables.outputs.keys())
-        .cloned()
-        .collect();
-
-    let mut total_sc = 0usize;
-    let mut count = 0usize;
-    println!("\n--- Equations Without Unknown Refs ---");
-    for (i, eq) in dae.continuous.equations.iter().enumerate() {
-        let mut refs = HashSet::new();
-        eq.rhs.collect_var_refs(&mut refs);
-        let has_unknown = refs.iter().any(|r| {
-            unknowns.contains(r)
-                || unknowns
-                    .iter()
-                    .any(|u| u.as_str().starts_with(&(r.as_str().to_string() + ".")))
-        });
-        if !has_unknown {
-            count += 1;
-            total_sc += eq.scalar_count;
+        for index in 0..shown {
+            let equation = view
+                .continuous_equation(index)
+                .expect("dense checked continuous equation resolves");
             println!(
-                "  [f_x-{}] [sc={}] {} | lhs={:?}",
-                i,
-                eq.scalar_count,
-                eq.origin,
-                eq.lhs.as_ref().map(|n| n.as_str())
+                "  [{index}] expr={} owner={:?} source={:?}",
+                equation.residual().index(),
+                equation.provenance().origin(),
+                checked_expression_source(view, equation.residual())
             );
         }
-    }
-    println!("  Total: {} equations, {} scalars", count, total_sc);
+        if view.continuous_equation_count() > shown {
+            println!(
+                "  ... omitted {} equations",
+                view.continuous_equation_count() - shown
+            );
+        }
+        println!(
+            "  compact_families={} initialization_residuals={} discrete_real_residuals={} discrete_assignments={} relations={} conditions={}",
+            view.continuous_family_count(),
+            view.initialization_equation_count(),
+            view.discrete_real_equation_count(),
+            view.discrete_assignment_count(),
+            view.relation_count(),
+            view.condition_count(),
+        );
+    });
+}
+
+/// Print continuous residuals that do not reference any continuous unknown.
+pub(super) fn print_equations_without_unknowns(dae: &Dae) {
+    dae.inspect(|view| {
+        let mut count = 0usize;
+        println!("\n--- Continuous Residuals Without Continuous Unknown Refs ---");
+        for index in 0..view.continuous_equation_count() {
+            let equation = view
+                .continuous_equation(index)
+                .expect("dense checked continuous equation resolves");
+            if !expression_references_continuous_unknown(view, equation.residual()) {
+                count += 1;
+                println!(
+                    "  [{index}] {:?}",
+                    checked_expression_source(view, equation.residual())
+                );
+            }
+        }
+        println!("  Total: {count} residuals");
+    });
 }
 
 pub(super) fn print_compiled_debug_with_limit(
     dae: &Dae,
     flat: &rumoca_ir_flat::Model,
-    eq_limit: usize,
+    balance: &rumoca_phase_dae::balance::BalanceDetail,
+    equation_limit: usize,
 ) {
     println!(
         "Success! {}",
-        rumoca_phase_dae::balance::balance_detail(dae)
-            .expect("debug introspection requires valid DAE metadata")
+        rumoca_phase_dae::BalanceBreakdown::from(balance.clone())
     );
     println!(
         "active_discrete_scalar_count = {}",
         active_discrete_scalar_count(flat, dae)
     );
     println!(
-        "raw interface_flow_count = {}",
-        dae.metadata.interface_flow_count
-    );
-    println!(
-        "raw overconstrained_interface_count = {}",
-        dae.metadata.overconstrained_interface_count
+        "flat class_type={} partial={}",
+        flat.class_type.as_str(),
+        flat.is_partial
     );
     print_flat_variables(flat);
     print_dae_variables(dae);
-    print_dae_equations(dae, eq_limit);
+    print_dae_equations(dae, equation_limit);
     print_equations_without_unknowns(dae);
     print_orphaned_unknowns(dae);
     print_flat_equation_summary(flat);
@@ -290,7 +318,12 @@ pub(super) fn maybe_dump_model_introspection(
     {
         return;
     }
-    println!("\n=== MSL Introspection: {} ===", name);
-    print_compiled_debug_with_limit(&result.dae, &result.flat, msl_introspect_eq_limit());
-    println!("=== End Introspection: {} ===", name);
+    println!("\n=== MSL Introspection: {name} ===");
+    print_compiled_debug_with_limit(
+        &result.dae,
+        &result.flat,
+        &result.balance_detail,
+        msl_introspect_eq_limit(),
+    );
+    println!("=== End Introspection: {name} ===");
 }

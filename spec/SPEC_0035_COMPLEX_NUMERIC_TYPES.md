@@ -28,27 +28,10 @@ type, not a preserved record; ordinary records stay scalarized.
 | Rule | Owner/Where | Brief Justification |
 |---|---|---|
 | Solve IR values are real or complex tensors | `rumoca-ir-solve` | Numeric types hardware understands |
-| Complex is a `TensorElementType` | `ir-solve/src/tensor.rs` | Not a record, not a pair |
+| Complex is a precision-neutral `TensorElementType` | `ir-solve/src/tensor.rs` | Not a record, not a pair |
 | Ordinary records stay scalarized | Flat/DAE | Organizational structure, no numeric semantics |
 | Element type and layout are separate | tensor metadata | Interleaved vs planar is a backend concern |
-| Element types are named by TOTAL bit width | `TensorElementType` | Matches every array ecosystem |
-
-**Naming is not free choice.** NumPy, PyTorch, TensorFlow, BLAS and MLIR all
-name complex by total width: `complex64` is two `float32`, `complex128` is two
-`float64`. The existing `Real64` already follows total-width naming, so the
-double-precision complex type is `Complex128`, not `Complex64`. Choosing
-otherwise inverts the meaning for every reader arriving from those ecosystems.
-
-| Rumoca | Bits | NumPy / PyTorch / TF | MLIR | CUDA | WGSL |
-|---|---|---|---|---|---|
-| `Real64` | 64 | `float64` | `f64` | `double` | *unavailable* |
-| `Real32` | 32 | `float32` | `f32` | `float` | `f32` |
-| `Complex128` | 128 | `complex128` | `complex<f64>` | `cuDoubleComplex` | *unavailable* |
-| `Complex64` | 64 | `complex64` | `complex<f32>` | `cuComplex` | `vec2<f32>` |
-
-**REQUIRED:** both complex widths exist. WGSL has no double precision at all, so
-a GPU backend can host only `Complex64`; a double-only enum would exclude the
-GPU path entirely.
+| Canonical element types contain no deployment width | DAE/Solve | One target-neutral problem |
 
 **Width is a target policy, not a Modelica type.** MLS §4.8.1 defines exactly
 one floating-point type, `Real`, with implementation-defined precision; there is
@@ -61,8 +44,18 @@ targets commonly want the 32-bit form.
 | Rule | Owner/Where | Brief Justification |
 |---|---|---|
 | Source and GALEC declare `Real`, never a width | frontend / algorithm code | MLS has one float type |
+| Canonical DAE/Solve use `Real` and `Complex` | compiler IR | Precision-neutral semantics |
 | The target selects the width | codegen | Precision is a deployment property |
 | A narrowing selection is explicit and recorded | export manifest | Silent precision loss is a defect |
+
+Target projection uses total-width ecosystem names:
+
+| Canonical + target format | NumPy / PyTorch / TF | MLIR | CUDA | WGSL |
+|---|---|---|---|---|
+| `Real + F64` | `float64` | `f64` | `double` | *unavailable* |
+| `Real + F32` | `float32` | `f32` | `float` | `f32` |
+| `Complex + F64` | `complex128` | `complex<f64>` | `cuDoubleComplex` | *unavailable* |
+| `Complex + F32` | `complex64` | `complex<f32>` | `cuComplex` | `vec2<f32>` |
 
 **The test for preservation is numeric semantics, not aggregation.** A `Pin`
 with `v` and `i` is organizational: no solver, kernel or hardware unit benefits
@@ -79,13 +72,22 @@ hardware representation and derivative rules, so it survives as a type.
 | Rule | Owner/Where | Brief Justification |
 |---|---|---|
 | Operator applications resolve to the declaring function | resolve/instantiate | Semantics are not name matching |
-| A record whose operators match the complex field maps to the complex type | DAE lowering | Recognition is structural |
+| A record whose operator bodies are proved equivalent to complex formulas maps to the complex type | DAE lowering | Recognition is semantic |
 | An unrecognized operator record scalarizes | DAE lowering | Only numeric types earn a type |
 | A refusal to map is reason-coded | lowering | Fallbacks stay legible |
 
 MLS §14 operator records are the mechanism by which a frontend recognizes
-complex arithmetic. They are not themselves preserved: recognition maps the
-operation onto the complex element type, and the record disappears.
+complex arithmetic. Signatures alone cannot prove the algebra. Recognition
+uses resolved declaration identities and an exact restricted normalizer over a
+two-Real-field record. It proves constructor/pack, zero, negation, addition,
+subtraction, multiplication, division, equality, conjugate, and magnitude
+formulas. Core type recognition requires constructor/pack, zero, negation,
+addition, and multiplication. Other operations receive individual proofs;
+unproved operations retain their exact real-field lowering.
+
+Recognition never branches on record or field names. Its proof receipt retains
+the effective `TypeId`, operator `DefId`s, source spans, and normalized formula
+fingerprints.
 
 ### 3. Solver State And Layout
 
@@ -110,11 +112,18 @@ The pairing rides on `(DefId, offset)` layout identity: one id, two offsets.
 |---|---|---|
 | Existing tensor nodes accept complex elements | `Map`, `AffineStencil`, `MatMul`, `LinSolve` | One node set, two element types |
 | The evaluator runs a native complex kernel | `rumoca-eval-solve` | One operation over two lanes |
-| Differentiation uses complex rules | AD | `[[a, -b], [b, a]]` is exploitable |
+| Differentiation is exact over real lanes | AD | Modelica state remains real |
+| Native complex AD requires a proved holomorphic operation | AD | Non-holomorphic rules differ |
 | A backend without complex support requests the real view | codegen | Correct default |
 
 **REQUIRED:** a complex node and its derived real view MUST produce equal
 results.
+
+Conjugate, magnitude, real/imag projections, and other non-holomorphic
+operations use explicit real-lane derivative rules. A complex dependency is
+expanded conservatively to a full 2-by-2 real block unless a checked derivative
+rule proves internal zeros. Structural pattern ownership and expansion follow
+[SPEC_0039](SPEC_0039_PROOF_CARRYING_SPARSITY.md).
 
 ### 5. Relationship To SPEC_0032
 
@@ -130,10 +139,10 @@ DRAFT because the codebase does none of this yet:
 
 | Observation | Evidence |
 |---|---|
-| `TensorElementType` has one variant | `ir-solve/src/tensor.rs:20` — `Real64` only; no `Real32` either |
+| `TensorElementType` has one variant | `ir-solve/src/tensor.rs` — `Real64` only |
 | `TensorLayout` has one variant | same file — `RowMajorDense` only |
 | Operator applications are not resolved | Magnetic converter row reaches DAE as a record-level product |
-| ~91 sites match the literal `"Complex"` | `eval-dae`, `phase-flatten/qualify.rs`, `phase-dae/analysis/variable_analysis.rs`, `phase-solve/function_validation.rs` |
+| Production still contains textual Complex special cases | frontend/lowering search gate |
 | 77 Magnetic models, 1 simulates | MSL corpus run |
 
 The name-matching sites measure the debt: each guesses at semantics the operator
@@ -143,11 +152,11 @@ declaration already states.
 
 | Phase | Delivers | Proves |
 |---|---|---|
-| 1 | Operator applications resolve to the declaring `operator function` | A minimal model shows the resolved call in Flat |
-| 2 | Structural analysis differentiates and matches complex equations | Index reduction handles a complex constraint |
-| 3 | `TensorElementType::{Complex128, Complex64}` + layout variants | Solve IR round-trips a complex node |
+| 1 | Operator applications resolve to the declaring `operator function` | A minimal model shows the resolved `DefId` in Flat |
+| 2 | Restricted exact normalizer and branded complex-algebra proof | Correct unnamed record is recognized; incorrect named record is refused |
+| 3 | Precision-neutral DAE/Solve complex element + real-lane view | Solve IR round-trips a complex node |
 | 4 | Native complex kernel in the evaluator | Evaluation equals the derived real view |
-| 5 | One native backend consumes complex; reason-coded fallback elsewhere | Backend emits a complex operation |
+| 5 | One native backend consumes complex; exact real views elsewhere | Backend emits a complex operation |
 | 6 | Retire the `"Complex"` name matches; add the enforcement gate | Gate fails on a reintroduced name match |
 
 **Promotion:** ACCEPTED when phases 1-3 are implemented and the name-match debt
@@ -173,6 +182,7 @@ but only after the earlier blockers are cleared.
 - MLS 3.7 §14 — Overloaded Operators
 - MLS 3.7 §12.4 — Built-in and Overloaded Operator Functions
 - `spec/SPEC_0032_RANGE_PRESERVING_TENSORS.md` — range ownership, the orthogonal axis
+- `spec/SPEC_0039_PROOF_CARRYING_SPARSITY.md` — element-block dependency patterns
 - `spec/SPEC_0007_IR_PIPELINE.md` — phase ownership and stage contracts
 - `spec/SPEC_0008_PHASE_ERRORS.md` — spanned errors, no silent recovery
 - `Complex.mo` in the Modelica Standard Library — the canonical operator record

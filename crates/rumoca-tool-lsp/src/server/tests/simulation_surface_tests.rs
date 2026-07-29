@@ -304,7 +304,10 @@ fn compile_model_for_simulation_ignores_unrelated_local_parse_errors() {
             .compile_model_for_simulation("Root", &focus.to_string_lossy())
             .await
             .expect("compile should ignore unrelated local parse errors");
-        assert_eq!(compiled.dae.variables.states.len(), 1);
+        assert_eq!(
+            checked_variable_count(&compiled.dae, rumoca_compile::compile::VariableRole::State),
+            1
+        );
     });
 }
 
@@ -362,7 +365,10 @@ fn compile_model_for_simulation_ignores_unreferenced_library_typecheck_errors() 
             .compile_model_for_simulation("Ball", &focus.to_string_lossy())
             .await
             .expect("focus model must compile despite unreferenced library typecheck errors");
-        assert_eq!(compiled.dae.variables.states.len(), 1);
+        assert_eq!(
+            checked_variable_count(&compiled.dae, rumoca_compile::compile::VariableRole::State),
+            1
+        );
     });
 }
 
@@ -424,7 +430,10 @@ fn compile_model_for_simulation_ignores_sibling_pulled_library_typecheck_errors(
             .compile_model_for_simulation("Ball", &focus.to_string_lossy())
             .await
             .expect("focus model must compile despite sibling-pulled library typecheck errors");
-        assert_eq!(compiled.dae.variables.states.len(), 1);
+        assert_eq!(
+            checked_variable_count(&compiled.dae, rumoca_compile::compile::VariableRole::State),
+            1
+        );
     });
 }
 
@@ -474,7 +483,11 @@ fn compile_model_for_simulation_handles_real_examples_ball_with_msl_root() {
             .compile_model_for_simulation("Ball", &focus.to_string_lossy())
             .await
             .expect("Ball must compile with the editor-configured MSL source root");
-        assert_eq!(compiled.dae.variables.states.len(), 2, "Ball has x and v");
+        assert_eq!(
+            checked_variable_count(&compiled.dae, rumoca_compile::compile::VariableRole::State),
+            2,
+            "Ball has x and v"
+        );
     });
 }
 
@@ -561,7 +574,10 @@ fn compile_model_for_simulation_repeated_runs_ignore_new_unrelated_local_parse_e
             .compile_model_for_simulation("Root", &focus.to_string_lossy())
             .await
             .expect("first focused compile should succeed");
-        assert_eq!(first.dae.variables.states.len(), 1);
+        assert_eq!(
+            checked_variable_count(&first.dae, rumoca_compile::compile::VariableRole::State),
+            1
+        );
 
         std::fs::write(&broken, "model Broken\n  Real x\nend Broken;\n").expect("write broken");
 
@@ -569,7 +585,10 @@ fn compile_model_for_simulation_repeated_runs_ignore_new_unrelated_local_parse_e
             .compile_model_for_simulation("Root", &focus.to_string_lossy())
             .await
             .expect("second focused compile should ignore unrelated local parse errors");
-        assert_eq!(second.dae.variables.states.len(), 1);
+        assert_eq!(
+            checked_variable_count(&second.dae, rumoca_compile::compile::VariableRole::State),
+            1
+        );
     });
 }
 
@@ -668,7 +687,7 @@ fn render_target_command_renders_compiled_open_document_model() {
                         .expect("file uri")
                         .to_string(),
                     "model": "Decay",
-                    "target": "sympy",
+                    "target": "c-solve",
                 })],
                 work_done_progress_params: WorkDoneProgressParams::default(),
             })
@@ -685,9 +704,9 @@ fn render_target_command_renders_compiled_open_document_model() {
                 .get("files")
                 .and_then(serde_json::Value::as_array)
                 .is_some_and(|files| files.iter().any(|file| {
-                    file.get("path").and_then(serde_json::Value::as_str) == Some("Decay_sympy.py")
+                    file.get("path").and_then(serde_json::Value::as_str) == Some("Decay_solve.c")
                 })),
-            "render target command should return the built-in SymPy model file"
+            "render target command should return the checked Solve C model file"
         );
     });
 }
@@ -949,7 +968,10 @@ fn compile_model_for_simulation_reuses_warm_save_diagnostics_for_single_document
             .expect("simulation compile should reuse warmed save artifacts");
         let delta = session_cache_stats().delta_since(before);
 
-        assert_eq!(compiled.dae.variables.states.len(), 1);
+        assert_eq!(
+            checked_variable_count(&compiled.dae, rumoca_compile::compile::VariableRole::State),
+            1
+        );
         assert_eq!(
             delta.strict_resolved_builds, 0,
             "simulation compile should not rebuild strict resolved state when save diagnostics already warmed it"
@@ -1271,7 +1293,10 @@ fn simulation_compile_keeps_sibling_namespace_fingerprint_warm_after_subtree_ref
             .await
             .expect("simulation compile after subtree refresh should succeed");
 
-        assert_eq!(compiled.dae.variables.states.len(), 1);
+        assert_eq!(
+            checked_variable_count(&compiled.dae, rumoca_compile::compile::VariableRole::State),
+            1
+        );
         let session = server.session.read().await;
         assert!(
             session.dirty_source_root_keys().is_empty(),

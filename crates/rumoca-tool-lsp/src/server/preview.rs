@@ -123,47 +123,81 @@ pub(super) fn render_flattened_preview(
     model_name: &str,
     result: &rumoca_compile::compile::DaeCompilationResult,
 ) -> String {
-    let dae = &result.dae;
-    let mut lines = vec![format!(
-        "model={model_name} | f_x={} | f_z={} | f_m={} | m={} | balance={}",
-        dae.continuous.equations.len(),
-        dae.discrete.real_updates.len(),
-        dae.discrete.valued_updates.len(),
-        dae.variables.discrete_valued.len(),
-        result.balance_detail.balance()
-    )];
-    push_equation_block(
-        &mut lines,
-        "f_x",
-        &dae.continuous.equations,
-        6,
-        |idx, eq| render_equation_line(idx, eq.lhs.as_ref().map(ToString::to_string), &eq.rhs),
-    );
-    push_equation_block(
-        &mut lines,
-        "f_z",
-        &dae.discrete.real_updates,
-        4,
-        |idx, eq| render_equation_line(idx, eq.lhs.as_ref().map(ToString::to_string), &eq.rhs),
-    );
-    push_equation_block(
-        &mut lines,
-        "f_m",
-        &dae.discrete.valued_updates,
-        4,
-        |idx, eq| render_equation_line(idx, eq.lhs.as_ref().map(ToString::to_string), &eq.rhs),
-    );
-    let discrete_valued = &dae.variables.discrete_valued;
-    push_discrete_valued_block(
-        &mut lines,
-        discrete_valued.len(),
-        discrete_valued.iter(),
-        6,
-        |var| match var.start.as_ref() {
-            Some(expr) => truncate_debug(expr, 80),
-            None => "<none>".to_string(),
-        },
-    );
+    let lines = result.dae.inspect(|view| {
+        let discrete_values = view
+            .variables()
+            .filter(|(_, variable)| {
+                variable.role() == rumoca_compile::compile::VariableRole::DiscreteValue
+            })
+            .collect::<Vec<_>>();
+        let mut lines = vec![format!(
+            "model={model_name} | f_x={} | f_z={} | f_m={} | m={} | balance={}",
+            view.continuous_owner_count(),
+            view.discrete_real_equation_count(),
+            view.discrete_assignment_count(),
+            discrete_values.len(),
+            result.balance_detail.balance()
+        )];
+        push_checked_residuals(
+            &mut lines,
+            "f_x",
+            view.continuous_equation_count(),
+            6,
+            |index| view.continuous_equation(index),
+            view,
+        );
+        push_checked_residuals(
+            &mut lines,
+            "f_z",
+            view.discrete_real_equation_count(),
+            4,
+            |index| view.discrete_real_equation(index),
+            view,
+        );
+        lines.push(format!("f_m ({}):", view.discrete_assignment_count()));
+        for index in 0..view.discrete_assignment_count().min(4) {
+            let id = view
+                .discrete_assignment_id(index)
+                .expect("finalized discrete assignment has an identity");
+            let assignment = view
+                .discrete_assignment(id)
+                .expect("branded discrete assignment resolves");
+            let target = view
+                .variables()
+                .find(|(id, _)| id.index() == assignment.target().index())
+                .map_or_else(
+                    || format!("<discrete:{}>", assignment.target().index()),
+                    |(_, variable)| variable.name().to_string(),
+                );
+            let value = view
+                .expression(assignment.value())
+                .and_then(|expression| view.source_text(expression.provenance()))
+                .map_or("<generated expression>", |source| source);
+            lines.push(format!(
+                "  {index}: {target} := {}",
+                truncate_text(value, 140)
+            ));
+        }
+        push_more_equations_line(&mut lines, view.discrete_assignment_count(), 4, "f_m");
+        if !discrete_values.is_empty() {
+            lines.push("m (discrete-valued variables):".to_string());
+            for (index, (_, variable)) in discrete_values.iter().take(6).enumerate() {
+                let start = variable
+                    .start()
+                    .and_then(|expression| view.expression(expression))
+                    .and_then(|expression| view.source_text(expression.provenance()))
+                    .map_or("<none>".to_string(), |source| truncate_text(source, 80));
+                lines.push(format!("{index}: {} start={start}", variable.name()));
+            }
+            if discrete_values.len() > 6 {
+                lines.push(format!(
+                    "... {} more discrete-valued variables",
+                    discrete_values.len() - 6
+                ));
+            }
+        }
+        lines
+    });
 
     format!(
         "**Flattened DAE Preview**\n\n```text\n{}\n```",
@@ -171,52 +205,24 @@ pub(super) fn render_flattened_preview(
     )
 }
 
-fn render_equation_line<R: std::fmt::Debug>(idx: usize, lhs: Option<String>, rhs: &R) -> String {
-    let lhs = match lhs {
-        Some(rendered) => rendered,
-        None => "0".to_string(),
-    };
-    format!("  {idx}: {lhs} = {}", truncate_debug(rhs, 140))
-}
-
-fn push_equation_block<E>(
+fn push_checked_residuals<'dae>(
     lines: &mut Vec<String>,
     label: &str,
-    equations: &[E],
-    limit: usize,
-    render: impl Fn(usize, &E) -> String,
-) {
-    lines.push(format!("{label} ({}):", equations.len()));
-    for (idx, eq) in equations.iter().take(limit).enumerate() {
-        lines.push(render(idx, eq));
-    }
-    push_more_equations_line(lines, equations.len(), limit, label);
-}
-
-fn push_discrete_valued_block<'a, K, V, I>(
-    lines: &mut Vec<String>,
     total: usize,
-    entries: I,
     limit: usize,
-    render_start: impl Fn(&V) -> String,
-) where
-    K: std::fmt::Display + 'a,
-    V: 'a,
-    I: Iterator<Item = (&'a K, &'a V)>,
-{
-    if total == 0 {
-        return;
+    equation: impl Fn(usize) -> Option<rumoca_compile::compile::ResidualEquationView<'dae>>,
+    view: rumoca_compile::compile::DaeView<'dae>,
+) {
+    lines.push(format!("{label} ({total}):"));
+    for index in 0..total.min(limit) {
+        let equation = equation(index).expect("finalized residual equation resolves");
+        let source = view
+            .expression(equation.residual())
+            .and_then(|expression| view.source_text(expression.provenance()))
+            .map_or("<generated residual>", |source| source);
+        lines.push(format!("  {index}: {}", truncate_text(source, 140)));
     }
-    lines.push("m (discrete-valued variables):".to_string());
-    for (idx, (name, var)) in entries.take(limit).enumerate() {
-        lines.push(format!("{idx}: {name} start={}", render_start(var)));
-    }
-    if total > limit {
-        lines.push(format!(
-            "... {} more discrete-valued variables",
-            total - limit
-        ));
-    }
+    push_more_equations_line(lines, total, limit, label);
 }
 
 fn push_more_equations_line(lines: &mut Vec<String>, total: usize, shown: usize, label: &str) {
@@ -225,12 +231,11 @@ fn push_more_equations_line(lines: &mut Vec<String>, total: usize, shown: usize,
     }
 }
 
-fn truncate_debug<T: std::fmt::Debug>(value: &T, max_chars: usize) -> String {
-    let rendered = format!("{value:?}");
-    if rendered.chars().count() <= max_chars {
-        return rendered;
+fn truncate_text(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value.to_string();
     }
-    let mut out = rendered.chars().take(max_chars).collect::<String>();
+    let mut out = value.chars().take(max_chars).collect::<String>();
     out.push_str("...");
     out
 }

@@ -107,10 +107,12 @@ pub fn eval_event_actions_with_context(
     events: &solve::SolveEventPartition,
     y: &[f64],
     p: &[f64],
+    event_pre_p: &[f64],
     t: f64,
     context: RowEvalContext<'_>,
 ) -> Result<EventActionOutcome, RuntimeSolveError> {
-    match solve_eval::eval_event_action_request(events, y, p, t, context)? {
+    let action_p = event_action_params(events, p, event_pre_p)?;
+    match solve_eval::eval_event_action_request(events, y, &action_p, t, context)? {
         solve_eval::EventActionRequest::Continue => Ok(EventActionOutcome::Continue),
         solve_eval::EventActionRequest::AssertionFailed { message } => {
             Ok(EventActionOutcome::AssertionFailed { time: t, message })
@@ -119,6 +121,28 @@ pub fn eval_event_actions_with_context(
             Ok(EventActionOutcome::Terminated { time: t, message })
         }
     }
+}
+
+fn event_action_params(
+    events: &solve::SolveEventPartition,
+    p: &[f64],
+    event_pre_p: &[f64],
+) -> Result<Vec<f64>, RuntimeSolveError> {
+    let mut action_p = runtime_event_copy_values(p, "event action parameters")?;
+    for &index in &events.condition_memory_parameter_indices {
+        let previous = event_pre_p.get(index).copied().ok_or_else(|| {
+            RuntimeSolveError::solve_ir(format!(
+                "event-entry condition-memory parameter index {index} is out of bounds"
+            ))
+        })?;
+        let slot = action_p.get_mut(index).ok_or_else(|| {
+            RuntimeSolveError::solve_ir(format!(
+                "current condition-memory parameter index {index} is out of bounds"
+            ))
+        })?;
+        *slot = previous;
+    }
+    Ok(action_p)
 }
 
 fn visible_value_with_context(

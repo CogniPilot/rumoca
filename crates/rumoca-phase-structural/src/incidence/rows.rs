@@ -17,6 +17,7 @@
 
 use std::collections::HashSet;
 
+#[cfg(test)]
 use crate::types::StructuralError;
 
 /// Scalar incidence stored as compressed sparse rows.
@@ -224,6 +225,13 @@ impl IncidenceRowsBuilder {
         self.offsets.len().saturating_sub(1)
     }
 
+    /// Read one completed row while later rows are still being assembled.
+    pub(crate) fn row(&self, equation: usize) -> Option<&[usize]> {
+        let start = *self.offsets.get(equation)?;
+        let end = *self.offsets.get(equation.checked_add(1)?)?;
+        self.columns.get(start..end)
+    }
+
     /// Append a row from an unordered source, sorting and deduplicating it.
     pub(crate) fn push_unsorted<I>(&mut self, columns: I)
     where
@@ -264,6 +272,7 @@ impl IncidenceRowsBuilder {
     /// the indexed column advances. Occurrence identity is retained until after
     /// translation; sorting earlier would pair the wrong accesses when two
     /// affine index expressions cross.
+    #[cfg(test)]
     pub(crate) fn push_affine_occurrences(
         &mut self,
         occurrences: &[usize],
@@ -329,6 +338,7 @@ impl IncidenceRowsBuilder {
     }
 }
 
+#[cfg(test)]
 fn shifted_column(column: usize, shift: i64) -> Option<usize> {
     let shifted = i128::try_from(column)
         .ok()?

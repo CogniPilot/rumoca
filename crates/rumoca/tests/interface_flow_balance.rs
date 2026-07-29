@@ -1,138 +1,78 @@
-//! Regression tests for interface-flow balance accounting.
+use rumoca_compile::compile::{FailedPhase, Session, SessionConfig};
 
-use rumoca_compile::{Session, SessionConfig, compile::CompilationResult};
-
-fn compile_model(source: &str, model_name: &str) -> CompilationResult {
+#[test]
+fn connector_model_balance_is_constructor_evidence() {
     let mut session = Session::new(SessionConfig::default());
     session
-        .add_document("test.mo", source)
-        .expect("model should parse/typecheck");
+        .add_document(
+            "connector.mo",
+            r#"
+connector Pin
+  Real v;
+  flow Real i;
+end Pin;
 
+model Source
+  Pin pin;
+equation
+  pin.v = 1;
+end Source;
+
+model OpenCircuit
+  Pin pin;
+equation
+  pin.i = 0;
+end OpenCircuit;
+
+model ConnectedSystem
+  Source source;
+  OpenCircuit load;
+equation
+  connect(source.pin, load.pin);
+end ConnectedSystem;
+"#,
+        )
+        .expect("fixture parses");
+    let result = session
+        .compile_model("ConnectedSystem")
+        .expect("connector model compiles");
+    assert!(result.balance_detail.is_balanced());
+    assert_eq!(result.balance_detail.equations_unknowns(), (4, 4));
+}
+
+#[test]
+fn redundant_boundary_flow_equations_fail_at_dae_construction() {
+    let mut session = Session::new(SessionConfig::default());
     session
-        .compile_model(model_name)
-        .expect("model should compile")
-}
-
-#[test]
-fn test_source_top_level_unconnected_flow_generates_boundary_closure() {
-    let source = r#"
+        .add_document(
+            "overdetermined_connector.mo",
+            r#"
 connector Pin
-    Real v;
-    flow Real i;
+  Real v;
+  flow Real i;
 end Pin;
 
-model OpenBoundary
-    Pin pin;
-end OpenBoundary;
-"#;
-
-    let result = compile_model(source, "OpenBoundary");
-    let unconnected_flow_scalars = result
-        .dae
-        .continuous
-        .equations
-        .iter()
-        .filter(|eq| eq.origin.starts_with("unconnected flow:"))
-        .map(|eq| eq.scalar_count)
-        .collect::<Vec<_>>();
-
-    assert_eq!(
-        unconnected_flow_scalars,
-        vec![1],
-        "top-level unconnected flow variable should generate one scalar boundary closure"
-    );
-}
-
-#[test]
-fn test_interface_flow_does_not_double_count_closed_boundary() {
-    let source = r#"
-connector Pin
-    Real v;
-    flow Real i;
-end Pin;
-
-connector Plug
-    parameter Integer m = 3;
-    Pin pin[m];
-end Plug;
-
-model Delta
-    parameter Integer m = 3;
-    Plug plug_p(m = m);
-    Plug plug_n(m = m);
+model Pair
+  Pin a;
+  Pin b;
 equation
-    plug_n.pin[1].i + plug_p.pin[2].i = 0;
-    plug_n.pin[2].i + plug_p.pin[3].i = 0;
-    plug_n.pin[3].i + plug_p.pin[1].i = 0;
-    plug_n.pin[1].v = plug_p.pin[2].v;
-    plug_n.pin[2].v = plug_p.pin[3].v;
-    plug_n.pin[3].v = plug_p.pin[1].v;
-end Delta;
+  connect(a, b);
+  a.v = 1;
+  a.i = 0;
+end Pair;
+"#,
+        )
+        .expect("fixture parses");
 
-model BoundaryWithDelta
-    parameter Integer m = 3;
-    Plug plug1(m = m);
-    Plug plug2(m = m);
-    Delta d1(m = m);
-    Delta d2(m = m);
-equation
-    connect(plug1, d1.plug_p);
-    connect(plug2, d2.plug_p);
-    connect(d1.plug_n, d2.plug_n);
-end BoundaryWithDelta;
-"#;
+    let failure = session
+        .compile_model_dae_strict_reachable_uncached_with_recovery_detailed("Pair")
+        .expect_err("redundant boundary closures cannot inhabit the checked DAE");
 
-    let result = compile_model(source, "BoundaryWithDelta");
-
-    let dae = &result.dae;
-    let detail = rumoca_phase_dae::balance::balance_detail(dae).expect("valid DAE balance fixture");
-    let unknown_scalars = detail.state_unknowns + detail.alg_unknowns + detail.output_unknowns;
-    let boundary_flow_zero_scalars: usize = dae
-        .continuous
-        .equations
-        .iter()
-        .filter(|eq| eq.origin.starts_with("unconnected flow:"))
-        .map(|eq| eq.scalar_count)
-        .sum();
-
-    assert_eq!(
-        detail.f_x_scalar, unknown_scalars,
-        "raw continuous equations should already close unknowns in this reproducer"
-    );
-    assert!(
-        boundary_flow_zero_scalars > 0,
-        "reproducer requires explicit boundary flow=0 equations (MLS §9.2)"
-    );
-    assert!(
-        detail.interface_flow_count > 0,
-        "raw interface-flow count should detect top-level connector flows (MLS §4.7)"
-    );
-    let base_without_iflow =
-        (detail.f_x_scalar + detail.algorithm_outputs + detail.when_eq_scalar) as i64;
-    let iflow_needed = (unknown_scalars as i64 - base_without_iflow).max(0);
-    let effective_iflow = (detail.interface_flow_count as i64).min(iflow_needed);
-    assert_eq!(
-        effective_iflow, 0,
-        "effective interface-flow contribution must not double-count flows already closed by explicit flow=0 equations"
-    );
-    // The clamp instrumentation must agree with the arithmetic above: every
-    // raw interface flow was discarded, and no other clamp fired.
-    let clamps = detail.clamps();
-    assert_eq!(
-        clamps.interface_flow_dropped, detail.interface_flow_count,
-        "all raw interface flows are surplus in this reproducer"
-    );
-    assert_eq!(clamps.aggregate_candidates_dropped, 0);
-    assert_eq!(clamps.oc_interface_dropped, 0);
-    assert_eq!(clamps.break_edge_dropped, 0);
-    assert_eq!(
-        clamps.exercised(),
-        vec!["interface_flow"],
-        "interface_flow is the only clamp this fixture depends on"
-    );
-    assert_eq!(
-        rumoca_phase_dae::balance::balance(dae).expect("valid DAE balance fixture"),
-        0,
-        "interface-flow terms must not overconstrain already-closed systems"
-    );
+    assert_eq!(failure.phase, Some(FailedPhase::ToDae));
+    assert_eq!(failure.error_code.as_deref(), Some("ED001"));
+    let detail = failure
+        .balance_detail
+        .expect("balance failure carries constructor evidence");
+    assert_eq!(detail.equations_unknowns(), (6, 4));
+    assert_eq!(detail.balance(), 2);
 }

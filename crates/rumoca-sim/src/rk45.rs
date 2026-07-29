@@ -37,21 +37,8 @@ pub fn simulate_with_diagnostics(
 
 pub use simulate_with_diagnostics as simulate_dae_with_diagnostics;
 
-/// Render a solve-lowering failure into `SimError` with its SPEC_0008 code as a
-/// `[CODE] ` prefix.
-///
-/// `SimError` is a plain string carrier, so the bracketed prefix is the only
-/// channel through which the code of the phase that raised the defect
-/// (`EL0xx` from solve lowering, `ES0xx` from structural analysis) survives into
-/// downstream consumers — the MSL worker result schema and
-/// `rumoca-msl-tools triage`. Without it every `--backend rk45` lowering failure
-/// degrades to the synthetic `EX002`. This mirrors the diffsol backend exactly,
-/// so the two backends report the same code for the same defect.
-fn solve_lowering_sim_error(err: rumoca_phase_solve::SolveModelLowerError) -> SimError {
-    SimError::SolveIr(format!("[{}] {err}", err.code()))
-}
-
-/// Same contract as [`solve_lowering_sim_error`] for the structured simulation
+/// Preserve the originating diagnostic code when adapting to the backend's
+/// string-carrying error.
 /// diagnostic, which also carries the runtime `EX0xx` codes (notably `EX003`
 /// for a rejected parameter/start override).
 fn diagnostic_sim_error(err: SimulationDiagnosticError) -> SimError {
@@ -72,7 +59,8 @@ impl SimulationSession {
         opts: rumoca_solver::SimOptions,
         mut begin_stage: impl FnMut(&'static str),
     ) -> Result<(Self, BuildSimulationTimings), SimError> {
-        let param_overrides = tunable_param_overrides(dae_model, &opts);
+        let param_overrides =
+            tunable_param_overrides(dae_model, &opts).map_err(diagnostic_sim_error)?;
         let (mut solve_model, solve_timings) =
             lower_dae_for_simulation_with_stage_timing_and_param_overrides(
                 dae_model,
@@ -80,7 +68,7 @@ impl SimulationSession {
                 &param_overrides,
                 &mut begin_stage,
             )
-            .map_err(solve_lowering_sim_error)?;
+            .map_err(diagnostic_sim_error)?;
         begin_stage("sim_overrides");
         let override_apply_start = Instant::now();
         crate::solve_lowering::apply_simulation_overrides(&mut solve_model, dae_model, &opts)
@@ -93,9 +81,9 @@ impl SimulationSession {
         Ok((
             Self { inner },
             BuildSimulationTimings {
-                ir_solve_structural_dae_seconds: solve_timings.structural_dae_seconds,
-                ir_solve_lower_seconds: solve_timings.solve_ir_seconds,
-                ir_solve_seconds: solve_timings.total_seconds(),
+                ir_solve_structural_dae_seconds: solve_timings.ir_solve_structural_dae_seconds,
+                ir_solve_lower_seconds: solve_timings.ir_solve_lower_seconds,
+                ir_solve_seconds: solve_timings.ir_solve_seconds,
                 override_apply_seconds,
                 backend_build_seconds,
             },
@@ -212,16 +200,18 @@ mod tests {
     /// than `--backend diffsol` for the identical defect.
     #[test]
     fn solve_lowering_failures_carry_their_phase_code() {
-        let err = rumoca_phase_solve::SolveModelLowerError::Structural {
-            source: rumoca_phase_structural::StructuralError::EmptySystem,
-        };
-        let code = err.code();
-        let SimError::SolveIr(message) = solve_lowering_sim_error(err) else {
+        let err =
+            SimulationDiagnosticError::SolveLowering(rumoca_phase_solve::LowerError::Structural {
+                reason: "empty checked system".to_string(),
+                span: None,
+            });
+        let code = err.diagnostic_code();
+        let SimError::SolveIr(message) = diagnostic_sim_error(err) else {
             panic!("solve-lowering failures must surface as SimError::SolveIr");
         };
-        assert_eq!(code, "ES011");
+        assert_eq!(code, "EL005");
         assert!(
-            message.starts_with("[ES011] "),
+            message.starts_with("[EL005] "),
             "rk45 must tag the lowering code like diffsol does, got {message:?}"
         );
     }

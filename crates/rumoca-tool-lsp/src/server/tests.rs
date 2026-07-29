@@ -66,6 +66,17 @@ fn new_test_service() -> LspService<ModelicaLanguageServer> {
     service
 }
 
+fn checked_variable_count(
+    dae: &rumoca_compile::compile::Dae,
+    role: rumoca_compile::compile::VariableRole,
+) -> usize {
+    dae.inspect(|view| {
+        view.variables()
+            .filter(|(_, variable)| variable.role() == role)
+            .count()
+    })
+}
+
 pub(super) async fn wait_for_namespace_cache_prewarm(
     server: &ModelicaLanguageServer,
 ) -> Vec<String> {

@@ -25,7 +25,6 @@ pub(super) struct BalanceCohortRecord {
     pub equations: u64,
     pub unknowns: u64,
     pub dominant_term: String,
-    pub clamps_exercised: Vec<String>,
     pub reproduction: String,
 }
 
@@ -94,13 +93,7 @@ fn balance_record(entry: &Value, reproduction: String) -> Option<BalanceCohortRe
         balance: detail.balance(),
         equations: equations as u64,
         unknowns: unknowns as u64,
-        dominant_term: detail.dominant_term().to_string(),
-        clamps_exercised: detail
-            .clamps()
-            .exercised()
-            .into_iter()
-            .map(str::to_string)
-            .collect(),
+        dominant_term: dominant_balance_term(&detail).to_string(),
         reproduction,
     })
 }
@@ -155,7 +148,6 @@ pub(super) fn balance_record_from_scalar_columns(
         equations: u64_field(entry, "scalar_equations").unwrap_or(0),
         unknowns: u64_field(entry, "scalar_unknowns").unwrap_or(0),
         dominant_term: "unrecorded".to_string(),
-        clamps_exercised: Vec::new(),
         reproduction,
     })
 }
@@ -185,28 +177,36 @@ pub(super) fn push_balance_cohort(out: &mut String, cohort: &BalanceCohort) {
         return;
     }
 
-    out.push_str(
-        "| Package | Model | Balance | Equations | Unknowns | Dominant term | Clamps exercised |\n",
-    );
-    out.push_str("|---|---|---:|---:|---:|---|---|\n");
+    out.push_str("| Package | Model | Balance | Equations | Unknowns | Dominant term |\n");
+    out.push_str("|---|---|---:|---:|---:|---|\n");
     for record in &cohort.records {
-        let clamps = if record.clamps_exercised.is_empty() {
-            "-".to_string()
-        } else {
-            record.clamps_exercised.join(", ")
-        };
         out.push_str(&format!(
-            "| {} | {} | {} | {} | {} | {} | {} |\n",
+            "| {} | {} | {} | {} | {} | {} |\n",
             record.package,
             record.model_name,
             record.balance,
             record.equations,
             record.unknowns,
             record.dominant_term,
-            clamps
         ));
     }
     out.push('\n');
+}
+
+fn dominant_balance_term(detail: &rumoca_compile::analysis::BalanceDetail) -> &'static str {
+    [
+        ("state_unknowns", detail.state_unknowns),
+        ("algebraic_unknowns", detail.algebraic_unknowns),
+        ("output_unknowns", detail.output_unknowns),
+        ("discrete_real_unknowns", detail.discrete_real_unknowns),
+        ("discrete_value_unknowns", detail.discrete_value_unknowns),
+        ("continuous_equations", detail.continuous_equations),
+        ("discrete_real_equations", detail.discrete_real_equations),
+        ("discrete_assignments", detail.discrete_assignments),
+    ]
+    .into_iter()
+    .max_by_key(|(_, count)| *count)
+    .map_or("none", |(name, _)| name)
 }
 
 #[cfg(test)]

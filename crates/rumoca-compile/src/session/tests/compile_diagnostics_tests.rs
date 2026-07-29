@@ -407,13 +407,12 @@ fn test_array_expansion_is_not_disabled_near_depth_limit() {
     let compiled = session
         .compile_model("Root")
         .unwrap_or_else(|error| panic!("array expansion near depth limit should compile: {error}"));
-    let variables = compiled
-        .dae
-        .variables
-        .algebraics
-        .keys()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>();
+    let variables = compiled.dae.inspect(|view| {
+        view.variables()
+            .filter(|(_, variable)| variable.role() == rumoca_ir_dae::VariableRole::Algebraic)
+            .map(|(_, variable)| variable.name().to_string())
+            .collect::<Vec<_>>()
+    });
 
     assert!(
         variables.iter().any(|name| name == "holder.leaf[1].x")
@@ -522,13 +521,12 @@ fn test_dae_expression_spans_use_target_source_file_in_multi_document_session() 
         .get_id("target_second.mo")
         .expect("target document should be in source map");
 
-    let rhs_span = result
-        .dae
-        .continuous
-        .equations
-        .iter()
-        .find_map(|equation| equation.rhs.span())
-        .expect("expected a source span on a DAE equation RHS");
+    let rhs_span = result.dae.inspect(|view| {
+        (0..view.continuous_equation_count())
+            .find_map(|index| view.continuous_equation(index))
+            .map(|equation| equation.provenance().span())
+            .expect("expected a source span on a checked DAE equation")
+    });
 
     assert_eq!(rhs_span.source, target_source_id);
     let (file_name, source) = source_map
@@ -604,11 +602,10 @@ fn test_strict_reachable_ignores_unrelated_source_root_resolve_errors() {
 
 #[test]
 fn test_compiled_source_root_tolerant_strict_reachable_ignores_unrelated_source_root_errors() {
-    let parsed = vec![
+    let sources = [
         (
-            "good_dep.mo".to_string(),
-            rumoca_phase_parse::parse_to_ast(
-                r#"
+            "good_dep.mo",
+            r#"
                 within Lib;
                 model GoodDep
                   Real x(start=0);
@@ -616,49 +613,46 @@ fn test_compiled_source_root_tolerant_strict_reachable_ignores_unrelated_source_
                   der(x) = 1;
                 end GoodDep;
                 "#,
-                "good_dep.mo",
-            )
-            .expect("good dependency should parse"),
         ),
         (
-            "broken.mo".to_string(),
-            rumoca_phase_parse::parse_to_ast(
-                r#"
+            "broken.mo",
+            r#"
                 within Lib;
                 model Broken
                   MissingType x;
                 end Broken;
                 "#,
-                "broken.mo",
-            )
-            .expect("broken sibling should still parse"),
         ),
         (
-            "lib.mo".to_string(),
-            rumoca_phase_parse::parse_to_ast(
-                r#"
+            "lib.mo",
+            r#"
                 package Lib
                 end Lib;
                 "#,
-                "lib.mo",
-            )
-            .expect("source-root package should parse"),
         ),
         (
-            "root.mo".to_string(),
-            rumoca_phase_parse::parse_to_ast(
-                r#"
+            "root.mo",
+            r#"
                 model Root
                   Lib.GoodDep dep;
                 end Root;
                 "#,
-                "root.mo",
-            )
-            .expect("root should parse"),
         ),
     ];
+    let mut source_map = rumoca_core::SourceMap::new();
+    let parsed = sources
+        .into_iter()
+        .map(|(name, source)| {
+            source_map.add(name, source);
+            (
+                name.to_owned(),
+                rumoca_phase_parse::parse_to_ast(source, name)
+                    .unwrap_or_else(|error| panic!("{name} should parse: {error}")),
+            )
+        })
+        .collect();
 
-    let source_root = CompiledSourceRoot::from_parsed_batch_tolerant(parsed)
+    let source_root = CompiledSourceRoot::from_parsed_batch_tolerant(parsed, source_map)
         .expect("tolerant compiled source root should index despite unrelated errors");
     assert!(
         source_root.model_names().iter().any(|name| name == "Root"),
@@ -680,8 +674,7 @@ fn test_compiled_source_root_tolerant_strict_reachable_ignores_unrelated_source_
 
 #[test]
 fn test_compiled_source_root_strict_reachable_uncached_does_not_fill_cache() {
-    let definition = rumoca_phase_parse::parse_to_ast(
-        r#"
+    let source = r#"
         package P
           model A
             Real x(start=0);
@@ -695,12 +688,12 @@ fn test_compiled_source_root_strict_reachable_uncached_does_not_fill_cache() {
             der(y) = 2;
           end B;
         end P;
-        "#,
-        "pkg.mo",
-    )
-    .expect("package should parse");
-
-    let source_root = CompiledSourceRoot::from_stored_definition(definition)
+        "#;
+    let definition =
+        rumoca_phase_parse::parse_to_ast(source, "pkg.mo").expect("package should parse");
+    let mut source_map = rumoca_core::SourceMap::new();
+    source_map.add("pkg.mo", source);
+    let source_root = CompiledSourceRoot::from_stored_definition(definition, source_map)
         .expect("compiled source root should build from one parsed package");
 
     let report = source_root.compile_model_strict_reachable_uncached_with_recovery("P.A");
@@ -1322,9 +1315,9 @@ fn strict_dae_recovery_detailed_reports_todae_ed001_with_balance_detail() {
         .expect("ED001 must carry the balance breakdown");
     assert!(
         detail.balance() != 0,
-        "carried detail must reproduce the unbalanced verdict: {detail}"
+        "carried detail must reproduce the unbalanced verdict: {detail:?}"
     );
-    assert_eq!(detail.equations_unknowns().1, detail.raw_unknowns());
+    assert_eq!(detail.equations_unknowns().1, detail.unknowns());
     assert!(failure.summary.contains("unbalanced model"));
 }
 

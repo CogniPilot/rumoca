@@ -32,7 +32,7 @@ pub use visitor::{
     walk_scalar_program_block, walk_solve_artifacts, walk_solve_model, walk_solve_problem,
 };
 
-pub const SOLVE_SCHEMA_VERSION: u16 = 23;
+pub const SOLVE_SCHEMA_VERSION: u16 = 24;
 
 pub fn source_span_from_offsets(source: u64, start: usize, end: usize) -> Span {
     Span::from_offsets(SourceId(source), start, end)
@@ -369,13 +369,43 @@ fn validate_scalar_program_metadata_lengths(
     Ok(())
 }
 
+mod structural_pattern;
+pub use structural_pattern::{
+    ColumnColoring, PatternDerivation, PatternProvenance, StructuralPattern,
+    StructuralPatternError, StructuralPatternView,
+};
+
+#[cfg(test)]
+pub(crate) fn fixture_pattern(rows: usize, columns: usize, diagonal: bool) -> StructuralPattern {
+    let dependencies = (0..rows)
+        .map(|row| {
+            if diagonal {
+                (row < columns).then_some(row).into_iter().collect()
+            } else {
+                (0..columns).collect()
+            }
+        })
+        .collect::<Vec<_>>();
+    let provenance = PatternProvenance::derived(
+        PatternDerivation::TensorOperand,
+        Span::from_offsets(
+            SourceId::from_source_name("solve_ir_pattern_fixture.mo"),
+            0,
+            1,
+        ),
+    )
+    .expect("fixture provenance");
+    StructuralPattern::from_row_dependencies(rows, columns, &dependencies, provenance)
+        .expect("fixture pattern")
+}
+
 mod tensor;
 use tensor::output_index_overflow;
 pub use tensor::{
     AffineStencilConstStride, AffineStencilConstStrideTerm, AffineStencilIndexStrideTerm,
     AffineStencilLoadStride, ComputeBlock, ComputeNode, ComputeNodeCounts, ScalarFallback,
-    SparsityPattern, TensorElementType, TensorLayout, TensorNodeMetadata, TensorOutputMap,
-    TensorOutputMapError, TensorSource,
+    TensorElementType, TensorLayout, TensorNodeMetadata, TensorOutputMap, TensorOutputMapError,
+    TensorSource,
 };
 
 #[cfg(test)]
@@ -595,7 +625,32 @@ fn validate_discrete_system_shape(
         "discrete.update_targets",
         system.rhs.len(),
         system.update_targets.len(),
-    )
+    )?;
+    validate_count(
+        "discrete.row_roles",
+        system.rhs.len(),
+        system.row_roles.len(),
+    )?;
+    validate_count(
+        "discrete.pre_modes",
+        system.rhs.len(),
+        system.pre_modes.len(),
+    )?;
+    validate_count(
+        "discrete.observation_refresh",
+        system.rhs.len(),
+        system.observation_refresh.len(),
+    )?;
+    validate_count(
+        "discrete.clock_owners",
+        system.rhs.len(),
+        system.clock_owners.len(),
+    )?;
+    let clock_count = problem.clocks.periodic_event_schedules.len();
+    for clock in system.clock_owners.iter().flatten().copied() {
+        validate_indices("discrete.clock_owners", &[clock.index()], clock_count)?;
+    }
+    Ok(())
 }
 
 fn validate_event_partition_shape(
@@ -953,12 +1008,10 @@ pub struct ContinuousSolveSystem {
     pub residual: ComputeBlock,
     /// Lower-order holonomic and velocity residuals retained when structural
     /// index reduction replaces them with acceleration-level equations.
-    #[serde(default)]
     pub manifold_residual: ComputeBlock,
     /// Connected state-coordinate blocks used to project accepted numerical
     /// steps onto `manifold_residual = 0`. Blocks may have more state
     /// coordinates than residual rows; runtimes use a minimum-norm correction.
-    #[serde(default)]
     pub manifold_projection_plan: AlgebraicProjectionPlan,
     pub derivative_rhs: ComputeBlock,
 }
@@ -1005,6 +1058,77 @@ pub struct SolveArtifacts {
     pub initialization: InitializationSolveArtifacts,
 }
 
+#[derive(Clone, Debug)]
+pub struct JacobianStructure {
+    pattern: StructuralPattern,
+    coloring: ColumnColoring,
+}
+
+impl JacobianStructure {
+    pub fn derived(pattern: StructuralPattern) -> Self {
+        let coloring = pattern.column_coloring();
+        Self { pattern, coloring }
+    }
+
+    pub const fn pattern(&self) -> &StructuralPattern {
+        &self.pattern
+    }
+
+    pub const fn coloring(&self) -> &ColumnColoring {
+        &self.coloring
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ContinuousStructuralArtifacts {
+    implicit: Option<JacobianStructure>,
+    manifold: Option<JacobianStructure>,
+    derivative: Option<JacobianStructure>,
+}
+
+impl ContinuousStructuralArtifacts {
+    pub fn derived(
+        implicit: Option<StructuralPattern>,
+        manifold: Option<StructuralPattern>,
+        derivative: Option<StructuralPattern>,
+    ) -> Self {
+        Self {
+            implicit: implicit.map(JacobianStructure::derived),
+            manifold: manifold.map(JacobianStructure::derived),
+            derivative: derivative.map(JacobianStructure::derived),
+        }
+    }
+
+    pub const fn implicit(&self) -> Option<&JacobianStructure> {
+        self.implicit.as_ref()
+    }
+
+    pub const fn manifold(&self) -> Option<&JacobianStructure> {
+        self.manifold.as_ref()
+    }
+
+    pub const fn derivative(&self) -> Option<&JacobianStructure> {
+        self.derivative.as_ref()
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct InitializationStructuralArtifacts {
+    residual: Option<JacobianStructure>,
+}
+
+impl InitializationStructuralArtifacts {
+    pub fn derived(residual: Option<StructuralPattern>) -> Self {
+        Self {
+            residual: residual.map(JacobianStructure::derived),
+        }
+    }
+
+    pub const fn residual(&self) -> Option<&JacobianStructure> {
+        self.residual.as_ref()
+    }
+}
+
 /// Compact solver-facing mass-matrix representation.
 ///
 /// The matrix dimension is the state scalar count in the accompanying
@@ -1032,7 +1156,9 @@ pub struct MassMatrixEntry {
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct ContinuousSolveArtifacts {
-    #[serde(default)]
+    /// Constructor-derived metadata; canonical Solve wire reconstructs it.
+    #[serde(skip)]
+    pub structural: ContinuousStructuralArtifacts,
     pub mass_matrix: MassMatrix,
     pub implicit_jacobian_v: ComputeBlock,
     /// Per-row forward-mode AD JVP of the *scalarized* `implicit_rhs`, row-aligned
@@ -1042,17 +1168,18 @@ pub struct ContinuousSolveArtifacts {
     /// (`d(alg)/d(state)`). Distinct from the tensor `implicit_jacobian_v`, whose
     /// scalarization is not row-aligned when the system has linear
     /// (`LinSolve`/`MatMul`) blocks.
-    #[serde(default)]
     pub implicit_jacobian_v_scalar: ScalarProgramBlock,
     /// Forward-mode state Jacobian-vector product for
     /// [`ContinuousSolveSystem::manifold_residual`].
-    #[serde(default)]
     pub manifold_jacobian_v: ComputeBlock,
     pub full_jacobian_v: ScalarProgramBlock,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct InitializationSolveArtifacts {
+    /// Constructor-derived metadata; canonical Solve wire reconstructs it.
+    #[serde(skip)]
+    pub structural: InitializationStructuralArtifacts,
     pub residual_jacobian_v: ComputeBlock,
 }
 
@@ -1061,11 +1188,8 @@ pub struct InitializationSolveSystem {
     pub residual: ComputeBlock,
     pub row_targets: Vec<Option<ScalarSlot>>,
     pub projection_unknowns: Vec<ScalarSlot>,
-    #[serde(default)]
     pub projection_plan: InitializationProjectionPlan,
-    #[serde(default)]
     pub update_rhs: ScalarProgramBlock,
-    #[serde(default)]
     pub update_targets: Vec<ScalarSlot>,
 }
 
@@ -1075,8 +1199,14 @@ pub struct DiscreteSolveSystem {
     pub runtime_assignment_targets: Vec<ScalarSlot>,
     pub rhs: ScalarProgramBlock,
     pub update_targets: Vec<ScalarSlot>,
+    pub row_roles: Vec<DiscreteRowRole>,
     pub pre_modes: Vec<DiscreteEventPreMode>,
     pub observation_refresh: Vec<bool>,
+    /// Periodic activation owner for each discrete row.
+    ///
+    /// `None` denotes an ordinary event-iteration row. A clock-owned row is
+    /// evaluated only when the referenced exact lattice ticks.
+    pub clock_owners: Vec<Option<PeriodicClockId>>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -1084,6 +1214,11 @@ pub struct SolveEventPartition {
     pub root_conditions: ScalarProgramBlock,
     pub root_relation_memory_targets: Vec<Option<ScalarSlot>>,
     pub root_zero_domains: Vec<RootZeroDomain>,
+    /// Hidden P slots that retain the previous value of each DAE condition.
+    ///
+    /// Event-action programs read these slots to distinguish a rising edge
+    /// from a condition that merely remains true across an unrelated event.
+    pub condition_memory_parameter_indices: Vec<usize>,
     pub scheduled_root_conditions: Vec<ScheduledRootCondition>,
     pub scheduled_time_events: Vec<f64>,
     pub dynamic_time_event_names: Vec<String>,
@@ -1155,6 +1290,30 @@ pub struct SolveClockPartition {
     pub periodic_event_schedules: Vec<PeriodicEventSchedule>,
 }
 
+impl SolveClockPartition {
+    pub fn periodic_clock_id(&self, index: usize) -> Option<PeriodicClockId> {
+        self.periodic_event_schedules
+            .get(index)
+            .and_then(|_| u32::try_from(index).ok())
+            .map(PeriodicClockId)
+    }
+
+    pub fn periodic_schedule(&self, clock: PeriodicClockId) -> Option<&PeriodicEventSchedule> {
+        self.periodic_event_schedules.get(clock.index())
+    }
+}
+
+/// Typed identity of one periodic schedule in a [`SolveClockPartition`].
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct PeriodicClockId(u32);
+
+impl PeriodicClockId {
+    pub const fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub enum DiscreteEventPreMode {
     /// Use the value from the start of the current clock/event tick.
@@ -1166,20 +1325,53 @@ pub enum DiscreteEventPreMode {
     FollowCurrent,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum DiscreteRowRole {
+    /// A B.1c equation that participates in initialization and event iteration.
+    Equation,
+    /// An assignment that executes only on its owning event edge.
+    EventAction,
+    /// Runtime memory for detecting a condition edge.
+    ConditionMemory,
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub struct PeriodicEventSchedule {
-    pub period_seconds: f64,
-    pub phase_seconds: f64,
+    lattice: rumoca_core::ClockLattice,
 }
 
 impl PeriodicEventSchedule {
-    /// The exact rational lattice behind this schedule (MLS §16.3/§16.5).
+    /// Construct an exact rational schedule from finite second values.
     ///
-    /// Seconds are the transport format; the lattice is what the tick grid is
-    /// generated from, so `phase + k * period` is evaluated in exact integer
-    /// arithmetic and rounded to `f64` exactly once per tick.
-    pub fn lattice(&self) -> Result<rumoca_core::ClockLattice, rumoca_core::ClockLatticeErrorKind> {
-        rumoca_core::ClockLattice::from_seconds(self.period_seconds, self.phase_seconds)
+    /// This is the external-boundary constructor for solver fixtures and
+    /// decoded configuration. Compiler lowering should pass its already proven
+    /// [`rumoca_core::ClockLattice`] through [`Self::new`].
+    pub fn from_seconds(
+        period: f64,
+        phase: f64,
+    ) -> Result<Self, rumoca_core::ClockLatticeErrorKind> {
+        Self::new(rumoca_core::ClockLattice::from_seconds(period, phase)?)
+    }
+
+    pub fn new(
+        lattice: rumoca_core::ClockLattice,
+    ) -> Result<Self, rumoca_core::ClockLatticeErrorKind> {
+        Ok(Self {
+            lattice: rumoca_core::ClockLattice::new(lattice.period(), lattice.phase())?,
+        })
+    }
+
+    /// The authoritative exact rational lattice (MLS §16.3/§16.5).
+    pub const fn lattice(&self) -> rumoca_core::ClockLattice {
+        self.lattice
+    }
+
+    pub fn period_seconds(&self) -> f64 {
+        self.lattice.period_seconds()
+    }
+
+    pub fn phase_seconds(&self) -> f64 {
+        self.lattice.phase_seconds()
     }
 
     /// Instant of tick `index` in seconds, computed exactly then rounded once.
@@ -1191,7 +1383,33 @@ impl PeriodicEventSchedule {
         &self,
         index: impl Into<i128>,
     ) -> Result<f64, rumoca_core::ClockLatticeErrorKind> {
-        self.lattice()?.tick_time_seconds(index)
+        self.lattice.tick_time_seconds(index)
+    }
+}
+
+impl Default for PeriodicEventSchedule {
+    fn default() -> Self {
+        Self::new(
+            rumoca_core::ClockLattice::from_interval_counter(1, 1)
+                .expect("one-second clock lattice is valid"),
+        )
+        .expect("one-second periodic schedule is valid")
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PeriodicEventScheduleWire {
+    lattice: rumoca_core::ClockLattice,
+}
+
+impl<'de> Deserialize<'de> for PeriodicEventSchedule {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = PeriodicEventScheduleWire::deserialize(deserializer)?;
+        Self::new(wire.lattice).map_err(serde::de::Error::custom)
     }
 }
 
@@ -1229,6 +1447,12 @@ pub struct PreParamBinding {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct SolveLayout {
     pub solver_maps: SolverNameIndexMaps,
+    /// Dense DAE variable ordinal to its first Solve storage slot.
+    ///
+    /// Scalar `k` of a variable is stored at `base + k` in the same column.
+    /// This is the canonical cross-phase coordinate map; display names are not
+    /// used to recover compiler identity.
+    pub variable_base_slots: Vec<ScalarSlot>,
     pub state_scalar_count: usize,
     pub algebraic_scalar_count: usize,
     pub output_scalar_count: usize,
@@ -1237,30 +1461,33 @@ pub struct SolveLayout {
     pub input_scalar_names: Vec<String>,
     pub discrete_real_scalar_names: Vec<String>,
     pub discrete_valued_scalar_names: Vec<String>,
-    #[serde(default)]
     pub relation_memory_parameter_indices: Vec<usize>,
-    #[serde(default)]
     pub initial_event_parameter_index: Option<usize>,
     /// P-slot that is true only while applying the final simulation event.
-    #[serde(default)]
     pub terminal_event_parameter_index: Option<usize>,
     /// Hidden P-slot used by initialization residuals that contain
     /// `homotopy(actual, simplified)`.
     ///
     /// The initialization driver advances this value from zero to one. Models
     /// without homotopy expressions omit the slot entirely.
-    #[serde(default)]
     pub initial_homotopy_parameter_index: Option<usize>,
     /// Snapshot bindings for `__pre__.*` parameters created by DAE-IR
     /// pre_lowering. At event entry the runtime copies each source slot into
     /// the corresponding dest P-slot before the event equations evaluate.
-    #[serde(default)]
     pub pre_param_bindings: Vec<PreParamBinding>,
 }
 
 impl SolveLayout {
     pub fn solver_maps(&self) -> &SolverNameIndexMaps {
         &self.solver_maps
+    }
+
+    pub fn variable_scalar_slot(&self, variable: usize, scalar: usize) -> Option<ScalarSlot> {
+        match self.variable_base_slots.get(variable).copied()? {
+            ScalarSlot::Y { index, .. } => index.checked_add(scalar).map(scalar_slot_y),
+            ScalarSlot::P { index, .. } => index.checked_add(scalar).map(scalar_slot_p),
+            ScalarSlot::Time | ScalarSlot::Constant(_) => None,
+        }
     }
 
     pub fn state_scalar_count(&self) -> usize {
@@ -1369,16 +1596,10 @@ pub struct SolveModel {
     pub artifacts: SolveArtifacts,
     pub initial_y: Vec<f64>,
     /// Positive nominal values aligned with solver `y` slots.
-    ///
-    /// Older serialized models and hand-built fixtures may omit this vector;
-    /// runtime consumers then use the Modelica default nominal of one.
-    #[serde(default)]
     pub solver_nominals: Vec<f64>,
     pub parameters: Vec<f64>,
-    #[serde(default)]
     pub external_tables: ExternalTables,
     pub visible_names: Vec<String>,
-    #[serde(default)]
     pub visible_value_rows: ScalarProgramBlock,
     pub variable_meta: Vec<SolveVariableMeta>,
 }

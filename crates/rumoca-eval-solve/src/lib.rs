@@ -47,7 +47,8 @@ use random_runtime::{
     initial_state_values, projected_random_value, random_result_and_state, read_reg_range,
 };
 pub use sparsity::{
-    JacobianSparsity, jacobian_sparsity_from_jvp, jacobian_sparsity_from_scalar_jvp,
+    derive_column_coloring, derive_jacobian_pattern_from_jvp,
+    derive_jacobian_pattern_from_scalar_jvp, derive_solve_structural_artifacts,
     row_seed_dependencies,
 };
 pub use table_runtime::{
@@ -58,6 +59,39 @@ pub use update_rows::{
     UpdateRowApplication, apply_scalar_slot_value, apply_scalar_slot_values,
     eval_and_apply_update_rows,
 };
+
+#[cfg(test)]
+pub(crate) fn fixture_pattern(
+    rows: usize,
+    columns: usize,
+    diagonal: bool,
+) -> rumoca_ir_solve::StructuralPattern {
+    let dependencies = (0..rows)
+        .map(|row| {
+            if diagonal {
+                (row < columns).then_some(row).into_iter().collect()
+            } else {
+                (0..columns).collect()
+            }
+        })
+        .collect::<Vec<_>>();
+    let provenance = rumoca_ir_solve::PatternProvenance::derived(
+        rumoca_ir_solve::PatternDerivation::TensorOperand,
+        rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("eval_solve_pattern_fixture.mo"),
+            0,
+            1,
+        ),
+    )
+    .expect("fixture provenance");
+    rumoca_ir_solve::StructuralPattern::from_row_dependencies(
+        rows,
+        columns,
+        &dependencies,
+        provenance,
+    )
+    .expect("fixture pattern")
+}
 
 static ROW_EVAL_CALLS: AtomicU64 = AtomicU64::new(0);
 static ROW_EVAL_NANOS: AtomicU64 = AtomicU64::new(0);

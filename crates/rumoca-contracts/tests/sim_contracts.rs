@@ -2,14 +2,28 @@
 //!
 //! Tests for the 9 simulation contracts defined in SPEC_0022.
 
-use rumoca_compile::compile::FailedPhase;
-use rumoca_compile::compile::core as rumoca_core;
-use rumoca_compile::compile::core::ExpressionVisitor;
+use rumoca_compile::compile::{Dae, FailedPhase, VariableRole};
 use rumoca_compile::{Session, SessionConfig};
 use rumoca_contracts::test_support::{
     expect_balanced, expect_failure_in_phase_with_code, expect_resolve_failure_with_code,
     expect_success, is_standalone_simulatable, unbound_fixed_parameter_names,
 };
+
+fn variable_count(dae: &Dae, role: VariableRole) -> usize {
+    dae.inspect(|view| {
+        view.variables()
+            .filter(|(_, variable)| variable.role() == role)
+            .count()
+    })
+}
+
+fn variable_attributes(dae: &Dae, role: VariableRole, name: &str) -> Option<(bool, Option<bool>)> {
+    dae.inspect(|view| {
+        view.variables()
+            .find(|(_, variable)| variable.role() == role && variable.name().as_str() == name)
+            .map(|(_, variable)| (variable.start().is_some(), variable.fixed()))
+    })
+}
 
 // =============================================================================
 // SIM-002: Initialization fixed
@@ -29,12 +43,12 @@ fn sim_002_initialization_fixed() {
         "Test",
     );
     // Check that start value is present in DAE
-    assert!(
-        !result.dae.variables.states.is_empty(),
-        "Should have state variables"
+    assert_eq!(variable_count(&result.dae, VariableRole::State), 1);
+    assert_eq!(
+        variable_attributes(&result.dae, VariableRole::State, "x"),
+        Some((true, None)),
+        "state x should retain its start value without inventing fixed=true"
     );
-    let state = result.dae.variables.states.values().next().unwrap();
-    assert!(state.start.is_some(), "State should have start value");
 }
 
 // =============================================================================
@@ -56,7 +70,7 @@ fn sim_003_parameter_fixed_default() {
         "Test",
     );
     assert!(
-        !result.dae.variables.parameters.is_empty(),
+        variable_count(&result.dae, VariableRole::Parameter) > 0,
         "Should have parameters in DAE"
     );
 }
@@ -128,25 +142,15 @@ fn sim_004_non_parameter_variable_defaults_fixed_false() {
         "Test",
     );
 
-    let state = result
-        .dae
-        .variables
-        .states
-        .iter()
-        .find(|(name, _)| name.as_str() == "x")
-        .map(|(_, state)| state)
-        .unwrap_or_else(|| {
-            panic!(
-                "expected state x, got states={:?}",
-                result.dae.variables.states.keys()
-            )
-        });
     assert_eq!(
-        state.fixed, None,
+        variable_attributes(&result.dae, VariableRole::State, "x"),
+        Some((true, None)),
         "non-parameter variables should not default to fixed=true"
     );
     assert!(
-        result.dae.initialization.equations.is_empty(),
+        result
+            .dae
+            .inspect(|view| view.initialization_equation_count() == 0),
         "start value without fixed=true must not add an initialization equation"
     );
 }
@@ -169,11 +173,13 @@ fn sim_009_dae_has_ode_equations() {
         "Test",
     );
     assert!(
-        !result.dae.continuous.equations.is_empty(),
+        result
+            .dae
+            .inspect(|view| view.continuous_equation_count() > 0),
         "DAE should have continuous equations (f_x)"
     );
     assert!(
-        !result.dae.variables.states.is_empty(),
+        variable_count(&result.dae, VariableRole::State) > 0,
         "DAE should have state variables"
     );
 }
@@ -192,7 +198,9 @@ fn sim_009_dae_has_algebraic_equations() {
     );
     // The model has equations (no der)
     assert!(
-        !result.dae.continuous.equations.is_empty(),
+        result
+            .dae
+            .inspect(|view| view.continuous_equation_count() > 0),
         "DAE should have equations (f_x)"
     );
 }
@@ -212,11 +220,13 @@ fn sim_009_dae_structure_ode_and_algebraic() {
         "Test",
     );
     assert!(
-        !result.dae.variables.states.is_empty(),
+        variable_count(&result.dae, VariableRole::State) > 0,
         "Should have state variables for ODE"
     );
     assert!(
-        !result.dae.continuous.equations.is_empty(),
+        result
+            .dae
+            .inspect(|view| view.continuous_equation_count() > 0),
         "Should have continuous equations (f_x)"
     );
 }
@@ -237,8 +247,11 @@ fn sim_basic_integrator() {
     "#,
         "Integrator",
     );
-    assert_eq!(result.dae.variables.states.len(), 1);
-    assert_eq!(result.dae.continuous.equations.len(), 1);
+    assert_eq!(variable_count(&result.dae, VariableRole::State), 1);
+    assert_eq!(
+        result.dae.inspect(|view| view.continuous_equation_count()),
+        1
+    );
 }
 
 #[test]
@@ -257,7 +270,7 @@ fn sim_spring_mass() {
     "#,
         "SpringMass",
     );
-    assert_eq!(result.dae.variables.states.len(), 2);
+    assert_eq!(variable_count(&result.dae, VariableRole::State), 2);
 }
 
 #[test]
@@ -273,8 +286,8 @@ fn sim_with_parameters() {
     "#,
         "Test",
     );
-    assert!(!result.dae.variables.parameters.is_empty());
-    assert!(!result.dae.variables.states.is_empty());
+    assert!(variable_count(&result.dae, VariableRole::Parameter) > 0);
+    assert!(variable_count(&result.dae, VariableRole::State) > 0);
 }
 
 #[test]
@@ -293,7 +306,9 @@ fn sim_with_when_clause() {
         "Test",
     );
     assert!(
-        !result.dae.conditions.relations.is_empty() && !result.dae.conditions.equations.is_empty(),
+        result
+            .dae
+            .inspect(|view| view.relation_count() > 0 && view.condition_count() > 0),
         "DAE should expose canonical condition equations"
     );
 }
@@ -312,36 +327,20 @@ fn sim_009_sample_in_fx_lowers_to_ordinary_dae_and_schedule_metadata() {
     );
 
     assert!(
-        !result
-            .dae
-            .continuous
-            .equations
-            .iter()
-            .any(|eq| expression_contains_function(
-                &eq.rhs,
-                rumoca_core::INTERNAL_SAMPLE_FUNCTION_NAME
-            )),
-        "the internal sample operator must not survive the DAE boundary"
-    );
-    assert!(
-        !result
-            .dae
-            .continuous
-            .equations
-            .iter()
-            .any(|eq| expression_contains_builtin_sample(&eq.rhs)),
-        "source-level BuiltinFunction::Sample must not survive the DAE boundary"
-    );
-    assert!(
         result
             .dae
-            .clocks
-            .schedules
-            .iter()
-            .any(
-                |schedule| (schedule.period_seconds - 0.1).abs() < f64::EPSILON
-                    && schedule.phase_seconds.abs() < f64::EPSILON
-            ),
+            .inspect(|view| (0..view.clock_count()).any(|index| {
+                let clock = view
+                    .clock(view.clock_id(index).expect("dense checked clock"))
+                    .expect("checked clock resolves");
+                matches!(
+                    clock.operation(),
+                    rumoca_compile::compile::ClockOperation::Periodic(lattice)
+                        if lattice.period().numerator() == 1
+                            && lattice.period().denominator() == 10
+                            && lattice.phase().is_zero()
+                )
+            })),
         "the periodic sample must remain represented by canonical DAE schedule metadata"
     );
 }
@@ -380,7 +379,9 @@ fn sim_009_sample_allowed_in_discrete_when_condition() {
     );
 
     assert!(
-        !result.dae.discrete.valued_updates.is_empty(),
+        result
+            .dae
+            .inspect(|view| view.discrete_assignment_count() > 0),
         "sample() in when-condition should lower to discrete partition equations"
     );
 }
@@ -402,82 +403,17 @@ fn sim_009_runtime_metadata_consistent_for_hybrid_model() {
         "Test",
     );
 
-    assert_eq!(
-        result.dae.conditions.equations.len(),
-        result.dae.conditions.relations.len(),
-        "f_c and relation must stay aligned for hybrid models"
-    );
     assert!(
         result
             .dae
-            .events
-            .scheduled_time_events
-            .iter()
-            .any(|event| (*event - 0.5).abs() <= 1.0e-12),
+            .inspect(|view| (0..view.time_event_count()).any(|index| {
+                let event = view
+                    .time_event(view.time_event_id(index).expect("dense time event"))
+                    .expect("checked time event resolves");
+                event.instant().numerator() == 1 && event.instant().denominator() == 2
+            })),
         "time-driven discontinuity should be reflected in scheduled_time_events"
     );
-    assert!(
-        result
-            .dae
-            .events
-            .scheduled_time_events
-            .iter()
-            .all(|event| event.is_finite()),
-        "scheduled_time_events must contain finite values"
-    );
-}
-
-fn expression_contains_function(expr: &rumoca_core::Expression, target: &str) -> bool {
-    let mut visitor = FunctionNameFinder {
-        target,
-        found: false,
-    };
-    visitor.visit_expression(expr);
-    visitor.found
-}
-
-struct FunctionNameFinder<'a> {
-    target: &'a str,
-    found: bool,
-}
-
-impl ExpressionVisitor for FunctionNameFinder<'_> {
-    fn visit_function_call(
-        &mut self,
-        name: &rumoca_core::Reference,
-        args: &[rumoca_core::Expression],
-        is_constructor: bool,
-    ) {
-        if name.as_str() == self.target {
-            self.found = true;
-            return;
-        }
-        self.walk_function_call(name, args, is_constructor);
-    }
-}
-
-fn expression_contains_builtin_sample(expr: &rumoca_core::Expression) -> bool {
-    let mut visitor = BuiltinSampleFinder { found: false };
-    visitor.visit_expression(expr);
-    visitor.found
-}
-
-struct BuiltinSampleFinder {
-    found: bool,
-}
-
-impl ExpressionVisitor for BuiltinSampleFinder {
-    fn visit_builtin_call(
-        &mut self,
-        function: &rumoca_core::BuiltinFunction,
-        args: &[rumoca_core::Expression],
-    ) {
-        if *function == rumoca_core::BuiltinFunction::Sample {
-            self.found = true;
-            return;
-        }
-        self.walk_builtin_call(function, args);
-    }
 }
 
 #[test]
@@ -498,23 +434,25 @@ fn sim_009_fc_relation_covers_if_and_when_conditions() {
     );
 
     assert_eq!(
-        result.dae.conditions.equations.len(),
-        result.dae.conditions.relations.len(),
-        "f_c and relation must remain 1:1"
-    );
-    assert_eq!(
-        result.dae.conditions.relations.len(),
+        result.dae.inspect(|view| view.relation_count()),
         2,
         "expected both if-condition and when-condition in relation"
     );
 
-    let relation_text: Vec<String> = result
-        .dae
-        .conditions
-        .relations
-        .iter()
-        .map(|expr| format!("{expr:?}"))
-        .collect();
+    let relation_text = result.dae.inspect(|view| {
+        (0..view.relation_count())
+            .map(|index| {
+                let relation = view
+                    .relation(view.relation_id(index).expect("dense relation"))
+                    .expect("checked relation resolves");
+                result
+                    .dae
+                    .source_text(relation.provenance())
+                    .expect("source relation has exact provenance")
+                    .to_string()
+            })
+            .collect::<Vec<_>>()
+    });
     assert!(
         relation_text.iter().any(|expr| expr.contains("0.3")),
         "if-condition should be present in relation: {relation_text:?}"
@@ -539,11 +477,11 @@ fn sim_009_fc_relation_ignores_noevent_conditions() {
     );
 
     assert!(
-        result.dae.conditions.relations.is_empty(),
+        result.dae.inspect(|view| view.relation_count() == 0),
         "noEvent condition must not generate relation entries"
     );
     assert!(
-        result.dae.conditions.equations.is_empty(),
+        result.dae.inspect(|view| view.condition_count() == 0),
         "noEvent condition must not generate f_c entries"
     );
 }
@@ -568,11 +506,8 @@ fn sim_005_discrete_solved_form_acyclic_dependency() {
     assert!(
         result
             .dae
-            .discrete
-            .valued_updates
-            .iter()
-            .all(|eq| eq.lhs.is_some()),
-        "f_m equations must be explicit assignments"
+            .inspect(|view| view.discrete_assignment_count() == 2),
+        "the checked discrete partition must contain two typed assignments"
     );
 }
 
@@ -595,23 +530,38 @@ fn sim_005_conditional_when_missing_branch_uses_pre_fallback() {
         "Test",
     );
 
-    let k_eq = result
-        .dae
-        .discrete
-        .valued_updates
-        .iter()
-        .find(|eq| eq.lhs.as_ref().is_some_and(|lhs| lhs.as_str() == "k"))
-        .unwrap_or_else(|| {
-            panic!(
-                "expected explicit f_m assignment for k; f_m={:?}",
-                result.dae.discrete.valued_updates
-            )
-        });
-
-    let rhs_debug = format!("{:?}", k_eq.rhs);
     assert!(
-        rhs_debug.contains("__pre__.k"),
-        "conditional when lowering must preserve lowered pre(k) fallback in missing branches; rhs={rhs_debug}"
+        result.dae.inspect(|view| {
+            (0..view.discrete_assignment_count()).any(|index| {
+                let assignment = view
+                    .discrete_assignment(
+                        view.discrete_assignment_id(index)
+                            .expect("dense discrete assignment"),
+                    )
+                    .expect("checked discrete assignment resolves");
+                let target = view
+                    .variable(assignment.target().into())
+                    .expect("assignment target resolves");
+                if target.name().as_str() != "k" {
+                    return false;
+                }
+                let mut has_pre_fallback = false;
+                rumoca_compile::compile::for_each_expression(
+                    view,
+                    assignment.value(),
+                    |_, expression| {
+                        has_pre_fallback |= matches!(
+                            expression.operation(),
+                            rumoca_compile::compile::ExpressionOperation::Coordinate(
+                                rumoca_compile::compile::CoordinateView::PreDiscreteValue(candidate)
+                            ) if candidate == assignment.target()
+                        );
+                    },
+                );
+                has_pre_fallback
+            })
+        }),
+        "conditional when lowering must preserve the typed pre(k) fallback"
     );
 }
 

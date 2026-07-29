@@ -4443,12 +4443,9 @@ dependencies = [
 name = "rumoca-eval-dae"
 version = "0.9.20"
 dependencies = [
- "blake3",
- "indexmap 2.14.0",
  "rumoca-core",
  "rumoca-ir-dae",
- "rustc-hash",
- "tracing",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -4469,8 +4466,6 @@ version = "0.9.20"
 dependencies = [
  "indexmap 2.14.0",
  "rumoca-core",
- "rumoca-eval-dae",
- "rumoca-ir-dae",
  "rumoca-ir-solve",
  "tracing",
 ]
@@ -4520,8 +4515,10 @@ name = "rumoca-galec-codegen"
 version = "0.9.20"
 dependencies = [
  "rumoca-core",
+ "rumoca-eval-dae",
  "rumoca-ir-dae",
  "rumoca-ir-galec",
+ "rumoca-phase-structural",
  "serde",
  "serde_json",
  "sha1",
@@ -4645,6 +4642,7 @@ dependencies = [
  "miette",
  "minijinja",
  "rumoca-core",
+ "rumoca-eval-dae",
  "rumoca-eval-solve",
  "rumoca-galec-codegen",
  "rumoca-ir-ast",
@@ -4659,14 +4657,11 @@ dependencies = [
 name = "rumoca-phase-dae"
 version = "0.9.20"
 dependencies = [
- "indexmap 2.14.0",
  "miette",
  "rumoca-core",
- "rumoca-eval-dae",
  "rumoca-eval-flat",
  "rumoca-ir-dae",
  "rumoca-ir-flat",
- "rustc-hash",
  "serde",
  "thiserror 2.0.18",
  "tracing",
@@ -4742,12 +4737,10 @@ version = "0.9.20"
 dependencies = [
  "indexmap 2.14.0",
  "rumoca-core",
- "rumoca-eval-dae",
  "rumoca-eval-solve",
  "rumoca-ir-dae",
  "rumoca-ir-solve",
  "rumoca-phase-structural",
- "tracing",
 ]
 
 [[package]]
@@ -4756,6 +4749,7 @@ version = "0.9.20"
 dependencies = [
  "indexmap 2.14.0",
  "rumoca-core",
+ "rumoca-eval-dae",
  "rumoca-ir-dae",
  "thiserror 2.0.18",
  "tracing",
@@ -4793,6 +4787,7 @@ dependencies = [
  "rumoca-codec",
  "rumoca-compile",
  "rumoca-core",
+ "rumoca-eval-dae",
  "rumoca-eval-solve",
  "rumoca-input",
  "rumoca-input-gamepad",
@@ -4876,6 +4871,7 @@ dependencies = [
  "rayon",
  "regex",
  "rumoca-compile",
+ "rumoca-eval-dae",
  "rumoca-ir-ast",
  "rumoca-ir-dae",
  "rumoca-ir-flat",

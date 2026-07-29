@@ -24,6 +24,17 @@ fn solve_problem_for(derivative_rhs: ComputeBlock) -> SolveProblem {
     SolveProblem::with_derivative_rhs(derivative_rhs)
 }
 
+fn full_matrix_pattern(size: usize, span: Span) -> rumoca_ir_solve::StructuralPattern {
+    let provenance = rumoca_ir_solve::PatternProvenance::derived(
+        rumoca_ir_solve::PatternDerivation::TensorOperand,
+        span,
+    )
+    .expect("fixture provenance");
+    let dependencies = (0..size).map(|_| (0..size).collect()).collect::<Vec<_>>();
+    rumoca_ir_solve::StructuralPattern::from_row_dependencies(size, size, &dependencies, provenance)
+        .expect("fixture pattern")
+}
+
 fn compile_derivative_rhs(
     solve: &SolveProblem,
     name: &str,
@@ -45,6 +56,7 @@ fn eval_at(compiled: &rumoca_exec_mlir::CompiledMlirResidual, y: &[f64]) -> Vec<
 /// b = [y[0], y[1]]       (registers 4-5)
 fn linsolve_block() -> ComputeBlock {
     let label = "linsolve_mlir_node.mo";
+    let span = Span::from_offsets(SourceId::from_source_name(label), 0, label.len());
     // setup_ops loads A and b into registers 0..5
     let setup_ops = vec![
         // A row-major: [2, 1, 1, 3]
@@ -63,8 +75,9 @@ fn linsolve_block() -> ComputeBlock {
             rhs_start: 4,
             n: 2,
             next_reg: 6,
+            matrix_pattern: full_matrix_pattern(2, span),
             metadata: rumoca_ir_solve::TensorNodeMetadata::default(),
-            span: Span::from_offsets(SourceId::from_source_name(label), 0, label.len()),
+            span,
         }],
     }
 }
@@ -191,6 +204,7 @@ fn linsolve_partial_pivoting_correctness() {
         LinearOp::Const { dst: 5, value: 0.0 },
     ];
     let label = "linsolve_mlir_pivot.mo";
+    let span = Span::from_offsets(SourceId::from_source_name(label), 0, label.len());
     let block = ComputeBlock {
         nodes: vec![ComputeNode::LinSolve {
             setup_ops,
@@ -198,8 +212,9 @@ fn linsolve_partial_pivoting_correctness() {
             rhs_start: 4,
             n: 2,
             next_reg: 6,
+            matrix_pattern: full_matrix_pattern(2, span),
             metadata: rumoca_ir_solve::TensorNodeMetadata::default(),
-            span: Span::from_offsets(SourceId::from_source_name(label), 0, label.len()),
+            span,
         }],
     };
     let problem = solve_problem_for(block);

@@ -5,7 +5,7 @@
 //! For each model in the committed MSL simulation target list, we:
 //! 1. Compile the model from the MSL source root
 //! 2. Run rumoca's built-in diffsol simulator to get a reference trace
-//! 3. Render CasADi MX Python code, run via `python3`
+//! 3. Render the checked CasADi Solve export, run via `python3`
 //! 4. Compare the two traces using `compare_model_traces`
 //!
 //! Run with:
@@ -15,7 +15,7 @@
 //!
 
 use flate2::read::GzDecoder;
-use rumoca_compile::codegen::{render_dae_template_with_name, templates};
+use rumoca_compile::codegen::{SolveTemplateRenderer, templates};
 use rumoca_compile::compile::{CompilationResult, CompiledSourceRoot, PhaseResult};
 use rumoca_compile::parsing::parse_files_parallel_lenient;
 use rumoca_sim::sim_trace_compare::{ModelDeviationMetric, SimTrace, compare_model_traces};
@@ -129,7 +129,7 @@ fn load_target_models() -> Vec<String> {
 }
 
 // =============================================================================
-// Python driver for CasADi MX
+// Python driver for the checked CasADi Solve export
 // =============================================================================
 
 fn python_available() -> bool {
@@ -148,36 +148,33 @@ spec = importlib.util.spec_from_file_location("model", os.path.join(os.path.dirn
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
 
-model = mod.create_model()
 dt = float(sys.argv[1])
-tf = float(sys.argv[2])
-tgrid = np.arange(0, tf + dt * 0.5, dt)
-n_x = model['n_x']
-n_z_c = model.get('n_z_continuous', 0)
-z0 = model.get('z0', np.array([]))
-# Augmented z0: [xdot0 (zeros), z_continuous0]
-z0_aug = np.concatenate([np.zeros(n_x), z0[:n_z_c]]) if n_z_c > 0 or n_x > 0 else np.array([])
-# Discrete variables appended as extra parameters
-z0_d = z0[n_z_c:] if len(z0) > n_z_c else np.array([])
-p_full = np.concatenate([model['p0'], np.array([]), z0_d])
-kwargs = dict(x0=model['x0'], p=p_full)
-if len(z0_aug) > 0:
-    kwargs['z0'] = z0_aug
-# Try IDAS first; fall back to collocation for structurally singular DAEs
-# where IDACalcIC cannot compute consistent initial conditions.
-result = None
-for method in ['idas', 'collocation']:
-    try:
-        integrator = model['build_integrator'](tgrid, method=method)
-        result = integrator(**kwargs)
-        break
-    except Exception:
-        if method == 'collocation':
-            raise
-xf = np.array(result['xf'])
-trace = {'times': tgrid.tolist(), 'names': model['state_names'], 'data': {}}
-for i, name in enumerate(model['state_names']):
-    trace['data'][name] = [float(xf[i, j]) for j in range(xf.shape[1])]
+t0 = float(sys.argv[2])
+tf = float(sys.argv[3])
+tgrid = np.arange(t0, tf + dt * 0.5, dt)
+if any(value is None for value in mod.DEFAULT_X):
+    raise RuntimeError("checked Solve export has a state without a numeric initial value")
+if any(value is None for value in mod.DEFAULT_P):
+    raise RuntimeError("checked Solve export has a static variable without a numeric value")
+x = np.asarray(mod.DEFAULT_X, dtype=float)
+p = np.asarray(mod.DEFAULT_P, dtype=float)
+u = np.zeros(mod.N_U)
+samples = [x.copy()]
+for left, right in zip(tgrid[:-1], tgrid[1:]):
+    h = right - left
+    def f(t, value):
+        return np.asarray(mod.rhs(t, value, u, p), dtype=float).reshape(-1)
+    k1 = f(left, x)
+    k2 = f(left + 0.5 * h, x + 0.5 * h * k1)
+    k3 = f(left + 0.5 * h, x + 0.5 * h * k2)
+    k4 = f(right, x + h * k3)
+    x = x + h * (k1 + 2.0 * k2 + 2.0 * k3 + k4) / 6.0
+    if not np.all(np.isfinite(x)):
+        raise RuntimeError(f"non-finite checked Solve state at t={right}")
+    samples.append(x.copy())
+trace = {'times': tgrid.tolist(), 'names': mod.STATE_NAMES, 'data': {}}
+for i, name in enumerate(mod.STATE_NAMES):
+    trace['data'][name] = [float(sample[i]) for sample in samples]
 print(json.dumps(trace))
 "#;
 
@@ -188,15 +185,21 @@ print(json.dumps(trace))
 fn casadi_simulate(
     dae: &rumoca_ir_dae::Dae,
     model_name: &str,
+    t_start: f64,
     t_end: f64,
     dt: f64,
 ) -> Result<SimTrace, String> {
-    let code = render_dae_template_with_name(
-        dae,
-        templates::builtin_template_source("casadi-mx", "casadi_mx.py.jinja").unwrap(),
-        model_name,
-    )
-    .map_err(|e| format!("render: {e}"))?;
+    let problem =
+        rumoca_sim::lower_solve_problem(dae).map_err(|error| format!("lower solve: {error}"))?;
+    let artifacts = rumoca_sim::lower_solve_artifacts(&problem)
+        .map_err(|error| format!("lower solve artifacts: {error}"))?;
+    let renderer = SolveTemplateRenderer::new_with_dae(&problem, &artifacts, dae.clone())
+        .map_err(|error| format!("render context: {error}"))?;
+    let template = templates::builtin_template_source("casadi-solve", "casadi_solve.py.jinja")
+        .ok_or_else(|| "checked casadi-solve template is missing".to_string())?;
+    let code = renderer
+        .render_with_name(template, model_name)
+        .map_err(|error| format!("render: {error}"))?;
 
     let dir = tempdir().map_err(|e| format!("tempdir: {e}"))?;
     let model_path = dir.path().join("model.py");
@@ -207,6 +210,7 @@ fn casadi_simulate(
     let output = Command::new("python3")
         .arg(driver_path.to_str().unwrap())
         .arg(format!("{dt}"))
+        .arg(format!("{t_start}"))
         .arg(format!("{t_end}"))
         .output()
         .map_err(|e| format!("python3 invoke: {e}"))?;
@@ -433,7 +437,7 @@ fn print_summary(
 ) {
     let total_pass = counts.total_pass();
     println!("\n{:=<80}", "");
-    println!("CasADi MX vs rumoca MSL summary");
+    println!("CasADi Solve vs rumoca MSL summary");
     println!("{:=<80}", "");
     println!("  total models:     {total}");
     println!("  pass (high):      {}", counts.pass_high);
@@ -513,8 +517,12 @@ fn run_single_model(source_root: &CompiledSourceRoot, model_name: &str) -> Model
 
     let dae = &result.dae;
 
-    // Skip models with no states — CasADi integrator needs states
-    if dae.variables.states.is_empty() {
+    // Skip models with no states — an ODE trace has no state channels.
+    let has_states = dae.inspect(|view| {
+        view.variables()
+            .any(|(_, variable)| variable.role() == rumoca_ir_dae::VariableRole::State)
+    });
+    if !has_states {
         return ModelOutcome::NoStates;
     }
 
@@ -540,10 +548,10 @@ fn run_single_model(source_root: &CompiledSourceRoot, model_name: &str) -> Model
 
     let rumoca_trace = sim_result_to_trace(&sim, model_name);
 
-    // 3. Run CasADi MX pipeline
+    // 3. Run the checked CasADi Solve pipeline
     // Use 100 output samples over the horizon
     let dt = (t_end - t_start) / 100.0;
-    let casadi_trace = match casadi_simulate(dae, model_name, t_end, dt) {
+    let casadi_trace = match casadi_simulate(dae, model_name, t_start, t_end, dt) {
         Ok(trace) => trace,
         Err(e) => {
             if e.contains("render:") {
@@ -574,7 +582,7 @@ fn test_casadi_vs_rumoca_msl() {
         panic!("python3 with casadi/numpy not available");
     }
 
-    println!("CasADi MX vs rumoca MSL cross-validation");
+    println!("CasADi Solve vs rumoca MSL cross-validation");
 
     // 1. Download/cache MSL
     let msl_dir = ensure_msl_downloaded().expect("Failed to download MSL");
@@ -584,7 +592,9 @@ fn test_casadi_vs_rumoca_msl() {
     println!("Parsing {} MSL files...", mo_files.len());
     let (successes, failures) = parse_files_parallel_lenient(&mo_files);
     println!("Parsed {} OK, {} failures", successes.len(), failures.len());
-    let source_root = CompiledSourceRoot::from_parsed_batch_tolerant(successes)
+    let source_map = rumoca_compile::parsing::source_map_for_parsed_files(&successes)
+        .expect("failed to preserve parsed MSL sources");
+    let source_root = CompiledSourceRoot::from_parsed_batch_tolerant(successes, source_map)
         .expect("failed to build source-root index");
 
     // 3. Select target models

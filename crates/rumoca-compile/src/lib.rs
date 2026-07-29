@@ -100,7 +100,8 @@ pub mod parsing {
     pub use crate::parse::{
         LenientParseResult, ParseError, ParseFailure, ParseResult, ParseSuccess,
         parse_and_merge_parallel, parse_files_parallel, parse_files_parallel_lenient,
-        parse_source_to_ast, parse_source_to_ast_with_errors, validate_source_syntax,
+        parse_source_to_ast, parse_source_to_ast_with_errors, source_map_for_parsed_files,
+        validate_source_syntax,
     };
 }
 
@@ -136,25 +137,20 @@ pub mod workspace {
 pub mod codegen {
     pub use crate::codegen_api::templates;
     pub use crate::codegen_api::{
-        CodegenError, SolveTemplateRenderer, dae_for_fmi_implementation_context,
-        dae_for_fmi_model_description_context, dae_for_fmi_native_implementation_context,
-        dae_for_solve_template_context, dae_to_template_json, fmi3_native_projection_available,
-        render_ast_template_with_name, render_dae_template, render_dae_template_with_json,
-        render_dae_template_with_json_and_name, render_dae_template_with_name,
-        render_flat_template_with_name, render_solve_template_with_name,
-        render_structured_dae_template_with_name, validate_dae_scalar_residual_view,
-        validate_dae_structured_ownership,
+        CodegenError, SolveTemplateRenderer, dae_to_template_json, render_ast_template_with_name,
+        render_dae_template, render_dae_template_with_name, render_flat_template_with_name,
+        render_solve_template_with_name,
     };
     pub mod targets {
         pub use crate::codegen_target::{
             AssetBundle, BuiltinTargetDescriptor, ChecksumNeed, RenderedTargetFile,
             TargetBuildKind, TargetBundle, TargetCapabilities, TargetCompatibilityEntry,
-            TargetFeatureSupport, TargetFile, TargetFileRenderContext, TargetManifest,
-            TargetTemplateIr, TargetTemplateSource, TensorCapabilities, TensorCapability,
-            TensorLayoutCapability, builtin_target_compatibility_matrix,
-            builtin_target_descriptors_for_ir, ensure_target_has_rendered_files,
-            parse_target_manifest, render_dae_target_files, safe_target_join,
-            target_ir_is_dae_renderable, target_manifest_ir, validate_dae_target_capabilities,
+            TargetFeatureSupport, TargetFile, TargetManifest, TargetTemplateIr,
+            TargetTemplateSource, TensorCapabilities, TensorCapability, TensorLayoutCapability,
+            builtin_target_compatibility_matrix, builtin_target_descriptors_for_ir,
+            ensure_target_has_rendered_files, parse_target_manifest, render_dae_target_files,
+            safe_target_join, target_ir_is_dae_renderable, target_manifest_ir,
+            validate_dae_target_capabilities,
         };
     }
 }
@@ -166,12 +162,11 @@ pub mod galec {
         EMBEDDED_C_GALEC_CONFORMANCE_LINES, EMBEDDED_C_GALEC_CONFORMANCE_SUMMARY,
         EMBEDDED_C_GALEC_TARGET, GALEC_PRODUCTION_TARGET, GALEC_TARGET, GalecCExport,
         GalecExportError, GalecPackagingPlan, GalecSources, PRODUCTION_CONFORMANCE_LINES,
-        PRODUCTION_CONFORMANCE_SUMMARY, build_scalar_type_map, dae_for_galec_projection,
-        is_galec_target, plan_galec_export, plan_galec_production_export, render_galec_c_export,
-        render_galec_c_files_from_context, render_galec_sources,
+        PRODUCTION_CONFORMANCE_SUMMARY, is_galec_target, plan_galec_export,
+        plan_galec_production_export, render_galec_c_export, render_galec_c_files_from_context,
+        render_galec_sources,
     };
-    pub use rumoca_galec_codegen::{GalecInput, GalecOptions, GalecTargetError, ScalarTypeMap};
-    pub use rumoca_ir_galec::ast::ScalarType;
+    pub use rumoca_galec_codegen::{GalecInput, GalecOptions, GalecTargetError};
 
     /// Curated downward re-export of the eFMI packaging primitives the
     /// `rumoca` crate's generic container/checksum build step needs
@@ -187,22 +182,17 @@ pub mod galec {
 
 /// Read-only DAE analysis helpers exposed through the compile facade.
 pub mod analysis {
-    pub use rumoca_phase_dae::balance::{
-        BalanceBreakdown, BalanceClamps, BalanceDetail, BalanceExclusionCounts,
-    };
-    pub use rumoca_phase_dae::{balance, balance_detail, equations_unknowns, is_balanced};
+    pub use rumoca_phase_dae::balance::{BalanceBreakdown, BalanceDetail};
+    pub use rumoca_phase_dae::balance_detail;
 }
 
-/// Structural-analysis primitives (BLT sorting, scalarization).
+/// Structural-analysis primitives over a branded checked-DAE view.
 pub mod phase_structural {
-    pub use rumoca_phase_structural::scalarize::scalarize_equations;
     pub use rumoca_phase_structural::{
-        AlgebraicLoop, BltBlock, CausalStep, EliminationResult, EquationRef, IcBlock,
-        IcRelaxationHint, Incidence, SortedDae, StructuralDiagnostics, StructuralError,
-        StructuredScalarBlock, Substitution, TearingResult, UnknownId, analyze_structure,
-        build_blt_from_incidence, build_ic_plan, build_ic_relaxation_hint,
-        build_solver_sparsity_triplets, runtime_defined_continuous_unknown_names,
-        runtime_defined_unknown_names, sort_dae, tear_algebraic_loop,
+        AlgebraicLoop, BltBlock, EquationRef, Incidence, SortedDae, StructuralDiagnostics,
+        StructuralError, StructuredScalarBlock, TearingResult, UnknownId, analyze,
+        build_blt_from_incidence, runtime_defined_continuous_unknown_names,
+        runtime_defined_unknown_names, sort, tear_algebraic_loop,
     };
 }
 
@@ -218,7 +208,10 @@ pub mod compile {
         ComponentReference as AstComponentReference, Expression as AstExpression,
         ForIndex as AstForIndex, Subscript as AstSubscript,
     };
-    pub use rumoca_ir_dae::{Dae, Variable};
+    pub use rumoca_ir_dae::{
+        ClockOperation, ContinuousOwnerView, CoordinateView, Dae, DaeView, ExpressionOperation,
+        ResidualEquationView, VariableId, VariableRole, VariableView, for_each_expression,
+    };
     pub use rumoca_ir_flat::Model as FlatModel;
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]

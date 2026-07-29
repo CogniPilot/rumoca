@@ -67,34 +67,30 @@
 pub mod admissibility;
 pub mod c_mangle;
 pub mod c_print;
-pub mod classify;
 pub mod diagnostic;
 pub mod emit;
 pub mod input;
 pub mod lower;
 pub mod mangle;
 pub mod manifest_context;
-pub mod manifest_vars;
 pub mod package;
 pub mod production_manifest;
 
 pub use admissibility::{AdmittedClock, check_admissibility};
 pub use c_mangle::{CNameTable, c_identifier};
 pub use c_print::CPrinter;
-pub use classify::{Classification, ClassifiedVariable, VariableClass, classify_variables};
 pub use diagnostic::GalecTargetError;
 pub use emit::{
     ManifestIdentity, assemble_manifest_with_identity, c_template_context,
     c_template_context_for_block, render_algorithm_code,
 };
-pub use input::{GalecInput, GalecOptions, GalecProfile, ScalarTypeMap};
+pub use input::{GalecInput, GalecOptions, GalecProfile};
 pub use lower::lower_to_algorithm_code;
 pub use manifest_context::{
     AcManifestCtx, ContentCtx, EfmiError, EfmiManifestContext, FilePath, IdRegistry, Identifier,
     ManifestId, ModelExport, NameWithoutSlashes, NormalizedText, PcManifestCtx, Sha1Hex, UnitCtx,
     UtcTimestamp, xml_escape, xs_double,
 };
-pub use manifest_vars::{ManifestVariables, build_manifest_variables};
 pub use package::{AlgorithmCodePackage, ManifestFragment};
 pub use production_manifest::{
     EmittedCodeFile, assemble_production_manifest, assemble_production_manifest_with_identity,

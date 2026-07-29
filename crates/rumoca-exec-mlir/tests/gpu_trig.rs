@@ -192,6 +192,7 @@ fn nonlinear_drone_prepared(m: f64, j: f64, f: f64, g: f64) -> rumoca_ir_solve::
                         .map(|(i, n)| (n, vec![i]))
                         .collect(),
                 },
+                variable_base_slots: Vec::new(),
                 state_scalar_count: 6,
                 algebraic_scalar_count: 0,
                 output_scalar_count: 0,
@@ -209,6 +210,7 @@ fn nonlinear_drone_prepared(m: f64, j: f64, f: f64, g: f64) -> rumoca_ir_solve::
         },
         artifacts: rumoca_ir_solve::SolveArtifacts {
             continuous: rumoca_ir_solve::ContinuousSolveArtifacts {
+                structural: rumoca_ir_solve::ContinuousStructuralArtifacts::default(),
                 mass_matrix: rumoca_ir_solve::MassMatrix::Identity,
                 implicit_jacobian_v: zero_block,
                 implicit_jacobian_v_scalar: zero_rb.clone(),

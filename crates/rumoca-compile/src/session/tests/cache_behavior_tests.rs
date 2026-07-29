@@ -844,8 +844,7 @@ fn test_compile_models_parallel_reuses_cache() {
 
 #[test]
 fn test_compiled_source_root_streaming_reuses_cache() {
-    let definition = rumoca_phase_parse::parse_to_ast(
-        r#"
+    let source = r#"
         model A
           Real x(start=0);
         equation
@@ -857,11 +856,12 @@ fn test_compiled_source_root_streaming_reuses_cache() {
         equation
           der(y) = 2;
         end B;
-        "#,
-        "models.mo",
-    )
-    .expect("models should parse");
-    let source_root = CompiledSourceRoot::from_stored_definition(definition)
+        "#;
+    let definition =
+        rumoca_phase_parse::parse_to_ast(source, "models.mo").expect("models should parse");
+    let mut source_map = rumoca_core::SourceMap::new();
+    source_map.add("models.mo", source);
+    let source_root = CompiledSourceRoot::from_stored_definition(definition, source_map)
         .expect("compiled source root should build");
 
     let mut first = Vec::new();

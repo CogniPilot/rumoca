@@ -150,12 +150,14 @@ pub(in crate::codegen) fn render_matmul_mlir_function(
     let k = solve_field_usize(&node, "k")?;
     let n = solve_field_usize(&node, "n")?;
 
-    let lhs_sparsity_val = get_field(&node, "lhs_sparsity")
-        .map_err(|err| render_err(format!("MatMul missing lhs_sparsity: {err}")))?;
-    let lhs_sparsity_str = value_to_string(&lhs_sparsity_val);
-    let is_diagonal_matvec = lhs_sparsity_str.contains("Diagonal") && n == 1 && m == k;
-    let explicit_nnz = if !is_diagonal_matvec && lhs_sparsity_str.contains("Explicit") {
-        Some(extract_explicit_nnz(&lhs_sparsity_val)?)
+    let pattern_kind = get_field(&node, "lhs_pattern_kind")
+        .map_err(|err| render_err(format!("MatMul missing lhs_pattern_kind: {err}")))?
+        .as_str()
+        .ok_or_else(|| render_err("MatMul lhs_pattern_kind must be a string"))?
+        .to_owned();
+    let is_diagonal_matvec = pattern_kind == "diagonal" && n == 1 && m == k;
+    let explicit_nnz = if !is_diagonal_matvec && pattern_kind == "csr" {
+        Some(extract_pattern_nonzeros(&node)?)
     } else {
         None
     };
@@ -748,43 +750,30 @@ fn mlir_native_linear_op_supported(op: &solve::LinearOp) -> bool {
     }
 }
 
-/// Extract `(row, col)` nonzero pairs from a serialized `SparsityPattern::Explicit`.
-///
-/// Expects the minijinja `Value` to represent `{"Explicit": {"nnz": [[r,c], ...]}}`.
-fn extract_explicit_nnz(sparsity: &Value) -> Result<Vec<(usize, usize)>, minijinja::Error> {
-    let explicit = get_field(sparsity, "Explicit")
-        .map_err(|err| render_err(format!("MatMul Explicit sparsity missing variant: {err}")))?;
-    let nnz_val = get_field(&explicit, "nnz")
-        .map_err(|err| render_err(format!("MatMul Explicit sparsity missing nnz: {err}")))?;
-    let len = nnz_val
+fn extract_pattern_nonzeros(node: &Value) -> Result<Vec<(usize, usize)>, minijinja::Error> {
+    let nonzeros = get_field(node, "lhs_pattern_nonzeros")
+        .map_err(|err| render_err(format!("MatMul missing lhs_pattern_nonzeros: {err}")))?;
+    let count = nonzeros
         .len()
-        .ok_or_else(|| render_err("MatMul Explicit sparsity nnz must be an array"))?;
-    let mut nnz = render_vec_with_capacity(len, "MatMul Explicit sparsity nnz count")?;
-    for i in 0..len {
-        let pair = nnz_val
-            .get_item(&minijinja::Value::from(i))
-            .map_err(|err| render_err(format!("MatMul Explicit sparsity nnz[{i}]: {err}")))?;
+        .ok_or_else(|| render_err("MatMul lhs_pattern_nonzeros must be an array"))?;
+    let mut entries = render_vec_with_capacity(count, "MatMul structural nonzero count")?;
+    for position in 0..count {
+        let pair = nonzeros
+            .get_item(&Value::from(position))
+            .map_err(|err| render_err(format!("MatMul nonzero[{position}]: {err}")))?;
         let row = pair
-            .get_item(&minijinja::Value::from(0))
-            .map_err(|err| render_err(format!("MatMul Explicit sparsity nnz[{i}] row: {err}")))?
+            .get_item(&Value::from(0))
+            .map_err(|err| render_err(format!("MatMul nonzero[{position}] row: {err}")))?
             .as_usize()
-            .ok_or_else(|| {
-                render_err(format!(
-                    "MatMul Explicit sparsity nnz[{i}] row must be a non-negative integer"
-                ))
-            })?;
-        let col = pair
-            .get_item(&minijinja::Value::from(1))
-            .map_err(|err| render_err(format!("MatMul Explicit sparsity nnz[{i}] col: {err}")))?
+            .ok_or_else(|| render_err("MatMul nonzero row must be an integer"))?;
+        let column = pair
+            .get_item(&Value::from(1))
+            .map_err(|err| render_err(format!("MatMul nonzero[{position}] column: {err}")))?
             .as_usize()
-            .ok_or_else(|| {
-                render_err(format!(
-                    "MatMul Explicit sparsity nnz[{i}] col must be a non-negative integer"
-                ))
-            })?;
-        nnz.push((row, col));
+            .ok_or_else(|| render_err("MatMul nonzero column must be an integer"))?;
+        entries.push((row, column));
     }
-    Ok(nnz)
+    Ok(entries)
 }
 
 fn matmul_nnz_for_row(
@@ -1069,12 +1058,14 @@ pub(in crate::codegen) fn render_matmul_c_function(
     let k = solve_field_usize(&node, "k")?;
     let n = solve_field_usize(&node, "n")?;
 
-    let lhs_sparsity_val = get_field(&node, "lhs_sparsity")
-        .map_err(|err| render_err(format!("MatMul missing lhs_sparsity: {err}")))?;
-    let lhs_sparsity_str = value_to_string(&lhs_sparsity_val);
-    let is_diagonal_matvec = lhs_sparsity_str.contains("Diagonal") && n == 1 && m == k;
-    let explicit_nnz = if !is_diagonal_matvec && lhs_sparsity_str.contains("Explicit") {
-        Some(extract_explicit_nnz(&lhs_sparsity_val)?)
+    let pattern_kind = get_field(&node, "lhs_pattern_kind")
+        .map_err(|err| render_err(format!("MatMul missing lhs_pattern_kind: {err}")))?
+        .as_str()
+        .ok_or_else(|| render_err("MatMul lhs_pattern_kind must be a string"))?
+        .to_owned();
+    let is_diagonal_matvec = pattern_kind == "diagonal" && n == 1 && m == k;
+    let explicit_nnz = if !is_diagonal_matvec && pattern_kind == "csr" {
+        Some(extract_pattern_nonzeros(&node)?)
     } else {
         None
     };

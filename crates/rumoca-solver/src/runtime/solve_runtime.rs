@@ -61,6 +61,15 @@ impl From<solve_eval::EvalSolveError> for RuntimeSolveError {
     }
 }
 
+struct RuntimeAssignmentSettleInput<'a> {
+    y: &'a mut [f64],
+    p: &'a mut [f64],
+    event_pre_p: &'a [f64],
+    t: f64,
+    tol: f64,
+    max_iters: usize,
+}
+
 #[derive(Clone)]
 pub struct SolveRuntime {
     pub model: solve::SolveModel,
@@ -414,10 +423,10 @@ impl SolveRuntime {
         plan: &RefreshPlan,
         mut args: RefreshSlotArgs<'_>,
     ) -> Result<(), RuntimeSolveError> {
-        self.validate_refresh_inputs(args.solver_y, args.params)?;
         if plan.rows.is_empty() && plan.simultaneous_plan.is_empty() {
             return Ok(());
         }
+        self.validate_refresh_inputs(args.solver_y, args.params)?;
         let incoming = copy_runtime_values(args.solver_y, "algebraic projection snapshot")?;
         let mut causal_refresh_succeeded = plan.rows.is_empty();
         let mut causal_seed_failed = false;
@@ -1392,11 +1401,14 @@ impl SolveRuntime {
         if self.model.problem.discrete.rhs.is_empty() {
             self.apply_root_relation_memory_overrides(root_relation_overrides, y, p, tol)?;
             return self.settle_runtime_assignments_and_projection(
-                y,
-                p,
-                t,
-                tol,
-                max_iters,
+                RuntimeAssignmentSettleInput {
+                    y,
+                    p,
+                    event_pre_p,
+                    t,
+                    tol,
+                    max_iters,
+                },
                 &mut project_algebraics,
             );
         }
@@ -1440,7 +1452,7 @@ impl SolveRuntime {
             changed |= project_algebraics(y, p)?;
             changed |= self.apply_runtime_assignments_until_stable(y, p, t, tol, max_iters)?;
             if !changed {
-                return self.eval_event_actions(y, p, t);
+                return self.eval_event_actions(y, p, event_pre_p, t);
             }
         }
         Err(RuntimeSolveError::solve_ir(format!(
@@ -1451,33 +1463,48 @@ impl SolveRuntime {
     fn validate_discrete_event_rows(&self) -> Result<(), RuntimeSolveError> {
         let rows = self.model.problem.discrete.rhs.len();
         let targets = self.model.problem.discrete.update_targets.len();
-        if rows == targets {
+        let roles = self.model.problem.discrete.row_roles.len();
+        let pre_modes = self.model.problem.discrete.pre_modes.len();
+        let observation = self.model.problem.discrete.observation_refresh.len();
+        let clock_owners = self.model.problem.discrete.clock_owners.len();
+        if rows == targets
+            && rows == roles
+            && rows == pre_modes
+            && rows == observation
+            && rows == clock_owners
+        {
             return Ok(());
         }
         Err(RuntimeSolveError::solve_ir(format!(
-            "discrete RHS row count {rows} does not match target count {targets}"
+            "discrete row columns differ: rhs={rows}, targets={targets}, roles={roles}, \
+             pre_modes={pre_modes}, observation_refresh={observation}, \
+             clock_owners={clock_owners}"
         )))
     }
 
     fn settle_runtime_assignments_and_projection<P>(
         &self,
-        y: &mut [f64],
-        p: &mut [f64],
-        t: f64,
-        tol: f64,
-        max_iters: usize,
+        input: RuntimeAssignmentSettleInput<'_>,
         project_algebraics: &mut P,
     ) -> Result<EventActionOutcome, RuntimeSolveError>
     where
         P: FnMut(&mut [f64], &mut [f64]) -> Result<bool, RuntimeSolveError>,
     {
+        let RuntimeAssignmentSettleInput {
+            y,
+            p,
+            event_pre_p,
+            t,
+            tol,
+            max_iters,
+        } = input;
         for _ in 0..max_iters {
             let mut changed =
                 self.apply_runtime_assignments_until_stable(y, p, t, tol, max_iters)?;
             changed |= project_algebraics(y, p)?;
             changed |= self.apply_runtime_assignments_until_stable(y, p, t, tol, max_iters)?;
             if !changed {
-                return self.eval_event_actions(y, p, t);
+                return self.eval_event_actions(y, p, event_pre_p, t);
             }
         }
         Err(RuntimeSolveError::solve_ir(format!(
@@ -1590,12 +1617,14 @@ impl SolveRuntime {
         &self,
         y: &[f64],
         p: &[f64],
+        event_pre_p: &[f64],
         t: f64,
     ) -> Result<EventActionOutcome, RuntimeSolveError> {
         eval_event_actions_with_context(
             &self.model.problem.events,
             y,
             p,
+            event_pre_p,
             t,
             self.row_eval_context(),
         )
@@ -1962,16 +1991,6 @@ fn visible_value_index_error(
     RuntimeSolveError::solve_ir(format!(
         "{context} for visible name `{name}` reference index {index}, but only {len} values are available"
     ))
-}
-
-pub fn apply_discrete_slot_value(
-    target: solve::ScalarSlot,
-    value: f64,
-    y: &mut [f64],
-    p: &mut [f64],
-    tol: f64,
-) -> Result<bool, EvalSolveError> {
-    solve_eval::apply_scalar_slot_value(target, value, y, p, tol)
 }
 
 #[cfg(test)]

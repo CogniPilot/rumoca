@@ -1,7 +1,10 @@
 use rumoca_eval_solve as solve_eval;
+use rumoca_ir_solve as solve;
 
 use crate::runtime::solve_events::event_eval_params_with_relation_overrides;
-use crate::{RuntimeSolveError, discrete_row_pre_mode, row_reads_solver_or_time};
+use crate::{
+    RuntimeSolveError, discrete_row_active_at, discrete_row_pre_mode, row_reads_solver_or_time,
+};
 
 use super::SolveRuntime;
 use super::event_update::{
@@ -14,6 +17,7 @@ use super::support::{copy_runtime_values, reserve_runtime_vec_capacity};
 struct DiscreteRowEvalScope {
     skip_solver_or_time_rows: bool,
     observation_only: bool,
+    initialization_equations_only: bool,
 }
 
 impl SolveRuntime {
@@ -37,6 +41,7 @@ impl SolveRuntime {
                 DiscreteRowEvalScope {
                     skip_solver_or_time_rows: false,
                     observation_only: false,
+                    initialization_equations_only: false,
                 },
             )?;
             pass_changed |= self.apply_runtime_assignments_until_stable(
@@ -80,6 +85,7 @@ impl SolveRuntime {
             DiscreteRowEvalScope {
                 skip_solver_or_time_rows: true,
                 observation_only: false,
+                initialization_equations_only: true,
             },
         )
     }
@@ -105,6 +111,12 @@ impl SolveRuntime {
         )?;
         for (row_idx, row) in self.model.problem.discrete.rhs.programs.iter().enumerate() {
             if scope.observation_only && !self.observation_refresh_row(row_idx)? {
+                continue;
+            }
+            if scope.initialization_equations_only
+                && self.model.problem.discrete.row_roles[row_idx]
+                    != solve::DiscreteRowRole::Equation
+            {
                 continue;
             }
             if scope.skip_solver_or_time_rows && row_reads_solver_or_time(row) {
@@ -147,7 +159,10 @@ impl SolveRuntime {
             t,
             tol,
         } = input;
-        let row_pre_mode = discrete_row_pre_mode(&self.model, row_idx);
+        if !discrete_row_active_at(&self.model, row_idx, t)? {
+            return Ok(None);
+        }
+        let row_pre_mode = discrete_row_pre_mode(&self.model, row_idx)?;
         if !snapshot.row_filter.accepts(row_pre_mode) {
             return Ok(None);
         }
@@ -209,6 +224,7 @@ impl SolveRuntime {
                 DiscreteRowEvalScope {
                     skip_solver_or_time_rows: false,
                     observation_only: true,
+                    initialization_equations_only: false,
                 },
             )?;
             if !changed {

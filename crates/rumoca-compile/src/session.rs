@@ -369,6 +369,7 @@ struct FlatModelQueryState {
 struct DaeModelArtifactData {
     flat: Arc<flat::Model>,
     dae: Arc<dae::Dae>,
+    balance_detail: rumoca_phase_dae::balance::BalanceDetail,
 }
 
 #[derive(Debug, Clone)]

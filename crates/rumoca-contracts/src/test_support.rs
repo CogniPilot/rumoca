@@ -3,12 +3,11 @@
 //! Provides convenience functions for compiling Modelica models
 //! and asserting success/failure/balance conditions.
 
-use rumoca_compile::compile::{CompilationResult, FailedPhase, PhaseResult};
+use rumoca_compile::compile::{CompilationResult, FailedPhase, PhaseResult, VariableRole};
 use rumoca_compile::parsing::{
     ParseError, parse_source_to_ast as parse_to_ast, parse_source_to_ast_with_errors,
 };
 use rumoca_compile::{Session, SessionConfig};
-use rumoca_phase_dae::balance as dae_balance;
 
 /// Compile a model from source, expecting success.
 /// Returns the CompilationResult for further assertions.
@@ -214,8 +213,7 @@ fn error_code_matches(actual: &str, expected: &str) -> bool {
 /// Panics if compilation fails or the system is not balanced.
 pub fn expect_balanced(source: &str, model: &str) -> CompilationResult {
     let result = expect_success(source, model);
-    let balance =
-        dae_balance(&result.dae).expect("balanced test support requires valid DAE metadata");
+    let balance = result.balance_detail.balance();
     assert_eq!(
         balance, 0,
         "Expected balanced system for {model}, got balance={balance}"
@@ -230,8 +228,11 @@ pub fn expect_balanced(source: &str, model: &str) -> CompilationResult {
 /// - no top-level unbound input variables
 /// - no unbound fixed parameters (fixed=true by default for parameters)
 pub fn is_standalone_simulatable(result: &CompilationResult) -> bool {
-    !result.dae.metadata.is_partial
-        && result.dae.variables.inputs.is_empty()
+    !result.flat.is_partial
+        && !result.dae.inspect(|view| {
+            view.variables()
+                .any(|(_, variable)| variable.role() == VariableRole::Input)
+        })
         && !result.flat.has_unbound_fixed_parameters()
 }
 

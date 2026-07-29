@@ -15,6 +15,7 @@ use rumoca_ir_ast::{
 };
 use std::borrow::Borrow;
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ComponentSemantics {
@@ -82,8 +83,14 @@ impl CandidateSet {
 /// segment. Keeping this boundary typed prevents it from being mistaken for a
 /// rendered component path; every matching segment retains all candidate
 /// `InstanceId`s and is resolved only by metadata consensus.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct UnresolvedMemberSegment(Box<str>);
+
+impl Hash for UnresolvedMemberSegment {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.0.len().hash(state);
+    }
+}
 
 impl From<&str> for UnresolvedMemberSegment {
     fn from(value: &str) -> Self {
@@ -152,13 +159,26 @@ impl InstanceSemanticScope {
         current_scope: Option<&ComponentPath>,
     ) -> SemanticLookup<Option<Vec<usize>>> {
         let path = component_reference_prefix_path(reference, prefix_len, false);
-        match self.lookup_scoped_array_shape(&path, current_scope) {
-            SemanticLookup::Found(shape) => SemanticLookup::Found(shape),
-            SemanticLookup::Ambiguous => SemanticLookup::Ambiguous,
-            SemanticLookup::Missing => self
-                .lookup_reference(reference, prefix_len, class_instance_id, current_scope)
-                .map(|semantics| semantics.shape),
+        // Search one lexical candidate at a time. Array-family metadata and
+        // exact declaration identity are alternatives at the same scope; an
+        // exact local scalar must stop the search before a same-named array in
+        // an enclosing instance can contribute its domain.
+        for candidate in scoped_path_candidates(&path, current_scope) {
+            if let Some(shape) = self.array_shapes.get(&candidate) {
+                return shape.clone();
+            }
+            match self.exact_paths.get(&candidate).map(CandidateSet::ids) {
+                Some(SemanticLookup::Found(ids)) => {
+                    return self
+                        .consensus(SemanticLookup::Found(ids.to_vec()))
+                        .map(|semantics| semantics.shape);
+                }
+                Some(SemanticLookup::Ambiguous) => return SemanticLookup::Ambiguous,
+                _ => {}
+            }
         }
+        self.lookup_reference(reference, prefix_len, class_instance_id, current_scope)
+            .map(|semantics| semantics.shape)
     }
 
     fn index_classes(&mut self, overlay: &InstanceOverlay) {
@@ -242,7 +262,7 @@ impl InstanceSemanticScope {
             let exact = ComponentPath::from_flat_path(rendered_path);
             insert_consensus_shape(&mut self.array_shapes, exact, shape.clone());
 
-            // Legacy `array_parent_dims` has no structured instance-family key.
+            // Obsolete `array_parent_dims` has no structured instance-family key.
             // Keep one de-indexed compatibility alias only when every
             // contributing family reports the same shape.
             let deindexed =
@@ -411,19 +431,6 @@ impl InstanceSemanticScope {
             }
             if let Some(ids) = self.family_paths.get(&candidate) {
                 return SemanticLookup::Found(ids.clone());
-            }
-        }
-        SemanticLookup::Missing
-    }
-
-    fn lookup_scoped_array_shape(
-        &self,
-        path: &ComponentPath,
-        current_scope: Option<&ComponentPath>,
-    ) -> SemanticLookup<Option<Vec<usize>>> {
-        for candidate in scoped_path_candidates(path, current_scope) {
-            if let Some(shape) = self.array_shapes.get(&candidate) {
-                return shape.clone();
             }
         }
         SemanticLookup::Missing

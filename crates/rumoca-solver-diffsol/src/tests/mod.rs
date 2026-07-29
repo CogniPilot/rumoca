@@ -11,6 +11,10 @@ mod tensor_runtime;
 
 mod runtime_value_tests;
 
+fn periodic_schedule(period: f64, phase: f64) -> solve::PeriodicEventSchedule {
+    solve::PeriodicEventSchedule::from_seconds(period, phase).unwrap()
+}
+
 #[test]
 fn speculative_algebraic_guess_does_not_mutate_accepted_state() {
     let warm_start = AlgebraicWarmStart::new(vec![1.0, 2.0]);
@@ -52,6 +56,44 @@ fn install_scalar_initial_projection_plan(
             unknowns: vec![solve::scalar_slot_y(y_index)],
         }],
     };
+}
+
+fn set_equation_row_metadata(
+    model: &mut solve::SolveModel,
+    pre_modes: Vec<solve::DiscreteEventPreMode>,
+    observation_refresh: Vec<bool>,
+) {
+    let row_count = model.problem.discrete.rhs.len();
+    assert_eq!(
+        pre_modes.len(),
+        row_count,
+        "fixture must state one pre-mode per discrete equation"
+    );
+    assert_eq!(
+        observation_refresh.len(),
+        row_count,
+        "fixture must state one observation policy per discrete equation"
+    );
+    model.problem.discrete.row_roles = vec![solve::DiscreteRowRole::Equation; row_count];
+    model.problem.discrete.pre_modes = pre_modes;
+    model.problem.discrete.observation_refresh = observation_refresh;
+    model.problem.discrete.clock_owners = vec![None; row_count];
+}
+
+fn ordinary_equation_row_metadata(model: &mut solve::SolveModel) {
+    let row_count = model.problem.discrete.rhs.len();
+    set_equation_row_metadata(
+        model,
+        vec![solve::DiscreteEventPreMode::FollowCurrent; row_count],
+        vec![false; row_count],
+    );
+}
+
+fn set_initialization_jvp(model: &mut solve::SolveModel, rows: Vec<Vec<solve::LinearOp>>) {
+    model.artifacts.initialization.residual_jacobian_v =
+        solve::ComputeBlock::from_scalar_program_block(
+            solve::ScalarProgramBlock::with_source_span(rows, fixture_span!()),
+        );
 }
 
 #[test]
@@ -225,6 +267,13 @@ fn general_ramp_model() -> solve::SolveModel {
             fixture_span!(),
         ),
     );
+    model.artifacts.continuous.full_jacobian_v = solve::ScalarProgramBlock::with_source_span(
+        vec![vec![
+            solve::LinearOp::Const { dst: 0, value: 0.0 },
+            solve::LinearOp::StoreOutput { src: 0 },
+        ]],
+        fixture_span!(),
+    );
     model.visible_value_rows = solve::ScalarProgramBlock::with_source_span(
         vec![vec![
             solve::LinearOp::LoadY { dst: 0, index: 0 },
@@ -342,10 +391,7 @@ fn state_only_bdf_accepts_transitive_projection_dependencies() {
 #[test]
 fn state_only_periodic_events_do_not_advance_to_right_limit_without_state_integration() {
     let mut model = unit_integrator_model();
-    model.problem.clocks.periodic_event_schedules = vec![solve::PeriodicEventSchedule {
-        phase_seconds: 0.05,
-        period_seconds: 10.0,
-    }];
+    model.problem.clocks.periodic_event_schedules = vec![periodic_schedule(10.0, 0.05)];
 
     let result = simulate(
         &model,
@@ -426,6 +472,13 @@ fn unit_integrator_model() -> solve::SolveModel {
             ]],
             fixture_span!(),
         ),
+    );
+    model.artifacts.continuous.full_jacobian_v = solve::ScalarProgramBlock::with_source_span(
+        vec![vec![
+            solve::LinearOp::Const { dst: 0, value: 0.0 },
+            solve::LinearOp::StoreOutput { src: 0 },
+        ]],
+        fixture_span!(),
     );
     model.initial_y = vec![0.0];
     model.visible_names = vec!["x".to_string()];
@@ -641,10 +694,7 @@ fn simulate_no_state_delay_preserves_continuous_source_event_left_limit() {
     let mut model = solve::SolveModel::default();
     model.problem.solve_layout.parameter_count = 1;
     model.problem.solve_layout.compiled_parameter_len = 1;
-    model.problem.clocks.periodic_event_schedules = vec![solve::PeriodicEventSchedule {
-        phase_seconds: 0.2,
-        period_seconds: 1.0,
-    }];
+    model.problem.clocks.periodic_event_schedules = vec![periodic_schedule(1.0, 0.2)];
     let delay = solve::ScalarProgramBlock::with_source_span(
         vec![vec![
             solve::LinearOp::Const { dst: 0, value: 0.1 },
@@ -884,6 +934,7 @@ fn simulate_applies_discrete_runtime_tail_updates_at_initial_event() {
         ]],
         fixture_span!(),
     );
+    ordinary_equation_row_metadata(&mut model);
     model.parameters = vec![0.0];
     model.visible_names = vec!["m".to_string()];
 
@@ -916,6 +967,7 @@ fn simulate_discrete_updates_can_read_initial_event_flag() {
         ]],
         fixture_span!(),
     );
+    ordinary_equation_row_metadata(&mut model);
     model.parameters = vec![0.0, 0.0];
     model.visible_names = vec!["m".to_string()];
 
@@ -943,10 +995,7 @@ fn simulate_applies_start_time_clock_tick_after_initial_mode() {
     model.problem.solve_layout.discrete_valued_scalar_names =
         vec!["source".to_string(), "held".to_string()];
     model.problem.solve_layout.initial_event_parameter_index = Some(2);
-    model.problem.clocks.periodic_event_schedules = vec![solve::PeriodicEventSchedule {
-        period_seconds: 0.1,
-        phase_seconds: 0.0,
-    }];
+    model.problem.clocks.periodic_event_schedules = vec![periodic_schedule(0.1, 0.0)];
     model.problem.discrete.update_targets = vec![solve::scalar_slot_p(1)];
     model.problem.discrete.rhs = solve::ScalarProgramBlock::with_source_span(
         vec![vec![
@@ -963,6 +1012,7 @@ fn simulate_applies_start_time_clock_tick_after_initial_mode() {
         ]],
         fixture_span!(),
     );
+    ordinary_equation_row_metadata(&mut model);
     model.parameters = vec![2.0, 0.0, 0.0];
     model.visible_names = vec!["held".to_string()];
     model.visible_value_rows = solve::ScalarProgramBlock::with_source_span(
@@ -1013,6 +1063,7 @@ fn simulate_initial_event_iterates_pre_to_current_runtime_tail() {
         ],
         fixture_span!(),
     );
+    ordinary_equation_row_metadata(&mut model);
     model.parameters = vec![1.0, 0.0, 0.0];
     model.visible_names = vec!["aux".to_string(), "y".to_string()];
 
@@ -1056,10 +1107,14 @@ fn fixed_static_event_keeps_follow_current_pre_rows_iterating() {
         ],
         fixture_span!(),
     );
-    model.problem.discrete.pre_modes = vec![
-        solve::DiscreteEventPreMode::FollowCurrent,
-        solve::DiscreteEventPreMode::FollowCurrent,
-    ];
+    set_equation_row_metadata(
+        &mut model,
+        vec![
+            solve::DiscreteEventPreMode::FollowCurrent,
+            solve::DiscreteEventPreMode::FollowCurrent,
+        ],
+        vec![false, false],
+    );
     model.parameters = vec![1.0, 0.0, 0.0];
 
     let runtime = SolveRuntime::new(&model).expect("valid runtime should prepare");
@@ -1116,6 +1171,7 @@ fn simulate_no_state_solve_ir_records_dynamic_time_event_between_outputs() {
         ]],
         fixture_span!(),
     );
+    ordinary_equation_row_metadata(&mut model);
     model.parameters = vec![5.0];
     model.visible_names = vec!["next".to_string()];
 
@@ -1189,6 +1245,7 @@ fn simulate_no_state_solve_ir_records_direct_time_threshold_event() {
         ]],
         fixture_span!(),
     );
+    ordinary_equation_row_metadata(&mut model);
     model.parameters = vec![0.0, 0.2, 0.0];
     model.visible_names = vec!["pulse".to_string()];
 
@@ -1219,16 +1276,20 @@ fn simulate_no_state_solve_ir_refreshes_periodic_event_indicator_between_ticks()
     model.problem.solve_layout.compiled_parameter_len = 2;
     model.problem.solve_layout.discrete_valued_scalar_names =
         vec!["pulse".to_string(), "derived".to_string()];
-    model.problem.clocks.periodic_event_schedules = vec![solve::PeriodicEventSchedule {
-        phase_seconds: 0.0,
-        period_seconds: 0.5,
-    }];
+    model.problem.clocks.periodic_event_schedules = vec![periodic_schedule(0.5, 0.0)];
     model.problem.discrete.update_targets = vec![solve::scalar_slot_p(0), solve::scalar_slot_p(1)];
     model.problem.discrete.rhs = solve::ScalarProgramBlock::with_source_span(
         vec![periodic_tick_row(0.0, 0.5), not_parameter_row(0)],
         fixture_span!(),
     );
-    model.problem.discrete.observation_refresh = vec![true, true];
+    set_equation_row_metadata(
+        &mut model,
+        vec![
+            solve::DiscreteEventPreMode::FollowCurrent,
+            solve::DiscreteEventPreMode::FollowCurrent,
+        ],
+        vec![true, true],
+    );
     model.parameters = vec![0.0, 0.0];
     model.visible_names = vec!["pulse".to_string(), "derived".to_string()];
 
@@ -1262,10 +1323,7 @@ fn observation_refresh_keeps_pre_values_fixed_during_settle() {
         source: solve::PreParamSource::P { index: 1 },
         clock_schedule: None,
     }];
-    model.problem.clocks.periodic_event_schedules = vec![solve::PeriodicEventSchedule {
-        phase_seconds: 0.0,
-        period_seconds: 0.1,
-    }];
+    model.problem.clocks.periodic_event_schedules = vec![periodic_schedule(0.1, 0.0)];
     model.problem.discrete.update_targets = vec![solve::scalar_slot_p(0), solve::scalar_slot_p(1)];
     model.problem.discrete.rhs = solve::ScalarProgramBlock::with_source_span(
         vec![
@@ -1274,11 +1332,14 @@ fn observation_refresh_keeps_pre_values_fixed_during_settle() {
         ],
         fixture_span!(),
     );
-    model.problem.discrete.pre_modes = vec![
-        solve::DiscreteEventPreMode::FollowCurrent,
-        solve::DiscreteEventPreMode::Fixed,
-    ];
-    model.problem.discrete.observation_refresh = vec![true, true];
+    set_equation_row_metadata(
+        &mut model,
+        vec![
+            solve::DiscreteEventPreMode::FollowCurrent,
+            solve::DiscreteEventPreMode::Fixed,
+        ],
+        vec![true, true],
+    );
     let mut y = Vec::new();
     let mut p = vec![0.0, 0.0, 0.0];
     let runtime = SolveRuntime::new(&model).expect("valid runtime should prepare");
@@ -1311,11 +1372,14 @@ fn observation_refresh_resets_fixed_pre_event_history_rows() {
         vec![load_parameter_row(0), change_parameter_row(1, 3)],
         fixture_span!(),
     );
-    model.problem.discrete.pre_modes = vec![
-        solve::DiscreteEventPreMode::FollowCurrent,
-        solve::DiscreteEventPreMode::Fixed,
-    ];
-    model.problem.discrete.observation_refresh = vec![true, true];
+    set_equation_row_metadata(
+        &mut model,
+        vec![
+            solve::DiscreteEventPreMode::FollowCurrent,
+            solve::DiscreteEventPreMode::Fixed,
+        ],
+        vec![true, true],
+    );
     let mut y = Vec::new();
     let mut p = vec![1.0, 0.0, 0.0, 0.0];
     let runtime = SolveRuntime::new(&model).expect("valid runtime should prepare");
@@ -1377,10 +1441,7 @@ fn simulate_no_state_solve_ir_updates_clocked_previous_feedback_at_periodic_tick
     model.problem.continuous.implicit_row_targets =
         vec![Some(solve::scalar_slot_y(0)), Some(solve::scalar_slot_y(1))];
     install_dense_algebraic_projection_plan(&mut model);
-    model.problem.clocks.periodic_event_schedules = vec![solve::PeriodicEventSchedule {
-        phase_seconds: 0.0,
-        period_seconds: 0.02,
-    }];
+    model.problem.clocks.periodic_event_schedules = vec![periodic_schedule(0.02, 0.0)];
     model.problem.discrete.update_targets = vec![
         solve::scalar_slot_p(0),
         solve::scalar_slot_p(2),
@@ -1395,14 +1456,17 @@ fn simulate_no_state_solve_ir_updates_clocked_previous_feedback_at_periodic_tick
         load_parameter_row(4),
         assign_on_clock_edge_row(),
     ]);
-    model.problem.discrete.pre_modes = vec![
-        solve::DiscreteEventPreMode::FollowCurrent,
-        solve::DiscreteEventPreMode::EventEntry,
-        solve::DiscreteEventPreMode::FollowCurrent,
-        solve::DiscreteEventPreMode::FollowCurrent,
-        solve::DiscreteEventPreMode::FollowCurrent,
-    ];
-    model.problem.discrete.observation_refresh = vec![true, false, false, false, false];
+    set_equation_row_metadata(
+        &mut model,
+        vec![
+            solve::DiscreteEventPreMode::FollowCurrent,
+            solve::DiscreteEventPreMode::EventEntry,
+            solve::DiscreteEventPreMode::FollowCurrent,
+            solve::DiscreteEventPreMode::FollowCurrent,
+            solve::DiscreteEventPreMode::FollowCurrent,
+        ],
+        vec![true, false, false, false, false],
+    );
     model.parameters = vec![0.0; 8];
     model.initial_y = vec![0.0; 2];
     model.visible_names = vec![
@@ -1715,13 +1779,17 @@ fn event_update_converges_boolean_pre_feedback_loop_row_by_row() {
         ],
         fixture_span!(),
     );
-    model.problem.discrete.pre_modes = vec![
-        solve::DiscreteEventPreMode::FollowCurrent,
-        solve::DiscreteEventPreMode::Fixed,
-        solve::DiscreteEventPreMode::FollowCurrent,
-        solve::DiscreteEventPreMode::FollowCurrent,
-        solve::DiscreteEventPreMode::FollowCurrent,
-    ];
+    set_equation_row_metadata(
+        &mut model,
+        vec![
+            solve::DiscreteEventPreMode::FollowCurrent,
+            solve::DiscreteEventPreMode::Fixed,
+            solve::DiscreteEventPreMode::FollowCurrent,
+            solve::DiscreteEventPreMode::FollowCurrent,
+            solve::DiscreteEventPreMode::FollowCurrent,
+        ],
+        vec![false; 5],
+    );
     model.parameters = vec![1.0, 1.0, 1.0, 1.0, 0.0, 0.0];
 
     let runtime = SolveRuntime::new(&model).expect("valid runtime should prepare");
@@ -1762,13 +1830,17 @@ fn fixed_time_event_does_not_freeze_follow_current_rows() {
         ],
         fixture_span!(),
     );
-    model.problem.discrete.pre_modes = vec![
-        solve::DiscreteEventPreMode::FollowCurrent,
-        solve::DiscreteEventPreMode::Fixed,
-        solve::DiscreteEventPreMode::FollowCurrent,
-        solve::DiscreteEventPreMode::FollowCurrent,
-        solve::DiscreteEventPreMode::FollowCurrent,
-    ];
+    set_equation_row_metadata(
+        &mut model,
+        vec![
+            solve::DiscreteEventPreMode::FollowCurrent,
+            solve::DiscreteEventPreMode::Fixed,
+            solve::DiscreteEventPreMode::FollowCurrent,
+            solve::DiscreteEventPreMode::FollowCurrent,
+            solve::DiscreteEventPreMode::FollowCurrent,
+        ],
+        vec![false; 5],
+    );
     model.parameters = vec![1.0, 1.0, 1.0, 1.0, 0.0, 0.0];
 
     let runtime = SolveRuntime::new(&model).expect("valid runtime should prepare");
@@ -1835,10 +1907,14 @@ fn event_update_rechecks_change_guard_after_runtime_alias_refresh() {
         ],
         fixture_span!(),
     );
-    model.problem.discrete.pre_modes = vec![
-        solve::DiscreteEventPreMode::FollowCurrent,
-        solve::DiscreteEventPreMode::Fixed,
-    ];
+    set_equation_row_metadata(
+        &mut model,
+        vec![
+            solve::DiscreteEventPreMode::FollowCurrent,
+            solve::DiscreteEventPreMode::Fixed,
+        ],
+        vec![false; 2],
+    );
     model.parameters = vec![1.0, 1.0, 0.0, 0.0, 0.0];
 
     let runtime = SolveRuntime::new(&model).expect("valid runtime should prepare");

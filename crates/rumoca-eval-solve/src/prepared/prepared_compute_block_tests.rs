@@ -2,7 +2,7 @@ use super::*;
 use rumoca_core::{SourceId, Span, StructuredIndexBinder, StructuredIndexDomain};
 use rumoca_ir_solve::{
     AffineStencilLoadStride, ComputeBlock, ComputeNode, LinearOp, ScalarProgramBlock,
-    SparsityPattern, TensorNodeMetadata,
+    TensorNodeMetadata,
 };
 
 fn test_domain() -> StructuredIndexDomain {
@@ -33,8 +33,8 @@ fn matmul_node(lhs: f64, rhs: &[f64]) -> ComputeNode {
         m: 1,
         k: 1,
         n: rhs.len(),
-        lhs_sparsity: SparsityPattern::Dense,
-        rhs_sparsity: SparsityPattern::Dense,
+        lhs_pattern: crate::fixture_pattern(1, 1, false),
+        rhs_pattern: crate::fixture_pattern(1, rhs.len(), false),
         metadata: TensorNodeMetadata::default(),
         span: test_span("prepared_matmul.mo"),
     }
@@ -337,8 +337,8 @@ fn prepared_compute_block_rejects_matmul_output_overflow_with_span() {
             m: usize::MAX,
             k: 1,
             n: 2,
-            lhs_sparsity: SparsityPattern::Dense,
-            rhs_sparsity: SparsityPattern::Dense,
+            lhs_pattern: crate::fixture_pattern(1, 1, false),
+            rhs_pattern: crate::fixture_pattern(1, 1, false),
             metadata: TensorNodeMetadata::default(),
             span,
         }],

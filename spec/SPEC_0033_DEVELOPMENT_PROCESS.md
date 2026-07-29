@@ -63,7 +63,7 @@ variable selection, and runtime-bound function names are checked.
 |---|---|---|
 | Default behavior MUST remain strict and spec-aligned | compiler/tooling | Avoids silent drift |
 | Compiler-owned IRs, wire formats, and phase APIs MUST support only their current representation | compiler | Old internal contracts must not constrain correct architecture |
-| A compiler representation cutover MUST remove the superseded reader, writer, adapter, alias, feature flag, fixture, and fallback branch in the same change | compiler | Prevents legacy paths from bypassing current invariants |
+| A compiler representation cutover MUST remove the superseded reader, writer, adapter, alias, feature flag, fixture, and fallback branch in the same change | compiler | Prevents obsolete paths from bypassing current invariants |
 | Unsupported compiler-owned wire versions MUST fail immediately | IR deserialization | Invalid input must not enter the pipeline |
 | Source-language compatibility deviations MUST be explicit and opt-in | config/tooling | Users choose non-standard Modelica behavior |
 | Source-language compatibility docs MUST name the requiring library/model and default | deviation docs | Makes exceptions reviewable |
@@ -71,8 +71,8 @@ variable selection, and runtime-bound function names are checked.
 | Temporary debug probes MUST be removed before finalization | all changes | Keeps tree clean |
 
 “Compatibility” in the source-language rows concerns intentionally
-non-standard source behavior. It does not authorize backward-compatibility or
-legacy code for compiler-owned representations.
+non-standard source behavior. It does not authorize support for superseded
+compiler-owned representations.
 
 ### 5. MSL-Backed Work
 
