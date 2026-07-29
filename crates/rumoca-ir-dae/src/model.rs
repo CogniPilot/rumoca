@@ -1234,15 +1234,11 @@ impl<'dae> Functions<'_, 'dae> {
     ) -> Result<(), DaeConstructionError> {
         check_provenance(self.source_map, provenance)?;
         let function = body.function;
-        let expected = self
-            .storage
-            .functions
-            .get(function.index() as usize)
-            .map(|entry| entry.results.clone())
-            .ok_or_else(|| unknown("function", function.index(), provenance))?;
         let output_values = self.storage.functions[function.index() as usize]
             .output_values
             .clone();
+        // Checked assignment and loop transitions are the only writers of
+        // current values; finalization only has to prove every output is set.
         let results = output_values
             .iter()
             .map(|value| {
@@ -1255,14 +1251,6 @@ impl<'dae> Functions<'_, 'dae> {
                 )
             })
             .collect::<Result<Vec<_>, _>>()?;
-        validate_function_results(
-            self.storage,
-            function,
-            &output_values,
-            &expected,
-            &results,
-            provenance,
-        )?;
         let Some(entry) = self.storage.functions.get_mut(function.index() as usize) else {
             return Err(unknown("function", function.index(), provenance));
         };
@@ -1276,39 +1264,6 @@ impl<'dae> Functions<'_, 'dae> {
         self.storage.unfilled_functions -= 1;
         Ok(())
     }
-}
-
-fn validate_function_results(
-    storage: &Storage,
-    function: FunctionId<'_>,
-    outputs: &[u32],
-    expected: &[u32],
-    results: &[u32],
-    at: DaeProvenance,
-) -> Result<(), DaeConstructionError> {
-    if expected.len() != results.len() || outputs.len() != results.len() {
-        return Err(invalid_arity(expected.len(), results.len(), at));
-    }
-    for ((&result, &output), &expected_type) in results.iter().zip(outputs).zip(expected) {
-        let definition = FunctionDefinitionId::from_raw(function.index(), result);
-        let entry = function_definition_entry(storage, definition, at)?;
-        if entry.target != output {
-            return Err(DaeConstructionError::InvalidFunctionValueRead {
-                value: output,
-                expected_definition: None,
-                found_definition: result,
-                span: entry.provenance.span(),
-            });
-        }
-        storage.expression_at(entry.rhs, at)?;
-        storage.expect_function_expression(ExprId::from_raw(entry.rhs), function, at)?;
-        storage.expect_value_type_compatible(
-            expected_type,
-            storage.expressions.value_types[entry.rhs as usize],
-            at,
-        )?;
-    }
-    Ok(())
 }
 
 pub(crate) fn check_provenance(

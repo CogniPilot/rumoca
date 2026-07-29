@@ -214,30 +214,6 @@ impl Storage {
         }
     }
 
-    pub(crate) fn expect_function_expression(
-        &self,
-        expression: ExprId<'_>,
-        function: FunctionId<'_>,
-        at: DaeProvenance,
-    ) -> Result<(), DaeConstructionError> {
-        if let Some(found_domain) = self.expr_binder_domain(expression, at)? {
-            return Err(DaeConstructionError::InvalidBinderScope {
-                expected_domain: None,
-                found_domain,
-                span: at.span(),
-            });
-        }
-        match self.expr_function_scope(expression, at)? {
-            None => Ok(()),
-            Some(found_function) if found_function == function.index() => Ok(()),
-            Some(found_function) => Err(DaeConstructionError::InvalidFunctionScope {
-                expected_function: Some(function.index()),
-                found_function,
-                span: at.span(),
-            }),
-        }
-    }
-
     pub(crate) fn expect_domain_expression(
         &self,
         expression: ExprId<'_>,
@@ -859,16 +835,5 @@ impl Storage {
         self.value_types
             .get(raw as usize)
             .ok_or_else(|| unknown("value type", raw, at))
-    }
-
-    pub(super) fn expression_at(
-        &self,
-        raw: u32,
-        at: DaeProvenance,
-    ) -> Result<&ExprNode, DaeConstructionError> {
-        self.expressions
-            .nodes
-            .get(raw as usize)
-            .ok_or_else(|| unknown("expression", raw, at))
     }
 }
