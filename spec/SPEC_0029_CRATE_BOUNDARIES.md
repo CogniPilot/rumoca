@@ -25,6 +25,11 @@ Rust compiler. See [Dependency Tiers](#dependency-tiers).
 contain only data types, display/debug implementations, and serde
 serialization. No evaluation logic, phase logic, or side effects.
 
+Every source-language parser, generated grammar, recoverable CST, parser state,
+and syntax diagnostic belongs in a `rumoca-phase-parse*` crate. IR crates MUST
+NOT contain or feature-gate source parsers. Current-version wire replay through
+checked constructors is data integrity, not source parsing.
+
 IR data types own the checked constructors needed to make their local
 invariants unrepresentable. `rumoca-ir-dae` also owns private current-version
 wire decoding, checked root assembly, and closed root-bound operations that
