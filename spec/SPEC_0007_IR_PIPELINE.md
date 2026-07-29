@@ -44,9 +44,8 @@ Modelica source (.mo)
 | FMI export, DAE-readable C/Fortran, CasADi, SymPy, JAX-style symbolic/array targets | DAE | MLS B.1 form, source traceability |
 | Numeric sim, C/Rust kernels, JIT, MLIR, CUDA/GPU | Solve | Register-machine plus tensor bytecode |
 
-**Template/codegen ownership:** `rumoca-phase-codegen` renders text. Execution
-adapters wrap toolchains, packaging, runtime calls, or JIT APIs, not semantics,
-DAE lowering, structural rewrites, or template policy.
+`rumoca-phase-codegen` renders text; execution adapters wrap toolchains and
+runtimes without owning compiler semantics.
 
 ---
 
@@ -245,43 +244,6 @@ rendering (those live in DAE-IR/upstream lowering, `rumoca-exec-*`, or
 
 ---
 
-### Key Invariants for Agents
-
-1. **Eliminate source temporal operators at the DAE boundary.** Any callable
-   `pre`, `edge`, `change`, `sample`, or `previous` past `phase-dae` is a bug.
-
-1. **Runtime flow actions are not expression graph nodes.** DAE-IR lowers
-   `reinit` into guarded updates and stores `assert`/`terminate` as guarded
-   event actions. Numeric DAE or Solve compute graphs must never contain these
-   source calls.
-
-2. **IR crates are pure data.** No evaluation logic, phase logic, or side
-   effects in `rumoca-ir-ast`, `rumoca-ir-flat`, `rumoca-ir-dae`, or
-   `rumoca-ir-solve`. See `SPEC_0029`.
-
-3. **Scalarization happens at the backend/evaluator boundary.** Call
-   `rumoca_eval_solve::to_scalar_program_block(&compute_block)` from the backend
-   or evaluator crate that needs scalar programs, and propagate its `Result`.
-   Do not define scalarization helpers in IR crates, and do not
-   flatten tensor nodes in `rumoca-phase-solve` lowering.
-
-4. **Each stage's output is serializable.** DAE and Solve roots carry mandatory
-   `schema_version`; unsupported versions are rejected. Compiler-owned wire
-   formats support only their current version; no superseded reader or migration
-   path is retained. Private wire decoders reconstruct checked stage values;
-   invariant-bearing IR children do not derive `Deserialize`.
-
-5. **The dependency direction is strictly downward.** AST → Flat → DAE → Solve.
-   No stage imports from a later stage.
-
-6. **DAE-IR owns symbolic math; Solve-IR lowers format only.** Do not add
-   expression rewrites or new mathematical content in Solve-IR or solve
-   lowering; add them to DAE-IR first.
-
-7. **Optional IR fields are same-version omissions, not work caches.** DAE
-   optionals remain canonical MLS/diagnostic data; solver products belong in
-   structural results or Solve artifacts. Meaning changes bump `schema_version`.
-
 ### Structural Lowering Scope
 
 Rumoca performs OpenModelica-class structural lowering between DAE and Solve.
@@ -303,24 +265,12 @@ keep scope and ownership clear.
 | Algebraic-loop tearing (Greedy Cellier) | `rumoca-phase-structural::tearing` | Identifies tear variables for cyclic algebraic blocks. |
 | State selection | `rumoca-phase-structural` | Pick a consistent state set. |
 
-**Out of scope (require an explicit spec update before adding):**
-
-- Full dummy-derivative method (Mattsson-Söderlind). The current
-  Pantelides-style approach may add dummy derivatives in restricted forms,
-  but a general dummy-derivative pass is not implemented.
-- Higher-order symbolic simplification beyond what serves index reduction
-  and alias elimination.
-- Symbolic linearization for control-design output (codegen-level concern,
-  not pipeline-level).
-
 **Placement requirement:**
 
-All DAE structural lowering/transformation MUST live in
-`rumoca-phase-structural` per SPEC_0029 §12. A structural lowering pass's IR
-output is another finalized DAE. Separate structural analysis products may
-accompany that DAE, but they are not stored as backend convenience fields on
-`ir-dae::Dae`. `rumoca-phase-solve` only lowers a finalized DAE to Solve-IR; it
-does not mutate DAE mathematical structure.
+DAE structural transformations live in `rumoca-phase-structural`, return a
+finalized DAE, and keep analysis products outside DAE. `rumoca-phase-solve`
+only lowers finalized DAE. General dummy derivatives, unrelated symbolic
+simplification, and control-design linearization require a spec update.
 
 ## References
 

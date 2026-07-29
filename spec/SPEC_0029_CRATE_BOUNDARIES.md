@@ -73,19 +73,14 @@ variable-name interners or serialized ID compatibility layers; if a phase needs
 symbol identity beyond `VarNameId`, introduce a phase-specific ID at that
 boundary.
 
-The `VarName` interner lifecycle is process-local and monotonic. Interned text
-is retained until process or WASM worker teardown so `VarNameId` stays stable
-for in-process IR values still referenced by caches, diagnostics, or snapshots.
-There is intentionally no public reset API. Long-running hosts must treat the
-process/worker/session lifetime as the memory boundary, and must
-serialize/display `VarName` as text rather than persisting `VarNameId`.
+The `VarName` interner is process-local, monotonic, and has no public reset.
+Hosts serialize/display text, never process-local `VarNameId`.
 
 Do not create `rumoca-ir-core`, `rumoca-foundation`, or another micro-crate for
 spans, diagnostics, IDs, or shared IR vocabulary without a spec update.
 
-IR-stage-specific types belong in the matching `rumoca-ir-*` crate. A type
-belongs in `rumoca-core` only if referenced by multiple IR stages or by both IR
-and phase crates.
+IR-specific types stay in their matching crate; shared multi-stage vocabulary
+belongs in `rumoca-core`.
 
 ### 3b. Single-Source Helpers Across the Pipeline
 
@@ -269,34 +264,12 @@ compiler/session → DAE structural → solve-IR lowering → runtime contracts 
 | Transport-neutral lockstep I/O | `rumoca-codec` | Separate from protocol codecs |
 | Protocol codecs (FlatBuffers, etc.) | `rumoca-codec-*` | No simulation, no controller, no HTTP, no scene |
 
-Execution adapter crates are not compiler phases. `rumoca-exec-*`
-crates wrap tool invocation, ABI adaptation, loading, GPU/accelerator
-integration, packaging, or runtime compilation. Text-only targets stay in
-codegen. Non-codegen phase crates MUST NOT
-depend on target encoder/JIT libraries such as `wasm-encoder`, Cranelift,
-Inkwell, LLVM ORC bindings, CUDA Driver APIs, or NVRTC; backend bytecode,
-native/JIT execution, and device launch policy belong in `rumoca-exec-*`, above
-the IR-lowering phase.
-
-Target-language and target-format policy belongs in manifests/templates, not
-Rust control flow. Rust MAY provide generic manifest parsing, template
-rendering, safe path handling, schema validation, and language-neutral feature
-probes over IR data. Rust MUST NOT hard-code target-language capabilities, file
-layouts, emitted language names, or backend feature tables for textual targets
-(C, Rust, CUDA C, MLIR, FMI/eFMI, or future custom targets). A textual/codegen
-target should be addable with `target.toml` plus Jinja templates; required
-capability declarations or unsupported-feature contracts must live in that
-manifest schema and be enforced by generic validation. Unsupported manifest
-capability failures MUST report stable `unsupported-feature:<feature_id>` from
-the manifest feature ID so CI, MSL reports, and release summaries can aggregate
-gaps without knowing the target language.
-
-JIT targets follow the same layering rule as execution adapters, not textual
-template targets. Cranelift, LLVM ORC/Inkwell, CUDA NVRTC/Driver, and browser
-WebAssembly compilation are allowed only in backend-facing execution crates or
-host bindings. They consume Solve IR or generated artifacts through a stable
-execution ABI and share the prepared-interpreter equivalence tests of concrete
-solver backends.
+Execution adapters are not phases. Non-codegen phases must not depend on target
+encoders, JITs, toolchains, or device APIs. Textual target policy lives in
+`target.toml` and templates; Rust provides generic rendering, validation, and
+IR capability probes. Unsupported capabilities report
+`unsupported-feature:<feature_id>`. JIT/device adapters consume Solve IR or
+generated artifacts through stable execution ABIs and equivalence tests.
 
 Steady-state CI rejects reverse dependencies across this chain. `rumoca-compile`
 MUST NOT depend on concrete solvers or visualization assets; backend-selection

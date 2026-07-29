@@ -11,22 +11,11 @@ over one private aggregate, without weaker roots or duplicate storage.
 
 ## Specification
 
-### Rollout
+### Scope
 
-| Milestone | Scope | Status |
-|---|---|---|
-| DAE | Aggregate, children, wire, transformations | This branch |
-| AST | Parsed, resolved, typed, instanced proofs | This branch |
-| Flat | Instantiated symbolic model | This branch |
-| Solve | Layouts, tensors, programs and derived sparsity | This branch |
-
-Current public IR fields and Flat/Solve validators remain noncompliant. This
-spec stays `DRAFT` until all milestones are implemented.
-
-Proof-carrying sparsity is part of the Solve milestone and follows
-[SPEC_0039](SPEC_0039_PROOF_CARRYING_SPARSITY.md). A sparsity annotation is not
-an unchecked optimization hint: patterns admitted to finalized Solve artifacts
-are derived by construction from checked programs and compact domains.
+DAE, AST phase proofs, Flat, and Solve must all satisfy this contract. The spec
+stays `DRAFT` while any stage exposes public invariant fields or root
+validators. Solve sparsity follows [SPEC_0039](SPEC_0039_PROOF_CARRYING_SPARSITY.md).
 
 ### DAE Milestone Acceptance
 
@@ -44,14 +33,7 @@ are derived by construction from checked programs and compact domains.
 | DAE-related production LOC is net-negative | PR metrics | Demonstrates savings |
 | Checked-DAE production is at most 11,000 LOC | `rumoca-ir-dae` | Bounds ceremony |
 
-LOC metrics compare the merge base with the completed branch using the same
-method. Production Rust is repository-wide; tests and generated code are
-reported separately. Coexisting superseded and checked DAE fails this milestone.
-
 ### One Aggregate Owns Construction
-
-`Dae::construct` creates one aggregate, lends its producer a branded capability,
-and returns immutable `Dae` only on success.
 
 | Rule | Owner/Where | Brief Justification |
 |---|---|---|
@@ -65,13 +47,9 @@ and returns immutable `Dae` only on success.
 | Failure exposes no DAE | `Dae::construct` | No partial root |
 | Finalization is O(1), excluding freezing | `Dae::construct` | No rescan |
 
-`DaeDraft`, separate roots, data-owning builder chains, root-shaped partial
-values, unchecked insertion, and finalized mutation are prohibited. Phase
-capabilities may consume themselves but always borrow the same aggregate.
-
-Every `add_*` checks applicable type, shape, variability, clock, domain, role,
-ownership, and key contracts before insertion, then returns a branded typed ID.
-Tree analysis stays in the producer; DAE checks local integrity and proofs.
+`DaeDraft`, separate roots, data-owning builders, partial roots, unchecked
+insertion, and finalized mutation are prohibited. Tree analysis stays in the
+producer; DAE insertion checks local integrity and supplied proofs.
 
 ### Storage and Forward References
 
@@ -88,22 +66,12 @@ Tree analysis stays in the producer; DAE checks local integrity and proofs.
 | B.1c keeps an incremental topology capability | Discrete system | Ordered assignment |
 | Other objects insert complete values | Owning arena/system | Ordered dependencies |
 
-Types, relations, roots, events, clocks and ownerships, temporal coordinates,
-delays, and equations are inserted complete in producer-proved dependency
-order. A function loop-transition slot exists only because the body transition
-reads the preceding iteration's carried values; its linear authority is
-consumed when the compact fold and its result expressions are inserted.
-Reservation may be added to another domain only after an MLS-valid cycle is
-demonstrated and this spec is amended.
-
-An allowed forward arena may keep private slots and an O(1) local unfilled
-count; definition authority is linear and branded. Final DAE has no unfilled
-slot. Global `RemainingDefinitions`, parallel identity/definition maps,
-data-owning reservation stages, seals, completion wrappers, validation passes,
-validation switches, and unchecked paths are prohibited.
-
-Build references carry one private session brand; finalized storage keeps only
-typed IDs. The brand never affects equality, order, display, or wire data.
+Only the listed domains may reserve. Their private linear definition authority
+and O(1) unfilled count must reach zero before success. All other objects insert
+complete values in producer-proved order. Global completion trackers, parallel
+identity maps, seals, validation passes, and unchecked paths are prohibited.
+Brands are build-only and never affect finalized equality, order, display, or
+wire data.
 
 ### Canonical Arenas, Systems, and Environments
 
@@ -119,10 +87,6 @@ typed IDs. The brand never affects equality, order, display, or wire data.
 | `EventSystem` | Events, schedules, actions | Arenas + indexes |
 | `ClockSystem` | Clocks, lattice, ownership | Arenas + indexes |
 | `TemporalSystem` | History, terminal, delays | Arenas + indexes |
-
-An arena owns typed identity and order; a system owns related arenas and
-contracts. An environment is a read-only filtered query and owns no identity.
-Facts attached to existing IDs are annotations.
 
 ### Type and Variable Identity
 
@@ -143,40 +107,13 @@ Facts attached to existing IDs are annotations.
 | Element type includes shape | Variables/expressions | Local compatibility |
 | Attributes are checked on attachment | Variable construction | No drift |
 
-Coordinates contain permitted primitive/enumeration rectangular values.
-Function values may also contain records, operator records, and external
-objects. Aggregates never use synthetic array shapes. Enum expressions retain
-type and literal ID; textual literal sidecars are prohibited.
-
-Variable-size function arrays are monomorphized before DAE construction. The
-producing phase derives one reachable specialization for each distinct concrete
-input signature and supplies an inspectable shape certificate containing the
-declared symbolic axes, call-site equalities, resolved parameter/result/local
-extents, and selected specialization identity. Dependent extents are accepted
-only when their source shape expressions evaluate exactly from already proven
-axes. Unresolved axes, inconsistent equalities, and unsupported shape
-expressions fail at their source owner; zero sentinels, guessed extents, and
-single-signature fallback are prohibited. DAE function signatures contain only
-concrete extents.
-
-Function control flow stores source-order statements and a checked denotation.
-A `for` statement owns one compact domain and a simultaneous transition over
-its loop-carried values. Transition parameters and results use owner-local
-typed identities; construction derives the carried set, checks every update,
-and consumes the loop authority. Literal-domain unrolling and mutable
-expression nodes are prohibited.
-
-ToDAE supplies a finite-domain proof for every function loop. A bound is
-statically known only when integer expression evaluation reaches literals
-through function values that have source defaults and no assignment anywhere
-in the function body. Runtime-dependent, cyclic, overflowing, or zero-step
-domains fail at the loop owner; construction never guesses a bound or silently
-unrolls a loop.
-
-Partition ordinals are layout, not identity. Metadata stores typed canonical or
-runtime facts. Descriptions, partial status, balance, ancestry, backend fields,
-and structural reports stay separate. Eliminated-value starts use typed stable
-source identity, never text.
+Coordinates use primitive/enumeration rectangular values; function values may
+also contain checked aggregates and external objects. Function array extents
+are concretely monomorphized from finite, inspectable shape proofs before DAE
+construction. Function loops retain source order as compact finite-domain
+transitions over typed carried values. Unresolved, cyclic, overflowing, or
+zero-step domains fail at their owner; guessed extents and literal unrolling
+are prohibited. Partition ordinals remain layout, never semantic identity.
 
 ### Expressions and Equations
 
@@ -201,17 +138,6 @@ source identity, never text.
 | Equations accept role-specific IDs | Equation systems | No generic forgery |
 | Optional-lhs equations are prohibited | Final DAE | Role-defined form |
 
-Typed coordinates represent parameters, time, states, derivatives, algebraics,
-discrete values, pre-values, conditions, delay outputs, and terminal state.
-Source `der`, `pre`, `edge`, `change`, `sample`, `previous`, `initial`,
-`reinit`, `assert`, and `terminate` never survive as generic DAE calls.
-
-Literal, coordinate, operator, call, index, range, comprehension, and array
-nodes each use their own source occurrence. Compiler-generated nodes use a
-typed `DaeGeneration` and the nearest semantically responsible source span;
-dummy provenance is prohibited. Equation `equal(lhs, rhs)` creates its
-synthetic residual with the equation owner's span and generated classification.
-
 | Equation contract | Owner/Where | Brief Justification |
 |---|---|---|
 | Continuous equations own checked residual IDs | Continuous system | B.1a has one form |
@@ -225,13 +151,9 @@ synthetic residual with the equation owner's span and generated classification.
 | Reinit branches preserve ordering and exclusivity | Event system | Multiple legal branches remain expressible |
 | Caller-supplied scalar counts are prohibited | Equation domains | Counts are derived |
 
-Structured families own compact domains, checked bodies, and body-view mode.
-`BinderSubstitution` substitutes checked binders and contributes every scalar
-body element per domain point. `RowMajorProjection` requires each aggregate
-body shape to equal the domain extents and contributes one scalar element per
-body per point. Constructors derive row counts without double multiplication.
-Scalar views retain typed family identity. Evaluation and lazy projection
-belong to `rumoca-eval-dae`, not the IR crate.
+Structured families own compact domains, checked bodies, typed scalar views,
+and constructor-derived row counts. Evaluation and lazy projection belong to
+`rumoca-eval-dae`.
 
 ### Conditions, Events, Clocks, and Temporal State
 
@@ -254,20 +176,11 @@ belong to `rumoca-eval-dae`, not the IR crate.
 | Previous retains owning clock | `TemporalSystem` | Tick-local history |
 | Terminal/delay coordinates are typed | `TemporalSystem` | No generated names |
 
-Only relations whose closed activation requires continuous monitoring receive
-roots. Discrete-only, literal-`noEvent`, and assertion-only relations do not;
-synthetic event-generating numeric surfaces do.
-
-Clock-domain expression environments filter capabilities without owning
-expressions. Domain exclusion and unknown identity are distinct errors.
-Runtime identity is never recovered from text or unrelated equations.
-
-Delay sources are legal primitive scalar/array values. Two-argument delay owns
-a strictly-positive scalar-Real parameter expression. Three-argument delay owns
-unclocked scalar-Real `delayTime` and strictly-positive parameter `delayMax`,
-requiring runtime `0 < delayTime <= delayMax`. Positive evidence stores the
-expression and finite evaluated value using an O(1) witness check; Boolean
-claims and tree walks are prohibited.
+Only continuously monitored closed activations receive roots. Clock-domain
+environments filter typed capabilities without owning expressions. Delay
+construction proves primitive shape, scalar-Real timing, and
+`0 < delayTime <= delayMax` where applicable; Boolean claims and text-derived
+runtime identity are prohibited.
 
 ### Transformations
 
@@ -340,52 +253,13 @@ permitted.
 
 ### Backend Capability Restoration
 
-The DAE cutover may establish a smaller reliable core before every backend is
-rewritten, but capability deletion is not completion. A backend removed during
-the cutover remains a required restoration item until it consumes checked DAE
-and Solve facts directly.
-
-The same rule applies to compiler and runtime semantics. The reliable core must
-reject a missing lowering at the first responsible phase; it must not erase the
-construct, substitute a default, or produce a partially computable Solve
-program. The following cutover gaps are required work, not optional features:
-
-| Capability | Required checked replacement | Required evidence |
-|---|---|---|
-| High-index DAE reduction | Provenance-preserving Pantelides/dummy-derivative transformation that constructs a new checked DAE | Index-reduction unit cases and representative MSL mechanics |
-| Alias elimination, tearing, and BLT preparation | Checked structural transformations with explicit preservation/loss receipts for every semantic owner | Structural equivalence and simulation parity |
-| Relations, roots, conditions, and event actions | Typed DAE-to-Solve event partition including `reinit`, `assert`, and `terminate` | Event ordering, coincident-event, and MSL event simulations |
-| Clocked equations and history | Typed Solve clocks for `sample`, `previous`, clock ownership, and exact lattices | Clock lattice, tick ordering, and clocked MSL simulations |
-| Delay and terminal semantics | Typed history buffers and terminal coordinates with checked bounds | Delay/terminal unit tests and simulations |
-| Coupled discrete Real equations and discrete-value updates | Computable B.1b/B.1c Solve partitions with explicit topology | Mixed continuous/discrete and event-iteration tests |
-| External functions, tables, and random sources | Typed runtime operations with declared host/runtime capabilities | Import/call/table/random tests with deterministic failure modes |
-| Initial algorithms and full algorithm statements | Semantic-owner construction for assignment, control flow, calls, and multi-output statements | Scalar, array, record, and initialization algorithm tests |
-| Aggregate and multi-output expressions | Typed record/tuple/field and function-output projection operations | Record, tuple, array, and function regression suites |
-| Dynamic array selection and remaining tensor forms | Checked index/domain operations or explicit target capability rejection | Tensor scaling, dynamic-index, and stencil tests |
-
-| Capability | Required replacement | Required evidence |
-|---|---|---|
-| CasADi MX and SX | Typed Solve programs and checked declarations | Render, import, evaluate, differentiate |
-| JAX | Typed Solve programs and checked declarations | Render, import, `jit`, `grad`, evaluate |
-| SymPy | Checked expressions/systems or typed Solve programs | Render, import, symbolic solve, evaluate |
-| SymForce | Checked expressions/systems or typed Solve programs | Render, import, residual/Jacobian evaluation |
-| ONNX | Typed Solve program graph | Model checker and runtime evaluation |
-| Julia ModelingToolkit | Checked expressions/systems or typed Solve programs | Julia load, structural simplify, evaluate |
-| FMI 2/3 ME/CS in native, packaged, and Wasm forms | One checked kernel and FMI lifecycle; in-process Diffsol is an FMI 3 ME host | XML/WIT validation and cross-form lifecycle/trace parity; implementation design is tracked by non-active deferred SPEC_0038 |
-| eFMI Algorithm Code and Production Code | Checked Solve/GALEC projection with no alternate semantic path | Schema/checksum validation, generated-C checks, and traceability evidence |
-
-Pending backends are absent from target discovery and fail as unsupported.
-Superseded templates, old-shape projections, target aliases, semantic stubs, and
-silent defaults are prohibited even as temporary restoration mechanisms. The
-checklist is complete only when each target is restored with equivalent
-end-to-end behavior or an accepted spec explicitly changes its capability.
-
-## Rationale
-
-Correct construction must remove code, not create lifecycle ceremony. One
-aggregate, local insertion, dense arenas, and justified forward slots preserve
-invariants without parallel representations. `DaeDraft` and data-owning stage
-builders recreate a weaker DAE and are rejected.
+Capability deletion is not completion. Structural, event, clock, temporal,
+algorithm, aggregate, tensor, external-call, symbolic-export, FMI 2/3 ME/CS,
+eFMI, native, and Wasm capabilities must consume checked DAE/Solve facts and
+retain equivalent end-to-end evidence. Missing lowering fails at its first
+owner. Pending targets stay undiscoverable; stubs, alternate semantic paths,
+old-shape adapters, target aliases, silent defaults, and compatibility readers
+are prohibited.
 
 ## References
 
@@ -398,6 +272,3 @@ builders recreate a weaker DAE and are rejected.
 - [SPEC_0037](archive/deferred/SPEC_0037_FORMALLY_VERIFIED_COMPILER.md) —
   deferred formal-verification architecture
 - [MLS Appendix B](https://specification.modelica.org/maint/3.6/modelica-dae-representation.html)
-
-Before proposal, SPEC_0007 and SPEC_0029 require coordinated terminology and
-construction-boundary amendments.
