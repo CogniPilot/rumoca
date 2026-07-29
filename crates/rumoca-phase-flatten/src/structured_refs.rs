@@ -1,19 +1,20 @@
 //! Flatten-exit pass: attach structured component references to every
-//! variable reference the phase emitted by rendered name.
+//! declared variable reference and reject unresolved occurrences.
 //!
 //! Flatten owns its name encoding. Connector/array expansion historically
 //! rendered element references (`sum.u[2]`) as plain strings and downstream
 //! phases re-derived the structure (the resolver scalar-name parse, balance
 //! prefix matching). This pass resolves each rendered reference against the
-//! flat variable table once, at the producing phase's boundary, so consumers
-//! receive structured references and the string-parsing bridges can reject
-//! unstructured leftovers instead of guessing.
+//! flat variable table once, at the producing phase's boundary. A reference
+//! that already carries resolved structure keeps it. Any other non-generated
+//! reference must name a declaration in that table; the phase fails at its
+//! exact occurrence instead of emitting an ambiguous Flat tree.
 
 use super::*;
 use rumoca_core::{ExpressionRewriter, StatementRewriter};
 
 pub(crate) fn attach_structured_references(flat: &mut flat::Model) -> Result<(), FlattenError> {
-    let index = StructuredRefIndex::build(flat);
+    let index = StructuredRefIndex::build(flat)?;
 
     let mut rewriter = StructuredRefRewriter {
         index: &index,
@@ -131,15 +132,18 @@ struct StructuredRefIndex {
 }
 
 impl StructuredRefIndex {
-    fn build(flat: &flat::Model) -> Self {
+    fn build(flat: &flat::Model) -> Result<Self, FlattenError> {
         let mut by_name = std::collections::HashMap::new();
         for (name, var) in &flat.variables {
             let Some(reference) = var.component_ref.as_ref() else {
-                continue;
+                return Err(FlattenError::missing_flat_variable_identity(
+                    name.as_str(),
+                    var.source_span,
+                ));
             };
             by_name.insert(name.id(), reference.clone());
         }
-        Self { by_name }
+        Ok(Self { by_name })
     }
 
     fn structured_for(
@@ -197,9 +201,19 @@ impl ExpressionRewriter for StructuredRefRewriter<'_> {
         if name.is_generated() {
             return self.walk_expression(expr);
         }
+        if name.target_def_id().is_some() {
+            return self.walk_expression(expr);
+        }
         let reference = match self.index.structured_for(name.var_name()) {
             Ok(Some(reference)) => reference,
-            Ok(None) => return self.walk_expression(expr),
+            Ok(None) if name.has_structure() => return self.walk_expression(expr),
+            Ok(None) => {
+                self.error = Some(FlattenError::unresolved_flat_reference(
+                    name.as_str(),
+                    *span,
+                ));
+                return expr.clone();
+            }
             Err(error) => {
                 self.error = Some(error);
                 return expr.clone();
@@ -306,5 +320,97 @@ mod tests {
             panic!("expected template var ref");
         };
         assert_eq!(name.target_def_id(), Some(def_id));
+    }
+
+    #[test]
+    fn unresolved_reference_fails_at_exact_occurrence() {
+        let occurrence = rumoca_core::Span::from_offsets(
+            SourceId::from_source_name("unresolved_flat_reference.mo"),
+            18,
+            25,
+        );
+        let mut flat = flat::Model::default();
+        flat.equations.push(flat::Equation::new(
+            Expression::VarRef {
+                name: Reference::new("missing"),
+                subscripts: Vec::new(),
+                span: occurrence,
+            },
+            occurrence,
+            flat::EquationOrigin::ComponentEquation {
+                component: "Root".to_string(),
+            },
+        ));
+
+        let error = attach_structured_references(&mut flat)
+            .expect_err("an unresolved source reference must not enter Flat IR");
+        assert!(matches!(
+            error,
+            FlattenError::UnresolvedFlatReference { ref name, span }
+                if name == "missing" && span == occurrence
+        ));
+        let diagnostic = rumoca_core::PhaseError::to_diagnostic(&error);
+        assert_eq!(diagnostic.code.as_deref(), Some("EF023"));
+        assert_eq!(diagnostic.labels[0].span, occurrence);
+    }
+
+    #[test]
+    fn unstructured_variable_fails_at_declaration_span() {
+        let declaration = rumoca_core::Span::from_offsets(
+            SourceId::from_source_name("unstructured_flat_variable.mo"),
+            9,
+            15,
+        );
+        let mut flat = flat::Model::default();
+        flat.variables.insert(
+            VarName::new("orphan"),
+            flat::Variable {
+                name: VarName::new("orphan"),
+                component_ref: None,
+                ..flat::Variable::empty_with_span(declaration)
+            },
+        );
+
+        let error = attach_structured_references(&mut flat)
+            .expect_err("an unstructured declaration must not enter Flat IR");
+        assert!(matches!(
+            error,
+            FlattenError::MissingFlatVariableIdentity { ref name, span }
+                if name == "orphan" && span == declaration
+        ));
+        let diagnostic = rumoca_core::PhaseError::to_diagnostic(&error);
+        assert_eq!(diagnostic.code.as_deref(), Some("EF024"));
+        assert_eq!(diagnostic.labels[0].span, declaration);
+    }
+
+    #[test]
+    fn resolved_external_reference_keeps_its_source_identity() {
+        let occurrence = rumoca_core::Span::from_offsets(
+            SourceId::from_source_name("resolved_flat_reference.mo"),
+            11,
+            29,
+        );
+        let resolved = component_reference(&["Pkg", "Literal"], Some(DefId::new(71)));
+        let mut flat = flat::Model::default();
+        flat.equations.push(flat::Equation::new(
+            Expression::VarRef {
+                name: Reference::with_component_reference("Pkg.Literal", resolved),
+                subscripts: Vec::new(),
+                span: occurrence,
+            },
+            occurrence,
+            flat::EquationOrigin::ComponentEquation {
+                component: "Root".to_string(),
+            },
+        ));
+
+        attach_structured_references(&mut flat)
+            .expect("a resolved non-variable reference is already valid");
+
+        let Expression::VarRef { name, span, .. } = &flat.equations[0].residual else {
+            panic!("expected variable reference");
+        };
+        assert_eq!(name.target_def_id(), Some(DefId::new(71)));
+        assert_eq!(*span, occurrence);
     }
 }

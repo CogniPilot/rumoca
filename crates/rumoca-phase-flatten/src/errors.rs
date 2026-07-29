@@ -264,6 +264,36 @@ pub enum FlattenError {
         #[label("this required edge makes the graph invalid")]
         span: Span,
     },
+
+    /// A non-generated value reference reached the Flat boundary without
+    /// either a resolved component path or a matching Flat declaration.
+    #[error("unresolved flat reference: {name}")]
+    #[diagnostic(
+        code(rumoca::flatten::EF023),
+        help(
+            "resolve and instantiate must preserve structured reference identity; flatten does not infer semantic identity from rendered names"
+        )
+    )]
+    UnresolvedFlatReference {
+        name: String,
+        #[label("unresolved reference reached the Flat IR boundary")]
+        span: Span,
+    },
+
+    /// A variable declaration reached the Flat boundary without the resolved
+    /// component path that identifies the instantiated declaration.
+    #[error("flat variable is missing structured identity: {name}")]
+    #[diagnostic(
+        code(rumoca::flatten::EF024),
+        help(
+            "instantiate must preserve the resolved component path on every variable declaration"
+        )
+    )]
+    MissingFlatVariableIdentity {
+        name: String,
+        #[label("this declaration has no structured Flat identity")]
+        span: Span,
+    },
 }
 
 impl FlattenError {
@@ -441,6 +471,20 @@ impl FlattenError {
             span,
         }
     }
+
+    pub fn unresolved_flat_reference(name: impl Into<String>, span: Span) -> Self {
+        Self::UnresolvedFlatReference {
+            name: name.into(),
+            span,
+        }
+    }
+
+    pub fn missing_flat_variable_identity(name: impl Into<String>, span: Span) -> Self {
+        Self::MissingFlatVariableIdentity {
+            name: name.into(),
+            span,
+        }
+    }
 }
 
 impl PhaseError for FlattenError {
@@ -460,7 +504,9 @@ impl PhaseError for FlattenError {
             | Self::InconsistentFunctionReference { span, .. }
             | Self::UnsupportedExpandableConnectorAugmentation { span, .. }
             | Self::CyclicConstantBinding { span, .. }
-            | Self::InvalidConnectionGraph { span, .. } => std::slice::from_ref(span),
+            | Self::InvalidConnectionGraph { span, .. }
+            | Self::UnresolvedFlatReference { span, .. }
+            | Self::MissingFlatVariableIdentity { span, .. } => std::slice::from_ref(span),
             Self::MissingFlowVariable { .. }
             | Self::Internal(_)
             | Self::FunctionRewriteNoConverge { .. }
