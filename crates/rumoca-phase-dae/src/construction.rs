@@ -23,6 +23,7 @@ mod function_construction;
 mod function_record_assembly;
 mod function_shapes;
 mod record_equation;
+mod structured_body;
 mod variable_construction;
 use algorithm::{
     AlgorithmStatementContext, lower_algorithm_assignment, lower_algorithm_function_call,
@@ -56,6 +57,7 @@ use function_shapes::{
     evaluate_shape_integer,
 };
 use record_equation::lower_record_equation;
+use structured_body::lower_structured_body;
 use variable_construction::{define_variables, reserve_variables};
 
 #[derive(Clone, Copy)]
@@ -164,6 +166,7 @@ fn build_checked<'dae>(
         ids: function_ids,
         comprehension_plans: &analysis.comprehension_plans,
         record_array_fields: &analysis.record_array_fields,
+        constants: &analysis.constants,
     };
     let (coordinates, reserved) = reserve_variables(flat, analysis, construction, &value_types)?;
     define_functions(
@@ -1600,7 +1603,14 @@ fn lower_structured_equations<'dae>(
                         shapes: functions.shapes.model_values(),
                         function_body: None,
                     };
-                    lower_expression_scoped(construction, symbols, &binders, body, generated_root)
+                    lower_structured_body(
+                        construction,
+                        symbols,
+                        &binders,
+                        body,
+                        generated_root,
+                        owner.span(),
+                    )
                 })
                 .collect::<Result<Vec<_>, _>>()?
         } else {
@@ -1690,12 +1700,19 @@ fn lower_materialized_family_bodies<'dae>(
                 .and_then(|offset| offset.checked_add(body_ordinal))
                 .expect("analysis validates the materialized family row range");
             let equation = &equations[family.first_equation_index + offset];
-            scalar_bodies.push(lower_expression(
-                construction,
+            let symbols = LoweringSymbols {
                 coordinates,
                 functions,
+                shapes: functions.shapes.model_values(),
+                function_body: None,
+            };
+            scalar_bodies.push(lower_structured_body(
+                construction,
+                symbols,
+                &HashMap::new(),
                 &equation.residual,
                 equation_generation(&equation.origin),
+                equation.span,
             )?);
         }
         let provenance = dae::DaeProvenance::generated(

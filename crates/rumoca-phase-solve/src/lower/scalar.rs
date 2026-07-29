@@ -1330,6 +1330,39 @@ impl<'dae> ScalarSelector<'dae> {
         }
     }
 
+    pub(super) fn select_array_element(
+        &self,
+        mut expression: dae::ExprId<'dae>,
+        mut scalar: usize,
+    ) -> Result<(dae::ExprId<'dae>, usize), LowerError> {
+        loop {
+            let node = self.node(expression);
+            let dae::ExpressionOperation::Array(elements) = node.operation() else {
+                return Ok((expression, scalar));
+            };
+            let Some(first) = elements.get(0) else {
+                return Err(LowerError::contract(
+                    "structured row cannot select an empty aggregate body",
+                    node.provenance().span(),
+                ));
+            };
+            let element_count = scalar_count(self.view, first);
+            if element_count == 0 {
+                return Err(LowerError::contract(
+                    "structured row cannot select an empty aggregate element",
+                    node.provenance().span(),
+                ));
+            }
+            expression = elements.get(scalar / element_count).ok_or_else(|| {
+                LowerError::contract(
+                    "structured row selects outside its checked aggregate body",
+                    node.provenance().span(),
+                )
+            })?;
+            scalar %= element_count;
+        }
+    }
+
     fn indexed_base_scalar(
         &self,
         base: dae::ExprId<'dae>,

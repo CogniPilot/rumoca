@@ -40,6 +40,7 @@ use source_balance::source_balance;
 use structured_families::validate_structured_families;
 
 pub(super) struct Analysis {
+    pub(super) constants: EvalContext,
     pub(super) roles: HashMap<VarName, PlannedRole>,
     pub(super) balance: BalanceDetail,
     pub(super) continuous_family_rows: HashSet<usize>,
@@ -163,7 +164,6 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
     let comprehension_plans = analyze_comprehensions(all_model_expressions(flat), &constants)?;
     let record_array_fields = analyze_record_array_field_plans(flat)?;
     let clocks = analyze_clocks(flat, &constants)?;
-
     let ModelRoles {
         states,
         variables: mut roles,
@@ -206,13 +206,7 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
             &mut sample_lattices,
         )?;
     }
-    if let Some(algorithm) = flat.initial_algorithms.first() {
-        return Err(ToDaeError::unsupported_algorithm(
-            "initial",
-            &algorithm.origin,
-            algorithm.span,
-        ));
-    }
+    reject_initial_algorithm(flat)?;
     for assertion in flat
         .assert_equations
         .iter()
@@ -235,6 +229,7 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
     non_runtime_rows.extend(&derived_parameters.rows);
     let balance = source_balance(flat, &roles, &non_runtime_rows, &record_equations)?;
     Ok(Analysis {
+        constants,
         roles,
         balance,
         continuous_family_rows,
@@ -253,6 +248,17 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
         record_equations,
         initial_record_equations,
     })
+}
+
+fn reject_initial_algorithm(flat: &flat::Model) -> Result<(), ToDaeError> {
+    let Some(algorithm) = flat.initial_algorithms.first() else {
+        return Ok(());
+    };
+    Err(ToDaeError::unsupported_algorithm(
+        "initial",
+        &algorithm.origin,
+        algorithm.span,
+    ))
 }
 
 fn analyze_record_array_field_plans(

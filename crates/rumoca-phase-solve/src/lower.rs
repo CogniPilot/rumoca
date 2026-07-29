@@ -882,6 +882,8 @@ fn explicit_derivative_rhs<'dae>(
     state: dae::StateId<'dae>,
     state_scalar: usize,
 ) -> Result<(dae::ExprId<'dae>, usize), LowerError> {
+    let selector = ScalarSelector::new(view, domain_point);
+    let (residual, scalar) = selector.select_array_element(residual, scalar)?;
     let node = view
         .expression(residual)
         .expect("branded residual expression resolves");
@@ -896,7 +898,6 @@ fn explicit_derivative_rhs<'dae>(
             node.provenance().span(),
         ));
     };
-    let selector = ScalarSelector::new(view, domain_point);
     if matches!(
         selector.coordinate(lhs, scalar)?,
         Some((dae::CoordinateView::Derivative(found), found_scalar))
