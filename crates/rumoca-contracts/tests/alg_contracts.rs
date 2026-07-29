@@ -149,7 +149,7 @@ fn alg_007_when_in_model_algorithm() {
     expect_success(
         r#"
         model Test
-            Real x;
+            input Real x;
             Real y;
             algorithm
                 y := 0;
