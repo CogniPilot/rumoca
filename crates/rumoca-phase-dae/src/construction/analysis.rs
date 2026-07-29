@@ -1,6 +1,7 @@
 use super::*;
 
 mod clocks;
+mod comprehensions;
 mod expression_validation;
 mod function_array_assemblies;
 mod function_conditionals;
@@ -12,9 +13,12 @@ mod source_balance;
 mod structured_families;
 use clocks::analyze_clocks;
 pub(super) use clocks::{ClockPlan, SampledValuePlan};
+use comprehensions::analyze_comprehensions;
+pub(super) use comprehensions::{ComprehensionKey, ComprehensionPlan};
 use expression_validation::{
     require_integer_literal, validate_array, validate_binary_operator, validate_builtin,
-    validate_conditional, validate_subscripts_scoped, validate_unary_operator,
+    validate_comprehension_range, validate_conditional, validate_subscripts_scoped,
+    validate_unary_operator,
 };
 use function_array_assemblies::coalesce_function_array_assemblies;
 use function_conditionals::validate_function_conditional;
@@ -38,6 +42,7 @@ pub(super) struct Analysis {
     pub(super) sampled_values: HashMap<VarName, SampledValuePlan>,
     pub(super) function_plans: HashMap<FunctionSpecializationKey, FunctionPlan>,
     pub(super) function_shapes: FunctionShapeAnalysis,
+    pub(super) comprehension_plans: HashMap<ComprehensionKey, ComprehensionPlan>,
     pub(super) record_equations: HashMap<usize, RecordEquationPlan>,
     pub(super) initial_record_equations: HashMap<usize, RecordEquationPlan>,
 }
@@ -149,6 +154,7 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
     let record_equations = analyze_record_equations(flat, &flat.equations)?;
     let initial_record_equations = analyze_record_equations(flat, &flat.initial_equations)?;
     let constants = constant_context(flat);
+    let comprehension_plans = analyze_comprehensions(all_model_expressions(flat), &constants)?;
     let clocks = analyze_clocks(flat, &constants)?;
 
     let ModelRoles {
@@ -222,6 +228,7 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
         sampled_values: clocks.sampled_values,
         function_plans,
         function_shapes,
+        comprehension_plans,
         record_equations,
         initial_record_equations,
     })
@@ -1959,13 +1966,33 @@ fn validate_expression_scoped(
             validate_expression_scoped(base, roles, states, binders)?;
             validate_subscripts_scoped(subscripts, roles, states, binders)
         }
-        Expression::Tuple { .. }
-        | Expression::ArrayComprehension { .. }
-        | Expression::FieldAccess { .. } => Err(ToDaeError::unsupported_flat(
-            "aggregate expression",
-            "tuple, comprehension, and record-field lowering require their typed semantic owner",
-            span,
-        )),
+        Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter,
+            ..
+        } => {
+            if filter.is_some() {
+                return Err(ToDaeError::unsupported_flat(
+                    "filtered array comprehension",
+                    "canonical DAE requires an unfiltered rectangular domain",
+                    span,
+                ));
+            }
+            let mut comprehension_binders = binders.clone();
+            for index in indices {
+                validate_comprehension_range(&index.range, roles, states, &comprehension_binders)?;
+                comprehension_binders.insert(VarName::new(&index.name));
+            }
+            validate_expression_scoped(expr, roles, states, &comprehension_binders)
+        }
+        Expression::Tuple { .. } | Expression::FieldAccess { .. } => {
+            Err(ToDaeError::unsupported_flat(
+                "aggregate expression",
+                "tuple and record-field lowering require their typed semantic owner",
+                span,
+            ))
+        }
         Expression::Empty { .. } => Err(ToDaeError::unsupported_flat(
             "empty expression",
             "an absent semantic value cannot enter canonical DAE",

@@ -10,6 +10,7 @@ pub(super) struct FunctionRegistry<'shape, 'dae> {
     pub(super) flat: &'shape flat::Model,
     pub(super) shapes: &'shape FunctionShapeAnalysis,
     pub(super) ids: HashMap<FunctionSpecializationKey, dae::FunctionId<'dae>>,
+    pub(super) comprehension_plans: &'shape HashMap<ComprehensionKey, ComprehensionPlan>,
 }
 
 impl<'dae> FunctionRegistry<'_, 'dae> {

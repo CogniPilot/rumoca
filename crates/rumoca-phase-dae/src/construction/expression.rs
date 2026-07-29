@@ -169,6 +169,12 @@ pub(super) fn lower_expression_scoped<'dae>(
         Expression::Array { elements, .. } => {
             lower_array_expression(construction, symbols, binders, elements, provenance)
         }
+        Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter: _,
+            ..
+        } => lower_array_comprehension(construction, symbols, binders, expr, indices, provenance),
         Expression::Range {
             start, step, end, ..
         } => {
@@ -198,10 +204,7 @@ pub(super) fn lower_expression_scoped<'dae>(
             *is_constructor,
             provenance,
         ),
-        Expression::Tuple { .. }
-        | Expression::ArrayComprehension { .. }
-        | Expression::FieldAccess { .. }
-        | Expression::Empty { .. } => {
+        Expression::Tuple { .. } | Expression::FieldAccess { .. } | Expression::Empty { .. } => {
             unreachable!("analysis rejects expressions outside the checked lowering grammar")
         }
     }
@@ -396,9 +399,10 @@ fn lower_function_call<'dae>(
         };
         return lower_expression_scoped(construction, symbols, binders, value, None);
     }
-    let (key, function) = symbols
-        .functions
-        .select_with_key(name, arguments, symbols.shapes, provenance.span());
+    let (key, function) =
+        symbols
+            .functions
+            .select_with_key(name, arguments, symbols.shapes, provenance.span());
     let arguments = arguments
         .iter()
         .enumerate()
@@ -436,9 +440,7 @@ fn lower_empty_function_argument<'dae>(
             .span()
             .expect("analysis proves empty argument provenance"),
     )?;
-    let scalar = symbols
-        .functions
-        .primitive_parameter_scalar(key, ordinal);
+    let scalar = symbols.functions.primitive_parameter_scalar(key, ordinal);
     let value_type = construction.types(|types| {
         types.derived(
             dae::ValueType::array(scalar, key.inputs[ordinal].clone()),
@@ -480,6 +482,30 @@ fn lower_array_expression<'dae>(
         .map(|element| lower_expression_scoped(construction, symbols, binders, element, None))
         .collect::<Result<Vec<_>, _>>()?;
     construction.expressions(|expressions| expressions.at(provenance).array(elements))
+}
+
+fn lower_array_comprehension<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    symbols: LoweringSymbols<'_, 'dae>,
+    enclosing_binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
+    body: &Expression,
+    indices: &[rumoca_core::ComprehensionIndex],
+    provenance: dae::DaeProvenance,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    let key = ComprehensionKey::new(provenance.span(), indices)
+        .expect("analysis proves comprehension-owner provenance");
+    let plan = &symbols.functions.comprehension_plans[&key];
+    let domain =
+        construction.domains(|domains| domains.structured(plan.domain.clone(), provenance))?;
+    let mut binders = enclosing_binders.clone();
+    for (ordinal, (index, span)) in indices.iter().zip(&plan.binder_spans).enumerate() {
+        let binder_provenance = dae::DaeProvenance::source(*span)?;
+        let binder =
+            construction.domains(|domains| domains.binder(domain, ordinal, binder_provenance))?;
+        binders.insert(VarName::new(&index.name), binder);
+    }
+    let body = lower_expression_scoped(construction, symbols, &binders, body, None)?;
+    construction.expressions(|expressions| expressions.at(provenance).comprehension(domain, body))
 }
 
 pub(super) fn lower_coordinate_reference<'dae>(
