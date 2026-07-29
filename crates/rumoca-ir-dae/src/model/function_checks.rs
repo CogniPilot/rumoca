@@ -82,16 +82,10 @@ pub(super) fn validate_recursive_function_group(
         }
         collect_group_dependencies(storage, *function, start, end, &mut edges[ordinal])?;
     }
-    if reaches_every_member(0, &edges) {
-        let mut reverse = vec![Vec::new(); edges.len()];
-        for (caller, dependencies) in edges.iter().enumerate() {
-            for &dependency in dependencies {
-                reverse[dependency].push(caller);
-            }
-        }
-        if reaches_every_member(0, &reverse) {
-            return Ok(());
-        }
+    let components = rumoca_core::dependency_first_sccs(&edges)
+        .expect("checked recursive calls reference their reserved group");
+    if matches!(components.as_slice(), [component] if component.recursive) {
+        return Ok(());
     }
     Err(DaeConstructionError::InvalidRecursiveFunctionGroup {
         span: provenance.span(),
@@ -195,21 +189,6 @@ fn push_subscripts(storage: &Storage, subscripts: OperandRange, pending: &mut Ve
             PackedSubscriptKind::Whole => {}
         }
     }
-}
-
-fn reaches_every_member(start: usize, edges: &[Vec<usize>]) -> bool {
-    let mut reached = vec![false; edges.len()];
-    reached[start] = true;
-    let mut pending = vec![start];
-    while let Some(node) = pending.pop() {
-        for &next in &edges[node] {
-            if !reached[next] {
-                reached[next] = true;
-                pending.push(next);
-            }
-        }
-    }
-    reached.into_iter().all(std::convert::identity)
 }
 
 pub(super) fn expect_function_body_expression(

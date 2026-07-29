@@ -150,6 +150,87 @@ fn assert_function_runtime_arena(view: DaeView<'_>) {
 }
 
 #[test]
+fn acyclic_function_rejects_self_call_at_the_exact_occurrence() {
+    let source = TestSource::new("function f output Real y; algorithm y := f(); end f;");
+    let declaration = source.source("function f", 0);
+    let output_at = source.source("output Real y", 0);
+    let call_at = source.source("f()", 0);
+    let assignment_at = source.source("y := f()", 0);
+    let call_span = call_at.span();
+    let error = Dae::construct(source.map, |dae| {
+        let real =
+            dae.types(|types| types.derived(ValueType::scalar(ScalarType::Real), declaration))?;
+        dae.function(
+            FunctionSignature::new(VarName::new("f"), [], [real], declaration),
+            |dae, reservation| {
+                let function = reservation.function();
+                let output = dae.functions(|functions| {
+                    functions.output(&reservation, VarName::new("y"), 0, output_at)
+                })?;
+                let value =
+                    dae.expressions(|expressions| expressions.at(call_at).call(function, 0, []))?;
+                let mut body =
+                    dae.functions(|functions| functions.begin(reservation, declaration))?;
+                dae.functions(|functions| {
+                    functions.assign(&mut body, output, value, assignment_at)
+                })?;
+                dae.functions(|functions| functions.define(body, declaration))
+            },
+        )
+        .map(|_| ())
+    })
+    .unwrap_err();
+
+    assert_eq!(
+        error,
+        DaeConstructionError::InvalidFunctionDependency {
+            function: 0,
+            target: 0,
+            span: call_span,
+        }
+    );
+}
+
+#[test]
+fn recursive_group_rejects_disconnected_headers() {
+    let source = TestSource::new("function f end f; function g end g;");
+    let f_at = source.source("function f", 0);
+    let g_at = source.source("function g", 0);
+    let error = Dae::construct(source.map, |dae| {
+        let real = dae.types(|types| types.derived(ValueType::scalar(ScalarType::Real), f_at))?;
+        let first = FunctionSignature::new(VarName::new("f"), [], [real], f_at);
+        let second = FunctionSignature::new(VarName::new("g"), [], [real], g_at);
+        dae.recursive_functions(first, [second], |dae, reservations| {
+            for (reservation, provenance) in reservations.into_iter().zip([f_at, g_at]) {
+                define_constant_result(dae, reservation, provenance)?;
+            }
+            Ok(())
+        })
+        .map(|_| ())
+    })
+    .unwrap_err();
+
+    assert_eq!(
+        error,
+        DaeConstructionError::InvalidRecursiveFunctionGroup { span: f_at.span() }
+    );
+}
+
+fn define_constant_result<'dae>(
+    dae: &mut DaeConstruction<'dae>,
+    reservation: FunctionReservation<'_, 'dae>,
+    provenance: DaeProvenance,
+) -> Result<(), DaeConstructionError> {
+    let output = dae
+        .functions(|functions| functions.output(&reservation, VarName::new("y"), 0, provenance))?;
+    let zero =
+        dae.expressions(|expressions| expressions.at(provenance).literal(DaeLiteral::Real(0.0)))?;
+    let mut body = dae.functions(|functions| functions.begin(reservation, provenance))?;
+    dae.functions(|functions| functions.assign(&mut body, output, zero, provenance))?;
+    dae.functions(|functions| functions.define(body, provenance))
+}
+
+#[test]
 fn function_parameters_cannot_cross_or_escape_semantic_owners() {
     let source = TestSource::new("function f end f; function g end g;");
     let f_at = source.source("function f", 0);

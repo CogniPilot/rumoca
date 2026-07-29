@@ -66,10 +66,10 @@ pub(super) fn construct_functions<'dae>(
                 &mut ids,
                 registry,
                 plans,
-                &component.specializations,
+                &component.members,
             )?;
         } else {
-            let specialization = component.specializations[0];
+            let specialization = component.members[0];
             let signature = function_signature(construction, flat, shapes, specialization)?;
             let (function, ()) =
                 construction.function(signature, |construction, reservation| {

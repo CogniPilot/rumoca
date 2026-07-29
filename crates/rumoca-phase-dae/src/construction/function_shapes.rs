@@ -1,8 +1,4 @@
-mod components;
-
 use super::*;
-
-use components::{FunctionComponent, dependency_first_components};
 
 #[cfg(test)]
 #[path = "function_shapes/tests/missing_provenance.rs"]
@@ -67,8 +63,9 @@ impl FunctionShapeAnalysis {
         &self.certificates
     }
 
-    pub(super) fn construction_components(&self) -> Vec<FunctionComponent> {
-        dependency_first_components(&self.dependencies)
+    pub(super) fn construction_components(&self) -> Vec<rumoca_core::DependencyScc> {
+        rumoca_core::dependency_first_sccs(&self.dependencies)
+            .expect("function shape dependencies reference known certificates")
     }
 
     pub(super) fn constructor_field_shapes(

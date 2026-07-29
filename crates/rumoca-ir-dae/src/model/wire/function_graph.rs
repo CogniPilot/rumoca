@@ -28,7 +28,20 @@ pub(super) fn function_components(
             *end = (*end).max(expression + 1);
         }
     }
-    let mut components = dependency_first_components(&dependencies, &expression_ends);
+    let mut components = rumoca_core::dependency_first_sccs(&dependencies)
+        .map_err(|_| malformed("functions.dependencies"))?
+        .into_iter()
+        .map(|component| WireFunctionComponent {
+            expression_end: component
+                .members
+                .iter()
+                .map(|&function| expression_ends[function])
+                .max()
+                .unwrap_or(0),
+            functions: component.members,
+            recursive: component.recursive,
+        })
+        .collect::<Vec<_>>();
     let mut expected = 0;
     for component in &components {
         for &function in &component.functions {
@@ -223,91 +236,4 @@ fn push_statement_roots(statements: &[FunctionStatementInput], pending: &mut Vec
             }
         }
     }
-}
-
-fn dependency_first_components(
-    dependencies: &[Vec<usize>],
-    expression_ends: &[usize],
-) -> Vec<WireFunctionComponent> {
-    let finish_order = finish_order(dependencies);
-    let transposed = transpose(dependencies);
-    let mut seen = vec![false; dependencies.len()];
-    let mut components = Vec::new();
-    for &start in finish_order.iter().rev() {
-        if seen[start] {
-            continue;
-        }
-        let mut members = collect(start, &transposed, &mut seen);
-        members.sort_unstable();
-        let recursive = members.len() > 1
-            || dependencies[members[0]]
-                .iter()
-                .any(|&callee| callee == members[0]);
-        components.push(WireFunctionComponent {
-            expression_end: members
-                .iter()
-                .map(|&function| expression_ends[function])
-                .max()
-                .unwrap_or(0),
-            functions: members.into_boxed_slice(),
-            recursive,
-        });
-    }
-    components.reverse();
-    components
-}
-
-fn finish_order(edges: &[Vec<usize>]) -> Vec<usize> {
-    let mut seen = vec![false; edges.len()];
-    let mut finished = Vec::with_capacity(edges.len());
-    for start in 0..edges.len() {
-        if seen[start] {
-            continue;
-        }
-        seen[start] = true;
-        let mut stack = vec![(start, 0_usize)];
-        while let Some((node, next_edge)) = stack.last_mut() {
-            if let Some(&next) = edges[*node].get(*next_edge) {
-                *next_edge += 1;
-                push_unseen(next, &mut seen, &mut stack);
-            } else {
-                finished.push(*node);
-                stack.pop();
-            }
-        }
-    }
-    finished
-}
-
-fn push_unseen(next: usize, seen: &mut [bool], stack: &mut Vec<(usize, usize)>) {
-    if !seen[next] {
-        seen[next] = true;
-        stack.push((next, 0));
-    }
-}
-
-fn transpose(edges: &[Vec<usize>]) -> Vec<Vec<usize>> {
-    let mut transposed = vec![Vec::new(); edges.len()];
-    for (caller, dependencies) in edges.iter().enumerate() {
-        for &dependency in dependencies {
-            transposed[dependency].push(caller);
-        }
-    }
-    transposed
-}
-
-fn collect(start: usize, edges: &[Vec<usize>], seen: &mut [bool]) -> Vec<usize> {
-    seen[start] = true;
-    let mut members = Vec::new();
-    let mut pending = vec![start];
-    while let Some(node) = pending.pop() {
-        members.push(node);
-        for &next in edges[node].iter().rev() {
-            if !seen[next] {
-                seen[next] = true;
-                pending.push(next);
-            }
-        }
-    }
-    members
 }
