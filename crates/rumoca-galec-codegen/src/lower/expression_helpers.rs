@@ -1,5 +1,124 @@
 use super::*;
 
+pub(super) fn state_reference(name: gast::Name, span: Span) -> gast::Reference {
+    state_reference_with_subscripts(name, Vec::new(), span)
+}
+
+pub(super) fn state_reference_indexed(
+    name: gast::Name,
+    indices: &[u32],
+    span: Span,
+) -> gast::Reference {
+    state_reference_with_subscripts(
+        name,
+        indices
+            .iter()
+            .map(|index| gast::Expression::Integer(i64::from(*index)))
+            .collect(),
+        span,
+    )
+}
+
+pub(super) fn state_reference_with_subscripts(
+    name: gast::Name,
+    subscripts: Vec<gast::Expression>,
+    span: Span,
+) -> gast::Reference {
+    gast::Reference::State(vec![gast::RefPart {
+        name,
+        subscripts,
+        span,
+    }])
+}
+
+pub(super) fn next_projected_index<'expression>(
+    projected: &mut impl Iterator<Item = &'expression gast::Expression>,
+    subscript: &str,
+    span: Span,
+) -> Result<gast::Expression, GalecTargetError> {
+    projected.next().cloned().ok_or_else(|| {
+        unsupported(
+            "array-projection",
+            format!("{subscript} subscript is missing its projected index"),
+            span,
+        )
+    })
+}
+
+pub(super) fn row_major_indices(dimensions: &[u32]) -> Vec<Vec<u32>> {
+    let mut indices = vec![Vec::new()];
+    for extent in dimensions {
+        let mut expanded = Vec::with_capacity(indices.len().saturating_mul(*extent as usize));
+        for prefix in indices {
+            for index in 1..=*extent {
+                let mut element = prefix.clone();
+                element.push(index);
+                expanded.push(element);
+            }
+        }
+        indices = expanded;
+    }
+    indices
+}
+
+pub(super) fn expression_span<'dae>(
+    view: dae::DaeView<'dae>,
+    expression: dae::ExprId<'dae>,
+) -> Span {
+    view.expression(expression)
+        .expect("checked expression resolves")
+        .provenance()
+        .span()
+}
+
+pub(super) fn literal_integer<'dae>(
+    view: dae::DaeView<'dae>,
+    expression: dae::ExprId<'dae>,
+) -> Option<i64> {
+    match view.expression(expression)?.operation() {
+        dae::ExpressionOperation::Literal(dae::DaeLiteral::Integer(value)) => Some(*value),
+        _ => None,
+    }
+}
+
+pub(super) fn with_span(name: gast::Name, span: Span) -> gast::Name {
+    match name {
+        gast::Name::Ident(identifier, _) => gast::Name::Ident(identifier, span),
+        gast::Name::Quoted(content, _) => gast::Name::Quoted(content, span),
+    }
+}
+
+pub(super) fn unsupported(feature: &str, detail: String, span: Span) -> GalecTargetError {
+    GalecTargetError::UnsupportedFeature {
+        feature: feature.to_owned(),
+        detail,
+        span: (!span.is_dummy()).then_some(span),
+    }
+}
+
+pub(super) fn type_mismatch(expected: &str, found: &str, span: Span) -> GalecTargetError {
+    GalecTargetError::LoweringTypeMismatch {
+        context: "checked DAE expression".to_owned(),
+        expected: leak_type_name(expected),
+        found: leak_type_name(found),
+        span: (!span.is_dummy()).then_some(span),
+    }
+}
+
+fn leak_type_name(name: &str) -> &'static str {
+    match name {
+        "Real" => "Real",
+        "Integer" => "Integer",
+        "Boolean" => "Boolean",
+        "numeric" => "numeric",
+        _ => "unknown",
+    }
+}
+
+pub(super) fn single(error: GalecTargetError) -> Vec<GalecTargetError> {
+    vec![error]
+}
+
 pub(super) fn operand_projection(
     dimensions: &[u32],
     result: &[gast::Expression],
