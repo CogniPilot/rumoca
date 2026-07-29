@@ -2,8 +2,8 @@ use rumoca_ir_galec::ast::{Block, Name};
 use rumoca_ir_galec::package::CheckedAlgorithmBlock;
 
 use super::{
-    lu_factorize_builtin, lu_solve_builtin, pivot_value, scalar_builtin, select_pivot,
-    solve_linear_equations,
+    lift_builtin, lu_factorize_builtin, lu_solve_builtin, pivot_value, scalar_builtin,
+    select_pivot, solve_linear_equations,
 };
 use crate::{EvaluationError, Evaluator, IntegerDomain, Value};
 
@@ -26,6 +26,10 @@ fn all_nan(value: &Value) -> bool {
 fn checked_block() -> CheckedAlgorithmBlock {
     CheckedAlgorithmBlock::construct(Block::new(Name::ident("BuiltinSignals")))
         .expect("empty builtin fixture must be checked")
+}
+
+fn real(value: Value) -> f64 {
+    value.real().expect("expected Real result")
 }
 
 #[test]
@@ -97,6 +101,103 @@ fn integer_conversion_checks_the_exact_signed_64_boundary() {
         Ok(Value::Integer(0))
     );
     assert!(evaluator.active_signals().contains("OVERFLOW"));
+}
+
+#[test]
+fn real_min_max_use_galec_relational_selection() {
+    let block = checked_block();
+    let mut evaluator =
+        Evaluator::new(&block, IntegerDomain::signed_32()).expect("create evaluator");
+
+    assert_eq!(
+        scalar_builtin(
+            &mut evaluator,
+            "min",
+            vec![Value::Real(3.0), Value::Real(2.0)]
+        ),
+        Ok(Value::Real(2.0))
+    );
+    assert_eq!(
+        scalar_builtin(
+            &mut evaluator,
+            "max",
+            vec![Value::Real(3.0), Value::Real(2.0)]
+        ),
+        Ok(Value::Real(3.0))
+    );
+    assert_eq!(
+        scalar_builtin(
+            &mut evaluator,
+            "min",
+            vec![Value::Real(2.0), Value::Real(2.0)]
+        ),
+        Ok(Value::Real(2.0))
+    );
+    assert_eq!(
+        scalar_builtin(
+            &mut evaluator,
+            "max",
+            vec![Value::Real(2.0), Value::Real(2.0)]
+        ),
+        Ok(Value::Real(2.0))
+    );
+}
+
+#[test]
+fn real_min_max_preserve_galec_nan_operand_order() {
+    let block = checked_block();
+    let mut evaluator =
+        Evaluator::new(&block, IntegerDomain::signed_32()).expect("create evaluator");
+
+    for name in ["min", "max"] {
+        let lhs_nan = scalar_builtin(
+            &mut evaluator,
+            name,
+            vec![Value::Real(f64::NAN), Value::Real(2.0)],
+        )
+        .expect("builtin evaluation");
+        assert_eq!(lhs_nan, Value::Real(2.0));
+
+        let rhs_nan = scalar_builtin(
+            &mut evaluator,
+            name,
+            vec![Value::Real(2.0), Value::Real(f64::NAN)],
+        )
+        .expect("builtin evaluation");
+        assert!(real(rhs_nan).is_nan());
+
+        let both_nan = scalar_builtin(
+            &mut evaluator,
+            name,
+            vec![Value::Real(f64::NAN), Value::Real(f64::NAN)],
+        )
+        .expect("builtin evaluation");
+        assert!(real(both_nan).is_nan());
+    }
+}
+
+#[test]
+fn lifted_real_min_max_share_scalar_nan_selection() {
+    let block = checked_block();
+    let mut evaluator =
+        Evaluator::new(&block, IntegerDomain::signed_32()).expect("create evaluator");
+
+    for name in ["min", "max"] {
+        let result = lift_builtin(
+            &mut evaluator,
+            name,
+            vec![
+                scalar_array(&[f64::NAN, 2.0]),
+                scalar_array(&[3.0, f64::NAN]),
+            ],
+        )
+        .expect("lifted builtin evaluation");
+        let Value::Array(values) = result else {
+            panic!("expected lifted Real array");
+        };
+        assert_eq!(values[0], Value::Real(3.0));
+        assert!(real(values[1].clone()).is_nan());
+    }
 }
 
 #[test]

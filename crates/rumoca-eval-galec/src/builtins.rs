@@ -219,11 +219,11 @@ fn scalar_binary_or_array(
         }
         "min" => {
             let (a, b) = builtin_real_pair(arguments)?;
-            Value::Real(a.min(b))
+            Value::Real(if a < b { a } else { b })
         }
         "max" => {
             let (a, b) = builtin_real_pair(arguments)?;
-            Value::Real(a.max(b))
+            Value::Real(if a > b { a } else { b })
         }
         "imin" | "imax" => {
             let a = arguments
