@@ -36,9 +36,11 @@ fn flat_variable_and_clock_constructors_preserve_owner_span() {
         Variable::empty_with_span(test_span()).source_span,
         test_span()
     );
-    assert_eq!(BaseClock::inferred(test_span()).source_span, test_span());
+    assert_eq!(BaseClock::inferred(test_span()).source_span(), test_span());
     assert_eq!(
-        BaseClock::periodic(0.1, test_span()).source_span,
+        BaseClock::periodic(0.1, test_span())
+            .expect("positive periodic clock")
+            .source_span(),
         test_span()
     );
     assert_eq!(

@@ -8,7 +8,7 @@
 
 use indexmap::{IndexMap, IndexSet};
 use rumoca_core::{ClockLattice, ClockLatticeError, ClockLatticeErrorKind, ClockRational, Span};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 
 use crate::{Equation, VarName};
 
@@ -145,14 +145,14 @@ pub struct ContinuousPartition {
 /// MLS §16.3: Base Clock.
 ///
 /// A base clock determines when a partition is active.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct BaseClock {
     /// The kind of clock.
-    pub kind: ClockKind,
+    kind: ClockKind,
     /// Source span for the clock expression that introduced this base clock.
-    pub source_span: Span,
+    source_span: Span,
     /// Inferred base interval (for rational clocks).
-    pub base_interval: Option<ClockInterval>,
+    base_interval: Option<ClockInterval>,
 }
 
 impl BaseClock {
@@ -172,16 +172,17 @@ impl BaseClock {
     /// `interval` has one. `ClockInterval::Seconds` is kept only for intervals
     /// with no reduced rational form; that is the inexact `Clock(interval)`
     /// case of §16.3 and it cannot participate in a lattice.
-    pub fn periodic(interval: f64, source_span: Span) -> Self {
+    pub fn periodic(interval: f64, source_span: Span) -> ClockLatticeResult<Self> {
+        require_positive_seconds(interval, source_span)?;
         let base_interval = match ClockRational::from_seconds(interval) {
             Ok(rational) => ClockInterval::Rational(rational),
             Err(_) => ClockInterval::Seconds(interval),
         };
-        Self {
+        Ok(Self {
             kind: ClockKind::Periodic { interval },
             source_span,
             base_interval: Some(base_interval),
-        }
+        })
     }
 
     /// MLS §16.3 `Clock(intervalCounter, resolution)`: an exactly rational
@@ -191,6 +192,22 @@ impl BaseClock {
         resolution: i64,
         source_span: Span,
     ) -> ClockLatticeResult<Self> {
+        if resolution <= 0 {
+            return Err(ClockLatticeErrorKind::NonPositiveFactor.at(source_span));
+        }
+        if interval_counter < 0 {
+            return Err(ClockLatticeErrorKind::NonPositivePeriod.at(source_span));
+        }
+        if interval_counter == 0 {
+            return Ok(Self {
+                kind: ClockKind::Rational {
+                    interval_counter,
+                    resolution,
+                },
+                source_span,
+                base_interval: None,
+            });
+        }
         let lattice = ClockLattice::from_interval_counter(interval_counter, resolution)
             .map_err(|kind| kind.at(source_span))?;
         Ok(Self {
@@ -203,6 +220,36 @@ impl BaseClock {
         })
     }
 
+    /// Create an event clock from `Clock(condition, startInterval)`.
+    pub fn event(start_interval: Option<f64>, source_span: Span) -> Self {
+        Self {
+            kind: ClockKind::Event { start_interval },
+            source_span,
+            base_interval: None,
+        }
+    }
+
+    /// Create a solver clock from `Clock(c, solverMethod)`.
+    pub fn solver(solver_method: String, source_span: Span) -> Self {
+        Self {
+            kind: ClockKind::Solver { solver_method },
+            source_span,
+            base_interval: None,
+        }
+    }
+
+    pub fn kind(&self) -> &ClockKind {
+        &self.kind
+    }
+
+    pub fn source_span(&self) -> Span {
+        self.source_span
+    }
+
+    pub fn base_interval(&self) -> Option<&ClockInterval> {
+        self.base_interval.as_ref()
+    }
+
     /// The exact lattice this base clock spans, or a spanned error when the
     /// clock is not a statically periodic rational clock.
     pub fn lattice(&self) -> ClockLatticeResult<ClockLattice> {
@@ -213,6 +260,61 @@ impl BaseClock {
             .exact_period()
             .map_err(|kind| kind.at(self.source_span))?;
         ClockLattice::new(period, ClockRational::ZERO).map_err(|kind| kind.at(self.source_span))
+    }
+}
+
+fn require_positive_seconds(value: f64, source_span: Span) -> ClockLatticeResult<()> {
+    if !value.is_finite() {
+        return Err(ClockLatticeErrorKind::NonFiniteSeconds.at(source_span));
+    }
+    if value <= 0.0 {
+        return Err(ClockLatticeErrorKind::NonPositivePeriod.at(source_span));
+    }
+    Ok(())
+}
+
+#[derive(Serialize)]
+#[serde(deny_unknown_fields)]
+struct BaseClockWireRef<'a> {
+    kind: &'a ClockKind,
+    source_span: Span,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BaseClockWire {
+    kind: ClockKind,
+    source_span: Span,
+}
+
+impl Serialize for BaseClock {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        BaseClockWireRef {
+            kind: &self.kind,
+            source_span: self.source_span,
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for BaseClock {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let wire = BaseClockWire::deserialize(deserializer)?;
+        let result = match wire.kind {
+            ClockKind::Inferred => Ok(Self::inferred(wire.source_span)),
+            ClockKind::Periodic { interval } => Self::periodic(interval, wire.source_span),
+            ClockKind::Rational {
+                interval_counter,
+                resolution,
+            } => Self::rational(interval_counter, resolution, wire.source_span),
+            ClockKind::Event { start_interval } => {
+                Ok(Self::event(start_interval, wire.source_span))
+            }
+            ClockKind::Solver { solver_method } => {
+                Ok(Self::solver(solver_method, wire.source_span))
+            }
+        };
+        result.map_err(D::Error::custom)
     }
 }
 
