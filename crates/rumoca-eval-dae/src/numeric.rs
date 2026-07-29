@@ -387,6 +387,9 @@ where
             .view
             .variable(id)
             .expect("finalized variable identity resolves");
+        if variable.scalar_count() == 0 {
+            return Ok(Vec::new());
+        }
         if matches!(
             variable.role(),
             dae::VariableRole::Parameter | dae::VariableRole::Constant
@@ -440,6 +443,10 @@ where
             .view
             .variable(id)
             .expect("finalized parameter identity resolves");
+        if variable.scalar_count() == 0 {
+            self.values[index] = Some(Vec::new());
+            return Ok(Vec::new());
+        }
         if !matches!(
             variable.role(),
             dae::VariableRole::Parameter | dae::VariableRole::Constant
@@ -1303,6 +1310,49 @@ mod tests {
                 NumericEvaluator::new(view).expression(zeros).unwrap(),
                 vec![0.0; 6]
             );
+        });
+    }
+
+    #[test]
+    fn zero_cardinality_variables_have_the_unique_empty_value() {
+        let text = "parameter Real p[0]; Real z[0];";
+        let mut source_map = SourceMap::new();
+        let source = source_map.add("empty.mo", text);
+        let at = |needle: &str| {
+            let start = text.find(needle).unwrap();
+            DaeProvenance::source(Span::from_offsets(source, start, start + needle.len())).unwrap()
+        };
+        let dae = Dae::construct(source_map, |dae| {
+            let empty = dae.types(|types| {
+                types.derived(ValueType::array(ScalarType::Real, [0]), at("Real p[0]"))
+            })?;
+            dae.variables(|variables| {
+                variables.parameter(
+                    VarName::new("p"),
+                    empty,
+                    at("parameter Real p[0]"),
+                    rumoca_ir_dae::VariableAttributes::default(),
+                )?;
+                variables.algebraic(
+                    VarName::new("z"),
+                    empty,
+                    at("Real z[0]"),
+                    rumoca_ir_dae::VariableAttributes::default(),
+                )?;
+                Ok(())
+            })
+        })
+        .unwrap();
+
+        dae.inspect(|view| {
+            let mut evaluator = NumericEvaluator::new(view);
+            for index in 0..2 {
+                let variable = view.variable_id(index).unwrap();
+                assert_eq!(
+                    evaluator.initial_value(variable).unwrap(),
+                    Vec::<f64>::new()
+                );
+            }
         });
     }
 

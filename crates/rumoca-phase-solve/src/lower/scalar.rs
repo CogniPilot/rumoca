@@ -9,6 +9,33 @@ pub(super) struct ScaledDerivativeProgram<'dae> {
     pub(super) span: Span,
 }
 
+#[derive(Clone, Copy)]
+enum ReductionKind {
+    Sum,
+    Product,
+    Minimum,
+    Maximum,
+}
+
+impl ReductionKind {
+    fn operator(self) -> solve::BinaryOp {
+        match self {
+            Self::Sum => solve::BinaryOp::Add,
+            Self::Product => solve::BinaryOp::Mul,
+            Self::Minimum => solve::BinaryOp::Min,
+            Self::Maximum => solve::BinaryOp::Max,
+        }
+    }
+
+    fn identity(self) -> Option<f64> {
+        match self {
+            Self::Sum => Some(0.0),
+            Self::Product => Some(1.0),
+            Self::Minimum | Self::Maximum => None,
+        }
+    }
+}
+
 pub(super) struct ScalarCompiler<'layout, 'dae> {
     view: dae::DaeView<'dae>,
     layout: &'layout LoweredLayout<'dae>,
@@ -1124,28 +1151,26 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 arguments.get(0).expect("checked noEvent value argument"),
                 scalar,
             ),
-            dae::PureBuiltin::Sum | dae::PureBuiltin::Product => {
-                let argument = arguments.get(0).expect("checked reduction argument");
-                self.reduction(
-                    argument,
-                    if builtin == dae::PureBuiltin::Sum {
-                        solve::BinaryOp::Add
-                    } else {
-                        solve::BinaryOp::Mul
-                    },
-                    span,
-                )
-            }
+            dae::PureBuiltin::Sum => self.reduction(
+                arguments.get(0).expect("checked reduction argument"),
+                ReductionKind::Sum,
+                span,
+            ),
+            dae::PureBuiltin::Product => self.reduction(
+                arguments.get(0).expect("checked reduction argument"),
+                ReductionKind::Product,
+                span,
+            ),
             dae::PureBuiltin::Min | dae::PureBuiltin::Max => {
-                let op = if builtin == dae::PureBuiltin::Min {
-                    solve::BinaryOp::Min
+                let reduction = if builtin == dae::PureBuiltin::Min {
+                    ReductionKind::Minimum
                 } else {
-                    solve::BinaryOp::Max
+                    ReductionKind::Maximum
                 };
                 if arguments.len() == 1 {
                     self.reduction(
                         arguments.get(0).expect("checked reduction argument"),
-                        op,
+                        reduction,
                         span,
                     )
                 } else {
@@ -1153,7 +1178,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                         .iter()
                         .map(|argument| self.expression(argument, scalar))
                         .collect::<Result<Vec<_>, _>>()?;
-                    self.fold_registers(values, op, span)
+                    self.fold_registers(values, reduction.operator(), span)
                 }
             }
             dae::PureBuiltin::Size => self.size_builtin(arguments, scalar, span),
@@ -1164,14 +1189,26 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
     fn reduction(
         &mut self,
         expression: dae::ExprId<'dae>,
-        operator: solve::BinaryOp,
+        reduction: ReductionKind,
         span: Span,
     ) -> Result<solve::Reg, LowerError> {
-        let mut values = Vec::with_capacity(scalar_count(self.view, expression));
-        for scalar in 0..scalar_count(self.view, expression) {
+        let count = scalar_count(self.view, expression);
+        if count == 0 {
+            return reduction.identity().map_or_else(
+                || {
+                    Err(LowerError::non_computable(
+                        "minimum and maximum require a nonempty array",
+                        span,
+                    ))
+                },
+                |identity| self.constant(identity, span),
+            );
+        }
+        let mut values = Vec::with_capacity(count);
+        for scalar in 0..count {
             values.push(self.expression(expression, scalar)?);
         }
-        self.fold_registers(values, operator, span)
+        self.fold_registers(values, reduction.operator(), span)
     }
 
     fn fold_registers(
@@ -1181,9 +1218,9 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         span: Span,
     ) -> Result<solve::Reg, LowerError> {
         let mut values = values.into_iter();
-        let mut result = values.next().ok_or_else(|| {
-            LowerError::non_computable("zero-length reduction has no identity in checked DAE", span)
-        })?;
+        let mut result = values
+            .next()
+            .expect("checked reduction supplies an identity or a nonempty operand");
         for value in values {
             let dst = self.register(span)?;
             self.ops.push(solve::LinearOp::Binary {
