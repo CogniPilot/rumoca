@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" elementFormDefault="qualified" attributeFormDefault="unqualified">
+	<xs:include schemaLocation="efmiManifestReferences.xsd"/>
+	<xs:include schemaLocation="efmiIdentifierType.xsd"/>
+	<xs:element name="Files">
+		<xs:annotation>
+			<xs:documentation>List of files referenced in this model representation.</xs:documentation>
+		</xs:annotation>
+		<xs:complexType>
+			<xs:sequence>
+				<xs:element name="File" minOccurs="0" maxOccurs="unbounded">
+					<xs:complexType>
+						<xs:attribute name="id" type="efmiIdentifierType" use="required"/>
+						<xs:attribute name="name" type="xs:normalizedString" use="required"/>
+						<xs:attribute name="path" type="efmiFilePathType" use="required"/>
+						<xs:attribute name="needsChecksum" type="xs:boolean" use="required"/>
+						<xs:attribute name="checksum" type="xs:normalizedString" use="optional">
+							<xs:annotation>
+								<xs:documentation>Optional SHA-1 hash -- according to the _Secure Hash Standard (SHS), FIPS PUB 180-4_ -- of the binary content of the file. Must be given, if, and only if, needsChecksum="true". A given checksum must be correct; if it is not the SHA-1 hash of the file, the eFMU is invalid.</xs:documentation>
+							</xs:annotation></xs:attribute>
+						<xs:attribute name="role" type="FileRole" use="required"/>
+						<xs:attribute name="description" type="xs:string" use="optional"/>
+						<!-- id: Id of the file. -->
+						<!-- name: Name of the file including suffix. -->
+						<!-- path: Path to the file relative to the container root. -->
+						<!-- needsChecksum: Indicates that checksum has to be calculated. -->
+						<!-- checksum: SHA-1 checksum of the binary content of the file. -->
+						<!-- role: Indicates the role of the file in the model representation, 
+							see also FileRole. -->
+						<!-- description: A description string for the file and its content. -->
+					</xs:complexType>
+				</xs:element>
+				<xs:element name="ForeignFile" minOccurs="0" maxOccurs="unbounded">
+					<xs:complexType>
+						<xs:sequence>
+							<xs:element name="ForeignReference" type="ForeignReference" minOccurs="1" maxOccurs="unbounded"/>
+						</xs:sequence>
+						<xs:attribute name="id" type="efmiIdentifierType" use="required"/>
+					</xs:complexType>
+				</xs:element>
+			</xs:sequence>
+		</xs:complexType>
+	</xs:element>
+	<xs:simpleType name="efmiFilePathType">
+		<xs:annotation>
+			<xs:documentation>Represents a path inside the container relative to its root. Must starts with "./" and end with a "/".
+			</xs:documentation>
+		</xs:annotation>
+		<xs:restriction base="xs:normalizedString">
+			<xs:pattern value="[.]/(.+/)*"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="FileRole">
+		<xs:annotation>
+			<xs:documentation>Indicates the role of the file.
+Possible values are Code, Manifest, FMU, FMUFolder, ReferenceData and other.
+			</xs:documentation>
+		</xs:annotation>
+		<xs:restriction base="xs:normalizedString">
+			<xs:enumeration value="Code"/>
+			<xs:enumeration value="Manifest"/>
+			<xs:enumeration value="FMU"/>
+			<xs:enumeration value="FMUFolder"/>
+			<xs:enumeration value="ReferenceData"/>
+			<xs:enumeration value="other"/>
+			<!-- Code: Indicating that the file is a code file, i.e., 
+				Algorithm Code, Production Code, Binary Code, which depends on the actual 
+				model representation. -->
+			<!-- Manifest: Flags the file as the manifest file of the model representation. -->
+			<!-- FMU: Reference to FMU container (zipped archive) that consists of 
+				the production code of this model representation and a corresponding FMI 
+				interface for co-simulation. -->
+			<!-- FMUFolder: Reference to FMU container (unzipped archive, i.e. a subfolder) 
+                that consists of the production code of this model representation and a 
+                corresponding FMI interface for co-simulation. -->
+            <!-- ReferenceData: Collection of data typically in comma separated value format. -->
+			<!-- other: All other files in the model representation, e.g. license files, 
+				description files, linker scripts, etc. -->
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:element name="FileReference">
+		<xs:annotation>
+			<xs:documentation>Reference to a file element in this manifest.</xs:documentation>
+		</xs:annotation>
+		<xs:complexType>
+			<xs:attribute name="fileRefId" type="efmiIdentifierType" use="required"/>
+			<xs:attribute name="kind" type="xs:normalizedString" use="optional"/>
+			<!-- fileRefId: Id of the referenced file. -->
+			<!-- kind: String specifying the content. May be fixed terms specified, 
+				e.g. license, description, compliance? -->
+		</xs:complexType>
+	</xs:element>
+</xs:schema>

@@ -1,5 +1,9 @@
 use super::*;
 
+#[cfg(test)]
+#[path = "function_shapes/tests/missing_provenance.rs"]
+mod provenance_tests;
+
 pub(super) type ValueShape = Vec<u32>;
 pub(super) type ShapeEnvironment = HashMap<VarName, ValueShape>;
 
@@ -15,7 +19,6 @@ pub(super) struct FunctionShapeCertificate {
     pub(super) parameters: Vec<ValueShape>,
     pub(super) results: Vec<ValueShape>,
     pub(super) values: ShapeEnvironment,
-    pub(super) first_call: Span,
 }
 
 pub(super) struct FunctionShapeAnalysis {
@@ -537,6 +540,7 @@ fn resolve_certificate(
     call_span: Span,
     global_values: &ShapeEnvironment,
 ) -> Result<FunctionShapeCertificate, ToDaeError> {
+    require_span(call_span, "function specialization call")?;
     if key.inputs.len() != function.inputs.len() {
         return Err(ToDaeError::unsupported_flat(
             "function shape proof",
@@ -571,7 +575,6 @@ fn resolve_certificate(
         parameters,
         results,
         values,
-        first_call: call_span,
     })
 }
 
@@ -1277,10 +1280,8 @@ mod tests {
         assert_eq!(certificates.len(), 2);
         assert_eq!(certificates[0].parameters, vec![vec![2]]);
         assert_eq!(certificates[0].results, vec![vec![2]]);
-        assert_eq!(certificates[0].first_call, first);
         assert_eq!(certificates[1].parameters, vec![vec![3]]);
         assert_eq!(certificates[1].results, vec![vec![3]]);
-        assert_eq!(certificates[1].first_call, second);
     }
 
     #[test]

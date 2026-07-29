@@ -68,7 +68,7 @@ impl std::fmt::Display for PathSegment {
 pub struct Location {
     pub path: Vec<PathSegment>,
     /// Optional origin in the source Modelica model, supplied by the
-    /// projection (`rumoca-galec-codegen`) when available.
+    /// projection (`rumoca-phase-codegen::galec`) when available.
     pub provenance: Option<String>,
 }
 

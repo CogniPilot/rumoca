@@ -14,9 +14,11 @@ use rumoca_compile::codegen::targets::{
     validate_solve_target_capabilities,
 };
 #[cfg(feature = "scheduled-sim")]
-use rumoca_compile::codegen::targets::{TargetBuildKind, TargetFile, safe_target_join};
+use rumoca_compile::codegen::targets::{
+    TargetArchiveFormat, TargetArchiveRoot, TargetFile, safe_target_join,
+};
 use rumoca_compile::compile::core::{Diagnostic as CommonDiagnostic, PrimaryLabel, SourceMap};
-use rumoca_compile::galec::{GalecExportError, GalecTargetError};
+use rumoca_phase_galec::{GalecInput, GalecOptions, GalecTargetError};
 
 #[cfg(feature = "scheduled-sim")]
 pub(crate) fn compile_target(
@@ -117,13 +119,14 @@ pub fn render_target_files(
     validate_target_requirements(result, &manifest)?;
 
     let model_identifier = model.replace('.', "_");
-    // The `galec`/`galec-production` eFMU targets render their manifests +
-    // `__content.xml` through the declarative checksum-web build step (contract
-    // §9 WI-5). In memory that is `packaging::render_web_files` — the same
+    // Algorithm Code package targets render their artifact graph through the
+    // generic checksum-web build step. In memory that is
+    // `packaging::render_web_files` — the same
     // topological render + hash-inject the CLI writes, minus the on-disk
     // packaging — so CI exercises the exact web the container writer will.
-    if let Some(plan) = build_galec_plan(result, &manifest, model, &model_identifier)? {
-        let render = galec_manifest_render(&plan, &bundle, &model_identifier);
+    if manifest.ir == TargetTemplateIr::AlgorithmCode {
+        let package = lower_algorithm_code(result, model, manifest.name.as_deref())?;
+        let render = algorithm_code_web_render(&package, &bundle, &model_identifier);
         return crate::packaging::render_web_files(&manifest.files, render);
     }
     let renderer = resolve_manifest_renderer(result, &manifest, &model_identifier)?;
@@ -134,58 +137,45 @@ pub fn render_target_files(
 /// `galec`/`galec-production` targets, or `None` for any other target. The
 /// GALEC projection runs here — once, before any filesystem effect — so a
 /// rejection surfaces before an output directory is created.
-fn build_galec_plan(
+fn lower_algorithm_code(
     result: &CompilationResult,
-    manifest: &TargetManifest,
     model: &str,
-    model_identifier: &str,
-) -> Result<Option<rumoca_compile::galec::GalecPackagingPlan>> {
-    if manifest.ir != TargetTemplateIr::Dae {
-        return Ok(None);
-    }
-    match manifest.name.as_deref() {
-        Some("galec") => Ok(Some(
-            rumoca_compile::galec::plan_galec_export(&result.dae, model_identifier, model)
-                .map_err(|error| galec_plan_error(result, error, "galec"))?,
-        )),
-        Some("galec-production") => Ok(Some(
-            rumoca_compile::galec::plan_galec_production_export(
-                &result.dae,
-                model_identifier,
-                model,
-            )
-            .map_err(|error| galec_plan_error(result, error, "galec-production"))?,
-        )),
-        _ => Ok(None),
-    }
+    target: Option<&str>,
+) -> Result<rumoca_ir_galec::package::AlgorithmCodePackage> {
+    rumoca_phase_galec::lower_to_algorithm_code(
+        &GalecInput::new(&result.dae, model),
+        &GalecOptions::default(),
+    )
+    .map_err(|diagnostics| galec_projection_error(result, diagnostics, target.unwrap_or("custom")))
 }
 
-fn galec_plan_error(
+fn galec_projection_error(
     result: &CompilationResult,
-    error: GalecExportError,
-    target: &'static str,
+    diagnostics: Vec<GalecTargetError>,
+    target: &str,
 ) -> anyhow::Error {
-    match error {
-        GalecExportError::Projection(diagnostics) => {
-            if diagnostics
+    if diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.span().is_some())
+    {
+        return CompilerError::SourceDiagnosticsError {
+            summary: format!("GALEC projection rejected target '{target}'"),
+            diagnostics: diagnostics
                 .iter()
-                .any(|diagnostic| diagnostic.span().is_some())
-            {
-                return CompilerError::SourceDiagnosticsError {
-                    summary: format!("GALEC projection rejected target '{target}'"),
-                    diagnostics: diagnostics
-                        .iter()
-                        .map(galec_projection_diagnostic)
-                        .collect(),
-                    source_map: Box::new(source_map(result)),
-                }
-                .into();
-            }
-            anyhow::Error::new(GalecExportError::Projection(diagnostics))
-                .context(galec_plan_context(target))
+                .map(galec_projection_diagnostic)
+                .collect(),
+            source_map: Box::new(source_map(result)),
         }
-        other => anyhow::Error::new(other).context(galec_plan_context(target)),
+        .into();
     }
+    anyhow::anyhow!(
+        "GALEC projection rejected target '{target}': {}",
+        diagnostics
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("; ")
+    )
 }
 
 fn galec_projection_diagnostic(error: &GalecTargetError) -> CommonDiagnostic {
@@ -208,14 +198,6 @@ fn galec_projection_label(error: &GalecTargetError) -> String {
     }
 }
 
-fn galec_plan_context(target: &'static str) -> &'static str {
-    match target {
-        "galec" => "GALEC eFMU plan for target 'galec'",
-        "galec-production" => "eFMI Production Code eFMU plan for target 'galec-production'",
-        _ => "GALEC target plan",
-    }
-}
-
 fn source_map(result: &CompilationResult) -> SourceMap {
     result.resolved.inner().source_map.clone()
 }
@@ -226,44 +208,33 @@ fn source_map(result: &CompilationResult) -> SourceMap {
 /// plan for the product-agnostic manifest context — into which the plan slots
 /// the build-step-injected checksums (keyed by their `as` name) — and renders
 /// under a strict-undefined env with the `xml_escape`/`xs_double` filters. The
-/// `.alg`/`.h`/`.c` passthrough templates read the top-level `galec_*` keys;
-/// the manifest templates read `ctx`.
-fn galec_manifest_render<'a>(
-    plan: &'a rumoca_compile::galec::GalecPackagingPlan,
+/// `.alg` reads its established printer-owned text, C templates read the
+/// typed semantic C context at top level, and manifest templates read only
+/// their validated product context below `ctx`.
+fn algorithm_code_web_render<'a>(
+    package: &'a rumoca_ir_galec::package::AlgorithmCodePackage,
     bundle: &'a TargetBundle,
     model_identifier: &'a str,
-) -> impl Fn(&str, &std::collections::BTreeMap<String, String>) -> Result<String> + 'a {
-    let mut env = minijinja::Environment::new();
-    env.set_undefined_behavior(minijinja::UndefinedBehavior::Strict);
-    register_manifest_filters(&mut env);
-    move |template: &str, checksums: &std::collections::BTreeMap<String, String>| {
-        let source = if template.ends_with(".jinja") {
-            bundle.template_source(template)?
-        } else {
-            std::borrow::Cow::Borrowed(template)
-        };
-        let ctx_value = plan
-            .template_ctx(template, checksums)
-            .map_err(anyhow::Error::from)?;
-        env.render_str(
+) -> impl Fn(&str, &crate::packaging::ArtifactRenderContext<'_>) -> Result<String> + 'a {
+    move |template_or_path, artifact| {
+        let source = bundle
+            .template_source(template_or_path)
+            .unwrap_or_else(|_| std::borrow::Cow::Borrowed(template_or_path));
+        rumoca_phase_codegen::render_algorithm_code_template_with_artifact(
+            package,
+            artifact,
             source.as_ref(),
-            minijinja::context! {
-                model_name => model_identifier,
-                galec_alg_source => plan.alg_text(),
-                galec_c_header => plan.c_header(),
-                galec_c_source => plan.c_source(),
-                ctx => minijinja::Value::from_serialize(&ctx_value),
-            },
+            model_identifier,
         )
-        .map_err(|error| anyhow::anyhow!("Render galec template '{template}': {error}"))
+        .map_err(anyhow::Error::from)
     }
 }
 
 /// Render every `[[files]]` entry of a manifest target in memory from one
 /// resolved renderer.
 ///
-/// Shared by [`render_target_files`] and the `build = "efmu"` packaging path
-/// of [`compile_manifest_target`], so the bytes the eFMU container packages
+/// Shared by [`render_target_files`] and manifest-declared package builds, so
+/// the bytes the package contains
 /// are exactly the bytes this invocation's single renderer produced (module
 /// docs on [`ManifestRenderer`]: re-rendering from a second projection would
 /// rest checksum validity on cross-run determinism).
@@ -344,6 +315,9 @@ fn template_ir_to_cli(value: TargetTemplateIr) -> TemplateIr {
         TargetTemplateIr::Solve => TemplateIr::Solve,
         TargetTemplateIr::Flat => TemplateIr::Flat,
         TargetTemplateIr::Ast => TemplateIr::Ast,
+        TargetTemplateIr::AlgorithmCode => {
+            unreachable!("Algorithm Code targets use their checked phase-owned renderer")
+        }
     }
 }
 
@@ -360,14 +334,6 @@ fn compile_manifest_target(
 
     let model_identifier = model.replace('.', "_");
 
-    // The `galec`/`galec-production` eFMU targets render their manifests +
-    // `__content.xml` through the declarative checksum-web build step and
-    // package the two eFMU forms (contract §9 WI-5) — a path distinct from the
-    // generic `ManifestRenderer` targets below.
-    if manifest.build == Some(TargetBuildKind::Efmu) {
-        return compile_efmu_target(result, model, bundle, manifest, output, &model_identifier);
-    }
-
     // Resolved before any filesystem effect: a renderer-level rejection
     // (e.g. the GALEC projection) must not leave an output directory behind.
     let renderer = resolve_manifest_renderer(result, manifest, &model_identifier)?;
@@ -382,96 +348,91 @@ fn compile_manifest_target(
         eprintln!("  {description}");
     }
 
-    // The target.toml `build` field decides whether to package the rendered
-    // output; the eFMU case is handled above. There is no CLI flag.
-    match manifest.build {
-        Some(TargetBuildKind::Efmu) => unreachable!("efmu targets are dispatched above"),
-        None => {
-            write_manifest_files(
-                result,
-                &renderer,
-                bundle,
-                manifest,
-                &out_dir,
-                &model_identifier,
-            )?;
-            print_target_completion_message(manifest, &out_dir, &model_identifier)?;
-        }
+    if manifest.package.is_some() {
+        compile_packaged_target(
+            result,
+            &renderer,
+            bundle,
+            manifest,
+            &out_dir,
+            &model_identifier,
+        )?;
+    } else {
+        write_manifest_files(
+            result,
+            &renderer,
+            bundle,
+            manifest,
+            &out_dir,
+            &model_identifier,
+        )?;
     }
-
+    print_target_completion_message(manifest, &out_dir, &model_identifier)?;
     Ok(())
 }
 
-/// Compile a `build = "efmu"` target (`galec`/`galec-production`, contract §9
-/// WI-5): project once into a packaging plan, then drive the declarative
-/// checksum-web build step to render every manifest + `__content.xml` and
-/// package both eFMU forms (directory + `.efmu` zip).
-///
-/// The directory form lives in its own pristine `<out_dir>/<model>/` root
-/// (eFMI ch. 2 defines the directory as a package format whose root must hold
-/// exactly `__content.xml`, `schemas/`, and representation containers), and the
-/// `.efmu` zip sits beside it — matching the `build = "fmu"` overwrite-on-re-run
-/// UX. The plan (and its GALEC projection) is built before any filesystem
-/// effect, so a rejected model leaves no directory behind.
 #[cfg(feature = "scheduled-sim")]
-fn compile_efmu_target(
+fn compile_packaged_target(
     result: &CompilationResult,
-    model: &str,
+    renderer: &ManifestRenderer,
     bundle: &TargetBundle,
     manifest: &TargetManifest,
-    output: Option<PathBuf>,
+    out_dir: &Path,
     model_identifier: &str,
 ) -> Result<()> {
+    let declared = manifest
+        .package
+        .as_ref()
+        .context("internal: packaged target has no [package] declaration")?;
     for file in &manifest.files {
         if file.mode.is_some() {
             bail!(
-                "build = \"efmu\" targets do not support per-file `mode` (file '{}'): \
-                 the container writer owns the on-disk layout",
+                "[package] targets do not support per-file `mode` (file '{}'): \
+                 the package writer owns the on-disk layout",
                 file.path
             );
         }
     }
-    let plan = build_galec_plan(result, manifest, model, model_identifier)?.ok_or_else(|| {
-        anyhow::anyhow!(
-            "build = \"efmu\" target '{}' is not a known GALEC eFMU target",
-            manifest.name.as_deref().unwrap_or("custom")
-        )
-    })?;
-    let out_dir = output.unwrap_or_else(|| default_target_output_dir(manifest, model_identifier));
-
-    eprintln!(
-        "Compiling target '{}' for {}",
-        bundle.label(manifest),
-        model_identifier
-    );
-    if let Some(description) = &manifest.description {
-        eprintln!("  {description}");
-    }
-
-    let container_root = out_dir.join(model_identifier);
+    let package_root = renderer
+        .render(result, &declared.root, model_identifier)
+        .context("Render [package] root")?;
+    let package_root = safe_target_join(out_dir, package_root.trim())?;
+    let archive_path = declared
+        .archive
+        .as_ref()
+        .map(|archive| {
+            if archive.format != TargetArchiveFormat::Zip
+                || archive.root != TargetArchiveRoot::Flat
+            {
+                bail!("Only flat zip archives are currently supported");
+            }
+            let rendered = renderer
+                .render(result, &archive.path, model_identifier)
+                .context("Render [package.archive] path")?;
+            safe_target_join(out_dir, rendered.trim())
+        })
+        .transpose()?;
     let package = crate::packaging::PackageSpec {
-        index: EFMU_CONTENT_INDEX.to_string(),
-        zip: Some(crate::packaging::ZipPackage {
-            archive_path: out_dir.join(format!("{model_identifier}.efmu")),
-        }),
+        required_files: declared.required_files.clone(),
+        zip: archive_path.map(|archive_path| crate::packaging::ZipPackage { archive_path }),
     };
-    let render = galec_manifest_render(&plan, bundle, model_identifier);
+    let render = |template_or_path: &str,
+                  artifact: &crate::packaging::ArtifactRenderContext<'_>| {
+        let source = bundle
+            .template_source(template_or_path)
+            .unwrap_or_else(|_| std::borrow::Cow::Borrowed(template_or_path));
+        renderer.render_with_artifact(result, source.as_ref(), model_identifier, artifact)
+    };
     crate::packaging::render_and_package(
         &manifest.files,
         render,
         &manifest.assets,
-        crate::packaging::efmi_asset_source,
+        |source| bundle.asset_files(source),
         &package,
-        &container_root,
+        &package_root,
     )?;
-    print_target_completion_message(manifest, &out_dir, model_identifier)?;
     Ok(())
 }
-
-/// The eFMU root index file: a directory holding it is recognized as a prior
-/// build of this product (contract §4b; eFMI ch. 2 package format 1).
-#[cfg(feature = "scheduled-sim")]
-const EFMU_CONTENT_INDEX: &str = "__content.xml";
 
 /// Write every `[[files]]` entry of a manifest target under `out_dir` (the
 /// non-packaged and FMU paths; the eFMU path packages the declarative build
@@ -500,7 +461,7 @@ fn validate_target_requirements(
         return Ok(());
     };
     match manifest.ir {
-        TargetTemplateIr::Dae => {
+        TargetTemplateIr::Dae | TargetTemplateIr::AlgorithmCode => {
             validate_dae_target_capabilities(&result.dae, manifest, capabilities)?;
         }
         TargetTemplateIr::Solve => {
@@ -515,12 +476,8 @@ fn validate_target_requirements(
 
 #[cfg(feature = "scheduled-sim")]
 fn default_target_output_dir(manifest: &TargetManifest, model_identifier: &str) -> PathBuf {
-    match manifest.build {
-        // The eFMU out dir holds both package forms (`<model>/` directory
-        // form + `<model>.efmu` zip; layout docs in `efmu.rs`), so it keeps
-        // the plain model name rather than a package extension.
-        Some(TargetBuildKind::Efmu) | None => PathBuf::from(model_identifier),
-    }
+    let _ = manifest;
+    PathBuf::from(model_identifier)
 }
 
 #[cfg(feature = "scheduled-sim")]
@@ -553,18 +510,18 @@ fn write_manifest_file(
 ///
 /// Resolved exactly once per target invocation, before the per-file loop,
 /// so every rendered artifact of one compile comes from the same underlying
-/// computation. The `galec`/`galec-production` eFMU targets do NOT go through
-/// this enum — they drive the declarative checksum-web build step
-/// ([`compile_efmu_target`] / [`galec_manifest_render`], contract §9 WI-5).
+/// computation. Packaged and unpackaged targets share this renderer; package
+/// assembly is a later generic artifact operation.
 enum ManifestRenderer {
     /// Generic path: the IR-keyed JSON template context.
     Ir(TemplateIr),
     /// `wgsl-solve` renders Solve kernels without the DAE JSON context.
     WgslSolve,
-    /// `embedded-c-galec` renders thin C templates over one typed
-    /// projection context (SPEC_0034 GAL-024/D2) — never the generic DAE
-    /// JSON context.
-    GalecC(rumoca_compile::galec::GalecCExport),
+    /// A checked Algorithm Code package plus immutable artifact facts.
+    AlgorithmCode {
+        package: rumoca_ir_galec::package::AlgorithmCodePackage,
+        artifact: crate::packaging::ArtifactSession,
+    },
 }
 
 /// Resolve the renderer for one non-eFMU target invocation (module docs on
@@ -581,11 +538,10 @@ fn resolve_manifest_renderer(
     if manifest.ir == TargetTemplateIr::Solve && manifest.name.as_deref() == Some("wgsl-solve") {
         return Ok(ManifestRenderer::WgslSolve);
     }
-    if manifest.ir == TargetTemplateIr::Dae && manifest.name.as_deref() == Some("embedded-c-galec")
-    {
-        let export = rumoca_compile::galec::render_galec_c_export(&result.dae, model_identifier)
-            .context("GALEC C export for target 'embedded-c-galec'")?;
-        return Ok(ManifestRenderer::GalecC(export));
+    if manifest.ir == TargetTemplateIr::AlgorithmCode {
+        let package = lower_algorithm_code(result, model_identifier, manifest.name.as_deref())?;
+        let artifact = crate::packaging::ArtifactSession::new(&manifest.files)?;
+        return Ok(ManifestRenderer::AlgorithmCode { package, artifact });
     }
     Ok(ManifestRenderer::Ir(template_ir_to_cli(manifest.ir)))
 }
@@ -608,6 +564,7 @@ impl ManifestRenderer {
         template: &str,
         model_identifier: &str,
     ) -> Result<String> {
+        let checksums = std::collections::BTreeMap::new();
         match self {
             Self::Ir(ir) => result
                 .render_template_str_with_name_and_ir(template, model_identifier, *ir)
@@ -615,89 +572,47 @@ impl ManifestRenderer {
             Self::WgslSolve => result
                 .render_solve_template_str_without_dae(template, model_identifier)
                 .map_err(Into::into),
-            Self::GalecC(export) => render_galec_c_template(export, template),
+            Self::AlgorithmCode { package, artifact } => {
+                let context = crate::packaging::ArtifactRenderContext {
+                    session: artifact,
+                    checksums: &checksums,
+                };
+                rumoca_phase_codegen::render_algorithm_code_template_with_artifact(
+                    package,
+                    &context,
+                    template,
+                    model_identifier,
+                )
+                .map_err(anyhow::Error::from)
+            }
         }
     }
-}
 
-/// Register the eFMI manifest render filters (contract §3b) on a bare
-/// minijinja environment: `xml_escape` (autoescape is OFF, so every text
-/// value is escaped explicitly) and `xs_double` (raw `f64` → valid
-/// `xs:double` lexical). The real `galec`/`galec-production` manifest
-/// templates pipe every interpolated text value through `xml_escape` and
-/// every raw `f64` through `xs_double`.
-fn register_manifest_filters(env: &mut minijinja::Environment<'_>) {
-    env.add_filter("xml_escape", |text: String| {
-        rumoca_compile::galec::xml_escape(&text)
-    });
-    env.add_filter("xs_double", rumoca_compile::galec::xs_double);
-}
-
-/// Conformance/honesty header the shared GALEC C-layout templates
-/// interpolate (SPEC_0034 GAL-024 two-track rule / D10).
-///
-/// `model.h.jinja`/`model.c.jinja` are shared by every target rendering
-/// the GALEC C projection, so the claim text is target IDENTITY, not
-/// projection data: each render path supplies its own value under the
-/// strict-undefined `conformance_header` context key instead of the
-/// templates baking one target's claim in. The eFMI Production Code target
-/// (`galec-production`) supplies its PC-representation claim the same way
-/// at its render site inside the compile facade (`galec_api.rs`, where the
-/// C files must render so their SHA-1s enter the Production Code manifest).
-struct CConformanceHeader {
-    /// Full conformance statement for the header file, pre-wrapped: each
-    /// entry becomes one ` * <line>` C comment line, so entries must stay
-    /// comment-safe (no newlines, no `*/` — pinned by unit test).
-    lines: &'static [&'static str],
-    /// One-line short claim (also comment-safe) spliced into the source
-    /// file's header comment ahead of the template-owned, target-agnostic
-    /// layout-mechanics text.
-    summary: &'static str,
-}
-
-impl CConformanceHeader {
-    fn context_value(&self) -> minijinja::Value {
-        minijinja::context! {
-            lines => self.lines,
-            summary => self.summary,
+    fn render_with_artifact(
+        &self,
+        result: &CompilationResult,
+        template: &str,
+        model_identifier: &str,
+        artifact: &crate::packaging::ArtifactRenderContext<'_>,
+    ) -> Result<String> {
+        match self {
+            Self::Ir(ir) => result
+                .render_template_str_with_name_and_ir(template, model_identifier, *ir)
+                .map_err(Into::into),
+            Self::WgslSolve => result
+                .render_solve_template_str_without_dae(template, model_identifier)
+                .map_err(Into::into),
+            Self::AlgorithmCode { package, .. } => {
+                rumoca_phase_codegen::render_algorithm_code_template_with_artifact(
+                    package,
+                    artifact,
+                    template,
+                    model_identifier,
+                )
+                .map_err(anyhow::Error::from)
+            }
         }
     }
-}
-
-/// The `embedded-c-galec` claim: the non-eFMI track of GAL-024 must
-/// self-describe as NOT an eFMI Production Code container (pinned by the
-/// CLI honesty test `export_self_describes_as_not_an_efmi_production_code_container`).
-/// The spelling is owned by `rumoca_compile::galec` — the single source shared
-/// with the compile facade, the LSP, and the WASM addon.
-const EMBEDDED_C_GALEC_CONFORMANCE_HEADER: CConformanceHeader = CConformanceHeader {
-    lines: rumoca_compile::galec::EMBEDDED_C_GALEC_CONFORMANCE_LINES,
-    summary: rumoca_compile::galec::EMBEDDED_C_GALEC_CONFORMANCE_SUMMARY,
-};
-
-/// Render an `embedded-c-galec` target template (file path or C file) from
-/// the invocation's single [`rumoca_compile::galec::GalecCExport`].
-///
-/// The context is the projection's serialized typed `CContext`
-/// (`model_name`, `block_name`, `struct_name`, `function_prefix`,
-/// `include_guard`, `variables`, `methods`): all C expression/statement
-/// text comes pre-printed by the typed Rust printer, the templates only
-/// lay out the files (SPEC_0034 D2/GAL-008 split). The renderer adds the
-/// one key that is target identity rather than projection data: this
-/// target's [`CConformanceHeader`].
-fn render_galec_c_template(
-    export: &rumoca_compile::galec::GalecCExport,
-    template: &str,
-) -> Result<String> {
-    let mut env = minijinja::Environment::new();
-    env.set_undefined_behavior(minijinja::UndefinedBehavior::Strict);
-    env.render_str(
-        template,
-        minijinja::context! {
-            conformance_header => EMBEDDED_C_GALEC_CONFORMANCE_HEADER.context_value(),
-            ..minijinja::Value::from_serialize(&export.context)
-        },
-    )
-    .context("Render embedded-c-galec target template")
 }
 
 #[cfg(feature = "scheduled-sim")]
@@ -1079,16 +994,12 @@ scalar_fallback = false
     /// (`export_self_describes_as_not_an_efmi_production_code_container`).
     #[test]
     fn embedded_c_galec_conformance_header_is_c_comment_safe() {
-        let header = &EMBEDDED_C_GALEC_CONFORMANCE_HEADER;
-        assert!(
-            !header.lines.is_empty(),
-            "the GAL-024 honesty statement must not be empty"
-        );
-        for text in header.lines.iter().chain(std::iter::once(&header.summary)) {
-            assert!(
-                !text.contains('\n') && !text.contains("*/"),
-                "conformance-header text must be a single C comment line: {text:?}"
-            );
-        }
+        let source = rumoca_phase_codegen::templates::builtin_template_source(
+            "embedded-c-galec",
+            "model.h.jinja",
+        )
+        .expect("embedded C header template");
+        assert!(source.contains("GALEC-derived embedded C export"));
+        assert!(source.contains("Target syntax and layout are owned by this template"));
     }
 }

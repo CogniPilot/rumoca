@@ -72,14 +72,15 @@ fn validate_return_definitions(
     for (statement, plan) in statements.iter().zip(plans) {
         let (
             rumoca_core::Statement::Assignment { value, .. },
-            FunctionStatementPlan::Assignment {
-                target,
-                subscript_count: 0,
-            },
+            FunctionStatementPlan::Assignment(assignment),
         ) = (statement, plan)
         else {
             return Err(unsupported_return_shape(function, statement));
         };
+        if !assignment.is_whole() {
+            return Err(unsupported_return_shape(function, statement));
+        }
+        let target = assignment.target();
         let mut references = Vec::new();
         value.collect_var_refs(&mut references);
         if references
@@ -113,10 +114,9 @@ fn validate_return_definitions(
 
 fn sequence_defines_target(plans: &[FunctionStatementPlan], target: &VarName) -> bool {
     plans.iter().any(|plan| match plan {
-        FunctionStatementPlan::Assignment {
-            target: assigned,
-            subscript_count: 0,
-        } => assigned == target,
+        FunctionStatementPlan::Assignment(assignment) if assignment.is_whole() => {
+            assignment.target() == target
+        }
         FunctionStatementPlan::If { targets, .. } => targets.contains(target),
         _ => false,
     })

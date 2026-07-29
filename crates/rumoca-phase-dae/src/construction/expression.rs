@@ -297,34 +297,25 @@ fn lower_delay<'dae>(
         .ok_or(dae::DaeConstructionError::InvalidPositiveParameter { span })?;
     let source = lower_expression_scoped(construction, symbols, binders, &arguments[0], None)?;
     let delay_time = lower_expression_scoped(construction, symbols, binders, &arguments[1], None)?;
-    let delay_time_provenance = expression_provenance(
-        arguments[1]
-            .span()
-            .expect("analysis proves delayTime provenance"),
-        None,
-    )?;
-    let delay = match plan {
-        DelayPlan::Fixed { delay_time: value } => construction.temporal(|temporal| {
-            let positive = temporal.positive_parameter(delay_time, value, delay_time_provenance)?;
+    match plan {
+        DelayPlan::Fixed(timing) => construction.temporal(|temporal| {
+            let timing_provenance = expression_provenance(timing.provenance(), None)?;
+            let positive =
+                temporal.positive_parameter(delay_time, timing.value(), timing_provenance)?;
             temporal.delay(source, positive, provenance, provenance)
-        })?,
-        DelayPlan::Bounded { delay_max: value } => {
+        }),
+        DelayPlan::Bounded(maximum) => {
             let delay_max =
                 lower_expression_scoped(construction, symbols, binders, &arguments[2], None)?;
-            let delay_max_provenance = expression_provenance(
-                arguments[2]
-                    .span()
-                    .expect("analysis proves delayMax provenance"),
-                None,
-            )?;
+            let maximum_provenance = expression_provenance(maximum.provenance(), None)?;
             construction.temporal(|temporal| {
                 let maximum =
-                    temporal.positive_parameter(delay_max, value, delay_max_provenance)?;
+                    temporal.positive_parameter(delay_max, maximum.value(), maximum_provenance)?;
                 temporal.bounded_delay(source, delay_time, maximum, provenance, provenance)
-            })?
+            })
         }
-    };
-    Ok(delay.expression())
+    }
+    .map(|delay| delay.expression())
 }
 
 fn lower_hold<'dae>(

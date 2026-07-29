@@ -801,6 +801,30 @@ fn production_lowering_constructs_delay_with_exact_timing_evidence() {
     ));
     model.is_partial = true;
 
+    let analysis = analyze(&model).unwrap();
+    assert_eq!(analysis.delay_plans.len(), 1);
+    let Some(DelayPlan::Fixed(timing)) = analysis.delay_plans.get(&delay_span) else {
+        panic!("accepted delay occurrence owns exactly one fixed timing plan");
+    };
+    assert_eq!(timing.value(), 0.5);
+    assert_eq!(timing.provenance(), source.span("dt", 1));
+
+    let mut missing_provenance = model.clone();
+    let Expression::Binary { rhs, .. } = &mut missing_provenance.equations[0].residual else {
+        panic!("fixture owns a binary residual");
+    };
+    let Expression::BuiltinCall { args, .. } = rhs.as_mut() else {
+        panic!("fixture owns one delay call");
+    };
+    let Expression::VarRef { span, .. } = &mut args[1] else {
+        panic!("fixture delayTime is a parameter reference");
+    };
+    *span = Span::DUMMY;
+    assert!(matches!(
+        analyze(&missing_provenance),
+        Err(ToDaeError::MissingProvenance { .. })
+    ));
+
     let dae = construct(&model, source.map).unwrap();
     dae.inspect(|view| {
         assert_eq!(view.delay_count(), 1);

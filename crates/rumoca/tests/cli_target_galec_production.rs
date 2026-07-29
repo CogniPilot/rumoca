@@ -4,7 +4,7 @@
 //! Invokes the real binary so the whole chain is exercised: CLI dispatch →
 //! generic capability gate → GALEC projection facade → a product-agnostic
 //! context validated in Rust → jinja templates (the eFMI manifests + C) plus
-//! the typed GALEC `.alg` printer → the declared-checksum-web `build = "efmu"`
+//! the typed GALEC `.alg` view → the declared checksum and `[package]` graph
 //! two-representation container packaging. The target claims the "eFMI Production Code export"
 //! rung of the SPEC_0034 conformance ladder, so these tests machine-check
 //! that rung:
@@ -47,6 +47,8 @@ mod cc_support;
 mod cli_support;
 #[path = "galec_cli_support/container_xml.rs"]
 mod container_xml_support;
+#[path = "galec_cli_support/metadata.rs"]
+mod metadata_support;
 
 use cc_support::cc;
 use cli_support::{run_compile_target, strip_ansi, write_fixture};
@@ -55,6 +57,7 @@ use container_xml_support::{
     relative_file_paths, sole_attribute_value, surgically, validate_against_xsd,
     vendored_schemas_dir, without_block, without_line,
 };
+use metadata_support::{assert_manifest_id, assert_strict_utc_timestamp};
 
 /// Fixed-sample discrete fixture: a parameter, a `pre()` state, an output,
 /// and one `when sample(...)` clock — the shape the GALEC projection
@@ -294,7 +297,8 @@ fn corrupted_production_code_manifest_is_rejected_by_the_xsd() {
     let out_dir = dir.path().join("out");
     let container = build_container(dir.path(), &out_dir);
     let manifest = fs::read_to_string(container.pc_manifest()).expect("read PC manifest");
-    let xsd = vendored_schemas_dir().join("ProductionCode/efmiProductionCodeManifest.xsd");
+    let xsd = vendored_schemas_dir("galec-production")
+        .join("ProductionCode/efmiProductionCodeManifest.xsd");
 
     validate_against_xsd(&container.pc_manifest(), &xsd)
         .expect("pristine rendered PC manifest must be schema-valid");
@@ -597,14 +601,14 @@ fn compile_target_galec_production_emits_schema_valid_two_representation_efmu() 
         "ProductionCode/ must hold exactly the C pair and its manifest"
     );
 
-    // schemas/ is the complete vendored Beta-1 tree, byte for byte
-    // (GAL-023; the repository-only README.md is not part of the copies).
-    let mut vendored = relative_file_paths(&vendored_schemas_dir());
-    vendored.remove("README.md");
+    // schemas/ is the complete target-owned Beta-1 asset tree, byte for byte
+    // (GAL-023), including its origin/license README.
+    let schemas = vendored_schemas_dir("galec-production");
+    let vendored = relative_file_paths(&schemas);
     let emitted = relative_file_paths(&container.root.join("schemas"));
     assert_eq!(emitted, vendored, "schemas/ must mirror the vendored tree");
     for relative in &vendored {
-        let vendored_bytes = fs::read(vendored_schemas_dir().join(relative)).unwrap();
+        let vendored_bytes = fs::read(schemas.join(relative)).unwrap();
         let emitted_bytes = fs::read(container.root.join("schemas").join(relative)).unwrap();
         assert_eq!(
             emitted_bytes, vendored_bytes,
@@ -617,17 +621,19 @@ fn compile_target_galec_production_emits_schema_valid_two_representation_efmu() 
     // never skips schema validation (GAL-012/GAL-021).
     validate_against_xsd(
         &container.content_xml(),
-        &vendored_schemas_dir().join("efmiContainerManifest.xsd"),
+        &vendored_schemas_dir("galec-production").join("efmiContainerManifest.xsd"),
     )
     .expect("__content.xml must validate against the vendored container XSD");
     validate_against_xsd(
         &container.ac_manifest(),
-        &vendored_schemas_dir().join("AlgorithmCode/efmiAlgorithmCodeManifest.xsd"),
+        &vendored_schemas_dir("galec-production")
+            .join("AlgorithmCode/efmiAlgorithmCodeManifest.xsd"),
     )
     .expect("AlgorithmCode/manifest.xml must validate against the vendored AC XSD");
     validate_against_xsd(
         &container.pc_manifest(),
-        &vendored_schemas_dir().join("ProductionCode/efmiProductionCodeManifest.xsd"),
+        &vendored_schemas_dir("galec-production")
+            .join("ProductionCode/efmiProductionCodeManifest.xsd"),
     )
     .expect("ProductionCode/manifest.xml must validate against the vendored PC XSD");
 }
@@ -675,11 +681,7 @@ fn container_checksum_web_recomputes_from_written_bytes() {
         );
         assert_eq!(
             entry.get("checksum").map(String::as_str),
-            Some(
-                rumoca_galec_codegen::Sha1Hex::of_bytes(manifest_bytes)
-                    .to_hex()
-                    .as_str()
-            ),
+            Some(rumoca::sha1_hex(manifest_bytes).as_str()),
             "__content.xml {name} checksum must be the SHA-1 of the written manifest.xml"
         );
         assert_eq!(
@@ -693,7 +695,7 @@ fn container_checksum_web_recomputes_from_written_bytes() {
     let alg_bytes = fs::read(container.alg_file()).expect("read .alg bytes");
     assert_eq!(
         sole_attribute_value(&container.ac_manifest(), "checksum"),
-        rumoca_galec_codegen::Sha1Hex::of_bytes(&alg_bytes).to_hex(),
+        rumoca::sha1_hex(&alg_bytes),
         "AC manifest File checksum must be the SHA-1 of the written .alg"
     );
 
@@ -712,11 +714,7 @@ fn container_checksum_web_recomputes_from_written_bytes() {
         let code_bytes = fs::read(&path).expect("read code file bytes");
         assert_eq!(
             entry.get("checksum").map(String::as_str),
-            Some(
-                rumoca_galec_codegen::Sha1Hex::of_bytes(&code_bytes)
-                    .to_hex()
-                    .as_str()
-            ),
+            Some(rumoca::sha1_hex(&code_bytes).as_str()),
             "PC manifest File checksum for {name} must be the SHA-1 of the written bytes"
         );
     }
@@ -727,11 +725,7 @@ fn container_checksum_web_recomputes_from_written_bytes() {
     let reference = sole_element_attributes(&container.pc_manifest(), "ManifestReference");
     assert_eq!(
         reference.get("checksum").map(String::as_str),
-        Some(
-            rumoca_galec_codegen::Sha1Hex::of_bytes(&ac_manifest_bytes)
-                .to_hex()
-                .as_str()
-        ),
+        Some(rumoca::sha1_hex(&ac_manifest_bytes).as_str()),
         "PC ManifestReference checksum must be the SHA-1 of the written AC manifest"
     );
     assert_eq!(
@@ -870,23 +864,12 @@ fn container_ids_unique_and_generation_metadata_strict() {
 
     for path in [container.ac_manifest(), container.pc_manifest()] {
         let id = root_id(&path);
-        rumoca_galec_codegen::ManifestId::parse(&id).unwrap_or_else(|error| {
-            panic!(
-                "manifest root id `{id}` in {} must be a brace-wrapped UUID: {error}",
-                path.display()
-            )
-        });
+        assert_manifest_id(&id, &path);
     }
 
     for path in &documents {
         let timestamp = sole_attribute_value(path, "generationDateAndTime");
-        rumoca_galec_codegen::UtcTimestamp::parse(&timestamp).unwrap_or_else(|error| {
-            panic!(
-                "generationDateAndTime `{timestamp}` in {} must match the strict \
-                 UTC pattern: {error}",
-                path.display()
-            )
-        });
+        assert_strict_utc_timestamp(&timestamp, path);
         let tool = sole_attribute_value(path, "generationTool");
         assert!(
             tool.starts_with("rumoca "),
@@ -1050,11 +1033,7 @@ fn rerunning_same_command_replaces_previous_container() {
         let manifest_bytes = fs::read(&manifest_path).expect("read replaced manifest");
         assert_eq!(
             entry.get("checksum").map(String::as_str),
-            Some(
-                rumoca_galec_codegen::Sha1Hex::of_bytes(&manifest_bytes)
-                    .to_hex()
-                    .as_str()
-            ),
+            Some(rumoca::sha1_hex(&manifest_bytes).as_str()),
             "the replaced container's {name} checksum must recompute from its own bytes"
         );
     }
@@ -1110,7 +1089,12 @@ fn production_code_compiles_links_and_reproduces_the_discrete_dynamics() {
     fs::write(&driver, DRIVER_MAIN).expect("write driver");
     let program = dir.path().join("smoke");
     let compile = cc()
+        .arg("-std=c99")
+        .arg("-pedantic")
         .arg("-Wall")
+        .arg("-Wextra")
+        .arg("-Wconversion")
+        .arg("-Wsign-conversion")
         .arg("-Werror")
         .arg("-I")
         .arg(container.root.join("ProductionCode"))
@@ -1123,7 +1107,7 @@ fn production_code_compiles_links_and_reproduces_the_discrete_dynamics() {
         .expect("run cc");
     assert!(
         compile.status.success(),
-        "cc -Wall -Werror failed.\nstderr:\n{}\nheader:\n{}\nsource:\n{}",
+        "strict cc -std=c99 compile failed.\nstderr:\n{}\nheader:\n{}\nsource:\n{}",
         String::from_utf8_lossy(&compile.stderr),
         fs::read_to_string(container.c_header()).unwrap_or_default(),
         fs::read_to_string(container.c_source()).unwrap_or_default()

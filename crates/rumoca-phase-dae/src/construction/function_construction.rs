@@ -68,10 +68,6 @@ pub(super) fn reserve_functions<'flat, 'dae>(
     let mut functions = HashMap::with_capacity(shapes.certificates().len());
     let mut reserved = Vec::with_capacity(shapes.certificates().len());
     for (specialization, certificate) in shapes.certificates().iter().enumerate() {
-        debug_assert!(
-            !certificate.first_call.is_dummy(),
-            "shape certificates retain their first call-site equality"
-        );
         let function = &flat.functions[&certificate.key.function];
         let declaration = dae::DaeProvenance::source(function.span)?;
         let parameters = function

@@ -13,6 +13,9 @@ fn builtin_template_descriptors() -> Vec<rumoca_compile::codegen::targets::Built
 {
     let mut descriptors = builtin_target_descriptors_for_ir(TargetTemplateIr::Dae);
     descriptors.extend(builtin_target_descriptors_for_ir(TargetTemplateIr::Solve));
+    descriptors.extend(builtin_target_descriptors_for_ir(
+        TargetTemplateIr::AlgorithmCode,
+    ));
     descriptors
 }
 
@@ -248,13 +251,6 @@ impl ModelicaLanguageServer {
             return Some(response);
         }
 
-        // GALEC targets carry the projection context (dae + flat) the generic
-        // DAE template render lacks; route them to the shared identity-free
-        // renderer instead (the eFMU container itself stays a CLI concern).
-        if rumoca_compile::galec::is_galec_target(&target_name) {
-            return Some(galec_codegen_response(&compiled, &model, &target_name));
-        }
-
         let target_path = resolve_scenario_codegen_target(&target_base_path, &target_name);
         if raw_jinja_target(&target_path) {
             return match render_raw_jinja_target(compiled.dae.as_ref(), &model, &target_path) {
@@ -283,6 +279,9 @@ impl ModelicaLanguageServer {
             }
             TargetTemplateIr::Solve => {
                 render_solve_target_files(&bundle, &manifest, compiled.dae.clone(), &model)
+            }
+            TargetTemplateIr::AlgorithmCode => {
+                render_algorithm_code_source_files(&bundle, &manifest, &compiled, &model)
             }
             TargetTemplateIr::Flat | TargetTemplateIr::Ast => {
                 return Some(Self::simulation_error_value(format!(
@@ -580,34 +579,68 @@ fn resolve_scenario_codegen_target(uri_path: &Path, target: &str) -> PathBuf {
 /// "Generate Code" flow: the `.alg` plus, for the C tracks, the `.h`/`.c`.
 /// Uses the shared identity-free renderer (the same one the WASM addon uses)
 /// over the checked DAE.
-fn galec_codegen_response(
+#[derive(serde::Serialize)]
+struct SourceArtifactFacts {
+    generated_at: &'static str,
+    generation_tool: &'static str,
+    identities: std::collections::BTreeMap<String, String>,
+    checksums: std::collections::BTreeMap<String, String>,
+}
+
+fn render_algorithm_code_source_files(
+    bundle: &TargetBundle,
+    manifest: &TargetManifest,
     compiled: &rumoca_compile::compile::DaeCompilationResult,
     model: &str,
-    target: &str,
-) -> Value {
-    // GALEC identifiers and C names cannot contain dots.
+) -> anyhow::Result<Vec<RenderedTargetFile>> {
     let model_id = model.replace('.', "_");
-    match rumoca_compile::galec::render_galec_sources(compiled.dae.as_ref(), &model_id, target) {
-        Ok(sources) => {
-            let mut files = vec![json!({
-                "path": format!("{model_id}.alg"),
-                "content": sources.alg,
-            })];
-            if !sources.c_source.is_empty() {
-                files.push(json!({
-                    "path": format!("{model_id}.h"),
-                    "content": sources.c_header,
-                }));
-                files.push(json!({
-                    "path": format!("{model_id}.c"),
-                    "content": sources.c_source,
-                }));
-            }
-            json!({ "ok": true, "target": target, "files": files })
+    let package = rumoca_phase_galec::lower_to_algorithm_code(
+        &rumoca_phase_galec::GalecInput::new(compiled.dae.as_ref(), &model_id),
+        &rumoca_phase_galec::GalecOptions::default(),
+    )
+    .map_err(|diagnostics| {
+        anyhow::anyhow!(
+            "GALEC projection failed: {}",
+            diagnostics
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("; ")
+        )
+    })?;
+    let artifact = SourceArtifactFacts {
+        generated_at: "1970-01-01T00:00:00Z",
+        generation_tool: "rumoca editor source preview",
+        identities: std::collections::BTreeMap::new(),
+        checksums: std::collections::BTreeMap::new(),
+    };
+    let mut rendered = Vec::new();
+    for file in &manifest.files {
+        let extension = Path::new(&file.path)
+            .extension()
+            .and_then(|value| value.to_str());
+        if !matches!(extension, Some("alg" | "h" | "c")) {
+            continue;
         }
-        // Same `{ ok: false, error }` shape as `simulation_error_value`.
-        Err(error) => json!({ "ok": false, "error": format!("GALEC codegen failed: {error}") }),
+        let path = rumoca_phase_codegen::render_algorithm_code_template_with_artifact(
+            &package,
+            &artifact,
+            &file.path,
+            &model_id,
+        )?;
+        let source = bundle.template_source(&file.template)?;
+        let content = rumoca_phase_codegen::render_algorithm_code_template_with_artifact(
+            &package,
+            &artifact,
+            source.as_ref(),
+            &model_id,
+        )?;
+        rendered.push(RenderedTargetFile {
+            path: path.trim().to_owned(),
+            content,
+        });
     }
+    Ok(rendered)
 }
 
 fn render_target_base_path(request_uri: &Url, focus_path: &Path) -> PathBuf {

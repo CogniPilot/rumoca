@@ -147,11 +147,13 @@ jobs:
           path: target/review/review-scan.json
           if-no-files-found: ignore
 
-      - name: Check generated Modelica parser is current
+      - name: Check generated parsers are current
         shell: bash
         run: |
           set -euo pipefail
-          git diff --exit-code -- crates/rumoca-phase-parse/src/generated
+          git diff --exit-code -- \
+            crates/rumoca-phase-parse/src/generated \
+            crates/rumoca-phase-parse-galec/src/parse/generated
 
       - name: Generate crate DAG release artifact
         run: cargo xtask repo graph crates --format dot

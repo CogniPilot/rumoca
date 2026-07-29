@@ -95,7 +95,7 @@ fn build_sources(work_dir: &Path, out_dir: &Path) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
-/// The emitted sources compile under `-Wall -Werror`, link against libm
+/// The emitted sources compile under strict ISO C99 warnings, link against libm
 /// with a real driver, and the executed block reproduces the discrete
 /// dynamics tick for tick.
 #[test]
@@ -113,7 +113,12 @@ fn emitted_c_compiles_links_and_reproduces_the_discrete_dynamics() {
     fs::write(&driver, DRIVER_MAIN).expect("write driver");
     let program = out_dir.join("smoke");
     let compile = cc()
+        .arg("-std=c99")
+        .arg("-pedantic")
         .arg("-Wall")
+        .arg("-Wextra")
+        .arg("-Wconversion")
+        .arg("-Wsign-conversion")
         .arg("-Werror")
         .arg("-o")
         .arg(&program)
@@ -124,7 +129,7 @@ fn emitted_c_compiles_links_and_reproduces_the_discrete_dynamics() {
         .expect("run cc");
     assert!(
         compile.status.success(),
-        "cc -Wall -Werror failed.\nstderr:\n{}\nheader:\n{}\nsource:\n{}",
+        "strict cc -std=c99 compile failed.\nstderr:\n{}\nheader:\n{}\nsource:\n{}",
         String::from_utf8_lossy(&compile.stderr),
         fs::read_to_string(&header).unwrap_or_default(),
         fs::read_to_string(&source).unwrap_or_default()

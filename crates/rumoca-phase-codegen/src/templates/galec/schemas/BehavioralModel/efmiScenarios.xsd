@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" elementFormDefault="qualified" attributeFormDefault="unqualified">
+	<xs:include schemaLocation="../efmiIdentifierType.xsd"/>
+	
+	<xs:complexType name="efmiScenarios">
+		<xs:sequence>
+			<xs:element name="Scenario" minOccurs="0" maxOccurs="unbounded">
+				<xs:complexType>
+					<xs:attribute name="name" type="xs:normalizedString" use="optional"/>
+					<xs:attribute name="description" type="xs:string" use="optional"/>
+					<xs:attribute name="id" type="efmiIdentifierType" use="required"/>
+					<xs:attribute name="timeGrid" use="required">
+						<xs:simpleType>
+							<xs:restriction base="xs:normalizedString">
+								<xs:enumeration value="variable"/>
+								<xs:enumeration value="equidistant"/>
+							</xs:restriction>
+						</xs:simpleType>
+					</xs:attribute>
+					<xs:attribute name="clockRefId" type="efmiIdentifierType" use="optional">
+						<xs:annotation>
+							<xs:documentation>Reference to the clock that defines the sample period.
+Mandatory for timeGrid="equidistant", an error otherwise.</xs:documentation>
+						</xs:annotation>
+					</xs:attribute>
+					<xs:attribute name="fileRefId" type="efmiIdentifierType" use="required"/>
+					<xs:attribute name="csvMappingRefId" type="efmiIdentifierType" use="required"/>
+					<xs:attribute name="tolerancesSetupRefId" type="efmiIdentifierType" use="required"/>
+				</xs:complexType>
+			</xs:element>
+		</xs:sequence>
+	</xs:complexType>
+</xs:schema>

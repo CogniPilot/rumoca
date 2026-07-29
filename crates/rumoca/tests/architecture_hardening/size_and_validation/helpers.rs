@@ -52,9 +52,8 @@ pub(crate) fn is_production_span_debt_counted_file(path: &Path) -> bool {
         // sanctioned here (through named constructors like `Spanned::dummy`,
         // `Name::ident`, `RefPart::plain`), so the "every production span must be
         // real" gate — aimed at the Modelica/DAE/Solve IRs, where a missing span
-        // is a provenance smell — does not apply to these crates.
+        // is a provenance smell — does not apply to this language IR.
         && !rel.contains("/rumoca-ir-galec/")
-        && !rel.contains("/rumoca-galec-codegen/")
 }
 
 pub(crate) fn dummy_span_fallback_locations(path: &Path) -> Vec<String> {

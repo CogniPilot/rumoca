@@ -147,9 +147,10 @@ cargo xtask help repo cli install
 ## Parser Grammar Regeneration
 
 The Modelica parser is generated from
-`crates/rumoca-phase-parse/src/modelica.par` by the crate build script. The
-generated Rust files are checked in under
-`crates/rumoca-phase-parse/src/generated/` so parser changes are reviewable.
+`crates/rumoca-phase-parse/src/modelica.par`, and the GALEC parser is generated
+from `crates/rumoca-phase-parse-galec/src/parse/galec.par`, by their phase-crate
+build scripts. Generated Rust files are checked in beside each grammar so
+parser changes are reviewable.
 
 When changing the grammar or parser generator settings, regenerate and test
 with:
@@ -157,7 +158,10 @@ with:
 ```bash
 cargo check -p rumoca-phase-parse
 cargo test -p rumoca-phase-parse --test recovery_corpus --quiet
+cargo check -p rumoca-phase-parse-galec
+cargo test -p rumoca-phase-parse-galec --quiet
 git diff -- crates/rumoca-phase-parse/src/generated
+git diff -- crates/rumoca-phase-parse-galec/src/parse/generated
 ```
 
 The workspace pins `parol` and `parol_runtime` to exact patch versions in

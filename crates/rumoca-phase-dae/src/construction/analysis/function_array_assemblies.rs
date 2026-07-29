@@ -50,28 +50,25 @@ fn direct_prefix(
     start: usize,
     static_integers: &HashMap<VarName, i64>,
 ) -> Option<(VarName, usize)> {
-    let FunctionStatementPlan::Assignment {
-        target,
-        subscript_count: 1,
-    } = plans.get(start)?
-    else {
+    let FunctionStatementPlan::Assignment(first) = plans.get(start)? else {
         return None;
     };
-    let target = target.clone();
+    if first.subscripts().len() != 1 {
+        return None;
+    }
+    let target = first.target().clone();
     let mut count = 0usize;
     for (statement, plan) in statements[start..].iter().zip(&plans[start..]) {
         let (
-            rumoca_core::Statement::Assignment { comp, value, .. },
-            FunctionStatementPlan::Assignment {
-                target: found,
-                subscript_count: 1,
-            },
+            rumoca_core::Statement::Assignment { value, .. },
+            FunctionStatementPlan::Assignment(found),
         ) = (statement, plan)
         else {
             break;
         };
-        if found != &target
-            || assignment_index(comp, static_integers) != i64::try_from(count + 1).ok()
+        if found.target() != &target
+            || assignment_index(found.subscripts(), static_integers)
+                != i64::try_from(count + 1).ok()
             || expression_reads(value, &target)
         {
             break;
@@ -104,13 +101,8 @@ fn total_suffix_loop(
     };
     let (
         [index],
-        [rumoca_core::Statement::Assignment { comp, value, .. }],
-        [
-            FunctionStatementPlan::Assignment {
-                target: loop_target,
-                subscript_count: 1,
-            },
-        ],
+        [rumoca_core::Statement::Assignment { value, .. }],
+        [FunctionStatementPlan::Assignment(assignment)],
         [binder],
     ) = (
         indices.as_slice(),
@@ -133,25 +125,24 @@ fn total_suffix_loop(
     else {
         return false;
     };
-    loop_target == target
+    assignment.target() == target
+        && assignment.subscripts().len() == 1
         && direct_count < extent
         && binder.lower == i64::try_from(direct_count + 1).unwrap_or(i64::MAX)
         && binder.upper == i64::try_from(extent).unwrap_or(i64::MIN)
         && binder.step == 1
-        && comp.parts.last().is_some_and(|part| {
-            matches!(
-                part.subs.as_slice(),
-                [subscript] if subscript_is_binder(subscript, &index.ident)
-            )
-        })
+        && matches!(
+            assignment.subscripts(),
+            [subscript] if subscript_is_binder(subscript, &index.ident)
+        )
         && !expression_reads(value, target)
 }
 
 fn assignment_index(
-    component: &rumoca_core::ComponentReference,
+    subscripts: &[rumoca_core::Subscript],
     static_integers: &HashMap<VarName, i64>,
 ) -> Option<i64> {
-    match component.parts.last()?.subs.as_slice() {
+    match subscripts {
         [rumoca_core::Subscript::Index { value, .. }] => Some(*value),
         [rumoca_core::Subscript::Expr { expr, .. }] => {
             static_integer_expression(expr, static_integers)

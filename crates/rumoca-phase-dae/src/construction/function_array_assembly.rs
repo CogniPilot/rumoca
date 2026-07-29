@@ -73,7 +73,7 @@ fn lower_array_assembly_loop<'dae>(
     let [rumoca_core::Statement::Assignment { value, .. }] = equations.as_slice() else {
         unreachable!("analysis proves one suffix-loop assignment")
     };
-    let [FunctionStatementPlan::Assignment { .. }] = statements.as_slice() else {
+    let [FunctionStatementPlan::Assignment(_)] = statements.as_slice() else {
         unreachable!("analysis proves one suffix-loop assignment plan")
     };
     let mut loop_shapes = symbols.shapes.clone();

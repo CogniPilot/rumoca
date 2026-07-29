@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" elementFormDefault="qualified" attributeFormDefault="unqualified">
+	<xs:include schemaLocation="efmiModelRepresentationKind.xsd"/>
+	<xs:include schemaLocation="efmiIdentifierType.xsd"/>
+	<xs:include schemaLocation="efmiManifestAttributes.xsd"/>
+	
+	<xs:element name="Content">
+		<xs:complexType>
+			<xs:sequence>
+				<xs:element name="ModelRepresentation" minOccurs="0" maxOccurs="unbounded">
+					<xs:complexType>
+						<xs:attribute name="name" type="efmiNameWithoutSlashesType" use="required">
+							<xs:annotation>
+								<xs:documentation>Unique name of the container, also defining its root directory (relative to the eFMU's __content.xml).</xs:documentation>
+							</xs:annotation>
+						</xs:attribute>
+						<xs:attribute name="kind" type="ModelRepresentationKind" use="required">
+							<xs:annotation>
+								<xs:documentation>Type of the container; see enumeration values.</xs:documentation>
+							</xs:annotation>
+						</xs:attribute>
+						<xs:attribute name="manifest" type="efmiNameWithoutSlashesType" use="required">
+							<xs:annotation>
+								<xs:documentation>Name of the container's manifest file. The manifest is located in the container's root directory, cf. "name" attribute.</xs:documentation>
+							</xs:annotation>
+						</xs:attribute>
+						<xs:attribute name="checksum" type="xs:normalizedString" use="required">
+							<xs:annotation>
+								<xs:documentation>SHA-1 hash -- according to the Secure Hash Standard (SHS), FIPS PUB 180-4 -- of the binary content of the manifest file of the model representation. The given checksum must be correct; if it is not the SHA-1 hash of the manifest file of the model representation, the eFMU is invalid.</xs:documentation>
+							</xs:annotation>
+						</xs:attribute>
+						<xs:attribute name="manifestRefId" type="efmiManifestIdentifierType" use="required">
+							<xs:annotation>
+								<xs:documentation>Like corresponding attribute of ManifestReference. References a manifest using the Manifest element's "id" attribute. Added to speedup resolving references, i.e., only technical purpose.</xs:documentation>
+							</xs:annotation>
+						</xs:attribute>
+					</xs:complexType>
+				</xs:element>
+			</xs:sequence>
+			<xs:attribute name="xsdVersion" type="xs:normalizedString" use="required" fixed="0.11.0">
+				<xs:annotation>
+					<xs:documentation>Version of this XSD Schema in Semantic Versioning 2.0.0 format (https://semver.org/); cf. the accompanying VERSION.txt file for a changelog.</xs:documentation>
+				</xs:annotation>
+			</xs:attribute>
+			<xs:attribute name="activeFmu" type="xs:normalizedString">
+				<xs:annotation>
+					<xs:documentation>Value of name attribute of model representation whose FMU is currently unpacked in the root directory of the container. If no FMU is unpacked currently, the value of this attribute must not be set.</xs:documentation>
+				</xs:annotation>
+			</xs:attribute>
+			<xs:attributeGroup ref="efmiManifestAttributesBase"/>
+		</xs:complexType>
+	</xs:element>
+	<xs:simpleType name="efmiNameWithoutSlashesType">
+		<xs:annotation>
+			<xs:documentation>Restrict values to pure names without path slashes in it.
+			</xs:documentation>
+		</xs:annotation>
+		<xs:restriction base="xs:normalizedString">
+			<xs:pattern value="[^/]+"/>
+		</xs:restriction>
+	</xs:simpleType>
+</xs:schema>

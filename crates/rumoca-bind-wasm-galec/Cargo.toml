@@ -11,19 +11,14 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 rumoca-compile = { workspace = true }
-rumoca-galec-codegen = { workspace = true }
-rumoca-ir-galec = { workspace = true, features = ["parse"] }
-rumoca-tool-galec-lsp = { workspace = true }
+rumoca-phase-codegen = { workspace = true }
+rumoca-phase-galec = { workspace = true }
+rumoca-phase-parse-galec = { workspace = true }
+rumoca-tool-lsp-galec = { workspace = true }
 lsp-types = { workspace = true }
 wasm-bindgen = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-# The GALEC projection (transitively, via rumoca-compile) pulls uuid (v4) +
-# time, which reach getrandom; enable the wasm_js backend feature so the addon
-# links on wasm32. The identity-free `render_galec_sources` path never *calls*
-# uuid or time::now_utc — that path is the wasm32 hazard (panics without the
-# time wasm feature) and is deliberately avoided.
-getrandom = { version = "0.3", features = ["wasm_js"] }
 console_error_panic_hook = { workspace = true, optional = true }
 
 [features]

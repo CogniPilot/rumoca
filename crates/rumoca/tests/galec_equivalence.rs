@@ -109,7 +109,12 @@ fn run_c_ticks(out_dir: &Path, model: &str, driver: &str, n_fields: usize) -> Ve
     let source = out_dir.join(format!("{model}.c"));
 
     let compile = cc_support::cc()
+        .arg("-std=c99")
+        .arg("-pedantic")
         .arg("-Wall")
+        .arg("-Wextra")
+        .arg("-Wconversion")
+        .arg("-Wsign-conversion")
         .arg("-Werror")
         .arg("-o")
         .arg(&program)
@@ -120,7 +125,7 @@ fn run_c_ticks(out_dir: &Path, model: &str, driver: &str, n_fields: usize) -> Ve
         .expect("run cc");
     assert!(
         compile.status.success(),
-        "cc -Wall -Werror failed for {model}.\nstderr:\n{}\nsource:\n{}",
+        "strict cc -std=c99 compile failed for {model}.\nstderr:\n{}\nsource:\n{}",
         String::from_utf8_lossy(&compile.stderr),
         fs::read_to_string(&source).unwrap_or_default()
     );

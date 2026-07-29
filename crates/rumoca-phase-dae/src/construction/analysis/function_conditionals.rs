@@ -54,10 +54,7 @@ fn total_conditional_targets(
     for (statement, plan) in statements.iter().zip(plans) {
         let (
             rumoca_core::Statement::Assignment { value, .. },
-            FunctionStatementPlan::Assignment {
-                target,
-                subscript_count: _,
-            },
+            FunctionStatementPlan::Assignment(assignment),
         ) = (statement, plan)
         else {
             return Err(ToDaeError::unsupported_flat(
@@ -69,6 +66,7 @@ fn total_conditional_targets(
                 statement.source_span().unwrap_or(span),
             ));
         };
+        let target = assignment.target();
         let mut references = Vec::new();
         value.collect_var_refs(&mut references);
         if let Some(dependency) = references

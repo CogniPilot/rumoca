@@ -109,10 +109,7 @@ pub(super) enum FunctionIntegerReduction {
 }
 
 pub(super) enum FunctionStatementPlan {
-    Assignment {
-        target: VarName,
-        subscript_count: usize,
-    },
+    Assignment(FunctionAssignmentPlan),
     For {
         domain: StructuredIndexDomain,
         binder_spans: Vec<Span>,
@@ -129,6 +126,25 @@ pub(super) enum FunctionStatementPlan {
     ArrayAssemblyMember,
     RecordAssembly(FunctionRecordAssemblyPlan),
     RecordAssemblyMember,
+}
+
+pub(super) struct FunctionAssignmentPlan {
+    target: VarName,
+    subscripts: Box<[Subscript]>,
+}
+
+impl FunctionAssignmentPlan {
+    pub(super) fn target(&self) -> &VarName {
+        &self.target
+    }
+
+    pub(super) fn subscripts(&self) -> &[Subscript] {
+        &self.subscripts
+    }
+
+    pub(super) fn is_whole(&self) -> bool {
+        self.subscripts.is_empty()
+    }
 }
 
 pub(super) struct FunctionArrayAssemblyPlan {
@@ -157,7 +173,7 @@ pub(super) struct FunctionRecordScalarSource {
 
 pub(super) enum FunctionLoopLowering {
     Fold { targets: Vec<VarName> },
-    TotalArrayDefinition { target: VarName },
+    TotalArrayDefinition,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -935,14 +951,9 @@ fn validate_function_statements(
         match statement {
             rumoca_core::Statement::Assignment { comp, value, span } => {
                 require_span(*span, "function assignment")?;
-                let (target, subscript_count) =
-                    validate_function_assignment_target(context.function, comp, *span)?;
-                validate_function_assignment_subscripts(comp, context.roles, context.flat)?;
+                let assignment = validate_function_assignment_target(context, comp, *span)?;
                 validate_function_expression_with_roles(value, context.roles, context.flat)?;
-                plans.push(FunctionStatementPlan::Assignment {
-                    target,
-                    subscript_count,
-                });
+                plans.push(FunctionStatementPlan::Assignment(assignment));
             }
             rumoca_core::Statement::For { .. } => {
                 plans.push(validate_function_loop(statement, context)?)
@@ -1188,17 +1199,13 @@ fn classify_function_loop(
 ) -> FunctionLoopLowering {
     let targets = function_loop_targets(plans);
     let (
-        [rumoca_core::Statement::Assignment { comp, value, .. }],
-        [
-            FunctionStatementPlan::Assignment {
-                target,
-                subscript_count,
-            },
-        ],
+        [rumoca_core::Statement::Assignment { value, .. }],
+        [FunctionStatementPlan::Assignment(assignment)],
     ) = (statements, plans)
     else {
         return FunctionLoopLowering::Fold { targets };
     };
+    let target = assignment.target();
     if !function
         .outputs
         .iter()
@@ -1217,9 +1224,7 @@ fn classify_function_loop(
         .iter()
         .map(|dimension| usize::try_from(*dimension))
         .collect::<Result<Vec<_>, _>>();
-    let Some(subscripts) = comp.parts.last().map(|part| part.subs.as_slice()) else {
-        return FunctionLoopLowering::Fold { targets };
-    };
+    let subscripts = assignment.subscripts();
     let exact_unit_domain = dimensions.as_ref().is_ok_and(|dimensions| {
         dimensions == &extents
             && domain
@@ -1232,8 +1237,7 @@ fn classify_function_loop(
                         && usize::try_from(binder.upper).ok() == Some(*dimension)
                 })
     });
-    let exact_subscripts = *subscript_count == indices.len()
-        && subscripts.len() == indices.len()
+    let exact_subscripts = subscripts.len() == indices.len()
         && subscripts
             .iter()
             .zip(indices)
@@ -1244,9 +1248,7 @@ fn classify_function_loop(
         && exact_subscripts
         && !references.iter().any(|reference| reference == target)
     {
-        FunctionLoopLowering::TotalArrayDefinition {
-            target: target.clone(),
-        }
+        FunctionLoopLowering::TotalArrayDefinition
     } else {
         FunctionLoopLowering::Fold { targets }
     }
@@ -1295,46 +1297,48 @@ fn flattened_function_loop_source<'statement>(
 }
 
 fn validate_function_assignment_target(
-    function: &rumoca_core::Function,
+    context: FunctionValidationContext<'_>,
     component: &rumoca_core::ComponentReference,
     span: Span,
-) -> Result<(VarName, usize), ToDaeError> {
-    let Some(target) = component.parts.last() else {
+) -> Result<FunctionAssignmentPlan, ToDaeError> {
+    let [target] = component.parts.as_slice() else {
         return Err(ToDaeError::unsupported_flat(
             "function assignment target",
-            "empty function result reference",
+            "a mutable function value must have one resolved target part",
             span,
         ));
     };
-    if !function
+    if !context
+        .function
         .outputs
         .iter()
-        .chain(&function.locals)
+        .chain(&context.function.locals)
         .any(|value| value.name == target.ident)
     {
         return Err(ToDaeError::unsupported_flat(
             "function assignment target",
             format!(
                 "`{}.{}` is not a whole mutable function value",
-                function.name, target.ident
+                context.function.name, target.ident
             ),
             span,
         ));
     }
-    Ok((VarName::new(&target.ident), target.subs.len()))
+    validate_function_subscripts(&target.subs, context)?;
+    Ok(FunctionAssignmentPlan {
+        target: VarName::new(&target.ident),
+        subscripts: target.subs.clone().into_boxed_slice(),
+    })
 }
 
-fn validate_function_assignment_subscripts(
-    component: &rumoca_core::ComponentReference,
-    roles: &HashMap<VarName, PlannedRole>,
-    flat: &flat::Model,
+fn validate_function_subscripts(
+    subscripts: &[Subscript],
+    context: FunctionValidationContext<'_>,
 ) -> Result<(), ToDaeError> {
-    let Some(target) = component.parts.last() else {
-        return Ok(());
-    };
-    for subscript in &target.subs {
+    validate_subscripts_scoped(subscripts, context.roles, &HashSet::new(), &HashSet::new())?;
+    for subscript in subscripts {
         if let rumoca_core::Subscript::Expr { expr, .. } = subscript {
-            validate_function_expression_with_roles(expr, roles, flat)?;
+            validate_known_function_calls(expr, context.flat)?;
         }
     }
     Ok(())
@@ -1343,9 +1347,10 @@ fn validate_function_assignment_subscripts(
 fn function_loop_targets(plans: &[FunctionStatementPlan]) -> Vec<VarName> {
     let mut targets = Vec::new();
     for plan in plans {
-        let FunctionStatementPlan::Assignment { target, .. } = plan else {
+        let FunctionStatementPlan::Assignment(assignment) = plan else {
             continue;
         };
+        let target = assignment.target();
         if !targets.contains(target) {
             targets.push(target.clone());
         }

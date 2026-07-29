@@ -1,0 +1,18 @@
+[package]
+name = "rumoca-phase-galec"
+description = "Checked DAE and Solve projection into the GALEC Algorithm Code export IR"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rumoca-core = { workspace = true }
+rumoca-eval-dae = { workspace = true }
+rumoca-ir-dae = { workspace = true }
+rumoca-ir-galec = { workspace = true }
+rumoca-phase-structural = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

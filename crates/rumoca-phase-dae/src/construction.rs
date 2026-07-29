@@ -35,10 +35,11 @@ use algorithm::{
 use analysis::{
     Analysis, ComprehensionKey, ComprehensionPlan, DelayPlan, DerivedParameterPlan,
     DiscreteValueTopologyPlan, EquationPartition, FunctionArrayAssemblyPlan,
-    FunctionIntegerReduction, FunctionLoopLowering, FunctionPlan, FunctionRecordAssemblyPlan,
-    FunctionStatementPlan, ModelAlgorithmPlan, PlannedRole, RecordArrayFieldPlan,
-    RecordEquationPlan, analyze, effective_variable_scalar_type, equation_partition,
-    model_algorithm_targets, primitive_scalar_type, structured_assignment_names,
+    FunctionAssignmentPlan, FunctionIntegerReduction, FunctionLoopLowering, FunctionPlan,
+    FunctionRecordAssemblyPlan, FunctionStatementPlan, ModelAlgorithmPlan, PlannedRole,
+    RecordArrayFieldPlan, RecordEquationPlan, analyze, effective_variable_scalar_type,
+    equation_partition, model_algorithm_targets, primitive_scalar_type,
+    structured_assignment_names,
 };
 use clocks::{LoweredClocks, lower_clocks, lower_sampled_value_clocks};
 use discrete_values::{DiscreteValueOwnerHandle, DiscreteValueStaging};
@@ -358,24 +359,17 @@ fn lower_function_statement<'dae>(
 ) -> Result<dae::FunctionBody<'dae>, dae::DaeConstructionError> {
     match (statement, plan) {
         (
-            rumoca_core::Statement::Assignment {
-                comp, value, span, ..
-            },
-            FunctionStatementPlan::Assignment {
-                target,
-                subscript_count,
-            },
+            rumoca_core::Statement::Assignment { value, span, .. },
+            FunctionStatementPlan::Assignment(plan),
         ) => {
             lower_function_assignment(
                 construction,
                 symbols,
                 &mut body,
                 FunctionAssignment {
-                    component: comp,
                     value,
                     span: *span,
-                    target,
-                    subscript_count: *subscript_count,
+                    plan,
                 },
             )?;
             Ok(body)
@@ -446,11 +440,9 @@ fn lower_function_statement<'dae>(
 }
 
 struct FunctionAssignment<'statement> {
-    component: &'statement rumoca_core::ComponentReference,
     value: &'statement Expression,
     span: Span,
-    target: &'statement VarName,
-    subscript_count: usize,
+    plan: &'statement FunctionAssignmentPlan,
 }
 
 fn lower_function_assignment<'dae>(
@@ -459,7 +451,7 @@ fn lower_function_assignment<'dae>(
     body: &mut dae::FunctionBody<'dae>,
     assignment: FunctionAssignment<'_>,
 ) -> Result<(), dae::DaeConstructionError> {
-    let target = function_value_coordinate(symbols.coordinates, assignment.target);
+    let target = function_value_coordinate(symbols.coordinates, assignment.plan.target());
     let mut value = lower_function_expression(
         construction,
         symbols.coordinates,
@@ -469,13 +461,7 @@ fn lower_function_assignment<'dae>(
         assignment.value,
     )?;
     let provenance = dae::DaeProvenance::source(assignment.span)?;
-    let subscripts = &assignment
-        .component
-        .parts
-        .last()
-        .expect("function assignment target was validated")
-        .subs;
-    debug_assert_eq!(assignment.subscript_count, subscripts.len());
+    let subscripts = assignment.plan.subscripts();
     if !subscripts.is_empty() {
         let binders = HashMap::new();
         value = lower_function_array_update(
@@ -535,7 +521,7 @@ fn lower_function_loop<'dae>(
         shapes: &loop_shapes,
     };
     match input.lowering {
-        FunctionLoopLowering::TotalArrayDefinition { target } => {
+        FunctionLoopLowering::TotalArrayDefinition => {
             lower_total_function_array_definition(
                 construction,
                 &mut body,
@@ -545,7 +531,6 @@ fn lower_function_loop<'dae>(
                     binders: &binders,
                     statements,
                     plans: input.plans,
-                    target,
                     owner,
                 },
             )?;

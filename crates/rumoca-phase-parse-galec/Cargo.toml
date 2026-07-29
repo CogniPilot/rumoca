@@ -1,0 +1,26 @@
+[package]
+name = "rumoca-phase-parse-galec"
+description = "GALEC Algorithm Code parsing with exact source spans"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+build = "build.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+parol_runtime = { workspace = true }
+rumoca-core = { workspace = true }
+rumoca-ir-galec = { workspace = true }
+scnr2 = { workspace = true }
+thiserror = { workspace = true }
+
+[build-dependencies]
+parol = { workspace = true }
+
+[dev-dependencies]
+rumoca-phase-codegen = { workspace = true }
+
+[lints]
+workspace = true

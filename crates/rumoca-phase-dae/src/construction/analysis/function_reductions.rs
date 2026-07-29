@@ -22,10 +22,10 @@ fn validate_while_sum(
     context: FunctionValidationContext<'_>,
 ) -> Result<FunctionPlan, ToDaeError> {
     let [
-        result_initial @ rumoca_core::Statement::Assignment {
+        rumoca_core::Statement::Assignment {
             value: result_zero, ..
         },
-        index_initial @ rumoca_core::Statement::Assignment {
+        rumoca_core::Statement::Assignment {
             value: index_zero, ..
         },
         rumoca_core::Statement::While { block, span },
@@ -35,20 +35,17 @@ fn validate_while_sum(
     };
     let initial = validate_function_statements(&function.body[..2], context)?;
     let [
-        FunctionStatementPlan::Assignment {
-            target: result,
-            subscript_count: 0,
-        },
-        FunctionStatementPlan::Assignment {
-            target: index,
-            subscript_count: 0,
-        },
+        FunctionStatementPlan::Assignment(result_assignment),
+        FunctionStatementPlan::Assignment(index_assignment),
     ] = initial.as_slice()
     else {
         return Err(unsupported_reduction(function));
     };
-    let result = result.clone();
-    let index = index.clone();
+    if !result_assignment.is_whole() || !index_assignment.is_whole() {
+        return Err(unsupported_reduction(function));
+    }
+    let result = result_assignment.target().clone();
+    let index = index_assignment.target().clone();
     let [
         rumoca_core::Statement::Assignment {
             value: result_update,
@@ -67,20 +64,15 @@ fn validate_while_sum(
         || !is_local_integer(function, &index)
         || !is_integer_zero(result_zero)
         || !is_integer_zero(index_zero)
-        || !same_assignment_target(result_initial, &result)
-        || !same_assignment_target(index_initial, &index)
         || !matches!(
             updates.as_slice(),
             [
-                FunctionStatementPlan::Assignment {
-                    target,
-                    subscript_count: 0
-                },
-                FunctionStatementPlan::Assignment {
-                    target: next,
-                    subscript_count: 0
-                }
-            ] if target == &result && next == &index
+                FunctionStatementPlan::Assignment(target),
+                FunctionStatementPlan::Assignment(next)
+            ] if target.is_whole()
+                && next.is_whole()
+                && target.target() == &result
+                && next.target() == &index
         )
         || !is_sum_update(result_update, &result, &index)
         || !is_increment(index_update, &index)
@@ -104,7 +96,7 @@ fn validate_capped_for_sum(
     context: FunctionValidationContext<'_>,
 ) -> Result<FunctionPlan, ToDaeError> {
     let [
-        initial_statement @ rumoca_core::Statement::Assignment {
+        rumoca_core::Statement::Assignment {
             value: initial_value,
             ..
         },
@@ -138,16 +130,13 @@ fn validate_capped_for_sum(
         return Err(unsupported_reduction(function));
     };
     let initial = validate_function_statements(&function.body[..1], context)?;
-    let [
-        FunctionStatementPlan::Assignment {
-            target: result,
-            subscript_count: 0,
-        },
-    ] = initial.as_slice()
-    else {
+    let [FunctionStatementPlan::Assignment(result_assignment)] = initial.as_slice() else {
         return Err(unsupported_reduction(function));
     };
-    let result = result.clone();
+    if !result_assignment.is_whole() {
+        return Err(unsupported_reduction(function));
+    }
+    let result = result_assignment.target().clone();
     let mut loop_roles = context.roles.clone();
     let binder = VarName::new(&index.ident);
     loop_roles.insert(binder.clone(), PlannedRole::Parameter);
@@ -161,13 +150,10 @@ fn validate_capped_for_sum(
     validate_function_expression_with_roles(&block.cond, &loop_roles, context.flat)?;
     if !is_output_integer(function, &result)
         || !is_integer_zero(initial_value)
-        || !same_assignment_target(initial_statement, &result)
         || !matches!(
             update_plan.as_slice(),
-            [FunctionStatementPlan::Assignment {
-                target,
-                subscript_count: 0
-            }] if target == &result
+            [FunctionStatementPlan::Assignment(target)]
+                if target.is_whole() && target.target() == &result
         )
         || !is_unit_runtime_range(&index.range, function)
         || !is_break_after_cap(&block.cond, &binder)
@@ -308,15 +294,6 @@ fn is_integer_one(expression: &Expression) -> bool {
             value: Literal::Integer(1),
             ..
         }
-    )
-}
-
-fn same_assignment_target(statement: &rumoca_core::Statement, expected: &VarName) -> bool {
-    matches!(
-        statement,
-        rumoca_core::Statement::Assignment { comp, .. }
-            if rumoca_core::component_ref_to_base_reference(comp).var_name() == expected
-                && comp.parts.iter().all(|part| part.subs.is_empty())
     )
 }
 

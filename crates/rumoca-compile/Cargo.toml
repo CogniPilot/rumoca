@@ -30,8 +30,6 @@ rumoca-phase-flatten = { workspace = true }
 rumoca-phase-dae = { workspace = true }
 rumoca-phase-structural = { workspace = true }
 rumoca-phase-codegen = { workspace = true }
-rumoca-ir-galec = { workspace = true }
-rumoca-galec-codegen = { workspace = true }
 rumoca-core = { workspace = true }
 anyhow = { workspace = true }
 indexmap = { workspace = true }

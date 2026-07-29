@@ -5,8 +5,24 @@ use super::*;
 
 #[derive(Clone, Copy)]
 pub(in crate::construction) enum DelayPlan {
-    Fixed { delay_time: f64 },
-    Bounded { delay_max: f64 },
+    Fixed(PositiveParameterPlan),
+    Bounded(PositiveParameterPlan),
+}
+
+#[derive(Clone, Copy)]
+pub(in crate::construction) struct PositiveParameterPlan {
+    value: f64,
+    provenance: Span,
+}
+
+impl PositiveParameterPlan {
+    pub(in crate::construction) fn value(self) -> f64 {
+        self.value
+    }
+
+    pub(in crate::construction) fn provenance(self) -> Span {
+        self.provenance
+    }
 }
 
 pub(super) fn analyze_delays(
@@ -30,14 +46,12 @@ struct DelayAnalyzer<'model> {
 
 impl DelayAnalyzer<'_> {
     fn visit_model(&mut self, flat: &flat::Model) -> Result<(), ToDaeError> {
-        for expression in all_model_expressions(flat)
+        all_model_expressions(flat)
             .chain(structured_template_expressions(&flat.structured_equations))
             .chain(structured_template_expressions(
                 &flat.initial_structured_equations,
             ))
-        {
-            self.visit_expression(expression)?;
-        }
+            .try_for_each(|expression| self.visit_expression(expression))?;
         for assertion in flat
             .assert_equations
             .iter()
@@ -49,65 +63,55 @@ impl DelayAnalyzer<'_> {
                 self.visit_expression(level)?;
             }
         }
-        for algorithm in flat.algorithms.iter().chain(&flat.initial_algorithms) {
-            for statement in &algorithm.statements {
-                self.visit_statement(statement)?;
-            }
-        }
-        for chain in &flat.when_chains {
-            for branch in chain.branches() {
+        flat.algorithms
+            .iter()
+            .chain(&flat.initial_algorithms)
+            .flat_map(|algorithm| &algorithm.statements)
+            .try_for_each(|statement| self.visit_statement(statement))?;
+        flat.when_chains
+            .iter()
+            .flat_map(flat::WhenChain::branches)
+            .try_for_each(|branch| {
                 self.visit_expression(&branch.condition)?;
-                self.visit_when_equations(&branch.equations)?;
-            }
-        }
-        self.visit_functions(flat)
-    }
-
-    fn visit_functions(&mut self, flat: &flat::Model) -> Result<(), ToDaeError> {
+                self.visit_when_equations(&branch.equations)
+            })?;
         self.in_function = true;
-        for function in flat.functions.values() {
-            self.visit_function(function)?;
-        }
-        self.in_function = false;
-        Ok(())
+        flat.functions
+            .values()
+            .try_for_each(|function| self.visit_function(function))
     }
 
     fn visit_function(&mut self, function: &rumoca_core::Function) -> Result<(), ToDaeError> {
-        for parameter in function
+        function
             .inputs
             .iter()
             .chain(&function.outputs)
             .chain(&function.locals)
-        {
-            self.visit_function_parameter(parameter)?;
-        }
-        for statement in &function.body {
-            self.visit_statement(statement)?;
-        }
-        Ok(())
+            .try_for_each(|parameter| self.visit_function_parameter(parameter))?;
+        function
+            .body
+            .iter()
+            .try_for_each(|statement| self.visit_statement(statement))
     }
 
     fn visit_function_parameter(
         &mut self,
         parameter: &rumoca_core::FunctionParam,
     ) -> Result<(), ToDaeError> {
-        for expression in [&parameter.default, &parameter.min, &parameter.max]
+        [&parameter.default, &parameter.min, &parameter.max]
             .into_iter()
             .flatten()
-        {
-            self.visit_expression(expression)?;
-        }
-        for subscript in &parameter.shape_expr {
-            self.visit_subscript(subscript)?;
-        }
-        Ok(())
+            .try_for_each(|expression| self.visit_expression(expression))?;
+        parameter
+            .shape_expr
+            .iter()
+            .try_for_each(|subscript| self.visit_subscript(subscript))
     }
 
     fn visit_when_equations(&mut self, equations: &[flat::WhenEquation]) -> Result<(), ToDaeError> {
-        for equation in equations {
-            self.visit_when_equation(equation)?;
-        }
-        Ok(())
+        equations
+            .iter()
+            .try_for_each(|equation| self.visit_when_equation(equation))
     }
 
     fn visit_when_equation(&mut self, equation: &flat::WhenEquation) -> Result<(), ToDaeError> {
@@ -126,10 +130,9 @@ impl DelayAnalyzer<'_> {
             } => {
                 self.visit_expression(condition)?;
                 self.visit_expression(message)?;
-                if let Some(level) = level {
-                    self.visit_expression(level)?;
-                }
-                Ok(())
+                level
+                    .iter()
+                    .try_for_each(|level| self.visit_expression(level))
             }
             flat::WhenEquation::Conditional {
                 branches,
@@ -144,14 +147,13 @@ impl DelayAnalyzer<'_> {
         branches: &[(Expression, Vec<flat::WhenEquation>)],
         else_branch: &Option<Vec<flat::WhenEquation>>,
     ) -> Result<(), ToDaeError> {
-        for (condition, equations) in branches {
+        branches.iter().try_for_each(|(condition, equations)| {
             self.visit_expression(condition)?;
-            self.visit_when_equations(equations)?;
-        }
-        if let Some(else_branch) = else_branch {
-            self.visit_when_equations(else_branch)?;
-        }
-        Ok(())
+            self.visit_when_equations(equations)
+        })?;
+        else_branch
+            .as_deref()
+            .map_or(Ok(()), |equations| self.visit_when_equations(equations))
     }
 }
 
@@ -187,25 +189,27 @@ fn delay_plan(
     span: Span,
 ) -> Result<DelayPlan, ToDaeError> {
     match arguments {
-        [_, delay_time] => Ok(DelayPlan::Fixed {
-            delay_time: positive_parameter(delay_time, constants, "delayTime", span)?,
-        }),
+        [_, delay_time] => {
+            let timing = positive_parameter(delay_time, constants, "delayTime", span)?;
+            Ok(DelayPlan::Fixed(timing))
+        }
         [_, delay_time, delay_max] => {
             let delay_max = positive_parameter(delay_max, constants, "delayMax", span)?;
+            let delay_max_value = delay_max.value();
             if let Ok(value) = eval_expr(delay_time, constants)
                 && let Some(delay_time) = value.to_real()
-                && (!delay_time.is_finite() || delay_time <= 0.0 || delay_time > delay_max)
+                && (!delay_time.is_finite() || delay_time <= 0.0 || delay_time > delay_max_value)
             {
                 return Err(ToDaeError::unsupported_runtime_operator(
                     "delay",
                     format!(
                         "parameter-evaluable delayTime must satisfy 0 < delayTime <= delayMax; \
-                         got delayTime={delay_time}, delayMax={delay_max}"
+                         got delayTime={delay_time}, delayMax={delay_max_value}"
                     ),
                     span,
                 ));
             }
-            Ok(DelayPlan::Bounded { delay_max })
+            Ok(DelayPlan::Bounded(delay_max))
         }
         _ => Err(ToDaeError::unsupported_runtime_operator(
             "delay",
@@ -220,7 +224,8 @@ fn positive_parameter(
     constants: &EvalContext,
     name: &str,
     owner: Span,
-) -> Result<f64, ToDaeError> {
+) -> Result<PositiveParameterPlan, ToDaeError> {
+    let provenance = expression_span(expression)?;
     let value = eval_expr(expression, constants).map_err(|error| {
         ToDaeError::unsupported_runtime_operator(
             "delay",
@@ -231,6 +236,7 @@ fn positive_parameter(
     value
         .to_real()
         .filter(|value| value.is_finite() && *value > 0.0)
+        .map(|value| PositiveParameterPlan { value, provenance })
         .ok_or_else(|| {
             ToDaeError::unsupported_runtime_operator(
                 "delay",

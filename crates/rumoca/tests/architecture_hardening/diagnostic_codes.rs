@@ -366,16 +366,12 @@ const DIAGNOSTIC_REGISTRIES: &[DiagnosticRegistry] = &[
         owner: "GALEC IR",
         paths: &[
             "crates/rumoca-ir-galec/src/diagnostic.rs",
-            "crates/rumoca-ir-galec/src/parse/errors.rs",
+            "crates/rumoca-phase-parse-galec/src/parse/errors.rs",
         ],
     },
     DiagnosticRegistry {
         owner: "GALEC target projection",
-        paths: &["crates/rumoca-galec-codegen/src/diagnostic.rs"],
-    },
-    DiagnosticRegistry {
-        owner: "eFMI packaging",
-        paths: &["crates/rumoca-galec-codegen/src/manifest_context/diagnostic.rs"],
+        paths: &["crates/rumoca-phase-galec/src/diagnostic.rs"],
     },
 ];
 
@@ -415,7 +411,7 @@ fn test_phase_error_codes_are_registered_in_spec_0008() {
 
     for expected in [
         "EP0xx", "ER0xx", "ET0xx", "EI0xx", "EF0xx", "ED0xx", "EC0xx", "EM0xx", "ES0xx", "EL0xx",
-        "EX0xx", "EG0xx", "EGT0xx", "EFM0xx",
+        "EX0xx", "EG0xx", "EGT0xx",
     ] {
         assert!(
             ranges.contains(expected),
