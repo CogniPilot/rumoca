@@ -1264,7 +1264,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
                 lower_builtin(self, builtin, arguments, node.provenance().span())?
             }
             dae::ExpressionOperation::FunctionValue { definition, .. } => {
-                return self.lower_at(definition, indices);
+                return self.lower_at(definition.rhs(), indices);
             }
             dae::ExpressionOperation::Index { base, subscripts } => {
                 return self.lower_index_at(base, subscripts, indices, node.provenance().span());
@@ -1413,7 +1413,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             .expect("checked function identity resolves");
         let result = function_view
             .result_values()
-            .get(output as usize)
+            .rhs(output as usize)
             .ok_or_else(|| GalecTargetError::LoweringInternal {
                 detail: format!("checked function output {output} is missing"),
             })?;

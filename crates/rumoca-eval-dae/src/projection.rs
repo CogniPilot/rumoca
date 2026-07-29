@@ -107,7 +107,7 @@ where
                 self.comprehension(domain, body, scalar_index)
             }
             dae::ExpressionOperation::FunctionValue { definition, .. } => {
-                self.expression(definition, scalar_index)
+                self.expression(definition.rhs(), scalar_index)
             }
             dae::ExpressionOperation::FunctionFoldParameter { .. } => Ok(()),
             dae::ExpressionOperation::FunctionFoldOutput { fold, .. } => {
@@ -117,8 +117,8 @@ where
                     .expect("checked function fold identity resolves");
                 for expression in fold
                     .initial_values()
-                    .iter()
-                    .chain(fold.update_values().iter())
+                    .rhs_iter()
+                    .chain(fold.update_values().rhs_iter())
                 {
                     self.all_scalars(expression)?;
                 }
@@ -211,7 +211,7 @@ where
         let result = self
             .view
             .function(function)
-            .and_then(|definition| definition.result_values().get(output as usize))
+            .and_then(|definition| definition.result_values().rhs(output as usize))
             .ok_or(ProjectionError::FunctionRecursion { span })?;
         self.function_arguments
             .push((function, arguments.iter().collect()));
@@ -247,7 +247,7 @@ where
                 let result = self
                     .view
                     .function(function)
-                    .and_then(|definition| definition.result_values().get(output as usize))
+                    .and_then(|definition| definition.result_values().rhs(output as usize))
                     .ok_or(ProjectionError::FunctionRecursion {
                         span: node.provenance().span(),
                     })?;
@@ -258,7 +258,7 @@ where
                 projected
             }
             dae::ExpressionOperation::FunctionValue { definition, .. } => {
-                self.record_field(definition, field, scalar_index)
+                self.record_field(definition.rhs(), field, scalar_index)
             }
             dae::ExpressionOperation::Conditional(operands) => {
                 let fallback = operands
@@ -655,7 +655,7 @@ where
                 self.integer(base, base_index)
             }
             dae::ExpressionOperation::FunctionValue { definition, .. } => {
-                self.integer(definition, scalar_index)
+                self.integer(definition.rhs(), scalar_index)
             }
             _ => Err(ProjectionError::DynamicSubscript { span }),
         }
@@ -694,7 +694,7 @@ where
         let result = self
             .view
             .function(function)
-            .and_then(|definition| definition.result_values().get(output as usize))
+            .and_then(|definition| definition.result_values().rhs(output as usize))
             .ok_or(ProjectionError::FunctionRecursion { span })?;
         self.function_arguments
             .push((function, arguments.iter().collect()));

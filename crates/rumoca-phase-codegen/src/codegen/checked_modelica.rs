@@ -81,16 +81,17 @@ impl<'dae> Renderer<'dae> {
     ) -> Result<Vec<String>, DaeBackendError> {
         let indent = "  ".repeat(depth);
         match statement {
-            dae::FunctionStatementView::Assignment { target, value, .. } => {
+            dae::FunctionStatementView::Assignment { definition } => {
                 let target = function
                     .values()
-                    .find(|candidate| candidate.id() == target)
+                    .find(|candidate| candidate.id() == definition.target())
                     .expect("checked function assignment target resolves");
+                let rhs = definition.rhs();
                 if let dae::ExpressionOperation::ArrayUpdate {
                     value, subscripts, ..
                 } = self
                     .view
-                    .expression(value)
+                    .expression(rhs)
                     .expect("checked function assignment value resolves")
                     .operation()
                 {
@@ -104,7 +105,7 @@ impl<'dae> Renderer<'dae> {
                 Ok(vec![format!(
                     "{indent}{} := {};",
                     target.name(),
-                    self.expression(value)?
+                    self.expression(rhs)?
                 )])
             }
             dae::FunctionStatementView::For {
@@ -387,8 +388,8 @@ impl<'dae> Renderer<'dae> {
                 .expect("checked function value resolves")
                 .name()
                 .to_string()),
-            dae::ExpressionOperation::FunctionFoldParameter { fold, carried }
-            | dae::ExpressionOperation::FunctionFoldOutput { fold, carried } => {
+            dae::ExpressionOperation::FunctionFoldParameter { fold, carried, .. }
+            | dae::ExpressionOperation::FunctionFoldOutput { fold, carried, .. } => {
                 Ok(self.function_fold_target_name(fold, carried))
             }
         }

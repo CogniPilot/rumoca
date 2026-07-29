@@ -1,13 +1,4 @@
 use super::*;
-impl<'dae> FunctionLoop<'dae> {
-    pub const fn fold(&self) -> FunctionFoldId<'dae> {
-        self.fold
-    }
-
-    pub const fn body(&self) -> &FunctionBody<'dae> {
-        &self.body
-    }
-}
 
 pub(super) fn expect_function_body_expression(
     storage: &Storage,
@@ -61,37 +52,6 @@ pub(super) fn function_fold_raw(
         });
     }
     Ok(raw)
-}
-
-pub(super) fn expect_expression_function_scope(
-    storage: &Storage,
-    expression: ExprId<'_>,
-    function: FunctionId<'_>,
-    provenance: DaeProvenance,
-) -> Result<(), DaeConstructionError> {
-    match storage.expr_function_scope(expression, provenance)? {
-        None => Ok(()),
-        Some(found) if found == function.index() => Ok(()),
-        Some(found) => Err(DaeConstructionError::InvalidFunctionScope {
-            expected_function: Some(function.index()),
-            found_function: found,
-            span: provenance.span(),
-        }),
-    }
-}
-
-pub(super) fn expect_function_loop_generation(
-    entry: &FunctionFoldEntry,
-    provenance: DaeProvenance,
-) -> Result<(), DaeConstructionError> {
-    let expected =
-        DaeProvenance::generated(DaeGeneration::FunctionLoopLowering, entry.provenance.span())?;
-    if provenance == expected {
-        return Ok(());
-    }
-    Err(DaeConstructionError::MalformedWire {
-        column: "function_folds.provenance",
-    })
 }
 
 pub(super) fn reserve_function_fold<'dae>(
@@ -209,11 +169,7 @@ pub(super) fn next_function_definition_id<'dae>(
         .get(function.index() as usize)
         .ok_or_else(|| unknown("function", function.index(), provenance))?
         .definitions;
-    let ordinal = checked_u32(
-        definitions.len(),
-        "function definition arena",
-        provenance,
-    )?;
+    let ordinal = checked_u32(definitions.len(), "function definition arena", provenance)?;
     Ok(FunctionDefinitionId::from_raw(function.index(), ordinal))
 }
 
@@ -265,7 +221,11 @@ pub(super) fn validate_function_value_reads(
         .copied()
         .ok_or_else(|| unknown("expression", expression.index(), provenance))?;
     storage.function_read_sets.try_for_each(reads, &mut |fact| {
-        let expected = body.current_values.get(fact.value as usize).copied().flatten();
+        let expected = body
+            .current_values
+            .get(fact.value as usize)
+            .copied()
+            .flatten();
         if expected == Some(fact.definition) {
             return Ok(());
         }

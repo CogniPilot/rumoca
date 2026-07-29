@@ -618,7 +618,7 @@ impl Storage {
                 .function_folds
                 .iter()
                 .enumerate()
-                .find(|(_, entry)| entry.update_values.is_empty())
+                .find(|(_, entry)| entry.update_definitions.is_empty())
                 .expect("private function-fold count matches its arena");
             return Err(DaeConstructionError::IncompleteDefinition {
                 kind: "function loop transition",

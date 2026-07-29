@@ -1,3 +1,8 @@
+mod equation_systems;
+mod expression_wire;
+mod function_replay;
+mod helpers;
+
 use serde::Deserialize;
 
 use super::*;
@@ -7,9 +12,8 @@ use crate::{
     RelationId, TerminalId, UnaryOperator,
 };
 
-mod equation_systems;
 use equation_systems::reconstruct_equation_systems;
-mod helpers;
+use expression_wire::*;
 use helpers::{expect_ordinal, map_expression_operands, map_many, mapped, wire_operands};
 
 #[derive(Deserialize)]
@@ -200,7 +204,7 @@ struct FunctionSsaDefinitionInput {
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 enum FunctionStatementInput {
     Assignment {
         definition: u32,
@@ -235,167 +239,6 @@ struct DomainEntryWire {
     domain: rumoca_core::StructuredIndexDomain,
     extents: Box<[u32]>,
     scalar_count: u32,
-    #[serde(deserialize_with = "deserialize_provenance")]
-    provenance: DaeProvenance,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ExpressionArenaWire {
-    nodes: Vec<ExprNodeWire>,
-    #[serde(deserialize_with = "deserialize_provenance_vec")]
-    provenance: Vec<DaeProvenance>,
-    value_types: Vec<u32>,
-    variability: Vec<ExpressionVariability>,
-    binder_domains: Vec<Option<u32>>,
-    function_scopes: Vec<Option<u32>>,
-    operands: Vec<u32>,
-    subscripts: Vec<PackedSubscriptWire>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum ExprNodeWire {
-    Literal(DaeLiteralWire),
-    Coordinate(CoordinateWire),
-    Unary {
-        operator: UnaryOperator,
-        operand: u32,
-    },
-    Binary {
-        operator: BinaryOperator,
-        lhs: u32,
-        rhs: u32,
-    },
-    Conditional {
-        operands: OperandRangeWire,
-    },
-    Array {
-        operands: OperandRangeWire,
-    },
-    Record {
-        operands: OperandRangeWire,
-    },
-    Field {
-        base: u32,
-        field: u32,
-    },
-    Range {
-        start: i64,
-        step: i64,
-        stop: i64,
-    },
-    Comprehension {
-        domain: u32,
-        body: u32,
-    },
-    Index {
-        base: u32,
-        subscripts: OperandRangeWire,
-    },
-    ArrayUpdate {
-        base: u32,
-        value: u32,
-        subscripts: OperandRangeWire,
-    },
-    Builtin {
-        builtin: PureBuiltin,
-        operands: OperandRangeWire,
-    },
-    Call {
-        function: u32,
-        output: u32,
-        operands: OperandRangeWire,
-    },
-    FunctionValue {
-        function: u32,
-        value: u32,
-        definition_ordinal: u32,
-    },
-    FunctionFoldParameter {
-        function: u32,
-        fold: u32,
-        carried: u32,
-        definition_ordinal: u32,
-    },
-    FunctionFoldOutput {
-        function: u32,
-        fold: u32,
-        carried: u32,
-        definition_ordinal: u32,
-    },
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum DaeLiteralWire {
-    Real(f64),
-    Integer(i64),
-    Enumeration(i64),
-    Boolean(bool),
-    String(String),
-}
-
-impl DaeLiteralWire {
-    fn as_literal(&self) -> DaeLiteral {
-        match self {
-            Self::Real(value) => DaeLiteral::Real(*value),
-            Self::Integer(value) => DaeLiteral::Integer(*value),
-            Self::Enumeration(value) => DaeLiteral::Enumeration(*value),
-            Self::Boolean(value) => DaeLiteral::Boolean(*value),
-            Self::String(value) => DaeLiteral::String(value.clone()),
-        }
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum CoordinateWire {
-    Parameter(u32),
-    Input(u32),
-    State(u32),
-    Derivative(u32),
-    Algebraic(u32),
-    DiscreteReal(u32),
-    DiscreteValue(u32),
-    PreDiscreteReal(u32),
-    PreDiscreteValue(u32),
-    Time,
-    Condition(u32),
-    Delay(u32),
-    Previous(u32),
-    Terminal(u32),
-    Binder { domain: u32, ordinal: u32 },
-    FunctionParameter { function: u32, ordinal: u32 },
-}
-
-#[derive(Deserialize, Clone, Copy)]
-#[serde(deny_unknown_fields)]
-struct OperandRangeWire {
-    start: u32,
-    len: u32,
-}
-
-impl OperandRangeWire {
-    fn indices(self) -> Option<std::ops::Range<usize>> {
-        let start = self.start as usize;
-        let end = start.checked_add(self.len as usize)?;
-        Some(start..end)
-    }
-}
-
-#[derive(Deserialize, Clone, Copy)]
-#[serde(rename_all = "snake_case")]
-enum PackedSubscriptKindWire {
-    Index(u32),
-    Whole,
-    Slice(u32),
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct PackedSubscriptWire {
-    kind: PackedSubscriptKindWire,
     #[serde(deserialize_with = "deserialize_provenance")]
     provenance: DaeProvenance,
 }
@@ -444,14 +287,14 @@ struct StructuredFamilyWire {
 }
 
 #[derive(Deserialize, Clone, Copy)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 enum EquationOwnerWire {
     Residual(u32),
     Structured(u32),
 }
 
 #[derive(Deserialize, Clone, Copy)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 enum ConditionNodeWire {
     Initial,
     Relation(u32),
@@ -496,7 +339,7 @@ struct TimeEventEntryWire {
 }
 
 #[derive(Deserialize, Clone, Copy)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 enum EventActionKindWire {
     Assert { message: u32, level: Option<u32> },
     Terminate { message: u32 },
@@ -516,7 +359,7 @@ struct EventActionEntryWire {
 }
 
 #[derive(Deserialize, Clone, Copy)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 enum ClockKindWire {
     Periodic(ClockLatticeWire),
     Triggered(u32),
@@ -580,7 +423,7 @@ struct ClockOwnershipEntryWire {
 }
 
 #[derive(Deserialize, Clone, Copy)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 enum ClockedVariableRoleWire {
     DiscreteReal,
     DiscreteValue,
@@ -626,31 +469,12 @@ struct DelayEntryWire {
     provenance: DaeProvenance,
 }
 
-impl StorageWire {
-    fn validate_columns(&self) -> Result<(), DaeConstructionError> {
-        let expression_count = self.expressions.nodes.len();
-        if self.expressions.provenance.len() != expression_count
-            || self.expressions.value_types.len() != expression_count
-            || self.expressions.variability.len() != expression_count
-            || self.expressions.binder_domains.len() != expression_count
-            || self.expressions.function_scopes.len() != expression_count
-            || self.flat_type_ids.len() != self.value_types.len()
-            || self.value_type_provenance.len() != self.value_types.len()
-        {
-            return Err(DaeConstructionError::MalformedWire {
-                column: "expression arena",
-            });
-        }
-        Ok(())
-    }
-}
-
 impl<'de> Deserialize<'de> for Dae {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
-        let mut wire = DaeWire::deserialize(deserializer)?;
+        let wire = DaeWire::deserialize(deserializer)?;
         if wire.schema_version != DAE_SCHEMA_VERSION {
             return Err(serde::de::Error::custom(
                 DaeConstructionError::InvalidSchemaVersion {
@@ -659,10 +483,6 @@ impl<'de> Deserialize<'de> for Dae {
                 },
             ));
         }
-        wire.source_map.rebuild_index();
-        wire.storage
-            .validate_columns()
-            .map_err(serde::de::Error::custom)?;
         Dae::construct(wire.source_map, |dae| reconstruct(&wire.storage, dae))
             .map_err(serde::de::Error::custom)
     }
@@ -716,8 +536,7 @@ fn reconstruct<'dae>(
     };
     reconstruct_clocks(wire, dae, &mut ids)?;
     reconstruct_temporal(wire, dae, &mut ids)?;
-    define_functions(wire, dae, &mut ids, function_reservations)?;
-    reconstruct_expressions(wire, dae, &mut ids)?;
+    function_replay::reconstruct(wire, dae, &mut ids, function_reservations)?;
     reconstruct_relations(wire, dae, &mut ids)?;
     define_variables(wire, dae, &ids, variable_reservations)?;
     define_conditions(wire, dae, &ids)?;
@@ -730,6 +549,11 @@ fn reconstruct_types<'dae>(
     wire: &StorageWire,
     dae: &mut DaeConstruction<'dae>,
 ) -> Result<Vec<ValueTypeId<'dae>>, DaeConstructionError> {
+    if wire.flat_type_ids.len() != wire.value_types.len()
+        || wire.value_type_provenance.len() != wire.value_types.len()
+    {
+        return Err(malformed("value_types"));
+    }
     let mut ids = Vec::with_capacity(wire.value_types.len());
     for (index, ((flat_type, ty), provenance)) in wire
         .flat_type_ids
@@ -933,43 +757,24 @@ fn reconstruct_function_values<'dae>(
             parameter.declaration,
         )?;
     }
-    for (ordinal, raw) in function.output_values.iter().copied().enumerate() {
-        let value = function
-            .values
-            .get(raw as usize)
-            .ok_or_else(|| unknown("function output value", raw, function.declaration))?;
-        if value.role != FunctionValueRole::Output {
-            return Err(DaeConstructionError::MalformedWire {
-                column: "functions.output_values",
-            });
-        }
-        let rebuilt = dae.functions(|functions| {
-            functions.output(reservation, value.name.clone(), ordinal, value.declaration)
-        })?;
-        let wire_type = mapped(types, value.value_type, "value type", value.declaration)?;
-        let rebuilt_type = dae.storage.functions[reservation.function().index() as usize].values
-            [rebuilt.ordinal() as usize]
-            .value_type;
-        if rebuilt_type != wire_type.index() {
-            return Err(DaeConstructionError::ShapeMismatch {
-                span: value.declaration.span(),
-            });
-        }
-        expect_ordinal(
-            "function value",
-            raw as usize,
-            rebuilt.ordinal(),
-            value.declaration,
-        )?;
+    if function.output_values.len() > function.values.len() {
+        return Err(malformed("functions.output_values"));
     }
     for (raw, value) in function.values.iter().enumerate() {
-        if function.output_values.contains(&(raw as u32)) {
+        if raw < function.output_values.len() {
+            let expected = u32::try_from(raw).map_err(|_| malformed("functions.values"))?;
+            if function.output_values[raw] != expected || value.role != FunctionValueRole::Output {
+                return Err(malformed("functions.output_values"));
+            }
+            let rebuilt = dae.functions(|functions| {
+                functions.output(reservation, value.name.clone(), raw, value.declaration)
+            })?;
+            expect_function_value_type(dae, types, reservation, value, rebuilt)?;
+            expect_ordinal("function value", raw, rebuilt.ordinal(), value.declaration)?;
             continue;
         }
         if value.role != FunctionValueRole::Local {
-            return Err(DaeConstructionError::MalformedWire {
-                column: "functions.values",
-            });
+            return Err(malformed("functions.values"));
         }
         let value_type = mapped(types, value.value_type, "value type", value.declaration)?;
         let rebuilt = dae.functions(|functions| {
@@ -983,6 +788,26 @@ fn reconstruct_function_values<'dae>(
         expect_ordinal("function value", raw, rebuilt.ordinal(), value.declaration)?;
     }
     Ok(())
+}
+
+fn expect_function_value_type<'dae>(
+    dae: &DaeConstruction<'dae>,
+    types: &[ValueTypeId<'dae>],
+    reservation: &FunctionReservation<'dae>,
+    value: &FunctionValueEntryInput,
+    rebuilt: FunctionValueId<'dae>,
+) -> Result<(), DaeConstructionError> {
+    let wire_type = mapped(types, value.value_type, "value type", value.declaration)?;
+    let rebuilt_type = dae.storage.functions[reservation.function().index() as usize].values
+        [rebuilt.ordinal() as usize]
+        .value_type;
+    if rebuilt_type == wire_type.index() {
+        Ok(())
+    } else {
+        Err(DaeConstructionError::ShapeMismatch {
+            span: value.declaration.span(),
+        })
+    }
 }
 
 fn reconstruct_domains<'dae>(
@@ -1021,82 +846,24 @@ fn reconstruct_conditions<'dae>(
         .collect()
 }
 
-fn reconstruct_expressions<'dae>(
-    wire: &StorageWire,
-    dae: &mut DaeConstruction<'dae>,
-    ids: &mut WireIds<'dae>,
-) -> Result<(), DaeConstructionError> {
-    while ids.expressions.len() < wire.expressions.nodes.len() {
-        if !reconstruct_next_expression(wire, dae, ids, None)? {
-            let index = ids.expressions.len();
-            return Err(DaeConstructionError::IncompleteDefinition {
-                kind: "function expression occurrence",
-                index: index as u32,
-                span: wire.expressions.provenance[index].span(),
-            });
-        }
-    }
-    Ok(())
-}
-
 fn reconstruct_next_expression<'dae>(
     wire: &StorageWire,
     dae: &mut DaeConstruction<'dae>,
     ids: &mut WireIds<'dae>,
-    body: Option<&FunctionBody<'dae>>,
 ) -> Result<bool, DaeConstructionError> {
     let index = ids.expressions.len();
     let raw = index as u32;
-    let provenance = *wire
-        .expressions
-        .provenance
-        .get(index)
-        .ok_or(DaeConstructionError::MalformedWire {
-            column: "expressions.provenance",
-        })?;
-    let node = wire
-        .expressions
-        .nodes
-        .get(index)
-        .ok_or_else(|| unknown("expression", raw, provenance))?;
-    let expected_type = mapped(
-        &ids.types,
-        *wire
-            .expressions
-            .value_types
-            .get(index)
-            .ok_or(DaeConstructionError::MalformedWire {
-                column: "expressions.value_types",
-            })?,
-        "value type",
-        provenance,
-    )?;
+    let expression = wire_expression(wire, index)?;
+    let provenance = expression.provenance;
+    let node = expression.node;
+    expect_next_packed_ranges(wire, dae, node)?;
+    let expected_type = mapped(&ids.types, expression.value_type, "value type", provenance)?;
     let id = match node {
         ExprNodeWire::Coordinate(CoordinateWire::Delay(delay)) => {
             reconstruct_delay_coordinate(wire, dae, ids, *delay, provenance)?
         }
-        ExprNodeWire::FunctionValue {
-            function,
-            value,
-            definition_ordinal,
-        } => {
-            let Some(body) = body else {
-                return Ok(false);
-            };
-            let function = mapped(&ids.functions, *function, "function", provenance)?;
-            if function != body.function {
-                return Ok(false);
-            }
-            let value = FunctionValueId::from_raw(function.index(), *value);
-            let current = dae.functions(|functions| {
-                functions.current_definition_id(body, value, provenance)
-            })?;
-            if current.ordinal() != *definition_ordinal {
-                return Ok(false);
-            }
-            dae.functions(|functions| functions.read(body, value, provenance))?
-        }
-        ExprNodeWire::FunctionFoldParameter { .. }
+        ExprNodeWire::FunctionValue { .. }
+        | ExprNodeWire::FunctionFoldParameter { .. }
         | ExprNodeWire::FunctionFoldOutput { .. } => {
             return Ok(false);
         }
@@ -1121,6 +888,48 @@ fn reconstruct_next_expression<'dae>(
     Ok(true)
 }
 
+fn expect_next_packed_ranges(
+    wire: &StorageWire,
+    dae: &DaeConstruction<'_>,
+    node: &ExprNodeWire,
+) -> Result<(), DaeConstructionError> {
+    match node {
+        ExprNodeWire::Conditional { operands }
+        | ExprNodeWire::Array { operands }
+        | ExprNodeWire::Record { operands }
+        | ExprNodeWire::Builtin { operands, .. }
+        | ExprNodeWire::Call { operands, .. } => expect_packed_range(
+            *operands,
+            dae.storage.expressions.operands.len(),
+            wire.expressions.operands.len(),
+            "expressions.operands",
+        ),
+        ExprNodeWire::Index { subscripts, .. } | ExprNodeWire::ArrayUpdate { subscripts, .. } => {
+            expect_packed_range(
+                *subscripts,
+                dae.storage.expressions.subscripts.len(),
+                wire.expressions.subscripts.len(),
+                "expressions.subscripts",
+            )
+        }
+        _ => Ok(()),
+    }
+}
+
+fn expect_packed_range(
+    range: OperandRangeWire,
+    cursor: usize,
+    buffer_len: usize,
+    column: &'static str,
+) -> Result<(), DaeConstructionError> {
+    let indices = range.indices().ok_or_else(|| malformed(column))?;
+    if indices.start == cursor && indices.end <= buffer_len {
+        Ok(())
+    } else {
+        Err(malformed(column))
+    }
+}
+
 fn verify_rebuilt_expression(
     wire: &StorageWire,
     dae: &DaeConstruction<'_>,
@@ -1129,121 +938,316 @@ fn verify_rebuilt_expression(
     expected_type: ValueTypeId<'_>,
     provenance: DaeProvenance,
 ) -> Result<(), DaeConstructionError> {
-        let found_type = dae.storage.expressions.value_types[id.index() as usize];
-        if found_type != expected_type.index() {
-            return Err(DaeConstructionError::ShapeMismatch {
-                span: provenance.span(),
-            });
-        }
-        let found_variability = dae.storage.expressions.variability[id.index() as usize];
-        if found_variability != wire.expressions.variability[index] {
-            return Err(DaeConstructionError::ShapeMismatch {
-                span: provenance.span(),
-            });
-        }
-        let found_binder_domain = dae.storage.expressions.binder_domains[id.index() as usize];
-        if found_binder_domain != wire.expressions.binder_domains[index] {
-            return Err(DaeConstructionError::ShapeMismatch {
-                span: provenance.span(),
-            });
-        }
-        let found_function_scope = dae.storage.expressions.function_scopes[id.index() as usize];
-        if found_function_scope != wire.expressions.function_scopes[index] {
-            return Err(DaeConstructionError::ShapeMismatch {
-                span: provenance.span(),
-            });
-        }
+    let raw = id.index() as usize;
+    let expression = wire_expression(wire, index)?;
+    if dae.storage.expressions.provenance[raw] != provenance
+        || dae.storage.expressions.value_types[raw] != expected_type.index()
+        || dae.storage.expressions.variability[raw] != expression.variability
+        || dae.storage.expressions.binder_domains[raw] != expression.binder_domain
+        || dae.storage.expressions.function_scopes[raw] != expression.function_scope
+    {
+        return Err(DaeConstructionError::ShapeMismatch {
+            span: provenance.span(),
+        });
+    }
     Ok(())
 }
 
-
-fn reconstruct_function_fold_parameter<'dae>(
+fn expect_expression_arena_consumed(
     wire: &StorageWire,
-    dae: &mut DaeConstruction<'dae>,
-    ids: &WireIds<'dae>,
-    identity: (u32, u32, u32),
-    expression_index: usize,
-    provenance: DaeProvenance,
-) -> Result<ExprId<'dae>, DaeConstructionError> {
-    let (function, fold, carried) = identity;
-    let (fold, raw) = mapped_function_fold(wire, ids, function, fold, provenance)?;
-    let rebuilt = dae.functions(|functions| {
-        functions.reconstruct_loop_parameter(fold, carried as usize, provenance)
-    })?;
-    expect_fold_expression(
-        wire.function_folds
-            .get(raw)
-            .map(|entry| entry.parameter_values.as_slice()),
-        carried as usize,
-        expression_index,
-        "function_folds.parameter_values",
-    )?;
-    Ok(rebuilt)
-}
-
-fn reconstruct_function_fold_output<'dae>(
-    wire: &StorageWire,
-    dae: &mut DaeConstruction<'dae>,
-    ids: &WireIds<'dae>,
-    identity: (u32, u32, u32),
-    expression_index: usize,
-    provenance: DaeProvenance,
-) -> Result<ExprId<'dae>, DaeConstructionError> {
-    let (function, fold, carried) = identity;
-    let (fold, raw) = mapped_function_fold(wire, ids, function, fold, provenance)?;
-    define_function_fold_if_needed(wire, dae, ids, fold, raw)?;
-    let rebuilt = dae.functions(|functions| {
-        functions.reconstruct_loop_output(fold, carried as usize, provenance)
-    })?;
-    expect_fold_expression(
-        wire.function_folds
-            .get(raw)
-            .map(|entry| entry.output_values.as_slice()),
-        carried as usize,
-        expression_index,
-        "function_folds.output_values",
-    )?;
-    Ok(rebuilt)
-}
-
-fn define_function_fold_if_needed<'dae>(
-    wire: &StorageWire,
-    dae: &mut DaeConstruction<'dae>,
-    ids: &WireIds<'dae>,
-    fold: FunctionFoldId<'dae>,
-    raw: usize,
+    dae: &DaeConstruction<'_>,
 ) -> Result<(), DaeConstructionError> {
-    let rebuilt =
-        dae.storage
-            .function_folds
-            .get(raw)
-            .ok_or(DaeConstructionError::MalformedWire {
-                column: "function_folds",
-            })?;
-    if !rebuilt.update_values.is_empty() {
-        return Ok(());
+    let count = wire.expressions.nodes.len();
+    if wire.expressions.provenance.len() != count
+        || wire.expressions.value_types.len() != count
+        || wire.expressions.variability.len() != count
+        || wire.expressions.binder_domains.len() != count
+        || wire.expressions.function_scopes.len() != count
+        || dae.storage.expressions.nodes.len() != count
+        || dae.storage.expressions.operands != wire.expressions.operands
+        || dae.storage.expressions.subscripts.len() != wire.expressions.subscripts.len()
+    {
+        return Err(malformed("expressions"));
     }
-    let entry = wire
-        .function_folds
-        .get(raw)
-        .ok_or(DaeConstructionError::MalformedWire {
-            column: "function_folds",
-        })?;
-    let initial_values = map_many(
-        &ids.expressions,
-        &entry.initial_values,
-        "function fold initial value",
-        entry.provenance,
-    )?;
-    let update_values = map_many(
-        &ids.expressions,
-        &entry.update_values,
-        "function fold update value",
-        entry.provenance,
-    )?;
-    dae.functions(|functions| {
-        functions.reconstruct_define_loop(fold, initial_values, update_values, entry.provenance)
-    })
+    for (actual, expected) in dae
+        .storage
+        .expressions
+        .nodes
+        .iter()
+        .zip(&wire.expressions.nodes)
+    {
+        if !expression_node_matches(actual, expected) {
+            return Err(malformed("expressions.nodes"));
+        }
+    }
+    for (actual, expected) in dae
+        .storage
+        .expressions
+        .subscripts
+        .iter()
+        .zip(&wire.expressions.subscripts)
+    {
+        if actual.provenance != expected.provenance
+            || !subscript_kind_matches(&actual.kind, expected.kind)
+        {
+            return Err(malformed("expressions.subscripts"));
+        }
+    }
+    Ok(())
+}
+
+fn expression_node_matches(actual: &ExprNode, expected: &ExprNodeWire) -> bool {
+    match (actual, expected) {
+        (ExprNode::Literal(actual), ExprNodeWire::Literal(expected)) => {
+            literal_matches(actual, expected)
+        }
+        (ExprNode::Coordinate(actual), ExprNodeWire::Coordinate(expected)) => {
+            coordinate_matches(*actual, expected)
+        }
+        (ExprNode::FunctionValue { .. }, ExprNodeWire::FunctionValue { .. })
+        | (ExprNode::FunctionFoldParameter { .. }, ExprNodeWire::FunctionFoldParameter { .. })
+        | (ExprNode::FunctionFoldOutput { .. }, ExprNodeWire::FunctionFoldOutput { .. }) => {
+            function_node_matches(actual, expected)
+        }
+        (ExprNode::Index { .. }, ExprNodeWire::Index { .. })
+        | (ExprNode::ArrayUpdate { .. }, ExprNodeWire::ArrayUpdate { .. })
+        | (ExprNode::Builtin { .. }, ExprNodeWire::Builtin { .. })
+        | (ExprNode::Call { .. }, ExprNodeWire::Call { .. }) => {
+            buffer_node_matches(actual, expected)
+        }
+        _ => operator_node_matches(actual, expected),
+    }
+}
+
+fn operator_node_matches(actual: &ExprNode, expected: &ExprNodeWire) -> bool {
+    match (actual, expected) {
+        (
+            ExprNode::Unary {
+                operator: ao,
+                operand: aa,
+            },
+            ExprNodeWire::Unary {
+                operator: eo,
+                operand: ea,
+            },
+        ) => ao == eo && aa == ea,
+        (
+            ExprNode::Binary {
+                operator: ao,
+                lhs: al,
+                rhs: ar,
+            },
+            ExprNodeWire::Binary {
+                operator: eo,
+                lhs: el,
+                rhs: er,
+            },
+        ) => ao == eo && al == el && ar == er,
+        (ExprNode::Conditional { operands: a }, ExprNodeWire::Conditional { operands: e })
+        | (ExprNode::Array { operands: a }, ExprNodeWire::Array { operands: e })
+        | (ExprNode::Record { operands: a }, ExprNodeWire::Record { operands: e }) => {
+            range_matches(*a, *e)
+        }
+        (
+            ExprNode::Field {
+                base: ab,
+                field: af,
+            },
+            ExprNodeWire::Field {
+                base: eb,
+                field: ef,
+            },
+        ) => ab == eb && af == ef,
+        (
+            ExprNode::Range {
+                start: aa,
+                step: ab,
+                stop: ac,
+            },
+            ExprNodeWire::Range {
+                start: ea,
+                step: eb,
+                stop: ec,
+            },
+        ) => aa == ea && ab == eb && ac == ec,
+        (
+            ExprNode::Comprehension {
+                domain: ad,
+                body: ab,
+            },
+            ExprNodeWire::Comprehension {
+                domain: ed,
+                body: eb,
+            },
+        ) => ad == ed && ab == eb,
+        _ => false,
+    }
+}
+
+fn buffer_node_matches(actual: &ExprNode, expected: &ExprNodeWire) -> bool {
+    match (actual, expected) {
+        (
+            ExprNode::Index {
+                base: ab,
+                subscripts: as_,
+            },
+            ExprNodeWire::Index {
+                base: eb,
+                subscripts: es,
+            },
+        ) => ab == eb && range_matches(*as_, *es),
+        (
+            ExprNode::ArrayUpdate {
+                base: ab,
+                value: av,
+                subscripts: as_,
+            },
+            ExprNodeWire::ArrayUpdate {
+                base: eb,
+                value: ev,
+                subscripts: es,
+            },
+        ) => ab == eb && av == ev && range_matches(*as_, *es),
+        (
+            ExprNode::Builtin {
+                builtin: ab,
+                operands: ao,
+            },
+            ExprNodeWire::Builtin {
+                builtin: eb,
+                operands: eo,
+            },
+        ) => ab == eb && range_matches(*ao, *eo),
+        (
+            ExprNode::Call {
+                function: af,
+                output: ao,
+                operands: aa,
+            },
+            ExprNodeWire::Call {
+                function: ef,
+                output: eo,
+                operands: ea,
+            },
+        ) => af == ef && ao == eo && range_matches(*aa, *ea),
+        _ => false,
+    }
+}
+
+fn function_node_matches(actual: &ExprNode, expected: &ExprNodeWire) -> bool {
+    match (actual, expected) {
+        (
+            ExprNode::FunctionValue {
+                function: af,
+                value: av,
+                definition_ordinal: ad,
+            },
+            ExprNodeWire::FunctionValue {
+                function: ef,
+                value: ev,
+                definition_ordinal: ed,
+            },
+        ) => af == ef && av == ev && ad == ed,
+        (
+            ExprNode::FunctionFoldParameter {
+                function: af,
+                fold: ax,
+                carried: ac,
+                definition_ordinal: ad,
+            },
+            ExprNodeWire::FunctionFoldParameter {
+                function: ef,
+                fold: ex,
+                carried: ec,
+                definition_ordinal: ed,
+            },
+        )
+        | (
+            ExprNode::FunctionFoldOutput {
+                function: af,
+                fold: ax,
+                carried: ac,
+                definition_ordinal: ad,
+            },
+            ExprNodeWire::FunctionFoldOutput {
+                function: ef,
+                fold: ex,
+                carried: ec,
+                definition_ordinal: ed,
+            },
+        ) => af == ef && ax == ex && ac == ec && ad == ed,
+        _ => false,
+    }
+}
+
+fn literal_matches(actual: &DaeLiteral, expected: &DaeLiteralWire) -> bool {
+    match (actual, expected) {
+        (DaeLiteral::Real(a), DaeLiteralWire::Real(e)) => a.to_bits() == e.to_bits(),
+        (DaeLiteral::Integer(a), DaeLiteralWire::Integer(e)) => a == e,
+        (DaeLiteral::Enumeration(a), DaeLiteralWire::Enumeration(e)) => a == e,
+        (DaeLiteral::Boolean(a), DaeLiteralWire::Boolean(e)) => a == e,
+        (DaeLiteral::String(a), DaeLiteralWire::String(e)) => a == e,
+        _ => false,
+    }
+}
+
+fn coordinate_matches(actual: Coordinate, expected: &CoordinateWire) -> bool {
+    match (actual, expected) {
+        (Coordinate::Parameter(a), CoordinateWire::Parameter(e))
+        | (Coordinate::Input(a), CoordinateWire::Input(e))
+        | (Coordinate::State(a), CoordinateWire::State(e))
+        | (Coordinate::Derivative(a), CoordinateWire::Derivative(e))
+        | (Coordinate::Algebraic(a), CoordinateWire::Algebraic(e))
+        | (Coordinate::DiscreteReal(a), CoordinateWire::DiscreteReal(e))
+        | (Coordinate::DiscreteValue(a), CoordinateWire::DiscreteValue(e))
+        | (Coordinate::PreDiscreteReal(a), CoordinateWire::PreDiscreteReal(e))
+        | (Coordinate::PreDiscreteValue(a), CoordinateWire::PreDiscreteValue(e))
+        | (Coordinate::Condition(a), CoordinateWire::Condition(e))
+        | (Coordinate::Delay(a), CoordinateWire::Delay(e))
+        | (Coordinate::Previous(a), CoordinateWire::Previous(e))
+        | (Coordinate::Terminal(a), CoordinateWire::Terminal(e)) => a == *e,
+        (Coordinate::Time, CoordinateWire::Time) => true,
+        (
+            Coordinate::Binder {
+                domain: ad,
+                ordinal: ao,
+            },
+            CoordinateWire::Binder {
+                domain: ed,
+                ordinal: eo,
+            },
+        )
+        | (
+            Coordinate::FunctionParameter {
+                function: ad,
+                ordinal: ao,
+            },
+            CoordinateWire::FunctionParameter {
+                function: ed,
+                ordinal: eo,
+            },
+        ) => ad == *ed && ao == *eo,
+        _ => false,
+    }
+}
+
+const fn range_matches(
+    actual: crate::expression::OperandRange,
+    expected: OperandRangeWire,
+) -> bool {
+    actual.start == expected.start && actual.len == expected.len
+}
+
+const fn subscript_kind_matches(
+    actual: &PackedSubscriptKind,
+    expected: PackedSubscriptKindWire,
+) -> bool {
+    match (actual, expected) {
+        (PackedSubscriptKind::Index(a), PackedSubscriptKindWire::Index(e))
+        | (PackedSubscriptKind::Slice(a), PackedSubscriptKindWire::Slice(e)) => *a == e,
+        (PackedSubscriptKind::Whole, PackedSubscriptKindWire::Whole) => true,
+        _ => false,
+    }
 }
 
 fn reconstruct_delay_coordinate<'dae>(
@@ -1406,46 +1410,11 @@ fn rebuild_node<'dae>(
             *output as usize,
             map_expression_operands(wire, ids, *operands, provenance)?,
         ),
-        ExprNodeWire::FunctionValue { .. } => {
-            unreachable!("function-value reads rebuild through their semantic owner")
-        }
+        ExprNodeWire::FunctionValue { .. } => Err(malformed("expressions.nodes.function_value")),
         ExprNodeWire::FunctionFoldParameter { .. } | ExprNodeWire::FunctionFoldOutput { .. } => {
-            unreachable!("function-fold values rebuild through their semantic owner")
+            Err(malformed("expressions.nodes.function_fold"))
         }
     }
-}
-
-fn mapped_function_fold<'dae>(
-    wire: &StorageWire,
-    ids: &WireIds<'dae>,
-    function: u32,
-    fold: u32,
-    provenance: DaeProvenance,
-) -> Result<(FunctionFoldId<'dae>, usize), DaeConstructionError> {
-    let raw = wire
-        .functions
-        .get(function as usize)
-        .and_then(|function| function.folds.get(fold as usize))
-        .copied()
-        .ok_or_else(|| unknown("function fold", fold, provenance))?;
-    let rebuilt = mapped(&ids.function_folds, raw, "function fold", provenance)?;
-    Ok((rebuilt, raw as usize))
-}
-
-fn expect_fold_expression(
-    expressions: Option<&[u32]>,
-    carried: usize,
-    expected: usize,
-    column: &'static str,
-) -> Result<(), DaeConstructionError> {
-    let found = expressions
-        .and_then(|expressions| expressions.get(carried))
-        .copied()
-        .map(|value| value as usize);
-    if found == Some(expected) {
-        return Ok(());
-    }
-    Err(DaeConstructionError::MalformedWire { column })
 }
 
 fn rebuild_coordinate<'dae>(
@@ -1486,7 +1455,7 @@ fn rebuild_coordinate<'dae>(
             CoordinateInput::Condition(mapped(&ids.conditions, *condition, "condition", at)?)
         }
         CoordinateWire::Delay(_) => {
-            unreachable!("delay coordinates rebuild atomically through their temporal owner")
+            return Err(malformed("expressions.nodes.delay"));
         }
         CoordinateWire::Previous(previous) => CoordinateInput::Previous(mapped(
             &ids.previous_values,
@@ -1500,7 +1469,9 @@ fn rebuild_coordinate<'dae>(
             "terminal coordinate",
             at,
         )?),
-        CoordinateWire::Binder { .. } => unreachable!("binder coordinates rebuild separately"),
+        CoordinateWire::Binder { .. } => {
+            return Err(malformed("expressions.nodes.binder"));
+        }
         CoordinateWire::FunctionParameter { function, ordinal } => {
             let function = mapped(&ids.functions, *function, "function", at)?;
             CoordinateInput::FunctionParameter(FunctionParameterId::from_raw(
@@ -1629,194 +1600,6 @@ fn define_variables<'dae>(
         dae.variables(|variables| variables.define(reservation, attributes, variable.declaration))?;
     }
     Ok(())
-}
-
-fn define_functions<'dae>(
-    wire: &StorageWire,
-    dae: &mut DaeConstruction<'dae>,
-    ids: &mut WireIds<'dae>,
-    reservations: Vec<FunctionReservation<'dae>>,
-) -> Result<(), DaeConstructionError> {
-    for (index, (function, reservation)) in wire.functions.iter().zip(reservations).enumerate() {
-        let Some(definition) = &function.definition else {
-            return Err(incomplete("function", index, function.declaration));
-        };
-        let mut body =
-            dae.functions(|functions| functions.begin(reservation, function.declaration))?;
-        drain_ready_function_expressions(wire, dae, ids, &body)?;
-        reconstruct_function_statements(wire, dae, ids, index, &mut body, &definition.statements)?;
-        let actual_results = function_results_from_body(function, &body)?;
-        if actual_results != definition.results {
-            return Err(DaeConstructionError::MalformedWire {
-                column: "functions.definition.results",
-            });
-        }
-        dae.functions(|functions| functions.define(body, function.declaration))?;
-    }
-    Ok(())
-}
-
-fn reconstruct_function_statements<'dae>(
-    wire: &StorageWire,
-    dae: &mut DaeConstruction<'dae>,
-    ids: &mut WireIds<'dae>,
-    function_index: usize,
-    body: &mut FunctionBody<'dae>,
-    statements: &[FunctionStatementInput],
-) -> Result<(), DaeConstructionError> {
-    for statement in statements {
-        match statement {
-            FunctionStatementInput::Assignment { definition } => {
-                let entry = wire.functions[function_index]
-                    .definitions
-                    .get(*definition as usize)
-                    .ok_or_else(|| unknown("function definition", *definition, wire.functions[function_index].declaration))?;
-                while ids.expressions.len() <= entry.rhs as usize {
-                    if !reconstruct_next_expression(wire, dae, ids, Some(body))? {
-                        return Err(DaeConstructionError::InvalidFunctionValueRead {
-                            value: entry.target,
-                            expected_definition: body.current_values[entry.target as usize],
-                            found_definition: *definition,
-                            span: entry.provenance.span(),
-                        });
-                    }
-                }
-                let value = mapped_expression(ids, entry.rhs, entry.provenance)?;
-                let target = FunctionValueId::from_raw(
-                    ids.functions[function_index].index(),
-                    entry.target,
-                );
-                dae.functions(|functions| {
-                    functions.assign(body, target, value, entry.provenance)
-                })?;
-                let rebuilt = dae.functions(|functions| {
-                    functions.current_definition_id(body, target, entry.provenance)
-                })?;
-                if rebuilt.ordinal() != *definition {
-                    return Err(DaeConstructionError::MalformedWire {
-                        column: "functions.definitions",
-                    });
-                }
-                drain_ready_function_expressions(wire, dae, ids, body)?;
-            }
-            FunctionStatementInput::For {
-                fold,
-                statements,
-                provenance,
-            } => {
-                reconstruct_function_loop(
-                    wire,
-                    dae,
-                    ids,
-                    function_index,
-                    body,
-                    *fold,
-                    statements,
-                    *provenance,
-                )?;
-            }
-        }
-    }
-    Ok(())
-}
-
-fn reconstruct_function_loop<'dae>(
-    wire: &StorageWire,
-    dae: &mut DaeConstruction<'dae>,
-    ids: &mut WireIds<'dae>,
-    function_index: usize,
-    body: &mut FunctionBody<'dae>,
-    fold_ordinal: u32,
-    statements: &[FunctionStatementInput],
-    provenance: DaeProvenance,
-) -> Result<(), DaeConstructionError> {
-    let function = wire
-        .functions
-        .get(function_index)
-        .ok_or_else(|| unknown("function", function_index as u32, provenance))?;
-    let raw = *function
-        .folds
-        .get(fold_ordinal as usize)
-        .ok_or_else(|| unknown("function fold", fold_ordinal, provenance))?;
-    let fold = wire
-        .function_folds
-        .get(raw as usize)
-        .ok_or_else(|| unknown("function fold", raw, provenance))?;
-    let function_id = ids.functions[function_index];
-    let domain = mapped(&ids.domains, fold.domain, "domain", provenance)?;
-    let targets = fold
-        .targets
-        .iter()
-        .map(|target| FunctionValueId::from_raw(function_id.index(), *target))
-        .collect::<Vec<_>>();
-    let mut loop_body =
-        dae.functions(|functions| functions.begin_loop(body, domain, targets.clone(), provenance))?;
-    if loop_body.fold().ordinal() != fold_ordinal {
-        return Err(DaeConstructionError::MalformedWire {
-            column: "function_folds.ordinal",
-        });
-    }
-    ids.function_folds[raw as usize] = Some(loop_body.fold());
-    record_fold_definitions(
-        wire,
-        dae,
-        ids,
-        loop_body.body(),
-        &targets,
-        &fold.parameter_definitions,
-        true,
-    )?;
-    reconstruct_loop_statements(
-        wire,
-        dae,
-        ids,
-        function_index,
-        &mut loop_body,
-        statements,
-    )?;
-    dae.functions(|functions| functions.finish_loop(body, loop_body, provenance))?;
-    record_fold_definitions(
-        wire,
-        dae,
-        ids,
-        body,
-        &targets,
-        &fold.output_definitions,
-        false,
-    )
-}
-
-fn drain_ready_function_expressions<'dae>(
-    wire: &StorageWire,
-    dae: &mut DaeConstruction<'dae>,
-    ids: &mut WireIds<'dae>,
-    body: &FunctionBody<'dae>,
-) -> Result<(), DaeConstructionError> {
-    while ids.expressions.len() < wire.expressions.nodes.len()
-        && reconstruct_next_expression(wire, dae, ids, Some(body))?
-    {}
-    Ok(())
-}
-
-fn function_results_from_body(
-    function: &FunctionEntryWire,
-    body: &FunctionBody<'_>,
-) -> Result<Vec<u32>, DaeConstructionError> {
-    function
-        .output_values
-        .iter()
-        .map(|output| {
-            body.current_values
-                .get(*output as usize)
-                .copied()
-                .flatten()
-                .ok_or(DaeConstructionError::IncompleteDefinition {
-                    kind: "function output",
-                    index: *output,
-                    span: function.declaration.span(),
-                })
-        })
-        .collect()
 }
 
 fn define_conditions<'dae>(

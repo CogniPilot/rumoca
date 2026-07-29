@@ -252,7 +252,7 @@ fn production_lowering_preserves_function_locals_and_statement_order() {
         assert_eq!(values[1].role(), dae::FunctionValueRole::Local);
         assert_eq!(function.statements().count(), 2);
         let result = view
-            .expression(function.result_values().get(0).unwrap())
+            .expression(function.result_values().rhs(0).unwrap())
             .unwrap();
         let dae::ExpressionOperation::Binary { lhs, .. } = result.operation() else {
             panic!("output retains the second assignment expression");
@@ -423,7 +423,7 @@ fn assert_production_sum3_loop(view: dae::DaeView<'_>, loop_span: Span) {
         Some("for k in 1:n loop y := y + k; end for")
     );
     let parameter = view
-        .expression(fold.parameter_values().get(0).unwrap())
+        .expression(fold.parameter_values().rhs(0).unwrap())
         .unwrap();
     assert_eq!(
         parameter.provenance().origin(),
@@ -431,11 +431,11 @@ fn assert_production_sum3_loop(view: dae::DaeView<'_>, loop_span: Span) {
     );
     assert_eq!(parameter.provenance().span(), loop_span);
     let update = view
-        .expression(fold.update_values().get(0).unwrap())
+        .expression(fold.update_values().rhs(0).unwrap())
         .unwrap();
     assert_eq!(view.source_text(update.provenance()), Some("y + k"));
     let result = view
-        .expression(function.result_values().get(0).unwrap())
+        .expression(function.result_values().rhs(0).unwrap())
         .unwrap();
     assert_eq!(result.kind(), dae::ExpressionKind::FunctionFoldOutput);
     assert_eq!(

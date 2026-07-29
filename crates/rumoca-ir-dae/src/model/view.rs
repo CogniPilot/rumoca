@@ -159,6 +159,20 @@ impl<'dae> DaeView<'dae> {
         })
     }
 
+    pub fn function_definition(
+        self,
+        id: FunctionDefinitionId<'dae>,
+    ) -> Option<FunctionDefinitionView<'dae>> {
+        let entry = self
+            .dae
+            .storage
+            .functions
+            .get(id.function().index() as usize)?
+            .definitions
+            .get(id.ordinal() as usize)?;
+        Some(FunctionDefinitionView { id, entry })
+    }
+
     pub fn function_fold(self, id: FunctionFoldId<'dae>) -> Option<FunctionFoldView<'dae>> {
         let function = self
             .dae
@@ -740,6 +754,16 @@ impl<'dae> FunctionView<'dae> {
         }
     }
 
+    pub fn definition_count(self) -> usize {
+        self.entry.definitions.len()
+    }
+
+    pub fn definition_id(self, index: usize) -> Option<FunctionDefinitionId<'dae>> {
+        let ordinal = u32::try_from(index).ok()?;
+        (index < self.entry.definitions.len())
+            .then(|| FunctionDefinitionId::from_raw(self.id.index(), ordinal))
+    }
+
     pub fn fold_count(self) -> usize {
         self.entry.folds.len()
     }
@@ -877,28 +901,26 @@ impl<'dae> FunctionDefinitionValues<'dae> {
         self.raw.is_empty()
     }
 
-    pub fn get(self, index: usize) -> Option<ExprId<'dae>> {
-        self.definition(index).map(FunctionDefinitionView::rhs)
-    }
-
-    pub fn definition(self, index: usize) -> Option<FunctionDefinitionView<'dae>> {
+    pub fn get(self, index: usize) -> Option<FunctionDefinitionView<'dae>> {
         self.raw
             .get(index)
             .copied()
             .map(|raw| function_definition_view(self.dae, self.function, raw))
     }
 
-    pub fn iter(self) -> impl ExactSizeIterator<Item = ExprId<'dae>> {
-        self.definitions().map(FunctionDefinitionView::rhs)
-    }
-
-    pub fn definitions(
-        self,
-    ) -> impl ExactSizeIterator<Item = FunctionDefinitionView<'dae>> {
+    pub fn iter(self) -> impl ExactSizeIterator<Item = FunctionDefinitionView<'dae>> {
         self.raw
             .iter()
             .copied()
             .map(move |raw| function_definition_view(self.dae, self.function, raw))
+    }
+
+    pub fn rhs(self, index: usize) -> Option<ExprId<'dae>> {
+        self.get(index).map(FunctionDefinitionView::rhs)
+    }
+
+    pub fn rhs_iter(self) -> impl ExactSizeIterator<Item = ExprId<'dae>> {
+        self.iter().map(FunctionDefinitionView::rhs)
     }
 }
 
@@ -907,11 +929,13 @@ fn function_definition_view<'dae>(
     function: FunctionId<'dae>,
     ordinal: u32,
 ) -> FunctionDefinitionView<'dae> {
-    let entry = &dae.storage.functions[function.index() as usize].definitions[ordinal as usize];
-    FunctionDefinitionView {
-        id: FunctionDefinitionId::from_raw(function.index(), ordinal),
-        entry,
+    let id = FunctionDefinitionId::from_raw(function.index(), ordinal);
+    DaeView {
+        dae,
+        marker: PhantomData,
     }
+    .function_definition(id)
+    .expect("final DAE definition identity resolves")
 }
 
 #[derive(Clone)]
@@ -1158,6 +1182,28 @@ impl<'dae> ExpressionView<'dae> {
 
     pub fn operation(self) -> ExpressionOperation<'dae> {
         match self.node {
+            ExprNode::Literal(_)
+            | ExprNode::Coordinate(_)
+            | ExprNode::Unary { .. }
+            | ExprNode::Binary { .. } => self.primitive_operation(),
+            ExprNode::Conditional { .. }
+            | ExprNode::Array { .. }
+            | ExprNode::Record { .. }
+            | ExprNode::Field { .. }
+            | ExprNode::Range { .. }
+            | ExprNode::Comprehension { .. } => self.aggregate_operation(),
+            ExprNode::Index { .. }
+            | ExprNode::ArrayUpdate { .. }
+            | ExprNode::Builtin { .. }
+            | ExprNode::Call { .. } => self.application_operation(),
+            ExprNode::FunctionValue { .. }
+            | ExprNode::FunctionFoldParameter { .. }
+            | ExprNode::FunctionFoldOutput { .. } => self.function_operation(),
+        }
+    }
+
+    fn primitive_operation(self) -> ExpressionOperation<'dae> {
+        match self.node {
             ExprNode::Literal(value) => ExpressionOperation::Literal(value),
             ExprNode::Coordinate(coordinate) => {
                 ExpressionOperation::Coordinate(coordinate_view(*coordinate))
@@ -1171,6 +1217,12 @@ impl<'dae> ExpressionView<'dae> {
                 lhs: ExprId::from_raw(*lhs),
                 rhs: ExprId::from_raw(*rhs),
             },
+            _ => unreachable!("expression operation family is selected from its checked node"),
+        }
+    }
+
+    fn aggregate_operation(self) -> ExpressionOperation<'dae> {
+        match self.node {
             ExprNode::Conditional { operands } => {
                 ExpressionOperation::Conditional(self.expression_operands(*operands))
             }
@@ -1193,6 +1245,12 @@ impl<'dae> ExpressionView<'dae> {
                 domain: DomainId::from_raw(*domain),
                 body: ExprId::from_raw(*body),
             },
+            _ => unreachable!("expression operation family is selected from its checked node"),
+        }
+    }
+
+    fn application_operation(self) -> ExpressionOperation<'dae> {
+        match self.node {
             ExprNode::Index { base, subscripts } => ExpressionOperation::Index {
                 base: ExprId::from_raw(*base),
                 subscripts: self.subscripts(*subscripts),
@@ -1219,6 +1277,12 @@ impl<'dae> ExpressionView<'dae> {
                 output: *output,
                 arguments: self.expression_operands(*operands),
             },
+            _ => unreachable!("expression operation family is selected from its checked node"),
+        }
+    }
+
+    fn function_operation(self) -> ExpressionOperation<'dae> {
+        match self.node {
             ExprNode::FunctionValue {
                 function,
                 value,
@@ -1259,6 +1323,7 @@ impl<'dae> ExpressionView<'dae> {
                     *definition_ordinal,
                 ),
             },
+            _ => unreachable!("expression operation family is selected from its checked node"),
         }
     }
 

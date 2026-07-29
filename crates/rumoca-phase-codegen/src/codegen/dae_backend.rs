@@ -7,7 +7,7 @@
 use rumoca_ir_dae as dae;
 use serde_json::{Value, json};
 
-pub(super) const TEMPLATE_SCHEMA_VERSION: u16 = 1;
+pub(super) const TEMPLATE_SCHEMA_VERSION: u16 = 2;
 
 #[derive(Debug, thiserror::Error)]
 pub(super) enum DaeBackendError {
@@ -217,6 +217,22 @@ fn project_functions(view: dae::DaeView<'_>) -> Vec<Value> {
                         "declaration": value.declaration(),
                     }))
                     .collect::<Vec<_>>(),
+                "definitions": (0..function.definition_count())
+                    .map(|ordinal| {
+                        let id = function
+                            .definition_id(ordinal)
+                            .expect("dense checked function definition identity resolves");
+                        let definition = view
+                            .function_definition(id)
+                            .expect("checked function definition resolves");
+                        json!({
+                            "ordinal": definition.id().ordinal(),
+                            "target": definition.target().ordinal(),
+                            "rhs": definition.rhs().index(),
+                            "provenance": definition.provenance(),
+                        })
+                    })
+                    .collect::<Vec<_>>(),
                 "statements": function
                     .statements()
                     .map(project_function_statement)
@@ -230,8 +246,10 @@ fn project_functions(view: dae::DaeView<'_>) -> Vec<Value> {
                             "ordinal": fold.id().ordinal(),
                             "domain": fold.domain().index(),
                             "targets": fold.targets().map(|target| target.ordinal()).collect::<Vec<_>>(),
-                            "initial_values": expression_ids(fold.initial_values()),
-                            "update_values": expression_ids(fold.update_values()),
+                            "parameter_definitions": definition_ordinals(fold.parameter_values()),
+                            "initial_definitions": definition_ordinals(fold.initial_values()),
+                            "update_definitions": definition_ordinals(fold.update_values()),
+                            "output_definitions": definition_ordinals(fold.output_values()),
                             "provenance": fold.provenance(),
                         })
                     })
@@ -239,7 +257,7 @@ fn project_functions(view: dae::DaeView<'_>) -> Vec<Value> {
                 "results": function
                     .result_values()
                     .iter()
-                    .map(|id| id.index())
+                    .map(|definition| definition.id().ordinal())
                     .collect::<Vec<_>>(),
                 "declaration": function.declaration(),
             })
@@ -249,15 +267,9 @@ fn project_functions(view: dae::DaeView<'_>) -> Vec<Value> {
 
 fn project_function_statement(statement: dae::FunctionStatementView<'_>) -> Value {
     match statement {
-        dae::FunctionStatementView::Assignment {
-            target,
-            value,
-            provenance,
-        } => json!({
+        dae::FunctionStatementView::Assignment { definition } => json!({
             "kind": "assignment",
-            "target": target.ordinal(),
-            "value": value.index(),
-            "provenance": provenance,
+            "definition": definition.id().ordinal(),
         }),
         dae::FunctionStatementView::For {
             fold,
@@ -361,59 +373,119 @@ fn project_expression_operation(operation: dae::ExpressionOperation<'_>) -> Valu
             "domain": domain.index(),
             "body": body.index(),
         }),
-        dae::ExpressionOperation::Index { base, subscripts } => json!({
-            "kind": "index",
-            "base": base.index(),
-            "subscripts": subscripts.iter().map(project_subscript).collect::<Vec<_>>(),
-        }),
+        dae::ExpressionOperation::Index { base, subscripts } => {
+            project_index_operation(base, subscripts)
+        }
         dae::ExpressionOperation::ArrayUpdate {
             base,
             value,
             subscripts,
-        } => json!({
-            "kind": "array_update",
-            "base": base.index(),
-            "value": value.index(),
-            "subscripts": subscripts.iter().map(project_subscript).collect::<Vec<_>>(),
-        }),
-        dae::ExpressionOperation::Builtin { builtin, arguments } => json!({
-            "kind": "builtin",
-            "builtin": builtin,
-            "arguments": expression_ids(arguments),
-        }),
+        } => project_array_update_operation(base, value, subscripts),
+        dae::ExpressionOperation::Builtin { builtin, arguments } => {
+            project_builtin_operation(builtin, arguments)
+        }
         dae::ExpressionOperation::Call {
             function,
             output,
             arguments,
-        } => json!({
-            "kind": "call",
-            "function": function.index(),
-            "output": output,
-            "arguments": expression_ids(arguments),
-        }),
-        dae::ExpressionOperation::FunctionValue { value, definition } => json!({
-            "kind": "function_value",
-            "function": value.function().index(),
-            "value": value.ordinal(),
-            "definition": definition.index(),
-        }),
-        dae::ExpressionOperation::FunctionFoldParameter { fold, carried } => json!({
-            "kind": "function_fold_parameter",
-            "function": fold.function().index(),
-            "fold": fold.ordinal(),
-            "carried": carried,
-        }),
-        dae::ExpressionOperation::FunctionFoldOutput { fold, carried } => json!({
-            "kind": "function_fold_output",
-            "function": fold.function().index(),
-            "fold": fold.ordinal(),
-            "carried": carried,
-        }),
+        } => project_call_operation(function, output, arguments),
+        dae::ExpressionOperation::FunctionValue { value, definition } => {
+            project_function_value_operation(value, definition)
+        }
+        dae::ExpressionOperation::FunctionFoldParameter {
+            fold,
+            carried,
+            definition,
+        } => project_function_fold_operation("function_fold_parameter", fold, carried, definition),
+        dae::ExpressionOperation::FunctionFoldOutput {
+            fold,
+            carried,
+            definition,
+        } => project_function_fold_operation("function_fold_output", fold, carried, definition),
     }
+}
+
+fn project_index_operation(base: dae::ExprId<'_>, subscripts: dae::SubscriptsView<'_>) -> Value {
+    json!({
+        "kind": "index",
+        "base": base.index(),
+        "subscripts": subscripts.iter().map(project_subscript).collect::<Vec<_>>(),
+    })
+}
+
+fn project_array_update_operation(
+    base: dae::ExprId<'_>,
+    value: dae::ExprId<'_>,
+    subscripts: dae::SubscriptsView<'_>,
+) -> Value {
+    json!({
+        "kind": "array_update",
+        "base": base.index(),
+        "value": value.index(),
+        "subscripts": subscripts.iter().map(project_subscript).collect::<Vec<_>>(),
+    })
+}
+
+fn project_builtin_operation(
+    builtin: dae::PureBuiltin,
+    arguments: dae::ExpressionOperands<'_>,
+) -> Value {
+    json!({
+        "kind": "builtin",
+        "builtin": builtin,
+        "arguments": expression_ids(arguments),
+    })
+}
+
+fn project_call_operation(
+    function: dae::FunctionId<'_>,
+    output: u32,
+    arguments: dae::ExpressionOperands<'_>,
+) -> Value {
+    json!({
+        "kind": "call",
+        "function": function.index(),
+        "output": output,
+        "arguments": expression_ids(arguments),
+    })
+}
+
+fn project_function_value_operation(
+    value: dae::FunctionValueId<'_>,
+    definition: dae::FunctionDefinitionView<'_>,
+) -> Value {
+    json!({
+        "kind": "function_value",
+        "function": value.function().index(),
+        "value": value.ordinal(),
+        "definition": definition.id().ordinal(),
+    })
+}
+
+fn project_function_fold_operation(
+    kind: &'static str,
+    fold: dae::FunctionFoldId<'_>,
+    carried: u32,
+    definition: dae::FunctionDefinitionView<'_>,
+) -> Value {
+    json!({
+        "kind": kind,
+        "function": fold.function().index(),
+        "fold": fold.ordinal(),
+        "carried": carried,
+        "definition": definition.id().ordinal(),
+    })
 }
 
 fn expression_ids(operands: dae::ExpressionOperands<'_>) -> Vec<u32> {
     operands.iter().map(|id| id.index()).collect()
+}
+
+fn definition_ordinals(definitions: dae::FunctionDefinitionValues<'_>) -> Vec<u32> {
+    definitions
+        .iter()
+        .map(|definition| definition.id().ordinal())
+        .collect()
 }
 
 fn project_coordinate(coordinate: dae::CoordinateView<'_>) -> Value {

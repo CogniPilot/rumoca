@@ -1,11 +1,13 @@
+mod function_wire;
+mod temporal_wire;
+mod wire_buffers;
+
 use rumoca_core::{
     ClockLattice, ClockRational, SourceId, SourceMap, Span, StructuredIndexBinder,
     StructuredIndexDomain, TypeId, VarName,
 };
 
 use crate::*;
-
-mod temporal_wire;
 
 struct TestSource {
     map: SourceMap,
@@ -1300,9 +1302,20 @@ fn assert_function_runtime_arena(view: DaeView<'_>) {
     assert_eq!(function.parameter_types().len(), 1);
     assert_eq!(function.result_types().len(), 1);
     assert_eq!(function.result_values().len(), 1);
-    let result = view
-        .expression(function.result_values().get(0).unwrap())
-        .unwrap();
+    let definition = function.result_values().get(0).unwrap();
+    assert_eq!(
+        view.function_definition(definition.id()).unwrap().rhs(),
+        definition.rhs()
+    );
+    assert_eq!(
+        function.result_values().iter().next().unwrap().id(),
+        definition.id()
+    );
+    assert_eq!(
+        function.result_values().rhs_iter().next(),
+        Some(definition.rhs())
+    );
+    let result = view.expression(definition.rhs()).unwrap();
     assert_eq!(result.function_scope(), view.function_id(0));
     let condition = view.condition(view.condition_id(0).unwrap()).unwrap();
     assert!(matches!(
@@ -1570,12 +1583,12 @@ fn function_locals_keep_ordered_statements_and_exact_use_provenance() {
         .iter_mut()
         .find_map(|node| node.get_mut("function_value"))
         .expect("fixture contains a function-value read");
-    local_read["definition"] = serde_json::json!(0);
+    local_read["definition_ordinal"] = serde_json::json!(1);
     let error = serde_json::from_value::<Dae>(forged).unwrap_err();
     assert!(
         error
             .to_string()
-            .contains("function value 1 reads definition 0"),
+            .contains("function value 1 reads definition 1, expected Some(0)"),
         "wire reconstruction must reject forged function snapshots: {error}"
     );
 }
@@ -1599,7 +1612,7 @@ fn assert_function_local_body(view: DaeView<'_>, local_use: DaeProvenance) {
     let statements = function.statements().collect::<Vec<_>>();
     assert_eq!(statements.len(), 2);
     let result = view
-        .expression(function.result_values().get(0).unwrap())
+        .expression(function.result_values().rhs(0).unwrap())
         .unwrap();
     let ExpressionOperation::Binary { lhs, .. } = result.operation() else {
         panic!("final function output must retain its checked expression");
@@ -1616,7 +1629,7 @@ fn assert_function_local_body(view: DaeView<'_>, local_use: DaeProvenance) {
         Some("z"),
         "the local read keeps its source occurrence"
     );
-    assert!(view.expression(definition).is_some());
+    assert!(view.expression(definition.rhs()).is_some());
 }
 
 #[test]
@@ -1835,10 +1848,11 @@ fn enumeration_literals_are_canonical_checked_integers_and_round_trip() {
 #[test]
 fn function_for_loop_is_a_compact_checked_transition() {
     let source = TestSource::new(
-        "function sum3\n output Real y;\nalgorithm\n y := 0;\n for k in 1:3 loop\n  y := y + k;\n end for;\nend sum3;",
+        "function sum3\n output Real y;\n protected Real scratch;\nalgorithm\n y := 0;\n for k in 1:3 loop\n  y := y + k;\n end for;\nend sum3;",
     );
     let function_at = source.source("function sum3", 0);
     let output_at = source.source("output Real y", 0);
+    let scratch_at = source.source("Real scratch", 0);
     let initial_at = source.source("y := 0", 0);
     let zero_at = source.source("0", 0);
     let loop_at = source.source("for k in 1:3 loop", 0);
@@ -1854,6 +1868,9 @@ fn function_for_loop_is_a_compact_checked_transition() {
         })?;
         let output = dae.functions(|functions| {
             functions.output(&reservation, VarName::new("y"), 0, output_at)
+        })?;
+        let scratch = dae.functions(|functions| {
+            functions.local(&reservation, VarName::new("scratch"), real, scratch_at)
         })?;
         let mut body = dae.functions(|functions| functions.begin(reservation, function_at))?;
         let zero =
@@ -1875,19 +1892,7 @@ fn function_for_loop_is_a_compact_checked_transition() {
         })?;
         let binder = DomainBinderId::from_raw(domain.index(), 0);
         let mut loop_body =
-            dae.functions(|functions| functions.begin_loop(&body, domain, [output], loop_at))?;
-        let loop_definition = dae.functions(|functions| {
-            functions.current_definition(loop_body.body(), output, loop_at)
-        })?;
-        let rejected = dae
-            .functions(|functions| functions.assign(&mut body, output, loop_definition, loop_at));
-        assert!(matches!(
-            rejected,
-            Err(DaeConstructionError::InvalidBinderScope {
-                expected_domain: None,
-                ..
-            })
-        ));
+            dae.functions(|functions| functions.begin_loop(body, domain, [output], loop_at))?;
         let current =
             dae.functions(|functions| functions.read(loop_body.body(), output, y_use_at))?;
         let k = dae.expressions(|expressions| expressions.at(k_use_at).binder(binder))?;
@@ -1896,10 +1901,20 @@ fn function_for_loop_is_a_compact_checked_transition() {
                 .at(update_value_at)
                 .binary(BinaryOperator::Add, current, k)
         })?;
+        let rejected = dae.functions(|functions| {
+            functions.assign_loop(&mut loop_body, scratch, update, update_at)
+        });
+        assert!(matches!(
+            rejected,
+            Err(DaeConstructionError::IncompleteDefinition {
+                kind: "function loop target",
+                ..
+            })
+        ));
         dae.functions(|functions| {
             functions.assign_loop(&mut loop_body, output, update, update_at)
         })?;
-        dae.functions(|functions| functions.finish_loop(&mut body, loop_body, loop_at))?;
+        let body = dae.functions(|functions| functions.finish_loop(loop_body, loop_at))?;
         dae.functions(|functions| functions.define(body, function_at))
     })
     .expect("loop-carried function state constructs as a checked fold");
@@ -1910,19 +1925,20 @@ fn function_for_loop_is_a_compact_checked_transition() {
     decoded.inspect(assert_sum3_loop);
 
     let mut missing_parameter: serde_json::Value = serde_json::from_str(&encoded).unwrap();
-    missing_parameter["storage"]["function_folds"][0]["parameter_values"] = serde_json::json!([]);
+    missing_parameter["storage"]["function_folds"][0]["parameter_definitions"] =
+        serde_json::json!([]);
     assert!(
         serde_json::from_value::<Dae>(missing_parameter).is_err(),
         "wire reconstruction rejects a missing loop-transition parameter"
     );
 
     let mut open_initial: serde_json::Value = serde_json::from_str(&encoded).unwrap();
-    let parameter = open_initial["storage"]["function_folds"][0]["parameter_values"][0].clone();
-    open_initial["storage"]["function_folds"][0]["initial_values"][0] = parameter;
-    let error = serde_json::from_value::<Dae>(open_initial).unwrap_err();
+    let parameter =
+        open_initial["storage"]["function_folds"][0]["parameter_definitions"][0].clone();
+    open_initial["storage"]["function_folds"][0]["initial_definitions"][0] = parameter;
     assert!(
-        error.to_string().contains("domain binder"),
-        "wire reconstruction rejects a binder-dependent initial value: {error}"
+        serde_json::from_value::<Dae>(open_initial).is_err(),
+        "wire reconstruction rejects an initial value that names a generated loop parameter"
     );
 
     let mut nested_fold: serde_json::Value = serde_json::from_str(&encoded).unwrap();
@@ -1931,7 +1947,7 @@ fn function_for_loop_is_a_compact_checked_transition() {
         serde_json::json!([outer]);
     let error = serde_json::from_value::<Dae>(nested_fold).unwrap_err();
     assert!(
-        error.to_string().contains("binder"),
+        error.to_string().contains("function_folds.nesting"),
         "wire reconstruction rejects a nested fold that normal construction cannot express: {error}"
     );
 }
@@ -1955,15 +1971,65 @@ fn assert_sum3_loop(view: DaeView<'_>) {
     assert_eq!(fold.initial_values().len(), 1);
     assert_eq!(fold.update_values().len(), 1);
     assert_eq!(
-        view.expression(function.result_values().get(0).unwrap())
+        view.expression(function.result_values().rhs(0).unwrap())
             .unwrap()
             .kind(),
         ExpressionKind::FunctionFoldOutput
     );
     let update = view
-        .expression(fold.update_values().get(0).unwrap())
+        .expression(fold.update_values().rhs(0).unwrap())
         .unwrap();
     assert_eq!(view.source_text(update.provenance()), Some("y + k"));
+}
+
+#[test]
+fn function_loop_rejects_duplicate_carried_targets() {
+    let source =
+        TestSource::new("function f output Real x; algorithm x := 0; for k in 1:2 loop end for;");
+    let function_at = source.source("function f", 0);
+    let output_at = source.source("output Real x", 0);
+    let assignment_at = source.source("x := 0", 0);
+    let zero_at = source.source("0", 0);
+    let loop_at = source.source("for k in 1:2 loop", 0);
+    let error = Dae::construct(source.map, |dae| {
+        let real =
+            dae.types(|types| types.derived(ValueType::scalar(ScalarType::Real), function_at))?;
+        let (_, reservation) = dae.functions(|functions| {
+            functions.reserve_recursive(VarName::new("f"), [], [real], function_at)
+        })?;
+        let output = dae.functions(|functions| {
+            functions.output(&reservation, VarName::new("x"), 0, output_at)
+        })?;
+        let mut body = dae.functions(|functions| functions.begin(reservation, function_at))?;
+        let zero =
+            dae.expressions(|expressions| expressions.at(zero_at).literal(DaeLiteral::Real(0.0)))?;
+        dae.functions(|functions| functions.assign(&mut body, output, zero, assignment_at))?;
+        let domain = dae.domains(|domains| {
+            domains.structured(
+                StructuredIndexDomain {
+                    binders: vec![StructuredIndexBinder {
+                        id: 0,
+                        display_name: "k".to_string(),
+                        lower: 1,
+                        upper: 2,
+                        step: 1,
+                    }],
+                },
+                loop_at,
+            )
+        })?;
+        let _ = dae
+            .functions(|functions| functions.begin_loop(body, domain, [output, output], loop_at))?;
+        Ok(())
+    })
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        DaeConstructionError::DuplicateDefinition {
+            kind: "function loop target",
+            ..
+        }
+    ));
 }
 
 #[test]

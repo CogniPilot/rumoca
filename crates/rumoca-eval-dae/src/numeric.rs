@@ -136,9 +136,9 @@ where
                 arguments,
             } => self.function_call(function, output, arguments, span)?,
             dae::ExpressionOperation::FunctionValue { definition, .. } => {
-                self.expression(definition)?
+                self.expression(definition.rhs())?
             }
-            dae::ExpressionOperation::FunctionFoldParameter { fold, carried } => self
+            dae::ExpressionOperation::FunctionFoldParameter { fold, carried, .. } => self
                 .function_fold_values
                 .last()
                 .filter(|(active, _)| *active == fold)
@@ -151,7 +151,7 @@ where
                         span,
                     )
                 })?,
-            dae::ExpressionOperation::FunctionFoldOutput { fold, carried } => {
+            dae::ExpressionOperation::FunctionFoldOutput { fold, carried, .. } => {
                 self.function_fold(fold, carried, span)?
             }
         };
@@ -298,7 +298,7 @@ where
         })?;
         let mut values = fold_view
             .initial_values()
-            .iter()
+            .rhs_iter()
             .map(|initial| self.expression(initial))
             .collect::<Result<Vec<_>, _>>()?;
         let domain = self
@@ -327,7 +327,7 @@ where
             self.domain_points.push((fold_view.domain(), point));
             let next = fold_view
                 .update_values()
-                .iter()
+                .rhs_iter()
                 .map(|update| self.expression(update))
                 .collect::<Result<Vec<_>, _>>();
             self.domain_points.pop();
@@ -371,7 +371,7 @@ where
         })?;
         let result = definition
             .result_values()
-            .get(output as usize)
+            .rhs(output as usize)
             .ok_or_else(|| function_result_error(span))?;
         self.function_arguments.push((function, arguments));
         let value = self.expression(result);
@@ -1763,7 +1763,7 @@ mod tests {
             let binder = dae.domains(|domains| domains.binder(domain, 0, at("k", 0)))?;
             let mut loop_body = dae.functions(|functions| {
                 functions.begin_loop(
-                    &body,
+                    body,
                     domain,
                     [output],
                     at("for k in 1:3 loop y := y + k; end for", 0),
@@ -1780,12 +1780,8 @@ mod tests {
             dae.functions(|functions| {
                 functions.assign_loop(&mut loop_body, output, update, at("y := y + k", 0))
             })?;
-            dae.functions(|functions| {
-                functions.finish_loop(
-                    &mut body,
-                    loop_body,
-                    at("for k in 1:3 loop y := y + k; end for", 0),
-                )
+            let body = dae.functions(|functions| {
+                functions.finish_loop(loop_body, at("for k in 1:3 loop y := y + k; end for", 0))
             })?;
             dae.functions(|functions| functions.define(body, at("function sum3", 0)))?;
             dae.expressions(|expressions| expressions.at(at("sum3()", 0)).call(function, 0, []))?;

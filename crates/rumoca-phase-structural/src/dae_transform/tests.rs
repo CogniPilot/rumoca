@@ -3,7 +3,7 @@ mod functions;
 use rumoca_core::{SourceMap, Span, TypeId, VarName};
 
 use super::*;
-use functions::{fixture_function_declarations, insert_fixture_functions};
+use functions::{FixtureFunctionConfig, fixture_function_declarations, insert_fixture_functions};
 
 fn source_provenance(
     source: rumoca_core::SourceId,
@@ -72,6 +72,7 @@ struct FixtureFeatures {
     functions: bool,
     holonomic: bool,
     deep_function: bool,
+    same_rhs_definitions: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -726,12 +727,13 @@ fn build_constrained_fixture(
         insert_fixture_record_companion(model, record, source, text)?;
         insert_fixture_functions(
             model,
-            real,
-            record,
-            source,
-            text,
-            features.functions,
-            features.deep_function,
+            FixtureFunctionConfig {
+                real,
+                record,
+                source,
+                text,
+                features,
+            },
         )?;
         insert_fixture_clock(model, variables, source, text, features.clocks)?;
         insert_fixture_delay(model, variables, source, text, features)?;

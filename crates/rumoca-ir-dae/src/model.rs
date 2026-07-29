@@ -1048,8 +1048,19 @@ pub struct FunctionBody<'dae> {
 /// Linear authority for one compact function-loop transition.
 pub struct FunctionLoop<'dae> {
     fold: FunctionFoldId<'dae>,
-    parent_values: Vec<Option<u32>>,
+    carried_targets: rustc_hash::FxHashSet<u32>,
+    parent_statements: Vec<FunctionStatementWire>,
     body: FunctionBody<'dae>,
+}
+
+impl<'dae> FunctionLoop<'dae> {
+    pub const fn body(&self) -> &FunctionBody<'dae> {
+        &self.body
+    }
+
+    pub const fn fold(&self) -> FunctionFoldId<'dae> {
+        self.fold
+    }
 }
 
 impl<'dae> Functions<'_, 'dae> {
@@ -1309,7 +1320,7 @@ impl<'dae> Functions<'_, 'dae> {
                 kind: "function value",
                 index: value.ordinal(),
                 span: provenance.span(),
-        })?;
+            })?;
         let definition = FunctionDefinitionId::from_raw(body.function.index(), definition);
         function_definition_rhs(self.storage, value, definition, provenance)?;
         Ok(definition)
@@ -1324,6 +1335,16 @@ impl<'dae> Functions<'_, 'dae> {
     ) -> Result<(), DaeConstructionError> {
         check_provenance(self.source_map, provenance)?;
         check_function_value_owner(body.function, target, provenance)?;
+        self.assign_after_owner_checks(body, target, value, provenance)
+    }
+
+    fn assign_after_owner_checks(
+        &mut self,
+        body: &mut FunctionBody<'dae>,
+        target: FunctionValueId<'dae>,
+        value: ExprId<'dae>,
+        provenance: DaeProvenance,
+    ) -> Result<(), DaeConstructionError> {
         let entry = function_value_entry(self.storage, target, provenance)?;
         expect_function_body_expression(self.storage, body, value, provenance)?;
         validate_function_value_reads(self.storage, body, value, provenance)?;
@@ -1336,8 +1357,7 @@ impl<'dae> Functions<'_, 'dae> {
             .ok_or_else(|| unknown("expression", value.index(), provenance))?;
         self.storage
             .expect_value_type_compatible(entry.value_type, found, provenance)?;
-        let definition =
-            insert_function_definition(self.storage, target, value, provenance)?;
+        let definition = insert_function_definition(self.storage, target, value, provenance)?;
         body.current_values[target.ordinal() as usize] = Some(definition.ordinal());
         body.statements.push(FunctionStatementWire::Assignment {
             definition: definition.ordinal(),
@@ -1347,7 +1367,7 @@ impl<'dae> Functions<'_, 'dae> {
 
     pub fn begin_loop(
         &mut self,
-        parent: &FunctionBody<'dae>,
+        mut parent: FunctionBody<'dae>,
         domain: DomainId<'dae>,
         targets: impl IntoIterator<Item = FunctionValueId<'dae>>,
         provenance: DaeProvenance,
@@ -1368,19 +1388,13 @@ impl<'dae> Functions<'_, 'dae> {
         if targets.is_empty() {
             return Err(invalid_arity(1, 0, provenance));
         }
-        let value_count = self
-            .storage
-            .functions
-            .get(parent.function.index() as usize)
-            .ok_or_else(|| unknown("function", parent.function.index(), provenance))?
-            .values
-            .len();
-        let mut seen = vec![false; value_count];
+        let mut seen = rustc_hash::FxHashSet::default();
+        seen.reserve(targets.len());
         let mut raw_targets = Vec::with_capacity(targets.len());
         let mut initial_values = Vec::with_capacity(targets.len());
         for target in &targets {
             check_function_value_owner(parent.function, *target, provenance)?;
-            if std::mem::replace(&mut seen[target.ordinal() as usize], true) {
+            if !seen.insert(target.ordinal()) {
                 return Err(DaeConstructionError::DuplicateDefinition {
                     kind: "function loop target",
                     index: target.ordinal(),
@@ -1407,15 +1421,10 @@ impl<'dae> Functions<'_, 'dae> {
         let raw = function_fold_raw(self.storage, fold, provenance)?;
         let generated =
             DaeProvenance::generated(DaeGeneration::FunctionLoopLowering, provenance.span())?;
-        let mut body = FunctionBody {
-            function: parent.function,
-            domain: Some(domain),
-            current_values: parent.current_values.clone(),
-            statements: Vec::new(),
-        };
+        let parent_statements = std::mem::take(&mut parent.statements);
+        parent.domain = Some(domain);
         for (carried, target) in targets.iter().enumerate() {
-            let definition =
-                next_function_definition_id(self.storage, parent.function, generated)?;
+            let definition = next_function_definition_id(self.storage, parent.function, generated)?;
             let parameter = crate::expression::insert_function_fold_parameter(
                 self.source_map,
                 self.storage,
@@ -1424,8 +1433,7 @@ impl<'dae> Functions<'_, 'dae> {
                 definition,
                 generated,
             )?;
-            let inserted =
-                insert_function_definition(self.storage, *target, parameter, generated)?;
+            let inserted = insert_function_definition(self.storage, *target, parameter, generated)?;
             if inserted != definition {
                 return Err(DaeConstructionError::ShapeMismatch {
                     span: generated.span(),
@@ -1434,12 +1442,13 @@ impl<'dae> Functions<'_, 'dae> {
             self.storage.function_folds[raw as usize]
                 .parameter_definitions
                 .push(definition.ordinal());
-            body.current_values[target.ordinal() as usize] = Some(definition.ordinal());
+            parent.current_values[target.ordinal() as usize] = Some(definition.ordinal());
         }
         Ok(FunctionLoop {
             fold,
-            parent_values: parent.current_values.clone(),
-            body,
+            carried_targets: seen,
+            parent_statements,
+            body: parent,
         })
     }
 
@@ -1450,25 +1459,24 @@ impl<'dae> Functions<'_, 'dae> {
         value: ExprId<'dae>,
         provenance: DaeProvenance,
     ) -> Result<(), DaeConstructionError> {
-        self.assign(&mut loop_body.body, target, value, provenance)
+        check_provenance(self.source_map, provenance)?;
+        check_function_value_owner(loop_body.body.function, target, provenance)?;
+        if !loop_body.carried_targets.contains(&target.ordinal()) {
+            return Err(DaeConstructionError::IncompleteDefinition {
+                kind: "function loop target",
+                index: target.ordinal(),
+                span: provenance.span(),
+            });
+        }
+        self.assign_after_owner_checks(&mut loop_body.body, target, value, provenance)
     }
 
     pub fn finish_loop(
         &mut self,
-        parent: &mut FunctionBody<'dae>,
-        loop_body: FunctionLoop<'dae>,
+        mut loop_body: FunctionLoop<'dae>,
         provenance: DaeProvenance,
-    ) -> Result<(), DaeConstructionError> {
+    ) -> Result<FunctionBody<'dae>, DaeConstructionError> {
         check_provenance(self.source_map, provenance)?;
-        if parent.function != loop_body.body.function
-            || parent.current_values != loop_body.parent_values
-        {
-            return Err(DaeConstructionError::InvalidFunctionScope {
-                expected_function: Some(parent.function.index()),
-                found_function: loop_body.body.function.index(),
-                span: provenance.span(),
-            });
-        }
         let raw = function_fold_raw(self.storage, loop_body.fold, provenance)?;
         let (domain, targets) = {
             let entry = &self.storage.function_folds[raw as usize];
@@ -1477,6 +1485,20 @@ impl<'dae> Functions<'_, 'dae> {
             }
             (DomainId::from_raw(entry.domain), entry.targets.clone())
         };
+        let Some(found_domain) = loop_body.body.domain else {
+            return Err(DaeConstructionError::IncompleteDefinition {
+                kind: "function loop domain",
+                index: loop_body.fold.ordinal(),
+                span: provenance.span(),
+            });
+        };
+        if found_domain != domain {
+            return Err(DaeConstructionError::InvalidBinderScope {
+                expected_domain: Some(domain.index()),
+                found_domain: found_domain.index(),
+                span: provenance.span(),
+            });
+        }
         let updates = targets
             .iter()
             .map(|target| {
@@ -1491,7 +1513,7 @@ impl<'dae> Functions<'_, 'dae> {
             .collect::<Result<Vec<_>, _>>()?;
         for update in &updates {
             let definition =
-                FunctionDefinitionId::from_raw(parent.function.index(), *update);
+                FunctionDefinitionId::from_raw(loop_body.body.function.index(), *update);
             let update = ExprId::from_raw(
                 function_definition_entry(self.storage, definition, provenance)?.rhs,
             );
@@ -1499,10 +1521,10 @@ impl<'dae> Functions<'_, 'dae> {
                 .expect_domain_expression(update, domain, provenance)?;
             match self.storage.expr_function_scope(update, provenance)? {
                 None => {}
-                Some(function) if function == parent.function.index() => {}
+                Some(function) if function == loop_body.body.function.index() => {}
                 Some(function) => {
                     return Err(DaeConstructionError::InvalidFunctionScope {
-                        expected_function: Some(parent.function.index()),
+                        expected_function: Some(loop_body.body.function.index()),
                         found_function: function,
                         span: provenance.span(),
                     });
@@ -1514,7 +1536,7 @@ impl<'dae> Functions<'_, 'dae> {
             DaeProvenance::generated(DaeGeneration::FunctionLoopLowering, provenance.span())?;
         for (carried, target) in targets.iter().enumerate() {
             let definition =
-                next_function_definition_id(self.storage, parent.function, generated)?;
+                next_function_definition_id(self.storage, loop_body.body.function, generated)?;
             let output = crate::expression::insert_function_fold_output(
                 self.source_map,
                 self.storage,
@@ -1525,7 +1547,7 @@ impl<'dae> Functions<'_, 'dae> {
             )?;
             let inserted = insert_function_definition(
                 self.storage,
-                FunctionValueId::from_raw(parent.function.index(), *target),
+                FunctionValueId::from_raw(loop_body.body.function.index(), *target),
                 output,
                 generated,
             )?;
@@ -1537,15 +1559,19 @@ impl<'dae> Functions<'_, 'dae> {
             self.storage.function_folds[raw as usize]
                 .output_definitions
                 .push(definition.ordinal());
-            parent.current_values[*target as usize] = Some(definition.ordinal());
+            loop_body.body.current_values[*target as usize] = Some(definition.ordinal());
         }
-        parent.statements.push(FunctionStatementWire::For {
-            fold: loop_body.fold.ordinal(),
-            statements: loop_body.body.statements,
-            provenance,
-        });
+        loop_body
+            .parent_statements
+            .push(FunctionStatementWire::For {
+                fold: loop_body.fold.ordinal(),
+                statements: std::mem::take(&mut loop_body.body.statements),
+                provenance,
+            });
+        loop_body.body.statements = loop_body.parent_statements;
+        loop_body.body.domain = None;
         self.storage.unfilled_function_folds -= 1;
-        Ok(())
+        Ok(loop_body.body)
     }
 
     pub fn define(
@@ -1611,8 +1637,7 @@ fn validate_function_results(
         return Err(invalid_arity(expected.len(), results.len(), at));
     }
     for ((&result, &output), &expected_type) in results.iter().zip(outputs).zip(expected) {
-        let definition =
-            FunctionDefinitionId::from_raw(function.index(), result);
+        let definition = FunctionDefinitionId::from_raw(function.index(), result);
         let entry = function_definition_entry(storage, definition, at)?;
         if entry.target != output {
             return Err(DaeConstructionError::InvalidFunctionValueRead {

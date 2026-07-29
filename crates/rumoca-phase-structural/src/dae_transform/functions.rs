@@ -134,6 +134,17 @@ pub(super) fn rebuild_functions<'source, 'target>(
     reservations: &mut [Option<dae::FunctionReservation<'target>>],
 ) -> Result<(), dae::DaeConstructionError> {
     let (function_use_groups, function_uses) = index_function_uses(source);
+    let function_definitions = (0..source.function_count())
+        .map(|index| {
+            let id = source
+                .function_id(index)
+                .expect("finalized function ordinal resolves");
+            let function = source
+                .function(id)
+                .expect("finalized function identity resolves");
+            vec![None; function.definition_count()]
+        })
+        .collect();
     FunctionRebuilder {
         source,
         target,
@@ -144,21 +155,22 @@ pub(super) fn rebuild_functions<'source, 'target>(
         pending: Vec::new(),
         function_use_groups,
         function_uses,
+        function_definitions,
     }
     .rebuild_all(reservations)
 }
 
 #[derive(Clone, Copy)]
 struct IndexedFunctionUse {
-    definition: u32,
     function: u32,
+    definition: u32,
     value: u32,
     expression: u32,
 }
 
 struct FunctionUseGroup {
-    definition: u32,
     function: u32,
+    definition: u32,
     value: u32,
     range: std::ops::Range<usize>,
     materialized: bool,
@@ -176,9 +188,14 @@ fn index_function_uses(source: dae::DaeView<'_>) -> (Vec<FunctionUseGroup>, Vec<
         if let dae::ExpressionOperation::FunctionValue { value, definition } =
             expression.operation()
         {
+            assert_eq!(
+                definition.target(),
+                value,
+                "checked function occurrence definition targets its value"
+            );
             indexed.push(IndexedFunctionUse {
-                definition: definition.index(),
-                function: value.function().index(),
+                function: definition.id().function().index(),
+                definition: definition.id().ordinal(),
                 value: value.ordinal(),
                 expression: source_id.index(),
             });
@@ -186,8 +203,8 @@ fn index_function_uses(source: dae::DaeView<'_>) -> (Vec<FunctionUseGroup>, Vec<
     }
     indexed.sort_unstable_by_key(|entry| {
         (
-            entry.definition,
             entry.function,
+            entry.definition,
             entry.value,
             entry.expression,
         )
@@ -195,15 +212,15 @@ fn index_function_uses(source: dae::DaeView<'_>) -> (Vec<FunctionUseGroup>, Vec<
     let mut groups = Vec::new();
     let mut expressions = Vec::with_capacity(indexed.len());
     for entry in indexed {
-        let key = (entry.definition, entry.function, entry.value);
+        let key = (entry.function, entry.definition, entry.value);
         let starts_group = groups.last().is_none_or(|group: &FunctionUseGroup| {
-            (group.definition, group.function, group.value) != key
+            (group.function, group.definition, group.value) != key
         });
         if starts_group {
             let start = expressions.len();
             groups.push(FunctionUseGroup {
-                definition: entry.definition,
                 function: entry.function,
+                definition: entry.definition,
                 value: entry.value,
                 range: start..start,
                 materialized: false,
@@ -229,6 +246,7 @@ struct FunctionRebuilder<'source, 'borrow, 'target> {
     pending: Vec<(dae::ExprId<'source>, bool)>,
     function_use_groups: Vec<FunctionUseGroup>,
     function_uses: Vec<u32>,
+    function_definitions: Vec<Vec<Option<dae::FunctionDefinitionId<'target>>>>,
 }
 
 impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
@@ -248,77 +266,110 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
             let reservation = reservation
                 .take()
                 .expect("each recursive function reservation is consumed once");
-            let mut body = self
+            let body = self
                 .target
                 .functions(|functions| functions.begin(reservation, function.declaration()))?;
-            self.rebuild_statements(
+            let body = self.rebuild_statements(
                 &self.identities.functions[index],
-                &mut body,
+                body,
                 function.statements(),
             )?;
             self.seed_results(function, &self.identities.functions[index], &body)?;
             self.target
                 .functions(|functions| functions.define(body, function.declaration()))?;
         }
+        self.expect_all_definitions_mapped()?;
         self.rebuild_orphaned_scoped_expressions()
+    }
+
+    fn expect_all_definitions_mapped(&self) -> Result<(), dae::DaeConstructionError> {
+        let missing =
+            self.function_definitions
+                .iter()
+                .enumerate()
+                .find_map(|(function, definitions)| {
+                    self.first_missing_definition(function, definitions)
+                });
+        let Some(source) = missing else {
+            return Ok(());
+        };
+        Err(dae::DaeConstructionError::IncompleteDefinition {
+            kind: "rebuilt function definition",
+            index: source.id().ordinal(),
+            span: source.provenance().span(),
+        })
+    }
+
+    fn first_missing_definition(
+        &self,
+        function_index: usize,
+        definitions: &[Option<dae::FunctionDefinitionId<'target>>],
+    ) -> Option<dae::FunctionDefinitionView<'source>> {
+        let ordinal = definitions.iter().position(Option::is_none)?;
+        let function = self
+            .source
+            .function_id(function_index)
+            .and_then(|id| self.source.function(id))
+            .expect("finalized function ordinal resolves");
+        function
+            .definition_id(ordinal)
+            .and_then(|id| self.source.function_definition(id))
     }
 
     fn rebuild_statements(
         &mut self,
         function: &RebuiltFunction<'target>,
-        body: &mut dae::FunctionBody<'target>,
+        mut body: dae::FunctionBody<'target>,
         statements: dae::FunctionStatements<'source>,
-    ) -> Result<(), dae::DaeConstructionError> {
+    ) -> Result<dae::FunctionBody<'target>, dae::DaeConstructionError> {
         for statement in statements {
             match statement {
-                dae::FunctionStatementView::Assignment {
-                    target,
-                    value,
-                    provenance,
-                } => self.assign_statement(function, body, target, value, provenance)?,
+                dae::FunctionStatementView::Assignment { definition } => {
+                    self.assign_statement(function, &mut body, definition)?
+                }
                 dae::FunctionStatementView::For {
                     fold,
                     statements,
                     provenance,
-                } => self.rebuild_loop(function, body, fold, statements, provenance)?,
+                } => body = self.rebuild_loop(function, body, fold, statements, provenance)?,
             }
         }
-        Ok(())
+        Ok(body)
     }
 
     fn assign_statement(
         &mut self,
         function: &RebuiltFunction<'target>,
         body: &mut dae::FunctionBody<'target>,
-        source_target: dae::FunctionValueId<'source>,
-        source_value: dae::ExprId<'source>,
-        provenance: dae::DaeProvenance,
+        source_definition: dae::FunctionDefinitionView<'source>,
     ) -> Result<(), dae::DaeConstructionError> {
-        let value = self.rebuild_expression(body, source_value)?;
-        self.target.functions(|functions| {
-            functions.assign(
-                body,
-                function.values[source_target.ordinal() as usize],
-                value,
-                provenance,
-            )
+        let source_target = source_definition.target();
+        let source_rhs = source_definition.rhs();
+        let provenance = source_definition.provenance();
+        let value = self.rebuild_expression(body, source_rhs)?;
+        let target_value = function.values[source_target.ordinal() as usize];
+        self.target
+            .functions(|functions| functions.assign(body, target_value, value, provenance))?;
+        let target_definition = self.target.functions(|functions| {
+            functions.current_definition_id(body, target_value, provenance)
         })?;
         self.materialize_definition_uses(
             body,
-            source_value,
+            source_definition,
             source_target,
-            function.values[source_target.ordinal() as usize],
+            target_value,
+            target_definition,
         )
     }
 
     fn rebuild_loop(
         &mut self,
         function: &RebuiltFunction<'target>,
-        body: &mut dae::FunctionBody<'target>,
+        body: dae::FunctionBody<'target>,
         source_fold_id: dae::FunctionFoldId<'source>,
         statements: dae::FunctionStatements<'source>,
         provenance: dae::DaeProvenance,
-    ) -> Result<(), dae::DaeConstructionError> {
+    ) -> Result<dae::FunctionBody<'target>, dae::DaeConstructionError> {
         let source_fold = self
             .source
             .function_fold(source_fold_id)
@@ -328,22 +379,20 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
             .map(|target| function.values[target.ordinal() as usize])
             .collect::<Vec<_>>();
         self.seed_current(
-            body,
+            &body,
             source_fold.targets(),
             &targets,
             source_fold.initial_values(),
-            provenance,
         )?;
         let domain = self.identities.domains[source_fold.domain().index() as usize].id;
         let mut loop_body = self.target.functions(|functions| {
-            functions.begin_loop(body, domain, targets.clone(), provenance)
+            functions.begin_loop(body, domain, targets.clone(), source_fold.provenance())
         })?;
         self.seed_current(
             loop_body.body(),
             source_fold.targets(),
             &targets,
             source_fold.parameter_values(),
-            provenance,
         )?;
         self.rebuild_loop_statements(function, &mut loop_body, statements)?;
         self.seed_current(
@@ -351,17 +400,17 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
             source_fold.targets(),
             &targets,
             source_fold.update_values(),
-            provenance,
         )?;
-        self.target
-            .functions(|functions| functions.finish_loop(body, loop_body, provenance))?;
+        let body = self
+            .target
+            .functions(|functions| functions.finish_loop(loop_body, provenance))?;
         self.seed_current(
-            body,
+            &body,
             source_fold.targets(),
             &targets,
             source_fold.output_values(),
-            provenance,
-        )
+        )?;
+        Ok(body)
     }
 
     fn rebuild_loop_statements(
@@ -371,28 +420,26 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
         statements: dae::FunctionStatements<'source>,
     ) -> Result<(), dae::DaeConstructionError> {
         for statement in statements {
-            let dae::FunctionStatementView::Assignment {
-                target,
-                value: source_value,
-                provenance,
-            } = statement
-            else {
+            let dae::FunctionStatementView::Assignment { definition } = statement else {
                 unreachable!("checked function loops cannot contain nested folds")
             };
-            let value = self.rebuild_expression(loop_body.body(), source_value)?;
+            let source_target = definition.target();
+            let source_rhs = definition.rhs();
+            let provenance = definition.provenance();
+            let target_value = function.values[source_target.ordinal() as usize];
+            let value = self.rebuild_expression(loop_body.body(), source_rhs)?;
             self.target.functions(|functions| {
-                functions.assign_loop(
-                    loop_body,
-                    function.values[target.ordinal() as usize],
-                    value,
-                    provenance,
-                )
+                functions.assign_loop(loop_body, target_value, value, provenance)
+            })?;
+            let target_definition = self.target.functions(|functions| {
+                functions.current_definition_id(loop_body.body(), target_value, provenance)
             })?;
             self.materialize_definition_uses(
                 loop_body.body(),
-                source_value,
-                target,
-                function.values[target.ordinal() as usize],
+                definition,
+                source_target,
+                target_value,
+                target_definition,
             )?;
         }
         Ok(())
@@ -443,8 +490,10 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
                 .expect("checked function expression resolves");
             let provenance = expression.provenance();
             match expression.operation() {
-                dae::ExpressionOperation::FunctionValue { value, .. } => {
-                    self.rebuild_function_value(current, value, expanded, body, provenance)?;
+                dae::ExpressionOperation::FunctionValue { value, definition } => {
+                    self.rebuild_function_value(
+                        current, value, definition, expanded, body, provenance,
+                    )?;
                 }
                 dae::ExpressionOperation::FunctionFoldParameter { .. }
                 | dae::ExpressionOperation::FunctionFoldOutput { .. } => {
@@ -479,6 +528,7 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
         &mut self,
         current: dae::ExprId<'source>,
         value: dae::FunctionValueId<'source>,
+        source_definition: dae::FunctionDefinitionView<'source>,
         expanded: bool,
         body: Option<&dae::FunctionBody<'target>>,
         provenance: dae::DaeProvenance,
@@ -494,6 +544,18 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
             index: current.index(),
             span: provenance.span(),
         })?;
+        let target_definition = self.mapped_definition(source_definition.id(), provenance)?;
+        let current_definition = self.target.functions(|functions| {
+            functions.current_definition_id(body, target_value, provenance)
+        })?;
+        if current_definition != target_definition {
+            return Err(dae::DaeConstructionError::InvalidFunctionValueRead {
+                value: target_value.ordinal(),
+                expected_definition: Some(target_definition.ordinal()),
+                found_definition: current_definition.ordinal(),
+                span: provenance.span(),
+            });
+        }
         let rebuilt = self
             .target
             .functions(|functions| functions.read(body, target_value, provenance))?;
@@ -596,15 +658,19 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
             .filter(|value| value.role() == dae::FunctionValueRole::Output);
         for (source_result, source_output) in source.result_values().iter().zip(outputs) {
             let target_output = function.values[source_output.id().ordinal() as usize];
-            let definition = self.target.functions(|functions| {
-                functions.current_definition(body, target_output, source_output.declaration())
+            let target_definition = self.target.functions(|functions| {
+                functions.current_definition_id(body, target_output, source_result.provenance())
             })?;
-            self.seed(source_result, definition, source_output.declaration())?;
+            let target_rhs = self.target.functions(|functions| {
+                functions.current_definition(body, target_output, source_result.provenance())
+            })?;
+            self.seed(source_result.rhs(), target_rhs, source_result.provenance())?;
             self.materialize_definition_uses(
                 body,
                 source_result,
                 source_output.id(),
                 target_output,
+                target_definition,
             )?;
         }
         Ok(())
@@ -615,19 +681,36 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
         body: &dae::FunctionBody<'target>,
         source_targets: impl IntoIterator<Item = dae::FunctionValueId<'source>>,
         targets: &[dae::FunctionValueId<'target>],
-        source_values: dae::ExpressionOperands<'source>,
-        provenance: dae::DaeProvenance,
+        source_definitions: dae::FunctionDefinitionValues<'source>,
     ) -> Result<(), dae::DaeConstructionError> {
-        for ((source_value, source_target), target_value) in source_values
+        for ((source_definition, source_target), target_value) in source_definitions
             .iter()
             .zip(source_targets)
             .zip(targets.iter().copied())
         {
-            let definition = self.target.functions(|functions| {
-                functions.current_definition(body, target_value, provenance)
+            if source_definition.target() != source_target {
+                return Err(dae::DaeConstructionError::ShapeMismatch {
+                    span: source_definition.provenance().span(),
+                });
+            }
+            let target_definition = self.target.functions(|functions| {
+                functions.current_definition_id(body, target_value, source_definition.provenance())
             })?;
-            self.seed(source_value, definition, provenance)?;
-            self.materialize_definition_uses(body, source_value, source_target, target_value)?;
+            let target_rhs = self.target.functions(|functions| {
+                functions.current_definition(body, target_value, source_definition.provenance())
+            })?;
+            self.seed(
+                source_definition.rhs(),
+                target_rhs,
+                source_definition.provenance(),
+            )?;
+            self.materialize_definition_uses(
+                body,
+                source_definition,
+                source_target,
+                target_value,
+                target_definition,
+            )?;
         }
         Ok(())
     }
@@ -635,19 +718,33 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
     fn materialize_definition_uses(
         &mut self,
         body: &dae::FunctionBody<'target>,
-        source_definition: dae::ExprId<'source>,
+        source_definition: dae::FunctionDefinitionView<'source>,
         source_value: dae::FunctionValueId<'source>,
         target_value: dae::FunctionValueId<'target>,
+        target_definition: dae::FunctionDefinitionId<'target>,
     ) -> Result<(), dae::DaeConstructionError> {
+        if source_definition.target() != source_value
+            || source_definition.id().function() != source_value.function()
+            || target_definition.function() != target_value.function()
+        {
+            return Err(dae::DaeConstructionError::ShapeMismatch {
+                span: source_definition.provenance().span(),
+            });
+        }
+        self.record_definition_mapping(
+            source_definition.id(),
+            target_definition,
+            source_definition.provenance(),
+        )?;
         let key = (
-            source_definition.index(),
-            source_value.function().index(),
+            source_definition.id().function().index(),
+            source_definition.id().ordinal(),
             source_value.ordinal(),
         );
         let Ok(group_index) = self
             .function_use_groups
             .binary_search_by_key(&key, |group| {
-                (group.definition, group.function, group.value)
+                (group.function, group.definition, group.value)
             })
         else {
             return Ok(());
@@ -668,6 +765,17 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
                 .source
                 .expression(source_use)
                 .expect("indexed function-value occurrence resolves");
+            let current_definition = self.target.functions(|functions| {
+                functions.current_definition_id(body, target_value, expression.provenance())
+            })?;
+            if current_definition != target_definition {
+                return Err(dae::DaeConstructionError::InvalidFunctionValueRead {
+                    value: target_value.ordinal(),
+                    expected_definition: Some(target_definition.ordinal()),
+                    found_definition: current_definition.ordinal(),
+                    span: expression.provenance().span(),
+                });
+            }
             let rebuilt = self.target.functions(|functions| {
                 functions.read(body, target_value, expression.provenance())
             })?;
@@ -675,6 +783,54 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
         }
         self.function_use_groups[group_index].materialized = true;
         Ok(())
+    }
+
+    fn record_definition_mapping(
+        &mut self,
+        source: dae::FunctionDefinitionId<'source>,
+        target: dae::FunctionDefinitionId<'target>,
+        provenance: dae::DaeProvenance,
+    ) -> Result<(), dae::DaeConstructionError> {
+        if source.function().index() != target.function().index()
+            || source.ordinal() != target.ordinal()
+        {
+            return Err(dae::DaeConstructionError::ShapeMismatch {
+                span: provenance.span(),
+            });
+        }
+        let slot = self
+            .function_definitions
+            .get_mut(source.function().index() as usize)
+            .and_then(|definitions| definitions.get_mut(source.ordinal() as usize))
+            .ok_or(dae::DaeConstructionError::IncompleteDefinition {
+                kind: "source function definition",
+                index: source.ordinal(),
+                span: provenance.span(),
+            })?;
+        if slot.is_some_and(|existing| existing != target) {
+            return Err(dae::DaeConstructionError::ShapeMismatch {
+                span: provenance.span(),
+            });
+        }
+        *slot = Some(target);
+        Ok(())
+    }
+
+    fn mapped_definition(
+        &self,
+        source: dae::FunctionDefinitionId<'source>,
+        provenance: dae::DaeProvenance,
+    ) -> Result<dae::FunctionDefinitionId<'target>, dae::DaeConstructionError> {
+        self.function_definitions
+            .get(source.function().index() as usize)
+            .and_then(|definitions| definitions.get(source.ordinal() as usize))
+            .copied()
+            .flatten()
+            .ok_or(dae::DaeConstructionError::IncompleteDefinition {
+                kind: "rebuilt function definition",
+                index: source.ordinal(),
+                span: provenance.span(),
+            })
     }
 
     fn seed(

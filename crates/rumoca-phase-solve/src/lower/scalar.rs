@@ -322,12 +322,12 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 node.provenance().span(),
             ),
             dae::ExpressionOperation::FunctionValue { definition, .. } => {
-                self.expression(definition, scalar)
+                self.expression(definition.rhs(), scalar)
             }
-            dae::ExpressionOperation::FunctionFoldParameter { fold, carried } => {
+            dae::ExpressionOperation::FunctionFoldParameter { fold, carried, .. } => {
                 self.function_fold_parameter(fold, carried, scalar, node.provenance().span())
             }
-            dae::ExpressionOperation::FunctionFoldOutput { fold, carried } => {
+            dae::ExpressionOperation::FunctionFoldOutput { fold, carried, .. } => {
                 self.function_fold_output(fold, carried, scalar, node.provenance().span())
             }
         }
@@ -386,7 +386,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 let result = self
                     .view
                     .function(function)
-                    .and_then(|definition| definition.result_values().get(output as usize))
+                    .and_then(|definition| definition.result_values().rhs(output as usize))
                     .ok_or_else(|| {
                         LowerError::contract("function result ordinal is out of range", span)
                     })?;
@@ -397,7 +397,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 lowered
             }
             dae::ExpressionOperation::FunctionValue { definition, .. } => {
-                self.record_field(definition, field, scalar, span)
+                self.record_field(definition.rhs(), field, scalar, span)
             }
             dae::ExpressionOperation::Conditional(operands) => {
                 let fallback = operands
@@ -443,7 +443,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             .ok_or_else(|| LowerError::contract("function fold identity does not resolve", span))?;
         let mut values = fold_view
             .initial_values()
-            .iter()
+            .rhs_iter()
             .map(|initial| {
                 (0..scalar_count(self.view, initial))
                     .map(|element| self.expression(initial, element))
@@ -470,7 +470,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             self.function_fold_values.push((fold, values));
             let updates = fold_view
                 .update_values()
-                .iter()
+                .rhs_iter()
                 .map(|update| {
                     (0..scalar_count(self.view, update))
                         .map(|element| self.expression(update, element))
@@ -839,7 +839,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             .ok_or_else(|| LowerError::contract("function identity does not resolve", span))?;
         let result = definition
             .result_values()
-            .get(output as usize)
+            .rhs(output as usize)
             .ok_or_else(|| LowerError::contract("function result ordinal is out of range", span))?;
         self.function_arguments
             .push((function, arguments.iter().collect()));

@@ -187,6 +187,272 @@ fn dae_modelica_target_renders_checked_function_values_and_statements() {
 }
 
 #[test]
+fn dae_template_preserves_distinct_definitions_with_one_rhs() {
+    let source =
+        "function f output Real y; protected Real z; algorithm z := 1; z := 1; y := z; end f;";
+    let mut source_map = SourceMap::new();
+    let source_id = source_map.add("same_rhs.mo", source);
+    let at = |snippet: &str, occurrence: usize| {
+        let start = source
+            .match_indices(snippet)
+            .nth(occurrence)
+            .map(|(start, _)| start)
+            .expect("fixture snippet occurrence exists");
+        dae::DaeProvenance::source(Span::from_offsets(source_id, start, start + snippet.len()))
+            .expect("fixture provenance is exact")
+    };
+    let dae = dae::Dae::construct(source_map, |dae| {
+        let real = dae.types(|types| {
+            types.derived(
+                dae::ValueType::scalar(dae::ScalarType::Real),
+                at("function f", 0),
+            )
+        })?;
+        let (_function, reservation) = dae.functions(|functions| {
+            functions.reserve_recursive(VarName::new("f"), [], [real], at("function f", 0))
+        })?;
+        let output = dae.functions(|functions| {
+            functions.output(&reservation, VarName::new("y"), 0, at("output Real y", 0))
+        })?;
+        let local = dae.functions(|functions| {
+            functions.local(&reservation, VarName::new("z"), real, at("Real z", 0))
+        })?;
+        let rhs = dae.expressions(|expressions| {
+            expressions
+                .at(at("1", 0))
+                .literal(dae::DaeLiteral::Real(1.0))
+        })?;
+        let mut body =
+            dae.functions(|functions| functions.begin(reservation, at("function f", 0)))?;
+        dae.functions(|functions| {
+            functions.assign(&mut body, local, rhs, at("z := 1", 0))?;
+            functions.assign(&mut body, local, rhs, at("z := 1", 1))
+        })?;
+        let local_use = dae.functions(|functions| functions.read(&body, local, at("z", 3)))?;
+        dae.functions(|functions| {
+            functions.assign(&mut body, output, local_use, at("y := z", 0))?;
+            functions.define(body, at("function f", 0))
+        })
+    })
+    .expect("same-RHS checked function constructs");
+
+    let projected = dae_template_json(&dae).expect("same-RHS DAE projects");
+    let function = &projected["functions"][0];
+    let definitions = function["definitions"]
+        .as_array()
+        .expect("canonical definition table is an array");
+    assert_eq!(definitions.len(), 3);
+    assert_eq!(definitions[0]["ordinal"], 0);
+    assert_eq!(definitions[1]["ordinal"], 1);
+    assert_eq!(definitions[0]["target"], definitions[1]["target"]);
+    assert_eq!(definitions[0]["rhs"], definitions[1]["rhs"]);
+    assert_ne!(definitions[0]["ordinal"], definitions[1]["ordinal"]);
+    assert_ne!(definitions[0]["provenance"], definitions[1]["provenance"]);
+    assert_eq!(function["statements"][0]["definition"], 0);
+    assert_eq!(function["statements"][1]["definition"], 1);
+    assert!(function["statements"][0].get("target").is_none());
+    assert!(function["statements"][0].get("value").is_none());
+    assert_eq!(function["results"][0], 2);
+
+    let function_use = projected["expressions"]
+        .as_array()
+        .expect("expression projection is an array")
+        .iter()
+        .find(|expression| expression["operation"]["kind"] == "function_value")
+        .expect("output RHS retains its function-value occurrence");
+    assert_eq!(function_use["operation"]["definition"], 1);
+}
+
+const FOLD_SOURCE: &str =
+    "function f output Real x; algorithm x := 0; for k in 1:2 loop x := x + k; end for; end f;";
+
+#[derive(Clone, Copy)]
+struct FoldSource {
+    id: rumoca_core::SourceId,
+}
+
+impl FoldSource {
+    fn attach() -> (Self, SourceMap) {
+        let mut source_map = SourceMap::new();
+        let id = source_map.add("fold.mo", FOLD_SOURCE);
+        (Self { id }, source_map)
+    }
+
+    fn at(self, snippet: &str, occurrence: usize) -> dae::DaeProvenance {
+        let start = FOLD_SOURCE
+            .match_indices(snippet)
+            .nth(occurrence)
+            .map(|(start, _)| start)
+            .expect("fixture snippet occurrence exists");
+        dae::DaeProvenance::source(Span::from_offsets(self.id, start, start + snippet.len()))
+            .expect("fixture provenance is exact")
+    }
+
+    fn generated_fold(self) -> dae::DaeProvenance {
+        dae::DaeProvenance::generated(
+            dae::DaeGeneration::FunctionLoopLowering,
+            self.at("for k in 1:2 loop", 0).span(),
+        )
+        .expect("generated fold provenance has an exact owner")
+    }
+}
+
+fn checked_fold_fixture() -> (dae::Dae, FoldSource) {
+    let (source, source_map) = FoldSource::attach();
+    let at = |snippet: &str, occurrence: usize| source.at(snippet, occurrence);
+    let dae = dae::Dae::construct(source_map, |dae| {
+        let real = dae.types(|types| {
+            types.derived(
+                dae::ValueType::scalar(dae::ScalarType::Real),
+                at("function f", 0),
+            )
+        })?;
+        let (_, reservation) = dae.functions(|functions| {
+            functions.reserve_recursive(VarName::new("f"), [], [real], at("function f", 0))
+        })?;
+        let output = dae.functions(|functions| {
+            functions.output(&reservation, VarName::new("x"), 0, at("output Real x", 0))
+        })?;
+        let mut body =
+            dae.functions(|functions| functions.begin(reservation, at("function f", 0)))?;
+        let zero = dae.expressions(|expressions| {
+            expressions
+                .at(at("0", 0))
+                .literal(dae::DaeLiteral::Real(0.0))
+        })?;
+        dae.functions(|functions| functions.assign(&mut body, output, zero, at("x := 0", 0)))?;
+        let domain = dae.domains(|domains| {
+            domains.structured(
+                rumoca_core::StructuredIndexDomain {
+                    binders: vec![rumoca_core::StructuredIndexBinder {
+                        id: 0,
+                        display_name: "k".to_owned(),
+                        lower: 1,
+                        upper: 2,
+                        step: 1,
+                    }],
+                },
+                at("for k in 1:2 loop", 0),
+            )
+        })?;
+        let binder = dae.domains(|domains| domains.binder(domain, 0, at("k", 1)))?;
+        let mut loop_body = dae.functions(|functions| {
+            functions.begin_loop(body, domain, [output], at("for k in 1:2 loop", 0))
+        })?;
+        let current =
+            dae.functions(|functions| functions.read(loop_body.body(), output, at("x", 3)))?;
+        let index = dae.expressions(|expressions| expressions.at(at("k", 1)).binder(binder))?;
+        let update = dae.expressions(|expressions| {
+            expressions
+                .at(at("x + k", 0))
+                .binary(dae::BinaryOperator::Add, current, index)
+        })?;
+        dae.functions(|functions| {
+            functions.assign_loop(&mut loop_body, output, update, at("x := x + k", 0))
+        })?;
+        let body = dae
+            .functions(|functions| functions.finish_loop(loop_body, at("for k in 1:2 loop", 0)))?;
+        dae.functions(|functions| functions.define(body, at("function f", 0)))
+    })
+    .expect("checked fold fixture constructs");
+    (dae, source)
+}
+
+fn assert_fold_definition_links(function: &serde_json::Value, source: FoldSource) {
+    let generated = source.generated_fold();
+    let at = |snippet: &str, occurrence: usize| source.at(snippet, occurrence);
+
+    assert_eq!(function["folds"][0]["ordinal"], 0);
+    assert_eq!(function["folds"][0]["targets"], serde_json::json!([0]));
+    assert_eq!(
+        function["folds"][0]["parameter_definitions"],
+        serde_json::json!([1])
+    );
+    assert_eq!(
+        function["folds"][0]["initial_definitions"],
+        serde_json::json!([0])
+    );
+    assert_eq!(
+        function["folds"][0]["update_definitions"],
+        serde_json::json!([2])
+    );
+    assert_eq!(
+        function["folds"][0]["output_definitions"],
+        serde_json::json!([3])
+    );
+    assert_eq!(function["statements"][1]["kind"], "for");
+    assert_eq!(function["statements"][1]["fold"], 0);
+    assert_eq!(function["statements"][1]["statements"][0]["definition"], 2);
+    assert_eq!(function["results"], serde_json::json!([3]));
+
+    let definitions = function["definitions"]
+        .as_array()
+        .expect("definition projection is an array");
+    let expected = [
+        (0, 0, at("x := 0", 0)),
+        (0, 1, generated),
+        (0, 4, at("x := x + k", 0)),
+        (0, 5, generated),
+    ];
+    for (definition, (target, rhs, provenance)) in definitions.iter().zip(expected) {
+        assert_eq!(definition["target"], target);
+        assert_eq!(definition["rhs"], rhs);
+        assert_eq!(
+            definition["provenance"],
+            serde_json::to_value(provenance).unwrap()
+        );
+    }
+    assert_eq!(
+        function["folds"][0]["provenance"],
+        serde_json::to_value(at("for k in 1:2 loop", 0)).unwrap()
+    );
+}
+
+fn assert_fold_expression_links(projected: &serde_json::Value, generated: dae::DaeProvenance) {
+    let expressions = projected["expressions"]
+        .as_array()
+        .expect("expression projection is an array");
+    assert_eq!(
+        expressions[1]["operation"],
+        serde_json::json!({
+            "kind": "function_fold_parameter",
+            "function": 0,
+            "fold": 0,
+            "carried": 0,
+            "definition": 1,
+        })
+    );
+    assert_eq!(
+        expressions[5]["operation"],
+        serde_json::json!({
+            "kind": "function_fold_output",
+            "function": 0,
+            "fold": 0,
+            "carried": 0,
+            "definition": 3,
+        })
+    );
+    assert_eq!(
+        expressions[1]["provenance"],
+        serde_json::to_value(generated).unwrap()
+    );
+    assert_eq!(
+        expressions[5]["provenance"],
+        serde_json::to_value(generated).unwrap()
+    );
+}
+
+#[test]
+fn dae_template_projects_function_folds_by_definition_identity() {
+    let (dae, source) = checked_fold_fixture();
+    let projected = dae_template_json(&dae).expect("checked fold projects");
+    let function = &projected["functions"][0];
+
+    assert_fold_definition_links(function, source);
+    assert_fold_expression_links(&projected, source.generated_fold());
+}
+
+#[test]
 fn symbolic_solve_targets_use_checked_declarations_and_solve_programs() {
     let dae = empty_checked_dae();
     let problem = solve::SolveProblem::default();

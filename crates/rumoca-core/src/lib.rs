@@ -787,7 +787,7 @@ fn decode_placeholder_source_name(name: &str) -> Option<SourceId> {
 ///
 /// This enables diagnostics to point to the correct source file when
 /// compiling models that span multiple files.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct SourceMap {
     /// (stable source id, name, content) in deterministic insertion order.
     files: Vec<(SourceId, String, Arc<str>)>,
@@ -797,6 +797,62 @@ pub struct SourceMap {
     /// Reverse lookup from SourceId to `files` index.
     #[serde(skip)]
     id_to_index: HashMap<SourceId, usize>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SourceMapWire {
+    files: Vec<(SourceId, String, Arc<str>)>,
+}
+
+struct SourceIndexes {
+    name_to_id: HashMap<String, SourceId>,
+    id_to_index: HashMap<SourceId, usize>,
+}
+
+impl<'de> Deserialize<'de> for SourceMap {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let SourceMapWire { files } = SourceMapWire::deserialize(deserializer)?;
+        let indexes = checked_source_indexes(&files).map_err(serde::de::Error::custom)?;
+        let SourceIndexes {
+            name_to_id,
+            id_to_index,
+        } = indexes;
+        Ok(Self {
+            files,
+            name_to_id,
+            id_to_index,
+        })
+    }
+}
+
+fn checked_source_indexes(files: &[(SourceId, String, Arc<str>)]) -> Result<SourceIndexes, String> {
+    let mut name_to_id = HashMap::with_capacity(files.len());
+    let mut id_to_index = HashMap::with_capacity(files.len());
+    for (index, (id, name, _)) in files.iter().enumerate() {
+        let derived = source_id_for_name(name);
+        if derived != *id {
+            return Err(format!(
+                "source map name `{name}` derives {derived:?}, not stored identity {id:?}"
+            ));
+        }
+        let std::collections::hash_map::Entry::Vacant(name_entry) = name_to_id.entry(name.clone())
+        else {
+            return Err(format!("duplicate source map name `{name}`"));
+        };
+        let std::collections::hash_map::Entry::Vacant(id_entry) = id_to_index.entry(*id) else {
+            return Err(format!("duplicate source map identity {id:?}"));
+        };
+        name_entry.insert(*id);
+        id_entry.insert(index);
+    }
+    Ok(SourceIndexes {
+        name_to_id,
+        id_to_index,
+    })
 }
 
 impl SourceMap {
@@ -831,13 +887,12 @@ impl SourceMap {
     /// Look up a SourceId by file name.
     ///
     /// The answer is derived from `name` itself, so it cannot depend on
-    /// insertion order or on whether [`SourceMap::rebuild_index`] has run.
+    /// insertion order.
     pub fn get_id(&self, name: &str) -> Option<SourceId> {
-        if let Some(&id) = self.name_to_id.get(name) {
-            return Some(id);
-        }
-        let id = source_id_for_name(name);
-        self.get_source(id).map(|_| id)
+        self.name_to_id.get(name).copied().or_else(|| {
+            let id = source_id_for_name(name);
+            self.id_to_index.contains_key(&id).then_some(id)
+        })
     }
 
     /// Get (name, content) for a SourceId.
@@ -845,7 +900,6 @@ impl SourceMap {
         self.id_to_index
             .get(&id)
             .and_then(|&index| self.files.get(index))
-            .or_else(|| self.files.iter().find(|(source_id, _, _)| *source_id == id))
             .map(|(_, name, content)| (name.as_str(), content.as_ref()))
     }
 
@@ -864,7 +918,7 @@ impl SourceMap {
     /// SPEC_0029 §3a: `display_name` is used only when it already derives `id`,
     /// otherwise [`placeholder_source_name`] is. That keeps a stand-in label
     /// from shadowing a real file of the same name in the name index and keeps
-    /// [`SourceMap::get_id`] stable across [`SourceMap::rebuild_index`].
+    /// [`SourceMap::get_id`] stable across serialization.
     ///
     /// Returns `false` when the id (or its derived name) is already registered;
     /// the existing entry always wins.
@@ -904,28 +958,9 @@ impl SourceMap {
         Some(Span::from_offsets(source_id, start, end))
     }
 
-    /// Rebuild the name_to_id index after deserialization.
-    ///
-    /// Every entry is keyed by a name that derives its id (see
-    /// [`SourceMap::register_id`]), so this reproduces the live index exactly.
-    pub fn rebuild_index(&mut self) {
-        self.name_to_id.clear();
-        self.id_to_index.clear();
-        for (i, (id, name, _)) in self.files.iter().enumerate() {
-            self.name_to_id.insert(name.clone(), *id);
-            self.id_to_index.insert(*id, i);
-        }
-    }
-
     /// Snapshot file-name to source-id mappings.
     pub fn source_ids(&self) -> HashMap<String, SourceId> {
-        if !self.name_to_id.is_empty() {
-            return self.name_to_id.clone();
-        }
-        self.files
-            .iter()
-            .map(|(id, name, _)| (name.clone(), *id))
-            .collect()
+        self.name_to_id.clone()
     }
 
     /// Return a copy that preserves source-id/name mappings but omits source text.
@@ -935,13 +970,11 @@ impl SourceMap {
             .iter()
             .map(|(id, name, _)| (*id, name.clone(), Arc::<str>::from("")))
             .collect();
-        let mut source_map = Self {
+        Self {
             files,
-            name_to_id: HashMap::new(),
-            id_to_index: HashMap::new(),
-        };
-        source_map.rebuild_index();
-        source_map
+            name_to_id: self.name_to_id.clone(),
+            id_to_index: self.id_to_index.clone(),
+        }
     }
 }
 
@@ -1781,7 +1814,7 @@ mod short_phase_error_code_tests {
 
 #[cfg(test)]
 mod source_map_source_id_tests {
-    use super::{SourceId, SourceMap, Span};
+    use super::{SourceId, SourceMap, Span, placeholder_source_name};
 
     #[test]
     fn try_span_rejects_unregistered_source() {
@@ -1869,11 +1902,13 @@ mod source_map_source_id_tests {
         assert!(map.register_id(parser_id, "<parsed-source-root>", std::sync::Arc::from("")));
 
         assert_eq!(map.get_id("<parsed-source-root>"), Some(document_id));
-        map.rebuild_index();
+        let encoded = serde_json::to_vec(&map).expect("source map serializes");
+        let map: SourceMap =
+            serde_json::from_slice(&encoded).expect("canonical source map deserializes");
         assert_eq!(
             map.get_id("<parsed-source-root>"),
             Some(document_id),
-            "rebuild_index must not change what a file name resolves to"
+            "serialization must not change what a file name resolves to"
         );
         assert_eq!(
             map.get_source(document_id).map(|(_, text)| text),
@@ -1894,5 +1929,89 @@ mod source_map_source_id_tests {
             Some("model A end A;")
         );
         assert_eq!(map.files.len(), 1);
+    }
+
+    #[test]
+    fn source_map_json_and_bincode_round_trip_rebuild_canonical_indexes() {
+        let mut map = SourceMap::new();
+        let first = map.add("pkg/A.mo", "model A end A;");
+        let second = SourceId::from_source_name("original/path/B.mo");
+        assert!(map.register_id(
+            second,
+            "<parsed-source-root>",
+            std::sync::Arc::from("model B end B;")
+        ));
+
+        let json = serde_json::to_vec(&map).expect("source map serializes as JSON");
+        let from_json: SourceMap =
+            serde_json::from_slice(&json).expect("canonical JSON source map deserializes");
+        let binary = bincode::serialize(&map).expect("source map serializes as bincode");
+        let from_binary: SourceMap =
+            bincode::deserialize(&binary).expect("canonical bincode source map deserializes");
+        let second_name = placeholder_source_name(second);
+
+        for decoded in [&from_json, &from_binary] {
+            assert_eq!(decoded.get_id("pkg/A.mo"), Some(first));
+            assert_eq!(decoded.name(first), Some("pkg/A.mo"));
+            assert_eq!(
+                decoded.get_source(second),
+                Some((second_name.as_str(), "model B end B;"))
+            );
+        }
+    }
+
+    #[test]
+    fn source_map_resolves_normalized_separator_alias_without_an_index_scan() {
+        let mut map = SourceMap::new();
+        let id = map.add("pkg/A.mo", "model A end A;");
+
+        assert_eq!(map.get_id(r"pkg\A.mo"), Some(id));
+
+        let encoded = serde_json::to_vec(&map).expect("source map serializes");
+        let decoded: SourceMap =
+            serde_json::from_slice(&encoded).expect("canonical source map deserializes");
+        assert_eq!(decoded.get_id(r"pkg\A.mo"), Some(id));
+    }
+
+    #[test]
+    fn source_map_deserialize_rejects_mismatched_name_identity() {
+        let stored = SourceId::from_source_name("pkg/A.mo");
+        let malformed = serde_json::json!({
+            "files": [[stored, "pkg/B.mo", "model B end B;"]]
+        });
+
+        let error = serde_json::from_value::<SourceMap>(malformed)
+            .expect_err("a source name cannot claim another source identity");
+
+        assert!(error.to_string().contains("not stored identity"));
+    }
+
+    #[test]
+    fn source_map_deserialize_rejects_duplicate_name_and_identity() {
+        let id = SourceId::from_source_name("pkg/A.mo");
+        let duplicate_name = serde_json::json!({
+            "files": [
+                [id, "pkg/A.mo", "first"],
+                [id, "pkg/A.mo", "second"],
+            ]
+        });
+        let duplicate_identity = serde_json::json!({
+            "files": [
+                [id, "pkg/A.mo", "first"],
+                [id, placeholder_source_name(id), "second"],
+            ]
+        });
+
+        let name_error = serde_json::from_value::<SourceMap>(duplicate_name)
+            .expect_err("duplicate source names are not canonical");
+        let identity_error = serde_json::from_value::<SourceMap>(duplicate_identity)
+            .expect_err("duplicate source identities are not canonical");
+
+        assert!(name_error.to_string().contains("duplicate source map name"));
+        assert!(
+            identity_error
+                .to_string()
+                .contains("duplicate source map identity")
+        );
     }
 }

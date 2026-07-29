@@ -30,6 +30,73 @@ fn state_demotion_preserves_recursive_functions_folds_records_and_wire() {
 }
 
 #[test]
+fn state_demotion_preserves_distinct_definitions_with_one_rhs() {
+    let (model, _) = constrained_state_model(
+        false,
+        FixtureFeatures {
+            functions: true,
+            same_rhs_definitions: true,
+            ..FixtureFeatures::default()
+        },
+    );
+    model.inspect(assert_same_rhs_definitions);
+    let prepared = prepare_for_solve(&model).expect("same-RHS definitions survive reconstruction");
+    let transformed = match prepared {
+        PreparedDae::Transformed { dae, .. } => dae,
+        PreparedDae::Borrowed(_) => panic!("singular fixture requires state demotion"),
+    };
+    transformed.inspect(assert_same_rhs_definitions);
+}
+
+fn assert_same_rhs_definitions(view: dae::DaeView<'_>) {
+    let function = find_function(view, "sum3");
+    let assignments = function
+        .statements()
+        .filter_map(|statement| match statement {
+            dae::FunctionStatementView::Assignment { definition } => Some(definition),
+            dae::FunctionStatementView::For { .. } => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(assignments.len() >= 3);
+    let first = assignments[0];
+    let second = assignments[1];
+    assert_ne!(first.id(), second.id());
+    assert_eq!(first.target(), second.target());
+    assert_eq!(first.rhs(), second.rhs());
+    assert_eq!(
+        view.function_definition(first.id()).unwrap().rhs(),
+        first.rhs()
+    );
+    assert_eq!(
+        view.function_definition(second.id()).unwrap().rhs(),
+        second.rhs()
+    );
+
+    let dead = (0..view.expression_count())
+        .filter_map(|index| view.expression_id(index))
+        .filter_map(|id| view.expression(id))
+        .find(|expression| view.source_text(expression.provenance()) == Some("acc + 0"))
+        .expect("definition-one occurrence remains in the arena");
+    let dae::ExpressionOperation::Binary { lhs, .. } = dead.operation() else {
+        panic!("retained expression remains binary");
+    };
+    let lhs = view.expression(lhs).expect("retained lhs resolves");
+    let dae::ExpressionOperation::FunctionValue { definition, .. } = lhs.operation() else {
+        panic!("retained lhs remains a function-value occurrence");
+    };
+    assert_eq!(definition.id(), first.id());
+
+    let fold = function
+        .statements()
+        .find_map(|statement| match statement {
+            dae::FunctionStatementView::For { fold, .. } => view.function_fold(fold),
+            dae::FunctionStatementView::Assignment { .. } => None,
+        })
+        .expect("sum fixture retains its fold");
+    assert_eq!(fold.initial_values().get(0).unwrap().id(), second.id());
+}
+
+#[test]
 fn holonomic_reconstruction_preserves_checked_function_owners() {
     let (model, _) = constrained_state_model(
         false,
@@ -225,7 +292,7 @@ fn function_expression_edges<'dae>(
             push(value);
             push_subscript_edges(subscripts, &mut push);
         }
-        dae::ExpressionOperation::FunctionValue { definition, .. } => push(definition),
+        dae::ExpressionOperation::FunctionValue { definition, .. } => push(definition.rhs()),
     }
     edges
 }
@@ -275,20 +342,31 @@ fn function_operation_fingerprint(operation: dae::ExpressionOperation<'_>) -> St
             output,
             arguments,
         } => format!("call:{}:{output}:{}", function.index(), arguments.len()),
-        dae::ExpressionOperation::FunctionValue { value, .. } => format!(
-            "function_value:{}:{}",
+        dae::ExpressionOperation::FunctionValue { value, definition } => format!(
+            "function_value:{}:{}:{}",
             value.function().index(),
-            value.ordinal()
+            value.ordinal(),
+            definition.id().ordinal()
         ),
-        dae::ExpressionOperation::FunctionFoldParameter { fold, carried } => format!(
-            "fold_parameter:{}:{}:{carried}",
+        dae::ExpressionOperation::FunctionFoldParameter {
+            fold,
+            carried,
+            definition,
+        } => format!(
+            "fold_parameter:{}:{}:{carried}:{}",
             fold.function().index(),
-            fold.ordinal()
+            fold.ordinal(),
+            definition.id().ordinal()
         ),
-        dae::ExpressionOperation::FunctionFoldOutput { fold, carried } => format!(
-            "fold_output:{}:{}:{carried}",
+        dae::ExpressionOperation::FunctionFoldOutput {
+            fold,
+            carried,
+            definition,
+        } => format!(
+            "fold_output:{}:{}:{carried}:{}",
             fold.function().index(),
-            fold.ordinal()
+            fold.ordinal(),
+            definition.id().ordinal()
         ),
     }
 }
@@ -357,11 +435,11 @@ fn find_function<'dae>(view: dae::DaeView<'dae>, name: &str) -> dae::FunctionVie
 fn assert_sum_function_body<'dae>(view: dae::DaeView<'dae>, function: dae::FunctionView<'dae>) {
     let statements = function.statements().collect::<Vec<_>>();
     assert_eq!(statements.len(), 3);
-    let dae::FunctionStatementView::Assignment { provenance, .. } = statements[0] else {
+    let dae::FunctionStatementView::Assignment { definition } = statements[0] else {
         panic!("first sum3 statement remains an assignment");
     };
     assert_eq!(
-        view.source_text(provenance),
+        view.source_text(definition.provenance()),
         Some("acc := if u <= 0 then 0 else sum3(u - 1)")
     );
     let dae::FunctionStatementView::For {
@@ -374,10 +452,13 @@ fn assert_sum_function_body<'dae>(view: dae::DaeView<'dae>, function: dae::Funct
     };
     assert_eq!(view.source_text(provenance), Some("for k in 1:3 loop"));
     let loop_statements = loop_statements.collect::<Vec<_>>();
-    let dae::FunctionStatementView::Assignment { provenance, .. } = loop_statements[0] else {
+    let dae::FunctionStatementView::Assignment { definition } = loop_statements[0] else {
         panic!("fold body remains an assignment");
     };
-    assert_eq!(view.source_text(provenance), Some("acc := acc + k"));
+    assert_eq!(
+        view.source_text(definition.provenance()),
+        Some("acc := acc + k")
+    );
     let fold = view.function_fold(fold).expect("fold identity resolves");
     assert_eq!(
         view.source_text(fold.provenance()),
@@ -389,7 +470,7 @@ fn assert_sum_function_body<'dae>(view: dae::DaeView<'dae>, function: dae::Funct
         .chain(fold.output_values().iter())
     {
         let generated = view
-            .expression(generated)
+            .expression(generated.rhs())
             .expect("fold expression resolves");
         assert_eq!(
             generated.provenance().origin(),
@@ -470,7 +551,7 @@ fn assert_record_function_body<'dae>(view: dae::DaeView<'dae>, function: dae::Fu
         Some("function makePair")
     );
     let result = view
-        .expression(function.result_values().get(0).unwrap())
+        .expression(function.result_values().rhs(0).unwrap())
         .expect("record function result resolves");
     assert!(result.value_type().is_record());
     assert!(matches!(
@@ -523,21 +604,32 @@ fn assert_exact_source_expression(
     assert_eq!(span.end.0 - span.start.0, expected.len());
     assert_eq!(view.source_text(provenance), Some(expected));
 }
+
+pub(super) struct FixtureFunctionConfig<'source, 'dae> {
+    pub(super) real: dae::ValueTypeId<'dae>,
+    pub(super) record: Option<dae::ValueTypeId<'dae>>,
+    pub(super) source: rumoca_core::SourceId,
+    pub(super) text: &'source str,
+    pub(super) features: FixtureFeatures,
+}
+
 pub(super) fn insert_fixture_functions<'dae>(
     model: &mut dae::DaeConstruction<'dae>,
-    real: dae::ValueTypeId<'dae>,
-    record: Option<dae::ValueTypeId<'dae>>,
-    source: rumoca_core::SourceId,
-    text: &str,
-    enabled: bool,
-    deep: bool,
+    config: FixtureFunctionConfig<'_, 'dae>,
 ) -> Result<(), dae::DaeConstructionError> {
-    if !enabled {
+    if !config.features.functions {
         return Ok(());
     }
-    insert_recursive_fold_function(model, real, source, text, deep)?;
-    if let Some(record) = record {
-        insert_record_function(model, real, record, source, text)?;
+    insert_recursive_fold_function(
+        model,
+        config.real,
+        config.source,
+        config.text,
+        config.features.deep_function,
+        config.features.same_rhs_definitions,
+    )?;
+    if let Some(record) = config.record {
+        insert_record_function(model, config.real, record, config.source, config.text)?;
     }
     Ok(())
 }
@@ -643,6 +735,7 @@ fn insert_recursive_fold_function<'dae>(
     source: rumoca_core::SourceId,
     text: &str,
     deep: bool,
+    same_rhs_definitions: bool,
 ) -> Result<(), dae::DaeConstructionError> {
     let declaration = source_provenance(source, text, "function sum3");
     let loop_at = source_provenance(source, text, "for k in 1:3 loop");
@@ -655,9 +748,9 @@ fn insert_recursive_fold_function<'dae>(
     let global_call_at = source_provenance(source, text, "sum3(1)");
     let global_argument_at = nested_source_provenance(source, text, "sum3(1)", "1", 0);
     let mut owners = declare_sum_function(model, real, source, text)?;
-    initialize_sum_function(model, &mut owners, source, text, deep)?;
+    initialize_sum_function(model, &mut owners, source, text, deep, same_rhs_definitions)?;
     let mut loop_body = model.functions(|functions| {
-        functions.begin_loop(&owners.body, owners.domain, [owners.accumulator], loop_at)
+        functions.begin_loop(owners.body, owners.domain, [owners.accumulator], loop_at)
     })?;
     let accumulator_value = model.functions(|functions| {
         functions.read(loop_body.body(), owners.accumulator, accumulator_use)
@@ -674,7 +767,7 @@ fn insert_recursive_fold_function<'dae>(
     model.functions(|functions| {
         functions.assign_loop(&mut loop_body, owners.accumulator, update, loop_assignment)
     })?;
-    model.functions(|functions| functions.finish_loop(&mut owners.body, loop_body, loop_at))?;
+    owners.body = model.functions(|functions| functions.finish_loop(loop_body, loop_at))?;
     let result = model
         .functions(|functions| functions.read(&owners.body, owners.accumulator, output_use))?;
     model.functions(|functions| {
@@ -701,6 +794,7 @@ fn initialize_sum_function<'dae>(
     source: rumoca_core::SourceId,
     text: &str,
     deep: bool,
+    same_rhs_definitions: bool,
 ) -> Result<(), dae::DaeConstructionError> {
     let condition_at = source_provenance(source, text, "u <= 0");
     let condition_parameter_at = nested_source_provenance(source, text, "u <= 0", "u", 0);
@@ -773,6 +867,21 @@ fn initialize_sum_function<'dae>(
             .at(dead_expression_at)
             .binary(dae::BinaryOperator::Add, dead_accumulator, zero)
     })?;
+    if same_rhs_definitions {
+        model.functions(|functions| {
+            functions.assign(
+                &mut owners.body,
+                owners.accumulator,
+                initial,
+                source_provenance_occurrence(
+                    source,
+                    text,
+                    "acc := if u <= 0 then 0 else sum3(u - 1)",
+                    1,
+                ),
+            )
+        })?;
+    }
     if let Some(deep) = insert_deep_chain(model, dead, dead_expression_at, deep)? {
         model.functions(|functions| {
             functions.assign(
@@ -843,7 +952,12 @@ pub(super) fn fixture_function_declarations(features: FixtureFeatures) -> String
     } else {
         ""
     };
+    let repeated_assignment = if features.same_rhs_definitions {
+        " acc := if u <= 0 then 0 else sum3(u - 1);"
+    } else {
+        ""
+    };
     format!(
-        " function sum3 input Real u; output Real y; protected Real acc; algorithm acc := if u <= 0 then 0 else sum3(u - 1); /* retained arena occurrence: acc + 0 */ for k in 1:3 loop acc := acc + k; end for; y := acc; end sum3; sum3(1);{record_function}"
+        " function sum3 input Real u; output Real y; protected Real acc; algorithm acc := if u <= 0 then 0 else sum3(u - 1); /* retained arena occurrence: acc + 0 */{repeated_assignment} for k in 1:3 loop acc := acc + k; end for; y := acc; end sum3; sum3(1);{record_function}"
     )
 }

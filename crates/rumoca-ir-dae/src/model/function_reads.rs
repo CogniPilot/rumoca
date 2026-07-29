@@ -1,3 +1,6 @@
+#[cfg(test)]
+mod tests;
+
 use super::{DaeConstructionError, DaeProvenance, checked_u32};
 
 const EMPTY: u32 = u32::MAX;
@@ -27,6 +30,7 @@ pub(crate) struct ConflictingFunctionRead {
     pub(crate) found: FunctionReadFact,
 }
 
+#[derive(Debug)]
 pub(crate) enum FunctionReadMergeError {
     Conflict(ConflictingFunctionRead),
     Construction(DaeConstructionError),
@@ -35,7 +39,7 @@ pub(crate) enum FunctionReadMergeError {
 /// One node in a persistent Patricia trie.
 ///
 /// `branch` is `LEAF` for a leaf and otherwise the most-significant differing
-/// bit (0..31). `key` is the leaf key or a representative branch key. The
+/// bit (0..31). `key` is the leaf key or the minimum descendant key. The
 /// remaining words are definition/witness or zero/one child indexes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct FunctionReadNode {
@@ -157,9 +161,10 @@ impl FunctionReadSets {
             return if expected.definition == found.definition {
                 Ok(lhs)
             } else {
-                Err(FunctionReadMergeError::Conflict(
-                    ConflictingFunctionRead { expected, found },
-                ))
+                Err(FunctionReadMergeError::Conflict(ConflictingFunctionRead {
+                    expected,
+                    found,
+                }))
             };
         }
         if lhs_depth == rhs_depth {

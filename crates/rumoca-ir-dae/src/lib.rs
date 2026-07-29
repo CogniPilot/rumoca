@@ -33,6 +33,24 @@
 //! # Ok(())
 //! # });
 //! ```
+//!
+//! An active function loop owns its parent body until the loop is finished:
+//!
+//! ```compile_fail
+//! # use rumoca_ir_dae::{
+//! #     DaeProvenance, DomainId, FunctionBody, FunctionValueId, Functions,
+//! # };
+//! # fn cannot_mutate_parent<'dae>(
+//! #     functions: &mut Functions<'_, 'dae>,
+//! #     body: FunctionBody<'dae>,
+//! #     domain: DomainId<'dae>,
+//! #     target: FunctionValueId<'dae>,
+//! #     provenance: DaeProvenance,
+//! # ) {
+//! let _active = functions.begin_loop(body, domain, [target], provenance);
+//! drop(body);
+//! # }
+//! ```
 
 mod clocks;
 mod conditions;
