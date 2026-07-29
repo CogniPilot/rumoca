@@ -238,6 +238,30 @@ pub(super) fn validate_comprehension_range(
     validate_expression_scoped(end, roles, states, binders)
 }
 
+pub(super) fn validate_array_comprehension(
+    body: &Expression,
+    indices: &[rumoca_core::ComprehensionIndex],
+    filter: Option<&Expression>,
+    roles: &HashMap<VarName, PlannedRole>,
+    states: &HashSet<VarName>,
+    binders: &HashSet<VarName>,
+    span: Span,
+) -> Result<(), ToDaeError> {
+    if filter.is_some() {
+        return Err(ToDaeError::unsupported_flat(
+            "filtered array comprehension",
+            "canonical DAE requires an unfiltered rectangular domain",
+            span,
+        ));
+    }
+    let mut comprehension_binders = binders.clone();
+    for index in indices {
+        validate_comprehension_range(&index.range, roles, states, &comprehension_binders)?;
+        comprehension_binders.insert(VarName::new(&index.name));
+    }
+    validate_expression_scoped(body, roles, states, &comprehension_binders)
+}
+
 pub(super) fn require_integer_literal(
     expression: &Expression,
     owner: &str,

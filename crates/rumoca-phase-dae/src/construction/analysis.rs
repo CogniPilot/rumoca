@@ -16,8 +16,8 @@ pub(super) use clocks::{ClockPlan, SampledValuePlan};
 use comprehensions::analyze_comprehensions;
 pub(super) use comprehensions::{ComprehensionKey, ComprehensionPlan};
 use expression_validation::{
-    require_integer_literal, validate_array, validate_binary_operator, validate_builtin,
-    validate_comprehension_range, validate_conditional, validate_subscripts_scoped,
+    require_integer_literal, validate_array, validate_array_comprehension,
+    validate_binary_operator, validate_builtin, validate_conditional, validate_subscripts_scoped,
     validate_unary_operator,
 };
 use function_array_assemblies::coalesce_function_array_assemblies;
@@ -1971,21 +1971,15 @@ fn validate_expression_scoped(
             indices,
             filter,
             ..
-        } => {
-            if filter.is_some() {
-                return Err(ToDaeError::unsupported_flat(
-                    "filtered array comprehension",
-                    "canonical DAE requires an unfiltered rectangular domain",
-                    span,
-                ));
-            }
-            let mut comprehension_binders = binders.clone();
-            for index in indices {
-                validate_comprehension_range(&index.range, roles, states, &comprehension_binders)?;
-                comprehension_binders.insert(VarName::new(&index.name));
-            }
-            validate_expression_scoped(expr, roles, states, &comprehension_binders)
-        }
+        } => validate_array_comprehension(
+            expr,
+            indices,
+            filter.as_deref(),
+            roles,
+            states,
+            binders,
+            span,
+        ),
         Expression::Tuple { .. } | Expression::FieldAccess { .. } => {
             Err(ToDaeError::unsupported_flat(
                 "aggregate expression",

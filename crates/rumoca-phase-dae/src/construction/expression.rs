@@ -495,8 +495,13 @@ fn lower_array_comprehension<'dae>(
     let key = ComprehensionKey::new(provenance.span(), indices)
         .expect("analysis proves comprehension-owner provenance");
     let plan = &symbols.functions.comprehension_plans[&key];
-    let domain =
-        construction.domains(|domains| domains.structured(plan.domain.clone(), provenance))?;
+    let domain = construction.domains(|domains| {
+        domains.nested_in_scope(
+            enclosing_binders.values().copied(),
+            plan.domain.clone(),
+            provenance,
+        )
+    })?;
     let mut binders = enclosing_binders.clone();
     for (ordinal, (index, span)) in indices.iter().zip(&plan.binder_spans).enumerate() {
         let binder_provenance = dae::DaeProvenance::source(*span)?;

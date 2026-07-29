@@ -1161,6 +1161,10 @@ pub struct DomainView<'dae> {
 }
 
 impl<'dae> DomainView<'dae> {
+    pub fn parent(self) -> Option<DomainId<'dae>> {
+        self.entry.parent.map(DomainId::from_raw)
+    }
+
     pub fn structured(self) -> &'dae StructuredIndexDomain {
         &self.entry.domain
     }

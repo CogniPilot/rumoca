@@ -39,7 +39,9 @@ pub fn for_each_scalar_coordinate<'dae>(
 ) -> Result<(), ProjectionError> {
     let mut projection = Projection {
         view,
-        domain_point: domain_point.map(|(domain, point)| (domain, point.to_vec())),
+        domain_points: domain_point
+            .map(|(domain, point)| vec![(domain, point.to_vec())])
+            .unwrap_or_default(),
         integer_stack: vec![false; view.expression_count()],
         function_arguments: Vec::new(),
         visit: &mut visit,
@@ -49,7 +51,7 @@ pub fn for_each_scalar_coordinate<'dae>(
 
 struct Projection<'visit, 'dae, F> {
     view: dae::DaeView<'dae>,
-    domain_point: Option<(dae::DomainId<'dae>, Vec<i64>)>,
+    domain_points: Vec<(dae::DomainId<'dae>, Vec<i64>)>,
     integer_stack: Vec<bool>,
     function_arguments: Vec<(dae::FunctionId<'dae>, Vec<dae::ExprId<'dae>>)>,
     visit: &'visit mut F,
@@ -384,10 +386,9 @@ where
             .index_tuple_at(point_index)
             .expect("checked comprehension domain remains valid")
             .expect("checked comprehension scalar index selects its domain");
-        let previous = self.domain_point.take();
-        self.domain_point = Some((domain, point));
+        self.domain_points.push((domain, point));
         let result = self.expression(body, body_index);
-        self.domain_point = previous;
+        self.domain_points.pop();
         result
     }
 
@@ -562,12 +563,14 @@ where
                     .ok_or(ProjectionError::IntegerOverflow { span })
             }
             dae::ExpressionOperation::Coordinate(dae::CoordinateView::Binder(binder)) => {
-                let Some((domain, point)) = self.domain_point.as_ref() else {
+                let Some((_, point)) = self
+                    .domain_points
+                    .iter()
+                    .rev()
+                    .find(|(domain, _)| *domain == binder.domain())
+                else {
                     return Err(ProjectionError::DynamicSubscript { span });
                 };
-                if *domain != binder.domain() {
-                    return Err(ProjectionError::DynamicSubscript { span });
-                }
                 point
                     .get(binder.ordinal() as usize)
                     .copied()

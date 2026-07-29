@@ -237,6 +237,7 @@ pub(crate) struct FunctionFoldEntry {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 struct DomainEntry {
+    parent: Option<u32>,
     domain: StructuredIndexDomain,
     extents: Box<[u32]>,
     scalar_count: u32,
@@ -1787,7 +1788,69 @@ impl<'dae> Domains<'_, 'dae> {
         domain: StructuredIndexDomain,
         provenance: DaeProvenance,
     ) -> Result<DomainId<'dae>, DaeConstructionError> {
-        insert_domain(self.source_map, self.storage, domain, provenance)
+        insert_domain(self.source_map, self.storage, None, domain, provenance)
+    }
+
+    pub fn nested(
+        &mut self,
+        parent: DomainId<'dae>,
+        domain: StructuredIndexDomain,
+        provenance: DaeProvenance,
+    ) -> Result<DomainId<'dae>, DaeConstructionError> {
+        insert_domain(
+            self.source_map,
+            self.storage,
+            Some(parent),
+            domain,
+            provenance,
+        )
+    }
+
+    pub fn nested_in_scope(
+        &mut self,
+        enclosing: impl IntoIterator<Item = DomainBinderId<'dae>>,
+        domain: StructuredIndexDomain,
+        provenance: DaeProvenance,
+    ) -> Result<DomainId<'dae>, DaeConstructionError> {
+        check_provenance(self.source_map, provenance)?;
+        let mut parent = None;
+        for binder in enclosing {
+            let candidate = binder.domain();
+            self.storage
+                .domain_binder(candidate.index(), binder.ordinal(), provenance)?;
+            parent = match parent {
+                None => Some(candidate),
+                Some(active)
+                    if self.storage.domain_is_ancestor_or_same(
+                        active.index(),
+                        candidate.index(),
+                        provenance,
+                    )? =>
+                {
+                    Some(candidate)
+                }
+                Some(active)
+                    if self.storage.domain_is_ancestor_or_same(
+                        candidate.index(),
+                        active.index(),
+                        provenance,
+                    )? =>
+                {
+                    Some(active)
+                }
+                Some(active) => {
+                    return Err(DaeConstructionError::InvalidBinderScope {
+                        expected_domain: Some(active.index()),
+                        found_domain: candidate.index(),
+                        span: provenance.span(),
+                    });
+                }
+            };
+        }
+        match parent {
+            Some(parent) => self.nested(parent, domain, provenance),
+            None => self.structured(domain, provenance),
+        }
     }
 
     pub fn binder(
@@ -1807,10 +1870,20 @@ impl<'dae> Domains<'_, 'dae> {
 pub(crate) fn insert_domain<'dae>(
     source_map: &SourceMap,
     storage: &mut Storage,
+    parent: Option<DomainId<'dae>>,
     domain: StructuredIndexDomain,
     provenance: DaeProvenance,
 ) -> Result<DomainId<'dae>, DaeConstructionError> {
     check_provenance(source_map, provenance)?;
+    let parent = parent
+        .map(|parent| {
+            storage
+                .domains
+                .get(parent.index() as usize)
+                .map(|_| parent.index())
+                .ok_or_else(|| unknown("domain", parent.index(), provenance))
+        })
+        .transpose()?;
     let scalar_count =
         domain
             .scalar_count()
@@ -1843,6 +1916,7 @@ pub(crate) fn insert_domain<'dae>(
     let scalar_count = checked_u32(scalar_count, "domain scalar count", provenance)?;
     let raw = checked_u32(storage.domains.len(), "domain arena", provenance)?;
     storage.domains.push(DomainEntry {
+        parent,
         domain,
         extents,
         scalar_count,

@@ -47,7 +47,7 @@ pub struct NumericEvaluator<'dae, F = fn(dae::VariableView<'dae>, usize) -> Opti
     evaluating: Vec<bool>,
     function_arguments: Vec<(dae::FunctionId<'dae>, Vec<Vec<f64>>)>,
     function_fold_values: Vec<(dae::FunctionFoldId<'dae>, Vec<Vec<f64>>)>,
-    domain_point: Option<(dae::DomainId<'dae>, Vec<i64>)>,
+    domain_points: Vec<(dae::DomainId<'dae>, Vec<i64>)>,
     override_value: F,
 }
 
@@ -68,7 +68,7 @@ where
             evaluating: vec![false; view.variable_count()],
             function_arguments: Vec::new(),
             function_fold_values: Vec::new(),
-            domain_point: None,
+            domain_points: Vec::new(),
             override_value,
         }
     }
@@ -126,12 +126,8 @@ where
             dae::ExpressionOperation::Builtin { builtin, arguments } => {
                 self.builtin(builtin, arguments, span)?
             }
-            dae::ExpressionOperation::Comprehension { .. } => {
-                return Err(failure(
-                    NumericEvaluationErrorKind::UnsupportedOperation,
-                    "numeric evaluation of compact comprehensions is not implemented",
-                    span,
-                ));
+            dae::ExpressionOperation::Comprehension { domain, body } => {
+                self.comprehension(domain, body, span)?
             }
             dae::ExpressionOperation::Call {
                 function,
@@ -222,9 +218,10 @@ where
         }
         if let dae::CoordinateView::Binder(binder) = coordinate {
             return self
-                .domain_point
-                .as_ref()
-                .filter(|(domain, _)| *domain == binder.domain())
+                .domain_points
+                .iter()
+                .rev()
+                .find(|(domain, _)| *domain == binder.domain())
                 .and_then(|(_, point)| point.get(binder.ordinal() as usize))
                 .map(|value| vec![*value as f64])
                 .ok_or_else(|| {
@@ -243,6 +240,46 @@ where
             )
         })?;
         self.parameter_value(variable)
+    }
+
+    fn comprehension(
+        &mut self,
+        domain: dae::DomainId<'dae>,
+        body: dae::ExprId<'dae>,
+        span: Span,
+    ) -> Result<Vec<f64>, NumericEvaluationError> {
+        let domain_view = self.view.domain(domain).ok_or_else(|| {
+            failure(
+                NumericEvaluationErrorKind::UnsupportedOperation,
+                "comprehension domain identity does not resolve",
+                span,
+            )
+        })?;
+        let mut values = Vec::new();
+        for point_index in 0..domain_view.scalar_count() as usize {
+            let point = domain_view
+                .structured()
+                .index_tuple_at(point_index)
+                .map_err(|_| {
+                    failure(
+                        NumericEvaluationErrorKind::Overflow,
+                        "comprehension domain projection overflowed",
+                        span,
+                    )
+                })?
+                .ok_or_else(|| {
+                    failure(
+                        NumericEvaluationErrorKind::OutOfBounds,
+                        "comprehension domain point does not resolve",
+                        span,
+                    )
+                })?;
+            self.domain_points.push((domain, point));
+            let body_values = self.expression(body);
+            self.domain_points.pop();
+            values.extend(body_values?);
+        }
+        Ok(values)
     }
 
     fn function_fold(
@@ -286,13 +323,13 @@ where
                     )
                 })?;
             self.function_fold_values.push((fold, values));
-            let previous_point = self.domain_point.replace((fold_view.domain(), point));
+            self.domain_points.push((fold_view.domain(), point));
             let next = fold_view
                 .update_values()
                 .iter()
                 .map(|update| self.expression(update))
                 .collect::<Result<Vec<_>, _>>();
-            self.domain_point = previous_point;
+            self.domain_points.pop();
             let (_, previous) = self
                 .function_fold_values
                 .pop()
@@ -1264,6 +1301,56 @@ mod tests {
             assert_eq!(
                 NumericEvaluator::new(view).expression(zeros).unwrap(),
                 vec![0.0; 6]
+            );
+        });
+    }
+
+    #[test]
+    fn nested_comprehensions_evaluate_with_lexically_scoped_binders() {
+        let text = "{{i + j for j in 1:3} for i in 1:2}";
+        let mut source_map = SourceMap::new();
+        let source = source_map.add("nested.mo", text);
+        let at = |needle: &str, occurrence: usize| {
+            let start = text.match_indices(needle).nth(occurrence).unwrap().0;
+            DaeProvenance::source(Span::from_offsets(source, start, start + needle.len())).unwrap()
+        };
+        let singleton_domain = |name: &str, upper| StructuredIndexDomain {
+            binders: vec![StructuredIndexBinder {
+                id: 0,
+                display_name: name.to_string(),
+                lower: 1,
+                upper,
+                step: 1,
+            }],
+        };
+        let dae = Dae::construct(source_map, |dae| {
+            let outer =
+                dae.domains(|domains| domains.structured(singleton_domain("i", 2), at("1:2", 0)))?;
+            let i = dae.domains(|domains| domains.binder(outer, 0, at("i", 0)))?;
+            let inner = dae.domains(|domains| {
+                domains.nested_in_scope([i], singleton_domain("j", 3), at("1:3", 0))
+            })?;
+            let j = dae.domains(|domains| domains.binder(inner, 0, at("j", 0)))?;
+            dae.expressions(|expressions| {
+                let i = expressions.at(at("i", 0)).binder(i)?;
+                let j = expressions.at(at("j", 0)).binder(j)?;
+                let sum = expressions
+                    .at(at("i + j", 0))
+                    .binary(BinaryOperator::Add, i, j)?;
+                let inner = expressions
+                    .at(at("{i + j for j in 1:3}", 0))
+                    .comprehension(inner, sum)?;
+                expressions.at(at(text, 0)).comprehension(outer, inner)?;
+                Ok(())
+            })
+        })
+        .unwrap();
+
+        dae.inspect(|view| {
+            let nested = view.expression_id(4).unwrap();
+            assert_eq!(
+                NumericEvaluator::new(view).expression(nested).unwrap(),
+                vec![2.0, 3.0, 4.0, 3.0, 4.0, 5.0]
             );
         });
     }

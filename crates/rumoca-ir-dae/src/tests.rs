@@ -433,6 +433,16 @@ fn domain_binders_cannot_cross_domains_or_escape_structured_owners() {
                 domains.binder(second, 0, j_use)?,
             ))
         })?;
+        let unrelated_scope =
+            dae.domains(|domains| domains.nested_in_scope([i, j], domain(2, "k"), first_owner));
+        assert!(matches!(
+            unrelated_scope,
+            Err(DaeConstructionError::InvalidBinderScope {
+                expected_domain: Some(0),
+                found_domain: 1,
+                ..
+            })
+        ));
         let (i, j) = dae.expressions(|expressions| {
             Ok((
                 expressions.at(i_use).binder(i)?,
@@ -470,6 +480,73 @@ fn domain_binders_cannot_cross_domains_or_escape_structured_owners() {
     dae.inspect(|view| {
         assert_eq!(view.domain_count(), 2);
         assert_eq!(view.continuous_equation_count(), 0);
+    });
+}
+
+#[test]
+fn nested_comprehensions_retain_lexical_scope_provenance_and_wire_identity() {
+    let source = TestSource::new("{{i + j for j in 1:3} for i in 1:2}");
+    let outer_owner = source.source("{{i + j for j in 1:3} for i in 1:2}", 0);
+    let inner_owner = source.source("{i + j for j in 1:3}", 0);
+    let outer_range = source.source("1:2", 0);
+    let inner_range = source.source("1:3", 0);
+    let i_use = source.source("i", 0);
+    let j_use = source.source("j", 0);
+    let sum_owner = source.source("i + j", 0);
+    let singleton_domain = |name: &str, upper| StructuredIndexDomain {
+        binders: vec![StructuredIndexBinder {
+            id: 0,
+            display_name: name.to_string(),
+            lower: 1,
+            upper,
+            step: 1,
+        }],
+    };
+
+    let dae = Dae::construct(source.map, |dae| {
+        let outer =
+            dae.domains(|domains| domains.structured(singleton_domain("i", 2), outer_range))?;
+        let i = dae.domains(|domains| domains.binder(outer, 0, i_use))?;
+        let inner = dae.domains(|domains| {
+            domains.nested_in_scope([i], singleton_domain("j", 3), inner_range)
+        })?;
+        let j = dae.domains(|domains| domains.binder(inner, 0, j_use))?;
+        dae.expressions(|expressions| {
+            let i = expressions.at(i_use).binder(i)?;
+            let j = expressions.at(j_use).binder(j)?;
+            let sum = expressions
+                .at(sum_owner)
+                .binary(BinaryOperator::Add, i, j)?;
+            let inner_expression = expressions.at(inner_owner).comprehension(inner, sum)?;
+            expressions
+                .at(outer_owner)
+                .comprehension(outer, inner_expression)?;
+            Ok(())
+        })
+    })
+    .expect("nested lexical domains are valid by construction");
+
+    let encoded = serde_json::to_string(&dae).unwrap();
+    let decoded: Dae = serde_json::from_str(&encoded).unwrap();
+    decoded.inspect(|view| {
+        let outer = view.domain(view.domain_id(0).unwrap()).unwrap();
+        let inner = view.domain(view.domain_id(1).unwrap()).unwrap();
+        assert_eq!(outer.parent(), None);
+        assert_eq!(inner.parent(), view.domain_id(0));
+        let inner_expression = view.expression(view.expression_id(3).unwrap()).unwrap();
+        let outer_expression = view.expression(view.expression_id(4).unwrap()).unwrap();
+        assert_eq!(inner_expression.binder_domain(), view.domain_id(0));
+        assert_eq!(outer_expression.binder_domain(), None);
+        assert_eq!(inner_expression.value_type().dimensions(), &[3]);
+        assert_eq!(outer_expression.value_type().dimensions(), &[2, 3]);
+        assert_eq!(
+            view.source_text(inner_expression.provenance()),
+            Some("{i + j for j in 1:3}")
+        );
+        assert_eq!(
+            view.source_text(outer_expression.provenance()),
+            Some("{{i + j for j in 1:3} for i in 1:2}")
+        );
     });
 }
 
