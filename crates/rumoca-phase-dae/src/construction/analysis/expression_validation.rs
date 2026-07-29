@@ -154,6 +154,7 @@ pub(super) fn validate_builtin(
             | BuiltinFunction::Mod
             | BuiltinFunction::Floor
             | BuiltinFunction::Ceil
+            | BuiltinFunction::Integer
             | BuiltinFunction::Sin
             | BuiltinFunction::Cos
             | BuiltinFunction::Tan

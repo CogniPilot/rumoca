@@ -826,6 +826,7 @@ fn pure_builtin(function: BuiltinFunction) -> dae::PureBuiltin {
         BuiltinFunction::Mod => dae::PureBuiltin::Mod,
         BuiltinFunction::Floor => dae::PureBuiltin::Floor,
         BuiltinFunction::Ceil => dae::PureBuiltin::Ceil,
+        BuiltinFunction::Integer => dae::PureBuiltin::Integer,
         BuiltinFunction::Sin => dae::PureBuiltin::Sin,
         BuiltinFunction::Cos => dae::PureBuiltin::Cos,
         BuiltinFunction::Tan => dae::PureBuiltin::Tan,

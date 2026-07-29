@@ -190,6 +190,7 @@ pub(super) fn lower_builtin_arguments(
         }
         dae::PureBuiltin::Floor => "roundDown",
         dae::PureBuiltin::Ceil => "roundUp",
+        dae::PureBuiltin::Integer => "integer",
         dae::PureBuiltin::Sin => "sin",
         dae::PureBuiltin::Cos => "cos",
         dae::PureBuiltin::Tan => "tan",

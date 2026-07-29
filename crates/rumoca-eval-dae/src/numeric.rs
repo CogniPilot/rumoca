@@ -775,6 +775,7 @@ where
             }
             dae::PureBuiltin::Floor => values.iter_mut().for_each(|value| *value = value.floor()),
             dae::PureBuiltin::Ceil => values.iter_mut().for_each(|value| *value = value.ceil()),
+            dae::PureBuiltin::Integer => values.iter_mut().for_each(|value| *value = value.trunc()),
             dae::PureBuiltin::Sin => values.iter_mut().for_each(|value| *value = value.sin()),
             dae::PureBuiltin::Cos => values.iter_mut().for_each(|value| *value = value.cos()),
             dae::PureBuiltin::Tan => values.iter_mut().for_each(|value| *value = value.tan()),

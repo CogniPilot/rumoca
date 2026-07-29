@@ -636,6 +636,7 @@ const fn builtin_name(builtin: dae::PureBuiltin) -> &'static str {
         dae::PureBuiltin::Mod => "mod",
         dae::PureBuiltin::Floor => "floor",
         dae::PureBuiltin::Ceil => "ceil",
+        dae::PureBuiltin::Integer => "integer",
         dae::PureBuiltin::Sin => "sin",
         dae::PureBuiltin::Cos => "cos",
         dae::PureBuiltin::Tan => "tan",

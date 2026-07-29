@@ -1041,6 +1041,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             | dae::PureBuiltin::Sqrt
             | dae::PureBuiltin::Floor
             | dae::PureBuiltin::Ceil
+            | dae::PureBuiltin::Integer
             | dae::PureBuiltin::Sin
             | dae::PureBuiltin::Cos
             | dae::PureBuiltin::Tan
