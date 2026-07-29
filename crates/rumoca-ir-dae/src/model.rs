@@ -385,137 +385,35 @@ pub struct DaeConstruction<'dae> {
     marker: PhantomData<&'dae mut &'dae ()>,
 }
 
+macro_rules! construction_owner_scopes {
+    ($($method:ident => $owner:ident),+ $(,)?) => {
+        $(pub fn $method<R>(
+            &mut self,
+            build: impl FnOnce(&mut $owner<'_, 'dae>) -> Result<R, DaeConstructionError>,
+        ) -> Result<R, DaeConstructionError> {
+            build(&mut $owner {
+                source_map: self.source_map,
+                storage: self.storage,
+                marker: PhantomData,
+            })
+        })+
+    };
+}
+
 impl<'dae> DaeConstruction<'dae> {
-    pub fn types<R>(
-        &mut self,
-        build: impl FnOnce(&mut ValueTypes<'_, 'dae>) -> Result<R, DaeConstructionError>,
-    ) -> Result<R, DaeConstructionError> {
-        build(&mut ValueTypes {
-            source_map: self.source_map,
-            storage: self.storage,
-            marker: PhantomData,
-        })
-    }
-
-    pub fn variables<R>(
-        &mut self,
-        build: impl FnOnce(&mut Variables<'_, 'dae>) -> Result<R, DaeConstructionError>,
-    ) -> Result<R, DaeConstructionError> {
-        build(&mut Variables {
-            source_map: self.source_map,
-            storage: self.storage,
-            marker: PhantomData,
-        })
-    }
-
-    pub fn functions<R>(
-        &mut self,
-        build: impl FnOnce(&mut Functions<'_, 'dae>) -> Result<R, DaeConstructionError>,
-    ) -> Result<R, DaeConstructionError> {
-        build(&mut Functions {
-            source_map: self.source_map,
-            storage: self.storage,
-            marker: PhantomData,
-        })
-    }
-
-    pub fn domains<R>(
-        &mut self,
-        build: impl FnOnce(&mut Domains<'_, 'dae>) -> Result<R, DaeConstructionError>,
-    ) -> Result<R, DaeConstructionError> {
-        build(&mut Domains {
-            source_map: self.source_map,
-            storage: self.storage,
-            marker: PhantomData,
-        })
-    }
-
-    pub fn expressions<R>(
-        &mut self,
-        build: impl FnOnce(&mut Expressions<'_, 'dae>) -> Result<R, DaeConstructionError>,
-    ) -> Result<R, DaeConstructionError> {
-        build(&mut Expressions {
-            source_map: self.source_map,
-            storage: self.storage,
-            marker: PhantomData,
-        })
-    }
-
-    pub fn continuous<R>(
-        &mut self,
-        build: impl FnOnce(&mut ContinuousEquations<'_, 'dae>) -> Result<R, DaeConstructionError>,
-    ) -> Result<R, DaeConstructionError> {
-        build(&mut ContinuousEquations {
-            source_map: self.source_map,
-            storage: self.storage,
-            marker: PhantomData,
-        })
-    }
-
-    pub fn initialization<R>(
-        &mut self,
-        build: impl FnOnce(&mut InitializationEquations<'_, 'dae>) -> Result<R, DaeConstructionError>,
-    ) -> Result<R, DaeConstructionError> {
-        build(&mut InitializationEquations {
-            source_map: self.source_map,
-            storage: self.storage,
-            marker: PhantomData,
-        })
-    }
-
-    pub fn discrete<R>(
-        &mut self,
-        build: impl FnOnce(&mut DiscreteEquations<'_, 'dae>) -> Result<R, DaeConstructionError>,
-    ) -> Result<R, DaeConstructionError> {
-        build(&mut DiscreteEquations {
-            source_map: self.source_map,
-            storage: self.storage,
-            marker: PhantomData,
-        })
-    }
-
-    pub fn conditions<R>(
-        &mut self,
-        build: impl FnOnce(&mut Conditions<'_, 'dae>) -> Result<R, DaeConstructionError>,
-    ) -> Result<R, DaeConstructionError> {
-        build(&mut Conditions {
-            source_map: self.source_map,
-            storage: self.storage,
-            marker: PhantomData,
-        })
-    }
-
-    pub fn events<R>(
-        &mut self,
-        build: impl FnOnce(&mut Events<'_, 'dae>) -> Result<R, DaeConstructionError>,
-    ) -> Result<R, DaeConstructionError> {
-        build(&mut Events {
-            source_map: self.source_map,
-            storage: self.storage,
-            marker: PhantomData,
-        })
-    }
-
-    pub fn clocks<R>(
-        &mut self,
-        build: impl FnOnce(&mut Clocks<'_, 'dae>) -> Result<R, DaeConstructionError>,
-    ) -> Result<R, DaeConstructionError> {
-        build(&mut Clocks {
-            source_map: self.source_map,
-            storage: self.storage,
-            marker: PhantomData,
-        })
-    }
-
-    pub fn temporal<R>(
-        &mut self,
-        build: impl FnOnce(&mut Temporal<'_, 'dae>) -> Result<R, DaeConstructionError>,
-    ) -> Result<R, DaeConstructionError> {
-        build(&mut Temporal {
-            source_map: self.source_map,
-            storage: self.storage,
-            marker: PhantomData,
-        })
+    construction_owner_scopes! {
+        types => ValueTypes,
+        variables => Variables,
+        functions => Functions,
+        domains => Domains,
+        expressions => Expressions,
+        continuous => ContinuousEquations,
+        initialization => InitializationEquations,
+        discrete => DiscreteEquations,
+        conditions => Conditions,
+        events => Events,
+        clocks => Clocks,
+        temporal => Temporal,
     }
 }
 
@@ -525,303 +423,71 @@ pub struct Variables<'storage, 'dae> {
     marker: PhantomData<&'dae mut &'dae ()>,
 }
 
+macro_rules! variable_role_constructors {
+    ($(
+        $complete:ident / $reserve:ident
+        ($($argument:ident: $argument_type:ty),*)
+        => $id:ident, $role:path, $variability:expr
+    );+ $(;)?) => {
+        $(pub fn $complete(
+            &mut self,
+            name: VarName,
+            value_type: ValueTypeId<'dae>,
+            $($argument: $argument_type,)*
+            declaration: DaeProvenance,
+            attributes: VariableAttributes<'dae>,
+        ) -> Result<$id<'dae>, DaeConstructionError> {
+            self.add_complete(
+                name,
+                $role,
+                $variability,
+                value_type,
+                declaration,
+                attributes,
+            )
+            .map(|id| $id::from_raw(id.index()))
+        }
+
+        pub fn $reserve(
+            &mut self,
+            name: VarName,
+            value_type: ValueTypeId<'dae>,
+            $($argument: $argument_type,)*
+            declaration: DaeProvenance,
+        ) -> Result<($id<'dae>, VariableReservation<'dae>), DaeConstructionError> {
+            let id = self.reserve_forward(
+                name,
+                $role,
+                $variability,
+                value_type,
+                declaration,
+            )?;
+            Ok((
+                $id::from_raw(id.index()),
+                VariableReservation { variable: id },
+            ))
+        })+
+    };
+}
+
 impl<'dae> Variables<'_, 'dae> {
-    pub fn parameter(
-        &mut self,
-        name: VarName,
-        value_type: ValueTypeId<'dae>,
-        declaration: DaeProvenance,
-        attributes: VariableAttributes<'dae>,
-    ) -> Result<ParameterId<'dae>, DaeConstructionError> {
-        self.add_complete(
-            name,
-            VariableRole::Parameter,
-            ExpressionVariability::Parameter,
-            value_type,
-            declaration,
-            attributes,
-        )
-        .map(|id| ParameterId::from_raw(id.index()))
-    }
-
-    pub fn constant(
-        &mut self,
-        name: VarName,
-        value_type: ValueTypeId<'dae>,
-        declaration: DaeProvenance,
-        attributes: VariableAttributes<'dae>,
-    ) -> Result<ParameterId<'dae>, DaeConstructionError> {
-        self.add_complete(
-            name,
-            VariableRole::Constant,
-            ExpressionVariability::Constant,
-            value_type,
-            declaration,
-            attributes,
-        )
-        .map(|id| ParameterId::from_raw(id.index()))
-    }
-
-    pub fn input(
-        &mut self,
-        name: VarName,
-        value_type: ValueTypeId<'dae>,
-        variability: InputVariability,
-        declaration: DaeProvenance,
-        attributes: VariableAttributes<'dae>,
-    ) -> Result<InputId<'dae>, DaeConstructionError> {
-        self.add_complete(
-            name,
-            VariableRole::Input,
-            variability.expression_variability(),
-            value_type,
-            declaration,
-            attributes,
-        )
-        .map(|id| InputId::from_raw(id.index()))
-    }
-
-    pub fn state(
-        &mut self,
-        name: VarName,
-        value_type: ValueTypeId<'dae>,
-        declaration: DaeProvenance,
-        attributes: VariableAttributes<'dae>,
-    ) -> Result<StateId<'dae>, DaeConstructionError> {
-        self.add_complete(
-            name,
-            VariableRole::State,
-            ExpressionVariability::Continuous,
-            value_type,
-            declaration,
-            attributes,
-        )
-        .map(|id| StateId::from_raw(id.index()))
-    }
-
-    pub fn algebraic(
-        &mut self,
-        name: VarName,
-        value_type: ValueTypeId<'dae>,
-        declaration: DaeProvenance,
-        attributes: VariableAttributes<'dae>,
-    ) -> Result<AlgebraicId<'dae>, DaeConstructionError> {
-        self.add_complete(
-            name,
-            VariableRole::Algebraic,
-            ExpressionVariability::Continuous,
-            value_type,
-            declaration,
-            attributes,
-        )
-        .map(|id| AlgebraicId::from_raw(id.index()))
-    }
-
-    pub fn output(
-        &mut self,
-        name: VarName,
-        value_type: ValueTypeId<'dae>,
-        declaration: DaeProvenance,
-        attributes: VariableAttributes<'dae>,
-    ) -> Result<AlgebraicId<'dae>, DaeConstructionError> {
-        self.add_complete(
-            name,
-            VariableRole::Output,
-            ExpressionVariability::Continuous,
-            value_type,
-            declaration,
-            attributes,
-        )
-        .map(|id| AlgebraicId::from_raw(id.index()))
-    }
-
-    pub fn discrete_real(
-        &mut self,
-        name: VarName,
-        value_type: ValueTypeId<'dae>,
-        declaration: DaeProvenance,
-        attributes: VariableAttributes<'dae>,
-    ) -> Result<DiscreteRealId<'dae>, DaeConstructionError> {
-        self.add_complete(
-            name,
-            VariableRole::DiscreteReal,
-            ExpressionVariability::Discrete,
-            value_type,
-            declaration,
-            attributes,
-        )
-        .map(|id| DiscreteRealId::from_raw(id.index()))
-    }
-
-    pub fn discrete_value(
-        &mut self,
-        name: VarName,
-        value_type: ValueTypeId<'dae>,
-        declaration: DaeProvenance,
-        attributes: VariableAttributes<'dae>,
-    ) -> Result<DiscreteValueId<'dae>, DaeConstructionError> {
-        self.add_complete(
-            name,
-            VariableRole::DiscreteValue,
-            ExpressionVariability::Discrete,
-            value_type,
-            declaration,
-            attributes,
-        )
-        .map(|id| DiscreteValueId::from_raw(id.index()))
-    }
-
-    pub fn reserve_algebraic(
-        &mut self,
-        name: VarName,
-        value_type: ValueTypeId<'dae>,
-        declaration: DaeProvenance,
-    ) -> Result<(AlgebraicId<'dae>, VariableReservation<'dae>), DaeConstructionError> {
-        let id = self.reserve_forward(
-            name,
-            VariableRole::Algebraic,
-            ExpressionVariability::Continuous,
-            value_type,
-            declaration,
-        )?;
-        Ok((
-            AlgebraicId::from_raw(id.index()),
-            VariableReservation { variable: id },
-        ))
-    }
-
-    pub fn reserve_constant(
-        &mut self,
-        name: VarName,
-        value_type: ValueTypeId<'dae>,
-        declaration: DaeProvenance,
-    ) -> Result<(ParameterId<'dae>, VariableReservation<'dae>), DaeConstructionError> {
-        let id = self.reserve_forward(
-            name,
-            VariableRole::Constant,
-            ExpressionVariability::Constant,
-            value_type,
-            declaration,
-        )?;
-        Ok((
-            ParameterId::from_raw(id.index()),
-            VariableReservation { variable: id },
-        ))
-    }
-
-    pub fn reserve_input(
-        &mut self,
-        name: VarName,
-        value_type: ValueTypeId<'dae>,
-        variability: InputVariability,
-        declaration: DaeProvenance,
-    ) -> Result<(InputId<'dae>, VariableReservation<'dae>), DaeConstructionError> {
-        let id = self.reserve_forward(
-            name,
-            VariableRole::Input,
-            variability.expression_variability(),
-            value_type,
-            declaration,
-        )?;
-        Ok((
-            InputId::from_raw(id.index()),
-            VariableReservation { variable: id },
-        ))
-    }
-
-    pub fn reserve_state(
-        &mut self,
-        name: VarName,
-        value_type: ValueTypeId<'dae>,
-        declaration: DaeProvenance,
-    ) -> Result<(StateId<'dae>, VariableReservation<'dae>), DaeConstructionError> {
-        let id = self.reserve_forward(
-            name,
-            VariableRole::State,
-            ExpressionVariability::Continuous,
-            value_type,
-            declaration,
-        )?;
-        Ok((
-            StateId::from_raw(id.index()),
-            VariableReservation { variable: id },
-        ))
-    }
-
-    pub fn reserve_output(
-        &mut self,
-        name: VarName,
-        value_type: ValueTypeId<'dae>,
-        declaration: DaeProvenance,
-    ) -> Result<(AlgebraicId<'dae>, VariableReservation<'dae>), DaeConstructionError> {
-        let id = self.reserve_forward(
-            name,
-            VariableRole::Output,
-            ExpressionVariability::Continuous,
-            value_type,
-            declaration,
-        )?;
-        Ok((
-            AlgebraicId::from_raw(id.index()),
-            VariableReservation { variable: id },
-        ))
-    }
-
-    pub fn reserve_discrete_real(
-        &mut self,
-        name: VarName,
-        value_type: ValueTypeId<'dae>,
-        declaration: DaeProvenance,
-    ) -> Result<(DiscreteRealId<'dae>, VariableReservation<'dae>), DaeConstructionError> {
-        let id = self.reserve_forward(
-            name,
-            VariableRole::DiscreteReal,
-            ExpressionVariability::Discrete,
-            value_type,
-            declaration,
-        )?;
-        Ok((
-            DiscreteRealId::from_raw(id.index()),
-            VariableReservation { variable: id },
-        ))
-    }
-
-    pub fn reserve_discrete_value(
-        &mut self,
-        name: VarName,
-        value_type: ValueTypeId<'dae>,
-        declaration: DaeProvenance,
-    ) -> Result<(DiscreteValueId<'dae>, VariableReservation<'dae>), DaeConstructionError> {
-        let id = self.reserve_forward(
-            name,
-            VariableRole::DiscreteValue,
-            ExpressionVariability::Discrete,
-            value_type,
-            declaration,
-        )?;
-        Ok((
-            DiscreteValueId::from_raw(id.index()),
-            VariableReservation { variable: id },
-        ))
-    }
-
-    pub fn reserve_parameter(
-        &mut self,
-        name: VarName,
-        value_type: ValueTypeId<'dae>,
-        declaration: DaeProvenance,
-    ) -> Result<(ParameterId<'dae>, VariableReservation<'dae>), DaeConstructionError> {
-        let id = self.reserve_forward(
-            name,
-            VariableRole::Parameter,
-            ExpressionVariability::Parameter,
-            value_type,
-            declaration,
-        )?;
-        Ok((
-            ParameterId::from_raw(id.index()),
-            VariableReservation { variable: id },
-        ))
+    variable_role_constructors! {
+        parameter / reserve_parameter ()
+            => ParameterId, VariableRole::Parameter, ExpressionVariability::Parameter;
+        constant / reserve_constant ()
+            => ParameterId, VariableRole::Constant, ExpressionVariability::Constant;
+        input / reserve_input (variability: InputVariability)
+            => InputId, VariableRole::Input, variability.expression_variability();
+        state / reserve_state ()
+            => StateId, VariableRole::State, ExpressionVariability::Continuous;
+        algebraic / reserve_algebraic ()
+            => AlgebraicId, VariableRole::Algebraic, ExpressionVariability::Continuous;
+        output / reserve_output ()
+            => AlgebraicId, VariableRole::Output, ExpressionVariability::Continuous;
+        discrete_real / reserve_discrete_real ()
+            => DiscreteRealId, VariableRole::DiscreteReal, ExpressionVariability::Discrete;
+        discrete_value / reserve_discrete_value ()
+            => DiscreteValueId, VariableRole::DiscreteValue, ExpressionVariability::Discrete;
     }
 
     pub fn define(
