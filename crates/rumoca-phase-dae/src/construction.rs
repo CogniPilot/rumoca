@@ -37,9 +37,8 @@ use analysis::{
     DiscreteValueTopologyPlan, EquationPartition, FunctionArrayAssemblyPlan,
     FunctionIntegerReduction, FunctionLoopLowering, FunctionPlan, FunctionRecordAssemblyPlan,
     FunctionStatementPlan, ModelAlgorithmPlan, PlannedRole, RecordArrayFieldPlan,
-    RecordEquationPlan, analyze, defined_discrete_targets, effective_variable_scalar_type,
-    equation_partition, model_algorithm_targets, primitive_scalar_type,
-    structured_assignment_names,
+    RecordEquationPlan, analyze, effective_variable_scalar_type, equation_partition,
+    model_algorithm_targets, primitive_scalar_type, structured_assignment_names,
 };
 use clocks::{LoweredClocks, lower_clocks, lower_sampled_value_clocks};
 use discrete_values::{DiscreteValueOwnerHandle, DiscreteValueStaging};
@@ -188,13 +187,11 @@ fn build_checked<'dae>(
         reserved_functions,
         &analysis.function_plans,
     )?;
-    let assigned_discrete_targets = defined_discrete_targets(flat, &analysis.roles)
-        .expect("analysis already validates discrete equation ownership");
     define_variables(
         construction,
         &coordinates,
         &functions,
-        &assigned_discrete_targets,
+        &analysis.assigned_discrete_targets,
         &analysis.derived_parameters,
         reserved,
     )?;
