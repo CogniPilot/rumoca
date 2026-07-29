@@ -29,6 +29,8 @@ struct FixtureFeatures {
     discrete: bool,
     events: bool,
     clocks: bool,
+    delay: bool,
+    bounded_delay: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -393,6 +395,64 @@ fn insert_fixture_clock<'dae>(
     })
 }
 
+fn insert_fixture_delay<'dae>(
+    model: &mut dae::DaeConstruction<'dae>,
+    variables: FixtureVariables<'dae>,
+    source: rumoca_core::SourceId,
+    text: &str,
+    features: FixtureFeatures,
+) -> Result<(), dae::DaeConstructionError> {
+    if !features.delay && !features.bounded_delay {
+        return Ok(());
+    }
+    let call_text = if features.bounded_delay {
+        "delay(y, 0.5, 1.0)"
+    } else {
+        "delay(y, 0.5)"
+    };
+    let call_start = text.find(call_text).expect("delay fixture call exists");
+    let owner = dae::DaeProvenance::source(Span::from_offsets(
+        source,
+        call_start,
+        call_start + call_text.len(),
+    ))
+    .expect("delay owner span is source-backed");
+    let source_at =
+        dae::DaeProvenance::source(Span::from_offsets(source, call_start + 6, call_start + 7))
+            .expect("delay source span is source-backed");
+    let timing_at =
+        dae::DaeProvenance::source(Span::from_offsets(source, call_start + 9, call_start + 12))
+            .expect("delay timing span is source-backed");
+    let maximum_at = features.bounded_delay.then(|| {
+        dae::DaeProvenance::source(Span::from_offsets(source, call_start + 14, call_start + 17))
+            .expect("delay maximum span is source-backed")
+    });
+    let (delayed, timing, maximum) = model.expressions(|expressions| {
+        Ok((
+            expressions
+                .at(source_at)
+                .coordinate(dae::CoordinateInput::State(variables.y))?,
+            expressions
+                .at(timing_at)
+                .literal(dae::DaeLiteral::Real(0.5))?,
+            maximum_at
+                .map(|at| expressions.at(at).literal(dae::DaeLiteral::Real(1.0)))
+                .transpose()?,
+        ))
+    })?;
+    model.temporal(|temporal| {
+        if let (Some(maximum), Some(maximum_at)) = (maximum, maximum_at) {
+            let positive = temporal.positive_parameter(maximum, 1.0, maximum_at)?;
+            temporal
+                .bounded_delay(delayed, timing, positive, owner, owner)
+                .map(|_| ())
+        } else {
+            let positive = temporal.positive_parameter(timing, 0.5, timing_at)?;
+            temporal.delay(delayed, positive, owner, owner).map(|_| ())
+        }
+    })
+}
+
 fn constrained_state_model(
     nonlinear_constraint: bool,
     features: FixtureFeatures,
@@ -428,8 +488,15 @@ fn constrained_state_model(
     } else {
         ""
     };
+    let delay_equations = if features.bounded_delay {
+        " delay(y, 0.5, 1.0);"
+    } else if features.delay {
+        " delay(y, 0.5);"
+    } else {
+        ""
+    };
     let text = format!(
-        "parameter Real p; Real x; Real y; Real a;{family_declaration}{discrete_declaration} equation x = {rhs}; der(y) = a; der(x) = 1;{family_equation}{discrete_equations}{event_equations}{clock_equations}"
+        "parameter Real p; Real x; Real y; Real a;{family_declaration}{discrete_declaration} equation x = {rhs}; der(y) = a; der(x) = 1;{family_equation}{discrete_equations}{event_equations}{clock_equations}{delay_equations}"
     );
     let mut sources = SourceMap::new();
     let source = sources.add("checked_index_reduction.mo", &text);
@@ -451,6 +518,7 @@ fn constrained_state_model(
         let domain = fixture_domain(model, family_owner)?;
         let variables = fixture_variables(model, real, vector, boolean, declaration, features)?;
         insert_fixture_clock(model, variables, source, &text, features.clocks)?;
+        insert_fixture_delay(model, variables, source, &text, features)?;
         let spans = FixtureSpans {
             constraint,
             derivative_y,
@@ -803,6 +871,119 @@ fn state_demotion_preserves_clock_history_and_terminal_owners() {
             sort(view).is_ok(),
             "replacement DAE remains structurally square"
         );
+    });
+}
+
+#[test]
+fn state_demotion_preserves_delay_owner_coordinate_and_timing_provenance() {
+    let (model, _) = constrained_state_model(
+        false,
+        FixtureFeatures {
+            delay: true,
+            ..FixtureFeatures::default()
+        },
+    );
+    let prepared = prepare_for_solve(&model).expect("delay companion owner survives");
+    let transformed = match prepared {
+        PreparedDae::Transformed { dae, .. } => dae,
+        PreparedDae::Borrowed(_) => panic!("singular fixture requires state demotion"),
+    };
+    transformed.inspect(|view| {
+        assert_eq!(view.delay_count(), 1);
+        let delay_id = view.delay_id(0).expect("dense delay identity survives");
+        let delay = view.delay(delay_id).expect("delay owner survives");
+        assert_eq!(view.source_text(delay.provenance()), Some("delay(y, 0.5)"));
+        assert_eq!(
+            view.source_text(
+                delay
+                    .delay_time_evidence()
+                    .expect("fixed delay retains positive evidence")
+                    .provenance()
+            ),
+            Some("0.5")
+        );
+        assert_eq!(
+            view.source_text(
+                view.expression(delay.source())
+                    .expect("delay source resolves")
+                    .provenance()
+            ),
+            Some("y")
+        );
+        let coordinates = (0..view.expression_count())
+            .filter_map(|index| view.expression_id(index))
+            .filter_map(|id| view.expression(id))
+            .filter(|expression| {
+                matches!(
+                    expression.operation(),
+                    dae::ExpressionOperation::Coordinate(dae::CoordinateView::Delay(id))
+                        if id == delay_id
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(coordinates.len(), 1);
+        assert_eq!(
+            view.source_text(coordinates[0].provenance()),
+            Some("delay(y, 0.5)")
+        );
+        assert!(
+            sort(view).is_ok(),
+            "replacement DAE remains structurally square"
+        );
+    });
+}
+
+#[test]
+fn state_demotion_preserves_bounded_delay_capability_and_provenance() {
+    let (model, _) = constrained_state_model(
+        false,
+        FixtureFeatures {
+            bounded_delay: true,
+            ..FixtureFeatures::default()
+        },
+    );
+    let prepared = prepare_for_solve(&model).expect("bounded delay owner survives");
+    let transformed = match prepared {
+        PreparedDae::Transformed { dae, .. } => dae,
+        PreparedDae::Borrowed(_) => panic!("singular fixture requires state demotion"),
+    };
+    transformed.inspect(|view| {
+        let delay_id = view.delay_id(0).expect("dense delay identity survives");
+        let delay = view.delay(delay_id).expect("bounded delay owner survives");
+        assert_eq!(
+            view.source_text(delay.provenance()),
+            Some("delay(y, 0.5, 1.0)")
+        );
+        assert!(delay.delay_time_evidence().is_none());
+        let maximum = delay
+            .delay_max()
+            .expect("bounded delay retains maximum capability");
+        assert_eq!(maximum.value(), 1.0);
+        assert_eq!(view.source_text(maximum.provenance()), Some("1.0"));
+        assert_eq!(
+            view.source_text(
+                view.expression(delay.delay_time())
+                    .expect("bounded delay timing resolves")
+                    .provenance()
+            ),
+            Some("0.5")
+        );
+        let coordinate = (0..view.expression_count())
+            .filter_map(|index| view.expression_id(index))
+            .filter_map(|id| view.expression(id))
+            .find(|expression| {
+                matches!(
+                    expression.operation(),
+                    dae::ExpressionOperation::Coordinate(dae::CoordinateView::Delay(id))
+                        if id == delay_id
+                )
+            })
+            .expect("bounded delay coordinate survives");
+        assert_eq!(
+            view.source_text(coordinate.provenance()),
+            Some("delay(y, 0.5, 1.0)")
+        );
+        assert!(sort(view).is_ok());
     });
 }
 

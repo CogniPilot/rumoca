@@ -1,6 +1,7 @@
 use std::marker::PhantomData;
 
 use crate::clocks::ClockedVariableRole;
+use crate::expression::{Coordinate, ExprNode};
 use crate::model::{Storage, check_provenance, checked_u32, unknown};
 use crate::{
     ClockId, DaeConstructionError, DaeProvenance, DelayId, DiscreteRealId, DiscreteValueId, ExprId,
@@ -142,6 +143,22 @@ pub struct PositiveParameter<'dae> {
     marker: PhantomData<&'dae mut &'dae ()>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct DelayCoordinate<'dae> {
+    id: DelayId<'dae>,
+    expression: ExprId<'dae>,
+}
+
+impl<'dae> DelayCoordinate<'dae> {
+    pub const fn id(self) -> DelayId<'dae> {
+        self.id
+    }
+
+    pub const fn expression(self) -> ExprId<'dae> {
+        self.expression
+    }
+}
+
 pub struct Temporal<'storage, 'dae> {
     pub(crate) source_map: &'storage rumoca_core::SourceMap,
     pub(crate) storage: &'storage mut Storage,
@@ -185,14 +202,16 @@ impl<'dae> Temporal<'_, 'dae> {
         source: ExprId<'dae>,
         delay_time: PositiveParameter<'dae>,
         provenance: DaeProvenance,
-    ) -> Result<DelayId<'dae>, DaeConstructionError> {
+        coordinate_provenance: DaeProvenance,
+    ) -> Result<DelayCoordinate<'dae>, DaeConstructionError> {
         let delay_time_expression = delay_time.entry.expression;
-        self.insert_delay(
+        self.insert_delay_coordinate(
             source,
             delay_time_expression,
             Some(delay_time.entry),
             None,
             provenance,
+            coordinate_provenance,
         )
     }
 
@@ -202,16 +221,18 @@ impl<'dae> Temporal<'_, 'dae> {
         delay_time: ExprId<'dae>,
         delay_max: PositiveParameter<'dae>,
         provenance: DaeProvenance,
-    ) -> Result<DelayId<'dae>, DaeConstructionError> {
+        coordinate_provenance: DaeProvenance,
+    ) -> Result<DelayCoordinate<'dae>, DaeConstructionError> {
         self.storage
             .expect_closed_expression(delay_time, provenance)?;
         check_scalar_real(self.storage, delay_time, provenance)?;
-        self.insert_delay(
+        self.insert_delay_coordinate(
             source,
             delay_time.index(),
             None,
             Some(delay_max.entry),
             provenance,
+            coordinate_provenance,
         )
     }
 
@@ -300,15 +321,17 @@ impl<'dae> Temporal<'_, 'dae> {
         Ok(PreviousId::from_raw(raw))
     }
 
-    fn insert_delay(
+    fn insert_delay_coordinate(
         &mut self,
         source: ExprId<'dae>,
         delay_time: u32,
         delay_time_evidence: Option<PositiveParameterEntry>,
         delay_max: Option<PositiveParameterEntry>,
         provenance: DaeProvenance,
-    ) -> Result<DelayId<'dae>, DaeConstructionError> {
+        coordinate_provenance: DaeProvenance,
+    ) -> Result<DelayCoordinate<'dae>, DaeConstructionError> {
         check_provenance(self.source_map, provenance)?;
+        check_provenance(self.source_map, coordinate_provenance)?;
         self.storage.expect_closed_expression(source, provenance)?;
         let source_type = self.storage.expr_type(source, provenance)?;
         let value_type = self.storage.expressions.value_types[source.index() as usize];
@@ -320,6 +343,11 @@ impl<'dae> Temporal<'_, 'dae> {
             });
         }
         let raw = checked_u32(self.storage.delays.len(), "delay arena", provenance)?;
+        checked_u32(
+            self.storage.expressions.nodes.len(),
+            "expression arena",
+            coordinate_provenance,
+        )?;
         self.storage.delays.push(DelayEntry {
             source: source.index(),
             delay_time,
@@ -329,9 +357,18 @@ impl<'dae> Temporal<'_, 'dae> {
             variability,
             provenance,
         });
-        self.storage.delay_coordinate_uses.push(0);
-        self.storage.unconsumed_delays += 1;
-        Ok(DelayId::from_raw(raw))
+        let expression = self.storage.expressions.push(
+            ExprNode::Coordinate(Coordinate::Delay(raw)),
+            value_type,
+            variability,
+            None,
+            None,
+            coordinate_provenance,
+        )?;
+        Ok(DelayCoordinate {
+            id: DelayId::from_raw(raw),
+            expression: ExprId::from_raw(expression),
+        })
     }
 }
 

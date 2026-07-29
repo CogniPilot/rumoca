@@ -1062,9 +1062,6 @@ fn reconstruct_expressions<'dae>(
 ) -> Result<(), DaeConstructionError> {
     for (index, node) in wire.expressions.nodes.iter().enumerate() {
         let provenance = wire.expressions.provenance[index];
-        if let ExprNodeWire::Coordinate(CoordinateWire::Delay(delay)) = node {
-            reconstruct_delay_through(wire, dae, ids, *delay, provenance)?;
-        }
         let expected_type = mapped(
             &ids.types,
             wire.expressions.value_types[index],
@@ -1072,6 +1069,9 @@ fn reconstruct_expressions<'dae>(
             provenance,
         )?;
         let id = match node {
+            ExprNodeWire::Coordinate(CoordinateWire::Delay(delay)) => {
+                reconstruct_delay_coordinate(wire, dae, ids, *delay, provenance)?
+            }
             ExprNodeWire::FunctionValue {
                 function,
                 value,
@@ -1249,80 +1249,86 @@ fn define_function_fold_if_needed<'dae>(
     })
 }
 
-fn reconstruct_delay_through<'dae>(
+fn reconstruct_delay_coordinate<'dae>(
     wire: &StorageWire,
     dae: &mut DaeConstruction<'dae>,
     ids: &mut WireIds<'dae>,
     target: u32,
-    at: DaeProvenance,
-) -> Result<(), DaeConstructionError> {
-    while ids.delays.len() <= target as usize {
-        let index = ids.delays.len();
-        let delay = wire
-            .delays
-            .get(index)
-            .ok_or_else(|| unknown("delay", target, at))?;
-        let source = mapped(
-            &ids.expressions,
-            delay.source,
-            "expression",
-            delay.provenance,
-        )?;
-        let id = match (&delay.delay_time_evidence, &delay.delay_max) {
-            (Some(evidence), None) if evidence.expression == delay.delay_time => {
-                let expression = mapped(
-                    &ids.expressions,
-                    evidence.expression,
-                    "expression",
-                    evidence.provenance,
-                )?;
-                dae.temporal(|temporal| {
-                    let positive = temporal.positive_parameter(
-                        expression,
-                        evidence.value,
-                        evidence.provenance,
-                    )?;
-                    temporal.delay(source, positive, delay.provenance)
-                })?
-            }
-            (None, Some(maximum)) => {
-                let delay_time = mapped(
-                    &ids.expressions,
-                    delay.delay_time,
-                    "expression",
-                    delay.provenance,
-                )?;
-                let maximum_expression = mapped(
-                    &ids.expressions,
-                    maximum.expression,
-                    "expression",
+    coordinate_provenance: DaeProvenance,
+) -> Result<ExprId<'dae>, DaeConstructionError> {
+    let index = ids.delays.len();
+    if target as usize != index {
+        return Err(DaeConstructionError::MalformedWire {
+            column: "delay coordinate order",
+        });
+    }
+    let delay = wire
+        .delays
+        .get(index)
+        .ok_or_else(|| unknown("delay", target, coordinate_provenance))?;
+    let source = mapped(
+        &ids.expressions,
+        delay.source,
+        "expression",
+        delay.provenance,
+    )?;
+    let coordinate = match (&delay.delay_time_evidence, &delay.delay_max) {
+        (Some(evidence), None) if evidence.expression == delay.delay_time => {
+            let expression = mapped(
+                &ids.expressions,
+                evidence.expression,
+                "expression",
+                evidence.provenance,
+            )?;
+            dae.temporal(|temporal| {
+                let positive =
+                    temporal.positive_parameter(expression, evidence.value, evidence.provenance)?;
+                temporal.delay(source, positive, delay.provenance, coordinate_provenance)
+            })?
+        }
+        (None, Some(maximum)) => {
+            let delay_time = mapped(
+                &ids.expressions,
+                delay.delay_time,
+                "expression",
+                delay.provenance,
+            )?;
+            let maximum_expression = mapped(
+                &ids.expressions,
+                maximum.expression,
+                "expression",
+                maximum.provenance,
+            )?;
+            dae.temporal(|temporal| {
+                let maximum = temporal.positive_parameter(
+                    maximum_expression,
+                    maximum.value,
                     maximum.provenance,
                 )?;
-                dae.temporal(|temporal| {
-                    let maximum = temporal.positive_parameter(
-                        maximum_expression,
-                        maximum.value,
-                        maximum.provenance,
-                    )?;
-                    temporal.bounded_delay(source, delay_time, maximum, delay.provenance)
-                })?
-            }
-            _ => {
-                return Err(DaeConstructionError::MalformedWire {
-                    column: "delay evidence",
-                });
-            }
-        };
-        expect_ordinal("delay", index, id.index(), delay.provenance)?;
-        let rebuilt = &dae.storage.delays[id.index() as usize];
-        if rebuilt.value_type != delay.value_type || rebuilt.variability != delay.variability {
-            return Err(DaeConstructionError::ShapeMismatch {
-                span: delay.provenance.span(),
+                temporal.bounded_delay(
+                    source,
+                    delay_time,
+                    maximum,
+                    delay.provenance,
+                    coordinate_provenance,
+                )
+            })?
+        }
+        _ => {
+            return Err(DaeConstructionError::MalformedWire {
+                column: "delay evidence",
             });
         }
-        ids.delays.push(id);
+    };
+    expect_ordinal("delay", index, coordinate.id().index(), delay.provenance)?;
+    let rebuilt = &dae.storage.delays[coordinate.id().index() as usize];
+    if rebuilt.value_type != delay.value_type || rebuilt.variability != delay.variability {
+        return Err(DaeConstructionError::ShapeMismatch {
+            span: delay.provenance.span(),
+        });
     }
-    Ok(())
+    ids.delays.push(coordinate.id());
+    Ok(coordinate.expression())
 }
 
 fn rebuild_node<'dae>(
@@ -1482,8 +1488,8 @@ fn rebuild_coordinate<'dae>(
         CoordinateWire::Condition(condition) => {
             CoordinateInput::Condition(mapped(&ids.conditions, *condition, "condition", at)?)
         }
-        CoordinateWire::Delay(delay) => {
-            CoordinateInput::Delay(mapped(&ids.delays, *delay, "delay", at)?)
+        CoordinateWire::Delay(_) => {
+            unreachable!("delay coordinates rebuild atomically through their temporal owner")
         }
         CoordinateWire::Previous(previous) => CoordinateInput::Previous(mapped(
             &ids.previous_values,

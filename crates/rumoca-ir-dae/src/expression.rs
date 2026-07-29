@@ -287,7 +287,6 @@ pub enum CoordinateInput<'dae> {
     PreDiscreteValue(DiscreteValueId<'dae>),
     Time,
     Condition(crate::ConditionId<'dae>),
-    Delay(crate::DelayId<'dae>),
     Previous(crate::PreviousId<'dae>),
     Terminal(crate::TerminalId<'dae>),
     FunctionParameter(FunctionParameterId<'dae>),
@@ -307,7 +306,6 @@ impl CoordinateInput<'_> {
             Self::PreDiscreteValue(id) => Coordinate::PreDiscreteValue(id.index()),
             Self::Time => Coordinate::Time,
             Self::Condition(id) => Coordinate::Condition(id.index()),
-            Self::Delay(id) => Coordinate::Delay(id.index()),
             Self::Previous(id) => Coordinate::Previous(id.index()),
             Self::Terminal(id) => Coordinate::Terminal(id.index()),
             Self::FunctionParameter(id) => Coordinate::FunctionParameter {

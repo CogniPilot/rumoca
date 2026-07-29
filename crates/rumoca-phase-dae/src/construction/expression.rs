@@ -306,7 +306,7 @@ fn lower_delay<'dae>(
     let delay = match plan {
         DelayPlan::Fixed { delay_time: value } => construction.temporal(|temporal| {
             let positive = temporal.positive_parameter(delay_time, value, delay_time_provenance)?;
-            temporal.delay(source, positive, provenance)
+            temporal.delay(source, positive, provenance, provenance)
         })?,
         DelayPlan::Bounded { delay_max: value } => {
             let delay_max =
@@ -320,15 +320,11 @@ fn lower_delay<'dae>(
             construction.temporal(|temporal| {
                 let maximum =
                     temporal.positive_parameter(delay_max, value, delay_max_provenance)?;
-                temporal.bounded_delay(source, delay_time, maximum, provenance)
+                temporal.bounded_delay(source, delay_time, maximum, provenance, provenance)
             })?
         }
     };
-    construction.expressions(|expressions| {
-        expressions
-            .at(provenance)
-            .coordinate(dae::CoordinateInput::Delay(delay))
-    })
+    Ok(delay.expression())
 }
 
 fn lower_hold<'dae>(

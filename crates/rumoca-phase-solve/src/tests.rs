@@ -1182,18 +1182,17 @@ fn delay_lowers_to_runtime_history_programs_and_a_typed_value_slot() {
         })?;
         let delay = model.temporal(|temporal| {
             let timing = temporal.positive_parameter(delay_time, 0.5, timing_at)?;
-            temporal.delay(source, timing, delay_at)
+            temporal.delay(source, timing, delay_at, delay_at)
         })?;
         let residual = model.expressions(|expressions| {
             let derivative = expressions
                 .at(derivative_at)
                 .coordinate(dae::CoordinateInput::Derivative(state))?;
-            let delayed = expressions
-                .at(delay_at)
-                .coordinate(dae::CoordinateInput::Delay(delay))?;
-            expressions
-                .at(owner)
-                .binary(dae::BinaryOperator::Subtract, derivative, delayed)
+            expressions.at(owner).binary(
+                dae::BinaryOperator::Subtract,
+                derivative,
+                delay.expression(),
+            )
         })?;
         model.continuous(|continuous| continuous.value_equation(owner, residual))
     })

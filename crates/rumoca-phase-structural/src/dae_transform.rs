@@ -304,20 +304,31 @@ fn rebuild_holonomic_constraint(
             let clocks = rebuild_clocks(source, target, &variables, &conditions)?;
             let temporal = rebuild_temporal_coordinates(source, target, &variables, &clocks)?;
             let derivative_definitions = explicit_derivative_definitions(source);
+            let identities = RebuiltIdentities {
+                types: &types,
+                variables: &variables,
+                domains: &domains,
+                conditions: &conditions,
+                previous: &temporal.previous,
+                terminals: &temporal.terminals,
+            };
+            let mut rebuilt_state = vec![None; source.expression_count()];
+            rebuild_delay_coordinates(
+                source,
+                target,
+                identities,
+                &derivative_definitions,
+                None,
+                &mut rebuilt_state,
+            )?;
             let (expressions, replacement) = target.expressions(|expressions| {
                 let mut rebuilder = ExpressionRebuilder::new(
                     source,
                     expressions,
-                    RebuiltIdentities {
-                        types: &types,
-                        variables: &variables,
-                        domains: &domains,
-                        conditions: &conditions,
-                        previous: &temporal.previous,
-                        terminals: &temporal.terminals,
-                    },
+                    identities,
                     &derivative_definitions,
                     None,
+                    &mut rebuilt_state,
                 );
                 let rebuilt = rebuilder.rebuild_all()?;
                 let source_residual = source
@@ -371,20 +382,31 @@ fn rebuild_with_state_demotion(
             let clocks = rebuild_clocks(source, target, &variables, &conditions)?;
             let temporal = rebuild_temporal_coordinates(source, target, &variables, &clocks)?;
             let derivative_definitions = explicit_derivative_definitions(source);
+            let identities = RebuiltIdentities {
+                types: &types,
+                variables: &variables,
+                domains: &domains,
+                conditions: &conditions,
+                previous: &temporal.previous,
+                terminals: &temporal.terminals,
+            };
+            let mut rebuilt_state = vec![None; source.expression_count()];
+            rebuild_delay_coordinates(
+                source,
+                target,
+                identities,
+                &derivative_definitions,
+                Some(candidate),
+                &mut rebuilt_state,
+            )?;
             let expressions = target.expressions(|expressions| {
                 let mut rebuilder = ExpressionRebuilder::new(
                     source,
                     expressions,
-                    RebuiltIdentities {
-                        types: &types,
-                        variables: &variables,
-                        domains: &domains,
-                        conditions: &conditions,
-                        previous: &temporal.previous,
-                        terminals: &temporal.terminals,
-                    },
+                    identities,
                     &derivative_definitions,
                     Some(candidate),
+                    &mut rebuilt_state,
                 );
                 rebuilder.rebuild_all()
             })?;
@@ -448,7 +470,7 @@ fn explicit_derivative_definitions(view: dae::DaeView<'_>) -> Vec<Option<u32>> {
 }
 
 fn supports_common_reconstruction(view: dae::DaeView<'_>) -> bool {
-    let unsupported_owner = view.function_count() != 0 || view.delay_count() != 0;
+    let unsupported_owner = view.function_count() != 0;
     if unsupported_owner {
         return false;
     }
@@ -498,6 +520,7 @@ fn supports_common_reconstruction(view: dae::DaeView<'_>) -> bool {
                     | dae::CoordinateView::PreDiscreteReal(_)
                     | dae::CoordinateView::PreDiscreteValue(_)
                     | dae::CoordinateView::Condition(_)
+                    | dae::CoordinateView::Delay(_)
                     | dae::CoordinateView::Previous(_)
                     | dae::CoordinateView::Terminal(_)
                     | dae::CoordinateView::Time
@@ -711,6 +734,106 @@ fn rebuild_temporal_coordinates<'target>(
         previous,
         terminals,
     })
+}
+
+fn rebuild_delay_coordinates<'target>(
+    source: dae::DaeView<'_>,
+    target: &mut dae::DaeConstruction<'target>,
+    identities: RebuiltIdentities<'_, 'target>,
+    derivative_definitions: &[Option<u32>],
+    candidate: Option<DirectStateConstraint>,
+    rebuilt: &mut [Option<dae::ExprId<'target>>],
+) -> Result<(), dae::DaeConstructionError> {
+    let mut coordinate_indices = vec![None; source.delay_count()];
+    for index in 0..source.expression_count() {
+        let expression_id = source
+            .expression_id(index)
+            .expect("finalized expression ordinal resolves");
+        let expression = source
+            .expression(expression_id)
+            .expect("finalized expression identity resolves");
+        if let dae::ExpressionOperation::Coordinate(dae::CoordinateView::Delay(delay)) =
+            expression.operation()
+        {
+            coordinate_indices[delay.index() as usize] = Some(index);
+        }
+    }
+    for (index, coordinate_index) in coordinate_indices.into_iter().enumerate() {
+        let source_id = source
+            .delay_id(index)
+            .expect("finalized delay ordinal resolves");
+        let delay = source
+            .delay(source_id)
+            .expect("finalized delay identity resolves");
+        let coordinate_index =
+            coordinate_index.expect("checked delay has exactly one coordinate expression");
+        let coordinate_id = source
+            .expression_id(coordinate_index)
+            .expect("delay coordinate expression resolves");
+        let coordinate_provenance = source
+            .expression(coordinate_id)
+            .expect("delay coordinate expression identity resolves")
+            .provenance();
+        let (rebuilt_source, rebuilt_time, rebuilt_maximum) =
+            target.expressions(|expressions| {
+                let mut rebuilder = ExpressionRebuilder::new(
+                    source,
+                    expressions,
+                    identities,
+                    derivative_definitions,
+                    candidate,
+                    rebuilt,
+                );
+                Ok((
+                    rebuilder.rebuild(delay.source())?,
+                    rebuilder.rebuild(delay.delay_time())?,
+                    delay
+                        .delay_max()
+                        .map(|maximum| rebuilder.rebuild(maximum.expression()))
+                        .transpose()?,
+                ))
+            })?;
+        let coordinate =
+            target.temporal(
+                |temporal| match (delay.delay_time_evidence(), delay.delay_max()) {
+                    (Some(evidence), None) => {
+                        let positive = temporal.positive_parameter(
+                            rebuilt_time,
+                            evidence.value(),
+                            evidence.provenance(),
+                        )?;
+                        temporal.delay(
+                            rebuilt_source,
+                            positive,
+                            delay.provenance(),
+                            coordinate_provenance,
+                        )
+                    }
+                    (None, Some(maximum)) => {
+                        let positive = temporal.positive_parameter(
+                            rebuilt_maximum.expect("bounded delay has a rebuilt maximum"),
+                            maximum.value(),
+                            maximum.provenance(),
+                        )?;
+                        temporal.bounded_delay(
+                            rebuilt_source,
+                            rebuilt_time,
+                            positive,
+                            delay.provenance(),
+                            coordinate_provenance,
+                        )
+                    }
+                    _ => unreachable!("checked delay retains one timing evidence form"),
+                },
+            )?;
+        if coordinate.id().index() as usize != index {
+            return Err(dae::DaeConstructionError::ShapeMismatch {
+                span: delay.provenance().span(),
+            });
+        }
+        rebuilt[coordinate_index] = Some(coordinate.expression());
+    }
+    Ok(())
 }
 
 enum TargetVariable<'dae> {
@@ -1219,9 +1342,10 @@ struct ExpressionRebuilder<'source, 'borrow, 'storage, 'target> {
     terminals: &'borrow [dae::TerminalId<'target>],
     derivative_definitions: &'borrow [Option<u32>],
     candidate: Option<DirectStateConstraint>,
-    rebuilt: Vec<Option<dae::ExprId<'target>>>,
+    rebuilt: &'borrow mut [Option<dae::ExprId<'target>>],
 }
 
+#[derive(Clone, Copy)]
 struct RebuiltIdentities<'borrow, 'target> {
     types: &'borrow [dae::ValueTypeId<'target>],
     variables: &'borrow [ReservedVariable<'target>],
@@ -1238,6 +1362,7 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         identities: RebuiltIdentities<'borrow, 'target>,
         derivative_definitions: &'borrow [Option<u32>],
         candidate: Option<DirectStateConstraint>,
+        rebuilt: &'borrow mut [Option<dae::ExprId<'target>>],
     ) -> Self {
         Self {
             source,
@@ -1250,7 +1375,7 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             terminals: identities.terminals,
             derivative_definitions,
             candidate,
-            rebuilt: vec![None; source.expression_count()],
+            rebuilt,
         }
     }
 

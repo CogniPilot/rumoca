@@ -278,8 +278,6 @@ pub(crate) struct Storage {
     pub(crate) terminals: Vec<TerminalEntry>,
     pub(crate) delays: Vec<DelayEntry>,
     #[serde(skip)]
-    pub(crate) delay_coordinate_uses: Vec<u8>,
-    #[serde(skip)]
     unfilled_variables: usize,
     #[serde(skip)]
     unfilled_functions: usize,
@@ -287,8 +285,6 @@ pub(crate) struct Storage {
     unfilled_function_folds: usize,
     #[serde(skip)]
     pub(crate) unfilled_conditions: usize,
-    #[serde(skip)]
-    pub(crate) unconsumed_delays: usize,
     #[serde(skip)]
     pub(crate) unassigned_discrete_values: usize,
 }

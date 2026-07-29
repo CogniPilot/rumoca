@@ -1147,7 +1147,7 @@ fn functions_conditions_and_generated_runtime_nodes_use_the_same_arena() {
             dae.expressions(|expr| expr.at(delay_generated).literal(DaeLiteral::Real(1.0)))?;
         let delay = dae.temporal(|temporal| {
             let positive = temporal.positive_parameter(delay_time, 1.0, delay_generated)?;
-            temporal.delay(literal, positive, delay_generated)
+            temporal.delay(literal, positive, delay_generated, delay_generated)
         })?;
 
         dae.expressions(|expr| {
@@ -1156,19 +1156,7 @@ fn functions_conditions_and_generated_runtime_nodes_use_the_same_arena() {
                 .at(condition_owner)
                 .coordinate(CoordinateInput::Condition(condition))?;
             let _clock = expr.at(clock_generated).coordinate(CoordinateInput::Time)?;
-            let _delay = expr
-                .at(delay_generated)
-                .coordinate(CoordinateInput::Delay(delay))?;
-            let duplicate_delay = expr
-                .at(delay_generated)
-                .coordinate(CoordinateInput::Delay(delay));
-            assert!(matches!(
-                duplicate_delay,
-                Err(DaeConstructionError::DuplicateDefinition {
-                    kind: "delay coordinate",
-                    ..
-                })
-            ));
+            let _delay = delay.expression();
             Ok(())
         })
     })
@@ -1202,18 +1190,34 @@ fn assert_function_runtime_arena(view: DaeView<'_>) {
     ));
     let delay = view.delay(view.delay_id(0).unwrap()).unwrap();
     assert_eq!(delay.delay_time_evidence().unwrap().value(), 1.0);
+    let expressions = (0..view.expression_count())
+        .filter_map(|index| view.expression_id(index))
+        .filter_map(|id| view.expression(id))
+        .collect::<Vec<_>>();
+    let clock = expressions
+        .iter()
+        .find(|expression| {
+            matches!(
+                expression.operation(),
+                ExpressionOperation::Coordinate(CoordinateView::Time)
+            )
+        })
+        .expect("clock coordinate survives");
     assert_eq!(
-        view.expression(view.expression_id(6).unwrap())
-            .unwrap()
-            .provenance()
-            .origin(),
+        clock.provenance().origin(),
         DaeProvenanceOrigin::Generated(DaeGeneration::ClockLowering)
     );
+    let delay = expressions
+        .iter()
+        .find(|expression| {
+            matches!(
+                expression.operation(),
+                ExpressionOperation::Coordinate(CoordinateView::Delay(_))
+            )
+        })
+        .expect("delay coordinate survives");
     assert_eq!(
-        view.expression(view.expression_id(7).unwrap())
-            .unwrap()
-            .provenance()
-            .origin(),
+        delay.provenance().origin(),
         DaeProvenanceOrigin::Generated(DaeGeneration::DelayLowering)
     );
 }
@@ -1718,11 +1722,13 @@ fn assert_sum3_loop(view: DaeView<'_>) {
 }
 
 #[test]
-fn delay_evidence_rejects_nonpositive_and_unconsumed_channels() {
+fn delay_owner_rejects_invalid_evidence_and_coordinate_provenance_atomically() {
     let source = TestSource::new("delay(x, 0.0)");
     let owner = source.source("delay(x, 0.0)", 0);
     let literal_at = source.source("0.0", 0);
-    let error = Dae::construct(source.map, |dae| {
+    let foreign_span = Span::from_offsets(SourceId::from_source_name("foreign.mo"), 0, 1);
+    let foreign = DaeProvenance::source(foreign_span).expect("foreign span is not the dummy span");
+    let dae = Dae::construct(source.map, |dae| {
         let (source, delay_time) = dae.expressions(|expressions| {
             Ok((
                 expressions.at(owner).literal(DaeLiteral::Real(1.0))?,
@@ -1736,18 +1742,16 @@ fn delay_evidence_rejects_nonpositive_and_unconsumed_channels() {
                 Err(DaeConstructionError::InvalidPositiveParameter { .. })
             ));
             let positive = temporal.positive_parameter(source, 1.0, owner)?;
-            temporal.delay(source, positive, owner)?;
+            let rejected = temporal.delay(source, positive, owner, foreign);
+            assert!(matches!(
+                rejected,
+                Err(DaeConstructionError::UnknownSource { span }) if span == foreign_span
+            ));
             Ok(())
         })
     })
-    .unwrap_err();
-    assert!(matches!(
-        error,
-        DaeConstructionError::IncompleteDefinition {
-            kind: "delay coordinate",
-            ..
-        }
-    ));
+    .expect("a rejected capability cannot leave a partial delay owner");
+    assert_eq!(dae.inspect(|view| view.delay_count()), 0);
 }
 
 #[test]
