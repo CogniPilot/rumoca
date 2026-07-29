@@ -1,7 +1,7 @@
 use rumoca_core::Span;
 use serde::{Deserialize, Serialize};
 
-use crate::model::Storage;
+use crate::model::{Storage, invalid_arity};
 use crate::{
     AlgebraicId, DaeConstructionError, DaeProvenance, DiscreteRealId, DiscreteValueId,
     DomainBinderId, DomainId, ExprId, FunctionFoldId, FunctionId, FunctionParameterId,
@@ -237,6 +237,17 @@ pub enum PureBuiltin {
     Zeros,
     Ones,
     Fill,
+    Linspace,
+    Cross,
+}
+
+impl PureBuiltin {
+    fn has_shaped_result(self) -> bool {
+        matches!(
+            self,
+            Self::Zeros | Self::Ones | Self::Fill | Self::Linspace | Self::Cross
+        )
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -808,11 +819,11 @@ impl<'dae> ExpressionAt<'_, 'dae> {
             .value_type_at(value_type.index(), self.provenance)?
             .clone();
         if !record.is_record() || fields.len() != record.record_field_count() {
-            return Err(DaeConstructionError::InvalidArity {
-                expected: record.record_field_count(),
-                found: fields.len(),
-                span: self.provenance.span(),
-            });
+            return Err(invalid_arity(
+                record.record_field_count(),
+                fields.len(),
+                self.provenance,
+            ));
         }
         let mut variability = ExpressionVariability::Constant;
         for (ordinal, field) in fields.iter().copied().enumerate() {
@@ -845,14 +856,9 @@ impl<'dae> ExpressionAt<'_, 'dae> {
         field: usize,
     ) -> Result<ExprId<'dae>, DaeConstructionError> {
         let record = self.storage.expr_type(base, self.provenance)?;
-        let field_type =
-            record
-                .record_field_type(field)
-                .ok_or(DaeConstructionError::InvalidArity {
-                    expected: record.record_field_count(),
-                    found: field + 1,
-                    span: self.provenance.span(),
-                })?;
+        let field_type = record.record_field_type(field).ok_or_else(|| {
+            invalid_arity(record.record_field_count(), field + 1, self.provenance)
+        })?;
         let variability = self.storage.expr_variability(base, self.provenance)?;
         let binder_domain = self.storage.expr_binder_domain(base, self.provenance)?;
         let field = checked_u32(field, "record field", self.provenance)?;
@@ -1036,11 +1042,11 @@ impl<'dae> ExpressionAt<'_, 'dae> {
             merged_binder_domain(self.storage, arguments.iter().copied(), self.provenance)?;
         let (parameters, results) = self.storage.function_signature(function, self.provenance)?;
         if arguments.len() != parameters.len() {
-            return Err(DaeConstructionError::InvalidArity {
-                expected: parameters.len(),
-                found: arguments.len(),
-                span: self.provenance.span(),
-            });
+            return Err(invalid_arity(
+                parameters.len(),
+                arguments.len(),
+                self.provenance,
+            ));
         }
         for (argument, expected) in arguments.iter().zip(parameters) {
             let found = self
@@ -1058,11 +1064,7 @@ impl<'dae> ExpressionAt<'_, 'dae> {
                 .expect_value_type_compatible(*expected, found, self.provenance)?;
         }
         let Some(&ty) = results.get(output) else {
-            return Err(DaeConstructionError::InvalidArity {
-                expected: results.len(),
-                found: output + 1,
-                span: self.provenance.span(),
-            });
+            return Err(invalid_arity(results.len(), output + 1, self.provenance));
         };
         let operands = self
             .storage
@@ -1088,11 +1090,7 @@ impl<'dae> ExpressionAt<'_, 'dae> {
     ) -> Result<ExprId<'dae>, DaeConstructionError> {
         let branches = branches.into_iter().collect::<Vec<_>>();
         if branches.is_empty() {
-            return Err(DaeConstructionError::InvalidArity {
-                expected: 1,
-                found: 0,
-                span: self.provenance.span(),
-            });
+            return Err(invalid_arity(1, 0, self.provenance));
         }
         let mut result = self.storage.expr_type(fallback, self.provenance)?.clone();
         let mut variability = self.storage.expr_variability(fallback, self.provenance)?;
@@ -1427,11 +1425,7 @@ fn function_fold_value_facts(
         .targets
         .get(carried)
         .copied()
-        .ok_or(DaeConstructionError::InvalidArity {
-            expected: entry.targets.len(),
-            found: carried + 1,
-            span: provenance.span(),
-        })?;
+        .ok_or_else(|| invalid_arity(entry.targets.len(), carried + 1, provenance))?;
     let value_type = storage
         .functions
         .get(fold.function().index() as usize)
@@ -1745,18 +1739,11 @@ fn builtin_result<'dae>(
     at: DaeProvenance,
 ) -> Result<ValueType, DaeConstructionError> {
     let Some(first) = arguments.first().copied() else {
-        return Err(DaeConstructionError::InvalidArity {
-            expected: 1,
-            found: 0,
-            span: at.span(),
-        });
+        return Err(invalid_arity(1, 0, at));
     };
     let first = storage.expr_type(first, at)?.clone();
-    if matches!(
-        builtin,
-        PureBuiltin::Zeros | PureBuiltin::Ones | PureBuiltin::Fill
-    ) {
-        return array_constructor_result(storage, builtin, arguments, &first, at);
+    if builtin.has_shaped_result() {
+        return shaped_builtin_result(storage, builtin, arguments, &first, at);
     }
     if !first.scalar_type().is_numeric() && builtin != PureBuiltin::Size {
         return Err(DaeConstructionError::ExpectedNumeric {
@@ -1837,13 +1824,17 @@ fn builtin_result<'dae>(
             }
             Ok(ValueType::scalar(ScalarType::Integer))
         }
-        PureBuiltin::Zeros | PureBuiltin::Ones | PureBuiltin::Fill => {
+        PureBuiltin::Zeros
+        | PureBuiltin::Ones
+        | PureBuiltin::Fill
+        | PureBuiltin::Linspace
+        | PureBuiltin::Cross => {
             unreachable!("array constructors return before numeric builtins")
         }
     }
 }
 
-fn array_constructor_result(
+fn shaped_builtin_result(
     storage: &Storage,
     builtin: PureBuiltin,
     arguments: &[ExprId<'_>],
@@ -1856,14 +1847,30 @@ fn array_constructor_result(
             (first.scalar_type(), &arguments[1..])
         }
         PureBuiltin::Fill if arguments.len() < 2 => {
-            return Err(DaeConstructionError::InvalidArity {
-                expected: 2,
-                found: arguments.len(),
-                span: at.span(),
-            });
+            return Err(invalid_arity(2, arguments.len(), at));
         }
         PureBuiltin::Fill => return Err(DaeConstructionError::ShapeMismatch { span: at.span() }),
-        _ => unreachable!("only array constructors use this validator"),
+        PureBuiltin::Linspace => {
+            expect_arity(arguments, 3, at)?;
+            let endpoints = common_value_type(first, storage.expr_type(arguments[1], at)?, at)?;
+            let extent = literal_array_extent(storage, arguments[2], at)?;
+            if !endpoints.is_scalar() {
+                return Err(DaeConstructionError::ShapeMismatch { span: at.span() });
+            }
+            if extent < 2 {
+                return Err(DaeConstructionError::InvalidArrayExtent { span: at.span() });
+            }
+            return Ok(ValueType::array(ScalarType::Real, [extent]));
+        }
+        PureBuiltin::Cross => {
+            expect_arity(arguments, 2, at)?;
+            let result = common_value_type(first, storage.expr_type(arguments[1], at)?, at)?;
+            if result.dimensions() != [3] {
+                return Err(DaeConstructionError::ShapeMismatch { span: at.span() });
+            }
+            return Ok(result);
+        }
+        _ => unreachable!("only compact shaped builtins use this validator"),
     };
     let dimensions = extents
         .iter()
@@ -1882,12 +1889,12 @@ fn literal_array_extent(
     if !value_type.is_scalar() || value_type.scalar_type() != ScalarType::Integer {
         return Err(DaeConstructionError::InvalidArrayExtent { span: at.span() });
     }
-    let Some(ExprNode::Literal(DaeLiteral::Integer(value))) =
-        storage.expressions.nodes.get(expression.index() as usize)
-    else {
-        return Err(DaeConstructionError::InvalidArrayExtent { span: at.span() });
-    };
-    u32::try_from(*value).map_err(|_| DaeConstructionError::InvalidArrayExtent { span: at.span() })
+    u32::try_from(
+        storage
+            .static_integer(expression)
+            .ok_or(DaeConstructionError::InvalidArrayExtent { span: at.span() })?,
+    )
+    .map_err(|_| DaeConstructionError::InvalidArrayExtent { span: at.span() })
 }
 
 fn expect_arity(
@@ -1898,11 +1905,7 @@ fn expect_arity(
     if arguments.len() == expected {
         return Ok(());
     }
-    Err(DaeConstructionError::InvalidArity {
-        expected,
-        found: arguments.len(),
-        span: at.span(),
-    })
+    Err(invalid_arity(expected, arguments.len(), at))
 }
 
 fn range_extent(

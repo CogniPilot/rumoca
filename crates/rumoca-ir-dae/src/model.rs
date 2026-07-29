@@ -1101,11 +1101,11 @@ impl<'dae> Functions<'_, 'dae> {
             .get_mut(reservation.function.index() as usize)
             .ok_or_else(|| unknown("function", reservation.function.index(), provenance))?;
         if ordinal != entry.parameter_values.len() || ordinal >= entry.parameters.len() {
-            return Err(DaeConstructionError::InvalidArity {
-                expected: entry.parameter_values.len(),
-                found: ordinal,
-                span: provenance.span(),
-            });
+            return Err(invalid_arity(
+                entry.parameter_values.len(),
+                ordinal,
+                provenance,
+            ));
         }
         ensure_unique_function_name(entry, &name, provenance)?;
         let ordinal = checked_u32(ordinal, "function parameter", provenance)?;
@@ -1145,11 +1145,11 @@ impl<'dae> Functions<'_, 'dae> {
             });
         }
         if ordinal != entry.output_values.len() || ordinal >= entry.results.len() {
-            return Err(DaeConstructionError::InvalidArity {
-                expected: entry.output_values.len(),
-                found: ordinal,
-                span: provenance.span(),
-            });
+            return Err(invalid_arity(
+                entry.output_values.len(),
+                ordinal,
+                provenance,
+            ));
         }
         ensure_unique_function_name(entry, &name, provenance)?;
         let value = checked_u32(entry.values.len(), "function value arena", provenance)?;
@@ -1342,11 +1342,7 @@ impl<'dae> Functions<'_, 'dae> {
         }
         let targets = targets.into_iter().collect::<Vec<_>>();
         if targets.is_empty() {
-            return Err(DaeConstructionError::InvalidArity {
-                expected: 1,
-                found: 0,
-                span: provenance.span(),
-            });
+            return Err(invalid_arity(1, 0, provenance));
         }
         let mut raw_targets = Vec::with_capacity(targets.len());
         let mut initial_values = Vec::with_capacity(targets.len());
@@ -1430,11 +1426,7 @@ impl<'dae> Functions<'_, 'dae> {
             raw_targets.push(target.ordinal());
         }
         if raw_targets.is_empty() {
-            return Err(DaeConstructionError::InvalidArity {
-                expected: 1,
-                found: 0,
-                span: provenance.span(),
-            });
+            return Err(invalid_arity(1, 0, provenance));
         }
         reserve_function_fold(
             self.storage,
@@ -1456,11 +1448,11 @@ impl<'dae> Functions<'_, 'dae> {
         let entry = &self.storage.function_folds[raw as usize];
         expect_function_loop_generation(entry, provenance)?;
         if carried != entry.parameter_values.len() {
-            return Err(DaeConstructionError::InvalidArity {
-                expected: entry.parameter_values.len(),
-                found: carried,
-                span: provenance.span(),
-            });
+            return Err(invalid_arity(
+                entry.parameter_values.len(),
+                carried,
+                provenance,
+            ));
         }
         let parameter = crate::expression::insert_function_fold_parameter(
             self.source_map,
@@ -1498,18 +1490,14 @@ impl<'dae> Functions<'_, 'dae> {
             return Err(duplicate("function fold", raw, provenance));
         }
         if initial_values.len() != targets.len() || update_values.len() != targets.len() {
-            return Err(DaeConstructionError::InvalidArity {
-                expected: targets.len(),
-                found: initial_values.len().max(update_values.len()),
-                span: provenance.span(),
-            });
+            return Err(invalid_arity(
+                targets.len(),
+                initial_values.len().max(update_values.len()),
+                provenance,
+            ));
         }
         if parameter_count != targets.len() {
-            return Err(DaeConstructionError::InvalidArity {
-                expected: targets.len(),
-                found: parameter_count,
-                span: provenance.span(),
-            });
+            return Err(invalid_arity(targets.len(), parameter_count, provenance));
         }
         for ((target, initial), update) in targets.iter().zip(&initial_values).zip(&update_values) {
             let expected = self.storage.functions[fold.function().index() as usize].values
@@ -1556,11 +1544,11 @@ impl<'dae> Functions<'_, 'dae> {
         let entry = &self.storage.function_folds[raw as usize];
         expect_function_loop_generation(entry, provenance)?;
         if carried != entry.output_values.len() || entry.update_values.is_empty() {
-            return Err(DaeConstructionError::InvalidArity {
-                expected: entry.output_values.len(),
-                found: carried,
-                span: provenance.span(),
-            });
+            return Err(invalid_arity(
+                entry.output_values.len(),
+                carried,
+                provenance,
+            ));
         }
         let output = crate::expression::insert_function_fold_output(
             self.source_map,
@@ -1787,11 +1775,7 @@ fn validate_function_results(
     at: DaeProvenance,
 ) -> Result<(), DaeConstructionError> {
     if expected.len() != results.len() {
-        return Err(DaeConstructionError::InvalidArity {
-            expected: expected.len(),
-            found: results.len(),
-            span: at.span(),
-        });
+        return Err(invalid_arity(expected.len(), results.len(), at));
     }
     for (&result, &expected_type) in results.iter().zip(expected) {
         storage.expression_at(result, at)?;
@@ -1854,6 +1838,18 @@ pub(crate) fn unknown(kind: &'static str, index: u32, at: DaeProvenance) -> DaeC
     DaeConstructionError::UnknownId {
         kind,
         index,
+        span: at.span(),
+    }
+}
+
+pub(crate) fn invalid_arity(
+    expected: usize,
+    found: usize,
+    at: DaeProvenance,
+) -> DaeConstructionError {
+    DaeConstructionError::InvalidArity {
+        expected,
+        found,
         span: at.span(),
     }
 }

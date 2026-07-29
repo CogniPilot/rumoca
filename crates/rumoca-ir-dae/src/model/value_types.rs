@@ -54,11 +54,7 @@ impl<'dae> ValueTypes<'_, 'dae> {
             })
             .collect::<Result<Vec<_>, _>>()?;
         if fields.is_empty() {
-            return Err(DaeConstructionError::InvalidArity {
-                expected: 1,
-                found: 0,
-                span: provenance.span(),
-            });
+            return Err(invalid_arity(1, 0, provenance));
         }
         self.storage
             .intern_type(ValueType::record(name, fields), provenance)

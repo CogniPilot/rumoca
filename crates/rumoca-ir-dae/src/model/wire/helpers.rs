@@ -54,15 +54,3 @@ pub(super) fn expect_ordinal(
     }
     Err(duplicate(kind, found, at))
 }
-
-pub(super) fn invalid_arity(
-    expected: usize,
-    found: usize,
-    at: DaeProvenance,
-) -> DaeConstructionError {
-    DaeConstructionError::InvalidArity {
-        expected,
-        found,
-        span: at.span(),
-    }
-}

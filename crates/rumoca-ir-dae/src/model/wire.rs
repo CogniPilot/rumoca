@@ -10,9 +10,7 @@ use crate::{
 mod equation_systems;
 use equation_systems::reconstruct_equation_systems;
 mod helpers;
-use helpers::{
-    expect_ordinal, invalid_arity, map_expression_operands, map_many, mapped, wire_operands,
-};
+use helpers::{expect_ordinal, map_expression_operands, map_many, mapped, wire_operands};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

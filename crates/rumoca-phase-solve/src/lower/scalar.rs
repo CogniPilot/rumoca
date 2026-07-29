@@ -1187,7 +1187,45 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             dae::PureBuiltin::Fill => {
                 self.expression(arguments.get(0).expect("checked fill value argument"), 0)
             }
+            dae::PureBuiltin::Linspace => self.linspace(arguments, scalar, span),
+            dae::PureBuiltin::Cross => self.cross(arguments, scalar, span),
         }
+    }
+
+    fn linspace(
+        &mut self,
+        arguments: dae::ExpressionOperands<'dae>,
+        scalar: usize,
+        span: Span,
+    ) -> Result<solve::Reg, LowerError> {
+        let start = self.expression(arguments.get(0).expect("checked linspace start"), 0)?;
+        let stop = self.expression(arguments.get(1).expect("checked linspace stop"), 0)?;
+        let count = u32::try_from(
+            ScalarSelector::from_points(self.view, &self.domain_points)
+                .integer(arguments.get(2).expect("checked linspace extent"), 0)?,
+        )
+        .expect("checked linspace extent is in the u32 domain");
+        let ordinal = u32::try_from(scalar).expect("linspace scalar is below its u32 extent");
+        let fraction = self.constant(f64::from(ordinal) / f64::from(count - 1), span)?;
+        let difference = self.binary(dae::BinaryOperator::Subtract, stop, start, span)?;
+        let scaled = self.binary(dae::BinaryOperator::Multiply, difference, fraction, span)?;
+        self.binary(dae::BinaryOperator::Add, start, scaled, span)
+    }
+
+    fn cross(
+        &mut self,
+        arguments: dae::ExpressionOperands<'dae>,
+        scalar: usize,
+        span: Span,
+    ) -> Result<solve::Reg, LowerError> {
+        let (first, second) = [(1, 2), (2, 0), (0, 1)][scalar];
+        let lhs = self.expression(arguments.get(0).expect("checked cross lhs"), first)?;
+        let rhs = self.expression(arguments.get(1).expect("checked cross rhs"), second)?;
+        let positive = self.binary(dae::BinaryOperator::Multiply, lhs, rhs, span)?;
+        let lhs = self.expression(arguments.get(0).expect("checked cross lhs"), second)?;
+        let rhs = self.expression(arguments.get(1).expect("checked cross rhs"), first)?;
+        let negative = self.binary(dae::BinaryOperator::Multiply, lhs, rhs, span)?;
+        self.binary(dae::BinaryOperator::Subtract, positive, negative, span)
     }
 
     fn reduction(

@@ -527,11 +527,14 @@ fn lower_continuous_family_point<'dae>(
     residual: &mut ScalarRows,
     derivative: &mut DerivativeRows,
 ) -> Result<usize, LowerError> {
+    let domain = view
+        .domain(family.domain())
+        .expect("checked family domain resolves");
     for body in family.bodies().iter() {
-        let scalar = match family.scalar_view() {
-            ComprehensionScalarView::BinderSubstitution => 0,
-            ComprehensionScalarView::RowMajorProjection => point,
-        };
+        let scalar = family
+            .scalar_view()
+            .body_scalar(point, domain.extents())
+            .expect("checked family view projects its domain point");
         lower_continuous_row(
             view,
             layout,
@@ -1103,11 +1106,14 @@ fn lower_initialization_family_point<'dae>(
     values: &[i64],
     rows: &mut ScalarRows,
 ) -> Result<(), LowerError> {
+    let domain = view
+        .domain(family.domain())
+        .expect("checked family domain resolves");
     for body in family.bodies().iter() {
-        let scalar = match family.scalar_view() {
-            ComprehensionScalarView::BinderSubstitution => 0,
-            ComprehensionScalarView::RowMajorProjection => point,
-        };
+        let scalar = family
+            .scalar_view()
+            .body_scalar(point, domain.extents())
+            .expect("checked family view projects its domain point");
         let program = ScalarCompiler::new(view, layout, Some((family.domain(), values)))
             .program(body, scalar)?;
         let output = rows.programs.len();
@@ -1416,7 +1422,9 @@ fn unary_builtin(builtin: dae::PureBuiltin) -> solve::UnaryOp {
         | dae::PureBuiltin::Size
         | dae::PureBuiltin::Zeros
         | dae::PureBuiltin::Ones
-        | dae::PureBuiltin::Fill => unreachable!("non-unary builtin"),
+        | dae::PureBuiltin::Fill
+        | dae::PureBuiltin::Linspace
+        | dae::PureBuiltin::Cross => unreachable!("non-unary builtin"),
     }
 }
 

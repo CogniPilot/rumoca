@@ -1537,6 +1537,12 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         scalar_type: gast::ScalarType,
         span: Span,
     ) -> Result<TypedExpression, GalecTargetError> {
+        if builtin == dae::PureBuiltin::Linspace {
+            return self.lower_linspace_element(arguments, indices, span);
+        }
+        if builtin == dae::PureBuiltin::Cross {
+            return self.lower_cross_element(arguments, indices, scalar_type, span);
+        }
         if builtin == dae::PureBuiltin::Zeros || builtin == dae::PureBuiltin::Ones {
             return Ok(TypedExpression {
                 expression: gast::Expression::Real(if builtin == dae::PureBuiltin::Ones {
@@ -1574,6 +1580,127 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             lowered.push(self.lower_at(argument, &projection)?);
         }
         let expression = lower_builtin_arguments(builtin, lowered, span)?;
+        Ok(TypedExpression {
+            expression,
+            scalar_type,
+        })
+    }
+
+    fn lower_linspace_element(
+        &mut self,
+        arguments: dae::ExpressionOperands<'dae>,
+        indices: &[gast::Expression],
+        span: Span,
+    ) -> Result<TypedExpression, GalecTargetError> {
+        let [index] = indices else {
+            unreachable!("checked linspace result has rank one")
+        };
+        let start = coerce(
+            self.lower_at(arguments.get(0).expect("checked linspace start"), &[])?,
+            gast::ScalarType::Real,
+            span,
+        )?;
+        let stop = coerce(
+            self.lower_at(arguments.get(1).expect("checked linspace stop"), &[])?,
+            gast::ScalarType::Real,
+            span,
+        )?;
+        let count = coerce(
+            self.lower_at(arguments.get(2).expect("checked linspace extent"), &[])?,
+            gast::ScalarType::Real,
+            span,
+        )?;
+        let index = coerce(
+            TypedExpression {
+                expression: index.clone(),
+                scalar_type: gast::ScalarType::Integer,
+            },
+            gast::ScalarType::Real,
+            span,
+        )?;
+        let one = gast::Expression::Real(1.0);
+        let offset = gast::Expression::binary(gast::BinaryOp::Sub, index, one.clone());
+        let width = gast::Expression::binary(gast::BinaryOp::Sub, count, one);
+        let delta = gast::Expression::binary(gast::BinaryOp::Sub, stop, start.clone());
+        let scaled = gast::Expression::binary(gast::BinaryOp::Mul, delta, offset);
+        Ok(TypedExpression {
+            expression: gast::Expression::binary(
+                gast::BinaryOp::Add,
+                start,
+                gast::Expression::binary(gast::BinaryOp::Div, scaled, width),
+            ),
+            scalar_type: gast::ScalarType::Real,
+        })
+    }
+
+    fn lower_cross_element(
+        &mut self,
+        arguments: dae::ExpressionOperands<'dae>,
+        indices: &[gast::Expression],
+        scalar_type: gast::ScalarType,
+        span: Span,
+    ) -> Result<TypedExpression, GalecTargetError> {
+        let [index] = indices else {
+            unreachable!("checked cross result has rank one")
+        };
+        let mut component = |ordinal: usize| {
+            let (first, second) = [(1, 2), (2, 0), (0, 1)][ordinal];
+            let first = [gast::Expression::Integer(i64::from(first + 1))];
+            let second = [gast::Expression::Integer(i64::from(second + 1))];
+            let lhs_first = self.lower_at(arguments.get(0).expect("checked cross lhs"), &first)?;
+            let rhs_second =
+                self.lower_at(arguments.get(1).expect("checked cross rhs"), &second)?;
+            let positive = lower_binary(
+                dae::BinaryOperator::Multiply,
+                lhs_first,
+                rhs_second,
+                scalar_type,
+                span,
+            )?;
+            let lhs_second =
+                self.lower_at(arguments.get(0).expect("checked cross lhs"), &second)?;
+            let rhs_first = self.lower_at(arguments.get(1).expect("checked cross rhs"), &first)?;
+            let negative = lower_binary(
+                dae::BinaryOperator::Multiply,
+                lhs_second,
+                rhs_first,
+                scalar_type,
+                span,
+            )?;
+            Ok::<_, GalecTargetError>(gast::Expression::binary(
+                gast::BinaryOp::Sub,
+                positive,
+                negative,
+            ))
+        };
+        let expression = if let gast::Expression::Integer(index) = index {
+            component(usize::try_from(*index - 1).expect("checked cross index is 1..=3"))?
+        } else {
+            let first = component(0)?;
+            let second = component(1)?;
+            let third = component(2)?;
+            gast::Expression::If(gast::IfExpression {
+                branches: vec![
+                    (
+                        gast::Expression::binary(
+                            gast::BinaryOp::Eq,
+                            index.clone(),
+                            gast::Expression::Integer(1),
+                        ),
+                        first,
+                    ),
+                    (
+                        gast::Expression::binary(
+                            gast::BinaryOp::Eq,
+                            index.clone(),
+                            gast::Expression::Integer(2),
+                        ),
+                        second,
+                    ),
+                ],
+                else_value: Box::new(third),
+            })
+        };
         Ok(TypedExpression {
             expression,
             scalar_type,

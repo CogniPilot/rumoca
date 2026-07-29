@@ -783,6 +783,12 @@ where
             };
             return self.filled_array(arguments, 1, *fill, span);
         }
+        if builtin == dae::PureBuiltin::Linspace {
+            return self.linspace(arguments);
+        }
+        if builtin == dae::PureBuiltin::Cross {
+            return self.cross(arguments);
+        }
         let first = arguments
             .get(0)
             .expect("checked builtin has its required operand");
@@ -829,7 +835,11 @@ where
                 values = self.extremum(builtin, arguments, values, span)?;
             }
             dae::PureBuiltin::Size => values = self.size(arguments, first, span)?,
-            dae::PureBuiltin::Zeros | dae::PureBuiltin::Ones | dae::PureBuiltin::Fill => {
+            dae::PureBuiltin::Zeros
+            | dae::PureBuiltin::Ones
+            | dae::PureBuiltin::Fill
+            | dae::PureBuiltin::Linspace
+            | dae::PureBuiltin::Cross => {
                 unreachable!("array constructors return before operand evaluation")
             }
         }
@@ -869,6 +879,41 @@ where
             })?;
         }
         Ok(vec![value; count])
+    }
+
+    fn linspace(
+        &mut self,
+        arguments: dae::ExpressionOperands<'dae>,
+    ) -> Result<Vec<f64>, NumericEvaluationError> {
+        let start = self.expression(arguments.get(0).expect("checked linspace start"))?[0];
+        let stop = self.expression(arguments.get(1).expect("checked linspace stop"))?[0];
+        let count = arguments.get(2).expect("checked linspace extent");
+        let dae::ExpressionOperation::Literal(dae::DaeLiteral::Integer(count)) = self
+            .view
+            .expression(count)
+            .expect("checked linspace extent resolves")
+            .operation()
+        else {
+            unreachable!("checked linspace extent is a literal Integer")
+        };
+        let count = u32::try_from(*count).expect("checked linspace extent is in the u32 domain");
+        let denominator = f64::from(count - 1);
+        Ok((0..count)
+            .map(|ordinal| start + (stop - start) * f64::from(ordinal) / denominator)
+            .collect())
+    }
+
+    fn cross(
+        &mut self,
+        arguments: dae::ExpressionOperands<'dae>,
+    ) -> Result<Vec<f64>, NumericEvaluationError> {
+        let lhs = self.expression(arguments.get(0).expect("checked cross lhs"))?;
+        let rhs = self.expression(arguments.get(1).expect("checked cross rhs"))?;
+        Ok(vec![
+            lhs[1] * rhs[2] - lhs[2] * rhs[1],
+            lhs[2] * rhs[0] - lhs[0] * rhs[2],
+            lhs[0] * rhs[1] - lhs[1] * rhs[0],
+        ])
     }
 
     fn extremum(
@@ -1379,6 +1424,76 @@ mod tests {
                     .expression(view.expression_id(4).unwrap())
                     .unwrap(),
                 vec![0.5, 0.5, 0.5]
+            );
+        });
+    }
+
+    #[test]
+    fn checked_linspace_and_cross_evaluate_their_vector_semantics() {
+        let text = "linspace(0.0, 2.0, 3); cross({1.0,0.0,0.0},{0.0,1.0,0.0})";
+        let mut source_map = SourceMap::new();
+        let source = source_map.add("vectors.mo", text);
+        let at = |needle: &str, occurrence: usize| {
+            let start = text.match_indices(needle).nth(occurrence).unwrap().0;
+            DaeProvenance::source(Span::from_offsets(source, start, start + needle.len())).unwrap()
+        };
+        let dae = Dae::construct(source_map, |dae| {
+            dae.expressions(|expressions| {
+                let start = expressions
+                    .at(at("0.0", 0))
+                    .literal(DaeLiteral::Real(0.0))?;
+                let stop = expressions
+                    .at(at("2.0", 0))
+                    .literal(DaeLiteral::Real(2.0))?;
+                let count = expressions.at(at("3", 0)).literal(DaeLiteral::Integer(3))?;
+                expressions
+                    .at(at("linspace(0.0, 2.0, 3)", 0))
+                    .builtin(PureBuiltin::Linspace, [start, stop, count])?;
+                let lhs_values = [
+                    expressions
+                        .at(at("1.0", 0))
+                        .literal(DaeLiteral::Real(1.0))?,
+                    expressions
+                        .at(at("0.0", 1))
+                        .literal(DaeLiteral::Real(0.0))?,
+                    expressions
+                        .at(at("0.0", 2))
+                        .literal(DaeLiteral::Real(0.0))?,
+                ];
+                let lhs = expressions.at(at("{1.0,0.0,0.0}", 0)).array(lhs_values)?;
+                let rhs_values = [
+                    expressions
+                        .at(at("0.0", 3))
+                        .literal(DaeLiteral::Real(0.0))?,
+                    expressions
+                        .at(at("1.0", 1))
+                        .literal(DaeLiteral::Real(1.0))?,
+                    expressions
+                        .at(at("0.0", 4))
+                        .literal(DaeLiteral::Real(0.0))?,
+                ];
+                let rhs = expressions.at(at("{0.0,1.0,0.0}", 0)).array(rhs_values)?;
+                expressions
+                    .at(at("cross({1.0,0.0,0.0},{0.0,1.0,0.0})", 0))
+                    .builtin(PureBuiltin::Cross, [lhs, rhs])?;
+                Ok(())
+            })
+        })
+        .unwrap();
+
+        dae.inspect(|view| {
+            let mut evaluator = NumericEvaluator::new(view);
+            assert_eq!(
+                evaluator
+                    .expression(view.expression_id(3).unwrap())
+                    .unwrap(),
+                vec![0.0, 1.0, 2.0]
+            );
+            assert_eq!(
+                evaluator
+                    .expression(view.expression_id(12).unwrap())
+                    .unwrap(),
+                vec![0.0, 0.0, 1.0]
             );
         });
     }

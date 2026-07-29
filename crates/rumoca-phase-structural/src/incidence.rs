@@ -4,7 +4,6 @@ pub mod rows;
 
 use std::collections::{HashMap, HashSet};
 
-use rumoca_core::ComprehensionScalarView;
 use rumoca_eval_dae::for_each_scalar_coordinate;
 use rumoca_ir_dae as dae;
 
@@ -254,10 +253,10 @@ impl<'dae> IncidenceBuilder<'_, 'dae> {
                 .expect("checked structured domain stays valid")
                 .expect("point ordinal is inside checked domain");
             for body in family.bodies().iter() {
-                let scalar = match family.scalar_view() {
-                    ComprehensionScalarView::BinderSubstitution => 0,
-                    ComprehensionScalarView::RowMajorProjection => point,
-                };
+                let scalar = family
+                    .scalar_view()
+                    .body_scalar(point, domain.extents())
+                    .expect("checked family view projects its domain point");
                 self.push_expression(
                     body,
                     scalar,

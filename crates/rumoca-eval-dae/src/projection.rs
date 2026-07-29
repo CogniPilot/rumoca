@@ -472,6 +472,20 @@ where
                 }
                 Ok(())
             }
+            dae::PureBuiltin::Linspace => {
+                for argument in arguments.iter() {
+                    self.expression(argument, 0)?;
+                }
+                Ok(())
+            }
+            dae::PureBuiltin::Cross => {
+                let (first, second) = [(1, 2), (2, 0), (0, 1)][scalar_index];
+                for argument in arguments.iter() {
+                    self.expression(argument, first)?;
+                    self.expression(argument, second)?;
+                }
+                Ok(())
+            }
         }
     }
 

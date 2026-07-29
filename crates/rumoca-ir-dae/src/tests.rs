@@ -326,6 +326,69 @@ fn structured_families_derive_rows_and_preserve_multidimensional_domains() {
     assert_structured_binders_round_trip_and_reject_forgery(&encoded);
 }
 
+#[test]
+fn binder_prefix_projection_compacts_nested_array_families() {
+    let source = TestSource::new("for i in 1:2 loop r[:] = a[i,:]; end for;");
+    let owner = source.source("for i in 1:2 loop r[:] = a[i,:]; end for", 0);
+    let dae = Dae::construct(source.map, |dae| {
+        let domain = dae.domains(|domains| {
+            domains.structured(
+                StructuredIndexDomain {
+                    binders: vec![
+                        StructuredIndexBinder {
+                            id: 0,
+                            display_name: "i".to_string(),
+                            lower: 1,
+                            upper: 2,
+                            step: 1,
+                        },
+                        StructuredIndexBinder {
+                            id: 1,
+                            display_name: "j".to_string(),
+                            lower: 1,
+                            upper: 3,
+                            step: 1,
+                        },
+                    ],
+                },
+                owner,
+            )
+        })?;
+        let row = dae.expressions(|expressions| {
+            let zero = expressions.at(owner).literal(DaeLiteral::Real(0.0))?;
+            expressions.at(owner).array([zero, zero, zero])
+        })?;
+        dae.continuous(|continuous| {
+            continuous.structured_family(
+                owner,
+                domain,
+                rumoca_core::ComprehensionScalarView::BinderPrefixProjection { binder_count: 1 },
+                |family| family.body(row),
+            )?;
+            Ok(())
+        })
+    })
+    .unwrap();
+
+    let encoded = serde_json::to_string(&dae).unwrap();
+    let decoded: Dae = serde_json::from_str(&encoded).unwrap();
+    decoded.inspect(|view| {
+        let family = view.continuous_family(0).unwrap();
+        assert_eq!(family.scalar_rows(), 6);
+        let projection = family.scalar_view();
+        assert!(matches!(
+            projection,
+            rumoca_core::ComprehensionScalarView::BinderPrefixProjection { binder_count: 1 }
+        ));
+        assert_eq!(
+            (0..6)
+                .map(|point| projection.body_scalar(point, &[2, 3]).unwrap())
+                .collect::<Vec<_>>(),
+            [0, 1, 2, 0, 1, 2]
+        );
+    });
+}
+
 fn assert_structured_owner_views(dae: &Dae) {
     dae.inspect(|view| {
         assert_eq!(view.domain_count(), 1);
@@ -1335,6 +1398,74 @@ fn ones_and_fill_are_compact_typed_array_operations() {
             let expression = view.expression(view.expression_id(index).unwrap()).unwrap();
             assert_eq!(expression.value_type().scalar_type(), ScalarType::Real);
             assert_eq!(expression.value_type().dimensions(), dimensions);
+            assert_eq!(view.source_text(expression.provenance()), Some(text));
+            assert!(matches!(
+                expression.operation(),
+                ExpressionOperation::Builtin { builtin: found, .. } if found == builtin
+            ));
+        }
+    });
+}
+
+#[test]
+fn linspace_and_cross_are_checked_compact_vector_operations() {
+    let source = TestSource::new("linspace(2.0, 4.0, 3); cross({1.0,2.0,3.0},{4.0,5.0,6.0})");
+    let linspace_at = source.source("linspace(2.0, 4.0, 3)", 0);
+    let cross_at = source.source("cross({1.0,2.0,3.0},{4.0,5.0,6.0})", 0);
+    let provenances = [
+        source.source("2.0", 0),
+        source.source("4.0", 0),
+        source.source("3", 0),
+        source.source("1.0", 0),
+        source.source("2.0", 1),
+        source.source("3.0", 0),
+        source.source("4.0", 1),
+        source.source("5.0", 0),
+        source.source("6.0", 0),
+    ];
+    let dae = Dae::construct(source.map, |dae| {
+        dae.expressions(|expressions| {
+            let start = expressions
+                .at(provenances[0])
+                .literal(DaeLiteral::Real(2.0))?;
+            let stop = expressions
+                .at(provenances[1])
+                .literal(DaeLiteral::Real(4.0))?;
+            let count = expressions
+                .at(provenances[2])
+                .literal(DaeLiteral::Integer(3))?;
+            expressions
+                .at(linspace_at)
+                .builtin(PureBuiltin::Linspace, [start, stop, count])?;
+            let lhs = provenances[3..6]
+                .iter()
+                .zip([1.0, 2.0, 3.0])
+                .map(|(at, value)| expressions.at(*at).literal(DaeLiteral::Real(value)))
+                .collect::<Result<Vec<_>, _>>()?;
+            let lhs = expressions.at(cross_at).array(lhs)?;
+            let rhs = provenances[6..]
+                .iter()
+                .zip([4.0, 5.0, 6.0])
+                .map(|(at, value)| expressions.at(*at).literal(DaeLiteral::Real(value)))
+                .collect::<Result<Vec<_>, _>>()?;
+            let rhs = expressions.at(cross_at).array(rhs)?;
+            expressions
+                .at(cross_at)
+                .builtin(PureBuiltin::Cross, [lhs, rhs])?;
+            Ok(())
+        })
+    })
+    .unwrap();
+
+    let encoded = serde_json::to_string(&dae).unwrap();
+    let decoded: Dae = serde_json::from_str(&encoded).unwrap();
+    decoded.inspect(|view| {
+        for (index, builtin, text) in [
+            (3, PureBuiltin::Linspace, "linspace(2.0, 4.0, 3)"),
+            (12, PureBuiltin::Cross, "cross({1.0,2.0,3.0},{4.0,5.0,6.0})"),
+        ] {
+            let expression = view.expression(view.expression_id(index).unwrap()).unwrap();
+            assert_eq!(expression.value_type().dimensions(), &[3]);
             assert_eq!(view.source_text(expression.provenance()), Some(text));
             assert!(matches!(
                 expression.operation(),

@@ -178,6 +178,8 @@ pub(super) fn validate_builtin(
             | BuiltinFunction::Zeros
             | BuiltinFunction::Ones
             | BuiltinFunction::Fill
+            | BuiltinFunction::Linspace
+            | BuiltinFunction::Cross
             | BuiltinFunction::Sample
     );
     if !supported {

@@ -661,6 +661,29 @@ fn arr_037_cross_of_matrix_column_slice_accepted() {
     );
 }
 
+#[test]
+fn arr_vector_constructor_values_reach_simulation() {
+    let trace = rumoca_contracts::test_support::simulate_model(
+        r#"
+        model M
+            Real line[3] = linspace(0.0, 1.0, 3);
+            Real axis[3] = cross({1.0, 0.0, 0.0}, {0.0, 1.0, 0.0});
+            Real t(start = 0, fixed = true);
+        equation
+            der(t) = 1;
+        end M;
+    "#,
+        "M",
+        0.1,
+    );
+    assert_eq!(trace.final_value("line[1]"), 0.0);
+    assert_eq!(trace.final_value("line[2]"), 0.5);
+    assert_eq!(trace.final_value("line[3]"), 1.0);
+    assert_eq!(trace.final_value("axis[1]"), 0.0);
+    assert_eq!(trace.final_value("axis[2]"), 0.0);
+    assert_eq!(trace.final_value("axis[3]"), 1.0);
+}
+
 // =============================================================================
 // ARR-038: transpose needs at least two dimensions (MLS §10.3.2)
 // =============================================================================
