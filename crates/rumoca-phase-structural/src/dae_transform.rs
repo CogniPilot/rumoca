@@ -358,7 +358,7 @@ fn rebuild_with_state_demotion(
     model: &dae::Dae,
     candidate: DirectStateConstraint,
 ) -> Result<Option<dae::Dae>, StructuralError> {
-    let supported = model.inspect(|view| supports_reconstruction(view, candidate));
+    let supported = model.inspect(supports_common_reconstruction);
     if !supported {
         return Ok(None);
     }
@@ -445,35 +445,6 @@ fn explicit_derivative_definitions(view: dae::DaeView<'_>) -> Vec<Option<u32>> {
         }
     }
     definitions
-}
-
-fn supports_reconstruction(view: dae::DaeView<'_>, candidate: DirectStateConstraint) -> bool {
-    if !supports_common_reconstruction(view) {
-        return false;
-    }
-    (0..view.expression_count()).all(|index| {
-        let id = view
-            .expression_id(index)
-            .expect("finalized expression ordinal resolves");
-        match view
-            .expression(id)
-            .expect("finalized expression identity resolves")
-            .operation()
-        {
-            dae::ExpressionOperation::Coordinate(dae::CoordinateView::Derivative(state))
-                if state.index() == candidate.state =>
-            {
-                is_differentiable(
-                    view,
-                    view.expression_id(candidate.rhs as usize)
-                        .expect("candidate RHS resolves"),
-                    state,
-                    &mut vec![false; view.expression_count()],
-                )
-            }
-            _ => true,
-        }
-    })
 }
 
 fn supports_common_reconstruction(view: dae::DaeView<'_>) -> bool {
@@ -1249,7 +1220,6 @@ struct ExpressionRebuilder<'source, 'borrow, 'storage, 'target> {
     derivative_definitions: &'borrow [Option<u32>],
     candidate: Option<DirectStateConstraint>,
     rebuilt: Vec<Option<dae::ExprId<'target>>>,
-    visiting: Vec<bool>,
 }
 
 struct RebuiltIdentities<'borrow, 'target> {
@@ -1281,7 +1251,6 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             derivative_definitions,
             candidate,
             rebuilt: vec![None; source.expression_count()],
-            visiting: vec![false; source.expression_count()],
         }
     }
 
@@ -1308,8 +1277,6 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         if let Some(rebuilt) = self.rebuilt[index] {
             return Ok(rebuilt);
         }
-        assert!(!self.visiting[index], "checked expression graph is acyclic");
-        self.visiting[index] = true;
         let source = self
             .source
             .expression(source_id)
@@ -1375,7 +1342,6 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             }
             _ => unreachable!("reconstruction preflight rejects this expression operation"),
         };
-        self.visiting[index] = false;
         self.rebuilt[index] = Some(rebuilt);
         Ok(rebuilt)
     }
