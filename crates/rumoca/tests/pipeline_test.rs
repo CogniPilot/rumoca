@@ -44,12 +44,19 @@ fn checked_dae_flows_through_structural_and_solve_phases() {
 }
 
 #[test]
-fn codegen_context_is_the_checked_wire_shape() {
+fn codegen_context_is_the_checked_semantic_projection() {
     let result = compile_decay();
     let json = rumoca_compile::codegen::dae_to_template_json(&result.dae)
         .expect("checked DAE template projection serializes");
 
-    assert_eq!(json["schema_version"], rumoca_ir_dae::DAE_SCHEMA_VERSION);
-    assert!(json.get("storage").is_some());
-    assert!(json.get("source_map").is_some());
+    assert_eq!(json["schema"]["name"], "rumoca.checked-dae-template");
+    assert_eq!(json["schema"]["version"], 1);
+    assert!(json["value_types"].is_array());
+    assert!(json["variables"].is_array());
+    assert!(json["expressions"].is_array());
+    assert!(json["systems"]["continuous"]["owners"].is_array());
+    assert!(
+        json.get("storage").is_none(),
+        "templates consume the checked semantic projection, not raw wire records"
+    );
 }
