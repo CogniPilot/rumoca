@@ -209,6 +209,7 @@ LSP, WASM, and CLI cannot drift into separate cache/invalidation policies.
 | Rule | Where | Why |
 |---|---|---|
 | Source-root membership, status, cache hydration live here | `rumoca-compile` | Single source of truth for project membership |
+| Portable source-root cache parsing/serialization lives here | `rumoca-compile` | `xtask` may invoke the compiler-owned command but MUST remain orchestration-only with no Rumoca workspace dependency; no documentation-tool micro-crate |
 | Incremental class graph + namespace/package views live here | `rumoca-compile` | One incremental story across all clients |
 | Workspace roots and imported roots are semantically identical | `rumoca-compile` | Retention/restore differ; semantics do not |
 | Clients MUST NOT implement their own invalidation policy or rebuild scope | tool-lsp / bind-wasm / CLI | Avoid divergent cache stories |

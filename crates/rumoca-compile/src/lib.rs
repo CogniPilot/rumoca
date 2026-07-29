@@ -52,6 +52,7 @@ mod package_layout;
 pub mod parallelism;
 mod parse;
 mod parsed_artifact_cache;
+mod portable_source_root_cache;
 mod scenario_config;
 mod session;
 mod source_root_cache;
@@ -62,6 +63,10 @@ mod workspace_config;
 /// Source-root discovery and cache helpers.
 pub mod source_roots {
     pub use crate::package_layout::PackageLayoutError;
+    pub use crate::portable_source_root_cache::{
+        PortableSourceRoot, PortableSourceRootCacheIssue, PortableSourceRootCacheReport,
+        write_portable_source_root_cache,
+    };
     pub use crate::session::SourceRootRefreshPlan;
     pub use crate::source_root_cache::{
         ParsedSourceRoot, SourceRootCacheStatus, SourceRootCacheTiming,

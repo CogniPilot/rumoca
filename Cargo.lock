@@ -4381,6 +4381,7 @@ dependencies = [
  "anyhow",
  "bincode",
  "blake3",
+ "flate2",
  "indexmap 2.14.0",
  "miette",
  "minijinja",
@@ -4899,19 +4900,6 @@ dependencies = [
  "walkdir",
  "zip",
  "zmq",
-]
-
-[[package]]
-name = "rumoca-tool-docs"
-version = "0.9.20"
-dependencies = [
- "anyhow",
- "bincode",
- "clap",
- "flate2",
- "mimalloc",
- "rayon",
- "rumoca-compile",
 ]
 
 [[package]]

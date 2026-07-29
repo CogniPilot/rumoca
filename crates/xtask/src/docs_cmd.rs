@@ -185,7 +185,7 @@ fn stage_user_guide_source_roots(root: &Path, out_dir: &Path) -> Result<Vec<Stri
             );
             continue;
         }
-        source_root_specs.push(format!("{}={}", source_root.key, source.display()));
+        source_root_specs.push((source_root.key.to_string(), source.to_path_buf()));
         workspace_roots.push(source_root.key.to_string());
         roots.push(json!({
             "key": source_root.key,
@@ -216,14 +216,12 @@ fn stage_user_guide_source_roots(root: &Path, out_dir: &Path) -> Result<Vec<Stri
     Ok(workspace_roots)
 }
 
-/// Build the source-root cache by shelling out to the `rumoca-docs-cache` bin
-/// (in rumoca-tool-docs, which links the compiler). This is the only
-/// compiler-linked step of the docs workflow; keeping it behind a subprocess is
-/// what lets `xtask` carry no `rumoca-*` dependency.
+/// Build the source-root cache through the compiler package's portable-cache
+/// command. `xtask` remains shell-like and carries no `rumoca-*` dependency.
 fn build_source_root_cache(
     root: &Path,
     cache_path: &Path,
-    source_root_specs: &[String],
+    source_root_specs: &[(String, std::path::PathBuf)],
 ) -> Result<()> {
     if source_root_specs.is_empty() {
         return Ok(());
@@ -232,14 +230,13 @@ fn build_source_root_cache(
     cmd.current_dir(root)
         .arg("run")
         .arg("--package")
-        .arg("rumoca-tool-docs")
+        .arg("rumoca-compile")
         .arg("--bin")
-        .arg("rumoca-docs-cache")
+        .arg("rumoca-source-root-cache")
         .arg("--")
-        .arg("--out")
         .arg(cache_path);
-    for spec in source_root_specs {
-        cmd.arg("--source-root").arg(spec);
+    for (key, path) in source_root_specs {
+        cmd.arg(key).arg(path);
     }
     run_status(cmd)
 }

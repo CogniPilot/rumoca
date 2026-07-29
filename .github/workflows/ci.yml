@@ -87,8 +87,8 @@ jobs:
 
       # Architectural invariant, checked without compiling anything: `xtask` must
       # carry NO rumoca-* workspace crate. It parses args, moves files, and shells
-      # out; heavy compiler-linked work runs on demand via `cargo run -p <crate>`
-      # (rumoca-test-msl, rumoca-tool-docs). If a rumoca-* dep creeps back in,
+      # out; compiler-linked work runs on demand through a command in its owning
+      # package. If a rumoca-* dep creeps back in,
       # building any xtask bin again drags in the whole compiler/diffsol stack.
       - name: Architecture — xtask stays dependency-light
         run: |
