@@ -15,7 +15,9 @@ use crate::{
 
 use equation_systems::reconstruct_equation_systems;
 use expression_wire::*;
-use helpers::{expect_ordinal, map_expression_operands, map_many, mapped, wire_operands};
+use helpers::{
+    expect_ordinal, map_expression_operands, map_many, mapped, take_packed, wire_operands,
+};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -477,6 +479,8 @@ struct WireIds<'dae> {
     delays: Vec<DelayId<'dae>>,
     expressions: Vec<ExprId<'dae>>,
     next_expression_type_anchor: usize,
+    next_operand: usize,
+    next_subscript: usize,
 }
 
 fn mapped_expression<'dae>(
@@ -509,6 +513,8 @@ fn reconstruct<'dae>(
         delays: Vec::with_capacity(wire.delays.len()),
         expressions: Vec::with_capacity(wire.expressions.nodes.len()),
         next_expression_type_anchor: 0,
+        next_operand: 0,
+        next_subscript: 0,
     };
     reconstruct_clocks(wire, dae, &mut ids)?;
     reconstruct_temporal(wire, dae, &mut ids)?;
@@ -796,7 +802,6 @@ fn reconstruct_next_expression<'dae>(
     let expression = wire_expression(wire, index)?;
     let provenance = expression.provenance;
     let node = expression.node;
-    expect_next_packed_ranges(wire, dae, node)?;
     let type_anchor = take_expression_type_anchor(wire, ids, node, provenance)?;
     let id = match node {
         ExprNodeWire::Coordinate(CoordinateWire::Delay(delay)) => {
@@ -835,7 +840,7 @@ fn take_expression_type_anchor<'dae>(
 ) -> Result<Option<ValueTypeId<'dae>>, DaeConstructionError> {
     let expression = checked_u32(ids.expressions.len(), "expression arena", provenance)?;
     let required = matches!(node, ExprNodeWire::Record { .. })
-        || matches!(node, ExprNodeWire::Array { operands } if operands.len == 0);
+        || matches!(node, ExprNodeWire::Array { operand_count: 0 });
     let next = wire
         .expressions
         .type_anchors
@@ -874,48 +879,6 @@ fn expect_no_expression_type_anchor(
     Ok(())
 }
 
-fn expect_next_packed_ranges(
-    wire: &StorageWire,
-    dae: &DaeConstruction<'_>,
-    node: &ExprNodeWire,
-) -> Result<(), DaeConstructionError> {
-    match node {
-        ExprNodeWire::Conditional { operands }
-        | ExprNodeWire::Array { operands }
-        | ExprNodeWire::Record { operands }
-        | ExprNodeWire::Builtin { operands, .. }
-        | ExprNodeWire::Call { operands, .. } => expect_packed_range(
-            *operands,
-            dae.storage.expressions.operands.len(),
-            wire.expressions.operands.len(),
-            "expressions.operands",
-        ),
-        ExprNodeWire::Index { subscripts, .. } | ExprNodeWire::ArrayUpdate { subscripts, .. } => {
-            expect_packed_range(
-                *subscripts,
-                dae.storage.expressions.subscripts.len(),
-                wire.expressions.subscripts.len(),
-                "expressions.subscripts",
-            )
-        }
-        _ => Ok(()),
-    }
-}
-
-fn expect_packed_range(
-    range: OperandRangeWire,
-    cursor: usize,
-    buffer_len: usize,
-    column: &'static str,
-) -> Result<(), DaeConstructionError> {
-    let indices = range.indices().ok_or_else(|| malformed(column))?;
-    if indices.start == cursor && indices.end <= buffer_len {
-        Ok(())
-    } else {
-        Err(malformed(column))
-    }
-}
-
 fn expect_expression_arena_consumed(
     wire: &StorageWire,
     dae: &DaeConstruction<'_>,
@@ -924,6 +887,8 @@ fn expect_expression_arena_consumed(
     let count = wire.expressions.nodes.len();
     if wire.expressions.provenance.len() != count
         || ids.next_expression_type_anchor != wire.expressions.type_anchors.len()
+        || ids.next_operand != wire.expressions.operands.len()
+        || ids.next_subscript != wire.expressions.subscripts.len()
         || dae.storage.expressions.nodes.len() != count
         || dae.storage.expressions.operands.len() != wire.expressions.operands.len()
         || dae.storage.expressions.subscripts.len() != wire.expressions.subscripts.len()
@@ -1011,7 +976,7 @@ fn reconstruct_delay_coordinate<'dae>(
 
 fn rebuild_node<'dae>(
     wire: &StorageWire,
-    ids: &WireIds<'dae>,
+    ids: &mut WireIds<'dae>,
     at: ExpressionAt<'_, 'dae>,
     node: &ExprNodeWire,
     type_anchor: Option<ValueTypeId<'dae>>,
@@ -1038,20 +1003,20 @@ fn rebuild_node<'dae>(
             mapped(&ids.expressions, *lhs, "expression", provenance)?,
             mapped(&ids.expressions, *rhs, "expression", provenance)?,
         ),
-        ExprNodeWire::Conditional { operands } => {
-            rebuild_conditional(wire, ids, at, *operands, provenance)
+        ExprNodeWire::Conditional { operand_count } => {
+            rebuild_conditional(wire, ids, at, *operand_count, provenance)
         }
-        ExprNodeWire::Array { operands } => {
-            let operands = map_expression_operands(wire, ids, *operands, provenance)?;
+        ExprNodeWire::Array { operand_count } => {
+            let operands = map_expression_operands(wire, ids, *operand_count, provenance)?;
             if operands.is_empty() {
                 at.empty_array(type_anchor.ok_or_else(|| malformed("expressions.type_anchors"))?)
             } else {
                 at.array(operands)
             }
         }
-        ExprNodeWire::Record { operands } => at.record(
+        ExprNodeWire::Record { operand_count } => at.record(
             type_anchor.ok_or_else(|| malformed("expressions.type_anchors"))?,
-            map_expression_operands(wire, ids, *operands, provenance)?,
+            map_expression_operands(wire, ids, *operand_count, provenance)?,
         ),
         ExprNodeWire::Field { base, field } => at.field(
             mapped(&ids.expressions, *base, "expression", provenance)?,
@@ -1062,30 +1027,34 @@ fn rebuild_node<'dae>(
             mapped(&ids.domains, *domain, "domain", provenance)?,
             mapped(&ids.expressions, *body, "expression", provenance)?,
         ),
-        ExprNodeWire::Index { base, subscripts } => {
-            rebuild_index(wire, ids, at, *base, *subscripts, provenance)
-        }
+        ExprNodeWire::Index {
+            base,
+            subscript_count,
+        } => rebuild_index(wire, ids, at, *base, *subscript_count, provenance),
         ExprNodeWire::ArrayUpdate {
             base,
             value,
-            subscripts,
+            subscript_count,
         } => at.array_update(
             mapped(&ids.expressions, *base, "expression", provenance)?,
             mapped(&ids.expressions, *value, "expression", provenance)?,
-            rebuild_subscripts(wire, ids, *subscripts, provenance)?,
+            rebuild_subscripts(wire, ids, *subscript_count, provenance)?,
         ),
-        ExprNodeWire::Builtin { builtin, operands } => at.builtin(
+        ExprNodeWire::Builtin {
+            builtin,
+            operand_count,
+        } => at.builtin(
             *builtin,
-            map_expression_operands(wire, ids, *operands, provenance)?,
+            map_expression_operands(wire, ids, *operand_count, provenance)?,
         ),
         ExprNodeWire::Call {
             function,
             output,
-            operands,
+            operand_count,
         } => at.call(
             mapped(&ids.functions, *function, "function", provenance)?,
             *output as usize,
-            map_expression_operands(wire, ids, *operands, provenance)?,
+            map_expression_operands(wire, ids, *operand_count, provenance)?,
         ),
         ExprNodeWire::FunctionValue { .. } => Err(malformed("expressions.nodes.function_value")),
         ExprNodeWire::FunctionFoldParameter { .. } | ExprNodeWire::FunctionFoldOutput { .. } => {
@@ -1161,12 +1130,12 @@ fn rebuild_coordinate<'dae>(
 
 fn rebuild_conditional<'dae>(
     wire: &StorageWire,
-    ids: &WireIds<'dae>,
+    ids: &mut WireIds<'dae>,
     at: ExpressionAt<'_, 'dae>,
-    range: OperandRangeWire,
+    count: u32,
     provenance: DaeProvenance,
 ) -> Result<ExprId<'dae>, DaeConstructionError> {
-    let operands = wire_operands(wire, range, provenance)?;
+    let operands = wire_operands(wire, &mut ids.next_operand, count)?;
     let Some((&fallback, branch_operands)) = operands.split_last() else {
         return Err(invalid_arity(1, 0, provenance));
     };
@@ -1194,13 +1163,13 @@ fn rebuild_conditional<'dae>(
 
 fn rebuild_index<'dae>(
     wire: &StorageWire,
-    ids: &WireIds<'dae>,
+    ids: &mut WireIds<'dae>,
     at: ExpressionAt<'_, 'dae>,
     base: u32,
-    range: OperandRangeWire,
+    count: u32,
     provenance: DaeProvenance,
 ) -> Result<ExprId<'dae>, DaeConstructionError> {
-    let subscripts = rebuild_subscripts(wire, ids, range, provenance)?;
+    let subscripts = rebuild_subscripts(wire, ids, count, provenance)?;
     at.index(
         mapped(&ids.expressions, base, "expression", provenance)?,
         subscripts,
@@ -1209,17 +1178,16 @@ fn rebuild_index<'dae>(
 
 fn rebuild_subscripts<'dae>(
     wire: &StorageWire,
-    ids: &WireIds<'dae>,
-    range: OperandRangeWire,
+    ids: &mut WireIds<'dae>,
+    count: u32,
     provenance: DaeProvenance,
 ) -> Result<Vec<Subscript<'dae>>, DaeConstructionError> {
-    let packed = wire
-        .expressions
-        .subscripts
-        .get(range.indices().ok_or(DaeConstructionError::MalformedWire {
-            column: "subscript range",
-        })?)
-        .ok_or_else(|| unknown("subscript range", range.start, provenance))?;
+    let packed = take_packed(
+        &wire.expressions.subscripts,
+        &mut ids.next_subscript,
+        count,
+        "expressions.subscripts",
+    )?;
     packed
         .iter()
         .map(|subscript| rebuild_subscript(ids, subscript, provenance))

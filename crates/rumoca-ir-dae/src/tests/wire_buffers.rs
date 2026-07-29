@@ -1,7 +1,37 @@
 use super::*;
 
 #[test]
-fn wire_rejects_repeated_expression_buffer_ranges() {
+fn wire_derives_packed_buffer_offsets_from_readable_counts() {
+    let dae = packed_buffer_fixture();
+    let encoded = serde_json::to_string(&dae).unwrap();
+    let decoded: Dae = serde_json::from_str(&encoded).expect("canonical packed counts round trip");
+    assert_eq!(serde_json::to_string(&decoded).unwrap(), encoded);
+    let binary = bincode::serialize(&dae).unwrap();
+    let decoded: Dae = bincode::deserialize(&binary).expect("binary packed counts replay");
+    assert_eq!(bincode::serialize(&decoded).unwrap(), binary);
+
+    let canonical: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+    let arrays = canonical["storage"]["expressions"]["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|node| node.get("array"))
+        .collect::<Vec<_>>();
+    assert_eq!(arrays[0]["operand_count"], 2);
+    assert_eq!(arrays[1]["operand_count"], 2);
+    let indices = canonical["storage"]["expressions"]["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|node| node.get("index"))
+        .collect::<Vec<_>>();
+    assert_eq!(indices[0]["subscript_count"], 1);
+    assert_eq!(indices[1]["subscript_count"], 1);
+
+    assert_malformed_packed_counts_rejected(canonical);
+}
+
+fn packed_buffer_fixture() -> Dae {
     let source = TestSource::new("Real a[2] = {1,2}; Real b[2] = {1,2}; a[:]; a[:];");
     let one_at = source.source("1", 0);
     let two_at = source.source("2", 0);
@@ -9,7 +39,7 @@ fn wire_rejects_repeated_expression_buffer_ranges() {
     let second_array_at = source.source("{1,2}", 1);
     let first_index_at = source.source("a[:]", 0);
     let second_index_at = source.source("a[:]", 1);
-    let dae = Dae::construct(source.map, |dae| {
+    Dae::construct(source.map, |dae| {
         dae.expressions(|expressions| {
             let one = expressions.at(one_at).literal(DaeLiteral::Real(1.0))?;
             let two = expressions.at(two_at).literal(DaeLiteral::Real(2.0))?;
@@ -30,38 +60,103 @@ fn wire_rejects_repeated_expression_buffer_ranges() {
             Ok(())
         })
     })
-    .expect("packed-buffer fixture constructs");
+    .expect("packed-buffer fixture constructs")
+}
 
-    let encoded = serde_json::to_string(&dae).unwrap();
-    let decoded: Dae = serde_json::from_str(&encoded).expect("canonical packed ranges round trip");
-    assert_eq!(serde_json::to_string(&decoded).unwrap(), encoded);
+fn assert_malformed_packed_counts_rejected(canonical: serde_json::Value) {
+    let mut old_name = canonical.clone();
+    let first_array = old_name["storage"]["expressions"]["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find_map(|node| node.get_mut("array"))
+        .unwrap()
+        .as_object_mut()
+        .unwrap();
+    first_array.remove("operand_count");
+    first_array.insert(
+        "operands".to_owned(),
+        serde_json::json!({"start": 0, "len": 2}),
+    );
+    assert!(serde_json::from_value::<Dae>(old_name).is_err());
 
-    let mut repeated_operands: serde_json::Value = serde_json::from_str(&encoded).unwrap();
-    let mut arrays = repeated_operands["storage"]["expressions"]["nodes"]
+    let mut old_name = canonical.clone();
+    let first_index = old_name["storage"]["expressions"]["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find_map(|node| node.get_mut("index"))
+        .unwrap()
+        .as_object_mut()
+        .unwrap();
+    first_index.remove("subscript_count");
+    first_index.insert(
+        "subscripts".to_owned(),
+        serde_json::json!({"start": 0, "len": 1}),
+    );
+    assert!(serde_json::from_value::<Dae>(old_name).is_err());
+
+    let mut old_range = canonical.clone();
+    let first_array = old_range["storage"]["expressions"]["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find_map(|node| node.get_mut("array"))
+        .unwrap();
+    first_array["operand_count"] = serde_json::json!({"start": 0, "len": 2});
+    assert!(
+        serde_json::from_value::<Dae>(old_range).is_err(),
+        "wire-v11 rejects the removed packed-range representation"
+    );
+
+    let mut oversized = canonical.clone();
+    let first_array = oversized["storage"]["expressions"]["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find_map(|node| node.get_mut("array"))
+        .unwrap();
+    first_array["operand_count"] = u32::MAX.into();
+    assert!(
+        serde_json::from_value::<Dae>(oversized).is_err(),
+        "an operand count cannot exceed the remaining packed buffer"
+    );
+
+    let mut oversized = canonical.clone();
+    let first_index = oversized["storage"]["expressions"]["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find_map(|node| node.get_mut("index"))
+        .unwrap();
+    first_index["subscript_count"] = 2.into();
+    assert!(
+        serde_json::from_value::<Dae>(oversized).is_err(),
+        "a subscript count cannot consume a later operation's payload"
+    );
+
+    let mut shortened = canonical.clone();
+    let second_array = shortened["storage"]["expressions"]["nodes"]
         .as_array_mut()
         .unwrap()
         .iter_mut()
         .filter_map(|node| node.get_mut("array"))
-        .collect::<Vec<_>>();
-    let first_operand_start = arrays[0]["operands"]["start"].clone();
-    arrays[1]["operands"]["start"] = first_operand_start;
+        .nth(1)
+        .unwrap();
+    second_array["operand_count"] = 1.into();
     assert!(
-        serde_json::from_value::<Dae>(repeated_operands).is_err(),
-        "an operand range cannot replay an already-consumed packed segment"
+        serde_json::from_value::<Dae>(shortened).is_err(),
+        "short counts cannot leave packed payload unconsumed"
     );
 
-    let mut repeated_subscripts: serde_json::Value = serde_json::from_str(&encoded).unwrap();
-    let mut indices = repeated_subscripts["storage"]["expressions"]["nodes"]
+    let mut trailing = canonical;
+    trailing["storage"]["expressions"]["operands"]
         .as_array_mut()
         .unwrap()
-        .iter_mut()
-        .filter_map(|node| node.get_mut("index"))
-        .collect::<Vec<_>>();
-    let first_subscript_start = indices[0]["subscripts"]["start"].clone();
-    indices[1]["subscripts"]["start"] = first_subscript_start;
+        .push(0.into());
     assert!(
-        serde_json::from_value::<Dae>(repeated_subscripts).is_err(),
-        "a subscript range cannot replay an already-consumed packed segment"
+        serde_json::from_value::<Dae>(trailing).is_err(),
+        "every packed operand must be consumed exactly once"
     );
 }
 

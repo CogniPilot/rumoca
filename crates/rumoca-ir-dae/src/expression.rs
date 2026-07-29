@@ -324,11 +324,19 @@ impl CoordinateInput<'_> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct OperandRange {
     pub(crate) start: u32,
     pub(crate) len: u32,
+}
+
+impl Serialize for OperandRange {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_u32(self.len)
+    }
 }
 
 impl OperandRange {
@@ -360,12 +368,15 @@ pub(crate) enum ExprNode {
         rhs: u32,
     },
     Conditional {
+        #[serde(rename = "operand_count")]
         operands: OperandRange,
     },
     Array {
+        #[serde(rename = "operand_count")]
         operands: OperandRange,
     },
     Record {
+        #[serde(rename = "operand_count")]
         operands: OperandRange,
     },
     Field {
@@ -383,20 +394,24 @@ pub(crate) enum ExprNode {
     },
     Index {
         base: u32,
+        #[serde(rename = "subscript_count")]
         subscripts: OperandRange,
     },
     ArrayUpdate {
         base: u32,
         value: u32,
+        #[serde(rename = "subscript_count")]
         subscripts: OperandRange,
     },
     Builtin {
         builtin: PureBuiltin,
+        #[serde(rename = "operand_count")]
         operands: OperandRange,
     },
     Call {
         function: u32,
         output: u32,
+        #[serde(rename = "operand_count")]
         operands: OperandRange,
     },
     FunctionValue {
