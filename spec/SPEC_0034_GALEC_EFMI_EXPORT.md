@@ -43,12 +43,12 @@ rumoca crate  generic container/checksum build step + vendored schemas (BSD-3 ve
 | GAL-006 | Generic capability validation always runs; GALEC admissibility is additive; the target manifest declares source IR `dae` or `solve`, never `galec`. | `rumoca-compile` | No `ir`-keyed validator bypasses (SPEC_0029 §12). |
 | GAL-007 | Unsupported features fail with stable `unsupported-feature:<feature_id>` diagnostics; errors are structured phase-local enums with stable codes and spans (SPEC_0008); no silent defaults. | GALEC language and phase modules | Fail early; CI-aggregatable. |
 | GAL-008 | Generated C **and eFMI packaging XML** are owned by minijinja templates (D3 amended); closed typed context stays typed through the render boundary; no dynamic-value transport or C/XML fragments in Rust; template dispatch fails closed. | `rumoca-phase-codegen` | SPEC_0029 §12. |
-| GAL-009 | `.alg` text is printed from the GALEC AST (recorded SPEC_0029 §12 exception), reaching emitted files as template context via the `target.toml` + minijinja pipeline. | `rumoca-ir-galec` printer | T4–T7/T12 need typed printing. |
+| GAL-009 | `.alg` text is printed from the checked GALEC block (recorded SPEC_0029 §12 exception), reaching emitted files as template context via the `target.toml` + minijinja pipeline. | `rumoca-ir-galec` printer | T4–T7/T12 need typed printing. |
 | GAL-010 | `rumoca-ir-galec` owns only opaque checked GALEC language data, parsing, and printing; it depends on `rumoca-core` for provenance only. `rumoca-phase-codegen` exclusively owns DAE projection, target contexts, C mangling/lowering, eFMI manifest models, and packaging validation. No GALEC-specific codegen crate or compatibility facade exists. Generic container/checksum assembly and schemas remain in `rumoca`. | workspace layout | Enforce phase ownership. |
 | GAL-011 | GALEC output via `--target galec` / `--target embedded-c-galec`; `--emit` stays reserved for canonical IR inspection. | `rumoca` CLI | Preserves the CLI contract. |
 | GAL-012 | Template CI renders GALEC targets against a dedicated smoke fixture; skipped targets MUST NOT be marked covered; generated C is compile-checked (Testing Requirements). | template CI (xtask) | False coverage hides broken output. |
 | GAL-013 | Generated C/H/object outputs MUST NOT be committed except as intentional, small, documented fixtures. | CI | Repository hygiene. |
-| GAL-014 | A parser, if added, parses into the GALEC AST only — never DAE/Solve, never Modelica input. The AST carries source `rumoca_core::Span`s (D11). | `rumoca-ir-galec` | Export language stays out of the front end. |
+| GAL-014 | The parser constructs a checked GALEC block only — never DAE/Solve, never Modelica input. Invalid documents use a private recoverable CST for diagnostics/navigation. | `rumoca-ir-galec` | Export language stays out of the front end. |
 | GAL-015 | Mangling MUST be injective AND disjoint from keywords/reserved words/builtins/Appendix C names/`__` prefix space; quoted identifiers carry original scalarized Modelica names. | `rumoca-phase-codegen` | Injectivity alone still emits illegal names (T13). |
 | GAL-016 | Discrete-time semantics derive from structured compiler metadata, never string/unit/value heuristics; one static base period per block; dynamic clocks and multi-rate rejected pre-projection with stable diagnostics. | `rumoca-phase-codegen` | **Why** below. |
 | GAL-017 | Block interface: exactly `Startup`/`Recalibrate`/`DoStep` (§3.1.3), stateful, parameter-free; I/O via `self.*`; Startup initializes ALL writable block variables, builtins only (control inputs read-only); Recalibrate emitted even when empty; all other functions reachable from DoStep; acyclic call graph. | `rumoca-phase-codegen` | §3.1.3, §3.2.3–3.2.4. |
@@ -110,16 +110,15 @@ XSD enum `dependentParameter` (not `calculatedParameter`); `start` row-major,
 scalar broadcast; method-local variables unlisted; structurally-parametric
 array sizes rejected.
 
-### Validator Scope (`rumoca-ir-galec::validate`, per §3.2.2)
+### Checked Construction Scope (`rumoca-ir-galec`, per §3.2.2)
 
 | Analysis | Checks |
 |----------|--------|
-| Name | keyword/reserved/`__`/builtin/Appendix C legality; quoted-identifier well-formedness; matching `end` names |
-| Type | equal-typed binary operands; `/` Real-only; `^`→Real; no implicit promotion; mandatory `else` |
-| Dimensionality | subscripts/dims/loop bounds are constant scalar Integer expressions |
-| Termination | acyclic call graph; DoStep-reachability (dead functions illegal); Startup builtins-only |
-| Side-effect | stateless functions never write state; stateful-call isolation; none in if-expressions |
-| Signals | §3.2.5 escape-set dataflow: declared == computed; only settable signals testable; ≤16 user signals; method escape ⊆ predefined 6 |
+| Name | constructors reject keyword/reserved/`__`/builtin/Appendix C collisions and malformed quoted names |
+| Type/shape | expressions carry exact type/extents; `/` is Real-only; `^`→Real; no implicit promotion; `else` mandatory |
+| Static domain | dimensions, subscripts, and loop bounds carry checked constant-Integer proofs |
+| Calls/effects | branded function IDs make unresolved/recursive calls impossible; body capabilities restrict writes and stateful calls |
+| Signals | construction derives §3.2.5 escape sets; only settable signals testable; ≤16 user signals; method escape ⊆ predefined 6 |
 
 ### Language Traps (T1–T14)
 
