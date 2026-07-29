@@ -4,99 +4,279 @@ mod tests;
 use super::*;
 use crate::model::{FunctionReadFact, FunctionReadMergeError};
 
-pub(super) fn node_function_scope(
-    storage: &Storage,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct FunctionInsertionFacts {
+    pub(super) scope: Option<u32>,
+    pub(super) illegal_coordinate: Option<u32>,
+    pub(super) read_set: FunctionReadSet,
+}
+
+impl FunctionInsertionFacts {
+    const EMPTY: Self = Self {
+        scope: None,
+        illegal_coordinate: None,
+        read_set: FunctionReadSet::EMPTY,
+    };
+}
+
+/// Derives all function-local facts while visiting each direct child once.
+///
+/// Scope errors take precedence over illegal-coordinate and read errors.
+/// Lower-priority errors are deferred without changing their left-to-right
+/// witness orientation.
+pub(super) fn node_function_facts(
+    storage: &mut Storage,
     node: &ExprNode,
     at: DaeProvenance,
-) -> Result<Option<u32>, DaeConstructionError> {
+) -> Result<FunctionInsertionFacts, DaeConstructionError> {
     match node {
-        ExprNode::Coordinate(Coordinate::FunctionParameter { function, .. })
-        | ExprNode::FunctionValue { function, .. }
-        | ExprNode::FunctionFoldParameter { function, .. }
-        | ExprNode::FunctionFoldOutput { function, .. } => Ok(Some(*function)),
-        ExprNode::Literal(_) | ExprNode::Coordinate(_) | ExprNode::Range { .. } => Ok(None),
+        ExprNode::Coordinate(Coordinate::FunctionParameter { function, .. }) => {
+            checked_u32(storage.expressions.nodes.len(), "expression arena", at)?;
+            return Ok(FunctionInsertionFacts {
+                scope: Some(*function),
+                ..FunctionInsertionFacts::EMPTY
+            });
+        }
+        ExprNode::FunctionValue {
+            function,
+            value,
+            definition_ordinal,
+        } => {
+            let witness = checked_u32(storage.expressions.nodes.len(), "expression arena", at)?;
+            let read_set = storage.function_read_sets.singleton(
+                FunctionReadFact {
+                    value: *value,
+                    definition: *definition_ordinal,
+                    witness,
+                },
+                at,
+            )?;
+            return Ok(FunctionInsertionFacts {
+                scope: Some(*function),
+                read_set,
+                ..FunctionInsertionFacts::EMPTY
+            });
+        }
+        ExprNode::FunctionFoldParameter {
+            function,
+            fold,
+            carried,
+            definition_ordinal,
+        }
+        | ExprNode::FunctionFoldOutput {
+            function,
+            fold,
+            carried,
+            definition_ordinal,
+        } => {
+            let witness = checked_u32(storage.expressions.nodes.len(), "expression arena", at)?;
+            let fold = FunctionFoldId::from_raw(*function, *fold);
+            let entry = function_fold_entry(storage, fold, at)?;
+            let value = entry
+                .targets
+                .get(*carried as usize)
+                .copied()
+                .ok_or_else(|| invalid_arity(entry.targets.len(), *carried as usize + 1, at))?;
+            let read_set = storage.function_read_sets.singleton(
+                FunctionReadFact {
+                    value,
+                    definition: *definition_ordinal,
+                    witness,
+                },
+                at,
+            )?;
+            return Ok(FunctionInsertionFacts {
+                scope: Some(*function),
+                read_set,
+                ..FunctionInsertionFacts::EMPTY
+            });
+        }
+        ExprNode::Coordinate(Coordinate::Binder { .. })
+        | ExprNode::Literal(_)
+        | ExprNode::Range { .. } => {
+            checked_u32(storage.expressions.nodes.len(), "expression arena", at)?;
+            return Ok(FunctionInsertionFacts::EMPTY);
+        }
+        ExprNode::Coordinate(_) => {
+            let witness = checked_u32(storage.expressions.nodes.len(), "expression arena", at)?;
+            return Ok(FunctionInsertionFacts {
+                illegal_coordinate: Some(witness),
+                ..FunctionInsertionFacts::EMPTY
+            });
+        }
+        _ => {}
+    }
+
+    let mut fold = FunctionFactsFold::new();
+    match node {
         ExprNode::Unary { operand, .. }
         | ExprNode::Field { base: operand, .. }
         | ExprNode::Comprehension { body: operand, .. } => {
-            merge_expression_function_scope(storage, None, *operand, at)
+            fold.merge_expression(storage, *operand, at)?;
         }
         ExprNode::Binary { lhs, rhs, .. } => {
-            let scope = merge_expression_function_scope(storage, None, *lhs, at)?;
-            merge_expression_function_scope(storage, scope, *rhs, at)
+            fold.merge_expression(storage, *lhs, at)?;
+            fold.merge_expression(storage, *rhs, at)?;
         }
         ExprNode::Index { base, subscripts } => {
-            let scope = merge_expression_function_scope(storage, None, *base, at)?;
-            merge_subscript_function_scopes(storage, scope, *subscripts, at)
+            fold.merge_expression(storage, *base, at)?;
+            fold.merge_subscripts(storage, *subscripts, at)?;
         }
         ExprNode::ArrayUpdate {
             base,
             value,
             subscripts,
         } => {
-            let scope = merge_expression_function_scope(storage, None, *base, at)?;
-            let scope = merge_expression_function_scope(storage, scope, *value, at)?;
-            merge_subscript_function_scopes(storage, scope, *subscripts, at)
+            fold.merge_expression(storage, *base, at)?;
+            fold.merge_expression(storage, *value, at)?;
+            fold.merge_subscripts(storage, *subscripts, at)?;
         }
         ExprNode::Conditional { operands }
         | ExprNode::Array { operands }
         | ExprNode::Record { operands }
         | ExprNode::Builtin { operands, .. }
-        | ExprNode::Call { operands, .. } => merge_operand_function_scopes(storage, *operands, at),
+        | ExprNode::Call { operands, .. } => fold.merge_operands(storage, *operands, at)?,
+        ExprNode::Literal(_)
+        | ExprNode::Coordinate(_)
+        | ExprNode::Range { .. }
+        | ExprNode::FunctionValue { .. }
+        | ExprNode::FunctionFoldParameter { .. }
+        | ExprNode::FunctionFoldOutput { .. } => unreachable!("leaf expressions returned above"),
     }
+    fold.finish(storage, at)
 }
 
-fn merge_operand_function_scopes(
-    storage: &Storage,
-    operands: OperandRange,
-    at: DaeProvenance,
-) -> Result<Option<u32>, DaeConstructionError> {
-    storage
-        .expressions
-        .operands
-        .get(operands.indices())
-        .ok_or_else(|| crate::model::unknown("operand range", operands.start, at))?
-        .iter()
-        .try_fold(None, |scope, expression| {
-            merge_expression_function_scope(storage, scope, *expression, at)
-        })
+#[derive(Debug)]
+struct FunctionFactsFold {
+    facts: FunctionInsertionFacts,
+    illegal_error: Option<DaeConstructionError>,
+    read_error: Option<FunctionReadMergeError>,
 }
 
-fn merge_subscript_function_scopes(
-    storage: &Storage,
-    mut scope: Option<u32>,
-    subscripts: OperandRange,
-    at: DaeProvenance,
-) -> Result<Option<u32>, DaeConstructionError> {
-    for subscript in storage
-        .expressions
-        .subscripts
-        .get(subscripts.indices())
-        .ok_or_else(|| crate::model::unknown("subscript range", subscripts.start, at))?
-    {
-        let expression = match subscript.kind {
-            PackedSubscriptKind::Index(expression) | PackedSubscriptKind::Slice(expression) => {
-                expression
+impl FunctionFactsFold {
+    const fn new() -> Self {
+        Self {
+            facts: FunctionInsertionFacts::EMPTY,
+            illegal_error: None,
+            read_error: None,
+        }
+    }
+
+    fn merge_operands(
+        &mut self,
+        storage: &mut Storage,
+        operands: OperandRange,
+        at: DaeProvenance,
+    ) -> Result<(), DaeConstructionError> {
+        if storage
+            .expressions
+            .operands
+            .get(operands.indices())
+            .is_none()
+        {
+            return Err(crate::model::unknown("operand range", operands.start, at));
+        }
+        for index in operands.indices() {
+            let expression = storage.expressions.operands[index];
+            self.merge_expression(storage, expression, at)?;
+        }
+        Ok(())
+    }
+
+    fn merge_subscripts(
+        &mut self,
+        storage: &mut Storage,
+        subscripts: OperandRange,
+        at: DaeProvenance,
+    ) -> Result<(), DaeConstructionError> {
+        if storage
+            .expressions
+            .subscripts
+            .get(subscripts.indices())
+            .is_none()
+        {
+            return Err(crate::model::unknown(
+                "subscript range",
+                subscripts.start,
+                at,
+            ));
+        }
+        for index in subscripts.indices() {
+            let expression = match storage.expressions.subscripts[index].kind {
+                PackedSubscriptKind::Index(expression) | PackedSubscriptKind::Slice(expression) => {
+                    expression
+                }
+                PackedSubscriptKind::Whole => continue,
+            };
+            self.merge_expression(storage, expression, at)?;
+        }
+        Ok(())
+    }
+
+    fn merge_expression(
+        &mut self,
+        storage: &mut Storage,
+        expression: u32,
+        at: DaeProvenance,
+    ) -> Result<(), DaeConstructionError> {
+        let index = expression as usize;
+        let scope = storage
+            .expressions
+            .function_scopes
+            .get(index)
+            .copied()
+            .ok_or_else(|| crate::model::unknown("expression", expression, at))?;
+        self.facts.scope = merge_function_scope(self.facts.scope, scope, at)?;
+
+        if self.facts.illegal_coordinate.is_none() && self.illegal_error.is_none() {
+            match storage
+                .expressions
+                .function_illegal_coordinates
+                .get(index)
+                .copied()
+            {
+                Some(illegal) => self.facts.illegal_coordinate = illegal,
+                None => {
+                    self.illegal_error = Some(crate::model::unknown("expression", expression, at));
+                }
             }
-            PackedSubscriptKind::Whole => continue,
-        };
-        scope = merge_expression_function_scope(storage, scope, expression, at)?;
-    }
-    Ok(scope)
-}
+        }
 
-fn merge_expression_function_scope(
-    storage: &Storage,
-    scope: Option<u32>,
-    expression: u32,
-    at: DaeProvenance,
-) -> Result<Option<u32>, DaeConstructionError> {
-    let found = storage
-        .expressions
-        .function_scopes
-        .get(expression as usize)
-        .copied()
-        .ok_or_else(|| crate::model::unknown("expression", expression, at))?;
-    merge_function_scope(scope, found, at)
+        if self.illegal_error.is_none() && self.read_error.is_none() {
+            match storage.expressions.function_read_sets.get(index).copied() {
+                Some(read_set) => {
+                    match storage
+                        .function_read_sets
+                        .merge(self.facts.read_set, read_set, at)
+                    {
+                        Ok(merged) => self.facts.read_set = merged,
+                        Err(error) => self.read_error = Some(error),
+                    }
+                }
+                None => {
+                    self.read_error = Some(FunctionReadMergeError::Construction(
+                        crate::model::unknown("expression", expression, at),
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn finish(
+        self,
+        storage: &Storage,
+        at: DaeProvenance,
+    ) -> Result<FunctionInsertionFacts, DaeConstructionError> {
+        if let Some(error) = self.illegal_error {
+            return Err(error);
+        }
+        checked_u32(storage.expressions.nodes.len(), "expression arena", at)?;
+        if let Some(error) = self.read_error {
+            return Err(function_read_error(storage, error, at));
+        }
+        Ok(self.facts)
+    }
 }
 
 fn merge_function_scope(
@@ -115,281 +295,28 @@ fn merge_function_scope(
     }
 }
 
-pub(super) fn node_function_illegal_coordinate(
+fn function_read_error(
     storage: &Storage,
-    node: &ExprNode,
+    error: FunctionReadMergeError,
     at: DaeProvenance,
-) -> Result<Option<u32>, DaeConstructionError> {
-    let direct = match node {
-        ExprNode::Coordinate(Coordinate::FunctionParameter { .. } | Coordinate::Binder { .. })
-        | ExprNode::Literal(_)
-        | ExprNode::Range { .. }
-        | ExprNode::FunctionValue { .. }
-        | ExprNode::FunctionFoldParameter { .. }
-        | ExprNode::FunctionFoldOutput { .. } => return Ok(None),
-        ExprNode::Coordinate(_) => {
-            return checked_u32(storage.expressions.nodes.len(), "expression arena", at).map(Some);
-        }
-        ExprNode::Unary { operand, .. }
-        | ExprNode::Field { base: operand, .. }
-        | ExprNode::Comprehension { body: operand, .. } => {
-            return function_illegal_coordinate_of(storage, *operand, at);
-        }
-        ExprNode::Binary { lhs, rhs, .. } => {
-            return function_illegal_coordinate_of(storage, *lhs, at)?.map_or_else(
-                || function_illegal_coordinate_of(storage, *rhs, at),
-                |illegal| Ok(Some(illegal)),
-            );
-        }
-        ExprNode::Index { base, subscripts } => {
-            if let Some(illegal) = function_illegal_coordinate_of(storage, *base, at)? {
-                return Ok(Some(illegal));
-            }
-            return subscript_function_illegal_coordinate(storage, *subscripts, at);
-        }
-        ExprNode::ArrayUpdate {
-            base,
-            value,
-            subscripts,
-        } => {
-            if let Some(illegal) = function_illegal_coordinate_of(storage, *base, at)?
-                .or(function_illegal_coordinate_of(storage, *value, at)?)
-            {
-                return Ok(Some(illegal));
-            }
-            return subscript_function_illegal_coordinate(storage, *subscripts, at);
-        }
-        ExprNode::Conditional { operands }
-        | ExprNode::Array { operands }
-        | ExprNode::Record { operands }
-        | ExprNode::Builtin { operands, .. }
-        | ExprNode::Call { operands, .. } => *operands,
-    };
-    storage
-        .expressions
-        .operands
-        .get(direct.indices())
-        .ok_or_else(|| crate::model::unknown("operand range", direct.start, at))?
-        .iter()
-        .try_fold(None, |found, expression| {
-            if found.is_some() {
-                Ok(found)
-            } else {
-                function_illegal_coordinate_of(storage, *expression, at)
-            }
-        })
-}
-
-fn subscript_function_illegal_coordinate(
-    storage: &Storage,
-    subscripts: OperandRange,
-    at: DaeProvenance,
-) -> Result<Option<u32>, DaeConstructionError> {
-    storage
-        .expressions
-        .subscripts
-        .get(subscripts.indices())
-        .ok_or_else(|| crate::model::unknown("subscript range", subscripts.start, at))?
-        .iter()
-        .try_fold(None, |found, subscript| {
-            if found.is_some() {
-                return Ok(found);
-            }
-            match subscript.kind {
-                PackedSubscriptKind::Index(expression) | PackedSubscriptKind::Slice(expression) => {
-                    function_illegal_coordinate_of(storage, expression, at)
-                }
-                PackedSubscriptKind::Whole => Ok(None),
-            }
-        })
-}
-
-fn function_illegal_coordinate_of(
-    storage: &Storage,
-    expression: u32,
-    at: DaeProvenance,
-) -> Result<Option<u32>, DaeConstructionError> {
-    storage
-        .expressions
-        .function_illegal_coordinates
-        .get(expression as usize)
-        .copied()
-        .ok_or_else(|| crate::model::unknown("expression", expression, at))
-}
-
-pub(super) fn node_function_read_set(
-    storage: &mut Storage,
-    node: &ExprNode,
-    at: DaeProvenance,
-) -> Result<FunctionReadSet, DaeConstructionError> {
-    let witness = checked_u32(storage.expressions.nodes.len(), "expression arena", at)?;
-    match node {
-        ExprNode::FunctionValue {
-            value,
-            definition_ordinal,
-            ..
-        } => {
-            return storage.function_read_sets.singleton(
-                FunctionReadFact {
-                    value: *value,
-                    definition: *definition_ordinal,
-                    witness,
-                },
-                at,
-            );
-        }
-        ExprNode::FunctionFoldParameter {
-            function,
-            fold,
-            carried,
-            definition_ordinal,
-        }
-        | ExprNode::FunctionFoldOutput {
-            function,
-            fold,
-            carried,
-            definition_ordinal,
-        } => {
-            let fold = FunctionFoldId::from_raw(*function, *fold);
-            let entry = function_fold_entry(storage, fold, at)?;
-            let value = entry
-                .targets
-                .get(*carried as usize)
-                .copied()
-                .ok_or_else(|| invalid_arity(entry.targets.len(), *carried as usize + 1, at))?;
-            return storage.function_read_sets.singleton(
-                FunctionReadFact {
-                    value,
-                    definition: *definition_ordinal,
-                    witness,
-                },
-                at,
-            );
-        }
-        _ => {}
-    }
-    match node {
-        ExprNode::Literal(_)
-        | ExprNode::Coordinate(_)
-        | ExprNode::Range { .. }
-        | ExprNode::FunctionValue { .. }
-        | ExprNode::FunctionFoldParameter { .. }
-        | ExprNode::FunctionFoldOutput { .. } => Ok(FunctionReadSet::EMPTY),
-        ExprNode::Unary { operand, .. }
-        | ExprNode::Field { base: operand, .. }
-        | ExprNode::Comprehension { body: operand, .. } => {
-            function_read_set_of(storage, *operand, at)
-        }
-        ExprNode::Binary { lhs, rhs, .. } => {
-            let lhs = function_read_set_of(storage, *lhs, at)?;
-            let rhs = function_read_set_of(storage, *rhs, at)?;
-            merge_function_read_sets(storage, lhs, rhs, at)
-        }
-        ExprNode::Index { base, subscripts } => {
-            let base = function_read_set_of(storage, *base, at)?;
-            merge_subscript_function_read_sets(storage, base, *subscripts, at)
-        }
-        ExprNode::ArrayUpdate {
-            base,
-            value,
-            subscripts,
-        } => {
-            let base = function_read_set_of(storage, *base, at)?;
-            let value = function_read_set_of(storage, *value, at)?;
-            let merged = merge_function_read_sets(storage, base, value, at)?;
-            merge_subscript_function_read_sets(storage, merged, *subscripts, at)
-        }
-        ExprNode::Conditional { operands }
-        | ExprNode::Array { operands }
-        | ExprNode::Record { operands }
-        | ExprNode::Builtin { operands, .. }
-        | ExprNode::Call { operands, .. } => {
-            merge_operand_function_read_sets(storage, *operands, at)
-        }
-    }
-}
-
-fn function_read_set_of(
-    storage: &Storage,
-    expression: u32,
-    at: DaeProvenance,
-) -> Result<FunctionReadSet, DaeConstructionError> {
-    storage
-        .expressions
-        .function_read_sets
-        .get(expression as usize)
-        .copied()
-        .ok_or_else(|| crate::model::unknown("expression", expression, at))
-}
-
-fn merge_operand_function_read_sets(
-    storage: &mut Storage,
-    operands: OperandRange,
-    at: DaeProvenance,
-) -> Result<FunctionReadSet, DaeConstructionError> {
-    let mut merged = FunctionReadSet::EMPTY;
-    for index in operands.indices() {
-        let expression = storage
-            .expressions
-            .operands
-            .get(index)
-            .copied()
-            .ok_or_else(|| crate::model::unknown("operand", index as u32, at))?;
-        let found = function_read_set_of(storage, expression, at)?;
-        merged = merge_function_read_sets(storage, merged, found, at)?;
-    }
-    Ok(merged)
-}
-
-fn merge_subscript_function_read_sets(
-    storage: &mut Storage,
-    mut merged: FunctionReadSet,
-    subscripts: OperandRange,
-    at: DaeProvenance,
-) -> Result<FunctionReadSet, DaeConstructionError> {
-    for index in subscripts.indices() {
-        let kind = storage
-            .expressions
-            .subscripts
-            .get(index)
-            .ok_or_else(|| crate::model::unknown("subscript", index as u32, at))?
-            .kind;
-        let expression = match kind {
-            PackedSubscriptKind::Index(expression) | PackedSubscriptKind::Slice(expression) => {
-                expression
-            }
-            PackedSubscriptKind::Whole => continue,
-        };
-        let found = function_read_set_of(storage, expression, at)?;
-        merged = merge_function_read_sets(storage, merged, found, at)?;
-    }
-    Ok(merged)
-}
-
-fn merge_function_read_sets(
-    storage: &mut Storage,
-    lhs: FunctionReadSet,
-    rhs: FunctionReadSet,
-    at: DaeProvenance,
-) -> Result<FunctionReadSet, DaeConstructionError> {
-    match storage.function_read_sets.merge(lhs, rhs, at) {
-        Ok(merged) => Ok(merged),
-        Err(FunctionReadMergeError::Construction(error)) => Err(error),
-        Err(FunctionReadMergeError::Conflict(conflict)) => {
-            let provenance = storage
+) -> DaeConstructionError {
+    match error {
+        FunctionReadMergeError::Construction(error) => error,
+        FunctionReadMergeError::Conflict(conflict) => {
+            let Some(provenance) = storage
                 .expressions
                 .provenance
                 .get(conflict.found.witness as usize)
                 .copied()
-                .ok_or_else(|| {
-                    crate::model::unknown("expression provenance", conflict.found.witness, at)
-                })?;
-            Err(DaeConstructionError::InvalidFunctionValueRead {
+            else {
+                return crate::model::unknown("expression provenance", conflict.found.witness, at);
+            };
+            DaeConstructionError::InvalidFunctionValueRead {
                 value: conflict.found.value,
                 expected_definition: Some(conflict.expected.definition),
                 found_definition: conflict.found.definition,
                 span: provenance.span(),
-            })
+            }
         }
     }
 }

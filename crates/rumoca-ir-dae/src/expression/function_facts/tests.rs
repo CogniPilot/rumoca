@@ -38,12 +38,37 @@ fn conflicting_storage(found_witness: u32) -> (Storage, FunctionReadSet, Functio
     (storage, lhs, rhs)
 }
 
+fn push_facts(
+    storage: &mut Storage,
+    scope: Option<u32>,
+    illegal_coordinate: Option<u32>,
+    read_set: FunctionReadSet,
+    at: DaeProvenance,
+) {
+    storage.expressions.function_scopes.push(scope);
+    storage
+        .expressions
+        .function_illegal_coordinates
+        .push(illegal_coordinate);
+    storage.expressions.function_read_sets.push(read_set);
+    storage.expressions.provenance.push(at);
+}
+
+fn binary() -> ExprNode {
+    ExprNode::Binary {
+        operator: BinaryOperator::Add,
+        lhs: 0,
+        rhs: 1,
+    }
+}
+
 #[test]
 fn conflicting_read_uses_the_exact_found_occurrence_span() {
     let (mut storage, lhs, rhs) = conflicting_storage(1);
-    storage.expressions.provenance = vec![provenance(10), provenance(20)];
+    push_facts(&mut storage, Some(7), None, lhs, provenance(10));
+    push_facts(&mut storage, Some(7), None, rhs, provenance(20));
 
-    let error = merge_function_read_sets(&mut storage, lhs, rhs, provenance(30))
+    let error = node_function_facts(&mut storage, &binary(), provenance(30))
         .expect_err("different definitions conflict");
     assert!(matches!(
         error,
@@ -59,9 +84,10 @@ fn conflicting_read_uses_the_exact_found_occurrence_span() {
 #[test]
 fn invalid_proof_witness_is_rejected_without_a_fallback_span() {
     let (mut storage, lhs, rhs) = conflicting_storage(9);
-    storage.expressions.provenance = vec![provenance(10)];
+    push_facts(&mut storage, Some(7), None, lhs, provenance(10));
+    push_facts(&mut storage, Some(7), None, rhs, provenance(20));
 
-    let error = merge_function_read_sets(&mut storage, lhs, rhs, provenance(30))
+    let error = node_function_facts(&mut storage, &binary(), provenance(30))
         .expect_err("invalid proof witness cannot be hidden");
     assert!(matches!(
         error,
@@ -71,4 +97,47 @@ fn invalid_proof_witness_is_rejected_without_a_fallback_span() {
             ..
         }
     ));
+}
+
+#[test]
+fn scope_conflict_precedes_earlier_read_conflict() {
+    let (mut storage, lhs, rhs) = conflicting_storage(1);
+    push_facts(&mut storage, Some(7), None, lhs, provenance(10));
+    push_facts(&mut storage, Some(8), None, rhs, provenance(20));
+
+    let error = node_function_facts(&mut storage, &binary(), provenance(30))
+        .expect_err("cross-function expressions are rejected first");
+    assert!(matches!(
+        error,
+        DaeConstructionError::InvalidFunctionScope {
+            expected_function: Some(7),
+            found_function: 8,
+            span,
+        } if span == provenance(30).span()
+    ));
+}
+
+#[test]
+fn fold_keeps_leftmost_illegal_coordinate() {
+    let mut storage = Storage::default();
+    push_facts(
+        &mut storage,
+        Some(7),
+        Some(11),
+        FunctionReadSet::EMPTY,
+        provenance(10),
+    );
+    push_facts(
+        &mut storage,
+        Some(7),
+        Some(12),
+        FunctionReadSet::EMPTY,
+        provenance(20),
+    );
+
+    let facts =
+        node_function_facts(&mut storage, &binary(), provenance(30)).expect("compatible facts");
+    assert_eq!(facts.scope, Some(7));
+    assert_eq!(facts.illegal_coordinate, Some(11));
+    assert_eq!(facts.read_set, FunctionReadSet::EMPTY);
 }
