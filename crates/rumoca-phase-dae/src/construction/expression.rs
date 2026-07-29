@@ -12,6 +12,7 @@ pub(super) fn lower_expression<'dae>(
         functions,
         shapes: functions.shapes.model_values(),
         function_body: None,
+        values: None,
     };
     lower_expression_scoped(
         construction,
@@ -28,6 +29,29 @@ pub(super) struct LoweringSymbols<'symbols, 'dae> {
     pub(super) functions: &'symbols FunctionRegistry<'symbols, 'dae>,
     pub(super) shapes: &'symbols ShapeEnvironment,
     pub(super) function_body: Option<&'symbols dae::FunctionBody<'dae>>,
+    pub(super) values: Option<&'symbols HashMap<VarName, dae::ExprId<'dae>>>,
+}
+
+pub(super) fn lower_model_algorithm_expression<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    coordinates: &HashMap<VarName, Coordinate<'dae>>,
+    functions: &FunctionRegistry<'_, 'dae>,
+    values: &HashMap<VarName, dae::ExprId<'dae>>,
+    expression: &Expression,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    lower_expression_scoped(
+        construction,
+        LoweringSymbols {
+            coordinates,
+            functions,
+            shapes: functions.shapes.model_values(),
+            function_body: None,
+            values: Some(values),
+        },
+        &HashMap::new(),
+        expression,
+        None,
+    )
 }
 
 pub(super) fn lower_function_expression<'dae>(
@@ -65,6 +89,7 @@ pub(super) fn lower_function_expression_scoped<'dae>(
             functions,
             shapes,
             function_body: Some(body),
+            values: None,
         },
         binders,
         expression,
@@ -269,6 +294,20 @@ fn lower_variable_reference<'dae>(
         && subscripts.is_empty()
     {
         return construction.expressions(|expressions| expressions.at(provenance).binder(binder));
+    }
+    if let Some(value) = symbols
+        .values
+        .and_then(|values| values.get(name.var_name()))
+        .copied()
+    {
+        return lower_index(
+            construction,
+            symbols,
+            binders,
+            value,
+            subscripts,
+            provenance,
+        );
     }
     match symbols.coordinates[name.var_name()] {
         Coordinate::FunctionValue(value) => {

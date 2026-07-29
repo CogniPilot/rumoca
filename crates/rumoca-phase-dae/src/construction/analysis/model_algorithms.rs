@@ -1,0 +1,321 @@
+use super::*;
+
+pub(in crate::construction) enum ModelAlgorithmPlan {
+    Declarative { target: VarName },
+    Event,
+}
+
+pub(super) fn analyze_model_algorithm(
+    flat: &flat::Model,
+    algorithm: &flat::Algorithm,
+    roles: &HashMap<VarName, PlannedRole>,
+) -> Result<ModelAlgorithmPlan, ToDaeError> {
+    if contains_when(&algorithm.statements) {
+        let targets = model_algorithm_targets(flat, algorithm);
+        if targets.iter().any(|target| {
+            !matches!(
+                roles[target],
+                PlannedRole::DiscreteReal | PlannedRole::DiscreteValue
+            )
+        }) {
+            return Err(ToDaeError::unsupported_algorithm(
+                "model",
+                "a mixed continuous/event algorithm requires one checked atomic owner",
+                algorithm.span,
+            ));
+        }
+        return Ok(ModelAlgorithmPlan::Event);
+    }
+    let targets = model_algorithm_targets(flat, algorithm);
+    let [target] = targets.as_slice() else {
+        return Err(ToDaeError::unsupported_algorithm(
+            "model",
+            "a multi-output algorithm requires one checked atomic vector-equation owner",
+            algorithm.span,
+        ));
+    };
+    let variable = &flat.variables[target];
+    if !variable.dims.is_empty() {
+        return Err(ToDaeError::unsupported_algorithm(
+            "model",
+            "an array algorithm requires one compact checked sequential-array owner",
+            algorithm.span,
+        ));
+    }
+    if !matches!(
+        roles[target],
+        PlannedRole::Algebraic
+            | PlannedRole::Output
+            | PlannedRole::DiscreteReal
+            | PlannedRole::DiscreteValue
+    ) {
+        return Err(ToDaeError::unsupported_algorithm(
+            "model",
+            format!(
+                "algorithm target `{target}` has non-computable role {:?}",
+                roles[target]
+            ),
+            algorithm.span,
+        ));
+    }
+    let assigned =
+        validate_declarative_sequence(&algorithm.statements, target, false, algorithm.span)?;
+    if !assigned {
+        return Err(ToDaeError::unsupported_algorithm(
+            "model",
+            format!("algorithm does not define `{target}` on every control-flow path"),
+            algorithm.span,
+        ));
+    }
+    Ok(ModelAlgorithmPlan::Declarative {
+        target: target.clone(),
+    })
+}
+
+fn validate_declarative_sequence(
+    statements: &[rumoca_core::Statement],
+    target: &VarName,
+    mut assigned: bool,
+    owner_span: Span,
+) -> Result<bool, ToDaeError> {
+    for statement in statements {
+        match statement {
+            rumoca_core::Statement::Assignment { comp, value, span } => {
+                let written = comp.to_var_name();
+                if &written != target || comp.parts.iter().any(|part| !part.subs.is_empty()) {
+                    return Err(ToDaeError::unsupported_algorithm(
+                        "model",
+                        "declarative scalar algorithm assignment escaped its checked target",
+                        *span,
+                    ));
+                }
+                reject_read_before_definition(value, target, assigned)?;
+                assigned = true;
+            }
+            rumoca_core::Statement::If {
+                cond_blocks,
+                else_block,
+                ..
+            } => {
+                let mut exits = Vec::with_capacity(cond_blocks.len() + 1);
+                for block in cond_blocks {
+                    reject_read_before_definition(&block.cond, target, assigned)?;
+                    exits.push(validate_declarative_sequence(
+                        &block.stmts,
+                        target,
+                        assigned,
+                        owner_span,
+                    )?);
+                }
+                exits.push(match else_block {
+                    Some(fallback) => {
+                        validate_declarative_sequence(fallback, target, assigned, owner_span)?
+                    }
+                    None => assigned,
+                });
+                assigned = exits.into_iter().all(std::convert::identity);
+            }
+            _ => {
+                return Err(ToDaeError::unsupported_algorithm(
+                    "model",
+                    "declarative algorithm requires scalar assignments and conditionals",
+                    statement.source_span().unwrap_or(owner_span),
+                ));
+            }
+        }
+    }
+    Ok(assigned)
+}
+
+fn reject_read_before_definition(
+    expression: &Expression,
+    target: &VarName,
+    assigned: bool,
+) -> Result<(), ToDaeError> {
+    if assigned {
+        return Ok(());
+    }
+    let mut references = Vec::new();
+    expression.collect_var_refs(&mut references);
+    if references.iter().any(|reference| reference == target) {
+        return Err(ToDaeError::unsupported_algorithm(
+            "model",
+            format!(
+                "`{target}` is read before definition; checked start/pre initialization is required"
+            ),
+            expression_span(expression)?,
+        ));
+    }
+    Ok(())
+}
+
+pub(in crate::construction) fn event_targets(flat: &flat::Model) -> HashSet<VarName> {
+    let mut written = when_clause_targets(flat);
+    for algorithm in &flat.algorithms {
+        collect_nested_when_targets(&algorithm.statements, &mut written);
+    }
+    resolve_written_targets(flat, written)
+}
+
+pub(in crate::construction) fn when_clause_targets(flat: &flat::Model) -> HashSet<VarName> {
+    let mut written = HashSet::new();
+    for clause in &flat.when_clauses {
+        collect_when_equation_targets(&clause.equations, &mut written);
+    }
+    resolve_written_targets(flat, written)
+}
+
+pub(in crate::construction) fn algorithm_targets(flat: &flat::Model) -> HashSet<VarName> {
+    flat.algorithms
+        .iter()
+        .flat_map(|algorithm| model_algorithm_targets(flat, algorithm))
+        .collect()
+}
+
+pub(in crate::construction) fn model_algorithm_targets(
+    flat: &flat::Model,
+    algorithm: &flat::Algorithm,
+) -> Vec<VarName> {
+    let mut written = HashSet::new();
+    collect_statement_targets(&algorithm.statements, &mut written);
+    let mut targets = resolve_written_targets(flat, written)
+        .into_iter()
+        .collect::<Vec<_>>();
+    targets.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+    targets
+}
+
+fn collect_statement_targets(
+    statements: &[rumoca_core::Statement],
+    targets: &mut HashSet<VarName>,
+) {
+    for statement in statements {
+        match statement {
+            rumoca_core::Statement::Assignment { comp, .. } if !comp.parts.is_empty() => {
+                targets.insert(comp.to_var_name());
+            }
+            rumoca_core::Statement::FunctionCall { outputs, .. } => {
+                targets.extend(outputs.iter().flatten().map(|output| output.to_var_name()));
+            }
+            rumoca_core::Statement::For { equations, .. } => {
+                collect_statement_targets(equations, targets);
+            }
+            rumoca_core::Statement::While { block, .. } => {
+                collect_statement_targets(&block.stmts, targets);
+            }
+            rumoca_core::Statement::If {
+                cond_blocks,
+                else_block,
+                ..
+            } => {
+                for block in cond_blocks {
+                    collect_statement_targets(&block.stmts, targets);
+                }
+                if let Some(fallback) = else_block {
+                    collect_statement_targets(fallback, targets);
+                }
+            }
+            rumoca_core::Statement::When { blocks, .. } => {
+                for block in blocks {
+                    collect_statement_targets(&block.stmts, targets);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn contains_when(statements: &[rumoca_core::Statement]) -> bool {
+    statements.iter().any(|statement| match statement {
+        rumoca_core::Statement::When { .. } => true,
+        rumoca_core::Statement::For { equations, .. } => contains_when(equations),
+        rumoca_core::Statement::While { block, .. } => contains_when(&block.stmts),
+        rumoca_core::Statement::If {
+            cond_blocks,
+            else_block,
+            ..
+        } => {
+            cond_blocks.iter().any(|block| contains_when(&block.stmts))
+                || else_block.as_deref().is_some_and(contains_when)
+        }
+        _ => false,
+    })
+}
+
+fn collect_nested_when_targets(
+    statements: &[rumoca_core::Statement],
+    targets: &mut HashSet<VarName>,
+) {
+    for statement in statements {
+        match statement {
+            rumoca_core::Statement::When { blocks, .. } => {
+                for block in blocks {
+                    collect_statement_targets(&block.stmts, targets);
+                }
+            }
+            rumoca_core::Statement::For { equations, .. } => {
+                collect_nested_when_targets(equations, targets);
+            }
+            rumoca_core::Statement::While { block, .. } => {
+                collect_nested_when_targets(&block.stmts, targets);
+            }
+            rumoca_core::Statement::If {
+                cond_blocks,
+                else_block,
+                ..
+            } => {
+                for block in cond_blocks {
+                    collect_nested_when_targets(&block.stmts, targets);
+                }
+                if let Some(fallback) = else_block {
+                    collect_nested_when_targets(fallback, targets);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn collect_when_equation_targets(equations: &[flat::WhenEquation], targets: &mut HashSet<VarName>) {
+    for equation in equations {
+        match equation {
+            flat::WhenEquation::Assign { target, .. } => {
+                targets.insert(target.clone());
+            }
+            flat::WhenEquation::Conditional {
+                branches,
+                else_branch,
+                ..
+            } => {
+                for (_, equations) in branches {
+                    collect_when_equation_targets(equations, targets);
+                }
+                collect_when_equation_targets(else_branch, targets);
+            }
+            flat::WhenEquation::FunctionCallOutputs { outputs, .. } => {
+                targets.extend(outputs.iter().cloned());
+            }
+            flat::WhenEquation::Reinit { .. }
+            | flat::WhenEquation::Assert { .. }
+            | flat::WhenEquation::Terminate { .. } => {}
+        }
+    }
+}
+
+fn resolve_written_targets(flat: &flat::Model, written: HashSet<VarName>) -> HashSet<VarName> {
+    let mut targets = HashSet::new();
+    for target in written {
+        if flat.variables.contains_key(&target) {
+            targets.insert(target);
+            continue;
+        }
+        let prefix = format!("{target}.");
+        targets.extend(
+            flat.variables
+                .keys()
+                .filter(|name| name.as_str().starts_with(&prefix))
+                .cloned(),
+        );
+    }
+    targets
+}

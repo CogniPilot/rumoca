@@ -257,6 +257,7 @@ fn lower_derived_parameter_binding<'dae>(
         functions,
         shapes: functions.shapes.model_values(),
         function_body: None,
+        values: None,
     };
     let body = lower_expression_scoped(construction, symbols, &binders, &plan.body, None)?;
     let generated =

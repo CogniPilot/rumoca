@@ -22,6 +22,7 @@ mod function_body;
 mod function_construction;
 mod function_record_assembly;
 mod function_shapes;
+mod model_algorithm;
 mod record_equation;
 mod structured_body;
 mod variable_construction;
@@ -31,9 +32,9 @@ use algorithm::{
 use analysis::{
     Analysis, ComprehensionKey, ComprehensionPlan, DerivedParameterPlan, EquationPartition,
     FunctionArrayAssemblyPlan, FunctionLoopLowering, FunctionPlan, FunctionRecordAssemblyPlan,
-    FunctionStatementPlan, PlannedRole, RecordArrayFieldPlan, RecordEquationPlan, analyze,
-    defined_discrete_targets, effective_variable_scalar_type, equation_partition,
-    primitive_scalar_type, structured_assignment_names,
+    FunctionStatementPlan, ModelAlgorithmPlan, PlannedRole, RecordArrayFieldPlan,
+    RecordEquationPlan, analyze, defined_discrete_targets, effective_variable_scalar_type,
+    equation_partition, primitive_scalar_type, structured_assignment_names,
 };
 use clocks::{LoweredClocks, lower_clocks, lower_sampled_value_clocks};
 use equation_systems::lower_equation_systems;
@@ -41,8 +42,8 @@ use expression::{
     FunctionArrayUpdate, LoweringSymbols, all_model_expressions, derivative_reference,
     expression_children, expression_span, lower_coordinate_reference, lower_expression,
     lower_expression_scoped, lower_function_array_update, lower_function_expression,
-    lower_function_expression_scoped, planned_input_variability, require_span,
-    variable_attribute_expressions,
+    lower_function_expression_scoped, lower_model_algorithm_expression, planned_input_variability,
+    require_span, variable_attribute_expressions,
 };
 use function_array_assembly::lower_function_array_assembly;
 use function_body::{
@@ -56,6 +57,7 @@ use function_shapes::{
     FunctionShapeAnalysis, FunctionSpecializationKey, ShapeEnvironment, ValueShape,
     evaluate_shape_integer,
 };
+use model_algorithm::lower_declarative_model_algorithm;
 use record_equation::lower_record_equation;
 use structured_body::lower_structured_body;
 use variable_construction::{define_variables, reserve_variables};
@@ -219,6 +221,7 @@ fn build_checked<'dae>(
         &functions,
         &analysis.sample_lattices,
         &flat.algorithms,
+        &analysis.model_algorithm_plans,
     )?;
     lower_when_clauses(
         construction,
@@ -445,6 +448,7 @@ fn lower_function_assignment<'dae>(
                     functions: symbols.functions,
                     shapes: symbols.shapes,
                     function_body: Some(body),
+                    values: None,
                 },
                 binders: &binders,
                 target,
@@ -720,17 +724,32 @@ fn lower_algorithms<'dae>(
     functions: &FunctionRegistry<'_, 'dae>,
     sample_lattices: &[(Span, ClockLattice)],
     algorithms: &[flat::Algorithm],
+    plans: &[ModelAlgorithmPlan],
 ) -> Result<(), dae::DaeConstructionError> {
-    for algorithm in algorithms {
-        lower_algorithm_statements(
-            construction,
-            coordinates,
-            functions,
-            sample_lattices,
-            None,
-            &algorithm.statements,
-            algorithm.span,
-        )?;
+    debug_assert_eq!(algorithms.len(), plans.len());
+    for (algorithm, plan) in algorithms.iter().zip(plans) {
+        match plan {
+            ModelAlgorithmPlan::Declarative { target } => {
+                lower_declarative_model_algorithm(
+                    construction,
+                    coordinates,
+                    functions,
+                    algorithm,
+                    target,
+                )?;
+            }
+            ModelAlgorithmPlan::Event => {
+                lower_algorithm_statements(
+                    construction,
+                    coordinates,
+                    functions,
+                    sample_lattices,
+                    None,
+                    &algorithm.statements,
+                    algorithm.span,
+                )?;
+            }
+        }
     }
     Ok(())
 }
@@ -1121,6 +1140,7 @@ fn lower_when_equations<'dae>(
                         functions,
                         shapes: functions.shapes.model_values(),
                         function_body: None,
+                        values: None,
                     },
                     sample_lattices,
                     guard,
@@ -1495,6 +1515,7 @@ fn lower_change_expression<'dae>(
         functions,
         shapes: functions.shapes.model_values(),
         function_body: None,
+        values: None,
     };
     let current = lower_coordinate_reference(
         construction,
@@ -1603,6 +1624,7 @@ fn lower_structured_equations<'dae>(
                         functions,
                         shapes: functions.shapes.model_values(),
                         function_body: None,
+                        values: None,
                     };
                     lower_structured_body(
                         construction,
@@ -1706,6 +1728,7 @@ fn lower_materialized_family_bodies<'dae>(
                 functions,
                 shapes: functions.shapes.model_values(),
                 function_body: None,
+                values: None,
             };
             scalar_bodies.push(lower_structured_body(
                 construction,
