@@ -1,9 +1,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use rumoca_ir_galec::ast as ast;
+use rumoca_ir_galec::ast;
 use rumoca_ir_galec::package::CheckedAlgorithmBlock;
 
 use crate::{IntegerDomain, Value};
+
+type SignalClosure = (String, BTreeSet<String>);
+type ConditionResult = (bool, Option<SignalClosure>);
+type Factorization = (Vec<Vec<f64>>, Vec<usize>, bool);
 
 /// Typed failure of checked-block execution.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
@@ -18,6 +22,13 @@ pub enum EvaluationError {
     IntegerDivisionByZero,
     #[error("GALEC integer arithmetic overflow")]
     IntegerOverflow,
+    #[error("GALEC value `{0}` is uninitialized")]
+    Uninitialized(String),
+    #[error("cannot {operation} a GALEC block while it is {state}")]
+    Lifecycle {
+        operation: &'static str,
+        state: &'static str,
+    },
     #[error("GALEC for-loop step must not be zero")]
     ZeroLoopStep,
     #[error("checked GALEC invariant was violated: {0}")]
@@ -58,6 +69,7 @@ pub struct Evaluator<'a> {
     signal_closures: Vec<(String, BTreeSet<String>)>,
     declaration_scopes: Vec<BTreeMap<String, ast::VariableDeclaration>>,
     integer_domain: IntegerDomain,
+    lifecycle: Lifecycle,
 }
 
 #[derive(Clone)]
@@ -65,6 +77,21 @@ struct StateSlot<'a> {
     declaration: &'a ast::VariableDeclaration,
     external_write: Option<&'static str>,
     value: Value,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Lifecycle {
+    Created,
+    Started,
+}
+
+impl Lifecycle {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Created => "created",
+            Self::Started => "started",
+        }
+    }
 }
 
 impl<'a> Evaluator<'a> {
@@ -84,7 +111,7 @@ impl<'a> Evaluator<'a> {
                         ast::InterfaceKind::TunableParameter => Some("tunable parameter"),
                         ast::InterfaceKind::Output => None,
                     },
-                    value: zero_declaration(block, &variable.decl)?,
+                    value: uninitialized_declaration(block, &variable.decl)?,
                 },
             );
         }
@@ -94,18 +121,40 @@ impl<'a> Evaluator<'a> {
                 StateSlot {
                     declaration: &variable.decl,
                     external_write: None,
-                    value: zero_declaration(block, &variable.decl)?,
+                    value: uninitialized_declaration(block, &variable.decl)?,
                 },
             );
         }
-        Ok(Self {
+        let mut evaluator = Self {
             block,
             state,
             active_signals: BTreeSet::new(),
             signal_closures: Vec::new(),
             declaration_scopes: Vec::new(),
             integer_domain,
-        })
+            lifecycle: Lifecycle::Created,
+        };
+        let starts = block
+            .interface
+            .iter()
+            .filter(|variable| {
+                matches!(
+                    variable.kind,
+                    ast::InterfaceKind::Input | ast::InterfaceKind::TunableParameter
+                )
+            })
+            .filter_map(|variable| {
+                variable
+                    .start
+                    .as_ref()
+                    .map(|start| (variable.decl.name.lexeme().to_owned(), start.clone()))
+            })
+            .collect::<Vec<_>>();
+        for (name, start) in starts {
+            let value = evaluator.expression(&start, &BTreeMap::new())?;
+            evaluator.set_state(&name, value)?;
+        }
+        Ok(evaluator)
     }
 
     pub fn set_state(&mut self, name: &str, value: Value) -> Result<(), EvaluationError> {
@@ -129,9 +178,17 @@ impl<'a> Evaluator<'a> {
         Ok(())
     }
 
-    #[must_use]
-    pub fn state(&self, name: &str) -> Option<&Value> {
-        self.state.get(name).map(|slot| &slot.value)
+    pub fn state(&self, name: &str) -> Result<&Value, EvaluationError> {
+        if self.lifecycle != Lifecycle::Started {
+            return Err(self.lifecycle_error("read state"));
+        }
+        let value = &self
+            .state
+            .get(name)
+            .ok_or_else(|| EvaluationError::UnknownName(name.to_owned()))?
+            .value;
+        initialized(value, name)?;
+        Ok(value)
     }
 
     #[must_use]
@@ -140,15 +197,66 @@ impl<'a> Evaluator<'a> {
     }
 
     pub fn startup(&mut self) -> Result<(), EvaluationError> {
-        self.invoke("Startup", &self.block.startup, false)
+        if self.lifecycle != Lifecycle::Created {
+            return Err(self.lifecycle_error("invoke Startup"));
+        }
+        self.ensure_external_state_initialized()?;
+        let state_before = self.state.clone();
+        match self.invoke("Startup", &self.block.startup, false) {
+            Ok(()) => {
+                if let Err(error) = self.ensure_all_state_initialized() {
+                    self.state = state_before;
+                    return Err(error);
+                }
+                self.lifecycle = Lifecycle::Started;
+                Ok(())
+            }
+            Err(error) => {
+                self.state = state_before;
+                Err(error)
+            }
+        }
     }
 
     pub fn recalibrate(&mut self) -> Result<(), EvaluationError> {
+        self.require_started("invoke Recalibrate")?;
         self.invoke("Recalibrate", &self.block.recalibrate, true)
     }
 
     pub fn do_step(&mut self) -> Result<(), EvaluationError> {
+        self.require_started("invoke DoStep")?;
         self.invoke("DoStep", &self.block.do_step, true)
+    }
+
+    fn require_started(&self, operation: &'static str) -> Result<(), EvaluationError> {
+        if self.lifecycle == Lifecycle::Started {
+            Ok(())
+        } else {
+            Err(self.lifecycle_error(operation))
+        }
+    }
+
+    fn lifecycle_error(&self, operation: &'static str) -> EvaluationError {
+        EvaluationError::Lifecycle {
+            operation,
+            state: self.lifecycle.name(),
+        }
+    }
+
+    fn ensure_external_state_initialized(&self) -> Result<(), EvaluationError> {
+        for (name, slot) in &self.state {
+            if slot.external_write.is_some() {
+                initialized(&slot.value, name)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn ensure_all_state_initialized(&self) -> Result<(), EvaluationError> {
+        for (name, slot) in &self.state {
+            initialized(&slot.value, name)?;
+        }
+        Ok(())
     }
 
     fn invoke(
@@ -166,12 +274,7 @@ impl<'a> Evaluator<'a> {
             method
                 .locals
                 .iter()
-                .map(|declaration| {
-                    (
-                        declaration.name.lexeme().to_owned(),
-                        declaration.clone(),
-                    )
-                })
+                .map(|declaration| (declaration.name.lexeme().to_owned(), declaration.clone()))
                 .collect(),
         );
         let result = self.statements(&method.statements, &mut locals);
@@ -236,50 +339,69 @@ impl<'a> Evaluator<'a> {
                 self.call(call, locals)?;
                 Ok(())
             }
-            ast::Statement::If(value) => {
-                for branch in &value.branches {
-                    let (matches, closure) = self.condition(&branch.condition, locals)?;
-                    if matches {
-                        if let Some(closure) = closure {
-                            self.signal_closures.push(closure);
-                            let result = self.statements(&branch.body, locals);
-                            self.signal_closures.pop();
-                            return result;
-                        }
-                        return self.statements(&branch.body, locals);
-                    }
-                }
-                if let Some(body) = &value.else_body {
-                    self.statements(body, locals)?;
-                }
-                Ok(())
-            }
+            ast::Statement::If(value) => self.if_statement(value, locals),
             ast::Statement::For(value) => self.for_loop(value, locals),
-            ast::Statement::Limit(targets) => {
-                for target in targets {
-                    match target {
-                        ast::LimitTarget::SelfState => self.limit_all()?,
-                        ast::LimitTarget::Reference(reference) => {
-                            self.limit_reference(reference, locals)?;
-                        }
-                    }
-                }
+            ast::Statement::Limit(targets) => self.limit_targets(targets, locals),
+            ast::Statement::Signal(signals) => {
+                self.raise_signals(signals);
                 Ok(())
             }
-            ast::Statement::Signal(signals) => {
-                for signal in signals {
-                    if let Some((_, captured)) = self
-                        .signal_closures
-                        .iter()
-                        .rev()
-                        .find(|(name, _)| name == signal.as_str())
-                    {
-                        self.active_signals.extend(captured.iter().cloned());
-                    } else {
-                        self.active_signals.insert(signal.as_str().to_owned());
-                    }
+        }
+    }
+
+    fn if_statement(
+        &mut self,
+        statement: &ast::IfStatement,
+        locals: &mut BTreeMap<String, Value>,
+    ) -> Result<(), EvaluationError> {
+        for branch in &statement.branches {
+            let (matches, closure) = self.condition(&branch.condition, locals)?;
+            if !matches {
+                continue;
+            }
+            if let Some(closure) = closure {
+                self.signal_closures.push(closure);
+                let result = self.statements(&branch.body, locals);
+                self.signal_closures.pop();
+                return result;
+            }
+            return self.statements(&branch.body, locals);
+        }
+        statement
+            .else_body
+            .as_deref()
+            .map_or(Ok(()), |body| self.statements(body, locals))
+    }
+
+    fn limit_targets(
+        &mut self,
+        targets: &[ast::LimitTarget],
+        locals: &mut BTreeMap<String, Value>,
+    ) -> Result<(), EvaluationError> {
+        for target in targets {
+            match target {
+                ast::LimitTarget::SelfState => self.limit_all()?,
+                ast::LimitTarget::Reference(reference) => {
+                    self.limit_reference(reference, locals)?;
                 }
-                Ok(())
+            }
+        }
+        Ok(())
+    }
+
+    fn raise_signals(&mut self, signals: &[ast::Identifier]) {
+        for signal in signals {
+            let captured = self
+                .signal_closures
+                .iter()
+                .rev()
+                .find(|(name, _)| name == signal.as_str())
+                .map(|(_, captured)| captured.clone());
+            match captured {
+                Some(captured) => self.active_signals.extend(captured),
+                None => {
+                    self.active_signals.insert(signal.as_str().to_owned());
+                }
             }
         }
     }
@@ -329,7 +451,7 @@ impl<'a> Evaluator<'a> {
         &mut self,
         condition: &ast::Condition,
         locals: &mut BTreeMap<String, Value>,
-    ) -> Result<(bool, Option<(String, BTreeSet<String>)>), EvaluationError> {
+    ) -> Result<ConditionResult, EvaluationError> {
         match condition {
             ast::Condition::Expression(expression) => Ok((
                 self.expression(expression, locals)?
@@ -365,9 +487,8 @@ impl<'a> Evaluator<'a> {
                 };
                 let signal_match = !caught.is_empty();
                 if signal_match {
-                    for signal in &caught {
-                        self.active_signals.remove(signal);
-                    }
+                    self.active_signals
+                        .retain(|signal| !caught.contains(signal));
                 }
                 let fallback = match &check.fallback {
                     Some(expression) => self
@@ -408,29 +529,21 @@ impl<'a> Evaluator<'a> {
                         found: values.len(),
                     });
                 }
-                Ok(values.into_iter().next().expect("one output"))
+                values.into_iter().next().ok_or_else(|| {
+                    EvaluationError::MalformedCheckedBlock(format!(
+                        "call `{}` lost its checked output",
+                        call.function.lexeme()
+                    ))
+                })
             }
             ast::Expression::Paren(inner) => self.expression(inner, locals),
-            ast::Expression::If(value) => {
-                for (condition, branch) in &value.branches {
-                    if self
-                        .expression(condition, locals)?
-                        .boolean()
-                        .ok_or(EvaluationError::Type("if-expression condition"))?
-                    {
-                        return self.expression(branch, locals);
-                    }
-                }
-                self.expression(&value.else_value, locals)
-            }
+            ast::Expression::If(value) => self.if_expression(value, locals),
             ast::Expression::Array(values) => values
                 .iter()
                 .map(|value| self.expression(value, locals))
                 .collect::<Result<Vec<_>, _>>()
                 .map(Value::Array),
-            ast::Expression::Neg(reference) => {
-                self.negate(self.reference(reference, locals)?)
-            }
+            ast::Expression::Neg(reference) => self.negate(self.reference(reference, locals)?),
             ast::Expression::Not(inner) => not_value(self.expression(inner, locals)?),
             ast::Expression::Binary { op, lhs, rhs } => {
                 let lhs = self.expression(lhs, locals)?;
@@ -438,6 +551,23 @@ impl<'a> Evaluator<'a> {
                 self.binary(*op, lhs, rhs)
             }
         }
+    }
+
+    fn if_expression(
+        &mut self,
+        expression: &ast::IfExpression,
+        locals: &BTreeMap<String, Value>,
+    ) -> Result<Value, EvaluationError> {
+        for (condition, branch) in &expression.branches {
+            let matches = self
+                .expression(condition, locals)?
+                .boolean()
+                .ok_or(EvaluationError::Type("if-expression condition"))?;
+            if matches {
+                return self.expression(branch, locals);
+            }
+        }
+        self.expression(&expression.else_value, locals)
     }
 
     fn binary(
@@ -451,28 +581,23 @@ impl<'a> Evaluator<'a> {
                 if lhs.len() != rhs.len() {
                     return Err(EvaluationError::Type("array binary operation shape"));
                 }
-                return lhs
-                    .into_iter()
+                lhs.into_iter()
                     .zip(rhs)
                     .map(|(lhs, rhs)| self.binary(op, lhs, rhs))
                     .collect::<Result<Vec<_>, _>>()
-                    .map(Value::Array);
+                    .map(Value::Array)
             }
-            (Value::Array(lhs), rhs) => {
-                return lhs
-                    .into_iter()
-                    .map(|lhs| self.binary(op, lhs, rhs.clone()))
-                    .collect::<Result<Vec<_>, _>>()
-                    .map(Value::Array);
-            }
-            (lhs, Value::Array(rhs)) => {
-                return rhs
-                    .into_iter()
-                    .map(|rhs| self.binary(op, lhs.clone(), rhs))
-                    .collect::<Result<Vec<_>, _>>()
-                    .map(Value::Array);
-            }
-            (lhs, rhs) => return self.scalar_binary(op, lhs, rhs),
+            (Value::Array(lhs), rhs) => lhs
+                .into_iter()
+                .map(|lhs| self.binary(op, lhs, rhs.clone()))
+                .collect::<Result<Vec<_>, _>>()
+                .map(Value::Array),
+            (lhs, Value::Array(rhs)) => rhs
+                .into_iter()
+                .map(|rhs| self.binary(op, lhs.clone(), rhs))
+                .collect::<Result<Vec<_>, _>>()
+                .map(Value::Array),
+            (lhs, rhs) => self.scalar_binary(op, lhs, rhs),
         }
     }
 
@@ -527,7 +652,9 @@ impl<'a> Evaluator<'a> {
                 .map(|value| self.negate(value))
                 .collect::<Result<Vec<_>, _>>()
                 .map(Value::Array),
-            Value::Boolean(_) | Value::Record(_) => Err(EvaluationError::Type("unary minus")),
+            Value::Boolean(_) | Value::Record(_) | Value::Uninitialized => {
+                Err(EvaluationError::Type("unary minus"))
+            }
         }
     }
 
@@ -606,11 +733,11 @@ impl<'a> Evaluator<'a> {
             .iter()
             .filter(|parameter| parameter.direction == ast::Direction::Output)
         {
-            let value = self.zero_runtime_declaration(&parameter.decl, &frame)?;
+            let value = self.uninitialized_runtime_declaration(&parameter.decl, &frame)?;
             frame.insert(parameter.decl.name.lexeme().to_owned(), value);
         }
         for declaration in &function.locals {
-            let value = self.zero_runtime_declaration(declaration, &frame)?;
+            let value = self.uninitialized_runtime_declaration(declaration, &frame)?;
             frame.insert(declaration.name.lexeme().to_owned(), value);
         }
         self.declaration_scopes.push(
@@ -619,12 +746,7 @@ impl<'a> Evaluator<'a> {
                 .iter()
                 .map(|parameter| &parameter.decl)
                 .chain(&function.locals)
-                .map(|declaration| {
-                    (
-                        declaration.name.lexeme().to_owned(),
-                        declaration.clone(),
-                    )
-                })
+                .map(|declaration| (declaration.name.lexeme().to_owned(), declaration.clone()))
                 .collect(),
         );
         let result = self.statements(&function.statements, &mut frame);
@@ -644,15 +766,16 @@ impl<'a> Evaluator<'a> {
                             parameter.decl.name.lexeme()
                         ))
                     })
+                    .and_then(|value| {
+                        initialized(&value, parameter.decl.name.lexeme())?;
+                        Ok(value)
+                    })
             })
             .collect()
     }
 
     fn builtin(&mut self, name: &str, args: Vec<Value>) -> Result<Vec<Value>, EvaluationError> {
-        if let Some(base) = name
-            .strip_suffix("1D")
-            .or_else(|| name.strip_suffix("2D"))
-        {
+        if let Some(base) = name.strip_suffix("1D").or_else(|| name.strip_suffix("2D")) {
             return lift_builtin(self, base, args).map(|value| vec![value]);
         }
         match name {
@@ -666,7 +789,7 @@ impl<'a> Evaluator<'a> {
         }
     }
 
-    fn zero_runtime_declaration(
+    fn uninitialized_runtime_declaration(
         &mut self,
         declaration: &ast::VariableDeclaration,
         frame: &BTreeMap<String, Value>,
@@ -675,7 +798,7 @@ impl<'a> Evaluator<'a> {
             dimensions: Vec::new(),
             ..declaration.clone()
         };
-        let scalar = zero_declaration(self.block, &scalar_decl)?;
+        let scalar = uninitialized_declaration(self.block, &scalar_decl)?;
         declaration
             .dimensions
             .iter()
@@ -715,31 +838,10 @@ impl<'a> Evaluator<'a> {
     ) -> Result<bool, EvaluationError> {
         let mut elements = vec![value];
         for dimension in &declaration.dimensions {
-            let expected = match dimension {
-                ast::Dimension::Derived => None,
-                ast::Dimension::Expr(expression) => {
-                    let size = self
-                        .expression(expression, frame)?
-                        .integer()
-                        .ok_or(EvaluationError::Type("runtime dimension"))?;
-                    Some(usize::try_from(size).map_err(|_| {
-                        EvaluationError::MalformedCheckedBlock(format!(
-                            "invalid runtime dimension {size} on `{}`",
-                            declaration.name.lexeme()
-                        ))
-                    })?)
-                }
+            let expected = self.runtime_dimension(declaration, dimension, frame)?;
+            let Some(nested) = flatten_dimension(elements, expected) else {
+                return Ok(false);
             };
-            let mut nested = Vec::new();
-            for element in elements {
-                let Value::Array(values) = element else {
-                    return Ok(false);
-                };
-                if expected.is_some_and(|expected| values.len() != expected) || values.is_empty() {
-                    return Ok(false);
-                }
-                nested.extend(values);
-            }
             elements = nested;
         }
         elements
@@ -747,6 +849,27 @@ impl<'a> Evaluator<'a> {
             .map(|element| value_matches_type(self.block, &declaration.ty, element))
             .collect::<Result<Vec<_>, _>>()
             .map(|matches| matches.into_iter().all(|matches| matches))
+    }
+
+    fn runtime_dimension(
+        &mut self,
+        declaration: &ast::VariableDeclaration,
+        dimension: &ast::Dimension,
+        frame: &BTreeMap<String, Value>,
+    ) -> Result<Option<usize>, EvaluationError> {
+        let ast::Dimension::Expr(expression) = dimension else {
+            return Ok(None);
+        };
+        let size = self
+            .expression(expression, frame)?
+            .integer()
+            .ok_or(EvaluationError::Type("runtime dimension"))?;
+        usize::try_from(size).map(Some).map_err(|_| {
+            EvaluationError::MalformedCheckedBlock(format!(
+                "invalid runtime dimension {size} on `{}`",
+                declaration.name.lexeme()
+            ))
+        })
     }
 
     fn reference(
@@ -759,7 +882,9 @@ impl<'a> Evaluator<'a> {
                 let value = locals
                     .get(part.name.lexeme())
                     .ok_or_else(|| EvaluationError::UnknownName(part.name.lexeme().to_owned()))?;
-                indexed(value, &part.subscripts, self, locals)
+                let value = indexed(value, &part.subscripts, self, locals)?;
+                initialized(&value, part.name.lexeme())?;
+                Ok(value)
             }
             ast::Reference::State(parts) => {
                 let first = parts.first().ok_or_else(|| {
@@ -773,15 +898,10 @@ impl<'a> Evaluator<'a> {
                     .clone();
                 value = indexed_owned(value, &first.subscripts, self, locals)?;
                 for part in &parts[1..] {
-                    let Value::Record(fields) = value else {
-                        return Err(EvaluationError::Type("record component reference"));
-                    };
-                    value = fields
-                        .get(part.name.lexeme())
-                        .cloned()
-                        .ok_or_else(|| EvaluationError::UnknownName(part.name.lexeme().to_owned()))?;
+                    value = record_field(value, part.name.lexeme())?;
                     value = indexed_owned(value, &part.subscripts, self, locals)?;
                 }
+                initialized(&value, first.name.lexeme())?;
                 Ok(value)
             }
         }
@@ -829,11 +949,11 @@ impl<'a> Evaluator<'a> {
                 .state
                 .remove(&name)
                 .ok_or_else(|| EvaluationError::UnknownName(name.clone()))?;
-            self.limit_declaration_value(
-                slot.declaration,
-                &mut slot.value,
-                &BTreeMap::new(),
-            )?;
+            if !slot.value.is_initialized() {
+                self.state.insert(name, slot);
+                continue;
+            }
+            self.limit_declaration_value(slot.declaration, &mut slot.value, &BTreeMap::new())?;
             self.state.insert(name, slot);
         }
         Ok(())
@@ -960,6 +1080,30 @@ impl<'a> Evaluator<'a> {
     }
 }
 
+fn flatten_dimension(elements: Vec<&Value>, expected: Option<usize>) -> Option<Vec<&Value>> {
+    let mut nested = Vec::new();
+    for element in elements {
+        let Value::Array(values) = element else {
+            return None;
+        };
+        if expected.is_some_and(|expected| values.len() != expected) || values.is_empty() {
+            return None;
+        }
+        nested.extend(values);
+    }
+    Some(nested)
+}
+
+fn record_field(value: Value, name: &str) -> Result<Value, EvaluationError> {
+    let Value::Record(fields) = value else {
+        return Err(EvaluationError::Type("record component reference"));
+    };
+    fields
+        .get(name)
+        .cloned()
+        .ok_or_else(|| EvaluationError::UnknownName(name.to_owned()))
+}
+
 fn declarations(
     block: &ast::Block,
     values: &[ast::VariableDeclaration],
@@ -969,28 +1113,26 @@ fn declarations(
         .map(|declaration| {
             Ok((
                 declaration.name.lexeme().to_owned(),
-                zero_declaration(block, declaration)?,
+                uninitialized_declaration(block, declaration)?,
             ))
         })
         .collect()
 }
 
-fn zero_declaration(
+fn uninitialized_declaration(
     block: &ast::Block,
     declaration: &ast::VariableDeclaration,
 ) -> Result<Value, EvaluationError> {
-    zero_declaration_inner(block, declaration, &mut BTreeSet::new())
+    uninitialized_declaration_inner(block, declaration, &mut BTreeSet::new())
 }
 
-fn zero_declaration_inner(
+fn uninitialized_declaration_inner(
     block: &ast::Block,
     declaration: &ast::VariableDeclaration,
     compartment_stack: &mut BTreeSet<String>,
 ) -> Result<Value, EvaluationError> {
     let scalar = match &declaration.ty {
-        ast::TypeRef::Primitive(ast::ScalarType::Boolean) => Value::Boolean(false),
-        ast::TypeRef::Primitive(ast::ScalarType::Integer) => Value::Integer(0),
-        ast::TypeRef::Primitive(ast::ScalarType::Real) => Value::Real(0.0),
+        ast::TypeRef::Primitive(_) => Value::Uninitialized,
         ast::TypeRef::Compartment(name) => {
             if !compartment_stack.insert(name.lexeme().to_owned()) {
                 return Err(EvaluationError::MalformedCheckedBlock(format!(
@@ -1014,7 +1156,7 @@ fn zero_declaration_inner(
                 .map(|entity| {
                     Ok((
                         entity.decl.name.lexeme().to_owned(),
-                        zero_declaration_inner(block, &entity.decl, compartment_stack)?,
+                        uninitialized_declaration_inner(block, &entity.decl, compartment_stack)?,
                     ))
                 })
                 .collect::<Result<BTreeMap<_, _>, EvaluationError>>()?;
@@ -1125,11 +1267,7 @@ fn value_matches_type(
 fn same_shape(lhs: &Value, rhs: &Value) -> bool {
     match (lhs, rhs) {
         (Value::Array(lhs), Value::Array(rhs)) => {
-            lhs.len() == rhs.len()
-                && lhs
-                    .iter()
-                    .zip(rhs)
-                    .all(|(lhs, rhs)| same_shape(lhs, rhs))
+            lhs.len() == rhs.len() && lhs.iter().zip(rhs).all(|(lhs, rhs)| same_shape(lhs, rhs))
         }
         (Value::Record(lhs), Value::Record(rhs)) => {
             lhs.len() == rhs.len()
@@ -1163,7 +1301,7 @@ fn not_value(value: Value) -> Result<Value, EvaluationError> {
             .map(not_value)
             .collect::<Result<Vec<_>, _>>()
             .map(Value::Array),
-        Value::Integer(_) | Value::Real(_) | Value::Record(_) => {
+        Value::Integer(_) | Value::Real(_) | Value::Record(_) | Value::Uninitialized => {
             Err(EvaluationError::Type("not"))
         }
     }
@@ -1179,6 +1317,7 @@ fn value_in_integer_domain(value: &Value, domain: IntegerDomain) -> bool {
             .values()
             .all(|value| value_in_integer_domain(value, domain)),
         Value::Boolean(_) | Value::Real(_) => true,
+        Value::Uninitialized => false,
     }
 }
 
@@ -1238,6 +1377,7 @@ fn indices(
         signal_closures: evaluator.signal_closures.clone(),
         declaration_scopes: evaluator.declaration_scopes.clone(),
         integer_domain: evaluator.integer_domain,
+        lifecycle: evaluator.lifecycle,
     };
     subscripts
         .iter()
@@ -1246,10 +1386,9 @@ fn indices(
                 .expression(subscript, locals)?
                 .integer()
                 .ok_or(EvaluationError::Type("array subscript"))?;
-            let zero_based = index.checked_sub(1).ok_or(EvaluationError::Bounds {
-                index,
-                length: 0,
-            })?;
+            let zero_based = index
+                .checked_sub(1)
+                .ok_or(EvaluationError::Bounds { index, length: 0 })?;
             usize::try_from(zero_based).map_err(|_| EvaluationError::Bounds { index, length: 0 })
         })
         .collect()
@@ -1275,17 +1414,14 @@ fn indexed_owned(
             return Err(EvaluationError::Type("array reference"));
         };
         let length = values.len();
-        value = values
-            .get(index)
-            .cloned()
-            .ok_or(EvaluationError::Bounds {
-                index: i64::try_from(index + 1).map_err(|_| {
-                    EvaluationError::MalformedCheckedBlock(
-                        "array index exceeds GALEC Integer".to_owned(),
-                    )
-                })?,
-                length,
-            })?;
+        value = values.get(index).cloned().ok_or(EvaluationError::Bounds {
+            index: i64::try_from(index + 1).map_err(|_| {
+                EvaluationError::MalformedCheckedBlock(
+                    "array index exceeds GALEC Integer".to_owned(),
+                )
+            })?,
+            length,
+        })?;
     }
     Ok(value)
 }
@@ -1452,8 +1588,21 @@ fn limit_value(
             return Err(EvaluationError::Type("range bound"));
         }
         Value::Boolean(_) | Value::Record(_) => {}
+        Value::Uninitialized => {
+            return Err(EvaluationError::Uninitialized(
+                "range-limited value".to_owned(),
+            ));
+        }
     }
     Ok(())
+}
+
+fn initialized(value: &Value, name: &str) -> Result<(), EvaluationError> {
+    if value.is_initialized() {
+        Ok(())
+    } else {
+        Err(EvaluationError::Uninitialized(name.to_owned()))
+    }
 }
 
 fn lift_builtin(
@@ -1491,24 +1640,26 @@ fn scalar_builtin(
     name: &str,
     arguments: Vec<Value>,
 ) -> Result<Value, EvaluationError> {
-    let real1 = || {
-        arguments
-            .first()
-            .and_then(Value::real)
-            .ok_or(EvaluationError::Type("Real builtin argument"))
-    };
-    let real2 = || {
-        Ok((
-            arguments
-                .first()
-                .and_then(Value::real)
-                .ok_or(EvaluationError::Type("Real builtin argument"))?,
-            arguments
-                .get(1)
-                .and_then(Value::real)
-                .ok_or(EvaluationError::Type("Real builtin argument"))?,
-        ))
-    };
+    match name {
+        "minInteger" | "maxInteger" | "minReal" | "maxReal" | "posMinReal" | "epsReal" | "nan"
+        | "minusInfinite" | "plusInfinite" | "euler" | "pi" | "isNaN" | "isInfinite"
+        | "isFinite" | "real" | "integer" => {
+            scalar_constant_or_conversion(evaluator, name, &arguments)
+        }
+        "safe_posdiv" | "safe_sqrt" | "safe_ln" | "safe_lg" | "safe_tan" | "safe_asin"
+        | "safe_acos" => scalar_safe_math(name, &arguments),
+        "roundDown" | "roundUp" | "roundHalfToEven" | "sign" | "absolute" | "fractional"
+        | "sqrt" | "exp" | "ln" | "lg" | "sin" | "cos" | "tan" | "asin" | "acos" | "atan"
+        | "sinh" | "cosh" | "tanh" => scalar_unary_math(name, &arguments),
+        _ => scalar_binary_or_array(evaluator, name, &arguments),
+    }
+}
+
+fn scalar_constant_or_conversion(
+    evaluator: &mut Evaluator<'_>,
+    name: &str,
+    arguments: &[Value],
+) -> Result<Value, EvaluationError> {
     Ok(match name {
         "minInteger" => Value::Integer(evaluator.integer_domain.min()),
         "maxInteger" => Value::Integer(evaluator.integer_domain.max()),
@@ -1521,9 +1672,9 @@ fn scalar_builtin(
         "plusInfinite" => Value::Real(f64::INFINITY),
         "euler" => Value::Real(std::f64::consts::E),
         "pi" => Value::Real(std::f64::consts::PI),
-        "isNaN" => Value::Boolean(real1()?.is_nan()),
-        "isInfinite" => Value::Boolean(real1()?.is_infinite()),
-        "isFinite" => Value::Boolean(real1()?.is_finite()),
+        "isNaN" => Value::Boolean(builtin_real(arguments, 0)?.is_nan()),
+        "isInfinite" => Value::Boolean(builtin_real(arguments, 0)?.is_infinite()),
+        "isFinite" => Value::Boolean(builtin_real(arguments, 0)?.is_finite()),
         "real" => Value::Real(
             arguments
                 .first()
@@ -1531,7 +1682,7 @@ fn scalar_builtin(
                 .ok_or(EvaluationError::Type("real conversion"))? as f64,
         ),
         "integer" => {
-            let value = real1()?;
+            let value = builtin_real(arguments, 0)?;
             if value.is_nan() {
                 evaluator.active_signals.insert("NAN".to_owned());
                 Value::Integer(0)
@@ -1544,101 +1695,102 @@ fn scalar_builtin(
                 Value::Integer(value.trunc() as i64)
             }
         }
-        "roundDown" => Value::Real(real1()?.floor()),
-        "roundUp" => Value::Real(real1()?.ceil()),
-        "roundHalfToEven" => Value::Real(real1()?.round_ties_even()),
-        "sign" => Value::Real(real1()?.signum()),
-        "absolute" => Value::Real(real1()?.abs()),
-        "fractional" => Value::Real(real1()?.fract()),
-        "sqrt" => Value::Real(real1()?.sqrt()),
-        "exp" => Value::Real(real1()?.exp()),
-        "ln" => Value::Real(real1()?.ln()),
-        "lg" => Value::Real(real1()?.log10()),
+        _ => return Err(EvaluationError::UnsupportedBuiltin(name.to_owned())),
+    })
+}
+
+fn scalar_safe_math(name: &str, arguments: &[Value]) -> Result<Value, EvaluationError> {
+    let value = builtin_real(arguments, 0)?;
+    Ok(match name {
         "safe_posdiv" => {
-            let numerator = real1()?;
-            let denominator = arguments
-                .get(1)
-                .and_then(Value::real)
-                .ok_or(EvaluationError::Type("Real builtin argument"))?;
-            let epsilon = arguments
-                .get(2)
-                .and_then(Value::real)
-                .ok_or(EvaluationError::Type("Real builtin argument"))?;
-            Value::Real(if numerator.is_nan() || denominator.is_nan() || epsilon.is_nan() {
-                f64::NAN
-            } else {
-                numerator / denominator.max(epsilon.max(f64::MIN_POSITIVE))
-            })
+            let denominator = builtin_real(arguments, 1)?;
+            let epsilon = builtin_real(arguments, 2)?;
+            Value::Real(
+                if value.is_nan() || denominator.is_nan() || epsilon.is_nan() {
+                    f64::NAN
+                } else {
+                    value / denominator.max(epsilon.max(f64::MIN_POSITIVE))
+                },
+            )
         }
-        "safe_sqrt" => {
-            let value = real1()?;
-            Value::Real(if value.is_nan() {
-                f64::NAN
-            } else {
-                value.max(0.0).sqrt()
-            })
-        }
-        "safe_ln" => {
-            let value = real1()?;
-            Value::Real(if value.is_nan() {
-                f64::NAN
-            } else {
-                value.max(0.0).ln()
-            })
-        }
-        "safe_lg" => {
-            let value = real1()?;
-            Value::Real(if value.is_nan() {
-                f64::NAN
-            } else {
-                value.max(0.0).log10()
-            })
-        }
-        "sin" => Value::Real(real1()?.sin()),
-        "cos" => Value::Real(real1()?.cos()),
-        "tan" => Value::Real(real1()?.tan()),
-        "asin" => Value::Real(real1()?.asin()),
-        "acos" => Value::Real(real1()?.acos()),
-        "atan" => Value::Real(real1()?.atan()),
-        "sinh" => Value::Real(real1()?.sinh()),
-        "cosh" => Value::Real(real1()?.cosh()),
-        "tanh" => Value::Real(real1()?.tanh()),
-        "safe_tan" => {
-            let value = real1()?;
-            Value::Real(if value >= std::f64::consts::FRAC_PI_2 {
-                f64::INFINITY
-            } else if value <= -std::f64::consts::FRAC_PI_2 {
-                f64::NEG_INFINITY
-            } else {
-                value.tan()
-            })
-        }
-        "safe_asin" => {
-            let value = real1()?;
-            Value::Real(if value.is_nan() {
-                f64::NAN
-            } else {
-                value.clamp(-1.0, 1.0).asin()
-            })
-        }
-        "safe_acos" => {
-            let value = real1()?;
-            Value::Real(if value.is_nan() {
-                f64::NAN
-            } else {
-                value.clamp(-1.0, 1.0).acos()
-            })
-        }
+        "safe_sqrt" => Value::Real(if value.is_nan() {
+            f64::NAN
+        } else {
+            value.max(0.0).sqrt()
+        }),
+        "safe_ln" => Value::Real(if value.is_nan() {
+            f64::NAN
+        } else {
+            value.max(0.0).ln()
+        }),
+        "safe_lg" => Value::Real(if value.is_nan() {
+            f64::NAN
+        } else {
+            value.max(0.0).log10()
+        }),
+        "safe_tan" => Value::Real(if value >= std::f64::consts::FRAC_PI_2 {
+            f64::INFINITY
+        } else if value <= -std::f64::consts::FRAC_PI_2 {
+            f64::NEG_INFINITY
+        } else {
+            value.tan()
+        }),
+        "safe_asin" => Value::Real(if value.is_nan() {
+            f64::NAN
+        } else {
+            value.clamp(-1.0, 1.0).asin()
+        }),
+        "safe_acos" => Value::Real(if value.is_nan() {
+            f64::NAN
+        } else {
+            value.clamp(-1.0, 1.0).acos()
+        }),
+        _ => return Err(EvaluationError::UnsupportedBuiltin(name.to_owned())),
+    })
+}
+
+fn scalar_unary_math(name: &str, arguments: &[Value]) -> Result<Value, EvaluationError> {
+    let value = builtin_real(arguments, 0)?;
+    Ok(Value::Real(match name {
+        "roundDown" => value.floor(),
+        "roundUp" => value.ceil(),
+        "roundHalfToEven" => value.round_ties_even(),
+        "sign" => value.signum(),
+        "absolute" => value.abs(),
+        "fractional" => value.fract(),
+        "sqrt" => value.sqrt(),
+        "exp" => value.exp(),
+        "ln" => value.ln(),
+        "lg" => value.log10(),
+        "sin" => value.sin(),
+        "cos" => value.cos(),
+        "tan" => value.tan(),
+        "asin" => value.asin(),
+        "acos" => value.acos(),
+        "atan" => value.atan(),
+        "sinh" => value.sinh(),
+        "cosh" => value.cosh(),
+        "tanh" => value.tanh(),
+        _ => return Err(EvaluationError::UnsupportedBuiltin(name.to_owned())),
+    }))
+}
+
+fn scalar_binary_or_array(
+    evaluator: &Evaluator<'_>,
+    name: &str,
+    arguments: &[Value],
+) -> Result<Value, EvaluationError> {
+    Ok(match name {
         "atan2" => {
-            let (y, x) = real2()?;
+            let (y, x) = builtin_real_pair(arguments)?;
             Value::Real(y.atan2(x))
         }
         "min" => {
-            let (a, b) = real2()?;
+            let (a, b) = builtin_real_pair(arguments)?;
             Value::Real(a.min(b))
         }
         "max" => {
-            let (a, b) = real2()?;
+            let (a, b) = builtin_real_pair(arguments)?;
             Value::Real(a.max(b))
         }
         "imin" | "imax" => {
@@ -1671,7 +1823,7 @@ fn scalar_builtin(
             }));
         }
         "realRemainderTowardsZero" => {
-            let (a, b) = real2()?;
+            let (a, b) = builtin_real_pair(arguments)?;
             Value::Real(a % b)
         }
         "hasNaN1D" | "hasNaN2D" => Value::Boolean(has_nan(
@@ -1681,6 +1833,17 @@ fn scalar_builtin(
         )),
         _ => return Err(EvaluationError::UnsupportedBuiltin(name.to_owned())),
     })
+}
+
+fn builtin_real(arguments: &[Value], index: usize) -> Result<f64, EvaluationError> {
+    arguments
+        .get(index)
+        .and_then(Value::real)
+        .ok_or(EvaluationError::Type("Real builtin argument"))
+}
+
+fn builtin_real_pair(arguments: &[Value]) -> Result<(f64, f64), EvaluationError> {
+    Ok((builtin_real(arguments, 0)?, builtin_real(arguments, 1)?))
 }
 
 fn solve_linear_equations(
@@ -1752,7 +1915,7 @@ fn lu_solve_builtin(
     ))
 }
 
-fn factorize(mut matrix: Vec<Vec<f64>>) -> Result<(Vec<Vec<f64>>, Vec<usize>, bool), EvaluationError> {
+fn factorize(mut matrix: Vec<Vec<f64>>) -> Result<Factorization, EvaluationError> {
     let n = matrix.len();
     if n == 0 || matrix.iter().any(|row| row.len() != n) {
         return Err(EvaluationError::InvalidBuiltinArgument {
@@ -1898,12 +2061,7 @@ fn interpolation_3d(arguments: Vec<Value>) -> Result<Value, EvaluationError> {
             .take(n2)
             .map(|row| interpolate_axis(x3, &axis3[..n3], &row[..n3], mode))
             .collect::<Result<Vec<_>, _>>()?;
-        along_first.push(interpolate_axis(
-            x2,
-            &axis2[..n2],
-            &along_second,
-            mode,
-        )?);
+        along_first.push(interpolate_axis(x2, &axis2[..n2], &along_second, mode)?);
     }
     Ok(Value::Real(interpolate_axis(
         x1,
@@ -1994,12 +2152,10 @@ fn invalid_interpolation<T>(name: &'static str) -> Result<T, EvaluationError> {
 }
 
 fn real_argument(value: &Value, name: &'static str) -> Result<f64, EvaluationError> {
-    value
-        .real()
-        .ok_or(EvaluationError::InvalidBuiltinArgument {
-            name,
-            detail: "expected Real scalar",
-        })
+    value.real().ok_or(EvaluationError::InvalidBuiltinArgument {
+        name,
+        detail: "expected Real scalar",
+    })
 }
 
 fn real_vector(value: &Value, name: &'static str) -> Result<Vec<f64>, EvaluationError> {
@@ -2036,10 +2192,7 @@ fn real_matrix(value: &Value, name: &'static str) -> Result<Vec<Vec<f64>>, Evalu
     rows.iter().map(|row| real_vector(row, name)).collect()
 }
 
-fn real_array3(
-    value: &Value,
-    name: &'static str,
-) -> Result<Vec<Vec<Vec<f64>>>, EvaluationError> {
+fn real_array3(value: &Value, name: &'static str) -> Result<Vec<Vec<Vec<f64>>>, EvaluationError> {
     let Value::Array(planes) = value else {
         return invalid_interpolation(name);
     };

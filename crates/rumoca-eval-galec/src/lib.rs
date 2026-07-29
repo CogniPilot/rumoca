@@ -9,3 +9,6 @@ mod value;
 
 pub use interpreter::{EvaluationError, Evaluator};
 pub use value::{IntegerDomain, Value};
+
+#[cfg(test)]
+mod tests;
