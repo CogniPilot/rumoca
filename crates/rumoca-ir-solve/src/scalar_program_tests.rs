@@ -40,3 +40,99 @@ fn scalar_program_construction_accepts_one_program_with_several_outputs() {
     assert_eq!(block.stored_output_count(), 2);
     assert_eq!(block.program_span(0), Some(span));
 }
+
+#[test]
+fn scalar_program_construction_rejects_undefined_register_read_at_its_source() {
+    let span = source_span("UndefinedRegister.mo", 41, 52);
+    let program = vec![
+        LinearOp::Move { dst: 0, src: 3 },
+        LinearOp::StoreOutput { src: 0 },
+    ];
+
+    let error = ScalarProgramBlock::with_program_spans(vec![program], vec![span])
+        .expect_err("a read must be dominated by an earlier register write");
+
+    assert_eq!(error.source_span(), Some(span));
+    assert!(matches!(
+        error,
+        SolveProblemShapeContractError::ScalarProgramRegisterFlow {
+            program_index: 0,
+            error: ScalarProgramRegisterError::UndefinedRegister {
+                op_index: 0,
+                operation: "Move",
+                register: 3,
+            },
+            ..
+        }
+    ));
+}
+
+#[test]
+fn scalar_program_construction_rejects_store_from_undefined_register() {
+    let span = source_span("UndefinedOutput.mo", 8, 19);
+
+    let error = ScalarProgramBlock::with_program_spans(
+        vec![vec![LinearOp::StoreOutput { src: 7 }]],
+        vec![span],
+    )
+    .expect_err("StoreOutput must consume a computed value");
+
+    assert_eq!(error.source_span(), Some(span));
+    assert!(matches!(
+        error,
+        SolveProblemShapeContractError::ScalarProgramRegisterFlow {
+            error: ScalarProgramRegisterError::UndefinedRegister {
+                op_index: 0,
+                operation: "StoreOutput",
+                register: 7,
+            },
+            ..
+        }
+    ));
+}
+
+#[test]
+fn scalar_program_register_proof_returns_exact_register_count() {
+    let program = [
+        LinearOp::Const { dst: 4, value: 2.0 },
+        LinearOp::Move { dst: 1, src: 4 },
+        LinearOp::StoreOutput { src: 1 },
+    ];
+
+    let proof = ScalarProgramRegisterFlow::derive(&program)
+        .expect("every source register has an earlier definition");
+
+    assert_eq!(proof.register_count(), 5);
+}
+
+#[test]
+fn scalar_program_construction_rejects_a_hole_in_register_range() {
+    let span = source_span("IncompleteRandomState.mo", 17, 38);
+    let program = vec![
+        LinearOp::Const { dst: 5, value: 1.0 },
+        LinearOp::Const { dst: 7, value: 3.0 },
+        LinearOp::RandomResult {
+            dst: 8,
+            generator: RandomGenerator::Xorshift64Star,
+            state_start: 5,
+            state_len: 3,
+        },
+        LinearOp::StoreOutput { src: 8 },
+    ];
+
+    let error = ScalarProgramBlock::with_program_spans(vec![program], vec![span])
+        .expect_err("every register in a source range must be defined");
+
+    assert_eq!(error.source_span(), Some(span));
+    assert!(matches!(
+        error,
+        SolveProblemShapeContractError::ScalarProgramRegisterFlow {
+            error: ScalarProgramRegisterError::UndefinedRegister {
+                op_index: 2,
+                operation: "RandomResult",
+                register: 6,
+            },
+            ..
+        }
+    ));
+}

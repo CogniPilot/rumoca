@@ -1,4 +1,4 @@
-use crate::VarLayoutShapeContractError;
+use crate::{ScalarProgramRegisterError, VarLayoutShapeContractError};
 use rumoca_core::{Span, StructuredIndexDomainError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,6 +41,13 @@ pub enum SolveProblemShapeContractError {
         context: String,
         node_index: usize,
         program_index: usize,
+        span: Option<Span>,
+    },
+    ScalarProgramRegisterFlow {
+        context: String,
+        node_index: usize,
+        program_index: usize,
+        error: ScalarProgramRegisterError,
         span: Option<Span>,
     },
     ScalarProgramCountMismatch {
@@ -171,6 +178,7 @@ impl SolveProblemShapeContractError {
             Self::ScalarProgramSpanMismatch { span, .. }
             | Self::ScalarProgramOutputIndexMismatch { span, .. }
             | Self::ScalarProgramMissingOutput { span, .. }
+            | Self::ScalarProgramRegisterFlow { span, .. }
             | Self::ScalarProgramCountMismatch { span, .. }
             | Self::OutputIndexOverflow { span, .. }
             | Self::SolverIndexOutOfBounds { span, .. }
@@ -229,6 +237,17 @@ impl std::fmt::Display for SolveProblemShapeContractError {
             } => write!(
                 f,
                 "{context} node {node_index} scalar program {program_index} stores no output"
+            ),
+            Self::ScalarProgramRegisterFlow {
+                context,
+                node_index,
+                program_index,
+                error,
+                ..
+            } => write!(
+                f,
+                "{context} node {node_index} scalar program {program_index} has invalid register \
+                 flow: {error}"
             ),
             Self::ScalarProgramCountMismatch {
                 context,

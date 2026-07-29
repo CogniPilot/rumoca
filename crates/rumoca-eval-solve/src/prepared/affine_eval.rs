@@ -80,7 +80,7 @@ fn eval_prepared_affine(
             eval_row_prepared_maybe_fast(
                 PreparedRowEval::new(&ops, affine.program.register_count, y, p, t, context)
                     .with_source_span(Some(affine.span)),
-                affine.program.register_safe,
+                true,
                 scratch,
                 &mut sink,
             )?;

@@ -467,7 +467,10 @@ mod tests {
     }
 
     fn store_row(src: Reg) -> Vec<LinearOp> {
-        vec![LinearOp::StoreOutput { src }]
+        vec![
+            LinearOp::Const { dst: src, value: 0.0 },
+            LinearOp::StoreOutput { src },
+        ]
     }
 
     fn matmul_node(span: Span) -> ComputeNode {
@@ -585,7 +588,7 @@ mod tests {
 
         assert_eq!(visitor.nodes, 5);
         assert_eq!(visitor.rows, 1);
-        assert_eq!(visitor.ops, 8);
+        assert_eq!(visitor.ops, 9);
         assert!(visitor.kinds.contains(&LinearOpSliceKind::MatMulLhs {
             node_index: 1,
             span

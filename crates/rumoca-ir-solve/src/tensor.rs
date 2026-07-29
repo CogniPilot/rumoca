@@ -595,6 +595,18 @@ impl ComputeNode {
                             program_index,
                             span,
                         },
+                        SolveProblemShapeContractError::ScalarProgramRegisterFlow {
+                            program_index,
+                            error,
+                            span,
+                            ..
+                        } => SolveProblemShapeContractError::ScalarProgramRegisterFlow {
+                            context: context.to_string(),
+                            node_index,
+                            program_index,
+                            error,
+                            span,
+                        },
                         other => other,
                     })?;
             }

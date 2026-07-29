@@ -438,8 +438,14 @@ fn scalar_program_output_indices_use_first_source_span_after_dummy_row() {
     );
     let block = ScalarProgramBlock::with_program_spans(
         vec![
-            vec![LinearOp::StoreOutput { src: 0 }],
-            vec![LinearOp::StoreOutput { src: 1 }],
+            vec![
+                LinearOp::Const { dst: 0, value: 0.0 },
+                LinearOp::StoreOutput { src: 0 },
+            ],
+            vec![
+                LinearOp::Const { dst: 1, value: 0.0 },
+                LinearOp::StoreOutput { src: 1 },
+            ],
         ],
         vec![rumoca_core::Span::DUMMY, span],
     )

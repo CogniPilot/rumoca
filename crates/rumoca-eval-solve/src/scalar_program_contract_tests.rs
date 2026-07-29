@@ -65,6 +65,31 @@ fn prepared_construction_rejects_missing_output_with_source_span() {
 }
 
 #[test]
+fn prepared_construction_rejects_bypassed_undefined_register_with_source_span() {
+    let source_span = span();
+    let malformed = ScalarProgramBlock {
+        programs: vec![vec![
+            LinearOp::Move { dst: 0, src: 4 },
+            LinearOp::StoreOutput { src: 0 },
+        ]],
+        program_spans: vec![source_span],
+        output_indices: vec![0],
+    };
+
+    let error = match PreparedScalarProgramBlock::new(malformed) {
+        Ok(_) => panic!("prepared evaluation must reject undefined register reads immediately"),
+        Err(error) => error,
+    };
+
+    assert_eq!(error.source_span(), Some(source_span));
+    assert!(matches!(
+        error,
+        EvalSolveError::ShapeContract { message, .. }
+            if message.contains("Move op 0 reads undefined register r4")
+    ));
+}
+
+#[test]
 fn single_program_eval_returns_its_one_explicit_output() {
     let row = vec![
         LinearOp::Const { dst: 0, value: 9.0 },
