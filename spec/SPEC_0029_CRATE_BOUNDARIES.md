@@ -303,6 +303,12 @@ Generic documented artifact commands may hash rendered bytes, validate a
 declared schema, and assemble the declared graph without understanding eFMI or
 another target format.
 
+Target assets follow the same ownership rule. Builtin target discovery embeds
+arbitrary assets declared beneath a target directory; external targets resolve
+declared asset sources relative to their own directory. Rust MUST NOT maintain
+a target-format bundle registry or map names such as an eFMI schema bundle to
+hardcoded files.
+
 Target-specific semantic lowering is a compiler phase, not code generation.
 `rumoca-phase-codegen/src` MUST NOT contain target-named subsystems such as
 `galec/`, C lowering, XML manifest models, target manglers, or target dispatch.

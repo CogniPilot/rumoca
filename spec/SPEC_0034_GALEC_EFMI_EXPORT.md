@@ -5,8 +5,8 @@ DRAFT
 
 Design contract; `--target galec` (Algorithm Code) and `--target galec-production`
 (Production Code) landed as schema-valid eFMU containers, and GALEC language
-conformance is **Earned** (parser round-trip under `--features parse`, plus the
-`.alg` language server).
+conformance is **Earned** (round-trip through `rumoca-phase-parse-galec`, plus
+the `.alg` language server).
 
 ## Summary
 Rumoca exports eFMI Algorithm Code and Production Code (GALEC `.alg`, C99, and
@@ -59,8 +59,8 @@ rumoca -> generic artifact/checksum/container graph + vendored schemas
 | GAL-019 | Template conformance: parenthesize every cross-precedence-class mix; no unary minus over non-references (T4); strict Real literal format; `/* */` comments only; mandatory `else`; parenthesized `not`; no re-association. | GALEC target templates | T4–T7, T12; evaluation order is normative. |
 | GAL-020 | Variables classify per the Variable Classification table; independent parameters never constant-folded; dependents recomputed in Recalibrate (inline in Startup); every variable has `start`; dimensions are literal integers ≥ 1. | `rumoca-phase-galec` + checked construction | §3.1.6 + repo policy. |
 | GAL-021 | Claims follow the Conformance Ladder, machine-checked per rung; no placeholder checksums, ever. `target.toml` declares the checksum/artifact graph and post-render schema gates; generic commands compute from exact bytes; CI independently recomputes from disk. Targets below a rung self-describe honestly. | target directories + generic artifact commands | Wrong checksum invalidates an eFMU. |
-| GAL-022 | Version pinning: profile constant `Efmi_1_0_0_Beta_1`; profile string `efmi-1.0.0-beta-1`; container XSD `0.11.0` / AlgorithmCode `0.14.0` / ProductionCode `0.17.0`; `efmiVersion` fixed `"1.0.0"`. | `rumoca-phase-codegen` template context | Beta-fixed constants change at 1.0.0 final. |
-| GAL-023 | Vendored Beta-1 XSDs (BSD 3-Clause) retain the LICENSE verbatim, copied into every emitted `schemas/`; CC-BY-SA-4.0 standard text/grammar/examples NEVER copied into repo specs/fixtures beyond short attributed quotes; no Modelica Association endorsement implied. | `rumoca` assets | License terms. |
+| GAL-022 | Version pinning: profile string `efmi-1.0.0-beta-1`; container XSD `0.11.0` / AlgorithmCode `0.14.0` / ProductionCode `0.17.0`; `efmiVersion` fixed `"1.0.0"`. These are literals declared by the owning target's `target.toml` and templates, never Rust constants or context fields. | target directories | Beta-fixed constants change at 1.0.0 final. |
+| GAL-023 | Vendored Beta-1 XSDs (BSD 3-Clause) live under the owning target assets, retain the LICENSE verbatim, and are copied into every emitted `schemas/` by generic declared asset operations; CC-BY-SA-4.0 standard text/grammar/examples NEVER copied into repo specs/fixtures beyond short attributed quotes; no Modelica Association endorsement implied. | target directories | License terms. |
 | GAL-024 | Embedded C is two-track: `embedded-c-galec` is a non-eFMI export; `galec-production` earns the Production Code rung. Neither fabricates a higher claim. | target templates | **Why** below. |
 | GAL-025 | v1 scope rejections say "not yet supported by the Rumoca GALEC projection" — never "unsupported by eFMI". | `rumoca-phase-galec` | eFMI expects discretized models. |
 | GAL-026 | Checked GALEC data, package data, semantic views, and templates are array-native; scalarized lowering is an implementation stage, never a language-layer assumption. | IR + phase + templates | Scalarization curtails optimization. |
@@ -88,7 +88,7 @@ non-conformant (§2.2).
 | D7 | Beta-1 grammar gaps | AST adopts `(min=,max=)`, the error-signal statement, input/output prefixes; emitter rejects `//` comments and unsigned exponents. |
 | D8 | Slice-1 signal scope | Full signal machinery in AST + validator; lowering emits Real relationals with empty escape sets and rejects constructs needing non-empty sets; NAN accounting (T9) is slice 2. |
 | D9 | Embedded-C sequencing | GAL-024: non-eFMI C export after checked projection; PC container after AC packaging. |
-| D10 | XSD vendoring | `crates/rumoca/assets/efmi-schemas/` (GAL-023). |
+| D10 | XSD vendoring | Asset trees owned and named by the eFMI target directories; builtin discovery embeds arbitrary declared target assets recursively, while external targets resolve them relative to their own directory (GAL-008/GAL-023). |
 | D11 | GALEC AST source spans | GALEC AST nodes carry `rumoca_core::Span` (the *foundation* crate, not an IR stage — GAL-001/GAL-010 intent holds). Parsed nodes span `.alg` bytes; generated nodes require typed source/generated provenance and the nearest responsible Modelica span. Production `Span::DUMMY` is prohibited. Spans are provenance, not identity (round-trip equality is span-insensitive). |
 
 ### Conformance Ladder (GAL-021, GAL-024)
