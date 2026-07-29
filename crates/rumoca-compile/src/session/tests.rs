@@ -1455,7 +1455,7 @@ end P;
         .resolved_for_semantic_navigation("P.Root")
         .expect("navigation tree should build");
     assert!(
-        first.0.get_class_by_qualified_name("P.Root").is_some(),
+        first.get_class_by_qualified_name("P.Root").is_some(),
         "navigation tree should include the active target"
     );
     let cached = session
@@ -1464,19 +1464,19 @@ end P;
         .semantic_navigation
         .get_mut("P.Root")
         .expect("navigation artifact should be cached");
-    cached.resolved = Arc::new(ast::ResolvedTree::new(ast::ClassTree::new()));
+    cached.tree = Arc::new(ast::ClassTree::new());
 
     let second = session
         .resolved_for_semantic_navigation("P.Root")
         .expect("navigation tree should reuse cache");
     assert!(
-        second.0.definitions.classes.is_empty(),
+        second.definitions.classes.is_empty(),
         "second navigation lookup must reuse the cached artifact"
     );
 }
 
 #[test]
-fn strict_recovery_resolved_cache_reuses_tree_and_diagnostics() {
+fn strict_recovery_planning_cache_reuses_tree_and_diagnostics() {
     let source = r#"package P
   model Root
     Missing dep;
@@ -1491,8 +1491,8 @@ end P;
         .add_document("test.mo", source)
         .expect("document should parse");
 
-    let (_first_resolved, first_diags) = session
-        .build_resolved_for_strict_compile_with_diagnostics()
+    let (_first_plan, first_diags) = session
+        .build_resolution_plan_for_strict_compile()
         .expect("strict recovery resolve should succeed");
     assert!(
         session
@@ -1501,11 +1501,15 @@ end P;
             .builds
             .strict_compile_recovery
             .is_some(),
-        "first strict recovery lookup should cache the resolved tree"
+        "first strict recovery lookup should cache the planning tree"
     );
     assert!(
         !first_diags.is_empty(),
         "strict recovery resolve should preserve diagnostics"
+    );
+    assert!(
+        !session.has_resolved_cached(),
+        "an incomplete planning tree must not masquerade as a Resolve proof"
     );
 
     let cached = session
@@ -1515,13 +1519,13 @@ end P;
         .strict_compile_recovery
         .as_mut()
         .expect("strict recovery tree should be cached");
-    *cached = Arc::new(ast::ResolvedTree::new(ast::ClassTree::new()));
+    cached.tree = ResolutionPlanningTree::Incomplete(Arc::new(ast::ClassTree::new()));
 
-    let (second_resolved, second_diags) = session
-        .build_resolved_for_strict_compile_with_diagnostics()
+    let (second_plan, second_diags) = session
+        .build_resolution_plan_for_strict_compile()
         .expect("warm strict recovery resolve should reuse cache");
     assert!(
-        second_resolved.0.definitions.classes.is_empty(),
+        second_plan.tree().definitions.classes.is_empty(),
         "warm strict recovery resolve must reuse the cached tree"
     );
     let first_messages: Vec<_> = first_diags
@@ -1572,7 +1576,7 @@ end P;
         .semantic_navigation
         .get_mut("P.Root")
         .expect("navigation artifact should be cached");
-    cached.resolved = Arc::new(ast::ResolvedTree::new(ast::ClassTree::new()));
+    cached.tree = Arc::new(ast::ClassTree::new());
 
     let parse_err = session.update_document("other.mo", "model Other\n  Real z = 1;\nend Other;\n");
     assert!(parse_err.is_none(), "unrelated edit should remain valid");
@@ -1585,7 +1589,7 @@ end P;
         .resolved_for_semantic_navigation("P.Root")
         .expect("navigation tree should still reuse cache");
     assert!(
-        second.0.definitions.classes.is_empty(),
+        second.definitions.classes.is_empty(),
         "unrelated edits must preserve the cached navigation artifact"
     );
 }
@@ -1635,7 +1639,7 @@ end P;
         .semantic_navigation
         .get_mut("P.Root")
         .expect("navigation artifact should be cached")
-        .resolved = Arc::new(ast::ResolvedTree::new(ast::ClassTree::new()));
+        .tree = Arc::new(ast::ClassTree::new());
 
     let parse_err = session.update_document("test.mo", updated);
     assert!(parse_err.is_none(), "edited document should remain valid");
@@ -1644,11 +1648,11 @@ end P;
         .resolved_for_semantic_navigation("P.Root")
         .expect("navigation tree should rebuild");
     assert!(
-        rebuilt.0.get_class_by_qualified_name("P.Root").is_some(),
+        rebuilt.get_class_by_qualified_name("P.Root").is_some(),
         "rebuilt navigation tree should include the active target"
     );
     assert!(
-        !rebuilt.0.definitions.classes.is_empty(),
+        !rebuilt.definitions.classes.is_empty(),
         "edited document must rebuild semantic navigation instead of reusing stale cache"
     );
 }
@@ -1691,7 +1695,7 @@ end Child;
         .resolved_for_semantic_navigation("Child")
         .expect("navigation tree should build");
     assert!(
-        first.0.get_class_by_qualified_name("Child").is_some(),
+        first.get_class_by_qualified_name("Child").is_some(),
         "navigation tree should include Child"
     );
     session
@@ -1700,14 +1704,14 @@ end Child;
         .semantic_navigation
         .get_mut("Child")
         .expect("navigation artifact should be cached")
-        .resolved = Arc::new(ast::ResolvedTree::new(ast::ClassTree::new()));
+        .tree = Arc::new(ast::ClassTree::new());
 
     session.update_document("other.mo", other_v2);
     let second = session
         .resolved_for_semantic_navigation("Child")
         .expect("unrelated edit should keep cached navigation artifact");
     assert!(
-        second.0.definitions.classes.is_empty(),
+        second.definitions.classes.is_empty(),
         "unrelated edits should not evict Child semantic navigation cache"
     );
 
@@ -1716,11 +1720,11 @@ end Child;
         .resolved_for_semantic_navigation("Child")
         .expect("dependency edit should rebuild navigation artifact");
     assert!(
-        third.0.get_class_by_qualified_name("Child").is_some(),
+        third.get_class_by_qualified_name("Child").is_some(),
         "dependency edits must rebuild semantic navigation instead of reusing stale cache"
     );
     assert!(
-        !third.0.definitions.classes.is_empty(),
+        !third.definitions.classes.is_empty(),
         "rebuilt navigation tree must not reuse the sentinel cache entry"
     );
 }

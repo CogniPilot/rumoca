@@ -51,7 +51,8 @@ template-runtime-tests = []
 tracing = ["dep:tracing", "dep:tracing-subscriber", "rumoca-compile/tracing"]
 
 [dependencies]
-# Internal crates: CLI consumes the high-level facades only.
+# Internal crates: CLI consumes high-level facades plus the phase-owned
+# ResolvedTree proof exposed by its library API.
 # rumoca-compile wraps all compilation phases.
 # rumoca-sim wraps simulation primitives, solvers, and opt-in axes for scenario
 # config, scheduling, transports, input devices, viewer web UI, and reports.
@@ -59,6 +60,7 @@ tracing = ["dep:tracing", "dep:tracing-subscriber", "rumoca-compile/tracing"]
 rumoca-compile = { workspace = true }
 rumoca-core = { workspace = true }
 rumoca-ir-solve = { workspace = true }
+rumoca-phase-resolve = { workspace = true }
 rumoca-sim = { workspace = true, default-features = false, features = ["native-solvers"] }
 rumoca-tool-fmt = { workspace = true }
 rumoca-tool-lint = { workspace = true }
@@ -160,7 +162,6 @@ rumoca-ir-dae = { workspace = true }
 rumoca-phase-flatten = { workspace = true }
 rumoca-phase-instantiate = { workspace = true }
 rumoca-phase-parse = { workspace = true }
-rumoca-phase-resolve = { workspace = true }
 rumoca-phase-codegen = { workspace = true }
 rumoca-phase-dae = { workspace = true }
 rumoca-eval-solve = { workspace = true }

@@ -201,7 +201,7 @@ pub(super) fn set_child_navigation_cache_sentinel(session: &mut Session) {
         .semantic_navigation
         .get_mut("Child")
         .expect("Child semantic navigation should be cached")
-        .resolved = Arc::new(ast::ResolvedTree::new(ast::ClassTree::new()));
+        .tree = Arc::new(ast::ClassTree::new());
 }
 
 pub(super) fn expect_warm_child_navigation(session: &mut Session) {
@@ -210,7 +210,7 @@ pub(super) fn expect_warm_child_navigation(session: &mut Session) {
         .resolved_for_semantic_navigation("Child")
         .expect("Child semantic navigation should succeed");
     assert!(
-        resolved.0.definitions.classes.is_empty(),
+        resolved.definitions.classes.is_empty(),
         "unrelated edits should not rebuild Child semantic navigation"
     );
 }
@@ -220,11 +220,11 @@ pub(super) fn expect_cold_child_navigation(session: &mut Session) {
         .resolved_for_semantic_navigation("Child")
         .expect("Child semantic navigation should rebuild after dependency edit");
     assert!(
-        resolved.0.get_class_by_qualified_name("Child").is_some(),
+        resolved.get_class_by_qualified_name("Child").is_some(),
         "rebuilt semantic navigation should still resolve Child"
     );
     assert!(
-        !resolved.0.definitions.classes.is_empty(),
+        !resolved.definitions.classes.is_empty(),
         "dependency edits should rebuild Child semantic navigation"
     );
 }

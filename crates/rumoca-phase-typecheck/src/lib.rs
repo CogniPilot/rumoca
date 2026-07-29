@@ -49,9 +49,10 @@ use rumoca_core::{
 pub(crate) const UNKNOWN_SOURCE_DISPLAY_NAME: &str = "<unknown source>";
 use rumoca_ir_ast::{
     ClassDef, ClassKind, ClassTree, Component, EnumerationType, Expression, InstanceId,
-    InstanceOverlay, ResolvedTree, ScopeImport, StoredDefinition, Type, TypeAlias, TypeClassType,
-    TypeTable, TypedTree,
+    InstanceOverlay, ScopeImport, StoredDefinition, Type, TypeAlias, TypeClassType, TypeTable,
+    TypedTree,
 };
+use rumoca_phase_resolve::ResolvedTree;
 use semantic_scope::{ComponentSemantics, InstanceSemanticScope, SemanticLookup};
 use std::collections::{HashMap, HashSet};
 use thiserror::Error;

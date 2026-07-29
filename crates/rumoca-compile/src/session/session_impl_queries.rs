@@ -352,17 +352,15 @@ impl Session {
     ) -> Option<SourceRootResolvedAggregate> {
         let mut session = Session::default();
         session.add_parsed_batch(documents.to_vec());
-        let (resolved, _) = session
-            .build_resolved_for_strict_compile_with_diagnostics()
-            .ok()?;
+        let (plan, _) = session.build_resolution_plan_for_strict_compile().ok()?;
         Some(SourceRootResolvedAggregate {
             model_names: session.query_state.resolved.model_names.clone(),
-            dependency_fingerprints: DependencyFingerprintCache::from_tree(&resolved.0),
+            dependency_fingerprints: DependencyFingerprintCache::from_tree(plan.tree()),
         })
     }
 
     fn restore_resolved_inputs_from_source_root_aggregates(&mut self) -> bool {
-        if self.query_state.resolved.builds.any().is_some()
+        if self.query_state.resolved.builds.any_tree().is_some()
             || !self.detached_document_uris.is_empty()
             || !self.detached_source_root_documents.is_empty()
         {

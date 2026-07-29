@@ -5,7 +5,8 @@
 //!
 //! Instantiation phase for the Rumoca compiler.
 //!
-//! This crate implements the instantiation pass that converts a ast::ResolvedTree to an ast::InstancedTree.
+//! This crate implements the instantiation pass that converts a
+//! `rumoca_phase_resolve::ResolvedTree` to an `ast::InstancedTree`.
 //! It finds the root model, applies modifications recursively, evaluates structural
 //! parameters, and builds the instance overlay.
 //!
@@ -36,7 +37,7 @@
 //! ```ignore
 //! use rumoca_phase_instantiate::instantiate;
 //!
-//! let resolved: ast::ResolvedTree = resolve(parsed)?;
+//! let resolved: rumoca_phase_resolve::ResolvedTree = resolve(parsed)?;
 //! let instanced: ast::InstancedTree = instantiate(resolved, "MyModel")?;
 //! ```
 
@@ -74,6 +75,7 @@ use rumoca_core::Diagnostics;
 use rumoca_core::{DefId, Span, TypeId};
 use rumoca_ir_ast as ast;
 use rumoca_ir_ast::AstIndexMap as IndexMap;
+use rumoca_phase_resolve::ResolvedTree;
 
 use array_expansion::{ArrayExpansionScope, expand_array_component};
 use attributes::*;
@@ -778,7 +780,7 @@ impl Default for InstantiateContext {
     }
 }
 
-/// Instantiate a ast::ResolvedTree, finding and instantiating the named model.
+/// Instantiate a [`ResolvedTree`], finding and instantiating the named model.
 ///
 /// This is the main entry point for instantiation.
 ///
@@ -791,7 +793,7 @@ impl Default for InstantiateContext {
 ///
 /// An `ast::InstancedTree` with the class tree and instance overlay, or an error.
 pub fn instantiate(
-    resolved: ast::ResolvedTree,
+    resolved: ResolvedTree,
     model_name: &str,
 ) -> InstantiateResult<ast::InstancedTree> {
     instantiate_with_options(resolved, model_name, InstantiateOptions::default())
@@ -799,7 +801,7 @@ pub fn instantiate(
 
 /// Instantiate a resolved tree with caller-supplied instantiation options.
 pub fn instantiate_with_options(
-    resolved: ast::ResolvedTree,
+    resolved: ResolvedTree,
     model_name: &str,
     options: InstantiateOptions,
 ) -> InstantiateResult<ast::InstancedTree> {

@@ -92,11 +92,11 @@ fn expected_dependency_fingerprint_for_source_root(
             ),
         ),
     ]);
-    let (resolved, _) = session
-        .build_resolved_for_strict_compile_with_diagnostics()
+    let (plan, _) = session
+        .build_resolution_plan_for_strict_compile()
         .expect("dependency source root should resolve tolerantly");
     let mut dependency_fingerprints =
-        super::super::dependency_fingerprint::DependencyFingerprintCache::from_tree(&resolved.0);
+        super::super::dependency_fingerprint::DependencyFingerprintCache::from_tree(plan.tree());
     (
         dependency_fingerprints.model_fingerprint(model_name),
         session.query_state.resolved.model_names.clone(),

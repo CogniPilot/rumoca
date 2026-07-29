@@ -2,7 +2,7 @@ use super::*;
 
 #[derive(Debug, Clone)]
 struct InterfaceSemanticDiagnosticsResult {
-    resolved: Arc<ast::ResolvedTree>,
+    resolved: Arc<ResolvedTree>,
     fingerprint: Fingerprint,
     class_type: Option<rumoca_core::ClassType>,
     /// Warning-severity resolve diagnostics scoped to the model's source
@@ -193,13 +193,15 @@ impl Session {
     fn build_semantic_diagnostics_resolved(
         &mut self,
         mode: SemanticDiagnosticsMode,
-    ) -> Result<(Arc<ast::ResolvedTree>, CommonDiagnostics), CommonDiagnostics> {
-        if let Some(resolved) = self
-            .query_state
-            .flat
-            .semantic_diagnostics
-            .resolved_by_mode
-            .get(&mode)
+        model_name: &str,
+    ) -> Result<(Arc<ResolvedTree>, CommonDiagnostics), CommonDiagnostics> {
+        if mode == SemanticDiagnosticsMode::Standard
+            && let Some(resolved) = self
+                .query_state
+                .flat
+                .semantic_diagnostics
+                .resolved_by_mode
+                .get(&mode)
         {
             let diagnostics = diagnostics_from_vec(
                 self.query_state
@@ -213,10 +215,20 @@ impl Session {
             return Ok((resolved.clone(), diagnostics));
         }
 
+        if mode == SemanticDiagnosticsMode::Save {
+            return self
+                .resolve_strict_target_uncached(model_name)
+                .map(|target| (target.resolved, diagnostics_from_vec(target.diagnostics)))
+                .map_err(|failure| diagnostics_from_vec(failure.diagnostics));
+        }
+
         let build_started = maybe_start_timer();
         let resolved_result = self.resolve_documents_for_mode(mode.resolve_build_mode());
         let _ = maybe_elapsed_duration(build_started);
-        let (resolved, diagnostics, _) = resolved_result?;
+        let (plan, diagnostics, _) = resolved_result?;
+        let ResolutionPlanningTree::Complete(resolved) = plan else {
+            return Err(diagnostics);
+        };
         self.query_state
             .flat
             .semantic_diagnostics
@@ -319,22 +331,24 @@ impl Session {
         model_name: &str,
         mode: SemanticDiagnosticsMode,
     ) -> Result<InterfaceSemanticDiagnosticsResult, Box<ModelDiagnostics>> {
-        let (resolved, resolve_diagnostics) = match self.build_semantic_diagnostics_resolved(mode) {
-            Ok(tree) => tree,
-            Err(diags) => {
-                record_interface_semantic_diagnostics_cache_miss();
-                record_interface_semantic_diagnostics_build();
-                return Err(Box::new(global_resolution_failure_diagnostics(
-                    self.session_source_map(),
-                    diags.iter().cloned().collect(),
-                )));
-            }
-        };
+        let (resolved, resolve_diagnostics) =
+            match self.build_semantic_diagnostics_resolved(mode, model_name) {
+                Ok(tree) => tree,
+                Err(diags) => {
+                    record_interface_semantic_diagnostics_cache_miss();
+                    record_interface_semantic_diagnostics_build();
+                    return Err(Box::new(global_resolution_failure_diagnostics(
+                        self.session_source_map(),
+                        diags.iter().cloned().collect(),
+                    )));
+                }
+            };
 
-        let warnings = self.target_resolve_warnings(&resolved.0, &resolve_diagnostics, model_name);
+        let warnings =
+            self.target_resolve_warnings(resolved.inner(), &resolve_diagnostics, model_name);
         if mode == SemanticDiagnosticsMode::Save {
             let target_resolve_diagnostics = self.save_mode_target_resolve_diagnostics(
-                &resolved.0,
+                resolved.inner(),
                 &resolve_diagnostics,
                 model_name,
             );
@@ -342,13 +356,13 @@ impl Session {
                 record_interface_semantic_diagnostics_cache_miss();
                 record_interface_semantic_diagnostics_build();
                 return Err(Box::new(model_diagnostics_for_tree(
-                    &resolved.0,
+                    resolved.inner(),
                     target_resolve_diagnostics,
                 )));
             }
         }
 
-        let fingerprint = self.semantic_diagnostics_fingerprint(&resolved.0, mode, model_name);
+        let fingerprint = self.semantic_diagnostics_fingerprint(resolved.inner(), mode, model_name);
         if let Some(class_type) =
             self.cached_interface_semantic_diagnostics(model_name, mode, fingerprint)
         {
@@ -442,7 +456,7 @@ impl Session {
             Err(diags) => return *diags,
         };
 
-        let tree = &interface.resolved.0;
+        let tree = interface.resolved.inner();
         let warnings = model_diagnostics_for_tree(tree, interface.warnings.clone());
         let body =
             self.body_semantic_diagnostics_query(tree, model_name, mode, interface.fingerprint);
@@ -597,7 +611,7 @@ fn synthesized_inner_diagnostics(
     .collect()
 }
 
-fn resolve_diagnostic_in_target_files(
+pub(super) fn resolve_diagnostic_in_target_files(
     tree: &ast::ClassTree,
     target_source_files: &IndexSet<String>,
     diagnostic: &CommonDiagnostic,

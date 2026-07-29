@@ -215,7 +215,7 @@ fn galec_plan_context(target: &'static str) -> &'static str {
 }
 
 fn source_map(result: &CompilationResult) -> SourceMap {
-    result.resolved.0.source_map.clone()
+    result.resolved.inner().source_map.clone()
 }
 
 /// The per-file render closure driving the declarative eFMU build step for a

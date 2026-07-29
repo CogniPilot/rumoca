@@ -1,9 +1,6 @@
 use super::{DaePhaseResult, Document, FailedPhase, ModelFailureDiagnostic, PhaseResult};
 use indexmap::{IndexMap, IndexSet};
-use rumoca_core::{
-    Diagnostic as CommonDiagnostic, Diagnostics as CommonDiagnostics, Label, PrimaryLabel,
-    SourceMap,
-};
+use rumoca_core::{Diagnostic as CommonDiagnostic, Label, PrimaryLabel, SourceMap};
 use rumoca_core::{SourceId, Span};
 use rumoca_ir_ast as ast;
 use std::collections::HashMap;
@@ -231,33 +228,6 @@ pub(super) fn collect_parse_failures_for_files(
         .collect()
 }
 
-pub(super) fn collect_resolve_failures_for_files(
-    diagnostics: &CommonDiagnostics,
-    source_map: &SourceMap,
-    files: &IndexSet<String>,
-) -> Vec<ModelFailureDiagnostic> {
-    if files.is_empty() {
-        return Vec::new();
-    }
-    diagnostics
-        .iter()
-        .filter(|diag| diag.is_error())
-        .filter(|diag| {
-            diag.labels.iter().any(|label| {
-                source_file_key(source_map, label.span.source)
-                    .is_some_and(|file_name| files.iter().any(|file| same_path(file, &file_name)))
-            })
-        })
-        .map(|diag| ModelFailureDiagnostic {
-            model_name: "<resolve>".to_string(),
-            phase: None,
-            error_code: diag.code.clone(),
-            error: diag.message.clone(),
-            primary_label: diag.labels.iter().find(|label| label.primary).cloned(),
-        })
-        .collect()
-}
-
 pub(super) fn collect_parse_error_diagnostics(
     documents: &IndexMap<String, Arc<Document>>,
     source_map: &SourceMap,
@@ -322,10 +292,17 @@ pub(super) fn collect_target_source_files(
 ) -> IndexSet<String> {
     let mut files = IndexSet::new();
     for target in targets {
-        let Some(class) = tree.get_class_by_qualified_name(target) else {
-            continue;
-        };
-        files.extend(source_file_key(&tree.source_map, class.location.source));
+        let mut end = target.len();
+        loop {
+            let class_name = &target[..end];
+            if let Some(class) = tree.get_class_by_qualified_name(class_name) {
+                files.extend(source_file_key(&tree.source_map, class.location.source));
+            }
+            let Some(separator) = class_name.rfind('.') else {
+                break;
+            };
+            end = separator;
+        }
     }
     files
 }
@@ -526,75 +503,6 @@ fn canonicalized_path_key(path: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Session;
-
-    const MODEL: &str = "model M\n  Real x;\nequation\n  x = 1;\nend M;\n";
-
-    fn tree_without_source_map() -> ast::ClassTree {
-        let mut session = Session::default();
-        session
-            .add_document("unregistered.mo", MODEL)
-            .expect("document should parse");
-        session
-            .build_resolved()
-            .expect("resolved tree should be available");
-        let mut tree = session
-            .ensure_resolved()
-            .expect("resolved tree should be cached")
-            .0
-            .clone();
-        tree.source_map = SourceMap::new();
-        tree
-    }
-
-    #[test]
-    fn unresolvable_target_source_is_kept_and_still_matches_its_diagnostics() {
-        let tree = tree_without_source_map();
-        let source = tree
-            .definitions
-            .classes
-            .get("M")
-            .expect("class M")
-            .location
-            .source;
-        assert!(tree.source_map.name(source).is_none());
-
-        let files = collect_target_source_files(&tree, &["M".to_string()]);
-        assert_eq!(
-            files.len(),
-            1,
-            "a target whose source id has no registered name must not be dropped"
-        );
-
-        let mut diagnostics = CommonDiagnostics::new();
-        diagnostics.emit(CommonDiagnostic::error(
-            "ER002",
-            "unresolved component reference: 'y'",
-            PrimaryLabel::new(Span::from_offsets(source, 0, 1)),
-        ));
-        let failures = collect_resolve_failures_for_files(&diagnostics, &tree.source_map, &files);
-        assert_eq!(
-            failures.len(),
-            1,
-            "resolve failures in the target's file must still be collected"
-        );
-        assert_eq!(failures[0].error_code.as_deref(), Some("ER002"));
-    }
-
-    #[test]
-    fn source_free_diagnostics_never_match_a_target_file() {
-        let tree = tree_without_source_map();
-        let files = collect_target_source_files(&tree, &["M".to_string()]);
-        let mut diagnostics = CommonDiagnostics::new();
-        diagnostics.emit(CommonDiagnostic::error(
-            "ER002",
-            "compiler generated",
-            PrimaryLabel::new(Span::from_offsets(SourceId::DUMMY, 0, 1)),
-        ));
-        assert!(
-            collect_resolve_failures_for_files(&diagnostics, &tree.source_map, &files).is_empty()
-        );
-    }
 
     #[test]
     fn needs_inner_failure_is_attributed_to_instantiation() {
