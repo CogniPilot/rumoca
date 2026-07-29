@@ -169,8 +169,7 @@ pub struct VariableReservation<'dae> {
     variable: VariableId<'dae>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct FunctionEntry {
     name: VarName,
     parameters: Vec<u32>,
@@ -184,8 +183,7 @@ pub(crate) struct FunctionEntry {
     definition: Option<FunctionDefinitionWire>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq)]
 struct FunctionParameterEntry {
     name: VarName,
     value_type: u32,
@@ -199,8 +197,7 @@ pub enum FunctionValueRole {
     Local,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct FunctionValueEntry {
     name: VarName,
     pub(crate) value_type: u32,
@@ -208,16 +205,14 @@ pub(crate) struct FunctionValueEntry {
     declaration: DaeProvenance,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct FunctionDefinitionEntry {
     target: u32,
     rhs: u32,
     provenance: DaeProvenance,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, PartialEq)]
 enum FunctionStatementWire {
     Assignment {
         definition: u32,
@@ -229,15 +224,13 @@ enum FunctionStatementWire {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq)]
 struct FunctionDefinitionWire {
     statements: Vec<FunctionStatementWire>,
     results: Vec<u32>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct FunctionFoldEntry {
     pub(crate) function: u32,
     pub(crate) ordinal: u32,
@@ -262,8 +255,7 @@ struct DomainEntry {
     provenance: DaeProvenance,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Default)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub(crate) struct Storage {
     pub(crate) value_types: Vec<ValueType>,
     flat_type_ids: Vec<Option<TypeId>>,
@@ -292,22 +284,15 @@ pub(crate) struct Storage {
     pub(crate) previous_values: Vec<PreviousEntry>,
     pub(crate) terminals: Vec<TerminalEntry>,
     pub(crate) delays: Vec<DelayEntry>,
-    #[serde(skip)]
     pub(crate) function_read_sets: FunctionReadSets,
-    #[serde(skip)]
     unfilled_variables: usize,
-    #[serde(skip)]
     unfilled_functions: usize,
-    #[serde(skip)]
     unfilled_function_folds: usize,
-    #[serde(skip)]
     pub(crate) unfilled_conditions: usize,
-    #[serde(skip)]
     pub(crate) unassigned_discrete_values: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq)]
 struct FrozenStorage {
     value_types: Box<[ValueType]>,
     flat_type_ids: Box<[Option<TypeId>]>,

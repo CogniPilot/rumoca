@@ -3,7 +3,8 @@ mod expression_wire;
 mod function_replay;
 mod helpers;
 
-use serde::Deserialize;
+use serde::ser::SerializeStruct;
+use serde::{Deserialize, Serialize};
 
 use super::*;
 use crate::expression::Subscript;
@@ -52,6 +53,51 @@ struct DaeWire {
     storage: StorageWire,
 }
 
+impl Serialize for FrozenStorage {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut state = serializer.serialize_struct("DaeStorage", 26)?;
+        state.serialize_field("value_types", &self.value_types)?;
+        state.serialize_field("flat_type_ids", &self.flat_type_ids)?;
+        state.serialize_field("value_type_provenance", &self.value_type_provenance)?;
+        state.serialize_field("variables", &self.variables)?;
+        state.serialize_field(
+            "functions",
+            &function_replay::FunctionArenaOutput::new(&self.functions, &self.function_folds),
+        )?;
+        state.serialize_field("domains", &self.domains)?;
+        state.serialize_field("expressions", &self.expressions)?;
+        state.serialize_field("continuous_equations", &self.continuous_equations)?;
+        state.serialize_field("initialization_equations", &self.initialization_equations)?;
+        state.serialize_field("discrete_real_equations", &self.discrete_real_equations)?;
+        state.serialize_field("discrete_assignments", &self.discrete_assignments)?;
+        state.serialize_field("continuous_families", &self.continuous_families)?;
+        state.serialize_field("initialization_families", &self.initialization_families)?;
+        state.serialize_field(
+            "continuous_equation_owners",
+            &self.continuous_equation_owners,
+        )?;
+        state.serialize_field(
+            "initialization_equation_owners",
+            &self.initialization_equation_owners,
+        )?;
+        state.serialize_field("equation_family_bodies", &self.equation_family_bodies)?;
+        state.serialize_field("relations", &self.relations)?;
+        state.serialize_field("conditions", &self.conditions)?;
+        state.serialize_field("roots", &self.roots)?;
+        state.serialize_field("time_events", &self.time_events)?;
+        state.serialize_field("event_actions", &self.event_actions)?;
+        state.serialize_field("clocks", &self.clocks)?;
+        state.serialize_field("clock_ownerships", &self.clock_ownerships)?;
+        state.serialize_field("previous_values", &self.previous_values)?;
+        state.serialize_field("terminals", &self.terminals)?;
+        state.serialize_field("delays", &self.delays)?;
+        state.end()
+    }
+}
+
 /// Private schema-v11 input records.
 ///
 /// These mirror the serialized column names, but they are deliberately
@@ -67,7 +113,6 @@ struct StorageWire {
     value_type_provenance: Vec<DaeProvenance>,
     variables: Vec<VariableEntryWire>,
     functions: Vec<FunctionEntryWire>,
-    function_folds: Vec<FunctionFoldEntryWire>,
     domains: Vec<DomainEntryWire>,
     expressions: ExpressionArenaWire,
     continuous_equations: Vec<ResidualEquationWire>,
@@ -156,80 +201,41 @@ struct VariableAttributesInput {
 #[serde(deny_unknown_fields)]
 struct FunctionEntryWire {
     name: rumoca_core::VarName,
-    parameters: Vec<u32>,
-    results: Vec<u32>,
-    parameter_values: Vec<FunctionParameterEntryInput>,
-    values: Vec<FunctionValueEntryInput>,
-    output_values: Vec<u32>,
-    definitions: Vec<FunctionSsaDefinitionInput>,
-    folds: Vec<u32>,
-    #[serde(deserialize_with = "deserialize_provenance")]
-    declaration: DaeProvenance,
-    definition: Option<FunctionDefinitionInput>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct FunctionParameterEntryInput {
-    name: rumoca_core::VarName,
-    value_type: u32,
-    #[serde(deserialize_with = "deserialize_provenance")]
-    declaration: DaeProvenance,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct FunctionValueEntryInput {
-    name: rumoca_core::VarName,
-    value_type: u32,
-    role: FunctionValueRole,
-    #[serde(deserialize_with = "deserialize_provenance")]
-    declaration: DaeProvenance,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct FunctionDefinitionInput {
+    parameters: Vec<FunctionNamedValueInput>,
+    outputs: Vec<FunctionNamedValueInput>,
+    locals: Vec<FunctionNamedValueInput>,
     statements: Vec<FunctionStatementInput>,
-    results: Vec<u32>,
+    #[serde(deserialize_with = "deserialize_provenance")]
+    declaration: DaeProvenance,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct FunctionSsaDefinitionInput {
-    target: u32,
-    rhs: u32,
+struct FunctionNamedValueInput {
+    name: rumoca_core::VarName,
+    value_type: u32,
     #[serde(deserialize_with = "deserialize_provenance")]
-    provenance: DaeProvenance,
+    declaration: DaeProvenance,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 enum FunctionStatementInput {
     Assignment {
-        definition: u32,
-    },
-    For {
-        fold: u32,
-        statements: Vec<FunctionStatementInput>,
+        target: u32,
+        rhs: u32,
         #[serde(deserialize_with = "deserialize_provenance")]
         provenance: DaeProvenance,
     },
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct FunctionFoldEntryWire {
-    function: u32,
-    ordinal: u32,
-    domain: u32,
-    targets: Vec<u32>,
-    parameter_definitions: Vec<u32>,
-    initial_definitions: Vec<u32>,
-    update_definitions: Vec<u32>,
-    output_definitions: Vec<u32>,
-    #[serde(deserialize_with = "deserialize_provenance")]
-    provenance: DaeProvenance,
+    For {
+        domain: u32,
+        targets: Vec<u32>,
+        statements: Vec<FunctionStatementInput>,
+        #[serde(deserialize_with = "deserialize_provenance")]
+        begin_provenance: DaeProvenance,
+        #[serde(deserialize_with = "deserialize_provenance")]
+        finish_provenance: DaeProvenance,
+    },
 }
 
 #[derive(Deserialize)]
@@ -477,7 +483,6 @@ struct WireIds<'dae> {
     types: Vec<ValueTypeId<'dae>>,
     variables: Vec<VariableId<'dae>>,
     functions: Vec<FunctionId<'dae>>,
-    function_folds: Vec<Option<FunctionFoldId<'dae>>>,
     domains: Vec<DomainId<'dae>>,
     conditions: Vec<ConditionId<'dae>>,
     relations: Vec<RelationId<'dae>>,
@@ -510,7 +515,6 @@ fn reconstruct<'dae>(
         types,
         variables,
         functions,
-        function_folds: vec![None; wire.function_folds.len()],
         domains,
         conditions,
         relations: Vec::with_capacity(wire.relations.len()),
@@ -686,13 +690,8 @@ fn reconstruct_functions<'dae>(
     let mut ids = Vec::with_capacity(wire.functions.len());
     let mut reservations = Vec::with_capacity(wire.functions.len());
     for function in &wire.functions {
-        let parameters = map_many(
-            types,
-            &function.parameters,
-            "value type",
-            function.declaration,
-        )?;
-        let results = map_many(types, &function.results, "value type", function.declaration)?;
+        let parameters = map_function_value_types(types, &function.parameters)?;
+        let results = map_function_value_types(types, &function.outputs)?;
         let (id, reservation) = dae.functions(|functions| {
             functions.reserve_recursive(
                 function.name.clone(),
@@ -708,13 +707,23 @@ fn reconstruct_functions<'dae>(
     Ok((ids, reservations))
 }
 
+fn map_function_value_types<'dae>(
+    types: &[ValueTypeId<'dae>],
+    values: &[FunctionNamedValueInput],
+) -> Result<Vec<ValueTypeId<'dae>>, DaeConstructionError> {
+    values
+        .iter()
+        .map(|value| mapped(types, value.value_type, "value type", value.declaration))
+        .collect()
+}
+
 fn reconstruct_function_values<'dae>(
     function: &FunctionEntryWire,
     dae: &mut DaeConstruction<'dae>,
     types: &[ValueTypeId<'dae>],
     reservation: &FunctionReservation<'dae>,
 ) -> Result<(), DaeConstructionError> {
-    for (ordinal, parameter) in function.parameter_values.iter().enumerate() {
+    for (ordinal, parameter) in function.parameters.iter().enumerate() {
         let rebuilt = dae.functions(|functions| {
             functions.parameter(
                 reservation,
@@ -723,20 +732,6 @@ fn reconstruct_function_values<'dae>(
                 parameter.declaration,
             )
         })?;
-        let wire_type = mapped(
-            types,
-            parameter.value_type,
-            "value type",
-            parameter.declaration,
-        )?;
-        let rebuilt_type = dae.storage.functions[reservation.function().index() as usize]
-            .parameter_values[rebuilt.ordinal() as usize]
-            .value_type;
-        if rebuilt_type != wire_type.index() {
-            return Err(DaeConstructionError::ShapeMismatch {
-                span: parameter.declaration.span(),
-            });
-        }
         expect_ordinal(
             "function parameter",
             ordinal,
@@ -744,25 +739,19 @@ fn reconstruct_function_values<'dae>(
             parameter.declaration,
         )?;
     }
-    if function.output_values.len() > function.values.len() {
-        return Err(malformed("functions.output_values"));
+    for (ordinal, value) in function.outputs.iter().enumerate() {
+        let rebuilt = dae.functions(|functions| {
+            functions.output(reservation, value.name.clone(), ordinal, value.declaration)
+        })?;
+        expect_ordinal(
+            "function value",
+            ordinal,
+            rebuilt.ordinal(),
+            value.declaration,
+        )?;
     }
-    for (raw, value) in function.values.iter().enumerate() {
-        if raw < function.output_values.len() {
-            let expected = u32::try_from(raw).map_err(|_| malformed("functions.values"))?;
-            if function.output_values[raw] != expected || value.role != FunctionValueRole::Output {
-                return Err(malformed("functions.output_values"));
-            }
-            let rebuilt = dae.functions(|functions| {
-                functions.output(reservation, value.name.clone(), raw, value.declaration)
-            })?;
-            expect_function_value_type(dae, types, reservation, value, rebuilt)?;
-            expect_ordinal("function value", raw, rebuilt.ordinal(), value.declaration)?;
-            continue;
-        }
-        if value.role != FunctionValueRole::Local {
-            return Err(malformed("functions.values"));
-        }
+    let output_count = function.outputs.len();
+    for (local, value) in function.locals.iter().enumerate() {
         let value_type = mapped(types, value.value_type, "value type", value.declaration)?;
         let rebuilt = dae.functions(|functions| {
             functions.local(
@@ -772,29 +761,14 @@ fn reconstruct_function_values<'dae>(
                 value.declaration,
             )
         })?;
-        expect_ordinal("function value", raw, rebuilt.ordinal(), value.declaration)?;
+        expect_ordinal(
+            "function value",
+            output_count + local,
+            rebuilt.ordinal(),
+            value.declaration,
+        )?;
     }
     Ok(())
-}
-
-fn expect_function_value_type<'dae>(
-    dae: &DaeConstruction<'dae>,
-    types: &[ValueTypeId<'dae>],
-    reservation: &FunctionReservation<'dae>,
-    value: &FunctionValueEntryInput,
-    rebuilt: FunctionValueId<'dae>,
-) -> Result<(), DaeConstructionError> {
-    let wire_type = mapped(types, value.value_type, "value type", value.declaration)?;
-    let rebuilt_type = dae.storage.functions[reservation.function().index() as usize].values
-        [rebuilt.ordinal() as usize]
-        .value_type;
-    if rebuilt_type == wire_type.index() {
-        Ok(())
-    } else {
-        Err(DaeConstructionError::ShapeMismatch {
-            span: value.declaration.span(),
-        })
-    }
 }
 
 fn reconstruct_domains<'dae>(

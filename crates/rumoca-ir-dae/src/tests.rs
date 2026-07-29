@@ -1925,29 +1925,28 @@ fn function_for_loop_is_a_compact_checked_transition() {
     decoded.inspect(assert_sum3_loop);
 
     let mut missing_parameter: serde_json::Value = serde_json::from_str(&encoded).unwrap();
-    missing_parameter["storage"]["function_folds"][0]["parameter_definitions"] =
+    missing_parameter["storage"]["functions"][0]["statements"][1]["for"]["targets"] =
         serde_json::json!([]);
     assert!(
         serde_json::from_value::<Dae>(missing_parameter).is_err(),
-        "wire reconstruction rejects a missing loop-transition parameter"
+        "wire reconstruction rejects a loop operation inconsistent with generated parameters"
     );
 
     let mut open_initial: serde_json::Value = serde_json::from_str(&encoded).unwrap();
-    let parameter =
-        open_initial["storage"]["function_folds"][0]["parameter_definitions"][0].clone();
-    open_initial["storage"]["function_folds"][0]["initial_definitions"][0] = parameter;
+    open_initial["storage"]["functions"][0]["statements"][1]["for"]["targets"][0] =
+        serde_json::json!(1);
     assert!(
         serde_json::from_value::<Dae>(open_initial).is_err(),
-        "wire reconstruction rejects an initial value that names a generated loop parameter"
+        "wire reconstruction rejects an uninitialized loop-carried local"
     );
 
     let mut nested_fold: serde_json::Value = serde_json::from_str(&encoded).unwrap();
-    let outer = nested_fold["storage"]["functions"][0]["definition"]["statements"][1].clone();
-    nested_fold["storage"]["functions"][0]["definition"]["statements"][1]["for"]["statements"] =
+    let outer = nested_fold["storage"]["functions"][0]["statements"][1].clone();
+    nested_fold["storage"]["functions"][0]["statements"][1]["for"]["statements"] =
         serde_json::json!([outer]);
     let error = serde_json::from_value::<Dae>(nested_fold).unwrap_err();
     assert!(
-        error.to_string().contains("function_folds.nesting"),
+        error.to_string().contains("functions.statements.nesting"),
         "wire reconstruction rejects a nested fold that normal construction cannot express: {error}"
     );
 }

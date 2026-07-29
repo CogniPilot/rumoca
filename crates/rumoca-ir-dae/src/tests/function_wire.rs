@@ -17,7 +17,7 @@ fn wire_rejects_a_noncanonical_source_map_before_dae_construction() {
 }
 
 #[test]
-fn wire_replay_stops_before_a_ready_later_definition() {
+fn function_operations_are_canonical_and_replay_in_owner_order() {
     let source = TestSource::new("function f output Real x; x:=0; 1; old_x; x:=1; end f;");
     let function_at = source.source("function f", 0);
     let output_at = source.source("output Real x", 0);
@@ -49,16 +49,53 @@ fn wire_replay_stops_before_a_ready_later_definition() {
 
     let encoded = serde_json::to_string(&dae).unwrap();
     let _: Dae = serde_json::from_str(&encoded).expect("owner-scheduled replay round trips");
+    let binary = bincode::serialize(&dae).expect("function operation log serializes");
+    let decoded: Dae = bincode::deserialize(&binary).expect("function operation log reconstructs");
+    assert_eq!(
+        bincode::serialize(&decoded).unwrap(),
+        binary,
+        "binary function operations have one canonical representation"
+    );
 
-    let mut orphan_definition: serde_json::Value = serde_json::from_str(&encoded).unwrap();
-    let duplicate = orphan_definition["storage"]["functions"][0]["definitions"][1].clone();
-    orphan_definition["storage"]["functions"][0]["definitions"]
-        .as_array_mut()
-        .unwrap()
-        .push(duplicate);
+    let canonical: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+    let storage = canonical["storage"].as_object().unwrap();
     assert!(
-        serde_json::from_value::<Dae>(orphan_definition).is_err(),
-        "every serialized definition must be consumed exactly once"
+        !storage.contains_key("function_folds"),
+        "constructor-derived fold facts are not wire state"
+    );
+    let function = canonical["storage"]["functions"][0].as_object().unwrap();
+    for removed in [
+        "parameter_values",
+        "values",
+        "output_values",
+        "definitions",
+        "folds",
+        "definition",
+        "results",
+    ] {
+        assert!(
+            !function.contains_key(removed),
+            "{removed} is constructor-derived and must not be serialized"
+        );
+    }
+    assert_eq!(
+        function["statements"].as_array().unwrap().len(),
+        2,
+        "assignments are the readable semantic operation log"
+    );
+    assert!(
+        function["statements"][0].get("assignment").is_some(),
+        "an assignment stores its target, RHS, and provenance inline"
+    );
+
+    let mut legacy_definition = canonical;
+    legacy_definition["storage"]["functions"][0]
+        .as_object_mut()
+        .unwrap()
+        .insert("definitions".to_owned(), serde_json::json!([]));
+    assert!(
+        serde_json::from_value::<Dae>(legacy_definition).is_err(),
+        "wire-v11 rejects the removed definition mirror"
     );
 }
 
