@@ -31,6 +31,7 @@ struct FixtureFeatures {
     clocks: bool,
     delay: bool,
     bounded_delay: bool,
+    record_companion: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -94,6 +95,29 @@ fn fixture_domain<'dae>(
             })
         })
         .transpose()
+}
+
+fn fixture_record_type<'dae>(
+    model: &mut dae::DaeConstruction<'dae>,
+    real: dae::ValueTypeId<'dae>,
+    source: rumoca_core::SourceId,
+    text: &str,
+    enabled: bool,
+) -> Result<Option<dae::ValueTypeId<'dae>>, dae::DaeConstructionError> {
+    if !enabled {
+        return Ok(None);
+    }
+    let declaration =
+        source_provenance(source, text, "record Pair Real left; Real right; end Pair");
+    model
+        .types(|types| {
+            types.record(
+                VarName::new("Pair"),
+                [(VarName::new("left"), real), (VarName::new("right"), real)],
+                declaration,
+            )
+        })
+        .map(Some)
 }
 
 fn fixture_variables<'dae>(
@@ -352,6 +376,83 @@ fn insert_fixture_events<'dae>(
     })
 }
 
+fn insert_fixture_record_companion<'dae>(
+    model: &mut dae::DaeConstruction<'dae>,
+    record: Option<dae::ValueTypeId<'dae>>,
+    source: rumoca_core::SourceId,
+    text: &str,
+) -> Result<(), dae::DaeConstructionError> {
+    let Some(record) = record else {
+        return Ok(());
+    };
+    let declaration = source_provenance(
+        source,
+        text,
+        "parameter Pair companion(start = Pair(4, 5)) = Pair(2, 3)",
+    );
+    let binding_at = source_provenance(source, text, "Pair(2, 3)");
+    let start_at = source_provenance(source, text, "Pair(4, 5)");
+    let projection_at = source_provenance(source, text, "companion.left");
+    let use_start = text
+        .find("companion.left")
+        .expect("record companion use exists");
+    let use_at = dae::DaeProvenance::source(Span::from_offsets(
+        source,
+        use_start,
+        use_start + "companion".len(),
+    ))
+    .expect("record companion use span is source-backed");
+    let (companion, reservation) = model.variables(|variables| {
+        variables.reserve_parameter(VarName::new("companion"), record, declaration)
+    })?;
+    let (binding, start) = model.expressions(|expressions| {
+        let binding_fields = [
+            expressions
+                .at(binding_at)
+                .literal(dae::DaeLiteral::Integer(2))?,
+            expressions
+                .at(binding_at)
+                .literal(dae::DaeLiteral::Integer(3))?,
+        ];
+        let start_fields = [
+            expressions
+                .at(start_at)
+                .literal(dae::DaeLiteral::Integer(4))?,
+            expressions
+                .at(start_at)
+                .literal(dae::DaeLiteral::Integer(5))?,
+        ];
+        Ok((
+            expressions.at(binding_at).record(record, binding_fields)?,
+            expressions.at(start_at).record(record, start_fields)?,
+        ))
+    })?;
+    model.variables(|variables| {
+        variables.define(
+            reservation,
+            dae::VariableAttributes {
+                binding: Some(binding),
+                start: Some(start),
+                fixed: Some(true),
+                description: Some("record companion".to_owned()),
+                ..dae::VariableAttributes::default()
+            },
+            declaration,
+        )
+    })?;
+    model.expressions(|expressions| {
+        let base = expressions
+            .at(use_at)
+            .coordinate(dae::CoordinateInput::Parameter(companion))?;
+        expressions.at(projection_at).field(base, 0)?;
+        let generated = dae::DaeProvenance::generated(
+            dae::DaeGeneration::RecordEquationProjection,
+            projection_at.span(),
+        )?;
+        expressions.at(generated).field(base, 1).map(|_| ())
+    })
+}
+
 fn insert_fixture_clock<'dae>(
     model: &mut dae::DaeConstruction<'dae>,
     variables: FixtureVariables<'dae>,
@@ -495,8 +596,13 @@ fn constrained_state_model(
     } else {
         ""
     };
+    let record_declarations = if features.record_companion {
+        "record Pair Real left; Real right; end Pair; parameter Pair companion(start = Pair(4, 5)) = Pair(2, 3); Real projection = companion.left;"
+    } else {
+        ""
+    };
     let text = format!(
-        "parameter Real p; Real x; Real y; Real a;{family_declaration}{discrete_declaration} equation x = {rhs}; der(y) = a; der(x) = 1;{family_equation}{discrete_equations}{event_equations}{clock_equations}{delay_equations}"
+        "{record_declarations} parameter Real p; Real x; Real y; Real a;{family_declaration}{discrete_declaration} equation x = {rhs}; der(y) = a; der(x) = 1;{family_equation}{discrete_equations}{event_equations}{clock_equations}{delay_equations}"
     );
     let mut sources = SourceMap::new();
     let source = sources.add("checked_index_reduction.mo", &text);
@@ -515,8 +621,10 @@ fn constrained_state_model(
     });
     let model = dae::Dae::construct(sources, |model| {
         let (real, vector, boolean) = fixture_types(model, declaration)?;
+        let record = fixture_record_type(model, real, source, &text, features.record_companion)?;
         let domain = fixture_domain(model, family_owner)?;
         let variables = fixture_variables(model, real, vector, boolean, declaration, features)?;
+        insert_fixture_record_companion(model, record, source, &text)?;
         insert_fixture_clock(model, variables, source, &text, features.clocks)?;
         insert_fixture_delay(model, variables, source, &text, features)?;
         let spans = FixtureSpans {
@@ -985,6 +1093,169 @@ fn state_demotion_preserves_bounded_delay_capability_and_provenance() {
         );
         assert!(sort(view).is_ok());
     });
+}
+
+#[test]
+fn state_demotion_preserves_record_layout_values_attributes_and_use_sites() {
+    let (model, _) = constrained_state_model(
+        false,
+        FixtureFeatures {
+            record_companion: true,
+            ..FixtureFeatures::default()
+        },
+    );
+    let prepared = prepare_for_solve(&model).expect("unrelated record companion survives");
+    let transformed = match prepared {
+        PreparedDae::Transformed { dae, .. } => dae,
+        PreparedDae::Borrowed(_) => panic!("singular fixture requires state demotion"),
+    };
+    transformed.inspect(assert_rebuilt_record_companion);
+}
+
+fn assert_rebuilt_record_companion(view: dae::DaeView<'_>) {
+    let record_id = (0..view.value_type_count())
+        .filter_map(|index| view.value_type_id(index))
+        .find(|id| {
+            view.value_type(*id)
+                .and_then(dae::ValueType::record_name)
+                .is_some_and(|name| name.as_str() == "Pair")
+        })
+        .expect("record type survives");
+    let record = view
+        .value_type(record_id)
+        .expect("record identity resolves");
+    assert!(record.is_record());
+    assert_eq!(record.record_field_count(), 2);
+    assert_eq!(view.record_field(record_id, 0).unwrap().0.as_str(), "left");
+    assert_eq!(view.record_field(record_id, 1).unwrap().0.as_str(), "right");
+    assert_eq!(
+        view.source_text(view.value_type_provenance(record_id).unwrap()),
+        Some("record Pair Real left; Real right; end Pair")
+    );
+    assert!(view.effective_flat_type(record_id).is_none());
+
+    let (_, companion) = view
+        .variables()
+        .find(|(_, variable)| variable.name().as_str() == "companion")
+        .expect("record-valued parameter survives");
+    assert_eq!(companion.value_type_id(), record_id);
+    assert_eq!(companion.role(), dae::VariableRole::Parameter);
+    assert_eq!(companion.fixed(), Some(true));
+    assert_eq!(companion.description(), Some("record companion"));
+    assert_eq!(
+        view.source_text(companion.declaration()),
+        Some("parameter Pair companion(start = Pair(4, 5)) = Pair(2, 3)")
+    );
+    assert_record_attributes(view, record_id, companion);
+    assert_record_projections(view);
+    assert!(sort(view).is_ok());
+}
+
+fn assert_record_attributes<'dae>(
+    view: dae::DaeView<'dae>,
+    record_id: dae::ValueTypeId<'dae>,
+    companion: dae::VariableView<'dae>,
+) {
+    for (expression, expected_text) in [
+        (
+            companion.binding().expect("record binding survives"),
+            "Pair(2, 3)",
+        ),
+        (
+            companion.start().expect("record start survives"),
+            "Pair(4, 5)",
+        ),
+    ] {
+        let expression = view.expression(expression).expect("record value resolves");
+        assert_eq!(expression.value_type_id(), record_id);
+        assert!(matches!(
+            expression.operation(),
+            dae::ExpressionOperation::Record(_)
+        ));
+        assert_eq!(
+            view.source_text(expression.provenance()),
+            Some(expected_text)
+        );
+    }
+}
+
+fn assert_record_projections(view: dae::DaeView<'_>) {
+    let projection = (0..view.expression_count())
+        .filter_map(|index| view.expression_id(index))
+        .filter_map(|id| view.expression(id))
+        .find(|expression| {
+            expression.provenance().origin() == dae::DaeProvenanceOrigin::Source
+                && view.source_text(expression.provenance()) == Some("companion.left")
+        })
+        .expect("record field projection survives");
+    let dae::ExpressionOperation::Field { base, field } = projection.operation() else {
+        panic!("record use remains a field projection");
+    };
+    assert_eq!(field, 0);
+    let base = view.expression(base).expect("field base resolves");
+    assert_eq!(view.source_text(base.provenance()), Some("companion"));
+    assert!(matches!(
+        base.operation(),
+        dae::ExpressionOperation::Coordinate(dae::CoordinateView::Parameter(_))
+    ));
+    let generated = (0..view.expression_count())
+        .filter_map(|index| view.expression_id(index))
+        .filter_map(|id| view.expression(id))
+        .find(|expression| {
+            expression.provenance().origin()
+                == dae::DaeProvenanceOrigin::Generated(dae::DaeGeneration::RecordEquationProjection)
+        })
+        .expect("generated record projection survives");
+    assert_eq!(
+        view.source_text(generated.provenance()),
+        Some("companion.left")
+    );
+    assert!(matches!(
+        generated.operation(),
+        dae::ExpressionOperation::Field { field: 1, .. }
+    ));
+}
+
+#[test]
+fn continuous_record_unknown_fails_at_its_declaration_before_matching() {
+    let text = "record Pair Real left; end Pair; Pair unresolved;";
+    let mut sources = SourceMap::new();
+    let source = sources.add("continuous_record.mo", text);
+    let real_at = source_provenance(source, text, "Real left");
+    let record_at = source_provenance(source, text, "record Pair Real left; end Pair");
+    let variable_at = source_provenance(source, text, "Pair unresolved");
+    let model = dae::Dae::construct(sources, |model| {
+        let real = model
+            .types(|types| types.derived(dae::ValueType::scalar(dae::ScalarType::Real), real_at))?;
+        let record = model.types(|types| {
+            types.record(
+                VarName::new("Pair"),
+                [(VarName::new("left"), real)],
+                record_at,
+            )
+        })?;
+        model.variables(|variables| {
+            variables
+                .algebraic(
+                    VarName::new("unresolved"),
+                    record,
+                    variable_at,
+                    dae::VariableAttributes::default(),
+                )
+                .map(|_| ())
+        })
+    })
+    .expect("checked DAE represents the record declaration");
+    let error = model.inspect(|view| sort(view).map(|_| ())).unwrap_err();
+    assert!(matches!(
+        &error,
+        StructuralError::ContractViolation { span, .. } if *span == variable_at.span()
+    ));
+    assert!(
+        error
+            .to_string()
+            .contains("must be projected to primitive coordinates")
+    );
 }
 
 #[test]

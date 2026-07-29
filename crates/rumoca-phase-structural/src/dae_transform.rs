@@ -474,19 +474,6 @@ fn supports_common_reconstruction(view: dae::DaeView<'_>) -> bool {
     if unsupported_owner {
         return false;
     }
-    if view
-        .variables()
-        .any(|(_, variable)| variable.value_type().is_record())
-    {
-        return false;
-    }
-    if (0..view.value_type_count()).any(|index| {
-        view.value_type_id(index)
-            .and_then(|id| view.value_type(id))
-            .is_none_or(dae::ValueType::is_record)
-    }) {
-        return false;
-    }
     (0..view.expression_count()).all(|index| {
         let Some(id) = view.expression_id(index) else {
             return false;
@@ -503,6 +490,8 @@ fn supports_common_reconstruction(view: dae::DaeView<'_>) -> bool {
             | dae::ExpressionOperation::Binary { .. }
             | dae::ExpressionOperation::Conditional(_)
             | dae::ExpressionOperation::Array(_)
+            | dae::ExpressionOperation::Record(_)
+            | dae::ExpressionOperation::Field { .. }
             | dae::ExpressionOperation::Range { .. }
             | dae::ExpressionOperation::Comprehension { .. }
             | dae::ExpressionOperation::Index { .. }
@@ -551,25 +540,58 @@ fn rebuild_types<'target>(
     target: &mut dae::DaeConstruction<'target>,
 ) -> Result<Vec<dae::ValueTypeId<'target>>, dae::DaeConstructionError> {
     target.types(|types| {
-        (0..source.value_type_count())
-            .map(|index| {
-                let source_id = source
-                    .value_type_id(index)
-                    .expect("finalized value type ordinal resolves");
-                let value_type = source
-                    .value_type(source_id)
-                    .expect("finalized value type identity resolves")
-                    .clone();
-                let provenance = source
-                    .value_type_provenance(source_id)
-                    .expect("finalized value type has provenance");
+        let mut rebuilt = Vec::with_capacity(source.value_type_count());
+        for index in 0..source.value_type_count() {
+            let source_id = source
+                .value_type_id(index)
+                .expect("finalized value type ordinal resolves");
+            let value_type = source
+                .value_type(source_id)
+                .expect("finalized value type identity resolves");
+            let provenance = source
+                .value_type_provenance(source_id)
+                .expect("finalized value type has provenance");
+            let rebuilt_type = if value_type.is_record() {
+                rebuild_record_type(source, source_id, value_type, provenance, &rebuilt, types)?
+            } else {
+                let value_type = value_type.clone();
                 match source.effective_flat_type(source_id) {
-                    Some(flat_type) => types.intern(flat_type, value_type, provenance),
-                    None => types.derived(value_type, provenance),
+                    Some(flat_type) => types.intern(flat_type, value_type, provenance)?,
+                    None => types.derived(value_type, provenance)?,
                 }
-            })
-            .collect()
+            };
+            rebuilt.push(rebuilt_type);
+        }
+        Ok(rebuilt)
     })
+}
+
+fn rebuild_record_type<'source, 'target>(
+    source: dae::DaeView<'source>,
+    source_id: dae::ValueTypeId<'source>,
+    value_type: &dae::ValueType,
+    provenance: dae::DaeProvenance,
+    rebuilt: &[dae::ValueTypeId<'target>],
+    types: &mut dae::ValueTypes<'_, 'target>,
+) -> Result<dae::ValueTypeId<'target>, dae::DaeConstructionError> {
+    let fields = (0..value_type.record_field_count()).map(|ordinal| {
+        let (name, field_type) = source
+            .record_field(source_id, ordinal)
+            .expect("checked record field ordinal resolves");
+        let field_type = rebuilt
+            .get(field_type.index() as usize)
+            .copied()
+            .expect("checked record field type precedes its record owner");
+        (name.clone(), field_type)
+    });
+    types.record(
+        value_type
+            .record_name()
+            .expect("checked record has a canonical name")
+            .clone(),
+        fields,
+        provenance,
+    )
 }
 
 struct RebuiltDomain<'dae> {
@@ -1434,6 +1456,14 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                     let elements = self.rebuild_operands(operands)?;
                     self.target.at(provenance).array(elements)?
                 }
+            }
+            dae::ExpressionOperation::Record(fields) => {
+                let fields = self.rebuild_operands(fields)?;
+                self.target.at(provenance).record(value_type, fields)?
+            }
+            dae::ExpressionOperation::Field { base, field } => {
+                let base = self.rebuild(base)?;
+                self.target.at(provenance).field(base, field as usize)?
             }
             dae::ExpressionOperation::Range { start, step, stop } => {
                 self.target.at(provenance).range(start, step, stop)?

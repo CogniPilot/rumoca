@@ -36,6 +36,127 @@ impl TestSource {
 }
 
 #[test]
+fn record_layout_values_and_field_uses_round_trip_through_checked_wire() {
+    let source = TestSource::new(
+        "record Pair Real left; Real right; end Pair; parameter Pair companion = Pair(1, 2); companion.left",
+    );
+    let real_at = source.source("Real left", 0);
+    let record_at = source.source("record Pair Real left; Real right; end Pair", 0);
+    let variable_at = source.source("parameter Pair companion = Pair(1, 2)", 0);
+    let constructor_at = source.source("Pair(1, 2)", 0);
+    let use_at = source.source("companion", 1);
+    let projection_at = source.source("companion.left", 0);
+    let dae = Dae::construct(source.map, |dae| {
+        let real =
+            dae.types(|types| types.derived(ValueType::scalar(ScalarType::Real), real_at))?;
+        let record = dae.types(|types| {
+            types.record(
+                VarName::new("Pair"),
+                [(VarName::new("left"), real), (VarName::new("right"), real)],
+                record_at,
+            )
+        })?;
+        let (companion, reservation) = dae.variables(|variables| {
+            variables.reserve_parameter(VarName::new("companion"), record, variable_at)
+        })?;
+        let binding = dae.expressions(|expressions| {
+            let one = expressions
+                .at(constructor_at)
+                .literal(DaeLiteral::Integer(1))?;
+            let two = expressions
+                .at(constructor_at)
+                .literal(DaeLiteral::Integer(2))?;
+            expressions.at(constructor_at).record(record, [one, two])
+        })?;
+        dae.variables(|variables| {
+            variables.define(
+                reservation,
+                VariableAttributes {
+                    binding: Some(binding),
+                    ..VariableAttributes::default()
+                },
+                variable_at,
+            )
+        })?;
+        dae.expressions(|expressions| {
+            let base = expressions
+                .at(use_at)
+                .coordinate(CoordinateInput::Parameter(companion))?;
+            expressions.at(projection_at).field(base, 0).map(|_| ())
+        })
+    })
+    .expect("record owners construct through checked operations");
+
+    dae.inspect(assert_record_round_trip);
+    let encoded = serde_json::to_string(&dae).unwrap();
+    let decoded: Dae = serde_json::from_str(&encoded).unwrap();
+    decoded.inspect(assert_record_round_trip);
+
+    let mut forged: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+    forged["storage"]["value_types"][1]["record_fields"][0]["value_type"] = serde_json::json!(1);
+    let error = serde_json::from_value::<Dae>(forged).unwrap_err();
+    assert!(
+        error.to_string().contains("value_types.record_fields"),
+        "wire rejects a cyclic record base before insertion: {error}"
+    );
+}
+
+fn assert_record_round_trip(view: DaeView<'_>) {
+    let record_id = view.value_type_id(1).expect("record type remains dense");
+    let record = view.value_type(record_id).expect("record type resolves");
+    assert_eq!(record.record_name().unwrap().as_str(), "Pair");
+    assert_eq!(view.record_field(record_id, 0).unwrap().0.as_str(), "left");
+    assert_eq!(view.record_field(record_id, 1).unwrap().0.as_str(), "right");
+    let (_, companion) = view
+        .variables()
+        .find(|(_, variable)| variable.name().as_str() == "companion")
+        .expect("record variable survives");
+    let binding = view
+        .expression(companion.binding().expect("record binding survives"))
+        .expect("record binding resolves");
+    assert!(matches!(
+        binding.operation(),
+        ExpressionOperation::Record(_)
+    ));
+    assert_eq!(view.source_text(binding.provenance()), Some("Pair(1, 2)"));
+    let projection = (0..view.expression_count())
+        .filter_map(|index| view.expression_id(index))
+        .filter_map(|id| view.expression(id))
+        .find(|expression| view.source_text(expression.provenance()) == Some("companion.left"))
+        .expect("field use survives");
+    assert!(matches!(
+        projection.operation(),
+        ExpressionOperation::Field { field: 0, .. }
+    ));
+}
+
+#[test]
+fn record_type_rejects_unknown_provenance_before_insertion() {
+    let source = TestSource::new("record Pair Real left; end Pair");
+    let real_at = source.source("Real left", 0);
+    let foreign_span = Span::from_offsets(SourceId::from_source_name("foreign.mo"), 0, 1);
+    let foreign = DaeProvenance::source(foreign_span).expect("foreign span is non-dummy");
+    let dae = Dae::construct(source.map, |dae| {
+        let real =
+            dae.types(|types| types.derived(ValueType::scalar(ScalarType::Real), real_at))?;
+        let rejected = dae.types(|types| {
+            types.record(
+                VarName::new("Pair"),
+                [(VarName::new("left"), real)],
+                foreign,
+            )
+        });
+        assert!(matches!(
+            rejected,
+            Err(DaeConstructionError::UnknownSource { span }) if span == foreign_span
+        ));
+        Ok(())
+    })
+    .expect("rejected record provenance leaves no partial owner");
+    assert_eq!(dae.inspect(|view| view.value_type_count()), 1);
+}
+
+#[test]
 fn exact_expression_provenance_resolves_through_the_source_map() {
     let source =
         TestSource::new("Real x; equation x + 2; {x, 2}; 1:3; x[1]; [x for i in 1:3]; abs(x);");
