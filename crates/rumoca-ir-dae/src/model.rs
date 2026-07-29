@@ -35,8 +35,8 @@ use crate::expression::{
     ValueType, source_text,
 };
 use crate::temporal::{
-    DelayEntry, DelayView, PositiveParameterEntry, PositiveParameterView, PreviousEntry,
-    PreviousView, Temporal, TerminalEntry, TerminalView,
+    DelayEntry, DelayKind, DelayOperation, DelayView, PositiveParameterEntry,
+    PositiveParameterView, PreviousEntry, PreviousView, Temporal, TerminalEntry, TerminalView,
 };
 use crate::{
     AlgebraicId, ClockId, ClockOwnershipId, ConditionId, ContinuousEquationId, ContinuousFamilyId,

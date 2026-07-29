@@ -141,14 +141,14 @@ fn production_lowering_constructs_delay_with_exact_timing_evidence() {
             .delay(view.delay_id(0).expect("dense delay identity"))
             .expect("checked delay owner resolves");
         assert_eq!(view.source_text(delay.provenance()), Some("delay(x, dt)"));
-        let timing = delay
-            .delay_time_evidence()
-            .expect("two-argument delay owns positive timing evidence");
+        let dae::DelayOperation::ParameterDelay { delay_time: timing } = delay.operation() else {
+            panic!("two-argument delay owns parameter timing evidence");
+        };
         assert_eq!(timing.value(), 0.5);
         assert_eq!(view.source_text(timing.provenance()), Some("dt"));
         assert_eq!(
             view.source_text(
-                view.expression(delay.delay_time())
+                view.expression(timing.expression())
                     .expect("delayTime expression resolves")
                     .provenance()
             ),

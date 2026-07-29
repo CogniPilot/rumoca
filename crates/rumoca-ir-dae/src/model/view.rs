@@ -537,14 +537,21 @@ impl<'dae> DaeView<'dae> {
 
     pub fn delay(self, id: DelayId<'dae>) -> Option<DelayView<'dae>> {
         let entry = self.dae.storage.delays.get(id.index() as usize)?;
+        let operation = match &entry.kind {
+            DelayKind::ParameterDelay { delay_time } => DelayOperation::ParameterDelay {
+                delay_time: positive_parameter_view(delay_time),
+            },
+            DelayKind::BoundedDelay {
+                delay_time,
+                delay_max,
+            } => DelayOperation::BoundedDelay {
+                delay_time: ExprId::from_raw(*delay_time),
+                delay_max: positive_parameter_view(delay_max),
+            },
+        };
         Some(DelayView {
             source: ExprId::from_raw(entry.source),
-            delay_time: ExprId::from_raw(entry.delay_time),
-            delay_time_evidence: entry
-                .delay_time_evidence
-                .as_ref()
-                .map(positive_parameter_view),
-            delay_max: entry.delay_max.as_ref().map(positive_parameter_view),
+            operation,
             value_type: self
                 .dae
                 .storage

@@ -59,10 +59,15 @@ fn lower_delays<'dae>(
         let id = view.delay_id(index).expect("dense delay identity resolves");
         let delay = view.delay(id).expect("checked delay identity resolves");
         let span = delay.provenance().span();
-        let delay_max = delay
-            .delay_max()
-            .map(|evidence| evidence.expression())
-            .unwrap_or_else(|| delay.delay_time());
+        let (delay_time, delay_max) = match delay.operation() {
+            dae::DelayOperation::ParameterDelay { delay_time } => {
+                (delay_time.expression(), delay_time.expression())
+            }
+            dae::DelayOperation::BoundedDelay {
+                delay_time,
+                delay_max,
+            } => (delay_time, delay_max.expression()),
+        };
         let scalar_count = delay
             .value_type()
             .scalar_count()
@@ -75,7 +80,7 @@ fn lower_delays<'dae>(
                 channel,
             );
             delay_time_rhs.push(
-                ScalarCompiler::new(view, layout, None).program(delay.delay_time(), 0)?,
+                ScalarCompiler::new(view, layout, None).program(delay_time, 0)?,
                 span,
                 channel,
             );

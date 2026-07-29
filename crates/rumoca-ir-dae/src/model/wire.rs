@@ -437,12 +437,22 @@ struct PositiveParameterWire {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+enum DelayKindWire {
+    ParameterDelay {
+        delay_time: PositiveParameterWire,
+    },
+    BoundedDelay {
+        delay_time: u32,
+        delay_max: PositiveParameterWire,
+    },
+}
+
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct DelayEntryWire {
     source: u32,
-    delay_time: u32,
-    delay_time_evidence: Option<PositiveParameterWire>,
-    delay_max: Option<PositiveParameterWire>,
+    kind: DelayKindWire,
     #[serde(deserialize_with = "deserialize_provenance")]
     provenance: DaeProvenance,
 }
@@ -889,6 +899,7 @@ fn expect_expression_arena_consumed(
         || ids.next_expression_type_anchor != wire.expressions.type_anchors.len()
         || ids.next_operand != wire.expressions.operands.len()
         || ids.next_subscript != wire.expressions.subscripts.len()
+        || ids.delays.len() != wire.delays.len()
         || dae.storage.expressions.nodes.len() != count
         || dae.storage.expressions.operands.len() != wire.expressions.operands.len()
         || dae.storage.expressions.subscripts.len() != wire.expressions.subscripts.len()
@@ -921,8 +932,10 @@ fn reconstruct_delay_coordinate<'dae>(
         "expression",
         delay.provenance,
     )?;
-    let coordinate = match (&delay.delay_time_evidence, &delay.delay_max) {
-        (Some(evidence), None) if evidence.expression == delay.delay_time => {
+    let coordinate = match &delay.kind {
+        DelayKindWire::ParameterDelay {
+            delay_time: evidence,
+        } => {
             let expression = mapped(
                 &ids.expressions,
                 evidence.expression,
@@ -935,10 +948,13 @@ fn reconstruct_delay_coordinate<'dae>(
                 temporal.delay(source, positive, delay.provenance, coordinate_provenance)
             })?
         }
-        (None, Some(maximum)) => {
+        DelayKindWire::BoundedDelay {
+            delay_time,
+            delay_max: maximum,
+        } => {
             let delay_time = mapped(
                 &ids.expressions,
-                delay.delay_time,
+                *delay_time,
                 "expression",
                 delay.provenance,
             )?;
@@ -962,11 +978,6 @@ fn reconstruct_delay_coordinate<'dae>(
                     coordinate_provenance,
                 )
             })?
-        }
-        _ => {
-            return Err(DaeConstructionError::MalformedWire {
-                column: "delay evidence",
-            });
         }
     };
     expect_ordinal("delay", index, coordinate.id().index(), delay.provenance)?;

@@ -672,6 +672,20 @@ struct RebuiltTemporal<'dae> {
     terminals: Vec<dae::TerminalId<'dae>>,
 }
 
+enum RebuiltDelay<'source, 'target> {
+    Parameter {
+        source: dae::ExprId<'target>,
+        delay_time: dae::ExprId<'target>,
+        evidence: dae::PositiveParameterView<'source>,
+    },
+    Bounded {
+        source: dae::ExprId<'target>,
+        delay_time: dae::ExprId<'target>,
+        delay_max: dae::ExprId<'target>,
+        evidence: dae::PositiveParameterView<'source>,
+    },
+}
+
 fn rebuild_temporal_coordinates<'target>(
     source: dae::DaeView<'_>,
     target: &mut dae::DaeConstruction<'target>,
@@ -755,58 +769,66 @@ fn rebuild_delay_coordinates<'target>(
             .expression(coordinate_id)
             .expect("delay coordinate expression identity resolves")
             .provenance();
-        let (rebuilt_source, rebuilt_time, rebuilt_maximum) =
-            target.expressions(|expressions| {
-                let mut rebuilder = ExpressionRebuilder::new(
+        let rebuilt_delay = target.expressions(|expressions| {
+            let mut rebuilder = ExpressionRebuilder::new(
+                source,
+                expressions,
+                identities,
+                derivative_definitions,
+                candidate,
+                rebuilt,
+            );
+            let source = rebuilder.rebuild(delay.source())?;
+            match delay.operation() {
+                dae::DelayOperation::ParameterDelay { delay_time } => Ok(RebuiltDelay::Parameter {
                     source,
-                    expressions,
-                    identities,
-                    derivative_definitions,
-                    candidate,
-                    rebuilt,
-                );
-                Ok((
-                    rebuilder.rebuild(delay.source())?,
-                    rebuilder.rebuild(delay.delay_time())?,
-                    delay
-                        .delay_max()
-                        .map(|maximum| rebuilder.rebuild(maximum.expression()))
-                        .transpose()?,
-                ))
-            })?;
-        let coordinate =
-            target.temporal(
-                |temporal| match (delay.delay_time_evidence(), delay.delay_max()) {
-                    (Some(evidence), None) => {
-                        let positive = temporal.positive_parameter(
-                            rebuilt_time,
-                            evidence.value(),
-                            evidence.provenance(),
-                        )?;
-                        temporal.delay(
-                            rebuilt_source,
-                            positive,
-                            delay.provenance(),
-                            coordinate_provenance,
-                        )
-                    }
-                    (None, Some(maximum)) => {
-                        let positive = temporal.positive_parameter(
-                            rebuilt_maximum.expect("bounded delay has a rebuilt maximum"),
-                            maximum.value(),
-                            maximum.provenance(),
-                        )?;
-                        temporal.bounded_delay(
-                            rebuilt_source,
-                            rebuilt_time,
-                            positive,
-                            delay.provenance(),
-                            coordinate_provenance,
-                        )
-                    }
-                    _ => unreachable!("checked delay retains one timing evidence form"),
-                },
-            )?;
+                    delay_time: rebuilder.rebuild(delay_time.expression())?,
+                    evidence: delay_time,
+                }),
+                dae::DelayOperation::BoundedDelay {
+                    delay_time,
+                    delay_max,
+                } => Ok(RebuiltDelay::Bounded {
+                    source,
+                    delay_time: rebuilder.rebuild(delay_time)?,
+                    delay_max: rebuilder.rebuild(delay_max.expression())?,
+                    evidence: delay_max,
+                }),
+            }
+        })?;
+        let coordinate = target.temporal(|temporal| match rebuilt_delay {
+            RebuiltDelay::Parameter {
+                source,
+                delay_time,
+                evidence,
+            } => {
+                let positive = temporal.positive_parameter(
+                    delay_time,
+                    evidence.value(),
+                    evidence.provenance(),
+                )?;
+                temporal.delay(source, positive, delay.provenance(), coordinate_provenance)
+            }
+            RebuiltDelay::Bounded {
+                source,
+                delay_time,
+                delay_max,
+                evidence,
+            } => {
+                let positive = temporal.positive_parameter(
+                    delay_max,
+                    evidence.value(),
+                    evidence.provenance(),
+                )?;
+                temporal.bounded_delay(
+                    source,
+                    delay_time,
+                    positive,
+                    delay.provenance(),
+                    coordinate_provenance,
+                )
+            }
+        })?;
         if coordinate.id().index() as usize != index {
             return Err(dae::DaeConstructionError::ShapeMismatch {
                 span: delay.provenance().span(),

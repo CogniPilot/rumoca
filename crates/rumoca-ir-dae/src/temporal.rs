@@ -38,14 +38,24 @@ pub(crate) struct PositiveParameterEntry {
 #[serde(deny_unknown_fields)]
 pub(crate) struct DelayEntry {
     pub(crate) source: u32,
-    pub(crate) delay_time: u32,
-    pub(crate) delay_time_evidence: Option<PositiveParameterEntry>,
-    pub(crate) delay_max: Option<PositiveParameterEntry>,
+    pub(crate) kind: DelayKind,
     #[serde(skip_serializing)]
     pub(crate) value_type: u32,
     #[serde(skip_serializing)]
     pub(crate) variability: ExpressionVariability,
     pub(crate) provenance: DaeProvenance,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum DelayKind {
+    ParameterDelay {
+        delay_time: PositiveParameterEntry,
+    },
+    BoundedDelay {
+        delay_time: u32,
+        delay_max: PositiveParameterEntry,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -102,11 +112,20 @@ impl<'dae> PositiveParameterView<'dae> {
 }
 
 #[derive(Debug, Clone, Copy)]
+pub enum DelayOperation<'dae> {
+    ParameterDelay {
+        delay_time: PositiveParameterView<'dae>,
+    },
+    BoundedDelay {
+        delay_time: ExprId<'dae>,
+        delay_max: PositiveParameterView<'dae>,
+    },
+}
+
+#[derive(Debug, Clone, Copy)]
 pub struct DelayView<'dae> {
     pub(crate) source: ExprId<'dae>,
-    pub(crate) delay_time: ExprId<'dae>,
-    pub(crate) delay_time_evidence: Option<PositiveParameterView<'dae>>,
-    pub(crate) delay_max: Option<PositiveParameterView<'dae>>,
+    pub(crate) operation: DelayOperation<'dae>,
     pub(crate) value_type: &'dae ValueType,
     pub(crate) variability: ExpressionVariability,
     pub(crate) provenance: DaeProvenance,
@@ -117,16 +136,8 @@ impl<'dae> DelayView<'dae> {
         self.source
     }
 
-    pub const fn delay_time(self) -> ExprId<'dae> {
-        self.delay_time
-    }
-
-    pub const fn delay_time_evidence(self) -> Option<PositiveParameterView<'dae>> {
-        self.delay_time_evidence
-    }
-
-    pub const fn delay_max(self) -> Option<PositiveParameterView<'dae>> {
-        self.delay_max
+    pub const fn operation(self) -> DelayOperation<'dae> {
+        self.operation
     }
 
     pub const fn value_type(self) -> &'dae ValueType {
@@ -208,12 +219,11 @@ impl<'dae> Temporal<'_, 'dae> {
         provenance: DaeProvenance,
         coordinate_provenance: DaeProvenance,
     ) -> Result<DelayCoordinate<'dae>, DaeConstructionError> {
-        let delay_time_expression = delay_time.entry.expression;
         self.insert_delay_coordinate(
             source,
-            delay_time_expression,
-            Some(delay_time.entry),
-            None,
+            DelayKind::ParameterDelay {
+                delay_time: delay_time.entry,
+            },
             provenance,
             coordinate_provenance,
         )
@@ -232,9 +242,10 @@ impl<'dae> Temporal<'_, 'dae> {
         check_scalar_real(self.storage, delay_time, provenance)?;
         self.insert_delay_coordinate(
             source,
-            delay_time.index(),
-            None,
-            Some(delay_max.entry),
+            DelayKind::BoundedDelay {
+                delay_time: delay_time.index(),
+                delay_max: delay_max.entry,
+            },
             provenance,
             coordinate_provenance,
         )
@@ -328,9 +339,7 @@ impl<'dae> Temporal<'_, 'dae> {
     fn insert_delay_coordinate(
         &mut self,
         source: ExprId<'dae>,
-        delay_time: u32,
-        delay_time_evidence: Option<PositiveParameterEntry>,
-        delay_max: Option<PositiveParameterEntry>,
+        kind: DelayKind,
         provenance: DaeProvenance,
         coordinate_provenance: DaeProvenance,
     ) -> Result<DelayCoordinate<'dae>, DaeConstructionError> {
@@ -354,9 +363,7 @@ impl<'dae> Temporal<'_, 'dae> {
         )?;
         self.storage.delays.push(DelayEntry {
             source: source.index(),
-            delay_time,
-            delay_time_evidence,
-            delay_max,
+            kind,
             value_type,
             variability,
             provenance,

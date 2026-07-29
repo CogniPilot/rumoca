@@ -1323,7 +1323,10 @@ fn assert_function_runtime_arena(view: DaeView<'_>) {
         ConditionOperation::Discrete(_)
     ));
     let delay = view.delay(view.delay_id(0).unwrap()).unwrap();
-    assert_eq!(delay.delay_time_evidence().unwrap().value(), 1.0);
+    assert!(matches!(
+        delay.operation(),
+        DelayOperation::ParameterDelay { delay_time } if delay_time.value() == 1.0
+    ));
     let expressions = (0..view.expression_count())
         .filter_map(|index| view.expression_id(index))
         .filter_map(|id| view.expression(id))
