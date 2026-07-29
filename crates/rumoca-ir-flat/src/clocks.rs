@@ -7,7 +7,9 @@
 //! - Clock inference data
 
 use indexmap::{IndexMap, IndexSet};
-use rumoca_core::{ClockLattice, ClockLatticeError, ClockLatticeErrorKind, ClockRational, Span};
+use rumoca_core::{
+    ClockLattice, ClockLatticeError, ClockLatticeErrorKind, ClockRational, ProvenanceSpan, Span,
+};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 
 use crate::{Equation, VarName};
@@ -355,75 +357,159 @@ pub enum ClockKind {
 /// MLS §16.5.2: Sub-Clock.
 ///
 /// Defines the relationship between a sub-clock and its base clock.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct SubClock {
     /// Source span for the sub-clock expression.
-    pub source_span: Span,
-    /// Sub-sampling factor (subSample).
-    /// The sub-clock ticks every `sub_factor` ticks of the base clock.
-    pub sub_factor: Option<i64>,
-    /// Super-sampling factor (superSample).
-    /// The sub-clock ticks `super_factor` times per base clock tick.
-    pub super_factor: Option<i64>,
-    /// Shift amount (shiftSample).
-    /// Number of base clock ticks to shift.
-    pub shift_counter: Option<i64>,
-    /// Shift resolution.
-    pub shift_resolution: Option<i64>,
-    /// Back-sample amount (backSample).
-    pub back_counter: Option<i64>,
-    /// Back-sample resolution.
-    pub back_resolution: Option<i64>,
-    /// Whether noClock() was used.
-    pub no_clock: bool,
+    source_span: ProvenanceSpan,
+    /// Source-ordered clock conversion operations.
+    operations: Vec<SubClockOperation>,
+}
+
+#[derive(Debug, Clone)]
+enum SubClockOperation {
+    SubSample {
+        factor: i64,
+        span: ProvenanceSpan,
+    },
+    SuperSample {
+        factor: i64,
+        span: ProvenanceSpan,
+    },
+    ShiftSample {
+        counter: i64,
+        resolution: i64,
+        span: ProvenanceSpan,
+    },
+    BackSample {
+        counter: i64,
+        resolution: i64,
+        span: ProvenanceSpan,
+    },
+    NoClock {
+        span: ProvenanceSpan,
+    },
 }
 
 impl SubClock {
-    pub fn empty_with_span(source_span: Span) -> Self {
+    /// Create the identity sub-clock used before clock inference adds
+    /// conversions.
+    ///
+    /// Raw spans cannot bypass the provenance requirement:
+    ///
+    /// ```compile_fail
+    /// use rumoca_core::Span;
+    /// use rumoca_ir_flat::SubClock;
+    ///
+    /// let _ = SubClock::identity(Span::DUMMY);
+    /// ```
+    pub fn identity(source_span: ProvenanceSpan) -> Self {
         Self {
             source_span,
-            sub_factor: None,
-            super_factor: None,
-            shift_counter: None,
-            shift_resolution: None,
-            back_counter: None,
-            back_resolution: None,
-            no_clock: bool::default(),
+            operations: Vec::new(),
         }
     }
 
     /// Create a sub-sampled clock.
-    pub fn sub_sample(factor: i64, source_span: Span) -> Self {
-        Self {
-            sub_factor: Some(factor),
-            ..Self::empty_with_span(source_span)
-        }
+    pub fn sub_sample(factor: i64, source_span: ProvenanceSpan) -> ClockLatticeResult<Self> {
+        Self::identity(source_span).then_sub_sample(factor, source_span)
     }
 
     /// Create a super-sampled clock.
-    pub fn super_sample(factor: i64, source_span: Span) -> Self {
-        Self {
-            super_factor: Some(factor),
-            ..Self::empty_with_span(source_span)
-        }
+    pub fn super_sample(factor: i64, source_span: ProvenanceSpan) -> ClockLatticeResult<Self> {
+        Self::identity(source_span).then_super_sample(factor, source_span)
     }
 
     /// Create a shifted clock (MLS §16.5.2 `shiftSample`).
-    pub fn shift_sample(counter: i64, resolution: i64, source_span: Span) -> Self {
-        Self {
-            shift_counter: Some(counter),
-            shift_resolution: Some(resolution),
-            ..Self::empty_with_span(source_span)
-        }
+    pub fn shift_sample(
+        counter: i64,
+        resolution: i64,
+        source_span: ProvenanceSpan,
+    ) -> ClockLatticeResult<Self> {
+        Self::identity(source_span).then_shift_sample(counter, resolution, source_span)
     }
 
     /// Create a back-shifted clock (MLS §16.5.2 `backSample`).
-    pub fn back_sample(counter: i64, resolution: i64, source_span: Span) -> Self {
+    pub fn back_sample(
+        counter: i64,
+        resolution: i64,
+        source_span: ProvenanceSpan,
+    ) -> ClockLatticeResult<Self> {
+        Self::identity(source_span).then_back_sample(counter, resolution, source_span)
+    }
+
+    /// Create an inferred `noClock` conversion.
+    pub fn no_clock(source_span: ProvenanceSpan) -> Self {
         Self {
-            back_counter: Some(counter),
-            back_resolution: Some(resolution),
-            ..Self::empty_with_span(source_span)
+            source_span,
+            operations: vec![SubClockOperation::NoClock { span: source_span }],
         }
+    }
+
+    pub fn then_sub_sample(
+        mut self,
+        factor: i64,
+        operation_span: ProvenanceSpan,
+    ) -> ClockLatticeResult<Self> {
+        require_nonnegative_factor(factor, operation_span)?;
+        self.operations.push(SubClockOperation::SubSample {
+            factor,
+            span: operation_span,
+        });
+        Ok(self)
+    }
+
+    pub fn then_super_sample(
+        mut self,
+        factor: i64,
+        operation_span: ProvenanceSpan,
+    ) -> ClockLatticeResult<Self> {
+        require_nonnegative_factor(factor, operation_span)?;
+        self.operations.push(SubClockOperation::SuperSample {
+            factor,
+            span: operation_span,
+        });
+        Ok(self)
+    }
+
+    pub fn then_shift_sample(
+        mut self,
+        counter: i64,
+        resolution: i64,
+        operation_span: ProvenanceSpan,
+    ) -> ClockLatticeResult<Self> {
+        require_shift_arguments(counter, resolution, operation_span)?;
+        self.operations.push(SubClockOperation::ShiftSample {
+            counter,
+            resolution,
+            span: operation_span,
+        });
+        Ok(self)
+    }
+
+    pub fn then_back_sample(
+        mut self,
+        counter: i64,
+        resolution: i64,
+        operation_span: ProvenanceSpan,
+    ) -> ClockLatticeResult<Self> {
+        require_shift_arguments(counter, resolution, operation_span)?;
+        self.operations.push(SubClockOperation::BackSample {
+            counter,
+            resolution,
+            span: operation_span,
+        });
+        Ok(self)
+    }
+
+    pub fn then_no_clock(mut self, operation_span: ProvenanceSpan) -> Self {
+        self.operations.push(SubClockOperation::NoClock {
+            span: operation_span,
+        });
+        self
+    }
+
+    pub fn source_span(&self) -> Span {
+        self.source_span.span()
     }
 
     /// Derive this sub-clock's exact lattice from its base clock.
@@ -432,35 +518,200 @@ impl SubClock {
     /// source clock, so the derivation is exact integer arithmetic and never a
     /// floating-point scaling. `noClock()` has no periodic lattice.
     pub fn derive(&self, base: ClockLattice) -> ClockLatticeResult<ClockLattice> {
-        if self.no_clock {
-            return Err(ClockLatticeErrorKind::NotRationallyRepresentable.at(self.source_span));
-        }
         let mut derived = base;
-        if let Some(factor) = self.sub_factor {
-            derived = self.apply(derived.sub_sample(factor))?;
-        }
-        if let Some(factor) = self.super_factor {
-            derived = self.apply(derived.super_sample(factor))?;
-        }
-        // MLS §16.5.2 declares `resolution = 1` as the operator's own default,
-        // so an absent resolution is the spec value rather than a substitute.
-        if let Some(counter) = self.shift_counter {
-            let resolution = self.shift_resolution.unwrap_or(1);
-            derived = self.apply(derived.shift_sample(counter, resolution))?;
-        }
-        if let Some(counter) = self.back_counter {
-            let resolution = self.back_resolution.unwrap_or(1);
-            derived = self.apply(derived.back_sample(counter, resolution))?;
+        for operation in &self.operations {
+            derived = operation.apply(derived)?;
         }
         Ok(derived)
     }
+}
 
-    fn apply(
-        &self,
-        result: Result<ClockLattice, ClockLatticeErrorKind>,
-    ) -> ClockLatticeResult<ClockLattice> {
-        result.map_err(|kind| kind.at(self.source_span))
+impl SubClockOperation {
+    fn apply(&self, lattice: ClockLattice) -> ClockLatticeResult<ClockLattice> {
+        match *self {
+            Self::SubSample { factor: 0, span }
+            | Self::SuperSample { factor: 0, span }
+            | Self::NoClock { span } => {
+                Err(ClockLatticeErrorKind::NotRationallyRepresentable.at(span.span()))
+            }
+            Self::SubSample { factor, span } => lattice
+                .sub_sample(factor)
+                .map_err(|kind| kind.at(span.span())),
+            Self::SuperSample { factor, span } => lattice
+                .super_sample(factor)
+                .map_err(|kind| kind.at(span.span())),
+            Self::ShiftSample {
+                counter,
+                resolution,
+                span,
+            } => lattice
+                .shift_sample(counter, resolution)
+                .map_err(|kind| kind.at(span.span())),
+            Self::BackSample {
+                counter,
+                resolution,
+                span,
+            } => lattice
+                .back_sample(counter, resolution)
+                .map_err(|kind| kind.at(span.span())),
+        }
     }
+}
+
+fn require_nonnegative_factor(factor: i64, span: ProvenanceSpan) -> ClockLatticeResult<()> {
+    if factor < 0 {
+        return Err(ClockLatticeErrorKind::NonPositiveFactor.at(span.span()));
+    }
+    Ok(())
+}
+
+fn require_shift_arguments(
+    counter: i64,
+    resolution: i64,
+    span: ProvenanceSpan,
+) -> ClockLatticeResult<()> {
+    if counter < 0 || resolution <= 0 {
+        return Err(ClockLatticeErrorKind::NonPositiveFactor.at(span.span()));
+    }
+    Ok(())
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
+enum SubClockOperationWire {
+    SubSample {
+        factor: i64,
+        span: Span,
+    },
+    SuperSample {
+        factor: i64,
+        span: Span,
+    },
+    ShiftSample {
+        counter: i64,
+        resolution: i64,
+        span: Span,
+    },
+    BackSample {
+        counter: i64,
+        resolution: i64,
+        span: Span,
+    },
+    NoClock {
+        span: Span,
+    },
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SubClockWire {
+    source_span: Span,
+    operations: Vec<SubClockOperationWire>,
+}
+
+impl Serialize for SubClock {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        SubClockWire {
+            source_span: self.source_span.span(),
+            operations: self
+                .operations
+                .iter()
+                .map(SubClockOperationWire::from)
+                .collect(),
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for SubClock {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let wire = SubClockWire::deserialize(deserializer)?;
+        wire.reconstruct::<D::Error>()
+    }
+}
+
+impl From<&SubClockOperation> for SubClockOperationWire {
+    fn from(operation: &SubClockOperation) -> Self {
+        match *operation {
+            SubClockOperation::SubSample { factor, span } => Self::SubSample {
+                factor,
+                span: span.span(),
+            },
+            SubClockOperation::SuperSample { factor, span } => Self::SuperSample {
+                factor,
+                span: span.span(),
+            },
+            SubClockOperation::ShiftSample {
+                counter,
+                resolution,
+                span,
+            } => Self::ShiftSample {
+                counter,
+                resolution,
+                span: span.span(),
+            },
+            SubClockOperation::BackSample {
+                counter,
+                resolution,
+                span,
+            } => Self::BackSample {
+                counter,
+                resolution,
+                span: span.span(),
+            },
+            SubClockOperation::NoClock { span } => Self::NoClock { span: span.span() },
+        }
+    }
+}
+
+impl SubClockWire {
+    fn reconstruct<E: serde::de::Error>(self) -> Result<SubClock, E> {
+        let source_span = self
+            .source_span
+            .require_provenance("Flat sub-clock owner")
+            .map_err(E::custom)?;
+        let mut clock = SubClock::identity(source_span);
+        for operation in self.operations {
+            clock = match operation {
+                SubClockOperationWire::SubSample { factor, span } => clock
+                    .then_sub_sample(factor, operation_provenance(span).map_err(E::custom)?)
+                    .map_err(E::custom)?,
+                SubClockOperationWire::SuperSample { factor, span } => clock
+                    .then_super_sample(factor, operation_provenance(span).map_err(E::custom)?)
+                    .map_err(E::custom)?,
+                SubClockOperationWire::ShiftSample {
+                    counter,
+                    resolution,
+                    span,
+                } => clock
+                    .then_shift_sample(
+                        counter,
+                        resolution,
+                        operation_provenance(span).map_err(E::custom)?,
+                    )
+                    .map_err(E::custom)?,
+                SubClockOperationWire::BackSample {
+                    counter,
+                    resolution,
+                    span,
+                } => clock
+                    .then_back_sample(
+                        counter,
+                        resolution,
+                        operation_provenance(span).map_err(E::custom)?,
+                    )
+                    .map_err(E::custom)?,
+                SubClockOperationWire::NoClock { span } => {
+                    clock.then_no_clock(operation_provenance(span).map_err(E::custom)?)
+                }
+            };
+        }
+        Ok(clock)
+    }
+}
+
+fn operation_provenance(span: Span) -> Result<ProvenanceSpan, rumoca_core::MissingProvenanceSpan> {
+    span.require_provenance("Flat sub-clock operation")
 }
 
 /// Clock interval representation.

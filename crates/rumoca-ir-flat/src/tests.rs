@@ -1,7 +1,7 @@
 //! Tests for flat expression conversion and analysis.
 
 use super::*;
-use rumoca_core::{ComponentRefPart, DefId, Token, extract_algorithm_outputs};
+use rumoca_core::{ComponentRefPart, DefId, ProvenanceSpan, Token, extract_algorithm_outputs};
 use rumoca_ir_ast as ast;
 use std::sync::Arc;
 
@@ -13,6 +13,12 @@ fn test_span() -> rumoca_core::Span {
         1,
         2,
     )
+}
+
+fn test_provenance() -> ProvenanceSpan {
+    test_span()
+        .require_provenance("Flat IR test")
+        .expect("test span has provenance")
 }
 
 fn make_var(name: &str) -> ast::Expression {
@@ -44,15 +50,19 @@ fn flat_variable_and_clock_constructors_preserve_owner_span() {
         test_span()
     );
     assert_eq!(
-        SubClock::empty_with_span(test_span()).source_span,
+        SubClock::identity(test_provenance()).source_span(),
         test_span()
     );
     assert_eq!(
-        SubClock::sub_sample(2, test_span()).source_span,
+        SubClock::sub_sample(2, test_provenance())
+            .expect("positive sub-sample factor")
+            .source_span(),
         test_span()
     );
     assert_eq!(
-        SubClock::super_sample(2, test_span()).source_span,
+        SubClock::super_sample(2, test_provenance())
+            .expect("positive super-sample factor")
+            .source_span(),
         test_span()
     );
 }

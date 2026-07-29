@@ -5,6 +5,12 @@ fn span() -> Span {
     Span::from_offsets(SourceId::from_source_name(file!()), 0, 1)
 }
 
+fn provenance(source_span: Span) -> ProvenanceSpan {
+    source_span
+        .require_provenance("Flat clock test")
+        .expect("test span has provenance")
+}
+
 fn rational(num: i64, den: i64) -> ClockRational {
     ClockRational::new(num, den).expect("test rational must reduce")
 }
@@ -65,10 +71,12 @@ fn super_sample_then_sub_sample_reproduces_the_base_clock_exactly() {
         .expect("positive periodic clock")
         .lattice()
         .expect("exact base lattice");
-    let up = SubClock::super_sample(3, span())
+    let up = SubClock::super_sample(3, provenance(span()))
+        .expect("positive super-sample factor")
         .derive(base)
         .expect("exact super sample");
-    let down = SubClock::sub_sample(3, span())
+    let down = SubClock::sub_sample(3, provenance(span()))
+        .expect("positive sub-sample factor")
         .derive(up)
         .expect("exact sub sample");
 
@@ -83,12 +91,14 @@ fn sub_clock_shift_and_back_shift_cancel_exactly() {
         .expect("positive periodic clock")
         .lattice()
         .expect("exact base lattice");
-    let shifted = SubClock::shift_sample(1, 3, span())
+    let shifted = SubClock::shift_sample(1, 3, provenance(span()))
+        .expect("nonnegative shift with positive resolution")
         .derive(base)
         .expect("exact shift sample");
     assert_eq!(shifted.phase(), rational(1, 30));
 
-    let restored = SubClock::back_sample(1, 3, span())
+    let restored = SubClock::back_sample(1, 3, provenance(span()))
+        .expect("nonnegative back shift with positive resolution")
         .derive(shifted)
         .expect("exact back sample");
     assert!(restored.is_same_clock(base));
@@ -96,8 +106,7 @@ fn sub_clock_shift_and_back_shift_cancel_exactly() {
 
 #[test]
 fn no_clock_sub_partitions_have_no_lattice() {
-    let mut sub_clock = SubClock::empty_with_span(span());
-    sub_clock.no_clock = true;
+    let sub_clock = SubClock::no_clock(provenance(span()));
     let base = BaseClock::periodic(0.1, span())
         .expect("positive periodic clock")
         .lattice()
@@ -120,7 +129,8 @@ fn overflowing_sub_sample_reports_a_spanned_error() {
     )
     .expect("exact rational clock");
 
-    let error = SubClock::sub_sample(2, span())
+    let error = SubClock::sub_sample(2, provenance(span()))
+        .expect("positive sub-sample factor")
         .derive(base)
         .expect_err("sub-sampling beyond i128 must not wrap");
 
@@ -185,4 +195,124 @@ fn base_clock_wire_decodes_through_checked_construction() {
     let error = serde_json::from_str::<BaseClock>(&invalid)
         .expect_err("wire decoding must reject a non-positive interval");
     assert!(error.to_string().contains("strictly positive"));
+}
+
+#[test]
+fn sub_clock_rejects_invalid_arguments_at_the_operation_span() {
+    let operation = Span::from_offsets(SourceId::from_source_name("sub_clock_args.mo"), 8, 19);
+    for error in [
+        SubClock::sub_sample(-1, provenance(operation)).expect_err("factor must be nonnegative"),
+        SubClock::super_sample(-1, provenance(operation)).expect_err("factor must be nonnegative"),
+        SubClock::shift_sample(-1, 1, provenance(operation))
+            .expect_err("counter must be nonnegative"),
+        SubClock::shift_sample(1, 0, provenance(operation))
+            .expect_err("resolution must be positive"),
+        SubClock::back_sample(-1, 1, provenance(operation))
+            .expect_err("counter must be nonnegative"),
+        SubClock::back_sample(1, 0, provenance(operation))
+            .expect_err("resolution must be positive"),
+    ] {
+        assert_eq!(error.kind, ClockLatticeErrorKind::NonPositiveFactor);
+        assert_eq!(error.span, operation);
+    }
+}
+
+#[test]
+fn inferred_zero_factor_is_valid_but_has_no_final_lattice() {
+    let operation = Span::from_offsets(SourceId::from_source_name("inferred_factor.mo"), 12, 13);
+    let base = BaseClock::periodic(0.1, span())
+        .expect("positive base period")
+        .lattice()
+        .expect("exact base lattice");
+    let clock =
+        SubClock::sub_sample(0, provenance(operation)).expect("zero requests factor inference");
+
+    let error = clock
+        .derive(base)
+        .expect_err("an uninferred factor is not yet computable");
+    assert_eq!(
+        error.kind,
+        ClockLatticeErrorKind::NotRationallyRepresentable
+    );
+    assert_eq!(error.span, operation);
+}
+
+#[test]
+fn composed_sub_clock_keeps_source_order_and_operation_provenance() {
+    let base = BaseClock::periodic(0.12, span())
+        .expect("positive base period")
+        .lattice()
+        .expect("exact base lattice");
+    let shift_span = Span::from_offsets(SourceId::from_source_name("composed_clock.mo"), 3, 12);
+    let sample_span = Span::from_offsets(SourceId::from_source_name("composed_clock.mo"), 15, 24);
+    let clock = SubClock::identity(provenance(span()))
+        .then_shift_sample(1, 3, provenance(shift_span))
+        .expect("valid shift")
+        .then_sub_sample(2, provenance(sample_span))
+        .expect("valid sub-sample");
+
+    let derived = clock
+        .derive(base)
+        .expect("composition has an exact lattice");
+    assert_eq!(derived.period(), rational(6, 25));
+    assert_eq!(derived.phase(), rational(1, 25));
+
+    let failing = clock
+        .then_back_sample(2, 1, provenance(sample_span))
+        .expect("arguments are locally valid")
+        .derive(base)
+        .expect_err("back shift would precede the base clock");
+    assert_eq!(
+        failing.kind,
+        ClockLatticeErrorKind::ClockStartsBeforeBaseClock
+    );
+    assert_eq!(failing.span, sample_span);
+}
+
+#[test]
+fn sub_clock_wire_decodes_through_checked_operations() {
+    let clock = SubClock::identity(provenance(span()))
+        .then_super_sample(2, provenance(span()))
+        .expect("positive factor")
+        .then_shift_sample(1, 4, provenance(span()))
+        .expect("valid shift");
+    let encoded = serde_json::to_string(&clock).expect("sub-clock serializes");
+    let decoded: SubClock = serde_json::from_str(&encoded).expect("sub-clock decodes");
+    let base = BaseClock::periodic(0.2, span())
+        .expect("positive period")
+        .lattice()
+        .expect("exact base lattice");
+    assert_eq!(
+        decoded.derive(base).map(ClockLattice::period),
+        clock.derive(base).map(ClockLattice::period)
+    );
+
+    let invalid = encoded.replace("\"resolution\":4", "\"resolution\":0");
+    let error = serde_json::from_str::<SubClock>(&invalid)
+        .expect_err("wire reconstruction must reject invalid resolution");
+    assert!(error.to_string().contains("strictly positive"));
+
+    let mut missing_operation_provenance =
+        serde_json::to_value(&clock).expect("sub-clock serializes to a value");
+    missing_operation_provenance["operations"][0]["span"] =
+        serde_json::to_value(Span::DUMMY).expect("dummy span serializes");
+    let error = serde_json::from_value::<SubClock>(missing_operation_provenance)
+        .expect_err("wire reconstruction must reject missing operation provenance");
+    assert!(
+        error
+            .to_string()
+            .contains("missing source provenance for Flat sub-clock operation")
+    );
+
+    let mut missing_owner_provenance =
+        serde_json::to_value(&clock).expect("sub-clock serializes to a value");
+    missing_owner_provenance["source_span"] =
+        serde_json::to_value(Span::DUMMY).expect("dummy span serializes");
+    let error = serde_json::from_value::<SubClock>(missing_owner_provenance)
+        .expect_err("wire reconstruction must reject missing owner provenance");
+    assert!(
+        error
+            .to_string()
+            .contains("missing source provenance for Flat sub-clock owner")
+    );
 }
