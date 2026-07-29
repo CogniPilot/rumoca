@@ -7,6 +7,7 @@ pub(super) struct ReservedFunction<'flat, 'dae> {
 }
 
 pub(super) struct FunctionRegistry<'shape, 'dae> {
+    pub(super) flat: &'shape flat::Model,
     pub(super) shapes: &'shape FunctionShapeAnalysis,
     pub(super) ids: HashMap<FunctionSpecializationKey, dae::FunctionId<'dae>>,
 }
@@ -19,11 +20,32 @@ impl<'dae> FunctionRegistry<'_, 'dae> {
         values: &ShapeEnvironment,
         span: Span,
     ) -> dae::FunctionId<'dae> {
+        self.select_with_key(name, arguments, values, span).1
+    }
+
+    pub(super) fn select_with_key(
+        &self,
+        name: &rumoca_core::Reference,
+        arguments: &[Expression],
+        values: &ShapeEnvironment,
+        span: Span,
+    ) -> (FunctionSpecializationKey, dae::FunctionId<'dae>) {
         let key = self
             .shapes
             .call_key(name, arguments, values, span)
             .expect("analysis supplies a concrete specialization for every accepted call");
-        self.ids[&key]
+        let id = self.ids[&key];
+        (key, id)
+    }
+
+    pub(super) fn primitive_parameter_scalar(
+        &self,
+        key: &FunctionSpecializationKey,
+        ordinal: usize,
+    ) -> dae::ScalarType {
+        let parameter = &self.flat.functions[&key.function].inputs[ordinal];
+        primitive_scalar_type(&parameter.type_name)
+            .expect("record lowering leaves primitive function parameters")
     }
 }
 

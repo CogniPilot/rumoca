@@ -396,14 +396,56 @@ fn lower_function_call<'dae>(
         };
         return lower_expression_scoped(construction, symbols, binders, value, None);
     }
-    let function = symbols
+    let (key, function) = symbols
         .functions
-        .select(name, arguments, symbols.shapes, provenance.span());
+        .select_with_key(name, arguments, symbols.shapes, provenance.span());
     let arguments = arguments
         .iter()
-        .map(|argument| lower_expression_scoped(construction, symbols, binders, argument, None))
+        .enumerate()
+        .map(|(ordinal, argument)| {
+            if matches!(
+                argument,
+                Expression::Array {
+                    elements,
+                    ..
+                } if elements.is_empty()
+            ) {
+                return lower_empty_function_argument(
+                    construction,
+                    symbols,
+                    &key,
+                    ordinal,
+                    argument,
+                );
+            }
+            lower_expression_scoped(construction, symbols, binders, argument, None)
+        })
         .collect::<Result<Vec<_>, _>>()?;
     construction.expressions(|expressions| expressions.at(provenance).call(function, 0, arguments))
+}
+
+fn lower_empty_function_argument<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    symbols: LoweringSymbols<'_, 'dae>,
+    key: &FunctionSpecializationKey,
+    ordinal: usize,
+    argument: &Expression,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    let provenance = dae::DaeProvenance::source(
+        argument
+            .span()
+            .expect("analysis proves empty argument provenance"),
+    )?;
+    let scalar = symbols
+        .functions
+        .primitive_parameter_scalar(key, ordinal);
+    let value_type = construction.types(|types| {
+        types.derived(
+            dae::ValueType::array(scalar, key.inputs[ordinal].clone()),
+            provenance,
+        )
+    })?;
+    construction.expressions(|expressions| expressions.at(provenance).empty_array(value_type))
 }
 
 fn lower_conditional_expression<'dae>(

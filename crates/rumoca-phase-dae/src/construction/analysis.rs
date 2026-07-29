@@ -1926,6 +1926,16 @@ fn validate_expression_scoped(
         } => validate_conditional(branches, else_branch, roles, states, binders, span),
         Expression::FunctionCall { args, .. } => {
             for argument in args {
+                if matches!(
+                    argument,
+                    Expression::Array {
+                        elements,
+                        ..
+                    } if elements.is_empty()
+                ) {
+                    require_span(expression_span(argument)?, "empty function argument")?;
+                    continue;
+                }
                 validate_expression_scoped(argument, roles, states, binders)?;
             }
             Ok(())

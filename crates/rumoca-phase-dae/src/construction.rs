@@ -156,6 +156,7 @@ fn build_checked<'dae>(
     let (function_ids, reserved_functions) =
         reserve_functions(flat, &analysis.function_shapes, construction)?;
     let functions = FunctionRegistry {
+        flat,
         shapes: &analysis.function_shapes,
         ids: function_ids,
     };

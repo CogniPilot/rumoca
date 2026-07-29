@@ -1352,7 +1352,12 @@ fn rebuild_node<'dae>(
             rebuild_conditional(wire, ids, at, *operands, provenance)
         }
         ExprNodeWire::Array { operands } => {
-            at.array(map_expression_operands(wire, ids, *operands, provenance)?)
+            let operands = map_expression_operands(wire, ids, *operands, provenance)?;
+            if operands.is_empty() {
+                at.empty_array(expected_type)
+            } else {
+                at.array(operands)
+            }
         }
         ExprNodeWire::Record { operands } => at.record(
             expected_type,

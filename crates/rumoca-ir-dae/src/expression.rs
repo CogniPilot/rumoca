@@ -776,6 +776,35 @@ impl<'dae> ExpressionAt<'_, 'dae> {
         self.insert(ExprNode::Array { operands }, ty, variability, binder_domain)
     }
 
+    /// Construct an empty array using its context-proven value type.
+    ///
+    /// An empty literal has no element expression from which to derive its
+    /// scalar type or trailing dimensions, so its semantic owner must supply
+    /// an array type whose outer extent is zero.
+    pub fn empty_array(
+        self,
+        value_type: ValueTypeId<'dae>,
+    ) -> Result<ExprId<'dae>, DaeConstructionError> {
+        let ty = self
+            .storage
+            .value_type_at(value_type.index(), self.provenance)?;
+        if ty.is_record() || ty.dimensions().first() != Some(&0) {
+            return Err(DaeConstructionError::ShapeMismatch {
+                span: self.provenance.span(),
+            });
+        }
+        let operands = self
+            .storage
+            .expressions
+            .push_operands(std::iter::empty(), self.provenance)?;
+        self.insert(
+            ExprNode::Array { operands },
+            value_type,
+            ExpressionVariability::Constant,
+            None,
+        )
+    }
+
     pub fn record(
         self,
         value_type: ValueTypeId<'dae>,

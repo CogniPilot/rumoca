@@ -133,6 +133,44 @@ fn exact_expression_provenance_resolves_through_the_source_map() {
 }
 
 #[test]
+fn explicitly_typed_empty_arrays_round_trip_through_checked_construction() {
+    let source = TestSource::new("Real empty[0] = {};");
+    let declaration = source.source("Real empty[0]", 0);
+    let literal = source.source("{}", 0);
+    let dae = Dae::construct(source.map, |dae| {
+        let empty_real = dae.types(|types| {
+            types.intern(
+                TypeId::new(0),
+                ValueType::array(ScalarType::Real, [0]),
+                declaration,
+            )
+        })?;
+        dae.expressions(|expressions| {
+            expressions.at(literal).empty_array(empty_real)?;
+            Ok(())
+        })
+    })
+    .expect("the declaration supplies the missing empty-array element type");
+
+    dae.inspect(|view| {
+        let expression = view.expression(view.expression_id(0).unwrap()).unwrap();
+        assert_eq!(expression.value_type().scalar_type(), ScalarType::Real);
+        assert_eq!(expression.value_type().dimensions(), &[0]);
+        assert!(matches!(
+            expression.operation(),
+            ExpressionOperation::Array(elements) if elements.is_empty()
+        ));
+    });
+
+    let encoded = serde_json::to_string(&dae).unwrap();
+    let decoded: Dae = serde_json::from_str(&encoded).unwrap();
+    decoded.inspect(|view| {
+        let expression = view.expression(view.expression_id(0).unwrap()).unwrap();
+        assert_eq!(expression.value_type().dimensions(), &[0]);
+    });
+}
+
+#[test]
 fn numeric_promotion_is_derived_during_construction() {
     let source = TestSource::new("Real x; equation der(x) = 1; x + 2; if true then 3 else x;");
     let declaration = source.source("Real x", 0);

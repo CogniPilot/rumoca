@@ -749,11 +749,7 @@ fn array_expression_shape(
     span: Span,
 ) -> Result<ValueShape, ToDaeError> {
     let Some(first) = elements.first() else {
-        return Err(ToDaeError::unsupported_flat(
-            "function shape proof",
-            "empty array has no provable element shape",
-            span,
-        ));
+        return Ok(vec![0]);
     };
     let child = expression_shape(first, values, function_result)?;
     for element in &elements[1..] {
@@ -1131,6 +1127,23 @@ mod tests {
         assert_eq!(certificates[1].parameters, vec![vec![3]]);
         assert_eq!(certificates[1].results, vec![vec![3]]);
         assert_eq!(certificates[1].first_call, second);
+    }
+
+    #[test]
+    fn empty_array_call_has_a_zero_extent_shape_certificate() {
+        let mut sources = SourceMap::new();
+        let source = sources.add("empty_shape.mo", "identity({});");
+        let span = Span::from_offsets(source, 0, 13);
+        let mut model = flat::Model::new();
+        model.add_function(identity_function(span, true));
+        model.add_equation(call(0, span));
+
+        let analysis = FunctionShapeAnalysis::analyze(&model).unwrap();
+        let [certificate] = analysis.certificates() else {
+            panic!("empty array call should have one shape certificate");
+        };
+        assert_eq!(certificate.parameters, vec![vec![0]]);
+        assert_eq!(certificate.results, vec![vec![0]]);
     }
 
     #[test]
