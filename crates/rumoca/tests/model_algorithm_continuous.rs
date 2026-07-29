@@ -17,6 +17,27 @@ equation
 end ContinuousAlgorithm;
 "#;
 
+const EVENT_GUARDED_ALGORITHM: &str = r#"
+package EventGuarded
+  type L = enumeration(U, X, Z, ZERO, ONE);
+
+  model Lookup
+    parameter Real map[L, L] = [1,1,1,1,1;
+                                1,2,2,2,2;
+                                1,2,3,3,3;
+                                1,2,3,4,4;
+                                1,2,3,4,5];
+    L a(start = L.U);
+    L b(start = L.U);
+    Real f(start = 1);
+  algorithm
+    if change(a) or change(b) then
+      f := map[a, b];
+    end if;
+  end Lookup;
+end EventGuarded;
+"#;
+
 #[test]
 fn continuous_model_algorithm_remains_an_algebraic_equation() {
     let compiled = Compiler::new()
@@ -70,6 +91,35 @@ fn continuous_model_algorithm_remains_an_algebraic_equation() {
         .expect("algebraic trace is non-empty");
     assert!((x_final - (-2.0_f64).exp()).abs() <= 5.0e-4);
     assert!((y_final - 2.0 * x_final).abs() <= 5.0e-8);
+}
+
+#[test]
+fn event_guarded_model_algorithm_constructs_one_checked_discrete_action() {
+    let compiled = Compiler::new()
+        .model("EventGuarded.Lookup")
+        .compile_str(EVENT_GUARDED_ALGORITHM, "event_guarded_algorithm.mo")
+        .expect("event-guarded algorithm should construct checked DAE");
+
+    compiled.dae.inspect(|view| {
+        let f = view
+            .variables()
+            .find(|(_, variable)| variable.name().as_str() == "f")
+            .map(|(_, variable)| variable)
+            .expect("algorithm target f remains in the checked catalog");
+        assert_eq!(f.role(), VariableRole::DiscreteReal);
+        assert_eq!(view.event_action_count(), 1);
+        let action = view
+            .event_action(view.event_action_id(0).expect("one checked event action"))
+            .expect("event action id resolves within this DAE");
+        assert_eq!(action.provenance().origin(), DaeProvenanceOrigin::Source);
+        assert_eq!(view.source_text(action.provenance()), Some("f"));
+    });
+
+    let wire =
+        serde_json::to_string(&compiled.dae).expect("event-guarded algorithm should serialize");
+    let decoded: rumoca_compile::compile::Dae =
+        serde_json::from_str(&wire).expect("wire-v11 should reconstruct the checked event owner");
+    decoded.inspect(|view| assert_eq!(view.event_action_count(), 1));
 }
 
 #[test]
