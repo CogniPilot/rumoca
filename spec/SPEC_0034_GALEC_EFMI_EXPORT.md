@@ -28,6 +28,7 @@ DAE (+ optional provenance)
 ```text
 rumoca-compile -> rumoca-phase-galec -> rumoca-ir-dae/solve
                                       -> rumoca-ir-galec
+rumoca-phase-parse-galec -> rumoca-ir-galec
 rumoca-eval-galec -> rumoca-ir-galec
 rumoca-phase-codegen -> typed Algorithm Code view -> MiniJinja
 rumoca -> generic artifact/checksum/container graph + vendored schemas
@@ -46,11 +47,11 @@ rumoca -> generic artifact/checksum/container graph + vendored schemas
 | GAL-007 | Unsupported features fail with stable `unsupported-feature:<feature_id>` diagnostics; errors are structured phase-local enums with stable codes and spans (SPEC_0008); no silent defaults. | `rumoca-phase-galec` | Fail early; CI-aggregatable. |
 | GAL-008 | Generated C **and eFMI packaging XML** are owned by minijinja templates (D3 amended); closed typed context stays typed through the render boundary; no dynamic-value transport or C/XML fragments in Rust; template dispatch fails closed. | `rumoca-phase-codegen` | SPEC_0029 §12. |
 | GAL-009 | MiniJinja renders `.alg` from the checked semantic view. Rust exposes typed semantics and provenance; it MUST NOT print fragments. | `rumoca-phase-codegen` templates | Same boundary as every IR. |
-| GAL-010 | `rumoca-ir-galec` owns opaque checked Algorithm Code/package data and private parser state. `rumoca-phase-galec` owns DAE/Solve projection and admissibility. `rumoca-phase-codegen` owns only generic rendering plus a target-neutral typed Algorithm Code view; it has no `src/galec/` subsystem. Templates own all GALEC/C/XML text. No codegen crate or compatibility facade exists. Generic artifact/checksum/container assembly remains in `rumoca`. | workspace layout | Enforce ownership. |
+| GAL-010 | `rumoca-ir-galec` owns only opaque checked Algorithm Code/package data and constructors. `rumoca-phase-parse-galec` owns `.alg` parsing and private recoverable syntax state. `rumoca-phase-galec` owns DAE/Solve projection and admissibility. `rumoca-phase-codegen` owns only generic rendering plus a target-neutral typed Algorithm Code view; it has no `src/galec/` subsystem. Templates own all GALEC/C/XML text. No codegen or parser compatibility facade exists. Generic artifact/checksum/container assembly remains in `rumoca`. | workspace layout | Enforce ownership. |
 | GAL-011 | GALEC output via `--target galec` / `--target embedded-c-galec`; `--emit` stays reserved for canonical IR inspection. | `rumoca` CLI | Preserves the CLI contract. |
 | GAL-012 | Template CI renders GALEC targets against a dedicated smoke fixture; skipped targets MUST NOT be marked covered; generated C is compile-checked (Testing Requirements). | template CI (xtask) | False coverage hides broken output. |
 | GAL-013 | Generated C/H/object outputs MUST NOT be committed except as intentional, small, documented fixtures. | CI | Repository hygiene. |
-| GAL-014 | The parser constructs a checked GALEC block only — never DAE/Solve, never Modelica input. Invalid documents use a private recoverable CST for diagnostics/navigation. | `rumoca-ir-galec` | Export language stays out of the front end. |
+| GAL-014 | The parser constructs a checked GALEC block only — never DAE/Solve, never Modelica input. Invalid documents use a private recoverable CST for diagnostics/navigation. | `rumoca-phase-parse-galec` | Keep syntax recovery out of checked IR. |
 | GAL-015 | Checked names MUST be injective AND disjoint from keywords/reserved words/builtins/Appendix C names/`__` prefix space; quoted identifiers retain source identity. | `rumoca-ir-galec` + `rumoca-phase-galec` | Injectivity alone still emits illegal names (T13). |
 | GAL-016 | Discrete-time semantics derive from structured compiler metadata, never string/unit/value heuristics; one static base period per block; dynamic clocks and multi-rate rejected pre-projection with stable diagnostics. | `rumoca-phase-galec` | **Why** below. |
 | GAL-017 | Block interface: exactly `Startup`/`Recalibrate`/`DoStep` (§3.1.3), stateful, parameter-free; I/O via `self.*`; Startup initializes ALL writable block variables, builtins only (control inputs read-only); Recalibrate emitted even when empty; all other functions reachable from DoStep; acyclic call graph. | `rumoca-ir-galec` construction | §3.1.3–3.1.4. |
@@ -95,7 +96,7 @@ non-conformant (§2.2).
 |-------|-----------------------------|--------|
 | "GALEC-derived text export" | `.alg` + `manifest.xml` render; honest self-description only | Earned (`galec`; `embedded-c-galec` is the honest non-eFMI track) |
 | "eFMI Algorithm Code export" | Schema-valid eFMU: `__content.xml` + `schemas/` + Algorithm Code container; correct SHA-1s, UUID/ids, strict UTC timestamps | Earned (`galec`) |
-| "GALEC language conformance" | Above + round-trip parse of emitted `.alg`: render∘parse∘render idempotence | Earned (`galec`; round-trip template integration tests, `rumoca-ir-galec --features parse`) |
+| "GALEC language conformance" | Above + round-trip parse of emitted `.alg`: render∘parse∘render idempotence | Earned (`galec`; `rumoca-phase-parse-galec` round-trip integration tests) |
 | "eFMI Production Code export" | Schema-valid eFMU co-emitting Algorithm Code **and** Production Code (§2.2); PC `manifest.xml` xmllint-valid; LogicalData maps every AC variable + all three BlockMethods once; PC `ManifestReference@checksum` = SHA-1 of the AC manifest bytes, `@manifestRefId` = AC root UUID; whole SHA-1 web recomputed from written bytes, no placeholders | Earned (`galec-production`) |
 
 ### Variable Classification (GAL-020, normative)
@@ -164,8 +165,7 @@ array sizes rejected.
   or authorize target-specific canonical-DAE rewrites.
 - No Behavioral Model (ch. 4; an eFMU is valid without one), FMU embedding, or
   Binary Code representation.
-- The parser never accepts Modelica input — GALEC AST only (GAL-014). (The
-  parser and `.alg` LSP have landed.)
+- The parser never accepts Modelica input — GALEC only (GAL-014).
 
 ## References
 

@@ -253,6 +253,7 @@ compiler/session → DAE structural → solve-IR lowering → runtime contracts 
 | Solver-facing prepared data + row ops | `rumoca-ir-solve` | Backend-neutral execution IR |
 | DAE → solve-IR lowering | `rumoca-phase-solve` | Lowering only, not structural mutation |
 | Optimization/training orchestration | `rumoca-opt` | Consumes Solve/eval APIs; no Modelica semantics |
+| GALEC `.alg` → checked GALEC parsing | `rumoca-phase-parse-galec` | Recoverable syntax state stays out of checked IR |
 | DAE/Solve → checked GALEC lowering | `rumoca-phase-galec` | Semantic export lowering and admissibility only; no text, templates, packaging, or target-language helpers |
 | Checked GALEC executable semantics | `rumoca-eval-galec` | Small explicit interpreter over `rumoca-ir-galec`; no DAE/Solve, lowering, rendering, target, or runtime-host dependencies |
 | Textual generated artifacts and templates | `rumoca-phase-codegen` | Jinja/minijinja rendering owns generated C, Rust, CUDA C, MLIR, FMI/eFMI and FMU/eFMU packaging text |
