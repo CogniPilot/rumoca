@@ -3,6 +3,7 @@ use std::borrow::Cow;
 
 mod clocks;
 mod comprehensions;
+mod delays;
 mod derived_parameters;
 mod expression_validation;
 mod function_array_assemblies;
@@ -23,6 +24,8 @@ use clocks::analyze_clocks;
 pub(super) use clocks::{ClockPlan, SampledValuePlan};
 use comprehensions::analyze_comprehensions;
 pub(super) use comprehensions::{ComprehensionKey, ComprehensionPlan};
+pub(super) use delays::DelayPlan;
+use delays::analyze_delays;
 pub(super) use derived_parameters::DerivedParameterPlan;
 use derived_parameters::analyze_derived_parameters;
 use expression_validation::{
@@ -54,6 +57,7 @@ use when_clauses::validate_when_clauses;
 
 pub(super) struct Analysis {
     pub(super) constants: EvalContext,
+    pub(super) delay_plans: HashMap<Span, DelayPlan>,
     pub(super) roles: HashMap<VarName, PlannedRole>,
     pub(super) balance: BalanceDetail,
     pub(super) continuous_family_rows: HashSet<usize>,
@@ -196,6 +200,7 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
     let initial_record_equations = analyze_record_equations(flat, &flat.initial_equations)?;
     let constants = constant_context(flat);
     let comprehension_plans = analyze_comprehensions(all_model_expressions(flat), &constants)?;
+    let delay_plans = analyze_delays(flat, &constants)?;
     let record_array_fields = analyze_record_array_field_plans(flat)?;
     let clocks = analyze_clocks(flat, &constants)?;
     let ModelRoles {
@@ -256,6 +261,7 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
     let balance = source_balance(flat, &roles, &non_runtime_rows, &record_equations)?;
     Ok(Analysis {
         constants,
+        delay_plans,
         roles,
         balance,
         continuous_family_rows,

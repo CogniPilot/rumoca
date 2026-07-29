@@ -182,6 +182,7 @@ pub(super) fn validate_builtin(
             | BuiltinFunction::Linspace
             | BuiltinFunction::Cross
             | BuiltinFunction::Sample
+            | BuiltinFunction::Delay
     );
     if !supported {
         return Err(ToDaeError::unsupported_runtime_operator(

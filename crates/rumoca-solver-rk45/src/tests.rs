@@ -1560,6 +1560,10 @@ fn variable_discrete_delay_model() -> solve::SolveModel {
         source_is_discrete: vec![true],
     };
     model.problem.discrete.update_targets = vec![solve::scalar_slot_p(1)];
+    model.problem.discrete.row_roles = vec![solve::DiscreteRowRole::Equation];
+    model.problem.discrete.pre_modes = vec![solve::DiscreteEventPreMode::FollowCurrent];
+    model.problem.discrete.observation_refresh = vec![false];
+    model.problem.discrete.clock_owners = vec![None];
     model.problem.discrete.rhs = ScalarProgramBlock::with_source_span(
         vec![vec![
             LinearOp::LoadP { dst: 0, index: 0 },

@@ -22,9 +22,18 @@ pub(crate) struct LoweredLayout<'dae> {
     pub(crate) pre_variables: Vec<Option<usize>>,
     pub(crate) previous_values: Vec<usize>,
     pub(crate) condition_memory: Vec<usize>,
+    pub(crate) delay_values: Vec<usize>,
     pub(crate) layout: solve::VarLayout,
     pub(crate) solve_layout: solve::SolveLayout,
     pub(crate) marker: std::marker::PhantomData<&'dae mut &'dae ()>,
+}
+
+struct RuntimeLayout {
+    condition_memory: Vec<usize>,
+    delay_values: Vec<usize>,
+    initial_event_parameter_index: Option<usize>,
+    initial_homotopy_parameter_index: Option<usize>,
+    scalar_count: usize,
 }
 
 /// Build the public variable layout directly from checked declarations.
@@ -63,28 +72,13 @@ pub(crate) fn lower_layout<'dae>(
     let pre = append_pre_variables(view, &variables, p.names.len())?;
 
     let y_scalars = y.names.len();
-    let condition_base =
-        p.names.len().checked_add(pre.scalar_count).ok_or_else(|| {
-            LowerError::contract("pre-value layout overflow", first_model_span(view))
-        })?;
-    let condition_memory = (0..view.condition_count())
-        .map(|offset| {
-            condition_base.checked_add(offset).ok_or_else(|| {
-                LowerError::contract("condition-memory layout overflow", first_model_span(view))
-            })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let after_conditions = condition_base
-        .checked_add(condition_memory.len())
-        .ok_or_else(|| LowerError::contract("parameter layout overflow", first_model_span(view)))?;
-    let (initial_event_parameter_index, initial_homotopy_parameter_index, p_scalars) =
-        append_runtime_flags(view, after_conditions)?;
+    let runtime = append_runtime_layout(view, p.names.len(), pre.scalar_count)?;
     let layout = solve::VarLayout::from_parts_with_shapes_and_spans(
         bindings,
         shapes,
         shape_spans,
         y_scalars,
-        p_scalars,
+        runtime.scalar_count,
     )
     .map_err(|error| {
         LowerError::contract(
@@ -117,25 +111,80 @@ pub(crate) fn lower_layout<'dae>(
         algebraic_scalar_count: y.algebraic_count,
         output_scalar_count: y.output_count,
         parameter_count: p.parameter_count,
-        compiled_parameter_len: p_scalars,
+        compiled_parameter_len: runtime.scalar_count,
         input_scalar_names: p.input_names,
         discrete_real_scalar_names: p.discrete_real_names,
         discrete_valued_scalar_names: p.discrete_value_names,
         relation_memory_parameter_indices: Vec::new(),
-        initial_event_parameter_index,
+        initial_event_parameter_index: runtime.initial_event_parameter_index,
         terminal_event_parameter_index: None,
-        initial_homotopy_parameter_index,
+        initial_homotopy_parameter_index: runtime.initial_homotopy_parameter_index,
         pre_param_bindings: pre.bindings,
     };
     Ok(LoweredLayout {
         variables,
         pre_variables: pre.variables,
         previous_values: pre.previous_values,
-        condition_memory,
+        condition_memory: runtime.condition_memory,
+        delay_values: runtime.delay_values,
         layout,
         solve_layout,
         marker: std::marker::PhantomData,
     })
+}
+
+fn append_runtime_layout(
+    view: dae::DaeView<'_>,
+    parameter_count: usize,
+    pre_count: usize,
+) -> Result<RuntimeLayout, LowerError> {
+    let condition_base = parameter_count
+        .checked_add(pre_count)
+        .ok_or_else(|| LowerError::contract("pre-value layout overflow", first_model_span(view)))?;
+    let condition_memory = (0..view.condition_count())
+        .map(|offset| {
+            condition_base.checked_add(offset).ok_or_else(|| {
+                LowerError::contract("condition-memory layout overflow", first_model_span(view))
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let after_conditions = condition_base
+        .checked_add(condition_memory.len())
+        .ok_or_else(|| LowerError::contract("parameter layout overflow", first_model_span(view)))?;
+    let (delay_values, after_delays) = append_delay_values(view, after_conditions)?;
+    let (initial_event_parameter_index, initial_homotopy_parameter_index, scalar_count) =
+        append_runtime_flags(view, after_delays)?;
+    Ok(RuntimeLayout {
+        condition_memory,
+        delay_values,
+        initial_event_parameter_index,
+        initial_homotopy_parameter_index,
+        scalar_count,
+    })
+}
+
+fn append_delay_values(
+    view: dae::DaeView<'_>,
+    first_index: usize,
+) -> Result<(Vec<usize>, usize), LowerError> {
+    let mut bases = Vec::with_capacity(view.delay_count());
+    let mut next = first_index;
+    for index in 0..view.delay_count() {
+        let delay = view
+            .delay(view.delay_id(index).expect("dense delay identity"))
+            .expect("checked delay identity resolves");
+        bases.push(next);
+        let count = delay.value_type().scalar_count().ok_or_else(|| {
+            LowerError::contract(
+                "delay value type exceeds scalar capacity",
+                delay.provenance().span(),
+            )
+        })?;
+        next = next.checked_add(count).ok_or_else(|| {
+            LowerError::contract("delay-value layout overflow", delay.provenance().span())
+        })?;
+    }
+    Ok((bases, next))
 }
 
 fn append_runtime_flags(

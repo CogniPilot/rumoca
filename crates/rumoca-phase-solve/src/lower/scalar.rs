@@ -661,7 +661,9 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 span,
             ));
         }
-        let slot = if let dae::CoordinateView::Previous(previous_id) = coordinate {
+        let slot = if let dae::CoordinateView::Delay(delay_id) = coordinate {
+            delay_value_scalar_slot(self.layout, delay_id.index(), scalar, span)?
+        } else if let dae::CoordinateView::Previous(previous_id) = coordinate {
             let previous = self
                 .view
                 .previous(previous_id)
@@ -678,7 +680,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         } else {
             let variable = coordinate_variable(coordinate).ok_or_else(|| {
                 LowerError::unsupported(
-                    "runtime-managed condition, delay, previous, or terminal coordinate",
+                    "runtime-managed condition, previous, or terminal coordinate",
                     span,
                 )
             })?;

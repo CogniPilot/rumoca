@@ -3,7 +3,9 @@ use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
 
 use super::clocks::LoweredClocks;
-use super::{LoweredLayout, ScalarCompiler, ScalarRows, variable_scalar_slot};
+use super::{
+    LoweredLayout, ScalarCompiler, ScalarRows, delay_value_scalar_slot, variable_scalar_slot,
+};
 use crate::LowerError;
 
 pub(super) fn lower_discrete_and_events<'dae>(
@@ -27,6 +29,7 @@ pub(super) fn lower_discrete_and_events<'dae>(
     lower_condition_memory(view, layout, &mut discrete)?;
     let roots = lower_roots(view, layout)?;
     let scheduled_time_events = lower_time_events(view);
+    let delays = lower_delays(view, layout)?;
     let discrete = discrete.finish()?;
     let events = solve::SolveEventPartition {
         root_conditions: roots.programs,
@@ -37,9 +40,65 @@ pub(super) fn lower_discrete_and_events<'dae>(
         action_conditions: action_conditions.into_scalar_block()?,
         actions: event_actions,
         has_terminal_event: false,
+        delays,
         ..solve::SolveEventPartition::default()
     };
     Ok((discrete, events))
+}
+
+fn lower_delays<'dae>(
+    view: dae::DaeView<'dae>,
+    layout: &LoweredLayout<'dae>,
+) -> Result<solve::SolveDelayPartition, LowerError> {
+    let mut source_rhs = ScalarRows::default();
+    let mut delay_time_rhs = ScalarRows::default();
+    let mut delay_max_rhs = ScalarRows::default();
+    let mut value_parameter_indices = Vec::new();
+    let mut source_is_discrete = Vec::new();
+    for index in 0..view.delay_count() {
+        let id = view.delay_id(index).expect("dense delay identity resolves");
+        let delay = view.delay(id).expect("checked delay identity resolves");
+        let span = delay.provenance().span();
+        let delay_max = delay
+            .delay_max()
+            .map(|evidence| evidence.expression())
+            .unwrap_or_else(|| delay.delay_time());
+        let scalar_count = delay
+            .value_type()
+            .scalar_count()
+            .expect("checked delay value type has scalar capacity");
+        for scalar in 0..scalar_count {
+            let channel = value_parameter_indices.len();
+            source_rhs.push(
+                ScalarCompiler::new(view, layout, None).program(delay.source(), scalar)?,
+                span,
+                channel,
+            );
+            delay_time_rhs.push(
+                ScalarCompiler::new(view, layout, None).program(delay.delay_time(), 0)?,
+                span,
+                channel,
+            );
+            delay_max_rhs.push(
+                ScalarCompiler::new(view, layout, None).program(delay_max, 0)?,
+                span,
+                channel,
+            );
+            let slot = delay_value_scalar_slot(layout, id.index(), scalar, span)?;
+            let solve::ScalarSlot::P { index, .. } = slot else {
+                unreachable!("delay values always occupy runtime-managed P slots")
+            };
+            value_parameter_indices.push(index);
+            source_is_discrete.push(delay.variability() != dae::ExpressionVariability::Continuous);
+        }
+    }
+    Ok(solve::SolveDelayPartition {
+        source_rhs: source_rhs.into_scalar_block()?,
+        delay_time_rhs: delay_time_rhs.into_scalar_block()?,
+        delay_max_rhs: delay_max_rhs.into_scalar_block()?,
+        value_parameter_indices,
+        source_is_discrete,
+    })
 }
 
 #[derive(Default)]

@@ -46,10 +46,7 @@ pub(crate) fn lower_solve_problem<'dae>(
 }
 
 fn reject_unimplemented_systems(view: dae::DaeView<'_>) -> Result<(), LowerError> {
-    let unsupported = [
-        (view.terminal_count(), "terminal coordinates"),
-        (view.delay_count(), "transport delays"),
-    ];
+    let unsupported = [(view.terminal_count(), "terminal coordinates")];
     if let Some((_, semantics)) = unsupported.into_iter().find(|(count, _)| *count != 0) {
         return Err(LowerError::unsupported(
             format!("{semantics} do not yet have checked Solve lowering"),
@@ -1355,6 +1352,23 @@ pub(super) fn previous_value_scalar_slot(
     let index = base
         .checked_add(scalar)
         .ok_or_else(|| LowerError::contract("previous-value scalar layout overflow", span))?;
+    Ok(solve::scalar_slot_p(index))
+}
+
+pub(super) fn delay_value_scalar_slot(
+    layout: &LoweredLayout<'_>,
+    delay: u32,
+    scalar: usize,
+    span: Span,
+) -> Result<solve::ScalarSlot, LowerError> {
+    let base = layout
+        .delay_values
+        .get(delay as usize)
+        .copied()
+        .ok_or_else(|| LowerError::contract("delay has no Solve value layout entry", span))?;
+    let index = base
+        .checked_add(scalar)
+        .ok_or_else(|| LowerError::contract("delay-value scalar layout overflow", span))?;
     Ok(solve::scalar_slot_p(index))
 }
 

@@ -31,10 +31,10 @@ use algorithm::{
     own_clocked_algorithm_targets,
 };
 use analysis::{
-    Analysis, ComprehensionKey, ComprehensionPlan, DerivedParameterPlan, EquationPartition,
-    FunctionArrayAssemblyPlan, FunctionIntegerReduction, FunctionLoopLowering, FunctionPlan,
-    FunctionRecordAssemblyPlan, FunctionStatementPlan, ModelAlgorithmPlan, PlannedRole,
-    RecordArrayFieldPlan, RecordEquationPlan, analyze, defined_discrete_targets,
+    Analysis, ComprehensionKey, ComprehensionPlan, DelayPlan, DerivedParameterPlan,
+    EquationPartition, FunctionArrayAssemblyPlan, FunctionIntegerReduction, FunctionLoopLowering,
+    FunctionPlan, FunctionRecordAssemblyPlan, FunctionStatementPlan, ModelAlgorithmPlan,
+    PlannedRole, RecordArrayFieldPlan, RecordEquationPlan, analyze, defined_discrete_targets,
     effective_variable_scalar_type, equation_partition, primitive_scalar_type,
     structured_assignment_names,
 };
@@ -175,6 +175,7 @@ fn build_checked<'dae>(
         comprehension_plans: &analysis.comprehension_plans,
         record_array_fields: &analysis.record_array_fields,
         constants: &analysis.constants,
+        delay_plans: &analysis.delay_plans,
         reinit_state_pre: &analysis.reinit_state_pre,
     };
     let (coordinates, reserved) = reserve_variables(flat, analysis, construction, &value_types)?;

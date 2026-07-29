@@ -201,6 +201,11 @@ pub(super) fn lower_expression_scoped<'dae>(
             };
             lower_temporal_identity(construction, symbols, binders, value, provenance)
         }
+        Expression::BuiltinCall {
+            function: BuiltinFunction::Delay,
+            args,
+            ..
+        } => lower_delay(construction, symbols, binders, args, provenance, span),
         Expression::BuiltinCall { function, args, .. } => {
             lower_builtin_call(construction, symbols, binders, *function, args, provenance)
         }
@@ -229,13 +234,7 @@ pub(super) fn lower_expression_scoped<'dae>(
         } => lower_array_comprehension(construction, symbols, binders, expr, indices, provenance),
         Expression::Range {
             start, step, end, ..
-        } => {
-            let start = integer_literal(start);
-            let step = step.as_deref().map(integer_literal).unwrap_or(1);
-            let end = integer_literal(end);
-            construction
-                .expressions(|expressions| expressions.at(provenance).range(start, step, end))
-        }
+        } => lower_range(construction, start, step.as_deref(), end, provenance),
         Expression::Index {
             base, subscripts, ..
         } => {
@@ -267,6 +266,69 @@ pub(super) fn lower_expression_scoped<'dae>(
             unreachable!("analysis rejects expressions outside the checked lowering grammar")
         }
     }
+}
+
+fn lower_range<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    start: &Expression,
+    step: Option<&Expression>,
+    end: &Expression,
+    provenance: dae::DaeProvenance,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    let start = integer_literal(start);
+    let step = step.map(integer_literal).unwrap_or(1);
+    let end = integer_literal(end);
+    construction.expressions(|expressions| expressions.at(provenance).range(start, step, end))
+}
+
+fn lower_delay<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    symbols: LoweringSymbols<'_, 'dae>,
+    binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
+    arguments: &[Expression],
+    provenance: dae::DaeProvenance,
+    span: Span,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    let plan = symbols
+        .functions
+        .delay_plans
+        .get(&span)
+        .copied()
+        .ok_or(dae::DaeConstructionError::InvalidPositiveParameter { span })?;
+    let source = lower_expression_scoped(construction, symbols, binders, &arguments[0], None)?;
+    let delay_time = lower_expression_scoped(construction, symbols, binders, &arguments[1], None)?;
+    let delay_time_provenance = expression_provenance(
+        arguments[1]
+            .span()
+            .expect("analysis proves delayTime provenance"),
+        None,
+    )?;
+    let delay = match plan {
+        DelayPlan::Fixed { delay_time: value } => construction.temporal(|temporal| {
+            let positive = temporal.positive_parameter(delay_time, value, delay_time_provenance)?;
+            temporal.delay(source, positive, provenance)
+        })?,
+        DelayPlan::Bounded { delay_max: value } => {
+            let delay_max =
+                lower_expression_scoped(construction, symbols, binders, &arguments[2], None)?;
+            let delay_max_provenance = expression_provenance(
+                arguments[2]
+                    .span()
+                    .expect("analysis proves delayMax provenance"),
+                None,
+            )?;
+            construction.temporal(|temporal| {
+                let maximum =
+                    temporal.positive_parameter(delay_max, value, delay_max_provenance)?;
+                temporal.bounded_delay(source, delay_time, maximum, provenance)
+            })?
+        }
+    };
+    construction.expressions(|expressions| {
+        expressions
+            .at(provenance)
+            .coordinate(dae::CoordinateInput::Delay(delay))
+    })
 }
 
 fn lower_hold<'dae>(
