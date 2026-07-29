@@ -211,7 +211,9 @@ pub(super) fn lower_builtin_arguments(
         dae::PureBuiltin::Sum
         | dae::PureBuiltin::Product
         | dae::PureBuiltin::Size
-        | dae::PureBuiltin::Zeros => {
+        | dae::PureBuiltin::Zeros
+        | dae::PureBuiltin::Ones
+        | dae::PureBuiltin::Fill => {
             return Err(unsupported(
                 "builtin",
                 format!("builtin `{builtin:?}` has no scalar GALEC mapping"),

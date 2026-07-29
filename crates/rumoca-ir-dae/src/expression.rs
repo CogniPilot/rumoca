@@ -235,6 +235,8 @@ pub enum PureBuiltin {
     Product,
     Size,
     Zeros,
+    Ones,
+    Fill,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1750,7 +1752,13 @@ fn builtin_result<'dae>(
         });
     };
     let first = storage.expr_type(first, at)?.clone();
-    if !first.scalar_type().is_numeric() && !matches!(builtin, PureBuiltin::Size) {
+    if matches!(
+        builtin,
+        PureBuiltin::Zeros | PureBuiltin::Ones | PureBuiltin::Fill
+    ) {
+        return array_constructor_result(storage, builtin, arguments, &first, at);
+    }
+    if !first.scalar_type().is_numeric() && builtin != PureBuiltin::Size {
         return Err(DaeConstructionError::ExpectedNumeric {
             found: first.scalar_type(),
             span: at.span(),
@@ -1829,15 +1837,40 @@ fn builtin_result<'dae>(
             }
             Ok(ValueType::scalar(ScalarType::Integer))
         }
-        PureBuiltin::Zeros => {
-            let dimensions = arguments
-                .iter()
-                .copied()
-                .map(|argument| literal_array_extent(storage, argument, at))
-                .collect::<Result<Vec<_>, _>>()?;
-            Ok(ValueType::array(ScalarType::Real, dimensions))
+        PureBuiltin::Zeros | PureBuiltin::Ones | PureBuiltin::Fill => {
+            unreachable!("array constructors return before numeric builtins")
         }
     }
+}
+
+fn array_constructor_result(
+    storage: &Storage,
+    builtin: PureBuiltin,
+    arguments: &[ExprId<'_>],
+    first: &ValueType,
+    at: DaeProvenance,
+) -> Result<ValueType, DaeConstructionError> {
+    let (scalar, extents) = match builtin {
+        PureBuiltin::Zeros | PureBuiltin::Ones => (ScalarType::Real, arguments),
+        PureBuiltin::Fill if arguments.len() >= 2 && first.is_scalar() => {
+            (first.scalar_type(), &arguments[1..])
+        }
+        PureBuiltin::Fill if arguments.len() < 2 => {
+            return Err(DaeConstructionError::InvalidArity {
+                expected: 2,
+                found: arguments.len(),
+                span: at.span(),
+            });
+        }
+        PureBuiltin::Fill => return Err(DaeConstructionError::ShapeMismatch { span: at.span() }),
+        _ => unreachable!("only array constructors use this validator"),
+    };
+    let dimensions = extents
+        .iter()
+        .copied()
+        .map(|expression| literal_array_extent(storage, expression, at))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(ValueType::array(scalar, dimensions))
 }
 
 fn literal_array_extent(

@@ -1183,6 +1183,10 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             }
             dae::PureBuiltin::Size => self.size_builtin(arguments, scalar, span),
             dae::PureBuiltin::Zeros => self.constant(0.0, span),
+            dae::PureBuiltin::Ones => self.constant(1.0, span),
+            dae::PureBuiltin::Fill => {
+                self.expression(arguments.get(0).expect("checked fill value argument"), 0)
+            }
         }
     }
 

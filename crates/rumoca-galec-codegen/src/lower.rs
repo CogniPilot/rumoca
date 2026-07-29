@@ -1537,6 +1537,19 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         scalar_type: gast::ScalarType,
         span: Span,
     ) -> Result<TypedExpression, GalecTargetError> {
+        if builtin == dae::PureBuiltin::Zeros || builtin == dae::PureBuiltin::Ones {
+            return Ok(TypedExpression {
+                expression: gast::Expression::Real(if builtin == dae::PureBuiltin::Ones {
+                    1.0
+                } else {
+                    0.0
+                }),
+                scalar_type,
+            });
+        }
+        if builtin == dae::PureBuiltin::Fill {
+            return self.lower_at(arguments.get(0).expect("checked fill value argument"), &[]);
+        }
         if matches!(
             builtin,
             dae::PureBuiltin::Smooth | dae::PureBuiltin::NoEvent

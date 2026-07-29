@@ -176,6 +176,8 @@ pub(super) fn validate_builtin(
             | BuiltinFunction::Product
             | BuiltinFunction::Size
             | BuiltinFunction::Zeros
+            | BuiltinFunction::Ones
+            | BuiltinFunction::Fill
             | BuiltinFunction::Sample
     );
     if !supported {

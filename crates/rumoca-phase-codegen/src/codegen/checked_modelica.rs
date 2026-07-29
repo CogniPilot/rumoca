@@ -658,6 +658,8 @@ const fn builtin_name(builtin: dae::PureBuiltin) -> &'static str {
         dae::PureBuiltin::Product => "product",
         dae::PureBuiltin::Size => "size",
         dae::PureBuiltin::Zeros => "zeros",
+        dae::PureBuiltin::Ones => "ones",
+        dae::PureBuiltin::Fill => "fill",
     }
 }
 

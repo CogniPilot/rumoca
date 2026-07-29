@@ -866,6 +866,8 @@ fn pure_builtin(function: BuiltinFunction) -> dae::PureBuiltin {
         BuiltinFunction::Product => dae::PureBuiltin::Product,
         BuiltinFunction::Size => dae::PureBuiltin::Size,
         BuiltinFunction::Zeros => dae::PureBuiltin::Zeros,
+        BuiltinFunction::Ones => dae::PureBuiltin::Ones,
+        BuiltinFunction::Fill => dae::PureBuiltin::Fill,
         _ => unreachable!("analysis restricts pure builtins"),
     }
 }

@@ -1414,7 +1414,9 @@ fn unary_builtin(builtin: dae::PureBuiltin) -> solve::UnaryOp {
         | dae::PureBuiltin::Sum
         | dae::PureBuiltin::Product
         | dae::PureBuiltin::Size
-        | dae::PureBuiltin::Zeros => unreachable!("non-unary builtin"),
+        | dae::PureBuiltin::Zeros
+        | dae::PureBuiltin::Ones
+        | dae::PureBuiltin::Fill => unreachable!("non-unary builtin"),
     }
 }
 

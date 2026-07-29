@@ -1290,6 +1290,61 @@ fn zeros_is_a_provenance_bearing_checked_array_operation() {
 }
 
 #[test]
+fn ones_and_fill_are_compact_typed_array_operations() {
+    let source = TestSource::new("ones(2, 2); fill(0.5, 3)");
+    let ones_at = source.source("ones(2, 2)", 0);
+    let fill_at = source.source("fill(0.5, 3)", 0);
+    let first_two_at = source.source("2", 0);
+    let second_two_at = source.source("2", 1);
+    let value_at = source.source("0.5", 0);
+    let extent_at = source.source("3", 0);
+    let dae = Dae::construct(source.map, |dae| {
+        let first_two = dae.expressions(|expressions| {
+            expressions.at(first_two_at).literal(DaeLiteral::Integer(2))
+        })?;
+        let second_two = dae.expressions(|expressions| {
+            expressions
+                .at(second_two_at)
+                .literal(DaeLiteral::Integer(2))
+        })?;
+        dae.expressions(|expressions| {
+            expressions
+                .at(ones_at)
+                .builtin(PureBuiltin::Ones, [first_two, second_two])
+        })?;
+        let value =
+            dae.expressions(|expressions| expressions.at(value_at).literal(DaeLiteral::Real(0.5)))?;
+        let extent = dae
+            .expressions(|expressions| expressions.at(extent_at).literal(DaeLiteral::Integer(3)))?;
+        dae.expressions(|expressions| {
+            expressions
+                .at(fill_at)
+                .builtin(PureBuiltin::Fill, [value, extent])
+        })?;
+        Ok(())
+    })
+    .unwrap();
+
+    let encoded = serde_json::to_string(&dae).unwrap();
+    let decoded: Dae = serde_json::from_str(&encoded).unwrap();
+    decoded.inspect(|view| {
+        for (index, builtin, dimensions, text) in [
+            (2, PureBuiltin::Ones, &[2, 2][..], "ones(2, 2)"),
+            (5, PureBuiltin::Fill, &[3][..], "fill(0.5, 3)"),
+        ] {
+            let expression = view.expression(view.expression_id(index).unwrap()).unwrap();
+            assert_eq!(expression.value_type().scalar_type(), ScalarType::Real);
+            assert_eq!(expression.value_type().dimensions(), dimensions);
+            assert_eq!(view.source_text(expression.provenance()), Some(text));
+            assert!(matches!(
+                expression.operation(),
+                ExpressionOperation::Builtin { builtin: found, .. } if found == builtin
+            ));
+        }
+    });
+}
+
+#[test]
 fn enumeration_literals_are_canonical_checked_integers_and_round_trip() {
     let source = TestSource::new("E.a");
     let literal_at = source.source("E.a", 0);

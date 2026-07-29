@@ -767,6 +767,22 @@ where
         arguments: dae::ExpressionOperands<'dae>,
         span: Span,
     ) -> Result<Vec<f64>, NumericEvaluationError> {
+        if matches!(builtin, dae::PureBuiltin::Zeros | dae::PureBuiltin::Ones) {
+            let value = if builtin == dae::PureBuiltin::Ones {
+                1.0
+            } else {
+                0.0
+            };
+            return self.filled_array(arguments, 0, value, span);
+        }
+        if builtin == dae::PureBuiltin::Fill {
+            let fill =
+                self.expression(arguments.get(0).expect("checked fill has a value argument"))?;
+            let [fill] = fill.as_slice() else {
+                unreachable!("checked fill value is scalar")
+            };
+            return self.filled_array(arguments, 1, *fill, span);
+        }
         let first = arguments
             .get(0)
             .expect("checked builtin has its required operand");
@@ -813,42 +829,46 @@ where
                 values = self.extremum(builtin, arguments, values, span)?;
             }
             dae::PureBuiltin::Size => values = self.size(arguments, first, span)?,
-            dae::PureBuiltin::Zeros => values = self.zeros(arguments, span)?,
+            dae::PureBuiltin::Zeros | dae::PureBuiltin::Ones | dae::PureBuiltin::Fill => {
+                unreachable!("array constructors return before operand evaluation")
+            }
         }
         Ok(values)
     }
 
-    fn zeros(
+    fn filled_array(
         &mut self,
         arguments: dae::ExpressionOperands<'dae>,
+        first_extent: usize,
+        value: f64,
         span: Span,
     ) -> Result<Vec<f64>, NumericEvaluationError> {
         let mut count = 1_usize;
-        for argument in arguments.iter() {
+        for argument in arguments.iter().skip(first_extent) {
             let extent = self.expression(argument)?;
             let [extent] = extent.as_slice() else {
                 return Err(failure(
                     NumericEvaluationErrorKind::ShapeMismatch,
-                    "checked zeros extent is not scalar",
+                    "checked array-constructor extent is not scalar",
                     span,
                 ));
             };
             if *extent < 0.0 || extent.fract() != 0.0 {
                 return Err(failure(
                     NumericEvaluationErrorKind::InvalidValue,
-                    "checked zeros extent is not a nonnegative integer",
+                    "checked array-constructor extent is not a nonnegative integer",
                     span,
                 ));
             }
             count = count.checked_mul(*extent as usize).ok_or_else(|| {
                 failure(
                     NumericEvaluationErrorKind::Overflow,
-                    "checked zeros scalar count overflowed",
+                    "checked array-constructor scalar count overflowed",
                     span,
                 )
             })?;
         }
-        Ok(vec![0.0; count])
+        Ok(vec![value; count])
     }
 
     fn extremum(
@@ -1309,6 +1329,56 @@ mod tests {
             assert_eq!(
                 NumericEvaluator::new(view).expression(zeros).unwrap(),
                 vec![0.0; 6]
+            );
+        });
+    }
+
+    #[test]
+    fn checked_ones_and_fill_evaluate_without_materialized_dae_arrays() {
+        let text = "ones(2); fill(0.5, 3)";
+        let mut source_map = SourceMap::new();
+        let source = source_map.add("constructors.mo", text);
+        let at = |needle: &str, occurrence: usize| {
+            let start = text.match_indices(needle).nth(occurrence).unwrap().0;
+            DaeProvenance::source(Span::from_offsets(source, start, start + needle.len())).unwrap()
+        };
+        let dae = Dae::construct(source_map, |dae| {
+            let two = dae.expressions(|expressions| {
+                expressions.at(at("2", 0)).literal(DaeLiteral::Integer(2))
+            })?;
+            dae.expressions(|expressions| {
+                expressions
+                    .at(at("ones(2)", 0))
+                    .builtin(PureBuiltin::Ones, [two])
+            })?;
+            let value = dae.expressions(|expressions| {
+                expressions.at(at("0.5", 0)).literal(DaeLiteral::Real(0.5))
+            })?;
+            let three = dae.expressions(|expressions| {
+                expressions.at(at("3", 0)).literal(DaeLiteral::Integer(3))
+            })?;
+            dae.expressions(|expressions| {
+                expressions
+                    .at(at("fill(0.5, 3)", 0))
+                    .builtin(PureBuiltin::Fill, [value, three])
+            })?;
+            Ok(())
+        })
+        .unwrap();
+
+        dae.inspect(|view| {
+            let mut evaluator = NumericEvaluator::new(view);
+            assert_eq!(
+                evaluator
+                    .expression(view.expression_id(1).unwrap())
+                    .unwrap(),
+                vec![1.0, 1.0]
+            );
+            assert_eq!(
+                evaluator
+                    .expression(view.expression_id(4).unwrap())
+                    .unwrap(),
+                vec![0.5, 0.5, 0.5]
             );
         });
     }

@@ -460,9 +460,15 @@ where
                 }
                 Ok(())
             }
-            dae::PureBuiltin::Zeros => {
+            dae::PureBuiltin::Zeros | dae::PureBuiltin::Ones => {
                 for dimension in arguments.iter() {
                     self.expression(dimension, 0)?;
+                }
+                Ok(())
+            }
+            dae::PureBuiltin::Fill => {
+                for argument in arguments.iter() {
+                    self.expression(argument, 0)?;
                 }
                 Ok(())
             }
