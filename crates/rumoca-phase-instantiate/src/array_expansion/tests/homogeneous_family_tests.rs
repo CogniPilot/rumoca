@@ -411,6 +411,38 @@ fn zero_sized_array_records_no_family() {
     assert_overlays_equivalent(&compact, &instantiate(SOURCE, "Stack", false));
 }
 
+#[test]
+fn zero_sized_primitive_arrays_retain_their_typed_instance_headers() {
+    const SOURCE: &str = r"
+        model EmptyInterface
+            input Real u[0];
+            parameter Real p[0];
+        end EmptyInterface;
+    ";
+    let overlay = instantiate(SOURCE, "EmptyInterface", true);
+    let u = overlay
+        .components
+        .values()
+        .find(|component| component.qualified_name.to_flat_string() == "u")
+        .expect("empty input keeps one typed declaration header");
+    assert_eq!(u.dims, [0]);
+    assert!(u.is_primitive);
+    assert!(matches!(u.causality, rumoca_core::Causality::Input(_)));
+
+    let p = overlay
+        .components
+        .values()
+        .find(|component| component.qualified_name.to_flat_string() == "p")
+        .expect("empty parameter keeps one typed declaration header");
+    assert_eq!(p.dims, [0]);
+    assert!(matches!(
+        p.variability,
+        rumoca_core::Variability::Parameter(_)
+    ));
+    assert_eq!(overlay.array_parent_dims.get("u"), Some(&vec![0]));
+    assert_eq!(overlay.array_parent_dims.get("p"), Some(&vec![0]));
+}
+
 /// Assert that two overlays are equivalent, including `InstanceId` numbering.
 fn assert_overlays_equivalent(compact: &ast::InstanceOverlay, scalar: &ast::InstanceOverlay) {
     assert_eq!(
