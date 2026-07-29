@@ -890,3 +890,57 @@ fn clocked_self_dependent_discrete_residual_fails_before_runtime() {
         LowerError::Unsupported { span, .. } if span == owner.span()
     ));
 }
+
+#[test]
+fn initial_condition_owns_a_dedicated_runtime_flag() {
+    let source = TestSource::new("discrete Real x; when initial() then x = 1; end when;");
+    let declaration = source.at(0, 15);
+    let initial_at = source.at(22, 31);
+    let assignment = source.at(37, 42);
+    let model = dae::Dae::construct(source.map, |model| {
+        let real = model.types(|types| {
+            types.intern(
+                TypeId::new(0),
+                dae::ValueType::scalar(dae::ScalarType::Real),
+                declaration,
+            )
+        })?;
+        let variable = model.variables(|variables| {
+            variables.discrete_real(
+                VarName::new("x"),
+                real,
+                declaration,
+                dae::VariableAttributes::default(),
+            )
+        })?;
+        let condition = model.conditions(|conditions| conditions.reserve(initial_at))?;
+        model.conditions(|conditions| {
+            conditions.define(condition, dae::ConditionInput::Initial, initial_at)
+        })?;
+        let value = model.expressions(|expressions| {
+            expressions
+                .at(assignment)
+                .literal(dae::DaeLiteral::Real(1.0))
+        })?;
+        model.events(|events| {
+            events.assign_discrete_real(condition, condition, variable, value, assignment)
+        })?;
+        Ok(())
+    })
+    .unwrap();
+
+    let solve = lower_solve_problem(&model).unwrap();
+    let flag = solve
+        .solve_layout
+        .initial_event_parameter_index
+        .expect("initial() owns one checked runtime flag");
+    assert!(
+        solve
+            .discrete
+            .rhs
+            .programs
+            .iter()
+            .flatten()
+            .any(|operation| matches!(operation, LinearOp::LoadP { index, .. } if *index == flag))
+    );
+}

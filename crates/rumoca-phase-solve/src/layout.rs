@@ -74,9 +74,11 @@ pub(crate) fn lower_layout<'dae>(
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let p_scalars = condition_base
+    let after_conditions = condition_base
         .checked_add(condition_memory.len())
         .ok_or_else(|| LowerError::contract("parameter layout overflow", first_model_span(view)))?;
+    let (initial_event_parameter_index, p_scalars) =
+        append_condition_flags(view, after_conditions)?;
     let layout = solve::VarLayout::from_parts_with_shapes_and_spans(
         bindings,
         shapes,
@@ -120,7 +122,7 @@ pub(crate) fn lower_layout<'dae>(
         discrete_real_scalar_names: p.discrete_real_names,
         discrete_valued_scalar_names: p.discrete_value_names,
         relation_memory_parameter_indices: Vec::new(),
-        initial_event_parameter_index: None,
+        initial_event_parameter_index,
         terminal_event_parameter_index: None,
         initial_homotopy_parameter_index: None,
         pre_param_bindings: pre.bindings,
@@ -134,6 +136,22 @@ pub(crate) fn lower_layout<'dae>(
         solve_layout,
         marker: std::marker::PhantomData,
     })
+}
+
+fn append_condition_flags(
+    view: dae::DaeView<'_>,
+    first_index: usize,
+) -> Result<(Option<usize>, usize), LowerError> {
+    let has_initial = (0..view.condition_count()).any(|index| {
+        view.condition(view.condition_id(index).expect("dense condition identity"))
+            .is_some_and(|condition| {
+                matches!(condition.operation(), dae::ConditionOperation::Initial)
+            })
+    });
+    let end = first_index
+        .checked_add(usize::from(has_initial))
+        .ok_or_else(|| LowerError::contract("parameter layout overflow", first_model_span(view)))?;
+    Ok((has_initial.then_some(first_index), end))
 }
 
 struct PreVariableLayout {

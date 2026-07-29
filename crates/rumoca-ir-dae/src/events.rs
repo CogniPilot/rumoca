@@ -387,6 +387,7 @@ impl<'dae> Events<'_, 'dae> {
 fn condition_owner_clock(storage: &Storage, condition: u32) -> Option<u32> {
     let node = storage.conditions.get(condition as usize)?.node?;
     match node {
+        crate::conditions::ConditionNode::Initial => None,
         crate::conditions::ConditionNode::Clock(clock) => Some(clock),
         crate::conditions::ConditionNode::And { lhs, rhs } => merge_owner_clocks(
             condition_owner_clock(storage, lhs),

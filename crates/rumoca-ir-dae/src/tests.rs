@@ -1897,6 +1897,33 @@ fn event_actions_are_guarded_typed_and_keep_coincident_time_ids() {
     assert_event_wire_requires_trigger(&encoded);
 }
 
+#[test]
+fn initial_condition_is_typed_and_round_trips_through_wire_v11() {
+    let source = TestSource::new("when initial() then end when;");
+    let initial_at = source.source("initial()", 0);
+    let dae = Dae::construct(source.map, |dae| {
+        let condition = dae.conditions(|conditions| conditions.reserve(initial_at))?;
+        dae.conditions(|conditions| {
+            conditions.define(condition, ConditionInput::Initial, initial_at)
+        })
+    })
+    .unwrap();
+
+    let assert_initial = |model: &Dae| {
+        model.inspect(|view| {
+            let condition = view
+                .condition(view.condition_id(0).unwrap())
+                .expect("initial condition identity resolves");
+            assert!(matches!(condition.operation(), ConditionOperation::Initial));
+            assert_eq!(model.source_text(condition.provenance()), Some("initial()"));
+        });
+    };
+    assert_initial(&dae);
+    let wire = serde_json::to_string(&dae).unwrap();
+    let decoded: Dae = serde_json::from_str(&wire).unwrap();
+    assert_initial(&decoded);
+}
+
 fn assert_event_wire_requires_trigger(encoded: &str) {
     let mut value: serde_json::Value = serde_json::from_str(encoded).unwrap();
     value["storage"]["event_actions"][0]

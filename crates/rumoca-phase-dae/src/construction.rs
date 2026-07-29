@@ -1394,26 +1394,34 @@ fn lower_condition<'dae>(
     Ok((condition, owner_clock))
 }
 
+type LoweredCondition<'dae> = (
+    dae::ConditionId<'dae>,
+    Vec<dae::RelationId<'dae>>,
+    Option<dae::ClockId<'dae>>,
+);
+type LoweredConditionNode<'dae> = (
+    dae::ConditionInput<'dae>,
+    Vec<dae::RelationId<'dae>>,
+    Option<dae::ClockId<'dae>>,
+);
+
 fn lower_condition_tree<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     coordinates: &HashMap<VarName, Coordinate<'dae>>,
     functions: &FunctionRegistry<'_, 'dae>,
     sample_lattices: &[(Span, ClockLattice)],
     expression: &Expression,
-) -> Result<
-    (
-        dae::ConditionId<'dae>,
-        Vec<dae::RelationId<'dae>>,
-        Option<dae::ClockId<'dae>>,
-    ),
-    dae::DaeConstructionError,
-> {
+) -> Result<LoweredCondition<'dae>, dae::DaeConstructionError> {
     let provenance = dae::DaeProvenance::source(
         expression
             .span()
             .expect("analysis proves condition provenance"),
     )?;
     let (input, relations, owner_clock) = match expression {
+        Expression::BuiltinCall {
+            function: BuiltinFunction::Initial,
+            ..
+        } => (dae::ConditionInput::Initial, Vec::new(), None),
         Expression::Unary {
             op: OpUnary::Not,
             rhs,
@@ -1462,14 +1470,7 @@ fn lower_condition_tree<'dae>(
         Expression::BuiltinCall {
             function: BuiltinFunction::Sample,
             ..
-        } => {
-            let lattice = *sample_lattices
-                .iter()
-                .find_map(|(span, lattice)| (*span == provenance.span()).then_some(lattice))
-                .expect("analysis proves every sample condition has an exact clock lattice");
-            let clock = construction.clocks(|clocks| clocks.periodic(lattice, provenance))?;
-            (dae::ConditionInput::Clock(clock), Vec::new(), Some(clock))
-        }
+        } => lower_sample_condition(construction, sample_lattices, provenance)?,
         Expression::BuiltinCall {
             function: BuiltinFunction::Change,
             args,
@@ -1510,6 +1511,19 @@ fn lower_condition_tree<'dae>(
     Ok((condition, relations, owner_clock))
 }
 
+fn lower_sample_condition<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    sample_lattices: &[(Span, ClockLattice)],
+    provenance: dae::DaeProvenance,
+) -> Result<LoweredConditionNode<'dae>, dae::DaeConstructionError> {
+    let lattice = *sample_lattices
+        .iter()
+        .find_map(|(span, lattice)| (*span == provenance.span()).then_some(lattice))
+        .expect("analysis proves every sample condition has an exact clock lattice");
+    let clock = construction.clocks(|clocks| clocks.periodic(lattice, provenance))?;
+    Ok((dae::ConditionInput::Clock(clock), Vec::new(), Some(clock)))
+}
+
 fn lower_binary_condition<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     coordinates: &HashMap<VarName, Coordinate<'dae>>,
@@ -1518,14 +1532,7 @@ fn lower_binary_condition<'dae>(
     operands: (&Expression, &Expression),
     disjunction: bool,
     provenance: dae::DaeProvenance,
-) -> Result<
-    (
-        dae::ConditionInput<'dae>,
-        Vec<dae::RelationId<'dae>>,
-        Option<dae::ClockId<'dae>>,
-    ),
-    dae::DaeConstructionError,
-> {
+) -> Result<LoweredConditionNode<'dae>, dae::DaeConstructionError> {
     let (lhs, rhs) = operands;
     let (lhs, mut relations, lhs_clock) =
         lower_condition_tree(construction, coordinates, functions, sample_lattices, lhs)?;

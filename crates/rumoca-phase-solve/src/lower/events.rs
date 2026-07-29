@@ -528,6 +528,7 @@ fn condition_clock_owner<'dae>(
         .condition(condition)
         .expect("checked condition identity resolves");
     match condition.operation() {
+        dae::ConditionOperation::Initial => None,
         dae::ConditionOperation::Clock(clock) => Some(clock),
         dae::ConditionOperation::And(lhs, rhs) => merge_condition_clocks(
             condition_clock_owner(view, lhs),
@@ -685,6 +686,7 @@ fn condition_contains_pre<'dae>(view: dae::DaeView<'dae>, root: dae::ConditionId
             .condition(condition)
             .expect("checked condition identity resolves");
         match condition.operation() {
+            dae::ConditionOperation::Initial => {}
             dae::ConditionOperation::Relation(relation) => {
                 let expression = view
                     .relation(relation)

@@ -347,6 +347,21 @@ fn validate_condition_expression(
 ) -> Result<(), ToDaeError> {
     match expression {
         Expression::BuiltinCall {
+            function: BuiltinFunction::Initial,
+            args,
+            span,
+        } => {
+            if args.is_empty() {
+                Ok(())
+            } else {
+                Err(ToDaeError::unsupported_runtime_operator(
+                    "initial",
+                    "initial() takes no arguments",
+                    *span,
+                ))
+            }
+        }
+        Expression::BuiltinCall {
             function: BuiltinFunction::Sample,
             args,
             span,

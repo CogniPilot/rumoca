@@ -733,6 +733,19 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             .expect("checked condition identity resolves");
         let span = condition.provenance().span();
         match condition.operation() {
+            dae::ConditionOperation::Initial => {
+                let index = self
+                    .layout
+                    .solve_layout
+                    .initial_event_parameter_index
+                    .ok_or_else(|| {
+                        LowerError::non_computable(
+                            "initial condition has no checked Solve storage",
+                            span,
+                        )
+                    })?;
+                self.load_slot(solve::scalar_slot_p(index), span)
+            }
             dae::ConditionOperation::Relation(relation) => {
                 let expression = self
                     .view

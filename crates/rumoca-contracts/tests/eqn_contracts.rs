@@ -943,18 +943,22 @@ fn eqn_019_connect_in_noneval_if_rejected() {
 
 #[test]
 fn eqn_023_when_initial_accepted() {
-    expect_success(
+    let trace = rumoca_contracts::test_support::simulate_model(
         r#"
         model M
             discrete Real x;
+            Real y(start = 0);
         equation
+            der(y) = 0;
             when initial() then
                 x = 1;
             end when;
         end M;
     "#,
         "M",
+        0.1,
     );
+    assert_eq!(trace.final_value("x"), 1.0);
 }
 
 // =============================================================================
