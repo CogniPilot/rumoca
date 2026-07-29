@@ -1,5 +1,5 @@
 use super::*;
-use rumoca_core::SourceId;
+use rumoca_core::{Expression, Literal, SourceId};
 
 fn span() -> Span {
     Span::from_offsets(SourceId::from_source_name(file!()), 0, 1)
@@ -13,6 +13,23 @@ fn provenance(source_span: Span) -> ProvenanceSpan {
 
 fn rational(num: i64, den: i64) -> ClockRational {
     ClockRational::new(num, den).expect("test rational must reduce")
+}
+
+fn named_span(name: &str, start: usize) -> Span {
+    Span::from_offsets(SourceId::from_source_name(name), start, start + 1)
+}
+
+fn equation(source_span: Span) -> Equation {
+    Equation::new(
+        Expression::Literal {
+            value: Literal::Integer(0),
+            span: source_span,
+        },
+        source_span,
+        crate::EquationOrigin::ComponentEquation {
+            component: "clocked".into(),
+        },
+    )
 }
 
 #[test]
@@ -315,4 +332,192 @@ fn sub_clock_wire_decodes_through_checked_operations() {
             .to_string()
             .contains("missing source provenance for Flat sub-clock owner")
     );
+}
+
+#[test]
+fn base_clock_partition_owns_checked_sub_clock_children() {
+    let owner = named_span("clock_partition.mo", 1);
+    let base_variable = named_span("clock_partition.mo", 3);
+    let sub_owner = named_span("clock_partition.mo", 5);
+    let sub_variable = named_span("clock_partition.mo", 7);
+    let equation_span = named_span("clock_partition.mo", 9);
+    let discretized_span = named_span("clock_partition.mo", 11);
+    let base_clock = BaseClock::periodic(0.1, owner).expect("positive base clock");
+    let mut partition = BaseClockPartition::construct(4, base_clock, provenance(owner));
+    partition
+        .add_variable(VarName::new("base_only"), provenance(base_variable))
+        .expect("unique base variable");
+
+    let sub_clock =
+        SubClock::sub_sample(2, provenance(sub_owner)).expect("positive sub-sample factor");
+    let mut sub_partition = SubClockPartition::construct(2, sub_clock, provenance(sub_owner));
+    sub_partition
+        .add_variable(VarName::new("on_sub_clock"), provenance(sub_variable))
+        .expect("unique sub-clock variable");
+    sub_partition
+        .add_equation(equation(equation_span))
+        .expect("equation has provenance");
+    partition
+        .add_sub_partition(sub_partition)
+        .expect("unique sub-clock owner");
+    partition.mark_discretized(provenance(discretized_span));
+
+    assert_eq!(partition.id(), 4);
+    assert_eq!(partition.source_span(), owner);
+    assert_eq!(partition.variables().count(), 2);
+    assert_eq!(
+        partition.variable_span(&VarName::new("on_sub_clock")),
+        Some(sub_variable)
+    );
+    assert_eq!(partition.sub_partitions().len(), 1);
+    assert_eq!(partition.sub_partitions()[0].equations().len(), 1);
+    assert!(partition.is_discretized());
+    assert_eq!(partition.discretized_span(), Some(discretized_span));
+}
+
+#[test]
+fn clock_partition_rejects_duplicate_local_and_sibling_ownership() {
+    let owner = named_span("clock_partition_duplicates.mo", 1);
+    let first = named_span("clock_partition_duplicates.mo", 3);
+    let duplicate = named_span("clock_partition_duplicates.mo", 5);
+    let base_clock = BaseClock::inferred(owner);
+    let mut partition = BaseClockPartition::construct(0, base_clock, provenance(owner));
+    let name = VarName::new("x");
+    partition
+        .add_variable(name.clone(), provenance(first))
+        .expect("first variable occurrence");
+    let error = partition
+        .add_variable(name.clone(), provenance(duplicate))
+        .expect_err("duplicate variable must fail");
+    assert!(matches!(
+        error,
+        ClockPartitionError::DuplicateVariable {
+            first_span,
+            duplicate_span,
+            ..
+        } if first_span == first && duplicate_span == duplicate
+    ));
+
+    let mut first_sub =
+        SubClockPartition::construct(1, SubClock::identity(provenance(first)), provenance(first));
+    first_sub
+        .add_variable(name.clone(), provenance(first))
+        .expect("first sub-clock ownership");
+    partition
+        .add_sub_partition(first_sub)
+        .expect("first sub-clock partition");
+
+    let mut sibling = SubClockPartition::construct(
+        2,
+        SubClock::identity(provenance(duplicate)),
+        provenance(duplicate),
+    );
+    sibling
+        .add_variable(name, provenance(duplicate))
+        .expect("locally unique sibling variable");
+    let error = partition
+        .add_sub_partition(sibling)
+        .expect_err("one variable cannot belong to sibling sub-clocks");
+    assert!(matches!(
+        error,
+        ClockPartitionError::VariableInMultipleSubPartitions {
+            first_span,
+            duplicate_span,
+            ..
+        } if first_span == first && duplicate_span == duplicate
+    ));
+
+    let duplicate_id = SubClockPartition::construct(
+        1,
+        SubClock::identity(provenance(duplicate)),
+        provenance(duplicate),
+    );
+    let error = partition
+        .add_sub_partition(duplicate_id)
+        .expect_err("sub-clock IDs must be unique");
+    assert!(matches!(
+        error,
+        ClockPartitionError::DuplicateSubPartition {
+            id: 1,
+            first_span,
+            duplicate_span,
+        } if first_span == first && duplicate_span == duplicate
+    ));
+}
+
+#[test]
+fn base_clock_partition_wire_reconstructs_the_checked_aggregate() {
+    let owner = named_span("clock_partition_wire.mo", 1);
+    let variable_span = named_span("clock_partition_wire.mo", 3);
+    let sub_owner = named_span("clock_partition_wire.mo", 5);
+    let equation_span = named_span("clock_partition_wire.mo", 7);
+    let mut partition =
+        BaseClockPartition::construct(8, BaseClock::inferred(owner), provenance(owner));
+    partition
+        .add_variable(VarName::new("x"), provenance(variable_span))
+        .expect("unique variable");
+    partition
+        .add_equation(equation(equation_span))
+        .expect("equation has provenance");
+    partition
+        .add_sub_partition(SubClockPartition::construct(
+            3,
+            SubClock::identity(provenance(sub_owner)),
+            provenance(sub_owner),
+        ))
+        .expect("unique sub-clock");
+
+    let encoded = serde_json::to_value(&partition).expect("partition serializes");
+    let decoded: BaseClockPartition =
+        serde_json::from_value(encoded.clone()).expect("partition reconstructs");
+    assert_eq!(decoded.id(), 8);
+    assert_eq!(decoded.source_span(), owner);
+    assert_eq!(
+        decoded.variable_span(&VarName::new("x")),
+        Some(variable_span)
+    );
+    assert_eq!(decoded.equations().len(), 1);
+    assert_eq!(decoded.sub_partitions()[0].id(), 3);
+
+    let mut missing_owner = encoded.clone();
+    missing_owner["source_span"] =
+        serde_json::to_value(Span::DUMMY).expect("dummy span serializes");
+    let error = serde_json::from_value::<BaseClockPartition>(missing_owner)
+        .expect_err("missing aggregate provenance must fail");
+    assert!(
+        error
+            .to_string()
+            .contains("missing source provenance for Flat base-clock partition owner")
+    );
+
+    let mut duplicate_sub_id = encoded.clone();
+    let first_sub = duplicate_sub_id["sub_partitions"][0].clone();
+    duplicate_sub_id["sub_partitions"]
+        .as_array_mut()
+        .expect("sub-partitions are an array")
+        .push(first_sub);
+    let error = serde_json::from_value::<BaseClockPartition>(duplicate_sub_id)
+        .expect_err("duplicate wire sub-clock IDs must fail");
+    assert!(
+        error
+            .to_string()
+            .contains("duplicate sub-clock partition id")
+    );
+
+    let mut missing_equation_provenance = encoded.clone();
+    missing_equation_provenance["equations"][0]["span"] =
+        serde_json::to_value(Span::DUMMY).expect("dummy span serializes");
+    let error = serde_json::from_value::<BaseClockPartition>(missing_equation_provenance)
+        .expect_err("equations without provenance must fail");
+    assert!(
+        error
+            .to_string()
+            .contains("missing source provenance for Flat base-clock partition equation")
+    );
+
+    let mut legacy_shape = encoded;
+    legacy_shape["is_discretized"] = serde_json::Value::Bool(false);
+    let error = serde_json::from_value::<BaseClockPartition>(legacy_shape)
+        .expect_err("legacy public-field wire shape must fail");
+    assert!(error.to_string().contains("unknown field"));
 }
