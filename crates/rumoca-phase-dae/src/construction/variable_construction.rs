@@ -244,6 +244,7 @@ fn lower_derived_parameter_binding<'dae>(
         shapes: functions.shapes.model_values(),
         function_body: None,
         values: None,
+        owner_clock: None,
     };
     let body = lower_expression_scoped(construction, symbols, &binders, &plan.body, None)?;
     let generated =

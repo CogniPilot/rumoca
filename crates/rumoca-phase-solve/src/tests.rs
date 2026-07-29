@@ -771,6 +771,76 @@ fn pre_discrete_value_loads_a_distinct_bound_history_lane() {
 }
 
 #[test]
+fn previous_loads_history_owned_by_its_exact_clock_schedule() {
+    let source = TestSource::new(
+        "discrete Real x; Clock c=Clock(0.1); when c then x=previous(x)+1; end when;",
+    );
+    let declaration = source.at(0, 15);
+    let clock_at = source.at(25, 35);
+    let condition_at = source.at(42, 43);
+    let owner = source.at(49, 64);
+    let lattice = rumoca_core::ClockLattice::from_interval_counter(1, 10).unwrap();
+    let model = dae::Dae::construct(source.map, |model| {
+        let real = model.types(|types| {
+            types.intern(
+                TypeId::new(0),
+                dae::ValueType::scalar(dae::ScalarType::Real),
+                declaration,
+            )
+        })?;
+        let variable = model.variables(|variables| {
+            variables.discrete_real(
+                VarName::new("x"),
+                real,
+                declaration,
+                dae::VariableAttributes::default(),
+            )
+        })?;
+        let clock = model.clocks(|clocks| clocks.periodic(lattice, clock_at))?;
+        model.clocks(|clocks| clocks.own_discrete_real(clock, variable, owner))?;
+        let condition = model.conditions(|conditions| conditions.reserve(condition_at))?;
+        model.conditions(|conditions| {
+            conditions.define(condition, dae::ConditionInput::Clock(clock), condition_at)
+        })?;
+        let previous =
+            model.temporal(|temporal| temporal.previous_discrete_real(clock, variable, owner))?;
+        let value = model.expressions(|expressions| {
+            let previous = expressions
+                .at(owner)
+                .coordinate(dae::CoordinateInput::Previous(previous))?;
+            let one = expressions.at(owner).literal(dae::DaeLiteral::Real(1.0))?;
+            expressions
+                .at(owner)
+                .binary(dae::BinaryOperator::Add, previous, one)
+        })?;
+        model.events(|events| {
+            events.assign_discrete_real(condition, condition, variable, value, owner)
+        })?;
+        Ok(())
+    })
+    .unwrap();
+
+    let solve = lower_solve_problem(&model).unwrap();
+    let [ordinary_pre, previous] = solve.solve_layout.pre_param_bindings.as_slice() else {
+        panic!("ordinary pre and clock-owned previous history bindings expected");
+    };
+    assert!(ordinary_pre.clock_schedule.is_none());
+    assert_eq!(
+        previous
+            .clock_schedule
+            .as_ref()
+            .expect("previous has its owning periodic schedule")
+            .lattice(),
+        lattice
+    );
+    assert!(
+        solve.discrete.rhs.programs[0]
+            .iter()
+            .any(|operation| matches!(operation, LinearOp::LoadP { index: 2, .. }))
+    );
+}
+
+#[test]
 fn clocked_self_dependent_discrete_residual_fails_before_runtime() {
     let source = TestSource::new("Real d; Clock c=Clock(0.1); d=d+1;");
     let declaration = source.at(0, 6);

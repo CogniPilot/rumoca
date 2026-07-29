@@ -716,7 +716,9 @@ fn expression_contains_pre<'dae>(view: dae::DaeView<'dae>, root: dae::ExprId<'da
         found |= matches!(
             expression.operation(),
             dae::ExpressionOperation::Coordinate(
-                dae::CoordinateView::PreDiscreteReal(_) | dae::CoordinateView::PreDiscreteValue(_)
+                dae::CoordinateView::PreDiscreteReal(_)
+                    | dae::CoordinateView::PreDiscreteValue(_)
+                    | dae::CoordinateView::Previous(_)
             )
         );
     });

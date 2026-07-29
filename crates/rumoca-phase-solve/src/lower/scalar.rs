@@ -661,7 +661,19 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 span,
             ));
         }
-        let slot = if let Some(variable) = pre_coordinate_variable(coordinate) {
+        let slot = if let dae::CoordinateView::Previous(previous_id) = coordinate {
+            let previous = self
+                .view
+                .previous(previous_id)
+                .expect("checked previous identity resolves");
+            if self.active_clock != Some(previous.clock()) {
+                return Err(LowerError::non_computable(
+                    "previous coordinate escaped its owning clock schedule",
+                    span,
+                ));
+            }
+            previous_value_scalar_slot(self.layout, previous_id.index(), scalar, span)?
+        } else if let Some(variable) = pre_coordinate_variable(coordinate) {
             pre_variable_scalar_slot(self.layout, variable, scalar, span)?
         } else {
             let variable = coordinate_variable(coordinate).ok_or_else(|| {

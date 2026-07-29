@@ -1310,14 +1310,10 @@ fn validate_known_function_calls(
                     *span,
                 ));
             }
-        } else if name.as_str() == "Clock" {
-            if args.len() != 1 {
-                return Err(ToDaeError::unsupported_runtime_operator(
-                    "Clock",
-                    "the canonical clock proof currently requires Clock(interval)",
-                    *span,
-                ));
-            }
+        } else if let Some(result) =
+            validate_intrinsic_function_call(name.as_str(), args.len(), *span)
+        {
+            result?;
         } else {
             let function = flat
                 .functions
@@ -1341,6 +1337,28 @@ fn validate_known_function_calls(
         validate_known_function_calls(child, flat)?;
     }
     Ok(())
+}
+
+fn validate_intrinsic_function_call(
+    name: &str,
+    arity: usize,
+    span: Span,
+) -> Option<Result<(), ToDaeError>> {
+    let valid = match name {
+        "Clock" | "previous" | "hold" | "noClock" => arity == 1,
+        "subSample" | "superSample" => arity == 2,
+        "shiftSample" | "backSample" => matches!(arity, 2 | 3),
+        _ => return None,
+    };
+    Some(if valid {
+        Ok(())
+    } else {
+        Err(ToDaeError::unsupported_runtime_operator(
+            name,
+            format!("invalid intrinsic arity {arity}"),
+            span,
+        ))
+    })
 }
 
 fn validate_variable(

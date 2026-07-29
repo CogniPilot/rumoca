@@ -223,6 +223,53 @@ end AmbiguousClockOwner;
     );
 }
 
+#[test]
+fn previous_is_clock_owned_provenance_bearing_and_simulatable() {
+    let source = r#"
+model PreviousCounter
+  Clock c = Clock(0.1);
+  Real x(start = 0);
+equation
+  when c then
+    x = previous(x) + 1;
+  end when;
+end PreviousCounter;
+"#;
+    let compiled = rumoca::Compiler::new()
+        .model("PreviousCounter")
+        .compile_str(source, "previous_counter.mo")
+        .expect("typed previous history should compile through Solve IR");
+    compiled.dae.inspect(|view| {
+        assert_eq!(view.previous_value_count(), 1);
+        let previous = view
+            .previous(view.previous_id(0).expect("one branded previous identity"))
+            .expect("previous identity resolves");
+        let clock = view
+            .clock(previous.clock())
+            .expect("previous retains its owning clock");
+        assert!(matches!(
+            clock.operation(),
+            rumoca_ir_dae::ClockOperation::Periodic(_)
+        ));
+        assert!(
+            view.source_text(previous.provenance())
+                .is_some_and(|text| text.starts_with("previous(")),
+            "previous provenance must resolve to its source call occurrence"
+        );
+    });
+
+    let result = simulate_dae(
+        &compiled.dae,
+        &SimOptions {
+            t_end: 0.2,
+            dt: Some(0.1),
+            ..SimOptions::default()
+        },
+    )
+    .expect("clock-owned previous history should be runtime computable");
+    assert_eq!(trace_values(&result, "x"), &[1.0, 2.0, 3.0]);
+}
+
 fn assert_canonical_clock_ownership(model: &rumoca_ir_dae::Dae) {
     model.inspect(|view| {
         assert_eq!(

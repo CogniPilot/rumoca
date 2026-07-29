@@ -18,6 +18,11 @@ pub(super) fn validate_when_clauses(
             constants,
             sample_lattices,
         )?;
+        let clocked = matches!(
+            &clause.condition,
+            Expression::VarRef { name, .. }
+                if matches!(roles.get(name.var_name()), Some(PlannedRole::Clock))
+        );
         validate_when_equations(
             &clause.equations,
             roles,
@@ -25,6 +30,7 @@ pub(super) fn validate_when_clauses(
             constants,
             sample_lattices,
             &mut reinit_state_pre,
+            clocked,
         )?;
     }
     Ok(reinit_state_pre)
@@ -37,6 +43,7 @@ fn validate_when_equations(
     constants: &EvalContext,
     sample_lattices: &mut Vec<(Span, ClockLattice)>,
     reinit_state_pre: &mut HashSet<Span>,
+    clocked: bool,
 ) -> Result<(), ToDaeError> {
     for equation in equations {
         require_span(equation.span(), "when equation")?;
@@ -46,7 +53,7 @@ fn validate_when_equations(
                 value,
                 span,
                 ..
-            } => validate_assignment(target, value, *span, roles, states)?,
+            } => validate_assignment(target, value, *span, roles, states, clocked)?,
             flat::WhenEquation::Reinit {
                 state, value, span, ..
             } => validate_reinitialization(state, value, *span, roles, states, reinit_state_pre)?,
@@ -85,6 +92,7 @@ fn validate_when_equations(
                         constants,
                         sample_lattices,
                         reinit_state_pre,
+                        clocked,
                     )?;
                 }
                 validate_when_equations(
@@ -94,6 +102,7 @@ fn validate_when_equations(
                     constants,
                     sample_lattices,
                     reinit_state_pre,
+                    clocked,
                 )?;
             }
             flat::WhenEquation::FunctionCallOutputs { span, .. } => {
@@ -114,6 +123,7 @@ fn validate_assignment(
     span: Span,
     roles: &HashMap<VarName, PlannedRole>,
     states: &HashSet<VarName>,
+    clocked: bool,
 ) -> Result<(), ToDaeError> {
     if !matches!(
         roles.get(target),
@@ -125,7 +135,57 @@ fn validate_assignment(
             span,
         ));
     }
+    validate_clocked_temporal_expressions(value, roles, clocked)?;
     validate_expression(value, roles, states)
+}
+
+fn validate_clocked_temporal_expressions(
+    expression: &Expression,
+    roles: &HashMap<VarName, PlannedRole>,
+    clocked: bool,
+) -> Result<(), ToDaeError> {
+    if let Expression::FunctionCall {
+        name, args, span, ..
+    } = expression
+        && name.as_str() == "previous"
+    {
+        if !clocked {
+            return Err(ToDaeError::unsupported_runtime_operator(
+                "previous",
+                "requires an owning clocked when-clause",
+                *span,
+            ));
+        }
+        let [argument] = args.as_slice() else {
+            return Err(ToDaeError::unsupported_runtime_operator(
+                "previous",
+                "requires exactly one coordinate operand",
+                *span,
+            ));
+        };
+        let Some((coordinate, _)) = derivative_reference(argument) else {
+            return Err(ToDaeError::unsupported_runtime_operator(
+                "previous",
+                "requires a direct component expression",
+                *span,
+            ));
+        };
+        if !matches!(
+            roles.get(coordinate.var_name()),
+            Some(PlannedRole::DiscreteReal | PlannedRole::DiscreteValue)
+        ) {
+            return Err(ToDaeError::unsupported_runtime_operator(
+                "previous",
+                "requires a clocked discrete coordinate",
+                *span,
+            ));
+        }
+        return Ok(());
+    }
+    for child in expression_children(expression) {
+        validate_clocked_temporal_expressions(child, roles, clocked)?;
+    }
+    Ok(())
 }
 
 fn validate_reinitialization(

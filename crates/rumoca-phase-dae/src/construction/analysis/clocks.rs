@@ -30,6 +30,7 @@ pub(super) fn analyze_clocks(
     let mut plans = HashMap::new();
     let mut aliases = Vec::new();
     let mut equation_rows = HashSet::new();
+    derive_bound_clock_plans(flat, constants, &clock_names, &mut plans)?;
     for (row, equation) in flat.equations.iter().enumerate() {
         let Some((lhs, rhs)) = subtraction_operands(&equation.residual) else {
             if expression_mentions_clock(&equation.residual, &clock_names) {
@@ -71,6 +72,144 @@ pub(super) fn analyze_clocks(
         equation_rows,
         sampled_values,
     })
+}
+
+fn derive_bound_clock_plans(
+    flat: &flat::Model,
+    constants: &EvalContext,
+    clock_names: &HashSet<VarName>,
+    plans: &mut HashMap<VarName, ClockPlan>,
+) -> Result<(), ToDaeError> {
+    for _ in 0..clock_names.len() {
+        let mut progress = false;
+        for name in clock_names {
+            if plans.contains_key(name) {
+                continue;
+            }
+            let Some(binding) = flat.variables[name].binding.as_ref() else {
+                continue;
+            };
+            let Some(plan) = bound_clock_plan(binding, constants, clock_names, plans)? else {
+                continue;
+            };
+            insert_plan(plans, name, plan, expression_span(binding)?)?;
+            progress = true;
+        }
+        if !progress {
+            break;
+        }
+    }
+    Ok(())
+}
+
+fn bound_clock_plan(
+    expression: &Expression,
+    constants: &EvalContext,
+    clock_names: &HashSet<VarName>,
+    plans: &HashMap<VarName, ClockPlan>,
+) -> Result<Option<ClockPlan>, ToDaeError> {
+    if let Some(plan) = periodic_constructor(expression, constants)? {
+        return Ok(Some(plan));
+    }
+    if let Some(name) = whole_clock_reference(expression, clock_names) {
+        return Ok(plans.get(name).copied());
+    }
+    let Expression::FunctionCall {
+        name, args, span, ..
+    } = expression
+    else {
+        return Err(ToDaeError::unsupported_flat(
+            "clock ownership proof",
+            "a Clock binding must be a constructor, alias, or exact derived clock",
+            expression_span(expression)?,
+        ));
+    };
+    let operator = name.as_str();
+    let Some(source) = args.first() else {
+        return Err(invalid_clock_operator(
+            operator,
+            "requires a source clock",
+            *span,
+        ));
+    };
+    let Some(source_name) = whole_clock_reference(source, clock_names) else {
+        return Err(invalid_clock_operator(
+            operator,
+            "requires a whole Clock coordinate as its first argument",
+            *span,
+        ));
+    };
+    let Some(source_plan) = plans.get(source_name).copied() else {
+        return Ok(None);
+    };
+    let lattice = match (operator, args.as_slice()) {
+        ("subSample", [_, factor]) => source_plan
+            .lattice
+            .sub_sample(clock_integer(factor, constants, operator, *span)?),
+        ("superSample", [_, factor]) => source_plan
+            .lattice
+            .super_sample(clock_integer(factor, constants, operator, *span)?),
+        ("shiftSample", [_, counter]) => source_plan
+            .lattice
+            .shift_sample(clock_integer(counter, constants, operator, *span)?, 1),
+        ("shiftSample", [_, counter, resolution]) => source_plan.lattice.shift_sample(
+            clock_integer(counter, constants, operator, *span)?,
+            clock_integer(resolution, constants, operator, *span)?,
+        ),
+        ("backSample", [_, counter]) => source_plan
+            .lattice
+            .back_sample(clock_integer(counter, constants, operator, *span)?, 1),
+        ("backSample", [_, counter, resolution]) => source_plan.lattice.back_sample(
+            clock_integer(counter, constants, operator, *span)?,
+            clock_integer(resolution, constants, operator, *span)?,
+        ),
+        ("noClock", [_]) => {
+            return Err(invalid_clock_operator(
+                operator,
+                "has no exact periodic lattice for checked clock ownership",
+                *span,
+            ));
+        }
+        ("subSample" | "superSample" | "shiftSample" | "backSample" | "noClock", _) => {
+            return Err(invalid_clock_operator(
+                operator,
+                "has invalid clock conversion arity",
+                *span,
+            ));
+        }
+        _ => {
+            return Err(ToDaeError::unresolved_reference(operator, *span));
+        }
+    }
+    .map_err(|error| {
+        ToDaeError::unsupported_runtime_operator(operator, error.to_string(), *span)
+    })?;
+    Ok(Some(ClockPlan {
+        lattice,
+        constructor_span: *span,
+    }))
+}
+
+fn clock_integer(
+    expression: &Expression,
+    constants: &EvalContext,
+    operator: &str,
+    span: Span,
+) -> Result<i64, ToDaeError> {
+    eval_expr(expression, constants)
+        .ok()
+        .and_then(|value| value.as_integer())
+        .ok_or_else(|| {
+            invalid_clock_operator(
+                operator,
+                "requires parameter-evaluable Integer conversion arguments",
+                span,
+            )
+        })
+}
+
+fn invalid_clock_operator(operator: &str, detail: &str, span: Span) -> ToDaeError {
+    ToDaeError::unsupported_runtime_operator(operator, detail, span)
 }
 
 fn analyze_sampled_values(

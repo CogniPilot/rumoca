@@ -47,7 +47,6 @@ pub(crate) fn lower_solve_problem<'dae>(
 
 fn reject_unimplemented_systems(view: dae::DaeView<'_>) -> Result<(), LowerError> {
     let unsupported = [
-        (view.previous_value_count(), "previous-value history"),
         (view.terminal_count(), "terminal coordinates"),
         (view.delay_count(), "transport delays"),
     ];
@@ -1337,6 +1336,25 @@ pub(super) fn pre_variable_scalar_slot(
     let index = base
         .checked_add(scalar)
         .ok_or_else(|| LowerError::contract("pre variable scalar layout overflow", span))?;
+    Ok(solve::scalar_slot_p(index))
+}
+
+pub(super) fn previous_value_scalar_slot(
+    layout: &LoweredLayout<'_>,
+    previous: u32,
+    scalar: usize,
+    span: Span,
+) -> Result<solve::ScalarSlot, LowerError> {
+    let base = layout
+        .previous_values
+        .get(previous as usize)
+        .copied()
+        .ok_or_else(|| {
+            LowerError::contract("previous value has no Solve history layout entry", span)
+        })?;
+    let index = base
+        .checked_add(scalar)
+        .ok_or_else(|| LowerError::contract("previous-value scalar layout overflow", span))?;
     Ok(solve::scalar_slot_p(index))
 }
 
