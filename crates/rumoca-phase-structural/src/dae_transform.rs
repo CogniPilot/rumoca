@@ -301,6 +301,8 @@ fn rebuild_holonomic_constraint(
             let domains = rebuild_domains(source, target)?;
             let mut variables = reserve_variables(source, target, &types, None)?;
             let conditions = reserve_conditions(source, target)?;
+            let clocks = rebuild_clocks(source, target, &variables, &conditions)?;
+            let temporal = rebuild_temporal_coordinates(source, target, &variables, &clocks)?;
             let derivative_definitions = explicit_derivative_definitions(source);
             let (expressions, replacement) = target.expressions(|expressions| {
                 let mut rebuilder = ExpressionRebuilder::new(
@@ -311,6 +313,8 @@ fn rebuild_holonomic_constraint(
                         variables: &variables,
                         domains: &domains,
                         conditions: &conditions,
+                        previous: &temporal.previous,
+                        terminals: &temporal.terminals,
                     },
                     &derivative_definitions,
                     None,
@@ -335,9 +339,12 @@ fn rebuild_holonomic_constraint(
                 source,
                 target,
                 &expressions,
-                &variables,
-                &domains,
-                &conditions,
+                RebuiltOwnerIdentities {
+                    variables: &variables,
+                    domains: &domains,
+                    conditions: &conditions,
+                    clocks: &clocks,
+                },
                 Some((constraint.residual, replacement)),
             )
         })
@@ -361,6 +368,8 @@ fn rebuild_with_state_demotion(
             let domains = rebuild_domains(source, target)?;
             let mut variables = reserve_variables(source, target, &types, Some(candidate.state))?;
             let conditions = reserve_conditions(source, target)?;
+            let clocks = rebuild_clocks(source, target, &variables, &conditions)?;
+            let temporal = rebuild_temporal_coordinates(source, target, &variables, &clocks)?;
             let derivative_definitions = explicit_derivative_definitions(source);
             let expressions = target.expressions(|expressions| {
                 let mut rebuilder = ExpressionRebuilder::new(
@@ -371,6 +380,8 @@ fn rebuild_with_state_demotion(
                         variables: &variables,
                         domains: &domains,
                         conditions: &conditions,
+                        previous: &temporal.previous,
+                        terminals: &temporal.terminals,
                     },
                     &derivative_definitions,
                     Some(candidate),
@@ -382,9 +393,12 @@ fn rebuild_with_state_demotion(
                 source,
                 target,
                 &expressions,
-                &variables,
-                &domains,
-                &conditions,
+                RebuiltOwnerIdentities {
+                    variables: &variables,
+                    domains: &domains,
+                    conditions: &conditions,
+                    clocks: &clocks,
+                },
                 None,
             )
         })
@@ -463,12 +477,7 @@ fn supports_reconstruction(view: dae::DaeView<'_>, candidate: DirectStateConstra
 }
 
 fn supports_common_reconstruction(view: dae::DaeView<'_>) -> bool {
-    let unsupported_owner = view.function_count() != 0
-        || view.clock_count() != 0
-        || view.clock_ownership_count() != 0
-        || view.previous_value_count() != 0
-        || view.terminal_count() != 0
-        || view.delay_count() != 0;
+    let unsupported_owner = view.function_count() != 0 || view.delay_count() != 0;
     if unsupported_owner {
         return false;
     }
@@ -518,6 +527,8 @@ fn supports_common_reconstruction(view: dae::DaeView<'_>) -> bool {
                     | dae::CoordinateView::PreDiscreteReal(_)
                     | dae::CoordinateView::PreDiscreteValue(_)
                     | dae::CoordinateView::Condition(_)
+                    | dae::CoordinateView::Previous(_)
+                    | dae::CoordinateView::Terminal(_)
                     | dae::CoordinateView::Time
                     | dae::CoordinateView::Binder(_)
             ),
@@ -618,6 +629,117 @@ fn reserve_conditions<'target>(
             target.conditions(|conditions| conditions.reserve(condition.provenance()))
         })
         .collect()
+}
+
+fn rebuild_clocks<'target>(
+    source: dae::DaeView<'_>,
+    target: &mut dae::DaeConstruction<'target>,
+    variables: &[ReservedVariable<'target>],
+    conditions: &[dae::ConditionId<'target>],
+) -> Result<Vec<dae::ClockId<'target>>, dae::DaeConstructionError> {
+    let mut clocks = Vec::with_capacity(source.clock_count());
+    for index in 0..source.clock_count() {
+        let id = source
+            .clock_id(index)
+            .expect("finalized clock ordinal resolves");
+        let clock = source.clock(id).expect("finalized clock identity resolves");
+        let rebuilt = target.clocks(|target| match clock.operation() {
+            dae::ClockOperation::Periodic(lattice) => target.periodic(*lattice, clock.provenance()),
+            dae::ClockOperation::Triggered(condition) => {
+                target.triggered(conditions[condition.index() as usize], clock.provenance())
+            }
+        })?;
+        clocks.push(rebuilt);
+    }
+    for index in 0..source.clock_ownership_count() {
+        rebuild_clock_ownership(source, target, variables, &clocks, index)?;
+    }
+    Ok(clocks)
+}
+
+fn rebuild_clock_ownership<'target>(
+    source: dae::DaeView<'_>,
+    target: &mut dae::DaeConstruction<'target>,
+    variables: &[ReservedVariable<'target>],
+    clocks: &[dae::ClockId<'target>],
+    index: usize,
+) -> Result<(), dae::DaeConstructionError> {
+    let id = source
+        .clock_ownership_id(index)
+        .expect("finalized clock ownership ordinal resolves");
+    let ownership = source
+        .clock_ownership(id)
+        .expect("finalized clock ownership identity resolves");
+    let clock = clocks[ownership.clock().index() as usize];
+    target.clocks(|target| match ownership.kind() {
+        dae::ClockedVariableKind::DiscreteReal => {
+            let TargetVariable::DiscreteReal(variable) =
+                variables[ownership.variable().index() as usize].identity
+            else {
+                unreachable!("clock ownership retains its discrete-real role")
+            };
+            target.own_discrete_real(clock, variable, ownership.provenance())
+        }
+        dae::ClockedVariableKind::DiscreteValue => {
+            let TargetVariable::DiscreteValue(variable) =
+                variables[ownership.variable().index() as usize].identity
+            else {
+                unreachable!("clock ownership retains its discrete-value role")
+            };
+            target.own_discrete_value(clock, variable, ownership.provenance())
+        }
+    })?;
+    Ok(())
+}
+
+struct RebuiltTemporal<'dae> {
+    previous: Vec<dae::PreviousId<'dae>>,
+    terminals: Vec<dae::TerminalId<'dae>>,
+}
+
+fn rebuild_temporal_coordinates<'target>(
+    source: dae::DaeView<'_>,
+    target: &mut dae::DaeConstruction<'target>,
+    variables: &[ReservedVariable<'target>],
+    clocks: &[dae::ClockId<'target>],
+) -> Result<RebuiltTemporal<'target>, dae::DaeConstructionError> {
+    let mut previous = Vec::with_capacity(source.previous_value_count());
+    for index in 0..source.previous_value_count() {
+        let id = source
+            .previous_id(index)
+            .expect("finalized previous-value ordinal resolves");
+        let entry = source
+            .previous(id)
+            .expect("finalized previous-value identity resolves");
+        let clock = clocks[entry.clock().index() as usize];
+        let rebuilt = target.temporal(|target| {
+            match variables[entry.variable().index() as usize].identity {
+                TargetVariable::DiscreteReal(variable) => {
+                    target.previous_discrete_real(clock, variable, entry.provenance())
+                }
+                TargetVariable::DiscreteValue(variable) => {
+                    target.previous_discrete_value(clock, variable, entry.provenance())
+                }
+                _ => unreachable!("previous coordinate retains its discrete variable role"),
+            }
+        })?;
+        previous.push(rebuilt);
+    }
+    let terminals = (0..source.terminal_count())
+        .map(|index| {
+            let id = source
+                .terminal_id(index)
+                .expect("finalized terminal ordinal resolves");
+            let entry = source
+                .terminal(id)
+                .expect("finalized terminal identity resolves");
+            target.temporal(|target| target.terminal(entry.provenance()))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(RebuiltTemporal {
+        previous,
+        terminals,
+    })
 }
 
 enum TargetVariable<'dae> {
@@ -765,20 +887,45 @@ fn define_variables<'target>(
     })
 }
 
+struct RebuiltOwnerIdentities<'borrow, 'target> {
+    variables: &'borrow [ReservedVariable<'target>],
+    domains: &'borrow [RebuiltDomain<'target>],
+    conditions: &'borrow [dae::ConditionId<'target>],
+    clocks: &'borrow [dae::ClockId<'target>],
+}
+
 fn rebuild_semantic_owners<'target>(
     source: dae::DaeView<'_>,
     target: &mut dae::DaeConstruction<'target>,
     expressions: &[dae::ExprId<'target>],
-    variables: &[ReservedVariable<'target>],
-    domains: &[RebuiltDomain<'target>],
-    conditions: &[dae::ConditionId<'target>],
+    identities: RebuiltOwnerIdentities<'_, 'target>,
     replacement: Option<(u32, dae::ExprId<'target>)>,
 ) -> Result<(), dae::DaeConstructionError> {
-    rebuild_equations(source, target, expressions, variables, domains, replacement)?;
+    rebuild_equations(
+        source,
+        target,
+        expressions,
+        identities.variables,
+        identities.domains,
+        replacement,
+    )?;
     let relations = rebuild_relations(source, target, expressions)?;
-    define_conditions(source, target, expressions, conditions, &relations)?;
-    rebuild_roots(source, target, conditions, &relations)?;
-    rebuild_events(source, target, expressions, variables, conditions)
+    define_conditions(
+        source,
+        target,
+        expressions,
+        identities.conditions,
+        &relations,
+        identities.clocks,
+    )?;
+    rebuild_roots(source, target, identities.conditions, &relations)?;
+    rebuild_events(
+        source,
+        target,
+        expressions,
+        identities.variables,
+        identities.conditions,
+    )
 }
 
 fn rebuild_relations<'target>(
@@ -810,6 +957,7 @@ fn define_conditions<'target>(
     expressions: &[dae::ExprId<'target>],
     conditions: &[dae::ConditionId<'target>],
     relations: &[dae::RelationId<'target>],
+    clocks: &[dae::ClockId<'target>],
 ) -> Result<(), dae::DaeConstructionError> {
     for (index, target_id) in conditions.iter().copied().enumerate() {
         let source_id = source
@@ -837,8 +985,8 @@ fn define_conditions<'target>(
                 conditions[lhs.index() as usize],
                 conditions[rhs.index() as usize],
             ),
-            dae::ConditionOperation::Clock(_) => {
-                unreachable!("reconstruction preflight rejects clocks")
+            dae::ConditionOperation::Clock(id) => {
+                dae::ConditionInput::Clock(clocks[id.index() as usize])
             }
         };
         target
@@ -1096,6 +1244,8 @@ struct ExpressionRebuilder<'source, 'borrow, 'storage, 'target> {
     variables: &'borrow [ReservedVariable<'target>],
     domains: &'borrow [RebuiltDomain<'target>],
     conditions: &'borrow [dae::ConditionId<'target>],
+    previous: &'borrow [dae::PreviousId<'target>],
+    terminals: &'borrow [dae::TerminalId<'target>],
     derivative_definitions: &'borrow [Option<u32>],
     candidate: Option<DirectStateConstraint>,
     rebuilt: Vec<Option<dae::ExprId<'target>>>,
@@ -1107,6 +1257,8 @@ struct RebuiltIdentities<'borrow, 'target> {
     variables: &'borrow [ReservedVariable<'target>],
     domains: &'borrow [RebuiltDomain<'target>],
     conditions: &'borrow [dae::ConditionId<'target>],
+    previous: &'borrow [dae::PreviousId<'target>],
+    terminals: &'borrow [dae::TerminalId<'target>],
 }
 
 impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 'storage, 'target> {
@@ -1124,6 +1276,8 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             variables: identities.variables,
             domains: identities.domains,
             conditions: identities.conditions,
+            previous: identities.previous,
+            terminals: identities.terminals,
             derivative_definitions,
             candidate,
             rebuilt: vec![None; source.expression_count()],
@@ -1349,6 +1503,38 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                 }
             }
             dae::CoordinateView::Time => dae::CoordinateInput::Time,
+            discrete @ (dae::CoordinateView::DiscreteReal(_)
+            | dae::CoordinateView::DiscreteValue(_)
+            | dae::CoordinateView::PreDiscreteReal(_)
+            | dae::CoordinateView::PreDiscreteValue(_)) => {
+                return self.rebuild_discrete_coordinate(discrete, provenance);
+            }
+            dae::CoordinateView::Condition(source) => {
+                dae::CoordinateInput::Condition(self.conditions[source.index() as usize])
+            }
+            dae::CoordinateView::Previous(source) => {
+                dae::CoordinateInput::Previous(self.previous[source.index() as usize])
+            }
+            dae::CoordinateView::Terminal(source) => {
+                dae::CoordinateInput::Terminal(self.terminals[source.index() as usize])
+            }
+            dae::CoordinateView::Binder(binder) => {
+                return self.target.at(provenance).binder(
+                    self.domains[binder.domain().index() as usize].binders
+                        [binder.ordinal() as usize],
+                );
+            }
+            _ => unreachable!("reconstruction preflight rejects this coordinate"),
+        };
+        self.target.at(provenance).coordinate(coordinate)
+    }
+
+    fn rebuild_discrete_coordinate(
+        &mut self,
+        coordinate: dae::CoordinateView<'source>,
+        provenance: dae::DaeProvenance,
+    ) -> Result<dae::ExprId<'target>, dae::DaeConstructionError> {
+        let coordinate = match coordinate {
             dae::CoordinateView::DiscreteReal(source) => {
                 let TargetVariable::DiscreteReal(target) =
                     self.variables[source.index() as usize].identity
@@ -1381,16 +1567,7 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                 };
                 dae::CoordinateInput::PreDiscreteValue(target)
             }
-            dae::CoordinateView::Condition(source) => {
-                dae::CoordinateInput::Condition(self.conditions[source.index() as usize])
-            }
-            dae::CoordinateView::Binder(binder) => {
-                return self.target.at(provenance).binder(
-                    self.domains[binder.domain().index() as usize].binders
-                        [binder.ordinal() as usize],
-                );
-            }
-            _ => unreachable!("reconstruction preflight rejects this coordinate"),
+            _ => unreachable!("caller passes a discrete coordinate"),
         };
         self.target.at(provenance).coordinate(coordinate)
     }

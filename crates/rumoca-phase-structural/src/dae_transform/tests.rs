@@ -28,6 +28,7 @@ struct FixtureFeatures {
     family: bool,
     discrete: bool,
     events: bool,
+    clocks: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -349,6 +350,49 @@ fn insert_fixture_events<'dae>(
     })
 }
 
+fn insert_fixture_clock<'dae>(
+    model: &mut dae::DaeConstruction<'dae>,
+    variables: FixtureVariables<'dae>,
+    source: rumoca_core::SourceId,
+    text: &str,
+    enabled: bool,
+) -> Result<(), dae::DaeConstructionError> {
+    if !enabled {
+        return Ok(());
+    }
+    let clock_at = source_provenance(source, text, "Clock(1, 10)");
+    let previous_at = source_provenance(source, text, "previous(d)");
+    let terminal_at = source_provenance(source, text, "terminal()");
+    let condition = model.conditions(|conditions| conditions.reserve(clock_at))?;
+    let clock = model.clocks(|clocks| {
+        let lattice = rumoca_core::ClockLattice::from_interval_counter(1, 10)
+            .expect("fixture clock has a positive exact period");
+        clocks.periodic(lattice, clock_at)
+    })?;
+    let d = variables
+        .d
+        .expect("clock fixture requires a discrete-real variable");
+    model.clocks(|clocks| clocks.own_discrete_real(clock, d, clock_at))?;
+    let previous =
+        model.temporal(|temporal| temporal.previous_discrete_real(clock, d, previous_at))?;
+    let terminal = model.temporal(|temporal| temporal.terminal(terminal_at))?;
+    model.conditions(|conditions| {
+        conditions.define(condition, dae::ConditionInput::Clock(clock), clock_at)
+    })?;
+    model.expressions(|expressions| {
+        expressions
+            .at(previous_at)
+            .coordinate(dae::CoordinateInput::Previous(previous))?;
+        expressions
+            .at(terminal_at)
+            .coordinate(dae::CoordinateInput::Terminal(terminal))?;
+        expressions
+            .at(clock_at)
+            .coordinate(dae::CoordinateInput::Condition(condition))?;
+        Ok(())
+    })
+}
+
 fn constrained_state_model(
     nonlinear_constraint: bool,
     features: FixtureFeatures,
@@ -379,8 +423,13 @@ fn constrained_state_model(
     } else {
         ""
     };
+    let clock_equations = if features.clocks {
+        " Clock(1, 10); previous(d); terminal();"
+    } else {
+        ""
+    };
     let text = format!(
-        "parameter Real p; Real x; Real y; Real a;{family_declaration}{discrete_declaration} equation x = {rhs}; der(y) = a; der(x) = 1;{family_equation}{discrete_equations}{event_equations}"
+        "parameter Real p; Real x; Real y; Real a;{family_declaration}{discrete_declaration} equation x = {rhs}; der(y) = a; der(x) = 1;{family_equation}{discrete_equations}{event_equations}{clock_equations}"
     );
     let mut sources = SourceMap::new();
     let source = sources.add("checked_index_reduction.mo", &text);
@@ -401,6 +450,7 @@ fn constrained_state_model(
         let (real, vector, boolean) = fixture_types(model, declaration)?;
         let domain = fixture_domain(model, family_owner)?;
         let variables = fixture_variables(model, real, vector, boolean, declaration, features)?;
+        insert_fixture_clock(model, variables, source, &text, features.clocks)?;
         let spans = FixtureSpans {
             constraint,
             derivative_y,
@@ -685,6 +735,70 @@ fn state_demotion_preserves_conditions_roots_and_event_owners() {
             })
             .count();
         assert_eq!(condition_coordinates, 1);
+        assert!(
+            sort(view).is_ok(),
+            "replacement DAE remains structurally square"
+        );
+    });
+}
+
+#[test]
+fn state_demotion_preserves_clock_history_and_terminal_owners() {
+    let (model, _) = constrained_state_model(
+        false,
+        FixtureFeatures {
+            discrete: true,
+            clocks: true,
+            ..FixtureFeatures::default()
+        },
+    );
+    let prepared = prepare_for_solve(&model).expect("clock companion owners survive");
+    let transformed = match prepared {
+        PreparedDae::Transformed { dae, .. } => dae,
+        PreparedDae::Borrowed(_) => panic!("singular fixture requires state demotion"),
+    };
+    transformed.inspect(|view| {
+        assert_eq!(view.clock_count(), 1);
+        assert_eq!(view.clock_ownership_count(), 1);
+        assert_eq!(view.previous_value_count(), 1);
+        assert_eq!(view.terminal_count(), 1);
+        let clock_id = view.clock_id(0).expect("clock identity survives");
+        let clock = view.clock(clock_id).expect("clock survives reconstruction");
+        assert_eq!(view.source_text(clock.provenance()), Some("Clock(1, 10)"));
+        assert!(matches!(
+            clock.operation(),
+            dae::ClockOperation::Periodic(lattice)
+                if lattice.period()
+                    == rumoca_core::ClockRational::new(1, 10)
+                        .expect("expected period is positive")
+        ));
+        let previous_id = view
+            .previous_id(0)
+            .expect("previous coordinate identity survives");
+        let previous = view
+            .previous(previous_id)
+            .expect("previous owner survives reconstruction");
+        assert_eq!(view.source_text(previous.provenance()), Some("previous(d)"));
+        let terminal_id = view
+            .terminal_id(0)
+            .expect("terminal coordinate identity survives");
+        let terminal = view
+            .terminal(terminal_id)
+            .expect("terminal owner survives reconstruction");
+        assert_eq!(view.source_text(terminal.provenance()), Some("terminal()"));
+        let temporal_coordinates = (0..view.expression_count())
+            .filter_map(|index| view.expression_id(index))
+            .filter_map(|id| view.expression(id))
+            .filter(|expression| {
+                matches!(
+                    expression.operation(),
+                    dae::ExpressionOperation::Coordinate(
+                        dae::CoordinateView::Previous(_) | dae::CoordinateView::Terminal(_)
+                    )
+                )
+            })
+            .count();
+        assert_eq!(temporal_coordinates, 2);
         assert!(
             sort(view).is_ok(),
             "replacement DAE remains structurally square"
