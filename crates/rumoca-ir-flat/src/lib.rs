@@ -147,14 +147,14 @@ pub struct Model {
     /// Potential roots from Connections.potentialRoot(a, priority) calls (MLS §9.4).
     #[serde(default)]
     pub potential_roots: Vec<(String, i64)>,
-    /// Names of top-level components whose class type is `connector` (MLS §4.7).
+    /// Names of public top-level components whose class type is `connector` (MLS §4.7).
     /// Per MLS §4.7, only flow variables in top-level public connector components
     /// count toward the local equation size for balance checking. Components of
     /// type `model` or `block` (like Delta in transformers) are NOT interface
     /// connectors even if they contain connectors internally.
     #[serde(default)]
     pub top_level_connectors: IndexSet<String>,
-    /// Names of top-level components declared with `input` causality.
+    /// Names of public top-level components declared with `input` causality.
     /// Fields of these components (e.g., `state.phase` from `input Record state`)
     /// are external inputs and should NOT be promoted to algebraic unknowns,
     /// unlike sub-component inputs from type interfaces (MLS §4.4.2.2).

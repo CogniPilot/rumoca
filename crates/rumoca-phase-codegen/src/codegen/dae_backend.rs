@@ -617,6 +617,7 @@ fn project_conditions(view: dae::DaeView<'_>) -> Value {
 
 fn project_condition_operation(operation: dae::ConditionOperation<'_>) -> Value {
     match operation {
+        dae::ConditionOperation::Initial => json!({ "kind": "initial" }),
         dae::ConditionOperation::Relation(id) => {
             json!({ "kind": "relation", "relation": id.index() })
         }

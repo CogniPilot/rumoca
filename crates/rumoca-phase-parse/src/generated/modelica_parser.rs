@@ -8100,12 +8100,12 @@ pub const PRODUCTIONS: &[Production; 519] = &[
         lhs: 67,
         production: &[ParseType::N(140), ParseType::T(83)],
     },
-    // 316 - component_statementGroup: function_call_args : crate::ExpressionList ;
+    // 316 - component_statementGroup: function_call_args : crate::FunctionCallArguments ;
     Production {
         lhs: 67,
         production: &[ParseType::N(176)],
     },
-    // 317 - function_call_output_statement: '('^ /* Clipped */ output_expression_list : crate::ExpressionList  ')'^ /* Clipped */ ':='^ /* Clipped */ component_reference : rumoca_ir_ast::ComponentReference  function_call_args : crate::ExpressionList ;
+    // 317 - function_call_output_statement: '('^ /* Clipped */ output_expression_list : crate::ExpressionList  ')'^ /* Clipped */ ':='^ /* Clipped */ component_reference : rumoca_ir_ast::ComponentReference  function_call_args : crate::FunctionCallArguments ;
     Production {
         lhs: 178,
         production: &[
@@ -8700,7 +8700,7 @@ pub const PRODUCTIONS: &[Production; 519] = &[
         lhs: 57,
         production: &[ParseType::N(58), ParseType::N(62)],
     },
-    // 421 - component_primaryOpt: function_call_args : crate::ExpressionList  component_primaryOpt0 /* Option */;
+    // 421 - component_primaryOpt: function_call_args : crate::FunctionCallArguments  component_primaryOpt0 /* Option */;
     Production {
         lhs: 58,
         production: &[ParseType::N(59), ParseType::N(176)],
@@ -8785,7 +8785,7 @@ pub const PRODUCTIONS: &[Production; 519] = &[
         lhs: 25,
         production: &[],
     },
-    // 436 - global_function_call: global_function_callGroup function_call_args : crate::ExpressionList  global_function_callOpt /* Option */;
+    // 436 - global_function_call: global_function_callGroup function_call_args : crate::FunctionCallArguments  global_function_callOpt /* Option */;
     Production {
         lhs: 182,
         production: &[ParseType::N(184), ParseType::N(176), ParseType::N(183)],
@@ -8910,7 +8910,7 @@ pub const PRODUCTIONS: &[Production; 519] = &[
         lhs: 61,
         production: &[],
     },
-    // 460 - function_call_args: '('^ /* Clipped */ function_call_argsOpt /* Option */ ')'^ /* Clipped */;
+    // 460 - function_call_args: '(' function_call_argsOpt /* Option */ ')';
     Production {
         lhs: 176,
         production: &[ParseType::T(75), ParseType::N(177), ParseType::T(74)],

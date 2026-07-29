@@ -43,7 +43,7 @@ pub(super) fn source_balance(
             EquationPartition::DiscreteReal { .. } => {
                 detail.discrete_real_equations += equation.scalar_count;
             }
-            EquationPartition::DiscreteValue { .. } => {
+            EquationPartition::DiscreteValue(_) => {
                 detail.discrete_assignments += equation.scalar_count;
             }
         }

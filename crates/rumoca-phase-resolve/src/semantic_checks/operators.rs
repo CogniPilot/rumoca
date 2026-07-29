@@ -624,7 +624,7 @@ fn collect_when_equation_targets(
     branch_path: &[u32],
 ) {
     match equation {
-        Equation::FunctionCall { comp, args } => {
+        Equation::FunctionCall { comp, args, .. } => {
             if let Some((target_name, span)) = extract_reinit_target(comp, args) {
                 reinit_targets
                     .entry(target_name)

@@ -1077,6 +1077,11 @@ fn lower_action_guard<'dae>(
         .expect("checked event guard resolves")
         .operation()
     {
+        dae::ConditionOperation::Initial => Err(unsupported(
+            "initial-event-guard",
+            "initial() event actions are outside a periodic DoStep clock".to_owned(),
+            span,
+        )),
         dae::ConditionOperation::Clock(found) if found == expected => Ok(None),
         dae::ConditionOperation::Clock(_) => Err(unsupported(
             "multiple-clock-event-guard",
@@ -1558,7 +1563,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         }
         if matches!(
             builtin,
-            dae::PureBuiltin::Smooth | dae::PureBuiltin::NoEvent
+            dae::PureBuiltin::Smooth | dae::PureBuiltin::NoEvent | dae::PureBuiltin::Homotopy
         ) {
             let ordinal = usize::from(builtin == dae::PureBuiltin::Smooth);
             return self.lower_at(

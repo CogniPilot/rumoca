@@ -260,6 +260,7 @@ fn test_function_call_context_dispatch() {
     let equation_call = Equation::FunctionCall {
         comp: make_comp_ref("f_eq"),
         args: vec![make_int(2)],
+        span: rumoca_core::Span::DUMMY,
     };
     let statement_call = Statement::FunctionCall {
         comp: make_comp_ref("f_stmt"),

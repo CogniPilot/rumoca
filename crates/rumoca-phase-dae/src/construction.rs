@@ -31,10 +31,10 @@ use algorithm::{
     own_clocked_algorithm_targets,
 };
 use analysis::{
-    Analysis, ComprehensionKey, ComprehensionPlan, DerivedParameterPlan, EquationPartition,
-    FunctionArrayAssemblyPlan, FunctionIntegerReduction, FunctionLoopLowering, FunctionPlan,
-    FunctionRecordAssemblyPlan, FunctionStatementPlan, ModelAlgorithmPlan, PlannedRole,
-    RecordArrayFieldPlan, RecordEquationPlan, analyze, defined_discrete_targets,
+    Analysis, ComprehensionKey, ComprehensionPlan, DelayPlan, DerivedParameterPlan,
+    EquationPartition, FunctionArrayAssemblyPlan, FunctionIntegerReduction, FunctionLoopLowering,
+    FunctionPlan, FunctionRecordAssemblyPlan, FunctionStatementPlan, ModelAlgorithmPlan,
+    PlannedRole, RecordArrayFieldPlan, RecordEquationPlan, analyze, defined_discrete_targets,
     effective_variable_scalar_type, equation_partition, primitive_scalar_type,
     structured_assignment_names,
 };
@@ -53,7 +53,9 @@ use function_body::{
     function_value_coordinate, lower_function_conditional, lower_function_fold,
     lower_guarded_function_return, lower_integer_reduction, lower_total_function_array_definition,
 };
-use function_construction::{FunctionRegistry, define_functions, reserve_functions};
+use function_construction::{
+    FunctionRegistry, define_functions, function_value_type, reserve_functions,
+};
 use function_record_assembly::lower_function_record_assembly;
 use function_shapes::{
     FunctionShapeAnalysis, FunctionSpecializationKey, ShapeEnvironment, ValueShape,
@@ -173,6 +175,7 @@ fn build_checked<'dae>(
         comprehension_plans: &analysis.comprehension_plans,
         record_array_fields: &analysis.record_array_fields,
         constants: &analysis.constants,
+        delay_plans: &analysis.delay_plans,
         reinit_state_pre: &analysis.reinit_state_pre,
     };
     let (coordinates, reserved) = reserve_variables(flat, analysis, construction, &value_types)?;
@@ -608,16 +611,21 @@ fn lower_bindings<'dae>(
             continue;
         }
         let coordinate = coordinates[name];
-        if matches!(coordinate, Coordinate::Parameter(_)) {
+        if matches!(coordinate, Coordinate::Parameter(_) | Coordinate::Input(_)) {
             continue;
         }
         let owner_span = binding.span().unwrap_or(variable.source_span);
         let owner = dae::DaeProvenance::generated(dae::DaeGeneration::BindingEquation, owner_span)?;
         let rhs = lower_expression(construction, coordinates, functions, binding, None)?;
         match coordinate {
-            Coordinate::Input(_) => unreachable!("analysis rejects bound inputs"),
             Coordinate::DiscreteValue(target) => {
                 construction.discrete(|discrete| discrete.assignment(owner, target, rhs))?;
+            }
+            Coordinate::Parameter(_)
+            | Coordinate::Input(_)
+            | Coordinate::FunctionParameter(_)
+            | Coordinate::FunctionValue(_) => {
+                unreachable!("non-equation binding coordinates were filtered before lowering")
             }
             coordinate => {
                 lower_residual_binding(construction, coordinate, owner, rhs)?;
@@ -1389,26 +1397,34 @@ fn lower_condition<'dae>(
     Ok((condition, owner_clock))
 }
 
+type LoweredCondition<'dae> = (
+    dae::ConditionId<'dae>,
+    Vec<dae::RelationId<'dae>>,
+    Option<dae::ClockId<'dae>>,
+);
+type LoweredConditionNode<'dae> = (
+    dae::ConditionInput<'dae>,
+    Vec<dae::RelationId<'dae>>,
+    Option<dae::ClockId<'dae>>,
+);
+
 fn lower_condition_tree<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     coordinates: &HashMap<VarName, Coordinate<'dae>>,
     functions: &FunctionRegistry<'_, 'dae>,
     sample_lattices: &[(Span, ClockLattice)],
     expression: &Expression,
-) -> Result<
-    (
-        dae::ConditionId<'dae>,
-        Vec<dae::RelationId<'dae>>,
-        Option<dae::ClockId<'dae>>,
-    ),
-    dae::DaeConstructionError,
-> {
+) -> Result<LoweredCondition<'dae>, dae::DaeConstructionError> {
     let provenance = dae::DaeProvenance::source(
         expression
             .span()
             .expect("analysis proves condition provenance"),
     )?;
     let (input, relations, owner_clock) = match expression {
+        Expression::BuiltinCall {
+            function: BuiltinFunction::Initial,
+            ..
+        } => (dae::ConditionInput::Initial, Vec::new(), None),
         Expression::Unary {
             op: OpUnary::Not,
             rhs,
@@ -1457,14 +1473,7 @@ fn lower_condition_tree<'dae>(
         Expression::BuiltinCall {
             function: BuiltinFunction::Sample,
             ..
-        } => {
-            let lattice = *sample_lattices
-                .iter()
-                .find_map(|(span, lattice)| (*span == provenance.span()).then_some(lattice))
-                .expect("analysis proves every sample condition has an exact clock lattice");
-            let clock = construction.clocks(|clocks| clocks.periodic(lattice, provenance))?;
-            (dae::ConditionInput::Clock(clock), Vec::new(), Some(clock))
-        }
+        } => lower_sample_condition(construction, sample_lattices, provenance)?,
         Expression::BuiltinCall {
             function: BuiltinFunction::Change,
             args,
@@ -1505,6 +1514,19 @@ fn lower_condition_tree<'dae>(
     Ok((condition, relations, owner_clock))
 }
 
+fn lower_sample_condition<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    sample_lattices: &[(Span, ClockLattice)],
+    provenance: dae::DaeProvenance,
+) -> Result<LoweredConditionNode<'dae>, dae::DaeConstructionError> {
+    let lattice = *sample_lattices
+        .iter()
+        .find_map(|(span, lattice)| (*span == provenance.span()).then_some(lattice))
+        .expect("analysis proves every sample condition has an exact clock lattice");
+    let clock = construction.clocks(|clocks| clocks.periodic(lattice, provenance))?;
+    Ok((dae::ConditionInput::Clock(clock), Vec::new(), Some(clock)))
+}
+
 fn lower_binary_condition<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     coordinates: &HashMap<VarName, Coordinate<'dae>>,
@@ -1513,14 +1535,7 @@ fn lower_binary_condition<'dae>(
     operands: (&Expression, &Expression),
     disjunction: bool,
     provenance: dae::DaeProvenance,
-) -> Result<
-    (
-        dae::ConditionInput<'dae>,
-        Vec<dae::RelationId<'dae>>,
-        Option<dae::ClockId<'dae>>,
-    ),
-    dae::DaeConstructionError,
-> {
+) -> Result<LoweredConditionNode<'dae>, dae::DaeConstructionError> {
     let (lhs, rhs) = operands;
     let (lhs, mut relations, lhs_clock) =
         lower_condition_tree(construction, coordinates, functions, sample_lattices, lhs)?;
@@ -1939,10 +1954,19 @@ fn lower_equations<'dae>(
                     system.real_equation(owner, |equation| equation.residual(residual))
                 })?;
             }
-            EquationPartition::DiscreteValue { target, value } => {
-                let value =
-                    lower_expression(construction, coordinates, functions, value, generation)?;
-                let Coordinate::DiscreteValue(target) = coordinates[target] else {
+            EquationPartition::DiscreteValue(plan) => {
+                let value = lower_expression(
+                    construction,
+                    coordinates,
+                    functions,
+                    plan.value.as_ref(),
+                    if plan.generated {
+                        Some(dae::DaeGeneration::DiscreteUpdate)
+                    } else {
+                        generation
+                    },
+                )?;
+                let Coordinate::DiscreteValue(target) = coordinates[plan.target] else {
                     unreachable!("analysis classifies the equation target as discrete-valued")
                 };
                 construction.discrete(|system| system.assignment(owner, target, value))?;

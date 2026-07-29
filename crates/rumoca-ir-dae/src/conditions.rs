@@ -9,6 +9,7 @@ use crate::{
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ConditionNode {
+    Initial,
     Relation(u32),
     Discrete(u32),
     Clock(u32),
@@ -57,6 +58,7 @@ impl<'dae> RelationView<'dae> {
 
 #[derive(Debug, Clone, Copy)]
 pub enum ConditionOperation<'dae> {
+    Initial,
     Relation(RelationId<'dae>),
     Discrete(ExprId<'dae>),
     Clock(ClockId<'dae>),
@@ -104,6 +106,7 @@ impl<'dae> RootView<'dae> {
 
 #[derive(Debug, Clone, Copy)]
 pub enum ConditionInput<'dae> {
+    Initial,
     Relation(RelationId<'dae>),
     Discrete(ExprId<'dae>),
     Clock(ClockId<'dae>),
@@ -214,6 +217,7 @@ impl<'dae> Conditions<'_, 'dae> {
         at: DaeProvenance,
     ) -> Result<ConditionNode, DaeConstructionError> {
         Ok(match input {
+            ConditionInput::Initial => ConditionNode::Initial,
             ConditionInput::Relation(id) => {
                 self.storage
                     .relations

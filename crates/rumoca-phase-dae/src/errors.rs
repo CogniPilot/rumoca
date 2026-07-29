@@ -29,6 +29,17 @@ pub enum ToDaeError {
     #[diagnostic(code(rumoca::todae::ED003))]
     Internal { detail: String },
 
+    #[error("reinit() can only be applied to state variables: {name} is not a state")]
+    #[diagnostic(
+        code(rumoca::todae::ED004),
+        help("MLS §8.3.6 requires the first reinit argument to have a constructor-proven StateId")
+    )]
+    ReinitNonState {
+        name: String,
+        #[label("reinit applied to non-state variable here")]
+        span: Span,
+    },
+
     #[error("Flat semantic owner is missing source provenance: {owner}")]
     #[diagnostic(
         code(rumoca::todae::ED007),
@@ -37,6 +48,19 @@ pub enum ToDaeError {
         )
     )]
     MissingProvenance { owner: String },
+
+    #[error("invalid Appendix B discrete solved form: {detail}")]
+    #[diagnostic(
+        code(rumoca::todae::ED010),
+        help(
+            "discrete-valued equations must be explicit assignments with an acyclic current-value dependency order"
+        )
+    )]
+    DiscreteSolvedFormViolation {
+        detail: String,
+        #[label("invalid discrete solved-form equation")]
+        span: Span,
+    },
 
     #[error("unresolved Flat reference `{name}`")]
     #[diagnostic(
@@ -133,6 +157,20 @@ impl ToDaeError {
         }
     }
 
+    pub fn reinit_non_state(name: impl Into<String>, span: Span) -> Self {
+        Self::ReinitNonState {
+            name: name.into(),
+            span,
+        }
+    }
+
+    pub fn discrete_solved_form_violation(detail: impl Into<String>, span: Span) -> Self {
+        Self::DiscreteSolvedFormViolation {
+            detail: detail.into(),
+            span,
+        }
+    }
+
     pub fn unsupported_algorithm(
         section: impl Into<String>,
         origin: impl Into<String>,
@@ -176,6 +214,8 @@ impl ToDaeError {
     fn diagnostic_source_spans(&self) -> &[Span] {
         match self {
             Self::UnresolvedReference { span, .. }
+            | Self::ReinitNonState { span, .. }
+            | Self::DiscreteSolvedFormViolation { span, .. }
             | Self::UnsupportedAlgorithm { span, .. }
             | Self::UnsupportedRuntimeOperator { span, .. }
             | Self::UnsupportedFlatSemantics { span, .. }
@@ -187,6 +227,12 @@ impl ToDaeError {
 
 impl From<dae::DaeConstructionError> for ToDaeError {
     fn from(source: dae::DaeConstructionError) -> Self {
+        if let dae::DaeConstructionError::InvalidDiscreteDependencyCycle { target, span } = source {
+            return Self::discrete_solved_form_violation(
+                format!("target identity {target} participates in a current-value cycle"),
+                span,
+            );
+        }
         match source.source_span() {
             Some(span) if !span.is_dummy() => Self::Construction { source, span },
             _ => Self::internal(source.to_string()),

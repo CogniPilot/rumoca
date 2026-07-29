@@ -22,17 +22,27 @@ pub(super) struct FunctionShapeAnalysis {
     model_values: ShapeEnvironment,
     certificates: Vec<FunctionShapeCertificate>,
     certificate_by_key: HashMap<FunctionSpecializationKey, usize>,
+    constructor_names: HashSet<VarName>,
+    constructor_fields_by_key: HashMap<FunctionSpecializationKey, Vec<ValueShape>>,
 }
 
 impl FunctionShapeAnalysis {
     pub(super) fn analyze(flat: &flat::Model) -> Result<Self, ToDaeError> {
         let model_values = concrete_model_shapes(flat)?;
+        let constructor_names = flat
+            .functions
+            .values()
+            .filter(|function| function.is_constructor)
+            .map(|function| function.name.clone())
+            .collect();
         let mut analyzer = ShapeAnalyzer {
             flat,
             analysis: Self {
                 model_values,
                 certificates: Vec::new(),
                 certificate_by_key: HashMap::new(),
+                constructor_names,
+                constructor_fields_by_key: HashMap::new(),
             },
         };
         analyzer.discover_model_calls()?;
@@ -45,6 +55,25 @@ impl FunctionShapeAnalysis {
 
     pub(super) fn certificates(&self) -> &[FunctionShapeCertificate] {
         &self.certificates
+    }
+
+    pub(super) fn constructor_field_shapes(
+        &self,
+        name: &rumoca_core::Reference,
+        arguments: &[Expression],
+        values: &ShapeEnvironment,
+    ) -> Option<&[ValueShape]> {
+        let inputs = arguments
+            .iter()
+            .map(|argument| self.expression_shape(argument, values))
+            .collect::<Result<Vec<_>, _>>()
+            .ok()?;
+        self.constructor_fields_by_key
+            .get(&FunctionSpecializationKey {
+                function: name.var_name().clone(),
+                inputs,
+            })
+            .map(Vec::as_slice)
     }
 
     pub(super) fn certificate(
@@ -90,6 +119,9 @@ impl FunctionShapeAnalysis {
         values: &ShapeEnvironment,
     ) -> Result<ValueShape, ToDaeError> {
         let mut resolve = |name: &rumoca_core::Reference, arguments: &[Expression], span: Span| {
+            if self.constructor_names.contains(name.var_name()) {
+                return Ok(Vec::new());
+            }
             let key = self.call_key(name, arguments, values, span)?;
             self.certificate(&key)
                 .and_then(|certificate| certificate.results.first())
@@ -164,6 +196,16 @@ impl ShapeAnalyzer<'_> {
         expression: &Expression,
         values: &ShapeEnvironment,
     ) -> Result<ValueShape, ToDaeError> {
+        if let Expression::FunctionCall {
+            name,
+            args,
+            is_constructor: true,
+            span,
+        } = expression
+            && !name.as_str().starts_with("__rumoca_named_arg__.")
+        {
+            return self.discover_constructor(name, args, *span, values);
+        }
         let mut resolve = |name: &rumoca_core::Reference, arguments: &[Expression], span: Span| {
             let inputs = arguments
                 .iter()
@@ -187,6 +229,63 @@ impl ShapeAnalyzer<'_> {
                 })
         };
         expression_shape(expression, values, &mut resolve)
+    }
+
+    fn discover_constructor(
+        &mut self,
+        name: &rumoca_core::Reference,
+        arguments: &[Expression],
+        span: Span,
+        values: &ShapeEnvironment,
+    ) -> Result<ValueShape, ToDaeError> {
+        let constructor = self
+            .flat
+            .functions
+            .get(name.var_name())
+            .ok_or_else(|| ToDaeError::unresolved_reference(name.as_str(), span))?;
+        if !constructor.is_constructor {
+            return Err(ToDaeError::unsupported_flat(
+                "record constructor",
+                format!("`{}` is not constructor metadata", name.as_str()),
+                span,
+            ));
+        }
+        if constructor.inputs.len() != arguments.len() {
+            return Err(ToDaeError::unsupported_flat(
+                "record constructor",
+                format!(
+                    "`{}` expects {} fields but receives {}",
+                    name.as_str(),
+                    constructor.inputs.len(),
+                    arguments.len()
+                ),
+                span,
+            ));
+        }
+        let mut inputs = Vec::with_capacity(arguments.len());
+        let mut fields = Vec::with_capacity(arguments.len());
+        for (parameter, argument) in constructor.inputs.iter().zip(arguments) {
+            let actual = self.discover_expression(argument, values)?;
+            inputs.push(actual.clone());
+            fields.push(resolve_declared_shape(parameter, Some(&actual), values)?);
+        }
+        let key = FunctionSpecializationKey {
+            function: name.var_name().clone(),
+            inputs,
+        };
+        if let Some(previous) = self
+            .analysis
+            .constructor_fields_by_key
+            .insert(key, fields.clone())
+            && previous != fields
+        {
+            return Err(ToDaeError::unsupported_flat(
+                "record constructor",
+                "one constructor specialization resolved to inconsistent field shapes",
+                span,
+            ));
+        }
+        Ok(Vec::new())
     }
 
     fn ensure_specialization(

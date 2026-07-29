@@ -522,7 +522,7 @@ pub(crate) fn flatten_equation_with_def_map(
             expand_if_equation(ctx, cond_blocks, else_block, prefix, span, &origin, def_map)
         }
 
-        ast::Equation::FunctionCall { comp, args } => {
+        ast::Equation::FunctionCall { comp, args, .. } => {
             flatten_function_call_equation(ctx, comp, args, prefix, span, def_map, &origin)
         }
 

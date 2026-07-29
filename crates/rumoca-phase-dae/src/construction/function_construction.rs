@@ -13,6 +13,7 @@ pub(super) struct FunctionRegistry<'shape, 'dae> {
     pub(super) comprehension_plans: &'shape HashMap<ComprehensionKey, ComprehensionPlan>,
     pub(super) record_array_fields: &'shape HashMap<Span, RecordArrayFieldPlan>,
     pub(super) constants: &'shape EvalContext,
+    pub(super) delay_plans: &'shape HashMap<Span, DelayPlan>,
     pub(super) reinit_state_pre: &'shape HashSet<Span>,
 }
 
@@ -102,7 +103,7 @@ pub(super) fn reserve_functions<'flat, 'dae>(
     Ok((functions, reserved))
 }
 
-fn function_value_type<'dae>(
+pub(super) fn function_value_type<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     flat: &flat::Model,
     value: &rumoca_core::FunctionParam,

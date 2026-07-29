@@ -229,6 +229,7 @@ pub enum PureBuiltin {
     Log10,
     Smooth,
     NoEvent,
+    Homotopy,
     Min,
     Max,
     Sum,
@@ -1745,12 +1746,17 @@ fn builtin_result<'dae>(
     if builtin.has_shaped_result() {
         return shaped_builtin_result(storage, builtin, arguments, &first, at);
     }
-    if !first.scalar_type().is_numeric() && builtin != PureBuiltin::Size {
-        return Err(DaeConstructionError::ExpectedNumeric {
-            found: first.scalar_type(),
-            span: at.span(),
-        });
+    if builtin == PureBuiltin::NoEvent {
+        expect_arity(arguments, 1, at)?;
+        return Ok(first);
     }
+    if builtin == PureBuiltin::Homotopy {
+        return homotopy_result(storage, arguments, first, at);
+    }
+    if builtin == PureBuiltin::Size {
+        return size_result(storage, arguments, first, at);
+    }
+    expect_numeric(first.scalar_type(), at)?;
     match builtin {
         PureBuiltin::Abs
         | PureBuiltin::Sign
@@ -1768,8 +1774,7 @@ fn builtin_result<'dae>(
         | PureBuiltin::Tanh
         | PureBuiltin::Exp
         | PureBuiltin::Log
-        | PureBuiltin::Log10
-        | PureBuiltin::NoEvent => {
+        | PureBuiltin::Log10 => {
             expect_arity(arguments, 1, at)?;
             Ok(first)
         }
@@ -1784,6 +1789,7 @@ fn builtin_result<'dae>(
             expect_arity(arguments, 2, at)?;
             common_value_type(&first, storage.expr_type(arguments[1], at)?, at)
         }
+        PureBuiltin::Homotopy => unreachable!("homotopy returns after checking both branches"),
         PureBuiltin::Smooth => {
             expect_arity(arguments, 2, at)?;
             if !first.is_scalar() || first.scalar_type() != ScalarType::Integer {
@@ -1806,24 +1812,7 @@ fn builtin_result<'dae>(
             }
             Ok(first)
         }
-        PureBuiltin::Size if arguments.len() == 1 => Ok(ValueType::array(
-            ScalarType::Integer,
-            [u32::try_from(first.dimensions().len()).map_err(|_| {
-                DaeConstructionError::CapacityExceeded {
-                    arena: "value type rank",
-                    attempted_index: first.dimensions().len(),
-                    span: at.span(),
-                }
-            })?],
-        )),
-        PureBuiltin::Size => {
-            expect_arity(arguments, 2, at)?;
-            let dimension = storage.expr_type(arguments[1], at)?;
-            if !dimension.is_scalar() || dimension.scalar_type() != ScalarType::Integer {
-                return Err(DaeConstructionError::InvalidSubscript { span: at.span() });
-            }
-            Ok(ValueType::scalar(ScalarType::Integer))
-        }
+        PureBuiltin::Size => unreachable!("size returns after checking its dimension argument"),
         PureBuiltin::Zeros
         | PureBuiltin::Ones
         | PureBuiltin::Fill
@@ -1831,7 +1820,48 @@ fn builtin_result<'dae>(
         | PureBuiltin::Cross => {
             unreachable!("array constructors return before numeric builtins")
         }
+        PureBuiltin::NoEvent => {
+            unreachable!("type-preserving noEvent returns before numeric builtin checks")
+        }
     }
+}
+
+fn homotopy_result(
+    storage: &Storage,
+    arguments: &[ExprId<'_>],
+    actual: ValueType,
+    at: DaeProvenance,
+) -> Result<ValueType, DaeConstructionError> {
+    expect_arity(arguments, 2, at)?;
+    let simplified = storage.expr_type(arguments[1], at)?;
+    if !actual.is_scalar() || actual.scalar_type() != ScalarType::Real || simplified != &actual {
+        return Err(DaeConstructionError::ShapeMismatch { span: at.span() });
+    }
+    Ok(actual)
+}
+
+fn size_result(
+    storage: &Storage,
+    arguments: &[ExprId<'_>],
+    array: ValueType,
+    at: DaeProvenance,
+) -> Result<ValueType, DaeConstructionError> {
+    if arguments.len() == 1 {
+        let rank = u32::try_from(array.dimensions().len()).map_err(|_| {
+            DaeConstructionError::CapacityExceeded {
+                arena: "value type rank",
+                attempted_index: array.dimensions().len(),
+                span: at.span(),
+            }
+        })?;
+        return Ok(ValueType::array(ScalarType::Integer, [rank]));
+    }
+    expect_arity(arguments, 2, at)?;
+    let dimension = storage.expr_type(arguments[1], at)?;
+    if !dimension.is_scalar() || dimension.scalar_type() != ScalarType::Integer {
+        return Err(DaeConstructionError::InvalidSubscript { span: at.span() });
+    }
+    Ok(ValueType::scalar(ScalarType::Integer))
 }
 
 fn shaped_builtin_result(

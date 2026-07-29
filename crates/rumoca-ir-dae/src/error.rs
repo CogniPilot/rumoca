@@ -118,6 +118,10 @@ pub enum DaeConstructionError {
         clock: u32,
         span: Span,
     },
+    InvalidDiscreteDependencyCycle {
+        target: u32,
+        span: Span,
+    },
     IncompleteDefinition {
         kind: &'static str,
         index: u32,
@@ -216,6 +220,10 @@ impl std::fmt::Display for DaeConstructionError {
             Self::MissingClockOwnership {
                 variable, clock, ..
             } => format_clock_ownership(formatter, *variable, *clock),
+            Self::InvalidDiscreteDependencyCycle { target, .. } => write!(
+                formatter,
+                "discrete-value target identity {target} has a cyclic current-value dependency"
+            ),
             Self::IncompleteDefinition { kind, index, .. } => {
                 write!(formatter, "missing {kind} definition for identity {index}")
             }
@@ -382,6 +390,7 @@ impl DaeConstructionError {
             | Self::DuplicateDefinition { span, .. }
             | Self::DuplicateKey { span, .. }
             | Self::MissingClockOwnership { span, .. }
+            | Self::InvalidDiscreteDependencyCycle { span, .. }
             | Self::IncompleteDefinition { span, .. } => Some(*span),
             Self::InvalidSchemaVersion { .. } | Self::MalformedWire { .. } => None,
         }

@@ -284,6 +284,11 @@ pub(super) fn lower_builtin<'dae>(
             .lower(arguments.get(0).expect("checked noEvent value argument"))
             .map(|value| value.expression);
     }
+    if builtin == dae::PureBuiltin::Homotopy {
+        return lowerer
+            .lower(arguments.get(0).expect("checked homotopy actual argument"))
+            .map(|value| value.expression);
+    }
     let lowered = arguments
         .iter()
         .map(|argument| lowerer.lower(argument))
@@ -325,6 +330,7 @@ pub(super) fn lower_builtin_arguments(
         dae::PureBuiltin::Log10 => "lg",
         dae::PureBuiltin::Smooth => unreachable!("smooth is lowered as its value"),
         dae::PureBuiltin::NoEvent => unreachable!("noEvent is lowered as its value"),
+        dae::PureBuiltin::Homotopy => unreachable!("homotopy is lowered as its actual value"),
         dae::PureBuiltin::Min => "min",
         dae::PureBuiltin::Max => "max",
         dae::PureBuiltin::Sum

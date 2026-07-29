@@ -1855,7 +1855,7 @@ pub(crate) fn collect_function_calls_from_equation(
             // Component references in connect don't contain function calls
             let _ = (lhs, rhs);
         }
-        ast::Equation::FunctionCall { comp, args } => {
+        ast::Equation::FunctionCall { comp, args, .. } => {
             calls.insert(resolve_function_request(comp, tree, class_index));
             for arg in args {
                 collect_function_calls_from_expression(arg, calls, tree, class_index);

@@ -91,6 +91,86 @@ fn production_lowering_enters_only_through_construct() {
 }
 
 #[test]
+fn production_lowering_constructs_delay_with_exact_timing_evidence() {
+    let source = TestSource::new("Real x; Real y; parameter Real dt = 0.5; y - delay(x, dt);");
+    let mut model = flat::Model::new();
+    add_primitive_variable(&mut model, &source, "x", "Real x", 1, Vec::new(), false);
+    add_primitive_variable(&mut model, &source, "y", "Real y", 2, Vec::new(), false);
+    add_primitive_variable(
+        &mut model,
+        &source,
+        "dt",
+        "parameter Real dt = 0.5",
+        3,
+        Vec::new(),
+        false,
+    );
+    let delay_time = model.variables.get_mut(&VarName::new("dt")).unwrap();
+    delay_time.variability = Variability::Parameter(Default::default());
+    delay_time.binding = Some(Expression::Literal {
+        value: Literal::Real(0.5),
+        span: source.span("0.5", 0),
+    });
+    let delay_span = source.span("delay(x, dt)", 0);
+    let equation_span = source.span("y - delay(x, dt)", 0);
+    model.add_equation(flat::Equation::new(
+        Expression::Binary {
+            op: OpBinary::Sub,
+            lhs: Box::new(variable_reference(&source, "y", "y", 1, Vec::new())),
+            rhs: Box::new(Expression::BuiltinCall {
+                function: BuiltinFunction::Delay,
+                args: vec![
+                    variable_reference(&source, "x", "x", 1, Vec::new()),
+                    variable_reference(&source, "dt", "dt", 1, Vec::new()),
+                ],
+                span: delay_span,
+            }),
+            span: equation_span,
+        },
+        equation_span,
+        flat::EquationOrigin::ComponentEquation {
+            component: String::new(),
+        },
+    ));
+    model.is_partial = true;
+
+    let dae = construct(&model, source.map, ToDaeOptions::default()).unwrap();
+    dae.inspect(|view| {
+        assert_eq!(view.delay_count(), 1);
+        let delay = view
+            .delay(view.delay_id(0).expect("dense delay identity"))
+            .expect("checked delay owner resolves");
+        assert_eq!(view.source_text(delay.provenance()), Some("delay(x, dt)"));
+        let timing = delay
+            .delay_time_evidence()
+            .expect("two-argument delay owns positive timing evidence");
+        assert_eq!(timing.value(), 0.5);
+        assert_eq!(view.source_text(timing.provenance()), Some("dt"));
+        assert_eq!(
+            view.source_text(
+                view.expression(delay.delay_time())
+                    .expect("delayTime expression resolves")
+                    .provenance()
+            ),
+            Some("dt")
+        );
+        let delay_coordinate = (0..view.expression_count())
+            .filter_map(|index| view.expression(view.expression_id(index)?))
+            .find(|expression| {
+                matches!(
+                    expression.operation(),
+                    dae::ExpressionOperation::Coordinate(dae::CoordinateView::Delay(_))
+                )
+            })
+            .expect("delay owner is consumed by one typed coordinate");
+        assert_eq!(
+            view.source_text(delay_coordinate.provenance()),
+            Some("delay(x, dt)")
+        );
+    });
+}
+
+#[test]
 fn production_lowering_preserves_function_locals_and_statement_order() {
     let source = TestSource::new(
         "function f input Real u; output Real y; protected Real z; algorithm z := u + 1.0; y := z * 2.0; end f; f(1.0);",

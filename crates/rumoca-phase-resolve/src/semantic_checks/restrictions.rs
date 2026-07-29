@@ -164,7 +164,7 @@ impl EquationScan<'_> {
                 self.check_connect_protected(lhs);
                 self.check_connect_protected(rhs);
             }
-            Equation::FunctionCall { comp, args } => {
+            Equation::FunctionCall { comp, args, .. } => {
                 if comp.parts.len() == 2 && comp.parts[0].ident.text.as_ref() == "Connections" {
                     self.check_connect_context(comp, ctx);
                 }

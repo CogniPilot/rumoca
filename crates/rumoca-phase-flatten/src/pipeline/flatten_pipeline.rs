@@ -4,6 +4,7 @@ use crate::source_spans::required_location_span;
 pub(crate) struct FlattenGraphData {
     pub(crate) vcg_data: vcg::VcgPreScanData,
     pub(crate) optional_edges: Vec<(String, String)>,
+    pub(crate) required_forest: vcg::RequiredEdgeForest,
 }
 
 pub(crate) struct OverlayScopeIndex<'a> {
@@ -792,7 +793,7 @@ pub(crate) fn process_component_instances_for_flatten(
 }
 
 fn track_top_level_component_markers(flat: &mut flat::Model, instance_data: &ast::InstanceData) {
-    if instance_data.qualified_name.parts.len() != 1 {
+    if instance_data.qualified_name.parts.len() != 1 || instance_data.is_protected {
         return;
     }
     let name = &instance_data.qualified_name.parts[0].0;
@@ -870,12 +871,8 @@ pub(crate) fn prepare_context_for_equation_flattening(
     let optional_edges = vcg::derive_optional_edges(overlay, &vcg_data)?;
     vcg::validate_component_roots(&vcg_data, &optional_edges)?;
     flat.optional_edges = optional_edges.clone();
-    let vcg_result = vcg::build_vcg(
-        &vcg_data.definite_roots,
-        &vcg_data.potential_roots,
-        &vcg_data.branches,
-        &optional_edges,
-    );
+    let required_forest = vcg::RequiredEdgeForest::construct(&vcg_data, &optional_edges)?;
+    let vcg_result = vcg::build_vcg(&vcg_data, &optional_edges, &required_forest);
     ctx.vcg_is_root = vcg_result.is_root;
     ctx.vcg_rooted = vcg_result.rooted;
     compute_cardinality_counts(ctx, overlay)?;
@@ -883,6 +880,7 @@ pub(crate) fn prepare_context_for_equation_flattening(
     Ok(FlattenGraphData {
         vcg_data,
         optional_edges,
+        required_forest,
     })
 }
 
@@ -940,11 +938,8 @@ pub(crate) fn finalize_flat_model(
     outer_refs::redirect_outer_refs(flat, &overlay.outer_prefix_to_inner);
 
     let connections_start = maybe_start_timer();
-    let mut oc_forest = vcg::OverconstrainedEquationForest::new(
-        &flatten_graph.vcg_data.definite_roots,
-        &flatten_graph.vcg_data.branches,
-        &flatten_graph.optional_edges,
-    );
+    let mut oc_forest =
+        vcg::OverconstrainedEquationForest::new(flatten_graph.required_forest.clone());
     let connections_result = connections::process_connections(
         flat,
         overlay,

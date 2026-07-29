@@ -444,6 +444,7 @@ enum EquationOwnerWire {
 #[derive(Deserialize, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
 enum ConditionNodeWire {
+    Initial,
     Relation(u32),
     Discrete(u32),
     Clock(u32),
@@ -1783,6 +1784,7 @@ fn rebuild_condition_input<'dae>(
     at: DaeProvenance,
 ) -> Result<ConditionInput<'dae>, DaeConstructionError> {
     Ok(match node {
+        ConditionNodeWire::Initial => ConditionInput::Initial,
         ConditionNodeWire::Relation(raw) => {
             ConditionInput::Relation(mapped(&ids.relations, raw, "relation", at)?)
         }

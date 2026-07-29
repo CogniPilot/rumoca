@@ -890,3 +890,233 @@ fn clocked_self_dependent_discrete_residual_fails_before_runtime() {
         LowerError::Unsupported { span, .. } if span == owner.span()
     ));
 }
+
+#[test]
+fn initial_condition_owns_a_dedicated_runtime_flag() {
+    let source = TestSource::new("discrete Real x; when initial() then x = 1; end when;");
+    let declaration = source.at(0, 15);
+    let initial_at = source.at(22, 31);
+    let assignment = source.at(37, 42);
+    let model = dae::Dae::construct(source.map, |model| {
+        let real = model.types(|types| {
+            types.intern(
+                TypeId::new(0),
+                dae::ValueType::scalar(dae::ScalarType::Real),
+                declaration,
+            )
+        })?;
+        let variable = model.variables(|variables| {
+            variables.discrete_real(
+                VarName::new("x"),
+                real,
+                declaration,
+                dae::VariableAttributes::default(),
+            )
+        })?;
+        let condition = model.conditions(|conditions| conditions.reserve(initial_at))?;
+        model.conditions(|conditions| {
+            conditions.define(condition, dae::ConditionInput::Initial, initial_at)
+        })?;
+        let value = model.expressions(|expressions| {
+            expressions
+                .at(assignment)
+                .literal(dae::DaeLiteral::Real(1.0))
+        })?;
+        model.events(|events| {
+            events.assign_discrete_real(condition, condition, variable, value, assignment)
+        })?;
+        Ok(())
+    })
+    .unwrap();
+
+    let solve = lower_solve_problem(&model).unwrap();
+    let flag = solve
+        .solve_layout
+        .initial_event_parameter_index
+        .expect("initial() owns one checked runtime flag");
+    assert!(
+        solve
+            .discrete
+            .rhs
+            .programs
+            .iter()
+            .flatten()
+            .any(|operation| matches!(operation, LinearOp::LoadP { index, .. } if *index == flag))
+    );
+}
+
+#[test]
+fn homotopy_owns_a_dedicated_continuation_parameter() {
+    let source = TestSource::new("Real x; der(x) = homotopy(x*x, x);");
+    let declaration = source.at(0, 6);
+    let owner = source.at(8, 34);
+    let homotopy_at = source.at(17, 33);
+    let model = dae::Dae::construct(source.map, |model| {
+        let real = model.types(|types| {
+            types.intern(
+                TypeId::new(0),
+                dae::ValueType::scalar(dae::ScalarType::Real),
+                declaration,
+            )
+        })?;
+        let state = model.variables(|variables| {
+            variables.state(
+                VarName::new("x"),
+                real,
+                declaration,
+                dae::VariableAttributes::default(),
+            )
+        })?;
+        let residual = model.expressions(|expressions| {
+            let derivative = expressions
+                .at(owner)
+                .coordinate(dae::CoordinateInput::Derivative(state))?;
+            let x = expressions
+                .at(homotopy_at)
+                .coordinate(dae::CoordinateInput::State(state))?;
+            let actual = expressions
+                .at(homotopy_at)
+                .binary(dae::BinaryOperator::Multiply, x, x)?;
+            let homotopy = expressions
+                .at(homotopy_at)
+                .builtin(dae::PureBuiltin::Homotopy, [actual, x])?;
+            expressions
+                .at(owner)
+                .binary(dae::BinaryOperator::Subtract, derivative, homotopy)
+        })?;
+        model.continuous(|continuous| continuous.value_equation(owner, residual))
+    })
+    .unwrap();
+
+    model.inspect(|view| {
+        let expression = (0..view.expression_count())
+            .filter_map(|index| view.expression(view.expression_id(index)?))
+            .find(|expression| {
+                matches!(
+                    expression.operation(),
+                    dae::ExpressionOperation::Builtin {
+                        builtin: dae::PureBuiltin::Homotopy,
+                        ..
+                    }
+                )
+            })
+            .expect("checked DAE retains the homotopy node");
+        assert_eq!(
+            view.source_text(expression.provenance()),
+            Some("homotopy(x*x, x)")
+        );
+    });
+    let solve = lower_solve_problem(&model).unwrap();
+    let lambda = solve
+        .solve_layout
+        .initial_homotopy_parameter_index
+        .expect("homotopy owns one checked continuation parameter");
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous.derivative_rhs.nodes.as_slice()
+    else {
+        panic!("one scalar derivative block expected");
+    };
+    assert!(
+        rows.programs[0].iter().any(
+            |operation| matches!(operation, LinearOp::LoadP { index, .. } if *index == lambda)
+        )
+    );
+}
+
+#[test]
+fn delay_lowers_to_runtime_history_programs_and_a_typed_value_slot() {
+    let source = TestSource::new("Real x; der(x) = delay(x, 0.5);");
+    let declaration = source.at(0, 6);
+    let owner = source.at(8, 31);
+    let derivative_at = source.at(8, 14);
+    let delay_at = source.at(17, 30);
+    let source_at = source.at(23, 24);
+    let timing_at = source.at(26, 29);
+    let model = dae::Dae::construct(source.map, |model| {
+        let real = model.types(|types| {
+            types.intern(
+                TypeId::new(0),
+                dae::ValueType::scalar(dae::ScalarType::Real),
+                declaration,
+            )
+        })?;
+        let state = model.variables(|variables| {
+            variables.state(
+                VarName::new("x"),
+                real,
+                declaration,
+                dae::VariableAttributes::default(),
+            )
+        })?;
+        let (source, delay_time) = model.expressions(|expressions| {
+            Ok((
+                expressions
+                    .at(source_at)
+                    .coordinate(dae::CoordinateInput::State(state))?,
+                expressions
+                    .at(timing_at)
+                    .literal(dae::DaeLiteral::Real(0.5))?,
+            ))
+        })?;
+        let delay = model.temporal(|temporal| {
+            let timing = temporal.positive_parameter(delay_time, 0.5, timing_at)?;
+            temporal.delay(source, timing, delay_at)
+        })?;
+        let residual = model.expressions(|expressions| {
+            let derivative = expressions
+                .at(derivative_at)
+                .coordinate(dae::CoordinateInput::Derivative(state))?;
+            let delayed = expressions
+                .at(delay_at)
+                .coordinate(dae::CoordinateInput::Delay(delay))?;
+            expressions
+                .at(owner)
+                .binary(dae::BinaryOperator::Subtract, derivative, delayed)
+        })?;
+        model.continuous(|continuous| continuous.value_equation(owner, residual))
+    })
+    .unwrap();
+
+    model.inspect(|view| {
+        let delay = view
+            .delay(view.delay_id(0).expect("dense delay identity"))
+            .expect("checked delay owner resolves");
+        assert_eq!(view.source_text(delay.provenance()), Some("delay(x, 0.5)"));
+        assert_eq!(
+            view.source_text(
+                delay
+                    .delay_time_evidence()
+                    .expect("fixed delay has timing evidence")
+                    .provenance()
+            ),
+            Some("0.5")
+        );
+    });
+
+    let solve = lower_solve_problem(&model).unwrap();
+    solve
+        .validate()
+        .expect("delay lowering produces a computable Solve problem");
+    let delays = &solve.events.delays;
+    assert_eq!(delays.value_parameter_indices.len(), 1);
+    assert_eq!(delays.source_is_discrete, [false]);
+    let delay_slot = delays.value_parameter_indices[0];
+    assert!(matches!(
+        delays.source_rhs.programs[0][0],
+        LinearOp::LoadY { index: 0, .. }
+    ));
+    assert!(matches!(
+        delays.delay_time_rhs.programs[0][0],
+        LinearOp::Const { value: 0.5, .. }
+    ));
+    assert!(matches!(
+        delays.delay_max_rhs.programs[0][0],
+        LinearOp::Const { value: 0.5, .. }
+    ));
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous.derivative_rhs.nodes.as_slice()
+    else {
+        panic!("one scalar derivative block expected");
+    };
+    assert!(rows.programs[0].iter().any(
+        |operation| matches!(operation, LinearOp::LoadP { index, .. } if *index == delay_slot)
+    ));
+}

@@ -322,7 +322,7 @@ pub(super) fn flatten_equations_list(
                     crate::when_equations::flatten_when_blocks(ctx, blocks, prefix, span, def_map)?;
                 result.when_clauses.extend(clauses);
             }
-            ast::Equation::FunctionCall { comp, args } => {
+            ast::Equation::FunctionCall { comp, args, .. } => {
                 let flattened =
                     flatten_function_call_equation(ctx, comp, args, prefix, span, def_map, origin)?;
                 if flattened.is_empty() && !is_side_effect_only_function(comp) {
@@ -959,9 +959,10 @@ pub(crate) fn substitute_index_in_equation(
             lhs: substitute_index_in_component_ref(lhs, var_name, value),
             rhs: substitute_index_in_component_ref(rhs, var_name, value),
         },
-        ast::Equation::FunctionCall { comp, args } => ast::Equation::FunctionCall {
+        ast::Equation::FunctionCall { comp, args, span } => ast::Equation::FunctionCall {
             comp: substitute_index_in_component_ref(comp, var_name, value),
             args: args.iter().map(&sub_expr).collect(),
+            span: *span,
         },
         ast::Equation::Assert {
             condition,

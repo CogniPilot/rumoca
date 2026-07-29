@@ -677,6 +677,175 @@ impl Storage {
                 span: variable.declaration.span(),
             });
         }
+        self.validate_discrete_dependency_graphs()?;
+        Ok(())
+    }
+
+    fn validate_discrete_dependency_graphs(&self) -> Result<(), DaeConstructionError> {
+        self.validate_discrete_dependency_group(
+            self.discrete_assignments
+                .iter()
+                .map(|entry| (entry.target, entry.value, entry.provenance))
+                .collect(),
+        )?;
+        let mut groups = Vec::new();
+        for action in &self.event_actions {
+            if matches!(action.kind, EventActionKind::AssignDiscreteValue { .. })
+                && !groups.contains(&(action.trigger, action.guard))
+            {
+                groups.push((action.trigger, action.guard));
+            }
+        }
+        for (trigger, guard) in groups {
+            self.validate_discrete_dependency_group(
+                self.event_actions
+                    .iter()
+                    .filter(|entry| entry.trigger == trigger && entry.guard == guard)
+                    .filter_map(|entry| match entry.kind {
+                        EventActionKind::AssignDiscreteValue { target, value } => {
+                            Some((target, value, entry.provenance))
+                        }
+                        _ => None,
+                    })
+                    .collect(),
+            )?;
+        }
+        Ok(())
+    }
+
+    fn validate_discrete_dependency_group(
+        &self,
+        assignments: Vec<(u32, u32, DaeProvenance)>,
+    ) -> Result<(), DaeConstructionError> {
+        for &(target, value, provenance) in &assignments {
+            self.validate_discrete_assignment_dependencies(
+                &assignments,
+                target,
+                value,
+                provenance,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn validate_discrete_assignment_dependencies(
+        &self,
+        assignments: &[(u32, u32, DaeProvenance)],
+        target: u32,
+        value: u32,
+        provenance: DaeProvenance,
+    ) -> Result<(), DaeConstructionError> {
+        let mut pending = self.current_discrete_value_dependencies(value, provenance)?;
+        let mut visited = vec![false; self.variables.len()];
+        while let Some(dependency) = pending.pop() {
+            if dependency == target {
+                return Err(DaeConstructionError::InvalidDiscreteDependencyCycle {
+                    target,
+                    span: provenance.span(),
+                });
+            }
+            let Some(seen) = visited.get_mut(dependency as usize) else {
+                return Err(unknown("variable", dependency, provenance));
+            };
+            if std::mem::replace(seen, true) {
+                continue;
+            }
+            let Some((_, dependency_value, _)) = assignments
+                .iter()
+                .find(|(candidate, _, _)| *candidate == dependency)
+            else {
+                continue;
+            };
+            pending
+                .extend(self.current_discrete_value_dependencies(*dependency_value, provenance)?);
+        }
+        Ok(())
+    }
+
+    fn current_discrete_value_dependencies(
+        &self,
+        expression: u32,
+        provenance: DaeProvenance,
+    ) -> Result<Vec<u32>, DaeConstructionError> {
+        let mut dependencies = Vec::new();
+        let mut pending = vec![expression];
+        let mut visited = vec![false; self.expressions.nodes.len()];
+        while let Some(index) = pending.pop() {
+            let Some(seen) = visited.get_mut(index as usize) else {
+                return Err(unknown("expression", index, provenance));
+            };
+            if std::mem::replace(seen, true) {
+                continue;
+            }
+            let node = self
+                .expressions
+                .nodes
+                .get(index as usize)
+                .ok_or_else(|| unknown("expression", index, provenance))?;
+            match node {
+                ExprNode::Coordinate(Coordinate::DiscreteValue(variable)) => {
+                    dependencies.push(*variable);
+                }
+                ExprNode::Unary { operand, .. } => pending.push(*operand),
+                ExprNode::Binary { lhs, rhs, .. } => pending.extend([*lhs, *rhs]),
+                ExprNode::Field { base, .. } => pending.push(*base),
+                ExprNode::Comprehension { body, .. } => pending.push(*body),
+                ExprNode::Index { base, subscripts } => {
+                    pending.push(*base);
+                    self.push_subscript_expressions(*subscripts, provenance, &mut pending)?;
+                }
+                ExprNode::ArrayUpdate {
+                    base,
+                    value,
+                    subscripts,
+                } => {
+                    pending.extend([*base, *value]);
+                    self.push_subscript_expressions(*subscripts, provenance, &mut pending)?;
+                }
+                ExprNode::Conditional { operands }
+                | ExprNode::Array { operands }
+                | ExprNode::Record { operands }
+                | ExprNode::Builtin { operands, .. }
+                | ExprNode::Call { operands, .. } => {
+                    pending.extend(
+                        self.expressions
+                            .operands
+                            .get(operands.indices())
+                            .ok_or_else(|| unknown("operand range", operands.start, provenance))?,
+                    );
+                }
+                ExprNode::Literal(_)
+                | ExprNode::Coordinate(_)
+                | ExprNode::Range { .. }
+                | ExprNode::FunctionValue { .. }
+                | ExprNode::FunctionFoldParameter { .. }
+                | ExprNode::FunctionFoldOutput { .. } => {}
+            }
+        }
+        dependencies.sort_unstable();
+        dependencies.dedup();
+        Ok(dependencies)
+    }
+
+    fn push_subscript_expressions(
+        &self,
+        range: crate::expression::OperandRange,
+        provenance: DaeProvenance,
+        pending: &mut Vec<u32>,
+    ) -> Result<(), DaeConstructionError> {
+        for subscript in self
+            .expressions
+            .subscripts
+            .get(range.indices())
+            .ok_or_else(|| unknown("subscript range", range.start, provenance))?
+        {
+            match subscript.kind {
+                PackedSubscriptKind::Index(expression) | PackedSubscriptKind::Slice(expression) => {
+                    pending.push(expression)
+                }
+                PackedSubscriptKind::Whole => {}
+            }
+        }
         Ok(())
     }
 

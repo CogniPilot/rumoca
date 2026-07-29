@@ -2,7 +2,7 @@
 //!
 //! Tests for the 38 equation contracts defined in SPEC_0022.
 
-use rumoca_compile::compile::FailedPhase;
+use rumoca_compile::compile::{ExpressionOperation, FailedPhase, VariableRole};
 use rumoca_contracts::test_support::{
     expect_balanced, expect_failure_in_phase_with_code, expect_parse_err_with_code,
     expect_resolve_failure_with_code, expect_success,
@@ -67,7 +67,7 @@ fn eqn_001_underspecified() {
 
 #[test]
 fn eqn_002_input_with_binding() {
-    expect_success(
+    let result = expect_success(
         r#"
         model Test
             input Real u = 1.0;
@@ -75,9 +75,26 @@ fn eqn_002_input_with_binding() {
         equation
             der(x) = u;
         end Test;
-    "#,
+        "#,
         "Test",
     );
+    result.dae.inspect(|view| {
+        let input = view
+            .variables()
+            .find(|(_, variable)| variable.name().as_str() == "u")
+            .map(|(_, variable)| variable)
+            .expect("checked DAE retains the model input");
+        let binding = input
+            .binding()
+            .expect("checked DAE retains the input default");
+        assert_eq!(input.role(), VariableRole::Input);
+        assert_eq!(
+            result
+                .dae
+                .source_text(view.expression(binding).unwrap().provenance()),
+            Some("1.0")
+        );
+    });
 }
 
 // =============================================================================
@@ -842,6 +859,34 @@ fn eqn_007_discrete_equation_not_solved_form_rejected() {
     );
 }
 
+#[test]
+fn eqn_007_discrete_conditional_solved_form_accepted() {
+    let result = expect_success(
+        r#"
+        model M
+            Integer i(start = 0);
+        equation
+            if time > 1 then
+                i = 1;
+            else
+                i = 0;
+            end if;
+        end M;
+    "#,
+        "M",
+    );
+    result.dae.inspect(|view| {
+        assert_eq!(view.discrete_assignment_count(), 1);
+        let assignment = view
+            .discrete_assignment(view.discrete_assignment_id(0).unwrap())
+            .unwrap();
+        assert!(matches!(
+            view.expression(assignment.value()).unwrap().operation(),
+            ExpressionOperation::Conditional(_)
+        ));
+    });
+}
+
 // =============================================================================
 // EQN-014: Any left hand side indices must be evaluable expressions (§8.3.5)
 // =============================================================================
@@ -898,18 +943,22 @@ fn eqn_019_connect_in_noneval_if_rejected() {
 
 #[test]
 fn eqn_023_when_initial_accepted() {
-    expect_success(
+    let trace = rumoca_contracts::test_support::simulate_model(
         r#"
         model M
             discrete Real x;
+            Real y(start = 0);
         equation
+            der(y) = 0;
             when initial() then
                 x = 1;
             end when;
         end M;
     "#,
         "M",
+        0.1,
     );
+    assert_eq!(trace.final_value("x"), 1.0);
 }
 
 // =============================================================================
@@ -1094,6 +1143,31 @@ fn eqn_012_branch_variable_sets_differ_rejected() {
         "M",
         FailedPhase::ToDae,
         "ED010",
+    );
+}
+
+#[test]
+fn eqn_012_branch_variable_sets_match_accepted() {
+    expect_success(
+        r#"
+        model M
+            parameter Boolean sel = true;
+            Integer i(start = 0);
+            Integer j(start = 0);
+            Boolean c = time > 1;
+        equation
+            when c then
+                if sel then
+                    i = 1;
+                    j = 2;
+                else
+                    i = 3;
+                    j = 4;
+                end if;
+            end when;
+        end M;
+    "#,
+        "M",
     );
 }
 

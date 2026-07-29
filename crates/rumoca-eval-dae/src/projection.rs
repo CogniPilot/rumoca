@@ -423,7 +423,7 @@ where
                     .expect("checked unary builtin has one argument"),
                 scalar_index,
             ),
-            dae::PureBuiltin::Atan2 | dae::PureBuiltin::Mod => {
+            dae::PureBuiltin::Atan2 | dae::PureBuiltin::Mod | dae::PureBuiltin::Homotopy => {
                 for argument in arguments.iter() {
                     self.expression(argument, scalar_index)?;
                 }

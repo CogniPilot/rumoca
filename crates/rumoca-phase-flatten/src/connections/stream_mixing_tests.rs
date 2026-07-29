@@ -331,7 +331,7 @@ fn weights_positive_flow(expression: &rumoca_core::Expression, flow: &str) -> bo
 }
 
 fn process(model: &mut flat::Model, overlay: &ast::InstanceOverlay) -> Result<(), FlattenError> {
-    let mut forest = crate::vcg::OverconstrainedEquationForest::new(&Default::default(), &[], &[]);
+    let mut forest = crate::vcg::OverconstrainedEquationForest::empty();
     process_connections(model, overlay, false, &mut forest)
 }
 

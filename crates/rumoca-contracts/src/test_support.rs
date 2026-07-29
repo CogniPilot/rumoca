@@ -230,8 +230,9 @@ pub fn expect_balanced(source: &str, model: &str) -> CompilationResult {
 pub fn is_standalone_simulatable(result: &CompilationResult) -> bool {
     !result.flat.is_partial
         && !result.dae.inspect(|view| {
-            view.variables()
-                .any(|(_, variable)| variable.role() == VariableRole::Input)
+            view.variables().any(|(_, variable)| {
+                variable.role() == VariableRole::Input && variable.binding().is_none()
+            })
         })
         && !result.flat.has_unbound_fixed_parameters()
 }

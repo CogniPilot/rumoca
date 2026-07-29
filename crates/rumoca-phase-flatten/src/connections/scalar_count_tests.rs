@@ -23,7 +23,7 @@ fn equality_generation_rejects_mismatched_array_sizes() {
     let rhs = rumoca_core::VarName::new("b.v");
     flat.add_variable(lhs.clone(), array_variable(vec![2], false));
     flat.add_variable(rhs.clone(), array_variable(vec![3], false));
-    let mut forest = crate::vcg::OverconstrainedEquationForest::new(&Default::default(), &[], &[]);
+    let mut forest = crate::vcg::OverconstrainedEquationForest::empty();
 
     let error = generate_equality_equations(&mut flat, &[lhs, rhs], test_span(), &mut forest)
         .expect_err("mismatched potential arrays must not be truncated");

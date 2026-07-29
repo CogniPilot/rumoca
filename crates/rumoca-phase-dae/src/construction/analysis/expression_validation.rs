@@ -170,6 +170,7 @@ pub(super) fn validate_builtin(
             | BuiltinFunction::Log10
             | BuiltinFunction::Smooth
             | BuiltinFunction::NoEvent
+            | BuiltinFunction::Homotopy
             | BuiltinFunction::Min
             | BuiltinFunction::Max
             | BuiltinFunction::Sum
@@ -181,6 +182,7 @@ pub(super) fn validate_builtin(
             | BuiltinFunction::Linspace
             | BuiltinFunction::Cross
             | BuiltinFunction::Sample
+            | BuiltinFunction::Delay
     );
     if !supported {
         return Err(ToDaeError::unsupported_runtime_operator(

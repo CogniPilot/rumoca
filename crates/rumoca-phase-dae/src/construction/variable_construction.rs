@@ -213,7 +213,7 @@ fn lower_variable_binding<'dae>(
     }
     if !matches!(
         reserved.role,
-        PlannedRole::Parameter | PlannedRole::Constant
+        PlannedRole::Parameter | PlannedRole::Constant | PlannedRole::Input
     ) {
         return Ok(None);
     }

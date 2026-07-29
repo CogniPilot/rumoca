@@ -173,6 +173,41 @@ fn explicitly_typed_empty_arrays_round_trip_through_checked_construction() {
 }
 
 #[test]
+fn no_event_preserves_a_boolean_operand_and_exact_provenance() {
+    let source = TestSource::new("Boolean quiet = noEvent(true);");
+    let literal_at = source.source("true", 0);
+    let no_event_at = source.source("noEvent(true)", 0);
+    let dae = Dae::construct(source.map, |dae| {
+        dae.expressions(|expressions| {
+            let value = expressions
+                .at(literal_at)
+                .literal(DaeLiteral::Boolean(true))?;
+            expressions
+                .at(no_event_at)
+                .builtin(PureBuiltin::NoEvent, [value])?;
+            Ok(())
+        })
+    })
+    .expect("noEvent is a type-preserving checked expression");
+
+    dae.inspect(|view| {
+        let expression = view.expression(view.expression_id(1).unwrap()).unwrap();
+        assert_eq!(expression.value_type().scalar_type(), ScalarType::Boolean);
+        assert_eq!(
+            view.source_text(expression.provenance()),
+            Some("noEvent(true)")
+        );
+        assert!(matches!(
+            expression.operation(),
+            ExpressionOperation::Builtin {
+                builtin: PureBuiltin::NoEvent,
+                ..
+            }
+        ));
+    });
+}
+
+#[test]
 fn numeric_promotion_is_derived_during_construction() {
     let source = TestSource::new("Real x; equation der(x) = 1; x + 2; if true then 3 else x;");
     let declaration = source.source("Real x", 0);
@@ -994,6 +1029,64 @@ fn every_local_b1c_target_requires_exactly_one_definition() {
             kind: "B.1c target",
             ..
         }
+    ));
+}
+
+#[test]
+fn b1c_current_value_dependencies_must_be_acyclic() {
+    let source = TestSource::new("discrete Boolean a; discrete Boolean b; equation a = b; b = a;");
+    let a_declaration = source.source("discrete Boolean a", 0);
+    let b_declaration = source.source("discrete Boolean b", 0);
+    let a_assignment = source.source("a = b", 0);
+    let b_assignment = source.source("b = a", 0);
+    let error = Dae::construct(source.map, |dae| {
+        let boolean = dae.types(|types| {
+            types.intern(
+                TypeId::new(0),
+                ValueType::scalar(ScalarType::Boolean),
+                a_declaration,
+            )
+        })?;
+        let (a, b) = dae.variables(|variables| {
+            Ok((
+                variables.discrete_value(
+                    VarName::new("a"),
+                    boolean,
+                    a_declaration,
+                    VariableAttributes::default(),
+                )?,
+                variables.discrete_value(
+                    VarName::new("b"),
+                    boolean,
+                    b_declaration,
+                    VariableAttributes::default(),
+                )?,
+            ))
+        })?;
+        let a_value = dae.expressions(|expressions| {
+            expressions
+                .at(a_assignment)
+                .coordinate(CoordinateInput::DiscreteValue(a))
+        })?;
+        let b_value = dae.expressions(|expressions| {
+            expressions
+                .at(b_assignment)
+                .coordinate(CoordinateInput::DiscreteValue(b))
+        })?;
+        dae.discrete(|discrete| {
+            discrete.assignment(a_assignment, a, b_value)?;
+            discrete.assignment(b_assignment, b, a_value)?;
+            Ok(())
+        })
+    })
+    .unwrap_err();
+
+    assert!(matches!(
+        error,
+        DaeConstructionError::InvalidDiscreteDependencyCycle {
+            target,
+            span,
+        } if target == 0 && span == a_assignment.span()
     ));
 }
 
@@ -1837,6 +1930,33 @@ fn event_actions_are_guarded_typed_and_keep_coincident_time_ids() {
     });
 
     assert_event_wire_requires_trigger(&encoded);
+}
+
+#[test]
+fn initial_condition_is_typed_and_round_trips_through_wire_v11() {
+    let source = TestSource::new("when initial() then end when;");
+    let initial_at = source.source("initial()", 0);
+    let dae = Dae::construct(source.map, |dae| {
+        let condition = dae.conditions(|conditions| conditions.reserve(initial_at))?;
+        dae.conditions(|conditions| {
+            conditions.define(condition, ConditionInput::Initial, initial_at)
+        })
+    })
+    .unwrap();
+
+    let assert_initial = |model: &Dae| {
+        model.inspect(|view| {
+            let condition = view
+                .condition(view.condition_id(0).unwrap())
+                .expect("initial condition identity resolves");
+            assert!(matches!(condition.operation(), ConditionOperation::Initial));
+            assert_eq!(model.source_text(condition.provenance()), Some("initial()"));
+        });
+    };
+    assert_initial(&dae);
+    let wire = serde_json::to_string(&dae).unwrap();
+    let decoded: Dae = serde_json::from_str(&wire).unwrap();
+    assert_initial(&decoded);
 }
 
 fn assert_event_wire_requires_trigger(encoded: &str) {

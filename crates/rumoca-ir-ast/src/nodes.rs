@@ -813,6 +813,8 @@ pub enum Equation {
     FunctionCall {
         comp: ComponentReference,
         args: Vec<Expression>,
+        /// Exact source range of the complete call, including delimiters.
+        span: Span,
     },
     /// MLS §8.3.7: assert(condition, message, level)
     Assert {
@@ -1352,7 +1354,7 @@ impl std::fmt::Display for Equation {
                 cond_blocks,
                 else_block,
             } => format_if_equation(f, cond_blocks, else_block),
-            Equation::FunctionCall { comp, args } => {
+            Equation::FunctionCall { comp, args, .. } => {
                 write!(f, "{}({})", comp, format_display_list(args))
             }
             Equation::Assert {

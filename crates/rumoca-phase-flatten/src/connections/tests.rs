@@ -223,8 +223,7 @@ fn test_stream_connection_does_not_generate_potential_equality() {
         ..Default::default()
     });
 
-    let mut oc_forest =
-        crate::vcg::OverconstrainedEquationForest::new(&Default::default(), &[], &[]);
+    let mut oc_forest = crate::vcg::OverconstrainedEquationForest::empty();
     process_connections(&mut flat, &overlay, false, &mut oc_forest)
         .expect("stream connection processing");
 
@@ -304,8 +303,7 @@ fn test_connector_path_with_structural_member_expands_nonstructural_members() {
         ..Default::default()
     });
 
-    let mut oc_forest =
-        crate::vcg::OverconstrainedEquationForest::new(&Default::default(), &[], &[]);
+    let mut oc_forest = crate::vcg::OverconstrainedEquationForest::empty();
     process_connections(&mut flat, &overlay, false, &mut oc_forest)
         .expect("connector connection processing");
 
@@ -367,8 +365,7 @@ fn collapsed_connector_array_connects_to_expanded_connector_elements() {
         ..Default::default()
     });
 
-    let mut oc_forest =
-        crate::vcg::OverconstrainedEquationForest::new(&Default::default(), &[], &[]);
+    let mut oc_forest = crate::vcg::OverconstrainedEquationForest::empty();
     process_connections(&mut flat, &overlay, false, &mut oc_forest)
         .expect("asymmetric connector-array connection processing");
 
@@ -433,8 +430,7 @@ fn expandable_connectors_with_same_declared_members_are_supported() {
     add_expandable_member(&mut flat, "a.signal");
     add_expandable_member(&mut flat, "b.signal");
     let overlay = expandable_connector_test_overlay();
-    let mut oc_forest =
-        crate::vcg::OverconstrainedEquationForest::new(&Default::default(), &[], &[]);
+    let mut oc_forest = crate::vcg::OverconstrainedEquationForest::empty();
 
     process_connections(&mut flat, &overlay, false, &mut oc_forest)
         .expect("identical declared members require no augmentation");
@@ -452,8 +448,7 @@ fn expandable_connector_member_union_is_rejected_before_connection_sets() {
     add_expandable_member(&mut flat, "a.left_only");
     add_expandable_member(&mut flat, "b.right_only");
     let overlay = expandable_connector_test_overlay();
-    let mut oc_forest =
-        crate::vcg::OverconstrainedEquationForest::new(&Default::default(), &[], &[]);
+    let mut oc_forest = crate::vcg::OverconstrainedEquationForest::empty();
 
     let error = process_connections(&mut flat, &overlay, false, &mut oc_forest)
         .expect_err("member-union augmentation must not silently drop both endpoints");
@@ -475,8 +470,7 @@ fn expandable_connector_partial_member_union_is_rejected() {
         add_expandable_member(&mut flat, name);
     }
     let overlay = expandable_connector_test_overlay();
-    let mut oc_forest =
-        crate::vcg::OverconstrainedEquationForest::new(&Default::default(), &[], &[]);
+    let mut oc_forest = crate::vcg::OverconstrainedEquationForest::empty();
 
     let error = process_connections(&mut flat, &overlay, false, &mut oc_forest)
         .expect_err("connecting only the declared intersection is not MLS §9.1.3");
@@ -592,8 +586,7 @@ fn test_generate_equality_equations() {
         rumoca_core::VarName::new("r3.p.v"),
     ];
 
-    let mut oc_forest =
-        crate::vcg::OverconstrainedEquationForest::new(&Default::default(), &[], &[]);
+    let mut oc_forest = crate::vcg::OverconstrainedEquationForest::empty();
     generate_equality_equations(&mut flat, &vars, test_span(), &mut oc_forest).unwrap();
 
     // Should generate 2 equations (n-1 for n=3)
@@ -642,8 +635,9 @@ fn zero_constraint_equality_generation_respects_required_vcg_branch() {
         ("a.R".to_string(), "c.R".to_string()),
         ("c.R".to_string(), "b.R".to_string()),
     ];
-    let mut oc_forest =
-        crate::vcg::OverconstrainedEquationForest::new(&Default::default(), &branches, &optional);
+    let mut oc_forest = crate::vcg::OverconstrainedEquationForest::new(
+        crate::vcg::test_required_forest(&Default::default(), &branches, &optional),
+    );
     let vars = [
         rumoca_core::VarName::new("a.R.gamma"),
         rumoca_core::VarName::new("c.R.gamma"),
@@ -1066,8 +1060,7 @@ fn test_process_connections_negates_nested_connector_under_outside_root() {
         ..Default::default()
     });
 
-    let mut oc_forest =
-        crate::vcg::OverconstrainedEquationForest::new(&Default::default(), &[], &[]);
+    let mut oc_forest = crate::vcg::OverconstrainedEquationForest::empty();
     process_connections(&mut flat, &overlay, false, &mut oc_forest)
         .expect("nested connector connection");
 
@@ -1366,7 +1359,7 @@ fn test_generate_equality_marks_base_connected_for_multidimensional_subscript() 
             rumoca_core::VarName::new("gain.y"),
         ],
         test_span(),
-        &mut crate::vcg::OverconstrainedEquationForest::new(&Default::default(), &[], &[]),
+        &mut crate::vcg::OverconstrainedEquationForest::empty(),
     )
     .unwrap();
 
