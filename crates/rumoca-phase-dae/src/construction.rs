@@ -633,7 +633,14 @@ fn lower_bindings<'dae>(
         if matches!(coordinate, Coordinate::Parameter(_) | Coordinate::Input(_)) {
             continue;
         }
-        let owner_span = binding.span().unwrap_or(variable.source_span);
+        let Some(binding_span) = binding.span() else {
+            return Err(dae::DaeConstructionError::MissingProvenance {
+                origin: dae::DaeProvenanceOrigin::Source,
+                attempted_span: Span::DUMMY,
+            });
+        };
+        let binding_source = dae::DaeProvenance::source(binding_span)?;
+        let owner_span = binding_source.span();
         let owner = dae::DaeProvenance::generated(dae::DaeGeneration::BindingEquation, owner_span)?;
         let rhs = lower_expression(construction, coordinates, functions, binding, None)?;
         match coordinate {
@@ -641,13 +648,7 @@ fn lower_bindings<'dae>(
                 let semantic_owner = discrete_values
                     .owner(owner, [name.clone()], coordinates, topology)?
                     .expect("a discrete-value binding has one planned B.1c owner");
-                discrete_values.always(
-                    semantic_owner,
-                    target,
-                    rhs,
-                    owner,
-                    dae::DaeProvenance::source(owner_span)?,
-                )?;
+                discrete_values.always(semantic_owner, target, rhs, owner, binding_source)?;
             }
             Coordinate::Parameter(_)
             | Coordinate::Input(_)
