@@ -31,7 +31,7 @@ fn dummy_span_cannot_enter_checked_provenance() {
         DaeProvenance::generated(DaeGeneration::PreValueLowering, Span::DUMMY),
         Err(DaeConstructionError::MissingProvenance {
             origin: DaeProvenanceOrigin::Generated(DaeGeneration::PreValueLowering),
-            attempted_span: Span::DUMMY,
+            attempted_span: Some(Span::DUMMY),
         })
     );
 }

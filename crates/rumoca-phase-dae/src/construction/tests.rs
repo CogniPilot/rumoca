@@ -1510,7 +1510,7 @@ fn binding_lowering_does_not_fallback_to_declaration_provenance() {
         error,
         dae::DaeConstructionError::MissingProvenance {
             origin: dae::DaeProvenanceOrigin::Source,
-            attempted_span: Span::DUMMY,
+            attempted_span: None,
         }
     ));
 }

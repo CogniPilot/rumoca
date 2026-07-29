@@ -13,7 +13,7 @@ pub enum DaeConstructionError {
     #[error("missing source provenance for {origin}")]
     MissingProvenance {
         origin: DaeProvenanceOrigin,
-        attempted_span: Span,
+        attempted_span: Option<Span>,
     },
     #[error("DAE provenance references an unknown source: {span:?}")]
     UnknownSource { span: Span },
@@ -213,7 +213,7 @@ impl DaeConstructionError {
     /// there is no semantic owner from which an honest span could be obtained.
     pub const fn source_span(&self) -> Option<Span> {
         match self {
-            Self::MissingProvenance { attempted_span, .. } => Some(*attempted_span),
+            Self::MissingProvenance { attempted_span, .. } => *attempted_span,
             Self::UnknownSource { span }
             | Self::InvalidSourceRange { span, .. }
             | Self::InvalidEffectiveTypeId { span, .. }

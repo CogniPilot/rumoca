@@ -636,7 +636,7 @@ fn lower_bindings<'dae>(
         let Some(binding_span) = binding.span() else {
             return Err(dae::DaeConstructionError::MissingProvenance {
                 origin: dae::DaeProvenanceOrigin::Source,
-                attempted_span: Span::DUMMY,
+                attempted_span: None,
             });
         };
         let binding_source = dae::DaeProvenance::source(binding_span)?;
