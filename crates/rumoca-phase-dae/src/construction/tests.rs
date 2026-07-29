@@ -126,6 +126,67 @@ fn source_priority_when_model(source: &TestSource) -> flat::Model {
     model
 }
 
+fn duplicate_when_model(source: &TestSource, nested: bool) -> flat::Model {
+    let condition_span = source.span("when true", 0);
+    let first_span = source.span("m = true", 0);
+    let second_span = source.span("m = false", 0);
+    let mut model = flat::Model::new();
+    add_primitive_variable(
+        &mut model,
+        source,
+        "m",
+        "discrete Boolean m",
+        8,
+        Vec::new(),
+        true,
+    );
+    let mut branch = flat::WhenBranch::new(
+        Expression::Literal {
+            value: Literal::Boolean(true),
+            span: condition_span,
+        },
+        condition_span,
+    );
+    branch.add_equation(flat::WhenEquation::assign(
+        VarName::new("m"),
+        Expression::Literal {
+            value: Literal::Boolean(true),
+            span: source.span("true", 1),
+        },
+        first_span,
+        "first definition",
+    ));
+    let second = flat::WhenEquation::assign(
+        VarName::new("m"),
+        Expression::Literal {
+            value: Literal::Boolean(false),
+            span: source.span("false", 0),
+        },
+        second_span,
+        "second definition",
+    );
+    if nested {
+        branch.add_equation(flat::WhenEquation::conditional(
+            vec![(
+                Expression::Literal {
+                    value: Literal::Boolean(true),
+                    span: source.span("if true", 0),
+                },
+                vec![second],
+            )],
+            None,
+            source.span("if true then m = false; end if", 0),
+            "nested second definition",
+        ));
+    } else {
+        branch.add_equation(second);
+    }
+    model
+        .when_chains
+        .push(flat::WhenChain::new(branch, source.span("when true", 0)));
+    model
+}
+
 #[test]
 fn production_lowering_enters_only_through_construct() {
     let source = TestSource::new("model M Real x; equation 0 = x - 1.0; end M;");
@@ -189,6 +250,194 @@ fn when_chain_lowers_source_priority_with_exact_branch_provenance() {
             dae::ConditionOperation::Not(previous) if previous == first.trigger()
         ));
     });
+}
+
+#[test]
+fn malformed_flat_when_branch_rejects_direct_duplicate_at_second_definition() {
+    let source = TestSource::new(
+        "model M discrete Boolean m; equation \
+         when true then m = true; m = false; end when; end M;",
+    );
+    let second_span = source.span("m = false", 0);
+    let model = duplicate_when_model(&source, false);
+    let error = construct(&model, source.map, ToDaeOptions::default()).unwrap_err();
+
+    assert!(matches!(
+        error,
+        ToDaeError::DiscreteSolvedFormViolation { detail, span }
+            if span == second_span && detail.contains("`m`")
+    ));
+}
+
+#[test]
+fn malformed_flat_when_branch_rejects_nested_duplicate_at_inner_definition() {
+    let source = TestSource::new(
+        "model M discrete Boolean m; equation \
+         when true then m = true; if true then m = false; end if; end when; end M;",
+    );
+    let second_span = source.span("m = false", 0);
+    let model = duplicate_when_model(&source, true);
+    let error = construct(&model, source.map, ToDaeOptions::default()).unwrap_err();
+
+    assert!(matches!(
+        error,
+        ToDaeError::DiscreteSolvedFormViolation { detail, span }
+            if span == second_span && detail.contains("`m`")
+    ));
+}
+
+#[test]
+fn malformed_flat_rejects_second_independent_when_owner_for_one_target() {
+    let source = TestSource::new(
+        "model M discrete Boolean m; equation \
+         when true then m = true; end when; \
+         when false then m = false; end when; end M;",
+    );
+    let mut model = flat::Model::new();
+    add_primitive_variable(
+        &mut model,
+        &source,
+        "m",
+        "discrete Boolean m",
+        8,
+        Vec::new(),
+        true,
+    );
+    for (condition, assignment, owner, value) in [
+        (
+            "when true",
+            "m = true",
+            "when true then m = true; end when",
+            true,
+        ),
+        (
+            "when false",
+            "m = false",
+            "when false then m = false; end when",
+            false,
+        ),
+    ] {
+        let condition_span = source.span(condition, 0);
+        let assignment_span = source.span(assignment, 0);
+        let mut branch = flat::WhenBranch::new(
+            Expression::Literal {
+                value: Literal::Boolean(value),
+                span: condition_span,
+            },
+            condition_span,
+        );
+        branch.add_equation(flat::WhenEquation::assign(
+            VarName::new("m"),
+            Expression::Literal {
+                value: Literal::Boolean(value),
+                span: assignment_span,
+            },
+            assignment_span,
+            assignment,
+        ));
+        model
+            .when_chains
+            .push(flat::WhenChain::new(branch, source.span(owner, 0)));
+    }
+    let second_owner = source.span("when false then m = false; end when", 0);
+    let error = construct(&model, source.map, ToDaeOptions::default()).unwrap_err();
+
+    assert!(matches!(
+        error,
+        ToDaeError::DiscreteSolvedFormViolation { detail, span }
+            if span == second_owner && detail.contains("`m`")
+    ));
+}
+
+#[test]
+fn nested_duplicate_diagnostic_follows_source_insertion_order() {
+    let source = TestSource::new(
+        "model M discrete Boolean z; discrete Boolean a; equation \
+         when true then z = true; a = true; \
+         if true then z = false; a = false; end if; end when; end M;",
+    );
+    let mut model = flat::Model::new();
+    add_primitive_variable(
+        &mut model,
+        &source,
+        "z",
+        "discrete Boolean z",
+        8,
+        Vec::new(),
+        true,
+    );
+    add_primitive_variable(
+        &mut model,
+        &source,
+        "a",
+        "discrete Boolean a",
+        9,
+        Vec::new(),
+        true,
+    );
+    let owner_span = source.span("when true", 0);
+    let mut branch = flat::WhenBranch::new(
+        Expression::Literal {
+            value: Literal::Boolean(true),
+            span: owner_span,
+        },
+        owner_span,
+    );
+    for (target, assignment) in [("z", "z = true"), ("a", "a = true")] {
+        let span = source.span(assignment, 0);
+        branch.add_equation(flat::WhenEquation::assign(
+            VarName::new(target),
+            Expression::Literal {
+                value: Literal::Boolean(true),
+                span,
+            },
+            span,
+            assignment,
+        ));
+    }
+    let z_second = source.span("z = false", 0);
+    let a_second = source.span("a = false", 0);
+    branch.add_equation(flat::WhenEquation::conditional(
+        vec![(
+            Expression::Literal {
+                value: Literal::Boolean(true),
+                span: source.span("if true", 0),
+            },
+            vec![
+                flat::WhenEquation::assign(
+                    VarName::new("z"),
+                    Expression::Literal {
+                        value: Literal::Boolean(false),
+                        span: z_second,
+                    },
+                    z_second,
+                    "z second",
+                ),
+                flat::WhenEquation::assign(
+                    VarName::new("a"),
+                    Expression::Literal {
+                        value: Literal::Boolean(false),
+                        span: a_second,
+                    },
+                    a_second,
+                    "a second",
+                ),
+            ],
+        )],
+        None,
+        source.span("if true then z = false; a = false; end if", 0),
+        "source-order duplicates",
+    ));
+    model
+        .when_chains
+        .push(flat::WhenChain::new(branch, owner_span));
+    let error = construct(&model, source.map, ToDaeOptions::default()).unwrap_err();
+
+    assert!(matches!(
+        error,
+        ToDaeError::DiscreteSolvedFormViolation { detail, span }
+            if span == z_second && detail.contains("`z`")
+    ));
 }
 
 #[test]

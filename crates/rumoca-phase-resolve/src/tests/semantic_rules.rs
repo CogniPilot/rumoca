@@ -150,6 +150,322 @@ end DuplicateWhenTarget;
 }
 
 #[test]
+fn test_when_single_assign_rejects_duplicate_in_one_branch_at_second_target() {
+    let source = r#"
+model DuplicateWithinWhenBranch
+  Boolean trigger;
+  Real x;
+equation
+  when edge(trigger) then
+    x = 1;
+    x = 2;
+  end when;
+end DuplicateWithinWhenBranch;
+"#;
+
+    let diagnostics =
+        resolve_test_source(source).expect_err("one when branch cannot define x twice");
+    let diagnostic = diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code.as_deref() == Some("ER053"))
+        .expect("duplicate definition must report ER053");
+    let label = diagnostic
+        .labels
+        .iter()
+        .find(|label| label.primary)
+        .expect("ER053 must identify the second definition");
+    assert_eq!(&source[label.span.start.0..label.span.end.0], "x");
+    assert_eq!(
+        label.span.start.0,
+        source.find("x = 2").expect("second assignment is present"),
+        "ER053 must point at the second target, not the first"
+    );
+}
+
+#[test]
+fn test_when_single_assign_rejects_assignment_before_conditional_definition() {
+    let source = r#"
+model AssignmentBeforeConditional
+  Boolean trigger;
+  Boolean choose;
+  Real x;
+equation
+  when edge(trigger) then
+    x = 1;
+    if choose then
+      x = 2;
+    else
+      x = 3;
+    end if;
+  end when;
+end AssignmentBeforeConditional;
+"#;
+
+    let diagnostics = resolve_test_source(source)
+        .expect_err("a conditional contributes its target once to the enclosing sequence");
+    let diagnostic = diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code.as_deref() == Some("ER053"))
+        .expect("sequential assignment and conditional definition must report ER053");
+    let label = diagnostic
+        .labels
+        .iter()
+        .find(|label| label.primary)
+        .expect("ER053 must identify the colliding conditional target");
+    assert_eq!(&source[label.span.start.0..label.span.end.0], "x");
+    assert_eq!(
+        label.span.start.0,
+        source
+            .find("x = 2")
+            .expect("first conditional target is present"),
+        "the conditional's representative target is the second occurrence"
+    );
+}
+
+#[test]
+fn test_when_single_assign_allows_target_in_mutually_exclusive_if_branches() {
+    let source = r#"
+model MutuallyExclusiveConditionalTargets
+  Boolean trigger;
+  Boolean choose;
+  Real x;
+equation
+  when edge(trigger) then
+    if choose then
+      x = 1;
+    else
+      x = 2;
+    end if;
+  end when;
+end MutuallyExclusiveConditionalTargets;
+"#;
+
+    resolve_test_source(source)
+        .expect("mutually exclusive conditional branches may define the same target");
+}
+
+#[test]
+fn test_when_single_assign_allows_target_in_elsewhen_branches() {
+    let source = r#"
+model MutuallyExclusiveElsewhenTargets
+  Boolean firstTrigger;
+  Boolean secondTrigger;
+  Real x;
+equation
+  when edge(firstTrigger) then
+    x = 1;
+  elsewhen edge(secondTrigger) then
+    x = 2;
+  end when;
+end MutuallyExclusiveElsewhenTargets;
+"#;
+
+    resolve_test_source(source)
+        .expect("source branches of one when/elsewhen chain are mutually exclusive");
+}
+
+#[test]
+fn test_when_single_assign_allows_target_in_outer_if_alternatives() {
+    let source = r#"
+model MutuallyExclusiveOuterIfTargets
+  parameter Boolean chooseFirst = true;
+  Boolean firstTrigger;
+  Boolean secondTrigger;
+  Real x;
+equation
+  if chooseFirst then
+    when edge(firstTrigger) then
+      x = 1;
+    end when;
+  else
+    when edge(secondTrigger) then
+      x = 2;
+    end when;
+  end if;
+end MutuallyExclusiveOuterIfTargets;
+"#;
+
+    resolve_test_source(source)
+        .expect("mutually exclusive outer if alternatives may own the same when target");
+}
+
+#[test]
+fn test_when_single_assign_rejects_sequential_owners_in_outer_if_branch() {
+    let source = r#"
+model SequentialWhenOwnersInOuterIf
+  parameter Boolean enabled = true;
+  Boolean firstTrigger;
+  Boolean secondTrigger;
+  Real x;
+equation
+  if enabled then
+    when edge(firstTrigger) then
+      x = 1;
+    end when;
+    when edge(secondTrigger) then
+      x = 2;
+    end when;
+  end if;
+end SequentialWhenOwnersInOuterIf;
+"#;
+
+    let diagnostics = resolve_test_source(source)
+        .expect_err("sequential when owners on one selected path cannot share a target");
+    let diagnostic = diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code.as_deref() == Some("ER053"))
+        .expect("sequential owners must report ER053");
+    let label = diagnostic
+        .labels
+        .iter()
+        .find(|label| label.primary)
+        .expect("ER053 must identify the second owner");
+    assert_eq!(&source[label.span.start.0..label.span.end.0], "x");
+    assert_eq!(
+        label.span.start.0,
+        source
+            .find("x = 2")
+            .expect("second owner target is present"),
+        "ER053 must point at the target in the second sequential owner"
+    );
+}
+
+#[test]
+fn test_reinit_allows_same_state_in_outer_if_alternatives() {
+    let source = r#"
+model MutuallyExclusiveOuterIfReinit
+  parameter Boolean chooseFirst = true;
+  Boolean firstTrigger;
+  Boolean secondTrigger;
+  Real x(start = 0);
+equation
+  der(x) = 0;
+  if chooseFirst then
+    when edge(firstTrigger) then
+      reinit(x, 1);
+    end when;
+  else
+    when edge(secondTrigger) then
+      reinit(x, 2);
+    end when;
+  end if;
+end MutuallyExclusiveOuterIfReinit;
+"#;
+
+    resolve_test_source(source)
+        .expect("mutually exclusive outer if alternatives may reinitialize the same state");
+}
+
+#[test]
+fn test_reinit_rejects_sequential_owners_in_outer_if_branch_at_second_target() {
+    let source = r#"
+model SequentialReinitOwnersInOuterIf
+  parameter Boolean enabled = true;
+  Boolean firstTrigger;
+  Boolean secondTrigger;
+  Real x(start = 0);
+equation
+  der(x) = 0;
+  if enabled then
+    when edge(firstTrigger) then
+      reinit(x, 1);
+    end when;
+    when edge(secondTrigger) then
+      reinit(x, 2);
+    end when;
+  end if;
+end SequentialReinitOwnersInOuterIf;
+"#;
+
+    let diagnostics = resolve_test_source(source)
+        .expect_err("sequential when owners cannot both reinitialize one state");
+    let diagnostic = diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code.as_deref() == Some("ER051"))
+        .expect("sequential reinit owners must report ER051");
+    let label = diagnostic
+        .labels
+        .iter()
+        .find(|label| label.primary)
+        .expect("ER051 must identify the second reinit target");
+    assert_eq!(&source[label.span.start.0..label.span.end.0], "x");
+    assert_eq!(
+        label.span.start.0,
+        source
+            .find("x, 2")
+            .expect("second reinit target is present"),
+        "ER051 must point at the target in the second sequential owner"
+    );
+}
+
+#[test]
+fn test_reinit_allows_same_state_in_mutually_exclusive_inner_if_branches() {
+    let source = r#"
+model MutuallyExclusiveInnerIfReinit
+  Boolean trigger;
+  Boolean chooseFirst;
+  Real x(start = 0);
+equation
+  der(x) = 0;
+  when edge(trigger) then
+    if chooseFirst then
+      reinit(x, 1);
+    else
+      reinit(x, 2);
+    end if;
+  end when;
+end MutuallyExclusiveInnerIfReinit;
+"#;
+
+    resolve_test_source(source)
+        .expect("mutually exclusive branches of one inner if may reinitialize the same state");
+}
+
+#[test]
+fn test_reinit_rejects_overlapping_sequential_inner_if_paths() {
+    let source = r#"
+model OverlappingSequentialInnerIfReinit
+  Boolean trigger;
+  Boolean firstChoice;
+  Boolean secondChoice;
+  Real x(start = 0);
+equation
+  der(x) = 0;
+  when edge(trigger) then
+    if firstChoice then
+      reinit(x, 1);
+    end if;
+    if secondChoice then
+      assert(true, "no reinit on this alternative");
+    else
+      reinit(x, 2);
+    end if;
+  end when;
+end OverlappingSequentialInnerIfReinit;
+"#;
+
+    let diagnostics = resolve_test_source(source)
+        .expect_err("two sequential inner if paths may both reinitialize x");
+    let diagnostic = diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code.as_deref() == Some("ER052"))
+        .expect("overlapping reinit paths must report ER052");
+    let label = diagnostic
+        .labels
+        .iter()
+        .find(|label| label.primary)
+        .expect("ER052 must identify the second reinit target");
+    assert_eq!(&source[label.span.start.0..label.span.end.0], "x");
+    assert_eq!(
+        label.span.start.0,
+        source
+            .find("x, 2")
+            .expect("second reinit target is present"),
+        "ER052 must point at the second potentially executable reinit"
+    );
+}
+
+#[test]
 fn test_single_branch_clocked_when_is_valid() {
     let source = r#"
 model SingleClockedWhen

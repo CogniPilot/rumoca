@@ -1,4 +1,5 @@
 use super::*;
+use rumoca_ir_ast::AstIndexMap;
 
 pub(super) const ER047_OPERATOR_CONTENTS: &str = "ER047";
 pub(super) const ER048_OPERATOR_PLACEMENT: &str = "ER048";
@@ -500,194 +501,355 @@ pub(super) fn check_operator_record_base_restrictions(
 }
 
 pub(super) fn check_when_reinit_contracts(class: &ClassDef, diags: &mut Vec<Diagnostic>) {
-    let mut when_global_reinit: HashMap<String, Span> = HashMap::new();
-    let mut when_global_defined: HashMap<String, Span> = HashMap::new();
-
-    for eq in &class.equations {
-        let Equation::When(blocks) = eq else {
-            continue;
-        };
-
-        let mut local_reinit_targets: HashMap<String, Vec<(Span, Vec<u32>)>> = HashMap::new();
-        let mut local_defined_targets: HashMap<String, Vec<(Span, Vec<u32>)>> = HashMap::new();
-
-        collect_when_definition_targets(
-            blocks,
-            &mut local_reinit_targets,
-            &mut local_defined_targets,
-            &[],
-        );
-
-        let mut local_reinit_merged: HashMap<String, Span> = HashMap::new();
-        for (name, reinit_targets) in local_reinit_targets {
-            merge_reinit_targets_for_name(&name, reinit_targets, &mut local_reinit_merged, diags);
-        }
-
-        for (name, local_span) in local_reinit_merged {
-            if let Some(prev_span) = when_global_reinit.get(&name) {
-                diags.push(semantic_error(
-                    ER051_REINIT_SINGLE_WHEN,
-                    format!(
-                        "reinit for variable '{name}' is used in more than one when-equation (MLS §8.3.5)"
-                    ),
-                    label_from_span(
-                        *prev_span,
-                        format!("second when-equation applies reinit to '{name}'"),
-                    ),
-                ));
-                continue;
-            }
-
-            when_global_reinit.insert(name, local_span);
-        }
-
-        let mut local_defined_merged: HashMap<String, Span> = HashMap::new();
-        for (name, mut definitions) in local_defined_targets {
-            if let Some((span, _)) = definitions.pop() {
-                local_defined_merged.insert(name, span);
-            }
-        }
-
-        for (name, local_span) in local_defined_merged {
-            if let Some(prev_span) = when_global_defined.get(&name) {
-                diags.push(semantic_error(
-                    ER053_WHEN_SINGLE_ASSIGN,
-                    format!(
-                        "the same variable '{name}' is defined in more than one when-equation (MLS §8.3.5)"
-                    ),
-                    label_from_span(
-                        *prev_span,
-                        format!("'{name}' is already defined by a previous when-equation"),
-                    ),
-                ));
-            } else {
-                when_global_defined.insert(name, local_span);
-            }
-        }
-    }
+    let mut targets = WhenOwnerTargets::default();
+    collect_when_owner_sequence(&class.equations, &mut targets, diags);
 }
 
-fn collect_when_definition_targets(
-    blocks: &[ast::EquationBlock],
-    reinit_targets: &mut HashMap<String, Vec<(Span, Vec<u32>)>>,
-    defined_targets: &mut HashMap<String, Vec<(Span, Vec<u32>)>>,
-    branch_path: &[u32],
-) {
-    for eq in blocks.iter().flat_map(|block| block.eqs.iter()) {
-        collect_when_equation_targets(eq, reinit_targets, defined_targets, branch_path);
-    }
+type DefinitionTargets = AstIndexMap<String, Span>;
+
+#[derive(Default)]
+struct WhenOwnerTargets {
+    reinit: DefinitionTargets,
+    defined: DefinitionTargets,
 }
 
-fn record_reinit_branch_target(
-    name: &str,
-    span: Span,
-    branch_path: Vec<u32>,
-    seen_in_branch: &mut HashMap<Vec<u32>, Span>,
-    diags: &mut Vec<Diagnostic>,
-) -> bool {
-    let Some(prev_span) = seen_in_branch.insert(branch_path, span) else {
-        return false;
-    };
-
-    diags.push(semantic_error(
-        ER052_REINIT_BRANCH_DISTRIBUTION,
-        format!(
-            "multiple reinit calls for '{name}' in one when-branch are not allowed (MLS §8.3.5)"
-        ),
-        label_from_span(
-            prev_span,
-            format!("multiple reinit calls for '{name}' in this branch"),
-        ),
-    ));
-    true
-}
-
-fn merge_reinit_targets_for_name(
-    name: &str,
-    reinit_targets: Vec<(Span, Vec<u32>)>,
-    local_reinit_merged: &mut HashMap<String, Span>,
-    diags: &mut Vec<Diagnostic>,
-) {
-    let mut seen_in_branch: HashMap<Vec<u32>, Span> = HashMap::new();
-    for (span, branch_path) in reinit_targets {
-        if record_reinit_branch_target(name, span, branch_path, &mut seen_in_branch, diags) {
-            continue;
-        }
-        local_reinit_merged.entry(name.to_string()).or_insert(span);
-    }
-}
-
-fn collect_when_equation_targets(
-    equation: &Equation,
-    reinit_targets: &mut HashMap<String, Vec<(Span, Vec<u32>)>>,
-    defined_targets: &mut HashMap<String, Vec<(Span, Vec<u32>)>>,
-    branch_path: &[u32],
-) {
-    match equation {
-        Equation::FunctionCall { comp, args, .. } => {
-            if let Some((target_name, span)) = extract_reinit_target(comp, args) {
-                reinit_targets
-                    .entry(target_name)
-                    .or_default()
-                    .push((span, branch_path.to_vec()));
-            }
-        }
-        Equation::Simple { lhs, .. } => {
-            if let Some((target_name, span)) = extract_component_reference_target(lhs) {
-                defined_targets
-                    .entry(target_name)
-                    .or_default()
-                    .push((span, branch_path.to_vec()));
-            }
-        }
-        Equation::When(blocks) => {
-            collect_when_definition_targets(blocks, reinit_targets, defined_targets, branch_path);
-        }
-        Equation::For { equations, .. } => {
-            collect_when_block_targets_with_path(
-                equations,
-                reinit_targets,
-                defined_targets,
-                branch_path,
-            );
-        }
-        Equation::If {
-            cond_blocks,
-            else_block,
-        } => {
-            for (index, block) in cond_blocks.iter().enumerate() {
-                let mut cond_branch = branch_path.to_vec();
-                cond_branch.push(index as u32);
-                collect_when_block_targets_with_path(
-                    &block.eqs,
-                    reinit_targets,
-                    defined_targets,
-                    &cond_branch,
-                );
-            }
-            if let Some(else_block) = else_block {
-                let mut else_branch = branch_path.to_vec();
-                else_branch.push(cond_blocks.len() as u32);
-                collect_when_block_targets_with_path(
-                    else_block,
-                    reinit_targets,
-                    defined_targets,
-                    &else_branch,
-                );
-            }
-        }
-        Equation::Assert { .. } | Equation::Connect { .. } | Equation::Empty => {}
-    }
-}
-
-fn collect_when_block_targets_with_path(
+fn collect_when_owner_sequence(
     equations: &[Equation],
-    reinit_targets: &mut HashMap<String, Vec<(Span, Vec<u32>)>>,
-    defined_targets: &mut HashMap<String, Vec<(Span, Vec<u32>)>>,
-    branch_path: &[u32],
+    targets: &mut WhenOwnerTargets,
+    diags: &mut Vec<Diagnostic>,
 ) {
-    for eq in equations {
-        collect_when_equation_targets(eq, reinit_targets, defined_targets, branch_path);
+    for equation in equations {
+        match equation {
+            Equation::When(blocks) => {
+                let owner = collect_when_owner_contracts(blocks, diags);
+                merge_sequential_when_owner_targets(targets, owner, diags);
+            }
+            Equation::If {
+                cond_blocks,
+                else_block,
+            } => {
+                let mut alternatives = WhenOwnerTargets::default();
+                for block in cond_blocks {
+                    let mut branch = WhenOwnerTargets::default();
+                    collect_when_owner_sequence(&block.eqs, &mut branch, diags);
+                    merge_exclusive_when_owner_targets(&mut alternatives, branch);
+                }
+                if let Some(else_block) = else_block {
+                    let mut branch = WhenOwnerTargets::default();
+                    collect_when_owner_sequence(else_block, &mut branch, diags);
+                    merge_exclusive_when_owner_targets(&mut alternatives, branch);
+                }
+                merge_sequential_when_owner_targets(targets, alternatives, diags);
+            }
+            Equation::For { equations, .. } => {
+                let mut loop_targets = WhenOwnerTargets::default();
+                collect_when_owner_sequence(equations, &mut loop_targets, diags);
+                merge_sequential_when_owner_targets(targets, loop_targets, diags);
+            }
+            Equation::FunctionCall { .. }
+            | Equation::Assert { .. }
+            | Equation::Connect { .. }
+            | Equation::Empty
+            | Equation::Simple { .. } => {}
+        }
+    }
+}
+
+fn merge_exclusive_when_owner_targets(targets: &mut WhenOwnerTargets, branch: WhenOwnerTargets) {
+    merge_exclusive_definition_targets(&mut targets.reinit, branch.reinit);
+    merge_exclusive_definition_targets(&mut targets.defined, branch.defined);
+}
+
+fn merge_sequential_when_owner_targets(
+    targets: &mut WhenOwnerTargets,
+    sequential: WhenOwnerTargets,
+    diags: &mut Vec<Diagnostic>,
+) {
+    for (name, span) in sequential.reinit {
+        record_sequential_reinit(&mut targets.reinit, name, span, diags);
+    }
+    for (name, span) in sequential.defined {
+        record_sequential_when_definition(&mut targets.defined, name, span, diags);
+    }
+}
+
+fn collect_when_owner_contracts(
+    blocks: &[ast::EquationBlock],
+    diags: &mut Vec<Diagnostic>,
+) -> WhenOwnerTargets {
+    WhenOwnerTargets {
+        reinit: collect_when_chain_reinit_targets(blocks, diags),
+        defined: collect_when_chain_definition_targets(blocks, diags),
+    }
+}
+
+fn record_sequential_reinit(
+    targets: &mut DefinitionTargets,
+    name: String,
+    span: Span,
+    diags: &mut Vec<Diagnostic>,
+) {
+    match targets.entry(name) {
+        indexmap::map::Entry::Occupied(entry) => {
+            let name = entry.key();
+            diags.push(semantic_error(
+                ER051_REINIT_SINGLE_WHEN,
+                format!(
+                    "reinit for variable '{name}' is used in more than one when-equation (MLS §8.3.5)"
+                ),
+                label_from_span(
+                    span,
+                    format!("second when-equation applies reinit to '{name}'"),
+                ),
+            ));
+        }
+        indexmap::map::Entry::Vacant(entry) => {
+            entry.insert(span);
+        }
+    }
+}
+
+fn record_sequential_when_definition(
+    targets: &mut DefinitionTargets,
+    name: String,
+    span: Span,
+    diags: &mut Vec<Diagnostic>,
+) {
+    match targets.entry(name) {
+        indexmap::map::Entry::Occupied(entry) => {
+            let name = entry.key();
+            diags.push(semantic_error(
+                ER053_WHEN_SINGLE_ASSIGN,
+                format!(
+                    "the same variable '{name}' is defined in more than one when-equation (MLS §8.3.5)"
+                ),
+                label_from_span(
+                    span,
+                    format!("second when-equation defines '{name}' again"),
+                ),
+            ));
+        }
+        indexmap::map::Entry::Vacant(entry) => {
+            entry.insert(span);
+        }
+    }
+}
+
+fn collect_when_chain_reinit_targets(
+    blocks: &[ast::EquationBlock],
+    diags: &mut Vec<Diagnostic>,
+) -> DefinitionTargets {
+    let mut chain_targets = DefinitionTargets::default();
+    for block in blocks {
+        let mut branch_targets = DefinitionTargets::default();
+        collect_reinit_sequence(&block.eqs, &mut branch_targets, diags);
+        merge_exclusive_definition_targets(&mut chain_targets, branch_targets);
+    }
+    chain_targets
+}
+
+fn collect_reinit_sequence(
+    equations: &[Equation],
+    targets: &mut DefinitionTargets,
+    diags: &mut Vec<Diagnostic>,
+) {
+    for equation in equations {
+        match equation {
+            Equation::FunctionCall { comp, args, .. } => {
+                if let Some((name, span)) = extract_reinit_target(comp, args) {
+                    record_sequential_branch_reinit(targets, name, span, diags);
+                }
+            }
+            Equation::If {
+                cond_blocks,
+                else_block,
+            } => {
+                let mut alternatives = DefinitionTargets::default();
+                for block in cond_blocks {
+                    let mut branch = DefinitionTargets::default();
+                    collect_reinit_sequence(&block.eqs, &mut branch, diags);
+                    merge_exclusive_definition_targets(&mut alternatives, branch);
+                }
+                if let Some(else_block) = else_block {
+                    let mut branch = DefinitionTargets::default();
+                    collect_reinit_sequence(else_block, &mut branch, diags);
+                    merge_exclusive_definition_targets(&mut alternatives, branch);
+                }
+                merge_sequential_reinit_targets(targets, alternatives, diags);
+            }
+            Equation::For { equations, .. } => {
+                let mut loop_targets = DefinitionTargets::default();
+                collect_reinit_sequence(equations, &mut loop_targets, diags);
+                merge_sequential_reinit_targets(targets, loop_targets, diags);
+            }
+            Equation::When(blocks) => {
+                let nested_targets = collect_when_chain_reinit_targets(blocks, diags);
+                merge_sequential_reinit_targets(targets, nested_targets, diags);
+            }
+            Equation::Assert { .. }
+            | Equation::Connect { .. }
+            | Equation::Empty
+            | Equation::Simple { .. } => {}
+        }
+    }
+}
+
+fn merge_sequential_reinit_targets(
+    targets: &mut DefinitionTargets,
+    sequential: DefinitionTargets,
+    diags: &mut Vec<Diagnostic>,
+) {
+    for (name, span) in sequential {
+        record_sequential_branch_reinit(targets, name, span, diags);
+    }
+}
+
+fn record_sequential_branch_reinit(
+    targets: &mut DefinitionTargets,
+    name: String,
+    span: Span,
+    diags: &mut Vec<Diagnostic>,
+) {
+    match targets.entry(name) {
+        indexmap::map::Entry::Occupied(entry) => {
+            let name = entry.key();
+            diags.push(semantic_error(
+                ER052_REINIT_BRANCH_DISTRIBUTION,
+                format!(
+                    "multiple reinit calls for '{name}' in one when-branch are not allowed (MLS §8.3.5)"
+                ),
+                label_from_span(
+                    span,
+                    format!("second reinit for '{name}' in this branch"),
+                ),
+            ));
+        }
+        indexmap::map::Entry::Vacant(entry) => {
+            entry.insert(span);
+        }
+    }
+}
+
+fn collect_when_chain_definition_targets(
+    blocks: &[ast::EquationBlock],
+    diags: &mut Vec<Diagnostic>,
+) -> DefinitionTargets {
+    let mut chain_targets = DefinitionTargets::default();
+    for block in blocks {
+        let mut branch_targets = DefinitionTargets::default();
+        collect_definition_sequence(&block.eqs, &mut branch_targets, diags);
+        merge_exclusive_definition_targets(&mut chain_targets, branch_targets);
+    }
+    chain_targets
+}
+
+fn collect_definition_sequence(
+    equations: &[Equation],
+    targets: &mut DefinitionTargets,
+    diags: &mut Vec<Diagnostic>,
+) {
+    for equation in equations {
+        match equation {
+            Equation::Simple { lhs, .. } => {
+                for (name, span) in extract_definition_targets(lhs) {
+                    record_sequential_definition(targets, name, span, diags);
+                }
+            }
+            Equation::If {
+                cond_blocks,
+                else_block,
+            } => {
+                let mut conditional_targets = DefinitionTargets::default();
+                for block in cond_blocks {
+                    let mut branch_targets = DefinitionTargets::default();
+                    collect_definition_sequence(&block.eqs, &mut branch_targets, diags);
+                    merge_exclusive_definition_targets(&mut conditional_targets, branch_targets);
+                }
+                if let Some(else_block) = else_block {
+                    let mut branch_targets = DefinitionTargets::default();
+                    collect_definition_sequence(else_block, &mut branch_targets, diags);
+                    merge_exclusive_definition_targets(&mut conditional_targets, branch_targets);
+                }
+                merge_sequential_definition_targets(targets, conditional_targets, diags);
+            }
+            Equation::For { equations, .. } => {
+                let mut loop_targets = DefinitionTargets::default();
+                collect_definition_sequence(equations, &mut loop_targets, diags);
+                merge_sequential_definition_targets(targets, loop_targets, diags);
+            }
+            Equation::When(blocks) => {
+                let nested_targets = collect_when_chain_definition_targets(blocks, diags);
+                merge_sequential_definition_targets(targets, nested_targets, diags);
+            }
+            Equation::FunctionCall { .. }
+            | Equation::Assert { .. }
+            | Equation::Connect { .. }
+            | Equation::Empty => {}
+        }
+    }
+}
+
+fn merge_exclusive_definition_targets(
+    targets: &mut DefinitionTargets,
+    branch_targets: DefinitionTargets,
+) {
+    for (name, span) in branch_targets {
+        targets.entry(name).or_insert(span);
+    }
+}
+
+fn merge_sequential_definition_targets(
+    targets: &mut DefinitionTargets,
+    sequential_targets: DefinitionTargets,
+    diags: &mut Vec<Diagnostic>,
+) {
+    for (name, span) in sequential_targets {
+        record_sequential_definition(targets, name, span, diags);
+    }
+}
+
+fn record_sequential_definition(
+    targets: &mut DefinitionTargets,
+    name: String,
+    span: Span,
+    diags: &mut Vec<Diagnostic>,
+) {
+    match targets.entry(name) {
+        indexmap::map::Entry::Occupied(entry) => {
+            let name = entry.key();
+            diags.push(semantic_error(
+                ER053_WHEN_SINGLE_ASSIGN,
+                format!(
+                    "the variable '{name}' is defined more than once in one when/elsewhen branch (MLS §8.3.5)"
+                ),
+                label_from_span(span, format!("second definition of '{name}' in this branch")),
+            ));
+        }
+        indexmap::map::Entry::Vacant(entry) => {
+            entry.insert(span);
+        }
+    }
+}
+
+fn extract_definition_targets(expr: &Expression) -> Vec<(String, Span)> {
+    let mut targets = Vec::new();
+    collect_definition_targets(expr, &mut targets);
+    targets
+}
+
+fn collect_definition_targets(expr: &Expression, targets: &mut Vec<(String, Span)>) {
+    match expr {
+        Expression::ComponentReference(_) => {
+            if let Some(target) = extract_component_reference_target(expr) {
+                targets.push(target);
+            }
+        }
+        Expression::Tuple { elements, .. } => {
+            for element in elements {
+                collect_definition_targets(element, targets);
+            }
+        }
+        _ => {}
     }
 }
 
