@@ -29,82 +29,8 @@ pub(super) fn node_function_facts(
     node: &ExprNode,
     at: DaeProvenance,
 ) -> Result<FunctionInsertionFacts, DaeConstructionError> {
-    match node {
-        ExprNode::Coordinate(Coordinate::FunctionParameter { function, .. }) => {
-            checked_u32(storage.expressions.nodes.len(), "expression arena", at)?;
-            return Ok(FunctionInsertionFacts {
-                scope: Some(*function),
-                ..FunctionInsertionFacts::EMPTY
-            });
-        }
-        ExprNode::FunctionValue {
-            function,
-            value,
-            definition_ordinal,
-        } => {
-            let witness = checked_u32(storage.expressions.nodes.len(), "expression arena", at)?;
-            let read_set = storage.function_read_sets.singleton(
-                FunctionReadFact {
-                    value: *value,
-                    definition: *definition_ordinal,
-                    witness,
-                },
-                at,
-            )?;
-            return Ok(FunctionInsertionFacts {
-                scope: Some(*function),
-                read_set,
-                ..FunctionInsertionFacts::EMPTY
-            });
-        }
-        ExprNode::FunctionFoldParameter {
-            function,
-            fold,
-            carried,
-            definition_ordinal,
-        }
-        | ExprNode::FunctionFoldOutput {
-            function,
-            fold,
-            carried,
-            definition_ordinal,
-        } => {
-            let witness = checked_u32(storage.expressions.nodes.len(), "expression arena", at)?;
-            let fold = FunctionFoldId::from_raw(*function, *fold);
-            let entry = function_fold_entry(storage, fold, at)?;
-            let value = entry
-                .targets
-                .get(*carried as usize)
-                .copied()
-                .ok_or_else(|| invalid_arity(entry.targets.len(), *carried as usize + 1, at))?;
-            let read_set = storage.function_read_sets.singleton(
-                FunctionReadFact {
-                    value,
-                    definition: *definition_ordinal,
-                    witness,
-                },
-                at,
-            )?;
-            return Ok(FunctionInsertionFacts {
-                scope: Some(*function),
-                read_set,
-                ..FunctionInsertionFacts::EMPTY
-            });
-        }
-        ExprNode::Coordinate(Coordinate::Binder { .. })
-        | ExprNode::Literal(_)
-        | ExprNode::Range { .. } => {
-            checked_u32(storage.expressions.nodes.len(), "expression arena", at)?;
-            return Ok(FunctionInsertionFacts::EMPTY);
-        }
-        ExprNode::Coordinate(_) => {
-            let witness = checked_u32(storage.expressions.nodes.len(), "expression arena", at)?;
-            return Ok(FunctionInsertionFacts {
-                illegal_coordinate: Some(witness),
-                ..FunctionInsertionFacts::EMPTY
-            });
-        }
-        _ => {}
+    if let Some(facts) = leaf_function_facts(storage, node, at)? {
+        return Ok(facts);
     }
 
     let mut fold = FunctionFactsFold::new();
@@ -144,6 +70,100 @@ pub(super) fn node_function_facts(
         | ExprNode::FunctionFoldOutput { .. } => unreachable!("leaf expressions returned above"),
     }
     fold.finish(storage, at)
+}
+
+fn leaf_function_facts(
+    storage: &mut Storage,
+    node: &ExprNode,
+    at: DaeProvenance,
+) -> Result<Option<FunctionInsertionFacts>, DaeConstructionError> {
+    match node {
+        ExprNode::Coordinate(Coordinate::FunctionParameter { function, .. }) => {
+            checked_u32(storage.expressions.nodes.len(), "expression arena", at)?;
+            Ok(Some(FunctionInsertionFacts {
+                scope: Some(*function),
+                ..FunctionInsertionFacts::EMPTY
+            }))
+        }
+        ExprNode::FunctionValue {
+            function,
+            value,
+            definition_ordinal,
+        } => {
+            let witness = checked_u32(storage.expressions.nodes.len(), "expression arena", at)?;
+            let read_set = storage.function_read_sets.singleton(
+                FunctionReadFact {
+                    value: *value,
+                    definition: *definition_ordinal,
+                    witness,
+                },
+                at,
+            )?;
+            Ok(Some(FunctionInsertionFacts {
+                scope: Some(*function),
+                read_set,
+                ..FunctionInsertionFacts::EMPTY
+            }))
+        }
+        ExprNode::FunctionFoldParameter {
+            function,
+            fold,
+            carried,
+            definition_ordinal,
+        }
+        | ExprNode::FunctionFoldOutput {
+            function,
+            fold,
+            carried,
+            definition_ordinal,
+        } => {
+            let witness = checked_u32(storage.expressions.nodes.len(), "expression arena", at)?;
+            let fold = FunctionFoldId::from_raw(*function, *fold);
+            let entry = function_fold_entry(storage, fold, at)?;
+            let value = entry
+                .targets
+                .get(*carried as usize)
+                .copied()
+                .ok_or_else(|| invalid_arity(entry.targets.len(), *carried as usize + 1, at))?;
+            let read_set = storage.function_read_sets.singleton(
+                FunctionReadFact {
+                    value,
+                    definition: *definition_ordinal,
+                    witness,
+                },
+                at,
+            )?;
+            Ok(Some(FunctionInsertionFacts {
+                scope: Some(*function),
+                read_set,
+                ..FunctionInsertionFacts::EMPTY
+            }))
+        }
+        ExprNode::Coordinate(Coordinate::Binder { .. })
+        | ExprNode::Literal(_)
+        | ExprNode::Range { .. } => {
+            checked_u32(storage.expressions.nodes.len(), "expression arena", at)?;
+            Ok(Some(FunctionInsertionFacts::EMPTY))
+        }
+        ExprNode::Coordinate(_) => {
+            let witness = checked_u32(storage.expressions.nodes.len(), "expression arena", at)?;
+            Ok(Some(FunctionInsertionFacts {
+                illegal_coordinate: Some(witness),
+                ..FunctionInsertionFacts::EMPTY
+            }))
+        }
+        ExprNode::Unary { .. }
+        | ExprNode::Binary { .. }
+        | ExprNode::Conditional { .. }
+        | ExprNode::Array { .. }
+        | ExprNode::Record { .. }
+        | ExprNode::Field { .. }
+        | ExprNode::Comprehension { .. }
+        | ExprNode::Index { .. }
+        | ExprNode::ArrayUpdate { .. }
+        | ExprNode::Builtin { .. }
+        | ExprNode::Call { .. } => Ok(None),
+    }
 }
 
 #[derive(Debug)]
