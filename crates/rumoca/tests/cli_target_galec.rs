@@ -31,6 +31,8 @@ use tempfile::tempdir;
 mod cli_support;
 #[path = "galec_cli_support/container_xml.rs"]
 mod container_xml_support;
+#[path = "galec_cli_support/metadata.rs"]
+mod metadata_support;
 
 use cli_support::{run_compile_target, strip_ansi, write_fixture};
 use container_xml_support::{
@@ -38,6 +40,7 @@ use container_xml_support::{
     relative_file_paths, sole_attribute_value, surgically, validate_against_xsd,
     vendored_schemas_dir, without_block, without_line,
 };
+use metadata_support::{assert_manifest_id, assert_strict_utc_timestamp};
 
 /// Fixed-sample discrete fixture: a parameter, a `pre()` state, an output,
 /// and one `when sample(...)` clock — the shape the galec target exists for.
@@ -120,7 +123,7 @@ fn corrupted_algorithm_code_manifest_is_rejected_by_the_xsd() {
     let out_dir = dir.path().join("out");
     let container = build_container(dir.path(), &out_dir);
     let manifest = fs::read_to_string(container.manifest_xml()).expect("read AC manifest");
-    let xsd = vendored_schemas_dir().join("AlgorithmCode/efmiAlgorithmCodeManifest.xsd");
+    let xsd = vendored_schemas_dir("galec").join("AlgorithmCode/efmiAlgorithmCodeManifest.xsd");
 
     // Sanity: the pristine rendered manifest is valid (else the negatives
     // below would be vacuous).
@@ -186,14 +189,14 @@ fn compile_target_galec_emits_schema_valid_efmu_container() {
         "eFMU root must hold exactly __content.xml, schemas/, AlgorithmCode/"
     );
 
-    // schemas/ is the complete vendored Beta-1 tree, byte for byte
-    // (GAL-023; the repository-only README.md is not part of the copies).
-    let mut vendored = relative_file_paths(&vendored_schemas_dir());
-    vendored.remove("README.md");
+    // schemas/ is the complete target-owned Beta-1 asset tree, byte for byte
+    // (GAL-023), including its origin/license README.
+    let schemas = vendored_schemas_dir("galec");
+    let vendored = relative_file_paths(&schemas);
     let emitted = relative_file_paths(&container.root.join("schemas"));
     assert_eq!(emitted, vendored, "schemas/ must mirror the vendored tree");
     for relative in &vendored {
-        let vendored_bytes = fs::read(vendored_schemas_dir().join(relative)).unwrap();
+        let vendored_bytes = fs::read(schemas.join(relative)).unwrap();
         let emitted_bytes = fs::read(container.root.join("schemas").join(relative)).unwrap();
         assert_eq!(
             emitted_bytes, vendored_bytes,
@@ -213,12 +216,12 @@ fn compile_target_galec_emits_schema_valid_efmu_container() {
     // skips schema validation (GAL-012/GAL-021).
     validate_against_xsd(
         &container.content_xml(),
-        &vendored_schemas_dir().join("efmiContainerManifest.xsd"),
+        &vendored_schemas_dir("galec").join("efmiContainerManifest.xsd"),
     )
     .expect("__content.xml must validate against the vendored container XSD");
     validate_against_xsd(
         &container.manifest_xml(),
-        &vendored_schemas_dir().join("AlgorithmCode/efmiAlgorithmCodeManifest.xsd"),
+        &vendored_schemas_dir("galec").join("AlgorithmCode/efmiAlgorithmCodeManifest.xsd"),
     )
     .expect("manifest.xml must validate against the vendored Algorithm Code XSD");
 }
@@ -282,18 +285,11 @@ fn container_ids_unique_and_generation_metadata_strict() {
         manifest_ref_id, manifest_id,
         "__content.xml manifestRefId must be the manifest's own root id"
     );
-    rumoca_ir_galec::manifest_context::ManifestId::parse(&manifest_ref_id)
-        .expect("manifestRefId must be a brace-wrapped UUID");
+    assert_manifest_id(&manifest_ref_id, &container.content_xml());
 
     for path in [container.content_xml(), container.manifest_xml()] {
         let timestamp = sole_attribute_value(&path, "generationDateAndTime");
-        rumoca_ir_galec::manifest_context::UtcTimestamp::parse(&timestamp).unwrap_or_else(|error| {
-            panic!(
-                "generationDateAndTime `{timestamp}` in {} must match the strict \
-                 UTC pattern: {error}",
-                path.display()
-            )
-        });
+        assert_strict_utc_timestamp(&timestamp, &path);
         let tool = sole_attribute_value(&path, "generationTool");
         assert!(
             tool.starts_with("rumoca "),
