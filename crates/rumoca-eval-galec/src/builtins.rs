@@ -6,7 +6,23 @@ use std::collections::BTreeSet;
 use crate::interpreter::{EvaluationError, Evaluator};
 use crate::{IntegerDomain, Value};
 
-type Factorization = (Vec<Vec<f64>>, Vec<usize>, bool);
+enum Factorization {
+    Regular {
+        matrix: Vec<Vec<f64>>,
+        pivots: Vec<usize>,
+    },
+    Failed {
+        dimension: usize,
+        pivots: Vec<usize>,
+    },
+}
+
+enum LinearSolution {
+    Unique(Vec<f64>),
+    // eFMI 1.0.0 Beta 1 §3.2.6, "Systems of linear equations", requires
+    // every failed solution output to be qNaN (SPEC_0034 T14).
+    Failed { dimension: usize },
+}
 
 pub(super) fn lift_builtin(
     evaluator: &mut Evaluator<'_>,
@@ -88,18 +104,31 @@ fn scalar_constant_or_conversion(
             let value = builtin_real(arguments, 0)?;
             if value.is_nan() {
                 evaluator.active_signals.insert("NAN".to_owned());
-                Value::Integer(0)
-            } else if value > evaluator.integer_domain.max() as f64
-                || value < evaluator.integer_domain.min() as f64
-            {
-                evaluator.active_signals.insert("OVERFLOW".to_owned());
+                // eFMI 1.0.0 Beta 1 §3.2.6, "Numeric type conversions",
+                // defines zero as integer()'s result when it signals
+                // NAN or OVERFLOW (SPEC_0034 T8/T14).
                 Value::Integer(0)
             } else {
-                Value::Integer(value.trunc() as i64)
+                match integer_conversion(value, evaluator.integer_domain) {
+                    Some(value) => Value::Integer(value),
+                    None => {
+                        evaluator.active_signals.insert("OVERFLOW".to_owned());
+                        Value::Integer(0)
+                    }
+                }
             }
         }
         _ => return Err(EvaluationError::UnsupportedBuiltin(name.to_owned())),
     })
+}
+
+fn integer_conversion(value: f64, domain: IntegerDomain) -> Option<i64> {
+    let truncated = value.trunc();
+    if truncated < i64::MIN as f64 || truncated >= -(i64::MIN as f64) {
+        return None;
+    }
+    let converted = truncated as i64;
+    domain.contains(converted).then_some(converted)
 }
 
 fn scalar_safe_math(name: &str, arguments: &[Value]) -> Result<Value, EvaluationError> {
@@ -255,16 +284,11 @@ pub(super) fn solve_linear_equations(
 ) -> Result<Value, EvaluationError> {
     let matrix = real_matrix(&arguments[0], "solveLinearEquations")?;
     let rhs = real_vector(&arguments[1], "solveLinearEquations")?;
-    let (lu, pivots, singular) = factorize(matrix)?;
-    let (solution, solve_failed) = solve_lu(&lu, &pivots, &rhs)?;
-    if singular || solve_failed {
-        evaluator
-            .active_signals
-            .insert("SOLVE_LINEAR_EQUATIONS_FAILED".to_owned());
-    }
-    Ok(Value::Array(
-        solution.into_iter().map(Value::Real).collect(),
-    ))
+    let solution = match factorize(matrix)? {
+        Factorization::Regular { matrix, pivots } => solve_lu(&matrix, &pivots, &rhs)?,
+        Factorization::Failed { dimension, .. } => LinearSolution::Failed { dimension },
+    };
+    Ok(linear_solution_value(evaluator, solution))
 }
 
 pub(super) fn lu_factorize_builtin(
@@ -272,12 +296,15 @@ pub(super) fn lu_factorize_builtin(
     arguments: Vec<Value>,
 ) -> Result<Vec<Value>, EvaluationError> {
     let matrix = real_matrix(&arguments[0], "luFactorize")?;
-    let (lu, pivots, singular) = factorize(matrix)?;
-    if singular {
-        evaluator
-            .active_signals
-            .insert("SOLVE_LINEAR_EQUATIONS_FAILED".to_owned());
-    }
+    let (lu, pivots) = match factorize(matrix)? {
+        Factorization::Regular { matrix, pivots } => (matrix, pivots),
+        Factorization::Failed { dimension, pivots } => {
+            raise_linear_solve_failure(evaluator);
+            // §3.2.6 constrains failed LU values to qNaN; pivots remain
+            // Integer outputs and therefore still pass the target-domain proof.
+            (vec![vec![f64::NAN; dimension]; dimension], pivots)
+        }
+    };
     Ok(vec![
         matrix_value(lu),
         Value::Array(
@@ -307,14 +334,9 @@ pub(super) fn lu_solve_builtin(
         })
         .collect::<Result<Vec<_>, _>>()?;
     let rhs = real_vector(&arguments[2], "luSolve")?;
-    let (solution, failed) = solve_lu(&lu, &pivots, &rhs)?;
-    if failed {
-        evaluator
-            .active_signals
-            .insert("SOLVE_LINEAR_EQUATIONS_FAILED".to_owned());
-    }
-    Ok(Value::Array(
-        solution.into_iter().map(Value::Real).collect(),
+    Ok(linear_solution_value(
+        evaluator,
+        solve_lu(&lu, &pivots, &rhs)?,
     ))
 }
 
@@ -327,7 +349,7 @@ fn factorize(mut matrix: Vec<Vec<f64>>) -> Result<Factorization, EvaluationError
         });
     }
     let mut pivots = (0..n).collect::<Vec<_>>();
-    let mut singular = false;
+    let mut failed = matrix.iter().flatten().any(|value| value.is_nan());
     for column in 0..n {
         let pivot = select_pivot(&matrix, column)?;
         matrix.swap(column, pivot);
@@ -335,7 +357,7 @@ fn factorize(mut matrix: Vec<Vec<f64>>) -> Result<Factorization, EvaluationError
         let diagonal = matrix[column][column];
         if diagonal == 0.0 || diagonal.is_nan() {
             matrix[column][column] = f64::NAN;
-            singular = true;
+            failed = true;
             continue;
         }
         for row in column + 1..n {
@@ -345,7 +367,15 @@ fn factorize(mut matrix: Vec<Vec<f64>>) -> Result<Factorization, EvaluationError
             }
         }
     }
-    Ok((matrix, pivots, singular))
+    failed |= matrix.iter().flatten().any(|value| value.is_nan());
+    if failed {
+        Ok(Factorization::Failed {
+            dimension: n,
+            pivots,
+        })
+    } else {
+        Ok(Factorization::Regular { matrix, pivots })
+    }
 }
 
 fn select_pivot(matrix: &[Vec<f64>], column: usize) -> Result<usize, EvaluationError> {
@@ -374,7 +404,7 @@ fn solve_lu(
     lu: &[Vec<f64>],
     pivots: &[usize],
     rhs: &[f64],
-) -> Result<(Vec<f64>, bool), EvaluationError> {
+) -> Result<LinearSolution, EvaluationError> {
     let n = lu.len();
     if n == 0
         || lu.iter().any(|row| row.len() != n)
@@ -388,21 +418,44 @@ fn solve_lu(
         });
     }
     let mut solution = vec![0.0; n];
+    let mut failed =
+        lu.iter().flatten().any(|value| value.is_nan()) || rhs.iter().any(|value| value.is_nan());
     for row in 0..n {
         solution[row] = rhs[pivots[row]];
         for column in 0..row {
             solution[row] -= lu[row][column] * solution[column];
         }
     }
-    let mut failed = false;
     for row in (0..n).rev() {
         for column in row + 1..n {
             solution[row] -= lu[row][column] * solution[column];
         }
+        failed |= lu[row][row] == 0.0 || lu[row][row].is_nan();
         solution[row] /= lu[row][row];
         failed |= solution[row].is_nan();
     }
-    Ok((solution, failed))
+    if failed {
+        Ok(LinearSolution::Failed { dimension: n })
+    } else {
+        Ok(LinearSolution::Unique(solution))
+    }
+}
+
+fn linear_solution_value(evaluator: &mut Evaluator<'_>, solution: LinearSolution) -> Value {
+    let values = match solution {
+        LinearSolution::Unique(values) => values,
+        LinearSolution::Failed { dimension } => {
+            raise_linear_solve_failure(evaluator);
+            vec![f64::NAN; dimension]
+        }
+    };
+    Value::Array(values.into_iter().map(Value::Real).collect())
+}
+
+fn raise_linear_solve_failure(evaluator: &mut Evaluator<'_>) {
+    evaluator
+        .active_signals
+        .insert("SOLVE_LINEAR_EQUATIONS_FAILED".to_owned());
 }
 
 pub(super) fn interpolation_1d(arguments: Vec<Value>) -> Result<Value, EvaluationError> {
