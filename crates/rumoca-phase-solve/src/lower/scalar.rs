@@ -1149,10 +1149,9 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 Ok(dst)
             }
             dae::PureBuiltin::Atan2 => self.atan2(arguments, scalar, span),
-            dae::PureBuiltin::Mod => Err(LowerError::unsupported(
-                "mod does not yet have checked Solve lowering",
-                span,
-            )),
+            dae::PureBuiltin::Div | dae::PureBuiltin::Mod | dae::PureBuiltin::Rem => {
+                self.quotient(builtin, arguments, scalar, span)
+            }
             dae::PureBuiltin::Smooth => self.expression(
                 arguments.get(1).expect("checked smooth value argument"),
                 scalar,
@@ -1223,6 +1222,53 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             op: solve::BinaryOp::Atan2,
             lhs,
             rhs,
+        });
+        Ok(dst)
+    }
+
+    fn quotient(
+        &mut self,
+        builtin: dae::PureBuiltin,
+        arguments: dae::ExpressionOperands<'dae>,
+        scalar: usize,
+        span: Span,
+    ) -> Result<solve::Reg, LowerError> {
+        let lhs = self.expression(
+            arguments.get(0).expect("checked quotient first argument"),
+            scalar,
+        )?;
+        let rhs = self.expression(
+            arguments.get(1).expect("checked quotient second argument"),
+            scalar,
+        )?;
+        let ratio = self.binary(dae::BinaryOperator::Divide, lhs, rhs, span)?;
+        let quotient = self.solve_unary(
+            if builtin == dae::PureBuiltin::Mod {
+                solve::UnaryOp::Floor
+            } else {
+                solve::UnaryOp::Trunc
+            },
+            ratio,
+            span,
+        )?;
+        if builtin == dae::PureBuiltin::Div {
+            return Ok(quotient);
+        }
+        let multiple = self.binary(dae::BinaryOperator::Multiply, quotient, rhs, span)?;
+        self.binary(dae::BinaryOperator::Subtract, lhs, multiple, span)
+    }
+
+    fn solve_unary(
+        &mut self,
+        op: solve::UnaryOp,
+        argument: solve::Reg,
+        span: Span,
+    ) -> Result<solve::Reg, LowerError> {
+        let dst = self.register(span)?;
+        self.ops.push(solve::LinearOp::Unary {
+            dst,
+            op,
+            arg: argument,
         });
         Ok(dst)
     }

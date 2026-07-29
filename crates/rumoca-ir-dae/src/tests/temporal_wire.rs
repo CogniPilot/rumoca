@@ -164,9 +164,11 @@ fn assert_clock_views(view: DaeView<'_>) {
 }
 
 #[test]
-fn wire_v11_round_trip_preserves_checked_mod_and_its_provenance() {
-    let source = TestSource::new("mod(-7, 3)");
-    let owner = source.source("mod(-7, 3)", 0);
+fn wire_v11_round_trip_preserves_checked_quotients_and_their_provenance() {
+    let source = TestSource::new("div(-7, 3); mod(-7, 3); rem(-7, 3)");
+    let div_owner = source.source("div(-7, 3)", 0);
+    let mod_owner = source.source("mod(-7, 3)", 0);
+    let rem_owner = source.source("rem(-7, 3)", 0);
     let lhs_at = source.source("-7", 0);
     let rhs_at = source.source("3", 0);
     let dae = Dae::construct(source.map, |dae| {
@@ -174,7 +176,13 @@ fn wire_v11_round_trip_preserves_checked_mod_and_its_provenance() {
             dae.expressions(|expressions| expressions.at(lhs_at).literal(DaeLiteral::Integer(-7)))?;
         let rhs =
             dae.expressions(|expressions| expressions.at(rhs_at).literal(DaeLiteral::Integer(3)))?;
-        dae.expressions(|expressions| expressions.at(owner).builtin(PureBuiltin::Mod, [lhs, rhs]))?;
+        for (owner, builtin) in [
+            (div_owner, PureBuiltin::Div),
+            (mod_owner, PureBuiltin::Mod),
+            (rem_owner, PureBuiltin::Rem),
+        ] {
+            dae.expressions(|expressions| expressions.at(owner).builtin(builtin, [lhs, rhs]))?;
+        }
         Ok(())
     })
     .unwrap();
@@ -182,20 +190,23 @@ fn wire_v11_round_trip_preserves_checked_mod_and_its_provenance() {
     let encoded = serde_json::to_string(&dae).unwrap();
     let decoded: Dae = serde_json::from_str(&encoded).unwrap();
     decoded.inspect(|view| {
-        let expression = view
-            .expression(view.expression_id(2).unwrap())
-            .expect("wire-reconstructed mod expression");
-        assert!(matches!(
-            expression.operation(),
-            ExpressionOperation::Builtin {
-                builtin: PureBuiltin::Mod,
-                ..
-            }
-        ));
-        assert_eq!(
-            view.source_text(expression.provenance()),
-            Some("mod(-7, 3)")
-        );
+        for (index, builtin, text) in [
+            (2, PureBuiltin::Div, "div(-7, 3)"),
+            (3, PureBuiltin::Mod, "mod(-7, 3)"),
+            (4, PureBuiltin::Rem, "rem(-7, 3)"),
+        ] {
+            let expression = view
+                .expression(view.expression_id(index).unwrap())
+                .expect("wire-reconstructed quotient expression");
+            assert!(matches!(
+                expression.operation(),
+                ExpressionOperation::Builtin {
+                    builtin: found,
+                    ..
+                } if found == builtin
+            ));
+            assert_eq!(view.source_text(expression.provenance()), Some(text));
+        }
     });
 }
 

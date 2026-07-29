@@ -267,6 +267,48 @@ fn production_lowering_preserves_function_locals_and_statement_order() {
 }
 
 #[test]
+fn dynamic_quotient_fails_at_its_runtime_operator_owner() {
+    let source = TestSource::new("Real x; x - div(x, 2);");
+    let mut model = flat::Model::new();
+    add_primitive_variable(&mut model, &source, "x", "Real x", 1, Vec::new(), false);
+    let quotient_span = source.span("div(x, 2)", 0);
+    let equation_span = source.span("x - div(x, 2)", 0);
+    model.add_equation(flat::Equation::new(
+        Expression::Binary {
+            op: OpBinary::Sub,
+            lhs: Box::new(variable_reference(&source, "x", "x", 1, Vec::new())),
+            rhs: Box::new(Expression::BuiltinCall {
+                function: BuiltinFunction::Div,
+                args: vec![
+                    variable_reference(&source, "x", "x", 2, Vec::new()),
+                    Expression::Literal {
+                        value: Literal::Integer(2),
+                        span: source.span("2", 0),
+                    },
+                ],
+                span: quotient_span,
+            }),
+            span: equation_span,
+        },
+        equation_span,
+        flat::EquationOrigin::ComponentEquation {
+            component: String::new(),
+        },
+    ));
+    model.is_partial = true;
+
+    let error = construct(&model, source.map, ToDaeOptions::default()).unwrap_err();
+    assert!(matches!(
+        error,
+        ToDaeError::UnsupportedRuntimeOperator {
+            operator,
+            span,
+            ..
+        } if operator == "div" && span == quotient_span
+    ));
+}
+
+#[test]
 fn production_lowering_constructs_a_compact_checked_function_loop() {
     let source = TestSource::new(
         "function sum3 output Integer y; protected Integer n = 3; algorithm \

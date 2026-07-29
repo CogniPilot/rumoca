@@ -311,6 +311,17 @@ fn select_min_max_integer(acc: i64, value: i64, is_min: bool) -> i64 {
 // mod: x - floor(x/y) * y
 fn eval_mod(args: &[Value], span: Span) -> Result<Value, EvalError> {
     check_arg_count(args, 2, span)?;
+    if let (Value::Integer(x), Value::Integer(y)) = (&args[0], &args[1]) {
+        let quotient = checked_floor_div(*x, *y, span)?;
+        return x
+            .checked_sub(
+                quotient
+                    .checked_mul(*y)
+                    .ok_or_else(|| integer_overflow_error("mod(...)", span))?,
+            )
+            .map(Value::Integer)
+            .ok_or_else(|| integer_overflow_error("mod(...)", span));
+    }
     let x = to_real(&args[0], span)?;
     let y = to_real(&args[1], span)?;
     if y == 0.0 {
@@ -324,6 +335,15 @@ fn eval_mod(args: &[Value], span: Span) -> Result<Value, EvalError> {
 // rem: x - div(x,y) * y (truncated division)
 fn eval_rem(args: &[Value], span: Span) -> Result<Value, EvalError> {
     check_arg_count(args, 2, span)?;
+    if let (Value::Integer(x), Value::Integer(y)) = (&args[0], &args[1]) {
+        if *y == 0 {
+            return Err(EvalError::DivisionByZero { span });
+        }
+        return x
+            .checked_rem(*y)
+            .map(Value::Integer)
+            .ok_or_else(|| integer_overflow_error("rem(...)", span));
+    }
     let x = to_real(&args[0], span)?;
     let y = to_real(&args[1], span)?;
     if y == 0.0 {
@@ -342,7 +362,9 @@ fn eval_div(args: &[Value], span: Span) -> Result<Value, EvalError> {
             if *y == 0 {
                 return Err(EvalError::DivisionByZero { span });
             }
-            Ok(Value::Integer(x / y))
+            x.checked_div(*y)
+                .map(Value::Integer)
+                .ok_or_else(|| integer_overflow_error("div(...)", span))
         }
         (a, b) => {
             let x = to_real(a, span)?;
@@ -350,8 +372,35 @@ fn eval_div(args: &[Value], span: Span) -> Result<Value, EvalError> {
             if y == 0.0 {
                 return Err(EvalError::DivisionByZero { span });
             }
-            checked_real_to_i64((x / y).trunc(), span, "div(...)").map(Value::Integer)
+            let result = (x / y).trunc();
+            if result.is_finite() {
+                Ok(Value::Real(result))
+            } else {
+                Err(EvalError::function_error(
+                    "div(...) produced a non-finite Real",
+                    span,
+                ))
+            }
         }
+    }
+}
+
+fn checked_floor_div(lhs: i64, rhs: i64, span: Span) -> Result<i64, EvalError> {
+    if rhs == 0 {
+        return Err(EvalError::DivisionByZero { span });
+    }
+    let quotient = lhs
+        .checked_div(rhs)
+        .ok_or_else(|| integer_overflow_error("mod(...)", span))?;
+    let remainder = lhs
+        .checked_rem(rhs)
+        .ok_or_else(|| integer_overflow_error("mod(...)", span))?;
+    if remainder != 0 && (remainder < 0) != (rhs < 0) {
+        quotient
+            .checked_sub(1)
+            .ok_or_else(|| integer_overflow_error("mod(...)", span))
+    } else {
+        Ok(quotient)
     }
 }
 
@@ -970,6 +1019,24 @@ mod tests {
         let result =
             eval_builtin("div", &[Value::Integer(-7), Value::Integer(3)], Span::DUMMY).unwrap();
         assert_eq!(result.as_integer().unwrap(), -2);
+
+        let result =
+            eval_builtin("div", &[Value::Real(-7.0), Value::Integer(3)], Span::DUMMY).unwrap();
+        assert_eq!(result.as_real(), Some(-2.0));
+    }
+
+    #[test]
+    fn quotient_builtins_preserve_integer_result_types_and_sign_rules() {
+        let modulo =
+            eval_builtin("mod", &[Value::Integer(-7), Value::Integer(3)], Span::DUMMY).unwrap();
+        assert_eq!(modulo.as_integer(), Some(2));
+        let remainder =
+            eval_builtin("rem", &[Value::Integer(-7), Value::Integer(3)], Span::DUMMY).unwrap();
+        assert_eq!(remainder.as_integer(), Some(-1));
+
+        let real_modulo =
+            eval_builtin("mod", &[Value::Real(-7.0), Value::Integer(3)], Span::DUMMY).unwrap();
+        assert_eq!(real_modulo.as_real(), Some(2.0));
     }
 
     #[test]

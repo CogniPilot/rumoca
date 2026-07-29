@@ -1751,6 +1751,67 @@ fn delay_evidence_rejects_nonpositive_and_unconsumed_channels() {
 }
 
 #[test]
+fn quotient_construction_rejects_dynamic_and_undefined_operands() {
+    let source = TestSource::new("Real x; div(x, 2); mod(7, 0)");
+    let declaration = source.source("Real x", 0);
+    let x_use = source.source("x", 1);
+    let two_use = source.source("2", 0);
+    let dynamic_owner = source.source("div(x, 2)", 0);
+    let seven_use = source.source("7", 0);
+    let zero_use = source.source("0", 0);
+    let undefined_owner = source.source("mod(7, 0)", 0);
+    Dae::construct(source.map, |dae| {
+        let real = dae.types(|types| {
+            types.intern(
+                TypeId::new(0),
+                ValueType::scalar(ScalarType::Real),
+                declaration,
+            )
+        })?;
+        let x = dae.variables(|variables| {
+            variables.algebraic(
+                VarName::new("x"),
+                real,
+                declaration,
+                VariableAttributes::default(),
+            )
+        })?;
+        let (x_use, two, seven, zero) = dae.expressions(|expressions| {
+            Ok((
+                expressions
+                    .at(x_use)
+                    .coordinate(CoordinateInput::Algebraic(x))?,
+                expressions.at(two_use).literal(DaeLiteral::Integer(2))?,
+                expressions.at(seven_use).literal(DaeLiteral::Integer(7))?,
+                expressions.at(zero_use).literal(DaeLiteral::Integer(0))?,
+            ))
+        })?;
+        let dynamic = dae.expressions(|expressions| {
+            expressions
+                .at(dynamic_owner)
+                .builtin(PureBuiltin::Div, [x_use, two])
+        });
+        assert!(matches!(
+            dynamic,
+            Err(DaeConstructionError::NonStaticDiscontinuity { span, .. })
+                if span == dynamic_owner.span()
+        ));
+        let undefined = dae.expressions(|expressions| {
+            expressions
+                .at(undefined_owner)
+                .builtin(PureBuiltin::Mod, [seven, zero])
+        });
+        assert!(matches!(
+            undefined,
+            Err(DaeConstructionError::UndefinedBuiltinDomain { span, .. })
+                if span == undefined_owner.span()
+        ));
+        Ok(())
+    })
+    .unwrap();
+}
+
+#[test]
 fn roots_accept_only_closed_primitive_relations() {
     let source = TestSource::new("Real x; when x > 0 then end when;");
     let declaration = source.source("Real x", 0);

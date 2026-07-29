@@ -1444,7 +1444,9 @@ fn unary_builtin(builtin: dae::PureBuiltin) -> solve::UnaryOp {
         dae::PureBuiltin::Log => solve::UnaryOp::Log,
         dae::PureBuiltin::Log10 => solve::UnaryOp::Log10,
         dae::PureBuiltin::Atan2
+        | dae::PureBuiltin::Div
         | dae::PureBuiltin::Mod
+        | dae::PureBuiltin::Rem
         | dae::PureBuiltin::Smooth
         | dae::PureBuiltin::NoEvent
         | dae::PureBuiltin::Homotopy

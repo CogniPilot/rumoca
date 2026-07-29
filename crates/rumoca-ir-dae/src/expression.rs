@@ -210,7 +210,9 @@ pub enum PureBuiltin {
     Abs,
     Sign,
     Sqrt,
+    Div,
     Mod,
+    Rem,
     Floor,
     Ceil,
     Integer,
@@ -1015,9 +1017,15 @@ impl<'dae> ExpressionAt<'_, 'dae> {
     ) -> Result<ExprId<'dae>, DaeConstructionError> {
         let arguments = arguments.into_iter().collect::<Vec<_>>();
         let variability = max_variability(self.storage, &arguments, self.provenance)?;
+        let result = builtin_result(self.storage, builtin, &arguments, self.provenance)?;
+        if matches!(
+            builtin,
+            PureBuiltin::Div | PureBuiltin::Mod | PureBuiltin::Rem
+        ) {
+            validate_static_quotient(self.storage, builtin, &arguments, self.provenance)?;
+        }
         let binder_domain =
             merged_binder_domain(self.storage, arguments.iter().copied(), self.provenance)?;
-        let result = builtin_result(self.storage, builtin, &arguments, self.provenance)?;
         let ty = self.storage.intern_type(result, self.provenance)?;
         let operands = self
             .storage
@@ -1546,6 +1554,105 @@ fn max_variability(
         })
 }
 
+fn validate_static_quotient(
+    storage: &Storage,
+    builtin: PureBuiltin,
+    arguments: &[ExprId<'_>],
+    at: DaeProvenance,
+) -> Result<(), DaeConstructionError> {
+    let [lhs, rhs] = arguments else {
+        unreachable!("builtin result validation proves quotient arity")
+    };
+    let operator = quotient_name(builtin);
+    let Some(lhs) = static_numeric_value(storage, lhs.index()) else {
+        return Err(DaeConstructionError::NonStaticDiscontinuity {
+            operator,
+            span: at.span(),
+        });
+    };
+    let Some(rhs) = static_numeric_value(storage, rhs.index()) else {
+        return Err(DaeConstructionError::NonStaticDiscontinuity {
+            operator,
+            span: at.span(),
+        });
+    };
+    let function = match builtin {
+        PureBuiltin::Div => rumoca_core::BuiltinFunction::Div,
+        PureBuiltin::Mod => rumoca_core::BuiltinFunction::Mod,
+        PureBuiltin::Rem => rumoca_core::BuiltinFunction::Rem,
+        _ => unreachable!("caller restricts static quotient validation"),
+    };
+    let result = rumoca_core::apply_scalar_binary_math(function, lhs, rhs);
+    if result.is_some_and(f64::is_finite) {
+        Ok(())
+    } else {
+        Err(DaeConstructionError::UndefinedBuiltinDomain {
+            operator,
+            span: at.span(),
+        })
+    }
+}
+
+fn quotient_name(builtin: PureBuiltin) -> &'static str {
+    match builtin {
+        PureBuiltin::Div => "div",
+        PureBuiltin::Mod => "mod",
+        PureBuiltin::Rem => "rem",
+        _ => unreachable!("caller restricts quotient builtins"),
+    }
+}
+
+fn static_numeric_value(storage: &Storage, expression: u32) -> Option<f64> {
+    let node = storage.expressions.nodes.get(expression as usize)?;
+    let value = match node {
+        ExprNode::Literal(DaeLiteral::Real(value)) => *value,
+        ExprNode::Literal(DaeLiteral::Integer(value) | DaeLiteral::Enumeration(value)) => {
+            *value as f64
+        }
+        ExprNode::Unary { operator, operand } => {
+            let operand = static_numeric_value(storage, *operand)?;
+            match operator {
+                UnaryOperator::Plus => operand,
+                UnaryOperator::Negate => -operand,
+                UnaryOperator::Not => return None,
+            }
+        }
+        ExprNode::Binary { operator, lhs, rhs } => {
+            let lhs = static_numeric_value(storage, *lhs)?;
+            let rhs = static_numeric_value(storage, *rhs)?;
+            match operator {
+                BinaryOperator::Add | BinaryOperator::ElementwiseAdd => lhs + rhs,
+                BinaryOperator::Subtract | BinaryOperator::ElementwiseSubtract => lhs - rhs,
+                BinaryOperator::Multiply | BinaryOperator::ElementwiseMultiply => lhs * rhs,
+                BinaryOperator::Divide | BinaryOperator::ElementwiseDivide if rhs != 0.0 => {
+                    lhs / rhs
+                }
+                BinaryOperator::Power | BinaryOperator::ElementwisePower => lhs.powf(rhs),
+                _ => return None,
+            }
+        }
+        ExprNode::Builtin { builtin, operands }
+            if matches!(
+                builtin,
+                PureBuiltin::Div | PureBuiltin::Mod | PureBuiltin::Rem
+            ) =>
+        {
+            let mut operands = storage.expressions.operands[operands.indices()].iter();
+            let lhs = static_numeric_value(storage, *operands.next()?)?;
+            let rhs = static_numeric_value(storage, *operands.next()?)?;
+            let function = match builtin {
+                PureBuiltin::Div => rumoca_core::BuiltinFunction::Div,
+                PureBuiltin::Mod => rumoca_core::BuiltinFunction::Mod,
+                PureBuiltin::Rem => rumoca_core::BuiltinFunction::Rem,
+                _ => unreachable!("guard restricts quotient builtins"),
+            };
+            rumoca_core::apply_scalar_binary_math(function, lhs, rhs)?
+        }
+        _ => return None,
+    };
+    value.is_finite().then_some(value)
+}
+
 fn binary_result(
     operator: BinaryOperator,
     lhs: &ValueType,
@@ -1785,7 +1892,7 @@ fn builtin_result<'dae>(
             }
             Ok(ValueType::scalar(ScalarType::Integer))
         }
-        PureBuiltin::Atan2 | PureBuiltin::Mod => {
+        PureBuiltin::Atan2 | PureBuiltin::Div | PureBuiltin::Mod | PureBuiltin::Rem => {
             expect_arity(arguments, 2, at)?;
             common_value_type(&first, storage.expr_type(arguments[1], at)?, at)
         }
