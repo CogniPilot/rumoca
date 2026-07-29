@@ -1314,26 +1314,30 @@ fn lower_condition_tree<'dae>(
             lhs,
             rhs,
             ..
-        } => {
-            let is_or = matches!(
+        } => lower_binary_condition(
+            construction,
+            coordinates,
+            functions,
+            sample_lattices,
+            (lhs, rhs),
+            matches!(
                 expression,
                 Expression::Binary {
                     op: OpBinary::Or,
                     ..
                 }
+            ),
+            provenance,
+        )?,
+        Expression::Array { elements, .. } => {
+            return lower_vector_condition(
+                construction,
+                coordinates,
+                functions,
+                sample_lattices,
+                elements,
+                provenance.span(),
             );
-            let (lhs, mut relations, lhs_clock) =
-                lower_condition_tree(construction, coordinates, functions, sample_lattices, lhs)?;
-            let (rhs, rhs_relations, rhs_clock) =
-                lower_condition_tree(construction, coordinates, functions, sample_lattices, rhs)?;
-            relations.extend(rhs_relations);
-            let input = if is_or {
-                dae::ConditionInput::Or(lhs, rhs)
-            } else {
-                dae::ConditionInput::And(lhs, rhs)
-            };
-            let owner_clock = merge_condition_clock(lhs_clock, rhs_clock, is_or, provenance)?;
-            (input, relations, owner_clock)
         }
         Expression::BuiltinCall {
             function: BuiltinFunction::Sample,
@@ -1383,6 +1387,86 @@ fn lower_condition_tree<'dae>(
     };
     let condition = construction.conditions(|conditions| conditions.reserve(provenance))?;
     construction.conditions(|conditions| conditions.define(condition, input, provenance))?;
+    Ok((condition, relations, owner_clock))
+}
+
+fn lower_binary_condition<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    coordinates: &HashMap<VarName, Coordinate<'dae>>,
+    functions: &FunctionRegistry<'_, 'dae>,
+    sample_lattices: &[(Span, ClockLattice)],
+    operands: (&Expression, &Expression),
+    disjunction: bool,
+    provenance: dae::DaeProvenance,
+) -> Result<
+    (
+        dae::ConditionInput<'dae>,
+        Vec<dae::RelationId<'dae>>,
+        Option<dae::ClockId<'dae>>,
+    ),
+    dae::DaeConstructionError,
+> {
+    let (lhs, rhs) = operands;
+    let (lhs, mut relations, lhs_clock) =
+        lower_condition_tree(construction, coordinates, functions, sample_lattices, lhs)?;
+    let (rhs, rhs_relations, rhs_clock) =
+        lower_condition_tree(construction, coordinates, functions, sample_lattices, rhs)?;
+    relations.extend(rhs_relations);
+    let input = if disjunction {
+        dae::ConditionInput::Or(lhs, rhs)
+    } else {
+        dae::ConditionInput::And(lhs, rhs)
+    };
+    let owner_clock = merge_condition_clock(lhs_clock, rhs_clock, disjunction, provenance)?;
+    Ok((input, relations, owner_clock))
+}
+
+fn lower_vector_condition<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    coordinates: &HashMap<VarName, Coordinate<'dae>>,
+    functions: &FunctionRegistry<'_, 'dae>,
+    sample_lattices: &[(Span, ClockLattice)],
+    elements: &[Expression],
+    span: Span,
+) -> Result<
+    (
+        dae::ConditionId<'dae>,
+        Vec<dae::RelationId<'dae>>,
+        Option<dae::ClockId<'dae>>,
+    ),
+    dae::DaeConstructionError,
+> {
+    let generated = dae::DaeProvenance::generated(dae::DaeGeneration::ConditionLowering, span)?;
+    let Some(first) = elements.first() else {
+        let expression = construction.expressions(|expressions| {
+            expressions
+                .at(generated)
+                .literal(dae::DaeLiteral::Boolean(false))
+        })?;
+        let condition = construction.conditions(|conditions| conditions.reserve(generated))?;
+        construction.conditions(|conditions| {
+            conditions.define(
+                condition,
+                dae::ConditionInput::Discrete(expression),
+                generated,
+            )
+        })?;
+        return Ok((condition, Vec::new(), None));
+    };
+    let (mut condition, mut relations, mut owner_clock) =
+        lower_condition_tree(construction, coordinates, functions, sample_lattices, first)?;
+    for element in &elements[1..] {
+        let (rhs, rhs_relations, rhs_clock) = lower_condition_tree(
+            construction,
+            coordinates,
+            functions,
+            sample_lattices,
+            element,
+        )?;
+        condition = combine_conditions(construction, condition, rhs, true, span)?;
+        relations.extend(rhs_relations);
+        owner_clock = merge_condition_clock(owner_clock, rhs_clock, true, generated)?;
+    }
     Ok((condition, relations, owner_clock))
 }
 
