@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use rumoca_core::{ComprehensionScalarView, Span};
 use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
-use rumoca_phase_structural::{EquationRef, UnknownId};
+use rumoca_phase_structural::{BltBlock, EquationRef, UnknownId};
 
 use crate::LowerError;
 use crate::layout::{LoweredLayout, StorageClass, lower_layout};
@@ -28,8 +28,8 @@ pub(crate) fn lower_solve_problem<'dae>(
     reject_unimplemented_systems(view)?;
     let lowered = lower_layout(view)?;
     let clocks = clocks::lower_clocks(view)?;
-    let matching = structural_matching(view)?;
-    let continuous = lower_continuous(view, &lowered, &matching)?;
+    let structural = structural_matching(view)?;
+    let continuous = lower_continuous(view, &lowered, &structural)?;
     let initialization = lower_initialization(view, &lowered)?;
     let (discrete, events) = events::lower_discrete_and_events(view, &lowered, &clocks)?;
     Ok(solve::SolveProblem {
@@ -59,9 +59,14 @@ fn reject_unimplemented_systems(view: dae::DaeView<'_>) -> Result<(), LowerError
     Ok(())
 }
 
+struct StructuralMatching<'dae> {
+    rows: HashMap<usize, UnknownId<'dae>>,
+    algebraic_blocks: Vec<Vec<UnknownId<'dae>>>,
+}
+
 fn structural_matching<'dae>(
     view: dae::DaeView<'dae>,
-) -> Result<HashMap<usize, UnknownId<'dae>>, LowerError> {
+) -> Result<StructuralMatching<'dae>, LowerError> {
     let scalar_rows = continuous_scalar_row_count(view)?;
     let unknowns = view
         .variables()
@@ -74,17 +79,42 @@ fn structural_matching<'dae>(
         .map(|(_, variable)| variable.scalar_count())
         .sum::<usize>();
     if scalar_rows == 0 && unknowns == 0 {
-        return Ok(HashMap::new());
+        return Ok(StructuralMatching {
+            rows: HashMap::new(),
+            algebraic_blocks: Vec::new(),
+        });
     }
     let sorted = rumoca_phase_structural::sort(view).map_err(|error| LowerError::Structural {
         reason: error.to_string(),
         span: error.source_span(),
     })?;
-    Ok(sorted
+    let algebraic_blocks = sorted
+        .blocks
+        .iter()
+        .filter_map(|block| match block {
+            BltBlock::Scalar { unknown, .. } => {
+                matches!(unknown, UnknownId::Algebraic { .. }).then(|| vec![*unknown])
+            }
+            BltBlock::AlgebraicLoop { unknowns, .. } => {
+                let algebraic = unknowns
+                    .iter()
+                    .copied()
+                    .filter(|unknown| matches!(unknown, UnknownId::Algebraic { .. }))
+                    .collect::<Vec<_>>();
+                (!algebraic.is_empty()).then_some(algebraic)
+            }
+            BltBlock::StructuredScalar(_) => None,
+        })
+        .collect();
+    let rows = sorted
         .matching
         .into_iter()
         .map(|(EquationRef(equation), unknown)| (equation, unknown))
-        .collect())
+        .collect();
+    Ok(StructuralMatching {
+        rows,
+        algebraic_blocks,
+    })
 }
 
 fn continuous_scalar_row_count(view: dae::DaeView<'_>) -> Result<usize, LowerError> {
@@ -110,7 +140,7 @@ fn continuous_scalar_row_count(view: dae::DaeView<'_>) -> Result<usize, LowerErr
 fn lower_continuous<'dae>(
     view: dae::DaeView<'dae>,
     layout: &LoweredLayout<'dae>,
-    matching: &HashMap<usize, UnknownId<'dae>>,
+    structural: &StructuralMatching<'dae>,
 ) -> Result<solve::ContinuousSolveSystem, LowerError> {
     let mut residual = ScalarRows::default();
     let mut derivative = DerivativeRows::default();
@@ -122,7 +152,7 @@ fn lower_continuous<'dae>(
                 if let Some(group) = lower_implicit_tensor_derivative(
                     view,
                     layout,
-                    matching,
+                    &structural.rows,
                     row,
                     equation.residual(),
                     equation.provenance().span(),
@@ -140,7 +170,7 @@ fn lower_continuous<'dae>(
                     lower_continuous_row(
                         view,
                         layout,
-                        matching,
+                        &structural.rows,
                         row,
                         equation.residual(),
                         scalar,
@@ -156,7 +186,7 @@ fn lower_continuous<'dae>(
                 row = lower_continuous_family(
                     view,
                     layout,
-                    matching,
+                    &structural.rows,
                     row,
                     family,
                     &mut residual,
@@ -167,7 +197,7 @@ fn lower_continuous<'dae>(
     }
     let residual = residual.into_compute_block()?;
     let (implicit_row_targets, algebraic_projection_plan) =
-        lower_algebraic_projection(view, layout, matching)?;
+        lower_algebraic_projection(view, layout, structural)?;
     Ok(solve::ContinuousSolveSystem {
         implicit_rhs: residual.clone(),
         implicit_row_targets,
@@ -185,7 +215,7 @@ fn lower_continuous<'dae>(
 fn lower_algebraic_projection<'dae>(
     view: dae::DaeView<'dae>,
     layout: &LoweredLayout<'dae>,
-    matching: &HashMap<usize, UnknownId<'dae>>,
+    structural: &StructuralMatching<'dae>,
 ) -> Result<
     (
         Vec<Option<solve::ScalarSlot>>,
@@ -196,7 +226,7 @@ fn lower_algebraic_projection<'dae>(
     let solver_count = layout.solve_layout.solver_scalar_count();
     let state_count = layout.solve_layout.state_scalar_count();
     let mut targets = vec![None; solver_count];
-    for unknown in matching.values().copied() {
+    for unknown in structural.rows.values().copied() {
         let UnknownId::Algebraic { variable, scalar } = unknown else {
             continue;
         };
@@ -225,15 +255,40 @@ fn lower_algebraic_projection<'dae>(
             first_model_span(view),
         ));
     }
-    let rows = algebraic_indices.clone().collect::<Vec<_>>();
-    let blocks = if rows.is_empty() {
-        Vec::new()
-    } else {
-        vec![solve::AlgebraicProjectionBlock {
-            rows: rows.clone(),
-            y_indices: rows,
-        }]
-    };
+    let mut covered = vec![false; solver_count];
+    let blocks = structural
+        .algebraic_blocks
+        .iter()
+        .map(|unknowns| {
+            let mut indices = Vec::with_capacity(unknowns.len());
+            for unknown in unknowns {
+                let UnknownId::Algebraic { variable, scalar } = *unknown else {
+                    unreachable!("structural algebraic block contains only algebraics")
+                };
+                let solve::ScalarSlot::Y { index, .. } = variable_scalar_slot(
+                    layout,
+                    variable.index(),
+                    scalar as usize,
+                    first_model_span(view),
+                )?
+                else {
+                    unreachable!("algebraic declarations are Y slots")
+                };
+                covered[index] = true;
+                indices.push(index);
+            }
+            Ok(solve::AlgebraicProjectionBlock {
+                rows: indices.clone(),
+                y_indices: indices,
+            })
+        })
+        .collect::<Result<Vec<_>, LowerError>>()?;
+    if let Some(index) = algebraic_indices.clone().find(|index| !covered[*index]) {
+        return Err(LowerError::non_computable(
+            format!("BLT proof omitted algebraic Solve slot {index}"),
+            first_model_span(view),
+        ));
+    }
     Ok((targets, solve::AlgebraicProjectionPlan { blocks }))
 }
 

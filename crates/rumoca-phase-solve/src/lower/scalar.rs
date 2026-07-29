@@ -616,6 +616,12 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             self.ops.push(solve::LinearOp::LoadTime { dst });
             return Ok(dst);
         }
+        if matches!(coordinate, dae::CoordinateView::Derivative(_)) {
+            return Err(LowerError::non_computable(
+                "derivative coordinate escaped checked structural substitution",
+                span,
+            ));
+        }
         let slot = if let Some(variable) = pre_coordinate_variable(coordinate) {
             pre_variable_scalar_slot(self.layout, variable, scalar, span)?
         } else {

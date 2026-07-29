@@ -260,16 +260,17 @@ impl<'dae> DaeView<'dae> {
     }
 
     pub fn variable(self, id: VariableId<'dae>) -> Option<VariableView<'dae>> {
+        let value_type = self
+            .dae
+            .storage
+            .variables
+            .get(id.index() as usize)?
+            .value_type;
         Some(VariableView {
             id,
             entry: self.dae.storage.variables.get(id.index() as usize)?,
-            value_type: self.dae.storage.value_types.get(
-                self.dae
-                    .storage
-                    .variables
-                    .get(id.index() as usize)?
-                    .value_type as usize,
-            )?,
+            value_type_id: ValueTypeId::from_raw(value_type),
+            value_type: self.dae.storage.value_types.get(value_type as usize)?,
             marker: PhantomData,
         })
     }
@@ -708,6 +709,7 @@ impl<'dae> DaeView<'dae> {
 pub struct VariableView<'dae> {
     id: VariableId<'dae>,
     entry: &'dae VariableEntry,
+    value_type_id: ValueTypeId<'dae>,
     value_type: &'dae ValueType,
     marker: PhantomData<&'dae mut &'dae ()>,
 }
@@ -750,6 +752,10 @@ impl<'dae> VariableView<'dae> {
 
     pub const fn value_type(self) -> &'dae ValueType {
         self.value_type
+    }
+
+    pub const fn value_type_id(self) -> ValueTypeId<'dae> {
+        self.value_type_id
     }
 
     pub fn scalar_count(self) -> usize {

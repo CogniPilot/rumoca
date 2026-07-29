@@ -6,6 +6,7 @@
 
 mod blt;
 mod causal_definitions;
+mod dae_transform;
 pub mod diagnostic_codes;
 mod diagnostics;
 pub mod incidence;
@@ -21,6 +22,7 @@ use std::collections::HashSet;
 use rumoca_ir_dae as dae;
 
 pub use causal_definitions::CausalDefinitions;
+pub use dae_transform::{PreparedDae, prepare_for_solve};
 pub use diagnostic_codes::STRUCTURAL_DIAGNOSTIC_CODES;
 pub use diagnostics::{AlgebraicLoop, StructuralDiagnostics};
 pub use incidence::{Incidence, solver_incidence};
@@ -40,7 +42,8 @@ pub fn sort<'dae>(view: dae::DaeView<'dae>) -> Result<SortedDae<'dae>, Structura
     if incidence.n_eq == 0 && incidence.n_var == 0 {
         return Err(StructuralError::EmptySystem);
     }
-    let (match_eq, match_var) = maximum_matching(&incidence, &[]);
+    let preferences = explicit_derivative_preferences(view, &incidence);
+    let (match_eq, match_var) = maximum_matching(&incidence, &preferences);
     require_perfect_matching(view, &incidence, &match_eq, &match_var)?;
     let adjacency =
         incidence::build_dependency_graph(&incidence.eq_unknowns, &match_var, incidence.n_eq);
@@ -65,6 +68,49 @@ pub fn sort<'dae>(view: dae::DaeView<'dae>) -> Result<SortedDae<'dae>, Structura
     })
 }
 
+fn explicit_derivative_preferences<'dae>(
+    view: dae::DaeView<'dae>,
+    incidence: &Incidence<'dae>,
+) -> Vec<Option<usize>> {
+    incidence
+        .equation_refs
+        .iter()
+        .map(|equation| {
+            let dae::ContinuousOwnerView::Residual { equation, .. } =
+                view.continuous_owner_for_scalar_row(equation.0)?
+            else {
+                return None;
+            };
+            let residual = view.expression(equation.residual())?;
+            if !residual.value_type().is_scalar() {
+                return None;
+            }
+            let dae::ExpressionOperation::Binary {
+                operator: dae::BinaryOperator::Subtract,
+                lhs,
+                ..
+            } = residual.operation()
+            else {
+                return None;
+            };
+            let dae::ExpressionOperation::Coordinate(dae::CoordinateView::Derivative(state)) =
+                view.expression(lhs)?.operation()
+            else {
+                return None;
+            };
+            incidence.unknowns.iter().position(|unknown| {
+                matches!(
+                    unknown,
+                    UnknownId::Derivative {
+                        state: candidate,
+                        scalar: 0
+                    } if *candidate == state
+                )
+            })
+        })
+        .collect()
+}
+
 /// Produce diagnostic-only structural results without inventing a fallback
 /// matching for a singular model.
 pub fn analyze(view: dae::DaeView<'_>) -> StructuralDiagnostics {
@@ -83,7 +129,8 @@ pub fn analyze(view: dae::DaeView<'_>) -> StructuralDiagnostics {
         return result;
     }
 
-    let (match_eq, match_var) = maximum_matching(&incidence, &[]);
+    let preferences = explicit_derivative_preferences(view, &incidence);
+    let (match_eq, match_var) = maximum_matching(&incidence, &preferences);
     result.matching_size = match_eq.iter().filter(|matched| matched.is_some()).count();
     result.unmatched_equations = match_eq
         .iter()

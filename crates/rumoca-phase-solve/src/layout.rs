@@ -59,12 +59,11 @@ pub(crate) fn lower_layout<'dae>(
         &mut shape_spans,
         &mut variables,
     )?;
-    let (pre_variables, pre_param_bindings, pre_scalar_count) =
-        append_pre_variables(view, &variables, p.names.len())?;
+    let pre = append_pre_variables(view, &variables, p.names.len())?;
 
     let y_scalars = y.names.len();
     let condition_base =
-        p.names.len().checked_add(pre_scalar_count).ok_or_else(|| {
+        p.names.len().checked_add(pre.scalar_count).ok_or_else(|| {
             LowerError::contract("pre-value layout overflow", first_model_span(view))
         })?;
     let condition_memory = (0..view.condition_count())
@@ -123,11 +122,11 @@ pub(crate) fn lower_layout<'dae>(
         initial_event_parameter_index: None,
         terminal_event_parameter_index: None,
         initial_homotopy_parameter_index: None,
-        pre_param_bindings,
+        pre_param_bindings: pre.bindings,
     };
     Ok(LoweredLayout {
         variables,
-        pre_variables,
+        pre_variables: pre.variables,
         condition_memory,
         layout,
         solve_layout,
@@ -135,11 +134,17 @@ pub(crate) fn lower_layout<'dae>(
     })
 }
 
+struct PreVariableLayout {
+    variables: Vec<Option<usize>>,
+    bindings: Vec<solve::PreParamBinding>,
+    scalar_count: usize,
+}
+
 fn append_pre_variables(
     view: dae::DaeView<'_>,
     variables: &[VariableSlot],
     first_pre_index: usize,
-) -> Result<(Vec<Option<usize>>, Vec<solve::PreParamBinding>, usize), LowerError> {
+) -> Result<PreVariableLayout, LowerError> {
     let mut pre_variables = vec![None; view.variable_count()];
     let mut bindings = Vec::new();
     let mut scalar_count = 0usize;
@@ -181,7 +186,11 @@ fn append_pre_variables(
             )
         })?;
     }
-    Ok((pre_variables, bindings, scalar_count))
+    Ok(PreVariableLayout {
+        variables: pre_variables,
+        bindings,
+        scalar_count,
+    })
 }
 
 struct YColumns {

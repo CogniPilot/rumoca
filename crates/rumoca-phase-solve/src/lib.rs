@@ -28,7 +28,13 @@ mod tests;
 
 /// Lower one immutable checked DAE into the canonical Solve problem.
 pub fn lower_solve_problem(dae: &dae::Dae) -> Result<solve::SolveProblem, LowerError> {
-    dae.inspect(lower::lower_solve_problem)
+    let prepared = rumoca_phase_structural::prepare_for_solve(dae).map_err(|error| {
+        LowerError::Structural {
+            reason: error.to_string(),
+            span: error.source_span(),
+        }
+    })?;
+    prepared.as_dae().inspect(lower::lower_solve_problem)
 }
 
 /// Materialize optional solver artifacts from an already-lowered problem.
