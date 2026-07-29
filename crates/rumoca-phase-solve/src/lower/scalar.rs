@@ -1,5 +1,14 @@
 use super::*;
 
+pub(super) struct ScaledDerivativeProgram<'dae> {
+    pub(super) numerator: dae::ExprId<'dae>,
+    pub(super) numerator_scalar: usize,
+    pub(super) coefficient: dae::ExprId<'dae>,
+    pub(super) coefficient_scalar: usize,
+    pub(super) negate: bool,
+    pub(super) span: Span,
+}
+
 pub(super) struct ScalarCompiler<'layout, 'dae> {
     view: dae::DaeView<'dae>,
     layout: &'layout LoweredLayout<'dae>,
@@ -37,6 +46,25 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         scalar: usize,
     ) -> Result<Vec<solve::LinearOp>, LowerError> {
         let output = self.expression(expression, scalar)?;
+        self.ops.push(solve::LinearOp::StoreOutput { src: output });
+        Ok(self.ops)
+    }
+
+    pub(super) fn scaled_derivative_program(
+        mut self,
+        input: ScaledDerivativeProgram<'dae>,
+    ) -> Result<Vec<solve::LinearOp>, LowerError> {
+        let mut numerator = self.expression(input.numerator, input.numerator_scalar)?;
+        if input.negate {
+            numerator = self.unary(dae::UnaryOperator::Negate, numerator, input.span)?;
+        }
+        let coefficient = self.expression(input.coefficient, input.coefficient_scalar)?;
+        let output = self.binary(
+            dae::BinaryOperator::Divide,
+            numerator,
+            coefficient,
+            input.span,
+        )?;
         self.ops.push(solve::LinearOp::StoreOutput { src: output });
         Ok(self.ops)
     }
@@ -1259,6 +1287,10 @@ pub(super) struct ScalarSelector<'dae> {
 }
 
 impl<'dae> ScalarSelector<'dae> {
+    pub(super) const fn view(&self) -> dae::DaeView<'dae> {
+        self.view
+    }
+
     pub(super) fn new(
         view: dae::DaeView<'dae>,
         domain_point: Option<(dae::DomainId<'dae>, &[i64])>,
@@ -1534,6 +1566,69 @@ impl<'dae> ScalarSelector<'dae> {
         Ok((scalar, end))
     }
 
+    pub(super) fn constant_real(
+        &self,
+        expression: dae::ExprId<'dae>,
+        scalar: usize,
+    ) -> Result<f64, LowerError> {
+        self.constant_real_inner(expression, scalar, &mut Vec::new())
+    }
+
+    fn constant_real_inner(
+        &self,
+        expression: dae::ExprId<'dae>,
+        scalar: usize,
+        active: &mut Vec<dae::ExprId<'dae>>,
+    ) -> Result<f64, LowerError> {
+        let node = self.node(expression);
+        let span = node.provenance().span();
+        check_constant_recursion(active, expression, span)?;
+        active.push(expression);
+        let result = match node.operation() {
+            dae::ExpressionOperation::Literal(dae::DaeLiteral::Real(value)) => Ok(*value),
+            dae::ExpressionOperation::Literal(
+                dae::DaeLiteral::Integer(value) | dae::DaeLiteral::Enumeration(value),
+            ) => Ok(*value as f64),
+            dae::ExpressionOperation::Coordinate(dae::CoordinateView::Parameter(parameter)) => {
+                let variable = self
+                    .view
+                    .variable(parameter.into())
+                    .expect("checked parameter coordinate resolves");
+                let binding = variable.binding().ok_or_else(|| {
+                    LowerError::non_computable(
+                        "affine derivative coefficient parameter has no static binding",
+                        span,
+                    )
+                })?;
+                self.constant_real_inner(binding, scalar, active)
+            }
+            dae::ExpressionOperation::Unary { operator, operand } => {
+                let value = self.constant_real_inner(operand, scalar, active)?;
+                match operator {
+                    dae::UnaryOperator::Plus => Ok(value),
+                    dae::UnaryOperator::Negate => Ok(-value),
+                    dae::UnaryOperator::Not => Err(LowerError::non_computable(
+                        "affine derivative coefficient is not numeric",
+                        span,
+                    )),
+                }
+            }
+            dae::ExpressionOperation::Binary { operator, lhs, rhs } => {
+                let lhs_scalar = scalar_operand(self.view, lhs, scalar);
+                let rhs_scalar = scalar_operand(self.view, rhs, scalar);
+                let lhs = self.constant_real_inner(lhs, lhs_scalar, active)?;
+                let rhs = self.constant_real_inner(rhs, rhs_scalar, active)?;
+                constant_binary(operator, lhs, rhs, span)
+            }
+            _ => Err(LowerError::non_computable(
+                "affine derivative coefficient is not compile-time numeric",
+                span,
+            )),
+        };
+        active.pop();
+        result.and_then(|value| finite_constant(value, span))
+    }
+
     fn integer(&self, expression: dae::ExprId<'dae>, scalar: usize) -> Result<i64, LowerError> {
         let node = self.node(expression);
         let span = node.provenance().span();
@@ -1630,5 +1725,78 @@ impl<'dae> ScalarSelector<'dae> {
         self.view
             .expression(expression)
             .expect("branded expression resolves in its DAE")
+    }
+}
+
+fn scalar_operand<'dae>(
+    view: dae::DaeView<'dae>,
+    expression: dae::ExprId<'dae>,
+    scalar: usize,
+) -> usize {
+    if scalar_count(view, expression) == 1 {
+        0
+    } else {
+        scalar
+    }
+}
+
+fn check_constant_recursion<'dae>(
+    active: &[dae::ExprId<'dae>],
+    expression: dae::ExprId<'dae>,
+    span: Span,
+) -> Result<(), LowerError> {
+    if active.contains(&expression) {
+        return Err(LowerError::non_computable(
+            "affine derivative coefficient has a cyclic parameter definition",
+            span,
+        ));
+    }
+    if active.len() >= 256 {
+        return Err(LowerError::non_computable(
+            "affine derivative coefficient exceeded the checked recursion limit",
+            span,
+        ));
+    }
+    Ok(())
+}
+
+fn constant_binary(
+    operator: dae::BinaryOperator,
+    lhs: f64,
+    rhs: f64,
+    span: Span,
+) -> Result<f64, LowerError> {
+    let value = match operator {
+        dae::BinaryOperator::Add | dae::BinaryOperator::ElementwiseAdd => lhs + rhs,
+        dae::BinaryOperator::Subtract | dae::BinaryOperator::ElementwiseSubtract => lhs - rhs,
+        dae::BinaryOperator::Multiply | dae::BinaryOperator::ElementwiseMultiply => lhs * rhs,
+        dae::BinaryOperator::Divide | dae::BinaryOperator::ElementwiseDivide if rhs != 0.0 => {
+            lhs / rhs
+        }
+        dae::BinaryOperator::Power | dae::BinaryOperator::ElementwisePower => lhs.powf(rhs),
+        dae::BinaryOperator::Divide | dae::BinaryOperator::ElementwiseDivide => {
+            return Err(LowerError::non_computable(
+                "affine derivative coefficient divides by zero",
+                span,
+            ));
+        }
+        _ => {
+            return Err(LowerError::non_computable(
+                "affine derivative coefficient is not numeric",
+                span,
+            ));
+        }
+    };
+    finite_constant(value, span)
+}
+
+fn finite_constant(value: f64, span: Span) -> Result<f64, LowerError> {
+    if value.is_finite() {
+        Ok(value)
+    } else {
+        Err(LowerError::non_computable(
+            "affine derivative coefficient is not finite",
+            span,
+        ))
     }
 }

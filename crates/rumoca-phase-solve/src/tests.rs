@@ -21,6 +21,66 @@ impl TestSource {
     }
 }
 
+fn scaled_state_model(source: TestSource, coefficient: f64) -> dae::Dae {
+    let parameter_at = source.at(0, 18);
+    let state_at = source.at(20, 26);
+    let owner = source.at(28, 40);
+    dae::Dae::construct(source.map, |model| {
+        let real = model.types(|types| {
+            types.intern(
+                TypeId::new(0),
+                dae::ValueType::scalar(dae::ScalarType::Real),
+                parameter_at,
+            )
+        })?;
+        let binding = model.expressions(|expressions| {
+            expressions
+                .at(parameter_at)
+                .literal(dae::DaeLiteral::Real(coefficient))
+        })?;
+        let (parameter, state) = model.variables(|variables| {
+            Ok((
+                variables.parameter(
+                    VarName::new("p"),
+                    real,
+                    parameter_at,
+                    dae::VariableAttributes {
+                        binding: Some(binding),
+                        ..dae::VariableAttributes::default()
+                    },
+                )?,
+                variables.state(
+                    VarName::new("x"),
+                    real,
+                    state_at,
+                    dae::VariableAttributes::default(),
+                )?,
+            ))
+        })?;
+        let residual = model.expressions(|expressions| {
+            let parameter = expressions
+                .at(owner)
+                .coordinate(dae::CoordinateInput::Parameter(parameter))?;
+            let derivative = expressions
+                .at(owner)
+                .coordinate(dae::CoordinateInput::Derivative(state))?;
+            let scaled = expressions.at(owner).binary(
+                dae::BinaryOperator::Multiply,
+                parameter,
+                derivative,
+            )?;
+            let state = expressions
+                .at(owner)
+                .coordinate(dae::CoordinateInput::State(state))?;
+            expressions
+                .at(owner)
+                .binary(dae::BinaryOperator::Subtract, scaled, state)
+        })?;
+        model.continuous(|continuous| continuous.value_equation(owner, residual))
+    })
+    .unwrap()
+}
+
 #[test]
 fn explicit_state_equation_lowers_to_derivative_program() {
     let source = TestSource::new("Real x; der(x) = -x;");
@@ -85,6 +145,48 @@ fn explicit_state_equation_lowers_to_derivative_program() {
             op: rumoca_ir_solve::UnaryOp::Neg,
             ..
         }
+    ));
+}
+
+#[test]
+fn affine_state_equation_preserves_its_runtime_parameter_coefficient() {
+    let source = TestSource::new("parameter Real p=2; Real x; p*der(x)-x=0;");
+    let model = scaled_state_model(source, 2.0);
+
+    let solve = lower_solve_problem(&model).unwrap();
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous.derivative_rhs.nodes.as_slice()
+    else {
+        panic!("one scalar derivative block expected");
+    };
+    let program = &rows.programs[0];
+    assert!(
+        program
+            .iter()
+            .any(|operation| matches!(operation, LinearOp::LoadP { index: 0, .. })),
+        "the coefficient must use the runtime parameter slot, not its declaration value"
+    );
+    assert!(
+        program.iter().any(|operation| matches!(
+            operation,
+            LinearOp::Binary {
+                op: rumoca_ir_solve::BinaryOp::Div,
+                ..
+            }
+        )),
+        "the proven affine coefficient must explicitly isolate the derivative"
+    );
+}
+
+#[test]
+fn zero_affine_derivative_coefficient_fails_before_runtime() {
+    let source = TestSource::new("parameter Real p=0; Real x; p*der(x)-x=0;");
+    let model = scaled_state_model(source, 0.0);
+
+    let error = lower_solve_problem(&model).unwrap_err();
+    assert!(matches!(
+        error,
+        LowerError::NonComputable { reason, .. }
+            if reason.contains("zero affine coefficient")
     ));
 }
 
