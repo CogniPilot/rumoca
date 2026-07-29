@@ -274,13 +274,13 @@ pub mod compile {
         CompilePhaseTimingSnapshot, CompilePhaseTimingStat, CompiledSourceRoot,
         DaeCompilationResult, Document, DocumentSymbol, DocumentSymbolKind, FailedPhase,
         LocalComponentInfo, ModelDiagnostics, ModelFailureDiagnostic, NavigationClassTargetInfo,
-        ParsedSourceRootLoad, PhaseResult, SemanticDiagnosticsMode, Session, SessionChange,
-        SessionConfig, SessionSnapshot, SourceRootActivityKind, SourceRootActivityPhase,
-        SourceRootActivitySnapshot, SourceRootDurability, SourceRootKind, SourceRootLoadMode,
-        SourceRootLoadReport, SourceRootStatusSnapshot, StrictCheckTiming, StrictCompileFailure,
-        StrictCompileReport, StructuralOverride, WorkspaceSymbol, WorkspaceSymbolKind,
-        WorkspaceSymbolSnapshotTiming, compile_phase_timing_stats, install_compile_phase_observer,
-        reset_compile_phase_timing_stats,
+        ParsedSourceDocument, ParsedSourceRootLoad, PhaseResult, SemanticDiagnosticsMode, Session,
+        SessionChange, SessionConfig, SessionSnapshot, SourceRootActivityKind,
+        SourceRootActivityPhase, SourceRootActivitySnapshot, SourceRootDurability, SourceRootKind,
+        SourceRootLoadMode, SourceRootLoadReport, SourceRootStatusSnapshot, StrictCheckTiming,
+        StrictCompileFailure, StrictCompileReport, StructuralOverride, WorkspaceSymbol,
+        WorkspaceSymbolKind, WorkspaceSymbolSnapshotTiming, compile_phase_timing_stats,
+        install_compile_phase_observer, reset_compile_phase_timing_stats,
     };
 }
 

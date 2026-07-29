@@ -130,36 +130,24 @@ fn workspace_source_root_definitions(
     ]
 }
 
-fn workspace_family_source_root_definitions() -> Vec<(String, ast::StoredDefinition)> {
+fn workspace_family_source_root_definitions() -> Vec<ParsedSourceDocument> {
     let new_folder_package_uri = "NewFolder/package.mo".to_string();
     let new_folder_child_uri = "NewFolder/Test.mo".to_string();
     let other_package_uri = "Other/package.mo".to_string();
     let other_child_uri = "Other/Thing.mo".to_string();
     vec![
-        (
-            new_folder_package_uri.clone(),
-            parse_definition(
-                "within ;\npackage NewFolder\nend NewFolder;\n",
-                &new_folder_package_uri,
-            ),
+        parse_source_document(
+            "within ;\npackage NewFolder\nend NewFolder;\n",
+            &new_folder_package_uri,
         ),
-        (
-            new_folder_child_uri.clone(),
-            parse_definition(
-                "within NewFolder;\nmodel Test\n  Real x;\nend Test;\n",
-                &new_folder_child_uri,
-            ),
+        parse_source_document(
+            "within NewFolder;\nmodel Test\n  Real x;\nend Test;\n",
+            &new_folder_child_uri,
         ),
-        (
-            other_package_uri.clone(),
-            parse_definition("within ;\npackage Other\nend Other;\n", &other_package_uri),
-        ),
-        (
-            other_child_uri.clone(),
-            parse_definition(
-                "within Other;\nmodel Thing\n  Real y;\nend Thing;\n",
-                &other_child_uri,
-            ),
+        parse_source_document("within ;\npackage Other\nend Other;\n", &other_package_uri),
+        parse_source_document(
+            "within Other;\nmodel Thing\n  Real y;\nend Thing;\n",
+            &other_child_uri,
         ),
     ]
 }
