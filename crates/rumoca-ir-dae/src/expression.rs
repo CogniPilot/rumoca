@@ -1745,6 +1745,10 @@ fn builtin_result<'dae>(
     if builtin.has_shaped_result() {
         return shaped_builtin_result(storage, builtin, arguments, &first, at);
     }
+    if builtin == PureBuiltin::NoEvent {
+        expect_arity(arguments, 1, at)?;
+        return Ok(first);
+    }
     if !first.scalar_type().is_numeric() && builtin != PureBuiltin::Size {
         return Err(DaeConstructionError::ExpectedNumeric {
             found: first.scalar_type(),
@@ -1768,8 +1772,7 @@ fn builtin_result<'dae>(
         | PureBuiltin::Tanh
         | PureBuiltin::Exp
         | PureBuiltin::Log
-        | PureBuiltin::Log10
-        | PureBuiltin::NoEvent => {
+        | PureBuiltin::Log10 => {
             expect_arity(arguments, 1, at)?;
             Ok(first)
         }
@@ -1830,6 +1833,9 @@ fn builtin_result<'dae>(
         | PureBuiltin::Linspace
         | PureBuiltin::Cross => {
             unreachable!("array constructors return before numeric builtins")
+        }
+        PureBuiltin::NoEvent => {
+            unreachable!("type-preserving noEvent returns before numeric builtin checks")
         }
     }
 }

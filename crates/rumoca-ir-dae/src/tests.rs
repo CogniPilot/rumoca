@@ -173,6 +173,41 @@ fn explicitly_typed_empty_arrays_round_trip_through_checked_construction() {
 }
 
 #[test]
+fn no_event_preserves_a_boolean_operand_and_exact_provenance() {
+    let source = TestSource::new("Boolean quiet = noEvent(true);");
+    let literal_at = source.source("true", 0);
+    let no_event_at = source.source("noEvent(true)", 0);
+    let dae = Dae::construct(source.map, |dae| {
+        dae.expressions(|expressions| {
+            let value = expressions
+                .at(literal_at)
+                .literal(DaeLiteral::Boolean(true))?;
+            expressions
+                .at(no_event_at)
+                .builtin(PureBuiltin::NoEvent, [value])?;
+            Ok(())
+        })
+    })
+    .expect("noEvent is a type-preserving checked expression");
+
+    dae.inspect(|view| {
+        let expression = view.expression(view.expression_id(1).unwrap()).unwrap();
+        assert_eq!(expression.value_type().scalar_type(), ScalarType::Boolean);
+        assert_eq!(
+            view.source_text(expression.provenance()),
+            Some("noEvent(true)")
+        );
+        assert!(matches!(
+            expression.operation(),
+            ExpressionOperation::Builtin {
+                builtin: PureBuiltin::NoEvent,
+                ..
+            }
+        ));
+    });
+}
+
+#[test]
 fn numeric_promotion_is_derived_during_construction() {
     let source = TestSource::new("Real x; equation der(x) = 1; x + 2; if true then 3 else x;");
     let declaration = source.source("Real x", 0);
