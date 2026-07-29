@@ -958,3 +958,67 @@ fn canonicalize_discrete_assignments_preserves_conflicting_same_target_rows() {
         "canonicalization should not hide repeated non-connection assignments; validation owns the error"
     );
 }
+
+/// MLS §10.5: a subscript expression is evaluated, so an array element is
+/// identified by its subscript's *value*. Names built for the same element must
+/// therefore agree no matter how the subscript was spelled.
+///
+/// Regression guard: `Subscript::Expr` used to render as `format!("{expr:?}")`,
+/// which embeds the AST including each node's `Span`. Two references to the
+/// same element at different source positions produced different names, so the
+/// current-value lookup during algorithm lowering never matched. That emitted
+/// self-referential equations such as `a[1] = a[1] + 1.0` for `a[i]`, and for
+/// index *expressions* like `a[i + 1]` it diverted lowering into the dynamic
+/// -subscript path, where the expression grew without bound.
+#[test]
+fn constant_subscripts_render_by_value_regardless_of_spelling() {
+    let name = VarName::new("a".to_string());
+    let literal_one = varname_with_subscripts(&name, &[Subscript::index(1, test_span())]);
+
+    // A loop iterator is substituted as an *expression*, not a Subscript::Index.
+    let expr_one = varname_with_subscripts(
+        &name,
+        &[Subscript::expr(Box::new(integer_literal(1)), test_span())],
+    );
+    assert_eq!(
+        expr_one, literal_one,
+        "`a[<expr 1>]` must name the same element as `a[1]`"
+    );
+
+    // Constant arithmetic in the subscript: `a[i + 1]` with `i = 1`.
+    let expr_sum = varname_with_subscripts(
+        &name,
+        &[Subscript::expr(
+            Box::new(Expression::Binary {
+                op: rumoca_core::OpBinary::Add,
+                lhs: Box::new(integer_literal(1)),
+                rhs: Box::new(integer_literal(1)),
+                span: test_span(),
+            }),
+            test_span(),
+        )],
+    );
+    let literal_two = varname_with_subscripts(&name, &[Subscript::index(2, test_span())]);
+    assert_eq!(
+        expr_sum, literal_two,
+        "`a[1 + 1]` must name the same element as `a[2]`"
+    );
+
+    // A genuinely non-constant subscript keeps the previous behaviour: it is
+    // not a constant, so it must not be folded into some arbitrary index.
+    let dynamic = varname_with_subscripts(
+        &name,
+        &[Subscript::expr(
+            Box::new(Expression::VarRef {
+                name: VarName::new("k".to_string()).into(),
+                subscripts: vec![],
+                span: test_span(),
+            }),
+            test_span(),
+        )],
+    );
+    assert_ne!(
+        dynamic, literal_one,
+        "a run-time subscript must not collapse onto a constant index"
+    );
+}
