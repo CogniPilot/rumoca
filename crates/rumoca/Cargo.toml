@@ -60,6 +60,9 @@ tracing = ["dep:tracing", "dep:tracing-subscriber", "rumoca-compile/tracing"]
 rumoca-compile = { workspace = true }
 rumoca-core = { workspace = true }
 rumoca-ir-solve = { workspace = true }
+rumoca-ir-galec = { workspace = true }
+rumoca-phase-codegen = { workspace = true }
+rumoca-phase-galec = { workspace = true }
 rumoca-phase-resolve = { workspace = true }
 rumoca-sim = { workspace = true, default-features = false, features = ["native-solvers"] }
 rumoca-tool-fmt = { workspace = true }
@@ -76,12 +79,15 @@ minijinja = { workspace = true }
 rayon = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["unbounded_depth"] }
+sha1 = { workspace = true }
+time = { workspace = true }
 tempfile = { workspace = true }
 toml = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true, optional = true }
 tracing-subscriber = { workspace = true, optional = true }
 walkdir = { workspace = true }
+uuid = { workspace = true }
 # Used only by FMU packaging (FMU export = zip archive); pulls C compression
 # backends (bzip2/lzma/zstd), so gate behind `fmu-packaging`.
 zip = { workspace = true, optional = true }
@@ -123,8 +129,8 @@ name = "msl_sim_regression"
 path = "tests/msl_sim_regression.rs"
 required-features = ["msl-sim-tests"]
 
-# Exercises the FMU packaging module end-to-end and unzips the produced `.efmu`
-# via the optional `zip` dependency, so it
+# Exercises generic target-declared packaging end-to-end and inspects the
+# target-declared zip archive via the optional `zip` dependency, so it
 # must not compile under --no-default-features.
 [[test]]
 name = "cli_target_galec"
@@ -153,10 +159,6 @@ serde = { version = "1.0", features = ["derive"] }
 ntest = "0.9"  # Test timeouts
 # Direct phase access for debugging/analysis tests
 rumoca-ir-ast = { workspace = true }
-# GALEC target CI (tests only): the eFMI id/checksum primitives
-# (`Sha1Hex`/`ManifestId`/`UtcTimestamp`) for recomputing the SHA-1 web and
-# checking id/timestamp discipline over the exact on-disk container bytes.
-rumoca-galec-codegen = { workspace = true }
 rumoca-ir-flat = { workspace = true }
 rumoca-ir-dae = { workspace = true }
 rumoca-phase-flatten = { workspace = true }
@@ -173,7 +175,7 @@ rumoca-phase-typecheck = { workspace = true }
 # GALEC target CI (tests only): recompute the SHA-1 checksum web and check
 # manifest.xml well-formedness / attribute order over the exact on-disk bytes.
 # xmllint XSD validation runs the external `xmllint`; the SHA-1 primitive comes
-# through the `rumoca-compile` facade (rumoca-galec-codegen).
+# through the `rumoca-compile` facade.
 quick-xml = { workspace = true }
 
 [lints]

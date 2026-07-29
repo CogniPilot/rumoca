@@ -4,7 +4,7 @@
 //! Invokes the real binary so the whole chain is exercised: CLI dispatch →
 //! generic capability gate → GALEC projection facade → a product-agnostic
 //! context validated in Rust → jinja templates (the eFMI manifests + C) plus
-//! the typed GALEC `.alg` printer → the declared-checksum-web `build = "efmu"`
+//! the typed GALEC `.alg` view → the declared checksum and `[package]` graph
 //! two-representation container packaging. The target claims the "eFMI Production Code export"
 //! rung of the SPEC_0034 conformance ladder, so these tests machine-check
 //! that rung:
@@ -676,8 +676,7 @@ fn container_checksum_web_recomputes_from_written_bytes() {
         assert_eq!(
             entry.get("checksum").map(String::as_str),
             Some(
-                rumoca_galec_codegen::Sha1Hex::of_bytes(manifest_bytes)
-                    .to_hex()
+                rumoca::sha1_hex(manifest_bytes)
                     .as_str()
             ),
             "__content.xml {name} checksum must be the SHA-1 of the written manifest.xml"
@@ -693,7 +692,7 @@ fn container_checksum_web_recomputes_from_written_bytes() {
     let alg_bytes = fs::read(container.alg_file()).expect("read .alg bytes");
     assert_eq!(
         sole_attribute_value(&container.ac_manifest(), "checksum"),
-        rumoca_galec_codegen::Sha1Hex::of_bytes(&alg_bytes).to_hex(),
+        rumoca::sha1_hex(&alg_bytes),
         "AC manifest File checksum must be the SHA-1 of the written .alg"
     );
 
@@ -713,8 +712,7 @@ fn container_checksum_web_recomputes_from_written_bytes() {
         assert_eq!(
             entry.get("checksum").map(String::as_str),
             Some(
-                rumoca_galec_codegen::Sha1Hex::of_bytes(&code_bytes)
-                    .to_hex()
+                rumoca::sha1_hex(&code_bytes)
                     .as_str()
             ),
             "PC manifest File checksum for {name} must be the SHA-1 of the written bytes"
@@ -728,8 +726,7 @@ fn container_checksum_web_recomputes_from_written_bytes() {
     assert_eq!(
         reference.get("checksum").map(String::as_str),
         Some(
-            rumoca_galec_codegen::Sha1Hex::of_bytes(&ac_manifest_bytes)
-                .to_hex()
+            rumoca::sha1_hex(&ac_manifest_bytes)
                 .as_str()
         ),
         "PC ManifestReference checksum must be the SHA-1 of the written AC manifest"
@@ -870,7 +867,7 @@ fn container_ids_unique_and_generation_metadata_strict() {
 
     for path in [container.ac_manifest(), container.pc_manifest()] {
         let id = root_id(&path);
-        rumoca_galec_codegen::ManifestId::parse(&id).unwrap_or_else(|error| {
+        rumoca_ir_galec::manifest_context::ManifestId::parse(&id).unwrap_or_else(|error| {
             panic!(
                 "manifest root id `{id}` in {} must be a brace-wrapped UUID: {error}",
                 path.display()
@@ -880,7 +877,7 @@ fn container_ids_unique_and_generation_metadata_strict() {
 
     for path in &documents {
         let timestamp = sole_attribute_value(path, "generationDateAndTime");
-        rumoca_galec_codegen::UtcTimestamp::parse(&timestamp).unwrap_or_else(|error| {
+        rumoca_ir_galec::manifest_context::UtcTimestamp::parse(&timestamp).unwrap_or_else(|error| {
             panic!(
                 "generationDateAndTime `{timestamp}` in {} must match the strict \
                  UTC pattern: {error}",
@@ -1051,8 +1048,7 @@ fn rerunning_same_command_replaces_previous_container() {
         assert_eq!(
             entry.get("checksum").map(String::as_str),
             Some(
-                rumoca_galec_codegen::Sha1Hex::of_bytes(&manifest_bytes)
-                    .to_hex()
+                rumoca::sha1_hex(&manifest_bytes)
                     .as_str()
             ),
             "the replaced container's {name} checksum must recompute from its own bytes"
@@ -1110,7 +1106,12 @@ fn production_code_compiles_links_and_reproduces_the_discrete_dynamics() {
     fs::write(&driver, DRIVER_MAIN).expect("write driver");
     let program = dir.path().join("smoke");
     let compile = cc()
+        .arg("-std=c99")
+        .arg("-pedantic")
         .arg("-Wall")
+        .arg("-Wextra")
+        .arg("-Wconversion")
+        .arg("-Wsign-conversion")
         .arg("-Werror")
         .arg("-I")
         .arg(container.root.join("ProductionCode"))
@@ -1123,7 +1124,7 @@ fn production_code_compiles_links_and_reproduces_the_discrete_dynamics() {
         .expect("run cc");
     assert!(
         compile.status.success(),
-        "cc -Wall -Werror failed.\nstderr:\n{}\nheader:\n{}\nsource:\n{}",
+        "strict cc -std=c99 compile failed.\nstderr:\n{}\nheader:\n{}\nsource:\n{}",
         String::from_utf8_lossy(&compile.stderr),
         fs::read_to_string(container.c_header()).unwrap_or_default(),
         fs::read_to_string(container.c_source()).unwrap_or_default()

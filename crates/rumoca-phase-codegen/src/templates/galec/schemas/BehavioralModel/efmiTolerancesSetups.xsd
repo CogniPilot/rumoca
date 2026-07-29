@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" elementFormDefault="qualified" attributeFormDefault="unqualified">
+	<xs:include schemaLocation="../efmiIdentifierType.xsd"/>
+	<xs:include schemaLocation="../efmiFloatingPointPrecision.xsd"/>
+	<xs:include schemaLocation="../efmiWildcard.xsd"/>
+	
+	<xs:complexType name="efmiTolerancesSetups">
+		<xs:sequence>
+			<xs:element name="TolerancesSetup" minOccurs="0" maxOccurs="unbounded">
+				<xs:complexType>
+					<xs:sequence>
+						<xs:element name="TolerancesConfiguration" minOccurs="1" maxOccurs="unbounded">
+							<xs:complexType>
+								<xs:sequence>
+									<xs:element name="TolerancesDefinition" minOccurs="0" maxOccurs="unbounded">
+										<xs:complexType>
+											<xs:sequence>
+												<xs:element name="ElementTolerances" minOccurs="0" maxOccurs="unbounded">
+													<xs:complexType>
+														<xs:attribute name="elementIndex" type="xs:unsignedInt" use="required"/>
+														<xs:attributeGroup ref="efmiTolerancesAttributesBase"/>
+													</xs:complexType>
+												</xs:element>
+											</xs:sequence>
+											<xs:attribute name="variableRefId" type="efmiIdentifierType" use="required"/>
+											<xs:attributeGroup ref="efmiTolerancesAttributesBase"/>
+										</xs:complexType>
+									</xs:element>
+								</xs:sequence>
+								<xs:attribute name="floatingPointPrecision" use="required">
+									<xs:simpleType>
+										<xs:union memberTypes="efmiFloatingPointPrecision efmiWildcard"/>
+									</xs:simpleType>
+								</xs:attribute>
+							</xs:complexType>
+						</xs:element>
+					</xs:sequence>
+					<xs:attribute name="id" type="efmiIdentifierType" use="required"/>
+				</xs:complexType>
+			</xs:element>
+		</xs:sequence>
+	</xs:complexType>
+	
+	<xs:attributeGroup name="efmiTolerancesAttributesBase">
+		<xs:attribute name="unitRefId" type="efmiIdentifierType" use="optional">
+			<xs:annotation>
+				<xs:documentation>Unit of absolute tolerance. Must not be set if no absolute tolerance is given.</xs:documentation>
+			</xs:annotation>
+		</xs:attribute>
+		<xs:attribute name="absoluteTolerance" type="xs:normalizedString" use="optional"/>
+		<xs:attribute name="relativeTolerance" type="xs:normalizedString" use="optional"/>
+	</xs:attributeGroup>
+</xs:schema>

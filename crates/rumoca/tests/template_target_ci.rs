@@ -212,7 +212,7 @@ fn galec_target_renders_alg_and_wellformed_manifest_for_discrete_fixture() {
     // The web-injected representation checksum flows into `__content.xml`: it
     // is the SHA-1 of the exact rendered manifest bytes (GAL-021, no placeholder).
     let content = find_rendered_file(&files, "__content.xml");
-    let manifest_sha1 = rumoca_galec_codegen::Sha1Hex::of_bytes(manifest.content.as_bytes());
+    let manifest_sha1 = rumoca::sha1_hex(manifest.content.as_bytes());
     assert!(
         content
             .content

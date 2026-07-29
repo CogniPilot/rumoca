@@ -43,11 +43,12 @@
 // crate's symbols via `pub use`, so downstream crates import `rumoca_core::Span`
 // directly rather than through `rumoca_ir_galec::ast::Span`.
 use rumoca_core::Span;
+use serde::Serialize;
 
 /// A node paired with its source [`Span`] — the span carrier for enums (whose
 /// variants cannot each hold a field ergonomically) and for statement lists.
 /// Structs instead carry an inline `span` field.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Spanned<T> {
     pub node: T,
     pub span: Span,
@@ -71,7 +72,7 @@ impl<T> Spanned<T> {
 
 /// A plain GALEC identifier (ASCII-letter-first; legality checked by the
 /// validator, trap T13).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Identifier(pub String);
 
 impl Identifier {
@@ -94,7 +95,8 @@ impl Identifier {
 /// adds the surrounding `'` characters. Well-formedness of the quoted content
 /// (scalarized-reference structure, no whitespace) is a validator concern;
 /// the printer only rejects content that cannot be a single lexeme at all.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum Name {
     /// Plain identifier, e.g. `firstTick`, with its source span (D11).
     Ident(Identifier, Span),
@@ -139,7 +141,8 @@ impl Name {
 }
 
 /// GALEC primitive types (§3.1: there is no String type).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum ScalarType {
     Real,
     Integer,
@@ -160,7 +163,8 @@ impl ScalarType {
 
 /// Declared type of a variable: a primitive or a state-compartment (record)
 /// reference (S-2.7).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum TypeRef {
     Primitive(ScalarType),
     /// Component type: the name of a `record` state compartment.
@@ -168,7 +172,8 @@ pub enum TypeRef {
 }
 
 /// One declared dimension of a multi-dimensional variable.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum Dimension {
     /// Derived dimension `:` — legal only for function *input* parameters
     /// (S-2.14); enforced by the validator.
@@ -179,7 +184,7 @@ pub enum Dimension {
 
 /// Modelica-style `(min = …, max = …)` declaration attributes (Beta-1 grammar
 /// gap adopted per SPEC_0034 D7; semantics: saturation ranges, trap T3).
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize)]
 pub struct RangeAttributes {
     pub min: Option<Expression>,
     pub max: Option<Expression>,
@@ -194,7 +199,7 @@ impl RangeAttributes {
 }
 
 /// A variable declaration: type, name, dimensions, range attributes.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct VariableDeclaration {
     pub ty: TypeRef,
     pub name: Name,
@@ -219,7 +224,8 @@ impl VariableDeclaration {
 }
 
 /// Causality of a block-interface variable declared before `protected` (D7).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum InterfaceKind {
     /// `input Real u;` — control-input, read-only inside the block.
     Input,
@@ -230,7 +236,8 @@ pub enum InterfaceKind {
 }
 
 /// Kind of a block-internal state entity declared after `protected`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum ProtectedKind {
     /// `parameter` after `protected` — dependent parameter, recomputed in
     /// `Recalibrate`.
@@ -242,7 +249,7 @@ pub enum ProtectedKind {
 }
 
 /// A block-interface variable (before `protected`).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct InterfaceVariable {
     pub kind: InterfaceKind,
     pub decl: VariableDeclaration,
@@ -250,12 +257,12 @@ pub struct InterfaceVariable {
     /// (GAL-020). Row-major for arrays. Not part of `.alg` concrete syntax
     /// and not read by this crate's validator; the start-mirrors-Startup
     /// cross-check (GAL-017/GAL-020) is owned by the projection and
-    /// manifest layers (`rumoca-galec-codegen`).
+    /// manifest layers (`rumoca-phase-codegen::galec`).
     pub start: Option<Expression>,
 }
 
 /// A block-internal state entity (after `protected`).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ProtectedEntity {
     pub kind: ProtectedKind,
     pub decl: VariableDeclaration,
@@ -268,7 +275,7 @@ pub struct ProtectedEntity {
 /// `constant`/`parameter` prefixes on compartment entities as on block-level
 /// state entities, and manifest generation needs `start` for every state
 /// variable including compartment members (GAL-020).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct StateCompartment {
     pub name: Name,
     pub entities: Vec<ProtectedEntity>,
@@ -278,7 +285,8 @@ pub struct StateCompartment {
 
 /// The six predefined error signals with their normative 32-bit encoding
 /// positions (§3.2.5 §1.6). Block-interface methods may expose only these.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum PredefinedSignal {
     InvalidArgument,
     Overflow,
@@ -328,7 +336,8 @@ impl PredefinedSignal {
 }
 
 /// The three mandatory block-interface method kinds (§3.1.3).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum BlockMethodKind {
     Startup,
     Recalibrate,
@@ -350,7 +359,7 @@ impl BlockMethodKind {
 /// A block-interface method body. Parameter-free by construction (trap T1);
 /// its name is fixed by its position in [`Block`]. Exposable signals are
 /// restricted to the six predefined ones by construction (§3.2.5 §1.3).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct BlockMethod {
     /// `signals …;` clause; must equal the computed escape set (validator).
     pub signals: Vec<PredefinedSignal>,
@@ -373,7 +382,8 @@ impl Default for BlockMethod {
 }
 
 /// `function` (stateless) vs `method` (stateful), S-2.3.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum FunctionKind {
     /// `function` — must not write state nor call stateful functions.
     Stateless,
@@ -393,7 +403,8 @@ impl FunctionKind {
 }
 
 /// `input` / `output` data-flow direction of a function parameter.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum Direction {
     Input,
     Output,
@@ -411,7 +422,7 @@ impl Direction {
 }
 
 /// A function parameter declaration.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Parameter {
     pub direction: Direction,
     pub decl: VariableDeclaration,
@@ -419,7 +430,7 @@ pub struct Parameter {
 
 /// A user-defined function (everything except the three block methods).
 /// Must be transitively called from `DoStep` (S-2.11; validator).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct UserFunction {
     pub kind: FunctionKind,
     pub name: Name,
@@ -437,7 +448,7 @@ pub struct UserFunction {
 /// Section order follows G-2.1: interface variables, `protected`,
 /// compartments, protected entities, error signals, protected functions,
 /// `public`, `Startup`/`Recalibrate`/`DoStep` plus other public functions.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Block {
     pub name: Name,
     /// Interface variables before `protected` (inputs, then outputs, then
@@ -484,7 +495,7 @@ impl Block {
 }
 
 /// One dotted part of a reference: name plus optional subscripts.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct RefPart {
     pub name: Name,
     /// `computed-dimensions`: constant-scalar-integer-expressions (S-3.1).
@@ -508,7 +519,8 @@ impl RefPart {
 /// A reference. Local references are a single part (grammar `local-reference`);
 /// state references are `self.` followed by one or more parts — the split is
 /// structural so an illegal dotted local reference cannot be represented.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum Reference {
     /// `name[subs]` — function parameter, local variable, or loop iterator.
     Local(RefPart),
@@ -529,7 +541,8 @@ impl Reference {
 }
 
 /// Binary operators with the normative precedence classes (S-3.3).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum BinaryOp {
     Pow,
     Mul,
@@ -548,7 +561,8 @@ pub enum BinaryOp {
 
 /// Normative operator precedence classes, highest first (S-3.3). Any
 /// cross-class mix must be explicitly parenthesized (trap T6).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum PrecedenceClass {
     Power,
     Multiplicative,
@@ -560,7 +574,8 @@ pub enum PrecedenceClass {
 }
 
 /// Associativity of a precedence class.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum Associativity {
     Left,
     Right,
@@ -614,7 +629,7 @@ impl PrecedenceClass {
 }
 
 /// An if-expression: self-parenthesized with mandatory `else` (trap T12).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct IfExpression {
     /// `(condition, value)` pairs: the `if` branch followed by any `elseif`
     /// branches; must be non-empty (checked by the printer).
@@ -624,14 +639,15 @@ pub struct IfExpression {
 }
 
 /// A function call `name(args)`.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct FunctionCall {
     pub function: Name,
     pub arguments: Vec<Expression>,
 }
 
 /// GALEC expressions (G-3.1).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum Expression {
     /// Boolean literal.
     Bool(bool),
@@ -714,14 +730,15 @@ impl Expression {
 
 /// Branch condition of an if-statement: Boolean expression or error-signal
 /// check (§3.2.5 §1.4).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum Condition {
     Expression(Expression),
     SignalCheck(SignalCheck),
 }
 
 /// The listed part of a signal check: `[not] in s1, s2, …`.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SignalTest {
     /// `not in …` — test the in-reachable set MINUS the listed signals.
     pub negated: bool,
@@ -731,7 +748,7 @@ pub struct SignalTest {
 
 /// Error-signal check `signal [closure] [[not] in s1, …] [or expr]`.
 /// Checking is catching: satisfied checks unset their test set (trap T10).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SignalCheck {
     /// Optional signal-closure variable capturing the caught signals.
     pub closure: Option<Identifier>,
@@ -742,7 +759,7 @@ pub struct SignalCheck {
 }
 
 /// One `if`/`elseif` branch of an if-statement.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct IfBranch {
     pub condition: Condition,
     pub body: Vec<Spanned<Statement>>,
@@ -754,7 +771,7 @@ pub struct IfBranch {
 }
 
 /// `if … then … [elseif … then …]* [else …] end if;`.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct IfStatement {
     /// `if` branch plus `elseif` branches; must be non-empty (printer).
     pub branches: Vec<IfBranch>,
@@ -764,7 +781,7 @@ pub struct IfStatement {
 
 /// `for i in start[:step]:stop loop … end for;` with statically-evaluated
 /// integer bounds (trap T11).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ForLoop {
     /// Optional loop-iterator declaration (optional per the grammar).
     pub iterator: Option<Name>,
@@ -775,7 +792,8 @@ pub struct ForLoop {
 }
 
 /// Target of a `limit` statement.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum LimitTarget {
     /// `limit self;` — limit all ranged state variables.
     SelfState,
@@ -786,7 +804,8 @@ pub enum LimitTarget {
 /// GALEC statements, including the error-signal statement (a 7th statement
 /// kind per SPEC_0034 D7 — Beta-1 defines it in §3.2.5 but omits it from the
 /// `statement` alternatives).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum Statement {
     /// `reference := expression;`
     Assignment {

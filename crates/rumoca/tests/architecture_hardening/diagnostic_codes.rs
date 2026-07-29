@@ -366,16 +366,16 @@ const DIAGNOSTIC_REGISTRIES: &[DiagnosticRegistry] = &[
         owner: "GALEC IR",
         paths: &[
             "crates/rumoca-ir-galec/src/diagnostic.rs",
-            "crates/rumoca-ir-galec/src/parse/errors.rs",
+            "crates/rumoca-phase-parse-galec/src/parse/errors.rs",
         ],
     },
     DiagnosticRegistry {
         owner: "GALEC target projection",
-        paths: &["crates/rumoca-galec-codegen/src/diagnostic.rs"],
+        paths: &["crates/rumoca-phase-codegen/src/galec/diagnostic.rs"],
     },
     DiagnosticRegistry {
         owner: "eFMI packaging",
-        paths: &["crates/rumoca-galec-codegen/src/manifest_context/diagnostic.rs"],
+        paths: &["crates/rumoca-phase-codegen/src/galec/manifest_context/diagnostic.rs"],
     },
 ];
 

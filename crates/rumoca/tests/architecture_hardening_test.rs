@@ -350,13 +350,31 @@ fn test_generated_parser_contract_is_pinned_and_documented() {
         );
     }
 
+    let galec_build_rs = fs::read_to_string(root.join("crates/rumoca-phase-parse-galec/build.rs"))
+        .expect("read GALEC parser build.rs");
+    for required in [
+        r#"Builder::with_explicit_output_dir("src/parse/generated")"#,
+        r#".grammar_file(par_file)"#,
+        r#".parser_output_file("galec_parser.rs")"#,
+        r#".actions_output_file("galec_grammar_trait.rs")"#,
+        r#"println!("cargo:rerun-if-changed=src/parse/galec.par");"#,
+    ] {
+        assert!(
+            galec_build_rs.contains(required),
+            "GALEC parser build script must keep the generated parser contract stable; missing `{required}`"
+        );
+    }
+
     let contributing =
         fs::read_to_string(root.join("CONTRIBUTING.md")).expect("read CONTRIBUTING.md");
     for required in [
         "## Parser Grammar Regeneration",
         "cargo check -p rumoca-phase-parse",
         "cargo test -p rumoca-phase-parse --test recovery_corpus --quiet",
+        "cargo check -p rumoca-phase-parse-galec",
+        "cargo test -p rumoca-phase-parse-galec --quiet",
         "git diff -- crates/rumoca-phase-parse/src/generated",
+        "git diff -- crates/rumoca-phase-parse-galec/src/parse/generated",
     ] {
         assert!(
             contributing.contains(required),
@@ -366,8 +384,13 @@ fn test_generated_parser_contract_is_pinned_and_documented() {
 
     let ci = fs::read_to_string(root.join(".github/workflows/ci.yml")).expect("read CI workflow");
     assert!(
-        ci.contains("git diff --exit-code -- crates/rumoca-phase-parse/src/generated"),
+        ci.contains("git diff --exit-code --")
+            && ci.contains("crates/rumoca-phase-parse/src/generated"),
         "CI lint gate must fail when the checked-in generated parser is stale"
+    );
+    assert!(
+        ci.contains("crates/rumoca-phase-parse-galec/src/parse/generated"),
+        "CI lint gate must fail when the checked-in generated GALEC parser is stale"
     );
 }
 
@@ -1948,3 +1971,6 @@ mod instantiate_value_fabrication;
 
 #[path = "architecture_hardening/phase_diagnostics.rs"]
 mod phase_diagnostics;
+
+#[path = "architecture_hardening/parser_ownership.rs"]
+mod parser_ownership;

@@ -1,5 +1,5 @@
 version = 1
-ir = "dae"
+ir = "algorithm-code"
 name = "embedded-c-galec"
 # Conformance (SPEC_0034 GAL-024, two-track rule): this target is the
 # non-eFMI track — a GALEC-derived embedded C export that may exist
@@ -40,12 +40,10 @@ reverse_ad = false
 dynamic_control_flow = false
 host_callbacks = false
 
-# D2/GAL-008 split: these templates own the C FILE LAYOUT only (includes,
-# guards, struct/function skeletons, the fixed builtin-helper prelude);
-# every C expression/statement and identifier is printed by the typed Rust
-# printer in rumoca-galec-codegen (c_mangle/c_print) and arrives pre-printed
-# in the template context (`variables[*].c_name`, `methods.*.c_lines`).
-# Templates stay thin — iteration and interpolation, no C syntax logic.
+# D2/GAL-008 split: Rust lowers to a closed typed semantic context
+# (collision-checked names, typed variables, recursive expressions/statements,
+# and normalized array operations). These templates own every C token,
+# declaration, expression, statement, comment escape, and file-layout choice.
 [[files]]
 path = "{{ model_name }}.h"
 template = "model.h.jinja"

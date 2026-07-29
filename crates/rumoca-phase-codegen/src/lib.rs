@@ -52,11 +52,14 @@
 
 mod codegen;
 mod errors;
+pub mod views;
 
 pub use codegen::{
     CodegenInput, SolveTemplateRenderer, dae_template_json, render_ast_template,
-    render_ast_template_with_name, render_flat_template_with_name, render_solve_template_with_name,
-    render_template, render_template_file, render_template_for_input, render_template_with_name,
+    render_algorithm_code_template_with_artifact, render_ast_template_with_name,
+    render_checked_algorithm_block_template_with_artifact,
+    render_flat_template_with_name, render_solve_template_with_name, render_template,
+    render_template_file, render_template_for_input, render_template_with_name,
     render_template_with_name_for_input,
 };
 pub use errors::CodegenError;
@@ -74,6 +77,7 @@ pub mod templates {
         pub name: &'static str,
         pub manifest: &'static str,
         pub templates: &'static [BuiltinTargetTemplate],
+        pub assets: &'static [BuiltinTargetAsset],
     }
 
     /// Built-in template source addressed by a target manifest-local path.
@@ -83,12 +87,35 @@ pub mod templates {
         pub source: &'static str,
     }
 
+    /// Non-template file embedded from a built-in target directory.
+    #[derive(Clone, Copy, Debug)]
+    pub struct BuiltinTargetAsset {
+        pub path: &'static str,
+        pub bytes: &'static [u8],
+    }
+
     impl BuiltinTarget {
         pub fn template_source(&self, path: &str) -> Option<&'static str> {
             self.templates
                 .iter()
                 .find(|template| template.path == path)
                 .map(|template| template.source)
+        }
+
+        pub fn asset_files(&self, source: &str) -> Option<Vec<(&'static str, &'static [u8])>> {
+            let prefix = source.trim_end_matches('/');
+            let prefix_with_separator = format!("{prefix}/");
+            let files = self
+                .assets
+                .iter()
+                .filter_map(|asset| {
+                    asset
+                        .path
+                        .strip_prefix(&prefix_with_separator)
+                        .map(|relative| (relative, asset.bytes))
+                })
+                .collect::<Vec<_>>();
+            (!files.is_empty()).then_some(files)
         }
     }
 

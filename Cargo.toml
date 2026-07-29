@@ -15,13 +15,16 @@ members = [
     "crates/rumoca-eval-ast",
     "crates/rumoca-eval-flat",
     "crates/rumoca-eval-dae",
+    "crates/rumoca-eval-galec",
     "crates/rumoca-eval-solve",
     "crates/rumoca-ir-ast",
     "crates/rumoca-ir-flat",
     "crates/rumoca-phase-codegen",
+    "crates/rumoca-phase-galec",
     "crates/rumoca-phase-flatten",
     "crates/rumoca-phase-instantiate",
     "crates/rumoca-phase-parse",
+    "crates/rumoca-phase-parse-galec",
     "crates/rumoca-phase-resolve",
     "crates/rumoca-phase-dae",
     "crates/rumoca-phase-structural",
@@ -43,13 +46,12 @@ members = [
     "crates/rumoca-phase-typecheck",
     # GALEC / eFMI export
     "crates/rumoca-ir-galec",
-    "crates/rumoca-galec-codegen",
     # Compile pipeline and tools
     "crates/rumoca-compile",
     "crates/rumoca-tool-lint",
     "crates/rumoca-tool-fmt",
     "crates/rumoca-tool-lsp",
-    "crates/rumoca-tool-galec-lsp",
+    "crates/rumoca-tool-lsp-galec",
     "crates/xtask",
     # Bindings
     "crates/rumoca-bind-wasm",
@@ -89,17 +91,20 @@ rumoca-ir-solve = { path = "crates/rumoca-ir-solve" }
 rumoca-eval-ast = { path = "crates/rumoca-eval-ast" }
 rumoca-eval-flat = { path = "crates/rumoca-eval-flat" }
 rumoca-eval-dae = { path = "crates/rumoca-eval-dae" }
+rumoca-eval-galec = { path = "crates/rumoca-eval-galec" }
 rumoca-eval-solve = { path = "crates/rumoca-eval-solve" }
 rumoca-ir-ast = { path = "crates/rumoca-ir-ast" }
 rumoca-ir-flat = { path = "crates/rumoca-ir-flat" }
 rumoca-phase-flatten = { path = "crates/rumoca-phase-flatten" }
 rumoca-phase-instantiate = { path = "crates/rumoca-phase-instantiate" }
 rumoca-phase-parse = { path = "crates/rumoca-phase-parse" }
+rumoca-phase-parse-galec = { path = "crates/rumoca-phase-parse-galec" }
 rumoca-phase-resolve = { path = "crates/rumoca-phase-resolve" }
 rumoca-phase-dae = { path = "crates/rumoca-phase-dae" }
 rumoca-phase-structural = { path = "crates/rumoca-phase-structural" }
 rumoca-phase-solve = { path = "crates/rumoca-phase-solve", default-features = false }
 rumoca-phase-codegen = { path = "crates/rumoca-phase-codegen" }
+rumoca-phase-galec = { path = "crates/rumoca-phase-galec" }
 rumoca-signal-frame = { path = "crates/rumoca-signal-frame" }
 rumoca-codec = { path = "crates/rumoca-codec" }
 rumoca-codec-flatbuffers = { path = "crates/rumoca-codec-flatbuffers" }
@@ -117,15 +122,13 @@ rumoca-solver-rk45 = { path = "crates/rumoca-solver-rk45" }
 rumoca-phase-typecheck = { path = "crates/rumoca-phase-typecheck" }
 rumoca-compile = { path = "crates/rumoca-compile" }
 rumoca-ir-galec = { path = "crates/rumoca-ir-galec" }
-rumoca-galec-codegen = { path = "crates/rumoca-galec-codegen" }
 rumoca-exec-cranelift = { path = "crates/rumoca-exec-cranelift" }
 rumoca-exec-mlir = { path = "crates/rumoca-exec-mlir" }
 rumoca-exec-wasm = { path = "crates/rumoca-exec-wasm" }
 rumoca-tool-lint = { path = "crates/rumoca-tool-lint" }
 rumoca-tool-fmt = { path = "crates/rumoca-tool-fmt" }
 rumoca-tool-lsp = { path = "crates/rumoca-tool-lsp", default-features = false }
-rumoca-tool-galec-lsp = { path = "crates/rumoca-tool-galec-lsp", default-features = false }
-rumoca-lsp-position = { path = "crates/rumoca-lsp-position" }
+rumoca-tool-lsp-galec = { path = "crates/rumoca-tool-lsp-galec", default-features = false }
 rumoca-bind-wasm = { path = "crates/rumoca-bind-wasm" }
 rumoca-bind-python = { path = "crates/rumoca-bind-python" }
 rumoca-test-msl = { path = "crates/rumoca-test-msl" }

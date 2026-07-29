@@ -4253,14 +4253,15 @@ dependencies = [
  "rumoca-compile",
  "rumoca-core",
  "rumoca-eval-solve",
- "rumoca-galec-codegen",
  "rumoca-ir-ast",
  "rumoca-ir-dae",
  "rumoca-ir-flat",
+ "rumoca-ir-galec",
  "rumoca-ir-solve",
  "rumoca-phase-codegen",
  "rumoca-phase-dae",
  "rumoca-phase-flatten",
+ "rumoca-phase-galec",
  "rumoca-phase-instantiate",
  "rumoca-phase-parse",
  "rumoca-phase-resolve",
@@ -4272,15 +4273,18 @@ dependencies = [
  "rumoca-tool-lint",
  "serde",
  "serde_json",
+ "sha1",
  "sigpipe",
  "tar",
  "tempfile",
  "thiserror 2.0.18",
+ "time",
  "toml",
  "tracing",
  "tracing-subscriber",
  "tungstenite 0.26.2",
  "ureq",
+ "uuid",
  "walkdir",
  "zip",
 ]
@@ -4305,6 +4309,7 @@ dependencies = [
 name = "rumoca-bind-wasm"
 version = "0.9.20"
 dependencies = [
+ "anyhow",
  "bincode",
  "console_error_panic_hook",
  "getrandom 0.3.4",
@@ -4315,6 +4320,8 @@ dependencies = [
  "rumoca-core",
  "rumoca-eval-ast",
  "rumoca-ir-solve",
+ "rumoca-phase-codegen",
+ "rumoca-phase-galec",
  "rumoca-sim",
  "rumoca-tool-lint",
  "rumoca-tool-lsp",
@@ -4345,12 +4352,12 @@ name = "rumoca-bind-wasm-galec"
 version = "0.9.20"
 dependencies = [
  "console_error_panic_hook",
- "getrandom 0.3.4",
  "lsp-types",
  "rumoca-compile",
- "rumoca-galec-codegen",
- "rumoca-ir-galec",
- "rumoca-tool-galec-lsp",
+ "rumoca-phase-codegen",
+ "rumoca-phase-galec",
+ "rumoca-phase-parse-galec",
+ "rumoca-tool-lsp-galec",
  "serde",
  "serde_json",
  "wasm-bindgen",
@@ -4387,11 +4394,9 @@ dependencies = [
  "minijinja",
  "rayon",
  "rumoca-core",
- "rumoca-galec-codegen",
  "rumoca-ir-ast",
  "rumoca-ir-dae",
  "rumoca-ir-flat",
- "rumoca-ir-galec",
  "rumoca-ir-solve",
  "rumoca-phase-codegen",
  "rumoca-phase-dae",
@@ -4465,6 +4470,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "rumoca-eval-galec"
+version = "0.9.20"
+dependencies = [
+ "rumoca-ir-galec",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "rumoca-eval-solve"
 version = "0.9.20"
 dependencies = [
@@ -4512,23 +4525,6 @@ dependencies = [
  "wasm-bindgen",
  "wasm-encoder",
  "wasmparser",
-]
-
-[[package]]
-name = "rumoca-galec-codegen"
-version = "0.9.20"
-dependencies = [
- "rumoca-core",
- "rumoca-eval-dae",
- "rumoca-ir-dae",
- "rumoca-ir-galec",
- "rumoca-phase-structural",
- "serde",
- "serde_json",
- "sha1",
- "thiserror 2.0.18",
- "time",
- "uuid",
 ]
 
 [[package]]
@@ -4600,11 +4596,8 @@ dependencies = [
 name = "rumoca-ir-galec"
 version = "0.9.20"
 dependencies = [
- "anyhow",
- "parol",
- "parol_runtime",
  "rumoca-core",
- "scnr2",
+ "serde",
  "thiserror 2.0.18",
 ]
 
@@ -4643,11 +4636,12 @@ dependencies = [
  "rumoca-core",
  "rumoca-eval-dae",
  "rumoca-eval-solve",
- "rumoca-galec-codegen",
  "rumoca-ir-ast",
  "rumoca-ir-dae",
  "rumoca-ir-flat",
+ "rumoca-ir-galec",
  "rumoca-ir-solve",
+ "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
@@ -4687,6 +4681,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "rumoca-phase-galec"
+version = "0.9.20"
+dependencies = [
+ "rumoca-core",
+ "rumoca-eval-dae",
+ "rumoca-ir-dae",
+ "rumoca-ir-galec",
+ "rumoca-phase-structural",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "rumoca-phase-instantiate"
 version = "0.9.20"
 dependencies = [
@@ -4715,6 +4721,20 @@ dependencies = [
  "rumoca-core",
  "rumoca-ir-ast",
  "scnr2",
+]
+
+[[package]]
+name = "rumoca-phase-parse-galec"
+version = "0.9.20"
+dependencies = [
+ "anyhow",
+ "parol",
+ "parol_runtime",
+ "rumoca-core",
+ "rumoca-ir-galec",
+ "rumoca-phase-codegen",
+ "scnr2",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -4908,19 +4928,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rumoca-tool-galec-lsp"
-version = "0.9.20"
-dependencies = [
- "clap",
- "futures-util",
- "lsp-types",
- "rumoca-core",
- "rumoca-ir-galec",
- "tokio",
- "tower-lsp",
-]
-
-[[package]]
 name = "rumoca-tool-lint"
 version = "0.9.20"
 dependencies = [
@@ -4942,7 +4949,9 @@ dependencies = [
  "lsp-types",
  "rumoca-compile",
  "rumoca-core",
+ "rumoca-phase-codegen",
  "rumoca-phase-dae",
+ "rumoca-phase-galec",
  "rumoca-sim",
  "rumoca-tool-fmt",
  "rumoca-tool-lint",
@@ -4952,6 +4961,19 @@ dependencies = [
  "toml",
  "tower-lsp",
  "tracing",
+]
+
+[[package]]
+name = "rumoca-tool-lsp-galec"
+version = "0.9.20"
+dependencies = [
+ "clap",
+ "futures-util",
+ "lsp-types",
+ "rumoca-core",
+ "rumoca-phase-parse-galec",
+ "tokio",
+ "tower-lsp",
 ]
 
 [[package]]

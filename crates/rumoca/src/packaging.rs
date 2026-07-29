@@ -1,15 +1,12 @@
 //! Generic declarative checksum/packaging build step (contract §4).
 //!
-//! This is the product-agnostic packaging path for the `galec`/`galec-production`
-//! eFMU targets (contract §9 WI-5). Rather than baking eFMI representation
-//! grouping and `__content.xml` synthesis into Rust, this build step is driven
-//! entirely by `target.toml` declarations: `[[files]]` carry a logical `id` and
-//! `[[files.checksums]]` edges (`of -> as`), and `[[assets]]` name bundles to
+//! This product-agnostic build step is driven entirely by `target.toml`:
+//! `[[files]]` carry logical identities and checksum edges, `[package]`
+//! declares product layout, and `[[assets]]` names target-relative trees to
 //! copy verbatim. It renders every file **in dependency order**, hashes the
 //! EXACT bytes it is about to write, and threads each producer's SHA-1 into the
-//! downstream files' context under the declared `as` key. No XML shape, no
-//! eFMI knowledge, lives here — the product lives in the templates and the
-//! `target.toml`.
+//! downstream files' context under the declared `as` key. Product-specific
+//! filenames, extensions, and formats live only in the target directory.
 //!
 //! # The no-placeholder proof (contract §4c), by construction
 //!
@@ -20,33 +17,34 @@
 //! On the resulting total order, when file `C` is rendered every `sha1[of]`
 //! was inserted right after its producer's bytes were produced — so the value
 //! threaded into `C` is always the real SHA-1 of the producer's final bytes.
-//! No placeholder is representable ([`Sha1Hex`] is constructible only from
-//! real bytes or a strict parse), and the bytes hashed are the exact bytes
-//! written (one `bytes` buffer feeds both `Sha1Hex::of_bytes` and the write).
+//! No placeholder is representable: the digest is computed only after the
+//! producer bytes exist, and the bytes hashed are the exact bytes written.
 
 use std::collections::{BTreeMap, HashMap};
+#[cfg(feature = "scheduled-sim")]
+use std::fs;
+#[cfg(feature = "scheduled-sim")]
+use std::io::Write as _;
 #[cfg(feature = "scheduled-sim")]
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 #[cfg(feature = "scheduled-sim")]
-use rumoca_compile::codegen::targets::{AssetBundle, safe_target_join};
-use rumoca_compile::codegen::targets::{RenderedTargetFile, TargetFile};
-use rumoca_compile::galec::Sha1Hex;
-
-#[cfg(feature = "scheduled-sim")]
-use crate::container;
+use rumoca_compile::codegen::targets::{AssetBundle, TargetAssetFile, safe_target_join};
+use rumoca_compile::codegen::targets::{
+    ChecksumAlgorithm, RenderedTargetFile, TargetFile,
+};
+use sha1::{Digest, Sha1};
+use serde::Serialize;
+use time::OffsetDateTime;
+use time::macros::format_description;
+use uuid::Uuid;
 
 /// How the rendered files + assets are finalized on disk (contract §4b).
-///
-/// The `.efmu`/flat-zip specifics are fields, not constants, so `build_fmu`
-/// can fold into this one step later with different values (out of scope here).
 #[cfg(feature = "scheduled-sim")]
 pub struct PackageSpec {
-    /// The product's root index file (e.g. `__content.xml`). A directory that
-    /// already holds it is recognized as a prior build of THIS product and is
-    /// replaced on re-run; anything else non-empty is foreign and refused.
-    pub index: String,
+    /// Files whose presence recognizes a directory as a previous product.
+    pub required_files: Vec<String>,
     /// The zip package form, if the product has one. `None` = directory-only.
     pub zip: Option<ZipPackage>,
 }
@@ -54,35 +52,48 @@ pub struct PackageSpec {
 /// The zip form of a package (contract §4b `Zip { ext }`).
 #[cfg(feature = "scheduled-sim")]
 pub struct ZipPackage {
-    /// Absolute path of the archive to write (e.g. `<out>/<model>.efmu`).
+    /// Absolute path of the archive declared by the target.
     pub archive_path: PathBuf,
 }
 
-/// One resolved asset file: a bundle-relative `/`-separated path and its exact
-/// bytes, copied verbatim into the product (contract §4d).
-#[cfg(feature = "scheduled-sim")]
-pub struct AssetFile {
-    /// Path relative to the bundle's declared `dest`, `/`-separated.
-    pub relative_path: String,
-    /// The exact bytes to write.
-    pub bytes: Vec<u8>,
+/// Immutable facts shared by every artifact rendered in one invocation.
+///
+/// The generic artifact layer owns identity/time minting. Concrete target
+/// templates decide which identities they use and how they spell them.
+#[derive(Debug, Clone, Serialize)]
+pub struct ArtifactSession {
+    pub generated_at: String,
+    pub generation_tool: String,
+    pub identities: BTreeMap<String, String>,
 }
 
-/// Resolve a declared `[[assets]]` bundle name to the vendored eFMI XSD tree
-/// (contract §4d): the generic build step's real asset source. Fails early on
-/// an unknown bundle so a `target.toml` typo cannot silently ship an empty
-/// `schemas/`.
-#[cfg(feature = "scheduled-sim")]
-pub fn efmi_asset_source(bundle: &str) -> Result<Vec<AssetFile>> {
-    let files = container::asset_bundle_files(bundle)
-        .with_context(|| format!("Unknown asset bundle '{bundle}'"))?;
-    Ok(files
-        .into_iter()
-        .map(|(relative_path, bytes)| AssetFile {
-            relative_path: relative_path.to_string(),
-            bytes: bytes.to_vec(),
+impl ArtifactSession {
+    pub fn new(files: &[TargetFile]) -> Result<Self> {
+        let generated_at = OffsetDateTime::now_utc()
+            .format(format_description!(
+                "[year]-[month]-[day]T[hour]:[minute]:[second]Z"
+            ))
+            .context("Format artifact generation timestamp")?;
+        let identities = files
+            .iter()
+            .filter_map(|file| file.id.as_ref())
+            .map(|id| (id.clone(), Uuid::new_v4().hyphenated().to_string()))
+            .collect();
+        Ok(Self {
+            generated_at,
+            generation_tool: format!("rumoca {}", env!("CARGO_PKG_VERSION")),
+            identities,
         })
-        .collect())
+    }
+}
+
+/// Per-file immutable render context: one shared session plus the checksums
+/// made available by the declared incoming DAG edges.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct ArtifactRenderContext<'a> {
+    #[serde(flatten)]
+    pub session: &'a ArtifactSession,
+    pub checksums: &'a BTreeMap<String, String>,
 }
 
 /// Order the target's files so every producer precedes every consumer of its
@@ -162,30 +173,65 @@ pub fn topo_sort(files: &[TargetFile]) -> Result<Vec<usize>> {
 /// `render(template, checksums)` renders one template string (a `[[files]]`
 /// `path` or its content `template`) against the target's base context plus
 /// the injected checksum keys — keeping this step ignorant of how the base
-/// context is built (typed export vs IR JSON). `asset_source(bundle)` resolves
-/// a declared bundle name to its files. Nothing is written until every byte is
+/// context is built. `asset_source(source)` resolves a target-relative tree.
+/// Nothing is written until every byte is
 /// rendered and hashed, so a render or topo failure leaves the product path
 /// untouched.
 #[cfg(feature = "scheduled-sim")]
 pub fn render_and_package(
     files: &[TargetFile],
-    render: impl Fn(&str, &BTreeMap<String, String>) -> Result<String>,
+    render: impl Fn(&str, &ArtifactRenderContext<'_>) -> Result<String>,
     assets: &[AssetBundle],
-    asset_source: impl Fn(&str) -> Result<Vec<AssetFile>>,
+    asset_source: impl Fn(&str) -> Result<Vec<TargetAssetFile>>,
     package: &PackageSpec,
     out_dir: &Path,
 ) -> Result<()> {
     let rendered = render_web(files, render)?;
+    let resolved_assets = assets
+        .iter()
+        .map(|asset| {
+            Ok((
+                asset,
+                asset_source(&asset.source).with_context(|| {
+                    format!("Resolve target asset source '{}'", asset.source)
+                })?,
+            ))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    validate_required_files(&rendered, &resolved_assets, &package.required_files)?;
+    validate_existing_root(out_dir, &package.required_files)?;
 
-    prepare_root(out_dir, &package.index)?;
-    write_rendered_files(out_dir, &rendered)?;
-    for asset in assets {
-        copy_asset_bundle(out_dir, asset, &asset_source)?;
+    let parent = out_dir
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent)
+        .with_context(|| format!("Create package parent '{}'", parent.display()))?;
+    let staging = tempfile::Builder::new()
+        .prefix(".rumoca-package-")
+        .tempdir_in(parent)
+        .with_context(|| format!("Create package staging directory in '{}'", parent.display()))?;
+    let staged_root = staging.path().join("product");
+    fs::create_dir(&staged_root)
+        .with_context(|| format!("Create staged product '{}'", staged_root.display()))?;
+    write_rendered_files(&staged_root, &rendered)?;
+    for (asset, files) in &resolved_assets {
+        copy_asset_tree(&staged_root, asset, files)?;
     }
-    if let Some(zip) = &package.zip {
-        container::write_efmu_zip(out_dir, &zip.archive_path)
-            .context("Write package (zip form)")?;
+    let staged_archive = package
+        .zip
+        .as_ref()
+        .map(|_| staging.path().join("archive.zip"));
+    if let Some(archive_path) = &staged_archive {
+        write_zip_package(&staged_root, archive_path).context("Build staged package archive")?;
     }
+    install_staged_package(
+        &staged_root,
+        out_dir,
+        staged_archive.as_deref(),
+        package.zip.as_ref().map(|zip| zip.archive_path.as_path()),
+        staging.path(),
+    )?;
     Ok(())
 }
 
@@ -206,11 +252,12 @@ pub fn render_and_package(
 /// any per-file render failure from `render`.
 pub fn render_web(
     files: &[TargetFile],
-    render: impl Fn(&str, &BTreeMap<String, String>) -> Result<String>,
+    render: impl Fn(&str, &ArtifactRenderContext<'_>) -> Result<String>,
 ) -> Result<Vec<(String, Vec<u8>)>> {
     let order = topo_sort(files)?;
+    let session = ArtifactSession::new(files)?;
 
-    let mut sha1: HashMap<String, Sha1Hex> = HashMap::new();
+    let mut digests: HashMap<(String, ChecksumAlgorithm), String> = HashMap::new();
     // Render into `order` positions but return in declaration order, so the
     // in-memory caller sees files in the same order the `target.toml` declares
     // them (`render_target_files` asserts a 1:1 file-count match).
@@ -220,25 +267,41 @@ pub fn render_web(
         let mut checksums = BTreeMap::new();
         for need in &file.checksums {
             // Guaranteed present: the producer precedes this file in `order`.
-            let digest = sha1.get(&need.of).with_context(|| {
+            let digest = digests
+                .get(&(need.of.clone(), need.algorithm))
+                .with_context(|| {
                 format!(
                     "internal: producer '{}' hash missing while rendering '{}'",
                     need.of, file.path
                 )
             })?;
-            checksums.insert(need.as_key.clone(), digest.to_hex());
+            checksums.insert(need.as_key.clone(), digest.clone());
         }
-        let path = render(&file.path, &checksums)
+        let context = ArtifactRenderContext {
+            session: &session,
+            checksums: &checksums,
+        };
+        let path = render(&file.path, &context)
             .with_context(|| format!("Render target output path '{}'", file.path))?
             .trim()
             .to_string();
-        let bytes = render(&file.template, &checksums)
+        let bytes = render(&file.template, &context)
             .with_context(|| format!("Render target template '{}'", file.template))?
             .into_bytes();
-        // Hash the EXACT bytes that will be written (§4c): `Sha1Hex::of_bytes`
-        // and the write below share this one buffer with no intervening reformat.
+        // Hash the exact bytes that will be written; hashing and writing share
+        // this one buffer with no intervening reformat.
         if let Some(id) = &file.id {
-            sha1.insert(id.clone(), Sha1Hex::of_bytes(&bytes));
+            for algorithm in files.iter().flat_map(|consumer| {
+                consumer
+                    .checksums
+                    .iter()
+                    .filter(|need| need.of == *id)
+                    .map(|need| need.algorithm)
+            }) {
+                digests
+                    .entry((id.clone(), algorithm))
+                    .or_insert_with(|| checksum_hex(algorithm, &bytes));
+            }
         }
         rendered[index] = Some((path, bytes));
     }
@@ -247,6 +310,18 @@ pub fn render_web(
         .into_iter()
         .map(|entry| entry.expect("every file rendered exactly once in topological order"))
         .collect())
+}
+
+/// SHA-1 digest of exact artifact bytes as lowercase hexadecimal.
+#[must_use]
+pub fn sha1_hex(bytes: &[u8]) -> String {
+    format!("{:x}", Sha1::digest(bytes))
+}
+
+fn checksum_hex(algorithm: ChecksumAlgorithm, bytes: &[u8]) -> String {
+    match algorithm {
+        ChecksumAlgorithm::Sha1 => sha1_hex(bytes),
+    }
 }
 
 /// In-memory twin of [`render_and_package`]'s render half (contract §9 WI-5):
@@ -261,7 +336,7 @@ pub fn render_web(
 /// emit UTF-8, so this is an internal invariant break).
 pub fn render_web_files(
     files: &[TargetFile],
-    render: impl Fn(&str, &BTreeMap<String, String>) -> Result<String>,
+    render: impl Fn(&str, &ArtifactRenderContext<'_>) -> Result<String>,
 ) -> Result<Vec<RenderedTargetFile>> {
     render_web(files, render)?
         .into_iter()
@@ -275,23 +350,20 @@ pub fn render_web_files(
         .collect()
 }
 
-/// Make way for this run's product directory (contract §4b): a directory
-/// holding the package `index` file is a previous build of this product and is
-/// removed so the writer starts clean; an empty directory is accepted; anything
-/// else non-empty is foreign and refused with a remedy, never deleted.
+/// Make way for this run's product directory. A directory holding all declared
+/// marker files is a previous build and can be replaced; any other non-empty
+/// directory is treated as foreign.
 #[cfg(feature = "scheduled-sim")]
-fn prepare_root(out_dir: &Path, index: &str) -> Result<()> {
+fn validate_existing_root(out_dir: &Path, required_files: &[String]) -> Result<()> {
     if !out_dir.exists() {
-        std::fs::create_dir_all(out_dir)
-            .with_context(|| format!("Create product directory `{}`", out_dir.display()))?;
         return Ok(());
     }
-    if out_dir.is_dir() && out_dir.join(index).is_file() {
-        std::fs::remove_dir_all(out_dir).with_context(|| {
-            format!("Remove the previous build product `{}`", out_dir.display())
-        })?;
-        std::fs::create_dir_all(out_dir)
-            .with_context(|| format!("Recreate product directory `{}`", out_dir.display()))?;
+    let previous_product = !required_files.is_empty()
+        && out_dir.is_dir()
+        && required_files
+            .iter()
+            .all(|required| out_dir.join(required).is_file());
+    if previous_product {
         return Ok(());
     }
     let empty = out_dir.is_dir()
@@ -304,10 +376,34 @@ fn prepare_root(out_dir: &Path, index: &str) -> Result<()> {
     }
     bail!(
         "product output path `{}` exists but is not a build product from a previous run \
-         (no `{index}`); refusing to remove it. Delete it or choose a different `--output` \
+         (required marker files are missing); refusing to remove it. Delete it or choose a different `--output` \
          directory.",
         out_dir.display()
     );
+}
+
+#[cfg(feature = "scheduled-sim")]
+fn validate_required_files(
+    rendered: &[(String, Vec<u8>)],
+    assets: &[(&AssetBundle, Vec<TargetAssetFile>)],
+    required_files: &[String],
+) -> Result<()> {
+    for required in required_files {
+        safe_target_join(Path::new("product"), required)?;
+        let rendered_match = rendered.iter().any(|(path, _)| path == required);
+        let asset_match = assets.iter().any(|(asset, files)| {
+            files.iter().any(|file| {
+                let dest = asset.dest.trim_end_matches('/');
+                format!("{dest}/{}", file.relative_path) == *required
+            })
+        });
+        if !rendered_match && !asset_match {
+            bail!(
+                "[package] required file '{required}' is not produced by [[files]] or [[assets]]"
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Write the exact rendered bytes that were hashed (contract §4c): the tuple
@@ -326,18 +422,15 @@ fn write_rendered_files(out_dir: &Path, rendered: &[(String, Vec<u8>)]) -> Resul
     Ok(())
 }
 
-/// Copy one declared asset bundle into `out_dir/<dest>` verbatim (contract
-/// §4d): assets are outside the render/hash DAG, so this is a pure file copy.
+/// Copy one target-relative asset tree into `out_dir/<dest>` verbatim.
 #[cfg(feature = "scheduled-sim")]
-fn copy_asset_bundle(
+fn copy_asset_tree(
     out_dir: &Path,
     asset: &AssetBundle,
-    asset_source: &impl Fn(&str) -> Result<Vec<AssetFile>>,
+    files: &[TargetAssetFile],
 ) -> Result<()> {
     let dest_root = safe_target_join(out_dir, &asset.dest)?;
-    for file in asset_source(&asset.bundle)
-        .with_context(|| format!("Resolve asset bundle '{}'", asset.bundle))?
-    {
+    for file in files {
         let output_path = safe_target_join(&dest_root, &file.relative_path)?;
         if let Some(parent) = output_path.parent() {
             std::fs::create_dir_all(parent)
@@ -346,6 +439,202 @@ fn copy_asset_bundle(
         std::fs::write(&output_path, &file.bytes)
             .with_context(|| format!("Write asset `{}`", output_path.display()))?;
     }
+    Ok(())
+}
+
+#[cfg(feature = "scheduled-sim")]
+fn install_staged_package(
+    staged_root: &Path,
+    final_root: &Path,
+    staged_archive: Option<&Path>,
+    final_archive: Option<&Path>,
+    transaction_dir: &Path,
+) -> Result<()> {
+    let previous_root = transaction_dir.join("previous-product");
+    let had_root = final_root.exists();
+    if had_root {
+        fs::rename(final_root, &previous_root).with_context(|| {
+            format!(
+                "Move previous product '{}' into transaction",
+                final_root.display()
+            )
+        })?;
+    }
+    if let Err(error) = fs::rename(staged_root, final_root) {
+        if had_root {
+            let _ = fs::rename(&previous_root, final_root);
+        }
+        return Err(error).with_context(|| {
+            format!("Install staged product '{}'", final_root.display())
+        });
+    }
+
+    let archive_result = install_staged_archive(
+        staged_archive,
+        final_archive,
+        transaction_dir.join("previous-archive"),
+    );
+    if let Err(error) = archive_result {
+        let _ = fs::remove_dir_all(final_root);
+        if had_root {
+            let _ = fs::rename(&previous_root, final_root);
+        }
+        return Err(error);
+    }
+    if had_root {
+        fs::remove_dir_all(&previous_root).with_context(|| {
+            format!("Remove previous product '{}'", previous_root.display())
+        })?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "scheduled-sim")]
+fn install_staged_archive(
+    staged_archive: Option<&Path>,
+    final_archive: Option<&Path>,
+    previous_archive: PathBuf,
+) -> Result<()> {
+    let (Some(staged), Some(final_path)) = (staged_archive, final_archive) else {
+        return Ok(());
+    };
+    if let Some(parent) = final_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("Create archive parent '{}'", parent.display()))?;
+    }
+    let had_archive = final_path.exists();
+    if had_archive {
+        fs::rename(final_path, &previous_archive).with_context(|| {
+            format!("Move previous archive '{}' into transaction", final_path.display())
+        })?;
+    }
+    if let Err(error) = fs::rename(staged, final_path) {
+        if had_archive {
+            let _ = fs::rename(&previous_archive, final_path);
+        }
+        return Err(error)
+            .with_context(|| format!("Install package archive '{}'", final_path.display()));
+    }
+    if had_archive {
+        fs::remove_file(&previous_archive).with_context(|| {
+            format!(
+                "Remove previous package archive '{}'",
+                previous_archive.display()
+            )
+        })?;
+    }
+    Ok(())
+}
+
+/// Write a deterministic flat zip of `package_root` to a staging file and
+/// replace `archive_path` only after the archive is complete.
+#[cfg(feature = "scheduled-sim")]
+fn write_zip_package(package_root: &Path, archive_path: &Path) -> Result<()> {
+    let mut relative_paths = Vec::new();
+    collect_package_files(package_root, package_root, &mut relative_paths)?;
+    relative_paths.sort();
+
+    if let Some(parent) = archive_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("Create archive directory '{}'", parent.display()))?;
+    }
+    let mut staging_name = archive_path
+        .file_name()
+        .context("Package archive path must have a file name")?
+        .to_os_string();
+    staging_name.push(".part");
+    let staging_path = archive_path.with_file_name(staging_name);
+    write_zip_entries(package_root, archive_path, &staging_path, &relative_paths).inspect_err(
+        |_| {
+            let _ = fs::remove_file(&staging_path);
+        },
+    )?;
+    if archive_path.exists() {
+        fs::remove_file(archive_path).with_context(|| {
+            format!("Remove previous archive '{}'", archive_path.display())
+        })?;
+    }
+    fs::rename(&staging_path, archive_path).with_context(|| {
+        format!(
+            "Rename staged archive '{}' to '{}'",
+            staging_path.display(),
+            archive_path.display()
+        )
+    })
+}
+
+#[cfg(feature = "scheduled-sim")]
+fn collect_package_files(root: &Path, dir: &Path, out: &mut Vec<String>) -> Result<()> {
+    for entry in
+        fs::read_dir(dir).with_context(|| format!("Read package directory '{}'", dir.display()))?
+    {
+        let entry =
+            entry.with_context(|| format!("Read package entry in '{}'", dir.display()))?;
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("Stat package entry '{}'", path.display()))?;
+        if file_type.is_symlink() {
+            bail!("Package trees may not contain symlinks: '{}'", path.display());
+        }
+        if file_type.is_dir() {
+            collect_package_files(root, &path, out)?;
+        } else if file_type.is_file() {
+            out.push(relative_package_path(root, &path)?);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "scheduled-sim")]
+fn relative_package_path(root: &Path, path: &Path) -> Result<String> {
+    path.strip_prefix(root)
+        .expect("package entry is beneath package root")
+        .components()
+        .map(|component| {
+            component
+                .as_os_str()
+                .to_str()
+                .context("Package paths must be valid UTF-8")
+        })
+        .collect::<Result<Vec<_>>>()
+        .map(|segments| segments.join("/"))
+}
+
+#[cfg(feature = "scheduled-sim")]
+fn write_zip_entries(
+    package_root: &Path,
+    archive_path: &Path,
+    staging_path: &Path,
+    relative_paths: &[String],
+) -> Result<()> {
+    let file = fs::File::create(staging_path)
+        .with_context(|| format!("Create staged archive '{}'", staging_path.display()))?;
+    let mut archive = zip::ZipWriter::new(file);
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated)
+        .last_modified_time(zip::DateTime::default())
+        .unix_permissions(0o644);
+    for relative in relative_paths {
+        let source = package_root.join(relative.replace('/', std::path::MAIN_SEPARATOR_STR));
+        let bytes = fs::read(&source)
+            .with_context(|| format!("Read package file '{}'", source.display()))?;
+        archive.start_file(relative, options).with_context(|| {
+            format!(
+                "Start zip entry '{relative}' in '{}'",
+                archive_path.display()
+            )
+        })?;
+        archive.write_all(&bytes).with_context(|| {
+            format!(
+                "Write zip entry '{relative}' in '{}'",
+                archive_path.display()
+            )
+        })?;
+    }
+    archive
+        .finish()
+        .with_context(|| format!("Finish archive '{}'", archive_path.display()))?;
     Ok(())
 }
 
@@ -395,6 +684,7 @@ path = "AlgorithmCode/manifest.xml"
 template = "ac.jinja"
   [[files.checksums]]
   of = "alg"
+  algorithm = "sha1"
   as = "alg_sha1"
 
 [[files]]
@@ -403,12 +693,15 @@ path = "ProductionCode/manifest.xml"
 template = "pc.jinja"
   [[files.checksums]]
   of = "ac_manifest"
+  algorithm = "sha1"
   as = "ac_manifest_sha1"
   [[files.checksums]]
   of = "c_header"
+  algorithm = "sha1"
   as = "c_header_sha1"
   [[files.checksums]]
   of = "c_source"
+  algorithm = "sha1"
   as = "c_source_sha1"
 
 [[files]]
@@ -417,9 +710,11 @@ path = "__content.xml"
 template = "content.jinja"
   [[files.checksums]]
   of = "ac_manifest"
+  algorithm = "sha1"
   as = "ac_manifest_sha1"
   [[files.checksums]]
   of = "pc_manifest"
+  algorithm = "sha1"
   as = "pc_manifest_sha1"
 "#,
         );
@@ -458,6 +753,7 @@ path = "a.xml"
 template = "a.jinja"
   [[files.checksums]]
   of = "b"
+  algorithm = "sha1"
   as = "b_sha1"
 
 [[files]]
@@ -466,6 +762,7 @@ path = "b.xml"
 template = "b.jinja"
   [[files.checksums]]
   of = "a"
+  algorithm = "sha1"
   as = "a_sha1"
 "#,
         );
@@ -492,6 +789,7 @@ path = "m.xml"
 template = "m.jinja"
   [[files.checksums]]
   of = "m"
+  algorithm = "sha1"
   as = "m_sha1"
 "#,
         )
@@ -517,6 +815,7 @@ path = "c.xml"
 template = "c.jinja"
   [[files.checksums]]
   of = "missing"
+  algorithm = "sha1"
   as = "missing_sha1"
 "#,
         )
@@ -540,7 +839,7 @@ readiness_level = 2
 [capabilities]
 
 [[assets]]
-bundle = "fake-bundle"
+source = "fake-assets"
 dest = "schemas/"
 
 [[files]]
@@ -554,24 +853,28 @@ path = "root.txt"
 template = "root-template"
   [[files.checksums]]
   of = "leaf"
+  algorithm = "sha1"
   as = "leaf_sha1"
 "#,
         );
         // Fake renderer: `leaf-template` -> fixed content; `root-template` ->
         // text embedding the injected `leaf_sha1`; path templates -> the path.
-        let render = |template: &str, checksums: &BTreeMap<String, String>| -> Result<String> {
+        let render = |template: &str, artifact: &ArtifactRenderContext<'_>| -> Result<String> {
             Ok(match template {
                 "leaf-template" => "LEAF-BODY".to_string(),
                 "root-template" => format!(
                     "root sees leaf={}",
-                    checksums.get("leaf_sha1").expect("leaf_sha1 injected")
+                    artifact
+                        .checksums
+                        .get("leaf_sha1")
+                        .expect("leaf_sha1 injected")
                 ),
                 other => other.to_string(), // path templates render to themselves
             })
         };
-        let asset_source = |bundle: &str| -> Result<Vec<AssetFile>> {
-            assert_eq!(bundle, "fake-bundle");
-            Ok(vec![AssetFile {
+        let asset_source = |source: &str| -> Result<Vec<TargetAssetFile>> {
+            assert_eq!(source, "fake-assets");
+            Ok(vec![TargetAssetFile {
                 relative_path: "LICENSE".to_string(),
                 bytes: b"license bytes".to_vec(),
             }])
@@ -579,7 +882,7 @@ template = "root-template"
         let dir = tempfile::tempdir().expect("temp dir");
         let out_dir = dir.path().join("product");
         let package = PackageSpec {
-            index: "root.txt".to_string(),
+            required_files: vec!["root.txt".to_string()],
             zip: None,
         };
         let manifest = parse_target_manifest(
@@ -592,7 +895,7 @@ readiness_level = 2
 [capabilities]
 
 [[assets]]
-bundle = "fake-bundle"
+source = "fake-assets"
 dest = "schemas/"
 
 [[files]]
@@ -606,6 +909,7 @@ path = "root.txt"
 template = "root-template"
   [[files.checksums]]
   of = "leaf"
+  algorithm = "sha1"
   as = "leaf_sha1"
 "#,
         )
@@ -622,9 +926,9 @@ template = "root-template"
         .expect("declarative package build should succeed");
 
         let leaf_bytes = std::fs::read(out_dir.join("leaf.txt")).expect("leaf written");
-        let expected = Sha1Hex::of_bytes(&leaf_bytes);
+        let expected = sha1_hex(&leaf_bytes);
         let root = std::fs::read_to_string(out_dir.join("root.txt")).expect("root written");
-        assert_eq!(root, format!("root sees leaf={}", expected.to_hex()));
+        assert_eq!(root, format!("root sees leaf={expected}"));
         let license =
             std::fs::read_to_string(out_dir.join("schemas/LICENSE")).expect("asset copied");
         assert_eq!(license, "license bytes");

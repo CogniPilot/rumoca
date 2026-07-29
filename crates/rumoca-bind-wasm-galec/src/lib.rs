@@ -10,21 +10,23 @@
 //!
 //! It is a thin wasm boundary: [`render_galec`] compiles Modelica in-memory to
 //! the canonical DAE + Flat model, then delegates to the shared
-//! [`rumoca_compile::galec::render_galec_sources`] — the one renderer behind
-//! the CLI, the LSP, and this addon — which projects to GALEC (`.alg`) and, for
-//! the C targets, the embedded C, identity-free (no eFMU container / UUID /
-//! clock, so it is safe on `wasm32-unknown-unknown`).
+//! the checked `rumoca-phase-galec` projection and the generic
+//! `rumoca-phase-codegen` Algorithm Code template surface used by the CLI and
+//! LSP.
 
 use std::collections::BTreeMap;
 
 use lsp_types::{Position, Url};
-use rumoca_compile::galec::{render_galec_c_files_from_context, render_galec_sources};
+use rumoca_compile::codegen::targets::{TargetBundle, TargetTemplateSource};
 use rumoca_compile::{Session, SessionConfig};
-use rumoca_galec_codegen::c_template_context_for_block;
-use rumoca_ir_galec::parse::parse as parse_galec;
-use rumoca_tool_galec_lsp::{compute_diagnostics, navigation};
+use rumoca_phase_parse_galec::parse as parse_galec;
+use rumoca_tool_lsp_galec::{compute_diagnostics, navigation};
 use serde_json::{Value, json};
 use wasm_bindgen::prelude::*;
+
+const GALEC_TARGET: &str = "galec";
+const GALEC_PRODUCTION_TARGET: &str = "galec-production";
+const EMBEDDED_C_GALEC_TARGET: &str = "embedded-c-galec";
 
 /// Initialize the panic hook for readable console errors (mirrors the core
 /// binding and the diffsol addon).
@@ -128,19 +130,48 @@ fn render_galec_c_from_alg_impl(
     model_name: &str,
     target: &str,
 ) -> Result<Value, String> {
-    let block = parse_galec(alg_source, file_name)
+    let checked = parse_galec(alg_source, file_name)
         .map_err(|error| format!("GALEC parse error: {error}"))?;
+    if !matches!(target, EMBEDDED_C_GALEC_TARGET | GALEC_PRODUCTION_TARGET) {
+        return Err(format!("target `{target}` does not emit C"));
+    }
     let model_id = model_name.replace('.', "_");
-    let c_context = c_template_context_for_block(&block, &model_id)
-        .map_err(|error| format!("GALEC-to-C rejected `{file_name}`: {error}"))?;
-    let sources =
-        render_galec_c_files_from_context(&c_context, target).map_err(|error| error.to_string())?;
+    let bundle = TargetBundle::builtin(EMBEDDED_C_GALEC_TARGET)
+        .ok_or_else(|| "missing built-in embedded-c-galec target".to_owned())?;
+    let artifact = SourceArtifactFacts {
+        generated_at: "1970-01-01T00:00:00Z",
+        generation_tool: "rumoca wasm edited Algorithm Code",
+        identities: BTreeMap::new(),
+        checksums: BTreeMap::new(),
+    };
+    let header = bundle
+        .template_source("model.h.jinja")
+        .map_err(|error| error.to_string())?;
+    let source = bundle
+        .template_source("model.c.jinja")
+        .map_err(|error| error.to_string())?;
+    let c_header =
+        rumoca_phase_codegen::render_checked_algorithm_block_template_with_artifact(
+            &checked,
+            &artifact,
+            header.as_ref(),
+            &model_id,
+        )
+        .map_err(|error| error.to_string())?;
+    let c_source =
+        rumoca_phase_codegen::render_checked_algorithm_block_template_with_artifact(
+            &checked,
+            &artifact,
+            source.as_ref(),
+            &model_id,
+        )
+        .map_err(|error| error.to_string())?;
     Ok(json!({
         "ok": true,
         "target": target,
         "model_identifier": model_id,
-        "c_header": sources.c_header,
-        "c_source": sources.c_source,
+        "c_header": c_header,
+        "c_source": c_source,
     }))
 }
 
@@ -172,8 +203,7 @@ fn render_galec_impl(
     //    projects to GALEC, and renders the .alg + C with the target's
     //    conformance header). GALEC identifiers/C names cannot contain dots.
     let model_id = model_name.replace('.', "_");
-    let sources =
-        render_galec_sources(&result.dae, &model_id, target).map_err(|error| error.to_string())?;
+    let sources = render_checked_sources(&result.dae, &model_id, target)?;
 
     Ok(json!({
         "ok": true,
@@ -190,13 +220,90 @@ fn render_galec_impl(
     }))
 }
 
+#[derive(serde::Serialize)]
+struct SourceArtifactFacts {
+    generated_at: &'static str,
+    generation_tool: &'static str,
+    identities: BTreeMap<String, String>,
+    checksums: BTreeMap<String, String>,
+}
+
+struct RenderedSources {
+    alg: String,
+    c_header: String,
+    c_source: String,
+}
+
+fn render_checked_sources(
+    dae: &rumoca_compile::compile::Dae,
+    model_id: &str,
+    target: &str,
+) -> Result<RenderedSources, String> {
+    if !matches!(
+        target,
+        GALEC_TARGET | GALEC_PRODUCTION_TARGET | EMBEDDED_C_GALEC_TARGET
+    ) {
+        return Err(format!("unknown GALEC target `{target}`"));
+    }
+    let bundle =
+        TargetBundle::builtin(target).ok_or_else(|| format!("missing built-in target `{target}`"))?;
+    let manifest = bundle.parse_manifest().map_err(|error| error.to_string())?;
+    let package = rumoca_phase_galec::lower_to_algorithm_code(
+        &rumoca_phase_galec::GalecInput::new(dae, model_id),
+        &rumoca_phase_galec::GalecOptions::default(),
+    )
+    .map_err(|diagnostics| {
+        diagnostics
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("; ")
+    })?;
+    let artifact = SourceArtifactFacts {
+        generated_at: "1970-01-01T00:00:00Z",
+        generation_tool: "rumoca wasm source preview",
+        identities: BTreeMap::new(),
+        checksums: BTreeMap::new(),
+    };
+    let mut rendered = RenderedSources {
+        alg: String::new(),
+        c_header: String::new(),
+        c_source: String::new(),
+    };
+    for file in &manifest.files {
+        let extension = std::path::Path::new(&file.path)
+            .extension()
+            .and_then(|value| value.to_str());
+        if !matches!(extension, Some("alg" | "h" | "c")) {
+            continue;
+        }
+        let source = bundle
+            .template_source(&file.template)
+            .map_err(|error| error.to_string())?;
+        let content = rumoca_phase_codegen::render_algorithm_code_template_with_artifact(
+            &package,
+            &artifact,
+            source.as_ref(),
+            model_id,
+        )
+        .map_err(|error| error.to_string())?;
+        match extension {
+            Some("alg") => rendered.alg = content,
+            Some("h") => rendered.c_header = content,
+            Some("c") => rendered.c_source = content,
+            _ => {}
+        }
+    }
+    Ok(rendered)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rumoca_compile::galec::{
-        EMBEDDED_C_GALEC_CONFORMANCE_LINES, EMBEDDED_C_GALEC_TARGET, GALEC_PRODUCTION_TARGET,
-        GALEC_TARGET, PRODUCTION_CONFORMANCE_LINES, PRODUCTION_CONFORMANCE_SUMMARY,
-    };
+    const EMBEDDED_C_GALEC_CONFORMANCE_LINES: &[&str] =
+        &["GALEC-derived embedded C export"];
+    const PRODUCTION_CONFORMANCE_LINES: &[&str] = &["eFMI Production Code export"];
+    const PRODUCTION_CONFORMANCE_SUMMARY: &str = "eFMI Production Code export";
 
     /// Fixed-sample discrete model admissible for GALEC projection (mirrors
     /// the `rumoca-compile` galec facade fixture).

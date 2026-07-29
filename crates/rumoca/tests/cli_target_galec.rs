@@ -4,7 +4,7 @@
 //! Invokes the real binary so the whole chain is exercised: CLI dispatch →
 //! generic capability gate → GALEC projection facade → a product-agnostic
 //! context validated in Rust → jinja templates (the eFMI manifest) plus the
-//! typed GALEC `.alg` printer → the declared-checksum-web `build = "efmu"`
+//! typed GALEC `.alg` view → the declared checksum and `[package]` graph
 //! container packaging.
 //! The galec target claims the "eFMI Algorithm Code export" rung of the
 //! SPEC_0034 conformance ladder, so these tests machine-check that rung:
@@ -240,7 +240,7 @@ fn container_checksums_recompute_from_written_bytes() {
     let recorded = sole_attribute_value(&container.content_xml(), "checksum");
     assert_eq!(
         recorded,
-        rumoca_galec_codegen::Sha1Hex::of_bytes(&manifest_bytes).to_hex(),
+        rumoca::sha1_hex(&manifest_bytes),
         "__content.xml checksum must be the SHA-1 of the written manifest.xml"
     );
 
@@ -248,7 +248,7 @@ fn container_checksums_recompute_from_written_bytes() {
     let listed = sole_attribute_value(&container.manifest_xml(), "checksum");
     assert_eq!(
         listed,
-        rumoca_galec_codegen::Sha1Hex::of_bytes(&alg_bytes).to_hex(),
+        rumoca::sha1_hex(&alg_bytes),
         "manifest.xml File checksum must be the SHA-1 of the written .alg"
     );
 }
@@ -282,12 +282,12 @@ fn container_ids_unique_and_generation_metadata_strict() {
         manifest_ref_id, manifest_id,
         "__content.xml manifestRefId must be the manifest's own root id"
     );
-    rumoca_galec_codegen::ManifestId::parse(&manifest_ref_id)
+    rumoca_ir_galec::manifest_context::ManifestId::parse(&manifest_ref_id)
         .expect("manifestRefId must be a brace-wrapped UUID");
 
     for path in [container.content_xml(), container.manifest_xml()] {
         let timestamp = sole_attribute_value(&path, "generationDateAndTime");
-        rumoca_galec_codegen::UtcTimestamp::parse(&timestamp).unwrap_or_else(|error| {
+        rumoca_ir_galec::manifest_context::UtcTimestamp::parse(&timestamp).unwrap_or_else(|error| {
             panic!(
                 "generationDateAndTime `{timestamp}` in {} must match the strict \
                  UTC pattern: {error}",
@@ -430,7 +430,7 @@ fn rerunning_same_command_replaces_previous_container() {
     let recorded = sole_attribute_value(&second.content_xml(), "checksum");
     assert_eq!(
         recorded,
-        rumoca_galec_codegen::Sha1Hex::of_bytes(&second_manifest).to_hex(),
+        rumoca::sha1_hex(&second_manifest),
         "the replaced container's checksum must recompute from its own bytes"
     );
     assert!(second.efmu_zip.is_file(), ".efmu zip must be rebuilt too");

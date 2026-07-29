@@ -1,0 +1,175 @@
+This file lists the versions of the ProductionCode schema.
+Each version gets an entry of the form:
+- Version: version number in semantic version format consisting of <major>.<minor>.<patch>
+- Revision: SHA1 ID hash of GIT commit
+- Description: May consist of multiple lines.
+The entries should be separated by an empty line.
+
+The recent version number must become the fixed value of the "version" attribute of the Manifest element of the schema file.
+On the other hand, the "eFMUProdCodeDescriptionCreator" writes the supported version number to that attribute.
+Hence, the version number can be used for multiple purposes:
+- For each Manifest file, the considered version of the schema is stored.
+- The validation of the generated Manifest file also checks wether the file fits to the schema.
+  If not, it produces an error message like: "Validation failed: The value of the 'version' attribute does not equal its fixed value."
+
+=============================================================================
+
+Version: <major>.<minor>.<patch>
+Revision: <SHA1 ID of last commit for this version>
+Description: <enter description>
+
+Version 0.17.0
+Revision: 83f06ea18ce0206fa9e46f3217cbedabac7db6b9
+	be1c5d60bc72773dd154471dc422a64e4046066b
+	8c166df83b7cb56b17c77707246ccf681087bf42
+Description:
+Christoff Bürger
+Removed efmiDescriptionFiles.xsd and efmiProperties.xsd (the latter was only used for elements of the former).
+The rationale is:
+  (1) We have no examples with <DescriptionFiles> and <DescriptionFile> elements in Production Code manifests in the
+      eFMI crosschecks.
+  (2) When adding AUTOSAR Builder production code with *.arxml files, which according to the old specification have
+      to be listed as <DescriptionFile>, it turned out that the manifest can have only one, either a <CodeFiles> or
+      a <DescriptionFiles>. This design is broken, since e.g., the AUTOSAR Builder production code containers have
+      both of course, C source code and *.arxml files.
+  (3) The old <DescriptionFiles> element was part of the <CodeContainer>. But that one clearly is only about C
+      source code.
+  (4) Fixing these issues would require a proper redesign without having any test cases yet. And generating/filling
+      potential <DescriptionFile> with meaningful properties is questionable; what are these supposed to be?
+      Everything regarding the *.arxml is well-defined by AUTOSAR; there is no need to repeat what is in these files
+      (they are of course listed in the <Files> section with role="other").
+      It would also take considerable time before AUTOSAR Builder -- or any other tool -- could produce AND leverage
+      on <DescriptionFile> elements; there is no need to generate something nobody uses.
+  (5) The new XSD Schema and specification is 100% backwards compatible as long as <DescriptionFiles> are not used.
+      According to (1), nobody ever used it.
+  (6) Considering (2), the old design is obviously broken and not useable; and considering (5) removing
+      <DescriptionFiles> does no harm to our current tooling.
+  (7) The old design is archived in the '2022-03-03-Production-Code-XSD-DescriptionFiles-backup' git branch.
+
+Version: 0.16.0
+Revision: eadf724fb964cdadc428a69239c822d61636fd27
+          2374f3ba2d6f4f0d7b29036ea3fe8d1ea32310cc
+Description:
+Changed path attribute in File element, thus all manifest schema have to be changed.
+
+Version: 0.15.0
+Revision: 899540adb1fd995eefbc92ebd6c8e340e0d64b79
+    ed091df40ed32e6254fe692636362283d3231a48
+    4a86ac2ecd58e29cfc84263962722499a38641d2
+    0ec4b18f53469f2eb4a1ad9925362a8eab362c42
+Description:
+Michael Hussmann
+Changes decided on PlugFest 2020-11 and succeeding discussions:
+- Aligned vendor annotations with FMI annotations
+- Removed obsolete CodeContainerInfoFileReferences element von ProductionCode manifest schema as decided at PlugFest 2020-11-10.
+- Added index attribute to <CompilerOptions>.
+- Added new LinkerOptions in analogy to CompilerOptions
+
+Version: 0.14.1
+Revision: 33d678502ada541e700a638d518a49d3bb1eadce
+Description:
+Jörg Niere
+changed fileRefId to descriptionFileRefId of ExternalDefinitionReferences entity
+
+Version: 0.14.0
+Revision: 0609a2e4a18da00cc0f5fba6cb1fa4b4771490f6
+Description:
+Jörg Niere
+- added last changes of October plug-fest concerning
+  support of AUTOSAR Classis/Adaptive and other architectures
+- placed corresponding ToDo markers into specification (MUST UPDATE THE SPECIFICATION)
+
+Version: 0.13.0
+Revision: 50a4bc8b93671c6035019f240b634bf5b0bc65a0
+Description:
+Jörg Niere
+Changes decided on October plug-fest
+
+Version: 0.12.1
+Revision: 90931bd800cd7f27d4ea77f59d753442abab190d
+Description: 
+Martin Otter
+Manifest attributes for all Manifest files defined in new file efmiManifestAttributes.xsd
+VendorAnnotations moved to the end
+
+Version: 0.12.0
+Revision: c6106ffcccdf422dd11e699288567a879cd00885
+Description: 
+introduded identifier type
+
+Version: 0.11.0
+Revision: 0c8fc07f1dc288a409a6e6758714c6c4e0d6903b
+Description: ProdCode manifest schema contains attribute "floatPrecision" as decided on PlugFest last week
+
+Version: 0.10.0
+Revision: 6c608b89c23342c9435be357a467a81571396eff
+Description:
+- ADAPTED VERSION NUMBER ACCORDING TO OUR AGREEMENT,
+  because the schema files have not been released yet
+
+Version: 1.9.1
+Revision: e7c7f475ced393e4dd1c99681bd7cf2a1863ad88
+Description:
+- Changed schema to decisions made during web meeting of production code group
+
+Version: 1.9.0
+Revision: 527504803fca2ea5f9ddba544c630d571306102a
+Description:
+- Changed format to semantics version number
+
+Version: 1.9
+Revision: 85fb1edb3cc9d077869f3ed434e33509bd25a14f
+Description:
+- Plug-Fest modifications.
+
+Version: 1.8
+Revision: 2f3126c04eb2cbb59b99e3fcbb2c47e3c1df680d 
+Description:
+- Added CompileRoot attribute to CompilerOptions
+
+Version: 1.7
+Revision: dcc5a4be0acb4b77bd5f60633b09029ad4b0ac42 
+Description:
+- Adapted attributes of Manifest element to changes from Algorithm Code manifest version 0.6.0 ("harmonized")
+
+Version: 1.6
+Revision: 871d713af09bb3ad3bad21579633bf784b14f2e5
+Description: Changes from 1.5.x
+- File listing
+- File references
+
+Version: 1.5.x (not stable)
+Revision: d1cffac7fd7d2e8a79fbb4177feafd4afd24251f
+Description: Minor changes.
+
+Version: 1.5
+Revision: 88500ed87da76709b0d8c516ae31524e81259254
+Description: Reworked by JoergN based on meeting in Renningen in January, 2019.
+
+Version: 1.4
+Revision: fd3eeefa52ebe765160b01b883a9aa9875e3dd7d
+Description: Changes by JoergN
+	Added efmiCodeContainerInfoFileReferences
+
+Version: 1.3
+Revision: ab1d5387eb6f4e147593c07807b39603204a85a7
+Description: Replaced attribute "platform" of "CodeContainer" by "CodeContainer" child element "Legacy" or "Autosar" or ...
+
+Version: 1.2
+Revision: afab81292f2899838b4b0ad501e31680f65639d8
+Description: Manifest has "id" attribute which is UUID
+
+Version: 1.1
+Revision: 36f0f4be920ab7224999fb12870f044aba8d76a3
+Description:
+- A manifest file can be referred to using the "id" attribute of the Manifest element.
+  Additionally, a checksum of the referenced ModelRepresentation is stored.
+- The level of the ModelRepresentation is stored in the new "kind" attribute.
+
+Version: 1.0
+Revision: 0a1b2d255d3bb6281a524fcd9961fd5911a8d02f
+Description: Based on ...
+ - initial version from SVN
+ - support for LogicalData (267ad76274db15a870aefa7f35eeb2bf05e13f52)
+ - minor corrections and additional comments
+ - new representation of access function references (3af85e8572362e435178147043bfdb1cb3bd911f)

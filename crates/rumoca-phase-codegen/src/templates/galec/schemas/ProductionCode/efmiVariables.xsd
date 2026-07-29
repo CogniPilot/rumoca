@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" elementFormDefault="qualified" attributeFormDefault="unqualified">
+	<xs:include schemaLocation="../efmiAnnotation.xsd"/>
+	<xs:include schemaLocation="../efmiIdentifierType.xsd"/>
+	<xs:include schemaLocation="./efmiDimensions.xsd"/>
+	<xs:element name="Variables">
+		<xs:complexType>
+			<xs:annotation>
+				<xs:documentation>List of variables in C code.</xs:documentation>
+			</xs:annotation>
+			<xs:sequence>
+				<xs:element ref="Variable" minOccurs="1" maxOccurs="unbounded"/>
+			</xs:sequence>
+		</xs:complexType>
+	</xs:element>
+	<xs:element name="Variable">
+		<xs:complexType>
+			<xs:annotation>
+				<xs:documentation>C code variable.</xs:documentation>
+			</xs:annotation>
+			<xs:sequence>
+				<xs:element name="Annotations" type="efmiAnnotation" minOccurs="0" maxOccurs="1"/>
+				<xs:element ref="Dimensions" minOccurs="0" maxOccurs="1"/>
+				<xs:element name="ReadAccessFcnRef" type="efmiAccessFcnRef" minOccurs="0" maxOccurs="1">
+					<xs:key name="ReadAccessFcnRefExclusiveOrByKey">
+						<xs:selector xpath="."/>
+						<xs:field xpath="@functionRefId|@parameterizedMacroRefId"/>
+					</xs:key>
+				</xs:element>
+				<xs:element name="WriteAccessFcnRef" type="efmiAccessFcnRef" minOccurs="0" maxOccurs="1">
+					<xs:key name="WriteAccessFcnRefExclusiveOrByKey">
+						<xs:selector xpath="."/>
+						<xs:field xpath="@functionRefId|@parameterizedMacroRefId"/>
+					</xs:key>
+				</xs:element>
+			</xs:sequence>
+			<xs:attribute name="id" type="efmiIdentifierType" use="required"/>
+			<xs:attribute name="name" type="xs:normalizedString" use="required"/>
+			<xs:attribute name="typeDefRefId" type="efmiIdentifierType" use="required"/>
+			<xs:attribute name="address" type="xs:normalizedString" use="optional"/>
+			<xs:attribute name="value" type="xs:normalizedString" use="optional">
+				<xs:annotation>
+					<xs:documentation>Optional and restricted to scalar variables.</xs:documentation>
+				</xs:annotation>
+			</xs:attribute>
+			<xs:attribute name="min" type="xs:normalizedString" use="optional">
+				<xs:annotation>
+					<xs:documentation>See "value"</xs:documentation>
+				</xs:annotation>
+			</xs:attribute>
+			<xs:attribute name="max" type="xs:normalizedString" use="optional">
+				<xs:annotation>
+					<xs:documentation>See "value"</xs:documentation>
+				</xs:annotation>
+			</xs:attribute>
+			<xs:attribute name="const" type="xs:boolean" use="optional" default="false"/>
+			<xs:attribute name="volatile" type="xs:boolean" use="optional" default="false"/>
+			<xs:attribute name="pointer" type="xs:boolean" use="optional" default="false"/>
+			<xs:attribute name="constPointer" type="xs:boolean" use="optional" default="false"/>
+			<xs:attribute name="static" type="xs:boolean" use="optional" default="false"/>
+		</xs:complexType>
+	</xs:element>
+	<xs:complexType name="efmiAccessFcnRef">
+		<xs:annotation>
+			<xs:documentation>Reference to access function (implemented as function or macro)</xs:documentation>
+		</xs:annotation>
+		<xs:attribute name="functionRefId" type="efmiIdentifierType" use="optional">
+			<xs:annotation>
+				<xs:documentation>Reference to corresponding access function. Attribute functionRefID and ParameterizedMacroRefId live in an exclusive or relationship.</xs:documentation>
+			</xs:annotation>
+		</xs:attribute>
+		<xs:attribute name="parameterizedMacroRefId" type="efmiIdentifierType" use="optional">
+			<xs:annotation>
+				<xs:documentation>Reference to corresponding access function macro. Attribute functionRefID and ParameterizedMacroRefId live in an exclusive or relationship.</xs:documentation>
+			</xs:annotation>
+		</xs:attribute>
+	</xs:complexType>
+</xs:schema>

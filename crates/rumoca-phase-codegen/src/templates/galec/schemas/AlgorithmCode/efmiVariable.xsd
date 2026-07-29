@@ -1,0 +1,146 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" elementFormDefault="qualified" attributeFormDefault="unqualified">
+	<xs:include schemaLocation="../efmiAnnotation.xsd"/>
+	<xs:include schemaLocation="../efmiIdentifierType.xsd"/>
+	<xs:complexType name="efmiRealVariable">
+		<xs:complexContent>
+			<xs:extension base="efmiVariableBase">
+				<xs:attribute name="unitRefId" type="efmiIdentifierType">
+					<xs:annotation>
+						<xs:documentation>Unit of variable values.</xs:documentation>
+					</xs:annotation>
+				</xs:attribute>
+				<xs:attribute name="relativeQuantity" type="xs:boolean" default="false">
+					<xs:annotation>
+						<xs:documentation>Defines if BaseUnit-based unit conversions have to consider the base-unit's offset (relativeQuantity=false) or not (relativeQuantity=true).</xs:documentation>
+					</xs:annotation>
+				</xs:attribute>
+				<xs:attribute name="min" type="xs:normalizedString"/>
+				<xs:attribute name="max" type="xs:normalizedString">
+					<xs:annotation>
+						<xs:documentation>max >= min required</xs:documentation>
+					</xs:annotation>
+				</xs:attribute>
+				<xs:attribute name="nominal" type="xs:normalizedString">
+					<xs:annotation>
+						<xs:documentation>nominal > 0.0 required</xs:documentation>
+					</xs:annotation>
+				</xs:attribute>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="efmiIntegerVariable">
+		<xs:complexContent>
+			<xs:extension base="efmiVariableBase">
+				<xs:attribute name="min" type="xs:int"/>
+				<xs:attribute name="max" type="xs:int">
+					<xs:annotation>
+						<xs:documentation>max >= min required</xs:documentation>
+					</xs:annotation>
+				</xs:attribute>
+			</xs:extension>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="efmiBooleanVariable">
+		<xs:complexContent>
+			<xs:extension base="efmiVariableBase"/>
+		</xs:complexContent>
+	</xs:complexType>
+	<xs:complexType name="efmiVariableBase" abstract="true">
+		<xs:annotation>
+			<xs:documentation>Properties of a variable</xs:documentation>
+		</xs:annotation>
+		<xs:sequence>
+			<xs:element name="Dimensions" minOccurs="0">
+				<xs:complexType>
+					<xs:sequence maxOccurs="unbounded">
+						<xs:element name="Dimension">
+							<xs:complexType>
+								<xs:attribute name="number" use="required">
+									<xs:annotation>
+										<xs:documentation>Number of dimension
+(first dimension = 1, second dimension = 2, etc).
+The numbers of the 'Dimension' elements of each 'Dimensions' must be consecutive, unique and one element must have number 1.</xs:documentation>
+									</xs:annotation>
+									<xs:simpleType>
+										<xs:restriction base="xs:integer">
+											<xs:minInclusive value="1"/>
+										</xs:restriction>
+									</xs:simpleType>
+								</xs:attribute>
+								<xs:attribute name="size" use="required">
+									<xs:annotation>
+										<xs:documentation>Constant size of dimension.</xs:documentation>
+									</xs:annotation>
+									<xs:simpleType>
+										<xs:restriction base="xs:integer">
+											<xs:minInclusive value="1"/>
+										</xs:restriction>
+									</xs:simpleType>
+								</xs:attribute>
+							</xs:complexType>
+						</xs:element>
+					</xs:sequence>
+				</xs:complexType>
+			</xs:element>
+			<xs:element name="Annotations" type="efmiAnnotation" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>Additional data of the variable, 
+e.g., for the dialog menu or the graphical layout</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+		</xs:sequence>
+		<xs:attribute name="id" type="efmiIdentifierType" use="required">
+			<xs:annotation>
+				<xs:documentation>id of variable</xs:documentation>
+			</xs:annotation>
+		</xs:attribute>
+		<xs:attribute name="name" type="xs:normalizedString" use="required">
+			<xs:annotation>
+				<xs:documentation>Identifier of variable, e.g. "A_Matrix", "a.b.c". 
+"name" must be unique with respect to all other elements of the Variables list</xs:documentation>
+			</xs:annotation>
+		</xs:attribute>
+		<xs:attribute name="description" type="xs:string"/>
+		<xs:attribute name="blockCausality" use="required">
+			<xs:annotation>
+				<xs:documentation>input : provided from environment (public)
+output: provided to environment (public)
+tunableParameter: provided from environment (public)
+dependentParameter: calculated from other parameters (protected)
+constant: Literal or calculated from other constants (protected)
+state: passed between methods (protected)</xs:documentation>
+			</xs:annotation>
+			<xs:simpleType>
+				<xs:restriction base="xs:normalizedString">
+					<xs:enumeration value="input"/>
+					<xs:enumeration value="output"/>
+					<xs:enumeration value="tunableParameter"/>
+					<xs:enumeration value="dependentParameter"/>
+					<xs:enumeration value="constant"/>
+					<xs:enumeration value="state"/>
+				</xs:restriction>
+			</xs:simpleType>
+		</xs:attribute>
+		<xs:attribute name="start" type="xs:token" use="required">
+			<xs:annotation>
+				<xs:documentation>Initial value of the variable as defined by default initialization.
+
+The given string can encode either, a scalar value or a multi-dimensional value with each element value separated by an XML whitespace character.
+
+If the variable is a scalar, the string must encode a scalar value. If the variable is a multi-dimension, the string can either:
+ (1) encode a scalar value, meaning that each element of the multi-dimension has the respective scalar value as start value or
+ (2) encode a  multi-dimensional value, meaning that the start values of the elements of the multi-dimension are the respective encoded multi-dimensional value.
+
+Encoded values must be of the variable's type and each must satisfy its min and max value</xs:documentation>
+			</xs:annotation>
+		</xs:attribute>
+	</xs:complexType>
+	<xs:group name="efmiVariable">
+		<xs:choice>
+			<xs:element name="RealVariable" type="efmiRealVariable"/>
+			<xs:element name="IntegerVariable" type="efmiIntegerVariable"/>
+			<xs:element name="BooleanVariable" type="efmiBooleanVariable"/>
+		</xs:choice>
+	</xs:group>
+</xs:schema>

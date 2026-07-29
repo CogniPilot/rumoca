@@ -1,1 +1,127 @@
-{{- galec_alg_source -}}
+{%- macro name(value) -%}
+{%- if value.kind == "ident" -%}{{ value.value[0] }}{%- elif value.kind == "quoted" -%}'{{ value.value[0] }}'{%- else -%}{{ fail_closed_name_kind }}{%- endif -%}
+{%- endmacro -%}
+{%- macro ref_part(value) -%}
+{{- name(value.name) -}}
+{%- if value.subscripts|length > 0 -%}[{% for item in value.subscripts %}{{ expr(item) }}{% if not loop.last %}, {% endif %}{% endfor %}]{%- endif -%}
+{%- endmacro -%}
+{%- macro reference(value) -%}
+{%- if value.kind == "local" -%}{{ ref_part(value.value) }}
+{%- elif value.kind == "state" -%}self{% for part in value.value %}.{{ ref_part(part) }}{% endfor %}
+{%- else -%}{{ fail_closed_reference_kind }}{%- endif -%}
+{%- endmacro -%}
+{%- macro binary_operator(value) -%}
+{%- if value.kind == "pow" -%}^{%- elif value.kind == "mul" -%}*{%- elif value.kind == "div" -%}/{%- elif value.kind == "add" -%}+{%- elif value.kind == "sub" -%}-{%- elif value.kind == "lt" -%}<{%- elif value.kind == "gt" -%}>{%- elif value.kind == "le" -%}<={%- elif value.kind == "ge" -%}>={%- elif value.kind == "eq" -%}=={%- elif value.kind == "ne" -%}<>{%- elif value.kind == "and" -%}and{%- elif value.kind == "or" -%}or{%- else -%}{{ fail_closed_binary_operator }}{%- endif -%}
+{%- endmacro -%}
+{%- macro call(value) -%}
+{{- name(value.function) }}({% for item in value.arguments %}{{ expr(item) }}{% if not loop.last %}, {% endif %}{% endfor %})
+{%- endmacro -%}
+{%- macro expr(value) -%}
+{%- if value.kind == "bool" -%}{% if value.value %}true{% else %}false{% endif %}
+{%- elif value.kind == "integer" -%}{{ value.value }}
+{%- elif value.kind == "real" -%}{{ value.value | xs_double }}
+{%- elif value.kind == "ref" -%}{{ reference(value.value) }}
+{%- elif value.kind == "size" -%}size({{ reference(value.value.array) }}, {{ expr(value.value.dimension) }})
+{%- elif value.kind == "call" -%}{{ call(value.value) }}
+{%- elif value.kind == "paren" -%}{{ expr(value.value) }}
+{%- elif value.kind == "if" -%}({% for branch in value.value.branches %}{% if loop.first %}if{% else %} elseif{% endif %} {{ expr(branch[0]) }} then {{ expr(branch[1]) }}{% endfor %} else {{ expr(value.value.else_value) }})
+{%- elif value.kind == "array" -%}{% raw %}{{% endraw %}{% for item in value.value %}{{ expr(item) }}{% if not loop.last %}, {% endif %}{% endfor %}{% raw %}}{% endraw %}
+{%- elif value.kind == "neg" -%}-{{ reference(value.value) }}
+{%- elif value.kind == "not" -%}not ({{ expr(value.value) }})
+{%- elif value.kind == "binary" -%}({{ expr(value.value.lhs) }}) {{ binary_operator(value.value.op) }} ({{ expr(value.value.rhs) }})
+{%- else -%}{{ fail_closed_expression_kind }}{%- endif -%}
+{%- endmacro -%}
+{%- macro declaration(value, prefix) -%}
+{{- prefix -}}
+{%- if value.ty.kind == "primitive" -%}
+{%- if value.ty.value.kind == "real" -%}Real{%- elif value.ty.value.kind == "integer" -%}Integer{%- elif value.ty.value.kind == "boolean" -%}Boolean{%- else -%}{{ fail_closed_scalar_type }}{%- endif -%}
+{%- elif value.ty.kind == "compartment" -%}{{ name(value.ty.value) }}
+{%- else -%}{{ fail_closed_type_kind }}{%- endif %} {{ name(value.name) }}
+{%- if value.dimensions|length > 0 -%}[{% for dimension in value.dimensions %}{% if dimension.kind == "derived" %}:{% elif dimension.kind == "expr" %}{{ expr(dimension.value) }}{% else %}{{ fail_closed_dimension_kind }}{% endif %}{% if not loop.last %}, {% endif %}{% endfor %}]{%- endif -%}
+{%- if value.range.min is not none or value.range.max is not none -%}({% if value.range.min is not none %}min = {{ expr(value.range.min) }}{% endif %}{% if value.range.min is not none and value.range.max is not none %}, {% endif %}{% if value.range.max is not none %}max = {{ expr(value.range.max) }}{% endif %}){%- endif -%};
+{%- endmacro -%}
+{%- macro condition(value) -%}
+{%- if value.kind == "expression" -%}{{ expr(value.value) }}
+{%- elif value.kind == "signal_check" -%}signal{% if value.value.closure is not none %} {{ value.value.closure }}{% endif %}{% if value.value.test is not none %}{% if value.value.test.negated %} not{% endif %} in {% for signal in value.value.test.signals %}{{ signal }}{% if not loop.last %}, {% endif %}{% endfor %}{% endif %}{% if value.value.fallback is not none %} or {{ expr(value.value.fallback) }}{% endif %}
+{%- else -%}{{ fail_closed_condition_kind }}{%- endif -%}
+{%- endmacro -%}
+{%- macro statements(values, depth) -%}
+{%- for wrapped in values %}
+{%- set value = wrapped.node %}
+{% for _ in range(depth) %}    {% endfor -%}
+{%- if value.kind == "assignment" -%}{{ reference(value.value.target) }} := {{ expr(value.value.value) }};
+{%- elif value.kind == "multi_assignment" -%}({% for target in value.value.targets %}{{ reference(target) }}{% if not loop.last %}, {% endif %}{% endfor %}) := {{ call(value.value.call) }};
+{%- elif value.kind == "call" -%}{{ call(value.value) }};
+{%- elif value.kind == "if" -%}
+{%- for branch in value.value.branches %}{% if not loop.first %}{% for _ in range(depth) %}    {% endfor %}{% endif %}{% if loop.first %}if{% else %}elseif{% endif %} {{ condition(branch.condition) }} then
+{{ statements(branch.body, depth + 1) }}{% endfor %}
+{%- if value.value.else_body is not none %}{% for _ in range(depth) %}    {% endfor %}else
+{{ statements(value.value.else_body, depth + 1) }}{% endif %}{% for _ in range(depth) %}    {% endfor %}end if;
+{%- elif value.kind == "for" -%}for {% if value.value.iterator is not none %}{{ name(value.value.iterator) }} in {% endif %}{{ expr(value.value.start) }}:{% if value.value.step is not none %}{{ expr(value.value.step) }}:{% endif %}{{ expr(value.value.stop) }} loop
+{{ statements(value.value.body, depth + 1) }}{% for _ in range(depth) %}    {% endfor %}end for;
+{%- elif value.kind == "limit" -%}limit {% for target in value.value %}{% if target.kind == "self_state" %}self{% elif target.kind == "reference" %}{{ reference(target.value) }}{% else %}{{ fail_closed_limit_kind }}{% endif %}{% if not loop.last %}, {% endif %}{% endfor %};
+{%- elif value.kind == "signal" -%}signal {% for signal in value.value %}{{ signal }}{% if not loop.last %}, {% endif %}{% endfor %};
+{%- else -%}{{ fail_closed_statement_kind }}{%- endif %}
+{%- endfor -%}
+{%- endmacro -%}
+{%- macro method(method_name, value, signals) %}
+    method {{ method_name }}
+{%- if signals|length > 0 %}
+        signals {% for signal in signals %}{{ signal }}{% if not loop.last %}, {% endif %}{% endfor %};
+{%- endif %}
+{%- if value.locals|length > 0 %}
+    protected
+{%- for local in value.locals %}
+        {{ declaration(local, "") }}
+{%- endfor %}
+{%- endif %}
+    algorithm
+{{ statements(value.statements, 2) }}    end {{ method_name }};
+{%- endmacro %}
+{%- macro user_function(value) %}
+    {% if value.kind.kind == "stateless" %}function{% elif value.kind.kind == "stateful" %}method{% else %}{{ fail_closed_function_kind }}{% endif %} {{ name(value.name) }}
+{%- if value.signals|length > 0 %}
+        signals {% for signal in value.signals %}{{ signal }}{% if not loop.last %}, {% endif %}{% endfor %};
+{%- endif %}
+{%- for parameter in value.parameters %}
+        {{ declaration(parameter.decl, "input " if parameter.direction.kind == "input" else "output " if parameter.direction.kind == "output" else fail_closed_parameter_direction) }}
+{%- endfor %}
+{%- if value.locals|length > 0 %}
+    protected
+{%- for local in value.locals %}
+        {{ declaration(local, "") }}
+{%- endfor %}
+{%- endif %}
+    algorithm
+{{ statements(value.statements, 2) }}    end {{ name(value.name) }};
+{%- endmacro %}
+{%- set block = algorithm_code.package.block %}
+block {{ name(block.name) }}
+{%- for variable in block.interface %}
+    {{ declaration(variable.decl, "input " if variable.kind.kind == "input" else "output " if variable.kind.kind == "output" else "parameter ") }}
+{%- endfor %}
+protected
+{%- for compartment in block.compartments %}
+    record {{ name(compartment.name) }}
+{%- for entity in compartment.entities %}
+        {{ declaration(entity.decl, "parameter " if entity.kind.kind == "dependent_parameter" else "constant " if entity.kind.kind == "constant" else "") }}
+{%- endfor %}
+    end {{ name(compartment.name) }};
+{%- endfor %}
+{%- for entity in block.protected %}
+    {{ declaration(entity.decl, "parameter " if entity.kind.kind == "dependent_parameter" else "constant " if entity.kind.kind == "constant" else "") }}
+{%- endfor %}
+{%- for signal in block.error_signals %}
+    signal {{ signal }};
+{%- endfor %}
+{%- for function in block.protected_functions %}
+{{ user_function(function) }}
+{%- endfor %}
+public
+{{ method("Startup", block.startup, algorithm_code.methods.startup_signals) }}
+{{ method("Recalibrate", block.recalibrate, algorithm_code.methods.recalibrate_signals) }}
+{{ method("DoStep", block.do_step, algorithm_code.methods.do_step_signals) }}
+{%- for function in block.public_functions %}
+{{ user_function(function) }}
+{%- endfor %}
+end {{ name(block.name) }};

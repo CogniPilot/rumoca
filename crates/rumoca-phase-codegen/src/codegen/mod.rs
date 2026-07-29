@@ -7,6 +7,7 @@ use rumoca_ir_ast as ast;
 use rumoca_ir_dae as dae;
 use rumoca_ir_flat as flat;
 use rumoca_ir_solve as solve;
+use serde::Serialize;
 use std::path::Path;
 
 mod checked_modelica;
@@ -97,6 +98,7 @@ pub enum CodegenInput<'a> {
     },
     Flat(&'a flat::Model),
     Ast(&'a ast::ClassTree),
+    AlgorithmCode(&'a rumoca_ir_galec::package::AlgorithmCodePackage),
 }
 
 fn dae_template_json_for_solve_context(dae: &dae::Dae) -> Result<serde_json::Value, CodegenError> {
@@ -125,6 +127,20 @@ fn render_with_input_context(
         }
         (CodegenInput::Flat(flat_model), name) => render_flat_context(tmpl, flat_model, name)?,
         (CodegenInput::Ast(ast_tree), name) => render_ast_context(tmpl, ast_tree, name)?,
+        (CodegenInput::AlgorithmCode(package), name) => {
+            let view = crate::views::algorithm_code::AlgorithmCodeView::new(package);
+            match name {
+                Some(model_name) => tmpl.render(minijinja::context! {
+                    algorithm_code => minijinja::Value::from_serialize(view),
+                    ir_kind => "algorithm_code",
+                    model_name,
+                })?,
+                None => tmpl.render(minijinja::context! {
+                    algorithm_code => minijinja::Value::from_serialize(view),
+                    ir_kind => "algorithm_code",
+                })?,
+            }
+        }
     };
     Ok(rendered)
 }
@@ -434,6 +450,54 @@ pub fn render_template_with_name_for_input(
     render_with_input_context(&tmpl, input, Some(model_name))
 }
 
+/// Render a checked Algorithm Code package with immutable, caller-owned
+/// artifact facts.
+///
+/// `artifact` is deliberately generic: the artifact layer may expose
+/// identities, timestamps, and checksum edges, while this phase remains
+/// stateless and unaware of any concrete package format.
+pub fn render_algorithm_code_template_with_artifact<T: Serialize>(
+    package: &rumoca_ir_galec::package::AlgorithmCodePackage,
+    artifact: &T,
+    template: &str,
+    model_name: &str,
+) -> Result<String, CodegenError> {
+    let mut env = create_environment();
+    env.add_template("inline", template)?;
+    let tmpl = env.get_template("inline")?;
+    let view = crate::views::algorithm_code::AlgorithmCodeView::new(package)
+        .map_err(CodegenError::template)?;
+    Ok(tmpl.render(minijinja::context! {
+        algorithm_code => Value::from_serialize(view),
+        artifact => Value::from_serialize(artifact),
+        ir_kind => "algorithm_code",
+        model_name,
+    })?)
+}
+
+/// Render a validated standalone Algorithm Code block.
+///
+/// This is the `.alg` editor boundary: it deliberately exposes no manifest
+/// or artifact metadata that cannot be derived from the parsed block.
+pub fn render_checked_algorithm_block_template_with_artifact<T: Serialize>(
+    block: &rumoca_ir_galec::package::CheckedAlgorithmBlock,
+    artifact: &T,
+    template: &str,
+    model_name: &str,
+) -> Result<String, CodegenError> {
+    let mut env = create_environment();
+    env.add_template("inline", template)?;
+    let tmpl = env.get_template("inline")?;
+    let view = crate::views::algorithm_code::CheckedAlgorithmBlockView::new(block)
+        .map_err(CodegenError::template)?;
+    Ok(tmpl.render(minijinja::context! {
+        algorithm_code => Value::from_serialize(view),
+        artifact => Value::from_serialize(artifact),
+        ir_kind => "algorithm_code",
+        model_name,
+    })?)
+}
+
 /// Render a DAE using a template string.
 ///
 /// The template receives the checked DAE semantic projection as `dae`.
@@ -552,6 +616,26 @@ fn create_environment() -> Environment<'static> {
     let mut env = Environment::new();
     // Fail fast on missing fields/variables in templates.
     env.set_undefined_behavior(UndefinedBehavior::Strict);
+    env.add_template(
+        "algorithm-code-source.jinja",
+        include_str!("../templates/galec/model.alg.jinja"),
+    )
+    .expect("built-in Algorithm Code source template must parse");
+    env.add_template(
+        "algorithm-code-manifest.jinja",
+        include_str!("../templates/galec/manifest.xml.jinja"),
+    )
+    .expect("built-in Algorithm Code manifest template must parse");
+    env.add_template(
+        "galec-model.c.jinja",
+        include_str!("../templates/embedded-c-galec/model.c.jinja"),
+    )
+    .expect("built-in GALEC-derived C source template must parse");
+    env.add_template(
+        "galec-model.h.jinja",
+        include_str!("../templates/embedded-c-galec/model.h.jinja"),
+    )
+    .expect("built-in GALEC-derived C header template must parse");
 
     // Custom filters
     env.add_filter("sanitize", sanitize_filter);
@@ -703,9 +787,7 @@ fn xml_escape_filter(value: String) -> String {
 
 /// Render a finite `f64` as a valid `xs:double` lexical form (explicit
 /// decimal point, never exponent notation): `2` -> `2.0`, `1e300` stays a
-/// plain decimal. Mirrors `rumoca_galec_codegen::xs_double` (a tier below cannot be
-/// imported here, so the guarantee is duplicated deliberately — contract §6);
-/// used by the eFMI templates for raw `BaseUnit` factor/offset.
+/// plain decimal. Used by templates that require an explicit decimal point.
 pub(crate) fn xs_double_str(value: f64) -> String {
     let rendered = format!("{value}");
     if rendered.contains('.') {
@@ -1043,9 +1125,6 @@ fn render_statements_function(stmts: Value, config: Value, indent: Value) -> Ren
     let indent_str = indent.as_str().unwrap_or("    ");
     render_statements(&stmts, &cfg, indent_str)
 }
-
-#[cfg(test)]
-mod local_tests;
 
 mod solve_renderer;
 pub use solve_renderer::SolveTemplateRenderer;

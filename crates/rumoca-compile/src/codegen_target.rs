@@ -22,15 +22,7 @@ pub enum TargetTemplateIr {
     Solve,
     Flat,
     Ast,
-}
-
-/// Post-render packaging step selected by a target's `build` field.
-/// `efmu` assembles a schema-valid eFMU container (directory + `.efmu` zip
-/// forms) from the invocation's rendered files.
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum TargetBuildKind {
-    Efmu,
+    AlgorithmCode,
 }
 
 #[derive(Debug, Deserialize)]
@@ -43,18 +35,55 @@ pub struct TargetManifest {
     pub execution_mode: Option<String>,
     pub deployment_class: Option<String>,
     pub readiness_level: Option<u8>,
-    pub build: Option<TargetBuildKind>,
+    pub package: Option<TargetPackage>,
+    pub integer: Option<TargetIntegerDomain>,
     pub completion_message: Option<String>,
     #[serde(alias = "requirements", alias = "requires")]
     pub capabilities: Option<TargetCapabilities>,
     #[serde(default)]
     pub files: Vec<TargetFile>,
-    /// Declared asset bundles the packaging build step copies verbatim into
-    /// the product (contract §4d): e.g. the vendored eFMI XSD tree. Assets
-    /// are NOT graph nodes — nothing checksums them, so they sit outside the
-    /// render/hash DAG. A product needing no bundled assets declares none.
+    /// Declared target-relative asset trees copied verbatim into the product.
     #[serde(default)]
     pub assets: Vec<AssetBundle>,
+}
+
+/// Target-declared product layout. All paths are target templates rendered
+/// against the same semantic context as `[[files]]`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TargetPackage {
+    pub root: String,
+    #[serde(default)]
+    pub required_files: Vec<String>,
+    pub archive: Option<TargetArchive>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TargetArchive {
+    pub path: String,
+    pub format: TargetArchiveFormat,
+    pub root: TargetArchiveRoot,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum TargetArchiveFormat {
+    Zip,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum TargetArchiveRoot {
+    Flat,
+}
+
+/// Integer range whose operations a target promises to represent.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TargetIntegerDomain {
+    pub minimum: i64,
+    pub maximum: i64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -141,22 +170,26 @@ pub struct TargetFile {
 pub struct ChecksumNeed {
     /// The producer file's `id` whose exact rendered bytes are hashed.
     pub of: String,
+    /// Hash algorithm selected by the target format.
+    pub algorithm: ChecksumAlgorithm,
     /// The context key this file's templates read the producer's SHA-1 from.
     /// `as` is a Rust keyword, so the field is renamed for the struct.
     #[serde(rename = "as")]
     pub as_key: String,
 }
 
-/// A declared asset bundle: copy the named embedded/vendored `bundle` into
-/// the product under `dest` (contract §4d). The bundle payload is declared
-/// here; the copy mechanism is coded once, generically, in the build step.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "kebab-case")]
+pub enum ChecksumAlgorithm {
+    Sha1,
+}
+
+/// A declared asset tree copied from `source` under the target directory to
+/// `dest` under the package root.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AssetBundle {
-    /// Logical name of the embedded/vendored bundle (e.g. `efmi-schemas`).
-    pub bundle: String,
-    /// Destination directory (product-root-relative) the bundle is copied
-    /// into, e.g. `schemas/`.
+    pub source: String,
     pub dest: String,
 }
 
@@ -255,6 +288,100 @@ impl TargetBundle {
             Self::Directory { dir, .. } => dir.to_str().unwrap_or("custom"),
         })
     }
+
+    pub fn asset_files(&self, source: &str) -> Result<Vec<TargetAssetFile>> {
+        match self {
+            Self::Builtin { target } => target
+                .asset_files(source)
+                .map(|files| {
+                    files
+                        .into_iter()
+                        .map(|(relative_path, bytes)| TargetAssetFile {
+                            relative_path: relative_path.to_owned(),
+                            bytes: bytes.to_vec(),
+                        })
+                        .collect()
+                })
+                .with_context(|| {
+                    format!(
+                        "Built-in target '{}' contains no asset source '{source}'",
+                        target.name
+                    )
+                }),
+            Self::Directory { dir, .. } => {
+                let root = safe_target_join(dir, source)?;
+                collect_target_assets(&root)
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TargetAssetFile {
+    pub relative_path: String,
+    pub bytes: Vec<u8>,
+}
+
+fn collect_target_assets(root: &Path) -> Result<Vec<TargetAssetFile>> {
+    if !root.is_dir() {
+        bail!("Target asset source '{}' is not a directory", root.display());
+    }
+    let mut paths = Vec::new();
+    collect_target_asset_paths(root, root, &mut paths)?;
+    paths.sort_by(|left, right| left.0.cmp(&right.0));
+    paths
+        .into_iter()
+        .map(|(relative_path, path)| {
+            Ok(TargetAssetFile {
+                relative_path,
+                bytes: std::fs::read(&path)
+                    .with_context(|| format!("Read target asset '{}'", path.display()))?,
+            })
+        })
+        .collect()
+}
+
+fn collect_target_asset_paths(
+    root: &Path,
+    dir: &Path,
+    out: &mut Vec<(String, PathBuf)>,
+) -> Result<()> {
+    for entry in std::fs::read_dir(dir)
+        .with_context(|| format!("Read target asset directory '{}'", dir.display()))?
+    {
+        let entry = entry
+            .with_context(|| format!("Read target asset entry in '{}'", dir.display()))?;
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("Stat target asset '{}'", entry.path().display()))?;
+        if file_type.is_symlink() {
+            bail!(
+                "Target asset source may not contain symlinks: '{}'",
+                entry.path().display()
+            );
+        }
+        if file_type.is_dir() {
+            collect_target_asset_paths(root, &entry.path(), out)?;
+        } else if file_type.is_file() {
+            let relative_path = entry
+                .path()
+                .strip_prefix(root)
+                .expect("walked target asset is beneath root")
+                .components()
+                .map(|component| {
+                    component.as_os_str().to_str().with_context(|| {
+                        format!(
+                            "Target asset path must be UTF-8: '{}'",
+                            entry.path().display()
+                        )
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?
+                .join("/");
+            out.push((relative_path, entry.path()));
+        }
+    }
+    Ok(())
 }
 
 impl TargetTemplateSource for TargetBundle {
@@ -378,7 +505,10 @@ fn tensor_dtypes(tensor: Option<&TensorCapabilities>) -> Vec<String> {
 fn scalar_program_support(ir: TargetTemplateIr) -> TargetFeatureSupport {
     match ir {
         TargetTemplateIr::Solve => TargetFeatureSupport::Native,
-        TargetTemplateIr::Dae | TargetTemplateIr::Flat | TargetTemplateIr::Ast => {
+        TargetTemplateIr::Dae
+        | TargetTemplateIr::Flat
+        | TargetTemplateIr::Ast
+        | TargetTemplateIr::AlgorithmCode => {
             TargetFeatureSupport::Unsupported
         }
     }
@@ -722,8 +852,12 @@ fn validate_target_manifest(manifest: &TargetManifest) -> Result<()> {
     if manifest.files.is_empty() && manifest.readiness_level != Some(0) {
         bail!("target.toml must contain at least one file entry");
     }
-    if manifest.ir == TargetTemplateIr::Dae && manifest.capabilities.is_none() {
-        bail!("DAE target manifest must declare a [capabilities] table");
+    if matches!(
+        manifest.ir,
+        TargetTemplateIr::Dae | TargetTemplateIr::AlgorithmCode
+    ) && manifest.capabilities.is_none()
+    {
+        bail!("DAE-derived target manifest must declare a [capabilities] table");
     }
     if let Some(capabilities) = &manifest.capabilities {
         validate_target_capabilities(manifest, capabilities)?;
@@ -736,6 +870,36 @@ fn validate_target_manifest(manifest: &TargetManifest) -> Result<()> {
     }
     validate_checksum_web(&manifest.files)?;
     validate_asset_bundles(&manifest.assets)?;
+    validate_package(manifest.package.as_ref())?;
+    if let Some(integer) = manifest.integer
+        && integer.minimum > integer.maximum
+    {
+        bail!(
+            "[integer] minimum ({}) must not exceed maximum ({})",
+            integer.minimum,
+            integer.maximum
+        );
+    }
+    Ok(())
+}
+
+fn validate_package(package: Option<&TargetPackage>) -> Result<()> {
+    let Some(package) = package else {
+        return Ok(());
+    };
+    if package.root.trim().is_empty() {
+        bail!("[package] root must not be empty");
+    }
+    for required in &package.required_files {
+        if required.trim().is_empty() {
+            bail!("[package] required_files entries must not be empty");
+        }
+    }
+    if let Some(archive) = &package.archive
+        && archive.path.trim().is_empty()
+    {
+        bail!("[package.archive] path must not be empty");
+    }
     Ok(())
 }
 
@@ -799,17 +963,16 @@ fn validate_checksum_web(files: &[TargetFile]) -> Result<()> {
     Ok(())
 }
 
-/// Fail-early checks on declared `[[assets]]` bundles: bundle name and dest
-/// must be non-empty (the copy mechanism resolves the bundle payload by name).
+/// Fail-early checks on declared target-relative asset trees.
 fn validate_asset_bundles(assets: &[AssetBundle]) -> Result<()> {
     for asset in assets {
-        if asset.bundle.trim().is_empty() {
-            bail!("[[assets]] bundle name must not be empty");
+        if asset.source.trim().is_empty() {
+            bail!("[[assets]] source must not be empty");
         }
         if asset.dest.trim().is_empty() {
             bail!(
-                "[[assets]] dest must not be empty (bundle '{}')",
-                asset.bundle
+                "[[assets]] dest must not be empty (source '{}')",
+                asset.source
             );
         }
     }
@@ -1086,7 +1249,12 @@ host_callbacks = false
             let manifest = parse_target_manifest(target.manifest).unwrap_or_else(|error| {
                 panic!("built-in target '{}' failed to parse: {error}", target.name)
             });
-            if !matches!(manifest.ir, TargetTemplateIr::Dae | TargetTemplateIr::Solve) {
+            if !matches!(
+                manifest.ir,
+                TargetTemplateIr::Dae
+                    | TargetTemplateIr::Solve
+                    | TargetTemplateIr::AlgorithmCode
+            ) {
                 continue;
             }
             for template in target.templates {
@@ -1543,6 +1711,7 @@ path = "b.txt"
 template = "b.jinja"
 [[files.checksums]]
 of = "a"
+  algorithm = "sha1"
 as = "a_sha1"
 "#,
         )
@@ -1590,6 +1759,7 @@ path = "b.txt"
 template = "b.jinja"
 [[files.checksums]]
 of = "ghost"
+  algorithm = "sha1"
 as = "ghost_sha1"
 "#,
             "names no [[files]] id",
@@ -1609,6 +1779,7 @@ template = "a.jinja"
 id = "a"
 [[files.checksums]]
 of = "a"
+  algorithm = "sha1"
 as = "a_sha1"
 "#,
             "checksums itself",
@@ -1631,6 +1802,7 @@ path = "b.txt"
 template = "b.jinja"
 [[files.checksums]]
 of = "a"
+  algorithm = "sha1"
 as = ""
 "#,
             "`as` must not be empty",
@@ -1657,9 +1829,11 @@ path = "b.txt"
 template = "b.jinja"
 [[files.checksums]]
 of = "a"
+  algorithm = "sha1"
 as = "sha1"
 [[files.checksums]]
 of = "c"
+  algorithm = "sha1"
 as = "sha1"
 "#,
             "declared twice",
@@ -1667,7 +1841,7 @@ as = "sha1"
     }
 
     #[test]
-    fn asset_bundle_rejects_empty_bundle_and_dest() {
+    fn asset_tree_rejects_empty_source_and_dest() {
         expect_target_error(
             r#"
 version = 1
@@ -1677,10 +1851,10 @@ name = "empty-bundle"
 path = "a.txt"
 template = "a.jinja"
 [[assets]]
-bundle = ""
+source = ""
 dest = "schemas/"
 "#,
-            "bundle name must not be empty",
+            "source must not be empty",
         );
         expect_target_error(
             r#"
@@ -1691,7 +1865,7 @@ name = "empty-dest"
 path = "a.txt"
 template = "a.jinja"
 [[assets]]
-bundle = "efmi-schemas"
+source = "schemas"
 dest = ""
 "#,
             "dest",

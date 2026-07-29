@@ -1,0 +1,198 @@
+This file lists the versions of the AlgorithmCode schema.
+Each version gets an entry of the form:
+- Version: version number in semantic version format consisting of <major>.<minor>.<patch>
+- Revision: SHA1 ID hash of GIT commit
+- Description: May consist of multiple lines.
+The entries should be separated by an empty line.
+
+=============================================================================
+
+Version: <major>.<minor>.<patch>
+Revision: <SHA1 ID of last commit for this version>
+Description: <enter description>
+
+Version: 0.14.0
+Revision: 6a5732bfe8221324d7b68d225e1767319f555e8d
+          8bd467aaaf0947d877d8dabc98ff30301fd16c1b
+Description:
+Christoff Bürger
+ * Deleted 'writeOutputs' attribute of Algorithm Code manifests.
+   It never had any well-defined sematic and even provided 'Undefined'
+   as value (which essentially was just by everybody).
+ * Moved 'fileRefId' attribute from <BlockMethods> to the <Manifest>
+   itself. Further added specification text stating that:
+   "The referenced file can contain a single line feed
+    (ISO/IEC 10646:2017 code point 10), in which case no GALEC implementation is
+    provided by this Algorithm Code container (i.e., this container cannot be used
+    for production code generation, but can still be referenced by Production Code
+    manifests for enabling reference tests and complement their manifest)."
+   The rationale for these changes is, that
+   (a) We did not specify above use case yet (although we discussed it).
+   (b) In the old design, only <BlockMethods> has 'fileRefId', although
+       also <Variables> stems from the GALEC program (if any).
+ * Aligned modelling of lists:
+   (a) Made implicit bounds explicit everywhere.
+   (b) <Units> is now mandatory, but can be empty.
+   (c) <Files> is now mandatory, but can be empty (only according to the
+       XSD Schema, but not according to semantic constraints, see above point).
+   (d) <Variables> is now mandatory, but can be empty (only according to the
+       XSD Schema, but not according to semantic constraints because the
+       <Clock> must be defined).
+
+Version: 0.13.0
+Revision: eadf724fb964cdadc428a69239c822d61636fd27
+          2374f3ba2d6f4f0d7b29036ea3fe8d1ea32310cc
+Description:
+Changed path attribute in File element, thus all manifest schema have to be changed.
+
+Version: 0.12.0
+Revision: 899540adb1fd995eefbc92ebd6c8e340e0d64b79
+    0ec4b18f53469f2eb4a1ad9925362a8eab362c42
+Description:
+Michael Hussmann
+Changes decided on PlugFest 2020-11:
+- Aligned vendor annotations with FMI annotations
+
+Version: 0.11.0
+Revision: 50a4bc8b93671c6035019f240b634bf5b0bc65a0
+Description:
+Jörg Niere
+Changes decided on October plug-fest
+
+Version: 0.10.0
+Revision: 86cd470bc1936c670c0dc4531b195ff6074362a9
+Description:
+Christoff Bürger
+ * Changed 'offset' and 'factor' attributes of <BaseUnit> to xs:double
+   (i.e., floating-point numbers as defined by the IEEE).
+ * Changed <BaseUnit> units to xs:int (32bit signed integers).
+ * Deleted <DisplayUnit>.
+ 
+Version: 0.9.0
+Revision: 90931bd800cd7f27d4ea77f59d753442abab190d
+Description:
+Martin Otter
+Many changes according to https://gitlab.ida.liu.se/emphysis/Specification/-/issues/61#note_90470:
+Manifest attributes for all Manifest files defined in new file efmiManifestAttributes.xsd
+ManifestReferences is mandatory
+ManifestReference: Changed constraint from 1..infinity to 1 (only one reference).
+Clock: attribute modelVariableRefId changed to variableRefId
+BlockMethods: Method changed to BlockMethod
+UnitDefinitions changed to Units; attribute id added to Unit
+TypeDefinitions removed
+ModelVariables changed to Variables
+   Changed Real/Integer/Boolean -> RealVariable, IntegerVariable, BooleanVariable
+   Remove elements Enumeration, Record
+   Remove attributes quantity, displayUnit, typeRefId, valueReference, sourceType
+   (note relativeQuantity cannot be removed, since needed if displayUnit is used which is defined in Units / Unit / displayUnit)
+Files efmiType.xsd and efmiAttributeGroups.xsd removed
+
+Version: 0.8.1
+Revision: 97b2840507b94be0c17c0a903e795fa0c836781b
+Description:
+introduced ErrorSignalStatus element
+
+Version: 0.8.0
+Revision: c6106ffcccdf422dd11e699288567a879cd00885
+Description:
+added signals specification at Method elements
+introduced identifier type
+
+Version: 0.7.0
+Revision: 527504803fca2ea5f9ddba544c630d571306102a
+Description:
+- Changed format to semantics version number
+
+Version: 0.7
+Revision: 85fb1edb3cc9d077869f3ed434e33509bd25a14f
+Description:
+- Plug-Fest modifications.
+
+Version: 0.6.8
+Revision: 4123e72859c0be4a554f39f366e2412be6636861
+Description:
+Christoff Bürger
+- Added description for "ManifestReferences"
+- Fixed "BlockMethods" to "Startup", "DoStep" and "Recalibrate"
+
+Version: 0.6.7
+Revision: bb12b43e78e136455c956d00c86b65f50b6ff62c
+Description:
+Martin Otter
+- Clock: Comment of id and of modelVariableRefId corrected
+
+Version: 0.6.6
+Revision: bb00f579959e5c58196dd902c8302770edb7ad8b
+Description:
+Martin Otter
+- Clock / modelVariableRefId added
+- BlockMethods / Methods / kind: Updated with the method names decided at the last meeting
+
+Version: 0.6.5
+Revision: 472c5aaf0ece0fa5b88b8e7b7f0eea0d453c9f67
+Description:
+Martin Otter
+- Clock is required now (no longer possible to be optional)
+- Comments added to start attributes, that the value must be either set here or via typeRefID in TypeDefinitions.
+
+Version: 0.6.4
+Revision: dd325e4c8b3238ec2c4b4ed7bf1fef037522aaf7
+Description:
+Martin Otter
+- Manifest attributes: Changed efmiVersion and xsdVersion to xs:string with fixed="<actual version number>".
+
+Version: 0.6.3
+Revision: 3d02ee9e4ecf8e9445699b24d331cbbbc7bb26d2
+Description:
+Martin Otter
+- BlockCausality: Changed attribute WriteOutputs to writeOutputs
+
+Version: 0.6.2
+Revision: 06e63a19273c8039b7b335321e32155cd3ac57fd
+Description:
+Martin Otter
+- BlockCausality changed from optional to mandatory (https://gitlab.ida.liu.se/emphysis/Specification/issues/57#note_88700)
+- Implicit rules for dimension number expressed in comment (https://gitlab.ida.liu.se/emphysis/Specification/issues/57#note_88699)
+
+Version: 0.6.1
+Revision: 2642f16c3c886ebe6ad3bd196f515a768b2c40cf
+Description:
+Martin Otter
+- Changed BockMethods/refId to fileRefID (https://gitlab.ida.liu.se/emphysis/Specification/issues/57#note_88693)
+- Removed enum-value AtNextClockTick from enumeration of BlockMethods/WriteOutputs (https://gitlab.ida.liu.se/emphysis/Specification/issues/57#note_88692)
+- minIncl=1 added to attribute number and size of element Dimension. (https://gitlab.ida.liu.se/emphysis/Specification/issues/57#note_88691)
+
+Version: 0.6.0
+Revision: 986510d24bc0c1598f82bcfbaf0bd2cda592a473
+Description:
+Martin Otter (based on discussions with Christoff Bürger and results of web meetings)
+- Top level attributes of Manifest file harmonized
+- Clock is optional
+- FunctionInterfaces replaced by BlockMethods
+- causality, variability, initial replaced by blockCausality
+- Dimensions attributes changed from start to number and size
+- All "xmlspy" comments removed
+- All copyright and license information temporarily removed.
+
+Version: 0.2
+Revision: 8ee8ebc562a76dc0688d7436381a424ca89b5897
+Description:
+Martin Otter, Torsten Blochwitz:
+- Used FMI 2.0 as basis
+- Introduced the new elements from 0.1
+- Added dimension to variables
+- Used ScalarVariables instead of Variables because current Modelica tools used ScalarVariables.
+  Change this later to Variables.
+
+Version: 0.1
+Revision: e0387d7d28a1a400e329dbeda49a7b6279e9f319
+Description:
+- Renamed algorithm code manifest XSD
+- Manifest has "id" attribute which is UUID
+- Adapted Algorithm code manifest XSDs
+  - attributes of "Manifest" root element adapted to Production code
+  - Use ManifestReference.xsd to refer to origin manifest
+  - Added "id" for types (only SimpleType, because StructuredType not used) and variables.
+    A Variable can refer to a type from its "VariableType".
+	(This was added to create an EFMU container with both algorithm and production code, where a production code manifest's variable refers to an algorithm code manifest's variable.
+	 We suggest to add the concept of Ids and RefIds of the production code schema to the algorithm code schema also.)

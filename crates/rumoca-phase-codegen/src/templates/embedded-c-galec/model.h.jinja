@@ -1,34 +1,26 @@
-/* {{ block_name }} — GALEC-derived embedded C export (SPEC_0034 GAL-024).
-{%- for line in conformance_header.lines %}
- * {{ line }}
-{%- endfor %} */
-#ifndef {{ include_guard }}
-#define {{ include_guard }}
+{%- macro c_type(kind) -%}
+{%- if kind == "real" -%}double{%- elif kind == "integer" -%}int32_t{%- elif kind == "boolean" -%}bool{%- else -%}{{ fail_closed_scalar_type }}{%- endif -%}
+{%- endmacro -%}
+/* {{ algorithm_code.block_name | replace("*/", "* /") | replace("/*", "/ *") }}
+ * GALEC-derived embedded C export (SPEC_0034 GAL-024).
+ * NOT an eFMI Production Code container.
+ * Target syntax and layout are owned by this template. */
+#ifndef {{ model_name | upper }}_GALEC_H
+#define {{ model_name | upper }}_GALEC_H
 
 #include <stdbool.h>
 #include <stdint.h>
 
-/* Block state: every manifest-listed variable of the projected GALEC
- * block, including the 'previous(x)' discrete-state slots committed at
- * the end of dostep (eFMI trap T2). */
 typedef struct {
-{%- for variable in variables %}
-    {{ variable.c_type }} {{ variable.c_name }}{% for size in variable.dimensions %}[{{ size }}]{% endfor %}; /* {{ variable.name }} ({{ variable.causality }}) */
+{%- for variable in algorithm_code.variables %}
+    {{ c_type(variable.kind) }} {{ variable.name | sanitize }}{% for size in variable.dimensions %}[{{ size }}]{% endfor %}; /* declaration {{ variable.ordinal }}: {{ variable.name | replace("*/", "* /") | replace("/*", "/ *") }} ({{ variable.causality }}) */
 {%- endfor %}
-} {{ struct_name }};
+} {{ model_name }}State;
 
-/* The three GALEC block-interface methods (eFMI §3.1.3): parameter-free,
- * all I/O through the block state.
- * - startup: initializes every writable variable (call once first);
- * - recalibrate: recomputes dependent parameters after tunable-parameter
- *   changes (parameters stay tunable at runtime);
- * - dostep: one fixed-sample control-cycle tick. */
-void {{ function_prefix }}_startup({{ struct_name }} *self);
-void {{ function_prefix }}_recalibrate({{ struct_name }} *self);
-void {{ function_prefix }}_dostep({{ struct_name }} *self);
+void {{ model_name }}_startup({{ model_name }}State *self);
+void {{ model_name }}_recalibrate({{ model_name }}State *self);
+void {{ model_name }}_dostep({{ model_name }}State *self);
 
-/* Project-neutral convenience wrappers for applications that want a stable
- * eFMI-shaped call surface independent of the generated model prefix. */
 #ifndef EFMI_STATE_TYPE
 #  define EFMI_STATE_TYPE(model) model##State
 #endif
@@ -42,4 +34,4 @@ void {{ function_prefix }}_dostep({{ struct_name }} *self);
 #  define EFMI_STEP(model, state) model##_dostep(state)
 #endif
 
-#endif /* {{ include_guard }} */
+#endif

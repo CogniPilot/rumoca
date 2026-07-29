@@ -1,0 +1,15 @@
+[package]
+name = "rumoca-eval-galec"
+description = "Explicit interpreter for checked GALEC Algorithm Code blocks"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+rumoca-ir-galec = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true
