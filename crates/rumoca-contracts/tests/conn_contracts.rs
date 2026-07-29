@@ -479,7 +479,7 @@ fn conn_011_expandable_connect_neither_declared_rejected() {
 fn conn_011_declared_expandable_member_is_not_treated_as_virtual() {
     expect_success(
         r#"
-        model M
+        partial model M
             expandable connector Bus
                 Real sig;
             end Bus;
@@ -692,8 +692,8 @@ fn conn_014_branch_cycle_rejected() {
         end M;
     "#,
         "M",
-        FailedPhase::ToDae,
-        "ED017",
+        FailedPhase::Flatten,
+        "EF022",
     );
 }
 
@@ -722,8 +722,8 @@ fn conn_015_two_connected_definite_roots_rejected() {
         end M;
     "#,
         "M",
-        FailedPhase::ToDae,
-        "ED017",
+        FailedPhase::Flatten,
+        "EF022",
     );
 }
 

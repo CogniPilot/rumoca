@@ -73,6 +73,7 @@ equation manipulation.
 **Contract:**
 - No unresolved class references.
 - No modification chains; all modifications have been applied.
+- Virtual connection graphs satisfy MLS §9.4 forest and root invariants.
 - Arrays remain symbolic (not scalarized).
 - Function bodies remain structured in `functions`.
 - `pre()`, `der()`, `initial()`, and other Modelica built-ins are still present

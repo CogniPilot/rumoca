@@ -97,7 +97,7 @@ fn overlay_with(connections: Vec<ast::InstanceConnection>) -> ast::InstanceOverl
 
 fn generated_equations(overlay: &ast::InstanceOverlay, count: i64) -> Vec<String> {
     let mut flat = connector_model(count);
-    let mut forest = crate::vcg::OverconstrainedEquationForest::new(&Default::default(), &[], &[]);
+    let mut forest = crate::vcg::OverconstrainedEquationForest::empty();
     equation_generation::process_connections(&mut flat, overlay, false, &mut forest)
         .expect("connection processing should succeed");
     flat.equations

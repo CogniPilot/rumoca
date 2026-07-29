@@ -250,6 +250,20 @@ pub enum FlattenError {
         #[label("this reference expands into itself")]
         span: Span,
     },
+
+    /// Required spanning-tree edges failed an MLS §9.4 construction invariant.
+    #[error("invalid virtual connection graph: {detail}")]
+    #[diagnostic(
+        code(rumoca::flatten::EF022),
+        help(
+            "MLS §9.4: Connections.branch() edges form a forest and each required-edge tree contains at most one Connections.root()"
+        )
+    )]
+    InvalidConnectionGraph {
+        detail: String,
+        #[label("this required edge makes the graph invalid")]
+        span: Span,
+    },
 }
 
 impl FlattenError {
@@ -420,6 +434,13 @@ impl FlattenError {
             reason: reason.into(),
         }
     }
+
+    pub fn invalid_connection_graph(detail: impl Into<String>, span: Span) -> Self {
+        Self::InvalidConnectionGraph {
+            detail: detail.into(),
+            span,
+        }
+    }
 }
 
 impl PhaseError for FlattenError {
@@ -438,7 +459,8 @@ impl PhaseError for FlattenError {
             | Self::MissingResolvedClassMetadata { span, .. }
             | Self::InconsistentFunctionReference { span, .. }
             | Self::UnsupportedExpandableConnectorAugmentation { span, .. }
-            | Self::CyclicConstantBinding { span, .. } => std::slice::from_ref(span),
+            | Self::CyclicConstantBinding { span, .. }
+            | Self::InvalidConnectionGraph { span, .. } => std::slice::from_ref(span),
             Self::MissingFlowVariable { .. }
             | Self::Internal(_)
             | Self::FunctionRewriteNoConverge { .. }
