@@ -2,7 +2,7 @@
 //!
 //! Tests for the 38 equation contracts defined in SPEC_0022.
 
-use rumoca_compile::compile::FailedPhase;
+use rumoca_compile::compile::{FailedPhase, VariableRole};
 use rumoca_contracts::test_support::{
     expect_balanced, expect_failure_in_phase_with_code, expect_parse_err_with_code,
     expect_resolve_failure_with_code, expect_success,
@@ -67,7 +67,7 @@ fn eqn_001_underspecified() {
 
 #[test]
 fn eqn_002_input_with_binding() {
-    expect_success(
+    let result = expect_success(
         r#"
         model Test
             input Real u = 1.0;
@@ -75,9 +75,26 @@ fn eqn_002_input_with_binding() {
         equation
             der(x) = u;
         end Test;
-    "#,
+        "#,
         "Test",
     );
+    result.dae.inspect(|view| {
+        let input = view
+            .variables()
+            .find(|(_, variable)| variable.name().as_str() == "u")
+            .map(|(_, variable)| variable)
+            .expect("checked DAE retains the model input");
+        let binding = input
+            .binding()
+            .expect("checked DAE retains the input default");
+        assert_eq!(input.role(), VariableRole::Input);
+        assert_eq!(
+            result
+                .dae
+                .source_text(view.expression(binding).unwrap().provenance()),
+            Some("1.0")
+        );
+    });
 }
 
 // =============================================================================

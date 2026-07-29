@@ -1384,7 +1384,7 @@ fn validate_variable(
         }
         return Ok(PlannedRole::Clock);
     }
-    let scalar_type = validate_variable_header(flat, name, variable, external_input)?;
+    let scalar_type = validate_variable_header(flat, name, variable)?;
     let role = classify_variable_role(
         name,
         variable,
@@ -1401,7 +1401,6 @@ fn validate_variable_header(
     flat: &flat::Model,
     name: &VarName,
     variable: &flat::Variable,
-    external_input: bool,
 ) -> Result<dae::ScalarType, ToDaeError> {
     require_span(
         variable.source_span,
@@ -1443,13 +1442,6 @@ fn validate_variable_header(
                 variable.source_span,
             ));
         }
-    }
-    if external_input && variable.binding.is_some() {
-        return Err(ToDaeError::unsupported_flat(
-            "input binding",
-            "an externally supplied input cannot silently become a local equation",
-            variable.source_span,
-        ));
     }
     Ok(scalar_type)
 }

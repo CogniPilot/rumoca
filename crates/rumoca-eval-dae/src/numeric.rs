@@ -37,10 +37,11 @@ impl NumericEvaluationError {
 /// Evaluates compile-time numeric values from one branded checked DAE.
 ///
 /// Parameter and constant coordinates are followed through their checked
-/// bindings. Every other coordinate is rejected: this evaluator never invents
-/// a runtime value. The optional override function is applied at the variable
-/// boundary, so dependents observe the same overridden parameter values as the
-/// runtime layout.
+/// bindings. Runtime inputs require either a checked default binding or an
+/// override for every scalar. Every other coordinate is rejected: this
+/// evaluator never invents a runtime value. The optional override function is
+/// applied at the variable boundary, so dependents observe the same overridden
+/// values as the runtime layout.
 pub struct NumericEvaluator<'dae, F = fn(dae::VariableView<'dae>, usize) -> Option<f64>> {
     view: dae::DaeView<'dae>,
     values: Vec<Option<Vec<f64>>>,
@@ -398,14 +399,7 @@ where
         }
         let expression = match variable.role() {
             dae::VariableRole::Input => {
-                return Err(failure(
-                    NumericEvaluationErrorKind::MissingValue,
-                    format!(
-                        "input `{}` has no runtime input provider; evaluation cannot invent its value",
-                        variable.name()
-                    ),
-                    variable.declaration().span(),
-                ));
+                return self.input_value(variable);
             }
             dae::VariableRole::State
             | dae::VariableRole::Algebraic
@@ -429,6 +423,47 @@ where
             }
         };
         self.variable_expression(variable, expression)
+    }
+
+    fn input_value(
+        &mut self,
+        variable: dae::VariableView<'dae>,
+    ) -> Result<Vec<f64>, NumericEvaluationError> {
+        if variable.scalar_count() == 0 {
+            return Ok(Vec::new());
+        }
+        if let Some(binding) = variable.binding() {
+            return self.variable_expression(variable, binding);
+        }
+        let mut values = Vec::with_capacity(variable.scalar_count());
+        for scalar in 0..variable.scalar_count() {
+            let value = (self.override_value)(variable, scalar).ok_or_else(|| {
+                failure(
+                    NumericEvaluationErrorKind::MissingValue,
+                    format!(
+                        "input `{}` has neither a checked default nor a runtime value",
+                        variable
+                            .scalar_name(scalar)
+                            .expect("checked scalar ordinal has a name")
+                    ),
+                    variable.declaration().span(),
+                )
+            })?;
+            if !value.is_finite() {
+                return Err(failure(
+                    NumericEvaluationErrorKind::InvalidOverride,
+                    format!(
+                        "runtime input `{}` must be finite",
+                        variable
+                            .scalar_name(scalar)
+                            .expect("checked scalar ordinal has a name")
+                    ),
+                    variable.declaration().span(),
+                ));
+            }
+            values.push(value);
+        }
+        Ok(values)
     }
 
     fn parameter_value(
@@ -528,7 +563,7 @@ where
             let name = variable
                 .scalar_name(scalar)
                 .expect("checked scalar ordinal has a name");
-            if !variable.is_tunable() {
+            if variable.role() != dae::VariableRole::Input && !variable.is_tunable() {
                 return Err(failure(
                     NumericEvaluationErrorKind::InvalidOverride,
                     format!(
@@ -1538,6 +1573,74 @@ mod tests {
                     Vec::<f64>::new()
                 );
             }
+        });
+    }
+
+    #[test]
+    fn runtime_inputs_require_an_override_or_use_their_checked_default() {
+        let text = "input Real defaulted = 2.5; input Real supplied;";
+        let mut source_map = SourceMap::new();
+        let source = source_map.add("inputs.mo", text);
+        let at = |needle: &str| {
+            let start = text.find(needle).unwrap();
+            DaeProvenance::source(Span::from_offsets(source, start, start + needle.len())).unwrap()
+        };
+        let dae = Dae::construct(source_map, |dae| {
+            let real = dae.types(|types| {
+                types.derived(ValueType::scalar(ScalarType::Real), at("Real defaulted"))
+            })?;
+            let default = dae.expressions(|expressions| {
+                expressions.at(at("2.5")).literal(DaeLiteral::Real(2.5))
+            })?;
+            dae.variables(|variables| {
+                variables.input(
+                    VarName::new("defaulted"),
+                    real,
+                    rumoca_ir_dae::InputVariability::Continuous,
+                    at("input Real defaulted"),
+                    rumoca_ir_dae::VariableAttributes {
+                        binding: Some(default),
+                        causality: rumoca_ir_dae::VariableCausality::Input,
+                        ..Default::default()
+                    },
+                )?;
+                variables.input(
+                    VarName::new("supplied"),
+                    real,
+                    rumoca_ir_dae::InputVariability::Continuous,
+                    at("input Real supplied"),
+                    rumoca_ir_dae::VariableAttributes {
+                        causality: rumoca_ir_dae::VariableCausality::Input,
+                        ..Default::default()
+                    },
+                )?;
+                Ok(())
+            })
+        })
+        .unwrap();
+
+        dae.inspect(|view| {
+            let defaulted = view.variable_id(0).unwrap();
+            let supplied = view.variable_id(1).unwrap();
+            let mut without_provider = NumericEvaluator::new(view);
+            assert_eq!(
+                without_provider.initial_value(defaulted).unwrap(),
+                vec![2.5]
+            );
+            assert_eq!(
+                without_provider.initial_value(supplied).unwrap_err().kind(),
+                super::NumericEvaluationErrorKind::MissingValue
+            );
+
+            let mut with_provider = NumericEvaluator::with_overrides(view, |variable, _| {
+                match variable.name().as_str() {
+                    "defaulted" => Some(3.5),
+                    "supplied" => Some(4.5),
+                    _ => None,
+                }
+            });
+            assert_eq!(with_provider.initial_value(defaulted).unwrap(), vec![3.5]);
+            assert_eq!(with_provider.initial_value(supplied).unwrap(), vec![4.5]);
         });
     }
 

@@ -608,16 +608,21 @@ fn lower_bindings<'dae>(
             continue;
         }
         let coordinate = coordinates[name];
-        if matches!(coordinate, Coordinate::Parameter(_)) {
+        if matches!(coordinate, Coordinate::Parameter(_) | Coordinate::Input(_)) {
             continue;
         }
         let owner_span = binding.span().unwrap_or(variable.source_span);
         let owner = dae::DaeProvenance::generated(dae::DaeGeneration::BindingEquation, owner_span)?;
         let rhs = lower_expression(construction, coordinates, functions, binding, None)?;
         match coordinate {
-            Coordinate::Input(_) => unreachable!("analysis rejects bound inputs"),
             Coordinate::DiscreteValue(target) => {
                 construction.discrete(|discrete| discrete.assignment(owner, target, rhs))?;
+            }
+            Coordinate::Parameter(_)
+            | Coordinate::Input(_)
+            | Coordinate::FunctionParameter(_)
+            | Coordinate::FunctionValue(_) => {
+                unreachable!("non-equation binding coordinates were filtered before lowering")
             }
             coordinate => {
                 lower_residual_binding(construction, coordinate, owner, rhs)?;
