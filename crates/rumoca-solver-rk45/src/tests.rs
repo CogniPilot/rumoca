@@ -268,24 +268,27 @@ fn rk45_snapshots_pre_params_before_event_updates() {
         clock_schedule: None,
     }];
     model.problem.events.scheduled_time_events = vec![0.05];
-    model.problem.discrete.update_targets = vec![solve::scalar_slot_y(0)];
-    model.problem.discrete.pre_modes = vec![solve::DiscreteEventPreMode::EventEntry];
-    model.problem.discrete.rhs = ScalarProgramBlock::with_source_span(
-        vec![vec![
-            LinearOp::LoadP { dst: 0, index: 0 },
-            LinearOp::Const {
-                dst: 1,
-                value: -0.8,
-            },
-            LinearOp::Binary {
-                dst: 2,
-                op: solve::BinaryOp::Mul,
-                lhs: 0,
-                rhs: 1,
-            },
-            LinearOp::StoreOutput { src: 2 },
-        ]],
-        fixture_span!(),
+    set_single_discrete_equation(
+        &mut model,
+        solve::scalar_slot_y(0),
+        solve::DiscreteEventPreMode::EventEntry,
+        ScalarProgramBlock::with_source_span(
+            vec![vec![
+                LinearOp::LoadP { dst: 0, index: 0 },
+                LinearOp::Const {
+                    dst: 1,
+                    value: -0.8,
+                },
+                LinearOp::Binary {
+                    dst: 2,
+                    op: solve::BinaryOp::Mul,
+                    lhs: 0,
+                    rhs: 1,
+                },
+                LinearOp::StoreOutput { src: 2 },
+            ]],
+            fixture_span!(),
+        ),
     );
 
     let result = simulate(
@@ -365,8 +368,12 @@ fn rk45_applies_scheduled_time_event_update() {
     model.problem.solve_layout.compiled_parameter_len = 1;
     model.problem.solve_layout.discrete_valued_scalar_names = vec!["m".to_string()];
     model.problem.events.scheduled_time_events = vec![0.05];
-    model.problem.discrete.update_targets = vec![solve::scalar_slot_p(0)];
-    model.problem.discrete.rhs = const_scalar_program_block(2.0);
+    set_single_discrete_equation(
+        &mut model,
+        solve::scalar_slot_p(0),
+        solve::DiscreteEventPreMode::FollowCurrent,
+        const_scalar_program_block(2.0),
+    );
     model.parameters = vec![0.0];
     model.visible_names = vec!["x".to_string(), "m".to_string()];
 
@@ -435,8 +442,12 @@ fn rk45_applies_root_event_update() {
         ]],
         fixture_span!(),
     );
-    model.problem.discrete.update_targets = vec![solve::scalar_slot_p(0)];
-    model.problem.discrete.rhs = const_scalar_program_block(2.0);
+    set_single_discrete_equation(
+        &mut model,
+        solve::scalar_slot_p(0),
+        solve::DiscreteEventPreMode::FollowCurrent,
+        const_scalar_program_block(2.0),
+    );
     model.parameters = vec![0.0];
     model.visible_names = vec!["x".to_string(), "m".to_string()];
 
@@ -581,20 +592,24 @@ fn rk45_root_event_updates_relation_memory_for_continuous_if_branch() {
     model.initial_y = vec![0.1];
     model.parameters = vec![0.0];
     model.problem.solve_layout.compiled_parameter_len = 1;
-    model.problem.discrete.update_targets = vec![solve::scalar_slot_p(0)];
-    model.problem.discrete.rhs = ScalarProgramBlock::with_source_span(
-        vec![vec![
-            LinearOp::LoadY { dst: 0, index: 0 },
-            LinearOp::Const { dst: 1, value: 0.0 },
-            LinearOp::Compare {
-                dst: 2,
-                op: solve::CompareOp::Lt,
-                lhs: 0,
-                rhs: 1,
-            },
-            LinearOp::StoreOutput { src: 2 },
-        ]],
-        fixture_span!(),
+    set_single_discrete_equation(
+        &mut model,
+        solve::scalar_slot_p(0),
+        solve::DiscreteEventPreMode::FollowCurrent,
+        ScalarProgramBlock::with_source_span(
+            vec![vec![
+                LinearOp::LoadY { dst: 0, index: 0 },
+                LinearOp::Const { dst: 1, value: 0.0 },
+                LinearOp::Compare {
+                    dst: 2,
+                    op: solve::CompareOp::Lt,
+                    lhs: 0,
+                    rhs: 1,
+                },
+                LinearOp::StoreOutput { src: 2 },
+            ]],
+            fixture_span!(),
+        ),
     );
     model.problem.events.root_conditions = ScalarProgramBlock::with_source_span(
         vec![vec![
@@ -632,8 +647,12 @@ fn rk45_applies_periodic_event_update() {
     model.problem.solve_layout.compiled_parameter_len = 1;
     model.problem.solve_layout.discrete_valued_scalar_names = vec!["m".to_string()];
     model.problem.clocks.periodic_event_schedules = vec![periodic_schedule(0.05, 0.05)];
-    model.problem.discrete.update_targets = vec![solve::scalar_slot_p(0)];
-    model.problem.discrete.rhs = const_scalar_program_block(3.0);
+    set_single_discrete_equation(
+        &mut model,
+        solve::scalar_slot_p(0),
+        solve::DiscreteEventPreMode::FollowCurrent,
+        const_scalar_program_block(3.0),
+    );
     model.parameters = vec![0.0];
     model.visible_names = vec!["x".to_string(), "m".to_string()];
 
@@ -693,30 +712,34 @@ fn rk45_periodic_event_seeds_scheduled_sample_relation_memory() {
             phase_seconds: 0.07,
         },
     ];
-    model.problem.discrete.update_targets = vec![solve::scalar_slot_p(2)];
-    model.problem.discrete.rhs = ScalarProgramBlock::with_source_span(
-        vec![vec![
-            LinearOp::LoadP { dst: 0, index: 0 },
-            LinearOp::Const {
-                dst: 1,
-                value: 10.0,
-            },
-            LinearOp::LoadP { dst: 2, index: 1 },
-            LinearOp::Binary {
-                dst: 3,
-                op: solve::BinaryOp::Mul,
-                lhs: 1,
-                rhs: 2,
-            },
-            LinearOp::Binary {
-                dst: 4,
-                op: solve::BinaryOp::Add,
-                lhs: 0,
-                rhs: 3,
-            },
-            LinearOp::StoreOutput { src: 4 },
-        ]],
-        fixture_span!(),
+    set_single_discrete_equation(
+        &mut model,
+        solve::scalar_slot_p(2),
+        solve::DiscreteEventPreMode::FollowCurrent,
+        ScalarProgramBlock::with_source_span(
+            vec![vec![
+                LinearOp::LoadP { dst: 0, index: 0 },
+                LinearOp::Const {
+                    dst: 1,
+                    value: 10.0,
+                },
+                LinearOp::LoadP { dst: 2, index: 1 },
+                LinearOp::Binary {
+                    dst: 3,
+                    op: solve::BinaryOp::Mul,
+                    lhs: 1,
+                    rhs: 2,
+                },
+                LinearOp::Binary {
+                    dst: 4,
+                    op: solve::BinaryOp::Add,
+                    lhs: 0,
+                    rhs: 3,
+                },
+                LinearOp::StoreOutput { src: 4 },
+            ]],
+            fixture_span!(),
+        ),
     );
     model.parameters = vec![0.0, 0.0, 0.0];
     model.visible_names = vec![
@@ -779,40 +802,43 @@ fn rk45_clears_scheduled_sample_relation_memory_between_ticks() {
         period_seconds: 0.05,
         phase_seconds: 0.0,
     }];
-    model.problem.discrete.update_targets = vec![solve::scalar_slot_p(2)];
-    model.problem.discrete.pre_modes = vec![solve::DiscreteEventPreMode::Fixed];
-    model.problem.discrete.rhs = ScalarProgramBlock::with_source_span(
-        vec![vec![
-            LinearOp::LoadP { dst: 0, index: 1 },
-            LinearOp::LoadP { dst: 1, index: 0 },
-            LinearOp::Unary {
-                dst: 2,
-                op: solve::UnaryOp::Not,
-                arg: 1,
-            },
-            LinearOp::Binary {
-                dst: 3,
-                op: solve::BinaryOp::And,
-                lhs: 0,
-                rhs: 2,
-            },
-            LinearOp::LoadP { dst: 4, index: 3 },
-            LinearOp::Const { dst: 5, value: 1.0 },
-            LinearOp::Binary {
-                dst: 6,
-                op: solve::BinaryOp::Add,
-                lhs: 4,
-                rhs: 5,
-            },
-            LinearOp::Select {
-                dst: 7,
-                cond: 3,
-                if_true: 6,
-                if_false: 4,
-            },
-            LinearOp::StoreOutput { src: 7 },
-        ]],
-        fixture_span!(),
+    set_single_discrete_equation(
+        &mut model,
+        solve::scalar_slot_p(2),
+        solve::DiscreteEventPreMode::Fixed,
+        ScalarProgramBlock::with_source_span(
+            vec![vec![
+                LinearOp::LoadP { dst: 0, index: 1 },
+                LinearOp::LoadP { dst: 1, index: 0 },
+                LinearOp::Unary {
+                    dst: 2,
+                    op: solve::UnaryOp::Not,
+                    arg: 1,
+                },
+                LinearOp::Binary {
+                    dst: 3,
+                    op: solve::BinaryOp::And,
+                    lhs: 0,
+                    rhs: 2,
+                },
+                LinearOp::LoadP { dst: 4, index: 3 },
+                LinearOp::Const { dst: 5, value: 1.0 },
+                LinearOp::Binary {
+                    dst: 6,
+                    op: solve::BinaryOp::Add,
+                    lhs: 4,
+                    rhs: 5,
+                },
+                LinearOp::Select {
+                    dst: 7,
+                    cond: 3,
+                    if_true: 6,
+                    if_false: 4,
+                },
+                LinearOp::StoreOutput { src: 7 },
+            ]],
+            fixture_span!(),
+        ),
     );
     // Mimic a phase-zero sample that already fired during initialization:
     // current sample memory is true and count has advanced once.
@@ -850,8 +876,12 @@ fn rk45_applies_dynamic_time_event_update() {
     model.problem.solve_layout.discrete_real_scalar_names = vec!["next".to_string()];
     model.problem.solve_layout.discrete_valued_scalar_names = vec!["m".to_string()];
     model.problem.events.dynamic_time_event_names = vec!["next".to_string()];
-    model.problem.discrete.update_targets = vec![solve::scalar_slot_p(1)];
-    model.problem.discrete.rhs = const_scalar_program_block(4.0);
+    set_single_discrete_equation(
+        &mut model,
+        solve::scalar_slot_p(1),
+        solve::DiscreteEventPreMode::FollowCurrent,
+        const_scalar_program_block(4.0),
+    );
     model.parameters = vec![0.05, 0.0];
     model.visible_names = vec!["x".to_string(), "next".to_string(), "m".to_string()];
 
@@ -1056,8 +1086,12 @@ fn rk45_session_extension_schedules_events_beyond_initial_end_time() {
     model.problem.solve_layout.compiled_parameter_len = 1;
     model.problem.solve_layout.discrete_valued_scalar_names = vec!["m".to_string()];
     model.problem.clocks.periodic_event_schedules = vec![periodic_schedule(0.05, 0.05)];
-    model.problem.discrete.update_targets = vec![solve::scalar_slot_p(0)];
-    model.problem.discrete.rhs = const_scalar_program_block(3.0);
+    set_single_discrete_equation(
+        &mut model,
+        solve::scalar_slot_p(0),
+        solve::DiscreteEventPreMode::FollowCurrent,
+        const_scalar_program_block(3.0),
+    );
     model.parameters = vec![0.0];
     model.visible_names = vec!["x".to_string(), "m".to_string()];
     let mut session = SimulationSession::new(
@@ -1559,32 +1593,32 @@ fn variable_discrete_delay_model() -> solve::SolveModel {
         value_parameter_indices: vec![0],
         source_is_discrete: vec![true],
     };
-    model.problem.discrete.update_targets = vec![solve::scalar_slot_p(1)];
-    model.problem.discrete.row_roles = vec![solve::DiscreteRowRole::Equation];
-    model.problem.discrete.pre_modes = vec![solve::DiscreteEventPreMode::FollowCurrent];
-    model.problem.discrete.observation_refresh = vec![false];
-    model.problem.discrete.clock_owners = vec![None];
-    model.problem.discrete.rhs = ScalarProgramBlock::with_source_span(
-        vec![vec![
-            LinearOp::LoadP { dst: 0, index: 0 },
-            LinearOp::Const { dst: 1, value: 0.5 },
-            LinearOp::Compare {
-                dst: 2,
-                op: solve::CompareOp::Gt,
-                lhs: 0,
-                rhs: 1,
-            },
-            LinearOp::Const { dst: 3, value: 2.0 },
-            LinearOp::LoadP { dst: 4, index: 1 },
-            LinearOp::Select {
-                dst: 5,
-                cond: 2,
-                if_true: 3,
-                if_false: 4,
-            },
-            LinearOp::StoreOutput { src: 5 },
-        ]],
-        fixture_span!(),
+    set_single_discrete_equation(
+        &mut model,
+        solve::scalar_slot_p(1),
+        solve::DiscreteEventPreMode::FollowCurrent,
+        ScalarProgramBlock::with_source_span(
+            vec![vec![
+                LinearOp::LoadP { dst: 0, index: 0 },
+                LinearOp::Const { dst: 1, value: 0.5 },
+                LinearOp::Compare {
+                    dst: 2,
+                    op: solve::CompareOp::Gt,
+                    lhs: 0,
+                    rhs: 1,
+                },
+                LinearOp::Const { dst: 3, value: 2.0 },
+                LinearOp::LoadP { dst: 4, index: 1 },
+                LinearOp::Select {
+                    dst: 5,
+                    cond: 2,
+                    if_true: 3,
+                    if_false: 4,
+                },
+                LinearOp::StoreOutput { src: 5 },
+            ]],
+            fixture_span!(),
+        ),
     );
     model.parameters = vec![0.0, 0.0];
     model.visible_names = vec!["marker".to_string()];
@@ -1606,6 +1640,23 @@ fn const_scalar_program_block(value: f64) -> ScalarProgramBlock {
         ]],
         fixture_span!(),
     )
+}
+
+fn set_single_discrete_equation(
+    model: &mut solve::SolveModel,
+    target: solve::ScalarSlot,
+    pre_mode: solve::DiscreteEventPreMode,
+    rhs: ScalarProgramBlock,
+) {
+    model.problem.discrete = solve::DiscreteSolveSystem {
+        update_targets: vec![target],
+        row_roles: vec![solve::DiscreteRowRole::Equation],
+        pre_modes: vec![pre_mode],
+        observation_refresh: vec![false],
+        clock_owners: vec![None],
+        rhs,
+        ..solve::DiscreteSolveSystem::default()
+    };
 }
 
 fn no_state_input_accumulator_model() -> solve::SolveModel {
