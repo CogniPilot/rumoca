@@ -68,6 +68,7 @@ pub(crate) struct StructuredFamilyEntry {
     pub(crate) domain: u32,
     pub(crate) scalar_view: ComprehensionScalarView,
     pub(crate) bodies: FamilyBodyRange,
+    #[serde(skip_serializing)]
     pub(crate) scalar_rows: u32,
     pub(crate) provenance: DaeProvenance,
 }

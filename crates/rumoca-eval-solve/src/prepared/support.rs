@@ -198,7 +198,7 @@ pub(super) fn prepare_row_output_metadata(
     let mut offsets =
         prepared_vec_with_capacity(offset_count, "prepared row output offsets", span)?;
     offsets.push(0usize);
-    for row in &block.programs {
+    for row in block.programs() {
         let next = checked_prepared_sum(
             *offsets.last().unwrap_or(&0),
             ScalarProgramBlock::program_output_count(row),
@@ -208,12 +208,12 @@ pub(super) fn prepare_row_output_metadata(
         offsets.push(next);
     }
 
-    if offsets.last().copied() != Some(block.output_indices.len()) {
+    if offsets.last().copied() != Some(block.output_indices().len()) {
         return Err(invalid_prepared_row_with_span(
             format!(
                 "prepared block has {} stored outputs but {} logical output indices",
                 offsets.last().copied().unwrap_or(0),
-                block.output_indices.len()
+                block.output_indices().len()
             ),
             span,
         ));
@@ -224,7 +224,7 @@ pub(super) fn prepare_row_output_metadata(
     for (row_idx, range) in offsets.windows(2).enumerate() {
         let row_output_count = range[1] - range[0];
         for stored_ordinal in range[0]..range[1] {
-            let output_index = *block.output_indices.get(stored_ordinal).ok_or_else(|| {
+            let output_index = *block.output_indices().get(stored_ordinal).ok_or_else(|| {
                 invalid_prepared_row_with_span(
                     format!(
                         "prepared row output ordinal {stored_ordinal} has no logical output index"
@@ -274,7 +274,7 @@ pub(super) fn checked_prepared_output_count(
     block: &ScalarProgramBlock,
 ) -> Result<usize, EvalSolveError> {
     block
-        .output_indices
+        .output_indices()
         .iter()
         .copied()
         .max()

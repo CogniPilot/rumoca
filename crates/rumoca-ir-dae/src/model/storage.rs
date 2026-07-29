@@ -1,7 +1,8 @@
 use super::*;
 
 impl Storage {
-    pub(super) fn freeze(self) -> FrozenStorage {
+    pub(super) fn freeze(mut self) -> FrozenStorage {
+        self.function_read_sets = FunctionReadSets::default();
         FrozenStorage {
             value_types: self.value_types.into_boxed_slice(),
             flat_type_ids: self.flat_type_ids.into_boxed_slice(),
@@ -337,23 +338,6 @@ impl Storage {
                 let ty = self.intern_type(ValueType::scalar(ScalarType::Real), at)?;
                 return Ok((ty, ExpressionVariability::Continuous));
             }
-            CoordinateInput::Delay(id) => {
-                let delay = self
-                    .delays
-                    .get(id.index() as usize)
-                    .ok_or_else(|| unknown("delay", id.index(), at))?;
-                let facts = (delay.value_type, delay.variability);
-                let use_count = self
-                    .delay_coordinate_uses
-                    .get_mut(id.index() as usize)
-                    .ok_or_else(|| unknown("delay use", id.index(), at))?;
-                if *use_count != 0 {
-                    return Err(duplicate("delay coordinate", id.index(), at));
-                }
-                *use_count = 1;
-                self.unconsumed_delays -= 1;
-                facts
-            }
             CoordinateInput::Condition(id) => {
                 if self.conditions.get(id.index() as usize).is_none() {
                     return Err(unknown("condition", id.index(), at));
@@ -634,7 +618,7 @@ impl Storage {
                 .function_folds
                 .iter()
                 .enumerate()
-                .find(|(_, entry)| entry.update_values.is_empty())
+                .find(|(_, entry)| entry.update_definitions.is_empty())
                 .expect("private function-fold count matches its arena");
             return Err(DaeConstructionError::IncompleteDefinition {
                 kind: "function loop transition",
@@ -645,21 +629,6 @@ impl Storage {
         }
         if self.unfilled_conditions != 0 {
             return Err(self.incomplete_arena("condition", &self.conditions));
-        }
-        if self.unconsumed_delays != 0 {
-            let Some(index) = self
-                .delay_coordinate_uses
-                .iter()
-                .position(|use_count| *use_count == 0)
-            else {
-                unreachable!("private delay-use count diverged from its arena");
-            };
-            return Err(DaeConstructionError::IncompleteDefinition {
-                kind: "delay coordinate",
-                index: u32::try_from(index)
-                    .expect("a dense DAE arena cannot exceed its checked u32 capacity"),
-                span: self.delays[index].provenance.span(),
-            });
         }
         if self.unassigned_discrete_values != 0 {
             let Some((index, variable)) =

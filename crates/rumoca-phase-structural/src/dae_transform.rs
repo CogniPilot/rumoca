@@ -5,12 +5,14 @@
 //! replacement DAE demotes that state and substitutes the exact symbolic
 //! derivative of its definition at every derivative occurrence.
 
+mod functions;
 #[cfg(test)]
 mod tests;
 
 use rumoca_core::StateSelect;
 use rumoca_ir_dae as dae;
 
+use self::functions::{RebuiltFunction, rebuild_functions, reserve_functions};
 use crate::{StructuralError, sort};
 
 /// A finalized DAE ready for Solve lowering.
@@ -78,9 +80,7 @@ pub fn prepare_for_solve(model: &dae::Dae) -> Result<PreparedDae<'_>, Structural
     };
     let candidates = model.inspect(direct_state_constraints);
     for candidate in candidates {
-        let Some(rebuilt) = rebuild_with_state_demotion(model, candidate)? else {
-            continue;
-        };
+        let rebuilt = rebuild_with_state_demotion(model, candidate)?;
         if rebuilt.inspect(|view| sort(view).map(|_| ())).is_ok() {
             return Ok(PreparedDae::Transformed {
                 dae: Box::new(rebuilt),
@@ -89,9 +89,7 @@ pub fn prepare_for_solve(model: &dae::Dae) -> Result<PreparedDae<'_>, Structural
         }
     }
     for constraint in model.inspect(holonomic_constraints) {
-        let Some((rebuilt, manifold)) = rebuild_holonomic_constraint(model, constraint)? else {
-            continue;
-        };
+        let (rebuilt, manifold) = rebuild_holonomic_constraint(model, constraint)?;
         if rebuilt.inspect(|view| sort(view).map(|_| ())).is_ok() {
             return Ok(PreparedDae::Transformed {
                 dae: Box::new(rebuilt),
@@ -289,35 +287,53 @@ fn is_differentiable<'dae>(
 fn rebuild_holonomic_constraint(
     model: &dae::Dae,
     constraint: HolonomicConstraint,
-) -> Result<Option<(dae::Dae, Vec<u32>)>, StructuralError> {
-    let supported = model.inspect(supports_common_reconstruction);
-    if !supported {
-        return Ok(None);
-    }
+) -> Result<(dae::Dae, Vec<u32>), StructuralError> {
     let mut manifold = Vec::with_capacity(2);
     let rebuilt = model.inspect(|source| {
         dae::Dae::construct(model.source_map().clone(), |target| {
             let types = rebuild_types(source, target)?;
             let domains = rebuild_domains(source, target)?;
+            let (functions, mut function_reservations) = reserve_functions(source, target, &types)?;
             let mut variables = reserve_variables(source, target, &types, None)?;
             let conditions = reserve_conditions(source, target)?;
             let clocks = rebuild_clocks(source, target, &variables, &conditions)?;
             let temporal = rebuild_temporal_coordinates(source, target, &variables, &clocks)?;
             let derivative_definitions = explicit_derivative_definitions(source);
+            let identities = RebuiltIdentities {
+                types: &types,
+                functions: &functions,
+                variables: &variables,
+                domains: &domains,
+                conditions: &conditions,
+                previous: &temporal.previous,
+                terminals: &temporal.terminals,
+            };
+            let mut rebuilt_state = vec![None; source.expression_count()];
+            rebuild_delay_coordinates(
+                source,
+                target,
+                identities,
+                &derivative_definitions,
+                None,
+                &mut rebuilt_state,
+            )?;
+            rebuild_functions(
+                source,
+                target,
+                identities,
+                &derivative_definitions,
+                None,
+                &mut rebuilt_state,
+                &mut function_reservations,
+            )?;
             let (expressions, replacement) = target.expressions(|expressions| {
                 let mut rebuilder = ExpressionRebuilder::new(
                     source,
                     expressions,
-                    RebuiltIdentities {
-                        types: &types,
-                        variables: &variables,
-                        domains: &domains,
-                        conditions: &conditions,
-                        previous: &temporal.previous,
-                        terminals: &temporal.terminals,
-                    },
+                    identities,
                     &derivative_definitions,
                     None,
+                    &mut rebuilt_state,
                 );
                 let rebuilt = rebuilder.rebuild_all()?;
                 let source_residual = source
@@ -350,41 +366,59 @@ fn rebuild_holonomic_constraint(
         })
     });
     rebuilt
-        .map(|dae| Some((dae, manifold)))
+        .map(|dae| (dae, manifold))
         .map_err(|error| construction_failure(model, error))
 }
 
 fn rebuild_with_state_demotion(
     model: &dae::Dae,
     candidate: DirectStateConstraint,
-) -> Result<Option<dae::Dae>, StructuralError> {
-    let supported = model.inspect(supports_common_reconstruction);
-    if !supported {
-        return Ok(None);
-    }
+) -> Result<dae::Dae, StructuralError> {
     let rebuilt = model.inspect(|source| {
         dae::Dae::construct(model.source_map().clone(), |target| {
             let types = rebuild_types(source, target)?;
             let domains = rebuild_domains(source, target)?;
+            let (functions, mut function_reservations) = reserve_functions(source, target, &types)?;
             let mut variables = reserve_variables(source, target, &types, Some(candidate.state))?;
             let conditions = reserve_conditions(source, target)?;
             let clocks = rebuild_clocks(source, target, &variables, &conditions)?;
             let temporal = rebuild_temporal_coordinates(source, target, &variables, &clocks)?;
             let derivative_definitions = explicit_derivative_definitions(source);
+            let identities = RebuiltIdentities {
+                types: &types,
+                functions: &functions,
+                variables: &variables,
+                domains: &domains,
+                conditions: &conditions,
+                previous: &temporal.previous,
+                terminals: &temporal.terminals,
+            };
+            let mut rebuilt_state = vec![None; source.expression_count()];
+            rebuild_delay_coordinates(
+                source,
+                target,
+                identities,
+                &derivative_definitions,
+                Some(candidate),
+                &mut rebuilt_state,
+            )?;
+            rebuild_functions(
+                source,
+                target,
+                identities,
+                &derivative_definitions,
+                Some(candidate),
+                &mut rebuilt_state,
+                &mut function_reservations,
+            )?;
             let expressions = target.expressions(|expressions| {
                 let mut rebuilder = ExpressionRebuilder::new(
                     source,
                     expressions,
-                    RebuiltIdentities {
-                        types: &types,
-                        variables: &variables,
-                        domains: &domains,
-                        conditions: &conditions,
-                        previous: &temporal.previous,
-                        terminals: &temporal.terminals,
-                    },
+                    identities,
                     &derivative_definitions,
                     Some(candidate),
+                    &mut rebuilt_state,
                 );
                 rebuilder.rebuild_all()
             })?;
@@ -403,9 +437,7 @@ fn rebuild_with_state_demotion(
             )
         })
     });
-    rebuilt
-        .map(Some)
-        .map_err(|error| construction_failure(model, error))
+    rebuilt.map_err(|error| construction_failure(model, error))
 }
 
 fn explicit_derivative_definitions(view: dae::DaeView<'_>) -> Vec<Option<u32>> {
@@ -447,67 +479,6 @@ fn explicit_derivative_definitions(view: dae::DaeView<'_>) -> Vec<Option<u32>> {
     definitions
 }
 
-fn supports_common_reconstruction(view: dae::DaeView<'_>) -> bool {
-    let unsupported_owner = view.function_count() != 0 || view.delay_count() != 0;
-    if unsupported_owner {
-        return false;
-    }
-    if view
-        .variables()
-        .any(|(_, variable)| variable.value_type().is_record())
-    {
-        return false;
-    }
-    if (0..view.value_type_count()).any(|index| {
-        view.value_type_id(index)
-            .and_then(|id| view.value_type(id))
-            .is_none_or(dae::ValueType::is_record)
-    }) {
-        return false;
-    }
-    (0..view.expression_count()).all(|index| {
-        let Some(id) = view.expression_id(index) else {
-            return false;
-        };
-        let Some(expression) = view.expression(id) else {
-            return false;
-        };
-        if expression.function_scope().is_some() {
-            return false;
-        }
-        match expression.operation() {
-            dae::ExpressionOperation::Literal(_)
-            | dae::ExpressionOperation::Unary { .. }
-            | dae::ExpressionOperation::Binary { .. }
-            | dae::ExpressionOperation::Conditional(_)
-            | dae::ExpressionOperation::Array(_)
-            | dae::ExpressionOperation::Range { .. }
-            | dae::ExpressionOperation::Comprehension { .. }
-            | dae::ExpressionOperation::Index { .. }
-            | dae::ExpressionOperation::ArrayUpdate { .. }
-            | dae::ExpressionOperation::Builtin { .. } => true,
-            dae::ExpressionOperation::Coordinate(coordinate) => matches!(
-                coordinate,
-                dae::CoordinateView::Parameter(_)
-                    | dae::CoordinateView::Input(_)
-                    | dae::CoordinateView::State(_)
-                    | dae::CoordinateView::Derivative(_)
-                    | dae::CoordinateView::Algebraic(_)
-                    | dae::CoordinateView::DiscreteReal(_)
-                    | dae::CoordinateView::DiscreteValue(_)
-                    | dae::CoordinateView::PreDiscreteReal(_)
-                    | dae::CoordinateView::PreDiscreteValue(_)
-                    | dae::CoordinateView::Condition(_)
-                    | dae::CoordinateView::Previous(_)
-                    | dae::CoordinateView::Terminal(_)
-                    | dae::CoordinateView::Time
-                    | dae::CoordinateView::Binder(_)
-            ),
-            _ => false,
-        }
-    })
-}
-
 fn construction_failure(model: &dae::Dae, error: dae::DaeConstructionError) -> StructuralError {
     let span = error
         .source_span()
@@ -528,25 +499,58 @@ fn rebuild_types<'target>(
     target: &mut dae::DaeConstruction<'target>,
 ) -> Result<Vec<dae::ValueTypeId<'target>>, dae::DaeConstructionError> {
     target.types(|types| {
-        (0..source.value_type_count())
-            .map(|index| {
-                let source_id = source
-                    .value_type_id(index)
-                    .expect("finalized value type ordinal resolves");
-                let value_type = source
-                    .value_type(source_id)
-                    .expect("finalized value type identity resolves")
-                    .clone();
-                let provenance = source
-                    .value_type_provenance(source_id)
-                    .expect("finalized value type has provenance");
+        let mut rebuilt = Vec::with_capacity(source.value_type_count());
+        for index in 0..source.value_type_count() {
+            let source_id = source
+                .value_type_id(index)
+                .expect("finalized value type ordinal resolves");
+            let value_type = source
+                .value_type(source_id)
+                .expect("finalized value type identity resolves");
+            let provenance = source
+                .value_type_provenance(source_id)
+                .expect("finalized value type has provenance");
+            let rebuilt_type = if value_type.is_record() {
+                rebuild_record_type(source, source_id, value_type, provenance, &rebuilt, types)?
+            } else {
+                let value_type = value_type.clone();
                 match source.effective_flat_type(source_id) {
-                    Some(flat_type) => types.intern(flat_type, value_type, provenance),
-                    None => types.derived(value_type, provenance),
+                    Some(flat_type) => types.intern(flat_type, value_type, provenance)?,
+                    None => types.derived(value_type, provenance)?,
                 }
-            })
-            .collect()
+            };
+            rebuilt.push(rebuilt_type);
+        }
+        Ok(rebuilt)
     })
+}
+
+fn rebuild_record_type<'source, 'target>(
+    source: dae::DaeView<'source>,
+    source_id: dae::ValueTypeId<'source>,
+    value_type: &dae::ValueType,
+    provenance: dae::DaeProvenance,
+    rebuilt: &[dae::ValueTypeId<'target>],
+    types: &mut dae::ValueTypes<'_, 'target>,
+) -> Result<dae::ValueTypeId<'target>, dae::DaeConstructionError> {
+    let fields = (0..value_type.record_field_count()).map(|ordinal| {
+        let (name, field_type) = source
+            .record_field(source_id, ordinal)
+            .expect("checked record field ordinal resolves");
+        let field_type = rebuilt
+            .get(field_type.index() as usize)
+            .copied()
+            .expect("checked record field type precedes its record owner");
+        (name.clone(), field_type)
+    });
+    types.record(
+        value_type
+            .record_name()
+            .expect("checked record has a canonical name")
+            .clone(),
+        fields,
+        provenance,
+    )
 }
 
 struct RebuiltDomain<'dae> {
@@ -711,6 +715,106 @@ fn rebuild_temporal_coordinates<'target>(
         previous,
         terminals,
     })
+}
+
+fn rebuild_delay_coordinates<'target>(
+    source: dae::DaeView<'_>,
+    target: &mut dae::DaeConstruction<'target>,
+    identities: RebuiltIdentities<'_, 'target>,
+    derivative_definitions: &[Option<u32>],
+    candidate: Option<DirectStateConstraint>,
+    rebuilt: &mut [Option<dae::ExprId<'target>>],
+) -> Result<(), dae::DaeConstructionError> {
+    let mut coordinate_indices = vec![None; source.delay_count()];
+    for index in 0..source.expression_count() {
+        let expression_id = source
+            .expression_id(index)
+            .expect("finalized expression ordinal resolves");
+        let expression = source
+            .expression(expression_id)
+            .expect("finalized expression identity resolves");
+        if let dae::ExpressionOperation::Coordinate(dae::CoordinateView::Delay(delay)) =
+            expression.operation()
+        {
+            coordinate_indices[delay.index() as usize] = Some(index);
+        }
+    }
+    for (index, coordinate_index) in coordinate_indices.into_iter().enumerate() {
+        let source_id = source
+            .delay_id(index)
+            .expect("finalized delay ordinal resolves");
+        let delay = source
+            .delay(source_id)
+            .expect("finalized delay identity resolves");
+        let coordinate_index =
+            coordinate_index.expect("checked delay has exactly one coordinate expression");
+        let coordinate_id = source
+            .expression_id(coordinate_index)
+            .expect("delay coordinate expression resolves");
+        let coordinate_provenance = source
+            .expression(coordinate_id)
+            .expect("delay coordinate expression identity resolves")
+            .provenance();
+        let (rebuilt_source, rebuilt_time, rebuilt_maximum) =
+            target.expressions(|expressions| {
+                let mut rebuilder = ExpressionRebuilder::new(
+                    source,
+                    expressions,
+                    identities,
+                    derivative_definitions,
+                    candidate,
+                    rebuilt,
+                );
+                Ok((
+                    rebuilder.rebuild(delay.source())?,
+                    rebuilder.rebuild(delay.delay_time())?,
+                    delay
+                        .delay_max()
+                        .map(|maximum| rebuilder.rebuild(maximum.expression()))
+                        .transpose()?,
+                ))
+            })?;
+        let coordinate =
+            target.temporal(
+                |temporal| match (delay.delay_time_evidence(), delay.delay_max()) {
+                    (Some(evidence), None) => {
+                        let positive = temporal.positive_parameter(
+                            rebuilt_time,
+                            evidence.value(),
+                            evidence.provenance(),
+                        )?;
+                        temporal.delay(
+                            rebuilt_source,
+                            positive,
+                            delay.provenance(),
+                            coordinate_provenance,
+                        )
+                    }
+                    (None, Some(maximum)) => {
+                        let positive = temporal.positive_parameter(
+                            rebuilt_maximum.expect("bounded delay has a rebuilt maximum"),
+                            maximum.value(),
+                            maximum.provenance(),
+                        )?;
+                        temporal.bounded_delay(
+                            rebuilt_source,
+                            rebuilt_time,
+                            positive,
+                            delay.provenance(),
+                            coordinate_provenance,
+                        )
+                    }
+                    _ => unreachable!("checked delay retains one timing evidence form"),
+                },
+            )?;
+        if coordinate.id().index() as usize != index {
+            return Err(dae::DaeConstructionError::ShapeMismatch {
+                span: delay.provenance().span(),
+            });
+        }
+        rebuilt[coordinate_index] = Some(coordinate.expression());
+    }
+    Ok(())
 }
 
 enum TargetVariable<'dae> {
@@ -1212,6 +1316,7 @@ struct ExpressionRebuilder<'source, 'borrow, 'storage, 'target> {
     source: dae::DaeView<'source>,
     target: &'borrow mut dae::Expressions<'storage, 'target>,
     types: &'borrow [dae::ValueTypeId<'target>],
+    functions: &'borrow [RebuiltFunction<'target>],
     variables: &'borrow [ReservedVariable<'target>],
     domains: &'borrow [RebuiltDomain<'target>],
     conditions: &'borrow [dae::ConditionId<'target>],
@@ -1219,11 +1324,13 @@ struct ExpressionRebuilder<'source, 'borrow, 'storage, 'target> {
     terminals: &'borrow [dae::TerminalId<'target>],
     derivative_definitions: &'borrow [Option<u32>],
     candidate: Option<DirectStateConstraint>,
-    rebuilt: Vec<Option<dae::ExprId<'target>>>,
+    rebuilt: &'borrow mut [Option<dae::ExprId<'target>>],
 }
 
+#[derive(Clone, Copy)]
 struct RebuiltIdentities<'borrow, 'target> {
     types: &'borrow [dae::ValueTypeId<'target>],
+    functions: &'borrow [RebuiltFunction<'target>],
     variables: &'borrow [ReservedVariable<'target>],
     domains: &'borrow [RebuiltDomain<'target>],
     conditions: &'borrow [dae::ConditionId<'target>],
@@ -1238,11 +1345,13 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         identities: RebuiltIdentities<'borrow, 'target>,
         derivative_definitions: &'borrow [Option<u32>],
         candidate: Option<DirectStateConstraint>,
+        rebuilt: &'borrow mut [Option<dae::ExprId<'target>>],
     ) -> Self {
         Self {
             source,
             target,
             types: identities.types,
+            functions: identities.functions,
             variables: identities.variables,
             domains: identities.domains,
             conditions: identities.conditions,
@@ -1250,7 +1359,7 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             terminals: identities.terminals,
             derivative_definitions,
             candidate,
-            rebuilt: vec![None; source.expression_count()],
+            rebuilt,
         }
     }
 
@@ -1310,6 +1419,14 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                     self.target.at(provenance).array(elements)?
                 }
             }
+            dae::ExpressionOperation::Record(fields) => {
+                let fields = self.rebuild_operands(fields)?;
+                self.target.at(provenance).record(value_type, fields)?
+            }
+            dae::ExpressionOperation::Field { base, field } => {
+                let base = self.rebuild(base)?;
+                self.target.at(provenance).field(base, field as usize)?
+            }
             dae::ExpressionOperation::Range { start, step, stop } => {
                 self.target.at(provenance).range(start, step, stop)?
             }
@@ -1340,7 +1457,23 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                 let arguments = self.rebuild_operands(arguments)?;
                 self.target.at(provenance).builtin(builtin, arguments)?
             }
-            _ => unreachable!("reconstruction preflight rejects this expression operation"),
+            dae::ExpressionOperation::Call {
+                function,
+                output,
+                arguments,
+            } => {
+                let arguments = self.rebuild_operands(arguments)?;
+                self.target.at(provenance).call(
+                    self.functions[function.index() as usize].id,
+                    output as usize,
+                    arguments,
+                )?
+            }
+            dae::ExpressionOperation::FunctionValue { .. }
+            | dae::ExpressionOperation::FunctionFoldParameter { .. }
+            | dae::ExpressionOperation::FunctionFoldOutput { .. } => {
+                unreachable!("function-owner reconstruction seeds scoped expression identities")
+            }
         };
         self.rebuilt[index] = Some(rebuilt);
         Ok(rebuilt)
@@ -1490,7 +1623,15 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                         [binder.ordinal() as usize],
                 );
             }
-            _ => unreachable!("reconstruction preflight rejects this coordinate"),
+            dae::CoordinateView::FunctionParameter(parameter) => {
+                return self.target.at(provenance).function_parameter(
+                    self.functions[parameter.function().index() as usize].parameters
+                        [parameter.ordinal() as usize],
+                );
+            }
+            dae::CoordinateView::Delay(_) => {
+                unreachable!("delay-owner reconstruction seeds its coordinate identity")
+            }
         };
         self.target.at(provenance).coordinate(coordinate)
     }

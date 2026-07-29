@@ -219,10 +219,10 @@ impl minijinja::value::Object for LazyScalarProgramsValue {
         let scalar = self.scalar()?;
         match key.as_str()? {
             "programs" => Some(Value::from_object(render_solve::SolveRowsValue::from_arc(
-                std::sync::Arc::new(scalar.programs.clone()),
+                std::sync::Arc::new(scalar.programs().to_vec()),
             ))),
-            "program_spans" => Some(Value::from_serialize(&scalar.program_spans)),
-            "output_indices" => Some(Value::from_serialize(&scalar.output_indices)),
+            "program_spans" => Some(Value::from_serialize(scalar.program_spans())),
+            "output_indices" => Some(Value::from_serialize(scalar.output_indices())),
             _ => None,
         }
     }
@@ -258,7 +258,7 @@ impl LazyScalarRowsValue {
             .get_or_init(|| {
                 rumoca_eval_solve::to_scalar_program_block(&self.block)
                     .ok()
-                    .map(|scalar| std::sync::Arc::new(scalar.programs))
+                    .map(|scalar| std::sync::Arc::new(scalar.programs().to_vec()))
             })
             .as_ref()
     }
@@ -361,7 +361,7 @@ fn solve_template_compute_block_json(block: &solve::ComputeBlock) -> Result<Valu
 
 fn scalar_program_block_uses_linear_solve_component(block: &solve::ScalarProgramBlock) -> bool {
     block
-        .programs
+        .programs()
         .iter()
         .flatten()
         .any(|op| matches!(op, solve::LinearOp::LinearSolveComponent { .. }))

@@ -138,7 +138,7 @@ fn check_program(
     p_len: usize,
     failures: &mut Vec<String>,
 ) {
-    for (row_idx, row) in program.programs.iter().enumerate() {
+    for (row_idx, row) in program.programs().iter().enumerate() {
         check_ops(&format!("{label}.row[{row_idx}]"), row, p_len, failures);
     }
 }
@@ -148,7 +148,7 @@ fn check_block(label: &str, block: &ComputeBlock, p_len: usize, failures: &mut V
         let node_label = format!("{label}.node[{node_idx}]");
         match node {
             ComputeNode::ScalarPrograms(programs) => {
-                for (row_idx, row) in programs.programs.iter().enumerate() {
+                for (row_idx, row) in programs.programs().iter().enumerate() {
                     check_ops(
                         &format!("{node_label}.row[{row_idx}]"),
                         row,

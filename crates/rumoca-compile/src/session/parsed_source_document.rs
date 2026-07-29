@@ -28,6 +28,18 @@ impl ParsedSourceDocument {
         &self.uri
     }
 
+    pub(super) fn from_parsed(
+        uri: String,
+        source: Arc<str>,
+        definition: ast::StoredDefinition,
+    ) -> Self {
+        Self {
+            uri,
+            source,
+            definition,
+        }
+    }
+
     pub(super) fn into_parts(self) -> (String, Arc<str>, ast::StoredDefinition) {
         (self.uri, self.source, self.definition)
     }

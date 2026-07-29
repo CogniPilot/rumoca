@@ -107,6 +107,10 @@ pub enum DaeConstructionError {
         found_definition: u32,
         span: Span,
     },
+    InvalidFunctionCoordinate {
+        coordinate: &'static str,
+        span: Span,
+    },
     InvalidVariableRole {
         name: VarName,
         span: Span,
@@ -213,6 +217,9 @@ impl std::fmt::Display for DaeConstructionError {
                 ..
             } => format_function_scope(formatter, *expected_function, *found_function),
             Self::InvalidFunctionValueRead { .. } => format_function_value_read(self, formatter),
+            Self::InvalidFunctionCoordinate { coordinate, .. } => {
+                format_function_coordinate(formatter, coordinate)
+            }
             Self::InvalidVariableRole { name, .. } => {
                 write!(
                     formatter,
@@ -306,6 +313,16 @@ fn format_function_value_read(
     write!(
         formatter,
         "function value {value} reads definition {found_definition}, expected {expected_definition:?}"
+    )
+}
+
+fn format_function_coordinate(
+    formatter: &mut std::fmt::Formatter<'_>,
+    coordinate: &str,
+) -> std::fmt::Result {
+    write!(
+        formatter,
+        "model coordinate `{coordinate}` cannot be captured by a pure function"
     )
 }
 
@@ -416,6 +433,7 @@ impl DaeConstructionError {
             | Self::InvalidBinderScope { span, .. }
             | Self::InvalidFunctionScope { span, .. }
             | Self::InvalidFunctionValueRead { span, .. }
+            | Self::InvalidFunctionCoordinate { span, .. }
             | Self::InvalidVariableRole { span, .. }
             | Self::DuplicateDefinition { span, .. }
             | Self::DuplicateKey { span, .. }

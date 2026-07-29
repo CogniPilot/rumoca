@@ -1,15 +1,4 @@
 use super::*;
-use crate::expression::OperandRange;
-
-impl<'dae> FunctionLoop<'dae> {
-    pub const fn fold(&self) -> FunctionFoldId<'dae> {
-        self.fold
-    }
-
-    pub const fn body(&self) -> &FunctionBody<'dae> {
-        &self.body
-    }
-}
 
 pub(super) fn expect_function_body_expression(
     storage: &Storage,
@@ -65,37 +54,6 @@ pub(super) fn function_fold_raw(
     Ok(raw)
 }
 
-pub(super) fn expect_expression_function_scope(
-    storage: &Storage,
-    expression: ExprId<'_>,
-    function: FunctionId<'_>,
-    provenance: DaeProvenance,
-) -> Result<(), DaeConstructionError> {
-    match storage.expr_function_scope(expression, provenance)? {
-        None => Ok(()),
-        Some(found) if found == function.index() => Ok(()),
-        Some(found) => Err(DaeConstructionError::InvalidFunctionScope {
-            expected_function: Some(function.index()),
-            found_function: found,
-            span: provenance.span(),
-        }),
-    }
-}
-
-pub(super) fn expect_function_loop_generation(
-    entry: &FunctionFoldEntry,
-    provenance: DaeProvenance,
-) -> Result<(), DaeConstructionError> {
-    let expected =
-        DaeProvenance::generated(DaeGeneration::FunctionLoopLowering, entry.provenance.span())?;
-    if provenance == expected {
-        return Ok(());
-    }
-    Err(DaeConstructionError::MalformedWire {
-        column: "function_folds.provenance",
-    })
-}
-
 pub(super) fn reserve_function_fold<'dae>(
     storage: &mut Storage,
     function: FunctionId<'dae>,
@@ -121,10 +79,10 @@ pub(super) fn reserve_function_fold<'dae>(
         ordinal,
         domain: domain.index(),
         targets,
-        parameter_values: Vec::new(),
-        initial_values,
-        update_values: Vec::new(),
-        output_values: Vec::new(),
+        parameter_definitions: Vec::new(),
+        initial_definitions: initial_values,
+        update_definitions: Vec::new(),
+        output_definitions: Vec::new(),
         provenance,
     });
     storage.unfilled_function_folds += 1;
@@ -163,6 +121,58 @@ pub(super) fn function_value_entry<'storage>(
         .ok_or_else(|| unknown("function value", value.ordinal(), provenance))
 }
 
+pub(super) fn function_definition_entry<'storage>(
+    storage: &'storage Storage,
+    definition: FunctionDefinitionId<'_>,
+    provenance: DaeProvenance,
+) -> Result<&'storage FunctionDefinitionEntry, DaeConstructionError> {
+    storage
+        .functions
+        .get(definition.function().index() as usize)
+        .and_then(|function| function.definitions.get(definition.ordinal() as usize))
+        .ok_or_else(|| unknown("function definition", definition.ordinal(), provenance))
+}
+
+pub(super) fn insert_function_definition<'dae>(
+    storage: &mut Storage,
+    target: FunctionValueId<'dae>,
+    rhs: ExprId<'dae>,
+    provenance: DaeProvenance,
+) -> Result<FunctionDefinitionId<'dae>, DaeConstructionError> {
+    let function = storage
+        .functions
+        .get_mut(target.function().index() as usize)
+        .ok_or_else(|| unknown("function", target.function().index(), provenance))?;
+    let ordinal = checked_u32(
+        function.definitions.len(),
+        "function definition arena",
+        provenance,
+    )?;
+    function.definitions.push(FunctionDefinitionEntry {
+        target: target.ordinal(),
+        rhs: rhs.index(),
+        provenance,
+    });
+    Ok(FunctionDefinitionId::from_raw(
+        target.function().index(),
+        ordinal,
+    ))
+}
+
+pub(super) fn next_function_definition_id<'dae>(
+    storage: &Storage,
+    function: FunctionId<'dae>,
+    provenance: DaeProvenance,
+) -> Result<FunctionDefinitionId<'dae>, DaeConstructionError> {
+    let definitions = &storage
+        .functions
+        .get(function.index() as usize)
+        .ok_or_else(|| unknown("function", function.index(), provenance))?
+        .definitions;
+    let ordinal = checked_u32(definitions.len(), "function definition arena", provenance)?;
+    Ok(FunctionDefinitionId::from_raw(function.index(), ordinal))
+}
+
 pub(super) fn check_function_value_owner<'dae>(
     function: FunctionId<'dae>,
     value: FunctionValueId<'dae>,
@@ -184,110 +194,96 @@ pub(super) fn validate_function_value_reads(
     expression: ExprId<'_>,
     provenance: DaeProvenance,
 ) -> Result<(), DaeConstructionError> {
-    let mut pending = vec![expression.index()];
-    let mut visited = vec![false; storage.expressions.nodes.len()];
-    while let Some(raw) = pending.pop() {
+    if let Some(raw) = storage
+        .expressions
+        .function_illegal_coordinates
+        .get(expression.index() as usize)
+        .copied()
+        .ok_or_else(|| unknown("expression", expression.index(), provenance))?
+    {
         let node = storage
             .expressions
             .nodes
             .get(raw as usize)
             .ok_or_else(|| unknown("expression", raw, provenance))?;
-        if std::mem::replace(&mut visited[raw as usize], true) {
-            continue;
-        }
-        push_function_expression_children(storage, node, &mut pending, provenance)?;
-        if let ExprNode::FunctionValue {
-            function,
-            value,
-            definition,
-        } = node
-        {
-            if *function != body.function.index() {
-                return Err(DaeConstructionError::InvalidFunctionScope {
-                    expected_function: Some(body.function.index()),
-                    found_function: *function,
-                    span: provenance.span(),
-                });
-            }
-            let expected = body.current_values.get(*value as usize).copied().flatten();
-            if expected != Some(*definition) {
-                return Err(DaeConstructionError::InvalidFunctionValueRead {
-                    value: *value,
-                    expected_definition: expected,
-                    found_definition: *definition,
-                    span: provenance.span(),
-                });
-            }
-        }
+        let coordinate_provenance = storage
+            .expressions
+            .provenance
+            .get(raw as usize)
+            .copied()
+            .ok_or_else(|| unknown("expression provenance", raw, provenance))?;
+        reject_model_coordinate(node, coordinate_provenance)?;
     }
-    Ok(())
-}
-
-fn push_function_expression_children(
-    storage: &Storage,
-    node: &ExprNode,
-    pending: &mut Vec<u32>,
-    provenance: DaeProvenance,
-) -> Result<(), DaeConstructionError> {
-    match node {
-        ExprNode::Literal(_)
-        | ExprNode::Coordinate(_)
-        | ExprNode::Range { .. }
-        | ExprNode::FunctionFoldParameter { .. }
-        | ExprNode::FunctionFoldOutput { .. } => {}
-        ExprNode::Unary { operand, .. } => pending.push(*operand),
-        ExprNode::Binary { lhs, rhs, .. } => pending.extend([*lhs, *rhs]),
-        ExprNode::Field { base, .. } => pending.push(*base),
-        ExprNode::Comprehension { body, .. } => pending.push(*body),
-        // A function-value use is an SSA environment boundary. Its attached
-        // definition was validated when that use was inserted; traversing into
-        // the immutable historical definition would incorrectly revalidate
-        // earlier reads against the body's current environment.
-        ExprNode::FunctionValue { .. } => {}
-        ExprNode::Index { base, subscripts } => {
-            pending.push(*base);
-            push_subscript_children(storage, *subscripts, pending, provenance)?;
-        }
-        ExprNode::ArrayUpdate {
-            base,
-            value,
-            subscripts,
-        } => {
-            pending.extend([*base, *value]);
-            push_subscript_children(storage, *subscripts, pending, provenance)?;
-        }
-        ExprNode::Conditional { operands }
-        | ExprNode::Array { operands }
-        | ExprNode::Record { operands }
-        | ExprNode::Builtin { operands, .. }
-        | ExprNode::Call { operands, .. } => pending.extend(
-            storage
-                .expressions
-                .operands
-                .get(operands.indices())
-                .ok_or_else(|| unknown("operand range", operands.start, provenance))?,
-        ),
-    }
-    Ok(())
-}
-
-fn push_subscript_children(
-    storage: &Storage,
-    subscripts: OperandRange,
-    pending: &mut Vec<u32>,
-    provenance: DaeProvenance,
-) -> Result<(), DaeConstructionError> {
-    for subscript in storage
+    let reads = storage
         .expressions
-        .subscripts
-        .get(subscripts.indices())
-        .ok_or_else(|| unknown("subscript range", subscripts.start, provenance))?
-    {
-        if let PackedSubscriptKind::Index(value) | PackedSubscriptKind::Slice(value) =
-            subscript.kind
-        {
-            pending.push(value);
+        .function_read_sets
+        .get(expression.index() as usize)
+        .copied()
+        .ok_or_else(|| unknown("expression", expression.index(), provenance))?;
+    storage.function_read_sets.try_for_each(reads, &mut |fact| {
+        let expected = body
+            .current_values
+            .get(fact.value as usize)
+            .copied()
+            .flatten();
+        if expected == Some(fact.definition) {
+            return Ok(());
         }
-    }
-    Ok(())
+        let span = storage
+            .expressions
+            .provenance
+            .get(fact.witness as usize)
+            .copied()
+            .ok_or_else(|| unknown("expression provenance", fact.witness, provenance))?
+            .span();
+        Err(DaeConstructionError::InvalidFunctionValueRead {
+            value: fact.value,
+            expected_definition: expected,
+            found_definition: fact.definition,
+            span,
+        })
+    })
+}
+
+fn reject_model_coordinate(
+    node: &ExprNode,
+    provenance: DaeProvenance,
+) -> Result<(), DaeConstructionError> {
+    let coordinate = match node {
+        ExprNode::Coordinate(Coordinate::FunctionParameter { .. } | Coordinate::Binder { .. })
+        | ExprNode::Literal(_)
+        | ExprNode::Range { .. }
+        | ExprNode::FunctionValue { .. }
+        | ExprNode::FunctionFoldParameter { .. }
+        | ExprNode::FunctionFoldOutput { .. }
+        | ExprNode::Unary { .. }
+        | ExprNode::Binary { .. }
+        | ExprNode::Field { .. }
+        | ExprNode::Comprehension { .. }
+        | ExprNode::Index { .. }
+        | ExprNode::ArrayUpdate { .. }
+        | ExprNode::Conditional { .. }
+        | ExprNode::Array { .. }
+        | ExprNode::Record { .. }
+        | ExprNode::Builtin { .. }
+        | ExprNode::Call { .. } => return Ok(()),
+        ExprNode::Coordinate(Coordinate::Parameter(_)) => "parameter",
+        ExprNode::Coordinate(Coordinate::Input(_)) => "input",
+        ExprNode::Coordinate(Coordinate::State(_)) => "state",
+        ExprNode::Coordinate(Coordinate::Derivative(_)) => "derivative",
+        ExprNode::Coordinate(Coordinate::Algebraic(_)) => "algebraic",
+        ExprNode::Coordinate(Coordinate::DiscreteReal(_)) => "discrete real",
+        ExprNode::Coordinate(Coordinate::DiscreteValue(_)) => "discrete value",
+        ExprNode::Coordinate(Coordinate::PreDiscreteReal(_)) => "pre(discrete real)",
+        ExprNode::Coordinate(Coordinate::PreDiscreteValue(_)) => "pre(discrete value)",
+        ExprNode::Coordinate(Coordinate::Time) => "time",
+        ExprNode::Coordinate(Coordinate::Condition(_)) => "condition",
+        ExprNode::Coordinate(Coordinate::Delay(_)) => "delay",
+        ExprNode::Coordinate(Coordinate::Previous(_)) => "previous",
+        ExprNode::Coordinate(Coordinate::Terminal(_)) => "terminal",
+    };
+    Err(DaeConstructionError::InvalidFunctionCoordinate {
+        coordinate,
+        span: provenance.span(),
+    })
 }

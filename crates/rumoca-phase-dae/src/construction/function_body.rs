@@ -3,17 +3,17 @@ use super::*;
 pub(super) fn lower_integer_reduction<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     symbols: FunctionSymbols<'_, 'dae>,
-    body: &mut dae::FunctionBody<'dae>,
+    body: dae::FunctionBody<'dae>,
     function: &rumoca_core::Function,
     initial_plans: &[FunctionStatementPlan],
     result: &VarName,
     reduction: &FunctionIntegerReduction,
-) -> Result<(), dae::DaeConstructionError> {
+) -> Result<dae::FunctionBody<'dae>, dae::DaeConstructionError> {
     let initial_count = match reduction {
         FunctionIntegerReduction::WhileExclusive => 2,
         FunctionIntegerReduction::ForInclusiveCapped => 1,
     };
-    lower_function_statements(
+    let mut body = lower_function_statements(
         construction,
         symbols,
         body,
@@ -23,12 +23,13 @@ pub(super) fn lower_integer_reduction<'dae>(
     let target = function_value_coordinate(symbols.coordinates, result);
     match reduction {
         FunctionIntegerReduction::WhileExclusive => {
-            lower_while_sum(construction, symbols, body, function, target)
+            lower_while_sum(construction, symbols, &mut body, function, target)?;
         }
         FunctionIntegerReduction::ForInclusiveCapped => {
-            lower_capped_for_sum(construction, symbols, body, function, target)
+            lower_capped_for_sum(construction, symbols, &mut body, function, target)?;
         }
     }
+    Ok(body)
 }
 
 fn lower_while_sum<'dae>(
@@ -200,12 +201,13 @@ fn lower_integer_series<'dae>(
 pub(super) fn lower_guarded_function_return<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     symbols: FunctionSymbols<'_, 'dae>,
-    body: &mut dae::FunctionBody<'dae>,
+    body: dae::FunctionBody<'dae>,
     function: &rumoca_core::Function,
     branch_plans: &[Vec<FunctionStatementPlan>],
     tail_plans: &[FunctionStatementPlan],
     targets: &[VarName],
-) -> Result<(), dae::DaeConstructionError> {
+) -> Result<dae::FunctionBody<'dae>, dae::DaeConstructionError> {
+    let mut body = body;
     let Some((
         rumoca_core::Statement::If {
             cond_blocks, span, ..
@@ -223,7 +225,7 @@ pub(super) fn lower_guarded_function_return<'dae>(
                 symbols.coordinates,
                 symbols.functions,
                 symbols.shapes,
-                body,
+                &body,
                 &block.cond,
             )
         })
@@ -238,7 +240,7 @@ pub(super) fn lower_guarded_function_return<'dae>(
                     lower_guarded_return_value(
                         construction,
                         symbols,
-                        body,
+                        &body,
                         &block.stmts[..block.stmts.len() - 1],
                         plans,
                         target,
@@ -248,20 +250,21 @@ pub(super) fn lower_guarded_function_return<'dae>(
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    lower_function_statements(construction, symbols, body, tail, tail_plans)?;
+    body = lower_function_statements(construction, symbols, body, tail, tail_plans)?;
     let provenance =
         dae::DaeProvenance::generated(dae::DaeGeneration::FunctionConditionLowering, *span)?;
     for (target, returned) in targets.iter().zip(returned) {
         let target = function_value_coordinate(symbols.coordinates, target);
         let fallback =
-            construction.functions(|functions| functions.read(body, target, provenance))?;
+            construction.functions(|functions| functions.read(&body, target, provenance))?;
         let branches = conditions.iter().copied().zip(returned);
         let value = construction.expressions(|expressions| {
             expressions.at(provenance).conditional(branches, fallback)
         })?;
-        construction.functions(|functions| functions.assign(body, target, value, provenance))?;
+        construction
+            .functions(|functions| functions.assign(&mut body, target, value, provenance))?;
     }
-    Ok(())
+    Ok(body)
 }
 
 fn lower_guarded_return_value<'dae>(
@@ -512,9 +515,9 @@ pub(super) struct FunctionFold<'scope, 'statement, 'dae> {
 pub(super) fn lower_function_fold<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     symbols: FunctionSymbols<'_, 'dae>,
-    body: &mut dae::FunctionBody<'dae>,
+    body: dae::FunctionBody<'dae>,
     input: FunctionFold<'_, '_, 'dae>,
-) -> Result<(), dae::DaeConstructionError> {
+) -> Result<dae::FunctionBody<'dae>, dae::DaeConstructionError> {
     let target_ids = input
         .targets
         .iter()
@@ -530,7 +533,7 @@ pub(super) fn lower_function_fold<'dae>(
         input.statements,
         input.plans,
     )?;
-    construction.functions(|functions| functions.finish_loop(body, loop_body, input.owner))
+    construction.functions(|functions| functions.finish_loop(loop_body, input.owner))
 }
 
 fn lower_function_loop_statements<'dae>(

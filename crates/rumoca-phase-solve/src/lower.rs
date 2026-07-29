@@ -848,14 +848,14 @@ fn expression_contains_derivative<'dae>(
             dae::ExpressionOperation::Field { base, .. } => pending.push(base),
             dae::ExpressionOperation::Comprehension { body, .. } => pending.push(body),
             dae::ExpressionOperation::FunctionValue { definition, .. } => {
-                pending.push(definition);
+                pending.push(definition.rhs());
             }
             dae::ExpressionOperation::FunctionFoldOutput { fold, .. } => {
                 let fold = view
                     .function_fold(fold)
                     .expect("checked function fold identity resolves");
-                pending.extend(fold.initial_values().iter());
-                pending.extend(fold.update_values().iter());
+                pending.extend(fold.initial_values().rhs_iter());
+                pending.extend(fold.update_values().rhs_iter());
             }
             dae::ExpressionOperation::Index { base, subscripts } => {
                 pending.push(base);

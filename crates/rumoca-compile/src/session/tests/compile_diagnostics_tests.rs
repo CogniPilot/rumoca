@@ -592,7 +592,7 @@ fn test_strict_reachable_ignores_unrelated_source_root_resolve_errors() {
     let report = session.compile_model_strict_reachable_with_recovery("Root");
     assert!(
         report.requested_succeeded(),
-        "strict compile must ignore unrelated source-root resolve errors"
+        "strict compile must resolve the selected source closure independently"
     );
     assert!(
         report.failures.is_empty(),
@@ -601,7 +601,67 @@ fn test_strict_reachable_ignores_unrelated_source_root_resolve_errors() {
 }
 
 #[test]
-fn test_compiled_source_root_tolerant_strict_reachable_ignores_unrelated_source_root_errors() {
+fn test_strict_reachable_ignores_broken_sibling_in_the_same_document() {
+    let source = r#"
+        package Types
+          type Signal = Real;
+        end Types;
+
+        package Lib
+          import Signal = Types.Signal;
+
+          model Good
+            Signal x(start=0);
+          equation
+            der(x) = 1;
+          end Good;
+
+          model Broken
+            MissingType value;
+          end Broken;
+        end Lib;
+
+        model Root
+          Lib.Good good;
+        end Root;
+        "#;
+
+    let mut session = Session::default();
+    session
+        .add_document("models.mo", source)
+        .expect("the shared document should parse");
+
+    let target = session
+        .resolve_strict_target("Root")
+        .unwrap_or_else(|failure| {
+            panic!(
+                "the exact Root definition closure should resolve: {:?}",
+                failure.failures
+            )
+        });
+    assert!(
+        target
+            .resolved
+            .inner()
+            .get_class_by_qualified_name("Lib.Broken")
+            .is_none(),
+        "the completed Resolve proof must not retain the unresolved sibling"
+    );
+
+    let report = session.compile_model_strict_reachable_with_recovery("Root");
+    assert!(
+        report.requested_succeeded(),
+        "the exact Root definition closure must exclude unresolved Lib.Broken: {:?}",
+        report.failures
+    );
+    assert!(
+        report.failures.is_empty(),
+        "whole-document resolve diagnostics must not leak into Root"
+    );
+}
+
+#[test]
+fn test_compiled_source_root_planning_strict_reachable_ignores_unrelated_source_root_errors() {
     let sources = [
         (
             "good_dep.mo",
@@ -652,23 +712,19 @@ fn test_compiled_source_root_tolerant_strict_reachable_ignores_unrelated_source_
         })
         .collect();
 
-    let source_root = CompiledSourceRoot::from_parsed_batch_tolerant(parsed, source_map)
-        .expect("tolerant compiled source root should index despite unrelated errors");
+    let source_root =
+        CompiledSourceRoot::from_parsed_batch_with_resolution_planning(parsed, source_map)
+            .expect("planning-only source root should retain unresolved diagnostics");
     assert!(
         source_root.model_names().iter().any(|name| name == "Root"),
-        "Root must still be discoverable without a whole-source-root strict resolve"
+        "Root must remain discoverable through the planning view"
     );
-
     let report = source_root
         .compile_model_strict_reachable_with_recovery("Root")
-        .unwrap_or_else(|error| panic!("strict reachable compile failed: {error}"));
+        .expect("strict target compilation should run");
     assert!(
         report.requested_succeeded(),
-        "strict closure compile must ignore unrelated source-root diagnostics"
-    );
-    assert!(
-        report.failures.is_empty(),
-        "unrelated source-root diagnostics must not leak into Root"
+        "the independently resolved Root closure must compile"
     );
 }
 
@@ -957,10 +1013,10 @@ fn completion_class_names_tolerate_unrelated_resolve_diagnostics() {
 
     let strict_names = session
         .all_class_names_for_completion()
-        .expect("completion name collection should tolerate unrelated diagnostics");
+        .expect("completion may consume the planning-only tree");
     assert!(
         strict_names.iter().any(|name| name == "Lib.A"),
-        "completion name collection should still expose Lib.A: {strict_names:?}"
+        "completion must retain declared classes: {strict_names:?}"
     );
 
     let standard_names = session.all_class_names();
@@ -1002,10 +1058,10 @@ fn planned_reachability(
     session
         .build_resolved()
         .expect("session should resolve for planner test");
-    let tree = &session
+    let tree = session
         .ensure_resolved()
         .expect("resolved tree should be available")
-        .0;
+        .inner();
     let dep_cache = super::dependency_fingerprint::DependencyFingerprintCache::from_tree(tree);
     let planner = super::reachability::ReachabilityPlanner::new(
         dep_cache.class_dependencies(),
@@ -1174,6 +1230,20 @@ end Ball;
     assert!(
         first_line.contains("unresolved import"),
         "expected first line to include unresolved import root cause, got: {summary}"
+    );
+    let failure = report
+        .failures
+        .iter()
+        .find(|failure| failure.error.contains("unresolved import"))
+        .expect("reachable unresolved import must retain its Resolve failure");
+    let span = failure
+        .primary_label
+        .as_ref()
+        .expect("reachable Resolve failure must retain exact provenance")
+        .span;
+    assert_eq!(
+        &source[span.start.0..span.end.0],
+        "import Modelica.Blocks.Continuous.PID"
     );
 }
 

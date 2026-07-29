@@ -130,9 +130,9 @@ fn build_unknowns<'dae>(view: dae::DaeView<'dae>) -> Result<UnknownCatalog<'dae>
     let mut spans = Vec::new();
     for (_, variable) in view.variables() {
         let declaration = variable.declaration().span();
-        let count = variable.scalar_count();
         match variable.identity() {
             dae::VariableIdentity::State(state) => {
+                let count = structural_scalar_count(variable)?;
                 for scalar in 0..count {
                     let scalar = checked_scalar_ordinal(scalar, declaration)?;
                     insert_unknown(
@@ -148,7 +148,8 @@ fn build_unknowns<'dae>(view: dae::DaeView<'dae>) -> Result<UnknownCatalog<'dae>
                     );
                 }
             }
-            dae::VariableIdentity::Algebraic(variable) => {
+            dae::VariableIdentity::Algebraic(algebraic) => {
+                let count = structural_scalar_count(variable)?;
                 for scalar in 0..count {
                     let scalar = checked_scalar_ordinal(scalar, declaration)?;
                     insert_unknown(
@@ -156,10 +157,13 @@ fn build_unknowns<'dae>(view: dae::DaeView<'dae>) -> Result<UnknownCatalog<'dae>
                         &mut unknowns,
                         &mut spans,
                         UnknownKey::Algebraic {
-                            variable: variable.index(),
+                            variable: algebraic.index(),
                             scalar,
                         },
-                        UnknownId::Algebraic { variable, scalar },
+                        UnknownId::Algebraic {
+                            variable: algebraic,
+                            scalar,
+                        },
                         declaration,
                     );
                 }
@@ -175,6 +179,19 @@ fn build_unknowns<'dae>(view: dae::DaeView<'dae>) -> Result<UnknownCatalog<'dae>
         ids: unknowns,
         spans,
     })
+}
+
+fn structural_scalar_count(variable: dae::VariableView<'_>) -> Result<usize, StructuralError> {
+    variable
+        .value_type()
+        .scalar_count()
+        .ok_or_else(|| StructuralError::ContractViolation {
+            reason: format!(
+                "continuous variable `{}` must be projected to primitive coordinates before structural analysis",
+                variable.name()
+            ),
+            span: variable.declaration().span(),
+        })
 }
 
 fn insert_unknown<'dae>(

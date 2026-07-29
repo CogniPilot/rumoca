@@ -25,6 +25,31 @@ end Test;
 }
 
 #[test]
+fn failed_resolution_exposes_only_the_planning_artifact() {
+    let source = r#"
+model Test
+  Real y = unknownFunc(1.0);
+end Test;
+"#;
+    let failure: ResolveFailure = match resolve_with_diagnostics(
+        parsed_tree_from_source(source),
+        ResolveOptions::default(),
+    ) {
+        Ok(_) => panic!("undefined call must not produce ResolveSuccess"),
+        Err(failure) => failure,
+    };
+
+    assert!(
+        failure.diagnostics().has_errors(),
+        "planning artifact must retain its exact failure diagnostics"
+    );
+    assert!(
+        failure.tree().definitions.classes.contains_key("Test"),
+        "planning remains available without receiving a ResolvedTree proof"
+    );
+}
+
+#[test]
 fn known_package_missing_function_is_rejected_at_the_call_target() {
     let source = r#"
 package Known
@@ -86,28 +111,6 @@ end Test;
     let target_def_id = target.def_id.expect("successful call must carry identity");
 
     assert_eq!(tree.def_map[&target_def_id], "Known.present");
-}
-
-#[test]
-fn test_unresolved_function_call_can_be_lenient() {
-    let source = r#"
-model Test
-Real y;
-equation
-y = unknownFunc(1.0);
-end Test;
-"#;
-    let parsed = parsed_tree_from_source(source);
-    let options = ResolveOptions {
-        unresolved_component_refs_are_errors: false,
-        unresolved_function_calls_are_errors: false,
-        ..ResolveOptions::default()
-    };
-    let result = resolve_with_options(parsed, options);
-    assert!(
-        result.is_ok(),
-        "lenient mode should not fail unresolved function calls"
-    );
 }
 
 #[test]

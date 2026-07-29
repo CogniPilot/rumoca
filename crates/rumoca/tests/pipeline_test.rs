@@ -50,7 +50,7 @@ fn codegen_context_is_the_checked_semantic_projection() {
         .expect("checked DAE template projection serializes");
 
     assert_eq!(json["schema"]["name"], "rumoca.checked-dae-template");
-    assert_eq!(json["schema"]["version"], 1);
+    assert_eq!(json["schema"]["version"], 2);
     assert!(json["value_types"].is_array());
     assert!(json["variables"].is_array());
     assert!(json["expressions"].is_array());

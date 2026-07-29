@@ -668,8 +668,11 @@ mod tests {
     fn scalar_row(ops: Vec<solve::LinearOp>) -> solve::ScalarProgramBlock {
         solve::ScalarProgramBlock::with_source_span(
             vec![ops],
-            solve::source_span_from_offsets(52, 0, 1),
+            solve::source_span_from_offsets(52, 0, 1)
+                .require_provenance("delay runtime fixture")
+                .expect("fixture span is source-backed"),
         )
+        .expect("fixture program is computable")
     }
 
     #[test]

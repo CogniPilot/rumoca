@@ -1,11 +1,14 @@
+mod derived_wire;
+mod function_wire;
+mod temporal_wire;
+mod wire_buffers;
+
 use rumoca_core::{
     ClockLattice, ClockRational, SourceId, SourceMap, Span, StructuredIndexBinder,
     StructuredIndexDomain, TypeId, VarName,
 };
 
 use crate::*;
-
-mod temporal_wire;
 
 struct TestSource {
     map: SourceMap,
@@ -33,6 +36,127 @@ impl TestSource {
     fn source(&self, needle: &str, occurrence: usize) -> DaeProvenance {
         DaeProvenance::source(self.span(needle, occurrence)).expect("fixture span is real")
     }
+}
+
+#[test]
+fn record_layout_values_and_field_uses_round_trip_through_checked_wire() {
+    let source = TestSource::new(
+        "record Pair Real left; Real right; end Pair; parameter Pair companion = Pair(1, 2); companion.left",
+    );
+    let real_at = source.source("Real left", 0);
+    let record_at = source.source("record Pair Real left; Real right; end Pair", 0);
+    let variable_at = source.source("parameter Pair companion = Pair(1, 2)", 0);
+    let constructor_at = source.source("Pair(1, 2)", 0);
+    let use_at = source.source("companion", 1);
+    let projection_at = source.source("companion.left", 0);
+    let dae = Dae::construct(source.map, |dae| {
+        let real =
+            dae.types(|types| types.derived(ValueType::scalar(ScalarType::Real), real_at))?;
+        let record = dae.types(|types| {
+            types.record(
+                VarName::new("Pair"),
+                [(VarName::new("left"), real), (VarName::new("right"), real)],
+                record_at,
+            )
+        })?;
+        let (companion, reservation) = dae.variables(|variables| {
+            variables.reserve_parameter(VarName::new("companion"), record, variable_at)
+        })?;
+        let binding = dae.expressions(|expressions| {
+            let one = expressions
+                .at(constructor_at)
+                .literal(DaeLiteral::Integer(1))?;
+            let two = expressions
+                .at(constructor_at)
+                .literal(DaeLiteral::Integer(2))?;
+            expressions.at(constructor_at).record(record, [one, two])
+        })?;
+        dae.variables(|variables| {
+            variables.define(
+                reservation,
+                VariableAttributes {
+                    binding: Some(binding),
+                    ..VariableAttributes::default()
+                },
+                variable_at,
+            )
+        })?;
+        dae.expressions(|expressions| {
+            let base = expressions
+                .at(use_at)
+                .coordinate(CoordinateInput::Parameter(companion))?;
+            expressions.at(projection_at).field(base, 0).map(|_| ())
+        })
+    })
+    .expect("record owners construct through checked operations");
+
+    dae.inspect(assert_record_round_trip);
+    let encoded = serde_json::to_string(&dae).unwrap();
+    let decoded: Dae = serde_json::from_str(&encoded).unwrap();
+    decoded.inspect(assert_record_round_trip);
+
+    let mut forged: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+    forged["storage"]["value_types"][1]["record_fields"][0]["value_type"] = serde_json::json!(1);
+    let error = serde_json::from_value::<Dae>(forged).unwrap_err();
+    assert!(
+        error.to_string().contains("value_types.record_fields"),
+        "wire rejects a cyclic record base before insertion: {error}"
+    );
+}
+
+fn assert_record_round_trip(view: DaeView<'_>) {
+    let record_id = view.value_type_id(1).expect("record type remains dense");
+    let record = view.value_type(record_id).expect("record type resolves");
+    assert_eq!(record.record_name().unwrap().as_str(), "Pair");
+    assert_eq!(view.record_field(record_id, 0).unwrap().0.as_str(), "left");
+    assert_eq!(view.record_field(record_id, 1).unwrap().0.as_str(), "right");
+    let (_, companion) = view
+        .variables()
+        .find(|(_, variable)| variable.name().as_str() == "companion")
+        .expect("record variable survives");
+    let binding = view
+        .expression(companion.binding().expect("record binding survives"))
+        .expect("record binding resolves");
+    assert!(matches!(
+        binding.operation(),
+        ExpressionOperation::Record(_)
+    ));
+    assert_eq!(view.source_text(binding.provenance()), Some("Pair(1, 2)"));
+    let projection = (0..view.expression_count())
+        .filter_map(|index| view.expression_id(index))
+        .filter_map(|id| view.expression(id))
+        .find(|expression| view.source_text(expression.provenance()) == Some("companion.left"))
+        .expect("field use survives");
+    assert!(matches!(
+        projection.operation(),
+        ExpressionOperation::Field { field: 0, .. }
+    ));
+}
+
+#[test]
+fn record_type_rejects_unknown_provenance_before_insertion() {
+    let source = TestSource::new("record Pair Real left; end Pair");
+    let real_at = source.source("Real left", 0);
+    let foreign_span = Span::from_offsets(SourceId::from_source_name("foreign.mo"), 0, 1);
+    let foreign = DaeProvenance::source(foreign_span).expect("foreign span is non-dummy");
+    let dae = Dae::construct(source.map, |dae| {
+        let real =
+            dae.types(|types| types.derived(ValueType::scalar(ScalarType::Real), real_at))?;
+        let rejected = dae.types(|types| {
+            types.record(
+                VarName::new("Pair"),
+                [(VarName::new("left"), real)],
+                foreign,
+            )
+        });
+        assert!(matches!(
+            rejected,
+            Err(DaeConstructionError::UnknownSource { span }) if span == foreign_span
+        ));
+        Ok(())
+    })
+    .expect("rejected record provenance leaves no partial owner");
+    assert_eq!(dae.inspect(|view| view.value_type_count()), 1);
 }
 
 #[test]
@@ -486,11 +610,9 @@ fn assert_structured_binders_round_trip_and_reject_forgery(encoded: &str) {
     });
 
     let mut forged: serde_json::Value = serde_json::from_str(encoded).unwrap();
-    forged["storage"]["expressions"]["binder_domains"][3] = serde_json::Value::Null;
-    assert!(matches!(
-        serde_json::from_value::<Dae>(forged),
-        Err(error) if error.to_string().contains("expression shape mismatch")
-    ));
+    forged["storage"]["expressions"]["nodes"][3]["coordinate"]["binder"]["ordinal"] =
+        serde_json::json!(2);
+    assert!(serde_json::from_value::<Dae>(forged).is_err());
 
     let mut forged: serde_json::Value = serde_json::from_str(encoded).unwrap();
     forged["storage"]["continuous_equation_owners"][1] =
@@ -1147,7 +1269,7 @@ fn functions_conditions_and_generated_runtime_nodes_use_the_same_arena() {
             dae.expressions(|expr| expr.at(delay_generated).literal(DaeLiteral::Real(1.0)))?;
         let delay = dae.temporal(|temporal| {
             let positive = temporal.positive_parameter(delay_time, 1.0, delay_generated)?;
-            temporal.delay(literal, positive, delay_generated)
+            temporal.delay(literal, positive, delay_generated, delay_generated)
         })?;
 
         dae.expressions(|expr| {
@@ -1156,19 +1278,7 @@ fn functions_conditions_and_generated_runtime_nodes_use_the_same_arena() {
                 .at(condition_owner)
                 .coordinate(CoordinateInput::Condition(condition))?;
             let _clock = expr.at(clock_generated).coordinate(CoordinateInput::Time)?;
-            let _delay = expr
-                .at(delay_generated)
-                .coordinate(CoordinateInput::Delay(delay))?;
-            let duplicate_delay = expr
-                .at(delay_generated)
-                .coordinate(CoordinateInput::Delay(delay));
-            assert!(matches!(
-                duplicate_delay,
-                Err(DaeConstructionError::DuplicateDefinition {
-                    kind: "delay coordinate",
-                    ..
-                })
-            ));
+            let _delay = delay.expression();
             Ok(())
         })
     })
@@ -1191,9 +1301,20 @@ fn assert_function_runtime_arena(view: DaeView<'_>) {
     assert_eq!(function.parameter_types().len(), 1);
     assert_eq!(function.result_types().len(), 1);
     assert_eq!(function.result_values().len(), 1);
-    let result = view
-        .expression(function.result_values().get(0).unwrap())
-        .unwrap();
+    let definition = function.result_values().get(0).unwrap();
+    assert_eq!(
+        view.function_definition(definition.id()).unwrap().rhs(),
+        definition.rhs()
+    );
+    assert_eq!(
+        function.result_values().iter().next().unwrap().id(),
+        definition.id()
+    );
+    assert_eq!(
+        function.result_values().rhs_iter().next(),
+        Some(definition.rhs())
+    );
+    let result = view.expression(definition.rhs()).unwrap();
     assert_eq!(result.function_scope(), view.function_id(0));
     let condition = view.condition(view.condition_id(0).unwrap()).unwrap();
     assert!(matches!(
@@ -1202,18 +1323,34 @@ fn assert_function_runtime_arena(view: DaeView<'_>) {
     ));
     let delay = view.delay(view.delay_id(0).unwrap()).unwrap();
     assert_eq!(delay.delay_time_evidence().unwrap().value(), 1.0);
+    let expressions = (0..view.expression_count())
+        .filter_map(|index| view.expression_id(index))
+        .filter_map(|id| view.expression(id))
+        .collect::<Vec<_>>();
+    let clock = expressions
+        .iter()
+        .find(|expression| {
+            matches!(
+                expression.operation(),
+                ExpressionOperation::Coordinate(CoordinateView::Time)
+            )
+        })
+        .expect("clock coordinate survives");
     assert_eq!(
-        view.expression(view.expression_id(6).unwrap())
-            .unwrap()
-            .provenance()
-            .origin(),
+        clock.provenance().origin(),
         DaeProvenanceOrigin::Generated(DaeGeneration::ClockLowering)
     );
+    let delay = expressions
+        .iter()
+        .find(|expression| {
+            matches!(
+                expression.operation(),
+                ExpressionOperation::Coordinate(CoordinateView::Delay(_))
+            )
+        })
+        .expect("delay coordinate survives");
     assert_eq!(
-        view.expression(view.expression_id(7).unwrap())
-            .unwrap()
-            .provenance()
-            .origin(),
+        delay.provenance().origin(),
         DaeProvenanceOrigin::Generated(DaeGeneration::DelayLowering)
     );
 }
@@ -1245,6 +1382,15 @@ fn function_parameters_cannot_cross_or_escape_semantic_owners() {
         let mut g_body = dae.functions(|functions| functions.begin(g_reservation, g_at))?;
         let f_value = dae.expressions(|expr| expr.at(f_at).function_parameter(f_parameter))?;
         let g_value = dae.expressions(|expr| expr.at(g_at).function_parameter(g_parameter))?;
+        let rejected =
+            dae.functions(|functions| functions.current_definition(&f_body, g_output, f_at));
+        assert!(matches!(
+            rejected,
+            Err(DaeConstructionError::InvalidFunctionScope {
+                expected_function: Some(_),
+                ..
+            })
+        ));
         let error =
             dae.expressions(|expr| expr.at(f_at).binary(BinaryOperator::Add, f_value, g_value));
         assert!(matches!(
@@ -1256,9 +1402,11 @@ fn function_parameters_cannot_cross_or_escape_semantic_owners() {
         ));
         dae.functions(|functions| functions.assign(&mut f_body, f_output, f_value, f_at))?;
         dae.functions(|functions| functions.assign(&mut g_body, g_output, g_value, g_at))?;
+        let escaped =
+            dae.functions(|functions| functions.current_definition(&f_body, f_output, f_at))?;
         dae.functions(|functions| functions.define(f_body, f_at))?;
         dae.functions(|functions| functions.define(g_body, g_at))?;
-        dae.continuous(|continuous| continuous.value_equation(f_at, f_value))
+        dae.continuous(|continuous| continuous.value_equation(f_at, escaped))
     });
     assert!(matches!(
         result,
@@ -1267,6 +1415,97 @@ fn function_parameters_cannot_cross_or_escape_semantic_owners() {
             ..
         })
     ));
+}
+
+#[test]
+fn pure_functions_reject_model_runtime_coordinates_at_the_exact_use_site() {
+    let source = TestSource::new(
+        "function f output Real y; algorithm y := state_x; y := time; y := delay(state_x, 1); y := 0; end f;",
+    );
+    let function_at = source.source("function f", 0);
+    let output_at = source.source("output Real y", 0);
+    let state_at = source.source("state_x", 0);
+    let time_at = source.source("time", 0);
+    let delay_at = source.source("delay(state_x, 1)", 0);
+    let delayed_state_at = source.source("state_x", 1);
+    let one_at = source.source("1", 0);
+    let zero_at = source.source("0", 0);
+    let assignment_at = source.source("y := 0", 0);
+    let dae = Dae::construct(source.map, |dae| {
+        let real =
+            dae.types(|types| types.derived(ValueType::scalar(ScalarType::Real), function_at))?;
+        let state = dae.variables(|variables| {
+            variables.state(
+                VarName::new("state_x"),
+                real,
+                state_at,
+                VariableAttributes::default(),
+            )
+        })?;
+        let (_function, reservation) = dae.functions(|functions| {
+            functions.reserve_recursive(VarName::new("f"), [], [real], function_at)
+        })?;
+        let output = dae.functions(|functions| {
+            functions.output(&reservation, VarName::new("y"), 0, output_at)
+        })?;
+        let mut body = dae.functions(|functions| functions.begin(reservation, function_at))?;
+        let state_use = dae.expressions(|expressions| {
+            expressions
+                .at(state_at)
+                .coordinate(CoordinateInput::State(state))
+        })?;
+        let rejected = dae
+            .functions(|functions| functions.assign(&mut body, output, state_use, assignment_at));
+        assert!(matches!(
+            rejected,
+            Err(DaeConstructionError::InvalidFunctionCoordinate {
+                coordinate: "state",
+                span,
+            }) if span == state_at.span()
+        ));
+        let time = dae
+            .expressions(|expressions| expressions.at(time_at).coordinate(CoordinateInput::Time))?;
+        let rejected =
+            dae.functions(|functions| functions.assign(&mut body, output, time, assignment_at));
+        assert!(matches!(
+            rejected,
+            Err(DaeConstructionError::InvalidFunctionCoordinate {
+                coordinate: "time",
+                span,
+            }) if span == time_at.span()
+        ));
+        let (delayed_state, one) = dae.expressions(|expressions| {
+            Ok((
+                expressions
+                    .at(delayed_state_at)
+                    .coordinate(CoordinateInput::State(state))?,
+                expressions.at(one_at).literal(DaeLiteral::Real(1.0))?,
+            ))
+        })?;
+        let delay = dae.temporal(|temporal| {
+            let positive = temporal.positive_parameter(one, 1.0, one_at)?;
+            temporal.delay(delayed_state, positive, delay_at, delay_at)
+        })?;
+        let rejected = dae.functions(|functions| {
+            functions.assign(&mut body, output, delay.expression(), assignment_at)
+        });
+        assert!(matches!(
+            rejected,
+            Err(DaeConstructionError::InvalidFunctionCoordinate {
+                coordinate: "delay",
+                span,
+            }) if span == delay_at.span()
+        ));
+        let zero =
+            dae.expressions(|expressions| expressions.at(zero_at).literal(DaeLiteral::Real(0.0)))?;
+        dae.functions(|functions| functions.assign(&mut body, output, zero, assignment_at))?;
+        dae.functions(|functions| functions.define(body, function_at))
+    })
+    .expect("rejected assignments do not mutate the function environment");
+    dae.inspect(|view| {
+        let function = view.function(view.function_id(0).unwrap()).unwrap();
+        assert_eq!(function.statements().count(), 1);
+    });
 }
 
 #[test]
@@ -1343,12 +1582,12 @@ fn function_locals_keep_ordered_statements_and_exact_use_provenance() {
         .iter_mut()
         .find_map(|node| node.get_mut("function_value"))
         .expect("fixture contains a function-value read");
-    local_read["definition"] = serde_json::json!(0);
+    local_read["definition_ordinal"] = serde_json::json!(1);
     let error = serde_json::from_value::<Dae>(forged).unwrap_err();
     assert!(
         error
             .to_string()
-            .contains("function value 1 reads definition 0"),
+            .contains("function value 1 reads definition 1, expected Some(0)"),
         "wire reconstruction must reject forged function snapshots: {error}"
     );
 }
@@ -1372,7 +1611,7 @@ fn assert_function_local_body(view: DaeView<'_>, local_use: DaeProvenance) {
     let statements = function.statements().collect::<Vec<_>>();
     assert_eq!(statements.len(), 2);
     let result = view
-        .expression(function.result_values().get(0).unwrap())
+        .expression(function.result_values().rhs(0).unwrap())
         .unwrap();
     let ExpressionOperation::Binary { lhs, .. } = result.operation() else {
         panic!("final function output must retain its checked expression");
@@ -1389,7 +1628,7 @@ fn assert_function_local_body(view: DaeView<'_>, local_use: DaeProvenance) {
         Some("z"),
         "the local read keeps its source occurrence"
     );
-    assert!(view.expression(definition).is_some());
+    assert!(view.expression(definition.rhs()).is_some());
 }
 
 #[test]
@@ -1608,10 +1847,11 @@ fn enumeration_literals_are_canonical_checked_integers_and_round_trip() {
 #[test]
 fn function_for_loop_is_a_compact_checked_transition() {
     let source = TestSource::new(
-        "function sum3\n output Real y;\nalgorithm\n y := 0;\n for k in 1:3 loop\n  y := y + k;\n end for;\nend sum3;",
+        "function sum3\n output Real y;\n protected Real scratch;\nalgorithm\n y := 0;\n for k in 1:3 loop\n  y := y + k;\n end for;\nend sum3;",
     );
     let function_at = source.source("function sum3", 0);
     let output_at = source.source("output Real y", 0);
+    let scratch_at = source.source("Real scratch", 0);
     let initial_at = source.source("y := 0", 0);
     let zero_at = source.source("0", 0);
     let loop_at = source.source("for k in 1:3 loop", 0);
@@ -1627,6 +1867,9 @@ fn function_for_loop_is_a_compact_checked_transition() {
         })?;
         let output = dae.functions(|functions| {
             functions.output(&reservation, VarName::new("y"), 0, output_at)
+        })?;
+        let scratch = dae.functions(|functions| {
+            functions.local(&reservation, VarName::new("scratch"), real, scratch_at)
         })?;
         let mut body = dae.functions(|functions| functions.begin(reservation, function_at))?;
         let zero =
@@ -1648,7 +1891,7 @@ fn function_for_loop_is_a_compact_checked_transition() {
         })?;
         let binder = DomainBinderId::from_raw(domain.index(), 0);
         let mut loop_body =
-            dae.functions(|functions| functions.begin_loop(&body, domain, [output], loop_at))?;
+            dae.functions(|functions| functions.begin_loop(body, domain, [output], loop_at))?;
         let current =
             dae.functions(|functions| functions.read(loop_body.body(), output, y_use_at))?;
         let k = dae.expressions(|expressions| expressions.at(k_use_at).binder(binder))?;
@@ -1657,10 +1900,20 @@ fn function_for_loop_is_a_compact_checked_transition() {
                 .at(update_value_at)
                 .binary(BinaryOperator::Add, current, k)
         })?;
+        let rejected = dae.functions(|functions| {
+            functions.assign_loop(&mut loop_body, scratch, update, update_at)
+        });
+        assert!(matches!(
+            rejected,
+            Err(DaeConstructionError::IncompleteDefinition {
+                kind: "function loop target",
+                ..
+            })
+        ));
         dae.functions(|functions| {
             functions.assign_loop(&mut loop_body, output, update, update_at)
         })?;
-        dae.functions(|functions| functions.finish_loop(&mut body, loop_body, loop_at))?;
+        let body = dae.functions(|functions| functions.finish_loop(loop_body, loop_at))?;
         dae.functions(|functions| functions.define(body, function_at))
     })
     .expect("loop-carried function state constructs as a checked fold");
@@ -1671,19 +1924,30 @@ fn function_for_loop_is_a_compact_checked_transition() {
     decoded.inspect(assert_sum3_loop);
 
     let mut missing_parameter: serde_json::Value = serde_json::from_str(&encoded).unwrap();
-    missing_parameter["storage"]["function_folds"][0]["parameter_values"] = serde_json::json!([]);
+    missing_parameter["storage"]["function_folds"][0]["parameter_definitions"] =
+        serde_json::json!([]);
     assert!(
         serde_json::from_value::<Dae>(missing_parameter).is_err(),
         "wire reconstruction rejects a missing loop-transition parameter"
     );
 
     let mut open_initial: serde_json::Value = serde_json::from_str(&encoded).unwrap();
-    let parameter = open_initial["storage"]["function_folds"][0]["parameter_values"][0].clone();
-    open_initial["storage"]["function_folds"][0]["initial_values"][0] = parameter;
-    let error = serde_json::from_value::<Dae>(open_initial).unwrap_err();
+    let parameter =
+        open_initial["storage"]["function_folds"][0]["parameter_definitions"][0].clone();
+    open_initial["storage"]["function_folds"][0]["initial_definitions"][0] = parameter;
     assert!(
-        error.to_string().contains("domain binder"),
-        "wire reconstruction rejects a binder-dependent initial value: {error}"
+        serde_json::from_value::<Dae>(open_initial).is_err(),
+        "wire reconstruction rejects an initial value that names a generated loop parameter"
+    );
+
+    let mut nested_fold: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+    let outer = nested_fold["storage"]["functions"][0]["definition"]["statements"][1].clone();
+    nested_fold["storage"]["functions"][0]["definition"]["statements"][1]["for"]["statements"] =
+        serde_json::json!([outer]);
+    let error = serde_json::from_value::<Dae>(nested_fold).unwrap_err();
+    assert!(
+        error.to_string().contains("function_folds.nesting"),
+        "wire reconstruction rejects a nested fold that normal construction cannot express: {error}"
     );
 }
 
@@ -1706,23 +1970,75 @@ fn assert_sum3_loop(view: DaeView<'_>) {
     assert_eq!(fold.initial_values().len(), 1);
     assert_eq!(fold.update_values().len(), 1);
     assert_eq!(
-        view.expression(function.result_values().get(0).unwrap())
+        view.expression(function.result_values().rhs(0).unwrap())
             .unwrap()
             .kind(),
         ExpressionKind::FunctionFoldOutput
     );
     let update = view
-        .expression(fold.update_values().get(0).unwrap())
+        .expression(fold.update_values().rhs(0).unwrap())
         .unwrap();
     assert_eq!(view.source_text(update.provenance()), Some("y + k"));
 }
 
 #[test]
-fn delay_evidence_rejects_nonpositive_and_unconsumed_channels() {
+fn function_loop_rejects_duplicate_carried_targets() {
+    let source =
+        TestSource::new("function f output Real x; algorithm x := 0; for k in 1:2 loop end for;");
+    let function_at = source.source("function f", 0);
+    let output_at = source.source("output Real x", 0);
+    let assignment_at = source.source("x := 0", 0);
+    let zero_at = source.source("0", 0);
+    let loop_at = source.source("for k in 1:2 loop", 0);
+    let error = Dae::construct(source.map, |dae| {
+        let real =
+            dae.types(|types| types.derived(ValueType::scalar(ScalarType::Real), function_at))?;
+        let (_, reservation) = dae.functions(|functions| {
+            functions.reserve_recursive(VarName::new("f"), [], [real], function_at)
+        })?;
+        let output = dae.functions(|functions| {
+            functions.output(&reservation, VarName::new("x"), 0, output_at)
+        })?;
+        let mut body = dae.functions(|functions| functions.begin(reservation, function_at))?;
+        let zero =
+            dae.expressions(|expressions| expressions.at(zero_at).literal(DaeLiteral::Real(0.0)))?;
+        dae.functions(|functions| functions.assign(&mut body, output, zero, assignment_at))?;
+        let domain = dae.domains(|domains| {
+            domains.structured(
+                StructuredIndexDomain {
+                    binders: vec![StructuredIndexBinder {
+                        id: 0,
+                        display_name: "k".to_string(),
+                        lower: 1,
+                        upper: 2,
+                        step: 1,
+                    }],
+                },
+                loop_at,
+            )
+        })?;
+        let _ = dae
+            .functions(|functions| functions.begin_loop(body, domain, [output, output], loop_at))?;
+        Ok(())
+    })
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        DaeConstructionError::DuplicateDefinition {
+            kind: "function loop target",
+            ..
+        }
+    ));
+}
+
+#[test]
+fn delay_owner_rejects_invalid_evidence_and_coordinate_provenance_atomically() {
     let source = TestSource::new("delay(x, 0.0)");
     let owner = source.source("delay(x, 0.0)", 0);
     let literal_at = source.source("0.0", 0);
-    let error = Dae::construct(source.map, |dae| {
+    let foreign_span = Span::from_offsets(SourceId::from_source_name("foreign.mo"), 0, 1);
+    let foreign = DaeProvenance::source(foreign_span).expect("foreign span is not the dummy span");
+    let dae = Dae::construct(source.map, |dae| {
         let (source, delay_time) = dae.expressions(|expressions| {
             Ok((
                 expressions.at(owner).literal(DaeLiteral::Real(1.0))?,
@@ -1736,18 +2052,16 @@ fn delay_evidence_rejects_nonpositive_and_unconsumed_channels() {
                 Err(DaeConstructionError::InvalidPositiveParameter { .. })
             ));
             let positive = temporal.positive_parameter(source, 1.0, owner)?;
-            temporal.delay(source, positive, owner)?;
+            let rejected = temporal.delay(source, positive, owner, foreign);
+            assert!(matches!(
+                rejected,
+                Err(DaeConstructionError::UnknownSource { span }) if span == foreign_span
+            ));
             Ok(())
         })
     })
-    .unwrap_err();
-    assert!(matches!(
-        error,
-        DaeConstructionError::IncompleteDefinition {
-            kind: "delay coordinate",
-            ..
-        }
-    ));
+    .expect("a rejected capability cannot leave a partial delay owner");
+    assert_eq!(dae.inspect(|view| view.delay_count()), 0);
 }
 
 #[test]

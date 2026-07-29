@@ -162,8 +162,8 @@ pub fn scalar_program_output_indices(
     let span = block_span(block);
     if !block.uses_local_contiguous_output_indices() {
         let mut indices =
-            scalarize_vec_with_capacity_optional(block.output_indices.len(), kind, span)?;
-        indices.extend_from_slice(&block.output_indices);
+            scalarize_vec_with_capacity_optional(block.output_indices().len(), kind, span)?;
+        indices.extend_from_slice(block.output_indices());
         return Ok(indices);
     }
     let stored_outputs = block.stored_output_count();

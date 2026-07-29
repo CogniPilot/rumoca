@@ -33,6 +33,24 @@
 //! # Ok(())
 //! # });
 //! ```
+//!
+//! An active function loop owns its parent body until the loop is finished:
+//!
+//! ```compile_fail
+//! # use rumoca_ir_dae::{
+//! #     DaeProvenance, DomainId, FunctionBody, FunctionValueId, Functions,
+//! # };
+//! # fn cannot_mutate_parent<'dae>(
+//! #     functions: &mut Functions<'_, 'dae>,
+//! #     body: FunctionBody<'dae>,
+//! #     domain: DomainId<'dae>,
+//! #     target: FunctionValueId<'dae>,
+//! #     provenance: DaeProvenance,
+//! # ) {
+//! let _active = functions.begin_loop(body, domain, [target], provenance);
+//! drop(body);
+//! # }
+//! ```
 
 mod clocks;
 mod conditions;
@@ -67,24 +85,25 @@ pub use expression::{
 pub use ids::{
     AlgebraicId, ClockId, ClockOwnershipId, ConditionId, ContinuousEquationId, ContinuousFamilyId,
     DelayId, DiscreteAssignmentId, DiscreteRealEquationId, DiscreteRealId, DiscreteValueId,
-    DomainBinderId, DomainId, EventActionId, ExprId, FunctionFoldId, FunctionId,
-    FunctionParameterId, FunctionValueId, InitializationEquationId, InitializationFamilyId,
-    InputId, ParameterId, PreviousId, RelationId, RootId, StateId, TerminalId, TimeEventId,
-    ValueTypeId, VariableId,
+    DomainBinderId, DomainId, EventActionId, ExprId, FunctionDefinitionId, FunctionFoldId,
+    FunctionId, FunctionParameterId, FunctionValueId, InitializationEquationId,
+    InitializationFamilyId, InputId, ParameterId, PreviousId, RelationId, RootId, StateId,
+    TerminalId, TimeEventId, ValueTypeId, VariableId,
 };
 pub use model::{
     ContinuousOwnerView, CoordinateView, DAE_SCHEMA_VERSION, Dae, DaeConstruction, DaeView,
     DomainView, Domains, ExpressionKind, ExpressionOperands, ExpressionOperation, ExpressionView,
-    FunctionBody, FunctionFoldView, FunctionLoop, FunctionParameterView, FunctionReservation,
-    FunctionStatementView, FunctionStatements, FunctionValueRole, FunctionValueView, FunctionView,
-    Functions, InitializationOwnerView, InputVariability, ResidualEquationView,
-    StructuredFamilyView, SubscriptView, SubscriptsView, ValueTypeOperands, ValueTypes,
-    VariableAttributes, VariableCausality, VariableIdentity, VariableOrigin, VariableReservation,
-    VariableRole, VariableView, Variables,
+    FunctionBody, FunctionDefinitionValues, FunctionDefinitionView, FunctionFoldView, FunctionLoop,
+    FunctionParameterView, FunctionReservation, FunctionStatementView, FunctionStatements,
+    FunctionValueRole, FunctionValueView, FunctionView, Functions, InitializationOwnerView,
+    InputVariability, ResidualEquationView, StructuredFamilyView, SubscriptView, SubscriptsView,
+    ValueTypeOperands, ValueTypes, VariableAttributes, VariableCausality, VariableIdentity,
+    VariableOrigin, VariableReservation, VariableRole, VariableView, Variables,
 };
 pub use provenance::{DaeGeneration, DaeProvenance, DaeProvenanceOrigin};
 pub use temporal::{
-    DelayView, PositiveParameter, PositiveParameterView, PreviousView, Temporal, TerminalView,
+    DelayCoordinate, DelayView, PositiveParameter, PositiveParameterView, PreviousView, Temporal,
+    TerminalView,
 };
 
 #[cfg(test)]

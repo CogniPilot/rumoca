@@ -1,11 +1,21 @@
+mod function_facts;
+mod type_rules;
+
 use rumoca_core::Span;
 use serde::{Deserialize, Serialize};
 
-use crate::model::{Storage, invalid_arity};
+use crate::model::{FunctionReadSet, Storage, invalid_arity};
 use crate::{
     AlgebraicId, DaeConstructionError, DaeProvenance, DiscreteRealId, DiscreteValueId,
-    DomainBinderId, DomainId, ExprId, FunctionFoldId, FunctionId, FunctionParameterId,
-    FunctionValueId, InputId, ParameterId, StateId, ValueTypeId,
+    DomainBinderId, DomainId, ExprId, FunctionDefinitionId, FunctionFoldId, FunctionId,
+    FunctionParameterId, FunctionValueId, InputId, ParameterId, StateId, ValueTypeId,
+};
+use function_facts::{
+    node_function_illegal_coordinate, node_function_read_set, node_function_scope,
+};
+use type_rules::{
+    binary_result, builtin_result, checked_u32, common_value_type, range_extent, type_mismatch,
+    validate_static_quotient, validate_subscript,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -287,7 +297,6 @@ pub enum CoordinateInput<'dae> {
     PreDiscreteValue(DiscreteValueId<'dae>),
     Time,
     Condition(crate::ConditionId<'dae>),
-    Delay(crate::DelayId<'dae>),
     Previous(crate::PreviousId<'dae>),
     Terminal(crate::TerminalId<'dae>),
     FunctionParameter(FunctionParameterId<'dae>),
@@ -307,7 +316,6 @@ impl CoordinateInput<'_> {
             Self::PreDiscreteValue(id) => Coordinate::PreDiscreteValue(id.index()),
             Self::Time => Coordinate::Time,
             Self::Condition(id) => Coordinate::Condition(id.index()),
-            Self::Delay(id) => Coordinate::Delay(id.index()),
             Self::Previous(id) => Coordinate::Previous(id.index()),
             Self::Terminal(id) => Coordinate::Terminal(id.index()),
             Self::FunctionParameter(id) => Coordinate::FunctionParameter {
@@ -396,21 +404,23 @@ pub(crate) enum ExprNode {
     FunctionValue {
         function: u32,
         value: u32,
-        definition: u32,
+        definition_ordinal: u32,
     },
     FunctionFoldParameter {
         function: u32,
         fold: u32,
         carried: u32,
+        definition_ordinal: u32,
     },
     FunctionFoldOutput {
         function: u32,
         fold: u32,
         carried: u32,
+        definition_ordinal: u32,
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum PackedSubscriptKind {
     Index(u32),
@@ -434,12 +444,15 @@ pub(crate) struct ExpressionArenaStorage {
     pub(crate) variability: Vec<ExpressionVariability>,
     pub(crate) binder_domains: Vec<Option<u32>>,
     pub(crate) function_scopes: Vec<Option<u32>>,
+    #[serde(skip)]
+    pub(crate) function_illegal_coordinates: Vec<Option<u32>>,
+    #[serde(skip)]
+    pub(crate) function_read_sets: Vec<FunctionReadSet>,
     pub(crate) operands: Vec<u32>,
     pub(crate) subscripts: Vec<PackedSubscript>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct FrozenExpressionArenaStorage {
     pub(crate) nodes: Box<[ExprNode]>,
     pub(crate) provenance: Box<[DaeProvenance]>,
@@ -451,28 +464,39 @@ pub(crate) struct FrozenExpressionArenaStorage {
     pub(crate) subscripts: Box<[PackedSubscript]>,
 }
 
+pub(crate) struct ExpressionInsertionFacts {
+    pub(crate) value_type: u32,
+    pub(crate) variability: ExpressionVariability,
+    pub(crate) binder_domain: Option<u32>,
+    pub(crate) function_scope: Option<u32>,
+    pub(crate) function_illegal_coordinate: Option<u32>,
+    pub(crate) function_read_set: FunctionReadSet,
+}
+
 impl ExpressionArenaStorage {
     pub(crate) fn push(
         &mut self,
         node: ExprNode,
-        ty: u32,
-        variability: ExpressionVariability,
-        binder_domain: Option<u32>,
-        function_scope: Option<u32>,
+        facts: ExpressionInsertionFacts,
         provenance: DaeProvenance,
     ) -> Result<u32, DaeConstructionError> {
         let id = checked_u32(self.nodes.len(), "expression arena", provenance)?;
         self.nodes.push(node);
         self.provenance.push(provenance);
-        self.value_types.push(ty);
-        self.variability.push(variability);
-        self.binder_domains.push(binder_domain);
-        self.function_scopes.push(function_scope);
+        self.value_types.push(facts.value_type);
+        self.variability.push(facts.variability);
+        self.binder_domains.push(facts.binder_domain);
+        self.function_scopes.push(facts.function_scope);
+        self.function_illegal_coordinates
+            .push(facts.function_illegal_coordinate);
+        self.function_read_sets.push(facts.function_read_set);
         debug_assert_eq!(self.nodes.len(), self.provenance.len());
         debug_assert_eq!(self.nodes.len(), self.value_types.len());
         debug_assert_eq!(self.nodes.len(), self.variability.len());
         debug_assert_eq!(self.nodes.len(), self.binder_domains.len());
         debug_assert_eq!(self.nodes.len(), self.function_scopes.len());
+        debug_assert_eq!(self.nodes.len(), self.function_illegal_coordinates.len());
+        debug_assert_eq!(self.nodes.len(), self.function_read_sets.len());
         Ok(id)
     }
 
@@ -486,7 +510,9 @@ impl ExpressionArenaStorage {
         OperandRange::new(start, self.operands.len() - start, at)
     }
 
-    pub(crate) fn freeze(self) -> FrozenExpressionArenaStorage {
+    pub(crate) fn freeze(mut self) -> FrozenExpressionArenaStorage {
+        self.function_illegal_coordinates = Vec::new();
+        self.function_read_sets = Vec::new();
         FrozenExpressionArenaStorage {
             nodes: self.nodes.into_boxed_slice(),
             provenance: self.provenance.into_boxed_slice(),
@@ -634,23 +660,22 @@ impl<'dae> ExpressionAt<'_, 'dae> {
     fn function_value_use(
         self,
         value: FunctionValueId<'dae>,
-        definition: ExprId<'dae>,
+        definition: FunctionDefinitionId<'dae>,
+        rhs: ExprId<'dae>,
     ) -> Result<ExprId<'dae>, DaeConstructionError> {
         let ty = self.storage.function_value_facts(value, self.provenance)?;
         self.storage.expect_value_type_compatible(
             ty.index(),
-            definition_type(self.storage, definition, self.provenance)?,
+            definition_type(self.storage, rhs, self.provenance)?,
             self.provenance,
         )?;
-        let variability = self.storage.expr_variability(definition, self.provenance)?;
-        let binder_domain = self
-            .storage
-            .expr_binder_domain(definition, self.provenance)?;
+        let variability = self.storage.expr_variability(rhs, self.provenance)?;
+        let binder_domain = self.storage.expr_binder_domain(rhs, self.provenance)?;
         self.insert(
             ExprNode::FunctionValue {
                 function: value.function().index(),
                 value: value.ordinal(),
-                definition: definition.index(),
+                definition_ordinal: definition.ordinal(),
             },
             ty,
             variability,
@@ -905,16 +930,13 @@ impl<'dae> ExpressionAt<'_, 'dae> {
         domain: DomainId<'dae>,
         body: ExprId<'dae>,
     ) -> Result<ExprId<'dae>, DaeConstructionError> {
-        let domain_extents = self
-            .storage
-            .domain_extents(domain, self.provenance)?
-            .to_vec();
+        let domain_extents = self.storage.domain_extents(domain, self.provenance)?;
         let body_ty = self.storage.expr_type(body, self.provenance)?.clone();
         let variability = self.storage.expr_variability(body, self.provenance)?;
         self.storage
             .expect_domain_expression(body, domain, self.provenance)?;
         let mut dimensions = Vec::with_capacity(body_ty.dimensions().len() + domain_extents.len());
-        dimensions.extend(domain_extents);
+        dimensions.extend_from_slice(domain_extents);
         dimensions.extend_from_slice(body_ty.dimensions());
         let ty = self.storage.intern_type(
             ValueType::array(body_ty.scalar_type(), dimensions),
@@ -1103,8 +1125,7 @@ impl<'dae> ExpressionAt<'_, 'dae> {
         }
         let mut result = self.storage.expr_type(fallback, self.provenance)?.clone();
         let mut variability = self.storage.expr_variability(fallback, self.provenance)?;
-        let mut expression_inputs = Vec::with_capacity(branches.len() * 2 + 1);
-        expression_inputs.push(fallback);
+        let mut binder_domain = self.storage.expr_binder_domain(fallback, self.provenance)?;
         for (condition, value) in &branches {
             let condition_ty = self.storage.expr_type(*condition, self.provenance)?;
             if !condition_ty.is_scalar() || condition_ty.scalar_type() != ScalarType::Boolean {
@@ -1122,18 +1143,27 @@ impl<'dae> ExpressionAt<'_, 'dae> {
             variability =
                 variability.max(self.storage.expr_variability(*condition, self.provenance)?);
             variability = variability.max(self.storage.expr_variability(*value, self.provenance)?);
-            expression_inputs.extend([*condition, *value]);
+            binder_domain = merge_binder_domain(
+                self.storage,
+                binder_domain,
+                self.storage
+                    .expr_binder_domain(*condition, self.provenance)?,
+                self.provenance,
+            )?;
+            binder_domain = merge_binder_domain(
+                self.storage,
+                binder_domain,
+                self.storage.expr_binder_domain(*value, self.provenance)?,
+                self.provenance,
+            )?;
         }
-        let binder_domain = merged_binder_domain(self.storage, expression_inputs, self.provenance)?;
-        let mut raw = Vec::with_capacity(branches.len() * 2 + 1);
-        for (condition, value) in branches {
-            raw.extend([condition.index(), value.index()]);
-        }
-        raw.push(fallback.index());
-        let operands = self
-            .storage
-            .expressions
-            .push_operands(raw, self.provenance)?;
+        let operands = self.storage.expressions.push_operands(
+            branches
+                .into_iter()
+                .flat_map(|(condition, value)| [condition.index(), value.index()])
+                .chain(std::iter::once(fallback.index())),
+            self.provenance,
+        )?;
         let ty = self.storage.intern_type(result, self.provenance)?;
         self.insert(
             ExprNode::Conditional { operands },
@@ -1152,14 +1182,21 @@ impl<'dae> ExpressionAt<'_, 'dae> {
     ) -> Result<ExprId<'dae>, DaeConstructionError> {
         crate::model::check_provenance(self.source_map, self.provenance)?;
         let function_scope = node_function_scope(self.storage, &node, self.provenance)?;
+        let function_illegal_coordinate =
+            node_function_illegal_coordinate(self.storage, &node, self.provenance)?;
+        let function_read_set = node_function_read_set(self.storage, &node, self.provenance)?;
         self.storage
             .expressions
             .push(
                 node,
-                ty.index(),
-                variability,
-                binder_domain,
-                function_scope,
+                ExpressionInsertionFacts {
+                    value_type: ty.index(),
+                    variability,
+                    binder_domain,
+                    function_scope,
+                    function_illegal_coordinate,
+                    function_read_set,
+                },
                 self.provenance,
             )
             .map(ExprId::from_raw)
@@ -1256,87 +1293,21 @@ fn pack_subscripts(
     })
 }
 
-fn node_function_scope(
-    storage: &Storage,
-    node: &ExprNode,
-    at: DaeProvenance,
-) -> Result<Option<u32>, DaeConstructionError> {
-    let direct = match node {
-        ExprNode::Coordinate(Coordinate::FunctionParameter { function, .. })
-        | ExprNode::FunctionValue { function, .. }
-        | ExprNode::FunctionFoldParameter { function, .. }
-        | ExprNode::FunctionFoldOutput { function, .. } => {
-            return Ok(Some(*function));
-        }
-        ExprNode::Literal(_) | ExprNode::Coordinate(_) | ExprNode::Range { .. } => Vec::new(),
-        ExprNode::Unary { operand, .. } => vec![*operand],
-        ExprNode::Binary { lhs, rhs, .. } => vec![*lhs, *rhs],
-        ExprNode::Field { base, .. } => vec![*base],
-        ExprNode::Comprehension { body, .. } => vec![*body],
-        ExprNode::Index { base, subscripts } => {
-            expression_with_subscripts(storage, vec![*base], *subscripts, at)?
-        }
-        ExprNode::ArrayUpdate {
-            base,
-            value,
-            subscripts,
-        } => expression_with_subscripts(storage, vec![*base, *value], *subscripts, at)?,
-        ExprNode::Conditional { operands }
-        | ExprNode::Array { operands }
-        | ExprNode::Record { operands }
-        | ExprNode::Builtin { operands, .. }
-        | ExprNode::Call { operands, .. } => storage
-            .expressions
-            .operands
-            .get(operands.indices())
-            .ok_or_else(|| crate::model::unknown("operand range", operands.start, at))?
-            .to_vec(),
-    };
-    direct.into_iter().try_fold(None, |scope, expression| {
-        let found = storage
-            .expressions
-            .function_scopes
-            .get(expression as usize)
-            .copied()
-            .ok_or_else(|| crate::model::unknown("expression", expression, at))?;
-        merge_function_scope(scope, found, at)
-    })
-}
-
-fn expression_with_subscripts(
-    storage: &Storage,
-    mut values: Vec<u32>,
-    subscripts: OperandRange,
-    at: DaeProvenance,
-) -> Result<Vec<u32>, DaeConstructionError> {
-    for subscript in storage
-        .expressions
-        .subscripts
-        .get(subscripts.indices())
-        .ok_or_else(|| crate::model::unknown("subscript range", subscripts.start, at))?
-    {
-        match subscript.kind {
-            PackedSubscriptKind::Index(value) | PackedSubscriptKind::Slice(value) => {
-                values.push(value);
-            }
-            PackedSubscriptKind::Whole => {}
-        }
-    }
-    Ok(values)
-}
-
 pub(crate) fn insert_function_value_use<'dae>(
     source_map: &rumoca_core::SourceMap,
     storage: &mut Storage,
     value: FunctionValueId<'dae>,
-    definition: ExprId<'dae>,
+    definition: FunctionDefinitionId<'dae>,
     domain: Option<DomainId<'dae>>,
     provenance: DaeProvenance,
 ) -> Result<ExprId<'dae>, DaeConstructionError> {
+    let rhs = crate::model::function_definition_rhs(storage, value, definition, provenance)?;
     match domain {
-        Some(domain) => storage.expect_domain_expression(definition, domain, provenance)?,
+        Some(domain) => {
+            storage.expect_domain_expression(rhs, domain, provenance)?;
+        }
         None => {
-            if let Some(found_domain) = storage.expr_binder_domain(definition, provenance)? {
+            if let Some(found_domain) = storage.expr_binder_domain(rhs, provenance)? {
                 return Err(DaeConstructionError::InvalidBinderScope {
                     expected_domain: None,
                     found_domain,
@@ -1345,7 +1316,7 @@ pub(crate) fn insert_function_value_use<'dae>(
             }
         }
     }
-    match storage.expr_function_scope(definition, provenance)? {
+    match storage.expr_function_scope(rhs, provenance)? {
         None => {}
         Some(function) if function == value.function().index() => {}
         Some(function) => {
@@ -1362,7 +1333,7 @@ pub(crate) fn insert_function_value_use<'dae>(
         provenance,
         marker: std::marker::PhantomData,
     }
-    .function_value_use(value, definition)
+    .function_value_use(value, definition, rhs)
 }
 
 pub(crate) fn insert_function_fold_parameter<'dae>(
@@ -1370,8 +1341,10 @@ pub(crate) fn insert_function_fold_parameter<'dae>(
     storage: &mut Storage,
     fold: FunctionFoldId<'dae>,
     carried: usize,
+    definition: FunctionDefinitionId<'dae>,
     provenance: DaeProvenance,
 ) -> Result<ExprId<'dae>, DaeConstructionError> {
+    expect_pending_fold_definition(storage, fold, definition, provenance)?;
     let (value_type, domain) = function_fold_value_facts(storage, fold, carried, provenance)?;
     ExpressionAt {
         source_map,
@@ -1384,6 +1357,7 @@ pub(crate) fn insert_function_fold_parameter<'dae>(
             function: fold.function().index(),
             fold: fold.ordinal(),
             carried: checked_u32(carried, "function fold parameter", provenance)?,
+            definition_ordinal: definition.ordinal(),
         },
         ValueTypeId::from_raw(value_type),
         ExpressionVariability::Parameter,
@@ -1396,12 +1370,28 @@ pub(crate) fn insert_function_fold_output<'dae>(
     storage: &mut Storage,
     fold: FunctionFoldId<'dae>,
     carried: usize,
+    definition: FunctionDefinitionId<'dae>,
     provenance: DaeProvenance,
 ) -> Result<ExprId<'dae>, DaeConstructionError> {
+    expect_pending_fold_definition(storage, fold, definition, provenance)?;
     let (value_type, _) = function_fold_value_facts(storage, fold, carried, provenance)?;
     let entry = function_fold_entry(storage, fold, provenance)?;
-    let initial = ExprId::from_raw(entry.initial_values[carried]);
-    let update = ExprId::from_raw(entry.update_values[carried]);
+    let initial =
+        FunctionDefinitionId::from_raw(fold.function().index(), entry.initial_definitions[carried]);
+    let update =
+        FunctionDefinitionId::from_raw(fold.function().index(), entry.update_definitions[carried]);
+    let initial = crate::model::function_definition_rhs(
+        storage,
+        FunctionValueId::from_raw(fold.function().index(), entry.targets[carried]),
+        initial,
+        provenance,
+    )?;
+    let update = crate::model::function_definition_rhs(
+        storage,
+        FunctionValueId::from_raw(fold.function().index(), entry.targets[carried]),
+        update,
+        provenance,
+    )?;
     let variability = storage
         .expr_variability(initial, provenance)?
         .max(storage.expr_variability(update, provenance)?);
@@ -1416,11 +1406,42 @@ pub(crate) fn insert_function_fold_output<'dae>(
             function: fold.function().index(),
             fold: fold.ordinal(),
             carried: checked_u32(carried, "function fold output", provenance)?,
+            definition_ordinal: definition.ordinal(),
         },
         ValueTypeId::from_raw(value_type),
         variability,
         None,
     )
+}
+
+fn expect_pending_fold_definition<'dae>(
+    storage: &Storage,
+    fold: FunctionFoldId<'dae>,
+    definition: FunctionDefinitionId<'dae>,
+    provenance: DaeProvenance,
+) -> Result<(), DaeConstructionError> {
+    if definition.function() != fold.function() {
+        return Err(DaeConstructionError::InvalidFunctionScope {
+            expected_function: Some(fold.function().index()),
+            found_function: definition.function().index(),
+            span: provenance.span(),
+        });
+    }
+    let expected = storage
+        .functions
+        .get(fold.function().index() as usize)
+        .ok_or_else(|| crate::model::unknown("function", fold.function().index(), provenance))?
+        .definitions
+        .len();
+    if definition.ordinal() as usize == expected {
+        return Ok(());
+    }
+    Err(DaeConstructionError::InvalidFunctionValueRead {
+        value: 0,
+        expected_definition: u32::try_from(expected).ok(),
+        found_definition: definition.ordinal(),
+        span: provenance.span(),
+    })
 }
 
 fn function_fold_value_facts(
@@ -1472,22 +1493,6 @@ fn definition_type(
         .get(definition.index() as usize)
         .copied()
         .ok_or_else(|| crate::model::unknown("expression", definition.index(), at))
-}
-
-fn merge_function_scope(
-    lhs: Option<u32>,
-    rhs: Option<u32>,
-    at: DaeProvenance,
-) -> Result<Option<u32>, DaeConstructionError> {
-    match (lhs, rhs) {
-        (None, scope) | (scope, None) => Ok(scope),
-        (Some(lhs), Some(rhs)) if lhs == rhs => Ok(Some(lhs)),
-        (Some(expected), Some(found)) => Err(DaeConstructionError::InvalidFunctionScope {
-            expected_function: Some(expected),
-            found_function: found,
-            span: at.span(),
-        }),
-    }
 }
 
 fn packed_value_subscript(
@@ -1552,550 +1557,6 @@ fn max_variability(
         .try_fold(ExpressionVariability::Constant, |maximum, expression| {
             Ok(maximum.max(storage.expr_variability(*expression, at)?))
         })
-}
-
-fn validate_static_quotient(
-    storage: &Storage,
-    builtin: PureBuiltin,
-    arguments: &[ExprId<'_>],
-    at: DaeProvenance,
-) -> Result<(), DaeConstructionError> {
-    let [lhs, rhs] = arguments else {
-        unreachable!("builtin result validation proves quotient arity")
-    };
-    let operator = quotient_name(builtin);
-    let Some(lhs) = static_numeric_value(storage, lhs.index()) else {
-        return Err(DaeConstructionError::NonStaticDiscontinuity {
-            operator,
-            span: at.span(),
-        });
-    };
-    let Some(rhs) = static_numeric_value(storage, rhs.index()) else {
-        return Err(DaeConstructionError::NonStaticDiscontinuity {
-            operator,
-            span: at.span(),
-        });
-    };
-    let function = match builtin {
-        PureBuiltin::Div => rumoca_core::BuiltinFunction::Div,
-        PureBuiltin::Mod => rumoca_core::BuiltinFunction::Mod,
-        PureBuiltin::Rem => rumoca_core::BuiltinFunction::Rem,
-        _ => unreachable!("caller restricts static quotient validation"),
-    };
-    let result = rumoca_core::apply_scalar_binary_math(function, lhs, rhs);
-    if result.is_some_and(f64::is_finite) {
-        Ok(())
-    } else {
-        Err(DaeConstructionError::UndefinedBuiltinDomain {
-            operator,
-            span: at.span(),
-        })
-    }
-}
-
-fn quotient_name(builtin: PureBuiltin) -> &'static str {
-    match builtin {
-        PureBuiltin::Div => "div",
-        PureBuiltin::Mod => "mod",
-        PureBuiltin::Rem => "rem",
-        _ => unreachable!("caller restricts quotient builtins"),
-    }
-}
-
-fn static_numeric_value(storage: &Storage, expression: u32) -> Option<f64> {
-    let node = storage.expressions.nodes.get(expression as usize)?;
-    let value = match node {
-        ExprNode::Literal(DaeLiteral::Real(value)) => *value,
-        ExprNode::Literal(DaeLiteral::Integer(value) | DaeLiteral::Enumeration(value)) => {
-            *value as f64
-        }
-        ExprNode::Unary { operator, operand } => {
-            let operand = static_numeric_value(storage, *operand)?;
-            match operator {
-                UnaryOperator::Plus => operand,
-                UnaryOperator::Negate => -operand,
-                UnaryOperator::Not => return None,
-            }
-        }
-        ExprNode::Binary { operator, lhs, rhs } => {
-            let lhs = static_numeric_value(storage, *lhs)?;
-            let rhs = static_numeric_value(storage, *rhs)?;
-            match operator {
-                BinaryOperator::Add | BinaryOperator::ElementwiseAdd => lhs + rhs,
-                BinaryOperator::Subtract | BinaryOperator::ElementwiseSubtract => lhs - rhs,
-                BinaryOperator::Multiply | BinaryOperator::ElementwiseMultiply => lhs * rhs,
-                BinaryOperator::Divide | BinaryOperator::ElementwiseDivide if rhs != 0.0 => {
-                    lhs / rhs
-                }
-                BinaryOperator::Power | BinaryOperator::ElementwisePower => lhs.powf(rhs),
-                _ => return None,
-            }
-        }
-        ExprNode::Builtin { builtin, operands }
-            if matches!(
-                builtin,
-                PureBuiltin::Div | PureBuiltin::Mod | PureBuiltin::Rem
-            ) =>
-        {
-            let mut operands = storage.expressions.operands[operands.indices()].iter();
-            let lhs = static_numeric_value(storage, *operands.next()?)?;
-            let rhs = static_numeric_value(storage, *operands.next()?)?;
-            let function = match builtin {
-                PureBuiltin::Div => rumoca_core::BuiltinFunction::Div,
-                PureBuiltin::Mod => rumoca_core::BuiltinFunction::Mod,
-                PureBuiltin::Rem => rumoca_core::BuiltinFunction::Rem,
-                _ => unreachable!("guard restricts quotient builtins"),
-            };
-            rumoca_core::apply_scalar_binary_math(function, lhs, rhs)?
-        }
-        _ => return None,
-    };
-    value.is_finite().then_some(value)
-}
-
-fn binary_result(
-    operator: BinaryOperator,
-    lhs: &ValueType,
-    rhs: &ValueType,
-    at: DaeProvenance,
-) -> Result<ValueType, DaeConstructionError> {
-    let lhs_scalar = lhs.scalar_type();
-    let rhs_scalar = rhs.scalar_type();
-    match operator {
-        BinaryOperator::And | BinaryOperator::Or => {
-            expect_same_shape(lhs, rhs, at)?;
-            if lhs_scalar != ScalarType::Boolean {
-                return Err(type_mismatch(ScalarType::Boolean, lhs_scalar, at));
-            }
-            if rhs_scalar != ScalarType::Boolean {
-                return Err(type_mismatch(ScalarType::Boolean, rhs_scalar, at));
-            }
-            Ok(lhs.clone())
-        }
-        BinaryOperator::Add
-        | BinaryOperator::Subtract
-        | BinaryOperator::ElementwiseAdd
-        | BinaryOperator::ElementwiseSubtract => {
-            expect_same_shape(lhs, rhs, at)?;
-            expect_numeric(lhs_scalar, at)?;
-            expect_numeric(rhs_scalar, at)?;
-            let scalar = promoted_numeric_scalar(lhs_scalar, rhs_scalar, false);
-            Ok(ValueType::array(scalar, lhs.dimensions().to_vec()))
-        }
-        BinaryOperator::Multiply => multiplication_result(lhs, rhs, at),
-        BinaryOperator::Divide => division_result(lhs, rhs, at),
-        BinaryOperator::Power => power_result(lhs, rhs, at),
-        BinaryOperator::ElementwiseMultiply
-        | BinaryOperator::ElementwiseDivide
-        | BinaryOperator::ElementwisePower => elementwise_result(operator, lhs, rhs, at),
-        BinaryOperator::Equal
-        | BinaryOperator::NotEqual
-        | BinaryOperator::Less
-        | BinaryOperator::LessEqual
-        | BinaryOperator::Greater
-        | BinaryOperator::GreaterEqual => {
-            expect_same_shape(lhs, rhs, at)?;
-            if lhs_scalar != rhs_scalar && !(lhs_scalar.is_numeric() && rhs_scalar.is_numeric()) {
-                return Err(type_mismatch(lhs_scalar, rhs_scalar, at));
-            }
-            Ok(ValueType::array(
-                ScalarType::Boolean,
-                lhs.dimensions().to_vec(),
-            ))
-        }
-    }
-}
-
-fn expect_same_shape(
-    lhs: &ValueType,
-    rhs: &ValueType,
-    at: DaeProvenance,
-) -> Result<(), DaeConstructionError> {
-    if lhs.dimensions() == rhs.dimensions() {
-        Ok(())
-    } else {
-        Err(DaeConstructionError::ShapeMismatch { span: at.span() })
-    }
-}
-
-fn promoted_numeric_scalar(lhs: ScalarType, rhs: ScalarType, force_real: bool) -> ScalarType {
-    if force_real || lhs == ScalarType::Real || rhs == ScalarType::Real {
-        ScalarType::Real
-    } else {
-        ScalarType::Integer
-    }
-}
-
-fn multiplication_result(
-    lhs: &ValueType,
-    rhs: &ValueType,
-    at: DaeProvenance,
-) -> Result<ValueType, DaeConstructionError> {
-    expect_numeric(lhs.scalar_type(), at)?;
-    expect_numeric(rhs.scalar_type(), at)?;
-    let dimensions = match (lhs.dimensions(), rhs.dimensions()) {
-        ([], rhs) => rhs.to_vec(),
-        (lhs, []) => lhs.to_vec(),
-        ([lhs_n], [rhs_n]) if lhs_n == rhs_n => Vec::new(),
-        ([rows, inner], [rhs_inner]) if inner == rhs_inner => vec![*rows],
-        ([lhs_inner], [rhs_inner, columns]) if lhs_inner == rhs_inner => vec![*columns],
-        ([rows, inner], [rhs_inner, columns]) if inner == rhs_inner => {
-            vec![*rows, *columns]
-        }
-        _ => return Err(DaeConstructionError::ShapeMismatch { span: at.span() }),
-    };
-    Ok(ValueType::array(
-        promoted_numeric_scalar(lhs.scalar_type(), rhs.scalar_type(), false),
-        dimensions,
-    ))
-}
-
-fn division_result(
-    lhs: &ValueType,
-    rhs: &ValueType,
-    at: DaeProvenance,
-) -> Result<ValueType, DaeConstructionError> {
-    expect_numeric(lhs.scalar_type(), at)?;
-    expect_numeric(rhs.scalar_type(), at)?;
-    if !rhs.is_scalar() {
-        return Err(DaeConstructionError::ShapeMismatch { span: at.span() });
-    }
-    Ok(ValueType::array(
-        ScalarType::Real,
-        lhs.dimensions().to_vec(),
-    ))
-}
-
-fn power_result(
-    lhs: &ValueType,
-    rhs: &ValueType,
-    at: DaeProvenance,
-) -> Result<ValueType, DaeConstructionError> {
-    expect_numeric(lhs.scalar_type(), at)?;
-    expect_numeric(rhs.scalar_type(), at)?;
-    if !rhs.is_scalar()
-        || !(lhs.is_scalar()
-            || matches!(lhs.dimensions(), [rows, columns] if rows == columns)
-                && rhs.scalar_type() == ScalarType::Integer)
-    {
-        return Err(DaeConstructionError::ShapeMismatch { span: at.span() });
-    }
-    Ok(ValueType::array(
-        promoted_numeric_scalar(lhs.scalar_type(), rhs.scalar_type(), false),
-        lhs.dimensions().to_vec(),
-    ))
-}
-
-fn elementwise_result(
-    operator: BinaryOperator,
-    lhs: &ValueType,
-    rhs: &ValueType,
-    at: DaeProvenance,
-) -> Result<ValueType, DaeConstructionError> {
-    expect_numeric(lhs.scalar_type(), at)?;
-    expect_numeric(rhs.scalar_type(), at)?;
-    let dimensions = if lhs.is_scalar() {
-        rhs.dimensions()
-    } else if rhs.is_scalar() || lhs.dimensions() == rhs.dimensions() {
-        lhs.dimensions()
-    } else {
-        return Err(DaeConstructionError::ShapeMismatch { span: at.span() });
-    };
-    Ok(ValueType::array(
-        promoted_numeric_scalar(
-            lhs.scalar_type(),
-            rhs.scalar_type(),
-            matches!(operator, BinaryOperator::ElementwiseDivide),
-        ),
-        dimensions.to_vec(),
-    ))
-}
-
-fn common_value_type(
-    lhs: &ValueType,
-    rhs: &ValueType,
-    at: DaeProvenance,
-) -> Result<ValueType, DaeConstructionError> {
-    if lhs.dimensions() != rhs.dimensions() {
-        return Err(DaeConstructionError::ShapeMismatch { span: at.span() });
-    }
-    let scalar = if lhs.scalar_type() == rhs.scalar_type() {
-        lhs.scalar_type()
-    } else if lhs.scalar_type().is_numeric() && rhs.scalar_type().is_numeric() {
-        ScalarType::Real
-    } else {
-        return Err(type_mismatch(lhs.scalar_type(), rhs.scalar_type(), at));
-    };
-    Ok(ValueType::array(scalar, lhs.dimensions().to_vec()))
-}
-
-fn expect_numeric(scalar: ScalarType, at: DaeProvenance) -> Result<(), DaeConstructionError> {
-    if scalar.is_numeric() {
-        Ok(())
-    } else {
-        Err(DaeConstructionError::ExpectedNumeric {
-            found: scalar,
-            span: at.span(),
-        })
-    }
-}
-
-fn builtin_result<'dae>(
-    storage: &Storage,
-    builtin: PureBuiltin,
-    arguments: &[ExprId<'dae>],
-    at: DaeProvenance,
-) -> Result<ValueType, DaeConstructionError> {
-    let Some(first) = arguments.first().copied() else {
-        return Err(invalid_arity(1, 0, at));
-    };
-    let first = storage.expr_type(first, at)?.clone();
-    if builtin.has_shaped_result() {
-        return shaped_builtin_result(storage, builtin, arguments, &first, at);
-    }
-    if builtin == PureBuiltin::NoEvent {
-        expect_arity(arguments, 1, at)?;
-        return Ok(first);
-    }
-    if builtin == PureBuiltin::Homotopy {
-        return homotopy_result(storage, arguments, first, at);
-    }
-    if builtin == PureBuiltin::Size {
-        return size_result(storage, arguments, first, at);
-    }
-    expect_numeric(first.scalar_type(), at)?;
-    match builtin {
-        PureBuiltin::Abs
-        | PureBuiltin::Sign
-        | PureBuiltin::Sqrt
-        | PureBuiltin::Floor
-        | PureBuiltin::Ceil
-        | PureBuiltin::Sin
-        | PureBuiltin::Cos
-        | PureBuiltin::Tan
-        | PureBuiltin::Asin
-        | PureBuiltin::Acos
-        | PureBuiltin::Atan
-        | PureBuiltin::Sinh
-        | PureBuiltin::Cosh
-        | PureBuiltin::Tanh
-        | PureBuiltin::Exp
-        | PureBuiltin::Log
-        | PureBuiltin::Log10 => {
-            expect_arity(arguments, 1, at)?;
-            Ok(first)
-        }
-        PureBuiltin::Integer => {
-            expect_arity(arguments, 1, at)?;
-            if !first.is_scalar() {
-                return Err(DaeConstructionError::ShapeMismatch { span: at.span() });
-            }
-            Ok(ValueType::scalar(ScalarType::Integer))
-        }
-        PureBuiltin::Atan2 | PureBuiltin::Div | PureBuiltin::Mod | PureBuiltin::Rem => {
-            expect_arity(arguments, 2, at)?;
-            common_value_type(&first, storage.expr_type(arguments[1], at)?, at)
-        }
-        PureBuiltin::Homotopy => unreachable!("homotopy returns after checking both branches"),
-        PureBuiltin::Smooth => {
-            expect_arity(arguments, 2, at)?;
-            if !first.is_scalar() || first.scalar_type() != ScalarType::Integer {
-                return Err(DaeConstructionError::InvalidSubscript { span: at.span() });
-            }
-            Ok(storage.expr_type(arguments[1], at)?.clone())
-        }
-        PureBuiltin::Sum | PureBuiltin::Product => {
-            expect_arity(arguments, 1, at)?;
-            Ok(ValueType::scalar(first.scalar_type()))
-        }
-        PureBuiltin::Min | PureBuiltin::Max if arguments.len() == 1 => {
-            Ok(ValueType::scalar(first.scalar_type()))
-        }
-        PureBuiltin::Min | PureBuiltin::Max => {
-            for argument in &arguments[1..] {
-                if storage.expr_type(*argument, at)? != &first {
-                    return Err(DaeConstructionError::ShapeMismatch { span: at.span() });
-                }
-            }
-            Ok(first)
-        }
-        PureBuiltin::Size => unreachable!("size returns after checking its dimension argument"),
-        PureBuiltin::Zeros
-        | PureBuiltin::Ones
-        | PureBuiltin::Fill
-        | PureBuiltin::Linspace
-        | PureBuiltin::Cross => {
-            unreachable!("array constructors return before numeric builtins")
-        }
-        PureBuiltin::NoEvent => {
-            unreachable!("type-preserving noEvent returns before numeric builtin checks")
-        }
-    }
-}
-
-fn homotopy_result(
-    storage: &Storage,
-    arguments: &[ExprId<'_>],
-    actual: ValueType,
-    at: DaeProvenance,
-) -> Result<ValueType, DaeConstructionError> {
-    expect_arity(arguments, 2, at)?;
-    let simplified = storage.expr_type(arguments[1], at)?;
-    if !actual.is_scalar() || actual.scalar_type() != ScalarType::Real || simplified != &actual {
-        return Err(DaeConstructionError::ShapeMismatch { span: at.span() });
-    }
-    Ok(actual)
-}
-
-fn size_result(
-    storage: &Storage,
-    arguments: &[ExprId<'_>],
-    array: ValueType,
-    at: DaeProvenance,
-) -> Result<ValueType, DaeConstructionError> {
-    if arguments.len() == 1 {
-        let rank = u32::try_from(array.dimensions().len()).map_err(|_| {
-            DaeConstructionError::CapacityExceeded {
-                arena: "value type rank",
-                attempted_index: array.dimensions().len(),
-                span: at.span(),
-            }
-        })?;
-        return Ok(ValueType::array(ScalarType::Integer, [rank]));
-    }
-    expect_arity(arguments, 2, at)?;
-    let dimension = storage.expr_type(arguments[1], at)?;
-    if !dimension.is_scalar() || dimension.scalar_type() != ScalarType::Integer {
-        return Err(DaeConstructionError::InvalidSubscript { span: at.span() });
-    }
-    Ok(ValueType::scalar(ScalarType::Integer))
-}
-
-fn shaped_builtin_result(
-    storage: &Storage,
-    builtin: PureBuiltin,
-    arguments: &[ExprId<'_>],
-    first: &ValueType,
-    at: DaeProvenance,
-) -> Result<ValueType, DaeConstructionError> {
-    let (scalar, extents) = match builtin {
-        PureBuiltin::Zeros | PureBuiltin::Ones => (ScalarType::Real, arguments),
-        PureBuiltin::Fill if arguments.len() >= 2 && first.is_scalar() => {
-            (first.scalar_type(), &arguments[1..])
-        }
-        PureBuiltin::Fill if arguments.len() < 2 => {
-            return Err(invalid_arity(2, arguments.len(), at));
-        }
-        PureBuiltin::Fill => return Err(DaeConstructionError::ShapeMismatch { span: at.span() }),
-        PureBuiltin::Linspace => {
-            expect_arity(arguments, 3, at)?;
-            let endpoints = common_value_type(first, storage.expr_type(arguments[1], at)?, at)?;
-            let extent = literal_array_extent(storage, arguments[2], at)?;
-            if !endpoints.is_scalar() {
-                return Err(DaeConstructionError::ShapeMismatch { span: at.span() });
-            }
-            if extent < 2 {
-                return Err(DaeConstructionError::InvalidArrayExtent { span: at.span() });
-            }
-            return Ok(ValueType::array(ScalarType::Real, [extent]));
-        }
-        PureBuiltin::Cross => {
-            expect_arity(arguments, 2, at)?;
-            let result = common_value_type(first, storage.expr_type(arguments[1], at)?, at)?;
-            if result.dimensions() != [3] {
-                return Err(DaeConstructionError::ShapeMismatch { span: at.span() });
-            }
-            return Ok(result);
-        }
-        _ => unreachable!("only compact shaped builtins use this validator"),
-    };
-    let dimensions = extents
-        .iter()
-        .copied()
-        .map(|expression| literal_array_extent(storage, expression, at))
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(ValueType::array(scalar, dimensions))
-}
-
-fn literal_array_extent(
-    storage: &Storage,
-    expression: ExprId<'_>,
-    at: DaeProvenance,
-) -> Result<u32, DaeConstructionError> {
-    let value_type = storage.expr_type(expression, at)?;
-    if !value_type.is_scalar() || value_type.scalar_type() != ScalarType::Integer {
-        return Err(DaeConstructionError::InvalidArrayExtent { span: at.span() });
-    }
-    u32::try_from(
-        storage
-            .static_integer(expression)
-            .ok_or(DaeConstructionError::InvalidArrayExtent { span: at.span() })?,
-    )
-    .map_err(|_| DaeConstructionError::InvalidArrayExtent { span: at.span() })
-}
-
-fn expect_arity(
-    arguments: &[ExprId<'_>],
-    expected: usize,
-    at: DaeProvenance,
-) -> Result<(), DaeConstructionError> {
-    if arguments.len() == expected {
-        return Ok(());
-    }
-    Err(invalid_arity(expected, arguments.len(), at))
-}
-
-fn range_extent(
-    start: i64,
-    step: i64,
-    stop: i64,
-    at: DaeProvenance,
-) -> Result<u32, DaeConstructionError> {
-    if (step > 0 && start > stop) || (step < 0 && start < stop) {
-        return Ok(0);
-    }
-    let distance = i128::from(stop) - i128::from(start);
-    let steps = distance / i128::from(step);
-    u32::try_from(steps + 1)
-        .map_err(|_| DaeConstructionError::RangeExtentOverflow { span: at.span() })
-}
-
-fn checked_u32(
-    value: usize,
-    arena: &'static str,
-    at: DaeProvenance,
-) -> Result<u32, DaeConstructionError> {
-    u32::try_from(value).map_err(|_| DaeConstructionError::CapacityExceeded {
-        arena,
-        attempted_index: value,
-        span: at.span(),
-    })
-}
-
-fn type_mismatch(
-    expected: ScalarType,
-    found: ScalarType,
-    at: DaeProvenance,
-) -> DaeConstructionError {
-    DaeConstructionError::TypeMismatch {
-        expected,
-        found,
-        span: at.span(),
-    }
-}
-
-fn validate_subscript<'dae>(
-    storage: &Storage,
-    expression: ExprId<'dae>,
-    expect_scalar: bool,
-    at: DaeProvenance,
-) -> Result<(), DaeConstructionError> {
-    let ty = storage.expr_type(expression, at)?;
-    let scalar_matches = ty.is_scalar() == expect_scalar;
-    if ty.scalar_type() == ScalarType::Integer && scalar_matches {
-        return Ok(());
-    }
-    Err(DaeConstructionError::InvalidSubscript { span: at.span() })
 }
 
 pub(crate) fn source_text(

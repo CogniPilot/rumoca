@@ -324,10 +324,10 @@ mod tests {
         session
             .build_resolved()
             .expect("resolved tree should be available");
-        let tree = &session
+        let tree = session
             .ensure_resolved()
             .expect("resolved tree should be cached")
-            .0;
+            .inner();
         let cache = DependencyFingerprintCache::from_tree(tree);
         let deps = cache
             .class_dependencies()
@@ -445,10 +445,10 @@ mod tests {
         session_v1
             .build_resolved()
             .expect("first tree should resolve");
-        let tree_v1 = &session_v1
+        let tree_v1 = session_v1
             .ensure_resolved()
             .expect("first resolved tree should be cached")
-            .0;
+            .inner();
         let mut cache_v1 = DependencyFingerprintCache::from_tree(tree_v1);
         let fingerprint_v1 = cache_v1.model_fingerprint("P.Root");
 
@@ -459,10 +459,10 @@ mod tests {
         session_v2
             .build_resolved()
             .expect("second tree should resolve");
-        let tree_v2 = &session_v2
+        let tree_v2 = session_v2
             .ensure_resolved()
             .expect("second resolved tree should be cached")
-            .0;
+            .inner();
         let mut cache_v2 = DependencyFingerprintCache::from_tree(tree_v2);
         let fingerprint_v2 = cache_v2.model_fingerprint("P.Root");
 
@@ -498,10 +498,10 @@ mod tests {
         session
             .build_resolved()
             .expect("resolved tree should be available");
-        let tree = &session
+        let tree = session
             .ensure_resolved()
             .expect("resolved tree should be cached")
-            .0;
+            .inner();
         let cache = DependencyFingerprintCache::from_tree(tree);
         let deps = cache
             .class_dependencies()
@@ -528,7 +528,7 @@ mod tests {
         session
             .ensure_resolved()
             .expect("resolved tree should be cached")
-            .0
+            .inner()
             .clone()
     }
 

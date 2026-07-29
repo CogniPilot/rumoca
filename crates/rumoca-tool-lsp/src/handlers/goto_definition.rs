@@ -309,7 +309,7 @@ end Modelica;
         let import_line = source.lines().nth(2).expect("import line");
         let char_pos = import_line.find("PID").expect("PID token") as u32 + 1;
 
-        let result = handle_goto_definition(ast, Some(&resolved.0), source, &uri, 2, char_pos);
+        let result = handle_goto_definition(ast, Some(resolved.inner()), source, &uri, 2, char_pos);
         match result {
             Some(GotoDefinitionResponse::Scalar(location)) => {
                 let expected = Url::from_file_path(&modelica_path)
@@ -371,7 +371,7 @@ end Modelica;
         let import_line = source.lines().nth(1).expect("import line");
         let char_pos = import_line.find("PID").expect("PID token") as u32 + 1;
 
-        let result = handle_goto_definition(&ast, Some(&resolved.0), source, &uri, 1, char_pos);
+        let result = handle_goto_definition(&ast, Some(&resolved), source, &uri, 1, char_pos);
         match result {
             Some(GotoDefinitionResponse::Scalar(location)) => {
                 let expected = Url::from_file_path(&modelica_path)

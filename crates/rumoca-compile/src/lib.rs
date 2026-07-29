@@ -202,7 +202,6 @@ pub mod compile {
     pub use rumoca_core::{
         Causality as AstCausality, Token as AstToken, VarName, Variability as AstVariability,
     };
-    pub use rumoca_ir_ast::ResolvedTree;
     pub use rumoca_ir_ast::{
         Component as AstComponent, ComponentRefPart as AstComponentRefPart,
         ComponentReference as AstComponentReference, Expression as AstExpression,

@@ -12,7 +12,7 @@ fn flatten_model(source: &str, model_name: &str) -> rumoca_ir_flat::Model {
     tree.source_map.add("connection_golden.mo", source);
     let parsed = rumoca_ir_ast::ParsedTree::new(tree);
     let resolved = resolve(parsed).expect("resolve should succeed");
-    let tree = &resolved.0;
+    let tree = resolved.inner();
     let mut overlay = instantiate_model(tree, model_name).expect("instantiate should succeed");
     typecheck_instanced(tree, &mut overlay, model_name).expect("typecheck should succeed");
     flatten_ref(tree, &overlay, model_name).expect("flatten should succeed")

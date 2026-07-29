@@ -1,7 +1,7 @@
 use super::*;
 use crate::session::compile_support::finalize_strict_compile_report_from_uncached_targets;
 
-/// Pre-compiled source root for efficient multi-model compilation.
+/// Indexed source root for efficient multi-model compilation.
 ///
 /// This is a convenience wrapper around [`Session`] that initializes from
 /// a [`ast::StoredDefinition`]. Use this when you've already parsed your source root
@@ -9,28 +9,44 @@ use crate::session::compile_support::finalize_strict_compile_report_from_uncache
 ///
 /// For new code, consider using [`Session`] directly with [`Session::add_parsed_batch`].
 pub struct CompiledSourceRoot {
-    resolved: Arc<ast::ResolvedTree>,
+    resolution: SourceRootResolution,
+    resolved_targets: Mutex<IndexMap<String, Arc<ResolvedTree>>>,
     model_names: Vec<String>,
     class_type_counts: std::collections::HashMap<String, usize>,
     class_dependencies: IndexMap<String, IndexSet<String>>,
-    resolve_diagnostics: CommonDiagnostics,
     pub(super) compile_cache: Mutex<IndexMap<String, PhaseResult>>,
+}
+
+enum SourceRootResolution {
+    Complete(Arc<ResolvedTree>),
+    Incomplete {
+        tree: Arc<ast::ClassTree>,
+        documents: Vec<ParsedSourceDocument>,
+    },
+}
+
+impl SourceRootResolution {
+    fn tree(&self) -> &ast::ClassTree {
+        match self {
+            Self::Complete(resolved) => resolved.inner(),
+            Self::Incomplete { tree, .. } => tree,
+        }
+    }
 }
 
 impl CompiledSourceRoot {
     fn from_indexed_state(
-        resolved: Arc<ast::ResolvedTree>,
+        resolved: Arc<ResolvedTree>,
         model_names: Vec<String>,
         class_type_counts: std::collections::HashMap<String, usize>,
-        resolve_diagnostics: CommonDiagnostics,
     ) -> Self {
-        let dependency_fingerprints = DependencyFingerprintCache::from_tree(&resolved.0);
+        let dependency_fingerprints = DependencyFingerprintCache::from_tree(resolved.inner());
         Self {
-            resolved,
+            resolution: SourceRootResolution::Complete(resolved),
+            resolved_targets: Mutex::new(IndexMap::new()),
             model_names,
             class_type_counts,
             class_dependencies: dependency_fingerprints.class_dependencies().clone(),
-            resolve_diagnostics,
             compile_cache: Mutex::new(IndexMap::new()),
         }
     }
@@ -42,61 +58,88 @@ impl CompiledSourceRoot {
         def: ast::StoredDefinition,
         source_map: SourceMap,
     ) -> Result<Self> {
-        let mut session = Session::new(SessionConfig::default());
-        session.add_parsed(SYNTHETIC_SOURCE_ROOT_URI, def);
-        session.build_resolved()?;
-        let mut resolved = session.ensure_resolved()?.clone();
-        Arc::make_mut(&mut resolved).0.source_map = source_map;
-        let model_names = session.query_state.resolved.model_names.clone();
-        let class_type_counts = collect_class_type_counts(&resolved.0.definitions);
+        let mut tree = ast::ClassTree::from_parsed(def);
+        tree.source_map = source_map;
+        let resolved = Arc::new(
+            rumoca_phase_resolve::resolve(ast::ParsedTree::new(tree))
+                .map_err(|diagnostics| diagnostics_to_anyhow(&diagnostics))?,
+        );
+        let model_names = collect_model_names(&resolved.inner().definitions);
+        let class_type_counts = collect_class_type_counts(&resolved.inner().definitions);
         Ok(Self::from_indexed_state(
             resolved,
             model_names,
             class_type_counts,
-            CommonDiagnostics::new(),
         ))
     }
 
-    /// Create a compiled source root from a parsed batch, indexing it tolerantly.
+    /// Create a compiled source root from a parsed batch.
     ///
-    /// This preserves whole-source-root resolve diagnostics for later strict
-    /// target-closure compilation without requiring the entire source root to
-    /// resolve cleanly up front.
-    pub fn from_parsed_batch_tolerant(
+    /// The full batch becomes a planning tree. Each requested target then
+    /// receives an independently resolved source-closure proof before any
+    /// semantic compilation phase runs.
+    pub fn from_parsed_batch_with_resolution_planning(
         documents: Vec<(String, ast::StoredDefinition)>,
         source_map: SourceMap,
     ) -> Result<Self> {
         let mut session = Session::new(SessionConfig::default());
-        session.add_parsed_batch(documents);
-        let (mut resolved, resolve_diagnostics) = session
-            .build_resolved_for_strict_compile_with_diagnostics()
+        let documents = documents
+            .into_iter()
+            .map(|(uri, definition)| {
+                let source_id = source_map
+                    .get_id(&uri)
+                    .ok_or_else(|| anyhow::anyhow!("source map is missing `{uri}`"))?;
+                let (_, source) = source_map
+                    .get_source(source_id)
+                    .ok_or_else(|| anyhow::anyhow!("source map is missing `{uri}`"))?;
+                Ok(ParsedSourceDocument::from_parsed(
+                    uri,
+                    Arc::<str>::from(source),
+                    definition,
+                ))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        session.add_in_memory_parsed_batch(documents.clone());
+        let (plan, _) = session
+            .build_resolution_plan_for_strict_compile()
             .map_err(|diags| diagnostics_to_anyhow(&diags))?;
-        Arc::make_mut(&mut resolved).0.source_map = source_map;
-        Ok(Self::from_indexed_state(
-            resolved.clone(),
-            session.query_state.resolved.model_names.clone(),
-            collect_class_type_counts(&resolved.0.definitions),
-            resolve_diagnostics,
-        ))
+        let resolution = match plan {
+            ResolutionPlanningTree::Complete(resolved) => SourceRootResolution::Complete(resolved),
+            ResolutionPlanningTree::Incomplete(tree) => {
+                SourceRootResolution::Incomplete { tree, documents }
+            }
+        };
+        let tree = resolution.tree();
+        let dependency_fingerprints = DependencyFingerprintCache::from_tree(tree);
+        let class_type_counts = collect_class_type_counts(&tree.definitions);
+        let class_dependencies = dependency_fingerprints.class_dependencies().clone();
+        Ok(Self {
+            resolution,
+            resolved_targets: Mutex::new(IndexMap::new()),
+            model_names: session.query_state.resolved.model_names.clone(),
+            class_type_counts,
+            class_dependencies,
+            compile_cache: Mutex::new(IndexMap::new()),
+        })
     }
 
     /// Create a compiled source root from an already-resolved tree.
     ///
     /// This avoids re-running resolve and is intended for callers that already
     /// hold a validated resolved tree (e.g., MSL regression harness).
-    pub fn from_resolved_tree(resolved: ast::ResolvedTree, model_names: Vec<String>) -> Self {
+    pub fn from_resolved_tree(resolved: ResolvedTree, model_names: Vec<String>) -> Self {
         let resolved = Arc::new(resolved);
         Self::from_indexed_state(
             resolved.clone(),
             model_names,
-            collect_class_type_counts(&resolved.0.definitions),
-            CommonDiagnostics::new(),
+            collect_class_type_counts(&resolved.inner().definitions),
         )
     }
 
     /// Get all model names in the source root.
     ///
-    /// This is infallible after construction since build_resolved was called.
+    /// Names come from the construction-time planning tree and remain
+    /// available even when unrelated references prevent full-root resolution.
     pub fn model_names(&self) -> &[String] {
         &self.model_names
     }
@@ -108,9 +151,10 @@ impl CompiledSourceRoot {
 
     /// Get the class tree.
     ///
-    /// This is infallible after construction since build_resolved was called.
+    /// This is the read-only planning view. It is not evidence that every
+    /// reference in the source root resolved successfully.
     pub fn tree(&self) -> &ast::ClassTree {
-        &self.resolved_tree().0
+        self.resolution.tree()
     }
 
     /// Count classes reachable from a strict target model.
@@ -120,9 +164,62 @@ impl CompiledSourceRoot {
             .len()
     }
 
-    /// Get the resolved tree reference (guaranteed present after construction).
-    fn resolved_tree(&self) -> &Arc<ast::ResolvedTree> {
-        &self.resolved
+    fn resolve_target_detailed(
+        &self,
+        model_name: &str,
+    ) -> std::result::Result<Arc<ResolvedTree>, StrictTargetResolutionFailure> {
+        match &self.resolution {
+            SourceRootResolution::Complete(resolved) => Ok(resolved.clone()),
+            SourceRootResolution::Incomplete { documents, .. } => {
+                let cached = self
+                    .resolved_targets
+                    .lock()
+                    .map_err(|_| self.target_resolution_cache_failure(model_name))?
+                    .get(model_name)
+                    .cloned();
+                if let Some(resolved) = cached {
+                    return Ok(resolved);
+                }
+                let mut session = Session::default();
+                session.add_in_memory_parsed_batch(documents.clone());
+                let resolved = session
+                    .resolve_strict_target(model_name)
+                    .map(|target| target.resolved)?;
+                self.resolved_targets
+                    .lock()
+                    .map_err(|_| self.target_resolution_cache_failure(model_name))?
+                    .insert(model_name.to_string(), resolved.clone());
+                Ok(resolved)
+            }
+        }
+    }
+
+    fn target_resolution_cache_failure(&self, model_name: &str) -> StrictTargetResolutionFailure {
+        StrictTargetResolutionFailure {
+            failures: vec![ModelFailureDiagnostic {
+                model_name: model_name.to_string(),
+                phase: None,
+                error_code: None,
+                error: "target resolution cache poisoned".to_string(),
+                primary_label: None,
+            }],
+            diagnostics: Vec::new(),
+            source_map: Box::new(self.tree().source_map.clone()),
+        }
+    }
+
+    fn resolve_target(&self, model_name: &str) -> Result<Arc<ResolvedTree>> {
+        self.resolve_target_detailed(model_name).map_err(|failure| {
+            anyhow::anyhow!(
+                "{}",
+                format_strict_failure_summary(
+                    model_name,
+                    requested_missing_result_message(model_name, &failure.failures),
+                    &failure.failures,
+                    8,
+                )
+            )
+        })
     }
 
     fn cached_phase_result(&self, model_name: &str) -> Result<PhaseResult> {
@@ -130,7 +227,8 @@ impl CompiledSourceRoot {
             return Ok(result);
         }
 
-        let result = compile_model_internal(&self.resolved_tree().0, model_name);
+        let resolved = self.resolve_target(model_name)?;
+        let result = compile_model_internal(resolved.inner(), model_name);
         self.compile_cache()?
             .entry(model_name.to_string())
             .or_insert_with(|| result.clone());
@@ -155,11 +253,46 @@ impl CompiledSourceRoot {
         };
 
         if !missing.is_empty() {
-            let tree = &self.resolved_tree().0;
-            let compiled_misses: Vec<_> = missing
+            let compiled_misses = missing
                 .par_iter()
-                .map(|name| (name.clone(), compile_model_internal(tree, name)))
-                .collect();
+                .map(|name| {
+                    let resolved = self.resolve_target(name)?;
+                    Ok((name.clone(), compile_model_internal(resolved.inner(), name)))
+                })
+                .collect::<Result<Vec<_>>>()?;
+
+            let mut cache = self.compile_cache()?;
+            for (name, result) in compiled_misses {
+                cache.entry(name.clone()).or_insert_with(|| result.clone());
+                results.insert(name, result);
+            }
+        }
+
+        Ok(targets
+            .iter()
+            .filter_map(|target| {
+                results
+                    .shift_remove(target)
+                    .map(|result| (target.clone(), result))
+            })
+            .collect())
+    }
+
+    fn compile_targets_with_resolved_cache(
+        &self,
+        resolved: &ResolvedTree,
+        targets: &[String],
+    ) -> Result<Vec<(String, PhaseResult)>> {
+        let (mut results, missing) = {
+            let cache = self.compile_cache()?;
+            split_cached_target_results(&cache, targets)
+        };
+
+        if !missing.is_empty() {
+            let compiled_misses = missing
+                .par_iter()
+                .map(|name| (name.clone(), compile_model_internal(resolved.inner(), name)))
+                .collect::<Vec<_>>();
 
             let mut cache = self.compile_cache()?;
             for (name, result) in compiled_misses {
@@ -215,9 +348,9 @@ impl CompiledSourceRoot {
     where
         F: FnMut(String, PhaseResult) + Send,
     {
-        let tree = &self.resolved_tree().0;
         for name in missing {
-            let result = compile_model_internal(tree, &name);
+            let resolved = self.resolve_target(&name)?;
+            let result = compile_model_internal(resolved.inner(), &name);
             self.compile_cache()?
                 .entry(name.clone())
                 .or_insert_with(|| result.clone());
@@ -257,11 +390,11 @@ impl CompiledSourceRoot {
         missing: &[String],
         result_tx: std::sync::mpsc::SyncSender<(String, PhaseResult)>,
     ) -> Result<()> {
-        let tree = &self.resolved_tree().0;
         let results = missing
             .par_iter()
             .map_with(result_tx, |tx, name| -> Result<()> {
-                let result = compile_model_internal(tree, name);
+                let resolved = self.resolve_target(name)?;
+                let result = compile_model_internal(resolved.inner(), name);
                 self.compile_cache()?
                     .entry(name.clone())
                     .or_insert_with(|| result.clone());
@@ -282,26 +415,23 @@ impl CompiledSourceRoot {
         &self,
         model_name: &str,
     ) -> Result<StrictCompileReport> {
-        let tree = &self.resolved_tree().0;
+        let resolved = match self.resolve_target_detailed(model_name) {
+            Ok(resolved) => resolved,
+            Err(failure) => {
+                return Ok(StrictCompileReport {
+                    requested_model: model_name.to_string(),
+                    requested_result: None,
+                    summary: CompilationSummary::default(),
+                    failures: failure.failures,
+                    source_map: Some(*failure.source_map),
+                });
+            }
+        };
+        let tree = resolved.inner();
         let closure = self.reachable_model_closure(model_name);
-        let target_source_files = collect_target_source_files(tree, &closure.reachable_classes);
-        let failures = collect_resolve_failures_for_files(
-            &self.resolve_diagnostics,
-            &tree.source_map,
-            &target_source_files,
-        );
-        // Resolve errors in the target's own files make every later phase a
-        // cascade, so stop here: one user error, one diagnostic.
-        if !failures.is_empty() {
-            return Ok(StrictCompileReport {
-                requested_model: model_name.to_string(),
-                requested_result: None,
-                summary: CompilationSummary::default(),
-                failures,
-                source_map: Some(tree.source_map.clone()),
-            });
-        }
-        let results = self.compile_targets_with_cache(&closure.compile_targets)?;
+        let failures = Vec::new();
+        let results =
+            self.compile_targets_with_resolved_cache(&resolved, &closure.compile_targets)?;
         Ok(finalize_strict_compile_report(
             tree, model_name, failures, results,
         ))
@@ -313,24 +443,21 @@ impl CompiledSourceRoot {
         &self,
         model_name: &str,
     ) -> StrictCompileReport {
-        let tree = &self.resolved_tree().0;
+        let resolved = match self.resolve_target_detailed(model_name) {
+            Ok(resolved) => resolved,
+            Err(failure) => {
+                return StrictCompileReport {
+                    requested_model: model_name.to_string(),
+                    requested_result: None,
+                    summary: CompilationSummary::default(),
+                    failures: failure.failures,
+                    source_map: Some(*failure.source_map),
+                };
+            }
+        };
+        let tree = resolved.inner();
         let closure = self.reachable_model_closure(model_name);
-        let target_source_files = collect_target_source_files(tree, &closure.reachable_classes);
-        let failures = collect_resolve_failures_for_files(
-            &self.resolve_diagnostics,
-            &tree.source_map,
-            &target_source_files,
-        );
-        // Same cascade gate as the cached path above.
-        if !failures.is_empty() {
-            return StrictCompileReport {
-                requested_model: model_name.to_string(),
-                requested_result: None,
-                summary: CompilationSummary::default(),
-                failures,
-                source_map: Some(tree.source_map.clone()),
-            };
-        }
+        let failures = Vec::new();
         finalize_strict_compile_report_from_uncached_targets(
             tree,
             model_name,
@@ -346,21 +473,18 @@ impl CompiledSourceRoot {
         &self,
         model_name: &str,
     ) -> std::result::Result<Box<DaeCompilationResult>, String> {
-        let tree = &self.resolved_tree().0;
-        let closure = self.reachable_model_closure(model_name);
-        let target_source_files = collect_target_source_files(tree, &closure.reachable_classes);
-        let mut failures = collect_resolve_failures_for_files(
-            &self.resolve_diagnostics,
-            &tree.source_map,
-            &target_source_files,
-        );
-        let target_has_resolve_failures = !failures.is_empty();
-        if target_has_resolve_failures {
-            let requested = requested_missing_result_message(model_name, &failures);
-            return Err(format_strict_failure_summary(
-                model_name, requested, &failures, 8,
-            ));
-        }
+        let resolved = self
+            .resolve_target_detailed(model_name)
+            .map_err(|failure| {
+                format_strict_failure_summary(
+                    model_name,
+                    requested_missing_result_message(model_name, &failure.failures),
+                    &failure.failures,
+                    8,
+                )
+            })?;
+        let tree = resolved.inner();
+        let mut failures = Vec::new();
 
         let requested_result = compile_model_dae_internal(tree, model_name);
         let requested = dae_phase_result_requested_message(model_name, &requested_result);
@@ -465,10 +589,6 @@ impl CompiledSourceRoot {
         Ok((results, summary))
     }
 }
-
-/// Display name used for an AST handed to the compiler as one stored
-/// definition. Its canonical source text is supplied separately.
-const SYNTHETIC_SOURCE_ROOT_URI: &str = "<parsed-source-root>";
 
 #[cfg(not(target_arch = "wasm32"))]
 fn drain_compile_results<F>(

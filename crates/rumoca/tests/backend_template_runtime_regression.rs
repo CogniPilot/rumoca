@@ -52,7 +52,7 @@ fn dae_template_context_exposes_checked_semantic_schema() {
         .render_template_str("{{ dae.schema.name }}:{{ dae.schema.version }}")
         .expect("checked DAE template renders");
 
-    assert_eq!(rendered, "rumoca.checked-dae-template:1");
+    assert_eq!(rendered, "rumoca.checked-dae-template:2");
 }
 
 #[test]

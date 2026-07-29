@@ -147,13 +147,13 @@ fn push_children<'dae>(
         } => pending.extend(operands.iter()),
         ExpressionOperation::Comprehension { body, .. } => pending.push(body),
         ExpressionOperation::Field { base, .. } => pending.push(base),
-        ExpressionOperation::FunctionValue { definition, .. } => pending.push(definition),
+        ExpressionOperation::FunctionValue { definition, .. } => pending.push(definition.rhs()),
         ExpressionOperation::FunctionFoldOutput { fold, .. } => {
             let fold = dae
                 .function_fold(fold)
                 .expect("checked function fold identity resolves");
-            pending.extend(fold.initial_values().iter());
-            pending.extend(fold.update_values().iter());
+            pending.extend(fold.initial_values().rhs_iter());
+            pending.extend(fold.update_values().rhs_iter());
         }
         ExpressionOperation::Index { base, subscripts } => {
             push_subscripts(subscripts, pending);

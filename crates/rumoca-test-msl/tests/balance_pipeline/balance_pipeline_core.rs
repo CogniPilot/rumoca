@@ -1493,22 +1493,24 @@ fn prepare_compiled_source_root(
             )));
         }
     };
-    let source_root =
-        match CompiledSourceRoot::from_parsed_batch_tolerant(parsed_successes, source_map) {
-            Ok(source_root) => std::sync::Arc::new(source_root),
-            Err(error) => {
-                println!("Failed to build tolerant source-root index: {error}");
-                let mut summary = empty_summary(total_mo_files, parse_errors);
-                summary.resolve_errors = 1;
-                timings.session_build_seconds = session_start.elapsed().as_secs_f64();
-                return Err(Box::new(finalize_early_summary(
-                    summary,
-                    timings,
-                    frontend_compile_start,
-                    core_start,
-                )));
-            }
-        };
+    let source_root = match CompiledSourceRoot::from_parsed_batch_with_resolution_planning(
+        parsed_successes,
+        source_map,
+    ) {
+        Ok(source_root) => std::sync::Arc::new(source_root),
+        Err(error) => {
+            println!("Failed to build tolerant source-root index: {error}");
+            let mut summary = empty_summary(total_mo_files, parse_errors);
+            summary.resolve_errors = 1;
+            timings.session_build_seconds = session_start.elapsed().as_secs_f64();
+            return Err(Box::new(finalize_early_summary(
+                summary,
+                timings,
+                frontend_compile_start,
+                core_start,
+            )));
+        }
+    };
     let model_names = source_root.model_names().to_vec();
     let class_type_counts = source_root.class_type_counts().clone();
     timings.session_build_seconds = session_start.elapsed().as_secs_f64();

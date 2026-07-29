@@ -4424,9 +4424,11 @@ dependencies = [
 name = "rumoca-core"
 version = "0.9.20"
 dependencies = [
+ "bincode",
  "indexmap 2.14.0",
  "miette",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -4752,6 +4754,7 @@ dependencies = [
  "rumoca-core",
  "rumoca-eval-dae",
  "rumoca-ir-dae",
+ "serde_json",
  "thiserror 2.0.18",
  "tracing",
 ]

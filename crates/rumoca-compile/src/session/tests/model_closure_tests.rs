@@ -34,11 +34,11 @@ fn index_dependency_source_root_with_cache(
 }
 
 fn strict_model_closure(session: &mut Session, model_name: &str) -> ReachableModelClosure {
-    let (resolved, _) = session
-        .build_resolved_for_strict_compile_with_diagnostics()
+    let (plan, _) = session
+        .build_resolution_plan_for_strict_compile()
         .expect("strict compile tree should build");
     session.reachable_model_closure_query(
-        &resolved.0,
+        plan.tree(),
         ResolveBuildMode::StrictCompileRecovery,
         model_name,
     )
@@ -186,8 +186,8 @@ fn warm_source_root_restore_keeps_reachable_model_closure_warm_for_unchanged_tar
         "warm reopen should reuse the outer parsed source-root snapshot",
     );
 
-    let (resolved, _) = second
-        .build_resolved_for_strict_compile_with_diagnostics()
+    let (plan, _) = second
+        .build_resolution_plan_for_strict_compile()
         .expect("strict compile tree should build after warm reopen");
     second
         .query_state
@@ -202,7 +202,7 @@ fn warm_source_root_restore_keeps_reachable_model_closure_warm_for_unchanged_tar
         );
 
     let first_closure = second.reachable_model_closure_query(
-        &resolved.0,
+        plan.tree(),
         ResolveBuildMode::StrictCompileRecovery,
         "Lib.Derived",
     );
@@ -234,7 +234,7 @@ fn warm_source_root_restore_keeps_reachable_model_closure_warm_for_unchanged_tar
     };
 
     let warm = second.reachable_model_closure_query(
-        &resolved.0,
+        plan.tree(),
         ResolveBuildMode::StrictCompileRecovery,
         "Lib.Derived",
     );

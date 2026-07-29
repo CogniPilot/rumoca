@@ -550,7 +550,7 @@ fn parameter_static_refresh_targets(plan: &RefreshPlan, state_count: usize) -> B
             if static_targets.contains(&refresh_row.target_index) {
                 continue;
             }
-            let Some(row) = plan.source_block.programs.get(refresh_row.row_idx) else {
+            let Some(row) = plan.source_block.programs().get(refresh_row.row_idx) else {
                 continue;
             };
             if parameter_static_refresh_row(
@@ -638,7 +638,7 @@ fn dependency_causal_projection_is_certified(
             row.equation_index < state_count
                 || row.equation_index >= solver_count
                 || row.output_offset != 0
-                || solve::ScalarProgramBlock::program_output_count(&block.programs[row.row_idx])
+                || solve::ScalarProgramBlock::program_output_count(&block.programs()[row.row_idx])
                     != 1
                 || row.assignment_target != Some(row.target_index)
                 || !row.direct_assignment_certified
@@ -691,7 +691,7 @@ fn order_refresh_rows(
     reserve_refresh_vec_capacity(&mut indegree, rows.len(), "refresh order indegree", span)?;
     indegree.resize(rows.len(), 0usize);
     for (row_pos, row) in rows.iter().enumerate() {
-        let Some(ops) = block.programs.get(row.row_idx) else {
+        let Some(ops) = block.programs().get(row.row_idx) else {
             continue;
         };
         for dep_index in row_y_dependencies(ops, row.target_index, state_count) {
@@ -827,11 +827,11 @@ fn derivative_row_dependencies(
     let mut deps = IndexSet::new();
     reserve_refresh_index_set_capacity(
         &mut deps,
-        state_count.min(block.programs.len()),
+        state_count.min(block.programs().len()),
         "derivative dependency set",
         first_block_span(block),
     )?;
-    for row_idx in 0..state_count.min(block.programs.len()) {
+    for row_idx in 0..state_count.min(block.programs().len()) {
         for index in row_all_y_dependencies(block, row_idx).filter(|index| *index >= state_count) {
             reserve_refresh_index_set_capacity(
                 &mut deps,
@@ -859,11 +859,11 @@ fn scalar_program_block_dependencies(
     let mut deps = IndexSet::new();
     reserve_refresh_index_set_capacity(
         &mut deps,
-        block.programs.len(),
+        block.programs().len(),
         "scalar block dependency set",
         first_block_span(block),
     )?;
-    for row_idx in 0..block.programs.len() {
+    for row_idx in 0..block.programs().len() {
         for index in row_all_y_dependencies(block, row_idx).filter(|index| *index >= state_count) {
             reserve_refresh_index_set_capacity(
                 &mut deps,
@@ -895,7 +895,7 @@ fn row_all_y_dependencies(
     row_idx: usize,
 ) -> impl Iterator<Item = usize> + '_ {
     block
-        .programs
+        .programs()
         .get(row_idx)
         .into_iter()
         .flat_map(|row| row.iter())
@@ -926,15 +926,15 @@ fn output_row_positions(
     let mut positions = IndexMap::new();
     reserve_refresh_index_map_capacity(
         &mut positions,
-        block.output_indices.len(),
+        block.output_indices().len(),
         "output-row position map",
         span,
     )?;
     let mut output_ordinal = 0usize;
-    for (program_index, program) in block.programs.iter().enumerate() {
+    for (program_index, program) in block.programs().iter().enumerate() {
         let output_count = solve::ScalarProgramBlock::program_output_count(program);
         for output_offset in 0..output_count {
-            let Some(output_index) = block.output_indices.get(output_ordinal).copied() else {
+            let Some(output_index) = block.output_indices().get(output_ordinal).copied() else {
                 return Err(EvalSolveError::InvalidRow {
                     message: format!(
                         "program output ordinal {output_ordinal} is missing scalar output metadata"
@@ -966,11 +966,11 @@ fn output_row_positions(
             }
         }
     }
-    if output_ordinal != block.output_indices.len() {
+    if output_ordinal != block.output_indices().len() {
         return Err(EvalSolveError::InvalidRow {
             message: format!(
                 "scalar program block has {} output indices but {output_ordinal} StoreOutput ops",
-                block.output_indices.len()
+                block.output_indices().len()
             ),
             span,
         });

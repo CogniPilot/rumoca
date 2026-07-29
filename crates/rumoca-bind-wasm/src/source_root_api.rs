@@ -432,10 +432,7 @@ pub fn compile_check_with_source_roots_with_options(
                     "check_model_ms": check_ms,
                     "total_ms": total_ms,
                     "strict": {
-                        "build_resolved_ms": strict_timing.build_resolved_ms,
-                        "reachable_closure_ms": strict_timing.reachable_closure_ms,
-                        "collect_parse_failures_ms": strict_timing.collect_parse_failures_ms,
-                        "collect_resolve_failures_ms": strict_timing.collect_resolve_failures_ms,
+                        "target_resolution_ms": strict_timing.target_resolution_ms,
                         "dae_phase_query_ms": strict_timing.dae_phase_query_ms,
                         "total_ms": strict_timing.total_ms,
                     }

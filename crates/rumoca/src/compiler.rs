@@ -44,8 +44,8 @@ use rumoca_compile::codegen::{
     render_dae_template_with_name, render_flat_template_with_name,
 };
 use rumoca_compile::compile::{
-    Dae, DaeCompilationResult as CompileDaeCompilationResult, FlatModel, PhaseResult, ResolvedTree,
-    Session, SessionConfig, SourceRootKind, VariableRole,
+    Dae, DaeCompilationResult as CompileDaeCompilationResult, FlatModel, PhaseResult, Session,
+    SessionConfig, SourceRootKind, VariableRole,
 };
 use rumoca_compile::parsing::collect_compile_unit_source_files;
 use rumoca_compile::source_roots::{
@@ -53,6 +53,7 @@ use rumoca_compile::source_roots::{
     referenced_unloaded_source_root_paths, render_source_root_status_message,
     resolve_source_root_cache_dir, source_root_source_set_key,
 };
+use rumoca_phase_resolve::ResolvedTree;
 use rumoca_sim::{lower_solve_artifacts, lower_solve_problem};
 
 use crate::error::CompilerError;

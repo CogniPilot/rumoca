@@ -378,7 +378,7 @@ fn derivative_non_state_loads(
     let state_count = model.state_scalar_count();
     let solver_count = model.solver_scalar_count();
     derivative_rows
-        .programs
+        .programs()
         .iter()
         .take(state_count)
         .flat_map(|row| non_state_y_loads(row, state_count, solver_count))
@@ -422,7 +422,7 @@ fn projection_plan_covers_non_state_loads(
             );
             return Ok(false);
         };
-        let Some(row) = implicit_rows.programs.get(program_idx) else {
+        let Some(row) = implicit_rows.program(program_idx) else {
             return Ok(false);
         };
         stack.extend(non_state_y_loads(row, state_count, solver_count));

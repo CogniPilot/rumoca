@@ -61,7 +61,6 @@ pub fn derive_jacobian_pattern_from_scalar_jvp(
     columns: usize,
     owner_span: Span,
 ) -> Result<StructuralPattern, EvalSolveError> {
-    block.validate_shape_contract("Jacobian sparsity derivation")?;
     if owner_span.is_dummy() {
         return Err(sparsity_error(
             "Jacobian sparsity requires source-backed owner provenance",
@@ -80,10 +79,10 @@ pub fn derive_jacobian_pattern_from_scalar_jvp(
 
     let mut row_dependencies = vec![None; rows];
     let mut output_ordinal = 0usize;
-    for (program_index, program) in block.programs.iter().enumerate() {
+    for (program_index, program) in block.programs().iter().enumerate() {
         let span = block.program_span(program_index).or(Some(owner_span));
         for dependencies in program_output_dependencies(program, span)? {
-            let output_index = *block.output_indices.get(output_ordinal).ok_or_else(|| {
+            let output_index = *block.output_indices().get(output_ordinal).ok_or_else(|| {
                 sparsity_error(
                     format!(
                         "Jacobian sparsity output {output_ordinal} has no checked output identity"
@@ -116,11 +115,11 @@ pub fn derive_jacobian_pattern_from_scalar_jvp(
             })?;
         }
     }
-    if output_ordinal != block.output_indices.len() {
+    if output_ordinal != block.output_indices().len() {
         return Err(sparsity_error(
             format!(
                 "Jacobian emitted {output_ordinal} outputs but carries {} output identities",
-                block.output_indices.len()
+                block.output_indices().len()
             ),
             Some(owner_span),
         ));
@@ -641,8 +640,11 @@ mod tests {
                 LinearOp::Const { dst: 1, value: 0.0 },
                 LinearOp::StoreOutput { src: 1 },
             ]],
-            span(),
-        );
+            span()
+                .require_provenance("sparsity fixture")
+                .expect("fixture span is source-backed"),
+        )
+        .expect("sparsity fixture is computable");
         let pattern = derive_jacobian_pattern_from_jvp(
             &ComputeBlock::from_scalar_program_block(block),
             2,
@@ -665,8 +667,11 @@ mod tests {
                 LinearOp::LoadSeed { dst: 0, index: 3 },
                 LinearOp::StoreOutput { src: 0 },
             ]],
-            span(),
-        );
+            span()
+                .require_provenance("sparsity fixture")
+                .expect("fixture span is source-backed"),
+        )
+        .expect("sparsity fixture is computable");
         let error = derive_jacobian_pattern_from_scalar_jvp(&block, 1, 3, span()).unwrap_err();
         assert!(error.to_string().contains("outside 0..3"));
     }
@@ -695,8 +700,11 @@ mod tests {
                 LinearOp::LoadSeed { dst: 0, index: 0 },
                 LinearOp::StoreOutput { src: 0 },
             ]],
-            span(),
-        );
+            span()
+                .require_provenance("sparsity fixture")
+                .expect("fixture span is source-backed"),
+        )
+        .expect("sparsity fixture is computable");
         let error = derive_jacobian_pattern_from_scalar_jvp(&block, 2, 1, span()).unwrap_err();
         assert!(error.to_string().contains("row extent 2"));
     }

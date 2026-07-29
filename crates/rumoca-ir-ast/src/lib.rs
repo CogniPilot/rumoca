@@ -362,7 +362,7 @@ impl<'tree> ClassDefIndex<'tree> {
 // proceeding. The underlying ClassTree is the same, but the wrappers provide
 // compile-time guarantees about which fields have been populated.
 //
-// Standalone typecheck progression: ParsedTree -> ResolvedTree -> TypedTree.
+// Standalone progression: ParsedTree -> phase-resolve::ResolvedTree -> TypedTree.
 // Production model compilation instantiates after resolve, then annotates the
 // InstanceOverlay with post-instantiation type information before flattening.
 
@@ -401,47 +401,6 @@ impl std::ops::Deref for ParsedTree {
 }
 
 impl std::ops::DerefMut for ParsedTree {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-
-/// A ClassTree that has completed name resolution.
-///
-/// At this stage:
-/// - All `def_id` fields are populated
-/// - All `scope_id` fields are populated
-/// - The `scope_tree` is fully built
-/// - `type_id` fields are still `None`
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ResolvedTree(pub ClassTree);
-
-impl ResolvedTree {
-    /// Create a new ResolvedTree from a ClassTree.
-    /// This should only be called by the resolve phase.
-    pub fn new(tree: ClassTree) -> Self {
-        Self(tree)
-    }
-
-    /// Get a reference to the inner ClassTree.
-    pub fn inner(&self) -> &ClassTree {
-        &self.0
-    }
-
-    /// Consume and return the inner ClassTree.
-    pub fn into_inner(self) -> ClassTree {
-        self.0
-    }
-}
-
-impl std::ops::Deref for ResolvedTree {
-    type Target = ClassTree;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl std::ops::DerefMut for ResolvedTree {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
     }

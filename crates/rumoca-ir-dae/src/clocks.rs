@@ -33,6 +33,7 @@ pub(crate) enum ClockedVariableRole {
 #[serde(deny_unknown_fields)]
 pub(crate) struct ClockOwnershipEntry {
     pub(crate) variable: u32,
+    #[serde(skip_serializing)]
     pub(crate) role: ClockedVariableRole,
     pub(crate) clock: u32,
     pub(crate) provenance: DaeProvenance,

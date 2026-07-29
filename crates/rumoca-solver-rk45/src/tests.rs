@@ -11,6 +11,15 @@ macro_rules! fixture_span {
     };
 }
 
+fn scalar_program_block(rows: Vec<Vec<LinearOp>>, span: rumoca_core::Span) -> ScalarProgramBlock {
+    ScalarProgramBlock::with_source_span(
+        rows,
+        span.require_provenance("RK45 fixture")
+            .expect("fixture span is source-backed"),
+    )
+    .expect("fixture program is computable")
+}
+
 fn periodic_schedule(period: f64, phase: f64) -> solve::PeriodicEventSchedule {
     solve::PeriodicEventSchedule::from_seconds(period, phase).unwrap()
 }
@@ -135,7 +144,7 @@ fn rk45_sets_terminal_marker_only_at_final_event() {
     model.problem.discrete.rhs = ScalarProgramBlock::default();
     model.parameters = vec![0.0];
     model.visible_names = vec!["terminal_marker".to_string()];
-    model.visible_value_rows = ScalarProgramBlock::with_source_span(
+    model.visible_value_rows = scalar_program_block(
         vec![vec![
             LinearOp::LoadP { dst: 0, index: 0 },
             LinearOp::StoreOutput { src: 0 },
@@ -272,7 +281,7 @@ fn rk45_snapshots_pre_params_before_event_updates() {
         &mut model,
         solve::scalar_slot_y(0),
         solve::DiscreteEventPreMode::EventEntry,
-        ScalarProgramBlock::with_source_span(
+        scalar_program_block(
             vec![vec![
                 LinearOp::LoadP { dst: 0, index: 0 },
                 LinearOp::Const {
@@ -313,7 +322,7 @@ fn rk45_terminate_returns_partial_success() {
         LinearOp::StoreOutput { src: 0 },
     ]]);
     model.initial_y = vec![0.0];
-    model.problem.events.root_conditions = ScalarProgramBlock::with_source_span(
+    model.problem.events.root_conditions = scalar_program_block(
         vec![vec![
             LinearOp::LoadY { dst: 0, index: 0 },
             LinearOp::Const {
@@ -425,7 +434,7 @@ fn rk45_applies_root_event_update() {
     model.initial_y = vec![0.0];
     model.problem.solve_layout.compiled_parameter_len = 1;
     model.problem.solve_layout.discrete_valued_scalar_names = vec!["m".to_string()];
-    model.problem.events.root_conditions = ScalarProgramBlock::with_source_span(
+    model.problem.events.root_conditions = scalar_program_block(
         vec![vec![
             LinearOp::LoadY { dst: 0, index: 0 },
             LinearOp::Const {
@@ -473,7 +482,7 @@ fn rk45_dense_root_localization_selects_earliest_crossing_and_state() {
         LinearOp::StoreOutput { src: 0 },
     ]]);
     model.initial_y = vec![1.0];
-    model.problem.events.root_conditions = ScalarProgramBlock::with_source_span(
+    model.problem.events.root_conditions = scalar_program_block(
         vec![root_threshold_row(1.08), root_threshold_row(1.05)],
         fixture_span!(),
     );
@@ -596,7 +605,7 @@ fn rk45_root_event_updates_relation_memory_for_continuous_if_branch() {
         &mut model,
         solve::scalar_slot_p(0),
         solve::DiscreteEventPreMode::FollowCurrent,
-        ScalarProgramBlock::with_source_span(
+        scalar_program_block(
             vec![vec![
                 LinearOp::LoadY { dst: 0, index: 0 },
                 LinearOp::Const { dst: 1, value: 0.0 },
@@ -611,7 +620,7 @@ fn rk45_root_event_updates_relation_memory_for_continuous_if_branch() {
             fixture_span!(),
         ),
     );
-    model.problem.events.root_conditions = ScalarProgramBlock::with_source_span(
+    model.problem.events.root_conditions = scalar_program_block(
         vec![vec![
             LinearOp::LoadY { dst: 0, index: 0 },
             LinearOp::StoreOutput { src: 0 },
@@ -685,7 +694,7 @@ fn rk45_periodic_event_seeds_scheduled_sample_relation_memory() {
     model.problem.solve_layout.relation_memory_parameter_indices = vec![0, 1];
     model.problem.clocks.periodic_event_schedules =
         vec![periodic_schedule(0.05, 0.05), periodic_schedule(0.07, 0.07)];
-    model.problem.events.root_conditions = ScalarProgramBlock::with_source_span(
+    model.problem.events.root_conditions = scalar_program_block(
         vec![
             vec![
                 LinearOp::Const { dst: 0, value: 1.0 },
@@ -716,7 +725,7 @@ fn rk45_periodic_event_seeds_scheduled_sample_relation_memory() {
         &mut model,
         solve::scalar_slot_p(2),
         solve::DiscreteEventPreMode::FollowCurrent,
-        ScalarProgramBlock::with_source_span(
+        scalar_program_block(
             vec![vec![
                 LinearOp::LoadP { dst: 0, index: 0 },
                 LinearOp::Const {
@@ -789,7 +798,7 @@ fn rk45_clears_scheduled_sample_relation_memory_between_ticks() {
         },
     ];
     model.problem.clocks.periodic_event_schedules = vec![periodic_schedule(0.05, 0.0)];
-    model.problem.events.root_conditions = ScalarProgramBlock::with_source_span(
+    model.problem.events.root_conditions = scalar_program_block(
         vec![vec![
             LinearOp::Const { dst: 0, value: 1.0 },
             LinearOp::StoreOutput { src: 0 },
@@ -806,7 +815,7 @@ fn rk45_clears_scheduled_sample_relation_memory_between_ticks() {
         &mut model,
         solve::scalar_slot_p(2),
         solve::DiscreteEventPreMode::Fixed,
-        ScalarProgramBlock::with_source_span(
+        scalar_program_block(
             vec![vec![
                 LinearOp::LoadP { dst: 0, index: 1 },
                 LinearOp::LoadP { dst: 1, index: 0 },
@@ -1311,32 +1320,29 @@ fn stiff_contact_model() -> solve::SolveModel {
             schema_version: solve::SOLVE_SCHEMA_VERSION,
             layout: solve::VarLayout::from_parts(Default::default(), 2, 1),
             continuous: solve::ContinuousSolveSystem {
-                implicit_rhs: ComputeBlock::from_scalar_program_block(
-                    ScalarProgramBlock::with_source_span(
-                        vec![dx.clone(), dv.clone()],
-                        fixture_span!(),
-                    ),
-                ),
+                implicit_rhs: ComputeBlock::from_scalar_program_block(scalar_program_block(
+                    vec![dx.clone(), dv.clone()],
+                    fixture_span!(),
+                )),
                 implicit_row_targets: vec![
                     Some(solve::scalar_slot_y(0)),
                     Some(solve::scalar_slot_y(1)),
                 ],
-                residual: ComputeBlock::from_scalar_program_block(
-                    ScalarProgramBlock::with_source_span(
-                        vec![dx.clone(), dv.clone()],
-                        fixture_span!(),
-                    ),
-                ),
-                derivative_rhs: ComputeBlock::from_scalar_program_block(
-                    ScalarProgramBlock::with_source_span(vec![dx, dv], fixture_span!()),
-                ),
+                residual: ComputeBlock::from_scalar_program_block(scalar_program_block(
+                    vec![dx.clone(), dv.clone()],
+                    fixture_span!(),
+                )),
+                derivative_rhs: ComputeBlock::from_scalar_program_block(scalar_program_block(
+                    vec![dx, dv],
+                    fixture_span!(),
+                )),
                 algebraic_projection_plan: solve::AlgebraicProjectionPlan::default(),
                 manifold_residual: ComputeBlock::default(),
                 manifold_projection_plan: solve::AlgebraicProjectionPlan::default(),
             },
             initialization: solve::InitializationSolveSystem::default(),
             discrete: solve::DiscreteSolveSystem {
-                rhs: ScalarProgramBlock::with_source_span(
+                rhs: scalar_program_block(
                     vec![vec![
                         LinearOp::LoadY { dst: 0, index: 0 },
                         LinearOp::Const { dst: 1, value: 0.0 },
@@ -1358,7 +1364,7 @@ fn stiff_contact_model() -> solve::SolveModel {
                 ..Default::default()
             },
             events: solve::SolveEventPartition {
-                root_conditions: ScalarProgramBlock::with_source_span(
+                root_conditions: scalar_program_block(
                     vec![vec![
                         LinearOp::LoadY { dst: 0, index: 0 },
                         LinearOp::StoreOutput { src: 0 },
@@ -1411,7 +1417,7 @@ fn stiff_contact_model() -> solve::SolveModel {
 
 fn single_state_model(rhs_rows: Vec<Vec<LinearOp>>) -> solve::SolveModel {
     let derivative_rows = rhs_rows.iter().take(1).cloned().collect::<Vec<_>>();
-    let zero = ScalarProgramBlock::with_source_span(
+    let zero = scalar_program_block(
         vec![vec![
             LinearOp::Const { dst: 0, value: 0.0 },
             LinearOp::StoreOutput { src: 0 },
@@ -1423,16 +1429,19 @@ fn single_state_model(rhs_rows: Vec<Vec<LinearOp>>) -> solve::SolveModel {
             schema_version: solve::SOLVE_SCHEMA_VERSION,
             layout: solve::VarLayout::from_parts(Default::default(), 1, 1),
             continuous: solve::ContinuousSolveSystem {
-                implicit_rhs: ComputeBlock::from_scalar_program_block(
-                    ScalarProgramBlock::with_source_span(rhs_rows.clone(), fixture_span!()),
-                ),
+                implicit_rhs: ComputeBlock::from_scalar_program_block(scalar_program_block(
+                    rhs_rows.clone(),
+                    fixture_span!(),
+                )),
                 implicit_row_targets: vec![Some(solve::scalar_slot_y(0))],
-                residual: ComputeBlock::from_scalar_program_block(
-                    ScalarProgramBlock::with_source_span(rhs_rows.clone(), fixture_span!()),
-                ),
-                derivative_rhs: ComputeBlock::from_scalar_program_block(
-                    ScalarProgramBlock::with_source_span(derivative_rows, fixture_span!()),
-                ),
+                residual: ComputeBlock::from_scalar_program_block(scalar_program_block(
+                    rhs_rows.clone(),
+                    fixture_span!(),
+                )),
+                derivative_rhs: ComputeBlock::from_scalar_program_block(scalar_program_block(
+                    derivative_rows,
+                    fixture_span!(),
+                )),
                 algebraic_projection_plan: solve::AlgebraicProjectionPlan::default(),
                 manifold_residual: ComputeBlock::default(),
                 manifold_projection_plan: solve::AlgebraicProjectionPlan::default(),
@@ -1499,14 +1508,14 @@ fn delayed_ramp_model() -> solve::SolveModel {
         LinearOp::Const { dst: 0, value: 1.0 },
         LinearOp::StoreOutput { src: 0 },
     ]]);
-    let source = ScalarProgramBlock::with_source_span(
+    let source = scalar_program_block(
         vec![vec![
             LinearOp::LoadY { dst: 0, index: 0 },
             LinearOp::StoreOutput { src: 0 },
         ]],
         fixture_span!(),
     );
-    let delay = ScalarProgramBlock::with_source_span(
+    let delay = scalar_program_block(
         vec![vec![
             LinearOp::Const { dst: 0, value: 0.2 },
             LinearOp::StoreOutput { src: 0 },
@@ -1525,7 +1534,7 @@ fn delayed_ramp_model() -> solve::SolveModel {
     model.initial_y = vec![0.0];
     model.parameters = vec![0.0];
     model.visible_names = vec!["x".to_string(), "delayed_x".to_string()];
-    model.visible_value_rows = ScalarProgramBlock::with_source_span(
+    model.visible_value_rows = scalar_program_block(
         vec![
             vec![
                 LinearOp::LoadY { dst: 0, index: 0 },
@@ -1546,7 +1555,7 @@ fn variable_discrete_delay_model() -> solve::SolveModel {
         LinearOp::Const { dst: 0, value: 0.0 },
         LinearOp::StoreOutput { src: 0 },
     ]]);
-    let source = ScalarProgramBlock::with_source_span(
+    let source = scalar_program_block(
         vec![vec![
             LinearOp::LoadTime { dst: 0 },
             LinearOp::Const { dst: 1, value: 0.2 },
@@ -1560,7 +1569,7 @@ fn variable_discrete_delay_model() -> solve::SolveModel {
         ]],
         fixture_span!(),
     );
-    let delay_time = ScalarProgramBlock::with_source_span(
+    let delay_time = scalar_program_block(
         vec![vec![
             LinearOp::LoadTime { dst: 0 },
             LinearOp::Const { dst: 1, value: 0.5 },
@@ -1597,7 +1606,7 @@ fn variable_discrete_delay_model() -> solve::SolveModel {
         &mut model,
         solve::scalar_slot_p(1),
         solve::DiscreteEventPreMode::FollowCurrent,
-        ScalarProgramBlock::with_source_span(
+        scalar_program_block(
             vec![vec![
                 LinearOp::LoadP { dst: 0, index: 0 },
                 LinearOp::Const { dst: 1, value: 0.5 },
@@ -1622,7 +1631,7 @@ fn variable_discrete_delay_model() -> solve::SolveModel {
     );
     model.parameters = vec![0.0, 0.0];
     model.visible_names = vec!["marker".to_string()];
-    model.visible_value_rows = ScalarProgramBlock::with_source_span(
+    model.visible_value_rows = scalar_program_block(
         vec![vec![
             LinearOp::LoadP { dst: 0, index: 1 },
             LinearOp::StoreOutput { src: 0 },
@@ -1633,7 +1642,7 @@ fn variable_discrete_delay_model() -> solve::SolveModel {
 }
 
 fn const_scalar_program_block(value: f64) -> ScalarProgramBlock {
-    ScalarProgramBlock::with_source_span(
+    scalar_program_block(
         vec![vec![
             LinearOp::Const { dst: 0, value },
             LinearOp::StoreOutput { src: 0 },
@@ -1661,7 +1670,7 @@ fn set_single_discrete_equation(
 
 fn no_state_input_accumulator_model() -> solve::SolveModel {
     let zero = const_scalar_program_block(0.0);
-    let preserve_y = ScalarProgramBlock::with_source_span(
+    let preserve_y = scalar_program_block(
         vec![vec![
             LinearOp::LoadY { dst: 0, index: 0 },
             LinearOp::StoreOutput { src: 0 },
@@ -1685,7 +1694,7 @@ fn no_state_input_accumulator_model() -> solve::SolveModel {
             },
             initialization: solve::InitializationSolveSystem::default(),
             discrete: solve::DiscreteSolveSystem {
-                rhs: ScalarProgramBlock::with_source_span(
+                rhs: scalar_program_block(
                     vec![vec![
                         LinearOp::LoadY { dst: 0, index: 0 },
                         LinearOp::LoadP { dst: 1, index: 0 },
@@ -1746,7 +1755,7 @@ fn no_state_input_accumulator_model() -> solve::SolveModel {
         parameters: vec![0.0],
         external_tables: solve::ExternalTables::default(),
         visible_names: vec!["y".to_string()],
-        visible_value_rows: ScalarProgramBlock::with_source_span(
+        visible_value_rows: scalar_program_block(
             vec![vec![
                 LinearOp::LoadY { dst: 0, index: 0 },
                 LinearOp::StoreOutput { src: 0 },

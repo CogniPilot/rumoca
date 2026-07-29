@@ -286,10 +286,10 @@ struct FunctionSymbols<'symbols, 'dae> {
 fn lower_function_statements<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     symbols: FunctionSymbols<'_, 'dae>,
-    body: &mut dae::FunctionBody<'dae>,
+    mut body: dae::FunctionBody<'dae>,
     statements: &[rumoca_core::Statement],
     plans: &[FunctionStatementPlan],
-) -> Result<(), dae::DaeConstructionError> {
+) -> Result<dae::FunctionBody<'dae>, dae::DaeConstructionError> {
     debug_assert_eq!(statements.len(), plans.len());
     let mut index = 0usize;
     while index < statements.len() {
@@ -300,7 +300,7 @@ fn lower_function_statements<'dae>(
             lower_function_array_assembly(
                 construction,
                 symbols,
-                body,
+                &mut body,
                 &statements[index..index + statement_count],
                 assembly,
             )?;
@@ -311,26 +311,26 @@ fn lower_function_statements<'dae>(
             lower_function_record_assembly(
                 construction,
                 symbols,
-                body,
+                &mut body,
                 &statements[index..index + assembly.statement_count],
                 assembly,
             )?;
             index += assembly.statement_count;
             continue;
         }
-        lower_function_statement(construction, symbols, body, statement, plan)?;
+        body = lower_function_statement(construction, symbols, body, statement, plan)?;
         index += 1;
     }
-    Ok(())
+    Ok(body)
 }
 
 fn lower_function_statement<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     symbols: FunctionSymbols<'_, 'dae>,
-    body: &mut dae::FunctionBody<'dae>,
+    mut body: dae::FunctionBody<'dae>,
     statement: &rumoca_core::Statement,
     plan: &FunctionStatementPlan,
-) -> Result<(), dae::DaeConstructionError> {
+) -> Result<dae::FunctionBody<'dae>, dae::DaeConstructionError> {
     match (statement, plan) {
         (
             rumoca_core::Statement::Assignment {
@@ -340,18 +340,21 @@ fn lower_function_statement<'dae>(
                 target,
                 subscript_count,
             },
-        ) => lower_function_assignment(
-            construction,
-            symbols,
-            body,
-            FunctionAssignment {
-                component: comp,
-                value,
-                span: *span,
-                target,
-                subscript_count: *subscript_count,
-            },
-        ),
+        ) => {
+            lower_function_assignment(
+                construction,
+                symbols,
+                &mut body,
+                FunctionAssignment {
+                    component: comp,
+                    value,
+                    span: *span,
+                    target,
+                    subscript_count: *subscript_count,
+                },
+            )?;
+            Ok(body)
+        }
         (
             rumoca_core::Statement::For {
                 indices,
@@ -391,19 +394,22 @@ fn lower_function_statement<'dae>(
                 fallback,
                 targets,
             },
-        ) => lower_function_conditional(
-            construction,
-            body,
-            FunctionConditional {
-                symbols,
-                blocks: cond_blocks,
-                fallback: else_block.as_deref(),
-                branch_plans: branches,
-                fallback_plans: fallback.as_deref(),
-                targets,
-                span: *span,
-            },
-        ),
+        ) => {
+            lower_function_conditional(
+                construction,
+                &mut body,
+                FunctionConditional {
+                    symbols,
+                    blocks: cond_blocks,
+                    fallback: else_block.as_deref(),
+                    branch_plans: branches,
+                    fallback_plans: fallback.as_deref(),
+                    targets,
+                    span: *span,
+                },
+            )?;
+            Ok(body)
+        }
         (_, FunctionStatementPlan::ArrayAssemblyMember) => {
             unreachable!("array assembly members are consumed by their leading owner")
         }
@@ -483,9 +489,9 @@ struct FunctionLoop<'statement> {
 fn lower_function_loop<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     symbols: FunctionSymbols<'_, 'dae>,
-    body: &mut dae::FunctionBody<'dae>,
+    mut body: dae::FunctionBody<'dae>,
     input: FunctionLoop<'_>,
-) -> Result<(), dae::DaeConstructionError> {
+) -> Result<dae::FunctionBody<'dae>, dae::DaeConstructionError> {
     let owner = dae::DaeProvenance::source(input.span)?;
     let domain_provenance = match input.binder_spans {
         [span] => dae::DaeProvenance::source(*span)?,
@@ -507,7 +513,7 @@ fn lower_function_loop<'dae>(
         FunctionLoopLowering::TotalArrayDefinition { target } => {
             lower_total_function_array_definition(
                 construction,
-                body,
+                &mut body,
                 TotalArrayDefinition {
                     symbols: loop_symbols,
                     domain,
@@ -517,7 +523,8 @@ fn lower_function_loop<'dae>(
                     target,
                     owner,
                 },
-            )
+            )?;
+            Ok(body)
         }
         FunctionLoopLowering::Fold { targets } => lower_function_fold(
             construction,

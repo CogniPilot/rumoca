@@ -13,7 +13,7 @@ fn max_scalar_row_ops(block: &ComputeBlock) -> usize {
         .nodes
         .iter()
         .filter_map(|node| match node {
-            ComputeNode::ScalarPrograms(rows) => rows.programs.iter().map(Vec::len).max(),
+            ComputeNode::ScalarPrograms(rows) => rows.programs().iter().map(Vec::len).max(),
             ComputeNode::MatMul { .. }
             | ComputeNode::LinSolve { .. }
             | ComputeNode::Map { .. }
@@ -93,7 +93,7 @@ fn scalar_fallback_output_indices(block: &ComputeBlock) -> Vec<usize> {
         .nodes
         .iter()
         .flat_map(|node| match node {
-            ComputeNode::ScalarPrograms(rows) => rows.output_indices.clone(),
+            ComputeNode::ScalarPrograms(rows) => rows.output_indices().to_vec(),
             ComputeNode::MatMul { .. }
             | ComputeNode::LinSolve { .. }
             | ComputeNode::Map { .. }

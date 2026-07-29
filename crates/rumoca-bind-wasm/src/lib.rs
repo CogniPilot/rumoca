@@ -1271,7 +1271,7 @@ fn resolved_tree_for_navigation(
     session: &mut Session,
     ast: Option<&StoredDefinition>,
     line: u32,
-) -> Option<rumoca_compile::parsing::ast::ResolvedTree> {
+) -> Option<rumoca_compile::parsing::ast::ClassTree> {
     ast.and_then(|parsed| {
         rumoca_tool_lsp::helpers::find_enclosing_class_qualified_name(parsed, line)
     })
@@ -1281,7 +1281,11 @@ fn resolved_tree_for_navigation(
             .ok()
             .map(|resolved| resolved.as_ref().clone())
     })
-    .or_else(|| session.resolved_cached())
+    .or_else(|| {
+        session
+            .resolved_cached()
+            .map(|resolved| resolved.into_inner())
+    })
 }
 
 fn local_component_hover(info: &rumoca_compile::compile::LocalComponentInfo) -> lsp_types::Hover {
@@ -1580,7 +1584,7 @@ pub fn lsp_hover(source: &str, line: u32, character: u32) -> Result<String, JsVa
             })
             .or_else(|| {
                 let resolved = resolved_tree_for_navigation(session, ast, line);
-                let tree = resolved.as_ref().map(|resolved| &resolved.0);
+                let tree = resolved.as_ref();
                 rumoca_tool_lsp::handle_hover(&doc.content, ast, tree, line, character)
             });
         serde_json::to_string(&hover).map_err(|e| JsValue::from_str(&format!("JSON error: {}", e)))
@@ -1643,7 +1647,7 @@ pub fn lsp_definition(source: &str, line: u32, character: u32) -> Result<String,
             })
             .or_else(|| {
                 let resolved = resolved_tree_for_navigation(session, Some(ast), line);
-                let tree = resolved.as_ref().map(|resolved| &resolved.0);
+                let tree = resolved.as_ref();
                 tree.and_then(|tree| {
                     parsed_source_root_class_definition(
                         session,

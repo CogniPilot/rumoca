@@ -668,8 +668,9 @@ fn test_c_solve_vs_rumoca_msl() {
     println!("Parsed {} OK, {} failures", successes.len(), failures.len());
     let source_map = rumoca_compile::parsing::source_map_for_parsed_files(&successes)
         .expect("failed to preserve parsed MSL sources");
-    let source_root = CompiledSourceRoot::from_parsed_batch_tolerant(successes, source_map)
-        .expect("failed to build source-root index");
+    let source_root =
+        CompiledSourceRoot::from_parsed_batch_with_resolution_planning(successes, source_map)
+            .expect("failed to build source-root index");
 
     // 3. Select target models
     let targets = target_models();

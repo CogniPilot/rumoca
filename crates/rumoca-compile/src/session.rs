@@ -20,7 +20,7 @@ use rumoca_phase_instantiate::{
     InstantiateError, InstantiateOptions, InstantiationOutcome,
     instantiate_model_with_outcome_options,
 };
-use rumoca_phase_resolve::{ResolveOptions, resolve_with_options_collect};
+use rumoca_phase_resolve::{ResolveOptions, ResolvedTree, resolve_with_diagnostics};
 use rumoca_phase_typecheck::typecheck_instanced;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -135,8 +135,8 @@ mod strict_compile_diagnostics;
 pub use strict_compile_diagnostics::StrictCompileFailure;
 use strict_compile_diagnostics::{
     class_primary_span, collect_parse_error_diagnostics, collect_parse_failures_for_files,
-    collect_resolve_failures_for_files, collect_target_source_files, dae_phase_result_to_failures,
-    default_tree_span, document_parse_diagnostics, phase_result_to_failures, same_path,
+    collect_target_source_files, dae_phase_result_to_failures, default_tree_span,
+    document_parse_diagnostics, phase_result_to_failures, same_path,
 };
 mod session_impl_caches;
 mod session_impl_diagnostics;
@@ -165,7 +165,7 @@ fn path_lookup_key(path: &str) -> String {
 #[derive(Debug, Clone)]
 struct SemanticNavigationArtifact {
     fingerprint: Fingerprint,
-    resolved: Arc<ast::ResolvedTree>,
+    tree: Arc<ast::ClassTree>,
 }
 
 #[derive(Debug, Clone)]
@@ -411,7 +411,7 @@ struct DaeModelArtifact {
 
 #[derive(Debug, Clone, Default)]
 struct SemanticDiagnosticsQueryState {
-    resolved_by_mode: IndexMap<SemanticDiagnosticsMode, Arc<ast::ResolvedTree>>,
+    resolved_by_mode: IndexMap<SemanticDiagnosticsMode, Arc<ResolvedTree>>,
     resolved_diagnostics_by_mode: IndexMap<SemanticDiagnosticsMode, Vec<CommonDiagnostic>>,
     dependency_fingerprints_by_mode: IndexMap<SemanticDiagnosticsMode, DependencyFingerprintCache>,
     interface_artifacts: LruMap<SemanticDiagnosticsCacheKey, InterfaceSemanticDiagnosticsArtifact>,
@@ -640,6 +640,40 @@ enum ResolveBuildMode {
     StrictCompileRecovery,
 }
 
+#[derive(Debug, Clone)]
+pub(in crate::session) enum ResolutionPlanningTree {
+    Complete(Arc<ResolvedTree>),
+    Incomplete(Arc<ast::ClassTree>),
+}
+
+pub(in crate::session) struct StrictTargetResolution {
+    resolved: Arc<ResolvedTree>,
+    closure: ReachableModelClosure,
+    diagnostics: Vec<CommonDiagnostic>,
+}
+
+pub(in crate::session) struct StrictTargetResolutionFailure {
+    failures: Vec<ModelFailureDiagnostic>,
+    diagnostics: Vec<CommonDiagnostic>,
+    source_map: Box<SourceMap>,
+}
+
+impl ResolutionPlanningTree {
+    fn tree(&self) -> &ast::ClassTree {
+        match self {
+            Self::Complete(resolved) => resolved.inner(),
+            Self::Incomplete(tree) => tree,
+        }
+    }
+
+    fn completed(&self) -> Option<&Arc<ResolvedTree>> {
+        match self {
+            Self::Complete(resolved) => Some(resolved),
+            Self::Incomplete(_) => None,
+        }
+    }
+}
+
 impl ResolveBuildMode {
     fn include_parse_error_diags(self) -> bool {
         matches!(self, Self::Standard)
@@ -659,32 +693,28 @@ impl SemanticDiagnosticsMode {
 
 #[derive(Debug, Clone, Default)]
 struct ResolvedBuildCache {
-    standard: Option<Arc<ast::ResolvedTree>>,
-    strict_compile_recovery: Option<Arc<ast::ResolvedTree>>,
-    strict_compile_recovery_diagnostics: Option<Vec<CommonDiagnostic>>,
+    standard: Option<Arc<ResolvedTree>>,
+    strict_compile_recovery: Option<ResolutionPlanningArtifact>,
+}
+
+#[derive(Debug, Clone)]
+struct ResolutionPlanningArtifact {
+    tree: ResolutionPlanningTree,
+    diagnostics: Vec<CommonDiagnostic>,
 }
 
 impl ResolvedBuildCache {
-    fn get(&self, mode: ResolveBuildMode) -> Option<&Arc<ast::ResolvedTree>> {
-        match mode {
-            ResolveBuildMode::Standard => self.standard.as_ref(),
-            ResolveBuildMode::StrictCompileRecovery => self.strict_compile_recovery.as_ref(),
-        }
+    fn standard(&self) -> Option<&Arc<ResolvedTree>> {
+        self.standard.as_ref()
     }
 
-    fn set(&mut self, mode: ResolveBuildMode, resolved: Arc<ast::ResolvedTree>) {
-        match mode {
-            ResolveBuildMode::Standard => self.standard = Some(resolved),
-            ResolveBuildMode::StrictCompileRecovery => {
-                self.strict_compile_recovery = Some(resolved)
-            }
-        }
+    fn set_standard(&mut self, resolved: Arc<ResolvedTree>) {
+        self.standard = Some(resolved);
     }
 
     fn clear(&mut self) {
         self.standard = None;
         self.strict_compile_recovery = None;
-        self.strict_compile_recovery_diagnostics = None;
     }
 
     fn clear_mode(&mut self, mode: ResolveBuildMode) {
@@ -692,15 +722,27 @@ impl ResolvedBuildCache {
             ResolveBuildMode::Standard => self.standard = None,
             ResolveBuildMode::StrictCompileRecovery => {
                 self.strict_compile_recovery = None;
-                self.strict_compile_recovery_diagnostics = None;
             }
         }
     }
 
-    fn any(&self) -> Option<&Arc<ast::ResolvedTree>> {
+    fn any_tree(&self) -> Option<&ast::ClassTree> {
         self.standard
             .as_ref()
-            .or(self.strict_compile_recovery.as_ref())
+            .map(|resolved| resolved.inner())
+            .or_else(|| {
+                self.strict_compile_recovery
+                    .as_ref()
+                    .map(|artifact| artifact.tree.tree())
+            })
+    }
+
+    fn has_completed_tree(&self) -> bool {
+        self.standard.is_some()
+            || self
+                .strict_compile_recovery
+                .as_ref()
+                .is_some_and(|artifact| artifact.tree.completed().is_some())
     }
 }
 
@@ -1674,10 +1716,7 @@ pub struct StrictCompileReport {
 /// Coarse timing breakdown for strict requested-only model checks.
 #[derive(Debug, Clone, Default)]
 pub struct StrictCheckTiming {
-    pub build_resolved_ms: u64,
-    pub reachable_closure_ms: u64,
-    pub collect_parse_failures_ms: u64,
-    pub collect_resolve_failures_ms: u64,
+    pub target_resolution_ms: u64,
     pub dae_phase_query_ms: u64,
     pub total_ms: u64,
 }

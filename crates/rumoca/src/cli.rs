@@ -35,8 +35,9 @@ use crate::{CompilationResult, Compiler, CompilerError, DaeCompilationResult, Te
 use rumoca_compile::{
     codegen::{render_ast_template_with_name, render_flat_template_with_name},
     compile::core::{Diagnostic as CommonDiagnostic, DiagnosticSeverity, SourceMap},
-    compile::{Dae, FlatModel, ResolvedTree},
+    compile::{Dae, FlatModel},
 };
+use rumoca_phase_resolve::ResolvedTree;
 use rumoca_sim::{DiffsolMethod, SimOptions, SimSolverMode};
 use rumoca_sim::{SimulationRequestSummary, SimulationRunMetrics};
 use rumoca_tool_lint::{LintLevel, LintMessage, LintOptions, PartialLintOptions};

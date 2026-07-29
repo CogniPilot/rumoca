@@ -147,7 +147,7 @@ fn solve_render_context_value_with_arcs(
     } else if artifacts
         .continuous
         .implicit_jacobian_v_scalar
-        .programs
+        .programs()
         .is_empty()
     {
         Value::from_object(LazyScalarRowsValue::new(
@@ -158,13 +158,13 @@ fn solve_render_context_value_with_arcs(
             artifacts
                 .continuous
                 .implicit_jacobian_v_scalar
-                .programs
-                .clone(),
+                .programs()
+                .to_vec(),
         ))
     };
     let full_jacobian_rows = artifacts.continuous.full_jacobian_v.clone();
     let full_jacobian_rows = Value::from_object(render_solve::SolveRowsValue::new(
-        full_jacobian_rows.programs,
+        full_jacobian_rows.programs().to_vec(),
     ));
     Ok(match model_name {
         Some(name) => minijinja::context! {

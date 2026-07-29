@@ -229,7 +229,7 @@ pub(super) fn define_functions<'dae>(
             functions,
             shapes: &certificate.values,
         };
-        lower_function_plan(construction, symbols, &mut body, reserved.flat, plan)?;
+        body = lower_function_plan(construction, symbols, body, reserved.flat, plan)?;
         construction.functions(|functions| functions.define(body, provenance))?;
     }
     Ok(())
@@ -238,10 +238,10 @@ pub(super) fn define_functions<'dae>(
 fn lower_function_plan<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     symbols: FunctionSymbols<'_, 'dae>,
-    body: &mut dae::FunctionBody<'dae>,
+    body: dae::FunctionBody<'dae>,
     function: &rumoca_core::Function,
     plan: &FunctionPlan,
-) -> Result<(), dae::DaeConstructionError> {
+) -> Result<dae::FunctionBody<'dae>, dae::DaeConstructionError> {
     match plan {
         FunctionPlan::Statements { statements } => {
             lower_function_statements(construction, symbols, body, &function.body, statements)

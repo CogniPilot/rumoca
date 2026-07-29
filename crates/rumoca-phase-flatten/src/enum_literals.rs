@@ -272,7 +272,7 @@ fn canonicalize_var_ref_if_enum_literal(
     if let Some(canonical) = enum_literals.canonicalize(name)
         && canonical != raw
     {
-        *name = rumoca_core::Reference::new(canonical.to_string());
+        *name = name.with_var_name(VarName::new(canonical));
     }
 }
 
@@ -446,6 +446,65 @@ mod tests {
             panic!("rhs should be enum literal var ref");
         };
         assert_eq!(name.as_str(), "TypesPkg.Init.NoInit");
+    }
+
+    #[test]
+    fn canonical_spelling_preserves_resolved_enum_identity_and_source_occurrence() {
+        let source = "model M\n  L a(start=L.U);\nend M;\n";
+        let source_id = rumoca_core::SourceId::from_source_name("enum_identity.mo");
+        let start = source.find("L.U").expect("fixture contains enum literal");
+        let occurrence = Span::from_offsets(source_id, start, start + "L.U".len());
+        let enum_type = rumoca_core::DefId::new(42);
+        let resolved_reference = rumoca_core::ComponentReference {
+            local: false,
+            span: occurrence,
+            parts: vec![
+                rumoca_core::ComponentRefPart {
+                    ident: "L".to_string(),
+                    span: Span::from_offsets(source_id, start, start + 1),
+                    subs: vec![],
+                },
+                rumoca_core::ComponentRefPart {
+                    ident: "U".to_string(),
+                    span: Span::from_offsets(source_id, start + 2, start + 3),
+                    subs: vec![],
+                },
+            ],
+            def_id: Some(enum_type),
+        };
+        let mut flat = flat::Model::new();
+        flat.variables.insert(
+            rumoca_core::VarName::new("a"),
+            flat::Variable {
+                start: Some(rumoca_core::Expression::VarRef {
+                    name: rumoca_core::Reference::with_component_reference(
+                        "L.U",
+                        resolved_reference.clone(),
+                    ),
+                    subscripts: vec![],
+                    span: occurrence,
+                }),
+                ..flat::Variable::empty_with_span(occurrence)
+            },
+        );
+        let mut known_enums = FxHashMap::default();
+        known_enums.insert("a".to_string(), "P.L.U".to_string());
+
+        canonicalize_flat_enum_literals(&mut flat, &ast::ClassTree::new(), &known_enums);
+
+        let rumoca_core::Expression::VarRef { name, span, .. } = flat
+            .variables
+            .get(&rumoca_core::VarName::new("a"))
+            .and_then(|variable| variable.start.as_ref())
+            .expect("start expression is retained")
+        else {
+            panic!("start expression remains an enum literal reference");
+        };
+        assert_eq!(name.as_str(), "P.L.U");
+        assert_eq!(name.component_ref(), Some(&resolved_reference));
+        assert_eq!(name.target_def_id(), Some(enum_type));
+        assert_eq!(*span, occurrence);
+        assert_eq!(&source[span.start.0..span.end.0], "L.U");
     }
 
     #[test]

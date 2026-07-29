@@ -804,14 +804,6 @@ pub(in crate::codegen) fn scalar_program_block_source_span(
         })
 }
 
-pub(in crate::codegen) fn scalar_program_row_span(
-    block: &solve::ScalarProgramBlock,
-    row: usize,
-    fallback: rumoca_core::Span,
-) -> rumoca_core::Span {
-    block.program_span(row).unwrap_or(fallback)
-}
-
 fn push_scalar_program_block_fallback_rows(
     partition: &mut NativeFamilyTemplatePartition,
     block: &solve::ScalarProgramBlock,
@@ -826,13 +818,12 @@ fn push_scalar_program_block_fallback_rows(
     )?;
     reserve_partition_capacity(
         &mut partition.fallback_programs,
-        block.programs.len(),
+        block.programs().len(),
         "scalar fallback program count",
         Some(block_span),
     )?;
     let mut output_ordinal = 0usize;
-    for (program_offset, program) in block.programs.iter().enumerate() {
-        let program_span = scalar_program_row_span(block, program_offset, block_span);
+    for (program, program_span) in block.programs().iter().zip(block.program_spans()) {
         let row_index = partition.fallback_programs.len();
         push_program_output_fallback_rows(
             &mut partition.scalar_fallback_rows,
@@ -840,7 +831,7 @@ fn push_scalar_program_block_fallback_rows(
             row_index,
             output_indices,
             &mut output_ordinal,
-            program_span,
+            *program_span,
         )?;
         partition.fallback_programs.push(program.clone());
     }
@@ -921,18 +912,18 @@ fn push_multi_output_tensor_fallback_program(
     };
     let scalar = rumoca_eval_solve::to_scalar_program_block(&local)?;
     let expected_program_count = usize::from(count > 0);
-    if scalar.programs.len() != expected_program_count {
+    if scalar.programs().len() != expected_program_count {
         return Err(rumoca_eval_solve::ScalarizeError::ShapeContract {
             message: format!(
                 "native dense fallback expected {expected_program_count} programs, got {}",
-                scalar.programs.len()
+                scalar.programs().len()
             ),
             span: Some(span),
         });
     }
     reserve_partition_capacity(
         &mut partition.fallback_programs,
-        scalar.programs.len(),
+        scalar.programs().len(),
         "native dense fallback program count",
         Some(span),
     )?;
@@ -947,7 +938,9 @@ fn push_multi_output_tensor_fallback_program(
                 native_dense,
             });
     }
-    partition.fallback_programs.extend(scalar.programs);
+    partition
+        .fallback_programs
+        .extend_from_slice(scalar.programs());
     *output_cursor = next_output_cursor;
     Ok(())
 }

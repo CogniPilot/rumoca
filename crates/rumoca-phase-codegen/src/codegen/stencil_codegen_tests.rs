@@ -44,13 +44,18 @@ fn solve_problem_with_stencil_and_scalar_derivative() -> solve::SolveProblem {
                 metadata: Default::default(),
                 span: fixture_span(),
             },
-            solve::ComputeNode::ScalarPrograms(solve::ScalarProgramBlock::with_source_span(
-                vec![vec![
-                    solve::LinearOp::Const { dst: 0, value: 3.0 },
-                    solve::LinearOp::StoreOutput { src: 0 },
-                ]],
-                fixture_span(),
-            )),
+            solve::ComputeNode::ScalarPrograms(
+                solve::ScalarProgramBlock::with_source_span(
+                    vec![vec![
+                        solve::LinearOp::Const { dst: 0, value: 3.0 },
+                        solve::LinearOp::StoreOutput { src: 0 },
+                    ]],
+                    fixture_span()
+                        .require_provenance("stencil codegen scalar fixture")
+                        .expect("fixture span is source-backed"),
+                )
+                .expect("fixture program is computable"),
+            ),
         ],
     };
     problem

@@ -153,9 +153,24 @@ impl<'dae> DaeView<'dae> {
 
     pub fn function(self, id: FunctionId<'dae>) -> Option<FunctionView<'dae>> {
         Some(FunctionView {
+            dae: self.dae,
             id,
             entry: self.dae.storage.functions.get(id.index() as usize)?,
         })
+    }
+
+    pub fn function_definition(
+        self,
+        id: FunctionDefinitionId<'dae>,
+    ) -> Option<FunctionDefinitionView<'dae>> {
+        let entry = self
+            .dae
+            .storage
+            .functions
+            .get(id.function().index() as usize)?
+            .definitions
+            .get(id.ordinal() as usize)?;
+        Some(FunctionDefinitionView { id, entry })
     }
 
     pub fn function_fold(self, id: FunctionFoldId<'dae>) -> Option<FunctionFoldView<'dae>> {
@@ -168,6 +183,7 @@ impl<'dae> DaeView<'dae> {
         let entry = self.dae.storage.function_folds.get(raw as usize)?;
         (entry.function == id.function().index() && entry.ordinal == id.ordinal()).then_some(
             FunctionFoldView {
+                dae: self.dae,
                 id,
                 entry,
                 marker: PhantomData,
@@ -683,6 +699,7 @@ pub enum VariableIdentity<'dae> {
 
 #[derive(Clone, Copy)]
 pub struct FunctionView<'dae> {
+    dae: &'dae Dae,
     id: FunctionId<'dae>,
     entry: &'dae FunctionEntry,
 }
@@ -724,16 +741,27 @@ impl<'dae> FunctionView<'dae> {
         }
     }
 
-    pub fn result_values(self) -> ExpressionOperands<'dae> {
+    pub fn result_values(self) -> FunctionDefinitionValues<'dae> {
         let definition = self
             .entry
             .definition
             .as_ref()
             .expect("final DAE cannot contain an undefined function");
-        ExpressionOperands {
+        FunctionDefinitionValues {
+            dae: self.dae,
+            function: self.id,
             raw: &definition.results,
-            marker: PhantomData,
         }
+    }
+
+    pub fn definition_count(self) -> usize {
+        self.entry.definitions.len()
+    }
+
+    pub fn definition_id(self, index: usize) -> Option<FunctionDefinitionId<'dae>> {
+        let ordinal = u32::try_from(index).ok()?;
+        (index < self.entry.definitions.len())
+            .then(|| FunctionDefinitionId::from_raw(self.id.index(), ordinal))
     }
 
     pub fn fold_count(self) -> usize {
@@ -769,6 +797,7 @@ impl<'dae> FunctionView<'dae> {
             .as_ref()
             .expect("final DAE cannot contain an undefined function");
         FunctionStatements {
+            dae: self.dae,
             function: self.id,
             statements: &definition.statements,
             next: 0,
@@ -832,12 +861,87 @@ impl<'dae> FunctionValueView<'dae> {
     }
 }
 
+#[derive(Clone, Copy)]
+pub struct FunctionDefinitionView<'dae> {
+    id: FunctionDefinitionId<'dae>,
+    entry: &'dae FunctionDefinitionEntry,
+}
+
+impl<'dae> FunctionDefinitionView<'dae> {
+    pub const fn id(self) -> FunctionDefinitionId<'dae> {
+        self.id
+    }
+
+    pub const fn target(self) -> FunctionValueId<'dae> {
+        FunctionValueId::from_raw(self.id.function().index(), self.entry.target)
+    }
+
+    pub const fn rhs(self) -> ExprId<'dae> {
+        ExprId::from_raw(self.entry.rhs)
+    }
+
+    pub const fn provenance(self) -> DaeProvenance {
+        self.entry.provenance
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct FunctionDefinitionValues<'dae> {
+    dae: &'dae Dae,
+    function: FunctionId<'dae>,
+    raw: &'dae [u32],
+}
+
+impl<'dae> FunctionDefinitionValues<'dae> {
+    pub const fn len(self) -> usize {
+        self.raw.len()
+    }
+
+    pub const fn is_empty(self) -> bool {
+        self.raw.is_empty()
+    }
+
+    pub fn get(self, index: usize) -> Option<FunctionDefinitionView<'dae>> {
+        self.raw
+            .get(index)
+            .copied()
+            .map(|raw| function_definition_view(self.dae, self.function, raw))
+    }
+
+    pub fn iter(self) -> impl ExactSizeIterator<Item = FunctionDefinitionView<'dae>> {
+        self.raw
+            .iter()
+            .copied()
+            .map(move |raw| function_definition_view(self.dae, self.function, raw))
+    }
+
+    pub fn rhs(self, index: usize) -> Option<ExprId<'dae>> {
+        self.get(index).map(FunctionDefinitionView::rhs)
+    }
+
+    pub fn rhs_iter(self) -> impl ExactSizeIterator<Item = ExprId<'dae>> {
+        self.iter().map(FunctionDefinitionView::rhs)
+    }
+}
+
+fn function_definition_view<'dae>(
+    dae: &'dae Dae,
+    function: FunctionId<'dae>,
+    ordinal: u32,
+) -> FunctionDefinitionView<'dae> {
+    let id = FunctionDefinitionId::from_raw(function.index(), ordinal);
+    DaeView {
+        dae,
+        marker: PhantomData,
+    }
+    .function_definition(id)
+    .expect("final DAE definition identity resolves")
+}
+
 #[derive(Clone)]
 pub enum FunctionStatementView<'dae> {
     Assignment {
-        target: FunctionValueId<'dae>,
-        value: ExprId<'dae>,
-        provenance: DaeProvenance,
+        definition: FunctionDefinitionView<'dae>,
     },
     For {
         fold: FunctionFoldId<'dae>,
@@ -847,16 +951,14 @@ pub enum FunctionStatementView<'dae> {
 }
 
 impl<'dae> FunctionStatementView<'dae> {
-    fn from_wire(function: FunctionId<'dae>, statement: &'dae FunctionStatementWire) -> Self {
+    fn from_wire(
+        dae: &'dae Dae,
+        function: FunctionId<'dae>,
+        statement: &'dae FunctionStatementWire,
+    ) -> Self {
         match statement {
-            FunctionStatementWire::Assignment {
-                target,
-                value,
-                provenance,
-            } => Self::Assignment {
-                target: FunctionValueId::from_raw(function.index(), *target),
-                value: ExprId::from_raw(*value),
-                provenance: *provenance,
+            FunctionStatementWire::Assignment { definition } => Self::Assignment {
+                definition: function_definition_view(dae, function, *definition),
             },
             FunctionStatementWire::For {
                 fold,
@@ -865,6 +967,7 @@ impl<'dae> FunctionStatementView<'dae> {
             } => Self::For {
                 fold: FunctionFoldId::from_raw(function.index(), *fold),
                 statements: FunctionStatements {
+                    dae,
                     function,
                     statements,
                     next: 0,
@@ -877,6 +980,7 @@ impl<'dae> FunctionStatementView<'dae> {
 
 #[derive(Clone)]
 pub struct FunctionStatements<'dae> {
+    dae: &'dae Dae,
     function: FunctionId<'dae>,
     statements: &'dae [FunctionStatementWire],
     next: usize,
@@ -888,7 +992,11 @@ impl<'dae> Iterator for FunctionStatements<'dae> {
     fn next(&mut self) -> Option<Self::Item> {
         let statement = self.statements.get(self.next)?;
         self.next += 1;
-        Some(FunctionStatementView::from_wire(self.function, statement))
+        Some(FunctionStatementView::from_wire(
+            self.dae,
+            self.function,
+            statement,
+        ))
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -901,6 +1009,7 @@ impl ExactSizeIterator for FunctionStatements<'_> {}
 
 #[derive(Clone, Copy)]
 pub struct FunctionFoldView<'dae> {
+    dae: &'dae Dae,
     id: FunctionFoldId<'dae>,
     entry: &'dae FunctionFoldEntry,
     marker: PhantomData<&'dae mut &'dae ()>,
@@ -923,31 +1032,35 @@ impl<'dae> FunctionFoldView<'dae> {
             .map(move |target| FunctionValueId::from_raw(self.entry.function, target))
     }
 
-    pub fn initial_values(self) -> ExpressionOperands<'dae> {
-        ExpressionOperands {
-            raw: &self.entry.initial_values,
-            marker: PhantomData,
+    pub fn initial_values(self) -> FunctionDefinitionValues<'dae> {
+        FunctionDefinitionValues {
+            dae: self.dae,
+            function: self.id.function(),
+            raw: &self.entry.initial_definitions,
         }
     }
 
-    pub fn parameter_values(self) -> ExpressionOperands<'dae> {
-        ExpressionOperands {
-            raw: &self.entry.parameter_values,
-            marker: PhantomData,
+    pub fn parameter_values(self) -> FunctionDefinitionValues<'dae> {
+        FunctionDefinitionValues {
+            dae: self.dae,
+            function: self.id.function(),
+            raw: &self.entry.parameter_definitions,
         }
     }
 
-    pub fn update_values(self) -> ExpressionOperands<'dae> {
-        ExpressionOperands {
-            raw: &self.entry.update_values,
-            marker: PhantomData,
+    pub fn update_values(self) -> FunctionDefinitionValues<'dae> {
+        FunctionDefinitionValues {
+            dae: self.dae,
+            function: self.id.function(),
+            raw: &self.entry.update_definitions,
         }
     }
 
-    pub fn output_values(self) -> ExpressionOperands<'dae> {
-        ExpressionOperands {
-            raw: &self.entry.output_values,
-            marker: PhantomData,
+    pub fn output_values(self) -> FunctionDefinitionValues<'dae> {
+        FunctionDefinitionValues {
+            dae: self.dae,
+            function: self.id.function(),
+            raw: &self.entry.output_definitions,
         }
     }
 
@@ -1069,6 +1182,28 @@ impl<'dae> ExpressionView<'dae> {
 
     pub fn operation(self) -> ExpressionOperation<'dae> {
         match self.node {
+            ExprNode::Literal(_)
+            | ExprNode::Coordinate(_)
+            | ExprNode::Unary { .. }
+            | ExprNode::Binary { .. } => self.primitive_operation(),
+            ExprNode::Conditional { .. }
+            | ExprNode::Array { .. }
+            | ExprNode::Record { .. }
+            | ExprNode::Field { .. }
+            | ExprNode::Range { .. }
+            | ExprNode::Comprehension { .. } => self.aggregate_operation(),
+            ExprNode::Index { .. }
+            | ExprNode::ArrayUpdate { .. }
+            | ExprNode::Builtin { .. }
+            | ExprNode::Call { .. } => self.application_operation(),
+            ExprNode::FunctionValue { .. }
+            | ExprNode::FunctionFoldParameter { .. }
+            | ExprNode::FunctionFoldOutput { .. } => self.function_operation(),
+        }
+    }
+
+    fn primitive_operation(self) -> ExpressionOperation<'dae> {
+        match self.node {
             ExprNode::Literal(value) => ExpressionOperation::Literal(value),
             ExprNode::Coordinate(coordinate) => {
                 ExpressionOperation::Coordinate(coordinate_view(*coordinate))
@@ -1082,6 +1217,12 @@ impl<'dae> ExpressionView<'dae> {
                 lhs: ExprId::from_raw(*lhs),
                 rhs: ExprId::from_raw(*rhs),
             },
+            _ => unreachable!("expression operation family is selected from its checked node"),
+        }
+    }
+
+    fn aggregate_operation(self) -> ExpressionOperation<'dae> {
+        match self.node {
             ExprNode::Conditional { operands } => {
                 ExpressionOperation::Conditional(self.expression_operands(*operands))
             }
@@ -1104,6 +1245,12 @@ impl<'dae> ExpressionView<'dae> {
                 domain: DomainId::from_raw(*domain),
                 body: ExprId::from_raw(*body),
             },
+            _ => unreachable!("expression operation family is selected from its checked node"),
+        }
+    }
+
+    fn application_operation(self) -> ExpressionOperation<'dae> {
+        match self.node {
             ExprNode::Index { base, subscripts } => ExpressionOperation::Index {
                 base: ExprId::from_raw(*base),
                 subscripts: self.subscripts(*subscripts),
@@ -1130,30 +1277,53 @@ impl<'dae> ExpressionView<'dae> {
                 output: *output,
                 arguments: self.expression_operands(*operands),
             },
+            _ => unreachable!("expression operation family is selected from its checked node"),
+        }
+    }
+
+    fn function_operation(self) -> ExpressionOperation<'dae> {
+        match self.node {
             ExprNode::FunctionValue {
                 function,
                 value,
-                definition,
+                definition_ordinal,
             } => ExpressionOperation::FunctionValue {
                 value: FunctionValueId::from_raw(*function, *value),
-                definition: ExprId::from_raw(*definition),
+                definition: function_definition_view(
+                    self.dae,
+                    FunctionId::from_raw(*function),
+                    *definition_ordinal,
+                ),
             },
             ExprNode::FunctionFoldParameter {
                 function,
                 fold,
                 carried,
+                definition_ordinal,
             } => ExpressionOperation::FunctionFoldParameter {
                 fold: FunctionFoldId::from_raw(*function, *fold),
                 carried: *carried,
+                definition: function_definition_view(
+                    self.dae,
+                    FunctionId::from_raw(*function),
+                    *definition_ordinal,
+                ),
             },
             ExprNode::FunctionFoldOutput {
                 function,
                 fold,
                 carried,
+                definition_ordinal,
             } => ExpressionOperation::FunctionFoldOutput {
                 fold: FunctionFoldId::from_raw(*function, *fold),
                 carried: *carried,
+                definition: function_definition_view(
+                    self.dae,
+                    FunctionId::from_raw(*function),
+                    *definition_ordinal,
+                ),
             },
+            _ => unreachable!("expression operation family is selected from its checked node"),
         }
     }
 
@@ -1346,15 +1516,17 @@ pub enum ExpressionOperation<'dae> {
     },
     FunctionValue {
         value: FunctionValueId<'dae>,
-        definition: ExprId<'dae>,
+        definition: FunctionDefinitionView<'dae>,
     },
     FunctionFoldParameter {
         fold: FunctionFoldId<'dae>,
         carried: u32,
+        definition: FunctionDefinitionView<'dae>,
     },
     FunctionFoldOutput {
         fold: FunctionFoldId<'dae>,
         carried: u32,
+        definition: FunctionDefinitionView<'dae>,
     },
 }
 

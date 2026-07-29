@@ -25,6 +25,12 @@ fn fixture_span() -> Span {
     )
 }
 
+fn fixture_provenance() -> rumoca_core::ProvenanceSpan {
+    fixture_span()
+        .require_provenance("Solve IR fixture")
+        .expect("fixture span is source-backed")
+}
+
 #[test]
 fn tensor_output_count_uses_compact_domain_bounds() {
     let domain = test_tensor_domain(1_000_000);
@@ -290,9 +296,10 @@ fn scalar_program_block_with_source_span_preserves_explicit_fixture_span() {
             LinearOp::Const { dst: 0, value: 1.0 },
             LinearOp::StoreOutput { src: 0 },
         ]],
-        fixture_span(),
-    );
-    assert_eq!(block.program_spans, vec![fixture_span()]);
+        fixture_provenance(),
+    )
+    .expect("scalar fixture is computable");
+    assert_eq!(block.program_spans(), [fixture_span()]);
 }
 
 fn make_layout(y_shapes: &[(&str, Vec<usize>)], p_shapes: &[(&str, Vec<usize>)]) -> VarLayout {
@@ -390,8 +397,9 @@ fn representative_continuous_system() -> ContinuousSolveSystem {
                         },
                         LinearOp::StoreOutput { src: 2 },
                     ]],
-                    fixture_span(),
-                ),
+                    fixture_provenance(),
+                )
+                .expect("implicit scalar fixture is computable"),
             )],
         },
         implicit_row_targets: vec![Some(scalar_slot_y(1))],
@@ -401,13 +409,16 @@ fn representative_continuous_system() -> ContinuousSolveSystem {
                 y_indices: vec![1],
             }],
         },
-        residual: ComputeBlock::from_scalar_program_block(ScalarProgramBlock::with_source_span(
-            vec![vec![
-                LinearOp::LoadY { dst: 0, index: 1 },
-                LinearOp::StoreOutput { src: 0 },
-            ]],
-            fixture_span(),
-        )),
+        residual: ComputeBlock::from_scalar_program_block(
+            ScalarProgramBlock::with_source_span(
+                vec![vec![
+                    LinearOp::LoadY { dst: 0, index: 1 },
+                    LinearOp::StoreOutput { src: 0 },
+                ]],
+                fixture_provenance(),
+            )
+            .expect("residual scalar fixture is computable"),
+        ),
         manifold_residual: ComputeBlock::default(),
         manifold_projection_plan: AlgebraicProjectionPlan::default(),
         derivative_rhs: representative_derivative_rhs(),
@@ -435,13 +446,16 @@ fn representative_derivative_rhs() -> ComputeBlock {
 fn representative_initialization_system() -> InitializationSolveSystem {
     InitializationSolveSystem {
         row_targets: vec![Some(scalar_slot_y(1))],
-        residual: ComputeBlock::from_scalar_program_block(ScalarProgramBlock::with_source_span(
-            vec![vec![
-                LinearOp::Const { dst: 0, value: 0.0 },
-                LinearOp::StoreOutput { src: 0 },
-            ]],
-            fixture_span(),
-        )),
+        residual: ComputeBlock::from_scalar_program_block(
+            ScalarProgramBlock::with_source_span(
+                vec![vec![
+                    LinearOp::Const { dst: 0, value: 0.0 },
+                    LinearOp::StoreOutput { src: 0 },
+                ]],
+                fixture_provenance(),
+            )
+            .expect("initial scalar fixture is computable"),
+        ),
         projection_unknowns: Vec::new(),
         projection_plan: InitializationProjectionPlan::default(),
         update_rhs: ScalarProgramBlock::default(),
@@ -456,8 +470,9 @@ fn representative_discrete_system() -> DiscreteSolveSystem {
                 LinearOp::LoadY { dst: 0, index: 2 },
                 LinearOp::StoreOutput { src: 0 },
             ]],
-            fixture_span(),
-        ),
+            fixture_provenance(),
+        )
+        .expect("runtime assignment fixture is computable"),
         runtime_assignment_targets: vec![scalar_slot_p(1)],
         rhs: ScalarProgramBlock::with_source_span(
             vec![vec![
@@ -471,8 +486,9 @@ fn representative_discrete_system() -> DiscreteSolveSystem {
                 },
                 LinearOp::StoreOutput { src: 2 },
             ]],
-            fixture_span(),
-        ),
+            fixture_provenance(),
+        )
+        .expect("discrete scalar fixture is computable"),
         update_targets: vec![scalar_slot_y(2)],
         row_roles: vec![DiscreteRowRole::Equation],
         pre_modes: vec![DiscreteEventPreMode::Fixed],
@@ -495,8 +511,9 @@ fn representative_event_partition() -> SolveEventPartition {
                 },
                 LinearOp::StoreOutput { src: 2 },
             ]],
-            fixture_span(),
-        ),
+            fixture_provenance(),
+        )
+        .expect("root scalar fixture is computable"),
         root_relation_memory_targets: vec![None],
         root_zero_domains: vec![RootZeroDomain::Previous],
         scheduled_time_events: vec![0.1],
@@ -597,29 +614,6 @@ fn scalar_program_block_rejects_output_index_count_mismatch_with_span() {
 }
 
 #[test]
-fn scalar_program_block_first_source_span_skips_dummy_rows() {
-    let span = Span::from_offsets(SourceId::from_source_name("scalar_source.mo"), 13, 21);
-    let block = ScalarProgramBlock::with_program_spans(
-        vec![
-            vec![
-                LinearOp::Const { dst: 0, value: 0.0 },
-                LinearOp::StoreOutput { src: 0 },
-            ],
-            vec![
-                LinearOp::Const { dst: 1, value: 0.0 },
-                LinearOp::StoreOutput { src: 1 },
-            ],
-        ],
-        vec![Span::DUMMY, span],
-    )
-    .expect("scalar span fixture metadata should match row count");
-
-    assert_eq!(block.program_span(0), None);
-    assert_eq!(block.program_span(1), Some(span));
-    assert_eq!(block.first_source_span(), Some(span));
-}
-
-#[test]
 fn y_slice_returns_none_for_p_slot_variable() {
     let layout = make_layout(&[], &[("p", vec![2])]);
     assert!(
@@ -668,13 +662,16 @@ fn serde_roundtrip_tensor_block_fixture() -> ComputeBlock {
 }
 
 fn serde_roundtrip_scalar_node() -> ComputeNode {
-    ComputeNode::ScalarPrograms(ScalarProgramBlock::with_source_span(
-        vec![vec![
-            LinearOp::Const { dst: 0, value: 1.0 },
-            LinearOp::StoreOutput { src: 0 },
-        ]],
-        fixture_span(),
-    ))
+    ComputeNode::ScalarPrograms(
+        ScalarProgramBlock::with_source_span(
+            vec![vec![
+                LinearOp::Const { dst: 0, value: 1.0 },
+                LinearOp::StoreOutput { src: 0 },
+            ]],
+            fixture_provenance(),
+        )
+        .expect("round-trip scalar fixture is computable"),
+    )
 }
 
 fn serde_roundtrip_matmul_node() -> ComputeNode {
@@ -1026,8 +1023,9 @@ fn solve_problem_shape_contract_rejects_duplicate_delay_parameter_slots() {
                 LinearOp::StoreOutput { src: 0 },
             ],
         ],
-        fixture_span(),
-    );
+        fixture_provenance(),
+    )
+    .expect("delay scalar fixture is computable");
     problem.events.delays.source_rhs = delay_rows.clone();
     problem.events.delays.delay_time_rhs = delay_rows.clone();
     problem.events.delays.delay_max_rhs = delay_rows;

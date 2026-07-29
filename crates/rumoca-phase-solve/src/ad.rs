@@ -61,16 +61,16 @@ fn lower_compute_node_jvp(
     match node {
         ComputeNode::ScalarPrograms(rows) => {
             let jvp_rows = lower_scalar_program_rows_ad(
-                &rows.programs,
-                &rows.program_spans,
+                rows.programs(),
+                rows.program_spans(),
                 seed_mode,
                 "spanned compute block AD row count",
             )?;
             Ok(ComputeNode::ScalarPrograms(
                 ScalarProgramBlock::with_output_indices(
                     jvp_rows,
-                    rows.program_spans.clone(),
-                    rows.output_indices.clone(),
+                    rows.program_spans().to_vec(),
+                    rows.output_indices().to_vec(),
                 )?,
             ))
         }
@@ -442,7 +442,7 @@ fn compute_node_span(node: &ComputeNode) -> Result<rumoca_core::Span, LowerError
         ComputeNode::ScalarPrograms(block) => block.program_span(0).ok_or_else(|| {
             ad_optional_contract_violation(
                 "ScalarPrograms node has no program span for AD error context".to_string(),
-                first_non_dummy_span(&block.program_spans),
+                None,
             )
         }),
         ComputeNode::MatMul { span, .. }
@@ -463,7 +463,7 @@ fn compute_block_context_span(block: &ComputeBlock) -> Option<rumoca_core::Span>
 
 fn compute_node_context_span(node: &ComputeNode) -> Option<rumoca_core::Span> {
     match node {
-        ComputeNode::ScalarPrograms(block) => first_non_dummy_span(&block.program_spans),
+        ComputeNode::ScalarPrograms(block) => block.program_span(0),
         ComputeNode::MatMul { span, .. }
         | ComputeNode::LinSolve { span, .. }
         | ComputeNode::Map { span, .. }

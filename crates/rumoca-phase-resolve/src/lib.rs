@@ -47,17 +47,57 @@ use rumoca_ir_ast::AstIndexMap as IndexMap;
 type ClassTree = ast::ClassTree;
 type Location = rumoca_core::Location;
 type ParsedTree = ast::ParsedTree;
-type ResolvedTree = ast::ResolvedTree;
 type ScopeTree = ast::ScopeTree;
 type StoredDefinition = ast::StoredDefinition;
+
+/// A class tree that has completed name resolution without errors.
+///
+/// Only this crate can construct the proof. Downstream phases may inspect the
+/// resolved tree or consume it into the next phase, but cannot mint or mutate
+/// a resolved artifact.
+///
+/// ```compile_fail
+/// fn forge(tree: rumoca_ir_ast::ClassTree) -> rumoca_phase_resolve::ResolvedTree {
+///     rumoca_phase_resolve::ResolvedTree::new(tree)
+/// }
+/// ```
+///
+/// ```compile_fail
+/// fn mutate(
+///     resolved: &mut rumoca_phase_resolve::ResolvedTree,
+///     source_map: rumoca_core::SourceMap,
+/// ) {
+///     resolved.source_map = source_map;
+/// }
+/// ```
+#[derive(Debug, Clone)]
+pub struct ResolvedTree(ClassTree);
+
+impl ResolvedTree {
+    fn new(tree: ClassTree) -> Self {
+        Self(tree)
+    }
+
+    pub fn inner(&self) -> &ClassTree {
+        &self.0
+    }
+
+    pub fn into_inner(self) -> ClassTree {
+        self.0
+    }
+}
+
+impl std::ops::Deref for ResolvedTree {
+    type Target = ClassTree;
+
+    fn deref(&self) -> &Self::Target {
+        self.inner()
+    }
+}
 
 /// Resolution behavior options.
 #[derive(Debug, Clone, Copy)]
 pub struct ResolveOptions {
-    /// Whether unresolved component references are treated as hard errors.
-    pub unresolved_component_refs_are_errors: bool,
-    /// Whether unresolved function calls are treated as hard errors.
-    pub unresolved_function_calls_are_errors: bool,
     /// Whether ER070 (annotation Evaluate scope) is treated as a hard error.
     pub evaluate_scope_is_error: bool,
     /// Whether ER053 (single-assignment in when-equation) is treated as a hard error.
@@ -67,8 +107,6 @@ pub struct ResolveOptions {
 impl Default for ResolveOptions {
     fn default() -> Self {
         Self {
-            unresolved_component_refs_are_errors: true,
-            unresolved_function_calls_are_errors: true,
             evaluate_scope_is_error: true,
             when_single_assign_is_error: true,
         }
@@ -553,28 +591,80 @@ pub fn resolve(parsed: ParsedTree) -> Result<ResolvedTree, Diagnostics> {
     resolve_with_options(parsed, ResolveOptions::default())
 }
 
-/// Resolve names in a ParsedTree with custom unresolved-symbol policy.
+/// Resolve names in a ParsedTree with custom semantic-diagnostic policy.
 pub fn resolve_with_options(
     parsed: ParsedTree,
     options: ResolveOptions,
 ) -> Result<ResolvedTree, Diagnostics> {
-    let (resolved, diagnostics) = resolve_with_options_collect(parsed, options);
-    if diagnostics.has_errors() {
-        Err(diagnostics)
-    } else {
-        Ok(resolved)
+    resolve_with_diagnostics(parsed, options)
+        .map(ResolveSuccess::into_tree)
+        .map_err(ResolveFailure::into_diagnostics)
+}
+
+/// A completed Resolve phase plus advisory diagnostics.
+///
+/// Construction is private to this crate: an error-bearing tree cannot receive
+/// the [`ResolvedTree`] phase proof.
+pub struct ResolveSuccess {
+    tree: ResolvedTree,
+    diagnostics: Diagnostics,
+}
+
+impl ResolveSuccess {
+    pub fn into_tree(self) -> ResolvedTree {
+        self.tree
+    }
+
+    pub fn into_parts(self) -> (ResolvedTree, Diagnostics) {
+        (self.tree, self.diagnostics)
     }
 }
 
-/// Resolve names and retain the resolved tree even when diagnostics were emitted.
+/// An incomplete Resolve attempt for diagnostics and source-closure planning.
 ///
-/// This is used by strict target compilation, which needs a best-effort resolved
-/// tree for reachability planning while separately deciding which diagnostics are
-/// relevant to the requested target closure.
-pub fn resolve_with_options_collect(
+/// This type deliberately does not dereference to [`ResolvedTree`] and exposes
+/// the incomplete class tree read-only. Semantic phases must resolve a selected
+/// closure independently before they can receive a completed phase artifact.
+pub struct ResolveFailure {
+    tree: Box<ClassTree>,
+    diagnostics: Box<Diagnostics>,
+}
+
+impl ResolveFailure {
+    pub fn tree(&self) -> &ClassTree {
+        &self.tree
+    }
+
+    pub fn diagnostics(&self) -> &Diagnostics {
+        &self.diagnostics
+    }
+
+    pub fn into_parts(self) -> (ClassTree, Diagnostics) {
+        (*self.tree, *self.diagnostics)
+    }
+
+    pub fn into_diagnostics(self) -> Diagnostics {
+        *self.diagnostics
+    }
+}
+
+/// Resolve names while preserving advisory diagnostics on success.
+///
+/// Any error returns a planning-only artifact rather than a [`ResolvedTree`].
+pub fn resolve_with_diagnostics(
     parsed: ParsedTree,
     options: ResolveOptions,
-) -> (ResolvedTree, Diagnostics) {
+) -> Result<ResolveSuccess, ResolveFailure> {
+    complete_resolution(resolve_attempt(parsed, options))
+}
+
+struct ResolutionAttempt {
+    tree: ClassTree,
+    diagnostics: Diagnostics,
+    stats: ResolutionStats,
+}
+
+fn resolve_attempt(parsed: ParsedTree, options: ResolveOptions) -> ResolutionAttempt {
     let total_start = maybe_start_timer();
     let mut tree = parsed.into_inner();
     let mut resolver = Resolver::new();
@@ -599,7 +689,7 @@ pub fn resolve_with_options_collect(
     let validation = validation::validate_resolution(&tree);
     let validation_ms = maybe_elapsed_ms(validation_start);
     let unresolved_emit_start = maybe_start_timer();
-    emit_unresolved_symbol_diagnostics(&mut resolver, &tree, &validation, options);
+    emit_unresolved_symbol_diagnostics(&mut resolver, &tree, &validation);
     let unresolved_emit_ms = maybe_elapsed_ms(unresolved_emit_start);
 
     #[cfg(target_arch = "wasm32")]
@@ -624,7 +714,26 @@ pub fn resolve_with_options_collect(
         class_count: count_declared_classes(&tree.definitions),
     });
 
-    (ResolvedTree::new(tree), resolver.take_diagnostics())
+    let stats = resolver.stats.clone();
+    ResolutionAttempt {
+        tree,
+        diagnostics: resolver.take_diagnostics(),
+        stats,
+    }
+}
+
+fn complete_resolution(attempt: ResolutionAttempt) -> Result<ResolveSuccess, ResolveFailure> {
+    if attempt.diagnostics.has_errors() {
+        Err(ResolveFailure {
+            tree: Box::new(attempt.tree),
+            diagnostics: Box::new(attempt.diagnostics),
+        })
+    } else {
+        Ok(ResolveSuccess {
+            tree: ResolvedTree::new(attempt.tree),
+            diagnostics: attempt.diagnostics,
+        })
+    }
 }
 
 /// Result of resolution with statistics.
@@ -640,44 +749,14 @@ pub struct ResolveWithStatsResult {
 /// This is useful for diagnosing resolution behavior - it always returns stats
 /// even if resolution fails.
 pub fn resolve_with_stats(parsed: ParsedTree) -> ResolveWithStatsResult {
-    let mut tree = parsed.into_inner();
-    let mut resolver = Resolver::new();
-    resolver.resolve(&mut tree);
-
-    // Run semantic checks.
-    for diag in semantic_checks::check_all_semantics(&tree.definitions, &tree.source_map) {
-        resolver.diagnostics.emit(apply_semantic_diagnostic_policy(
-            diag,
-            ResolveOptions::default(),
-        ));
-    }
-    for diag in semantic_checks::check_resolved_semantics(&tree) {
-        resolver.diagnostics.emit(apply_semantic_diagnostic_policy(
-            diag,
-            ResolveOptions::default(),
-        ));
-    }
-
-    // Validate unresolved symbols gathered by post-resolution visitor (MLS §5.3)
-    let validation = validation::validate_resolution(&tree);
-    emit_unresolved_symbol_diagnostics(
-        &mut resolver,
-        &tree,
-        &validation,
-        ResolveOptions::default(),
-    );
-
-    let stats = resolver.stats.clone();
-    let result = if resolver.has_errors() {
-        Err(resolver.take_diagnostics())
-    } else {
-        Ok(ResolvedTree::new(tree))
+    let attempt = resolve_attempt(parsed, ResolveOptions::default());
+    let stats = attempt.stats.clone();
+    let tree = match complete_resolution(attempt) {
+        Ok(success) => Ok(success.into_tree()),
+        Err(failure) => Err(failure.into_diagnostics()),
     };
 
-    ResolveWithStatsResult {
-        tree: result,
-        stats,
-    }
+    ResolveWithStatsResult { tree, stats }
 }
 
 /// Resolve names in a parsed StoredDefinition and return a ResolvedTree.
@@ -697,7 +776,6 @@ fn emit_unresolved_symbol_diagnostics(
     resolver: &mut Resolver,
     tree: &ClassTree,
     validation: &ValidationResult,
-    options: ResolveOptions,
 ) {
     for unresolved in &validation.unresolved {
         if unresolved.kind == UnresolvedKind::TypeReference
@@ -713,21 +791,11 @@ fn emit_unresolved_symbol_diagnostics(
             // as a static name-not-found error.
             continue;
         }
-        let force_error = unresolved.kind == UnresolvedKind::ComponentReference
-            && unresolved_is_within_encapsulated_scope(tree, unresolved.scope_id);
-        let (kind, code, is_error) = match unresolved.kind {
-            UnresolvedKind::TypeReference => ("type reference", "ER002", true),
-            UnresolvedKind::ExtendsBase => ("extends base class", "ER003", true),
-            UnresolvedKind::ComponentReference => (
-                "component reference",
-                "ER002",
-                options.unresolved_component_refs_are_errors || force_error,
-            ),
-            UnresolvedKind::FunctionCall => (
-                "function call",
-                "ER002",
-                options.unresolved_function_calls_are_errors,
-            ),
+        let (kind, code) = match unresolved.kind {
+            UnresolvedKind::TypeReference => ("type reference", "ER002"),
+            UnresolvedKind::ExtendsBase => ("extends base class", "ER003"),
+            UnresolvedKind::ComponentReference => ("component reference", "ER002"),
+            UnresolvedKind::FunctionCall => ("function call", "ER002"),
         };
 
         let Some(span) = location_span_or_emit(
@@ -739,29 +807,12 @@ fn emit_unresolved_symbol_diagnostics(
             continue;
         };
         let primary_label = PrimaryLabel::new(span).with_message(format!("unresolved {kind}"));
-        let diag = if is_error {
-            rumoca_core::Diagnostic::error(
-                code,
-                format!("unresolved {kind}: '{}'", unresolved.name),
-                primary_label,
-            )
-        } else {
-            rumoca_core::Diagnostic::warning(
-                code,
-                format!("unresolved {kind}: '{}'", unresolved.name),
-                primary_label,
-            )
-        };
-        resolver.diagnostics.emit(diag);
+        resolver.diagnostics.emit(rumoca_core::Diagnostic::error(
+            code,
+            format!("unresolved {kind}: '{}'", unresolved.name),
+            primary_label,
+        ));
     }
-}
-
-fn unresolved_is_within_encapsulated_scope(tree: &ClassTree, scope: ScopeId) -> bool {
-    std::iter::successors(Some(scope), |current| tree.scope_tree.parent(*current)).any(|current| {
-        tree.scope_tree
-            .get(current)
-            .is_some_and(rumoca_ir_ast::Scope::is_encapsulated)
-    })
 }
 
 #[cfg(test)]

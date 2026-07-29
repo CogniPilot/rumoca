@@ -47,8 +47,11 @@ fn decay_model() -> rumoca_ir_solve::SolveModel {
     fn spb(rows: Vec<Vec<LinearOp>>, label: &str) -> ScalarProgramBlock {
         ScalarProgramBlock::with_source_span(
             rows,
-            Span::from_offsets(SourceId::from_source_name(label), 0, label.len()),
+            Span::from_offsets(SourceId::from_source_name(label), 0, label.len())
+                .require_provenance("MLIR integration fixture")
+                .expect("fixture span is source-backed"),
         )
+        .expect("fixture program is computable")
     }
 
     // xdot = -y[0]

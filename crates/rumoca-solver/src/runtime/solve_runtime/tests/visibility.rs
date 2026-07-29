@@ -512,8 +512,10 @@ fn visible_value_runtime_errors_keep_row_span() {
         visible_names: vec!["x".to_string()],
         visible_value_rows: solve::ScalarProgramBlock::with_source_span(
             vec![derivative_placeholder_row(0)],
-            span,
-        ),
+            span.require_provenance("visible-value runtime fixture")
+                .expect("fixture span is source-backed"),
+        )
+        .expect("fixture program is computable"),
         ..Default::default()
     };
     let runtime = SolveRuntime::new(&model).expect("valid runtime should prepare");

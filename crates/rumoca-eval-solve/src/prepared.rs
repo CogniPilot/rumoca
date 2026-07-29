@@ -75,8 +75,7 @@ impl Clone for PreparedScalarProgramBlock {
 
 impl PreparedScalarProgramBlock {
     pub fn new(block: ScalarProgramBlock) -> Result<Self, EvalSolveError> {
-        block.validate_shape_contract("prepared scalar program block")?;
-        let row_count = block.programs.len();
+        let row_count = block.programs().len();
         let block_span = block.program_span(0);
         let output_count = checked_prepared_output_count(&block)?;
         let row_outputs = Box::new(prepare_row_output_metadata(&block, output_count)?);
@@ -92,7 +91,7 @@ impl PreparedScalarProgramBlock {
             block_span,
         )?;
         let mut requirements = RowInputRequirements::default();
-        for (row_idx, row) in block.programs.iter().enumerate() {
+        for (row_idx, row) in block.programs().iter().enumerate() {
             let span = block.program_span(row_idx);
             let row_requirement =
                 row_input_requirements(row).map_err(|error| error.with_source_span(span))?;
@@ -145,7 +144,7 @@ impl PreparedScalarProgramBlock {
     }
 
     pub fn reverse_row_y_gradient_supported(&self, row_idx: usize) -> bool {
-        self.block.programs.get(row_idx).is_some_and(|row| {
+        self.block.programs().get(row_idx).is_some_and(|row| {
             row.iter()
                 .filter(|op| matches!(op, LinearOp::StoreOutput { .. }))
                 .count()
@@ -159,7 +158,7 @@ impl PreparedScalarProgramBlock {
         row_idx: usize,
     ) -> impl Iterator<Item = &'static str> + '_ {
         self.block
-            .programs
+            .programs()
             .get(row_idx)
             .into_iter()
             .flatten()
@@ -257,7 +256,7 @@ impl PreparedScalarProgramBlock {
         out: &mut [f64],
     ) -> Result<(), EvalSolveError> {
         let rows = rows.min(self.block.row_count());
-        let prefix = &self.block.programs[..rows];
+        let prefix = &self.block.programs()[..rows];
         let stored_output_count = self.row_outputs.offsets[rows];
         let local_runtime_state;
         let context = match context.runtime_state {
@@ -269,12 +268,12 @@ impl PreparedScalarProgramBlock {
         };
         let prefix_output_indices = self
             .block
-            .output_indices
+            .output_indices()
             .get(..stored_output_count)
             .ok_or_else(|| EvalSolveError::ShapeContract {
                 message: format!(
                     "prepared prefix has {stored_output_count} stored outputs but only {} output indices",
-                    self.block.output_indices.len()
+                    self.block.output_indices().len()
                 ),
                 span: self.block.program_span(0),
             })?;
@@ -386,7 +385,7 @@ impl PreparedScalarProgramBlock {
         for &row_idx in row_indices {
             let row = self
                 .block
-                .programs
+                .programs()
                 .get(row_idx)
                 .ok_or(EvalSolveError::OutputTooSmall {
                     required: checked_required_row_count(row_idx)?,
@@ -414,7 +413,7 @@ impl PreparedScalarProgramBlock {
     fn eval_row_inner(&self, request: RowEvalRequest<'_>) -> Result<f64, EvalSolveError> {
         let row =
             self.block
-                .programs
+                .programs()
                 .get(request.row_idx)
                 .ok_or(EvalSolveError::OutputTooSmall {
                     required: checked_required_row_count(request.row_idx)?,
@@ -451,7 +450,7 @@ impl PreparedScalarProgramBlock {
     fn eval_row_output_inner(&self, request: RowOutputRequest<'_>) -> Result<f64, EvalSolveError> {
         let row =
             self.block
-                .programs
+                .programs()
                 .get(request.row_idx)
                 .ok_or(EvalSolveError::OutputTooSmall {
                     required: checked_required_row_count(request.row_idx)?,
@@ -533,7 +532,7 @@ impl PreparedScalarProgramBlock {
     /// True when the row's program loads the given solver-Y slot.
     pub fn row_reads_y(&self, row_idx: usize, y_index: usize) -> bool {
         self.block
-            .programs
+            .programs()
             .get(row_idx)
             .is_some_and(|row| row_loads_y_index(row, y_index))
     }
@@ -569,7 +568,7 @@ impl PreparedScalarProgramBlock {
             return None;
         }
         let stored_ordinal = self.row_outputs.offsets[row_idx].checked_add(output_offset)?;
-        self.block.output_indices.get(stored_ordinal).copied()
+        self.block.output_indices().get(stored_ordinal).copied()
     }
 
     /// Resolve a logical block output to its sole scalar program row.
@@ -584,7 +583,7 @@ impl PreparedScalarProgramBlock {
     }
 
     pub fn can_evaluate_target_assignment(&self, row_idx: usize, target_y_index: usize) -> bool {
-        let Some(row) = self.block.programs.get(row_idx) else {
+        let Some(row) = self.block.programs().get(row_idx) else {
             return false;
         };
         self.assignment_shape(row_idx, target_y_index).is_some()
@@ -596,7 +595,7 @@ impl PreparedScalarProgramBlock {
         row_idx: usize,
         target_y_index: usize,
     ) -> bool {
-        let Some(row) = self.block.programs.get(row_idx) else {
+        let Some(row) = self.block.programs().get(row_idx) else {
             return false;
         };
         if row.iter().any(non_causal_linear_op) {
@@ -613,7 +612,7 @@ impl PreparedScalarProgramBlock {
         row_idx: usize,
         target_y_index: usize,
     ) -> bool {
-        let Some(row) = self.block.programs.get(row_idx) else {
+        let Some(row) = self.block.programs().get(row_idx) else {
             return false;
         };
         !row.iter().any(non_causal_linear_op)
@@ -652,7 +651,7 @@ impl PreparedScalarProgramBlock {
     ) -> Result<(), EvalSolveError> {
         let row = self
             .block
-            .programs
+            .programs()
             .get(row_idx)
             .ok_or(EvalSolveError::OutputTooSmall {
                 required: checked_required_row_count(row_idx)?,
@@ -721,7 +720,7 @@ impl PreparedScalarProgramBlock {
     ) -> Result<Option<f64>, EvalSolveError> {
         let row =
             self.block
-                .programs
+                .programs()
                 .get(request.row_idx)
                 .ok_or(EvalSolveError::OutputTooSmall {
                     required: checked_required_row_count(request.row_idx)?,
@@ -792,7 +791,7 @@ impl PreparedScalarProgramBlock {
     ) -> Result<f64, EvalSolveError> {
         let row =
             self.block
-                .programs
+                .programs()
                 .get(request.row_idx)
                 .ok_or(EvalSolveError::OutputTooSmall {
                     required: checked_required_row_count(request.row_idx)?,
@@ -854,8 +853,8 @@ impl PreparedScalarProgramBlock {
             self.output_count,
             self.output_count,
         );
-        let mut sink = OutputCursor::with_output_indices(out, &self.block.output_indices);
-        for (row_idx, row) in self.block.programs.iter().enumerate() {
+        let mut sink = OutputCursor::with_output_indices(out, self.block.output_indices());
+        for (row_idx, row) in self.block.programs().iter().enumerate() {
             eval_row_prepared_maybe_fast(
                 PreparedRowEval::new(row, self.row_registers[row_idx], y, p, t, context)
                     .with_source_span(self.block.program_span(row_idx)),
@@ -1177,8 +1176,8 @@ fn prepared_scalar_programs(
     let next_output_cursor =
         scalar_program_output_count(block, output_cursor, "prepared scalar programs")?;
     let placed = ScalarProgramBlock::with_output_indices(
-        block.programs.clone(),
-        block.program_spans.clone(),
+        block.programs().to_vec(),
+        block.program_spans().to_vec(),
         output_indices,
     )?;
     Ok((
