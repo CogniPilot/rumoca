@@ -148,6 +148,98 @@ end DuplicateWhenTarget;
         "expected ER053 for duplicate when target, got: {diagnostics:?}"
     );
 }
+
+#[test]
+fn test_single_branch_clocked_when_is_valid() {
+    let source = r#"
+model SingleClockedWhen
+  Clock c = Clock(0.1);
+  Real x(start = 0);
+equation
+  when c then
+    x = previous(x) + 1;
+  end when;
+end SingleClockedWhen;
+"#;
+
+    resolve_test_source(source).expect("one branch is the complete clocked when grammar");
+}
+
+#[test]
+fn test_clocked_elsewhen_reports_offending_condition_span() {
+    let source = r#"
+model ClockedElsewhen
+  Clock firstClock = Clock(0.1);
+  Clock secondClock = Clock(0.2);
+  Real x(start = 0);
+equation
+  when firstClock then
+    x = previous(x) + 1;
+  elsewhen secondClock then
+    x = previous(x) + 2;
+  end when;
+end ClockedElsewhen;
+"#;
+
+    let diagnostics =
+        resolve_test_source(source).expect_err("clocked when cannot own an elsewhen branch");
+    let diagnostic = diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code.as_deref() == Some("ER131"))
+        .expect("CLK-014 diagnostic must be present");
+    assert!(
+        diagnostic
+            .message
+            .contains("cannot contain elsewhen branches"),
+        "unexpected CLK-014 diagnostic: {diagnostic:?}"
+    );
+    let label = diagnostic
+        .labels
+        .iter()
+        .find(|label| label.primary)
+        .expect("CLK-014 diagnostic has an exact primary label");
+    assert_eq!(
+        &source[label.span.start.0..label.span.end.0],
+        "secondClock",
+        "diagnostic must label the offending elsewhen condition"
+    );
+}
+
+#[test]
+fn test_clocked_elsewhen_nested_in_if_and_for_is_rejected() {
+    let source = r#"
+model NestedClockedElsewhen
+  parameter Boolean enabled = true;
+  Clock firstClock = Clock(0.1);
+  Clock secondClock = Clock(0.2);
+  Real x(start = 0);
+equation
+  if enabled then
+    for i in 1:1 loop
+      when firstClock then
+        x = previous(x) + 1;
+      elsewhen secondClock then
+        x = previous(x) + 2;
+      end when;
+    end for;
+  end if;
+end NestedClockedElsewhen;
+"#;
+
+    let diagnostics = resolve_test_source(source)
+        .expect_err("equation containers cannot hide a clocked elsewhen");
+    let diagnostic = diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code.as_deref() == Some("ER131"))
+        .expect("recursive CLK-014 diagnostic must be present");
+    let label = diagnostic
+        .labels
+        .iter()
+        .find(|label| label.primary)
+        .expect("recursive CLK-014 diagnostic has a primary label");
+    assert_eq!(&source[label.span.start.0..label.span.end.0], "secondClock");
+}
+
 #[test]
 fn test_state_machine_operator_reports_explicit_unsupported_diagnostic() {
     let source = r#"
