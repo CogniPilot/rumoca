@@ -77,8 +77,8 @@ pub(crate) fn lower_layout<'dae>(
     let after_conditions = condition_base
         .checked_add(condition_memory.len())
         .ok_or_else(|| LowerError::contract("parameter layout overflow", first_model_span(view)))?;
-    let (initial_event_parameter_index, p_scalars) =
-        append_condition_flags(view, after_conditions)?;
+    let (initial_event_parameter_index, initial_homotopy_parameter_index, p_scalars) =
+        append_runtime_flags(view, after_conditions)?;
     let layout = solve::VarLayout::from_parts_with_shapes_and_spans(
         bindings,
         shapes,
@@ -124,7 +124,7 @@ pub(crate) fn lower_layout<'dae>(
         relation_memory_parameter_indices: Vec::new(),
         initial_event_parameter_index,
         terminal_event_parameter_index: None,
-        initial_homotopy_parameter_index: None,
+        initial_homotopy_parameter_index,
         pre_param_bindings: pre.bindings,
     };
     Ok(LoweredLayout {
@@ -138,20 +138,42 @@ pub(crate) fn lower_layout<'dae>(
     })
 }
 
-fn append_condition_flags(
+fn append_runtime_flags(
     view: dae::DaeView<'_>,
     first_index: usize,
-) -> Result<(Option<usize>, usize), LowerError> {
+) -> Result<(Option<usize>, Option<usize>, usize), LowerError> {
     let has_initial = (0..view.condition_count()).any(|index| {
         view.condition(view.condition_id(index).expect("dense condition identity"))
             .is_some_and(|condition| {
                 matches!(condition.operation(), dae::ConditionOperation::Initial)
             })
     });
-    let end = first_index
+    let after_initial = first_index
         .checked_add(usize::from(has_initial))
         .ok_or_else(|| LowerError::contract("parameter layout overflow", first_model_span(view)))?;
-    Ok((has_initial.then_some(first_index), end))
+    let has_homotopy = (0..view.expression_count()).any(|index| {
+        view.expression(
+            view.expression_id(index)
+                .expect("dense expression identity"),
+        )
+        .is_some_and(|expression| {
+            matches!(
+                expression.operation(),
+                dae::ExpressionOperation::Builtin {
+                    builtin: dae::PureBuiltin::Homotopy,
+                    ..
+                }
+            )
+        })
+    });
+    let end = after_initial
+        .checked_add(usize::from(has_homotopy))
+        .ok_or_else(|| LowerError::contract("parameter layout overflow", first_model_span(view)))?;
+    Ok((
+        has_initial.then_some(first_index),
+        has_homotopy.then_some(after_initial),
+        end,
+    ))
 }
 
 struct PreVariableLayout {

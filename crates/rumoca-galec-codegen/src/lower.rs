@@ -1563,7 +1563,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         }
         if matches!(
             builtin,
-            dae::PureBuiltin::Smooth | dae::PureBuiltin::NoEvent
+            dae::PureBuiltin::Smooth | dae::PureBuiltin::NoEvent | dae::PureBuiltin::Homotopy
         ) {
             let ordinal = usize::from(builtin == dae::PureBuiltin::Smooth);
             return self.lower_at(

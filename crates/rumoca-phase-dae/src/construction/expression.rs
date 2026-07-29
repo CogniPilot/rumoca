@@ -1010,6 +1010,7 @@ fn pure_builtin(function: BuiltinFunction) -> dae::PureBuiltin {
         BuiltinFunction::Log10 => dae::PureBuiltin::Log10,
         BuiltinFunction::Smooth => dae::PureBuiltin::Smooth,
         BuiltinFunction::NoEvent => dae::PureBuiltin::NoEvent,
+        BuiltinFunction::Homotopy => dae::PureBuiltin::Homotopy,
         BuiltinFunction::Min => dae::PureBuiltin::Min,
         BuiltinFunction::Max => dae::PureBuiltin::Max,
         BuiltinFunction::Sum => dae::PureBuiltin::Sum,

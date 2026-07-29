@@ -1146,24 +1146,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 });
                 Ok(dst)
             }
-            dae::PureBuiltin::Atan2 => {
-                let lhs = self.expression(
-                    arguments.get(0).expect("checked atan2 first argument"),
-                    scalar,
-                )?;
-                let rhs = self.expression(
-                    arguments.get(1).expect("checked atan2 second argument"),
-                    scalar,
-                )?;
-                let dst = self.register(span)?;
-                self.ops.push(solve::LinearOp::Binary {
-                    dst,
-                    op: solve::BinaryOp::Atan2,
-                    lhs,
-                    rhs,
-                });
-                Ok(dst)
-            }
+            dae::PureBuiltin::Atan2 => self.atan2(arguments, scalar, span),
             dae::PureBuiltin::Mod => Err(LowerError::unsupported(
                 "mod does not yet have checked Solve lowering",
                 span,
@@ -1176,6 +1159,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 arguments.get(0).expect("checked noEvent value argument"),
                 scalar,
             ),
+            dae::PureBuiltin::Homotopy => self.homotopy(arguments, scalar, span),
             dae::PureBuiltin::Sum => self.reduction(
                 arguments.get(0).expect("checked reduction argument"),
                 ReductionKind::Sum,
@@ -1215,6 +1199,59 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             dae::PureBuiltin::Linspace => self.linspace(arguments, scalar, span),
             dae::PureBuiltin::Cross => self.cross(arguments, scalar, span),
         }
+    }
+
+    fn atan2(
+        &mut self,
+        arguments: dae::ExpressionOperands<'dae>,
+        scalar: usize,
+        span: Span,
+    ) -> Result<solve::Reg, LowerError> {
+        let lhs = self.expression(
+            arguments.get(0).expect("checked atan2 first argument"),
+            scalar,
+        )?;
+        let rhs = self.expression(
+            arguments.get(1).expect("checked atan2 second argument"),
+            scalar,
+        )?;
+        let dst = self.register(span)?;
+        self.ops.push(solve::LinearOp::Binary {
+            dst,
+            op: solve::BinaryOp::Atan2,
+            lhs,
+            rhs,
+        });
+        Ok(dst)
+    }
+
+    fn homotopy(
+        &mut self,
+        arguments: dae::ExpressionOperands<'dae>,
+        scalar: usize,
+        span: Span,
+    ) -> Result<solve::Reg, LowerError> {
+        let actual = self.expression(
+            arguments.get(0).expect("checked homotopy actual argument"),
+            scalar,
+        )?;
+        let simplified = self.expression(
+            arguments
+                .get(1)
+                .expect("checked homotopy simplified argument"),
+            scalar,
+        )?;
+        let index = self
+            .layout
+            .solve_layout
+            .initial_homotopy_parameter_index
+            .ok_or_else(|| {
+                LowerError::non_computable("homotopy expression has no checked Solve storage", span)
+            })?;
+        let lambda = self.load_slot(solve::scalar_slot_p(index), span)?;
+        let delta = self.binary(dae::BinaryOperator::Subtract, actual, simplified, span)?;
+        let scaled = self.binary(dae::BinaryOperator::Multiply, lambda, delta, span)?;
+        self.binary(dae::BinaryOperator::Add, simplified, scaled, span)
     }
 
     fn linspace(

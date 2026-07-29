@@ -1433,6 +1433,7 @@ fn unary_builtin(builtin: dae::PureBuiltin) -> solve::UnaryOp {
         | dae::PureBuiltin::Mod
         | dae::PureBuiltin::Smooth
         | dae::PureBuiltin::NoEvent
+        | dae::PureBuiltin::Homotopy
         | dae::PureBuiltin::Min
         | dae::PureBuiltin::Max
         | dae::PureBuiltin::Sum

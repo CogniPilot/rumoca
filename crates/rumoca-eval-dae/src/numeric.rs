@@ -864,6 +864,7 @@ where
                     self.expression(arguments.get(1).expect("checked smooth value argument"))?;
             }
             dae::PureBuiltin::NoEvent => {}
+            dae::PureBuiltin::Homotopy => {}
             dae::PureBuiltin::Sum => values = vec![values.iter().sum()],
             dae::PureBuiltin::Product => values = vec![values.iter().product()],
             dae::PureBuiltin::Min | dae::PureBuiltin::Max => {

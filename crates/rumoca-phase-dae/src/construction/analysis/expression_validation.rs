@@ -170,6 +170,7 @@ pub(super) fn validate_builtin(
             | BuiltinFunction::Log10
             | BuiltinFunction::Smooth
             | BuiltinFunction::NoEvent
+            | BuiltinFunction::Homotopy
             | BuiltinFunction::Min
             | BuiltinFunction::Max
             | BuiltinFunction::Sum

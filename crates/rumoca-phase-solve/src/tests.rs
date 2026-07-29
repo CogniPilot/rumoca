@@ -944,3 +944,80 @@ fn initial_condition_owns_a_dedicated_runtime_flag() {
             .any(|operation| matches!(operation, LinearOp::LoadP { index, .. } if *index == flag))
     );
 }
+
+#[test]
+fn homotopy_owns_a_dedicated_continuation_parameter() {
+    let source = TestSource::new("Real x; der(x) = homotopy(x*x, x);");
+    let declaration = source.at(0, 6);
+    let owner = source.at(8, 34);
+    let homotopy_at = source.at(17, 33);
+    let model = dae::Dae::construct(source.map, |model| {
+        let real = model.types(|types| {
+            types.intern(
+                TypeId::new(0),
+                dae::ValueType::scalar(dae::ScalarType::Real),
+                declaration,
+            )
+        })?;
+        let state = model.variables(|variables| {
+            variables.state(
+                VarName::new("x"),
+                real,
+                declaration,
+                dae::VariableAttributes::default(),
+            )
+        })?;
+        let residual = model.expressions(|expressions| {
+            let derivative = expressions
+                .at(owner)
+                .coordinate(dae::CoordinateInput::Derivative(state))?;
+            let x = expressions
+                .at(homotopy_at)
+                .coordinate(dae::CoordinateInput::State(state))?;
+            let actual = expressions
+                .at(homotopy_at)
+                .binary(dae::BinaryOperator::Multiply, x, x)?;
+            let homotopy = expressions
+                .at(homotopy_at)
+                .builtin(dae::PureBuiltin::Homotopy, [actual, x])?;
+            expressions
+                .at(owner)
+                .binary(dae::BinaryOperator::Subtract, derivative, homotopy)
+        })?;
+        model.continuous(|continuous| continuous.value_equation(owner, residual))
+    })
+    .unwrap();
+
+    model.inspect(|view| {
+        let expression = (0..view.expression_count())
+            .filter_map(|index| view.expression(view.expression_id(index)?))
+            .find(|expression| {
+                matches!(
+                    expression.operation(),
+                    dae::ExpressionOperation::Builtin {
+                        builtin: dae::PureBuiltin::Homotopy,
+                        ..
+                    }
+                )
+            })
+            .expect("checked DAE retains the homotopy node");
+        assert_eq!(
+            view.source_text(expression.provenance()),
+            Some("homotopy(x*x, x)")
+        );
+    });
+    let solve = lower_solve_problem(&model).unwrap();
+    let lambda = solve
+        .solve_layout
+        .initial_homotopy_parameter_index
+        .expect("homotopy owns one checked continuation parameter");
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous.derivative_rhs.nodes.as_slice()
+    else {
+        panic!("one scalar derivative block expected");
+    };
+    assert!(
+        rows.programs[0].iter().any(
+            |operation| matches!(operation, LinearOp::LoadP { index, .. } if *index == lambda)
+        )
+    );
+}

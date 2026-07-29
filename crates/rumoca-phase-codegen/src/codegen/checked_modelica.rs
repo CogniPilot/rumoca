@@ -652,6 +652,7 @@ const fn builtin_name(builtin: dae::PureBuiltin) -> &'static str {
         dae::PureBuiltin::Log10 => "log10",
         dae::PureBuiltin::Smooth => "smooth",
         dae::PureBuiltin::NoEvent => "noEvent",
+        dae::PureBuiltin::Homotopy => "homotopy",
         dae::PureBuiltin::Min => "min",
         dae::PureBuiltin::Max => "max",
         dae::PureBuiltin::Sum => "sum",
