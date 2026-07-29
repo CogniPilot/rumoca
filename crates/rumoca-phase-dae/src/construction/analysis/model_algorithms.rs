@@ -662,7 +662,9 @@ fn collect_when_equation_targets(equations: &[flat::WhenEquation], targets: &mut
                 for (_, equations) in branches {
                     collect_when_equation_targets(equations, targets);
                 }
-                collect_when_equation_targets(else_branch, targets);
+                if let Some(else_branch) = else_branch {
+                    collect_when_equation_targets(else_branch, targets);
+                }
             }
             flat::WhenEquation::FunctionCallOutputs { outputs, .. } => {
                 targets.extend(outputs.iter().cloned());

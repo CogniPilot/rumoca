@@ -1082,7 +1082,8 @@ fn lower_when_chain<'dae>(
     chain: &flat::WhenChain,
 ) -> Result<(), dae::DaeConstructionError> {
     let mut guards = Vec::with_capacity(chain.branches.len());
-    for branch in &chain.branches {
+    let mut previous = None;
+    for (index, branch) in chain.branches.iter().enumerate() {
         let (condition, owner_clock) = lower_when_condition(
             construction,
             coordinates,
@@ -1091,11 +1092,24 @@ fn lower_when_chain<'dae>(
             clocks,
             &branch.condition,
         )?;
+        let action_condition = if let Some(previous) = previous {
+            let no_previous = negate_condition(construction, previous, branch.span)?;
+            combine_conditions(construction, condition, no_previous, false, branch.span)?
+        } else {
+            condition
+        };
         guards.push(EventGuard {
             trigger: condition,
-            condition,
+            condition: action_condition,
             owner_clock,
         });
+        if index + 1 < chain.branches.len() {
+            previous = Some(if let Some(previous) = previous {
+                combine_conditions(construction, previous, condition, true, branch.span)?
+            } else {
+                condition
+            });
+        }
     }
     for (branch, guard) in chain.branches.iter().zip(&guards) {
         if let Some(clock) = guard.owner_clock {
@@ -1145,7 +1159,9 @@ fn own_clocked_targets<'dae>(
                 for (_, branch) in branches {
                     own_clocked_targets(construction, coordinates, clock, branch)?;
                 }
-                own_clocked_targets(construction, coordinates, clock, else_branch)?;
+                if let Some(else_branch) = else_branch {
+                    own_clocked_targets(construction, coordinates, clock, else_branch)?;
+                }
             }
             flat::WhenEquation::Reinit { .. }
             | flat::WhenEquation::Assert { .. }
@@ -1235,7 +1251,10 @@ fn lower_when_equations<'dae>(
                 })?;
             }
             flat::WhenEquation::Assert {
-                condition, message, ..
+                condition,
+                message,
+                level,
+                ..
             } => {
                 let (condition, _) = lower_condition(
                     construction,
@@ -1254,8 +1273,20 @@ fn lower_when_equations<'dae>(
                 )?;
                 let message =
                     lower_expression(construction, coordinates, functions, message, None)?;
+                let level = lower_optional_expression(
+                    construction,
+                    coordinates,
+                    functions,
+                    level.as_deref(),
+                )?;
                 construction.events(|events| {
-                    events.assert(guard.trigger, action_guard, message, provenance)
+                    events.assert_with_level(
+                        guard.trigger,
+                        action_guard,
+                        message,
+                        level,
+                        provenance,
+                    )
                 })?;
             }
             flat::WhenEquation::Terminate { message, .. } => {
@@ -1283,7 +1314,7 @@ fn lower_when_equations<'dae>(
                     sample_lattices,
                     guard,
                     branches,
-                    else_branch,
+                    else_branch.as_deref(),
                     equation.span(),
                 )?;
             }
@@ -1335,7 +1366,7 @@ fn lower_conditional_when<'dae>(
     sample_lattices: &[(Span, ClockLattice)],
     parent: EventGuard<'dae>,
     branches: &[(Expression, Vec<flat::WhenEquation>)],
-    else_branch: &[flat::WhenEquation],
+    else_branch: Option<&[flat::WhenEquation]>,
     span: Span,
 ) -> Result<(), dae::DaeConstructionError> {
     let mut previous = None;
@@ -1374,7 +1405,9 @@ fn lower_conditional_when<'dae>(
             None => condition,
         });
     }
-    if !else_branch.is_empty() {
+    if let Some(else_branch) = else_branch
+        && !else_branch.is_empty()
+    {
         let guard = match previous {
             Some(previous) => {
                 let available = negate_condition(construction, previous, span)?;

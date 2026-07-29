@@ -370,10 +370,16 @@ fn collect_active_refs_from_flat_when_equation(
             value.collect_var_refs(active);
         }
         rumoca_ir_flat::WhenEquation::Assert {
-            condition, message, ..
+            condition,
+            message,
+            level,
+            ..
         } => {
             condition.collect_var_refs(active);
             message.collect_var_refs(active);
+            if let Some(level) = level {
+                level.collect_var_refs(active);
+            }
         }
         rumoca_ir_flat::WhenEquation::Terminate { message, .. } => {
             message.collect_var_refs(active);
@@ -389,8 +395,10 @@ fn collect_active_refs_from_flat_when_equation(
                     collect_active_refs_from_flat_when_equation(nested, active);
                 }
             }
-            for nested in else_branch {
-                collect_active_refs_from_flat_when_equation(nested, active);
+            if let Some(else_branch) = else_branch {
+                for nested in else_branch {
+                    collect_active_refs_from_flat_when_equation(nested, active);
+                }
             }
         }
         rumoca_ir_flat::WhenEquation::FunctionCallOutputs {

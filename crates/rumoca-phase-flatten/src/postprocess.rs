@@ -340,10 +340,16 @@ fn collapse_index_when_equations(
                 collapse_index_expr(value, known_flat_vars);
             }
             rumoca_ir_flat::WhenEquation::Assert {
-                condition, message, ..
+                condition,
+                message,
+                level,
+                ..
             } => {
                 collapse_index_expr(condition, known_flat_vars);
                 collapse_index_expr(message, known_flat_vars);
+                if let Some(level) = level {
+                    collapse_index_expr(level, known_flat_vars);
+                }
             }
             rumoca_ir_flat::WhenEquation::Conditional {
                 branches,
@@ -354,7 +360,9 @@ fn collapse_index_when_equations(
                     collapse_index_expr(cond, known_flat_vars);
                     collapse_index_when_equations(branch_equations, known_flat_vars);
                 }
-                collapse_index_when_equations(else_branch, known_flat_vars);
+                if let Some(else_branch) = else_branch {
+                    collapse_index_when_equations(else_branch, known_flat_vars);
+                }
             }
             rumoca_ir_flat::WhenEquation::FunctionCallOutputs { function, .. } => {
                 collapse_index_expr(function, known_flat_vars);
@@ -1885,12 +1893,19 @@ fn substitute_known_constants_when_equation(
             *value = substitute_known_constants_expr(value.clone(), ctx, live_vars, locals, "")?;
         }
         flat::WhenEquation::Assert {
-            condition, message, ..
+            condition,
+            message,
+            level,
+            ..
         } => {
             *condition =
                 substitute_known_constants_expr(condition.clone(), ctx, live_vars, locals, "")?;
             *message =
                 substitute_known_constants_expr(message.clone(), ctx, live_vars, locals, "")?;
+            if let Some(level) = level.as_deref_mut() {
+                *level =
+                    substitute_known_constants_expr(level.clone(), ctx, live_vars, locals, "")?;
+            }
         }
         flat::WhenEquation::Terminate { message, .. } => {
             *message =
@@ -1908,8 +1923,10 @@ fn substitute_known_constants_when_equation(
                     substitute_known_constants_when_equation(nested, ctx, live_vars, locals)?;
                 }
             }
-            for nested in else_branch {
-                substitute_known_constants_when_equation(nested, ctx, live_vars, locals)?;
+            if let Some(else_branch) = else_branch {
+                for nested in else_branch {
+                    substitute_known_constants_when_equation(nested, ctx, live_vars, locals)?;
+                }
             }
         }
         flat::WhenEquation::FunctionCallOutputs { function, .. } => {

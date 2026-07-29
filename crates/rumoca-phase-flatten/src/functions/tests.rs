@@ -277,7 +277,7 @@ fn canonicalize_collected_function_calls_visits_when_chains() {
                 origin: "when function call".to_string(),
             }],
         )],
-        else_branch: vec![flat::WhenEquation::Assign {
+        else_branch: Some(vec![flat::WhenEquation::Assign {
             target: rumoca_core::VarName::new("y"),
             value: rumoca_core::Expression::FunctionCall {
                 name: rumoca_core::Reference::new("Pkg.Events.trip"),
@@ -287,7 +287,7 @@ fn canonicalize_collected_function_calls_visits_when_chains() {
             },
             span: Span::DUMMY,
             origin: "when assignment".to_string(),
-        }],
+        }]),
         span: Span::DUMMY,
         origin: "nested when branch".to_string(),
     });
@@ -314,7 +314,10 @@ fn canonicalize_collected_function_calls_visits_when_chains() {
         panic!("expected function-call output when equation");
     };
     assert_function_call_name(function, "Pkg.Events.trip");
-    let flat::WhenEquation::Assign { value, .. } = &else_branch[0] else {
+    let flat::WhenEquation::Assign { value, .. } = &else_branch
+        .as_ref()
+        .expect("source else branch remains present")[0]
+    else {
         panic!("expected assignment when equation");
     };
     assert_function_call_name(value, "Pkg.Events.trip");

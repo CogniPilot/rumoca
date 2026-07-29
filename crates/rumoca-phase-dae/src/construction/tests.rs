@@ -67,6 +67,63 @@ fn scalar_real_model(source: &TestSource) -> flat::Model {
     model
 }
 
+fn source_priority_when_model(source: &TestSource) -> flat::Model {
+    let first_condition_span = source.span("true", 0);
+    let second_condition_span = source.span("true", 2);
+    let first_assignment_span = source.span("m = true", 0);
+    let second_assignment_span = source.span("m = false", 0);
+    let mut model = flat::Model::new();
+    add_primitive_variable(
+        &mut model,
+        source,
+        "m",
+        "discrete Boolean m",
+        8,
+        Vec::new(),
+        true,
+    );
+    let mut first = flat::WhenBranch::new(
+        Expression::Literal {
+            value: Literal::Boolean(true),
+            span: first_condition_span,
+        },
+        first_condition_span,
+    );
+    first.add_equation(flat::WhenEquation::assign(
+        VarName::new("m"),
+        Expression::Literal {
+            value: Literal::Boolean(true),
+            span: source.span("true", 1),
+        },
+        first_assignment_span,
+        "first branch",
+    ));
+    let mut second = flat::WhenBranch::new(
+        Expression::Literal {
+            value: Literal::Boolean(true),
+            span: second_condition_span,
+        },
+        second_condition_span,
+    );
+    second.add_equation(flat::WhenEquation::assign(
+        VarName::new("m"),
+        Expression::Literal {
+            value: Literal::Boolean(false),
+            span: source.span("false", 0),
+        },
+        second_assignment_span,
+        "second branch",
+    ));
+    let mut chain = flat::WhenChain::new(source.span(
+        "when true then m = true; elsewhen true then m = false; end when",
+        0,
+    ));
+    chain.add_branch(first);
+    chain.add_branch(second);
+    model.when_chains.push(chain);
+    model
+}
+
 #[test]
 fn production_lowering_enters_only_through_construct() {
     let source = TestSource::new("model M Real x; equation 0 = x - 1.0; end M;");
@@ -87,6 +144,116 @@ fn production_lowering_enters_only_through_construct() {
                 .origin(),
             dae::DaeProvenanceOrigin::Source
         );
+    });
+}
+
+#[test]
+fn when_chain_lowers_source_priority_with_exact_branch_provenance() {
+    let source = TestSource::new(
+        "model M discrete Boolean m; equation \
+         when true then m = true; elsewhen true then m = false; end when; end M;",
+    );
+    let second_condition_span = source.span("true", 2);
+    let model = source_priority_when_model(&source);
+    let dae = construct(&model, source.map, ToDaeOptions::default()).unwrap();
+
+    dae.inspect(|view| {
+        assert_eq!(view.event_action_count(), 2);
+        let first = view.event_action(view.event_action_id(0).unwrap()).unwrap();
+        let second = view.event_action(view.event_action_id(1).unwrap()).unwrap();
+        assert_eq!(view.source_text(first.provenance()), Some("m = true"));
+        assert_eq!(view.source_text(second.provenance()), Some("m = false"));
+        assert_eq!(first.guard(), first.trigger());
+        assert_ne!(second.guard(), second.trigger());
+
+        let guard = view.condition(second.guard()).unwrap();
+        assert_eq!(guard.provenance().span(), second_condition_span);
+        assert_eq!(
+            guard.provenance().origin(),
+            dae::DaeProvenanceOrigin::Generated(dae::DaeGeneration::ConditionLowering)
+        );
+        let dae::ConditionOperation::And(branch_trigger, no_previous) = guard.operation() else {
+            panic!("later branch guard must combine its trigger with source priority");
+        };
+        assert_eq!(branch_trigger, second.trigger());
+        let negated = view.condition(no_previous).unwrap();
+        assert_eq!(negated.provenance().span(), second_condition_span);
+        assert_eq!(
+            negated.provenance().origin(),
+            dae::DaeProvenanceOrigin::Generated(dae::DaeGeneration::ConditionLowering)
+        );
+        assert!(matches!(
+            negated.operation(),
+            dae::ConditionOperation::Not(previous) if previous == first.trigger()
+        ));
+    });
+}
+
+#[test]
+fn when_assert_level_reaches_checked_event_action_with_exact_provenance() {
+    let source = TestSource::new(
+        "model M equation when true then assert(false, \"failed\", 2); end when; end M;",
+    );
+    let condition_span = source.span("true", 0);
+    let assertion_span = source.span("assert(false, \"failed\", 2)", 0);
+    let level_span = source.span("2", 0);
+    let mut branch = flat::WhenBranch::new(
+        Expression::Literal {
+            value: Literal::Boolean(true),
+            span: condition_span,
+        },
+        condition_span,
+    );
+    branch.add_equation(flat::WhenEquation::assert(
+        Expression::Literal {
+            value: Literal::Boolean(false),
+            span: source.span("false", 0),
+        },
+        Expression::Literal {
+            value: Literal::String("failed".to_string()),
+            span: source.span("\"failed\"", 0),
+        },
+        Some(Expression::Literal {
+            value: Literal::Integer(2),
+            span: level_span,
+        }),
+        assertion_span,
+        "assert in when-clause",
+    ));
+    let mut chain = flat::WhenChain::new(
+        source.span("when true then assert(false, \"failed\", 2); end when", 0),
+    );
+    chain.add_branch(branch);
+    let mut model = flat::Model::new();
+    model.when_chains.push(chain);
+    let dae = construct(&model, source.map, ToDaeOptions::default()).unwrap();
+
+    dae.inspect(|view| {
+        assert_eq!(view.event_action_count(), 1);
+        let action = view.event_action(view.event_action_id(0).unwrap()).unwrap();
+        assert_eq!(action.provenance().span(), assertion_span);
+        assert_eq!(
+            view.source_text(action.provenance()),
+            Some("assert(false, \"failed\", 2)")
+        );
+        let dae::EventActionOperation::Assert {
+            message,
+            level: Some(level),
+        } = action.operation()
+        else {
+            panic!("checked event assertion must own its optional level");
+        };
+        assert_eq!(
+            view.source_text(view.expression(message).unwrap().provenance()),
+            Some("\"failed\"")
+        );
+        let level = view.expression(level).unwrap();
+        assert_eq!(level.provenance().span(), level_span);
+        assert_eq!(view.source_text(level.provenance()), Some("2"));
+        assert!(matches!(
+            level.operation(),
+            dae::ExpressionOperation::Literal(dae::DaeLiteral::Integer(2))
+        ));
     });
 }
 

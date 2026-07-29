@@ -36,6 +36,9 @@ mod connections_graph;
 mod flattened_equations;
 mod structured_domain;
 mod zero_sized_reductions;
+pub(crate) use assert_equations::{
+    decode_assert_arguments, decode_terminate_arguments,
+};
 use assert_equations::{
     AssertEquationLowering, flatten_assert_equation, flatten_assert_function_call,
     is_assert_function_call,

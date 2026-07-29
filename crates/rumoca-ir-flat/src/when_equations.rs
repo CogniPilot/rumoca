@@ -56,7 +56,7 @@ impl WhenBranch {
 /// When-clauses can contain:
 /// - Simple assignments: `v = expr`
 /// - Reinit statements: `reinit(x, expr)`
-/// - Assert statements: `assert(condition, message)`
+/// - Assert statements: `assert(condition, message[, level])`
 /// - Terminate statements: `terminate(message)`
 /// - Conditional branches: `if cond then ... elseif ... else ... end if`
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,6 +79,7 @@ pub enum WhenEquation {
     Assert {
         condition: Expression,
         message: Expression,
+        level: Option<Box<Expression>>,
         span: Span,
         origin: String,
     },
@@ -95,8 +96,8 @@ pub enum WhenEquation {
     Conditional {
         /// Condition/equation pairs for if/elseif branches.
         branches: Vec<(Expression, Vec<WhenEquation>)>,
-        /// Equations for the else branch (may be empty).
-        else_branch: Vec<WhenEquation>,
+        /// Source-present else branch; `Some([])` is distinct from no else.
+        else_branch: Option<Vec<WhenEquation>>,
         span: Span,
         origin: String,
     },
@@ -149,12 +150,14 @@ impl WhenEquation {
     pub fn assert(
         condition: Expression,
         message: Expression,
+        level: Option<Expression>,
         span: Span,
         origin: impl Into<String>,
     ) -> Self {
         Self::Assert {
             condition,
             message,
+            level: level.map(Box::new),
             span,
             origin: origin.into(),
         }
@@ -172,7 +175,7 @@ impl WhenEquation {
     /// Create a new conditional when equation (if-statement inside when-clause).
     pub fn conditional(
         branches: Vec<(Expression, Vec<WhenEquation>)>,
-        else_branch: Vec<WhenEquation>,
+        else_branch: Option<Vec<WhenEquation>>,
         span: Span,
         origin: impl Into<String>,
     ) -> Self {

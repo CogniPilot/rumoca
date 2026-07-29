@@ -10,10 +10,16 @@ pub(crate) fn rewrite_function_overrides_in_when_equation_with_ctx(
             rewrite_function_overrides_in_expression_with_ctx(value, ctx);
         }
         flat::WhenEquation::Assert {
-            condition, message, ..
+            condition,
+            message,
+            level,
+            ..
         } => {
             rewrite_function_overrides_in_expression_with_ctx(condition, ctx);
             rewrite_function_overrides_in_expression_with_ctx(message, ctx);
+            if let Some(level) = level {
+                rewrite_function_overrides_in_expression_with_ctx(level, ctx);
+            }
         }
         flat::WhenEquation::Terminate { message, .. } => {
             rewrite_function_overrides_in_expression_with_ctx(message, ctx);
@@ -29,8 +35,10 @@ pub(crate) fn rewrite_function_overrides_in_when_equation_with_ctx(
                     rewrite_function_overrides_in_when_equation_with_ctx(nested_equation, ctx);
                 }
             }
-            for nested_equation in else_branch {
-                rewrite_function_overrides_in_when_equation_with_ctx(nested_equation, ctx);
+            if let Some(else_branch) = else_branch {
+                for nested_equation in else_branch {
+                    rewrite_function_overrides_in_when_equation_with_ctx(nested_equation, ctx);
+                }
             }
         }
         flat::WhenEquation::FunctionCallOutputs { function, .. } => {

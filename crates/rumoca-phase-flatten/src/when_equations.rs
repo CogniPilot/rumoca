@@ -14,7 +14,10 @@ use rumoca_ir_ast as ast;
 
 use rumoca_ir_flat as flat;
 
-use crate::equations::{build_qualified_name, expand_range_indices, substitute_index_in_equation};
+use crate::equations::{
+    build_qualified_name, decode_assert_arguments, decode_terminate_arguments,
+    expand_range_indices, substitute_index_in_equation,
+};
 use crate::errors::FlattenError;
 use crate::{Context, qualify_expression_imports_with_def_map_ctx};
 
@@ -116,6 +119,24 @@ fn flatten_when_body_equation(
                 .map(|opt| opt.into_iter().collect())
         }
 
+        ast::Equation::Assert {
+            condition,
+            message,
+            level,
+        } => flatten_when_assert_equation(
+            WhenAssertLowering {
+                ctx,
+                prefix,
+                span,
+                imports: &ctx.current_imports,
+                def_map,
+            },
+            condition,
+            message,
+            level.as_ref(),
+        )
+        .map(|assertion| vec![assertion]),
+
         ast::Equation::If {
             cond_blocks,
             else_block,
@@ -197,9 +218,9 @@ fn flatten_when_if_equation(
             let when_eqs = flatten_when_body_equation(ctx, eq, prefix, span, def_map)?;
             eqs.extend(when_eqs);
         }
-        eqs
+        Some(eqs)
     } else {
-        Vec::new()
+        None
     };
 
     // MLS §8.3.5 validation: all branches must assign to the same set of variables,
@@ -208,8 +229,14 @@ fn flatten_when_if_equation(
         .iter()
         .all(|block| crate::boolean_eval::is_structural_expression(ctx, &block.cond, prefix));
 
-    if !all_conditions_structural && branches.len() > 1 {
-        let first_targets = collect_when_eq_targets(&branches[0].1);
+    if !all_conditions_structural {
+        let Some((_, first_equations)) = branches.first() else {
+            return Err(FlattenError::unsupported_equation(
+                "if-equation in when-clause requires at least one conditional branch",
+                span,
+            ));
+        };
+        let first_targets = collect_when_eq_targets(first_equations);
         for (i, (_, branch_eqs)) in branches.iter().enumerate().skip(1) {
             let targets = collect_when_eq_targets(branch_eqs);
             if targets != first_targets {
@@ -233,9 +260,8 @@ fn flatten_when_if_equation(
                 ));
             }
         }
-        // Also validate the else branch if present
-        if !else_eqs.is_empty() {
-            let else_targets = collect_when_eq_targets(&else_eqs);
+        if let Some(else_eqs) = &else_eqs {
+            let else_targets = collect_when_eq_targets(else_eqs);
             if else_targets != first_targets {
                 return Err(FlattenError::unsupported_equation(
                     format!(
@@ -288,7 +314,9 @@ fn collect_when_eq_targets(
                 for (_, branch_eqs) in branches {
                     targets.extend(collect_when_eq_targets(branch_eqs));
                 }
-                targets.extend(collect_when_eq_targets(else_branch));
+                if let Some(else_branch) = else_branch {
+                    targets.extend(collect_when_eq_targets(else_branch));
+                }
             }
             flat::WhenEquation::Assert { .. } | flat::WhenEquation::Terminate { .. } => {}
         }
@@ -429,13 +457,18 @@ fn flatten_when_function_call(
         "reinit" => flatten_reinit_call(ctx, args, prefix, span, imports, def_map),
         "assert" => flatten_assert_call(ctx, args, prefix, span, imports, def_map),
         "terminate" => flatten_terminate_call(ctx, args, prefix, span, imports, def_map),
-        // print() is a side-effect function that outputs debug messages
-        // It doesn't contribute to the DAE system, so we skip it
-        "print" => Ok(None),
-        // Handle qualified Streams.* functions which are side-effects.
+        "print" => Err(FlattenError::unsupported_equation(
+            "print() in a when-equation requires a typed checked event-call owner",
+            span,
+        )),
         "Streams" | "Modelica" => {
             if is_known_streams_side_effect_call(comp) {
-                Ok(None) // Skip side-effect functions
+                Err(FlattenError::unsupported_equation(
+                    format!(
+                        "{full_name}() in a when-equation requires a typed checked event-call owner"
+                    ),
+                    span,
+                ))
             } else {
                 Err(FlattenError::unsupported_equation(
                     format!("unsupported function '{}' in when-equation", full_name),
@@ -543,22 +576,72 @@ fn flatten_assert_call(
     imports: &crate::qualify::ImportMap,
     def_map: Option<&crate::ResolveDefMap>,
 ) -> Result<Option<flat::WhenEquation>, FlattenError> {
-    if args.len() < 2 {
-        return Err(FlattenError::unsupported_equation(
-            "assert() requires at least 2 arguments (condition, message)",
+    let decoded = decode_assert_arguments(args, span)?;
+    flatten_when_assert_equation(
+        WhenAssertLowering {
+            ctx,
+            prefix,
             span,
-        ));
-    }
+            imports,
+            def_map,
+        },
+        decoded.condition,
+        decoded.message,
+        decoded.level,
+    )
+    .map(Some)
+}
 
-    let condition =
-        qualify_expression_imports_with_def_map_ctx(&args[0], prefix, imports, def_map, ctx, None)?;
-    let message =
-        qualify_expression_imports_with_def_map_ctx(&args[1], prefix, imports, def_map, ctx, None)?;
-    let origin = "assert in when-clause".to_string();
+#[derive(Clone, Copy)]
+struct WhenAssertLowering<'a> {
+    ctx: &'a Context,
+    prefix: &'a ast::QualifiedName,
+    span: rumoca_core::Span,
+    imports: &'a crate::qualify::ImportMap,
+    def_map: Option<&'a crate::ResolveDefMap>,
+}
 
-    Ok(Some(flat::WhenEquation::assert(
-        condition, message, span, origin,
-    )))
+fn flatten_when_assert_equation(
+    lowering: WhenAssertLowering<'_>,
+    condition: &ast::Expression,
+    message: &ast::Expression,
+    level: Option<&ast::Expression>,
+) -> Result<flat::WhenEquation, FlattenError> {
+    let condition = qualify_expression_imports_with_def_map_ctx(
+        condition,
+        lowering.prefix,
+        lowering.imports,
+        lowering.def_map,
+        lowering.ctx,
+        None,
+    )?;
+    let message = qualify_expression_imports_with_def_map_ctx(
+        message,
+        lowering.prefix,
+        lowering.imports,
+        lowering.def_map,
+        lowering.ctx,
+        None,
+    )?;
+    let level = level
+        .map(|level| {
+            qualify_expression_imports_with_def_map_ctx(
+                level,
+                lowering.prefix,
+                lowering.imports,
+                lowering.def_map,
+                lowering.ctx,
+                None,
+            )
+        })
+        .transpose()?;
+    Ok(flat::WhenEquation::assert(
+        condition,
+        message,
+        level,
+        lowering.span,
+        "assert in when-clause",
+    ))
 }
 
 /// Flatten a terminate() call: terminate(message)
@@ -570,15 +653,9 @@ fn flatten_terminate_call(
     imports: &crate::qualify::ImportMap,
     def_map: Option<&crate::ResolveDefMap>,
 ) -> Result<Option<flat::WhenEquation>, FlattenError> {
-    if args.is_empty() {
-        return Err(FlattenError::unsupported_equation(
-            "terminate() requires 1 argument (message)",
-            span,
-        ));
-    }
-
+    let message = decode_terminate_arguments(args, span)?;
     let message =
-        qualify_expression_imports_with_def_map_ctx(&args[0], prefix, imports, def_map, ctx, None)?;
+        qualify_expression_imports_with_def_map_ctx(message, prefix, imports, def_map, ctx, None)?;
     let origin = "terminate in when-clause".to_string();
 
     Ok(Some(flat::WhenEquation::terminate(message, span, origin)))
@@ -633,7 +710,8 @@ fn extract_assignment_target(
 #[cfg(test)]
 mod tests {
     use super::{
-        extract_assignment_target, flatten_when_blocks, flatten_when_for_equation,
+        extract_assignment_target, flatten_when_blocks, flatten_when_body_equation,
+        flatten_when_for_equation, flatten_when_function_call, flatten_when_if_equation,
         is_known_streams_side_effect_call,
     };
     use crate::errors::FlattenError;
@@ -666,10 +744,14 @@ mod tests {
     }
 
     fn int_expr(value: i64) -> ast::Expression {
+        int_expr_with_span(value, rumoca_core::Span::DUMMY)
+    }
+
+    fn int_expr_with_span(value: i64, span: rumoca_core::Span) -> ast::Expression {
         ast::Expression::Terminal {
             terminal_type: TerminalType::UnsignedInteger,
             token: token(&value.to_string()),
-            span: rumoca_core::Span::DUMMY,
+            span,
         }
     }
 
@@ -730,6 +812,25 @@ mod tests {
             def_id: None,
             span: rumoca_core::Span::DUMMY,
         })
+    }
+
+    fn assignment(target: &str, value: i64) -> ast::Equation {
+        ast::Equation::Simple {
+            lhs: var_expr(target),
+            rhs: int_expr(value),
+        }
+    }
+
+    fn named_argument(
+        name: &str,
+        value: ast::Expression,
+        span: rumoca_core::Span,
+    ) -> ast::Expression {
+        ast::Expression::NamedArgument {
+            name: token(name),
+            value: Arc::new(value),
+            span,
+        }
     }
 
     #[test]
@@ -824,6 +925,252 @@ mod tests {
             error,
             FlattenError::UnsupportedEquation { span, .. } if span == owner_span
         ));
+    }
+
+    #[test]
+    fn when_assert_preserves_optional_level() {
+        let span = test_span();
+        let level_span = rumoca_core::Span::from_offsets(span.source, 30, 31);
+        let equation = ast::Equation::Assert {
+            condition: bool_expr(true, span),
+            message: int_expr(1),
+            level: Some(int_expr_with_span(2, level_span)),
+        };
+
+        let equations = flatten_when_body_equation(
+            &crate::Context::default(),
+            &equation,
+            &ast::QualifiedName::new(),
+            span,
+            None,
+        )
+        .expect("source assert is a checked when action");
+
+        let [
+            flat::WhenEquation::Assert {
+                level: Some(level),
+                span: found,
+                ..
+            },
+        ] = equations.as_slice()
+        else {
+            panic!("optional assertion level must remain in Flat");
+        };
+        assert_eq!(*found, span);
+        assert_eq!(level.span(), Some(level_span));
+        assert!(matches!(
+            level.as_ref(),
+            rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Integer(2),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn when_assert_and_terminate_reject_extra_or_missing_arguments() {
+        let ctx = crate::Context::default();
+        let prefix = ast::QualifiedName::new();
+        let span = test_span();
+        for count in [1, 4] {
+            let args = (0..count).map(int_expr).collect::<Vec<_>>();
+            let error = flatten_when_function_call(
+                &ctx,
+                &comp_ref("assert"),
+                &args,
+                &prefix,
+                span,
+                &ctx.current_imports,
+                None,
+            )
+            .expect_err("assert arity must fail at its source owner");
+            assert!(matches!(
+                error,
+                FlattenError::UnsupportedEquation { span: found, .. } if found == span
+            ));
+        }
+        for count in [0, 2] {
+            let args = (0..count).map(int_expr).collect::<Vec<_>>();
+            let error = flatten_when_function_call(
+                &ctx,
+                &comp_ref("terminate"),
+                &args,
+                &prefix,
+                span,
+                &ctx.current_imports,
+                None,
+            )
+            .expect_err("terminate arity must fail at its source owner");
+            assert!(matches!(
+                error,
+                FlattenError::UnsupportedEquation { span: found, .. } if found == span
+            ));
+        }
+    }
+
+    #[test]
+    fn when_assert_decoder_rejects_duplicate_and_unknown_named_arguments() {
+        let ctx = crate::Context::default();
+        let prefix = ast::QualifiedName::new();
+        let span = test_span();
+        let duplicate = vec![
+            bool_expr(true, span),
+            int_expr(1),
+            named_argument("message", int_expr(2), span),
+        ];
+        let unknown = vec![
+            bool_expr(true, span),
+            int_expr(1),
+            named_argument("severity", int_expr(2), span),
+        ];
+        for args in [&duplicate, &unknown] {
+            let error = flatten_when_function_call(
+                &ctx,
+                &comp_ref("assert"),
+                args,
+                &prefix,
+                span,
+                &ctx.current_imports,
+                None,
+            )
+            .expect_err("every assert slot must be known and filled once");
+            assert!(matches!(
+                error,
+                FlattenError::UnsupportedEquation { span: found, .. } if found == span
+            ));
+        }
+    }
+
+    #[test]
+    fn when_terminate_decoder_unwraps_only_named_message() {
+        let ctx = crate::Context::default();
+        let prefix = ast::QualifiedName::new();
+        let span = test_span();
+        let decoded = flatten_when_function_call(
+            &ctx,
+            &comp_ref("terminate"),
+            &[named_argument("message", int_expr_with_span(7, span), span)],
+            &prefix,
+            span,
+            &ctx.current_imports,
+            None,
+        )
+        .expect("named terminate message is a single checked slot")
+        .expect("terminate remains an event action");
+        assert!(matches!(
+            decoded,
+            flat::WhenEquation::Terminate {
+                message: rumoca_core::Expression::Literal {
+                    value: rumoca_core::Literal::Integer(7),
+                    ..
+                },
+                ..
+            }
+        ));
+
+        let error = flatten_when_function_call(
+            &ctx,
+            &comp_ref("terminate"),
+            &[named_argument("text", int_expr(1), span)],
+            &prefix,
+            span,
+            &ctx.current_imports,
+            None,
+        )
+        .expect_err("unknown terminate slot must fail at the call");
+        assert!(matches!(
+            error,
+            FlattenError::UnsupportedEquation { span: found, .. } if found == span
+        ));
+    }
+
+    #[test]
+    fn nested_when_if_rejects_mismatched_explicit_else_target() {
+        let span = test_span();
+        let blocks = vec![ast::EquationBlock {
+            cond: var_expr_with_span("active", span),
+            eqs: vec![assignment("first", 1)],
+        }];
+        let error = flatten_when_if_equation(
+            &crate::Context::default(),
+            &blocks,
+            &Some(vec![assignment("second", 2)]),
+            &ast::QualifiedName::new(),
+            span,
+            None,
+        )
+        .expect_err("one if plus else must compare target sets");
+
+        assert!(matches!(
+            error,
+            FlattenError::UnsupportedEquation { span: found, .. } if found == span
+        ));
+    }
+
+    #[test]
+    fn nested_when_if_distinguishes_absent_from_explicit_empty_else() {
+        let span = test_span();
+        let blocks = vec![ast::EquationBlock {
+            cond: var_expr_with_span("active", span),
+            eqs: vec![assignment("target", 1)],
+        }];
+        let absent = flatten_when_if_equation(
+            &crate::Context::default(),
+            &blocks,
+            &None,
+            &ast::QualifiedName::new(),
+            span,
+            None,
+        )
+        .expect("an absent else remains absent")
+        .expect("conditional owner is retained");
+        assert!(matches!(
+            absent,
+            flat::WhenEquation::Conditional {
+                else_branch: None,
+                ..
+            }
+        ));
+
+        let error = flatten_when_if_equation(
+            &crate::Context::default(),
+            &blocks,
+            &Some(Vec::new()),
+            &ast::QualifiedName::new(),
+            span,
+            None,
+        )
+        .expect_err("an explicit empty else has an empty target set");
+        assert!(matches!(
+            error,
+            FlattenError::UnsupportedEquation { span: found, .. } if found == span
+        ));
+    }
+
+    #[test]
+    fn streams_error_in_when_fails_instead_of_disappearing() {
+        let ctx = crate::Context::default();
+        let span = test_span();
+        let error = flatten_when_function_call(
+            &ctx,
+            &comp_ref("Modelica.Utilities.Streams.error"),
+            &[int_expr(1)],
+            &ast::QualifiedName::new(),
+            span,
+            &ctx.current_imports,
+            None,
+        )
+        .expect_err("unrepresented Streams.error must never become an empty branch");
+
+        let FlattenError::UnsupportedEquation {
+            description,
+            span: found,
+        } = error
+        else {
+            panic!("Streams.error must report a source-owned unsupported equation");
+        };
+        assert_eq!(found, span);
+        assert!(description.contains("typed checked event-call owner"));
     }
 
     #[test]

@@ -322,10 +322,16 @@ fn canonicalize_def_id_when_equations(
                 canonicalize_def_id_expr(value, index, known_variables, None);
             }
             flat::WhenEquation::Assert {
-                condition, message, ..
+                condition,
+                message,
+                level,
+                ..
             } => {
                 canonicalize_def_id_expr(condition, index, known_variables, None);
                 canonicalize_def_id_expr(message, index, known_variables, None);
+                if let Some(level) = level {
+                    canonicalize_def_id_expr(level, index, known_variables, None);
+                }
             }
             flat::WhenEquation::Conditional {
                 branches,
@@ -336,7 +342,9 @@ fn canonicalize_def_id_when_equations(
                     canonicalize_def_id_expr(condition, index, known_variables, None);
                     canonicalize_def_id_when_equations(branch_equations, index, known_variables);
                 }
-                canonicalize_def_id_when_equations(else_branch, index, known_variables);
+                if let Some(else_branch) = else_branch {
+                    canonicalize_def_id_when_equations(else_branch, index, known_variables);
+                }
             }
             flat::WhenEquation::FunctionCallOutputs { function, .. } => {
                 canonicalize_def_id_expr(function, index, known_variables, None);

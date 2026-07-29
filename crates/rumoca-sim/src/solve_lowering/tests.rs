@@ -357,6 +357,106 @@ fn checked_event_trigger_does_not_reapply_at_a_branch_guard_root() {
 }
 
 #[test]
+fn checked_when_elsewhen_priority_blocks_later_rise_while_first_is_true() {
+    let dae = compile(
+        concat!(
+            "model PersistentFirstPriority\n",
+            "  discrete Integer selected(start=0);\n",
+            "  discrete Integer secondSeen(start=0);\n",
+            "  Real x(start=0);\n",
+            "  output Real selectedOut;\n",
+            "  output Real secondSeenOut;\n",
+            "equation\n",
+            "  der(x) = 1;\n",
+            "  selectedOut = selected;\n",
+            "  secondSeenOut = secondSeen;\n",
+            "  when x >= 0.25 then\n",
+            "    selected = 1;\n",
+            "  elsewhen x >= 0.75 then\n",
+            "    selected = 2;\n",
+            "  end when;\n",
+            "  when x >= 0.75 then\n",
+            "    secondSeen = 1;\n",
+            "  end when;\n",
+            "end PersistentFirstPriority;\n",
+        ),
+        "PersistentFirstPriority",
+    );
+    let options = SimOptions {
+        t_end: 1.0,
+        dt: Some(0.05),
+        solver_mode: crate::SimSolverMode::RkLike,
+        ..SimOptions::default()
+    };
+
+    let result = crate::rk45::simulate_dae(&dae, &options)
+        .expect("checked when/elsewhen priority must execute");
+    let selected = result
+        .names
+        .iter()
+        .position(|name| name == "selectedOut")
+        .unwrap_or_else(|| panic!("selected output column; available={:?}", result.names));
+    let second_seen = result
+        .names
+        .iter()
+        .position(|name| name == "secondSeenOut")
+        .unwrap_or_else(|| panic!("second-event witness column; available={:?}", result.names));
+
+    assert_eq!(
+        result.data[second_seen].last().copied(),
+        Some(1.0),
+        "the independent witness must prove that the later condition rose"
+    );
+    assert_eq!(
+        result.data[selected].last().copied(),
+        Some(1.0),
+        "a later rising condition must not outrank an earlier condition that remains true"
+    );
+}
+
+#[test]
+fn checked_when_elsewhen_priority_selects_first_on_simultaneous_rise() {
+    let dae = compile(
+        concat!(
+            "model SimultaneousPriority\n",
+            "  discrete Integer selected(start=0);\n",
+            "  Real x(start=0);\n",
+            "  output Real y;\n",
+            "equation\n",
+            "  der(x) = 1;\n",
+            "  y = selected;\n",
+            "  when x >= 0.5 then\n",
+            "    selected = 1;\n",
+            "  elsewhen x >= 0.5 then\n",
+            "    selected = 2;\n",
+            "  end when;\n",
+            "end SimultaneousPriority;\n",
+        ),
+        "SimultaneousPriority",
+    );
+    let options = SimOptions {
+        t_end: 1.0,
+        dt: Some(0.05),
+        solver_mode: crate::SimSolverMode::RkLike,
+        ..SimOptions::default()
+    };
+
+    let result = crate::rk45::simulate_dae(&dae, &options)
+        .expect("simultaneous checked when/elsewhen roots must execute");
+    let y = result
+        .names
+        .iter()
+        .position(|name| name == "y")
+        .unwrap_or_else(|| panic!("priority output column; available={:?}", result.names));
+
+    assert_eq!(
+        result.data[y].last().copied(),
+        Some(1.0),
+        "the first source branch must win when multiple conditions rise simultaneously"
+    );
+}
+
+#[test]
 fn unprovided_input_is_rejected_instead_of_receiving_a_default_value() {
     let dae = compile(
         "model NeedsInput input Real u; output Real y; equation y = u; end NeedsInput;",

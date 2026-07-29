@@ -460,10 +460,17 @@ impl ShapeAnalyzer<'_> {
                 self.discover_calls(value, values)
             }
             flat::WhenEquation::Assert {
-                condition, message, ..
+                condition,
+                message,
+                level,
+                ..
             } => {
                 self.discover_calls(condition, values)?;
-                self.discover_calls(message, values)
+                self.discover_calls(message, values)?;
+                if let Some(level) = level {
+                    self.discover_calls(level, values)?;
+                }
+                Ok(())
             }
             flat::WhenEquation::Terminate { message, .. } => self.discover_calls(message, values),
             flat::WhenEquation::Conditional {
@@ -475,7 +482,10 @@ impl ShapeAnalyzer<'_> {
                     self.discover_calls(condition, values)?;
                     self.discover_when_equations(equations, values)?;
                 }
-                self.discover_when_equations(else_branch, values)
+                if let Some(else_branch) = else_branch {
+                    self.discover_when_equations(else_branch, values)?;
+                }
+                Ok(())
             }
             flat::WhenEquation::FunctionCallOutputs { function, .. } => {
                 self.discover_calls(function, values)

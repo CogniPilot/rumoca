@@ -111,11 +111,11 @@ impl ConstructorMarker<'_> {
                 flat::WhenEquation::Assign { value, .. }
                 | flat::WhenEquation::Reinit { value, .. } => self.mark_expr(value),
                 flat::WhenEquation::Assert {
-                    condition, message, ..
-                } => {
-                    self.mark_expr(condition);
-                    self.mark_expr(message);
-                }
+                    condition,
+                    message,
+                    level,
+                    ..
+                } => self.mark_assert(condition, message, level),
                 flat::WhenEquation::Conditional {
                     branches,
                     else_branch,
@@ -129,16 +129,31 @@ impl ConstructorMarker<'_> {
         }
     }
 
+    fn mark_assert(
+        self,
+        condition: &mut rumoca_core::Expression,
+        message: &mut rumoca_core::Expression,
+        level: &mut Option<Box<rumoca_core::Expression>>,
+    ) {
+        self.mark_expr(condition);
+        self.mark_expr(message);
+        if let Some(level) = level {
+            self.mark_expr(level);
+        }
+    }
+
     fn mark_conditional_when_equation(
         self,
         branches: &mut [(rumoca_core::Expression, Vec<flat::WhenEquation>)],
-        else_branch: &mut [flat::WhenEquation],
+        else_branch: &mut Option<Vec<flat::WhenEquation>>,
     ) {
         for (condition, branch_equations) in branches {
             self.mark_expr(condition);
             self.mark_when_equations(branch_equations);
         }
-        self.mark_when_equations(else_branch);
+        if let Some(else_branch) = else_branch {
+            self.mark_when_equations(else_branch);
+        }
     }
 
     fn is_constructor_call(self, name: &rumoca_core::Reference) -> bool {

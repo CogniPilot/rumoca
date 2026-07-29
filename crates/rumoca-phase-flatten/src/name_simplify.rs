@@ -467,10 +467,16 @@ fn remap_when_equations(
                 remap_expression(value, ctx)?;
             }
             flat::WhenEquation::Assert {
-                condition, message, ..
+                condition,
+                message,
+                level,
+                ..
             } => {
                 remap_expression(condition, ctx)?;
                 remap_expression(message, ctx)?;
+                if let Some(level) = level {
+                    remap_expression(level, ctx)?;
+                }
             }
             flat::WhenEquation::Terminate { message, .. } => {
                 remap_expression(message, ctx)?;
@@ -484,7 +490,9 @@ fn remap_when_equations(
                     remap_expression(condition, ctx)?;
                     remap_when_equations(branch, ctx)?;
                 }
-                remap_when_equations(else_branch, ctx)?;
+                if let Some(else_branch) = else_branch {
+                    remap_when_equations(else_branch, ctx)?;
+                }
             }
             flat::WhenEquation::FunctionCallOutputs {
                 outputs, function, ..

@@ -1105,10 +1105,16 @@ fn rewrite_when_equations(
                 *value = rewriter.rewrite_expression(value)?;
             }
             flat::WhenEquation::Assert {
-                condition, message, ..
+                condition,
+                message,
+                level,
+                ..
             } => {
                 *condition = rewriter.rewrite_expression(condition)?;
                 *message = rewriter.rewrite_expression(message)?;
+                if let Some(level) = level.as_deref_mut() {
+                    *level = rewriter.rewrite_expression(level)?;
+                }
             }
             flat::WhenEquation::Terminate { message, .. } => {
                 *message = rewriter.rewrite_expression(message)?;
@@ -1122,7 +1128,9 @@ fn rewrite_when_equations(
                     *condition = rewriter.rewrite_expression(condition)?;
                     rewrite_when_equations(branch, rewriter)?;
                 }
-                rewrite_when_equations(else_branch, rewriter)?;
+                if let Some(else_branch) = else_branch {
+                    rewrite_when_equations(else_branch, rewriter)?;
+                }
             }
             flat::WhenEquation::FunctionCallOutputs { function, .. } => {
                 *function = rewriter.rewrite_expression(function)?;

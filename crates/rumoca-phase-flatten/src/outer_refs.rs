@@ -148,10 +148,16 @@ fn redirect_when_equations(
                 redirect_flat_expr(value, outer_to_inner);
             }
             flat::WhenEquation::Assert {
-                condition, message, ..
+                condition,
+                message,
+                level,
+                ..
             } => {
                 redirect_flat_expr(condition, outer_to_inner);
                 redirect_flat_expr(message, outer_to_inner);
+                if let Some(level) = level {
+                    redirect_flat_expr(level, outer_to_inner);
+                }
             }
             flat::WhenEquation::Terminate { message, .. } => {
                 redirect_flat_expr(message, outer_to_inner);
@@ -165,7 +171,9 @@ fn redirect_when_equations(
                     redirect_flat_expr(cond, outer_to_inner);
                     redirect_when_equations(eqs, outer_to_inner);
                 }
-                redirect_when_equations(else_branch, outer_to_inner);
+                if let Some(else_branch) = else_branch {
+                    redirect_when_equations(else_branch, outer_to_inner);
+                }
             }
             flat::WhenEquation::FunctionCallOutputs {
                 outputs, function, ..
