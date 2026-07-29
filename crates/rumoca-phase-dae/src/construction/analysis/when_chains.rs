@@ -1,37 +1,38 @@
 use super::*;
 use rumoca_core::ExpressionRewriter;
 
-pub(super) fn validate_when_clauses(
-    clauses: &[flat::WhenClause],
+pub(super) fn validate_when_chains(
+    chains: &[flat::WhenChain],
     roles: &HashMap<VarName, PlannedRole>,
     states: &HashSet<VarName>,
     constants: &EvalContext,
     sample_lattices: &mut Vec<(Span, ClockLattice)>,
 ) -> Result<HashSet<Span>, ToDaeError> {
     let mut reinit_state_pre = HashSet::new();
-    for clause in clauses {
-        require_span(clause.span, "when clause")?;
-        validate_condition_expression(
-            &clause.condition,
-            roles,
-            states,
-            constants,
-            sample_lattices,
-        )?;
-        let clocked = matches!(
-            &clause.condition,
-            Expression::VarRef { name, .. }
-                if matches!(roles.get(name.var_name()), Some(PlannedRole::Clock))
-        );
-        validate_when_equations(
-            &clause.equations,
-            roles,
-            states,
-            constants,
-            sample_lattices,
-            &mut reinit_state_pre,
-            clocked,
-        )?;
+    for chain in chains {
+        for branch in chain.branches() {
+            validate_condition_expression(
+                &branch.condition,
+                roles,
+                states,
+                constants,
+                sample_lattices,
+            )?;
+            let clocked = matches!(
+                &branch.condition,
+                Expression::VarRef { name, .. }
+                    if matches!(roles.get(name.var_name()), Some(PlannedRole::Clock))
+            );
+            validate_when_equations(
+                &branch.equations,
+                roles,
+                states,
+                constants,
+                sample_lattices,
+                &mut reinit_state_pre,
+                clocked,
+            )?;
+        }
     }
     Ok(reinit_state_pre)
 }
@@ -46,7 +47,6 @@ fn validate_when_equations(
     clocked: bool,
 ) -> Result<(), ToDaeError> {
     for equation in equations {
-        require_span(equation.span(), "when equation")?;
         match equation {
             flat::WhenEquation::Assign {
                 target,
@@ -58,7 +58,10 @@ fn validate_when_equations(
                 state, value, span, ..
             } => validate_reinitialization(state, value, *span, roles, states, reinit_state_pre)?,
             flat::WhenEquation::Assert {
-                condition, message, ..
+                condition,
+                message,
+                level,
+                ..
             } => {
                 validate_condition_expression(
                     condition,
@@ -68,6 +71,9 @@ fn validate_when_equations(
                     sample_lattices,
                 )?;
                 validate_expression(message, roles, states)?;
+                if let Some(level) = level {
+                    validate_expression(level, roles, states)?;
+                }
             }
             flat::WhenEquation::Terminate { message, .. } => {
                 validate_expression(message, roles, states)?;
@@ -97,15 +103,17 @@ fn validate_when_equations(
                         clocked,
                     )?;
                 }
-                validate_when_equations(
-                    else_branch,
-                    roles,
-                    states,
-                    constants,
-                    sample_lattices,
-                    reinit_state_pre,
-                    clocked,
-                )?;
+                if let Some(else_branch) = else_branch {
+                    validate_when_equations(
+                        else_branch,
+                        roles,
+                        states,
+                        constants,
+                        sample_lattices,
+                        reinit_state_pre,
+                        clocked,
+                    )?;
+                }
             }
             flat::WhenEquation::FunctionCallOutputs { span, .. } => {
                 return Err(ToDaeError::unsupported_flat(
@@ -121,7 +129,7 @@ fn validate_when_equations(
 
 fn validate_non_real_branch_targets(
     branches: &[(Expression, Vec<flat::WhenEquation>)],
-    else_branch: &[flat::WhenEquation],
+    else_branch: &Option<Vec<flat::WhenEquation>>,
     roles: &HashMap<VarName, PlannedRole>,
     span: Span,
 ) -> Result<(), ToDaeError> {
@@ -133,7 +141,11 @@ fn validate_non_real_branch_targets(
         .iter()
         .skip(1)
         .map(|(_, equations)| non_real_targets(equations, roles))
-        .chain(std::iter::once(non_real_targets(else_branch, roles)))
+        .chain(
+            else_branch
+                .iter()
+                .map(|equations| non_real_targets(equations, roles)),
+        )
         .all(|targets| targets == expected)
     {
         return Ok(());
@@ -164,7 +176,9 @@ fn non_real_targets(
                 for (_, equations) in branches {
                     targets.extend(non_real_targets(equations, roles));
                 }
-                targets.extend(non_real_targets(else_branch, roles));
+                if let Some(else_branch) = else_branch {
+                    targets.extend(non_real_targets(else_branch, roles));
+                }
             }
             flat::WhenEquation::Assign { .. }
             | flat::WhenEquation::Reinit { .. }

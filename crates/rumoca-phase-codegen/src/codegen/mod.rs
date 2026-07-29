@@ -12,7 +12,6 @@ use std::path::Path;
 mod checked_modelica;
 mod dae_backend;
 mod expr_config;
-mod render_c;
 mod render_expr;
 mod render_solve;
 mod render_solve_ops;
@@ -650,34 +649,6 @@ fn create_environment() -> Environment<'static> {
     // Custom function for detecting self-referential (builtin alias) functions
     env.add_function("is_self_call", is_self_call_function);
     env.add_function("fail", fail_function);
-
-    // Extract explicit ODE rhs from residual equation: 0 = der(x) - expr → expr
-    env.add_function("ode_rhs", render_c::ode_rhs_function);
-    // Find derivative expression for a specific state variable
-    env.add_function("ode_rhs_for_state", render_c::ode_rhs_for_state_function);
-
-    // Find explicit RHS for an algebraic variable from residual: 0 = y - expr → expr
-    env.add_function("alg_rhs_for_var", render_c::alg_rhs_for_var_function);
-    env.add_function(
-        "alg_rhs_for_var_or_self",
-        render_c::alg_rhs_for_var_or_self_function,
-    );
-    env.add_function(
-        "discrete_rhs_for_var",
-        render_c::discrete_rhs_for_var_function,
-    );
-
-    // Index into an array expression to render element i (1-based)
-    env.add_function(
-        "render_expr_at_index",
-        render_c::render_expr_at_index_function,
-    );
-
-    // Check if an expression is a string literal for scalar templates.
-    env.add_function("is_string_literal", render_c::is_string_literal_function);
-
-    // Check if a function has record-typed parameters
-    env.add_function("has_complex_params", render_c::has_complex_params_function);
 
     env
 }

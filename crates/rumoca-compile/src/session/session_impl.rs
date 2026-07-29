@@ -476,11 +476,7 @@ impl Session {
         tree.source_map = session_source_map;
 
         let parsed = ast::ParsedTree::new(tree);
-        let resolve_options = ResolveOptions {
-            evaluate_scope_is_error: self.evaluate_scope_is_error,
-            when_single_assign_is_error: self.when_single_assign_is_error,
-        };
-        let (tree, diagnostics) = match resolve_with_diagnostics(parsed, resolve_options) {
+        let (tree, diagnostics) = match resolve_with_diagnostics(parsed) {
             Ok(success) => {
                 let (resolved, diagnostics) = success.into_parts();
                 (
@@ -526,11 +522,7 @@ impl Session {
         })?;
         let mut tree = ast::ClassTree::from_parsed(merged);
         tree.source_map = source_map;
-        let options = ResolveOptions {
-            evaluate_scope_is_error: self.evaluate_scope_is_error,
-            when_single_assign_is_error: self.when_single_assign_is_error,
-        };
-        match resolve_with_diagnostics(ast::ParsedTree::new(tree), options) {
+        match resolve_with_diagnostics(ast::ParsedTree::new(tree)) {
             Ok(success) => {
                 let (resolved, diagnostics) = success.into_parts();
                 Ok((Arc::new(resolved), diagnostics))
@@ -545,20 +537,6 @@ impl Session {
     ) -> Result<StrictTargetResolution, StrictTargetResolutionFailure> {
         let (plan, _) = self
             .build_resolution_plan_for_strict_compile()
-            .map_err(|diagnostics| StrictTargetResolutionFailure {
-                failures: diagnostics.iter().map(resolve_diagnostic_failure).collect(),
-                diagnostics: diagnostics.iter().cloned().collect(),
-                source_map: Box::new(self.session_source_map()),
-            })?;
-        self.resolve_strict_target_from_plan(model_name, plan)
-    }
-
-    pub(in crate::session) fn resolve_strict_target_uncached(
-        &mut self,
-        model_name: &str,
-    ) -> Result<StrictTargetResolution, StrictTargetResolutionFailure> {
-        let (plan, _, _) = self
-            .resolve_documents_for_mode(ResolveBuildMode::StrictCompileRecovery)
             .map_err(|diagnostics| StrictTargetResolutionFailure {
                 failures: diagnostics.iter().map(resolve_diagnostic_failure).collect(),
                 diagnostics: diagnostics.iter().cloned().collect(),
@@ -1084,60 +1062,6 @@ impl Session {
         }
     }
 
-    /// Compile a model for diagnostics while allowing unbalanced DAE output.
-    ///
-    /// Normal production callers must use `compile_model`; this path exists so
-    /// profiling/debug tools can inspect the DAE that strict balance validation
-    /// rejected.
-    pub fn compile_model_allow_unbalanced_for_diagnostics(
-        &mut self,
-        model_name: &str,
-    ) -> Result<CompilationResult> {
-        self.build_resolved()?;
-        let resolved = self.ensure_resolved()?.clone();
-        match compile_model_internal_allow_unbalanced_for_diagnostics(resolved.inner(), model_name)
-        {
-            PhaseResult::Success(result) => Ok(*result),
-            PhaseResult::NeedsInner { missing_inners, .. } => Err(anyhow::anyhow!(
-                "Instantiate error: missing inner declarations: {}",
-                missing_inners.join(", ")
-            )),
-            PhaseResult::Failed {
-                phase,
-                error,
-                error_code,
-                ..
-            } => {
-                if let Some(code) = error_code {
-                    Err(anyhow::anyhow!("{} error [{}]: {}", phase, code, error))
-                } else {
-                    Err(anyhow::anyhow!("{} error: {}", phase, error))
-                }
-            }
-        }
-    }
-
-    pub fn compile_model_dae_allow_unbalanced_for_diagnostics(
-        &mut self,
-        model_name: &str,
-    ) -> std::result::Result<Box<DaeCompilationResult>, String> {
-        let target = self.resolve_strict_target(model_name).map_err(|failure| {
-            let requested = requested_missing_result_message(model_name, &failure.failures);
-            format_strict_failure_summary(model_name, requested, &failure.failures, 8)
-        })?;
-        let tree = target.resolved.inner();
-        match compile_model_dae_internal_allow_unbalanced_for_diagnostics(tree, model_name) {
-            DaePhaseResult::Success(result) => Ok(result),
-            DaePhaseResult::NeedsInner { missing_inners, .. } => Err(format!(
-                "{model_name} requires inner declarations: {}",
-                missing_inners.join(", ")
-            )),
-            DaePhaseResult::Failed { phase, error, .. } => {
-                Err(format!("{model_name} failed in {phase}: {error}"))
-            }
-        }
-    }
-
     /// Compile a model through flattening for diagnostics.
     ///
     /// This is for focused debug tooling that needs the last successful IR
@@ -1280,7 +1204,19 @@ impl Session {
         &mut self,
         model_name: &str,
     ) -> StrictCompileReport {
-        self.compile_model_strict_reachable_report(model_name, true)
+        match self.compile_model_strict_reachable_attempt(model_name, true) {
+            Ok((report, _)) => report,
+            Err(report) => *report,
+        }
+    }
+
+    /// Compile one strict reachable target and return its Resolve proof.
+    pub fn compile_model_strict(
+        &mut self,
+        model_name: &str,
+    ) -> std::result::Result<StrictCompilation, Box<StrictCompileReport>> {
+        let (report, resolved) = self.compile_model_strict_reachable_attempt(model_name, true)?;
+        report.into_compilation(resolved)
     }
 
     /// Check strict-recovery compilation for the requested model without
@@ -1351,7 +1287,10 @@ impl Session {
         &mut self,
         model_name: &str,
     ) -> StrictCompileReport {
-        self.compile_model_strict_reachable_report(model_name, false)
+        match self.compile_model_strict_reachable_attempt(model_name, false) {
+            Ok((report, _)) => report,
+            Err(report) => *report,
+        }
     }
 
     /// Compile the requested model through DAE using strict-reachable
@@ -1420,42 +1359,43 @@ impl Session {
         }
     }
 
-    fn compile_model_strict_reachable_report(
+    fn compile_model_strict_reachable_attempt(
         &mut self,
         model_name: &str,
         use_compile_cache: bool,
-    ) -> StrictCompileReport {
+    ) -> std::result::Result<(StrictCompileReport, ResolvedTree), Box<StrictCompileReport>> {
         let target = match self.resolve_strict_target(model_name) {
             Ok(target) => target,
             Err(failure) => {
-                return StrictCompileReport {
+                return Err(Box::new(StrictCompileReport {
                     requested_model: model_name.to_string(),
                     requested_result: None,
                     summary: CompilationSummary::default(),
                     failures: failure.failures,
                     source_map: Some(*failure.source_map),
-                };
+                }));
             }
         };
 
         let tree = target.resolved.inner();
         let failures = Vec::new();
-        if !use_compile_cache {
-            return finalize_strict_compile_report_from_uncached_targets(
+        let report = if use_compile_cache {
+            let results = self.compile_models_with_cache(
+                tree,
+                ResolveBuildMode::StrictCompileRecovery,
+                &target.closure.compile_targets,
+            );
+            finalize_strict_compile_report(tree, model_name, failures, results)
+        } else {
+            finalize_strict_compile_report_from_uncached_targets(
                 tree,
                 model_name,
                 failures,
                 &target.closure.compile_targets,
                 self.instantiation_options.clone(),
-            );
-        }
-
-        let results = self.compile_models_with_cache(
-            tree,
-            ResolveBuildMode::StrictCompileRecovery,
-            &target.closure.compile_targets,
-        );
-        finalize_strict_compile_report(tree, model_name, failures, results)
+            )
+        };
+        Ok((report, target.resolved.as_ref().clone()))
     }
 
     /// Compile a model with an explicit compilation mode.

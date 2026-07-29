@@ -249,11 +249,12 @@ Failure attribution is *structural*, never derived from message text:
   `ER003`, ...), normalized from the namespaced miette form
   (`rumoca::todae::ED001`) via `rumoca_core::short_phase_error_code`. It is
   therefore safe to key maps and taxonomies by this value.
-- `balance_detail` is present **only** for `ED001` (unbalanced model) failures
-  and for `--allow-unbalanced-for-diagnostics` compiles with a non-zero
-  continuous balance. It carries the full component breakdown, the balance
-  clamps that discarded rows, and the per-reason count of continuous equation
-  rows excluded from `f_x`.
+- `balance_detail` is present for `ED001` (unbalanced concrete model) failures
+  and for successful partial-class inspection when its continuous balance is
+  nonzero. It carries the full component breakdown, balance clamps, and
+  per-reason equation-row exclusions. An unbalanced concrete model never
+  proceeds to DAE construction or simulation; partial-class output is
+  diagnostic metadata and is never a simulation target.
 
 Historical note: before this plumbing existed, the worker hard-coded
 `error_code: None` and re-derived the phase by searching the rendered summary
@@ -320,12 +321,12 @@ the metric cannot drift again without a failing test.
 
 ```
 cargo run -p rumoca-test-msl --bin rumoca-msl-tools -- \
-    debug-model --model '<Model>' --allow-unbalanced
+    debug-model --model '<Model>'
 ```
 
-prints `error_code`, the balance, the dominant term, the raw component counts,
-which clamps were exercised, and how many continuous equation rows were
-excluded and why. Each clamp names the analysis to audit next:
+prints the strict failure's `error_code`, balance, dominant term, raw component
+counts, exercised clamps, and equation-row exclusions. It does not construct
+or simulate an invalid DAE. Each clamp names the analysis to audit next:
 
 | Clamp | Audit |
 |---|---|

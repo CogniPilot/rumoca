@@ -1475,17 +1475,17 @@ fn process_class_instance_body(
             &override_functions,
         );
         // Handle when-equations separately (pass context for parameter evaluation).
-        let mut clauses = when_equations::flatten_when_equation(ctx, &inst_eq, prefix, def_map)?;
-        for clause in &mut clauses {
-            rewrite_function_overrides_in_when_clause(
-                clause,
+        let chain = when_equations::flatten_when_equation(ctx, &inst_eq, prefix, def_map)?;
+        if let Some(mut chain) = chain {
+            rewrite_function_overrides_in_when_chain(
+                &mut chain,
                 tree,
                 class_index,
                 &override_packages,
                 &override_functions,
             );
+            flat.when_chains.push(chain);
         }
-        flat.when_clauses.extend(clauses);
 
         // Handle other equations (including for-loops that may contain when-equations).
         let mut flattened =
@@ -1506,7 +1506,7 @@ fn process_class_instance_body(
             flat.add_structured_equation(for_eq);
         }
         flat.assert_equations.extend(flattened.assert_equations);
-        flat.when_clauses.extend(flattened.when_clauses);
+        flat.when_chains.extend(flattened.when_chains);
         flat.definite_roots.extend(flattened.definite_roots);
         flat.branches.extend(flattened.branches);
         flat.potential_roots.extend(flattened.potential_roots);
@@ -1559,7 +1559,7 @@ fn process_class_instance_body(
         }
         flat.initial_assert_equations
             .extend(flattened.assert_equations);
-        if !flattened.when_clauses.is_empty() {
+        if !flattened.when_chains.is_empty() {
             return Err(FlattenError::unsupported_equation(
                 "when-equations are not allowed in initial equations (MLS §8.6)",
                 inst_eq.span,

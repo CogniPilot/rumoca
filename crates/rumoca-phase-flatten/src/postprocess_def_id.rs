@@ -75,18 +75,15 @@ pub(crate) fn canonicalize_varrefs_via_instantiated_def_ids(flat: &mut flat::Mod
         );
         canonicalize_def_id_opt_expr(&mut assert_eq.level, &def_id_index, &known_variables, None);
     }
-    for when_clause in &mut flat.when_clauses {
-        canonicalize_def_id_expr(
-            &mut when_clause.condition,
-            &def_id_index,
-            &known_variables,
-            None,
-        );
-        canonicalize_def_id_when_equations(
-            &mut when_clause.equations,
-            &def_id_index,
-            &known_variables,
-        );
+    for chain in &mut flat.when_chains {
+        for branch in chain.branches_mut() {
+            canonicalize_def_id_expr(&mut branch.condition, &def_id_index, &known_variables, None);
+            canonicalize_def_id_when_equations(
+                &mut branch.equations,
+                &def_id_index,
+                &known_variables,
+            );
+        }
     }
     for algorithm in &mut flat.algorithms {
         canonicalize_def_id_statements(
@@ -325,10 +322,16 @@ fn canonicalize_def_id_when_equations(
                 canonicalize_def_id_expr(value, index, known_variables, None);
             }
             flat::WhenEquation::Assert {
-                condition, message, ..
+                condition,
+                message,
+                level,
+                ..
             } => {
                 canonicalize_def_id_expr(condition, index, known_variables, None);
                 canonicalize_def_id_expr(message, index, known_variables, None);
+                if let Some(level) = level {
+                    canonicalize_def_id_expr(level, index, known_variables, None);
+                }
             }
             flat::WhenEquation::Conditional {
                 branches,
@@ -339,7 +342,9 @@ fn canonicalize_def_id_when_equations(
                     canonicalize_def_id_expr(condition, index, known_variables, None);
                     canonicalize_def_id_when_equations(branch_equations, index, known_variables);
                 }
-                canonicalize_def_id_when_equations(else_branch, index, known_variables);
+                if let Some(else_branch) = else_branch {
+                    canonicalize_def_id_when_equations(else_branch, index, known_variables);
+                }
             }
             flat::WhenEquation::FunctionCallOutputs { function, .. } => {
                 canonicalize_def_id_expr(function, index, known_variables, None);

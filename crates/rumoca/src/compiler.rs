@@ -44,8 +44,8 @@ use rumoca_compile::codegen::{
     render_dae_template_with_name, render_flat_template_with_name,
 };
 use rumoca_compile::compile::{
-    Dae, DaeCompilationResult as CompileDaeCompilationResult, FlatModel, PhaseResult, Session,
-    SessionConfig, SourceRootKind, VariableRole,
+    Dae, DaeCompilationResult as CompileDaeCompilationResult, FlatModel, Session, SessionConfig,
+    SourceRootKind, VariableRole,
 };
 use rumoca_compile::parsing::collect_compile_unit_source_files;
 use rumoca_compile::source_roots::{
@@ -544,37 +544,14 @@ impl Compiler {
             );
         }
 
-        let mut report = session.compile_model_strict_reachable_with_recovery(model_name);
-        let failure_summary = report.failure_summary(usize::MAX);
-        let result = match report.requested_result.take() {
-            Some(PhaseResult::Success(result)) => {
-                if !report.failures.is_empty() {
-                    return Err(CompilerError::CompileDiagnosticsError {
-                        summary: failure_summary,
-                        failures: report.failures,
-                        source_map: report.source_map.map(Box::new),
-                    });
-                }
-                *result
+        let compilation = session.compile_model_strict(model_name).map_err(|report| {
+            CompilerError::CompileDiagnosticsError {
+                summary: report.failure_summary(usize::MAX),
+                failures: report.failures,
+                source_map: report.source_map.map(Box::new),
             }
-            // Phase failures carry spanned diagnostics through
-            // `report.failures`; render them like any other compile
-            // diagnostics instead of flattening to a string.
-            Some(PhaseResult::NeedsInner { .. }) | Some(PhaseResult::Failed { .. }) | None => {
-                return Err(CompilerError::CompileDiagnosticsError {
-                    summary: failure_summary,
-                    failures: report.failures,
-                    source_map: report.source_map.map(Box::new),
-                });
-            }
-        };
-
-        // Get the resolved tree for successful compilations.
-        let resolved = session.resolved_cached().ok_or_else(|| {
-            CompilerError::ResolveError(
-                "strict compile produced no cached resolved tree".to_string(),
-            )
         })?;
+        let (result, resolved) = compilation.into_parts();
 
         if self.verbose {
             eprintln!("[rumoca] Compilation complete.");
@@ -994,12 +971,20 @@ mod tests {
 
         let result = Compiler::new()
             .model("Root")
-            .compile_file(&root.to_string_lossy());
-
+            .compile_file(&root.to_string_lossy())
+            .expect("strict target compile must ignore unrelated sibling parse errors");
+        let index = rumoca_ir_ast::ClassDefIndex::from_tree(result.resolved.inner());
         assert!(
-            result.is_ok(),
-            "strict target compile must ignore unrelated sibling parse errors: {:?}",
-            result.err()
+            index.get_by_qualified_name("Root").is_some(),
+            "the compilation must carry the requested model's Resolve proof"
+        );
+        assert!(
+            index.get_by_qualified_name("Helper").is_some(),
+            "the Resolve proof must contain the requested dependency"
+        );
+        assert!(
+            index.get_by_qualified_name("Broken").is_none(),
+            "the Resolve proof must be the exact target closure, not the recovered global plan"
         );
     }
 

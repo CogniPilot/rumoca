@@ -24,7 +24,8 @@ Built-in targets include:
 | `wgsl-solve` | solve | compiled | Experimental WebGPU kernels for browser runs |
 | `cranelift-solve-jit` / `mlir` | solve | JIT/compiled | In-process execution backends |
 | `modelica` / `flat-modelica` / `dae-modelica` / `base-modelica` | ast/flat/dae | source-transform | Modelica source at each stage |
-| `galec` / `galec-production` / `embedded-c-galec` | dae | eFMI | Algorithm Code, Production Code, and embedded C |
+| `galec` / `galec-production` | dae | eFMI | Algorithm Code and Production Code eFMU containers |
+| `embedded-c-galec` | dae | compiled | GALEC-derived embedded C without an eFMI container |
 
 FMI 2/3 and the former DAE-shaped SymPy, SymForce, ONNX, Julia, JAX, and
 CasADi targets are being rebuilt against checked DAE/Solve contracts. They are
@@ -56,8 +57,10 @@ and write into `examples/codegen/gen/` (git-ignored):
 
 - `examples/codegen/rumoca-scenario.ball_jax_solve.toml` — checked Solve JAX target
 - `examples/codegen/rumoca-scenario.sympy_decay_c_solve.toml` — checked Solve C target
-- `examples/codegen/rumoca-scenario.sympy_decay_standalone_web.toml` — custom web target
-- `examples/codegen/rumoca-scenario.sympy_decay_custom_casadi.toml` — raw Jinja template
+- `examples/codegen/rumoca-scenario.sympy_decay_checked_dae_report.toml` —
+  custom checked-DAE report target
+- `examples/codegen/rumoca-scenario.sympy_decay_custom_checked_variables.toml`
+  — raw checked-DAE Jinja template
 
 ## IR Dumps vs Targets
 

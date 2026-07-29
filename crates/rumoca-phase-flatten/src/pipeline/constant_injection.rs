@@ -1862,10 +1862,15 @@ pub(crate) fn collect_function_calls_from_equation(
             }
         }
         ast::Equation::Assert {
-            condition, message, ..
+            condition,
+            message,
+            level,
         } => {
             collect_function_calls_from_expression(condition, calls, tree, class_index);
             collect_function_calls_from_expression(message, calls, tree, class_index);
+            if let Some(level) = level {
+                collect_function_calls_from_expression(level, calls, tree, class_index);
+            }
         }
         ast::Equation::Empty => {}
     }

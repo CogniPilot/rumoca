@@ -72,13 +72,11 @@ use crate::simulation_api::{
 #[cfg(any(feature = "sim-diffsol", feature = "sim-rk45"))]
 pub use crate::simulation_session_api::WasmSimulationSession;
 pub use crate::source_root_api::{
-    clear_source_root_cache, compile_check_with_source_roots,
-    compile_check_with_source_roots_with_options, compile_with_source_roots,
-    compile_with_source_roots_with_options, compile_with_workspace_sources,
-    export_parsed_source_roots_binary, get_bundled_source_root_manifest,
-    get_source_root_document_count, get_source_root_statuses, load_bundled_source_root_cache,
-    load_source_roots, merge_parsed_source_roots, merge_parsed_source_roots_binary,
-    parse_source_root_file, sync_workspace_sources,
+    clear_source_root_cache, compile_check_with_source_roots, compile_with_source_roots,
+    compile_with_workspace_sources, export_parsed_source_roots_binary,
+    get_bundled_source_root_manifest, get_source_root_document_count, get_source_root_statuses,
+    load_bundled_source_root_cache, load_source_roots, merge_parsed_source_roots,
+    merge_parsed_source_roots_binary, parse_source_root_file, sync_workspace_sources,
 };
 pub use crate::workspace_config_api::workspace_effective_source_roots;
 

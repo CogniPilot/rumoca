@@ -21,6 +21,66 @@ fn test_provenance() -> ProvenanceSpan {
         .expect("test span has provenance")
 }
 
+#[test]
+fn when_chain_is_nonempty_and_preserves_source_order_and_provenance() {
+    let source = rumoca_core::SourceId::from_source_name("when_chain_ir_test.mo");
+    let owner_span = Span::from_offsets(source, 1, 80);
+    let first_span = Span::from_offsets(source, 6, 15);
+    let second_span = Span::from_offsets(source, 35, 45);
+    let first = WhenBranch::new(
+        Expression::Literal {
+            value: Literal::Boolean(true),
+            span: first_span,
+        },
+        first_span,
+    );
+    let second = WhenBranch::new(
+        Expression::Literal {
+            value: Literal::Boolean(false),
+            span: second_span,
+        },
+        second_span,
+    );
+    let mut chain = WhenChain::new(first, owner_span);
+    chain.push_else_when(second);
+
+    assert_eq!(chain.span(), owner_span);
+    assert_eq!(chain.first().span, first_span);
+    assert_eq!(chain.branch_count(), 2);
+    let spans = chain
+        .branches()
+        .map(|branch| branch.span)
+        .collect::<Vec<_>>();
+    assert_eq!(spans, [first_span, second_span]);
+}
+
+#[test]
+fn when_chain_deserialization_requires_its_first_branch() {
+    let span = test_span();
+    let chain = WhenChain::new(
+        WhenBranch::new(
+            Expression::Literal {
+                value: Literal::Boolean(true),
+                span,
+            },
+            span,
+        ),
+        span,
+    );
+    let mut value = serde_json::to_value(chain).expect("serialize nonempty when chain");
+    assert!(
+        value
+            .as_object_mut()
+            .expect("when chain serializes as a record")
+            .remove("first")
+            .is_some()
+    );
+
+    let error = serde_json::from_value::<WhenChain>(value)
+        .expect_err("serialized when chain requires its mandatory first branch");
+    assert!(error.to_string().contains("missing field `first`"));
+}
+
 fn make_var(name: &str) -> ast::Expression {
     ast::Expression::ComponentReference(ast::ComponentReference {
         local: false,

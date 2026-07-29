@@ -2,15 +2,18 @@ use super::*;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
-use rumoca_compile::codegen::render_dae_template_with_name;
 use rumoca_compile::codegen::targets::{
-    RenderedTargetFile, TargetBundle, TargetTemplateIr, builtin_target_descriptors_for_ir,
-    render_dae_target_files, target_ir_is_dae_renderable,
+    RenderedTargetFile, TargetBundle, TargetManifest, TargetTemplateIr, TargetTemplateSource,
+    builtin_target_descriptors_for_ir, ensure_target_has_rendered_files, render_dae_target_files,
+    validate_solve_target_capabilities,
 };
+use rumoca_compile::codegen::{SolveTemplateRenderer, render_dae_template_with_name};
 
 fn builtin_template_descriptors() -> Vec<rumoca_compile::codegen::targets::BuiltinTargetDescriptor>
 {
-    builtin_target_descriptors_for_ir(TargetTemplateIr::Dae)
+    let mut descriptors = builtin_target_descriptors_for_ir(TargetTemplateIr::Dae);
+    descriptors.extend(builtin_target_descriptors_for_ir(TargetTemplateIr::Solve));
+    descriptors
 }
 
 impl ModelicaLanguageServer {
@@ -274,14 +277,21 @@ impl ModelicaLanguageServer {
             Ok(manifest) => manifest,
             Err(error) => return Some(Self::simulation_error_value(error.to_string())),
         };
-        if !target_ir_is_dae_renderable(manifest.ir) {
-            return Some(Self::simulation_error_value(format!(
-                "target '{}' uses {:?} IR; editor target rendering currently supports dae IR targets",
-                target_name, manifest.ir
-            )));
-        }
-
-        match render_dae_target_files(&bundle, &manifest, compiled.dae.as_ref(), &model) {
+        let rendered = match manifest.ir {
+            TargetTemplateIr::Dae => {
+                render_dae_target_files(&bundle, &manifest, compiled.dae.as_ref(), &model)
+            }
+            TargetTemplateIr::Solve => {
+                render_solve_target_files(&bundle, &manifest, compiled.dae.clone(), &model)
+            }
+            TargetTemplateIr::Flat | TargetTemplateIr::Ast => {
+                return Some(Self::simulation_error_value(format!(
+                    "target '{}' uses {:?} IR; editor target rendering requires DAE or Solve IR",
+                    target_name, manifest.ir
+                )));
+            }
+        };
+        match rendered {
             Ok(files) => Some(json!({
                 "ok": true,
                 "target": target_name,
@@ -495,6 +505,42 @@ impl ModelicaLanguageServer {
         }
         Some(json!({ "ok": true }))
     }
+}
+
+fn render_solve_target_files(
+    source: &impl TargetTemplateSource,
+    manifest: &TargetManifest,
+    dae: Arc<rumoca_compile::compile::Dae>,
+    model_name: &str,
+) -> anyhow::Result<Vec<RenderedTargetFile>> {
+    ensure_target_has_rendered_files(manifest)?;
+    let capabilities = manifest
+        .capabilities
+        .as_ref()
+        .context("Solve target manifest must declare a [capabilities] table")?;
+    let problem = rumoca_sim::lower_solve_problem(&dae).context("Lower checked DAE to Solve IR")?;
+    validate_solve_target_capabilities(&problem, manifest, capabilities)?;
+    let artifacts =
+        rumoca_sim::lower_solve_artifacts(&problem).context("Lower checked Solve artifacts")?;
+    let renderer = SolveTemplateRenderer::new_owned_with_shared_dae(problem, artifacts, dae)?;
+
+    manifest
+        .files
+        .iter()
+        .map(|file| {
+            let path = renderer
+                .render_with_name(&file.path, model_name)
+                .with_context(|| format!("Render target output path '{}'", file.path))?;
+            let template = source.template_source(&file.template)?;
+            let content = renderer
+                .render_with_name(template.as_ref(), model_name)
+                .with_context(|| format!("Render target template '{}'", file.template))?;
+            Ok(RenderedTargetFile {
+                path: path.trim().to_string(),
+                content,
+            })
+        })
+        .collect()
 }
 
 fn scenario_task_from_json(value: Option<&Value>) -> Option<ScenarioTask> {

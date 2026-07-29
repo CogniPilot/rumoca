@@ -15,7 +15,7 @@ pub struct BalanceDetail {
     pub discrete_value_unknowns: usize,
     pub continuous_equations: usize,
     pub discrete_real_equations: usize,
-    pub discrete_assignments: usize,
+    pub discrete_value_definitions: usize,
 }
 
 impl BalanceDetail {
@@ -28,7 +28,7 @@ impl BalanceDetail {
     }
 
     pub const fn equations(&self) -> usize {
-        self.continuous_equations + self.discrete_real_equations + self.discrete_assignments
+        self.continuous_equations + self.discrete_real_equations + self.discrete_value_definitions
     }
 
     pub const fn equations_unknowns(&self) -> (usize, usize) {
@@ -67,7 +67,7 @@ impl std::fmt::Display for BalanceBreakdown {
         write!(
             formatter,
             "unknowns[state={} algebraic={} output={} discrete_real={} discrete_value={}] \
-             equations[continuous={} discrete_real={} discrete_assignment={}]",
+             equations[continuous={} discrete_real={} b1c_definition={}]",
             self.state_unknowns,
             self.algebraic_unknowns,
             self.output_unknowns,
@@ -75,7 +75,7 @@ impl std::fmt::Display for BalanceBreakdown {
             self.discrete_value_unknowns,
             self.continuous_equations,
             self.discrete_real_equations,
-            self.discrete_assignments,
+            self.discrete_value_definitions,
         )
     }
 }

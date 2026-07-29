@@ -43,6 +43,7 @@ impl TypeChecker {
             .map(|(def_id, name)| (*def_id, name.clone()))
             .collect();
         self.populate_nominal_class_context(tree);
+        self.populate_operator_record_capabilities(tree);
         self.function_signatures = function_signatures::build_function_signatures(tree);
         self.eval_ctx = rumoca_eval_ast::eval::TypeCheckEvalContext::new();
         let (type_table, type_ids_by_def_id) = match self.build_type_context(tree) {

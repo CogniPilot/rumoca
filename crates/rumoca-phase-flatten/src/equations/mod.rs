@@ -40,6 +40,7 @@ use assert_equations::{
     AssertEquationLowering, flatten_assert_equation, flatten_assert_function_call,
     is_assert_function_call,
 };
+pub(crate) use assert_equations::{decode_assert_arguments, decode_terminate_arguments};
 pub(crate) use conditional_and_eval::build_eval_context;
 use conditional_and_eval::*;
 pub(crate) use conditional_and_eval::{
@@ -490,7 +491,7 @@ pub(crate) fn flatten_equation_with_def_map(
                 equations: vec![equation],
                 structured_equations,
                 assert_equations: vec![],
-                when_clauses: vec![],
+                when_chains: vec![],
                 definite_roots: vec![],
                 branches: vec![],
                 potential_roots: vec![],

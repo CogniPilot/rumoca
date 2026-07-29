@@ -5,6 +5,7 @@ mod clocks;
 mod comprehensions;
 mod delays;
 mod derived_parameters;
+mod discrete_values;
 mod expression_validation;
 mod function_array_assemblies;
 mod function_conditionals;
@@ -19,7 +20,7 @@ mod record_array_fields;
 mod record_equations;
 mod source_balance;
 mod structured_families;
-mod when_clauses;
+mod when_chains;
 use clocks::analyze_clocks;
 pub(super) use clocks::{ClockPlan, SampledValuePlan};
 use comprehensions::analyze_comprehensions;
@@ -28,10 +29,10 @@ pub(super) use delays::DelayPlan;
 use delays::analyze_delays;
 pub(super) use derived_parameters::DerivedParameterPlan;
 use derived_parameters::analyze_derived_parameters;
+pub(super) use discrete_values::DiscreteValueTopologyPlan;
+use discrete_values::analyze_discrete_value_topology;
 use expression_validation::{
-    require_integer_literal, validate_array, validate_array_comprehension,
-    validate_binary_operator, validate_builtin, validate_conditional, validate_subscripts_scoped,
-    validate_unary_operator,
+    validate_expression, validate_expression_scoped, validate_subscripts_scoped,
 };
 use function_array_assemblies::coalesce_function_array_assemblies;
 use function_conditionals::validate_function_conditional;
@@ -45,7 +46,7 @@ use function_value_types::validate_function_value_type;
 pub(super) use model_algorithms::ModelAlgorithmPlan;
 use model_algorithms::analyze_model_algorithm;
 pub(super) use model_algorithms::{
-    algorithm_targets, event_targets, model_algorithm_targets, when_clause_targets,
+    algorithm_targets, event_targets, model_algorithm_targets, when_chain_targets,
 };
 use model_roles::{ModelRoles, analyze_model_roles};
 pub(super) use record_array_fields::RecordArrayFieldPlan;
@@ -53,7 +54,7 @@ use record_array_fields::{analyze_record_array_fields, expression_for_validation
 use record_equations::analyze_record_equations;
 use source_balance::source_balance;
 use structured_families::validate_structured_families;
-use when_clauses::validate_when_clauses;
+use when_chains::validate_when_chains;
 
 pub(super) struct Analysis {
     pub(super) constants: EvalContext,
@@ -77,6 +78,7 @@ pub(super) struct Analysis {
     pub(super) derived_parameter_rows: HashSet<usize>,
     pub(super) record_equations: HashMap<usize, RecordEquationPlan>,
     pub(super) initial_record_equations: HashMap<usize, RecordEquationPlan>,
+    pub(super) discrete_value_topology: DiscreteValueTopologyPlan,
 }
 
 pub(super) enum FunctionPlan {
@@ -233,8 +235,8 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
         &record_array_fields,
     )?;
     let mut sample_lattices = Vec::new();
-    let reinit_state_pre = validate_when_clauses(
-        &flat.when_clauses,
+    let reinit_state_pre = validate_when_chains(
+        &flat.when_chains,
         &roles,
         &states,
         &constants,
@@ -254,6 +256,7 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
             analyze_model_algorithm(flat, algorithm, &roles)
         })
         .collect::<Result<Vec<_>, _>>()?;
+    let discrete_value_topology = analyze_discrete_value_topology(flat, &roles)?;
     reject_initial_algorithm(flat)?;
     validate_assertions(flat, &roles, &states, &constants, &mut sample_lattices)?;
     let mut non_runtime_rows = clocks.equation_rows.clone();
@@ -281,6 +284,7 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
         derived_parameter_rows: derived_parameters.rows,
         record_equations,
         initial_record_equations,
+        discrete_value_topology,
     })
 }
 
@@ -1920,120 +1924,4 @@ fn collect_derivative_targets(
         collect_derivative_targets(child, states)?;
     }
     Ok(())
-}
-
-fn validate_expression(
-    expression: &Expression,
-    roles: &HashMap<VarName, PlannedRole>,
-    states: &HashSet<VarName>,
-) -> Result<(), ToDaeError> {
-    validate_expression_scoped(expression, roles, states, &HashSet::new())
-}
-
-fn validate_expression_scoped(
-    expression: &Expression,
-    roles: &HashMap<VarName, PlannedRole>,
-    states: &HashSet<VarName>,
-    binders: &HashSet<VarName>,
-) -> Result<(), ToDaeError> {
-    let span = expression_span(expression)?;
-    match expression {
-        Expression::Binary { op, lhs, rhs, .. } => {
-            validate_binary_operator(op, span)?;
-            validate_expression_scoped(lhs, roles, states, binders)?;
-            validate_expression_scoped(rhs, roles, states, binders)
-        }
-        Expression::Unary { op, rhs, .. } => {
-            validate_unary_operator(op, span)?;
-            validate_expression_scoped(rhs, roles, states, binders)
-        }
-        Expression::VarRef {
-            name, subscripts, ..
-        } => {
-            if name.as_str() != "time"
-                && !roles.contains_key(name.var_name())
-                && !binders.contains(name.var_name())
-            {
-                return Err(ToDaeError::unresolved_reference(name.as_str(), span));
-            }
-            if binders.contains(name.var_name()) && !subscripts.is_empty() {
-                return Err(ToDaeError::unsupported_flat(
-                    "structured-domain binder",
-                    "a domain binder is a scalar Integer coordinate and cannot be subscripted",
-                    span,
-                ));
-            }
-            validate_subscripts_scoped(subscripts, roles, states, binders)
-        }
-        Expression::BuiltinCall { function, args, .. } => {
-            validate_builtin(*function, args, roles, states, binders, span)
-        }
-        Expression::Literal { .. } => Ok(()),
-        Expression::If {
-            branches,
-            else_branch,
-            ..
-        } => validate_conditional(branches, else_branch, roles, states, binders, span),
-        Expression::FunctionCall { args, .. } => {
-            for argument in args {
-                if matches!(
-                    argument,
-                    Expression::Array {
-                        elements,
-                        ..
-                    } if elements.is_empty()
-                ) {
-                    require_span(expression_span(argument)?, "empty function argument")?;
-                    continue;
-                }
-                validate_expression_scoped(argument, roles, states, binders)?;
-            }
-            Ok(())
-        }
-        Expression::Array { elements, .. } => {
-            validate_array(elements, roles, states, binders, span)
-        }
-        Expression::Range {
-            start, step, end, ..
-        } => {
-            require_integer_literal(start, "range start")?;
-            if let Some(step) = step {
-                require_integer_literal(step, "range step")?;
-            }
-            require_integer_literal(end, "range end")?;
-            Ok(())
-        }
-        Expression::Index {
-            base, subscripts, ..
-        } => {
-            validate_expression_scoped(base, roles, states, binders)?;
-            validate_subscripts_scoped(subscripts, roles, states, binders)
-        }
-        Expression::ArrayComprehension {
-            expr,
-            indices,
-            filter,
-            ..
-        } => validate_array_comprehension(
-            expr,
-            indices,
-            filter.as_deref(),
-            roles,
-            states,
-            binders,
-            span,
-        ),
-        Expression::Tuple { .. } | Expression::FieldAccess { .. } => {
-            Err(ToDaeError::unsupported_flat(
-                "aggregate expression",
-                "tuple and record-field lowering require their typed semantic owner",
-                span,
-            ))
-        }
-        Expression::Empty { .. } => Err(ToDaeError::unsupported_flat(
-            "empty expression",
-            "an absent semantic value cannot enter canonical DAE",
-            span,
-        )),
-    }
 }

@@ -1,0 +1,5 @@
+checked-dae {{ dae.schema.version }}
+{% for variable in dae.variables -%}
+{{ variable.id }} {{ variable.role }} {{ variable.name }} {{ variable.value_type.scalar }}{% if variable.attributes.unit %} unit={{ variable.attributes.unit }}{% endif %}
+{% endfor -%}
+continuous_owners {{ dae.systems.continuous.owners | length }}

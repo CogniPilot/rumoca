@@ -108,8 +108,6 @@ impl Session {
             snapshot_cache,
             lightweight_snapshot_cache,
             workspace_symbol_snapshot_cache,
-            evaluate_scope_is_error: self.evaluate_scope_is_error,
-            when_single_assign_is_error: self.when_single_assign_is_error,
         }
     }
 
@@ -304,8 +302,6 @@ impl Session {
             snapshot_cache,
             lightweight_snapshot_cache,
             workspace_symbol_snapshot_cache,
-            evaluate_scope_is_error: self.evaluate_scope_is_error,
-            when_single_assign_is_error: self.when_single_assign_is_error,
         };
         SessionSnapshot::from_detached_session(snapshot)
     }
@@ -394,8 +390,6 @@ impl Session {
             snapshot_cache,
             lightweight_snapshot_cache,
             workspace_symbol_snapshot_cache,
-            evaluate_scope_is_error: self.evaluate_scope_is_error,
-            when_single_assign_is_error: self.when_single_assign_is_error,
         };
         timing.session_assemble_ms = session_assemble_started.elapsed().as_millis() as u64;
         (SessionSnapshot::from_detached_session(snapshot), timing)
@@ -463,8 +457,6 @@ impl Session {
             snapshot_cache,
             lightweight_snapshot_cache,
             workspace_symbol_snapshot_cache,
-            evaluate_scope_is_error: self.evaluate_scope_is_error,
-            when_single_assign_is_error: self.when_single_assign_is_error,
         };
         timing.session_assemble_ms = session_assemble_started.elapsed().as_millis() as u64;
         (SessionSnapshot::from_detached_session(snapshot), timing)

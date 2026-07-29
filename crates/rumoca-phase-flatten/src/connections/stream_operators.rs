@@ -1001,7 +1001,7 @@ fn rewrite_model_expressions(
     rewrite_variable_expressions(model, rewriter)?;
     rewrite_assertions(model, rewriter)?;
     rewrite_algorithms(model, rewriter)?;
-    rewrite_when_clauses(model, rewriter)?;
+    rewrite_when_chains(model, rewriter)?;
     Ok(())
 }
 
@@ -1082,13 +1082,15 @@ fn rewrite_algorithms(
     Ok(())
 }
 
-fn rewrite_when_clauses(
+fn rewrite_when_chains(
     model: &mut flat::Model,
     rewriter: &mut StreamOperatorRewriter,
 ) -> Result<(), FlattenError> {
-    for clause in &mut model.when_clauses {
-        clause.condition = rewriter.rewrite_expression(&clause.condition)?;
-        rewrite_when_equations(&mut clause.equations, rewriter)?;
+    for chain in &mut model.when_chains {
+        for branch in chain.branches_mut() {
+            branch.condition = rewriter.rewrite_expression(&branch.condition)?;
+            rewrite_when_equations(&mut branch.equations, rewriter)?;
+        }
     }
     Ok(())
 }
@@ -1103,10 +1105,16 @@ fn rewrite_when_equations(
                 *value = rewriter.rewrite_expression(value)?;
             }
             flat::WhenEquation::Assert {
-                condition, message, ..
+                condition,
+                message,
+                level,
+                ..
             } => {
                 *condition = rewriter.rewrite_expression(condition)?;
                 *message = rewriter.rewrite_expression(message)?;
+                if let Some(level) = level.as_deref_mut() {
+                    *level = rewriter.rewrite_expression(level)?;
+                }
             }
             flat::WhenEquation::Terminate { message, .. } => {
                 *message = rewriter.rewrite_expression(message)?;
@@ -1120,7 +1128,9 @@ fn rewrite_when_equations(
                     *condition = rewriter.rewrite_expression(condition)?;
                     rewrite_when_equations(branch, rewriter)?;
                 }
-                rewrite_when_equations(else_branch, rewriter)?;
+                if let Some(else_branch) = else_branch {
+                    rewrite_when_equations(else_branch, rewriter)?;
+                }
             }
             flat::WhenEquation::FunctionCallOutputs { function, .. } => {
                 *function = rewriter.rewrite_expression(function)?;

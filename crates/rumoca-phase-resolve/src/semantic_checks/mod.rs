@@ -115,7 +115,7 @@ struct CheckContext {
 #[derive(Clone)]
 struct OperatorRecordContext {
     name: String,
-    def_id: Option<DefId>,
+    def_id: DefId,
 }
 
 impl CheckContext {
@@ -270,7 +270,9 @@ impl ast::Visitor for SemanticClassCheckVisitor<'_> {
         if class.operator_record {
             self.ctx.current_operator_record = Some(OperatorRecordContext {
                 name: class.name.text.to_string(),
-                def_id: class.def_id,
+                def_id: class
+                    .def_id
+                    .expect("resolved operator-record class has a DefId"),
             });
         }
         if class.class_type == ClassType::Operator {
@@ -322,7 +324,6 @@ impl ast::Visitor for SemanticClassCheckVisitor<'_> {
                 check_statement(stmt, self.ctx, self.diags);
             }
         }
-        check_when_reinit_contracts(class, self.diags);
         for nested in class.classes.values() {
             self.visit_class_def(nested)?;
         }
@@ -352,6 +353,7 @@ fn check_class_structural(
     check_duplicate_names(class, diags);
     check_operator_restrictions(
         class,
+        def,
         parent_is_operator_record,
         parent_is_operator_class,
         operator_record,

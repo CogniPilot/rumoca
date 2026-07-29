@@ -3619,3 +3619,10 @@ case_id = 'oprec_011_zero_inner_dimension_product_rejected'
 test_file = 'tests/oprec_contracts.rs'
 kind = 'Compile'
 outcome = 'Reject'
+
+[[cases]]
+contract_id = 'OPREC-011'
+case_id = 'oprec_011_unused_zero_sized_array_is_legal'
+test_file = 'tests/oprec_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'

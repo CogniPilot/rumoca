@@ -998,14 +998,7 @@ fn rebuild_semantic_owners<'target>(
     identities: RebuiltOwnerIdentities<'_, 'target>,
     replacement: Option<(u32, dae::ExprId<'target>)>,
 ) -> Result<(), dae::DaeConstructionError> {
-    rebuild_equations(
-        source,
-        target,
-        expressions,
-        identities.variables,
-        identities.domains,
-        replacement,
-    )?;
+    rebuild_equations(source, target, expressions, identities.domains, replacement)?;
     let relations = rebuild_relations(source, target, expressions)?;
     define_conditions(
         source,
@@ -1017,6 +1010,13 @@ fn rebuild_semantic_owners<'target>(
     )?;
     rebuild_roots(source, target, identities.conditions, &relations)?;
     rebuild_events(
+        source,
+        target,
+        expressions,
+        identities.variables,
+        identities.conditions,
+    )?;
+    rebuild_discrete_value_owners(
         source,
         target,
         expressions,
@@ -1191,19 +1191,6 @@ fn rebuild_event_action<'target>(
                 action.provenance(),
             )
         }
-        dae::EventActionOperation::AssignDiscreteValue { target, value } => {
-            let TargetVariable::DiscreteValue(target) = variables[target.index() as usize].identity
-            else {
-                unreachable!("event assignment retains its discrete-value role")
-            };
-            events.assign_discrete_value(
-                trigger,
-                guard,
-                target,
-                expressions[value.index() as usize],
-                action.provenance(),
-            )
-        }
     })?;
     Ok(())
 }
@@ -1212,7 +1199,6 @@ fn rebuild_equations<'target>(
     source: dae::DaeView<'_>,
     target: &mut dae::DaeConstruction<'target>,
     expressions: &[dae::ExprId<'target>],
-    variables: &[ReservedVariable<'target>],
     domains: &[RebuiltDomain<'target>],
     replacement: Option<(u32, dae::ExprId<'target>)>,
 ) -> Result<(), dae::DaeConstructionError> {
@@ -1251,14 +1237,13 @@ fn rebuild_equations<'target>(
         }
         Ok(())
     })?;
-    rebuild_discrete_equations(source, target, expressions, variables)
+    rebuild_discrete_equations(source, target, expressions)
 }
 
 fn rebuild_discrete_equations<'target>(
     source: dae::DaeView<'_>,
     target: &mut dae::DaeConstruction<'target>,
     expressions: &[dae::ExprId<'target>],
-    variables: &[ReservedVariable<'target>],
 ) -> Result<(), dae::DaeConstructionError> {
     target.discrete(|target| {
         for index in 0..source.discrete_real_equation_count() {
@@ -1269,26 +1254,85 @@ fn rebuild_discrete_equations<'target>(
                 target.residual(expressions[equation.residual().index() as usize])
             })?;
         }
-        for index in 0..source.discrete_assignment_count() {
-            let id = source
-                .discrete_assignment_id(index)
-                .expect("finalized discrete assignment resolves");
-            let assignment = source
-                .discrete_assignment(id)
-                .expect("finalized discrete assignment identity resolves");
-            let TargetVariable::DiscreteValue(target_id) =
-                variables[assignment.target().index() as usize].identity
-            else {
-                unreachable!("checked assignment target retains its discrete-value role")
-            };
-            target.assignment(
-                assignment.provenance(),
-                target_id,
-                expressions[assignment.value().index() as usize],
-            )?;
+        Ok(())
+    })
+}
+
+fn rebuild_discrete_value_owners<'target>(
+    source: dae::DaeView<'_>,
+    target: &mut dae::DaeConstruction<'target>,
+    expressions: &[dae::ExprId<'target>],
+    variables: &[ReservedVariable<'target>],
+    conditions: &[dae::ConditionId<'target>],
+) -> Result<(), dae::DaeConstructionError> {
+    let source_owners = (0..source.discrete_value_owner_count())
+        .map(|index| {
+            source
+                .discrete_value_owner(
+                    source
+                        .discrete_value_owner_id(index)
+                        .expect("finalized B.1c owner ordinal resolves"),
+                )
+                .expect("finalized B.1c owner identity resolves")
+        })
+        .collect::<Vec<_>>();
+    let plan = source_owners
+        .iter()
+        .copied()
+        .flat_map(|owner| owner.targets().iter())
+        .map(|source_target| rebuilt_discrete_value(variables, source_target))
+        .collect::<Vec<_>>();
+    target.b1c(plan, |topology| {
+        for source_owner in source_owners {
+            let targets = source_owner
+                .targets()
+                .iter()
+                .map(|source_target| rebuilt_discrete_value(variables, source_target))
+                .collect::<Vec<_>>();
+            topology.owner(source_owner.provenance(), targets, |target_owner| {
+                rebuild_discrete_value_branches(target_owner, source_owner, expressions, conditions)
+            })?;
         }
         Ok(())
     })
+}
+
+fn rebuild_discrete_value_branches<'target>(
+    target: &mut dae::DiscreteValueOwner<'_, 'target>,
+    source: dae::DiscreteValueOwnerView<'_>,
+    expressions: &[dae::ExprId<'target>],
+    conditions: &[dae::ConditionId<'target>],
+) -> Result<(), dae::DaeConstructionError> {
+    for branch in source.branches().iter() {
+        let values = branch
+            .values()
+            .iter()
+            .map(|(value, provenance)| (expressions[value.index() as usize], provenance));
+        match branch.activation() {
+            dae::DiscreteBranchActivation::Always => {
+                target.always(branch.provenance(), values)?;
+            }
+            dae::DiscreteBranchActivation::When { trigger, guard } => {
+                target.when(
+                    conditions[trigger.index() as usize],
+                    conditions[guard.index() as usize],
+                    branch.provenance(),
+                    values,
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn rebuilt_discrete_value<'target>(
+    variables: &[ReservedVariable<'target>],
+    source: dae::DiscreteValueId<'_>,
+) -> dae::DiscreteValueId<'target> {
+    let TargetVariable::DiscreteValue(target) = variables[source.index() as usize].identity else {
+        unreachable!("checked B.1c owner target retains its discrete-value role")
+    };
+    target
 }
 
 fn rebuild_continuous_family<'target>(

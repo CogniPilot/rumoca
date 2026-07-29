@@ -9,12 +9,13 @@ use rumoca_eval_flat::constant::{EvalContext, eval_expr};
 use rumoca_ir_dae as dae;
 use rumoca_ir_flat as flat;
 
+use crate::ToDaeError;
 use crate::balance::BalanceDetail;
-use crate::{ToDaeError, ToDaeOptions};
 
 mod algorithm;
 mod analysis;
 mod clocks;
+mod discrete_values;
 mod equation_systems;
 mod expression;
 mod function_array_assembly;
@@ -23,22 +24,25 @@ mod function_construction;
 mod function_record_assembly;
 mod function_shapes;
 mod model_algorithm;
+mod model_events;
 mod record_equation;
 mod structured_body;
 mod variable_construction;
 use algorithm::{
-    AlgorithmStatementContext, lower_algorithm_assignment, lower_algorithm_function_call,
-    own_clocked_algorithm_targets,
+    AlgorithmFunctionCall, AlgorithmStatementContext, lower_algorithm_assignment,
+    lower_algorithm_function_call, own_clocked_algorithm_targets,
 };
 use analysis::{
     Analysis, ComprehensionKey, ComprehensionPlan, DelayPlan, DerivedParameterPlan,
-    EquationPartition, FunctionArrayAssemblyPlan, FunctionIntegerReduction, FunctionLoopLowering,
-    FunctionPlan, FunctionRecordAssemblyPlan, FunctionStatementPlan, ModelAlgorithmPlan,
-    PlannedRole, RecordArrayFieldPlan, RecordEquationPlan, analyze, defined_discrete_targets,
-    effective_variable_scalar_type, equation_partition, primitive_scalar_type,
+    DiscreteValueTopologyPlan, EquationPartition, FunctionArrayAssemblyPlan,
+    FunctionIntegerReduction, FunctionLoopLowering, FunctionPlan, FunctionRecordAssemblyPlan,
+    FunctionStatementPlan, ModelAlgorithmPlan, PlannedRole, RecordArrayFieldPlan,
+    RecordEquationPlan, analyze, defined_discrete_targets, effective_variable_scalar_type,
+    equation_partition, model_algorithm_targets, primitive_scalar_type,
     structured_assignment_names,
 };
 use clocks::{LoweredClocks, lower_clocks, lower_sampled_value_clocks};
+use discrete_values::{DiscreteValueOwnerHandle, DiscreteValueStaging};
 use equation_systems::lower_equation_systems;
 use expression::{
     FunctionArrayUpdate, LoweringSymbols, all_model_expressions, derivative_reference,
@@ -62,9 +66,10 @@ use function_shapes::{
     evaluate_shape_integer,
 };
 use model_algorithm::{
-    lower_declarative_model_algorithm, lower_separated_array_sum_model_algorithm,
-    lower_total_array_model_algorithm,
+    ModelAlgorithmLowering, lower_declarative_model_algorithm,
+    lower_separated_array_sum_model_algorithm, lower_total_array_model_algorithm,
 };
+use model_events::{WhenChainsRequest, always_condition, lower_when_assignment, lower_when_chains};
 use record_equation::lower_record_equation;
 use structured_body::lower_structured_body;
 use variable_construction::{define_variables, reserve_variables};
@@ -140,13 +145,9 @@ struct ReservedVariable<'flat, 'dae> {
     definition: dae::VariableReservation<'dae>,
 }
 
-pub(crate) fn construct(
-    flat: &flat::Model,
-    source_map: SourceMap,
-    options: ToDaeOptions,
-) -> Result<dae::Dae, ToDaeError> {
+pub(crate) fn construct(flat: &flat::Model, source_map: SourceMap) -> Result<dae::Dae, ToDaeError> {
     let analysis = analyze(flat)?;
-    if options.error_on_unbalanced && !flat.is_partial && !analysis.balance.is_balanced() {
+    if !flat.is_partial && !analysis.balance.is_balanced() {
         return Err(ToDaeError::unbalanced_from_detail(analysis.balance));
     }
 
@@ -205,14 +206,24 @@ fn build_checked<'dae>(
         &analysis.sampled_values,
         &clocks,
     )?;
+    let mut discrete_values = DiscreteValueStaging::new();
     lower_bindings(
         construction,
+        &mut discrete_values,
         &coordinates,
         &functions,
         &analysis.roles,
+        &analysis.discrete_value_topology,
         flat,
     )?;
-    lower_equation_systems(construction, flat, analysis, &coordinates, &functions)?;
+    lower_equation_systems(
+        construction,
+        &mut discrete_values,
+        flat,
+        analysis,
+        &coordinates,
+        &functions,
+    )?;
     lower_assertions(
         construction,
         &coordinates,
@@ -224,20 +235,37 @@ fn build_checked<'dae>(
     )?;
     lower_algorithms(
         construction,
-        &coordinates,
-        &functions,
-        &analysis.sample_lattices,
-        &flat.algorithms,
-        &analysis.model_algorithm_plans,
+        &mut discrete_values,
+        ModelAlgorithmsRequest {
+            flat,
+            environment: AlgorithmEnvironment {
+                coordinates: &coordinates,
+                functions: &functions,
+                sample_lattices: &analysis.sample_lattices,
+            },
+            plans: &analysis.model_algorithm_plans,
+            topology: &analysis.discrete_value_topology,
+        },
     )?;
-    lower_when_clauses(
+    lower_when_chains(
         construction,
+        &mut discrete_values,
+        WhenChainsRequest::new(
+            &coordinates,
+            &functions,
+            &analysis.sample_lattices,
+            &clocks,
+            &flat.when_chains,
+            &analysis.discrete_value_topology,
+        ),
+    )?;
+    discrete_values.add_holds(
+        construction,
+        flat,
         &coordinates,
-        &functions,
-        &analysis.sample_lattices,
-        &clocks,
-        &flat.when_clauses,
-    )
+        &analysis.discrete_value_topology,
+    )?;
+    discrete_values.finish(construction, &analysis.discrete_value_topology)
 }
 
 fn reserve_value_types<'dae>(
@@ -605,9 +633,11 @@ fn lower_attribute_expression<'dae>(
 
 fn lower_bindings<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
+    discrete_values: &mut DiscreteValueStaging<'dae>,
     coordinates: &HashMap<VarName, Coordinate<'dae>>,
     functions: &FunctionRegistry<'_, 'dae>,
     roles: &HashMap<VarName, PlannedRole>,
+    topology: &DiscreteValueTopologyPlan,
     flat: &flat::Model,
 ) -> Result<(), dae::DaeConstructionError> {
     for (name, variable) in &flat.variables {
@@ -626,7 +656,16 @@ fn lower_bindings<'dae>(
         let rhs = lower_expression(construction, coordinates, functions, binding, None)?;
         match coordinate {
             Coordinate::DiscreteValue(target) => {
-                construction.discrete(|discrete| discrete.assignment(owner, target, rhs))?;
+                let semantic_owner = discrete_values
+                    .owner(owner, [name.clone()], coordinates, topology)?
+                    .expect("a discrete-value binding has one planned B.1c owner");
+                discrete_values.always(
+                    semantic_owner,
+                    target,
+                    rhs,
+                    owner,
+                    dae::DaeProvenance::source(owner_span)?,
+                )?;
             }
             Coordinate::Parameter(_)
             | Coordinate::Input(_)
@@ -728,27 +767,57 @@ struct EventGuard<'dae> {
     trigger: dae::ConditionId<'dae>,
     condition: dae::ConditionId<'dae>,
     owner_clock: Option<dae::ClockId<'dae>>,
+    branch_provenance: dae::DaeProvenance,
+    always: bool,
+    parent_activation: Option<(dae::ConditionId<'dae>, dae::ConditionId<'dae>)>,
+}
+
+#[derive(Clone, Copy)]
+struct AlgorithmEnvironment<'scope, 'shape, 'dae> {
+    coordinates: &'scope HashMap<VarName, Coordinate<'dae>>,
+    functions: &'scope FunctionRegistry<'shape, 'dae>,
+    sample_lattices: &'scope [(Span, ClockLattice)],
+}
+
+#[derive(Clone, Copy)]
+struct AlgorithmOwner<'dae> {
+    discrete_owner: Option<DiscreteValueOwnerHandle>,
+    parent: Option<EventGuard<'dae>>,
+    span: Span,
+}
+
+struct ModelAlgorithmsRequest<'scope, 'shape, 'dae> {
+    flat: &'scope flat::Model,
+    environment: AlgorithmEnvironment<'scope, 'shape, 'dae>,
+    plans: &'scope [ModelAlgorithmPlan],
+    topology: &'scope DiscreteValueTopologyPlan,
 }
 
 fn lower_algorithms<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
-    coordinates: &HashMap<VarName, Coordinate<'dae>>,
-    functions: &FunctionRegistry<'_, 'dae>,
-    sample_lattices: &[(Span, ClockLattice)],
-    algorithms: &[flat::Algorithm],
-    plans: &[ModelAlgorithmPlan],
+    discrete_values: &mut DiscreteValueStaging<'dae>,
+    request: ModelAlgorithmsRequest<'_, '_, 'dae>,
 ) -> Result<(), dae::DaeConstructionError> {
-    debug_assert_eq!(algorithms.len(), plans.len());
-    for (algorithm, plan) in algorithms.iter().zip(plans) {
+    debug_assert_eq!(request.flat.algorithms.len(), request.plans.len());
+    for (algorithm, plan) in request.flat.algorithms.iter().zip(request.plans) {
+        let owner_provenance =
+            dae::DaeProvenance::generated(dae::DaeGeneration::AlgorithmEquation, algorithm.span)?;
+        let discrete_owner = discrete_values.owner(
+            owner_provenance,
+            model_algorithm_targets(request.flat, algorithm),
+            request.environment.coordinates,
+            request.topology,
+        )?;
+        let mut lowering = ModelAlgorithmLowering {
+            construction,
+            discrete_values,
+            discrete_owner,
+            coordinates: request.environment.coordinates,
+            functions: request.environment.functions,
+        };
         match plan {
             ModelAlgorithmPlan::Declarative { target } => {
-                lower_declarative_model_algorithm(
-                    construction,
-                    coordinates,
-                    functions,
-                    algorithm,
-                    target,
-                )?;
+                lower_declarative_model_algorithm(&mut lowering, algorithm, target)?;
             }
             ModelAlgorithmPlan::TotalArrayDefinition {
                 target,
@@ -756,9 +825,7 @@ fn lower_algorithms<'dae>(
                 binder_spans,
             } => {
                 lower_total_array_model_algorithm(
-                    construction,
-                    coordinates,
-                    functions,
+                    &mut lowering,
                     algorithm,
                     target,
                     domain,
@@ -772,9 +839,7 @@ fn lower_algorithms<'dae>(
                 binder_spans,
             } => {
                 lower_separated_array_sum_model_algorithm(
-                    construction,
-                    coordinates,
-                    functions,
+                    &mut lowering,
                     algorithm,
                     array_target,
                     scalar_target,
@@ -784,13 +849,15 @@ fn lower_algorithms<'dae>(
             }
             ModelAlgorithmPlan::Event => {
                 lower_algorithm_statements(
-                    construction,
-                    coordinates,
-                    functions,
-                    sample_lattices,
-                    None,
+                    lowering.construction,
+                    lowering.discrete_values,
+                    request.environment,
+                    AlgorithmOwner {
+                        discrete_owner,
+                        parent: None,
+                        span: algorithm.span,
+                    },
                     &algorithm.statements,
-                    algorithm.span,
                 )?;
             }
         }
@@ -798,77 +865,89 @@ fn lower_algorithms<'dae>(
     Ok(())
 }
 
-// SPEC_0021 exception: the structured-assignment arm performs one bounded
-// leaf expansion while retaining the surrounding statement grammar.
-#[allow(clippy::excessive_nesting)]
 fn lower_algorithm_statements<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
-    coordinates: &HashMap<VarName, Coordinate<'dae>>,
-    functions: &FunctionRegistry<'_, 'dae>,
-    sample_lattices: &[(Span, ClockLattice)],
-    parent: Option<EventGuard<'dae>>,
+    discrete_values: &mut DiscreteValueStaging<'dae>,
+    environment: AlgorithmEnvironment<'_, '_, 'dae>,
+    owner: AlgorithmOwner<'dae>,
     statements: &[rumoca_core::Statement],
-    owner_span: Span,
 ) -> Result<(), dae::DaeConstructionError> {
-    let context = AlgorithmStatementContext {
-        coordinates,
-        functions,
-        parent,
-        owner_span,
-    };
     for statement in statements {
-        match statement {
-            rumoca_core::Statement::Assignment { comp, value, span } => {
-                lower_algorithm_assignment(construction, context, comp, value, *span)?;
-            }
-            rumoca_core::Statement::If {
-                cond_blocks,
-                else_block,
-                span,
-            } => {
-                lower_algorithm_if(
-                    construction,
-                    coordinates,
-                    functions,
-                    sample_lattices,
-                    parent,
-                    cond_blocks,
-                    else_block.as_deref().unwrap_or_default(),
-                    *span,
-                )?;
-            }
-            rumoca_core::Statement::When { blocks, span } => {
-                lower_algorithm_when(
-                    construction,
-                    coordinates,
-                    functions,
-                    sample_lattices,
-                    parent,
-                    blocks,
-                    *span,
-                )?;
-            }
-            rumoca_core::Statement::FunctionCall {
-                comp,
-                args,
-                outputs,
-                span,
-            } => {
-                lower_algorithm_function_call(construction, context, comp, args, outputs, *span)?;
-            }
-            _ => unreachable!("algorithm analysis restricts the checked statement grammar"),
-        }
+        lower_algorithm_statement(construction, discrete_values, environment, owner, statement)?;
     }
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+fn lower_algorithm_statement<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    discrete_values: &mut DiscreteValueStaging<'dae>,
+    environment: AlgorithmEnvironment<'_, '_, 'dae>,
+    owner: AlgorithmOwner<'dae>,
+    statement: &rumoca_core::Statement,
+) -> Result<(), dae::DaeConstructionError> {
+    let context = AlgorithmStatementContext {
+        coordinates: environment.coordinates,
+        functions: environment.functions,
+        parent: owner.parent,
+        owner_span: owner.span,
+    };
+    match statement {
+        rumoca_core::Statement::Assignment { comp, value, span } => lower_algorithm_assignment(
+            construction,
+            discrete_values,
+            owner.discrete_owner,
+            context,
+            comp,
+            value,
+            *span,
+        ),
+        rumoca_core::Statement::If {
+            cond_blocks,
+            else_block,
+            span,
+        } => lower_algorithm_if(
+            construction,
+            discrete_values,
+            environment,
+            owner,
+            cond_blocks,
+            else_block.as_deref().unwrap_or_default(),
+            *span,
+        ),
+        rumoca_core::Statement::When { blocks, span } => lower_algorithm_when(
+            construction,
+            discrete_values,
+            environment,
+            owner,
+            blocks,
+            *span,
+        ),
+        rumoca_core::Statement::FunctionCall {
+            comp,
+            args,
+            outputs,
+            span,
+        } => lower_algorithm_function_call(
+            construction,
+            discrete_values,
+            owner.discrete_owner,
+            context,
+            AlgorithmFunctionCall {
+                component: comp,
+                arguments: args,
+                outputs,
+                span: *span,
+            },
+        ),
+        _ => unreachable!("algorithm analysis restricts the checked statement grammar"),
+    }
+}
+
 fn lower_algorithm_if<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
-    coordinates: &HashMap<VarName, Coordinate<'dae>>,
-    functions: &FunctionRegistry<'_, 'dae>,
-    sample_lattices: &[(Span, ClockLattice)],
-    parent: Option<EventGuard<'dae>>,
+    discrete_values: &mut DiscreteValueStaging<'dae>,
+    environment: AlgorithmEnvironment<'_, '_, 'dae>,
+    owner: AlgorithmOwner<'dae>,
     blocks: &[rumoca_core::StatementBlock],
     else_block: &[rumoca_core::Statement],
     span: Span,
@@ -877,9 +956,9 @@ fn lower_algorithm_if<'dae>(
     for block in blocks {
         let (condition, owner_clock) = lower_condition(
             construction,
-            coordinates,
-            functions,
-            sample_lattices,
+            environment.coordinates,
+            environment.functions,
+            environment.sample_lattices,
             &block.cond,
         )?;
         let available = match previous {
@@ -889,35 +968,36 @@ fn lower_algorithm_if<'dae>(
             }
             None => condition,
         };
-        let guard = match parent {
-            Some(parent) => EventGuard {
-                trigger: parent.trigger,
-                condition: combine_conditions(
-                    construction,
-                    parent.condition,
-                    available,
-                    false,
-                    span,
-                )?,
-                owner_clock: parent.owner_clock.or(owner_clock),
-            },
-            None => EventGuard {
-                trigger: available,
-                condition: available,
-                owner_clock,
-            },
-        };
+        let condition_span = block
+            .cond
+            .span()
+            .expect("analysis proves algorithm condition provenance");
+        let guard = algorithm_if_guard(
+            construction,
+            owner.parent,
+            available,
+            owner_clock,
+            condition_span,
+            span,
+        )?;
         if let Some(clock) = guard.owner_clock {
-            own_clocked_algorithm_targets(construction, coordinates, clock, &block.stmts)?;
+            own_clocked_algorithm_targets(
+                construction,
+                environment.coordinates,
+                clock,
+                &block.stmts,
+            )?;
         }
         lower_algorithm_statements(
             construction,
-            coordinates,
-            functions,
-            sample_lattices,
-            Some(guard),
+            discrete_values,
+            environment,
+            AlgorithmOwner {
+                parent: Some(guard),
+                span,
+                ..owner
+            },
             &block.stmts,
-            span,
         )?;
         previous = Some(match previous {
             Some(previous) => combine_conditions(construction, previous, condition, true, span)?,
@@ -925,34 +1005,12 @@ fn lower_algorithm_if<'dae>(
         });
     }
     if !else_block.is_empty() {
-        let available = match previous {
-            Some(previous) => negate_condition(construction, previous, span)?,
-            None => always_condition(construction, span)?,
-        };
-        let guard = match parent {
-            Some(parent) => EventGuard {
-                trigger: parent.trigger,
-                condition: combine_conditions(
-                    construction,
-                    parent.condition,
-                    available,
-                    false,
-                    span,
-                )?,
-                owner_clock: parent.owner_clock,
-            },
-            None => EventGuard {
-                trigger: available,
-                condition: available,
-                owner_clock: None,
-            },
-        };
-        lower_algorithm_statements(
+        lower_algorithm_else(
             construction,
-            coordinates,
-            functions,
-            sample_lattices,
-            Some(guard),
+            discrete_values,
+            environment,
+            owner,
+            previous,
             else_block,
             span,
         )?;
@@ -960,13 +1018,67 @@ fn lower_algorithm_if<'dae>(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+fn algorithm_if_guard<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    parent: Option<EventGuard<'dae>>,
+    available: dae::ConditionId<'dae>,
+    owner_clock: Option<dae::ClockId<'dae>>,
+    provenance_span: Span,
+    span: Span,
+) -> Result<EventGuard<'dae>, dae::DaeConstructionError> {
+    let branch_provenance = dae::DaeProvenance::source(provenance_span)?;
+    match parent {
+        Some(parent) => Ok(EventGuard {
+            trigger: parent.trigger,
+            condition: combine_conditions(construction, parent.condition, available, false, span)?,
+            owner_clock: parent.owner_clock.or(owner_clock),
+            branch_provenance,
+            always: false,
+            parent_activation: Some((parent.trigger, parent.condition)),
+        }),
+        None => Ok(EventGuard {
+            trigger: available,
+            condition: available,
+            owner_clock,
+            branch_provenance,
+            always: false,
+            parent_activation: None,
+        }),
+    }
+}
+
+fn lower_algorithm_else<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    discrete_values: &mut DiscreteValueStaging<'dae>,
+    environment: AlgorithmEnvironment<'_, '_, 'dae>,
+    owner: AlgorithmOwner<'dae>,
+    previous: Option<dae::ConditionId<'dae>>,
+    statements: &[rumoca_core::Statement],
+    span: Span,
+) -> Result<(), dae::DaeConstructionError> {
+    let available = match previous {
+        Some(previous) => negate_condition(construction, previous, span)?,
+        None => always_condition(construction, span)?,
+    };
+    let guard = algorithm_if_guard(construction, owner.parent, available, None, span, span)?;
+    lower_algorithm_statements(
+        construction,
+        discrete_values,
+        environment,
+        AlgorithmOwner {
+            parent: Some(guard),
+            span,
+            ..owner
+        },
+        statements,
+    )
+}
+
 fn lower_algorithm_when<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
-    coordinates: &HashMap<VarName, Coordinate<'dae>>,
-    functions: &FunctionRegistry<'_, 'dae>,
-    sample_lattices: &[(Span, ClockLattice)],
-    parent: Option<EventGuard<'dae>>,
+    discrete_values: &mut DiscreteValueStaging<'dae>,
+    environment: AlgorithmEnvironment<'_, '_, 'dae>,
+    owner: AlgorithmOwner<'dae>,
     blocks: &[rumoca_core::StatementBlock],
     span: Span,
 ) -> Result<(), dae::DaeConstructionError> {
@@ -975,9 +1087,9 @@ fn lower_algorithm_when<'dae>(
     for block in blocks {
         let (condition, owner_clock) = lower_condition(
             construction,
-            coordinates,
-            functions,
-            sample_lattices,
+            environment.coordinates,
+            environment.functions,
+            environment.sample_lattices,
             &block.cond,
         )?;
         let available = match previous {
@@ -987,7 +1099,7 @@ fn lower_algorithm_when<'dae>(
             }
             None => condition,
         };
-        let guard = match parent {
+        let guard = match owner.parent {
             Some(parent) => EventGuard {
                 trigger: available,
                 condition: combine_conditions(
@@ -998,11 +1110,27 @@ fn lower_algorithm_when<'dae>(
                     span,
                 )?,
                 owner_clock: parent.owner_clock.or(owner_clock),
+                branch_provenance: dae::DaeProvenance::source(
+                    block
+                        .cond
+                        .span()
+                        .expect("analysis proves algorithm condition provenance"),
+                )?,
+                always: false,
+                parent_activation: Some((parent.trigger, parent.condition)),
             },
             None => EventGuard {
                 trigger: available,
                 condition: available,
                 owner_clock,
+                branch_provenance: dae::DaeProvenance::source(
+                    block
+                        .cond
+                        .span()
+                        .expect("analysis proves algorithm condition provenance"),
+                )?,
+                always: false,
+                parent_activation: None,
             },
         };
         guarded_blocks.push((block, guard));
@@ -1013,366 +1141,25 @@ fn lower_algorithm_when<'dae>(
     }
     for (block, guard) in &guarded_blocks {
         if let Some(clock) = guard.owner_clock {
-            own_clocked_algorithm_targets(construction, coordinates, clock, &block.stmts)?;
+            own_clocked_algorithm_targets(
+                construction,
+                environment.coordinates,
+                clock,
+                &block.stmts,
+            )?;
         }
     }
     for (block, guard) in guarded_blocks {
         lower_algorithm_statements(
             construction,
-            coordinates,
-            functions,
-            sample_lattices,
-            Some(guard),
+            discrete_values,
+            environment,
+            AlgorithmOwner {
+                parent: Some(guard),
+                span,
+                ..owner
+            },
             &block.stmts,
-            span,
-        )?;
-    }
-    Ok(())
-}
-
-fn always_condition<'dae>(
-    construction: &mut dae::DaeConstruction<'dae>,
-    owner_span: Span,
-) -> Result<dae::ConditionId<'dae>, dae::DaeConstructionError> {
-    let provenance =
-        dae::DaeProvenance::generated(dae::DaeGeneration::ConditionLowering, owner_span)?;
-    let expression = construction.expressions(|expressions| {
-        expressions
-            .at(provenance)
-            .literal(dae::DaeLiteral::Boolean(true))
-    })?;
-    let condition = construction.conditions(|conditions| conditions.reserve(provenance))?;
-    construction.conditions(|conditions| {
-        conditions.define(
-            condition,
-            dae::ConditionInput::Discrete(expression),
-            provenance,
-        )
-    })?;
-    Ok(condition)
-}
-
-fn lower_when_clauses<'dae>(
-    construction: &mut dae::DaeConstruction<'dae>,
-    coordinates: &HashMap<VarName, Coordinate<'dae>>,
-    functions: &FunctionRegistry<'_, 'dae>,
-    sample_lattices: &[(Span, ClockLattice)],
-    clocks: &LoweredClocks<'dae>,
-    clauses: &[flat::WhenClause],
-) -> Result<(), dae::DaeConstructionError> {
-    let mut guards = Vec::with_capacity(clauses.len());
-    for clause in clauses {
-        let (condition, owner_clock) = lower_when_condition(
-            construction,
-            coordinates,
-            functions,
-            sample_lattices,
-            clocks,
-            &clause.condition,
-        )?;
-        guards.push(EventGuard {
-            trigger: condition,
-            condition,
-            owner_clock,
-        });
-    }
-    for (clause, guard) in clauses.iter().zip(&guards) {
-        if let Some(clock) = guard.owner_clock {
-            own_clocked_targets(construction, coordinates, clock, &clause.equations)?;
-        }
-    }
-    for (clause, guard) in clauses.iter().zip(guards) {
-        lower_when_equations(
-            construction,
-            coordinates,
-            functions,
-            sample_lattices,
-            guard,
-            &clause.equations,
-        )?;
-    }
-    Ok(())
-}
-
-fn own_clocked_targets<'dae>(
-    construction: &mut dae::DaeConstruction<'dae>,
-    coordinates: &HashMap<VarName, Coordinate<'dae>>,
-    clock: dae::ClockId<'dae>,
-    equations: &[flat::WhenEquation],
-) -> Result<(), dae::DaeConstructionError> {
-    for equation in equations {
-        match equation {
-            flat::WhenEquation::Assign { target, .. } => {
-                let provenance = dae::DaeProvenance::source(equation.span())?;
-                construction.clocks(|clocks| match coordinates[target] {
-                    Coordinate::DiscreteReal(variable) => {
-                        clocks.own_discrete_real(clock, variable, provenance)?;
-                        Ok(())
-                    }
-                    Coordinate::DiscreteValue(variable) => {
-                        clocks.own_discrete_value(clock, variable, provenance)?;
-                        Ok(())
-                    }
-                    _ => unreachable!("clock analysis accepts only discrete clocked targets"),
-                })?;
-            }
-            flat::WhenEquation::Conditional {
-                branches,
-                else_branch,
-                ..
-            } => {
-                for (_, branch) in branches {
-                    own_clocked_targets(construction, coordinates, clock, branch)?;
-                }
-                own_clocked_targets(construction, coordinates, clock, else_branch)?;
-            }
-            flat::WhenEquation::Reinit { .. }
-            | flat::WhenEquation::Assert { .. }
-            | flat::WhenEquation::Terminate { .. } => {}
-            flat::WhenEquation::FunctionCallOutputs { .. } => {
-                unreachable!("analysis rejects unchecked event function calls")
-            }
-        }
-    }
-    Ok(())
-}
-
-fn lower_when_condition<'dae>(
-    construction: &mut dae::DaeConstruction<'dae>,
-    coordinates: &HashMap<VarName, Coordinate<'dae>>,
-    functions: &FunctionRegistry<'_, 'dae>,
-    sample_lattices: &[(Span, ClockLattice)],
-    clocks: &LoweredClocks<'dae>,
-    expression: &Expression,
-) -> Result<(dae::ConditionId<'dae>, Option<dae::ClockId<'dae>>), dae::DaeConstructionError> {
-    let Expression::VarRef {
-        name,
-        subscripts,
-        span,
-    } = expression
-    else {
-        return lower_condition(
-            construction,
-            coordinates,
-            functions,
-            sample_lattices,
-            expression,
-        );
-    };
-    let Some(clock) = clocks.by_variable.get(name.var_name()).copied() else {
-        return lower_condition(
-            construction,
-            coordinates,
-            functions,
-            sample_lattices,
-            expression,
-        );
-    };
-    debug_assert!(
-        subscripts.is_empty(),
-        "clock analysis accepts scalar aliases"
-    );
-    let provenance = dae::DaeProvenance::source(*span)?;
-    let condition = construction.conditions(|conditions| conditions.reserve(provenance))?;
-    construction.conditions(|conditions| {
-        conditions.define(condition, dae::ConditionInput::Clock(clock), provenance)
-    })?;
-    Ok((condition, Some(clock)))
-}
-
-fn lower_when_equations<'dae>(
-    construction: &mut dae::DaeConstruction<'dae>,
-    coordinates: &HashMap<VarName, Coordinate<'dae>>,
-    functions: &FunctionRegistry<'_, 'dae>,
-    sample_lattices: &[(Span, ClockLattice)],
-    guard: EventGuard<'dae>,
-    equations: &[flat::WhenEquation],
-) -> Result<(), dae::DaeConstructionError> {
-    for equation in equations {
-        let provenance = dae::DaeProvenance::source(equation.span())?;
-        match equation {
-            flat::WhenEquation::Assign { target, value, .. } => {
-                let value = match guard.owner_clock {
-                    Some(clock) => lower_clocked_expression(
-                        construction,
-                        coordinates,
-                        functions,
-                        clock,
-                        value,
-                    )?,
-                    None => lower_expression(construction, coordinates, functions, value, None)?,
-                };
-                lower_when_assignment(construction, coordinates[target], guard, value, provenance)?;
-            }
-            flat::WhenEquation::Reinit { state, value, .. } => {
-                let Coordinate::State(state) = coordinates[state] else {
-                    unreachable!("analysis accepts only state reinitialization")
-                };
-                let value = lower_expression(construction, coordinates, functions, value, None)?;
-                construction.events(|events| {
-                    events.reinitialize(guard.trigger, guard.condition, state, value, provenance)
-                })?;
-            }
-            flat::WhenEquation::Assert {
-                condition, message, ..
-            } => {
-                let (condition, _) = lower_condition(
-                    construction,
-                    coordinates,
-                    functions,
-                    sample_lattices,
-                    condition,
-                )?;
-                let failed = negate_condition(construction, condition, equation.span())?;
-                let action_guard = combine_conditions(
-                    construction,
-                    guard.condition,
-                    failed,
-                    false,
-                    equation.span(),
-                )?;
-                let message =
-                    lower_expression(construction, coordinates, functions, message, None)?;
-                construction.events(|events| {
-                    events.assert(guard.trigger, action_guard, message, provenance)
-                })?;
-            }
-            flat::WhenEquation::Terminate { message, .. } => {
-                let message =
-                    lower_expression(construction, coordinates, functions, message, None)?;
-                construction.events(|events| {
-                    events.terminate(guard.trigger, guard.condition, message, provenance)
-                })?;
-            }
-            flat::WhenEquation::Conditional {
-                branches,
-                else_branch,
-                ..
-            } => {
-                lower_conditional_when(
-                    construction,
-                    LoweringSymbols {
-                        coordinates,
-                        functions,
-                        shapes: functions.shapes.model_values(),
-                        function_body: None,
-                        values: None,
-                        owner_clock: guard.owner_clock,
-                    },
-                    sample_lattices,
-                    guard,
-                    branches,
-                    else_branch,
-                    equation.span(),
-                )?;
-            }
-            flat::WhenEquation::FunctionCallOutputs { .. } => {
-                unreachable!("analysis rejects unchecked event function calls")
-            }
-        }
-    }
-    Ok(())
-}
-
-fn lower_when_assignment<'dae>(
-    construction: &mut dae::DaeConstruction<'dae>,
-    target: Coordinate<'dae>,
-    guard: EventGuard<'dae>,
-    value: dae::ExprId<'dae>,
-    provenance: dae::DaeProvenance,
-) -> Result<(), dae::DaeConstructionError> {
-    match target {
-        Coordinate::DiscreteReal(target) => construction
-            .events(|events| {
-                events.assign_discrete_real(
-                    guard.trigger,
-                    guard.condition,
-                    target,
-                    value,
-                    provenance,
-                )
-            })
-            .map(|_| ()),
-        Coordinate::DiscreteValue(target) => construction
-            .events(|events| {
-                events.assign_discrete_value(
-                    guard.trigger,
-                    guard.condition,
-                    target,
-                    value,
-                    provenance,
-                )
-            })
-            .map(|_| ()),
-        _ => unreachable!("analysis accepts only discrete when targets"),
-    }
-}
-
-fn lower_conditional_when<'dae>(
-    construction: &mut dae::DaeConstruction<'dae>,
-    symbols: LoweringSymbols<'_, 'dae>,
-    sample_lattices: &[(Span, ClockLattice)],
-    parent: EventGuard<'dae>,
-    branches: &[(Expression, Vec<flat::WhenEquation>)],
-    else_branch: &[flat::WhenEquation],
-    span: Span,
-) -> Result<(), dae::DaeConstructionError> {
-    let mut previous = None;
-    for (condition, equations) in branches {
-        let (condition, _) = lower_condition(
-            construction,
-            symbols.coordinates,
-            symbols.functions,
-            sample_lattices,
-            condition,
-        )?;
-        let available = match previous {
-            Some(previous) => {
-                let not_previous = negate_condition(construction, previous, span)?;
-                combine_conditions(construction, condition, not_previous, false, span)?
-            }
-            None => condition,
-        };
-        let guard_condition =
-            combine_conditions(construction, parent.condition, available, false, span)?;
-        let guard = EventGuard {
-            trigger: parent.trigger,
-            condition: guard_condition,
-            owner_clock: parent.owner_clock,
-        };
-        lower_when_equations(
-            construction,
-            symbols.coordinates,
-            symbols.functions,
-            sample_lattices,
-            guard,
-            equations,
-        )?;
-        previous = Some(match previous {
-            Some(previous) => combine_conditions(construction, previous, condition, true, span)?,
-            None => condition,
-        });
-    }
-    if !else_branch.is_empty() {
-        let guard = match previous {
-            Some(previous) => {
-                let available = negate_condition(construction, previous, span)?;
-                combine_conditions(construction, parent.condition, available, false, span)?
-            }
-            None => parent.condition,
-        };
-        let guard = EventGuard {
-            trigger: parent.trigger,
-            condition: guard,
-            owner_clock: parent.owner_clock,
-        };
-        lower_when_equations(
-            construction,
-            symbols.coordinates,
-            symbols.functions,
-            sample_lattices,
-            guard,
-            else_branch,
         )?;
     }
     Ok(())
@@ -1898,11 +1685,13 @@ struct EquationRows<'scope> {
     excluded: &'scope HashSet<usize>,
     records: &'scope HashMap<usize, RecordEquationPlan>,
     roles: &'scope HashMap<VarName, PlannedRole>,
+    topology: &'scope DiscreteValueTopologyPlan,
     initialization: bool,
 }
 
 fn lower_equations<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
+    discrete_values: &mut DiscreteValueStaging<'dae>,
     coordinates: &HashMap<VarName, Coordinate<'dae>>,
     functions: &FunctionRegistry<'_, 'dae>,
     input: EquationRows<'_>,
@@ -1976,7 +1765,16 @@ fn lower_equations<'dae>(
                 let Coordinate::DiscreteValue(target) = coordinates[plan.target] else {
                     unreachable!("analysis classifies the equation target as discrete-valued")
                 };
-                construction.discrete(|system| system.assignment(owner, target, value))?;
+                let semantic_owner = discrete_values
+                    .owner(owner, [plan.target.clone()], coordinates, input.topology)?
+                    .expect("a discrete equation has one planned B.1c owner");
+                discrete_values.always(
+                    semantic_owner,
+                    target,
+                    value,
+                    owner,
+                    dae::DaeProvenance::source(equation.span)?,
+                )?;
             }
         }
     }

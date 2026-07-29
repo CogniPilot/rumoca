@@ -4,8 +4,8 @@ use rumoca_core::ClockRational;
 
 use crate::model::{Storage, check_provenance, checked_u32, unknown};
 use crate::{
-    ConditionId, DaeConstructionError, DaeProvenance, DiscreteRealId, DiscreteValueId,
-    EventActionId, ExprId, ScalarType, StateId, TimeEventId,
+    ConditionId, DaeConstructionError, DaeProvenance, DiscreteRealId, EventActionId, ExprId,
+    ScalarType, StateId, TimeEventId,
 };
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -22,7 +22,6 @@ pub(crate) enum EventActionKind {
     Terminate { message: u32 },
     Reinitialize { state: u32, value: u32 },
     AssignDiscreteReal { target: u32, value: u32 },
-    AssignDiscreteValue { target: u32, value: u32 },
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -65,10 +64,6 @@ pub enum EventActionOperation<'dae> {
     },
     AssignDiscreteReal {
         target: DiscreteRealId<'dae>,
-        value: ExprId<'dae>,
-    },
-    AssignDiscreteValue {
-        target: DiscreteValueId<'dae>,
         value: ExprId<'dae>,
     },
 }
@@ -235,64 +230,6 @@ impl<'dae> Events<'_, 'dae> {
             },
             provenance,
         )
-    }
-
-    pub fn assign_discrete_value(
-        &mut self,
-        trigger: ConditionId<'dae>,
-        guard: ConditionId<'dae>,
-        target: DiscreteValueId<'dae>,
-        value: ExprId<'dae>,
-        provenance: DaeProvenance,
-    ) -> Result<EventActionId<'dae>, DaeConstructionError> {
-        check_provenance(self.source_map, provenance)?;
-        self.expect_guard(trigger, provenance)?;
-        self.expect_guard(guard, provenance)?;
-        self.storage
-            .expect_discrete_value_target(target, value, provenance)?;
-        self.expect_clock_ownership(guard, target.index(), provenance)?;
-        let already_defined = self
-            .storage
-            .discrete_assignments
-            .iter()
-            .any(|entry| entry.target == target.index())
-            || self.storage.event_actions.iter().any(|entry| {
-                matches!(
-                    entry.kind,
-                    EventActionKind::AssignDiscreteValue {
-                        target: found,
-                        ..
-                    } if found == target.index()
-                )
-            });
-        if self
-            .storage
-            .discrete_assignments
-            .iter()
-            .any(|entry| entry.target == target.index())
-        {
-            return Err(DaeConstructionError::DuplicateKey {
-                kind: "B.1c target",
-                key: self
-                    .storage
-                    .variable_name(target.index(), provenance)?
-                    .to_string(),
-                span: provenance.span(),
-            });
-        }
-        let action = self.insert_action(
-            trigger,
-            guard,
-            EventActionKind::AssignDiscreteValue {
-                target: target.index(),
-                value: value.index(),
-            },
-            provenance,
-        )?;
-        if !already_defined {
-            self.storage.unassigned_discrete_values -= 1;
-        }
-        Ok(action)
     }
 
     fn message_action(

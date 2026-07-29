@@ -329,11 +329,13 @@ fn collect_function_call_requests(flat: &flat::Model) -> Vec<FunctionRequest> {
         }
     }
 
-    // Collect from when clauses
-    for when in &flat.when_clauses {
-        collect_from_expression(&when.condition, &mut calls);
-        for eq in &when.equations {
-            collect_from_when_equation(eq, &mut calls);
+    // Collect from complete when/elsewhen owners in source-priority order.
+    for chain in &flat.when_chains {
+        for branch in chain.branches() {
+            collect_from_expression(&branch.condition, &mut calls);
+            for eq in &branch.equations {
+                collect_from_when_equation(eq, &mut calls);
+            }
         }
     }
 
@@ -378,10 +380,16 @@ fn collect_from_when_equation(eq: &rumoca_ir_flat::WhenEquation, calls: &mut Fun
             collect_from_expression(value, calls);
         }
         flat::WhenEquation::Assert {
-            condition, message, ..
+            condition,
+            message,
+            level,
+            ..
         } => {
             collect_from_expression(condition, calls);
             collect_from_expression(message, calls);
+            if let Some(level) = level {
+                collect_from_expression(level, calls);
+            }
         }
         flat::WhenEquation::Terminate { message, .. } => {
             collect_from_expression(message, calls);
@@ -397,8 +405,10 @@ fn collect_from_when_equation(eq: &rumoca_ir_flat::WhenEquation, calls: &mut Fun
                     collect_from_when_equation(eq, calls);
                 }
             }
-            for eq in else_branch {
-                collect_from_when_equation(eq, calls);
+            if let Some(else_branch) = else_branch {
+                for eq in else_branch {
+                    collect_from_when_equation(eq, calls);
+                }
             }
         }
         flat::WhenEquation::FunctionCallOutputs { function, .. } => {
@@ -716,9 +726,11 @@ pub(crate) fn canonicalize_collected_function_calls(
     for eq in &mut flat.initial_equations {
         eq.residual = rewriter.rewrite_expression(&eq.residual);
     }
-    for when_clause in &mut flat.when_clauses {
-        when_clause.condition = rewriter.rewrite_expression(&when_clause.condition);
-        canonicalize_when_equations(&mut when_clause.equations, &mut rewriter);
+    for chain in &mut flat.when_chains {
+        for branch in chain.branches_mut() {
+            branch.condition = rewriter.rewrite_expression(&branch.condition);
+            canonicalize_when_equations(&mut branch.equations, &mut rewriter);
+        }
     }
     for assertion in &mut flat.assert_equations {
         assertion.condition = rewriter.rewrite_expression(&assertion.condition);
@@ -774,10 +786,16 @@ fn canonicalize_when_equations(
                 *value = rewriter.rewrite_expression(value);
             }
             flat::WhenEquation::Assert {
-                condition, message, ..
+                condition,
+                message,
+                level,
+                ..
             } => {
                 *condition = rewriter.rewrite_expression(condition);
                 *message = rewriter.rewrite_expression(message);
+                if let Some(level) = level.as_deref_mut() {
+                    *level = rewriter.rewrite_expression(level);
+                }
             }
             flat::WhenEquation::Terminate { message, .. } => {
                 *message = rewriter.rewrite_expression(message);
@@ -791,7 +809,9 @@ fn canonicalize_when_equations(
                     *condition = rewriter.rewrite_expression(condition);
                     canonicalize_when_equations(branch_equations, rewriter);
                 }
-                canonicalize_when_equations(else_branch, rewriter);
+                if let Some(else_branch) = else_branch {
+                    canonicalize_when_equations(else_branch, rewriter);
+                }
             }
             flat::WhenEquation::FunctionCallOutputs { function, .. } => {
                 *function = rewriter.rewrite_expression(function);

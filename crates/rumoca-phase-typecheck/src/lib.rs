@@ -261,6 +261,8 @@ pub struct TypeChecker {
     type_ids_by_def_id: HashMap<DefId, TypeId>,
     /// Direct class inheritance edges used for nominal subtype compatibility.
     class_base_def_ids: HashMap<DefId, Vec<DefId>>,
+    /// Operator-record identities and whether they declare their own `'0'` operator.
+    operator_record_zero_capabilities: HashMap<DefId, bool>,
     /// Unique dotted-suffix index for type-name fallback lookup.
     ///
     /// Key examples:
@@ -330,6 +332,7 @@ impl TypeChecker {
             def_qualified_names: HashMap::new(),
             type_ids_by_def_id: HashMap::new(),
             class_base_def_ids: HashMap::new(),
+            operator_record_zero_capabilities: HashMap::new(),
             type_suffix_index: HashMap::new(),
             type_roots: HashMap::new(),
             current_declaration_semantics: HashMap::new(),
@@ -384,6 +387,7 @@ impl TypeChecker {
             .map(|(def_id, name)| (*def_id, name.clone()))
             .collect();
         self.populate_nominal_class_context(tree);
+        self.populate_operator_record_capabilities(tree);
         self.function_signatures = function_signatures::build_function_signatures(tree);
         let (type_table, type_ids_by_def_id) = match self.build_type_context(tree) {
             Ok(context) => context,
@@ -428,6 +432,19 @@ impl TypeChecker {
                     .chain(class.redeclare_target_def_id)
                     .collect::<Vec<_>>();
                 Some((*def_id, bases))
+            })
+            .collect();
+    }
+
+    fn populate_operator_record_capabilities(&mut self, tree: &ClassTree) {
+        self.operator_record_zero_capabilities = tree
+            .def_map
+            .keys()
+            .filter_map(|def_id| {
+                let class = tree.get_class_by_def_id(*def_id)?;
+                class
+                    .operator_record
+                    .then_some((*def_id, class.classes.contains_key("'0'")))
             })
             .collect();
     }

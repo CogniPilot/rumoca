@@ -54,9 +54,11 @@ impl DelayAnalyzer<'_> {
                 self.visit_statement(statement)?;
             }
         }
-        for clause in &flat.when_clauses {
-            self.visit_expression(&clause.condition)?;
-            self.visit_when_equations(&clause.equations)?;
+        for chain in &flat.when_chains {
+            for branch in chain.branches() {
+                self.visit_expression(&branch.condition)?;
+                self.visit_when_equations(&branch.equations)?;
+            }
         }
         self.visit_functions(flat)
     }
@@ -117,10 +119,17 @@ impl DelayAnalyzer<'_> {
                 function: value, ..
             } => self.visit_expression(value),
             flat::WhenEquation::Assert {
-                condition, message, ..
+                condition,
+                message,
+                level,
+                ..
             } => {
                 self.visit_expression(condition)?;
-                self.visit_expression(message)
+                self.visit_expression(message)?;
+                if let Some(level) = level {
+                    self.visit_expression(level)?;
+                }
+                Ok(())
             }
             flat::WhenEquation::Conditional {
                 branches,
@@ -133,13 +142,16 @@ impl DelayAnalyzer<'_> {
     fn visit_conditional_when(
         &mut self,
         branches: &[(Expression, Vec<flat::WhenEquation>)],
-        else_branch: &[flat::WhenEquation],
+        else_branch: &Option<Vec<flat::WhenEquation>>,
     ) -> Result<(), ToDaeError> {
         for (condition, equations) in branches {
             self.visit_expression(condition)?;
             self.visit_when_equations(equations)?;
         }
-        self.visit_when_equations(else_branch)
+        if let Some(else_branch) = else_branch {
+            self.visit_when_equations(else_branch)?;
+        }
+        Ok(())
     }
 }
 

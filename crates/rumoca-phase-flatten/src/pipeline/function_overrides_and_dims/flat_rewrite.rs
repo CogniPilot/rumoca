@@ -10,10 +10,16 @@ pub(crate) fn rewrite_function_overrides_in_when_equation_with_ctx(
             rewrite_function_overrides_in_expression_with_ctx(value, ctx);
         }
         flat::WhenEquation::Assert {
-            condition, message, ..
+            condition,
+            message,
+            level,
+            ..
         } => {
             rewrite_function_overrides_in_expression_with_ctx(condition, ctx);
             rewrite_function_overrides_in_expression_with_ctx(message, ctx);
+            if let Some(level) = level {
+                rewrite_function_overrides_in_expression_with_ctx(level, ctx);
+            }
         }
         flat::WhenEquation::Terminate { message, .. } => {
             rewrite_function_overrides_in_expression_with_ctx(message, ctx);
@@ -29,8 +35,10 @@ pub(crate) fn rewrite_function_overrides_in_when_equation_with_ctx(
                     rewrite_function_overrides_in_when_equation_with_ctx(nested_equation, ctx);
                 }
             }
-            for nested_equation in else_branch {
-                rewrite_function_overrides_in_when_equation_with_ctx(nested_equation, ctx);
+            if let Some(else_branch) = else_branch {
+                for nested_equation in else_branch {
+                    rewrite_function_overrides_in_when_equation_with_ctx(nested_equation, ctx);
+                }
             }
         }
         flat::WhenEquation::FunctionCallOutputs { function, .. } => {
@@ -39,13 +47,22 @@ pub(crate) fn rewrite_function_overrides_in_when_equation_with_ctx(
     }
 }
 
-pub(crate) fn rewrite_function_overrides_in_when_clause_with_ctx(
-    clause: &mut rumoca_ir_flat::WhenClause,
+fn rewrite_function_overrides_in_when_branch_with_ctx(
+    branch: &mut rumoca_ir_flat::WhenBranch,
     ctx: &FunctionOverrideRewriteContext<'_>,
 ) {
-    rewrite_function_overrides_in_expression_with_ctx(&mut clause.condition, ctx);
-    for equation in &mut clause.equations {
+    rewrite_function_overrides_in_expression_with_ctx(&mut branch.condition, ctx);
+    for equation in &mut branch.equations {
         rewrite_function_overrides_in_when_equation_with_ctx(equation, ctx);
+    }
+}
+
+pub(crate) fn rewrite_function_overrides_in_when_chain_with_ctx(
+    chain: &mut rumoca_ir_flat::WhenChain,
+    ctx: &FunctionOverrideRewriteContext<'_>,
+) {
+    for branch in chain.branches_mut() {
+        rewrite_function_overrides_in_when_branch_with_ctx(branch, ctx);
     }
 }
 
@@ -72,8 +89,8 @@ pub(crate) fn rewrite_function_overrides_in_expression(
     rewrite_function_overrides_in_expression_with_ctx(expr, &ctx);
 }
 
-pub(crate) fn rewrite_function_overrides_in_when_clause(
-    clause: &mut rumoca_ir_flat::WhenClause,
+pub(crate) fn rewrite_function_overrides_in_when_chain(
+    chain: &mut rumoca_ir_flat::WhenChain,
     tree: &ClassTree,
     class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
     override_packages: &[OverrideTarget],
@@ -85,7 +102,7 @@ pub(crate) fn rewrite_function_overrides_in_when_clause(
         override_packages,
         override_functions,
     );
-    rewrite_function_overrides_in_when_clause_with_ctx(clause, &ctx);
+    rewrite_function_overrides_in_when_chain_with_ctx(chain, &ctx);
 }
 
 pub(crate) fn rewrite_function_overrides_in_statement(
@@ -163,9 +180,9 @@ pub(crate) fn rewrite_function_overrides_in_flattened(
             );
         }
     }
-    for clause in &mut flattened.when_clauses {
-        rewrite_function_overrides_in_when_clause(
-            clause,
+    for chain in &mut flattened.when_chains {
+        rewrite_function_overrides_in_when_chain(
+            chain,
             tree,
             class_index,
             override_packages,
@@ -275,8 +292,8 @@ pub(crate) fn rewrite_function_overrides_in_flat_model(
             rewrite_function_overrides_in_statement_with_ctx(stmt, &root_ctx);
         }
     }
-    for clause in &mut flat.when_clauses {
-        rewrite_function_overrides_in_when_clause_with_ctx(clause, &root_ctx);
+    for chain in &mut flat.when_chains {
+        rewrite_function_overrides_in_when_chain_with_ctx(chain, &root_ctx);
     }
     rewrite_function_overrides_in_flat_functions(
         flat,

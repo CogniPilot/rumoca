@@ -202,7 +202,10 @@ fn dominant_balance_term(detail: &rumoca_compile::analysis::BalanceDetail) -> &'
         ("discrete_value_unknowns", detail.discrete_value_unknowns),
         ("continuous_equations", detail.continuous_equations),
         ("discrete_real_equations", detail.discrete_real_equations),
-        ("discrete_assignments", detail.discrete_assignments),
+        (
+            "discrete_value_definitions",
+            detail.discrete_value_definitions,
+        ),
     ]
     .into_iter()
     .max_by_key(|(_, count)| *count)

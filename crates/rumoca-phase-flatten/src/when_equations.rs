@@ -10,32 +10,39 @@
 //!
 //! Nested when-equations are NOT allowed (EQN-005).
 
+#[cfg(test)]
+mod tests;
+
+use std::collections::BTreeSet;
+
+use indexmap::map::Entry;
 use rumoca_ir_ast as ast;
 
 use rumoca_ir_flat as flat;
 
-use crate::equations::{build_qualified_name, expand_range_indices, substitute_index_in_equation};
+use crate::equations::{
+    build_qualified_name, decode_assert_arguments, decode_terminate_arguments,
+    expand_range_indices, substitute_index_in_equation,
+};
 use crate::errors::FlattenError;
 use crate::{Context, qualify_expression_imports_with_def_map_ctx};
 
-/// Flatten a when-equation to a list of WhenClauses.
-///
-/// Each flat::WhenClause represents one "when" or "elsewhen" branch with its condition
-/// and the discrete equations that should be executed when the condition becomes true.
+type DefinitionMap = flat::VarNameIndexMap<rumoca_core::Span>;
+
+/// Flatten one source when-equation to its complete semantic owner.
 pub(crate) fn flatten_when_equation(
     ctx: &Context,
     inst_eq: &ast::InstanceEquation,
     prefix: &ast::QualifiedName,
     def_map: Option<&crate::ResolveDefMap>,
-) -> Result<Vec<flat::WhenClause>, FlattenError> {
+) -> Result<Option<flat::WhenChain>, FlattenError> {
     let span = inst_eq.span;
 
     match &inst_eq.equation {
-        ast::Equation::When(blocks) => flatten_when_blocks(ctx, blocks, prefix, span, def_map),
-        _ => {
-            // Not a when-equation, return empty
-            Ok(vec![])
+        ast::Equation::When(blocks) => {
+            flatten_when_blocks(ctx, blocks, prefix, span, def_map).map(Some)
         }
+        _ => Ok(None),
     }
 }
 
@@ -50,25 +57,31 @@ pub(crate) fn flatten_when_blocks(
     prefix: &ast::QualifiedName,
     span: rumoca_core::Span,
     def_map: Option<&crate::ResolveDefMap>,
-) -> Result<Vec<flat::WhenClause>, FlattenError> {
-    let mut clauses = Vec::with_capacity(blocks.len());
-    for block in blocks {
-        let clause = flatten_when_block(ctx, block, prefix, span, def_map)?;
-        clauses.push(clause);
+) -> Result<flat::WhenChain, FlattenError> {
+    let Some((first, else_when)) = blocks.split_first() else {
+        return Err(FlattenError::unsupported_equation(
+            "when-equation requires a first branch",
+            span,
+        ));
+    };
+    let first = flatten_when_block(ctx, first, prefix, span, def_map)?;
+    let mut chain = flat::WhenChain::new(first, span);
+    for block in else_when {
+        chain.push_else_when(flatten_when_block(ctx, block, prefix, span, def_map)?);
     }
 
-    validate_when_branch_targets(ctx, blocks, &clauses, prefix, span)?;
-    Ok(clauses)
+    validate_when_branch_targets(ctx, blocks, &chain, prefix, span)?;
+    Ok(chain)
 }
 
-/// Flatten a single when/elsewhen block to a flat::WhenClause.
+/// Flatten a single ordered branch of a when/elsewhen chain.
 pub(crate) fn flatten_when_block(
     ctx: &Context,
     block: &ast::EquationBlock,
     prefix: &ast::QualifiedName,
     span: rumoca_core::Span,
     def_map: Option<&crate::ResolveDefMap>,
-) -> Result<flat::WhenClause, FlattenError> {
+) -> Result<flat::WhenBranch, FlattenError> {
     // Qualify the condition expression
     let condition = qualify_expression_imports_with_def_map_ctx(
         &block.cond,
@@ -79,17 +92,18 @@ pub(crate) fn flatten_when_block(
         None,
     )?;
 
-    let mut clause = flat::WhenClause::new(condition, span);
+    let mut branch = flat::WhenBranch::new(condition, block.cond.span());
 
     // Flatten each equation in the block
     for eq in &block.eqs {
         let when_eqs = flatten_when_body_equation(ctx, eq, prefix, span, def_map)?;
         for weq in when_eqs {
-            clause.add_equation(weq);
+            branch.add_equation(weq);
         }
     }
+    validate_when_equation_definitions(&branch.equations)?;
 
-    Ok(clause)
+    Ok(branch)
 }
 
 /// Flatten an equation inside a when-clause body.
@@ -121,14 +135,28 @@ fn flatten_when_body_equation(
                 .map(|opt| opt.into_iter().collect())
         }
 
+        ast::Equation::Assert {
+            condition,
+            message,
+            level,
+        } => flatten_when_assert_equation(
+            WhenAssertLowering {
+                ctx,
+                prefix,
+                span,
+                imports: &ctx.current_imports,
+                def_map,
+            },
+            condition,
+            message,
+            level.as_ref(),
+        )
+        .map(|assertion| vec![assertion]),
+
         ast::Equation::If {
             cond_blocks,
             else_block,
-        } => {
-            // If-equations inside when-clauses are allowed per MLS §8.3.5
-            flatten_when_if_equation(ctx, cond_blocks, else_block, prefix, span, def_map)
-                .map(|opt| opt.into_iter().collect())
-        }
+        } => flatten_when_if_equation(ctx, cond_blocks, else_block, prefix, span, def_map),
 
         ast::Equation::When(_) => {
             // MLS §8.3.5: Nested when-equations are not allowed (EQN-005)
@@ -172,7 +200,19 @@ fn flatten_when_if_equation(
     prefix: &ast::QualifiedName,
     span: rumoca_core::Span,
     def_map: Option<&crate::ResolveDefMap>,
-) -> Result<Option<flat::WhenEquation>, FlattenError> {
+) -> Result<Vec<flat::WhenEquation>, FlattenError> {
+    if cond_blocks.is_empty() {
+        return Err(FlattenError::unsupported_equation(
+            "if-equation in when-clause requires at least one conditional branch",
+            span,
+        ));
+    }
+    if let StructuralWhenSelection::Selected(active) =
+        select_structural_when_branch(ctx, cond_blocks, else_block, prefix)
+    {
+        return flatten_when_equation_sequence(ctx, active, prefix, span, def_map);
+    }
+
     let mut branches = Vec::new();
 
     // Process each if/elseif branch
@@ -202,78 +242,112 @@ fn flatten_when_if_equation(
             let when_eqs = flatten_when_body_equation(ctx, eq, prefix, span, def_map)?;
             eqs.extend(when_eqs);
         }
-        eqs
+        Some(eqs)
     } else {
-        Vec::new()
+        None
     };
 
     // MLS §8.3.5 validation: all branches must assign to the same set of variables,
     // unless all switching conditions are parameter expressions.
-    let all_conditions_structural = cond_blocks
-        .iter()
-        .all(|block| crate::boolean_eval::is_structural_expression(ctx, &block.cond, prefix));
-
-    if !all_conditions_structural && branches.len() > 1 {
-        let first_targets = collect_when_eq_targets(&branches[0].1);
-        for (i, (_, branch_eqs)) in branches.iter().enumerate().skip(1) {
-            let targets = collect_when_eq_targets(branch_eqs);
-            if targets != first_targets {
-                return Err(FlattenError::unsupported_equation(
-                    format!(
-                        "MLS §8.3.5: if-equation branches in when-clause must assign to the same variables. \
-                         Branch 1 assigns to [{}], branch {} assigns to [{}]",
-                        first_targets
-                            .iter()
-                            .map(|v| v.as_str())
-                            .collect::<Vec<_>>()
-                            .join(", "),
-                        i + 1,
-                        targets
-                            .iter()
-                            .map(|v| v.as_str())
-                            .collect::<Vec<_>>()
-                            .join(", "),
-                    ),
-                    span,
-                ));
-            }
+    let Some((_, first_equations)) = branches.first() else {
+        return Err(FlattenError::unsupported_equation(
+            "if-equation in when-clause requires at least one conditional branch",
+            span,
+        ));
+    };
+    let first_targets = collect_when_eq_targets(first_equations);
+    for (i, (_, branch_eqs)) in branches.iter().enumerate().skip(1) {
+        let targets = collect_when_eq_targets(branch_eqs);
+        if targets != first_targets {
+            return Err(FlattenError::unsupported_equation(
+                format!(
+                    "MLS §8.3.5: if-equation branches in when-clause must assign to the same variables. \
+                     Branch 1 assigns to [{}], branch {} assigns to [{}]",
+                    first_targets
+                        .iter()
+                        .map(|v| v.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    i + 1,
+                    targets
+                        .iter()
+                        .map(|v| v.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                ),
+                span,
+            ));
         }
-        // Also validate the else branch if present
-        if !else_eqs.is_empty() {
-            let else_targets = collect_when_eq_targets(&else_eqs);
-            if else_targets != first_targets {
-                return Err(FlattenError::unsupported_equation(
-                    format!(
-                        "MLS §8.3.5: if-equation branches in when-clause must assign to the same variables. \
-                         Branch 1 assigns to [{}], else branch assigns to [{}]",
-                        first_targets
-                            .iter()
-                            .map(|v| v.as_str())
-                            .collect::<Vec<_>>()
-                            .join(", "),
-                        else_targets
-                            .iter()
-                            .map(|v| v.as_str())
-                            .collect::<Vec<_>>()
-                            .join(", "),
-                    ),
-                    span,
-                ));
-            }
+    }
+    if let Some(else_eqs) = &else_eqs {
+        let else_targets = collect_when_eq_targets(else_eqs);
+        if else_targets != first_targets {
+            return Err(FlattenError::unsupported_equation(
+                format!(
+                    "MLS §8.3.5: if-equation branches in when-clause must assign to the same variables. \
+                     Branch 1 assigns to [{}], else branch assigns to [{}]",
+                    first_targets
+                        .iter()
+                        .map(|v| v.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    else_targets
+                        .iter()
+                        .map(|v| v.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                ),
+                span,
+            ));
         }
     }
 
     let origin = "if-equation in when-clause".to_string();
-    Ok(Some(flat::WhenEquation::conditional(
+    Ok(vec![flat::WhenEquation::conditional(
         branches, else_eqs, span, origin,
-    )))
+    )])
+}
+
+enum StructuralWhenSelection<'a> {
+    Selected(&'a [ast::Equation]),
+    Dynamic,
+}
+
+fn select_structural_when_branch<'a>(
+    ctx: &Context,
+    cond_blocks: &'a [ast::EquationBlock],
+    else_block: &'a Option<Vec<ast::Equation>>,
+    prefix: &ast::QualifiedName,
+) -> StructuralWhenSelection<'a> {
+    for block in cond_blocks {
+        match crate::boolean_eval::try_eval_structural_boolean(ctx, &block.cond, prefix) {
+            Some(true) => return StructuralWhenSelection::Selected(&block.eqs),
+            Some(false) => {}
+            None => return StructuralWhenSelection::Dynamic,
+        }
+    }
+    StructuralWhenSelection::Selected(else_block.as_deref().unwrap_or(&[]))
+}
+
+fn flatten_when_equation_sequence(
+    ctx: &Context,
+    equations: &[ast::Equation],
+    prefix: &ast::QualifiedName,
+    span: rumoca_core::Span,
+    def_map: Option<&crate::ResolveDefMap>,
+) -> Result<Vec<flat::WhenEquation>, FlattenError> {
+    let mut flattened = Vec::new();
+    for equation in equations {
+        flattened.extend(flatten_when_body_equation(
+            ctx, equation, prefix, span, def_map,
+        )?);
+    }
+    Ok(flattened)
 }
 
 /// Collect the set of LHS assignment targets from a list of when-equations.
-fn collect_when_eq_targets(
-    eqs: &[flat::WhenEquation],
-) -> std::collections::HashSet<rumoca_core::VarName> {
-    let mut targets = std::collections::HashSet::new();
+fn collect_when_eq_targets(eqs: &[flat::WhenEquation]) -> BTreeSet<rumoca_core::VarName> {
+    let mut targets = BTreeSet::new();
     for eq in eqs {
         match eq {
             flat::WhenEquation::Assign { target, .. } => {
@@ -293,7 +367,9 @@ fn collect_when_eq_targets(
                 for (_, branch_eqs) in branches {
                     targets.extend(collect_when_eq_targets(branch_eqs));
                 }
-                targets.extend(collect_when_eq_targets(else_branch));
+                if let Some(else_branch) = else_branch {
+                    targets.extend(collect_when_eq_targets(else_branch));
+                }
             }
             flat::WhenEquation::Assert { .. } | flat::WhenEquation::Terminate { .. } => {}
         }
@@ -301,14 +377,91 @@ fn collect_when_eq_targets(
     targets
 }
 
+fn validate_when_equation_definitions(
+    equations: &[flat::WhenEquation],
+) -> Result<(), FlattenError> {
+    summarize_when_definitions(equations).map(|_| ())
+}
+
+fn summarize_when_definitions(
+    equations: &[flat::WhenEquation],
+) -> Result<DefinitionMap, FlattenError> {
+    let mut definitions = DefinitionMap::default();
+    for equation in equations {
+        match equation {
+            flat::WhenEquation::Assign { target, span, .. } => {
+                insert_when_definition(&mut definitions, target.clone(), *span)?;
+            }
+            flat::WhenEquation::Reinit { state, span, .. } => {
+                insert_when_definition(&mut definitions, state.clone(), *span)?;
+            }
+            flat::WhenEquation::FunctionCallOutputs { outputs, span, .. } => {
+                for output in outputs {
+                    insert_when_definition(&mut definitions, output.clone(), *span)?;
+                }
+            }
+            flat::WhenEquation::Conditional {
+                branches,
+                else_branch,
+                ..
+            } => {
+                let mut alternatives = DefinitionMap::default();
+                for (_, branch) in branches {
+                    merge_alternative_definitions(
+                        &mut alternatives,
+                        summarize_when_definitions(branch)?,
+                    );
+                }
+                if let Some(else_branch) = else_branch {
+                    merge_alternative_definitions(
+                        &mut alternatives,
+                        summarize_when_definitions(else_branch)?,
+                    );
+                }
+                for (target, span) in alternatives {
+                    insert_when_definition(&mut definitions, target, span)?;
+                }
+            }
+            flat::WhenEquation::Assert { .. } | flat::WhenEquation::Terminate { .. } => {}
+        }
+    }
+    Ok(definitions)
+}
+
+fn merge_alternative_definitions(definitions: &mut DefinitionMap, alternative: DefinitionMap) {
+    for (target, span) in alternative {
+        definitions.entry(target).or_insert(span);
+    }
+}
+
+fn insert_when_definition(
+    definitions: &mut DefinitionMap,
+    target: rumoca_core::VarName,
+    span: rumoca_core::Span,
+) -> Result<(), FlattenError> {
+    match definitions.entry(target) {
+        Entry::Vacant(entry) => {
+            entry.insert(span);
+            Ok(())
+        }
+        Entry::Occupied(entry) => Err(FlattenError::unsupported_equation(
+            format!(
+                "when branch target `{}` is defined more than once",
+                entry.key()
+            ),
+            span,
+        )),
+    }
+}
+
 fn validate_when_branch_targets(
     ctx: &Context,
     blocks: &[ast::EquationBlock],
-    clauses: &[flat::WhenClause],
+    chain: &flat::WhenChain,
     prefix: &ast::QualifiedName,
     span: rumoca_core::Span,
 ) -> Result<(), FlattenError> {
-    if clauses.len() <= 1 {
+    if blocks.len() <= 1 {
         return Ok(());
     }
 
@@ -319,9 +472,9 @@ fn validate_when_branch_targets(
         return Ok(());
     }
 
-    let first_targets = collect_when_eq_targets(&clauses[0].equations);
-    for (index, clause) in clauses.iter().enumerate().skip(1) {
-        let targets = collect_when_eq_targets(&clause.equations);
+    let first_targets = collect_when_eq_targets(&chain.first().equations);
+    for (index, branch) in chain.branches().skip(1).enumerate() {
+        let targets = collect_when_eq_targets(&branch.equations);
         if targets != first_targets {
             return Err(FlattenError::unsupported_equation(
                 format!(
@@ -332,7 +485,7 @@ fn validate_when_branch_targets(
                         .map(|v| v.as_str())
                         .collect::<Vec<_>>()
                         .join(", "),
-                    index + 1,
+                    index + 2,
                     targets
                         .iter()
                         .map(|v| v.as_str())
@@ -360,6 +513,7 @@ fn flatten_when_simple_equation(
     imports: &crate::qualify::ImportMap,
     def_map: Option<&crate::ResolveDefMap>,
 ) -> Result<Option<flat::WhenEquation>, FlattenError> {
+    let target_span = lhs.span();
     // Check for tuple assignment (multi-output function call)
     if let ast::Expression::Tuple { elements, .. } = lhs {
         // Extract output variable names from the tuple
@@ -392,7 +546,10 @@ fn flatten_when_simple_equation(
         );
 
         return Ok(Some(flat::WhenEquation::function_call_outputs(
-            outputs, function, span, origin,
+            outputs,
+            function,
+            target_span,
+            origin,
         )));
     }
 
@@ -402,7 +559,10 @@ fn flatten_when_simple_equation(
         qualify_expression_imports_with_def_map_ctx(rhs, prefix, imports, def_map, ctx, None)?;
     let origin = format!("when equation assignment to {}", target);
     Ok(Some(flat::WhenEquation::assign(
-        target, value, span, origin,
+        target,
+        value,
+        target_span,
+        origin,
     )))
 }
 
@@ -434,13 +594,18 @@ fn flatten_when_function_call(
         "reinit" => flatten_reinit_call(ctx, args, prefix, span, imports, def_map),
         "assert" => flatten_assert_call(ctx, args, prefix, span, imports, def_map),
         "terminate" => flatten_terminate_call(ctx, args, prefix, span, imports, def_map),
-        // print() is a side-effect function that outputs debug messages
-        // It doesn't contribute to the DAE system, so we skip it
-        "print" => Ok(None),
-        // Handle qualified Streams.* functions which are side-effects.
+        "print" => Err(FlattenError::unsupported_equation(
+            "print() in a when-equation requires a typed checked event-call owner",
+            span,
+        )),
         "Streams" | "Modelica" => {
             if is_known_streams_side_effect_call(comp) {
-                Ok(None) // Skip side-effect functions
+                Err(FlattenError::unsupported_equation(
+                    format!(
+                        "{full_name}() in a when-equation requires a typed checked event-call owner"
+                    ),
+                    span,
+                ))
             } else {
                 Err(FlattenError::unsupported_equation(
                     format!("unsupported function '{}' in when-equation", full_name),
@@ -548,22 +713,72 @@ fn flatten_assert_call(
     imports: &crate::qualify::ImportMap,
     def_map: Option<&crate::ResolveDefMap>,
 ) -> Result<Option<flat::WhenEquation>, FlattenError> {
-    if args.len() < 2 {
-        return Err(FlattenError::unsupported_equation(
-            "assert() requires at least 2 arguments (condition, message)",
+    let decoded = decode_assert_arguments(args, span)?;
+    flatten_when_assert_equation(
+        WhenAssertLowering {
+            ctx,
+            prefix,
             span,
-        ));
-    }
+            imports,
+            def_map,
+        },
+        decoded.condition,
+        decoded.message,
+        decoded.level,
+    )
+    .map(Some)
+}
 
-    let condition =
-        qualify_expression_imports_with_def_map_ctx(&args[0], prefix, imports, def_map, ctx, None)?;
-    let message =
-        qualify_expression_imports_with_def_map_ctx(&args[1], prefix, imports, def_map, ctx, None)?;
-    let origin = "assert in when-clause".to_string();
+#[derive(Clone, Copy)]
+struct WhenAssertLowering<'a> {
+    ctx: &'a Context,
+    prefix: &'a ast::QualifiedName,
+    span: rumoca_core::Span,
+    imports: &'a crate::qualify::ImportMap,
+    def_map: Option<&'a crate::ResolveDefMap>,
+}
 
-    Ok(Some(flat::WhenEquation::assert(
-        condition, message, span, origin,
-    )))
+fn flatten_when_assert_equation(
+    lowering: WhenAssertLowering<'_>,
+    condition: &ast::Expression,
+    message: &ast::Expression,
+    level: Option<&ast::Expression>,
+) -> Result<flat::WhenEquation, FlattenError> {
+    let condition = qualify_expression_imports_with_def_map_ctx(
+        condition,
+        lowering.prefix,
+        lowering.imports,
+        lowering.def_map,
+        lowering.ctx,
+        None,
+    )?;
+    let message = qualify_expression_imports_with_def_map_ctx(
+        message,
+        lowering.prefix,
+        lowering.imports,
+        lowering.def_map,
+        lowering.ctx,
+        None,
+    )?;
+    let level = level
+        .map(|level| {
+            qualify_expression_imports_with_def_map_ctx(
+                level,
+                lowering.prefix,
+                lowering.imports,
+                lowering.def_map,
+                lowering.ctx,
+                None,
+            )
+        })
+        .transpose()?;
+    Ok(flat::WhenEquation::assert(
+        condition,
+        message,
+        level,
+        lowering.span,
+        "assert in when-clause",
+    ))
 }
 
 /// Flatten a terminate() call: terminate(message)
@@ -575,15 +790,9 @@ fn flatten_terminate_call(
     imports: &crate::qualify::ImportMap,
     def_map: Option<&crate::ResolveDefMap>,
 ) -> Result<Option<flat::WhenEquation>, FlattenError> {
-    if args.is_empty() {
-        return Err(FlattenError::unsupported_equation(
-            "terminate() requires 1 argument (message)",
-            span,
-        ));
-    }
-
+    let message = decode_terminate_arguments(args, span)?;
     let message =
-        qualify_expression_imports_with_def_map_ctx(&args[0], prefix, imports, def_map, ctx, None)?;
+        qualify_expression_imports_with_def_map_ctx(message, prefix, imports, def_map, ctx, None)?;
     let origin = "terminate in when-clause".to_string();
 
     Ok(Some(flat::WhenEquation::terminate(message, span, origin)))
@@ -609,10 +818,16 @@ fn flatten_reinit_call(
     let value =
         qualify_expression_imports_with_def_map_ctx(&args[1], prefix, imports, def_map, ctx, None)?;
     let origin = format!("reinit({})", state);
+    let target_span = args[0].span();
 
     // Note: EQN-016 validation (reinit target must be state) is done in ToDae phase
     // where we have full variable classification
-    Ok(Some(flat::WhenEquation::reinit(state, value, span, origin)))
+    Ok(Some(flat::WhenEquation::reinit(
+        state,
+        value,
+        target_span,
+        origin,
+    )))
 }
 
 /// Extract the target variable name from an assignment LHS.
@@ -632,173 +847,5 @@ fn extract_assignment_target(
                 lhs.span(),
             ))
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{
-        extract_assignment_target, flatten_when_for_equation, is_known_streams_side_effect_call,
-    };
-    use crate::errors::FlattenError;
-    use rumoca_ir_ast as ast;
-    use rumoca_ir_ast::TerminalType;
-    use rumoca_ir_flat as flat;
-    use std::sync::Arc;
-
-    fn token(text: &str) -> rumoca_core::Token {
-        rumoca_core::Token {
-            text: Arc::from(text.to_string()),
-            ..rumoca_core::Token::default()
-        }
-    }
-
-    fn comp_ref(path: &str) -> ast::ComponentReference {
-        ast::ComponentReference {
-            local: false,
-            parts: rumoca_core::ComponentPath::from_flat_path(path)
-                .into_parts()
-                .into_iter()
-                .map(|part| ast::ComponentRefPart {
-                    ident: token(&part),
-                    subs: None,
-                })
-                .collect(),
-            def_id: None,
-            span: rumoca_core::Span::DUMMY,
-        }
-    }
-
-    fn int_expr(value: i64) -> ast::Expression {
-        ast::Expression::Terminal {
-            terminal_type: TerminalType::UnsignedInteger,
-            token: token(&value.to_string()),
-            span: rumoca_core::Span::DUMMY,
-        }
-    }
-
-    fn test_span() -> rumoca_core::Span {
-        rumoca_core::Span::from_offsets(
-            rumoca_core::SourceId::from_source_name("when_equations_test.mo"),
-            10,
-            14,
-        )
-    }
-
-    fn range_expr(start: i64, end: i64) -> ast::Expression {
-        ast::Expression::Range {
-            start: Arc::new(int_expr(start)),
-            step: None,
-            end: Arc::new(int_expr(end)),
-            span: rumoca_core::Span::DUMMY,
-        }
-    }
-
-    fn var_expr(name: &str) -> ast::Expression {
-        ast::Expression::ComponentReference(comp_ref(name))
-    }
-
-    fn for_index(name: &str, start: i64, end: i64) -> ast::ForIndex {
-        ast::ForIndex {
-            ident: token(name),
-            range: range_expr(start, end),
-        }
-    }
-
-    fn indexed_var_expr(name: &str, subscripts: &[&str]) -> ast::Expression {
-        ast::Expression::ComponentReference(ast::ComponentReference {
-            local: false,
-            parts: vec![ast::ComponentRefPart {
-                ident: token(name),
-                subs: Some(
-                    subscripts
-                        .iter()
-                        .map(|name| ast::Subscript::Expression(var_expr(name)))
-                        .collect(),
-                ),
-            }],
-            def_id: None,
-            span: rumoca_core::Span::DUMMY,
-        })
-    }
-
-    #[test]
-    fn assignment_target_error_uses_invalid_lhs_span() {
-        let span = test_span();
-        let lhs = ast::Expression::Terminal {
-            terminal_type: TerminalType::UnsignedInteger,
-            token: token("1"),
-            span,
-        };
-
-        let err = extract_assignment_target(&lhs, &ast::QualifiedName::new())
-            .expect_err("non-reference LHS should fail");
-
-        assert!(
-            matches!(
-                err,
-                FlattenError::UnsupportedEquation { span: error_span, .. }
-                    if error_span == span
-            ),
-            "invalid LHS diagnostic should use the LHS source span: {err:?}"
-        );
-    }
-
-    #[test]
-    fn streams_side_effect_matching_uses_structured_parts() {
-        assert!(is_known_streams_side_effect_call(&comp_ref(
-            "Streams.print"
-        )));
-        assert!(is_known_streams_side_effect_call(&comp_ref(
-            "Modelica.Utilities.Streams.close"
-        )));
-        assert!(is_known_streams_side_effect_call(&comp_ref(
-            "Modelica.Utilities.Streams.error"
-        )));
-        assert!(!is_known_streams_side_effect_call(&comp_ref(
-            "Modelica.Utilities.FakeStreams.print"
-        )));
-        assert!(!is_known_streams_side_effect_call(&comp_ref(
-            "Modelica.Utilities.Streams.myprint"
-        )));
-    }
-
-    #[test]
-    fn when_for_equation_expands_all_index_ranges() {
-        let ctx = crate::Context::default();
-        let indices = vec![for_index("i", 1, 2), for_index("j", 1, 2)];
-        let equations = vec![ast::Equation::Simple {
-            lhs: indexed_var_expr("y", &["i", "j"]),
-            rhs: ast::Expression::Binary {
-                op: rumoca_core::OpBinary::Add,
-                lhs: Arc::new(var_expr("i")),
-                rhs: Arc::new(var_expr("j")),
-                span: rumoca_core::Span::DUMMY,
-            },
-        }];
-
-        let expanded = flatten_when_for_equation(
-            &ctx,
-            &indices,
-            &equations,
-            &ast::QualifiedName::new(),
-            rumoca_core::Span::DUMMY,
-            None,
-        )
-        .unwrap();
-
-        let targets = expanded
-            .iter()
-            .map(|eq| match eq {
-                flat::WhenEquation::Assign { target, .. } => target.as_str().to_string(),
-                other => panic!("expected assignment, got {other:?}"),
-            })
-            .collect::<std::collections::HashSet<_>>();
-
-        assert_eq!(targets.len(), 4);
-        assert!(targets.contains("y[1,1]"));
-        assert!(targets.contains("y[1,2]"));
-        assert!(targets.contains("y[2,1]"));
-        assert!(targets.contains("y[2,2]"));
     }
 }

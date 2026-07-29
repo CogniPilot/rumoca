@@ -16,33 +16,10 @@ use rumoca_ir_flat as flat;
 pub use balance::{BalanceBreakdown, BalanceDetail};
 pub use errors::{ToDaeError, ToDaeResult};
 
-/// Strictness controls applied before a canonical DAE can be returned.
-#[derive(Debug, Clone, Copy)]
-pub struct ToDaeOptions {
-    pub error_on_unbalanced: bool,
-}
-
-impl Default for ToDaeOptions {
-    fn default() -> Self {
-        Self {
-            error_on_unbalanced: true,
-        }
-    }
-}
-
 /// Construct the canonical DAE while transferring the source-map snapshot that
 /// resolves every retained provenance range.
 pub fn to_dae(flat: &flat::Model, source_map: SourceMap) -> Result<dae::Dae, ToDaeError> {
-    to_dae_with_options(flat, source_map, ToDaeOptions::default())
-}
-
-/// Construct the canonical DAE with explicit phase strictness.
-pub fn to_dae_with_options(
-    flat: &flat::Model,
-    source_map: SourceMap,
-    options: ToDaeOptions,
-) -> Result<dae::Dae, ToDaeError> {
-    construction::construct(flat, source_map, options)
+    construction::construct(flat, source_map)
 }
 
 /// Compute the exact source-model balance evidence while Flat ownership is

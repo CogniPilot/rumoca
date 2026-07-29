@@ -31,10 +31,7 @@ model Test
   Real y = unknownFunc(1.0);
 end Test;
 "#;
-    let failure: ResolveFailure = match resolve_with_diagnostics(
-        parsed_tree_from_source(source),
-        ResolveOptions::default(),
-    ) {
+    let failure: ResolveFailure = match resolve_with_diagnostics(parsed_tree_from_source(source)) {
         Ok(_) => panic!("undefined call must not produce ResolveSuccess"),
         Err(failure) => failure,
     };

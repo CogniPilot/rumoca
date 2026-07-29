@@ -200,29 +200,6 @@ pub(super) fn check_component_restrictions(
             ));
         }
 
-        // MLS §12.6 / OPREC-011: algebra over zero-sized operator-record
-        // arrays needs the record's '0' operator (e.g. a matrix product with
-        // zero inner dimension sums no terms). Reject zero-dimension
-        // operator-record components when the record does not define one.
-        if let Some(ResolvedTypeRoot::Class(type_class)) = &type_root
-            && type_class.operator_record
-            && component_has_literal_zero_dimension(comp)
-            && !type_class.classes.contains_key("'0'")
-        {
-            diags.push(semantic_error(
-                ER129_OPREC_ZERO_DIMENSION,
-                format!(
-                    "operator record '{}' has no '0' operator: zero-sized array component '{}' cannot participate in sum-style algebra (MLS §12.6)",
-                    type_class.name.text, name
-                ),
-                label_from_token(
-                    &comp.name_token,
-                    "restrictions/oprec_zero_dimension",
-                    "declare an operator '0' in the operator record or use a non-zero dimension",
-                ),
-            ));
-        }
-
         if (comp.inner || comp.outer)
             && let Some(ResolvedTypeRoot::Class(type_class)) = &type_root
             && type_class.class_type == ClassType::Connector
@@ -1515,6 +1492,9 @@ pub(super) fn check_annotation_advisories(
 /// has no effect; warn so the annotation is not silently ignored.
 pub(super) fn check_evaluate_annotations(class: &ClassDef, diags: &mut Vec<Diagnostic>) {
     for (name, comp) in &class.components {
+        if !matches!(comp.variability, Variability::Parameter(_)) {
+            continue;
+        }
         let has_evaluate = comp.annotation.iter().any(|entry| {
             matches!(
                 entry,
@@ -1727,21 +1707,6 @@ pub(super) fn check_operator_constructor_pairing(
             }
         }
     }
-}
-
-/// True when any declared dimension of the component is a literal zero.
-fn component_has_literal_zero_dimension(comp: &ast::Component) -> bool {
-    comp.shape.contains(&0)
-        || comp.shape_expr.iter().any(|sub| {
-            matches!(
-                sub,
-                Subscript::Expression(Expression::Terminal {
-                    terminal_type: TerminalType::UnsignedInteger,
-                    token,
-                    ..
-                }) if token.text.as_ref() == "0"
-            )
-        })
 }
 
 /// Whether the operator record declares a 'constructor' operator with an

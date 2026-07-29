@@ -14,13 +14,13 @@ use rumoca_core::{
 use rumoca_ir_ast as ast;
 use rumoca_ir_dae as dae;
 use rumoca_ir_flat as flat;
-use rumoca_phase_dae::{ToDaeError, ToDaeOptions, to_dae_with_options};
+use rumoca_phase_dae::{ToDaeError, to_dae};
 use rumoca_phase_flatten::{FlattenError, FlattenOptions, flatten_ref_with_options};
 use rumoca_phase_instantiate::{
     InstantiateError, InstantiateOptions, InstantiationOutcome,
     instantiate_model_with_outcome_options,
 };
-use rumoca_phase_resolve::{ResolveOptions, ResolvedTree, resolve_with_diagnostics};
+use rumoca_phase_resolve::{ResolvedTree, resolve_with_diagnostics};
 use rumoca_phase_typecheck::typecheck_instanced;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -111,11 +111,10 @@ use compile_phase_timing::{maybe_record_compile_phase_timing, notify_compile_pha
 mod compile_support;
 use compile_support::{
     collect_class_component_members, compile_model_dae_internal,
-    compile_model_dae_internal_allow_unbalanced_for_diagnostics,
     compile_model_dae_internal_with_options, compile_model_internal,
-    compile_model_internal_allow_unbalanced_for_diagnostics, compile_model_internal_with_options,
-    compile_phase_result_from_dae, dae_model_outcome_from_flat, dae_phase_result_from_dae,
-    diagnostics_from_vec, diagnostics_to_anyhow, finalize_strict_compile_report,
+    compile_model_internal_with_options, compile_phase_result_from_dae,
+    dae_model_outcome_from_flat, dae_phase_result_from_dae, diagnostics_from_vec,
+    diagnostics_to_anyhow, finalize_strict_compile_report,
     finalize_strict_compile_report_from_uncached_targets, flat_model_outcome_from_typed,
     is_simulatable_class_type, missing_inner_label, resolve_class_for_completion,
     split_cached_target_results, typed_model_outcome_from_instantiated,
@@ -138,6 +137,8 @@ use strict_compile_diagnostics::{
     collect_target_source_files, dae_phase_result_to_failures, default_tree_span,
     document_parse_diagnostics, phase_result_to_failures, same_path,
 };
+mod strict_compile_report;
+pub use strict_compile_report::{StrictCompilation, StrictCompileReport};
 mod session_impl_caches;
 mod session_impl_diagnostics;
 mod session_impl_inputs;
@@ -1699,58 +1700,12 @@ pub struct ModelFailureDiagnostic {
     pub primary_label: Option<Label>,
 }
 
-/// Report type from strict-reachable-with-recovery compilation.
-///
-/// The requested model remains strict: it must compile successfully for callers
-/// to treat the compile as successful. Other related models are still compiled
-/// so additional diagnostics can be surfaced to the user.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct StrictCompileReport {
-    pub requested_model: String,
-    pub requested_result: Option<PhaseResult>,
-    pub summary: CompilationSummary,
-    pub failures: Vec<ModelFailureDiagnostic>,
-    pub source_map: Option<SourceMap>,
-}
-
 /// Coarse timing breakdown for strict requested-only model checks.
 #[derive(Debug, Clone, Default)]
 pub struct StrictCheckTiming {
     pub target_resolution_ms: u64,
     pub dae_phase_query_ms: u64,
     pub total_ms: u64,
-}
-
-impl StrictCompileReport {
-    /// Returns true when strict compile succeeded for the requested closure.
-    pub fn requested_succeeded(&self) -> bool {
-        matches!(self.requested_result, Some(PhaseResult::Success(_))) && self.failures.is_empty()
-    }
-
-    /// Build a concise failure summary for user-facing diagnostics.
-    pub fn failure_summary(&self, max_related: usize) -> String {
-        let requested = match &self.requested_result {
-            Some(PhaseResult::Success(_)) => {
-                format!("{} compiled successfully", self.requested_model)
-            }
-            Some(PhaseResult::NeedsInner { missing_inners, .. }) => format!(
-                "{} requires inner declarations: {}",
-                self.requested_model,
-                missing_inners.join(", ")
-            ),
-            Some(PhaseResult::Failed { phase, error, .. }) => {
-                format!("{} failed in {}: {}", self.requested_model, phase, error)
-            }
-            None => requested_missing_result_message(&self.requested_model, &self.failures),
-        };
-
-        format_strict_failure_summary(
-            &self.requested_model,
-            requested,
-            &self.failures,
-            max_related,
-        )
-    }
 }
 
 fn requested_missing_result_message(
@@ -2015,10 +1970,6 @@ pub struct Session {
     lightweight_snapshot_cache: SharedSessionSnapshotCache,
     /// Shared medium-weight snapshot for global workspace symbol reads.
     workspace_symbol_snapshot_cache: SharedSessionSnapshotCache,
-    /// Session-wide semantic strictness for ER070.
-    evaluate_scope_is_error: bool,
-    /// Session-wide semantic strictness for ER053.
-    when_single_assign_is_error: bool,
 }
 
 /// Detached query snapshot cloned from one host session revision.

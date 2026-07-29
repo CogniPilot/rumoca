@@ -2,6 +2,7 @@ use super::*;
 
 pub(super) fn lower_equation_systems<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
+    discrete_values: &mut DiscreteValueStaging<'dae>,
     flat: &flat::Model,
     analysis: &Analysis,
     coordinates: &HashMap<VarName, Coordinate<'dae>>,
@@ -12,6 +13,7 @@ pub(super) fn lower_equation_systems<'dae>(
     excluded_equation_rows.extend(&analysis.derived_parameter_rows);
     lower_equations(
         construction,
+        discrete_values,
         coordinates,
         functions,
         EquationRows {
@@ -19,6 +21,7 @@ pub(super) fn lower_equation_systems<'dae>(
             excluded: &excluded_equation_rows,
             records: &analysis.record_equations,
             roles: &analysis.roles,
+            topology: &analysis.discrete_value_topology,
             initialization: false,
         },
     )?;
@@ -33,6 +36,7 @@ pub(super) fn lower_equation_systems<'dae>(
     )?;
     lower_equations(
         construction,
+        discrete_values,
         coordinates,
         functions,
         EquationRows {
@@ -40,6 +44,7 @@ pub(super) fn lower_equation_systems<'dae>(
             excluded: &analysis.initialization_family_rows,
             records: &analysis.initial_record_equations,
             roles: &analysis.roles,
+            topology: &analysis.discrete_value_topology,
             initialization: true,
         },
     )?;

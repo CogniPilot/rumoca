@@ -21,9 +21,11 @@ pub(super) fn canonicalize_varrefs_via_record_aliases(flat: &mut flat::Model, ct
     for equation in &mut flat.initial_equations {
         canonicalize_record_alias_expr(&mut equation.residual, ctx, &known_variables);
     }
-    for when_clause in &mut flat.when_clauses {
-        canonicalize_record_alias_expr(&mut when_clause.condition, ctx, &known_variables);
-        canonicalize_record_alias_when_equations(&mut when_clause.equations, ctx, &known_variables);
+    for chain in &mut flat.when_chains {
+        for branch in chain.branches_mut() {
+            canonicalize_record_alias_expr(&mut branch.condition, ctx, &known_variables);
+            canonicalize_record_alias_when_equations(&mut branch.equations, ctx, &known_variables);
+        }
     }
     for algorithm in &mut flat.algorithms {
         canonicalize_record_alias_statements(&mut algorithm.statements, ctx, &known_variables);
@@ -103,9 +105,11 @@ pub(super) fn collapse_index_refs_to_known_varrefs(flat: &mut flat::Model) {
         }
     }
 
-    for when_clause in &mut flat.when_clauses {
-        collapse_index_expr(&mut when_clause.condition, &known_flat_vars);
-        collapse_index_when_equations(&mut when_clause.equations, &known_flat_vars);
+    for chain in &mut flat.when_chains {
+        for branch in chain.branches_mut() {
+            collapse_index_expr(&mut branch.condition, &known_flat_vars);
+            collapse_index_when_equations(&mut branch.equations, &known_flat_vars);
+        }
     }
 
     for algorithm in &mut flat.algorithms {
@@ -336,10 +340,16 @@ fn collapse_index_when_equations(
                 collapse_index_expr(value, known_flat_vars);
             }
             rumoca_ir_flat::WhenEquation::Assert {
-                condition, message, ..
+                condition,
+                message,
+                level,
+                ..
             } => {
                 collapse_index_expr(condition, known_flat_vars);
                 collapse_index_expr(message, known_flat_vars);
+                if let Some(level) = level {
+                    collapse_index_expr(level, known_flat_vars);
+                }
             }
             rumoca_ir_flat::WhenEquation::Conditional {
                 branches,
@@ -350,7 +360,9 @@ fn collapse_index_when_equations(
                     collapse_index_expr(cond, known_flat_vars);
                     collapse_index_when_equations(branch_equations, known_flat_vars);
                 }
-                collapse_index_when_equations(else_branch, known_flat_vars);
+                if let Some(else_branch) = else_branch {
+                    collapse_index_when_equations(else_branch, known_flat_vars);
+                }
             }
             rumoca_ir_flat::WhenEquation::FunctionCallOutputs { function, .. } => {
                 collapse_index_expr(function, known_flat_vars);
@@ -766,16 +778,18 @@ pub(super) fn substitute_known_constants_in_flat(
         &live_vars,
         &no_locals,
     )?;
-    for when_clause in &mut flat.when_clauses {
-        when_clause.condition = substitute_known_constants_expr(
-            when_clause.condition.clone(),
-            ctx,
-            &live_vars,
-            &no_locals,
-            "",
-        )?;
-        for equation in &mut when_clause.equations {
-            substitute_known_constants_when_equation(equation, ctx, &live_vars, &no_locals)?;
+    for chain in &mut flat.when_chains {
+        for branch in chain.branches_mut() {
+            branch.condition = substitute_known_constants_expr(
+                branch.condition.clone(),
+                ctx,
+                &live_vars,
+                &no_locals,
+                "",
+            )?;
+            for equation in &mut branch.equations {
+                substitute_known_constants_when_equation(equation, ctx, &live_vars, &no_locals)?;
+            }
         }
     }
     substitute_algorithms(&mut flat.algorithms, ctx, &live_vars, &no_locals)?;
@@ -1879,12 +1893,19 @@ fn substitute_known_constants_when_equation(
             *value = substitute_known_constants_expr(value.clone(), ctx, live_vars, locals, "")?;
         }
         flat::WhenEquation::Assert {
-            condition, message, ..
+            condition,
+            message,
+            level,
+            ..
         } => {
             *condition =
                 substitute_known_constants_expr(condition.clone(), ctx, live_vars, locals, "")?;
             *message =
                 substitute_known_constants_expr(message.clone(), ctx, live_vars, locals, "")?;
+            if let Some(level) = level.as_deref_mut() {
+                *level =
+                    substitute_known_constants_expr(level.clone(), ctx, live_vars, locals, "")?;
+            }
         }
         flat::WhenEquation::Terminate { message, .. } => {
             *message =
@@ -1902,8 +1923,10 @@ fn substitute_known_constants_when_equation(
                     substitute_known_constants_when_equation(nested, ctx, live_vars, locals)?;
                 }
             }
-            for nested in else_branch {
-                substitute_known_constants_when_equation(nested, ctx, live_vars, locals)?;
+            if let Some(else_branch) = else_branch {
+                for nested in else_branch {
+                    substitute_known_constants_when_equation(nested, ctx, live_vars, locals)?;
+                }
             }
         }
         flat::WhenEquation::FunctionCallOutputs { function, .. } => {

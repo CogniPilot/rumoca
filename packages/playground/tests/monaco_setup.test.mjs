@@ -45,6 +45,7 @@ function createFakeMonaco() {
   const registeredLanguages = [];
   const tokenProviders = [];
   const semanticTokenProviders = [];
+  const completionProviders = [];
 
   return {
     captured: {
@@ -52,6 +53,7 @@ function createFakeMonaco() {
       registeredLanguages,
       tokenProviders,
       semanticTokenProviders,
+      completionProviders,
     },
     Emitter: FakeEmitter,
     MarkerSeverity: {
@@ -101,7 +103,8 @@ function createFakeMonaco() {
       setMonarchTokensProvider(languageId, provider) {
         tokenProviders.push([languageId, provider]);
       },
-      registerCompletionItemProvider() {
+      registerCompletionItemProvider(languageId, provider) {
+        completionProviders.push([languageId, provider]);
         return { dispose() {} };
       },
       registerDocumentSemanticTokensProvider(languageId, provider) {
@@ -184,6 +187,57 @@ test("setupMonacoWorkspace wires comment metadata for editable languages", async
       fakeMonaco.captured.tokenProviders.some(([languageId]) => languageId === "toml"),
       "expected setup to register local TOML tokenization",
     );
+  } finally {
+    globalThis.window = originalWindow;
+    globalThis.document = originalDocument;
+  }
+});
+
+test("jinja completion uses checked dense variable ordinals", async () => {
+  const fakeMonaco = createFakeMonaco();
+  const originalWindow = globalThis.window;
+  const originalDocument = globalThis.document;
+  globalThis.window = {
+    currentDaeForCompletions: {
+      storage: {
+        variables: [
+          { name: "gain", role: "parameter" },
+          { name: "x", role: "state" },
+        ],
+      },
+    },
+  };
+  globalThis.document = {
+    getElementById() {
+      return {};
+    },
+  };
+
+  try {
+    setupMonacoWorkspace({
+      monaco: fakeMonaco,
+      async sendLanguageCommand() {
+        return JSON.stringify({});
+      },
+      layoutAllEditors() {},
+    });
+    window.currentDaeForCompletions = {
+      storage: {
+        variables: [
+          { name: "gain", role: "parameter" },
+          { name: "x", role: "state" },
+        ],
+      },
+    };
+
+    const provider = fakeMonaco.captured.completionProviders
+      .find(([languageId]) => languageId === "jinja2")?.[1];
+    assert(provider, "expected checked Jinja completion provider");
+    const labels = provider.provideCompletionItems().suggestions
+      .map((suggestion) => suggestion.label);
+    assert(labels.includes("dae.variables[0] (gain)"));
+    assert(labels.includes("dae.variables[1].attributes.start_values (x)"));
+    assert(!labels.some((label) => label.startsWith("dae.x.")));
   } finally {
     globalThis.window = originalWindow;
     globalThis.document = originalDocument;

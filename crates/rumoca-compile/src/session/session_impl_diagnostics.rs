@@ -217,7 +217,7 @@ impl Session {
 
         if mode == SemanticDiagnosticsMode::Save {
             return self
-                .resolve_strict_target_uncached(model_name)
+                .resolve_strict_target(model_name)
                 .map(|target| (target.resolved, diagnostics_from_vec(target.diagnostics)))
                 .map_err(|failure| diagnostics_from_vec(failure.diagnostics));
         }

@@ -1010,11 +1010,11 @@ fn reproduction_command(model_name: &str) -> String {
     format!("cargo run --bin xtask -- repo msl rerun --model '{model_name}'")
 }
 
-/// Single-model drill-down for an ED001 failure: recompiles with the balance
-/// gate relaxed and prints the full component breakdown.
+/// Single-model drill-down for an ED001 failure with its typed balance
+/// breakdown and last successful Flat artifact.
 fn balance_reproduction_command(model_name: &str) -> String {
     format!(
-        "cargo run -p rumoca-test-msl --bin rumoca-msl-tools -- debug-model --model '{model_name}' --allow-unbalanced"
+        "cargo run -p rumoca-test-msl --bin rumoca-msl-tools -- debug-model --model '{model_name}'"
     )
 }
 
@@ -1426,13 +1426,7 @@ mod tests {
         assert_eq!(cohort.records.len(), 1);
         assert_eq!(cohort.records[0].balance, -7);
         assert_eq!(cohort.records[0].package, "Modelica.Fluid");
-        assert!(
-            cohort.records[0]
-                .reproduction
-                .contains("--allow-unbalanced"),
-            "{}",
-            cohort.records[0].reproduction
-        );
+        assert!(cohort.records[0].reproduction.contains("debug-model"));
     }
 
     #[test]

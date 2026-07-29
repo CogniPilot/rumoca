@@ -921,7 +921,7 @@ pub(super) fn prepare_simulation_run(
             counts.algebraic_variables,
             counts.continuous_equations,
             counts.discrete_real_equations,
-            counts.discrete_assignments,
+            counts.discrete_value_definitions,
             counts.conditions,
             counts.relations,
             counts.initialization_equations,
@@ -1124,7 +1124,7 @@ pub(super) fn is_trivial_static_model(dae: &Dae) -> bool {
         && counts.discrete_value_scalars == 0
         && counts.continuous_equations == 0
         && counts.discrete_real_equations == 0
-        && counts.discrete_assignments == 0
+        && counts.discrete_value_definitions == 0
         && counts.conditions == 0
         && counts.relations == 0
         && counts.initialization_equations == 0

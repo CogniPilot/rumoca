@@ -40,15 +40,18 @@ fn visit_semantic_expression_roots<'dae>(
                 .residual(),
         );
     }
-    for index in 0..view.discrete_assignment_count() {
+    for index in 0..view.discrete_value_owner_count() {
         let id = view
-            .discrete_assignment_id(index)
-            .expect("dense checked discrete assignment identity resolves");
-        visit(
-            view.discrete_assignment(id)
-                .expect("dense checked discrete assignment resolves")
-                .value(),
-        );
+            .discrete_value_owner_id(index)
+            .expect("dense checked B.1c owner identity resolves");
+        let owner = view
+            .discrete_value_owner(id)
+            .expect("dense checked B.1c owner resolves");
+        for branch in owner.branches().iter() {
+            for (value, _) in branch.values().iter() {
+                visit(value);
+            }
+        }
     }
     for index in 0..view.relation_count() {
         let id = view
@@ -131,7 +134,7 @@ pub(super) fn print_flat_equation_summary(flat: &rumoca_ir_flat::Model) {
     println!("\n--- Flat equation count ---");
     println!("  equations: {}", flat.equations.len());
     println!("  initial_equations: {}", flat.initial_equations.len());
-    println!("  when_clauses: {}", flat.when_clauses.len());
+    println!("  when_chains: {}", flat.when_chains.len());
     println!("  algorithms: {}", flat.algorithms.len());
     println!("  top_level_connectors: {:?}", flat.top_level_connectors);
     println!("  definite_roots: {:?}", flat.definite_roots);
@@ -246,11 +249,12 @@ pub(super) fn print_dae_equations(dae: &Dae, equation_limit: usize) {
             );
         }
         println!(
-            "  compact_families={} initialization_residuals={} discrete_real_residuals={} discrete_assignments={} relations={} conditions={}",
+            "  compact_families={} initialization_residuals={} discrete_real_residuals={} b1c_definitions={} b1c_owners={} relations={} conditions={}",
             view.continuous_family_count(),
             view.initialization_equation_count(),
             view.discrete_real_equation_count(),
-            view.discrete_assignment_count(),
+            view.discrete_value_definition_count(),
+            view.discrete_value_owner_count(),
             view.relation_count(),
             view.condition_count(),
         );

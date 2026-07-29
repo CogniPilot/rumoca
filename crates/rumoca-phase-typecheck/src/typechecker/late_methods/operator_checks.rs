@@ -26,8 +26,13 @@ impl TypeChecker {
                     self.require_boolean_expression(rhs, &operator, type_table);
                 }
                 OpBinary::Add => self.require_addition_expressions(lhs, rhs, type_table),
+                OpBinary::Mul => {
+                    self.check_zero_inner_operator_record_product(expression, lhs, rhs, type_table);
+                    let operator = op.to_string();
+                    self.require_numeric_expression(lhs, &operator, type_table);
+                    self.require_numeric_expression(rhs, &operator, type_table);
+                }
                 OpBinary::Sub
-                | OpBinary::Mul
                 | OpBinary::Div
                 | OpBinary::Exp
                 | OpBinary::ExpElem
@@ -74,6 +79,84 @@ impl TypeChecker {
                 }
             }
             _ => {}
+        }
+    }
+
+    fn check_zero_inner_operator_record_product(
+        &mut self,
+        expression: &Expression,
+        lhs: &Expression,
+        rhs: &Expression,
+        type_table: &TypeTable,
+    ) {
+        let (Some(lhs_shape), Some(rhs_shape)) = (
+            self.infer_expression_shape(lhs, type_table),
+            self.infer_expression_shape(rhs, type_table),
+        ) else {
+            return;
+        };
+        if !Self::has_zero_product_inner_dimension(&lhs_shape, &rhs_shape) {
+            return;
+        }
+        // The result type, not either operand, owns the empty reduction.
+        let Some(record) = self.operator_record_identity(expression, type_table) else {
+            return;
+        };
+        if self.operator_record_has_zero(record) {
+            return;
+        }
+        self.emit_typecheck_error(TypeCheckError::phase_diagnostic(
+            "ET011",
+            "zero-sized operator-record multiplication requires the record's '0' operator",
+            "this product has an empty reduction domain",
+            expression.span(),
+        ));
+    }
+
+    fn operator_record_identity(
+        &self,
+        expression: &Expression,
+        type_table: &TypeTable,
+    ) -> Option<DefId> {
+        let ty = self.infer_expression_type(expression, type_table)?;
+        let root = Self::resolve_alias_root(type_table, ty);
+        let Type::Class(class) = type_table.get(root)? else {
+            return None;
+        };
+        self.operator_record_zero_capabilities
+            .contains_key(&class.def_id)
+            .then_some(class.def_id)
+    }
+
+    fn operator_record_has_zero(&self, record: DefId) -> bool {
+        let mut pending = vec![record];
+        let mut seen = HashSet::new();
+        while let Some(current) = pending.pop() {
+            if !seen.insert(current) {
+                continue;
+            }
+            if self
+                .operator_record_zero_capabilities
+                .get(&current)
+                .copied()
+                .unwrap_or(false)
+            {
+                return true;
+            }
+            if let Some(bases) = self.class_base_def_ids.get(&current) {
+                pending.extend(bases.iter().copied());
+            }
+        }
+        false
+    }
+
+    fn has_zero_product_inner_dimension(lhs: &[usize], rhs: &[usize]) -> bool {
+        match (lhs, rhs) {
+            ([left], [right]) => left == right && *left == 0,
+            ([_, inner], [right]) => inner == right && *inner == 0,
+            ([left], [inner, _]) => left == inner && *left == 0,
+            ([_, inner], [right, _]) => inner == right && *inner == 0,
+            _ => false,
         }
     }
 

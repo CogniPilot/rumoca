@@ -85,14 +85,15 @@ pub(super) fn instantiate_effective_components(
             tree,
             resolve_effective_components_for_eval,
         );
+        let type_info = lookup_type_info(tree, comp, &type_name)?;
         if let Some(dims) = dims.as_ref()
             && dims.contains(&0)
         {
             register_zero_sized_array_component(ctx, overlay, name, dims);
-            continue;
+            if !type_info.is_primitive {
+                continue;
+            }
         }
-
-        let type_info = lookup_type_info(tree, comp, &type_name)?;
         let should_expand = !type_info.is_primitive && dims.as_ref().is_some_and(|d| !d.is_empty());
 
         if should_expand {

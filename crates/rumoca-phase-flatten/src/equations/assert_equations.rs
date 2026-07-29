@@ -82,51 +82,8 @@ pub(super) fn flatten_assert_function_call(
     lowering: AssertEquationLowering<'_>,
     args: &[ast::Expression],
 ) -> Result<FlattenedEquations, FlattenError> {
-    let positional: Vec<&ast::Expression> = args
-        .iter()
-        .filter(|arg| !matches!(arg, ast::Expression::NamedArgument { .. }))
-        .collect();
-    let condition = named_call_arg(args, "condition").or_else(|| positional.first().copied());
-    let message = named_call_arg(args, "message").or_else(|| positional.get(1).copied());
-    let level = named_call_arg(args, "level").or_else(|| positional.get(2).copied());
-
-    let (condition, message) = match (condition, message) {
-        (Some(condition), Some(message)) => (condition, message),
-        _ => {
-            return Err(FlattenError::unsupported_equation(
-                "assert() equation requires at least condition and message arguments",
-                lowering.span,
-            ));
-        }
-    };
-
-    let assert_eq = flat::AssertEquation::new(
-        qualify_assert_condition(lowering.ctx, condition, lowering.prefix, lowering.def_map)?,
-        qualify_expression_imports_with_def_map_ctx(
-            message,
-            lowering.prefix,
-            &lowering.ctx.current_imports,
-            lowering.def_map,
-            lowering.ctx,
-            None,
-        )?,
-        level
-            .map(|expr| {
-                qualify_expression_imports_with_def_map_ctx(
-                    expr,
-                    lowering.prefix,
-                    &lowering.ctx.current_imports,
-                    lowering.def_map,
-                    lowering.ctx,
-                    None,
-                )
-            })
-            .transpose()?,
-        lowering.span,
-        lowering.origin,
-    );
-
-    Ok(assert_equation_result(assert_eq))
+    let decoded = decode_assert_arguments(args, lowering.span)?;
+    flatten_assert_equation(lowering, decoded.condition, decoded.message, decoded.level)
 }
 
 fn assert_equation_result(assert_eq: flat::AssertEquation) -> FlattenedEquations {
@@ -134,27 +91,102 @@ fn assert_equation_result(assert_eq: flat::AssertEquation) -> FlattenedEquations
         equations: vec![],
         structured_equations: vec![],
         assert_equations: vec![assert_eq],
-        when_clauses: vec![],
+        when_chains: vec![],
         definite_roots: vec![],
         branches: vec![],
         potential_roots: vec![],
     }
 }
 
-fn named_call_arg<'a>(args: &'a [ast::Expression], name: &str) -> Option<&'a ast::Expression> {
-    args.iter().find_map(|arg| {
-        if let ast::Expression::NamedArgument {
-            name: arg_name,
-            value,
-            ..
-        } = arg
-            && arg_name.text.as_ref() == name
-        {
-            Some(value.as_ref())
-        } else {
-            None
+#[derive(Clone, Copy)]
+pub(crate) struct AssertArguments<'a> {
+    pub(crate) condition: &'a ast::Expression,
+    pub(crate) message: &'a ast::Expression,
+    pub(crate) level: Option<&'a ast::Expression>,
+}
+
+pub(crate) fn decode_assert_arguments<'a>(
+    args: &'a [ast::Expression],
+    span: rumoca_core::Span,
+) -> Result<AssertArguments<'a>, FlattenError> {
+    let mut values = [None, None, None];
+    let mut positional = 0;
+    let mut saw_named = false;
+    for argument in args {
+        let (index, name, value) = match argument {
+            ast::Expression::NamedArgument { name, value, .. } => {
+                saw_named = true;
+                let index = match name.text.as_ref() {
+                    "condition" => 0,
+                    "message" => 1,
+                    "level" => 2,
+                    unknown => {
+                        return Err(FlattenError::unsupported_equation(
+                            format!("assert() has unknown named argument `{unknown}`"),
+                            span,
+                        ));
+                    }
+                };
+                (index, name.text.as_ref(), value.as_ref())
+            }
+            _ if saw_named => {
+                return Err(FlattenError::unsupported_equation(
+                    "assert() positional arguments must precede named arguments",
+                    span,
+                ));
+            }
+            value => {
+                let Some(name) = ["condition", "message", "level"].get(positional) else {
+                    return Err(FlattenError::unsupported_equation(
+                        "assert() requires exactly condition, message, and optional level",
+                        span,
+                    ));
+                };
+                let index = positional;
+                positional += 1;
+                (index, *name, value)
+            }
+        };
+        if values[index].replace(value).is_some() {
+            return Err(FlattenError::unsupported_equation(
+                format!("assert() argument `{name}` is specified more than once"),
+                span,
+            ));
         }
+    }
+    let (Some(condition), Some(message)) = (values[0], values[1]) else {
+        return Err(FlattenError::unsupported_equation(
+            "assert() requires condition and message arguments",
+            span,
+        ));
+    };
+    Ok(AssertArguments {
+        condition,
+        message,
+        level: values[2],
     })
+}
+
+pub(crate) fn decode_terminate_arguments(
+    args: &[ast::Expression],
+    span: rumoca_core::Span,
+) -> Result<&ast::Expression, FlattenError> {
+    let [argument] = args else {
+        return Err(FlattenError::unsupported_equation(
+            "terminate() requires exactly one message argument",
+            span,
+        ));
+    };
+    match argument {
+        ast::Expression::NamedArgument { name, value, .. } if name.text.as_ref() == "message" => {
+            Ok(value)
+        }
+        ast::Expression::NamedArgument { name, .. } => Err(FlattenError::unsupported_equation(
+            format!("terminate() has unknown named argument `{}`", name.text),
+            span,
+        )),
+        message => Ok(message),
+    }
 }
 
 fn qualify_assert_condition(

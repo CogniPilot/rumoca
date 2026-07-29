@@ -68,7 +68,7 @@ end UsesLoopIndexJ;
 }
 
 #[test]
-fn test_evaluate_on_non_parameter_component_is_error_by_default() {
+fn test_evaluate_on_non_parameter_component_is_always_an_error() {
     let source = r#"
 model EvaluateScopeWarning
   Real x annotation(Evaluate=true);
@@ -77,7 +77,7 @@ equation
 end EvaluateScopeWarning;
 "#;
     let diagnostics = resolve_test_source(source)
-        .expect_err("Evaluate annotation scope should fail by default in strict mode");
+        .expect_err("Evaluate annotation scope is a mandatory MLS error");
     assert!(
         diagnostics
             .iter()
@@ -87,7 +87,7 @@ end EvaluateScopeWarning;
 }
 
 #[test]
-fn test_evaluate_on_function_local_component_is_allowed() {
+fn test_evaluate_on_function_local_component_is_an_error() {
     let source = r#"
 function F
   input Real x[:];
@@ -98,8 +98,14 @@ algorithm
   y := m;
 end F;
 "#;
-    resolve_test_source(source)
-        .expect("Evaluate annotation on function local component should be accepted");
+    let diagnostics =
+        resolve_test_source(source).expect_err("function locals are not exempt from ANN-008");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code.as_deref() == Some("ER070")),
+        "expected ER070 for invalid function-local Evaluate annotation, got: {diagnostics:?}"
+    );
 }
 
 #[test]
@@ -123,7 +129,7 @@ end IndexedWhenTargets;
 }
 
 #[test]
-fn test_when_single_assign_rejects_same_target_across_when_equations() {
+fn test_when_single_assign_leaves_cross_owner_identity_to_typed_ir() {
     let source = r#"
 model DuplicateWhenTarget
   Boolean open1;
@@ -138,16 +144,335 @@ t0 = time;
   end when;
 end DuplicateWhenTarget;
 "#;
-    let result = resolve_test_source(source);
-    assert!(result.is_err(), "duplicate when target should fail");
-    let diagnostics = result.expect_err("expected diagnostics");
-    assert!(
-        diagnostics
-            .iter()
-            .any(|diag| diag.code.as_deref() == Some("ER053")),
-        "expected ER053 for duplicate when target, got: {diagnostics:?}"
+    resolve_test_source(source)
+        .expect("Resolve does not compare ownership using rendered component references");
+}
+
+#[test]
+fn test_when_single_assign_does_not_claim_branch_local_multiplicity() {
+    let source = r#"
+model DuplicateWithinWhenBranch
+  Boolean trigger;
+  discrete Real x;
+equation
+  when edge(trigger) then
+    x = 1;
+    x = 2;
+  end when;
+end DuplicateWithinWhenBranch;
+"#;
+
+    resolve_test_source(source)
+        .expect("EQN-020 only compares definitions owned by distinct when-equations");
+}
+
+#[test]
+fn test_eqn_012_branch_mismatch_is_not_claimed_by_when_owner_check() {
+    let source = r#"
+model BranchVariableSetMismatch
+  Boolean sel;
+  Integer i(start = 0);
+  Integer j(start = 0);
+  Boolean c = time > 1;
+equation
+  when c then
+    if sel then
+      i = 1;
+    else
+      j = 2;
+    end if;
+  end when;
+end BranchVariableSetMismatch;
+"#;
+
+    resolve_test_source(source).expect(
+        "Resolve must leave EQN-012 branch-set validation to ToDAE's semantic-owner constructor",
     );
 }
+
+#[test]
+fn test_when_single_assign_allows_target_in_mutually_exclusive_if_branches() {
+    let source = r#"
+model MutuallyExclusiveConditionalTargets
+  Boolean trigger;
+  Boolean choose;
+  Real x;
+equation
+  when edge(trigger) then
+    if choose then
+      x = 1;
+    else
+      x = 2;
+    end if;
+  end when;
+end MutuallyExclusiveConditionalTargets;
+"#;
+
+    resolve_test_source(source)
+        .expect("mutually exclusive conditional branches may define the same target");
+}
+
+#[test]
+fn test_when_single_assign_allows_target_in_elsewhen_branches() {
+    let source = r#"
+model MutuallyExclusiveElsewhenTargets
+  Boolean firstTrigger;
+  Boolean secondTrigger;
+  Real x;
+equation
+  when edge(firstTrigger) then
+    x = 1;
+  elsewhen edge(secondTrigger) then
+    x = 2;
+  end when;
+end MutuallyExclusiveElsewhenTargets;
+"#;
+
+    resolve_test_source(source)
+        .expect("source branches of one when/elsewhen chain are mutually exclusive");
+}
+
+#[test]
+fn test_when_single_assign_allows_target_in_outer_if_alternatives() {
+    let source = r#"
+model MutuallyExclusiveOuterIfTargets
+  parameter Boolean chooseFirst = true;
+  Boolean firstTrigger;
+  Boolean secondTrigger;
+  Real x;
+equation
+  if chooseFirst then
+    when edge(firstTrigger) then
+      x = 1;
+    end when;
+  else
+    when edge(secondTrigger) then
+      x = 2;
+    end when;
+  end if;
+end MutuallyExclusiveOuterIfTargets;
+"#;
+
+    resolve_test_source(source)
+        .expect("mutually exclusive outer if alternatives may own the same when target");
+}
+
+#[test]
+fn test_when_single_assign_leaves_nested_cross_owner_identity_to_typed_ir() {
+    let source = r#"
+model SequentialWhenOwnersInOuterIf
+  parameter Boolean enabled = true;
+  Boolean firstTrigger;
+  Boolean secondTrigger;
+  Real x;
+equation
+  if enabled then
+    when edge(firstTrigger) then
+      x = 1;
+    end when;
+    when edge(secondTrigger) then
+      x = 2;
+    end when;
+  end if;
+end SequentialWhenOwnersInOuterIf;
+"#;
+
+    resolve_test_source(source)
+        .expect("Resolve leaves cross-owner comparison to a typed semantic-owner constructor");
+}
+
+#[test]
+fn test_reinit_allows_same_state_in_outer_if_alternatives() {
+    let source = r#"
+model MutuallyExclusiveOuterIfReinit
+  parameter Boolean chooseFirst = true;
+  Boolean firstTrigger;
+  Boolean secondTrigger;
+  Real x(start = 0);
+equation
+  der(x) = 0;
+  if chooseFirst then
+    when edge(firstTrigger) then
+      reinit(x, 1);
+    end when;
+  else
+    when edge(secondTrigger) then
+      reinit(x, 2);
+    end when;
+  end if;
+end MutuallyExclusiveOuterIfReinit;
+"#;
+
+    resolve_test_source(source)
+        .expect("mutually exclusive outer if alternatives may reinitialize the same state");
+}
+
+#[test]
+fn test_reinit_leaves_cross_owner_identity_to_typed_ir() {
+    let source = r#"
+model SequentialReinitOwnersInOuterIf
+  parameter Boolean enabled = true;
+  Boolean firstTrigger;
+  Boolean secondTrigger;
+  Real x(start = 0);
+equation
+  der(x) = 0;
+  if enabled then
+    when edge(firstTrigger) then
+      reinit(x, 1);
+    end when;
+    when edge(secondTrigger) then
+      reinit(x, 2);
+    end when;
+  end if;
+end SequentialReinitOwnersInOuterIf;
+"#;
+
+    resolve_test_source(source)
+        .expect("Resolve leaves cross-owner comparison to the typed DAE constructor");
+}
+
+#[test]
+fn test_reinit_allows_same_state_in_mutually_exclusive_inner_if_branches() {
+    let source = r#"
+model MutuallyExclusiveInnerIfReinit
+  Boolean trigger;
+  Boolean chooseFirst;
+  Real x(start = 0);
+equation
+  der(x) = 0;
+  when edge(trigger) then
+    if chooseFirst then
+      reinit(x, 1);
+    else
+      reinit(x, 2);
+    end if;
+  end when;
+end MutuallyExclusiveInnerIfReinit;
+"#;
+
+    resolve_test_source(source)
+        .expect("mutually exclusive branches of one inner if may reinitialize the same state");
+}
+
+#[test]
+fn test_reinit_leaves_branch_distribution_to_flatten() {
+    let source = r#"
+model OverlappingSequentialInnerIfReinit
+  Boolean trigger;
+  Boolean firstChoice;
+  Boolean secondChoice;
+  Real x(start = 0);
+equation
+  der(x) = 0;
+  when edge(trigger) then
+    if firstChoice then
+      reinit(x, 1);
+    end if;
+    if secondChoice then
+      assert(true, "no reinit on this alternative");
+    else
+      reinit(x, 2);
+    end if;
+  end when;
+end OverlappingSequentialInnerIfReinit;
+"#;
+
+    resolve_test_source(source)
+        .expect("Resolve leaves branch-distribution checks to Flat target identity");
+}
+
+#[test]
+fn test_single_branch_clocked_when_is_valid() {
+    let source = r#"
+model SingleClockedWhen
+  Clock c = Clock(0.1);
+  Real x(start = 0);
+equation
+  when c then
+    x = previous(x) + 1;
+  end when;
+end SingleClockedWhen;
+"#;
+
+    resolve_test_source(source).expect("one branch is the complete clocked when grammar");
+}
+
+#[test]
+fn test_clocked_elsewhen_reports_offending_condition_span() {
+    let source = r#"
+model ClockedElsewhen
+  Clock firstClock = Clock(0.1);
+  Clock secondClock = Clock(0.2);
+  Real x(start = 0);
+equation
+  when firstClock then
+    x = previous(x) + 1;
+  elsewhen secondClock then
+    x = previous(x) + 2;
+  end when;
+end ClockedElsewhen;
+"#;
+
+    let diagnostics =
+        resolve_test_source(source).expect_err("clocked when cannot own an elsewhen branch");
+    let diagnostic = diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code.as_deref() == Some("ER131"))
+        .expect("CLK-014 diagnostic must be present");
+    assert!(
+        diagnostic
+            .message
+            .contains("cannot contain elsewhen branches"),
+        "unexpected CLK-014 diagnostic: {diagnostic:?}"
+    );
+    let label = diagnostic
+        .labels
+        .iter()
+        .find(|label| label.primary)
+        .expect("CLK-014 diagnostic has an exact primary label");
+    assert_eq!(
+        &source[label.span.start.0..label.span.end.0],
+        "secondClock",
+        "diagnostic must label the offending elsewhen condition"
+    );
+}
+
+#[test]
+fn test_clocked_elsewhen_nested_in_if_and_for_is_rejected() {
+    let source = r#"
+model NestedClockedElsewhen
+  parameter Boolean enabled = true;
+  Clock firstClock = Clock(0.1);
+  Clock secondClock = Clock(0.2);
+  Real x(start = 0);
+equation
+  if enabled then
+    for i in 1:1 loop
+      when firstClock then
+        x = previous(x) + 1;
+      elsewhen secondClock then
+        x = previous(x) + 2;
+      end when;
+    end for;
+  end if;
+end NestedClockedElsewhen;
+"#;
+
+    let diagnostics = resolve_test_source(source)
+        .expect_err("equation containers cannot hide a clocked elsewhen");
+    let diagnostic = diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code.as_deref() == Some("ER131"))
+        .expect("recursive CLK-014 diagnostic must be present");
+    let label = diagnostic
+        .labels
+        .iter()
+        .find(|label| label.primary)
+        .expect("recursive CLK-014 diagnostic has a primary label");
+    assert_eq!(&source[label.span.start.0..label.span.end.0], "secondClock");
+}
+
 #[test]
 fn test_state_machine_operator_reports_explicit_unsupported_diagnostic() {
     let source = r#"

@@ -1,5 +1,121 @@
 use super::*;
 
+pub(super) fn validate_expression(
+    expression: &Expression,
+    roles: &HashMap<VarName, PlannedRole>,
+    states: &HashSet<VarName>,
+) -> Result<(), ToDaeError> {
+    validate_expression_scoped(expression, roles, states, &HashSet::new())
+}
+
+pub(super) fn validate_expression_scoped(
+    expression: &Expression,
+    roles: &HashMap<VarName, PlannedRole>,
+    states: &HashSet<VarName>,
+    binders: &HashSet<VarName>,
+) -> Result<(), ToDaeError> {
+    let span = expression_span(expression)?;
+    match expression {
+        Expression::Binary { op, lhs, rhs, .. } => {
+            validate_binary_operator(op, span)?;
+            validate_expression_scoped(lhs, roles, states, binders)?;
+            validate_expression_scoped(rhs, roles, states, binders)
+        }
+        Expression::Unary { op, rhs, .. } => {
+            validate_unary_operator(op, span)?;
+            validate_expression_scoped(rhs, roles, states, binders)
+        }
+        Expression::VarRef {
+            name, subscripts, ..
+        } => {
+            if name.as_str() != "time"
+                && !roles.contains_key(name.var_name())
+                && !binders.contains(name.var_name())
+            {
+                return Err(ToDaeError::unresolved_reference(name.as_str(), span));
+            }
+            if binders.contains(name.var_name()) && !subscripts.is_empty() {
+                return Err(ToDaeError::unsupported_flat(
+                    "structured-domain binder",
+                    "a domain binder is a scalar Integer coordinate and cannot be subscripted",
+                    span,
+                ));
+            }
+            validate_subscripts_scoped(subscripts, roles, states, binders)
+        }
+        Expression::BuiltinCall { function, args, .. } => {
+            validate_builtin(*function, args, roles, states, binders, span)
+        }
+        Expression::Literal { .. } => Ok(()),
+        Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => validate_conditional(branches, else_branch, roles, states, binders, span),
+        Expression::FunctionCall { args, .. } => {
+            for argument in args {
+                if matches!(
+                    argument,
+                    Expression::Array {
+                        elements,
+                        ..
+                    } if elements.is_empty()
+                ) {
+                    require_span(expression_span(argument)?, "empty function argument")?;
+                    continue;
+                }
+                validate_expression_scoped(argument, roles, states, binders)?;
+            }
+            Ok(())
+        }
+        Expression::Array { elements, .. } => {
+            validate_array(elements, roles, states, binders, span)
+        }
+        Expression::Range {
+            start, step, end, ..
+        } => {
+            require_integer_literal(start, "range start")?;
+            if let Some(step) = step {
+                require_integer_literal(step, "range step")?;
+            }
+            require_integer_literal(end, "range end")?;
+            Ok(())
+        }
+        Expression::Index {
+            base, subscripts, ..
+        } => {
+            validate_expression_scoped(base, roles, states, binders)?;
+            validate_subscripts_scoped(subscripts, roles, states, binders)
+        }
+        Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter,
+            ..
+        } => validate_array_comprehension(
+            expr,
+            indices,
+            filter.as_deref(),
+            roles,
+            states,
+            binders,
+            span,
+        ),
+        Expression::Tuple { .. } | Expression::FieldAccess { .. } => {
+            Err(ToDaeError::unsupported_flat(
+                "aggregate expression",
+                "tuple and record-field lowering require their typed semantic owner",
+                span,
+            ))
+        }
+        Expression::Empty { .. } => Err(ToDaeError::unsupported_flat(
+            "empty expression",
+            "an absent semantic value cannot enter canonical DAE",
+            span,
+        )),
+    }
+}
+
 pub(super) fn validate_binary_operator(op: &OpBinary, span: Span) -> Result<(), ToDaeError> {
     if matches!(
         op,

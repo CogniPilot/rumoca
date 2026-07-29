@@ -57,10 +57,12 @@ pub(crate) fn attach_structured_references(flat: &mut flat::Model) -> Result<(),
         assert_eq.message = rewriter.rewrite_expression(&assert_eq.message);
         rewrite_opt_expr(&mut assert_eq.level, &mut rewriter);
     }
-    for when_clause in &mut flat.when_clauses {
-        when_clause.condition = rewriter.rewrite_expression(&when_clause.condition);
-        for equation in &mut when_clause.equations {
-            rewrite_when_equation(equation, &mut rewriter);
+    for chain in &mut flat.when_chains {
+        for branch in chain.branches_mut() {
+            branch.condition = rewriter.rewrite_expression(&branch.condition);
+            for equation in &mut branch.equations {
+                rewrite_when_equation(equation, &mut rewriter);
+            }
         }
     }
     for algorithm in flat
@@ -87,10 +89,16 @@ fn rewrite_when_equation(
             *value = rewriter.rewrite_expression(value);
         }
         flat::WhenEquation::Assert {
-            condition, message, ..
+            condition,
+            message,
+            level,
+            ..
         } => {
             *condition = rewriter.rewrite_expression(condition);
             *message = rewriter.rewrite_expression(message);
+            if let Some(level) = level.as_deref_mut() {
+                *level = rewriter.rewrite_expression(level);
+            }
         }
         flat::WhenEquation::Terminate { message, .. } => {
             *message = rewriter.rewrite_expression(message);
@@ -106,8 +114,10 @@ fn rewrite_when_equation(
                     rewrite_when_equation(nested, rewriter);
                 }
             }
-            for nested in else_branch {
-                rewrite_when_equation(nested, rewriter);
+            if let Some(else_branch) = else_branch {
+                for nested in else_branch {
+                    rewrite_when_equation(nested, rewriter);
+                }
             }
         }
         flat::WhenEquation::FunctionCallOutputs { function, .. } => {

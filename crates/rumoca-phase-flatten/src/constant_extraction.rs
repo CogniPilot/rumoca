@@ -208,10 +208,12 @@ pub(super) fn collect_referenced_class_scopes(
         collect_expression_class_scopes(&eq.residual, live_vars, def_map, scopes);
     }
 
-    for when in &flat.when_clauses {
-        collect_expression_class_scopes(&when.condition, live_vars, def_map, scopes);
-        for eq in &when.equations {
-            collect_when_equation_class_scopes(eq, live_vars, def_map, scopes);
+    for chain in &flat.when_chains {
+        for branch in chain.branches() {
+            collect_expression_class_scopes(&branch.condition, live_vars, def_map, scopes);
+            for eq in &branch.equations {
+                collect_when_equation_class_scopes(eq, live_vars, def_map, scopes);
+            }
         }
     }
 
@@ -405,10 +407,16 @@ pub(super) fn collect_when_equation_class_scopes(
             collect_expression_class_scopes(value, live_vars, def_map, scopes)
         }
         flat::WhenEquation::Assert {
-            condition, message, ..
+            condition,
+            message,
+            level,
+            ..
         } => {
             collect_expression_class_scopes(condition, live_vars, def_map, scopes);
             collect_expression_class_scopes(message, live_vars, def_map, scopes);
+            if let Some(level) = level {
+                collect_expression_class_scopes(level, live_vars, def_map, scopes);
+            }
         }
         flat::WhenEquation::Terminate { message, .. } => {
             collect_expression_class_scopes(message, live_vars, def_map, scopes);
@@ -424,8 +432,10 @@ pub(super) fn collect_when_equation_class_scopes(
                     collect_when_equation_class_scopes(nested, live_vars, def_map, scopes);
                 }
             }
-            for nested in else_branch {
-                collect_when_equation_class_scopes(nested, live_vars, def_map, scopes);
+            if let Some(else_branch) = else_branch {
+                for nested in else_branch {
+                    collect_when_equation_class_scopes(nested, live_vars, def_map, scopes);
+                }
             }
         }
         flat::WhenEquation::FunctionCallOutputs { function, .. } => {

@@ -15,7 +15,7 @@ pub(super) fn lower_discrete_and_events<'dae>(
 ) -> Result<(solve::DiscreteSolveSystem, solve::SolveEventPartition), LowerError> {
     let mut discrete = DiscreteRows::default();
     lower_discrete_real_equations(view, layout, clocks, &mut discrete)?;
-    lower_unconditional_assignments(view, layout, &mut discrete)?;
+    lower_discrete_value_owners(view, layout, clocks, &mut discrete)?;
     let mut event_actions = Vec::new();
     let mut action_conditions = ScalarRows::default();
     lower_event_actions(
@@ -242,42 +242,173 @@ fn whole_discrete_real<'dae>(
     }
 }
 
-fn lower_unconditional_assignments<'dae>(
+fn lower_discrete_value_owners<'dae>(
+    view: dae::DaeView<'dae>,
+    layout: &LoweredLayout<'dae>,
+    clocks: &LoweredClocks<'dae>,
+    rows: &mut DiscreteRows,
+) -> Result<(), LowerError> {
+    for index in 0..view.discrete_value_owner_count() {
+        let id = view
+            .discrete_value_owner_id(index)
+            .expect("dense B.1c owner identity resolves");
+        let owner = view
+            .discrete_value_owner(id)
+            .expect("checked B.1c owner resolves");
+        let first = owner
+            .branches()
+            .get(0)
+            .expect("checked B.1c owner has a nonempty branch set");
+        match first.activation() {
+            dae::DiscreteBranchActivation::Always => {
+                lower_unconditional_discrete_value_owner(view, layout, rows, owner)?;
+            }
+            dae::DiscreteBranchActivation::When { .. } => {
+                lower_conditional_discrete_value_owner(view, layout, clocks, rows, owner)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn lower_unconditional_discrete_value_owner<'dae>(
     view: dae::DaeView<'dae>,
     layout: &LoweredLayout<'dae>,
     rows: &mut DiscreteRows,
+    owner: dae::DiscreteValueOwnerView<'dae>,
 ) -> Result<(), LowerError> {
-    for index in 0..view.discrete_assignment_count() {
-        let id = view
-            .discrete_assignment_id(index)
-            .expect("dense discrete assignment identity resolves");
-        let assignment = view
-            .discrete_assignment(id)
-            .expect("checked discrete assignment resolves");
-        let value = view
-            .expression(assignment.value())
-            .expect("checked assignment expression resolves");
-        let pre_mode = expression_pre_mode(view, assignment.value());
-        for scalar in 0..value
+    let branch = owner
+        .branches()
+        .get(0)
+        .expect("checked unconditional B.1c owner has one branch");
+    debug_assert_eq!(owner.branches().len(), 1);
+    for (target, (value, provenance)) in owner.targets().iter().zip(branch.values().iter()) {
+        let expression = view
+            .expression(value)
+            .expect("checked B.1c value expression resolves");
+        let span = provenance.span();
+        for scalar in 0..expression
             .value_type()
             .scalar_count()
-            .expect("checked assignment scalar capacity")
+            .expect("checked B.1c value scalar capacity")
         {
-            let span = assignment.provenance().span();
-            let program =
-                ScalarCompiler::new(view, layout, None).program(assignment.value(), scalar)?;
-            let target = variable_scalar_slot(layout, assignment.target().index(), scalar, span)?;
+            let program = ScalarCompiler::new(view, layout, None).program(value, scalar)?;
+            let target = variable_scalar_slot(layout, target.index(), scalar, span)?;
             rows.push(
                 program,
                 span,
                 target,
                 solve::DiscreteRowRole::Equation,
-                pre_mode,
+                expression_pre_mode(view, value),
                 None,
             );
         }
     }
     Ok(())
+}
+
+fn lower_conditional_discrete_value_owner<'dae>(
+    view: dae::DaeView<'dae>,
+    layout: &LoweredLayout<'dae>,
+    clocks: &LoweredClocks<'dae>,
+    rows: &mut DiscreteRows,
+    owner: dae::DiscreteValueOwnerView<'dae>,
+) -> Result<(), LowerError> {
+    for (target_ordinal, target) in owner.targets().iter().enumerate() {
+        let variable = view
+            .variable(dae::VariableId::from(target))
+            .expect("checked B.1c target resolves");
+        for scalar in 0..variable.scalar_count() {
+            let mut lowered = Vec::new();
+            for branch in owner.branches().iter() {
+                let branch = lower_checked_discrete_value_branch(
+                    view,
+                    layout,
+                    clocks,
+                    target,
+                    target_ordinal,
+                    scalar,
+                    branch,
+                )?;
+                record_guarded_target(
+                    &mut lowered,
+                    branch.target,
+                    branch.assignment,
+                    branch.clock,
+                    branch.has_pre,
+                    branch.span,
+                )?;
+            }
+            let [target] = lowered.as_slice() else {
+                unreachable!("one B.1c target and scalar creates one guarded target")
+            };
+            let program = match target.clock {
+                Some((clock, _)) => ScalarCompiler::new(view, layout, None)
+                    .clocked_guarded_assignments_program(
+                        clock,
+                        &target.branches,
+                        target.target,
+                        target.span,
+                    )?,
+                None => ScalarCompiler::new(view, layout, None).guarded_assignments_program(
+                    &target.branches,
+                    target.target,
+                    target.span,
+                )?,
+            };
+            rows.push(
+                program,
+                target.span,
+                target.target,
+                solve::DiscreteRowRole::EventAction,
+                target.pre_mode,
+                target.clock.map(|(_, clock)| clock),
+            );
+        }
+    }
+    Ok(())
+}
+
+struct LoweredDiscreteValueBranch<'dae> {
+    target: solve::ScalarSlot,
+    assignment: GuardedAssignment<'dae>,
+    clock: Option<(dae::ClockId<'dae>, solve::PeriodicClockId)>,
+    has_pre: bool,
+    span: Span,
+}
+
+fn lower_checked_discrete_value_branch<'dae>(
+    view: dae::DaeView<'dae>,
+    layout: &LoweredLayout<'dae>,
+    clocks: &LoweredClocks<'dae>,
+    target: dae::DiscreteValueId<'dae>,
+    target_ordinal: usize,
+    scalar: usize,
+    branch: dae::DiscreteValueBranchView<'dae>,
+) -> Result<LoweredDiscreteValueBranch<'dae>, LowerError> {
+    let dae::DiscreteBranchActivation::When { trigger, guard } = branch.activation() else {
+        unreachable!("checked B.1c owner cannot mix always and when branches")
+    };
+    let (value, provenance) = branch
+        .values()
+        .get(target_ordinal)
+        .expect("checked B.1c branch arity matches its target set");
+    let span = provenance.span();
+    let target = variable_scalar_slot(layout, target.index(), scalar, span)?;
+    let clock = condition_clock_owner(view, guard)
+        .map(|clock| clocks.clock(clock).map(|solve| (clock, solve)))
+        .transpose()?;
+    let trigger_memory = condition_memory(layout, trigger, span)?;
+    let has_pre = expression_contains_pre(view, value)
+        || condition_contains_pre(view, trigger)
+        || condition_contains_pre(view, guard);
+    Ok(LoweredDiscreteValueBranch {
+        target,
+        assignment: (trigger, guard, value, scalar, trigger_memory),
+        clock,
+        has_pre,
+        span,
+    })
 }
 
 fn lower_event_actions<'dae>(
@@ -357,16 +488,6 @@ fn lower_event_actions<'dae>(
                     clock: condition_clock_owner(view, action.guard()),
                 });
             }
-            dae::EventActionOperation::AssignDiscreteValue { target, value } => {
-                updates.push(EventUpdate {
-                    trigger: action.trigger(),
-                    guard: action.guard(),
-                    variable: target.index(),
-                    value,
-                    span: action.provenance().span(),
-                    clock: condition_clock_owner(view, action.guard()),
-                });
-            }
         }
     }
     lower_guarded_updates(view, layout, clocks, discrete, &updates)
@@ -429,16 +550,18 @@ struct EventUpdate<'dae> {
     clock: Option<dae::ClockId<'dae>>,
 }
 
+type GuardedAssignment<'dae> = (
+    dae::ConditionId<'dae>,
+    dae::ConditionId<'dae>,
+    dae::ExprId<'dae>,
+    usize,
+    usize,
+);
+
 struct GuardedTarget<'dae> {
     target: solve::ScalarSlot,
     span: Span,
-    branches: Vec<(
-        dae::ConditionId<'dae>,
-        dae::ConditionId<'dae>,
-        dae::ExprId<'dae>,
-        usize,
-        usize,
-    )>,
+    branches: Vec<GuardedAssignment<'dae>>,
     pre_mode: solve::DiscreteEventPreMode,
     clock: Option<(dae::ClockId<'dae>, solve::PeriodicClockId)>,
 }
@@ -509,13 +632,7 @@ fn lower_guarded_updates<'dae>(
 fn record_guarded_target<'dae>(
     targets: &mut Vec<GuardedTarget<'dae>>,
     target: solve::ScalarSlot,
-    branch: (
-        dae::ConditionId<'dae>,
-        dae::ConditionId<'dae>,
-        dae::ExprId<'dae>,
-        usize,
-        usize,
-    ),
+    branch: GuardedAssignment<'dae>,
     clock: Option<(dae::ClockId<'dae>, solve::PeriodicClockId)>,
     has_pre: bool,
     span: Span,

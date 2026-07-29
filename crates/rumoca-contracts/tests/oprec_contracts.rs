@@ -1,6 +1,9 @@
 //! Operator record contract tests - MLS §14
 
-use rumoca_contracts::test_support::{expect_resolve_failure_with_code, expect_success};
+use rumoca_compile::compile::FailedPhase;
+use rumoca_contracts::test_support::{
+    expect_failure_in_phase_with_code, expect_resolve_failure_with_code, expect_success,
+};
 
 #[test]
 fn oprec_operator_record_structure_allows_record_fields_and_operator_declarations() {
@@ -614,7 +617,7 @@ fn oprec_009_cross_constructor_pair_rejected() {
 
 #[test]
 fn oprec_011_zero_inner_dimension_product_rejected() {
-    rumoca_contracts::test_support::expect_resolve_failure_with_code(
+    expect_failure_in_phase_with_code(
         r#"
         package P
             operator record OR
@@ -628,8 +631,32 @@ fn oprec_011_zero_inner_dimension_product_rejected() {
                 c = a * b;
             end M;
         end P;
+        "#,
+        "P.M",
+        FailedPhase::Typecheck,
+        "ET011",
+    );
+}
+
+#[test]
+fn oprec_011_unused_zero_sized_array_is_legal() {
+    expect_success(
+        r#"
+        package P
+            operator record OR
+                Real re;
+            end OR;
+            model Unused
+                parameter Integer n = 0;
+                OR values[n];
+            end Unused;
+            model M
+                Real x;
+            equation
+                x = 1;
+            end M;
+        end P;
     "#,
         "P.M",
-        "ER129",
     );
 }

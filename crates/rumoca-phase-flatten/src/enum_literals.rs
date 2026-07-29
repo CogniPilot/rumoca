@@ -39,9 +39,11 @@ pub(crate) fn canonicalize_flat_enum_literals(
         canonicalize_expr(&mut eq.residual, &enum_literals, &variable_names);
     }
 
-    for when_clause in &mut flat.when_clauses {
-        canonicalize_expr(&mut when_clause.condition, &enum_literals, &variable_names);
-        canonicalize_when_equations(&mut when_clause.equations, &enum_literals, &variable_names);
+    for chain in &mut flat.when_chains {
+        for branch in chain.branches_mut() {
+            canonicalize_expr(&mut branch.condition, &enum_literals, &variable_names);
+            canonicalize_when_equations(&mut branch.equations, &enum_literals, &variable_names);
+        }
     }
 
     for algorithm in &mut flat.algorithms {
@@ -310,10 +312,16 @@ fn canonicalize_when_equations(
                 canonicalize_expr(value, enum_literals, variable_names);
             }
             flat::WhenEquation::Assert {
-                condition, message, ..
+                condition,
+                message,
+                level,
+                ..
             } => {
                 canonicalize_expr(condition, enum_literals, variable_names);
                 canonicalize_expr(message, enum_literals, variable_names);
+                if let Some(level) = level {
+                    canonicalize_expr(level, enum_literals, variable_names);
+                }
             }
             flat::WhenEquation::Terminate { message, .. } => {
                 canonicalize_expr(message, enum_literals, variable_names);
@@ -327,7 +335,9 @@ fn canonicalize_when_equations(
                     canonicalize_expr(condition, enum_literals, variable_names);
                     canonicalize_when_equations(branch_equations, enum_literals, variable_names);
                 }
-                canonicalize_when_equations(else_branch, enum_literals, variable_names);
+                if let Some(else_branch) = else_branch {
+                    canonicalize_when_equations(else_branch, enum_literals, variable_names);
+                }
             }
             flat::WhenEquation::FunctionCallOutputs { function, .. } => {
                 canonicalize_expr(function, enum_literals, variable_names);

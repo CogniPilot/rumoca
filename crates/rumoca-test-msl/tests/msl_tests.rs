@@ -311,6 +311,26 @@ fn collect_checked_expr_refs<'dae>(
     });
 }
 
+fn collect_checked_b1c_owner_refs<'dae>(
+    view: rumoca_ir_dae::DaeView<'dae>,
+    owner: rumoca_ir_dae::DiscreteValueOwnerView<'dae>,
+    active: &mut Vec<VarName>,
+) {
+    for target in owner.targets().iter() {
+        let variable = view
+            .variable(target.into())
+            .expect("checked B.1c target resolves");
+        push_var_ref(active, variable.name());
+    }
+    for (value, _) in owner
+        .branches()
+        .iter()
+        .flat_map(|branch| branch.values().iter())
+    {
+        collect_checked_expr_refs(view, value, active);
+    }
+}
+
 fn collect_active_refs_from_dae(dae: &Dae, active: &mut Vec<VarName>) {
     dae.inspect(|view| {
         for index in 0..view.continuous_equation_count() {
@@ -331,18 +351,14 @@ fn collect_active_refs_from_dae(dae: &Dae, active: &mut Vec<VarName>) {
                 .expect("dense checked discrete equation resolves");
             collect_checked_expr_refs(view, equation.residual(), active);
         }
-        for index in 0..view.discrete_assignment_count() {
-            let assignment_id = view
-                .discrete_assignment_id(index)
-                .expect("dense checked discrete assignment identity resolves");
-            let assignment = view
-                .discrete_assignment(assignment_id)
-                .expect("dense checked discrete assignment resolves");
-            let variable = view
-                .variable(assignment.target().into())
-                .expect("checked assignment target resolves");
-            push_var_ref(active, variable.name());
-            collect_checked_expr_refs(view, assignment.value(), active);
+        for index in 0..view.discrete_value_owner_count() {
+            let owner_id = view
+                .discrete_value_owner_id(index)
+                .expect("dense checked B.1c owner identity resolves");
+            let owner = view
+                .discrete_value_owner(owner_id)
+                .expect("dense checked B.1c owner resolves");
+            collect_checked_b1c_owner_refs(view, owner, active);
         }
         for index in 0..view.relation_count() {
             let relation_id = view
@@ -370,10 +386,16 @@ fn collect_active_refs_from_flat_when_equation(
             value.collect_var_refs(active);
         }
         rumoca_ir_flat::WhenEquation::Assert {
-            condition, message, ..
+            condition,
+            message,
+            level,
+            ..
         } => {
             condition.collect_var_refs(active);
             message.collect_var_refs(active);
+            if let Some(level) = level {
+                level.collect_var_refs(active);
+            }
         }
         rumoca_ir_flat::WhenEquation::Terminate { message, .. } => {
             message.collect_var_refs(active);
@@ -389,8 +411,10 @@ fn collect_active_refs_from_flat_when_equation(
                     collect_active_refs_from_flat_when_equation(nested, active);
                 }
             }
-            for nested in else_branch {
-                collect_active_refs_from_flat_when_equation(nested, active);
+            if let Some(else_branch) = else_branch {
+                for nested in else_branch {
+                    collect_active_refs_from_flat_when_equation(nested, active);
+                }
             }
         }
         rumoca_ir_flat::WhenEquation::FunctionCallOutputs {
@@ -405,10 +429,12 @@ fn collect_active_refs_from_flat_when_equation(
 }
 
 fn collect_active_refs_from_flat(flat: &rumoca_ir_flat::Model, active: &mut Vec<VarName>) {
-    for when in &flat.when_clauses {
-        when.condition.collect_var_refs(active);
-        for equation in &when.equations {
-            collect_active_refs_from_flat_when_equation(equation, active);
+    for chain in &flat.when_chains {
+        for branch in chain.branches() {
+            branch.condition.collect_var_refs(active);
+            for equation in &branch.equations {
+                collect_active_refs_from_flat_when_equation(equation, active);
+            }
         }
     }
 }

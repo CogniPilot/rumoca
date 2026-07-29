@@ -134,7 +134,7 @@ pub(super) fn render_flattened_preview(
             "model={model_name} | f_x={} | f_z={} | f_m={} | m={} | balance={}",
             view.continuous_owner_count(),
             view.discrete_real_equation_count(),
-            view.discrete_assignment_count(),
+            view.discrete_value_definition_count(),
             discrete_values.len(),
             result.balance_detail.balance()
         )];
@@ -154,31 +154,18 @@ pub(super) fn render_flattened_preview(
             |index| view.discrete_real_equation(index),
             view,
         );
-        lines.push(format!("f_m ({}):", view.discrete_assignment_count()));
-        for index in 0..view.discrete_assignment_count().min(4) {
-            let id = view
-                .discrete_assignment_id(index)
-                .expect("finalized discrete assignment has an identity");
-            let assignment = view
-                .discrete_assignment(id)
-                .expect("branded discrete assignment resolves");
-            let target = view
-                .variables()
-                .find(|(id, _)| id.index() == assignment.target().index())
-                .map_or_else(
-                    || format!("<discrete:{}>", assignment.target().index()),
-                    |(_, variable)| variable.name().to_string(),
-                );
-            let value = view
-                .expression(assignment.value())
-                .and_then(|expression| view.source_text(expression.provenance()))
-                .map_or("<generated expression>", |source| source);
-            lines.push(format!(
-                "  {index}: {target} := {}",
-                truncate_text(value, 140)
-            ));
-        }
-        push_more_equations_line(&mut lines, view.discrete_assignment_count(), 4, "f_m");
+        lines.push(format!(
+            "f_m ({} definitions in {} owners):",
+            view.discrete_value_definition_count(),
+            view.discrete_value_owner_count()
+        ));
+        push_discrete_value_owners(&mut lines, view, 4);
+        push_more_equations_line(
+            &mut lines,
+            view.discrete_value_owner_count(),
+            4,
+            "f_m owners",
+        );
         if !discrete_values.is_empty() {
             lines.push("m (discrete-valued variables):".to_string());
             for (index, (_, variable)) in discrete_values.iter().take(6).enumerate() {
@@ -203,6 +190,95 @@ pub(super) fn render_flattened_preview(
         "**Flattened DAE Preview**\n\n```text\n{}\n```",
         lines.join("\n")
     )
+}
+
+fn push_discrete_value_owners(
+    lines: &mut Vec<String>,
+    view: rumoca_compile::compile::DaeView<'_>,
+    limit: usize,
+) {
+    for index in 0..view.discrete_value_owner_count().min(limit) {
+        let id = view
+            .discrete_value_owner_id(index)
+            .expect("finalized B.1c owner has an identity");
+        let owner = view
+            .discrete_value_owner(id)
+            .expect("branded B.1c owner resolves");
+        let targets = owner
+            .targets()
+            .iter()
+            .map(|target| {
+                view.variables()
+                    .find(|(id, _)| id.index() == target.index())
+                    .map_or_else(
+                        || format!("<discrete:{}>", target.index()),
+                        |(_, variable)| variable.name().to_string(),
+                    )
+            })
+            .collect::<Vec<_>>();
+        lines.push(format!(
+            "  {index}: [{}] := {} ordered branch(es) | owner {} at `{}`",
+            targets.join(", "),
+            owner.branches().len(),
+            owner.provenance().origin(),
+            provenance_text(view, owner.provenance())
+        ));
+        for (branch_index, branch) in owner.branches().iter().enumerate() {
+            let activation = match branch.activation() {
+                rumoca_compile::compile::DiscreteBranchActivation::Always => "always".to_string(),
+                rumoca_compile::compile::DiscreteBranchActivation::When { trigger, guard } => {
+                    format!(
+                        "when trigger=`{}` guard=`{}`",
+                        condition_text(view, trigger),
+                        condition_text(view, guard)
+                    )
+                }
+            };
+            lines.push(format!(
+                "    branch {branch_index}: {activation} | {} at `{}`",
+                branch.provenance().origin(),
+                provenance_text(view, branch.provenance())
+            ));
+            for (target, (value, action)) in targets.iter().zip(branch.values().iter()) {
+                let value_source = expression_provenance_text(view, value);
+                lines.push(format!(
+                    "      {target} := `{value_source}` | action {} at `{}`",
+                    action.origin(),
+                    provenance_text(view, action)
+                ));
+            }
+        }
+    }
+}
+
+fn expression_provenance_text<'dae>(
+    view: rumoca_compile::compile::DaeView<'dae>,
+    expression: rumoca_compile::compile::ExprId<'dae>,
+) -> String {
+    view.expression(expression)
+        .map_or("<expression unavailable>".to_string(), |expression| {
+            provenance_text(view, expression.provenance())
+        })
+}
+
+fn condition_text<'dae>(
+    view: rumoca_compile::compile::DaeView<'dae>,
+    condition: rumoca_compile::compile::ConditionId<'dae>,
+) -> String {
+    view.condition(condition).map_or_else(
+        || format!("<condition:{}>", condition.index()),
+        |condition| provenance_text(view, condition.provenance()),
+    )
+}
+
+fn provenance_text(
+    view: rumoca_compile::compile::DaeView<'_>,
+    provenance: rumoca_compile::compile::DaeProvenance,
+) -> String {
+    view.source_text(provenance)
+        .map_or("<source unavailable>".to_string(), |source| {
+            truncate_text(source, 100)
+        })
 }
 
 fn push_checked_residuals<'dae>(

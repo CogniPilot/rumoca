@@ -318,9 +318,9 @@ pub(super) fn flatten_equations_list(
             ast::Equation::When(blocks) => {
                 // MLS §8.3.3/§8.3.5: When-equations inside for-loops are allowed.
                 // Flatten each when-block with the current prefix (which includes for-loop indices)
-                let clauses =
+                let chain =
                     crate::when_equations::flatten_when_blocks(ctx, blocks, prefix, span, def_map)?;
-                result.when_clauses.extend(clauses);
+                result.when_chains.push(chain);
             }
             ast::Equation::FunctionCall { comp, args, .. } => {
                 let flattened =

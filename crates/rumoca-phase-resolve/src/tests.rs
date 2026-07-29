@@ -18,7 +18,7 @@ mod redeclare_modifiers;
 mod semantic_rules;
 
 fn resolve_test_source(source: &str) -> Result<ResolvedTree, Diagnostics> {
-    resolve_with_options(parsed_tree_from_source(source), ResolveOptions::default())
+    resolve(parsed_tree_from_source(source))
 }
 
 fn parsed_tree_from_source(source: &str) -> ParsedTree {

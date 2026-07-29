@@ -11,8 +11,9 @@ which IR the template receives (default `dae`):
 rumoca compile Model.mo --target my_template.jinja --phase flat -o out.txt
 ```
 
-The template gets the serialized IR as its context. The repository example
-`examples/codegen/custom_casadi.jinja` shows this workflow.
+The template gets the canonical stage projection as its context. The
+repository example `examples/codegen/custom_checked_variables.jinja` shows
+this workflow.
 
 To learn the available fields, dump the matching IR as JSON first:
 
@@ -34,8 +35,8 @@ templates render which output files. The target — not individual templates —
 owns the IR choice, so a bundle stays consistent.
 
 The repository ships a complete worked example:
-`examples/codegen/standalone_web/target.toml` renders a standalone HTML page
-plus companion JavaScript from one model.
+`examples/codegen/checked_dae_report/target.toml` renders a readable report
+from the canonical checked DAE projection.
 
 ## Design Rule: Language Knowledge Lives in Targets
 

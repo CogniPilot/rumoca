@@ -4391,6 +4391,7 @@ dependencies = [
  "rumoca-ir-dae",
  "rumoca-ir-flat",
  "rumoca-ir-galec",
+ "rumoca-ir-solve",
  "rumoca-phase-codegen",
  "rumoca-phase-dae",
  "rumoca-phase-flatten",

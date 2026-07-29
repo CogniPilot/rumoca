@@ -799,7 +799,7 @@ fn render_target_command_renders_relative_raw_jinja_from_rum_scenario() {
         .expect("write scenario");
         std::fs::write(
             &template_path,
-            "model={{ model_name }} f_x={{ dae.f_x | length }}",
+            "model={{ model_name }} variables={{ dae.variables | length }}",
         )
         .expect("write template");
 
@@ -857,7 +857,7 @@ fn render_target_command_renders_relative_target_directory_from_rum_scenario() {
         let temp = new_temp_dir("render-target-directory-scenario");
         let model_dir = temp.join("models");
         let scenario_dir = temp.join("codegen");
-        let target_dir = scenario_dir.join("standalone_web");
+        let target_dir = scenario_dir.join("custom_report");
         std::fs::create_dir_all(&model_dir).expect("mkdir models");
         std::fs::create_dir_all(&target_dir).expect("mkdir target");
         let model_path = model_dir.join("Decay.mo");
@@ -869,17 +869,37 @@ fn render_target_command_renders_relative_target_directory_from_rum_scenario() {
         .expect("write model");
         std::fs::write(
             &scenario_path,
-            "[rumoca]\nversion = \"1\"\ntask = \"codegen\"\n\n[model]\nfile = \"../models/Decay.mo\"\nname = \"Decay\"\n\n[codegen]\ntarget = \"standalone_web\"\n",
+            "[rumoca]\nversion = \"1\"\ntask = \"codegen\"\n\n[model]\nfile = \"../models/Decay.mo\"\nname = \"Decay\"\n\n[codegen]\ntarget = \"custom_report\"\n",
         )
         .expect("write scenario");
         std::fs::write(
             target_dir.join("target.toml"),
-            "version = 1\nir = \"dae\"\n\n[[files]]\npath = \"{{ model_name }}.txt\"\ntemplate = \"model.txt.jinja\"\n",
+            r#"version = 1
+ir = "dae"
+
+[capabilities]
+continuous_states = true
+residual_equations = true
+structured_equation_families = true
+external_functions = true
+external_tables = true
+random = true
+initialization = true
+events = true
+runtime_events = true
+clocks = true
+dynamic_ranges = true
+dynamic_derivative_subscripts = true
+
+[[files]]
+path = "{{ model_name }}.txt"
+template = "model.txt.jinja"
+"#,
         )
         .expect("write target manifest");
         std::fs::write(
             target_dir.join("model.txt.jinja"),
-            "target={{ model_name }} f_x={{ dae.f_x | length }}",
+            "target={{ model_name }} variables={{ dae.variables | length }}",
         )
         .expect("write target template");
 
@@ -901,7 +921,7 @@ fn render_target_command_renders_relative_target_directory_from_rum_scenario() {
                         .expect("scenario file uri")
                         .to_string(),
                     "model": "Decay",
-                    "target": "standalone_web",
+                    "target": "custom_report",
                 })],
                 work_done_progress_params: WorkDoneProgressParams::default(),
             })

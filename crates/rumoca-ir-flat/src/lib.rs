@@ -65,7 +65,7 @@ pub use visitor::{
     StateVariableCollector, StatementScope, StatementVisitor, VarRefCollector,
 };
 
-pub use when_equations::{WhenClause, WhenEquation};
+pub use when_equations::{WhenBranch, WhenChain, WhenEquation};
 
 /// MLS §5.6: "flat equation system with globally unique variable names"
 ///
@@ -119,8 +119,8 @@ pub struct Model {
     pub algorithms: Vec<Algorithm>,
     /// Initial algorithm sections.
     pub initial_algorithms: Vec<Algorithm>,
-    /// When clauses.
-    pub when_clauses: Vec<WhenClause>,
+    /// Complete source `when`/`elsewhen` equation owners.
+    pub when_chains: Vec<WhenChain>,
     /// User-defined functions used by this model (MLS §12).
     pub functions: VarNameIndexMap<Function>,
     /// True if the model is declared with the `partial` keyword.

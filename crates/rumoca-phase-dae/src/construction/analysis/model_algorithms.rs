@@ -486,17 +486,19 @@ fn reject_read_before_definition(
 }
 
 pub(in crate::construction) fn event_targets(flat: &flat::Model) -> HashSet<VarName> {
-    let mut written = when_clause_targets(flat);
+    let mut written = when_chain_targets(flat);
     for algorithm in &flat.algorithms {
         collect_event_control_targets(&algorithm.statements, &mut written);
     }
     resolve_written_targets(flat, written)
 }
 
-pub(in crate::construction) fn when_clause_targets(flat: &flat::Model) -> HashSet<VarName> {
+pub(in crate::construction) fn when_chain_targets(flat: &flat::Model) -> HashSet<VarName> {
     let mut written = HashSet::new();
-    for clause in &flat.when_clauses {
-        collect_when_equation_targets(&clause.equations, &mut written);
+    for chain in &flat.when_chains {
+        for branch in chain.branches() {
+            collect_when_equation_targets(&branch.equations, &mut written);
+        }
     }
     resolve_written_targets(flat, written)
 }
@@ -660,7 +662,9 @@ fn collect_when_equation_targets(equations: &[flat::WhenEquation], targets: &mut
                 for (_, equations) in branches {
                     collect_when_equation_targets(equations, targets);
                 }
-                collect_when_equation_targets(else_branch, targets);
+                if let Some(else_branch) = else_branch {
+                    collect_when_equation_targets(else_branch, targets);
+                }
             }
             flat::WhenEquation::FunctionCallOutputs { outputs, .. } => {
                 targets.extend(outputs.iter().cloned());

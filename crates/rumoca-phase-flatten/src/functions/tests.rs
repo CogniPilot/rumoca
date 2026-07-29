@@ -240,7 +240,7 @@ fn canonicalize_collected_function_calls_rejects_disagreeing_name_and_resolved_i
 }
 
 #[test]
-fn canonicalize_collected_function_calls_visits_when_clauses() {
+fn canonicalize_collected_function_calls_visits_when_chains() {
     let mut flat = flat::Model::new();
     let mut function = rumoca_core::Function::new("Pkg.Events.trip", Span::DUMMY);
     function
@@ -248,7 +248,7 @@ fn canonicalize_collected_function_calls_visits_when_clauses() {
         .push(rumoca_core::Statement::Return { span: Span::DUMMY });
     flat.add_function(function);
 
-    let mut when = flat::WhenClause::new(
+    let mut branch = flat::WhenBranch::new(
         rumoca_core::Expression::FunctionCall {
             name: rumoca_core::Reference::new("Pkg.Events.trip"),
             args: vec![],
@@ -257,7 +257,7 @@ fn canonicalize_collected_function_calls_visits_when_clauses() {
         },
         Span::DUMMY,
     );
-    when.add_equation(flat::WhenEquation::Conditional {
+    branch.add_equation(flat::WhenEquation::Conditional {
         branches: vec![(
             rumoca_core::Expression::FunctionCall {
                 name: rumoca_core::Reference::new("Pkg.Events.trip"),
@@ -277,7 +277,7 @@ fn canonicalize_collected_function_calls_visits_when_clauses() {
                 origin: "when function call".to_string(),
             }],
         )],
-        else_branch: vec![flat::WhenEquation::Assign {
+        else_branch: Some(vec![flat::WhenEquation::Assign {
             target: rumoca_core::VarName::new("y"),
             value: rumoca_core::Expression::FunctionCall {
                 name: rumoca_core::Reference::new("Pkg.Events.trip"),
@@ -287,20 +287,21 @@ fn canonicalize_collected_function_calls_visits_when_clauses() {
             },
             span: Span::DUMMY,
             origin: "when assignment".to_string(),
-        }],
+        }]),
         span: Span::DUMMY,
         origin: "nested when branch".to_string(),
     });
-    flat.when_clauses.push(when);
+    let chain = flat::WhenChain::new(branch, Span::DUMMY);
+    flat.when_chains.push(chain);
 
     canonicalize_collected_function_calls(&mut flat).expect("canonicalize function calls");
 
-    assert_function_call_name(&flat.when_clauses[0].condition, "Pkg.Events.trip");
+    assert_function_call_name(&flat.when_chains[0].first().condition, "Pkg.Events.trip");
     let flat::WhenEquation::Conditional {
         branches,
         else_branch,
         ..
-    } = &flat.when_clauses[0].equations[0]
+    } = &flat.when_chains[0].first().equations[0]
     else {
         panic!("expected conditional when equation");
     };
@@ -309,7 +310,10 @@ fn canonicalize_collected_function_calls_visits_when_clauses() {
         panic!("expected function-call output when equation");
     };
     assert_function_call_name(function, "Pkg.Events.trip");
-    let flat::WhenEquation::Assign { value, .. } = &else_branch[0] else {
+    let flat::WhenEquation::Assign { value, .. } = &else_branch
+        .as_ref()
+        .expect("source else branch remains present")[0]
+    else {
         panic!("expected assignment when equation");
     };
     assert_function_call_name(value, "Pkg.Events.trip");
