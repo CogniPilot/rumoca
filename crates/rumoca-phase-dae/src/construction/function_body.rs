@@ -1,5 +1,101 @@
 use super::*;
 
+pub(super) fn lower_guarded_function_return<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    symbols: FunctionSymbols<'_, 'dae>,
+    body: &mut dae::FunctionBody<'dae>,
+    function: &rumoca_core::Function,
+    branch_plans: &[Vec<FunctionStatementPlan>],
+    tail_plans: &[FunctionStatementPlan],
+    targets: &[VarName],
+) -> Result<(), dae::DaeConstructionError> {
+    let Some((
+        rumoca_core::Statement::If {
+            cond_blocks, span, ..
+        },
+        tail,
+    )) = function.body.split_first()
+    else {
+        unreachable!("analysis proves a leading guarded return")
+    };
+    let conditions = cond_blocks
+        .iter()
+        .map(|block| {
+            lower_function_expression(
+                construction,
+                symbols.coordinates,
+                symbols.functions,
+                symbols.shapes,
+                body,
+                &block.cond,
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let returned = targets
+        .iter()
+        .map(|target| {
+            cond_blocks
+                .iter()
+                .zip(branch_plans)
+                .map(|(block, plans)| {
+                    lower_guarded_return_value(
+                        construction,
+                        symbols,
+                        body,
+                        &block.stmts[..block.stmts.len() - 1],
+                        plans,
+                        target,
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    lower_function_statements(construction, symbols, body, tail, tail_plans)?;
+    let provenance =
+        dae::DaeProvenance::generated(dae::DaeGeneration::FunctionConditionLowering, *span)?;
+    for (target, returned) in targets.iter().zip(returned) {
+        let target = function_value_coordinate(symbols.coordinates, target);
+        let fallback =
+            construction.functions(|functions| functions.read(body, target, provenance))?;
+        let branches = conditions.iter().copied().zip(returned);
+        let value = construction.expressions(|expressions| {
+            expressions.at(provenance).conditional(branches, fallback)
+        })?;
+        construction.functions(|functions| functions.assign(body, target, value, provenance))?;
+    }
+    Ok(())
+}
+
+fn lower_guarded_return_value<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    symbols: FunctionSymbols<'_, 'dae>,
+    body: &dae::FunctionBody<'dae>,
+    statements: &[rumoca_core::Statement],
+    plans: &[FunctionStatementPlan],
+    selected: &VarName,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    let assignment = statements
+        .iter()
+        .zip(plans)
+        .find_map(|(statement, plan)| match (statement, plan) {
+            (
+                rumoca_core::Statement::Assignment { value, .. },
+                FunctionStatementPlan::Assignment { target, .. },
+            ) if target == selected => Some(value),
+            _ => None,
+        })
+        .expect("analysis proves every returning branch defines every output");
+    lower_function_expression(
+        construction,
+        symbols.coordinates,
+        symbols.functions,
+        symbols.shapes,
+        body,
+        assignment,
+    )
+}
+
 pub(super) struct FunctionConditional<'scope, 'statement, 'dae> {
     pub(super) symbols: FunctionSymbols<'scope, 'dae>,
     pub(super) blocks: &'statement [rumoca_core::StatementBlock],

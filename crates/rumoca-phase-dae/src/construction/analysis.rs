@@ -8,6 +8,7 @@ mod function_array_assemblies;
 mod function_conditionals;
 mod function_ranges;
 mod function_record_assemblies;
+mod function_returns;
 mod function_value_types;
 mod model_algorithms;
 mod model_roles;
@@ -33,6 +34,7 @@ use function_ranges::{
     immutable_integer_defaults, static_function_range, validate_function_range_expression,
 };
 use function_record_assemblies::validate_record_output_assembly;
+use function_returns::validate_guarded_function_return;
 use function_value_types::validate_function_value_type;
 pub(super) use model_algorithms::ModelAlgorithmPlan;
 use model_algorithms::analyze_model_algorithm;
@@ -70,8 +72,15 @@ pub(super) struct Analysis {
     pub(super) initial_record_equations: HashMap<usize, RecordEquationPlan>,
 }
 
-pub(super) struct FunctionPlan {
-    pub(super) statements: Vec<FunctionStatementPlan>,
+pub(super) enum FunctionPlan {
+    Statements {
+        statements: Vec<FunctionStatementPlan>,
+    },
+    GuardedReturn {
+        branches: Vec<Vec<FunctionStatementPlan>>,
+        tail: Vec<FunctionStatementPlan>,
+        targets: Vec<VarName>,
+    },
 }
 
 pub(super) enum FunctionStatementPlan {
@@ -766,8 +775,13 @@ fn validate_functions(
             shapes: &certificate.values,
             shape_analysis: shapes,
         };
-        let statements = validate_function_statements(&function.body, context)?;
-        plans.insert(certificate.key.clone(), FunctionPlan { statements });
+        let plan = match validate_guarded_function_return(function, context)? {
+            Some(plan) => plan,
+            None => FunctionPlan::Statements {
+                statements: validate_function_statements(&function.body, context)?,
+            },
+        };
+        plans.insert(certificate.key.clone(), plan);
     }
     Ok(plans)
 }

@@ -228,13 +228,28 @@ pub(super) fn define_functions<'dae>(
             functions,
             shapes: &certificate.values,
         };
-        lower_function_statements(
-            construction,
-            symbols,
-            &mut body,
-            &reserved.flat.body,
-            &plan.statements,
-        )?;
+        match plan {
+            FunctionPlan::Statements { statements } => lower_function_statements(
+                construction,
+                symbols,
+                &mut body,
+                &reserved.flat.body,
+                statements,
+            )?,
+            FunctionPlan::GuardedReturn {
+                branches,
+                tail,
+                targets,
+            } => lower_guarded_function_return(
+                construction,
+                symbols,
+                &mut body,
+                reserved.flat,
+                branches,
+                tail,
+                targets,
+            )?,
+        }
         construction.functions(|functions| functions.define(body, provenance))?;
     }
     Ok(())

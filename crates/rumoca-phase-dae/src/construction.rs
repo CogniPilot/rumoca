@@ -49,7 +49,7 @@ use function_array_assembly::lower_function_array_assembly;
 use function_body::{
     FunctionConditional, FunctionFold, TotalArrayDefinition, flattened_function_loop,
     function_value_coordinate, lower_function_conditional, lower_function_fold,
-    lower_total_function_array_definition,
+    lower_guarded_function_return, lower_total_function_array_definition,
 };
 use function_construction::{FunctionRegistry, define_functions, reserve_functions};
 use function_record_assembly::lower_function_record_assembly;
