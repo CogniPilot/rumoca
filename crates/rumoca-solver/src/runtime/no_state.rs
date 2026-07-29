@@ -1,4 +1,6 @@
-use super::{schedule::RuntimeEventStop, solve_ops::EventPreMode};
+use super::{
+    event::runtime_root_event_application_time, schedule::RuntimeEventStop, solve_ops::EventPreMode,
+};
 use crate::timeline::sample_time_match_with_tol;
 
 const ROOT_BISECTION_ITERS: usize = 64;
@@ -53,7 +55,7 @@ pub fn first_no_state_root_crossing<E>(
     for _ in 0..ROOT_BISECTION_ITERS {
         let mid = lo + 0.5 * (hi - lo);
         evaluate(mid, &mut scratch.mid)?;
-        if root_slice_crossed_after_start(&scratch.lo, &scratch.mid, tol) {
+        if root_slice_brackets_after_start(&scratch.lo, &scratch.mid) {
             hi = mid;
         } else {
             lo = mid;
@@ -68,6 +70,13 @@ fn root_slice_crossed_after_start(start: &[f64], end: &[f64], tol: f64) -> bool 
         root_surface_near_zero(*b, tol)
             || (!root_surface_near_zero(*a, tol) && a.signum() != b.signum())
     })
+}
+
+fn root_slice_brackets_after_start(start: &[f64], end: &[f64]) -> bool {
+    start
+        .iter()
+        .zip(end)
+        .any(|(a, b)| *a != 0.0 && (*b == 0.0 || a.signum() != b.signum()))
 }
 
 fn root_surface_near_zero(value: f64, tol: f64) -> bool {
@@ -90,6 +99,13 @@ pub struct NoStateEventStep {
     pub tol: f64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NoStateRootBoundary {
+    pub event_time: f64,
+    pub evaluation_time: f64,
+    pub continuation_time: f64,
+}
+
 impl NoStateEventStep {
     pub fn event_time(self) -> f64 {
         if self.root_event {
@@ -107,6 +123,21 @@ impl NoStateEventStep {
                 .map(|event| event.pre_mode)
                 .unwrap_or(EventPreMode::FollowCurrent)
         }
+    }
+
+    pub fn root_boundary(self) -> Option<NoStateRootBoundary> {
+        self.root_event.then(|| {
+            let event_time = self.root_event_time.unwrap_or(self.stop_time);
+            NoStateRootBoundary {
+                event_time,
+                evaluation_time: event_time.next_up(),
+                continuation_time: runtime_root_event_application_time(
+                    event_time,
+                    self.target,
+                    self.tol,
+                ),
+            }
+        })
     }
 }
 
@@ -214,7 +245,11 @@ fn capped_no_state_step_target(current: f64, target: f64, max_step: Option<f64>)
     };
     let candidate = (current + max_step).min(target);
     if candidate > current {
-        candidate
+        if sample_time_match_with_tol(candidate, target) {
+            target
+        } else {
+            candidate
+        }
     } else {
         current.next_up().min(target)
     }
@@ -336,6 +371,17 @@ mod tests {
     }
 
     #[test]
+    fn accepted_step_limit_snaps_roundoff_to_the_output_boundary() {
+        let target = 0.2;
+        let current = 0.18;
+
+        assert_eq!(
+            capped_no_state_step_target(current, target, Some(0.02)),
+            target
+        );
+    }
+
+    #[test]
     fn root_search_finds_earliest_surface_without_reallocating_scratch() {
         let mut scratch = NoStateRootSearchScratch::new(2);
         let start_ptr = scratch.start.as_ptr();
@@ -370,6 +416,21 @@ mod tests {
     }
 
     #[test]
+    fn root_search_does_not_localize_one_tolerance_before_an_endpoint_root() {
+        let mut scratch = NoStateRootSearchScratch::new(1);
+        let end = 0.199_999_999_999_999_98;
+
+        let root = first_no_state_root_crossing(&mut scratch, 1, 0.18, end, 1.0e-6, |t, out| {
+            out[0] = t - 0.2;
+            Ok::<_, ()>(())
+        })
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(root, end);
+    }
+
+    #[test]
     fn root_scan_ceiling_uses_the_nearest_dt_or_delay_limit() {
         assert_eq!(
             no_state_root_scan_step_ceiling(Some(0.25), Some(0.1)),
@@ -380,6 +441,24 @@ mod tests {
             Some(0.25)
         );
         assert_eq!(no_state_root_scan_step_ceiling(Some(0.0), Some(-1.0)), None);
+    }
+
+    #[test]
+    fn coincident_root_boundary_separates_evaluation_from_output_time() {
+        let step = NoStateEventStep {
+            target: 0.2,
+            stop_time: 0.2,
+            event_stop: None,
+            root_event_time: Some(0.2),
+            root_event: true,
+            tol: 1.0e-6,
+        };
+
+        let boundary = step.root_boundary().unwrap();
+
+        assert_eq!(boundary.event_time, step.target);
+        assert_eq!(boundary.evaluation_time, 0.2_f64.next_up());
+        assert_eq!(boundary.continuation_time, step.target);
     }
 
     struct OscillatoryBackend {

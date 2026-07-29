@@ -40,8 +40,8 @@ use rumoca_solver::{
     build_sim_result_from_solve_model, commit_pre_params_after_event_at,
     current_dynamic_time_event_stop, next_runtime_event_stop, process_runtime_event_boundary,
     push_visible_values, replace_last_visible_values, runtime_event_horizon,
-    runtime_root_event_application_time, runtime_values_changed, stop_time_reached_with_tol,
-    timeline::sample_time_match_with_tol, visible_values_with_context,
+    runtime_values_changed, stop_time_reached_with_tol, timeline::sample_time_match_with_tol,
+    visible_values_with_context,
 };
 pub(crate) use runtime::{
     EventUpdateInput, apply_event_updates, apply_event_updates_with_event_pre,

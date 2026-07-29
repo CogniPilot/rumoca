@@ -7,8 +7,7 @@ use rumoca_solver::{
     RuntimeEventBoundaryHandler, RuntimeEventStop, RuntimeSolveError, SimOptions, SimTermination,
     SolveRuntime, SolveStopSchedule, apply_discrete_slot_values, commit_pre_params_after_event_at,
     first_no_state_root_crossing, no_state_root_scan_step_ceiling, process_runtime_event_boundary,
-    run_no_state_output_schedule, runtime_event_horizon, runtime_root_event_application_time,
-    runtime_values_changed,
+    run_no_state_output_schedule, runtime_event_horizon, runtime_values_changed,
     timeline::{event_left_probe_time, sample_time_match_with_tol},
 };
 
@@ -342,6 +341,7 @@ fn apply_no_state_event_step(
     step: NoStateEventStep,
 ) -> Result<(), SimError> {
     let event_t = step.event_time();
+    let root_boundary = step.root_boundary();
     runtime.last_event_t = Some(event_t);
     let event = if step.root_event {
         RuntimeEventStop::static_event(EventPreMode::EventEntry)
@@ -367,22 +367,18 @@ fn apply_no_state_event_step(
         process_runtime_event_boundary(
             RuntimeEventBoundary {
                 event_t,
-                horizon_t: if step.root_event {
-                    event_t.min(step.target)
-                } else {
-                    runtime_event_horizon(event, step.target, opts.t_end)
-                },
+                horizon_t: root_boundary.map_or_else(
+                    || runtime_event_horizon(event, step.target, opts.t_end),
+                    |boundary| boundary.evaluation_time,
+                ),
                 tolerance: step.tol,
                 event,
             },
             &mut handler,
         )?
     };
-    runtime.current_t = if step.root_event {
-        runtime_root_event_application_time(outcome.final_t, step.target, step.tol)
-    } else {
-        outcome.final_t
-    };
+    runtime.current_t =
+        root_boundary.map_or(outcome.final_t, |boundary| boundary.continuation_time);
     commit_pre_params_after_event_at(
         model,
         &runtime.current_y,
@@ -457,6 +453,9 @@ impl RuntimeEventBoundaryHandler for NoStateEventBoundary<'_> {
         }
         self.event_pre_y = self.y.to_vec();
         self.event_pre_p = self.p.to_vec();
+        if self.root_event {
+            return Ok(());
+        }
         self.apply_event_updates(event_t)?;
         refresh_observation_rows_and_relation_memory(
             self.runtime,

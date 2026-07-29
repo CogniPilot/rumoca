@@ -376,11 +376,9 @@ fn apply_no_state_event_step(
     }
     let event_pre_y = runtime.current_y.clone();
     let event_pre_p = runtime.params.clone();
-    runtime.current_t = if step.root_event {
-        root_event_application_time(event_t, step.target, step.tol)
-    } else {
-        event_t
-    };
+    runtime.current_t = step
+        .root_boundary()
+        .map_or(event_t, |boundary| boundary.evaluation_time);
     apply_event_updates(
         &runtime.runtime,
         &runtime.equilibrium_model,
@@ -423,6 +421,9 @@ fn record_no_state_event_step(
     event_pre_p: &[f64],
 ) -> Result<(), SimError> {
     if step.root_event {
+        let boundary = step
+            .root_boundary()
+            .expect("root event step constructs one root boundary");
         refresh_observation_rows_and_relation_memory(
             model,
             &runtime.runtime,
@@ -443,11 +444,10 @@ fn record_no_state_event_step(
             SamplePoint {
                 y: &runtime.current_y,
                 params: &runtime.params,
-                t: runtime.current_t,
+                t: boundary.continuation_time,
             },
         )?;
-        runtime.current_t =
-            runtime_root_event_application_time(runtime.current_t, step.target, step.tol);
+        runtime.current_t = boundary.continuation_time;
         return Ok(());
     }
     let event = step.event_stop.unwrap_or(RuntimeEventStop {
@@ -673,10 +673,6 @@ fn next_no_state_root_event_time(
     } else {
         Ok(planned_root)
     }
-}
-
-fn root_event_application_time(root_time: f64, target: f64, tolerance: f64) -> f64 {
-    runtime_root_event_application_time(root_time, target, tolerance)
 }
 
 pub(crate) struct FixedEventLeftLimitInput<'a> {
