@@ -1506,7 +1506,7 @@ fn is_external_input(
                 variable.source_span,
             )
         })?;
-    Ok(flat.top_level_input_components.contains(root))
+    Ok(flat.top_level_input_components.contains(root) || flat.top_level_connectors.contains(root))
 }
 
 fn validate_variable_role(

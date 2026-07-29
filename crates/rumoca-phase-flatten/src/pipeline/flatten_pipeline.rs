@@ -793,7 +793,7 @@ pub(crate) fn process_component_instances_for_flatten(
 }
 
 fn track_top_level_component_markers(flat: &mut flat::Model, instance_data: &ast::InstanceData) {
-    if instance_data.qualified_name.parts.len() != 1 {
+    if instance_data.qualified_name.parts.len() != 1 || instance_data.is_protected {
         return;
     }
     let name = &instance_data.qualified_name.parts[0].0;
