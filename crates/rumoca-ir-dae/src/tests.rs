@@ -616,12 +616,12 @@ fn assert_structured_binders_round_trip_and_reject_forgery(encoded: &str) {
     assert!(serde_json::from_value::<Dae>(forged).is_err());
 
     let mut forged: serde_json::Value = serde_json::from_str(encoded).unwrap();
-    forged["storage"]["continuous_equation_owners"][1] =
-        forged["storage"]["continuous_equation_owners"][0].clone();
-    assert!(matches!(
-        serde_json::from_value::<Dae>(forged),
-        Err(error) if error.to_string().contains("continuous equation owner order")
-    ));
+    forged["storage"]["continuous_equation_operations"][1]["residual"]["residual"] =
+        serde_json::json!(u32::MAX);
+    assert!(
+        serde_json::from_value::<Dae>(forged).is_err(),
+        "a residual operation cannot name an unknown expression"
+    );
 }
 
 #[test]

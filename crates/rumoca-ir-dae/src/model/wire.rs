@@ -58,7 +58,7 @@ impl Serialize for FrozenStorage {
     where
         S: serde::Serializer,
     {
-        let mut state = serializer.serialize_struct("DaeStorage", 26)?;
+        let mut state = serializer.serialize_struct("DaeStorage", 21)?;
         state.serialize_field("value_types", &self.value_types)?;
         state.serialize_field("flat_type_ids", &self.flat_type_ids)?;
         state.serialize_field("value_type_provenance", &self.value_type_provenance)?;
@@ -69,21 +69,26 @@ impl Serialize for FrozenStorage {
         )?;
         state.serialize_field("domains", &self.domains)?;
         state.serialize_field("expressions", &self.expressions)?;
-        state.serialize_field("continuous_equations", &self.continuous_equations)?;
-        state.serialize_field("initialization_equations", &self.initialization_equations)?;
+        state.serialize_field(
+            "continuous_equation_operations",
+            &equation_systems::EquationOperationsOutput::new(
+                &self.continuous_equation_owners,
+                &self.continuous_equations,
+                &self.continuous_families,
+                &self.equation_family_bodies,
+            ),
+        )?;
+        state.serialize_field(
+            "initialization_equation_operations",
+            &equation_systems::EquationOperationsOutput::new(
+                &self.initialization_equation_owners,
+                &self.initialization_equations,
+                &self.initialization_families,
+                &self.equation_family_bodies,
+            ),
+        )?;
         state.serialize_field("discrete_real_equations", &self.discrete_real_equations)?;
         state.serialize_field("discrete_assignments", &self.discrete_assignments)?;
-        state.serialize_field("continuous_families", &self.continuous_families)?;
-        state.serialize_field("initialization_families", &self.initialization_families)?;
-        state.serialize_field(
-            "continuous_equation_owners",
-            &self.continuous_equation_owners,
-        )?;
-        state.serialize_field(
-            "initialization_equation_owners",
-            &self.initialization_equation_owners,
-        )?;
-        state.serialize_field("equation_family_bodies", &self.equation_family_bodies)?;
         state.serialize_field("relations", &self.relations)?;
         state.serialize_field("conditions", &self.conditions)?;
         state.serialize_field("roots", &self.roots)?;
@@ -115,15 +120,10 @@ struct StorageWire {
     functions: Vec<FunctionEntryWire>,
     domains: Vec<DomainEntryWire>,
     expressions: ExpressionArenaWire,
-    continuous_equations: Vec<ResidualEquationWire>,
-    initialization_equations: Vec<ResidualEquationWire>,
+    continuous_equation_operations: Vec<EquationOperationInput>,
+    initialization_equation_operations: Vec<EquationOperationInput>,
     discrete_real_equations: Vec<ResidualEquationWire>,
     discrete_assignments: Vec<DiscreteAssignmentWire>,
-    continuous_families: Vec<StructuredFamilyWire>,
-    initialization_families: Vec<StructuredFamilyWire>,
-    continuous_equation_owners: Vec<EquationOwnerWire>,
-    initialization_equation_owners: Vec<EquationOwnerWire>,
-    equation_family_bodies: Vec<u32>,
     relations: Vec<RelationEntryWire>,
     conditions: Vec<ConditionEntryWire>,
     roots: Vec<RootEntryWire>,
@@ -256,44 +256,29 @@ struct ResidualEquationWire {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+enum EquationOperationInput {
+    Residual {
+        residual: u32,
+        #[serde(deserialize_with = "deserialize_provenance")]
+        provenance: DaeProvenance,
+    },
+    Structured {
+        domain: u32,
+        scalar_view: rumoca_core::ComprehensionScalarView,
+        bodies: Vec<u32>,
+        #[serde(deserialize_with = "deserialize_provenance")]
+        provenance: DaeProvenance,
+    },
+}
+
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct DiscreteAssignmentWire {
     target: u32,
     value: u32,
     #[serde(deserialize_with = "deserialize_provenance")]
     provenance: DaeProvenance,
-}
-
-#[derive(Deserialize, Clone, Copy)]
-#[serde(deny_unknown_fields)]
-struct FamilyBodyRangeWire {
-    start: u32,
-    len: u32,
-}
-
-impl FamilyBodyRangeWire {
-    fn indices(self) -> Option<std::ops::Range<usize>> {
-        let start = self.start as usize;
-        let end = start.checked_add(self.len as usize)?;
-        Some(start..end)
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct StructuredFamilyWire {
-    domain: u32,
-    scalar_view: rumoca_core::ComprehensionScalarView,
-    bodies: FamilyBodyRangeWire,
-    #[serde(deserialize_with = "deserialize_provenance")]
-    provenance: DaeProvenance,
-}
-
-#[derive(Deserialize, Clone, Copy)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
-enum EquationOwnerWire {
-    Residual(u32),
-    Structured(u32),
 }
 
 #[derive(Deserialize, Clone, Copy)]

@@ -28,7 +28,7 @@ fn wire_omits_constructor_derived_facts_and_round_trips_canonically() {
         );
     }
     assert!(
-        !storage["continuous_families"][0]
+        !storage["continuous_equation_operations"][0]["structured"]
             .as_object()
             .unwrap()
             .contains_key("scalar_rows")
@@ -64,7 +64,7 @@ fn wire_omits_constructor_derived_facts_and_round_trips_canonically() {
 }
 
 #[test]
-fn wire_rejects_removed_derived_fields_and_malformed_type_anchors() {
+fn wire_rejects_removed_derived_fields() {
     let dae = derived_wire_fixture();
     let canonical = serde_json::to_value(&dae).unwrap();
     for (path, field, value) in [
@@ -99,7 +99,12 @@ fn wire_rejects_removed_derived_fields_and_malformed_type_anchors() {
             serde_json::json!(1),
         ),
         (
-            &["storage", "continuous_families", "0"][..],
+            &[
+                "storage",
+                "continuous_equation_operations",
+                "0",
+                "structured",
+            ][..],
             "scalar_rows",
             serde_json::json!(1),
         ),
@@ -136,6 +141,31 @@ fn wire_rejects_removed_derived_fields_and_malformed_type_anchors() {
             "removed field {field} must be rejected"
         );
     }
+    for removed in [
+        "continuous_equations",
+        "initialization_equations",
+        "continuous_families",
+        "initialization_families",
+        "continuous_equation_owners",
+        "initialization_equation_owners",
+        "equation_family_bodies",
+    ] {
+        let mut forged = canonical.clone();
+        forged["storage"]
+            .as_object_mut()
+            .unwrap()
+            .insert(removed.to_owned(), serde_json::json!([]));
+        assert!(
+            serde_json::from_value::<Dae>(forged).is_err(),
+            "removed equation mirror {removed} must be rejected"
+        );
+    }
+}
+
+#[test]
+fn wire_rejects_malformed_type_anchors() {
+    let dae = derived_wire_fixture();
+    let canonical = serde_json::to_value(&dae).unwrap();
 
     let anchors = canonical["storage"]["expressions"]["type_anchors"]
         .as_array()

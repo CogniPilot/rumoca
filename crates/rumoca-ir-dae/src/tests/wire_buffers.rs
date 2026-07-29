@@ -66,7 +66,7 @@ fn wire_rejects_repeated_expression_buffer_ranges() {
 }
 
 #[test]
-fn wire_replays_interleaved_equation_family_owners_by_global_body_cursor() {
+fn wire_replays_ordered_equation_owner_operations_without_global_body_state() {
     let source = TestSource::new(
         "for i in 1:2 loop x = {0,0}; end for; initial equation x = {0,0}; x = {0,0};",
     );
@@ -122,23 +122,33 @@ fn wire_replays_interleaved_equation_family_owners_by_global_body_cursor() {
 
     let encoded = serde_json::to_string(&dae).unwrap();
     let decoded: Dae =
-        serde_json::from_str(&encoded).expect("global family-body insertion order round trips");
+        serde_json::from_str(&encoded).expect("ordered equation operations round trip");
     assert_eq!(serde_json::to_string(&decoded).unwrap(), encoded);
+    let binary = bincode::serialize(&dae).unwrap();
+    let decoded: Dae = bincode::deserialize(&binary).expect("binary equation operations replay");
+    assert_eq!(bincode::serialize(&decoded).unwrap(), binary);
 
-    let mut repeated: serde_json::Value = serde_json::from_str(&encoded).unwrap();
-    repeated["storage"]["initialization_families"][0]["bodies"]["start"] = 0.into();
+    let canonical: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+    let continuous = canonical["storage"]["continuous_equation_operations"]
+        .as_array()
+        .unwrap();
+    let initialization = canonical["storage"]["initialization_equation_operations"]
+        .as_array()
+        .unwrap();
+    assert_eq!(continuous.len(), 2);
+    assert_eq!(initialization.len(), 1);
     assert!(
-        serde_json::from_value::<Dae>(repeated).is_err(),
-        "a family cannot reuse a body segment owned by an earlier system"
+        continuous
+            .iter()
+            .all(|operation| operation.get("structured").is_some()),
+        "continuous owner insertion order is explicit"
     );
 
-    let mut trailing: serde_json::Value = serde_json::from_str(&encoded).unwrap();
-    trailing["storage"]["equation_family_bodies"]
-        .as_array_mut()
-        .unwrap()
-        .push(1.into());
+    let mut unknown_body = canonical;
+    unknown_body["storage"]["initialization_equation_operations"][0]["structured"]["bodies"][0] =
+        u32::MAX.into();
     assert!(
-        serde_json::from_value::<Dae>(trailing).is_err(),
-        "every packed family body must be consumed exactly once"
+        serde_json::from_value::<Dae>(unknown_body).is_err(),
+        "structured operation bodies must name constructed expressions"
     );
 }
