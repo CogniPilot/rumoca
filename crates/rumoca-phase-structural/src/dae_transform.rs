@@ -295,13 +295,16 @@ fn rebuild_holonomic_constraint(
     let rebuilt = model.inspect(|source| {
         dae::Dae::construct(model.source_map().clone(), |target| {
             let types = rebuild_types(source, target)?;
+            let domains = rebuild_domains(source, target)?;
             let mut variables = reserve_variables(source, target, &types, None)?;
             let derivative_definitions = explicit_derivative_definitions(source);
             let (expressions, replacement) = target.expressions(|expressions| {
                 let mut rebuilder = ExpressionRebuilder::new(
                     source,
                     expressions,
+                    &types,
                     &variables,
+                    &domains,
                     &derivative_definitions,
                     None,
                 );
@@ -325,6 +328,7 @@ fn rebuild_holonomic_constraint(
                 source,
                 target,
                 &expressions,
+                &domains,
                 Some((constraint.residual, replacement)),
             )
         })
@@ -345,20 +349,23 @@ fn rebuild_with_state_demotion(
     let rebuilt = model.inspect(|source| {
         dae::Dae::construct(model.source_map().clone(), |target| {
             let types = rebuild_types(source, target)?;
+            let domains = rebuild_domains(source, target)?;
             let mut variables = reserve_variables(source, target, &types, Some(candidate.state))?;
             let derivative_definitions = explicit_derivative_definitions(source);
             let expressions = target.expressions(|expressions| {
                 let mut rebuilder = ExpressionRebuilder::new(
                     source,
                     expressions,
+                    &types,
                     &variables,
+                    &domains,
                     &derivative_definitions,
                     Some(candidate),
                 );
                 rebuilder.rebuild_all()
             })?;
             define_variables(source, target, &expressions, &mut variables)?;
-            rebuild_equations(source, target, &expressions, None)
+            rebuild_equations(source, target, &expressions, &domains, None)
         })
     });
     rebuilt
@@ -436,9 +443,6 @@ fn supports_reconstruction(view: dae::DaeView<'_>, candidate: DirectStateConstra
 
 fn supports_common_reconstruction(view: dae::DaeView<'_>) -> bool {
     let unsupported_owner = view.function_count() != 0
-        || view.domain_count() != 0
-        || view.continuous_family_count() != 0
-        || view.initialization_family_count() != 0
         || view.discrete_real_equation_count() != 0
         || view.discrete_assignment_count() != 0
         || view.relation_count() != 0
@@ -477,13 +481,20 @@ fn supports_common_reconstruction(view: dae::DaeView<'_>) -> bool {
         let Some(expression) = view.expression(id) else {
             return false;
         };
-        if expression.binder_domain().is_some() || expression.function_scope().is_some() {
+        if expression.function_scope().is_some() {
             return false;
         }
         match expression.operation() {
             dae::ExpressionOperation::Literal(_)
             | dae::ExpressionOperation::Unary { .. }
-            | dae::ExpressionOperation::Binary { .. } => true,
+            | dae::ExpressionOperation::Binary { .. }
+            | dae::ExpressionOperation::Conditional(_)
+            | dae::ExpressionOperation::Array(_)
+            | dae::ExpressionOperation::Range { .. }
+            | dae::ExpressionOperation::Comprehension { .. }
+            | dae::ExpressionOperation::Index { .. }
+            | dae::ExpressionOperation::ArrayUpdate { .. }
+            | dae::ExpressionOperation::Builtin { .. } => true,
             dae::ExpressionOperation::Coordinate(coordinate) => matches!(
                 coordinate,
                 dae::CoordinateView::Parameter(_)
@@ -492,6 +503,7 @@ fn supports_common_reconstruction(view: dae::DaeView<'_>) -> bool {
                     | dae::CoordinateView::Derivative(_)
                     | dae::CoordinateView::Algebraic(_)
                     | dae::CoordinateView::Time
+                    | dae::CoordinateView::Binder(_)
             ),
             _ => false,
         }
@@ -537,6 +549,42 @@ fn rebuild_types<'target>(
             })
             .collect()
     })
+}
+
+struct RebuiltDomain<'dae> {
+    id: dae::DomainId<'dae>,
+    binders: Vec<dae::DomainBinderId<'dae>>,
+}
+
+fn rebuild_domains<'target>(
+    source: dae::DaeView<'_>,
+    target: &mut dae::DaeConstruction<'target>,
+) -> Result<Vec<RebuiltDomain<'target>>, dae::DaeConstructionError> {
+    let mut rebuilt: Vec<RebuiltDomain<'target>> = Vec::with_capacity(source.domain_count());
+    for index in 0..source.domain_count() {
+        let source_id = source
+            .domain_id(index)
+            .expect("finalized domain ordinal resolves");
+        let domain = source
+            .domain(source_id)
+            .expect("finalized domain identity resolves");
+        let provenance = domain.provenance();
+        let id = target.domains(|domains| match domain.parent() {
+            Some(parent) => domains.nested(
+                rebuilt[parent.index() as usize].id,
+                domain.structured().clone(),
+                provenance,
+            ),
+            None => domains.structured(domain.structured().clone(), provenance),
+        })?;
+        let binders = target.domains(|domains| {
+            (0..domain.structured().binders.len())
+                .map(|ordinal| domains.binder(id, ordinal, provenance))
+                .collect::<Result<Vec<_>, _>>()
+        })?;
+        rebuilt.push(RebuiltDomain { id, binders });
+    }
+    Ok(rebuilt)
 }
 
 enum TargetVariable<'dae> {
@@ -679,41 +727,95 @@ fn rebuild_equations<'target>(
     source: dae::DaeView<'_>,
     target: &mut dae::DaeConstruction<'target>,
     expressions: &[dae::ExprId<'target>],
+    domains: &[RebuiltDomain<'target>],
     replacement: Option<(u32, dae::ExprId<'target>)>,
 ) -> Result<(), dae::DaeConstructionError> {
     target.continuous(|target| {
         for owner in source.continuous_owners() {
-            let dae::ContinuousOwnerView::Residual { equation, .. } = owner else {
-                unreachable!("reconstruction preflight rejects structured families")
-            };
-            let residual = replacement
-                .filter(|(source, _)| *source == equation.residual().index())
-                .map_or(
-                    expressions[equation.residual().index() as usize],
-                    |(_, target)| target,
-                );
-            target.value_equation(equation.provenance(), residual)?;
+            match owner {
+                dae::ContinuousOwnerView::Residual { equation, .. } => {
+                    let residual = replacement
+                        .filter(|(source, _)| *source == equation.residual().index())
+                        .map_or(
+                            expressions[equation.residual().index() as usize],
+                            |(_, target)| target,
+                        );
+                    target.value_equation(equation.provenance(), residual)?;
+                }
+                dae::ContinuousOwnerView::Structured { family, .. } => {
+                    rebuild_continuous_family(target, family, expressions, domains)?;
+                }
+            }
         }
         Ok(())
     })?;
     target.initialization(|target| {
         for owner in source.initialization_owners() {
-            let dae::InitializationOwnerView::Residual { equation, .. } = owner else {
-                unreachable!("reconstruction preflight rejects structured families")
-            };
-            target.value_equation(
-                equation.provenance(),
-                expressions[equation.residual().index() as usize],
-            )?;
+            match owner {
+                dae::InitializationOwnerView::Residual { equation, .. } => {
+                    target.value_equation(
+                        equation.provenance(),
+                        expressions[equation.residual().index() as usize],
+                    )?;
+                }
+                dae::InitializationOwnerView::Structured { family, .. } => {
+                    rebuild_initialization_family(target, family, expressions, domains)?;
+                }
+            }
         }
         Ok(())
     })
 }
 
+fn rebuild_continuous_family<'target>(
+    target: &mut dae::ContinuousEquations<'_, 'target>,
+    family: dae::StructuredFamilyView<'_>,
+    expressions: &[dae::ExprId<'target>],
+    domains: &[RebuiltDomain<'target>],
+) -> Result<(), dae::DaeConstructionError> {
+    let domain = domains[family.domain().index() as usize].id;
+    target.structured_family(
+        family.provenance(),
+        domain,
+        family.scalar_view(),
+        |target| rebuild_family_bodies(target, family, expressions),
+    )?;
+    Ok(())
+}
+
+fn rebuild_initialization_family<'target>(
+    target: &mut dae::InitializationEquations<'_, 'target>,
+    family: dae::StructuredFamilyView<'_>,
+    expressions: &[dae::ExprId<'target>],
+    domains: &[RebuiltDomain<'target>],
+) -> Result<(), dae::DaeConstructionError> {
+    let domain = domains[family.domain().index() as usize].id;
+    target.structured_family(
+        family.provenance(),
+        domain,
+        family.scalar_view(),
+        |target| rebuild_family_bodies(target, family, expressions),
+    )?;
+    Ok(())
+}
+
+fn rebuild_family_bodies<'target>(
+    target: &mut dae::StructuredResiduals<'_, 'target>,
+    family: dae::StructuredFamilyView<'_>,
+    expressions: &[dae::ExprId<'target>],
+) -> Result<(), dae::DaeConstructionError> {
+    for body in family.bodies().iter() {
+        target.body(expressions[body.index() as usize])?;
+    }
+    Ok(())
+}
+
 struct ExpressionRebuilder<'source, 'borrow, 'storage, 'target> {
     source: dae::DaeView<'source>,
     target: &'borrow mut dae::Expressions<'storage, 'target>,
+    types: &'borrow [dae::ValueTypeId<'target>],
     variables: &'borrow [ReservedVariable<'target>],
+    domains: &'borrow [RebuiltDomain<'target>],
     derivative_definitions: &'borrow [Option<u32>],
     candidate: Option<DirectStateConstraint>,
     rebuilt: Vec<Option<dae::ExprId<'target>>>,
@@ -724,14 +826,18 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
     fn new(
         source: dae::DaeView<'source>,
         target: &'borrow mut dae::Expressions<'storage, 'target>,
+        types: &'borrow [dae::ValueTypeId<'target>],
         variables: &'borrow [ReservedVariable<'target>],
+        domains: &'borrow [RebuiltDomain<'target>],
         derivative_definitions: &'borrow [Option<u32>],
         candidate: Option<DirectStateConstraint>,
     ) -> Self {
         Self {
             source,
             target,
+            types,
             variables,
+            domains,
             derivative_definitions,
             candidate,
             rebuilt: vec![None; source.expression_count()],
@@ -769,6 +875,7 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             .expression(source_id)
             .expect("finalized expression identity resolves");
         let provenance = source.provenance();
+        let value_type = self.types[source.value_type_id().index() as usize];
         let rebuilt = match source.operation() {
             dae::ExpressionOperation::Literal(literal) => {
                 self.target.at(provenance).literal(literal.clone())?
@@ -785,11 +892,118 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                 let rhs = self.rebuild(rhs)?;
                 self.target.at(provenance).binary(operator, lhs, rhs)?
             }
+            dae::ExpressionOperation::Conditional(operands) => {
+                self.rebuild_conditional(operands, provenance)?
+            }
+            dae::ExpressionOperation::Array(operands) => {
+                if operands.is_empty() {
+                    self.target.at(provenance).empty_array(value_type)?
+                } else {
+                    let elements = self.rebuild_operands(operands)?;
+                    self.target.at(provenance).array(elements)?
+                }
+            }
+            dae::ExpressionOperation::Range { start, step, stop } => {
+                self.target.at(provenance).range(start, step, stop)?
+            }
+            dae::ExpressionOperation::Comprehension { domain, body } => {
+                let body = self.rebuild(body)?;
+                self.target
+                    .at(provenance)
+                    .comprehension(self.domains[domain.index() as usize].id, body)?
+            }
+            dae::ExpressionOperation::Index { base, subscripts } => {
+                let base = self.rebuild(base)?;
+                let subscripts = self.rebuild_subscripts(subscripts)?;
+                self.target.at(provenance).index(base, subscripts)?
+            }
+            dae::ExpressionOperation::ArrayUpdate {
+                base,
+                value,
+                subscripts,
+            } => {
+                let base = self.rebuild(base)?;
+                let value = self.rebuild(value)?;
+                let subscripts = self.rebuild_subscripts(subscripts)?;
+                self.target
+                    .at(provenance)
+                    .array_update(base, value, subscripts)?
+            }
+            dae::ExpressionOperation::Builtin { builtin, arguments } => {
+                let arguments = self.rebuild_operands(arguments)?;
+                self.target.at(provenance).builtin(builtin, arguments)?
+            }
             _ => unreachable!("reconstruction preflight rejects this expression operation"),
         };
         self.visiting[index] = false;
         self.rebuilt[index] = Some(rebuilt);
         Ok(rebuilt)
+    }
+
+    fn rebuild_operands(
+        &mut self,
+        operands: dae::ExpressionOperands<'source>,
+    ) -> Result<Vec<dae::ExprId<'target>>, dae::DaeConstructionError> {
+        operands
+            .iter()
+            .map(|operand| self.rebuild(operand))
+            .collect()
+    }
+
+    fn rebuild_conditional(
+        &mut self,
+        operands: dae::ExpressionOperands<'source>,
+        provenance: dae::DaeProvenance,
+    ) -> Result<dae::ExprId<'target>, dae::DaeConstructionError> {
+        let fallback = self.rebuild(
+            operands
+                .get(operands.len() - 1)
+                .expect("checked conditional has a fallback"),
+        )?;
+        let mut branches = Vec::with_capacity((operands.len() - 1) / 2);
+        for index in (0..operands.len() - 1).step_by(2) {
+            branches.push((
+                self.rebuild(
+                    operands
+                        .get(index)
+                        .expect("checked conditional branch has a condition"),
+                )?,
+                self.rebuild(
+                    operands
+                        .get(index + 1)
+                        .expect("checked conditional branch has a value"),
+                )?,
+            ));
+        }
+        self.target.at(provenance).conditional(branches, fallback)
+    }
+
+    fn rebuild_subscripts(
+        &mut self,
+        subscripts: dae::SubscriptsView<'source>,
+    ) -> Result<Vec<dae::Subscript<'target>>, dae::DaeConstructionError> {
+        subscripts
+            .iter()
+            .map(|subscript| match subscript {
+                dae::SubscriptView::Index {
+                    expression,
+                    provenance,
+                } => Ok(dae::Subscript::Index {
+                    expression: self.rebuild(expression)?,
+                    provenance,
+                }),
+                dae::SubscriptView::Whole { provenance } => {
+                    Ok(dae::Subscript::Whole { provenance })
+                }
+                dae::SubscriptView::Slice {
+                    expression,
+                    provenance,
+                } => Ok(dae::Subscript::Slice {
+                    expression: self.rebuild(expression)?,
+                    provenance,
+                }),
+            })
+            .collect()
     }
 
     fn rebuild_coordinate(
@@ -849,6 +1063,12 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                 }
             }
             dae::CoordinateView::Time => dae::CoordinateInput::Time,
+            dae::CoordinateView::Binder(binder) => {
+                return self.target.at(provenance).binder(
+                    self.domains[binder.domain().index() as usize].binders
+                        [binder.ordinal() as usize],
+                );
+            }
             _ => unreachable!("reconstruction preflight rejects this coordinate"),
         };
         self.target.at(provenance).coordinate(coordinate)
@@ -1124,6 +1344,7 @@ mod tests {
         x: dae::StateId<'dae>,
         y: dae::StateId<'dae>,
         a: dae::AlgebraicId<'dae>,
+        z: Option<dae::AlgebraicId<'dae>>,
     }
 
     #[derive(Clone, Copy)]
@@ -1133,14 +1354,178 @@ mod tests {
         derivative_x: dae::DaeProvenance,
     }
 
-    fn constrained_state_model(nonlinear_constraint: bool) -> (dae::Dae, dae::DaeProvenance) {
+    fn fixture_types<'dae>(
+        model: &mut dae::DaeConstruction<'dae>,
+        declaration: dae::DaeProvenance,
+    ) -> Result<(dae::ValueTypeId<'dae>, dae::ValueTypeId<'dae>), dae::DaeConstructionError> {
+        model.types(|types| {
+            Ok((
+                types.intern(
+                    TypeId::new(0),
+                    dae::ValueType::scalar(dae::ScalarType::Real),
+                    declaration,
+                )?,
+                types.intern(
+                    TypeId::new(1),
+                    dae::ValueType::array(dae::ScalarType::Real, [2]),
+                    declaration,
+                )?,
+            ))
+        })
+    }
+
+    fn fixture_domain<'dae>(
+        model: &mut dae::DaeConstruction<'dae>,
+        owner: Option<dae::DaeProvenance>,
+    ) -> Result<Option<dae::DomainId<'dae>>, dae::DaeConstructionError> {
+        owner
+            .map(|owner| {
+                model.domains(|domains| {
+                    domains.structured(
+                        rumoca_core::StructuredIndexDomain {
+                            binders: vec![rumoca_core::StructuredIndexBinder {
+                                id: 0,
+                                display_name: "i".to_owned(),
+                                lower: 1,
+                                upper: 2,
+                                step: 1,
+                            }],
+                        },
+                        owner,
+                    )
+                })
+            })
+            .transpose()
+    }
+
+    fn fixture_variables<'dae>(
+        model: &mut dae::DaeConstruction<'dae>,
+        real: dae::ValueTypeId<'dae>,
+        vector: dae::ValueTypeId<'dae>,
+        declaration: dae::DaeProvenance,
+        with_family: bool,
+    ) -> Result<FixtureVariables<'dae>, dae::DaeConstructionError> {
+        model.variables(|variables| {
+            let z = if with_family {
+                Some(variables.algebraic(
+                    VarName::new("z"),
+                    vector,
+                    declaration,
+                    dae::VariableAttributes::default(),
+                )?)
+            } else {
+                None
+            };
+            Ok(FixtureVariables {
+                p: variables.parameter(
+                    VarName::new("p"),
+                    real,
+                    declaration,
+                    dae::VariableAttributes::default(),
+                )?,
+                x: variables.state(
+                    VarName::new("x"),
+                    real,
+                    declaration,
+                    dae::VariableAttributes::default(),
+                )?,
+                y: variables.state(
+                    VarName::new("y"),
+                    real,
+                    declaration,
+                    dae::VariableAttributes::default(),
+                )?,
+                a: variables.algebraic(
+                    VarName::new("a"),
+                    real,
+                    declaration,
+                    dae::VariableAttributes::default(),
+                )?,
+                z,
+            })
+        })
+    }
+
+    fn fixture_family_residual<'dae>(
+        model: &mut dae::DaeConstruction<'dae>,
+        domain: Option<dae::DomainId<'dae>>,
+        owner: Option<dae::DaeProvenance>,
+        z: Option<dae::AlgebraicId<'dae>>,
+    ) -> Result<Option<dae::ExprId<'dae>>, dae::DaeConstructionError> {
+        let (Some(domain), Some(owner), Some(z)) = (domain, owner, z) else {
+            return Ok(None);
+        };
+        let binder = model.domains(|domains| domains.binder(domain, 0, owner))?;
+        model
+            .expressions(|expressions| {
+                let aggregate = expressions
+                    .at(owner)
+                    .coordinate(dae::CoordinateInput::Algebraic(z))?;
+                let index = expressions.at(owner).binder(binder)?;
+                let value = expressions.at(owner).index(
+                    aggregate,
+                    [dae::Subscript::Index {
+                        expression: index,
+                        provenance: owner,
+                    }],
+                )?;
+                expressions
+                    .at(owner)
+                    .binary(dae::BinaryOperator::Subtract, value, index)
+            })
+            .map(Some)
+    }
+
+    fn insert_fixture_equations<'dae>(
+        model: &mut dae::DaeConstruction<'dae>,
+        spans: FixtureSpans,
+        residuals: [dae::ExprId<'dae>; 3],
+        family: Option<(dae::DomainId<'dae>, dae::DaeProvenance, dae::ExprId<'dae>)>,
+    ) -> Result<(), dae::DaeConstructionError> {
+        model.continuous(|continuous| {
+            continuous.value_equation(spans.constraint, residuals[0])?;
+            continuous.value_equation(spans.derivative_y, residuals[1])?;
+            continuous.value_equation(spans.derivative_x, residuals[2])?;
+            if let Some((domain, owner, residual)) = family {
+                continuous.structured_family(
+                    owner,
+                    domain,
+                    rumoca_core::ComprehensionScalarView::BinderSubstitution,
+                    |family| family.body(residual),
+                )?;
+            }
+            Ok(())
+        })?;
+        if let Some((domain, owner, residual)) = family {
+            model.initialization(|initialization| {
+                initialization.structured_family(
+                    owner,
+                    domain,
+                    rumoca_core::ComprehensionScalarView::BinderSubstitution,
+                    |family| family.body(residual),
+                )?;
+                Ok(())
+            })?;
+        }
+        Ok(())
+    }
+
+    fn constrained_state_model(
+        nonlinear_constraint: bool,
+        with_family: bool,
+    ) -> (dae::Dae, dae::DaeProvenance) {
         let rhs = if nonlinear_constraint {
             "sin(y)"
         } else {
             "p*y"
         };
+        let family = if with_family {
+            " Real z[2]; for i in 1:2 loop z[i] = i; end for;"
+        } else {
+            ""
+        };
         let text = format!(
-            "parameter Real p; Real x; Real y; Real a; equation x = {rhs}; der(y) = a; der(x) = 1;"
+            "parameter Real p; Real x; Real y; Real a;{family} equation x = {rhs}; der(y) = a; der(x) = 1;"
         );
         let mut sources = SourceMap::new();
         let source = sources.add("checked_index_reduction.mo", &text);
@@ -1148,56 +1533,27 @@ mod tests {
         let constraint = source_provenance(source, &text, &format!("x = {rhs}"));
         let derivative_y = source_provenance(source, &text, "der(y) = a");
         let derivative_x = source_provenance(source, &text, "der(x) = 1");
+        let family_owner =
+            with_family.then(|| source_provenance(source, &text, "for i in 1:2 loop z[i] = i"));
         let model = dae::Dae::construct(sources, |model| {
-            let real = model.types(|types| {
-                types.intern(
-                    TypeId::new(0),
-                    dae::ValueType::scalar(dae::ScalarType::Real),
-                    declaration,
-                )
-            })?;
-            let variables = model.variables(|variables| {
-                Ok(FixtureVariables {
-                    p: variables.parameter(
-                        VarName::new("p"),
-                        real,
-                        declaration,
-                        dae::VariableAttributes::default(),
-                    )?,
-                    x: variables.state(
-                        VarName::new("x"),
-                        real,
-                        declaration,
-                        dae::VariableAttributes::default(),
-                    )?,
-                    y: variables.state(
-                        VarName::new("y"),
-                        real,
-                        declaration,
-                        dae::VariableAttributes::default(),
-                    )?,
-                    a: variables.algebraic(
-                        VarName::new("a"),
-                        real,
-                        declaration,
-                        dae::VariableAttributes::default(),
-                    )?,
-                })
-            })?;
+            let (real, vector) = fixture_types(model, declaration)?;
+            let domain = fixture_domain(model, family_owner)?;
+            let variables = fixture_variables(model, real, vector, declaration, with_family)?;
             let spans = FixtureSpans {
                 constraint,
                 derivative_y,
                 derivative_x,
             };
-            let [constraint_residual, y_residual, x_residual] =
-                model.expressions(|expressions| {
-                    fixture_residuals(expressions, variables, spans, nonlinear_constraint)
-                })?;
-            model.continuous(|continuous| {
-                continuous.value_equation(constraint, constraint_residual)?;
-                continuous.value_equation(derivative_y, y_residual)?;
-                continuous.value_equation(derivative_x, x_residual)
-            })
+            let residuals = model.expressions(|expressions| {
+                fixture_residuals(expressions, variables, spans, nonlinear_constraint)
+            })?;
+            let family_residual =
+                fixture_family_residual(model, domain, family_owner, variables.z)?;
+            let family = domain
+                .zip(family_owner)
+                .zip(family_residual)
+                .map(|((domain, owner), residual)| (domain, owner, residual));
+            insert_fixture_equations(model, spans, residuals, family)
         })
         .expect("fixture DAE is valid");
         (model, constraint)
@@ -1274,7 +1630,7 @@ mod tests {
 
     #[test]
     fn direct_state_demotion_reconstructs_a_finalized_dae_with_exact_provenance() {
-        let (model, constraint) = constrained_state_model(false);
+        let (model, constraint) = constrained_state_model(false, false);
         let prepared = prepare_for_solve(&model).expect("index-one constraint is reducible");
         assert!(matches!(prepared, PreparedDae::Transformed { .. }));
 
@@ -1317,8 +1673,54 @@ mod tests {
     }
 
     #[test]
+    fn state_demotion_preserves_structured_families_and_binder_provenance() {
+        let (model, _) = constrained_state_model(false, true);
+        let prepared = prepare_for_solve(&model).expect("structured companion family is preserved");
+        let transformed = match prepared {
+            PreparedDae::Transformed { dae, .. } => dae,
+            PreparedDae::Borrowed(_) => panic!("singular fixture requires state demotion"),
+        };
+        transformed.inspect(|view| {
+            assert_eq!(view.domain_count(), 1);
+            assert_eq!(view.continuous_family_count(), 1);
+            assert_eq!(view.initialization_family_count(), 1);
+            let family = view
+                .continuous_family(0)
+                .expect("structured family survives reconstruction");
+            assert_eq!(family.scalar_rows(), 2);
+            assert_eq!(
+                view.source_text(family.provenance()),
+                Some("for i in 1:2 loop z[i] = i")
+            );
+            let body = family
+                .bodies()
+                .get(0)
+                .expect("structured family retains its body");
+            let mut has_binder = false;
+            dae::for_each_expression(view, body, |_, expression| {
+                has_binder |= matches!(
+                    expression.operation(),
+                    dae::ExpressionOperation::Coordinate(dae::CoordinateView::Binder(binder))
+                        if binder.domain() == family.domain()
+                );
+            });
+            assert!(has_binder);
+            let initial = view
+                .initialization_family(0)
+                .expect("initialization family survives reconstruction");
+            assert_eq!(initial.domain(), family.domain());
+            assert_eq!(initial.bodies().len(), family.bodies().len());
+            assert_eq!(initial.provenance(), family.provenance());
+            assert!(
+                sort(view).is_ok(),
+                "replacement DAE remains structurally square"
+            );
+        });
+    }
+
+    #[test]
     fn unsupported_symbolic_derivative_preserves_the_original_singular_error() {
-        let (model, _) = constrained_state_model(true);
+        let (model, _) = constrained_state_model(true, false);
         let error = match prepare_for_solve(&model) {
             Ok(_) => panic!("unsupported differentiation must not guess a replacement"),
             Err(error) => error,
