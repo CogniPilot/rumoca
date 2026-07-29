@@ -4620,13 +4620,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rumoca-lsp-position"
-version = "0.9.20"
-dependencies = [
- "lsp-types",
-]
-
-[[package]]
 name = "rumoca-opt"
 version = "0.9.20"
 dependencies = [
@@ -4920,8 +4913,8 @@ dependencies = [
  "clap",
  "futures-util",
  "lsp-types",
+ "rumoca-core",
  "rumoca-ir-galec",
- "rumoca-lsp-position",
  "tokio",
  "tower-lsp",
 ]
@@ -4947,7 +4940,7 @@ dependencies = [
  "futures-util",
  "lsp-types",
  "rumoca-compile",
- "rumoca-lsp-position",
+ "rumoca-core",
  "rumoca-phase-dae",
  "rumoca-sim",
  "rumoca-tool-fmt",

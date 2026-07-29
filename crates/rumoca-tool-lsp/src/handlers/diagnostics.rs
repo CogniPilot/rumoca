@@ -1,5 +1,6 @@
 //! Diagnostics handler for Modelica files.
 
+use crate::text_position::span_to_range;
 use lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString, Position, Range};
 use rumoca_compile::Session;
 use rumoca_compile::compile::SemanticDiagnosticsMode;
@@ -11,7 +12,6 @@ use rumoca_compile::compile::core::{
 };
 use rumoca_compile::parsing::ast;
 use rumoca_compile::parsing::{ParseError, parse_source_to_ast_with_errors};
-use rumoca_lsp_position::span_to_range;
 use rumoca_tool_lint::{LintLevel, LintMessage, LintOptions, lint};
 use serde_json::json;
 use std::collections::HashSet;

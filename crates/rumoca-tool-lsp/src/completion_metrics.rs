@@ -55,10 +55,10 @@ pub struct CompletionProgressSummary {
 }
 
 pub fn extract_import_completion_prefix(source: &str, position: Position) -> Option<String> {
-    let line = rumoca_lsp_position::line_text(source, position.line)?;
+    let line = crate::text_position::line_text(source, position.line)?;
     // `position.character` is a UTF-16 column, not a byte index: slicing with it
     // directly returns `None` (or the wrong prefix) on any non-ASCII line.
-    let byte_column = rumoca_lsp_position::utf16_column_to_byte_column(line, position.character);
+    let byte_column = crate::text_position::utf16_column_to_byte_column(line, position.character);
     let line_prefix = line.get(..byte_column)?;
     let trimmed = line_prefix.trim_start();
     if !trimmed.starts_with("import ") {

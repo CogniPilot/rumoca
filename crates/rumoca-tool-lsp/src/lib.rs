@@ -24,6 +24,7 @@
 pub mod completion_metrics;
 pub mod handlers;
 pub mod helpers;
+mod text_position;
 mod traversal_adapter;
 
 #[cfg(feature = "server")]

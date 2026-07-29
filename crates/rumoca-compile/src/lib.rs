@@ -220,17 +220,11 @@ pub mod compile {
     };
     pub use rumoca_ir_flat::Model as FlatModel;
 
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub struct SourceTextPosition {
-        pub line: u32,
-        pub character: u32,
-    }
-
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct SourceSpanLocation {
         pub file_name: String,
-        pub start: SourceTextPosition,
-        pub end: SourceTextPosition,
+        pub start: rumoca_core::text_position::TextPosition,
+        pub end: rumoca_core::text_position::TextPosition,
     }
 
     pub fn source_span_location(
@@ -248,27 +242,9 @@ pub mod compile {
         }
         Some(SourceSpanLocation {
             file_name: file_name.to_string(),
-            start: byte_offset_to_position(source, start_byte),
-            end: byte_offset_to_position(source, end_byte),
+            start: rumoca_core::text_position::byte_offset_to_position(source, start_byte),
+            end: rumoca_core::text_position::byte_offset_to_position(source, end_byte),
         })
-    }
-
-    fn byte_offset_to_position(source: &str, byte_offset: usize) -> SourceTextPosition {
-        let clamped = byte_offset.min(source.len());
-        let mut line = 0u32;
-        let mut character = 0u32;
-        for (idx, ch) in source.char_indices() {
-            if idx >= clamped {
-                break;
-            }
-            if ch == '\n' {
-                line = line.saturating_add(1);
-                character = 0;
-            } else {
-                character = character.saturating_add(ch.len_utf16() as u32);
-            }
-        }
-        SourceTextPosition { line, character }
     }
 
     pub use crate::instrumentation::{

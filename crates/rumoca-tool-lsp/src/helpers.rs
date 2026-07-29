@@ -1,12 +1,12 @@
 //! Utility functions for LSP handlers.
 
-use lsp_types::{Position, Range};
-use rumoca_compile::compile::core as rumoca_core;
-use rumoca_compile::parsing::{self, DefId, ast};
-use rumoca_lsp_position::{
+use crate::text_position::{
     char_column_to_utf16_column, line_text, position_to_byte_offset, span_to_range,
     utf16_column_to_byte_column,
 };
+use lsp_types::{Position, Range};
+use rumoca_compile::compile::core as rumoca_core;
+use rumoca_compile::parsing::{self, DefId, ast};
 
 /// Convert a Modelica source location to an LSP [`Range`] (0-indexed, UTF-16
 /// columns) against the text the location was produced from.
@@ -470,7 +470,7 @@ pub fn imported_def_id(import: &ast::Import, tree: &ast::ClassTree, name: &str) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rumoca_lsp_position::byte_offset_to_position;
+    use crate::text_position::byte_offset_to_position;
 
     fn position_of(source: &str, needle: &str) -> Position {
         byte_offset_to_position(

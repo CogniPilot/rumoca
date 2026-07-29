@@ -338,11 +338,11 @@ mod tests {
     /// Decode a `(line, UTF-16 column, UTF-16 length)` triple back to text, so
     /// assertions read the same units the protocol carries.
     fn lexeme_at(source: &str, line: u32, col: u32, len: u32) -> String {
-        let Some(text) = rumoca_lsp_position::line_text(source, line) else {
+        let Some(text) = crate::text_position::line_text(source, line) else {
             return String::new();
         };
-        let start = rumoca_lsp_position::utf16_column_to_byte_column(text, col);
-        let end = rumoca_lsp_position::utf16_column_to_byte_column(text, col + len);
+        let start = crate::text_position::utf16_column_to_byte_column(text, col);
+        let end = crate::text_position::utf16_column_to_byte_column(text, col + len);
         text.get(start..end)
             .map(ToString::to_string)
             .unwrap_or_else(String::new)
@@ -471,7 +471,7 @@ end Ball;
             .iter()
             .find(|&&(line, col, len, _)| line == 1 && lexeme_at(source, line, col, len) == "x")
             .expect("component `x` token");
-        let expected = rumoca_lsp_position::byte_offset_to_position(
+        let expected = crate::text_position::byte_offset_to_position(
             source,
             source.rfind("x;").expect("component name present"),
         );

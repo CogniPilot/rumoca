@@ -1,5 +1,6 @@
 //! Enhanced completion handler for Modelica files.
 
+use crate::text_position::{char_column_to_utf16_column, utf16_column_to_byte_column};
 use lsp_types::{CompletionItem, CompletionItemKind, Position};
 use rumoca_compile::Session;
 use rumoca_compile::compile::ClassLocalCompletionKind;
@@ -8,7 +9,6 @@ use rumoca_compile::compile::SessionSnapshot;
 use rumoca_compile::compile::core as rumoca_core;
 use rumoca_compile::parsing::ast::Visitor;
 use rumoca_compile::parsing::{self, ast};
-use rumoca_lsp_position::{char_column_to_utf16_column, utf16_column_to_byte_column};
 use std::collections::{BTreeMap, HashSet};
 use std::ops::ControlFlow;
 
