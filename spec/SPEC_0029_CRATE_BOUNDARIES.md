@@ -251,6 +251,7 @@ compiler/session → DAE structural → solve-IR lowering → runtime contracts 
 | Solver-facing prepared data + row ops | `rumoca-ir-solve` | Backend-neutral execution IR |
 | DAE → solve-IR lowering | `rumoca-phase-solve` | Lowering only, not structural mutation |
 | Optimization/training orchestration | `rumoca-opt` | Consumes Solve/eval APIs; no Modelica semantics |
+| DAE/Solve → checked GALEC lowering | `rumoca-phase-galec` | Semantic export lowering and admissibility only; no text, templates, packaging, or target-language helpers |
 | Textual generated artifacts and templates | `rumoca-phase-codegen` | Jinja/minijinja rendering owns generated C, Rust, CUDA C, MLIR, FMI/eFMI and FMU/eFMU packaging text |
 | GALEC `.alg` text | `rumoca-phase-codegen` | MiniJinja renders a checked GALEC semantic view; the language IR owns no text emitter (SPEC_0034 GAL-009) |
 | eFMI packaging XML (`__content.xml`, manifests) | `rumoca-phase-codegen` | Rendered like FMI `modelDescription`; validators + generic checksum/container build step, not typed serializers (SPEC_0034 D3 amended) |
@@ -286,6 +287,26 @@ files. Those belong entirely to each target's `target.toml` and MiniJinja
 templates, so adding a textual target does not require a Rust dialect or
 renderer. Generic template operations consume semantic IR vocabulary and fail
 closed; they do not return pre-rendered language fragments.
+
+Target-specific semantic lowering is a compiler phase, not code generation.
+`rumoca-phase-codegen/src` MUST NOT contain target-named subsystems such as
+`galec/`, C lowering, XML manifest models, target manglers, or target dispatch.
+It MAY contain small IR-specific adapters under `views/` when they expose only
+typed, read-only semantic data. Checked export data and constructors belong to
+their `rumoca-ir-*` crate; semantic projection belongs to its
+`rumoca-phase-*` crate; all target syntax and presentation belong to the target
+directory.
+
+Within `rumoca-phase-codegen`, `src/codegen/` is reserved for the public
+MiniJinja extension-command surface. Rendering orchestration belongs in generic
+renderer modules and IR adapters belong under `src/views/`. Every registered
+command MUST be pure, deterministic, target-neutral, fail closed, and have
+documented template syntax, typed inputs/outputs, failure behavior, complexity,
+and focused tests. A single registry is the source of truth for registration
+and user-facing command documentation. Commands may return semantic values or
+checked arithmetic/query results; they MUST NOT return target-language
+fragments or perform lowering, name resolution, type repair, target dispatch,
+file assembly, or escaping for a particular output language.
 
 Architecture CI MUST reject production `rumoca-phase-codegen` Rust that builds
 generated or template-context text with formatting, concatenation, replacement,
