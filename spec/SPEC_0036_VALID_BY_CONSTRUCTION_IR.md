@@ -5,73 +5,88 @@ DRAFT
 
 ## Summary
 
-Compiler-generated IR makes invalid stage values unrepresentable. DAE
-construction uses sequential semantic-owner closures through `Dae::construct`
-over one private aggregate, without weaker roots or duplicate storage.
+Compiler IR makes invalid stage values unrepresentable. `Dae::construct` and
+future `flat::Model::construct` use sequential semantic-owner closures over one
+private aggregate without weaker or duplicate storage.
 
 ## Specification
 
 ### Scope
 
-DAE, AST phase proofs, Flat, and Solve must all satisfy this contract. The spec
-stays `DRAFT` while any stage exposes public invariant fields or root
-validators. Solve sparsity follows [SPEC_0039](SPEC_0039_PROOF_CARRYING_SPARSITY.md).
+This stays `DRAFT` until AST proofs, `flat::Model`, `Dae`, and `SolveProblem`
+hide invariant fields/root validators. Solve sparsity follows
+[SPEC_0039](SPEC_0039_PROOF_CARRYING_SPARSITY.md).
 
 ### DAE Milestone Acceptance
 
 | Rule | Owner/Where | Brief Justification |
 |---|---|---|
-| Fail at the responsible add operation | ToDAE/wire decode | Earliest boundary |
-| Failures carry typed errors and provenance | DAE API | Actionable defects |
-| Every source semantic owner is consumed exactly once | ToDAE construction | Prevent silent omission |
-| Unsupported semantics fail with typed provenance | First owning phase | Reject before simulation |
-| Missing/failed semantics never become fallback values | All phase boundaries | Plausible wrong output is unsafe |
-| Delete impossible-state checks and fallbacks | All consumers | Guarantees replace checks |
+| Adds fail with typed errors/provenance | ToDAE/wire decode | Earliest boundary |
+| Consume each source-semantic owner once | ToDAE construction | Prevent omission |
+| Unsupported/missing semantics fail with typed provenance, never default | First owner | Prevent wrong output |
+| Delete impossible-state checks/fallbacks | All consumers | Trust constructors |
 | Constructor checks replace validators | DAE cutover | One owner |
 | Delete superseded DAE and wire atomically | DAE cutover | No compatibility |
-| Report repository production LOC before/after | PR metrics | Total effect |
-| DAE-related production LOC is net-negative | PR metrics | Demonstrates savings |
-| Checked-DAE production is at most 11,000 LOC | `rumoca-ir-dae` | Bounds ceremony |
+| Report before/after repository LOC; DAE production is net-negative | PR metrics | Demonstrate savings |
+| Checked-DAE production ≤11,000 LOC | `rumoca-ir-dae` | Bounds ceremony |
 
 ### One Aggregate Owns Construction
 
 | Rule | Owner/Where | Brief Justification |
 |---|---|---|
-| One aggregate owns every arena/system | `Dae` | One authority |
-| Aggregate owns `ExpressionArena` | `Dae` | Canonical expressions |
-| Producers use sequential owner closures | `Dae::construct` | Shared boundary |
-| Handles borrow aggregate storage | DAE API | No duplicate IR |
-| Handles are branded/phase capabilities only | DAE API | No data ownership |
-| Build capabilities are non-serializable | DAE API | Build state stays private |
-| Success returns immutable `Dae` | `Dae::construct` | No invalidation |
-| Failure exposes no DAE | `Dae::construct` | No partial root |
+| Aggregate owns all arenas/systems, including `ExpressionArena` | `Dae` | One authority |
+| Sequential owner closures | `Dae::construct` | Shared boundary |
+| Handles are borrowed, branded, nonserializable capabilities | DAE API | No owned IR |
+| Success returns immutable `Dae`; failure exposes none | `Dae::construct` | No partial root |
 | Finalization is O(1), excluding freezing | `Dae::construct` | No rescan |
 
-`DaeDraft`, separate roots, data-owning builders, partial roots, unchecked
-insertion, and finalized mutation are prohibited. Tree analysis stays in the
-producer; DAE insertion checks local integrity and supplied proofs.
+Data-owning builders, partial roots, unchecked insertion, and
+finalized mutation are prohibited. Producers own analysis; insertion checks
+supplied proofs and local integrity.
+
+### Flat Aggregate Construction
+
+| Rule | Owner/Where | Brief Justification |
+|---|---|---|
+| `flat::Model` owns private class-free grammar and equation families | `rumoca-ir-flat` | No classes/duplicate owners |
+| Sequential scopes freeze the aggregate | `flat::Model::construct` | Checked ownership |
+| Semantic references use typed aggregate-local targets and exact use spans | `flat::Model::construct` | No unresolved target |
+| Every node requires source/generated provenance | `flat::Model::construct` | No dummy provenance |
+
+Declarations retain exact spans. Textual names remain only at
+source/protocol/config/display and external-name boundaries. Per SPEC_0032,
+`InstanceOverlay::component_families` remains a non-authoritative descriptor;
+per-element instance entries own Instance semantics. `flat::Model` owns only
+the flattened structured families, whose scalar views/counts derive.
+Drafts, public invariant fields, repair, compatibility, unchecked insertion,
+finalized mutation, and alternate constructors are prohibited.
 
 ### Storage and Forward References
 
 | Rule | Owner/Where | Brief Justification |
 |---|---|---|
-| Dense ID arenas build with `Vec` and `u32` IDs | DAE aggregate | Direct indexing |
-| Dense arenas freeze to boxed slices | Final `Dae` | Compact storage |
-| `IndexMap` serves non-dense semantic keys/order | DAE aggregate | Keyed lookup |
-| Producers supply semantic order | Producing phase | Explicit order |
-| Secondary indexes are derived | DAE aggregate | Unforgeable caches |
-| Functions may reserve recursive and loop-transition slots | `FunctionArena` | Recursion/iteration |
+| Dense arenas use `Vec`/`u32` IDs and freeze to boxed slices | DAE aggregate | Compact indexing |
+| `IndexMap` owns non-dense keys/order; secondary indexes derive | DAE aggregate | Unforgeable lookup |
+| Producers order semantics | Producing phase | Explicit order |
+| DAE call-header reservation | `FunctionArena` | Proven recursive SCC only |
+| DAE loops may reserve transition slots | `FunctionArena` | Checked finite iteration |
 | Variables may reserve header slots | `VariableArena` | Forward attributes |
 | Conditions may reserve identity slots | `ConditionSystem` | Condition/runtime cycle |
 | B.1c keeps an incremental topology capability | Discrete system | Ordered assignment |
+| Flat functions may reserve call headers | `flat::Model::construct` | Proven recursive SCC only |
+| Flat variables may reserve headers | `flat::Model::construct` | Forward attributes/bindings/references only |
 | Other objects insert complete values | Owning arena/system | Ordered dependencies |
 
-Only the listed domains may reserve. Their private linear definition authority
-and O(1) unfilled count must reach zero before success. All other objects insert
-complete values in producer-proved order. Global completion trackers, parallel
-identity maps, seals, validation passes, and unchecked paths are prohibited.
-Brands are build-only and never affect finalized equality, order, display, or
-wire data.
+Only listed entries reserve. Private linear authority and an O(1) unfilled
+counter reach zero before success; all else inserts complete values in proven
+order. Local checks/counters are required. Global trackers, parallel identity
+maps, persistent seals, root validation/repair, and unchecked paths are
+prohibited. Brands affect no finalized equality/order/display/wire data.
+Acyclic functions construct in dependency order.
+
+Construction is O(nodes + operands + total rank); insertion is amortized O(1)
+plus operand/rank work. Views borrow, derived indexes build once, proof
+transitions do not deep-clone IR.
 
 ### Canonical Arenas, Systems, and Environments
 
@@ -79,60 +94,51 @@ wire data.
 |---|---|---|
 | `TypeArena` | Effective types | Dense entries + `TypeId` lookup |
 | `FunctionArena` | Functions | Dense entries |
-| `VariableArena` | Variables and role views | Dense entries |
+| `VariableArena` | Variables/role views | Dense entries |
 | `ExpressionArena` | Immutable expressions | Parallel node/provenance/type vectors |
 | `RelationArena` | Primitive relations | Dense entries |
 | `RootArena` | Monitored surfaces | Dense entries |
-| `ConditionSystem` | Relations, conditions, activation | Arenas + indexes |
-| `EventSystem` | Events, schedules, actions | Arenas + indexes |
-| `ClockSystem` | Clocks, lattice, ownership | Arenas + indexes |
-| `TemporalSystem` | History, terminal, delays | Arenas + indexes |
+| `ConditionSystem` | Relations/conditions/activation | Arenas + indexes |
+| `EventSystem` | Events/schedules/actions | Arenas + indexes |
+| `ClockSystem` | Clocks/lattice/ownership | Arenas + indexes |
+| `TemporalSystem` | History/terminal/delays | Arenas + indexes |
 
 ### Type and Variable Identity
 
 | Rule | Owner/Where | Brief Justification |
 |---|---|---|
-| Effective Flat `TypeId` keys DAE types | `TypeArena` | Instances may differ |
-| `DefId` is provenance only | `TypeArena` | Not effective type |
+| Effective Flat `TypeId` keys DAE types; `DefId` is provenance | `TypeArena` | Instances may differ |
 | Nonprimitives use typed IDs | Value grammar | No name identity |
-| Fields use owner-local typed ordinals | `TypeArena` | Unique ownership |
-| Enum literals use owner-local one-based order | `TypeArena` | MLS order |
+| Fields/enums use owner-local typed ordinals; enums are one-based | `TypeArena` | Unique MLS order |
 | Operator records retain canonical bases | `TypeArena` | Explicit compatibility |
 | External lifecycle uses typed functions | Function construction | No raw `DefId` |
-| Variable identity differs from display | `VariableArena` | No text identity |
-| Roles use distinct typed IDs | `VariableArena` | Compile-time roles |
-| Role and causality are orthogonal | `VariableArena` | Distinct semantics |
+| Variable identity differs from display; roles are typed and causality-orthogonal | `VariableArena` | No text identity |
 | Proven parameter-variable families become calculated parameters atomically | ToDAE analysis/construction | One computable owner |
 | Calculated-parameter bindings require finite shape and acyclic dependency proofs | ToDAE analysis | Reject unsafe promotion |
-| Element type includes shape | Variables/expressions | Local compatibility |
+| Element type includes shape; shape products use checked multiplication | All constructors | Overflow fails |
 | Attributes are checked on attachment | Variable construction | No drift |
 
-Coordinates use primitive/enumeration rectangular values; function values may
-also contain checked aggregates and external objects. Function array extents
-are concretely monomorphized from finite, inspectable shape proofs before DAE
-construction. Function loops retain source order as compact finite-domain
-transitions over typed carried values. Unresolved, cyclic, overflowing, or
-zero-step domains fail at their owner; guessed extents and literal unrolling
-are prohibited. Partition ordinals remain layout, never semantic identity.
+Coordinates are primitive/enumeration rectangular values; function values may
+include checked aggregates/external objects. Finite, inspectable proofs
+monomorphize function extents before DAE construction. Loops preserve source
+order as compact finite-domain transitions over typed carried values.
+Unresolved, cyclic, overflowing, or zero-step domains fail at their owner; no
+guessed extents/literal unrolling.
+Partition ordinals are layout, never semantic identity.
 
 ### Expressions and Equations
 
 | Rule | Owner/Where | Brief Justification |
 |---|---|---|
-| Aggregate creates expression nodes | `ExpressionArena` API | Known ownership |
-| Every expression node has exact provenance | Parallel provenance vector | Lossless source traceability |
+| `expr.at(provenance).operation(...)` creates every node | `ExpressionArena` API | Provenance mandatory |
+| Parallel provenance stores exact identity/range/origin; text stays in `SourceMap` | DAE root | No duplicated text |
 | Variadic children use packed buffers | Expression arena | Compact dense storage |
-| Source text exists only in `SourceMap` | DAE root | Avoids duplicated text |
-| `expr.at(provenance).operation(...)` inserts nodes | Expression owner scope | Provenance cannot be omitted |
-| Coordinate nodes carry use-site spans | Expression arena | References retain occurrences |
-| Declarations carry declaration spans | Type/function/variable arenas | Identity and use stay distinct |
+| Coordinates carry use spans; declarations carry declaration spans | Owning arenas | Distinct occurrences |
 | Operands use active-build typed IDs | Expression API | No cross-build use |
 | Nodes derive type, shape, variability, domain | Expression API | O(1) checks |
-| Composite variability is operand maximum | Expression API | No tree walk |
-| Coordinate owners supply variability | DAE aggregate | One source |
+| Composite variability is operand maximum; coordinate owners supply it | DAE aggregate | No tree walk |
 | Nested domains name their checked lexical parent | Domain arena | Explicit scope tree |
-| Expression domain merging requires an ancestry relation | Expression API | Reject unrelated binders |
-| A comprehension consumes its local domain and retains its parent scope | Expression API | Nested capture stays typed |
+| Domain merging requires ancestry; comprehensions consume locals and retain parents | Expression API | Typed capture |
 | Source temporal/flow calls are absent | Expression grammar | Closed boundary |
 | Role conversion returns typed expression IDs | Expression API | Compile-time roles |
 | Equations accept role-specific IDs | Equation systems | No generic forgery |
@@ -152,42 +158,34 @@ are prohibited. Partition ordinals remain layout, never semantic identity.
 | Caller-supplied scalar counts are prohibited | Equation domains | Counts are derived |
 
 Structured families own compact domains, checked bodies, typed scalar views,
-and constructor-derived row counts. Evaluation and lazy projection belong to
-`rumoca-eval-dae`.
+and constructor-derived row counts; `rumoca-eval-dae` owns evaluation/lazy projection.
 
 ### Conditions, Events, Clocks, and Temporal State
 
 | Rule | Owner/Where | Brief Justification |
 |---|---|---|
-| `RelationId` identifies one relation | `RelationArena` | Policy is separate |
-| `ConditionId` identifies one B.1 `c` | `ConditionSystem` | Not a root |
+| `RelationId` and non-root `ConditionId` identify one relation and B.1 `c` | Condition system | Separate policy |
 | Conditions compose relations/discrete operands | Condition expressions | Boolean composition |
-| Relation/condition counts are independent | `ConditionSystem` | Sharing is legal |
-| Continuous relations are interned once | `RelationArena` | No duplication |
-| Root activation is closed and typed | `RootArena` | Monitored only |
-| Synthetic surfaces have typed root IDs | `RootArena` | No index identity |
+| Relation/condition counts are independent; continuous relations intern once | `ConditionSystem` | Sharing is legal |
+| Root activation is closed/typed; synthetic surfaces have root IDs | `RootArena` | No index identity |
 | Coincident time events retain IDs | `EventSystem` | Preserve semantics |
 | Actions own trigger, branch guard, action, provenance | `EventSystem` | Preserve edge and branch semantics |
-| Clocks have typed identity | `ClockSystem` | No textual identity |
-| Clocked variables have one owner | `ClockSystem` | MLS association |
-| Exact `ClockLattice` is authoritative | `ClockSystem` | No rounding identity |
+| Clocks are typed; variables have one owner; exact `ClockLattice` is authoritative | `ClockSystem` | No rounded identity |
 | Pre pairs with current `z`/`m` | `TemporalSystem` | Explicit coordinates |
 | Solve may slot typed history coordinates | Solve lowering | Slots are not parameters |
-| Previous retains owning clock | `TemporalSystem` | Tick-local history |
-| Terminal/delay coordinates are typed | `TemporalSystem` | No generated names |
+| Previous retains its clock; terminal/delay coordinates are typed | `TemporalSystem` | No generated names |
 
 Only continuously monitored closed activations receive roots. Clock-domain
 environments filter typed capabilities without owning expressions. Delay
 construction proves primitive shape, scalar-Real timing, and
-`0 < delayTime <= delayMax` where applicable; Boolean claims and text-derived
+`0 < delayTime <= delayMax` where applicable; Boolean claims/text-derived
 runtime identity are prohibited.
 
 ### Transformations
 
 | Rule | Owner/Where | Brief Justification |
 |---|---|---|
-| Passes consume/return immutable `Dae` | Structural phases | No partial mutation |
-| Multi-object changes use closed operations | DAE API | Atomic changes |
+| Passes consume/return immutable `Dae`; multi-object changes use closed operations | Structural/DAE API | Atomic changes |
 | Operations are aggregate-bound, consuming, non-cloneable | DAE API | No replay |
 | Inputs are closure-scoped to one DAE | DAE API | Lifetime ownership |
 | Changed expressions use add operations | DAE API | Preserve checks |
@@ -197,43 +195,69 @@ runtime identity are prohibited.
 | Changed contracts use named stage types | Phase boundaries | Visible semantics |
 | Backend projections are immutable views | Compile/codegen | No mutation |
 
-A transformation context is a lightweight capability over the replacement DAE
-aggregate, not a second IR. It may preserve unchanged immutable arenas by
-ownership transfer, but changed objects enter through the same checked add
-operations as initial construction. Persistent root seals, change registries,
-receipt stores, generation tokens, and post-rewrite validation are prohibited.
+A transformation context is a lightweight replacement-aggregate capability,
+not another IR. It may ownership-transfer unchanged immutable arenas; changed
+objects use initial construction's checked adds. Persistent root seals,
+change/receipt registries, generation tokens, and post-rewrite validation are prohibited.
 
 ### Serialization
 
-Schema version 11 is the only supported DAE wire version. Version 10,
-pre-versioned payloads, adapters, migration readers, and dual writes are
-prohibited.
+Only DAE wire v11 exists; v10/pre-versioned payloads, adapters, migration
+readers, and dual writes are prohibited.
 
 | Rule | Owner/Where | Brief Justification |
 |---|---|---|
-| Wire records are private and current-version only | DAE serde | Wire shape is not compiler IR |
-| Records use `deny_unknown_fields` | Private wire types | Unknown data fails |
+| Current wire records are private and deny unknown fields | DAE serde | Wire is not IR |
 | Required collections are explicit, including empty | Private wire types | Omission is not ambiguity |
 | Decode calls the same provenance-requiring operations | DAE serde | Deserialization is construction |
 | Provenance serializes identity/range/origin only | DAE wire | Source text stays canonical |
-| IDs project to deterministic wire-local ordinals | DAE serde | Process IDs never leak |
-| Arenas project as ordered arrays | DAE serde | Dense identity stays native |
+| IDs project to deterministic wire-local ordinals; arenas to ordered arrays | DAE serde | Process IDs never leak |
 | Non-dense key duplicates fail before insertion | DAE serde | Maps cannot hide malformed input |
 | Derived counts and indexes are absent from wire | Private wire types | Caches cannot be forged |
-| Invariant-bearing children do not derive `Deserialize` | DAE IR | Bytes cannot bypass checks |
+| Invariant-bearing children have no fieldwise `Deserialize` | IR serde | Bytes cannot bypass checks |
+
+Across `flat::Model`, `Dae`, and `SolveProblem`, a root may implement custom
+`Deserialize` only by decoding private current-version records through checked
+construction. Children cannot implement or derive fieldwise `Deserialize`.
 
 ### Other IR Boundaries
 
 | Rule | Owner/Where | Brief Justification |
 |---|---|---|
-| Recovered syntax remains representable | Parse AST | Diagnostics |
-| Successful phases return opaque proofs | AST phases | Completed proof |
-| Partial work receives no completed proof | AST phases | No forgery |
-| Flattening accepts a typed instance | Flatten phase | Resolved input |
-| Invariant fields are private | Flat/DAE/Solve | No bypass |
-| Public root `validate()` is prohibited | Flat/DAE/Solve | Construction proves |
-| Unchecked builders are prohibited | Flat/DAE/Solve | No weaker value |
-| Sparsity patterns are derived, not claimed | Solve construction | No unsafe under-approximation |
+| Parse preserves recovered syntax | Parse AST | Diagnostics |
+| Success returns opaque proofs | AST phases | Completed proof |
+| Partial work gets no proof | AST phases | No forgery |
+| `ParsedTree → ResolvedTree` has one mint | Resolve phase | One authority |
+| `ResolvedTree → InstancedTree` has one mint | Instantiate phase | One authority |
+| `InstancedTree → TypedInstancedTree` has one mint | Typecheck phase | One authority |
+| `TypedInstancedTree → flat::Model` consumes by value and has one mint | Flatten phase | Closed proof chain |
+| Proof fields/constructors are private; no `DerefMut`/mutable overlay | Owning phase | No forgery |
+| Invariant fields private | `flat::Model`/`Dae`/`SolveProblem` | No bypass |
+| Public root `validate()` prohibited | `flat::Model`/`Dae`/`SolveProblem` | Construction proves |
+| Unchecked builders prohibited | `flat::Model`/`Dae`/`SolveProblem` | No weaker value |
+| Sparsity patterns derived, not claimed | Solve construction | No unsafe under-approximation |
+
+Instantiation applies modifications and builds its overlay; post-instance
+typechecking sees those results; flattening expands checked connections. No raw
+tree/overlay enters flattening. Consuming a proof transfers its unique phase
+capability, not necessarily its immutable payload; payload sharing is allowed
+when it cannot forge or mutate a proof.
+
+### Refinement Obligations
+
+Each phase defines a deterministic relation `R_phase(input, output)`. Opaque
+proofs enforce order; the following obligations establish semantic correctness:
+
+| Rule | Owner/Where | Brief Justification |
+|---|---|---|
+| Isolate deterministic transitions from I/O/diagnostics | Phase algorithms | Proof-ready relation |
+| Preserve semantic identity, ordering, provenance, and supported behavior | `R_phase` | Refinement |
+| Fail unsupported input at its first owner with typed provenance | `R_phase` | No false success |
+| Use explicit producer-owned cross-stage ID maps | Phase transition | No ordinal assumptions |
+
+Runtime proof capabilities are erased and add no serialized receipts or
+duplicate IR. Compile-fail tests cover proof forgery/cross-stage use; property,
+differential, and refinement tests exercise each relation.
 
 ### Enforcement
 
@@ -241,25 +265,25 @@ prohibited.
 |---|---|---|
 | Compile-fail tests cover private construction | IR API tests | No invalid assembly |
 | Negative wire fixtures cover invariants | DAE serde tests | No forged DAE |
-| Property tests compare private audits | DAE tests | Constructor defects |
+| Property tests compare private audits | IR tests | Constructor defects |
 | Shared/compound relations are tested | DAE/Solve tests | B.1 cardinality |
 | Transform tests preserve families | DAE/structural tests | Consistent views |
 | Consumers have no malformed-DAE branches | Repository review | Guarantees replace checks |
 | LOC limits are CI/review metrics | DAE cutover | Bounded complexity |
 
-Private test-only audits may inspect the complete aggregate. No production
-audit, public validation pass, superseded fallback, or compatibility layer is
-permitted.
+Tests may privately audit the complete aggregate. Production audits, public
+validation, superseded fallbacks, and compatibility are prohibited.
 
 ### Backend Capability Restoration
 
-Capability deletion is not completion. Structural, event, clock, temporal,
-algorithm, aggregate, tensor, external-call, symbolic-export, FMI 2/3 ME/CS,
-eFMI, native, and Wasm capabilities must consume checked DAE/Solve facts and
-retain equivalent end-to-end evidence. Missing lowering fails at its first
-owner. Pending targets stay undiscoverable; stubs, alternate semantic paths,
-old-shape adapters, target aliases, silent defaults, and compatibility readers
-are prohibited.
+Capability deletion is not completion.
+
+Structural, event, clock, temporal, algorithm, aggregate,
+tensor, external-call, symbolic-export, FMI 2/3 ME/CS, eFMI, native, and Wasm
+capabilities consume checked `Dae`/`SolveProblem` facts and retain equivalent end-to-end
+evidence. Missing lowering fails at its first owner. Pending targets stay
+undiscoverable; no stubs, alternate semantic paths, target aliases, silent
+defaults, old-shape adapters, or compatibility readers.
 
 ## References
 
