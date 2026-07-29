@@ -480,17 +480,12 @@ fn validate_algorithm_statements(
                         *span,
                     ));
                 }
-                let target = comp.to_var_name();
+                let target = rumoca_core::component_ref_to_base_reference(comp)
+                    .var_name()
+                    .clone();
                 let target_role = roles.get(&target);
-                if comp.parts.iter().any(|part| !part.subs.is_empty()) {
-                    return Err(ToDaeError::unsupported_algorithm(
-                        "model",
-                        format!(
-                            "algorithm assignment target `{target}` is not a whole writable \
-                             coordinate (resolved role: {target_role:?})"
-                        ),
-                        *span,
-                    ));
+                for part in &comp.parts {
+                    validate_subscripts_scoped(&part.subs, roles, states, &HashSet::new())?;
                 }
                 if matches!(
                     target_role,
@@ -546,6 +541,33 @@ fn validate_algorithm_statements(
                         owner_span,
                     )?;
                 }
+            }
+            rumoca_core::Statement::For {
+                indices,
+                equations,
+                span,
+            } => {
+                require_span(*span, "algorithm for statement")?;
+                if indices.is_empty() {
+                    return Err(ToDaeError::unsupported_algorithm(
+                        "model",
+                        "for statement must declare at least one index",
+                        *span,
+                    ));
+                }
+                let mut loop_roles = roles.clone();
+                for index in indices {
+                    validate_expression(&index.range, &loop_roles, states)?;
+                    loop_roles.insert(VarName::new(&index.ident), PlannedRole::Parameter);
+                }
+                validate_algorithm_statements(
+                    equations,
+                    &loop_roles,
+                    states,
+                    constants,
+                    sample_lattices,
+                    owner_span,
+                )?;
             }
             rumoca_core::Statement::When { blocks, span } => {
                 require_span(*span, "algorithm when statement")?;

@@ -17,6 +17,64 @@ pub(super) fn lower_declarative_model_algorithm<'dae>(
         &mut values,
     )?;
     let value = values[target];
+    finish_model_algorithm_value(construction, coordinates, algorithm, target, value)
+}
+
+pub(super) fn lower_total_array_model_algorithm<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    coordinates: &HashMap<VarName, Coordinate<'dae>>,
+    functions: &FunctionRegistry<'_, 'dae>,
+    algorithm: &flat::Algorithm,
+    target: &VarName,
+    domain: &StructuredIndexDomain,
+    binder_spans: &[Span],
+) -> Result<(), dae::DaeConstructionError> {
+    let [
+        rumoca_core::Statement::For {
+            indices, equations, ..
+        },
+    ] = algorithm.statements.as_slice()
+    else {
+        unreachable!("analysis proves a total array-definition loop")
+    };
+    let [rumoca_core::Statement::Assignment { value, .. }] = equations.as_slice() else {
+        unreachable!("analysis proves one array element assignment")
+    };
+    let owner =
+        dae::DaeProvenance::generated(dae::DaeGeneration::AlgorithmEquation, algorithm.span)?;
+    let domain_provenance = match binder_spans {
+        [span] => dae::DaeProvenance::source(*span)?,
+        _ => owner,
+    };
+    let domain_id =
+        construction.domains(|domains| domains.structured(domain.clone(), domain_provenance))?;
+    let indices = indices.iter().collect::<Vec<_>>();
+    let binders = lower_function_binders(construction, domain_id, &indices, binder_spans)?;
+    let body = lower_expression_scoped(
+        construction,
+        LoweringSymbols {
+            coordinates,
+            functions,
+            shapes: functions.shapes.model_values(),
+            function_body: None,
+            values: None,
+        },
+        &binders,
+        value,
+        None,
+    )?;
+    let array = construction
+        .expressions(|expressions| expressions.at(owner).comprehension(domain_id, body))?;
+    finish_model_algorithm_value(construction, coordinates, algorithm, target, array)
+}
+
+fn finish_model_algorithm_value<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    coordinates: &HashMap<VarName, Coordinate<'dae>>,
+    algorithm: &flat::Algorithm,
+    target: &VarName,
+    value: dae::ExprId<'dae>,
+) -> Result<(), dae::DaeConstructionError> {
     let owner =
         dae::DaeProvenance::generated(dae::DaeGeneration::AlgorithmEquation, algorithm.span)?;
     let generated = owner;

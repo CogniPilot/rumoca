@@ -1,7 +1,14 @@
 use super::*;
 
 pub(in crate::construction) enum ModelAlgorithmPlan {
-    Declarative { target: VarName },
+    Declarative {
+        target: VarName,
+    },
+    TotalArrayDefinition {
+        target: VarName,
+        domain: StructuredIndexDomain,
+        binder_spans: Vec<Span>,
+    },
     Event,
 }
 
@@ -36,11 +43,7 @@ pub(super) fn analyze_model_algorithm(
     };
     let variable = &flat.variables[target];
     if !variable.dims.is_empty() {
-        return Err(ToDaeError::unsupported_algorithm(
-            "model",
-            "an array algorithm requires one compact checked sequential-array owner",
-            algorithm.span,
-        ));
+        return analyze_total_array_definition(algorithm, target, &variable.dims);
     }
     if !matches!(
         roles[target],
@@ -72,6 +75,141 @@ pub(super) fn analyze_model_algorithm(
     })
 }
 
+fn analyze_total_array_definition(
+    algorithm: &flat::Algorithm,
+    target: &VarName,
+    dimensions: &[i64],
+) -> Result<ModelAlgorithmPlan, ToDaeError> {
+    let [
+        rumoca_core::Statement::For {
+            indices,
+            equations,
+            span,
+        },
+    ] = algorithm.statements.as_slice()
+    else {
+        return Err(ToDaeError::unsupported_algorithm(
+            "model",
+            "an array algorithm requires one compact total-definition loop",
+            algorithm.span,
+        ));
+    };
+    let [rumoca_core::Statement::Assignment { comp, value, .. }] = equations.as_slice() else {
+        return Err(ToDaeError::unsupported_algorithm(
+            "model",
+            "a total array-definition loop requires one element assignment",
+            *span,
+        ));
+    };
+    let Some(component) = comp.parts.last() else {
+        return Err(ToDaeError::unsupported_algorithm(
+            "model",
+            "array loop assignment has no checked target",
+            *span,
+        ));
+    };
+    if assignment_target(comp) != *target
+        || indices.len() != dimensions.len()
+        || component.subs.len() != dimensions.len()
+    {
+        return Err(ToDaeError::unsupported_algorithm(
+            "model",
+            "array loop must bind every target axis exactly once",
+            *span,
+        ));
+    }
+    let mut binders = Vec::with_capacity(indices.len());
+    let mut binder_spans = Vec::with_capacity(indices.len());
+    for (ordinal, ((index, subscript), extent)) in indices
+        .iter()
+        .zip(&component.subs)
+        .zip(dimensions)
+        .enumerate()
+    {
+        validate_total_axis(index, subscript, *extent)?;
+        let range_span = expression_span(&index.range)?;
+        binders.push(StructuredIndexBinder {
+            id: ordinal,
+            display_name: index.ident.clone(),
+            lower: 1,
+            upper: *extent,
+            step: 1,
+        });
+        binder_spans.push(range_span);
+    }
+    reject_read_before_definition(value, target, false)?;
+    let domain = StructuredIndexDomain { binders };
+    domain.scalar_count().map_err(|error| {
+        ToDaeError::unsupported_algorithm(
+            "model",
+            format!("array loop domain is not computable: {error}"),
+            *span,
+        )
+    })?;
+    Ok(ModelAlgorithmPlan::TotalArrayDefinition {
+        target: target.clone(),
+        domain,
+        binder_spans,
+    })
+}
+
+fn validate_total_axis(
+    index: &rumoca_core::ForIndex,
+    subscript: &Subscript,
+    extent: i64,
+) -> Result<(), ToDaeError> {
+    let span = expression_span(&index.range)?;
+    let Expression::Range {
+        start, step, end, ..
+    } = &index.range
+    else {
+        return Err(invalid_total_axis(
+            index,
+            "axis requires an explicit range",
+            span,
+        ));
+    };
+    let exact_range = integer_value(start) == Some(1)
+        && step.as_deref().map(integer_value).unwrap_or(Some(1)) == Some(1)
+        && integer_value(end) == Some(extent);
+    let exact_subscript = matches!(
+        subscript,
+        Subscript::Expr { expr, .. }
+            if matches!(
+                expr.as_ref(),
+                Expression::VarRef { name, subscripts, .. }
+                    if name.as_str() == index.ident && subscripts.is_empty()
+            )
+    );
+    if exact_range && exact_subscript && extent >= 0 {
+        Ok(())
+    } else {
+        Err(invalid_total_axis(
+            index,
+            "range and subscript must cover one declared array axis exactly",
+            span,
+        ))
+    }
+}
+
+fn invalid_total_axis(index: &rumoca_core::ForIndex, detail: &str, span: Span) -> ToDaeError {
+    ToDaeError::unsupported_algorithm(
+        "model",
+        format!("loop index `{}`: {detail}", index.ident),
+        span,
+    )
+}
+
+fn integer_value(expression: &Expression) -> Option<i64> {
+    match expression {
+        Expression::Literal {
+            value: Literal::Integer(value),
+            ..
+        } => Some(*value),
+        _ => None,
+    }
+}
+
 fn validate_declarative_sequence(
     statements: &[rumoca_core::Statement],
     target: &VarName,
@@ -81,7 +219,7 @@ fn validate_declarative_sequence(
     for statement in statements {
         match statement {
             rumoca_core::Statement::Assignment { comp, value, span } => {
-                let written = comp.to_var_name();
+                let written = assignment_target(comp);
                 if &written != target || comp.parts.iter().any(|part| !part.subs.is_empty()) {
                     return Err(ToDaeError::unsupported_algorithm(
                         "model",
@@ -192,7 +330,7 @@ fn collect_statement_targets(
     for statement in statements {
         match statement {
             rumoca_core::Statement::Assignment { comp, .. } if !comp.parts.is_empty() => {
-                targets.insert(comp.to_var_name());
+                targets.insert(assignment_target(comp));
             }
             rumoca_core::Statement::FunctionCall { outputs, .. } => {
                 targets.extend(outputs.iter().flatten().map(|output| output.to_var_name()));
@@ -318,4 +456,10 @@ fn resolve_written_targets(flat: &flat::Model, written: HashSet<VarName>) -> Has
         );
     }
     targets
+}
+
+fn assignment_target(component: &rumoca_core::ComponentReference) -> VarName {
+    rumoca_core::component_ref_to_base_reference(component)
+        .var_name()
+        .clone()
 }

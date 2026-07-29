@@ -1,5 +1,5 @@
 use rumoca::Compiler;
-use rumoca_ir_dae::{DaeGeneration, DaeProvenanceOrigin, VariableRole};
+use rumoca_ir_dae::{ContinuousOwnerView, DaeGeneration, DaeProvenanceOrigin, VariableRole};
 use rumoca_sim::{SimOptions, simulate_dae};
 
 const CONTINUOUS_ALGORITHM: &str = r#"
@@ -120,4 +120,58 @@ end MixedAlgorithm;
             && message.contains("checked atomic owner"),
         "mixed ownership must fail at the source algorithm: {message}"
     );
+}
+
+#[test]
+fn total_array_algorithm_stays_compact_and_computable() {
+    let compiled = Compiler::new()
+        .model("TotalArrayAlgorithm")
+        .compile_str(
+            r#"
+model TotalArrayAlgorithm
+  Real x[5];
+algorithm
+  for i in 1:5 loop
+    x[i] := i * 1.0;
+  end for;
+end TotalArrayAlgorithm;
+"#,
+            "total_array_algorithm.mo",
+        )
+        .expect("total array algorithm should construct one compact owner");
+
+    compiled.dae.inspect(|view| {
+        assert_eq!(view.continuous_owner_count(), 1);
+        let ContinuousOwnerView::Structured { family, .. } = view
+            .continuous_owner(0)
+            .expect("array algorithm has a checked equation owner")
+        else {
+            panic!("array algorithm must not scalar-unroll in DAE");
+        };
+        assert_eq!(family.scalar_rows(), 5);
+        assert_eq!(
+            family.provenance().origin(),
+            DaeProvenanceOrigin::Generated(DaeGeneration::AlgorithmEquation)
+        );
+    });
+
+    let wire =
+        serde_json::to_string(&compiled.dae).expect("compact array algorithm should serialize");
+    let decoded: rumoca_compile::compile::Dae =
+        serde_json::from_str(&wire).expect("wire-v11 should reconstruct the compact owner");
+    let simulation = simulate_dae(&decoded, &SimOptions::default())
+        .expect("compact array algorithm should lower to computable Solve IR");
+    for index in 1..=5 {
+        let name = format!("x[{index}]");
+        let variable = simulation
+            .names
+            .iter()
+            .position(|candidate| candidate == &name)
+            .unwrap_or_else(|| panic!("{name} is visible"));
+        let value = simulation.data[variable]
+            .last()
+            .copied()
+            .expect("array result trace is non-empty");
+        assert!((value - index as f64).abs() <= 1.0e-10);
+    }
 }
