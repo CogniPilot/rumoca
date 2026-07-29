@@ -832,10 +832,13 @@ where
             dae::PureBuiltin::Abs => values.iter_mut().for_each(|value| *value = value.abs()),
             dae::PureBuiltin::Sign => values.iter_mut().for_each(|value| *value = value.signum()),
             dae::PureBuiltin::Sqrt => values.iter_mut().for_each(|value| *value = value.sqrt()),
-            dae::PureBuiltin::Mod => {
-                let rhs =
-                    self.expression(arguments.get(1).expect("checked mod has two arguments"))?;
-                apply_mod(&mut values, rhs, span)?;
+            dae::PureBuiltin::Div | dae::PureBuiltin::Mod | dae::PureBuiltin::Rem => {
+                let rhs = self.expression(
+                    arguments
+                        .get(1)
+                        .expect("checked quotient builtin has two arguments"),
+                )?;
+                apply_quotient(builtin, &mut values, rhs, span)?;
             }
             dae::PureBuiltin::Floor => values.iter_mut().for_each(|value| *value = value.floor()),
             dae::PureBuiltin::Ceil => values.iter_mut().for_each(|value| *value = value.ceil()),
@@ -1054,14 +1057,24 @@ fn record_field_bounds<'dae>(
     Some((start, value_type_scalar_count(view, selected)?))
 }
 
-fn apply_mod(values: &mut [f64], rhs: Vec<f64>, span: Span) -> Result<(), NumericEvaluationError> {
+fn apply_quotient(
+    builtin: dae::PureBuiltin,
+    values: &mut [f64],
+    rhs: Vec<f64>,
+    span: Span,
+) -> Result<(), NumericEvaluationError> {
+    let function = match builtin {
+        dae::PureBuiltin::Div => rumoca_core::BuiltinFunction::Div,
+        dae::PureBuiltin::Mod => rumoca_core::BuiltinFunction::Mod,
+        dae::PureBuiltin::Rem => rumoca_core::BuiltinFunction::Rem,
+        _ => unreachable!("caller restricts quotient builtins"),
+    };
     for (lhs, rhs) in values.iter_mut().zip(rhs) {
-        let value =
-            rumoca_core::apply_scalar_binary_math(rumoca_core::BuiltinFunction::Mod, *lhs, rhs);
+        let value = rumoca_core::apply_scalar_binary_math(function, *lhs, rhs);
         *lhs = value.ok_or_else(|| {
             failure(
                 NumericEvaluationErrorKind::InvalidValue,
-                "mod divisor must be nonzero",
+                "quotient divisor must be nonzero",
                 span,
             )
         })?;
@@ -1328,8 +1341,8 @@ mod tests {
     use super::NumericEvaluator;
 
     #[test]
-    fn checked_mod_preserves_modelica_sign_semantics_and_rejects_zero_divisors() {
-        let text = "mod(-7, 3); mod(-7, 0)";
+    fn checked_quotients_preserve_modelica_sign_semantics() {
+        let text = "div(-7, 3); mod(-7, 3); rem(-7, 3)";
         let mut source_map = SourceMap::new();
         let source = source_map.add("mod.mo", text);
         let at =
@@ -1344,34 +1357,41 @@ mod tests {
             dae.expressions(|expressions| {
                 expressions
                     .at(at(0, 10))
-                    .builtin(PureBuiltin::Mod, [minus_seven, three])
-            })?;
-            let zero = dae.expressions(|expressions| {
-                expressions.at(at(21, 22)).literal(DaeLiteral::Integer(0))
+                    .builtin(PureBuiltin::Div, [minus_seven, three])
             })?;
             dae.expressions(|expressions| {
                 expressions
-                    .at(at(12, text.len()))
-                    .builtin(PureBuiltin::Mod, [minus_seven, zero])
+                    .at(at(12, 22))
+                    .builtin(PureBuiltin::Mod, [minus_seven, three])
+            })?;
+            dae.expressions(|expressions| {
+                expressions
+                    .at(at(24, text.len()))
+                    .builtin(PureBuiltin::Rem, [minus_seven, three])
             })?;
             Ok(())
         })
         .unwrap();
         dae.inspect(|view| {
-            let valid = view.expression_id(2).unwrap();
+            let mut evaluator = NumericEvaluator::new(view);
             assert_eq!(
-                NumericEvaluator::new(view).expression(valid).unwrap(),
+                evaluator
+                    .expression(view.expression_id(2).unwrap())
+                    .unwrap(),
+                vec![-2.0]
+            );
+            assert_eq!(
+                evaluator
+                    .expression(view.expression_id(3).unwrap())
+                    .unwrap(),
                 vec![2.0]
             );
-            let division_by_zero = view.expression_id(4).unwrap();
-            let error = NumericEvaluator::new(view)
-                .expression(division_by_zero)
-                .unwrap_err();
             assert_eq!(
-                error.kind(),
-                super::NumericEvaluationErrorKind::InvalidValue
+                evaluator
+                    .expression(view.expression_id(4).unwrap())
+                    .unwrap(),
+                vec![-1.0]
             );
-            assert_eq!(error.span(), at(12, text.len()).span());
         });
     }
 

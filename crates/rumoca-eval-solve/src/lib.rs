@@ -16,9 +16,9 @@ use std::{
 };
 
 use rumoca_ir_solve::{
-    BinaryOp, CompareOp, LinearOp, Reg, ScalarProgramBlock, SolveEventActionKind,
-    SolveEventMessagePart, SolveEventPartition, SolveProblemShapeContractError, UnaryOp,
-    resolve_indexed_slot,
+    BinaryOp, CompareOp, LinearOp, Reg, ScalarProgramBlock, ScalarProgramRegisterFlow,
+    SolveEventActionKind, SolveEventMessagePart, SolveEventPartition,
+    SolveProblemShapeContractError, UnaryOp, resolve_indexed_slot,
 };
 
 mod compute_block_scalarize;
@@ -28,6 +28,8 @@ mod prepared;
 mod random_runtime;
 pub mod refresh_plan;
 pub mod reverse;
+#[cfg(test)]
+mod scalar_program_contract_tests;
 mod sparsity;
 mod table_runtime;
 pub mod tensor_policy;
@@ -856,19 +858,44 @@ pub fn eval_row_with_context(
 ///
 /// Convenience for callers that operate on programs with exactly one
 /// `StoreOutput` (residual rows, root conditions, event-message numbers,
-/// target-assignment rows). Returns the last value stored, matching the
-/// historical "last `StoreOutput` wins" behavior for those programs.
+/// target-assignment rows).
 pub(crate) fn eval_program_single(
     input: PreparedRowEval<'_, '_>,
     register_safe: bool,
     scratch: &mut RowEvalScratch,
 ) -> Result<f64, EvalSolveError> {
+    require_program_output_count(input.row, 1, input.source_span)?;
     let mut buf = [0.0f64];
     {
         let mut sink = OutputCursor::new(&mut buf);
         eval_row_prepared_maybe_fast(input, register_safe, scratch, &mut sink)?;
     }
     Ok(buf[0])
+}
+
+pub(crate) fn eval_program_no_output(
+    input: PreparedRowEval<'_, '_>,
+    register_safe: bool,
+    scratch: &mut RowEvalScratch,
+) -> Result<(), EvalSolveError> {
+    require_program_output_count(input.row, 0, input.source_span)?;
+    let mut sink = OutputCursor::new(&mut []);
+    eval_row_prepared_maybe_fast(input, register_safe, scratch, &mut sink)
+}
+
+fn require_program_output_count(
+    row: &[LinearOp],
+    expected: usize,
+    span: Option<rumoca_core::Span>,
+) -> Result<(), EvalSolveError> {
+    let actual = ScalarProgramBlock::program_output_count(row);
+    if actual == expected {
+        return Ok(());
+    }
+    Err(EvalSolveError::InvalidRow {
+        message: format!("single-program evaluation expected {expected} outputs, found {actual}"),
+        span,
+    })
 }
 
 #[inline(always)]
@@ -1431,20 +1458,9 @@ fn linear_op_name(op: &LinearOp) -> &'static str {
 }
 
 pub(crate) fn required_registers(row: &[LinearOp]) -> Result<usize, EvalSolveError> {
-    row.iter()
-        .map(max_register)
-        .try_fold(None, |max_reg: Option<u32>, reg| {
-            let reg = reg?;
-            Ok::<Option<u32>, EvalSolveError>(Some(max_reg.map_or(reg, |current| current.max(reg))))
-        })?
-        .map_or(Ok(0), checked_required_register_count)
-}
-
-fn checked_required_register_count(reg: Reg) -> Result<usize, EvalSolveError> {
-    usize::try_from(reg)
-        .ok()
-        .and_then(|reg| reg.checked_add(1))
-        .ok_or_else(|| invalid_row(format!("register index {reg} overflows register count")))
+    ScalarProgramRegisterFlow::derive(row)
+        .map(ScalarProgramRegisterFlow::register_count)
+        .map_err(|error| invalid_row(error.to_string()))
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1616,114 +1632,6 @@ fn validate_input_len(
     })
 }
 
-fn max_register(op: &LinearOp) -> Result<u32, EvalSolveError> {
-    match *op {
-        LinearOp::Const { dst, .. }
-        | LinearOp::LoadTime { dst }
-        | LinearOp::LoadY { dst, .. }
-        | LinearOp::LoadP { dst, .. }
-        | LinearOp::LoadSeed { dst, .. } => Ok(dst),
-        LinearOp::LoadIndexedP { dst, index, .. }
-        | LinearOp::LoadIndexedSeed { dst, index, .. } => Ok(dst.max(index)),
-        LinearOp::Move { dst, src } | LinearOp::Unary { dst, arg: src, .. } => Ok(dst.max(src)),
-        LinearOp::Binary { dst, lhs, rhs, .. } | LinearOp::Compare { dst, lhs, rhs, .. } => {
-            Ok(dst.max(lhs).max(rhs))
-        }
-        LinearOp::Select {
-            dst,
-            cond,
-            if_true,
-            if_false,
-        } => Ok(dst.max(cond).max(if_true).max(if_false)),
-        LinearOp::LinearSolveComponent {
-            dst,
-            matrix_start,
-            rhs_start,
-            n,
-            ..
-        } => Ok(dst
-            .max(checked_reg_range_last(
-                matrix_start,
-                checked_square_len(n, "linear solve matrix")?,
-                "linear solve matrix",
-            )?)
-            .max(checked_reg_range_last(rhs_start, n, "linear solve rhs")?)),
-        LinearOp::TableBounds { dst, table_id, .. } => Ok(dst.max(table_id)),
-        LinearOp::TableLookup {
-            dst,
-            table_id,
-            column,
-            input,
-        }
-        | LinearOp::TableLookupSlope {
-            dst,
-            table_id,
-            column,
-            input,
-        } => Ok(dst.max(table_id).max(column).max(input)),
-        LinearOp::TableNextEvent {
-            dst,
-            table_id,
-            time,
-        } => Ok(dst.max(table_id).max(time)),
-        LinearOp::RandomInitialState {
-            dst,
-            local_seed,
-            global_seed,
-            ..
-        } => Ok(dst.max(local_seed).max(global_seed)),
-        LinearOp::RandomResult {
-            dst,
-            state_start,
-            state_len,
-            ..
-        }
-        | LinearOp::RandomState {
-            dst,
-            state_start,
-            state_len,
-            ..
-        } => Ok(dst.max(checked_reg_range_last(
-            state_start,
-            state_len,
-            "random state",
-        )?)),
-        LinearOp::ImpureRandomInit { dst, seed } => Ok(dst.max(seed)),
-        LinearOp::ImpureRandom { dst, id, .. } => Ok(dst.max(id)),
-        LinearOp::ImpureRandomInteger {
-            dst,
-            id,
-            imin,
-            imax,
-            ..
-        } => Ok(dst.max(id).max(imin).max(imax)),
-        LinearOp::StoreOutput { src } => Ok(src),
-    }
-}
-
-fn checked_square_len(n: usize, kind: &'static str) -> Result<usize, EvalSolveError> {
-    n.checked_mul(n)
-        .ok_or_else(|| invalid_row(format!("{kind} size overflow")))
-}
-
-fn checked_reg_range_last(
-    start: Reg,
-    len: usize,
-    kind: &'static str,
-) -> Result<Reg, EvalSolveError> {
-    let Some(offset) = len.checked_sub(1) else {
-        return Ok(start);
-    };
-    let offset = Reg::try_from(offset).map_err(|_| {
-        invalid_row(format!(
-            "{kind} offset {offset} exceeds register index type"
-        ))
-    })?;
-    start
-        .checked_add(offset)
-        .ok_or_else(|| invalid_row(format!("{kind} range starting at {start} overflows")))
-}
-
 fn invalid_row(message: impl Into<String>) -> EvalSolveError {
     EvalSolveError::InvalidRow {
         message: message.into(),
@@ -1741,16 +1649,6 @@ fn eval_solve_f64_values(
     Ok(values)
 }
 
-fn eval_solve_bool_values(
-    len: usize,
-    value: bool,
-    context: &'static str,
-) -> Result<Vec<bool>, EvalSolveError> {
-    let mut values = eval_solve_vec_with_capacity(len, context)?;
-    values.resize(len, value);
-    Ok(values)
-}
-
 fn eval_solve_vec_with_capacity<T>(
     capacity: usize,
     context: &'static str,
@@ -1760,121 +1658,6 @@ fn eval_solve_vec_with_capacity<T>(
         .try_reserve_exact(capacity)
         .map_err(|_| invalid_row(format!("{context} exceeds host memory limits")))?;
     Ok(values)
-}
-
-pub(crate) fn row_register_flow_is_valid(row: &[LinearOp]) -> Result<bool, EvalSolveError> {
-    let register_count = required_registers(row)?;
-    let mut initialized = eval_solve_bool_values(register_count, false, "row register flow state")?;
-    for op in row {
-        if !op_sources_initialized(op, &initialized) {
-            return Ok(false);
-        }
-        mark_op_dests_initialized(op, &mut initialized);
-    }
-    Ok(true)
-}
-
-fn op_sources_initialized(op: &LinearOp, initialized: &[bool]) -> bool {
-    match *op {
-        LinearOp::Const { .. }
-        | LinearOp::LoadTime { .. }
-        | LinearOp::LoadY { .. }
-        | LinearOp::LoadP { .. }
-        | LinearOp::LoadSeed { .. } => true,
-        LinearOp::Move { src, .. }
-        | LinearOp::Unary { arg: src, .. }
-        | LinearOp::LoadIndexedP { index: src, .. }
-        | LinearOp::LoadIndexedSeed { index: src, .. }
-        | LinearOp::StoreOutput { src } => reg_initialized(initialized, src),
-        LinearOp::Binary { lhs, rhs, .. } | LinearOp::Compare { lhs, rhs, .. } => {
-            reg_initialized(initialized, lhs) && reg_initialized(initialized, rhs)
-        }
-        LinearOp::Select {
-            cond,
-            if_true,
-            if_false,
-            ..
-        } => {
-            reg_initialized(initialized, cond)
-                && reg_initialized(initialized, if_true)
-                && reg_initialized(initialized, if_false)
-        }
-        LinearOp::LinearSolveComponent {
-            matrix_start,
-            rhs_start,
-            n,
-            component,
-            ..
-        } => {
-            let Some(matrix_len) = n.checked_mul(n) else {
-                return false;
-            };
-            component < n
-                && reg_range_initialized(initialized, matrix_start, matrix_len)
-                && reg_range_initialized(initialized, rhs_start, n)
-        }
-        LinearOp::TableBounds { table_id, .. } => reg_initialized(initialized, table_id),
-        LinearOp::TableLookup {
-            table_id,
-            column,
-            input,
-            ..
-        }
-        | LinearOp::TableLookupSlope {
-            table_id,
-            column,
-            input,
-            ..
-        } => {
-            reg_initialized(initialized, table_id)
-                && reg_initialized(initialized, column)
-                && reg_initialized(initialized, input)
-        }
-        LinearOp::TableNextEvent { table_id, time, .. } => {
-            reg_initialized(initialized, table_id) && reg_initialized(initialized, time)
-        }
-        LinearOp::RandomInitialState {
-            local_seed,
-            global_seed,
-            ..
-        } => reg_initialized(initialized, local_seed) && reg_initialized(initialized, global_seed),
-        LinearOp::RandomResult {
-            state_start,
-            state_len,
-            ..
-        }
-        | LinearOp::RandomState {
-            state_start,
-            state_len,
-            ..
-        } => reg_range_initialized(initialized, state_start, state_len),
-        LinearOp::ImpureRandomInit { seed, .. } => reg_initialized(initialized, seed),
-        LinearOp::ImpureRandom { id, .. } => reg_initialized(initialized, id),
-        LinearOp::ImpureRandomInteger { id, imin, imax, .. } => {
-            reg_initialized(initialized, id)
-                && reg_initialized(initialized, imin)
-                && reg_initialized(initialized, imax)
-        }
-    }
-}
-
-fn mark_op_dests_initialized(op: &LinearOp, initialized: &mut [bool]) {
-    if let Some(dst) = op.dst_register()
-        && let Some(slot) = initialized.get_mut(dst as usize)
-    {
-        *slot = true;
-    }
-}
-
-fn reg_initialized(initialized: &[bool], reg: Reg) -> bool {
-    initialized.get(reg as usize).copied().unwrap_or(false)
-}
-
-fn reg_range_initialized(initialized: &[bool], start: Reg, len: usize) -> bool {
-    let start = start as usize;
-    start
-        .checked_add(len)
-        .is_some_and(|end| end <= initialized.len() && initialized[start..end].iter().all(|v| *v))
 }
 
 fn set(

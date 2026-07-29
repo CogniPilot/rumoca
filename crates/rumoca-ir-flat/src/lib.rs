@@ -54,7 +54,8 @@ pub use connections::{
 
 // Re-export clock types
 pub use clocks::{
-    BaseClock, BaseClockPartition, ClockKind, ClockPartitions, SubClock, SubClockPartition,
+    BaseClock, BaseClockPartition, ClockAssociation, ClockKind, ClockPartitionError,
+    ClockPartitions, SubClock, SubClockPartition,
 };
 pub use name_utils::component_base_name;
 

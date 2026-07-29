@@ -305,10 +305,10 @@ pub(super) fn lower_builtin_arguments(
         dae::PureBuiltin::Abs => "absolute",
         dae::PureBuiltin::Sign => "sign",
         dae::PureBuiltin::Sqrt => "sqrt",
-        dae::PureBuiltin::Mod => {
+        dae::PureBuiltin::Div | dae::PureBuiltin::Mod | dae::PureBuiltin::Rem => {
             return Err(unsupported(
-                "builtin:mod",
-                "builtin `mod` has no scalar GALEC mapping".to_owned(),
+                "builtin:quotient",
+                format!("builtin `{builtin:?}` has no scalar GALEC mapping"),
                 span,
             ));
         }

@@ -233,6 +233,20 @@ impl From<dae::DaeConstructionError> for ToDaeError {
                 span,
             );
         }
+        if let dae::DaeConstructionError::NonStaticDiscontinuity { operator, span } = source {
+            return Self::unsupported_runtime_operator(
+                operator,
+                "dynamic quotient semantics require a checked discontinuity owner",
+                span,
+            );
+        }
+        if let dae::DaeConstructionError::UndefinedBuiltinDomain { operator, span } = source {
+            return Self::unsupported_runtime_operator(
+                operator,
+                "the quotient must have a finite result and a nonzero divisor",
+                span,
+            );
+        }
         match source.source_span() {
             Some(span) if !span.is_dummy() => Self::Construction { source, span },
             _ => Self::internal(source.to_string()),

@@ -317,6 +317,11 @@ impl Resolver {
         let Some((resolved_def_id, _qualified_name)) =
             self.resolve_component_reference_full_path(comp, scope)
         else {
+            // A leading declaration is not proof that the called member exists.
+            // Clear the partial lookup before considering the only supported
+            // deferred case: a replaceable package whose concrete member set is
+            // established during instantiation.
+            comp.def_id = None;
             self.resolve_partial_replaceable_package_function_reference(comp, scope);
             return;
         };

@@ -253,7 +253,10 @@ fn compute_block_len_rejects_scalar_cursor_overflow_with_span() {
                 span: Span::DUMMY,
             },
             ComputeNode::ScalarPrograms(ScalarProgramBlock::with_source_span(
-                vec![vec![LinearOp::StoreOutput { src: 0 }]],
+                vec![vec![
+                    LinearOp::Const { dst: 0, value: 0.0 },
+                    LinearOp::StoreOutput { src: 0 },
+                ]],
                 span,
             )),
         ],
@@ -382,6 +385,7 @@ fn linear_solve_component_query_covers_scalar_programs_and_nodes() {
     let scalar_linsolve = ScalarProgramBlock::with_source_span(
         vec![vec![
             LinearOp::Const { dst: 0, value: 1.0 },
+            LinearOp::Const { dst: 1, value: 2.0 },
             LinearOp::LinearSolveComponent {
                 dst: 1,
                 matrix_start: 0,

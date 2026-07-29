@@ -252,13 +252,9 @@ pub fn apply_scalar_binary_math(function: BuiltinFunction, lhs: f64, rhs: f64) -
         BuiltinFunction::Atan2 => Some(lhs.atan2(rhs)),
         BuiltinFunction::Min => Some(lhs.min(rhs)),
         BuiltinFunction::Max => Some(lhs.max(rhs)),
-        BuiltinFunction::Div => (rhs.abs() > f64::EPSILON).then_some((lhs / rhs).trunc()),
-        BuiltinFunction::Mod => {
-            (rhs.abs() > f64::EPSILON).then_some(lhs - (lhs / rhs).floor() * rhs)
-        }
-        BuiltinFunction::Rem => {
-            (rhs.abs() > f64::EPSILON).then_some(lhs - (lhs / rhs).trunc() * rhs)
-        }
+        BuiltinFunction::Div => (rhs != 0.0).then_some((lhs / rhs).trunc()),
+        BuiltinFunction::Mod => (rhs != 0.0).then_some(lhs - (lhs / rhs).floor() * rhs),
+        BuiltinFunction::Rem => (rhs != 0.0).then_some(lhs - (lhs / rhs).trunc() * rhs),
         _ => None,
     }
 }
@@ -296,6 +292,22 @@ mod tests {
         assert_eq!(modelica_sign(-0.0), 0.0);
         assert_eq!(modelica_sign(2.0), 1.0);
         assert_eq!(modelica_sign(-2.0), -1.0);
+    }
+
+    #[test]
+    fn quotient_domain_uses_exact_zero_not_a_numeric_tolerance() {
+        let tiny = f64::MIN_POSITIVE;
+        assert_eq!(
+            apply_scalar_binary_math(BuiltinFunction::Div, tiny, tiny),
+            Some(1.0)
+        );
+        for function in [
+            BuiltinFunction::Div,
+            BuiltinFunction::Mod,
+            BuiltinFunction::Rem,
+        ] {
+            assert_eq!(apply_scalar_binary_math(function, 1.0, 0.0), None);
+        }
     }
 
     #[test]

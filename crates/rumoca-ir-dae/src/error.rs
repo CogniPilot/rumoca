@@ -76,6 +76,14 @@ pub enum DaeConstructionError {
     InvalidPositiveParameter {
         span: Span,
     },
+    NonStaticDiscontinuity {
+        operator: &'static str,
+        span: Span,
+    },
+    UndefinedBuiltinDomain {
+        operator: &'static str,
+        span: Span,
+    },
     InvalidSubscript {
         span: Span,
     },
@@ -187,9 +195,9 @@ impl std::fmt::Display for DaeConstructionError {
             Self::InvalidArrayExtent { .. } => {
                 formatter.write_str("array extent must be a nonnegative literal Integer")
             }
-            Self::InvalidPositiveParameter { .. } => {
-                formatter.write_str("expected a finite, strictly-positive parameter expression")
-            }
+            error @ (Self::InvalidPositiveParameter { .. }
+            | Self::NonStaticDiscontinuity { .. }
+            | Self::UndefinedBuiltinDomain { .. }) => format_numeric_error(error, formatter),
             Self::InvalidSubscript { .. } => formatter.write_str("invalid array subscript"),
             Self::InvalidEnumerationOrdinal { ordinal, .. } => {
                 format_enumeration_ordinal(formatter, *ordinal)
@@ -235,6 +243,26 @@ impl std::fmt::Display for DaeConstructionError {
                 write!(formatter, "malformed DAE wire column `{column}`")
             }
         }
+    }
+}
+
+fn format_numeric_error(
+    error: &DaeConstructionError,
+    formatter: &mut std::fmt::Formatter<'_>,
+) -> std::fmt::Result {
+    match error {
+        DaeConstructionError::InvalidPositiveParameter { .. } => {
+            formatter.write_str("expected a finite, strictly-positive parameter expression")
+        }
+        DaeConstructionError::NonStaticDiscontinuity { operator, .. } => write!(
+            formatter,
+            "discontinuous builtin `{operator}` requires statically computable operands until it has a checked event owner"
+        ),
+        DaeConstructionError::UndefinedBuiltinDomain { operator, .. } => write!(
+            formatter,
+            "builtin `{operator}` operands are outside the defined numeric domain"
+        ),
+        _ => unreachable!("caller restricts numeric construction errors"),
     }
 }
 
@@ -381,6 +409,8 @@ impl DaeConstructionError {
             | Self::RangeExtentOverflow { span }
             | Self::InvalidArrayExtent { span }
             | Self::InvalidPositiveParameter { span }
+            | Self::NonStaticDiscontinuity { span, .. }
+            | Self::UndefinedBuiltinDomain { span, .. }
             | Self::InvalidSubscript { span }
             | Self::InvalidEnumerationOrdinal { span, .. }
             | Self::InvalidBinderScope { span, .. }

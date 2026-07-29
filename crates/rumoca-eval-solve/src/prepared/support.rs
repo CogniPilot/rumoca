@@ -4,7 +4,6 @@ use super::*;
 pub(super) struct PreparedLinearOps {
     pub(super) ops: Vec<LinearOp>,
     pub(super) register_count: usize,
-    pub(super) register_safe: bool,
     pub(super) requirements: RowInputRequirements,
 }
 
@@ -20,7 +19,6 @@ impl PreparedLinearOps {
     ) -> Result<Self, EvalSolveError> {
         Ok(Self {
             register_count: required_registers(&ops)?,
-            register_safe: row_register_flow_is_valid(&ops)?,
             requirements,
             ops,
         })
@@ -36,11 +34,10 @@ impl PreparedLinearOps {
     ) -> Result<(), EvalSolveError> {
         // Operand setup ops compute matrix/rhs entries into the register file
         // and contain no `StoreOutput`; the matmul/linsolve kernel reads the
-        // registers afterward. The single-output helper drives the op loop and
-        // its (unused) return value is discarded.
-        eval_program_single(
+        // registers afterward.
+        eval_program_no_output(
             PreparedRowEval::new(&self.ops, self.register_count, y, p, t, context),
-            self.register_safe,
+            true,
             scratch,
         )?;
         Ok(())

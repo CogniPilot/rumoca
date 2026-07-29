@@ -78,18 +78,6 @@ fn eval_solve_f64_values_rejects_impossible_capacity() {
 }
 
 #[test]
-fn eval_solve_bool_values_rejects_impossible_capacity() {
-    let err = eval_solve_bool_values(usize::MAX, false, "row register flow state")
-        .expect_err("impossible eval-solve bool capacity should fail");
-
-    assert!(matches!(err, EvalSolveError::InvalidRow { .. }));
-    assert!(
-        err.to_string()
-            .contains("row register flow state exceeds host memory limits")
-    );
-}
-
-#[test]
 fn eval_row_compare_equality_is_exact_not_epsilon_based() {
     let row = vec![
         LinearOp::Const { dst: 0, value: 0.0 },
@@ -644,12 +632,13 @@ fn eval_row_missing_source_register_is_error_not_panic_or_zero() {
     let err = eval_row(&row, &[], &[], 0.0, None)
         .expect_err("missing source register should report an evaluation error");
 
-    assert_eq!(
-        err,
-        EvalSolveError::UninitializedRegister {
-            register: 1,
-            span: None,
-        }
+    assert!(
+        matches!(err, EvalSolveError::InvalidRow { span: None, .. }),
+        "expected invalid row error, got {err:?}"
+    );
+    assert!(
+        err.to_string().contains("Move op 0") && err.to_string().contains("undefined register r1"),
+        "error should identify the first invalid register read: {err}"
     );
 }
 
@@ -668,12 +657,14 @@ fn eval_row_uninitialized_source_register_is_error_not_zero() {
     let err = eval_row(&row, &[], &[], 0.0, None)
         .expect_err("uninitialized register read should report an evaluation error");
 
-    assert_eq!(
-        err,
-        EvalSolveError::UninitializedRegister {
-            register: 1,
-            span: None,
-        }
+    assert!(
+        matches!(err, EvalSolveError::InvalidRow { span: None, .. }),
+        "expected invalid row error, got {err:?}"
+    );
+    assert!(
+        err.to_string().contains("Binary op 0")
+            && err.to_string().contains("undefined register r1"),
+        "error should identify the first invalid register read: {err}"
     );
 }
 
@@ -693,12 +684,14 @@ fn eval_row_linsolve_missing_matrix_register_is_error_not_panic_or_zero() {
     let err = eval_row(&row, &[], &[], 0.0, None)
         .expect_err("malformed linear solve row should report an evaluation error");
 
-    assert_eq!(
-        err,
-        EvalSolveError::UninitializedRegister {
-            register: 1,
-            span: None,
-        }
+    assert!(
+        matches!(err, EvalSolveError::InvalidRow { span: None, .. }),
+        "expected invalid row error, got {err:?}"
+    );
+    assert!(
+        err.to_string().contains("LinearSolveComponent op 0")
+            && err.to_string().contains("undefined register r1"),
+        "error should identify the first invalid matrix register: {err}"
     );
 }
 
@@ -963,7 +956,8 @@ fn required_registers_reject_random_state_range_overflow() {
         "expected invalid row error, got {err:?}"
     );
     assert!(
-        err.to_string().contains("random state range") && err.to_string().contains("overflows"),
+        err.to_string().contains("RandomResult op 0 register range")
+            && err.to_string().contains("overflows"),
         "error should explain random state range overflow: {err}"
     );
 }
@@ -989,7 +983,8 @@ fn required_registers_reject_linear_solve_matrix_size_overflow() {
     );
     assert!(
         err.to_string()
-            .contains("linear solve matrix size overflow"),
+            .contains("LinearSolveComponent op 0 register range")
+            && err.to_string().contains("overflows"),
         "error should explain linear solve matrix overflow: {err}"
     );
 }
@@ -1129,32 +1124,26 @@ fn prepared_scalar_block_rejects_unallocatable_sparse_output_index() {
 }
 
 #[test]
-fn prepared_scalar_row_eval_attaches_span_to_register_error() {
+fn scalar_program_construction_attaches_span_to_register_error() {
     let span = rumoca_core::Span::from_offsets(
         rumoca_core::SourceId::from_source_name("bad_register_row.mo"),
         7,
         15,
     );
-    let block = ScalarProgramBlock::with_program_spans(
+    let err = ScalarProgramBlock::with_program_spans(
         vec![vec![
             LinearOp::Move { dst: 1, src: 0 },
             LinearOp::StoreOutput { src: 1 },
         ]],
         vec![span],
     )
-    .expect("register-error fixture metadata should match row count");
-    let prepared = PreparedScalarProgramBlock::new(block)
-        .expect("row with invalid runtime register state should still prepare");
-
-    let err = prepared
-        .eval_row_with_context(0, &[], &[], 0.0, RowEvalContext::default())
-        .expect_err("uninitialized register should fail at row evaluation");
+    .expect_err("undefined register reads must fail during scalar-program construction");
 
     assert_eq!(err.source_span(), Some(span));
     assert!(
         err.to_string()
-            .contains("uninitialized Solve-IR register r0"),
-        "error should explain the uninitialized register: {err}"
+            .contains("Move op 0 reads undefined register r0"),
+        "error should explain the undefined register: {err}"
     );
 }
 

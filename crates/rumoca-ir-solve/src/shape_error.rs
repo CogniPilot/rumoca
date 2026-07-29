@@ -1,4 +1,4 @@
-use crate::VarLayoutShapeContractError;
+use crate::{ScalarProgramRegisterError, VarLayoutShapeContractError};
 use rumoca_core::{Span, StructuredIndexDomainError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,6 +35,19 @@ pub enum SolveProblemShapeContractError {
         node_index: usize,
         programs: usize,
         output_indices: usize,
+        span: Option<Span>,
+    },
+    ScalarProgramMissingOutput {
+        context: String,
+        node_index: usize,
+        program_index: usize,
+        span: Option<Span>,
+    },
+    ScalarProgramRegisterFlow {
+        context: String,
+        node_index: usize,
+        program_index: usize,
+        error: ScalarProgramRegisterError,
         span: Option<Span>,
     },
     ScalarProgramCountMismatch {
@@ -164,6 +177,8 @@ impl SolveProblemShapeContractError {
             Self::Layout(err) => err.source_span(),
             Self::ScalarProgramSpanMismatch { span, .. }
             | Self::ScalarProgramOutputIndexMismatch { span, .. }
+            | Self::ScalarProgramMissingOutput { span, .. }
+            | Self::ScalarProgramRegisterFlow { span, .. }
             | Self::ScalarProgramCountMismatch { span, .. }
             | Self::OutputIndexOverflow { span, .. }
             | Self::SolverIndexOutOfBounds { span, .. }
@@ -213,6 +228,26 @@ impl std::fmt::Display for SolveProblemShapeContractError {
                 f,
                 "{context} node {node_index} has {programs} scalar programs but \
                  {output_indices} output indices"
+            ),
+            Self::ScalarProgramMissingOutput {
+                context,
+                node_index,
+                program_index,
+                ..
+            } => write!(
+                f,
+                "{context} node {node_index} scalar program {program_index} stores no output"
+            ),
+            Self::ScalarProgramRegisterFlow {
+                context,
+                node_index,
+                program_index,
+                error,
+                ..
+            } => write!(
+                f,
+                "{context} node {node_index} scalar program {program_index} has invalid register \
+                 flow: {error}"
             ),
             Self::ScalarProgramCountMismatch {
                 context,

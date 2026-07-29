@@ -5,6 +5,9 @@
 //! replacement DAE demotes that state and substitutes the exact symbolic
 //! derivative of its definition at every derivative occurrence.
 
+#[cfg(test)]
+mod tests;
+
 use rumoca_core::StateSelect;
 use rumoca_ir_dae as dae;
 
@@ -295,13 +298,24 @@ fn rebuild_holonomic_constraint(
     let rebuilt = model.inspect(|source| {
         dae::Dae::construct(model.source_map().clone(), |target| {
             let types = rebuild_types(source, target)?;
+            let domains = rebuild_domains(source, target)?;
             let mut variables = reserve_variables(source, target, &types, None)?;
+            let conditions = reserve_conditions(source, target)?;
+            let clocks = rebuild_clocks(source, target, &variables, &conditions)?;
+            let temporal = rebuild_temporal_coordinates(source, target, &variables, &clocks)?;
             let derivative_definitions = explicit_derivative_definitions(source);
             let (expressions, replacement) = target.expressions(|expressions| {
                 let mut rebuilder = ExpressionRebuilder::new(
                     source,
                     expressions,
-                    &variables,
+                    RebuiltIdentities {
+                        types: &types,
+                        variables: &variables,
+                        domains: &domains,
+                        conditions: &conditions,
+                        previous: &temporal.previous,
+                        terminals: &temporal.terminals,
+                    },
                     &derivative_definitions,
                     None,
                 );
@@ -321,10 +335,16 @@ fn rebuild_holonomic_constraint(
                 Ok((rebuilt, second))
             })?;
             define_variables(source, target, &expressions, &mut variables)?;
-            rebuild_equations(
+            rebuild_semantic_owners(
                 source,
                 target,
                 &expressions,
+                RebuiltOwnerIdentities {
+                    variables: &variables,
+                    domains: &domains,
+                    conditions: &conditions,
+                    clocks: &clocks,
+                },
                 Some((constraint.residual, replacement)),
             )
         })
@@ -338,27 +358,49 @@ fn rebuild_with_state_demotion(
     model: &dae::Dae,
     candidate: DirectStateConstraint,
 ) -> Result<Option<dae::Dae>, StructuralError> {
-    let supported = model.inspect(|view| supports_reconstruction(view, candidate));
+    let supported = model.inspect(supports_common_reconstruction);
     if !supported {
         return Ok(None);
     }
     let rebuilt = model.inspect(|source| {
         dae::Dae::construct(model.source_map().clone(), |target| {
             let types = rebuild_types(source, target)?;
+            let domains = rebuild_domains(source, target)?;
             let mut variables = reserve_variables(source, target, &types, Some(candidate.state))?;
+            let conditions = reserve_conditions(source, target)?;
+            let clocks = rebuild_clocks(source, target, &variables, &conditions)?;
+            let temporal = rebuild_temporal_coordinates(source, target, &variables, &clocks)?;
             let derivative_definitions = explicit_derivative_definitions(source);
             let expressions = target.expressions(|expressions| {
                 let mut rebuilder = ExpressionRebuilder::new(
                     source,
                     expressions,
-                    &variables,
+                    RebuiltIdentities {
+                        types: &types,
+                        variables: &variables,
+                        domains: &domains,
+                        conditions: &conditions,
+                        previous: &temporal.previous,
+                        terminals: &temporal.terminals,
+                    },
                     &derivative_definitions,
                     Some(candidate),
                 );
                 rebuilder.rebuild_all()
             })?;
             define_variables(source, target, &expressions, &mut variables)?;
-            rebuild_equations(source, target, &expressions, None)
+            rebuild_semantic_owners(
+                source,
+                target,
+                &expressions,
+                RebuiltOwnerIdentities {
+                    variables: &variables,
+                    domains: &domains,
+                    conditions: &conditions,
+                    clocks: &clocks,
+                },
+                None,
+            )
         })
     });
     rebuilt
@@ -405,62 +447,15 @@ fn explicit_derivative_definitions(view: dae::DaeView<'_>) -> Vec<Option<u32>> {
     definitions
 }
 
-fn supports_reconstruction(view: dae::DaeView<'_>, candidate: DirectStateConstraint) -> bool {
-    if !supports_common_reconstruction(view) {
-        return false;
-    }
-    (0..view.expression_count()).all(|index| {
-        let id = view
-            .expression_id(index)
-            .expect("finalized expression ordinal resolves");
-        match view
-            .expression(id)
-            .expect("finalized expression identity resolves")
-            .operation()
-        {
-            dae::ExpressionOperation::Coordinate(dae::CoordinateView::Derivative(state))
-                if state.index() == candidate.state =>
-            {
-                is_differentiable(
-                    view,
-                    view.expression_id(candidate.rhs as usize)
-                        .expect("candidate RHS resolves"),
-                    state,
-                    &mut vec![false; view.expression_count()],
-                )
-            }
-            _ => true,
-        }
-    })
-}
-
 fn supports_common_reconstruction(view: dae::DaeView<'_>) -> bool {
-    let unsupported_owner = view.function_count() != 0
-        || view.domain_count() != 0
-        || view.continuous_family_count() != 0
-        || view.initialization_family_count() != 0
-        || view.discrete_real_equation_count() != 0
-        || view.discrete_assignment_count() != 0
-        || view.relation_count() != 0
-        || view.condition_count() != 0
-        || view.root_count() != 0
-        || view.time_event_count() != 0
-        || view.event_action_count() != 0
-        || view.clock_count() != 0
-        || view.clock_ownership_count() != 0
-        || view.previous_value_count() != 0
-        || view.terminal_count() != 0
-        || view.delay_count() != 0;
+    let unsupported_owner = view.function_count() != 0 || view.delay_count() != 0;
     if unsupported_owner {
         return false;
     }
-    if view.variables().any(|(_, variable)| {
-        variable.value_type().is_record()
-            || matches!(
-                variable.role(),
-                dae::VariableRole::DiscreteReal | dae::VariableRole::DiscreteValue
-            )
-    }) {
+    if view
+        .variables()
+        .any(|(_, variable)| variable.value_type().is_record())
+    {
         return false;
     }
     if (0..view.value_type_count()).any(|index| {
@@ -477,13 +472,20 @@ fn supports_common_reconstruction(view: dae::DaeView<'_>) -> bool {
         let Some(expression) = view.expression(id) else {
             return false;
         };
-        if expression.binder_domain().is_some() || expression.function_scope().is_some() {
+        if expression.function_scope().is_some() {
             return false;
         }
         match expression.operation() {
             dae::ExpressionOperation::Literal(_)
             | dae::ExpressionOperation::Unary { .. }
-            | dae::ExpressionOperation::Binary { .. } => true,
+            | dae::ExpressionOperation::Binary { .. }
+            | dae::ExpressionOperation::Conditional(_)
+            | dae::ExpressionOperation::Array(_)
+            | dae::ExpressionOperation::Range { .. }
+            | dae::ExpressionOperation::Comprehension { .. }
+            | dae::ExpressionOperation::Index { .. }
+            | dae::ExpressionOperation::ArrayUpdate { .. }
+            | dae::ExpressionOperation::Builtin { .. } => true,
             dae::ExpressionOperation::Coordinate(coordinate) => matches!(
                 coordinate,
                 dae::CoordinateView::Parameter(_)
@@ -491,7 +493,15 @@ fn supports_common_reconstruction(view: dae::DaeView<'_>) -> bool {
                     | dae::CoordinateView::State(_)
                     | dae::CoordinateView::Derivative(_)
                     | dae::CoordinateView::Algebraic(_)
+                    | dae::CoordinateView::DiscreteReal(_)
+                    | dae::CoordinateView::DiscreteValue(_)
+                    | dae::CoordinateView::PreDiscreteReal(_)
+                    | dae::CoordinateView::PreDiscreteValue(_)
+                    | dae::CoordinateView::Condition(_)
+                    | dae::CoordinateView::Previous(_)
+                    | dae::CoordinateView::Terminal(_)
                     | dae::CoordinateView::Time
+                    | dae::CoordinateView::Binder(_)
             ),
             _ => false,
         }
@@ -539,11 +549,177 @@ fn rebuild_types<'target>(
     })
 }
 
+struct RebuiltDomain<'dae> {
+    id: dae::DomainId<'dae>,
+    binders: Vec<dae::DomainBinderId<'dae>>,
+}
+
+fn rebuild_domains<'target>(
+    source: dae::DaeView<'_>,
+    target: &mut dae::DaeConstruction<'target>,
+) -> Result<Vec<RebuiltDomain<'target>>, dae::DaeConstructionError> {
+    let mut rebuilt: Vec<RebuiltDomain<'target>> = Vec::with_capacity(source.domain_count());
+    for index in 0..source.domain_count() {
+        let source_id = source
+            .domain_id(index)
+            .expect("finalized domain ordinal resolves");
+        let domain = source
+            .domain(source_id)
+            .expect("finalized domain identity resolves");
+        let provenance = domain.provenance();
+        let id = target.domains(|domains| match domain.parent() {
+            Some(parent) => domains.nested(
+                rebuilt[parent.index() as usize].id,
+                domain.structured().clone(),
+                provenance,
+            ),
+            None => domains.structured(domain.structured().clone(), provenance),
+        })?;
+        let binders = target.domains(|domains| {
+            (0..domain.structured().binders.len())
+                .map(|ordinal| domains.binder(id, ordinal, provenance))
+                .collect::<Result<Vec<_>, _>>()
+        })?;
+        rebuilt.push(RebuiltDomain { id, binders });
+    }
+    Ok(rebuilt)
+}
+
+fn reserve_conditions<'target>(
+    source: dae::DaeView<'_>,
+    target: &mut dae::DaeConstruction<'target>,
+) -> Result<Vec<dae::ConditionId<'target>>, dae::DaeConstructionError> {
+    (0..source.condition_count())
+        .map(|index| {
+            let id = source
+                .condition_id(index)
+                .expect("finalized condition ordinal resolves");
+            let condition = source
+                .condition(id)
+                .expect("finalized condition identity resolves");
+            target.conditions(|conditions| conditions.reserve(condition.provenance()))
+        })
+        .collect()
+}
+
+fn rebuild_clocks<'target>(
+    source: dae::DaeView<'_>,
+    target: &mut dae::DaeConstruction<'target>,
+    variables: &[ReservedVariable<'target>],
+    conditions: &[dae::ConditionId<'target>],
+) -> Result<Vec<dae::ClockId<'target>>, dae::DaeConstructionError> {
+    let mut clocks = Vec::with_capacity(source.clock_count());
+    for index in 0..source.clock_count() {
+        let id = source
+            .clock_id(index)
+            .expect("finalized clock ordinal resolves");
+        let clock = source.clock(id).expect("finalized clock identity resolves");
+        let rebuilt = target.clocks(|target| match clock.operation() {
+            dae::ClockOperation::Periodic(lattice) => target.periodic(*lattice, clock.provenance()),
+            dae::ClockOperation::Triggered(condition) => {
+                target.triggered(conditions[condition.index() as usize], clock.provenance())
+            }
+        })?;
+        clocks.push(rebuilt);
+    }
+    for index in 0..source.clock_ownership_count() {
+        rebuild_clock_ownership(source, target, variables, &clocks, index)?;
+    }
+    Ok(clocks)
+}
+
+fn rebuild_clock_ownership<'target>(
+    source: dae::DaeView<'_>,
+    target: &mut dae::DaeConstruction<'target>,
+    variables: &[ReservedVariable<'target>],
+    clocks: &[dae::ClockId<'target>],
+    index: usize,
+) -> Result<(), dae::DaeConstructionError> {
+    let id = source
+        .clock_ownership_id(index)
+        .expect("finalized clock ownership ordinal resolves");
+    let ownership = source
+        .clock_ownership(id)
+        .expect("finalized clock ownership identity resolves");
+    let clock = clocks[ownership.clock().index() as usize];
+    target.clocks(|target| match ownership.kind() {
+        dae::ClockedVariableKind::DiscreteReal => {
+            let TargetVariable::DiscreteReal(variable) =
+                variables[ownership.variable().index() as usize].identity
+            else {
+                unreachable!("clock ownership retains its discrete-real role")
+            };
+            target.own_discrete_real(clock, variable, ownership.provenance())
+        }
+        dae::ClockedVariableKind::DiscreteValue => {
+            let TargetVariable::DiscreteValue(variable) =
+                variables[ownership.variable().index() as usize].identity
+            else {
+                unreachable!("clock ownership retains its discrete-value role")
+            };
+            target.own_discrete_value(clock, variable, ownership.provenance())
+        }
+    })?;
+    Ok(())
+}
+
+struct RebuiltTemporal<'dae> {
+    previous: Vec<dae::PreviousId<'dae>>,
+    terminals: Vec<dae::TerminalId<'dae>>,
+}
+
+fn rebuild_temporal_coordinates<'target>(
+    source: dae::DaeView<'_>,
+    target: &mut dae::DaeConstruction<'target>,
+    variables: &[ReservedVariable<'target>],
+    clocks: &[dae::ClockId<'target>],
+) -> Result<RebuiltTemporal<'target>, dae::DaeConstructionError> {
+    let mut previous = Vec::with_capacity(source.previous_value_count());
+    for index in 0..source.previous_value_count() {
+        let id = source
+            .previous_id(index)
+            .expect("finalized previous-value ordinal resolves");
+        let entry = source
+            .previous(id)
+            .expect("finalized previous-value identity resolves");
+        let clock = clocks[entry.clock().index() as usize];
+        let rebuilt = target.temporal(|target| {
+            match variables[entry.variable().index() as usize].identity {
+                TargetVariable::DiscreteReal(variable) => {
+                    target.previous_discrete_real(clock, variable, entry.provenance())
+                }
+                TargetVariable::DiscreteValue(variable) => {
+                    target.previous_discrete_value(clock, variable, entry.provenance())
+                }
+                _ => unreachable!("previous coordinate retains its discrete variable role"),
+            }
+        })?;
+        previous.push(rebuilt);
+    }
+    let terminals = (0..source.terminal_count())
+        .map(|index| {
+            let id = source
+                .terminal_id(index)
+                .expect("finalized terminal ordinal resolves");
+            let entry = source
+                .terminal(id)
+                .expect("finalized terminal identity resolves");
+            target.temporal(|target| target.terminal(entry.provenance()))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(RebuiltTemporal {
+        previous,
+        terminals,
+    })
+}
+
 enum TargetVariable<'dae> {
     Parameter(dae::ParameterId<'dae>),
     Input(dae::InputId<'dae>),
     State(dae::StateId<'dae>),
     Algebraic(dae::AlgebraicId<'dae>),
+    DiscreteReal(dae::DiscreteRealId<'dae>),
+    DiscreteValue(dae::DiscreteValueId<'dae>),
 }
 
 impl Copy for TargetVariable<'_> {}
@@ -619,8 +795,15 @@ fn reserve_variable<'target>(
             let (id, reservation) = variables.reserve_output(name, value_type, declaration)?;
             (TargetVariable::Algebraic(id), reservation)
         }
-        dae::VariableRole::DiscreteReal | dae::VariableRole::DiscreteValue => {
-            unreachable!("reconstruction preflight rejects discrete variables")
+        dae::VariableRole::DiscreteReal => {
+            let (id, reservation) =
+                variables.reserve_discrete_real(name, value_type, declaration)?;
+            (TargetVariable::DiscreteReal(id), reservation)
+        }
+        dae::VariableRole::DiscreteValue => {
+            let (id, reservation) =
+                variables.reserve_discrete_value(name, value_type, declaration)?;
+            (TargetVariable::DiscreteValue(id), reservation)
         }
     };
     Ok(ReservedVariable {
@@ -675,67 +858,399 @@ fn define_variables<'target>(
     })
 }
 
+struct RebuiltOwnerIdentities<'borrow, 'target> {
+    variables: &'borrow [ReservedVariable<'target>],
+    domains: &'borrow [RebuiltDomain<'target>],
+    conditions: &'borrow [dae::ConditionId<'target>],
+    clocks: &'borrow [dae::ClockId<'target>],
+}
+
+fn rebuild_semantic_owners<'target>(
+    source: dae::DaeView<'_>,
+    target: &mut dae::DaeConstruction<'target>,
+    expressions: &[dae::ExprId<'target>],
+    identities: RebuiltOwnerIdentities<'_, 'target>,
+    replacement: Option<(u32, dae::ExprId<'target>)>,
+) -> Result<(), dae::DaeConstructionError> {
+    rebuild_equations(
+        source,
+        target,
+        expressions,
+        identities.variables,
+        identities.domains,
+        replacement,
+    )?;
+    let relations = rebuild_relations(source, target, expressions)?;
+    define_conditions(
+        source,
+        target,
+        expressions,
+        identities.conditions,
+        &relations,
+        identities.clocks,
+    )?;
+    rebuild_roots(source, target, identities.conditions, &relations)?;
+    rebuild_events(
+        source,
+        target,
+        expressions,
+        identities.variables,
+        identities.conditions,
+    )
+}
+
+fn rebuild_relations<'target>(
+    source: dae::DaeView<'_>,
+    target: &mut dae::DaeConstruction<'target>,
+    expressions: &[dae::ExprId<'target>],
+) -> Result<Vec<dae::RelationId<'target>>, dae::DaeConstructionError> {
+    (0..source.relation_count())
+        .map(|index| {
+            let id = source
+                .relation_id(index)
+                .expect("finalized relation ordinal resolves");
+            let relation = source
+                .relation(id)
+                .expect("finalized relation identity resolves");
+            target.conditions(|conditions| {
+                conditions.relation(
+                    expressions[relation.expression().index() as usize],
+                    relation.provenance(),
+                )
+            })
+        })
+        .collect()
+}
+
+fn define_conditions<'target>(
+    source: dae::DaeView<'_>,
+    target: &mut dae::DaeConstruction<'target>,
+    expressions: &[dae::ExprId<'target>],
+    conditions: &[dae::ConditionId<'target>],
+    relations: &[dae::RelationId<'target>],
+    clocks: &[dae::ClockId<'target>],
+) -> Result<(), dae::DaeConstructionError> {
+    for (index, target_id) in conditions.iter().copied().enumerate() {
+        let source_id = source
+            .condition_id(index)
+            .expect("finalized condition ordinal resolves");
+        let condition = source
+            .condition(source_id)
+            .expect("finalized condition identity resolves");
+        let input = match condition.operation() {
+            dae::ConditionOperation::Initial => dae::ConditionInput::Initial,
+            dae::ConditionOperation::Relation(id) => {
+                dae::ConditionInput::Relation(relations[id.index() as usize])
+            }
+            dae::ConditionOperation::Discrete(expression) => {
+                dae::ConditionInput::Discrete(expressions[expression.index() as usize])
+            }
+            dae::ConditionOperation::Not(id) => {
+                dae::ConditionInput::Not(conditions[id.index() as usize])
+            }
+            dae::ConditionOperation::And(lhs, rhs) => dae::ConditionInput::And(
+                conditions[lhs.index() as usize],
+                conditions[rhs.index() as usize],
+            ),
+            dae::ConditionOperation::Or(lhs, rhs) => dae::ConditionInput::Or(
+                conditions[lhs.index() as usize],
+                conditions[rhs.index() as usize],
+            ),
+            dae::ConditionOperation::Clock(id) => {
+                dae::ConditionInput::Clock(clocks[id.index() as usize])
+            }
+        };
+        target
+            .conditions(|conditions| conditions.define(target_id, input, condition.provenance()))?;
+    }
+    Ok(())
+}
+
+fn rebuild_roots<'target>(
+    source: dae::DaeView<'_>,
+    target: &mut dae::DaeConstruction<'target>,
+    conditions: &[dae::ConditionId<'target>],
+    relations: &[dae::RelationId<'target>],
+) -> Result<(), dae::DaeConstructionError> {
+    for index in 0..source.root_count() {
+        let id = source
+            .root_id(index)
+            .expect("finalized root ordinal resolves");
+        let root = source.root(id).expect("finalized root identity resolves");
+        target.conditions(|target| {
+            target.root(
+                relations[root.relation().index() as usize],
+                conditions[root.activation().index() as usize],
+                root.provenance(),
+            )
+        })?;
+    }
+    Ok(())
+}
+
+fn rebuild_events<'target>(
+    source: dae::DaeView<'_>,
+    target: &mut dae::DaeConstruction<'target>,
+    expressions: &[dae::ExprId<'target>],
+    variables: &[ReservedVariable<'target>],
+    conditions: &[dae::ConditionId<'target>],
+) -> Result<(), dae::DaeConstructionError> {
+    for index in 0..source.time_event_count() {
+        let id = source
+            .time_event_id(index)
+            .expect("finalized time-event ordinal resolves");
+        let event = source
+            .time_event(id)
+            .expect("finalized time-event identity resolves");
+        target.events(|events| events.time_event(*event.instant(), event.provenance()))?;
+    }
+    for index in 0..source.event_action_count() {
+        rebuild_event_action(source, target, expressions, variables, conditions, index)?;
+    }
+    Ok(())
+}
+
+fn rebuild_event_action<'target>(
+    source: dae::DaeView<'_>,
+    target: &mut dae::DaeConstruction<'target>,
+    expressions: &[dae::ExprId<'target>],
+    variables: &[ReservedVariable<'target>],
+    conditions: &[dae::ConditionId<'target>],
+    index: usize,
+) -> Result<(), dae::DaeConstructionError> {
+    let id = source
+        .event_action_id(index)
+        .expect("finalized event-action ordinal resolves");
+    let action = source
+        .event_action(id)
+        .expect("finalized event-action identity resolves");
+    let trigger = conditions[action.trigger().index() as usize];
+    let guard = conditions[action.guard().index() as usize];
+    target.events(|events| match action.operation() {
+        dae::EventActionOperation::Assert { message, level } => events.assert_with_level(
+            trigger,
+            guard,
+            expressions[message.index() as usize],
+            level.map(|level| expressions[level.index() as usize]),
+            action.provenance(),
+        ),
+        dae::EventActionOperation::Terminate { message } => events.terminate(
+            trigger,
+            guard,
+            expressions[message.index() as usize],
+            action.provenance(),
+        ),
+        dae::EventActionOperation::Reinitialize { state, value } => {
+            let TargetVariable::State(state) = variables[state.index() as usize].identity else {
+                unreachable!("event reinitialization target retains its state role")
+            };
+            events.reinitialize(
+                trigger,
+                guard,
+                state,
+                expressions[value.index() as usize],
+                action.provenance(),
+            )
+        }
+        dae::EventActionOperation::AssignDiscreteReal { target, value } => {
+            let TargetVariable::DiscreteReal(target) = variables[target.index() as usize].identity
+            else {
+                unreachable!("event assignment retains its discrete-real role")
+            };
+            events.assign_discrete_real(
+                trigger,
+                guard,
+                target,
+                expressions[value.index() as usize],
+                action.provenance(),
+            )
+        }
+        dae::EventActionOperation::AssignDiscreteValue { target, value } => {
+            let TargetVariable::DiscreteValue(target) = variables[target.index() as usize].identity
+            else {
+                unreachable!("event assignment retains its discrete-value role")
+            };
+            events.assign_discrete_value(
+                trigger,
+                guard,
+                target,
+                expressions[value.index() as usize],
+                action.provenance(),
+            )
+        }
+    })?;
+    Ok(())
+}
+
 fn rebuild_equations<'target>(
     source: dae::DaeView<'_>,
     target: &mut dae::DaeConstruction<'target>,
     expressions: &[dae::ExprId<'target>],
+    variables: &[ReservedVariable<'target>],
+    domains: &[RebuiltDomain<'target>],
     replacement: Option<(u32, dae::ExprId<'target>)>,
 ) -> Result<(), dae::DaeConstructionError> {
     target.continuous(|target| {
         for owner in source.continuous_owners() {
-            let dae::ContinuousOwnerView::Residual { equation, .. } = owner else {
-                unreachable!("reconstruction preflight rejects structured families")
-            };
-            let residual = replacement
-                .filter(|(source, _)| *source == equation.residual().index())
-                .map_or(
-                    expressions[equation.residual().index() as usize],
-                    |(_, target)| target,
-                );
-            target.value_equation(equation.provenance(), residual)?;
+            match owner {
+                dae::ContinuousOwnerView::Residual { equation, .. } => {
+                    let residual = replacement
+                        .filter(|(source, _)| *source == equation.residual().index())
+                        .map_or(
+                            expressions[equation.residual().index() as usize],
+                            |(_, target)| target,
+                        );
+                    target.value_equation(equation.provenance(), residual)?;
+                }
+                dae::ContinuousOwnerView::Structured { family, .. } => {
+                    rebuild_continuous_family(target, family, expressions, domains)?;
+                }
+            }
         }
         Ok(())
     })?;
     target.initialization(|target| {
         for owner in source.initialization_owners() {
-            let dae::InitializationOwnerView::Residual { equation, .. } = owner else {
-                unreachable!("reconstruction preflight rejects structured families")
+            match owner {
+                dae::InitializationOwnerView::Residual { equation, .. } => {
+                    target.value_equation(
+                        equation.provenance(),
+                        expressions[equation.residual().index() as usize],
+                    )?;
+                }
+                dae::InitializationOwnerView::Structured { family, .. } => {
+                    rebuild_initialization_family(target, family, expressions, domains)?;
+                }
+            }
+        }
+        Ok(())
+    })?;
+    rebuild_discrete_equations(source, target, expressions, variables)
+}
+
+fn rebuild_discrete_equations<'target>(
+    source: dae::DaeView<'_>,
+    target: &mut dae::DaeConstruction<'target>,
+    expressions: &[dae::ExprId<'target>],
+    variables: &[ReservedVariable<'target>],
+) -> Result<(), dae::DaeConstructionError> {
+    target.discrete(|target| {
+        for index in 0..source.discrete_real_equation_count() {
+            let equation = source
+                .discrete_real_equation(index)
+                .expect("finalized discrete-real equation resolves");
+            target.real_equation(equation.provenance(), |target| {
+                target.residual(expressions[equation.residual().index() as usize])
+            })?;
+        }
+        for index in 0..source.discrete_assignment_count() {
+            let id = source
+                .discrete_assignment_id(index)
+                .expect("finalized discrete assignment resolves");
+            let assignment = source
+                .discrete_assignment(id)
+                .expect("finalized discrete assignment identity resolves");
+            let TargetVariable::DiscreteValue(target_id) =
+                variables[assignment.target().index() as usize].identity
+            else {
+                unreachable!("checked assignment target retains its discrete-value role")
             };
-            target.value_equation(
-                equation.provenance(),
-                expressions[equation.residual().index() as usize],
+            target.assignment(
+                assignment.provenance(),
+                target_id,
+                expressions[assignment.value().index() as usize],
             )?;
         }
         Ok(())
     })
 }
 
+fn rebuild_continuous_family<'target>(
+    target: &mut dae::ContinuousEquations<'_, 'target>,
+    family: dae::StructuredFamilyView<'_>,
+    expressions: &[dae::ExprId<'target>],
+    domains: &[RebuiltDomain<'target>],
+) -> Result<(), dae::DaeConstructionError> {
+    let domain = domains[family.domain().index() as usize].id;
+    target.structured_family(
+        family.provenance(),
+        domain,
+        family.scalar_view(),
+        |target| rebuild_family_bodies(target, family, expressions),
+    )?;
+    Ok(())
+}
+
+fn rebuild_initialization_family<'target>(
+    target: &mut dae::InitializationEquations<'_, 'target>,
+    family: dae::StructuredFamilyView<'_>,
+    expressions: &[dae::ExprId<'target>],
+    domains: &[RebuiltDomain<'target>],
+) -> Result<(), dae::DaeConstructionError> {
+    let domain = domains[family.domain().index() as usize].id;
+    target.structured_family(
+        family.provenance(),
+        domain,
+        family.scalar_view(),
+        |target| rebuild_family_bodies(target, family, expressions),
+    )?;
+    Ok(())
+}
+
+fn rebuild_family_bodies<'target>(
+    target: &mut dae::StructuredResiduals<'_, 'target>,
+    family: dae::StructuredFamilyView<'_>,
+    expressions: &[dae::ExprId<'target>],
+) -> Result<(), dae::DaeConstructionError> {
+    for body in family.bodies().iter() {
+        target.body(expressions[body.index() as usize])?;
+    }
+    Ok(())
+}
+
 struct ExpressionRebuilder<'source, 'borrow, 'storage, 'target> {
     source: dae::DaeView<'source>,
     target: &'borrow mut dae::Expressions<'storage, 'target>,
+    types: &'borrow [dae::ValueTypeId<'target>],
     variables: &'borrow [ReservedVariable<'target>],
+    domains: &'borrow [RebuiltDomain<'target>],
+    conditions: &'borrow [dae::ConditionId<'target>],
+    previous: &'borrow [dae::PreviousId<'target>],
+    terminals: &'borrow [dae::TerminalId<'target>],
     derivative_definitions: &'borrow [Option<u32>],
     candidate: Option<DirectStateConstraint>,
     rebuilt: Vec<Option<dae::ExprId<'target>>>,
-    visiting: Vec<bool>,
+}
+
+struct RebuiltIdentities<'borrow, 'target> {
+    types: &'borrow [dae::ValueTypeId<'target>],
+    variables: &'borrow [ReservedVariable<'target>],
+    domains: &'borrow [RebuiltDomain<'target>],
+    conditions: &'borrow [dae::ConditionId<'target>],
+    previous: &'borrow [dae::PreviousId<'target>],
+    terminals: &'borrow [dae::TerminalId<'target>],
 }
 
 impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 'storage, 'target> {
     fn new(
         source: dae::DaeView<'source>,
         target: &'borrow mut dae::Expressions<'storage, 'target>,
-        variables: &'borrow [ReservedVariable<'target>],
+        identities: RebuiltIdentities<'borrow, 'target>,
         derivative_definitions: &'borrow [Option<u32>],
         candidate: Option<DirectStateConstraint>,
     ) -> Self {
         Self {
             source,
             target,
-            variables,
+            types: identities.types,
+            variables: identities.variables,
+            domains: identities.domains,
+            conditions: identities.conditions,
+            previous: identities.previous,
+            terminals: identities.terminals,
             derivative_definitions,
             candidate,
             rebuilt: vec![None; source.expression_count()],
-            visiting: vec![false; source.expression_count()],
         }
     }
 
@@ -762,13 +1277,12 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         if let Some(rebuilt) = self.rebuilt[index] {
             return Ok(rebuilt);
         }
-        assert!(!self.visiting[index], "checked expression graph is acyclic");
-        self.visiting[index] = true;
         let source = self
             .source
             .expression(source_id)
             .expect("finalized expression identity resolves");
         let provenance = source.provenance();
+        let value_type = self.types[source.value_type_id().index() as usize];
         let rebuilt = match source.operation() {
             dae::ExpressionOperation::Literal(literal) => {
                 self.target.at(provenance).literal(literal.clone())?
@@ -785,11 +1299,117 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                 let rhs = self.rebuild(rhs)?;
                 self.target.at(provenance).binary(operator, lhs, rhs)?
             }
+            dae::ExpressionOperation::Conditional(operands) => {
+                self.rebuild_conditional(operands, provenance)?
+            }
+            dae::ExpressionOperation::Array(operands) => {
+                if operands.is_empty() {
+                    self.target.at(provenance).empty_array(value_type)?
+                } else {
+                    let elements = self.rebuild_operands(operands)?;
+                    self.target.at(provenance).array(elements)?
+                }
+            }
+            dae::ExpressionOperation::Range { start, step, stop } => {
+                self.target.at(provenance).range(start, step, stop)?
+            }
+            dae::ExpressionOperation::Comprehension { domain, body } => {
+                let body = self.rebuild(body)?;
+                self.target
+                    .at(provenance)
+                    .comprehension(self.domains[domain.index() as usize].id, body)?
+            }
+            dae::ExpressionOperation::Index { base, subscripts } => {
+                let base = self.rebuild(base)?;
+                let subscripts = self.rebuild_subscripts(subscripts)?;
+                self.target.at(provenance).index(base, subscripts)?
+            }
+            dae::ExpressionOperation::ArrayUpdate {
+                base,
+                value,
+                subscripts,
+            } => {
+                let base = self.rebuild(base)?;
+                let value = self.rebuild(value)?;
+                let subscripts = self.rebuild_subscripts(subscripts)?;
+                self.target
+                    .at(provenance)
+                    .array_update(base, value, subscripts)?
+            }
+            dae::ExpressionOperation::Builtin { builtin, arguments } => {
+                let arguments = self.rebuild_operands(arguments)?;
+                self.target.at(provenance).builtin(builtin, arguments)?
+            }
             _ => unreachable!("reconstruction preflight rejects this expression operation"),
         };
-        self.visiting[index] = false;
         self.rebuilt[index] = Some(rebuilt);
         Ok(rebuilt)
+    }
+
+    fn rebuild_operands(
+        &mut self,
+        operands: dae::ExpressionOperands<'source>,
+    ) -> Result<Vec<dae::ExprId<'target>>, dae::DaeConstructionError> {
+        operands
+            .iter()
+            .map(|operand| self.rebuild(operand))
+            .collect()
+    }
+
+    fn rebuild_conditional(
+        &mut self,
+        operands: dae::ExpressionOperands<'source>,
+        provenance: dae::DaeProvenance,
+    ) -> Result<dae::ExprId<'target>, dae::DaeConstructionError> {
+        let fallback = self.rebuild(
+            operands
+                .get(operands.len() - 1)
+                .expect("checked conditional has a fallback"),
+        )?;
+        let mut branches = Vec::with_capacity((operands.len() - 1) / 2);
+        for index in (0..operands.len() - 1).step_by(2) {
+            branches.push((
+                self.rebuild(
+                    operands
+                        .get(index)
+                        .expect("checked conditional branch has a condition"),
+                )?,
+                self.rebuild(
+                    operands
+                        .get(index + 1)
+                        .expect("checked conditional branch has a value"),
+                )?,
+            ));
+        }
+        self.target.at(provenance).conditional(branches, fallback)
+    }
+
+    fn rebuild_subscripts(
+        &mut self,
+        subscripts: dae::SubscriptsView<'source>,
+    ) -> Result<Vec<dae::Subscript<'target>>, dae::DaeConstructionError> {
+        subscripts
+            .iter()
+            .map(|subscript| match subscript {
+                dae::SubscriptView::Index {
+                    expression,
+                    provenance,
+                } => Ok(dae::Subscript::Index {
+                    expression: self.rebuild(expression)?,
+                    provenance,
+                }),
+                dae::SubscriptView::Whole { provenance } => {
+                    Ok(dae::Subscript::Whole { provenance })
+                }
+                dae::SubscriptView::Slice {
+                    expression,
+                    provenance,
+                } => Ok(dae::Subscript::Slice {
+                    expression: self.rebuild(expression)?,
+                    provenance,
+                }),
+            })
+            .collect()
     }
 
     fn rebuild_coordinate(
@@ -849,7 +1469,71 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                 }
             }
             dae::CoordinateView::Time => dae::CoordinateInput::Time,
+            discrete @ (dae::CoordinateView::DiscreteReal(_)
+            | dae::CoordinateView::DiscreteValue(_)
+            | dae::CoordinateView::PreDiscreteReal(_)
+            | dae::CoordinateView::PreDiscreteValue(_)) => {
+                return self.rebuild_discrete_coordinate(discrete, provenance);
+            }
+            dae::CoordinateView::Condition(source) => {
+                dae::CoordinateInput::Condition(self.conditions[source.index() as usize])
+            }
+            dae::CoordinateView::Previous(source) => {
+                dae::CoordinateInput::Previous(self.previous[source.index() as usize])
+            }
+            dae::CoordinateView::Terminal(source) => {
+                dae::CoordinateInput::Terminal(self.terminals[source.index() as usize])
+            }
+            dae::CoordinateView::Binder(binder) => {
+                return self.target.at(provenance).binder(
+                    self.domains[binder.domain().index() as usize].binders
+                        [binder.ordinal() as usize],
+                );
+            }
             _ => unreachable!("reconstruction preflight rejects this coordinate"),
+        };
+        self.target.at(provenance).coordinate(coordinate)
+    }
+
+    fn rebuild_discrete_coordinate(
+        &mut self,
+        coordinate: dae::CoordinateView<'source>,
+        provenance: dae::DaeProvenance,
+    ) -> Result<dae::ExprId<'target>, dae::DaeConstructionError> {
+        let coordinate = match coordinate {
+            dae::CoordinateView::DiscreteReal(source) => {
+                let TargetVariable::DiscreteReal(target) =
+                    self.variables[source.index() as usize].identity
+                else {
+                    unreachable!("discrete-real coordinate retains its variable role")
+                };
+                dae::CoordinateInput::DiscreteReal(target)
+            }
+            dae::CoordinateView::DiscreteValue(source) => {
+                let TargetVariable::DiscreteValue(target) =
+                    self.variables[source.index() as usize].identity
+                else {
+                    unreachable!("discrete-value coordinate retains its variable role")
+                };
+                dae::CoordinateInput::DiscreteValue(target)
+            }
+            dae::CoordinateView::PreDiscreteReal(source) => {
+                let TargetVariable::DiscreteReal(target) =
+                    self.variables[source.index() as usize].identity
+                else {
+                    unreachable!("pre(discrete-real) retains its variable role")
+                };
+                dae::CoordinateInput::PreDiscreteReal(target)
+            }
+            dae::CoordinateView::PreDiscreteValue(source) => {
+                let TargetVariable::DiscreteValue(target) =
+                    self.variables[source.index() as usize].identity
+                else {
+                    unreachable!("pre(discrete-value) retains its variable role")
+                };
+                dae::CoordinateInput::PreDiscreteValue(target)
+            }
+            _ => unreachable!("caller passes a discrete coordinate"),
         };
         self.target.at(provenance).coordinate(coordinate)
     }
@@ -1100,229 +1784,4 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
 enum Derivative<'dae> {
     Zero,
     Expression(dae::ExprId<'dae>),
-}
-
-#[cfg(test)]
-mod tests {
-    use rumoca_core::{SourceMap, Span, TypeId, VarName};
-
-    use super::*;
-
-    fn source_provenance(
-        source: rumoca_core::SourceId,
-        text: &str,
-        needle: &str,
-    ) -> dae::DaeProvenance {
-        let start = text.find(needle).expect("fixture snippet exists");
-        dae::DaeProvenance::source(Span::from_offsets(source, start, start + needle.len()))
-            .expect("fixture span is source-backed")
-    }
-
-    #[derive(Clone, Copy)]
-    struct FixtureVariables<'dae> {
-        p: dae::ParameterId<'dae>,
-        x: dae::StateId<'dae>,
-        y: dae::StateId<'dae>,
-        a: dae::AlgebraicId<'dae>,
-    }
-
-    #[derive(Clone, Copy)]
-    struct FixtureSpans {
-        constraint: dae::DaeProvenance,
-        derivative_y: dae::DaeProvenance,
-        derivative_x: dae::DaeProvenance,
-    }
-
-    fn constrained_state_model(nonlinear_constraint: bool) -> (dae::Dae, dae::DaeProvenance) {
-        let rhs = if nonlinear_constraint {
-            "sin(y)"
-        } else {
-            "p*y"
-        };
-        let text = format!(
-            "parameter Real p; Real x; Real y; Real a; equation x = {rhs}; der(y) = a; der(x) = 1;"
-        );
-        let mut sources = SourceMap::new();
-        let source = sources.add("checked_index_reduction.mo", &text);
-        let declaration = source_provenance(source, &text, "parameter Real p");
-        let constraint = source_provenance(source, &text, &format!("x = {rhs}"));
-        let derivative_y = source_provenance(source, &text, "der(y) = a");
-        let derivative_x = source_provenance(source, &text, "der(x) = 1");
-        let model = dae::Dae::construct(sources, |model| {
-            let real = model.types(|types| {
-                types.intern(
-                    TypeId::new(0),
-                    dae::ValueType::scalar(dae::ScalarType::Real),
-                    declaration,
-                )
-            })?;
-            let variables = model.variables(|variables| {
-                Ok(FixtureVariables {
-                    p: variables.parameter(
-                        VarName::new("p"),
-                        real,
-                        declaration,
-                        dae::VariableAttributes::default(),
-                    )?,
-                    x: variables.state(
-                        VarName::new("x"),
-                        real,
-                        declaration,
-                        dae::VariableAttributes::default(),
-                    )?,
-                    y: variables.state(
-                        VarName::new("y"),
-                        real,
-                        declaration,
-                        dae::VariableAttributes::default(),
-                    )?,
-                    a: variables.algebraic(
-                        VarName::new("a"),
-                        real,
-                        declaration,
-                        dae::VariableAttributes::default(),
-                    )?,
-                })
-            })?;
-            let spans = FixtureSpans {
-                constraint,
-                derivative_y,
-                derivative_x,
-            };
-            let [constraint_residual, y_residual, x_residual] =
-                model.expressions(|expressions| {
-                    fixture_residuals(expressions, variables, spans, nonlinear_constraint)
-                })?;
-            model.continuous(|continuous| {
-                continuous.value_equation(constraint, constraint_residual)?;
-                continuous.value_equation(derivative_y, y_residual)?;
-                continuous.value_equation(derivative_x, x_residual)
-            })
-        })
-        .expect("fixture DAE is valid");
-        (model, constraint)
-    }
-
-    fn fixture_residuals<'dae>(
-        expressions: &mut dae::Expressions<'_, 'dae>,
-        variables: FixtureVariables<'dae>,
-        spans: FixtureSpans,
-        nonlinear_constraint: bool,
-    ) -> Result<[dae::ExprId<'dae>; 3], dae::DaeConstructionError> {
-        let x_value = expressions
-            .at(spans.constraint)
-            .coordinate(dae::CoordinateInput::State(variables.x))?;
-        let y_value = expressions
-            .at(spans.constraint)
-            .coordinate(dae::CoordinateInput::State(variables.y))?;
-        let constraint_rhs = fixture_constraint_rhs(
-            expressions,
-            variables.p,
-            y_value,
-            spans.constraint,
-            nonlinear_constraint,
-        )?;
-        let constraint = expressions.at(spans.constraint).binary(
-            dae::BinaryOperator::Subtract,
-            x_value,
-            constraint_rhs,
-        )?;
-        let y_derivative = expressions
-            .at(spans.derivative_y)
-            .coordinate(dae::CoordinateInput::Derivative(variables.y))?;
-        let a_value = expressions
-            .at(spans.derivative_y)
-            .coordinate(dae::CoordinateInput::Algebraic(variables.a))?;
-        let derivative_y = expressions.at(spans.derivative_y).binary(
-            dae::BinaryOperator::Subtract,
-            y_derivative,
-            a_value,
-        )?;
-        let x_derivative = expressions
-            .at(spans.derivative_x)
-            .coordinate(dae::CoordinateInput::Derivative(variables.x))?;
-        let one = expressions
-            .at(spans.derivative_x)
-            .literal(dae::DaeLiteral::Real(1.0))?;
-        let derivative_x = expressions.at(spans.derivative_x).binary(
-            dae::BinaryOperator::Subtract,
-            x_derivative,
-            one,
-        )?;
-        Ok([constraint, derivative_y, derivative_x])
-    }
-
-    fn fixture_constraint_rhs<'dae>(
-        expressions: &mut dae::Expressions<'_, 'dae>,
-        parameter: dae::ParameterId<'dae>,
-        state: dae::ExprId<'dae>,
-        provenance: dae::DaeProvenance,
-        nonlinear: bool,
-    ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
-        if nonlinear {
-            return expressions
-                .at(provenance)
-                .builtin(dae::PureBuiltin::Sin, [state]);
-        }
-        let parameter = expressions
-            .at(provenance)
-            .coordinate(dae::CoordinateInput::Parameter(parameter))?;
-        expressions
-            .at(provenance)
-            .binary(dae::BinaryOperator::Multiply, parameter, state)
-    }
-
-    #[test]
-    fn direct_state_demotion_reconstructs_a_finalized_dae_with_exact_provenance() {
-        let (model, constraint) = constrained_state_model(false);
-        let prepared = prepare_for_solve(&model).expect("index-one constraint is reducible");
-        assert!(matches!(prepared, PreparedDae::Transformed { .. }));
-
-        prepared.as_dae().inspect(|view| {
-            let x = view
-                .variables()
-                .find(|(_, variable)| variable.name().as_str() == "x")
-                .map(|(_, variable)| variable)
-                .expect("x declaration survives reconstruction");
-            assert_eq!(x.role(), dae::VariableRole::Algebraic);
-            assert!(sort(view).is_ok(), "replacement DAE has a perfect matching");
-
-            let generated = (0..view.expression_count())
-                .filter_map(|index| view.expression_id(index))
-                .filter_map(|id| view.expression(id))
-                .filter(|expression| {
-                    expression.provenance().origin()
-                        == dae::DaeProvenanceOrigin::Generated(dae::DaeGeneration::IndexReduction)
-                })
-                .collect::<Vec<_>>();
-            assert!(!generated.is_empty());
-            assert!(
-                generated
-                    .iter()
-                    .all(|expression| expression.provenance().span() == constraint.span())
-            );
-            assert!((0..view.expression_count())
-                .filter_map(|index| view.expression_id(index))
-                .filter_map(|id| view.expression(id))
-                .all(|expression| {
-                    !matches!(
-                        expression.operation(),
-                        dae::ExpressionOperation::Coordinate(dae::CoordinateView::Derivative(state))
-                            if view
-                                .variable(state.into())
-                                .is_some_and(|variable| variable.name().as_str() == "x")
-                    )
-                }));
-        });
-    }
-
-    #[test]
-    fn unsupported_symbolic_derivative_preserves_the_original_singular_error() {
-        let (model, _) = constrained_state_model(true);
-        let error = match prepare_for_solve(&model) {
-            Ok(_) => panic!("unsupported differentiation must not guess a replacement"),
-            Err(error) => error,
-        };
-        assert!(matches!(error, StructuralError::Singular { .. }));
-    }
 }

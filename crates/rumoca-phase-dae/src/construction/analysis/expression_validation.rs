@@ -146,12 +146,28 @@ pub(super) fn validate_builtin(
         }
         return validate_subscripts_scoped(subscripts, roles, states, binders);
     }
-    let supported = matches!(
+    if !is_supported_builtin(function) {
+        return Err(ToDaeError::unsupported_runtime_operator(
+            function.name(),
+            "no checked canonical owner exists for this operator in the active lowering slice",
+            span,
+        ));
+    }
+    for argument in args {
+        validate_expression_scoped(argument, roles, states, binders)?;
+    }
+    Ok(())
+}
+
+fn is_supported_builtin(function: BuiltinFunction) -> bool {
+    matches!(
         function,
         BuiltinFunction::Abs
             | BuiltinFunction::Sign
             | BuiltinFunction::Sqrt
+            | BuiltinFunction::Div
             | BuiltinFunction::Mod
+            | BuiltinFunction::Rem
             | BuiltinFunction::Floor
             | BuiltinFunction::Ceil
             | BuiltinFunction::Integer
@@ -183,18 +199,7 @@ pub(super) fn validate_builtin(
             | BuiltinFunction::Cross
             | BuiltinFunction::Sample
             | BuiltinFunction::Delay
-    );
-    if !supported {
-        return Err(ToDaeError::unsupported_runtime_operator(
-            function.name(),
-            "no checked canonical owner exists for this operator in the active lowering slice",
-            span,
-        ));
-    }
-    for argument in args {
-        validate_expression_scoped(argument, roles, states, binders)?;
-    }
-    Ok(())
+    )
 }
 
 pub(super) fn validate_subscripts_scoped(

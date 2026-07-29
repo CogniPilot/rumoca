@@ -20,11 +20,10 @@ use crate::{
         checked_contiguous_output_count, scalar_program_output_count,
         scalar_program_output_indices, tensor_output_count, validate_affine_stride_metadata,
     },
-    eval_program_single, eval_row_prepared_maybe_fast,
+    eval_program_no_output, eval_program_single, eval_row_prepared_maybe_fast,
     linear_solve::solve_all_unchecked,
     record_solve_block_eval, required_registers, row_input_requirements,
-    row_register_flow_is_valid, validate_input_requirements, validate_input_requirements_with_span,
-    validate_output_len,
+    validate_input_requirements, validate_input_requirements_with_span, validate_output_len,
 };
 #[cfg(test)]
 use assignment_shape::checked_expr_eval_len;
@@ -45,7 +44,6 @@ pub struct PreparedScalarProgramBlock {
     row_registers: Vec<usize>,
     row_requirements: Vec<RowInputRequirements>,
     row_seed_loads: Vec<Box<[PreparedSeedLoad]>>,
-    row_register_safe: Vec<bool>,
     row_assignment_shapes: Vec<Box<[TargetAssignmentShape]>>,
     requirements: RowInputRequirements,
     scratch: RefCell<RowEvalScratch>,
@@ -67,7 +65,6 @@ impl Clone for PreparedScalarProgramBlock {
             row_registers: self.row_registers.clone(),
             row_requirements: self.row_requirements.clone(),
             row_seed_loads: self.row_seed_loads.clone(),
-            row_register_safe: self.row_register_safe.clone(),
             row_assignment_shapes: self.row_assignment_shapes.clone(),
             requirements: self.requirements,
             scratch: RefCell::new(RowEvalScratch::default()),
@@ -78,6 +75,7 @@ impl Clone for PreparedScalarProgramBlock {
 
 impl PreparedScalarProgramBlock {
     pub fn new(block: ScalarProgramBlock) -> Result<Self, EvalSolveError> {
+        block.validate_shape_contract("prepared scalar program block")?;
         let row_count = block.programs.len();
         let block_span = block.program_span(0);
         let output_count = checked_prepared_output_count(&block)?;
@@ -88,8 +86,6 @@ impl PreparedScalarProgramBlock {
             prepared_vec_with_capacity(row_count, "prepared row requirement count", block_span)?;
         let mut row_seed_loads =
             prepared_vec_with_capacity(row_count, "prepared row seed load count", block_span)?;
-        let mut row_register_safe =
-            prepared_vec_with_capacity(row_count, "prepared row flow metadata count", block_span)?;
         let mut row_assignment_shapes = prepared_vec_with_capacity(
             row_count,
             "prepared row assignment shape count",
@@ -104,9 +100,6 @@ impl PreparedScalarProgramBlock {
                 .push(required_registers(row).map_err(|error| error.with_source_span(span))?);
             row_requirements.push(row_requirement);
             row_seed_loads.push(prepared_seed_loads(row, span)?);
-            row_register_safe.push(
-                row_register_flow_is_valid(row).map_err(|error| error.with_source_span(span))?,
-            );
             row_assignment_shapes.push(
                 target_assignment_shapes(row)
                     .map_err(|error| error.with_source_span(span))?
@@ -121,7 +114,6 @@ impl PreparedScalarProgramBlock {
             row_registers,
             row_requirements,
             row_seed_loads,
-            row_register_safe,
             row_assignment_shapes,
             requirements,
             scratch: RefCell::new(RowEvalScratch::default()),
@@ -307,7 +299,7 @@ impl PreparedScalarProgramBlock {
             eval_row_prepared_maybe_fast(
                 PreparedRowEval::new(row, self.row_registers[row_idx], y, p, t, context)
                     .with_source_span(self.block.program_span(row_idx)),
-                self.row_register_safe[row_idx],
+                true,
                 &mut scratch,
                 &mut sink,
             )
@@ -410,7 +402,7 @@ impl PreparedScalarProgramBlock {
             eval_row_prepared_maybe_fast(
                 PreparedRowEval::new(row, self.row_registers[row_idx], y, p, t, context)
                     .with_source_span(self.block.program_span(row_idx)),
-                self.row_register_safe[row_idx],
+                true,
                 &mut scratch,
                 &mut sink,
             )
@@ -450,7 +442,7 @@ impl PreparedScalarProgramBlock {
                 request.context,
             )
             .with_source_span(self.block.program_span(request.row_idx)),
-            self.row_register_safe[request.row_idx],
+            true,
             &mut scratch,
         )
         .map_err(|error| error.with_source_span(self.block.program_span(request.row_idx)))
@@ -509,7 +501,7 @@ impl PreparedScalarProgramBlock {
                 request.context,
             )
             .with_source_span(self.block.program_span(request.row_idx)),
-            self.row_register_safe[request.row_idx],
+            true,
             &mut scratch,
             &mut sink,
         )
@@ -682,7 +674,7 @@ impl PreparedScalarProgramBlock {
         eval_row_prepared_maybe_fast(
             PreparedRowEval::new(row, self.row_registers[row_idx], y, p, t, context)
                 .with_source_span(self.block.program_span(row_idx)),
-            self.row_register_safe[row_idx],
+            true,
             &mut scratch,
             &mut sink,
         )
@@ -764,13 +756,13 @@ impl PreparedScalarProgramBlock {
                     request.context,
                 )
                 .with_source_span(self.block.program_span(request.row_idx)),
-                self.row_register_safe[request.row_idx],
+                true,
                 &mut scratch,
             )
             .map_err(|error| error.with_source_span(self.block.program_span(request.row_idx)))?;
             return Ok((!row_loads_y_index(row, request.target_y_index)).then_some(output));
         };
-        eval_program_single(
+        eval_program_no_output(
             PreparedRowEval::new(
                 &row[..shape.expr_eval_len()],
                 self.row_registers[request.row_idx],
@@ -780,7 +772,7 @@ impl PreparedScalarProgramBlock {
                 request.context,
             )
             .with_source_span(self.block.program_span(request.row_idx)),
-            self.row_register_safe[request.row_idx],
+            true,
             &mut scratch,
         )
         .map_err(|error| error.with_source_span(self.block.program_span(request.row_idx)))?;
@@ -813,7 +805,7 @@ impl PreparedScalarProgramBlock {
                 self.block.program_span(request.row_idx),
             ));
         };
-        eval_program_single(
+        eval_program_no_output(
             PreparedRowEval::new(
                 &row[..shape.expr_eval_len()],
                 self.row_registers[request.row_idx],
@@ -823,7 +815,7 @@ impl PreparedScalarProgramBlock {
                 request.context,
             )
             .with_source_span(self.block.program_span(request.row_idx)),
-            self.row_register_safe[request.row_idx],
+            true,
             &mut *request.scratch,
         )
         .map_err(|error| error.with_source_span(self.block.program_span(request.row_idx)))?;
@@ -867,7 +859,7 @@ impl PreparedScalarProgramBlock {
             eval_row_prepared_maybe_fast(
                 PreparedRowEval::new(row, self.row_registers[row_idx], y, p, t, context)
                     .with_source_span(self.block.program_span(row_idx)),
-                self.row_register_safe[row_idx],
+                true,
                 scratch,
                 &mut sink,
             )

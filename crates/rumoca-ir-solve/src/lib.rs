@@ -8,6 +8,8 @@
 mod compute_block_tests;
 mod layout;
 mod linear_op;
+#[cfg(test)]
+mod scalar_program_tests;
 mod shape_error;
 pub mod visitor;
 
@@ -24,7 +26,8 @@ pub use layout::{
     VarLayout, VarLayoutShapeContractError, scalar_slot_p, scalar_slot_y,
 };
 pub use linear_op::{
-    BinaryOp, CompareOp, LinearOp, RandomGenerator, Reg, UnaryOp, resolve_indexed_slot,
+    BinaryOp, CompareOp, LinearOp, RandomGenerator, Reg, ScalarProgramRegisterError,
+    ScalarProgramRegisterFlow, UnaryOp, resolve_indexed_slot,
 };
 pub use shape_error::{AffineTensorNodeKind, SolveProblemShapeContractError};
 pub use visitor::{
@@ -108,6 +111,8 @@ impl ScalarProgramBlock {
             output_indices.len(),
             first_span(&program_spans),
         )?;
+        validate_scalar_program_outputs("ScalarProgramBlock", 0, &programs, &program_spans)?;
+        validate_scalar_program_register_flows("ScalarProgramBlock", 0, &programs, &program_spans)?;
         Ok(Self::from_valid_parts(
             programs,
             program_spans,
@@ -144,7 +149,8 @@ impl ScalarProgramBlock {
     pub fn with_source_span(programs: Vec<Vec<LinearOp>>, span: Span) -> Self {
         let program_spans = vec![span; programs.len()];
         let output_indices = (0..stored_output_count(&programs)).collect();
-        Self::from_valid_parts(programs, program_spans, output_indices)
+        Self::with_output_indices(programs, program_spans, output_indices)
+            .expect("lowered scalar programs must have computable register flow and outputs")
     }
 
     pub fn program_span(&self, row: usize) -> Option<Span> {
@@ -321,7 +327,8 @@ impl ScalarProgramBlock {
                 },
             );
         }
-        Ok(())
+        validate_scalar_program_outputs(&context, 0, &self.programs, &self.program_spans)?;
+        validate_scalar_program_register_flows(&context, 0, &self.programs, &self.program_spans)
     }
 }
 
@@ -365,6 +372,56 @@ fn validate_scalar_program_metadata_lengths(
                 span,
             },
         );
+    }
+    Ok(())
+}
+
+fn validate_scalar_program_outputs(
+    context: &str,
+    node_index: usize,
+    programs: &[Vec<LinearOp>],
+    program_spans: &[Span],
+) -> Result<(), SolveProblemShapeContractError> {
+    let Some(program_index) = programs
+        .iter()
+        .position(|program| ScalarProgramBlock::program_output_count(program) == 0)
+    else {
+        return Ok(());
+    };
+    let span = program_spans
+        .get(program_index)
+        .copied()
+        .filter(|span| !span.is_dummy());
+    Err(SolveProblemShapeContractError::ScalarProgramMissingOutput {
+        context: context.to_string(),
+        node_index,
+        program_index,
+        span,
+    })
+}
+
+fn validate_scalar_program_register_flows(
+    context: &str,
+    node_index: usize,
+    programs: &[Vec<LinearOp>],
+    program_spans: &[Span],
+) -> Result<(), SolveProblemShapeContractError> {
+    for (program_index, program) in programs.iter().enumerate() {
+        let error = match ScalarProgramRegisterFlow::derive(program) {
+            Ok(_) => continue,
+            Err(error) => error,
+        };
+        let span = program_spans
+            .get(program_index)
+            .copied()
+            .filter(|span| !span.is_dummy());
+        return Err(SolveProblemShapeContractError::ScalarProgramRegisterFlow {
+            context: context.to_string(),
+            node_index,
+            program_index,
+            error,
+            span,
+        });
     }
     Ok(())
 }
