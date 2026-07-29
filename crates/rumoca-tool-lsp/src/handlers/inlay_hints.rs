@@ -1,8 +1,8 @@
 //! Inlay hints handler for Modelica files.
 
+use crate::text_position::{byte_offset_to_position, char_column_to_utf16_column, line_text};
 use lsp_types::{InlayHint, InlayHintKind, InlayHintLabel, InlayHintTooltip, Position, Range};
 use rumoca_compile::parsing::ast;
-use rumoca_lsp_position::{byte_offset_to_position, char_column_to_utf16_column, line_text};
 use std::ops::ControlFlow;
 
 use crate::traversal_adapter;

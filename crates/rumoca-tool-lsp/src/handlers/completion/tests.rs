@@ -572,7 +572,7 @@ fn dot_completion_member_prefix_survives_non_ascii_prefix_on_line() {
         .nth(line_index as usize)
         .expect("member line");
     let cursor_byte = line.find("va").expect("member token") + "va".len();
-    let character = rumoca_lsp_position::byte_offset_to_position(line, cursor_byte).character;
+    let character = crate::text_position::byte_offset_to_position(line, cursor_byte).character;
 
     let target = ast_dot_completion_target(source, &ast, line_index, character)
         .expect("dot completion target on the member line");
@@ -590,7 +590,7 @@ fn dot_completion_member_prefix_is_partial_mid_token() {
         .nth(line_index as usize)
         .expect("member line");
     let cursor_byte = line.find("value").expect("member token") + "val".len();
-    let character = rumoca_lsp_position::byte_offset_to_position(line, cursor_byte).character;
+    let character = crate::text_position::byte_offset_to_position(line, cursor_byte).character;
 
     let target = ast_dot_completion_target(source, &ast, line_index, character)
         .expect("dot completion target on the member line");

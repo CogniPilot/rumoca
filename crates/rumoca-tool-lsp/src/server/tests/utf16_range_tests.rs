@@ -7,7 +7,7 @@
 //! previously published raw lexer columns.
 
 use super::*;
-use rumoca_lsp_position::byte_offset_to_position;
+use crate::text_position::byte_offset_to_position;
 
 /// A line whose UTF-16 columns, character columns and byte columns all differ.
 ///
@@ -70,7 +70,7 @@ fn rename_edits_use_utf16_columns_after_astral_character() {
                 .lines()
                 .nth(text_edit.range.start.line as usize)
                 .expect("edit line exists");
-            let byte_column = rumoca_lsp_position::utf16_column_to_byte_column(
+            let byte_column = crate::text_position::utf16_column_to_byte_column(
                 expected_line,
                 text_edit.range.start.character,
             );

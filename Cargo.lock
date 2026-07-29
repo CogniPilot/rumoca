@@ -4381,6 +4381,7 @@ dependencies = [
  "anyhow",
  "bincode",
  "blake3",
+ "flate2",
  "indexmap 2.14.0",
  "miette",
  "minijinja",
@@ -4619,13 +4620,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rumoca-lsp-position"
-version = "0.9.20"
-dependencies = [
- "lsp-types",
-]
-
-[[package]]
 name = "rumoca-opt"
 version = "0.9.20"
 dependencies = [
@@ -4655,6 +4649,7 @@ dependencies = [
  "rumoca-ir-flat",
  "rumoca-ir-solve",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
 ]
 
@@ -4902,19 +4897,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rumoca-tool-docs"
-version = "0.9.20"
-dependencies = [
- "anyhow",
- "bincode",
- "clap",
- "flate2",
- "mimalloc",
- "rayon",
- "rumoca-compile",
-]
-
-[[package]]
 name = "rumoca-tool-fmt"
 version = "0.9.20"
 dependencies = [
@@ -4932,8 +4914,8 @@ dependencies = [
  "clap",
  "futures-util",
  "lsp-types",
+ "rumoca-core",
  "rumoca-ir-galec",
- "rumoca-lsp-position",
  "tokio",
  "tower-lsp",
 ]
@@ -4959,7 +4941,7 @@ dependencies = [
  "futures-util",
  "lsp-types",
  "rumoca-compile",
- "rumoca-lsp-position",
+ "rumoca-core",
  "rumoca-phase-dae",
  "rumoca-sim",
  "rumoca-tool-fmt",

@@ -3,11 +3,11 @@ use super::*;
 pub(super) fn source_balance(
     flat: &flat::Model,
     roles: &HashMap<VarName, PlannedRole>,
+    assigned_targets: &HashSet<VarName>,
     clock_equation_rows: &HashSet<usize>,
     record_equations: &HashMap<usize, RecordEquationPlan>,
 ) -> Result<BalanceDetail, ToDaeError> {
     let mut detail = BalanceDetail::default();
-    let assigned_targets = defined_discrete_targets(flat, roles)?;
     for (name, role) in roles {
         let variable = &flat.variables[name];
         let scalar_count = checked_shape_size(name, variable)?;

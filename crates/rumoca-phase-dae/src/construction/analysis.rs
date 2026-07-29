@@ -79,6 +79,12 @@ pub(super) struct Analysis {
     pub(super) record_equations: HashMap<usize, RecordEquationPlan>,
     pub(super) initial_record_equations: HashMap<usize, RecordEquationPlan>,
     pub(super) discrete_value_topology: DiscreteValueTopologyPlan,
+    pub(super) assigned_discrete_targets: HashSet<VarName>,
+}
+
+struct SourceBalanceAnalysis {
+    detail: BalanceDetail,
+    assigned_discrete_targets: HashSet<VarName>,
 }
 
 pub(super) enum FunctionPlan {
@@ -259,14 +265,18 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
     let discrete_value_topology = analyze_discrete_value_topology(flat, &roles)?;
     reject_initial_algorithm(flat)?;
     validate_assertions(flat, &roles, &states, &constants, &mut sample_lattices)?;
-    let mut non_runtime_rows = clocks.equation_rows.clone();
-    non_runtime_rows.extend(&derived_parameters.rows);
-    let balance = source_balance(flat, &roles, &non_runtime_rows, &record_equations)?;
+    let balance = analyze_source_balance(
+        flat,
+        &roles,
+        &clocks.equation_rows,
+        &derived_parameters.rows,
+        &record_equations,
+    )?;
     Ok(Analysis {
         constants,
         delay_plans,
         roles,
-        balance,
+        balance: balance.detail,
         continuous_family_rows,
         initialization_family_rows,
         sample_lattices,
@@ -285,6 +295,30 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
         record_equations,
         initial_record_equations,
         discrete_value_topology,
+        assigned_discrete_targets: balance.assigned_discrete_targets,
+    })
+}
+
+fn analyze_source_balance(
+    flat: &flat::Model,
+    roles: &HashMap<VarName, PlannedRole>,
+    clock_equation_rows: &HashSet<usize>,
+    derived_parameter_rows: &HashSet<usize>,
+    record_equations: &HashMap<usize, RecordEquationPlan>,
+) -> Result<SourceBalanceAnalysis, ToDaeError> {
+    let assigned_discrete_targets = defined_discrete_targets(flat, roles)?;
+    let mut non_runtime_rows = clock_equation_rows.clone();
+    non_runtime_rows.extend(derived_parameter_rows);
+    let detail = source_balance(
+        flat,
+        roles,
+        &assigned_discrete_targets,
+        &non_runtime_rows,
+        record_equations,
+    )?;
+    Ok(SourceBalanceAnalysis {
+        detail,
+        assigned_discrete_targets,
     })
 }
 
@@ -1770,7 +1804,7 @@ fn collect_assignment_target_names<'flat>(
     }
 }
 
-pub(super) fn defined_discrete_targets(
+fn defined_discrete_targets(
     flat: &flat::Model,
     roles: &HashMap<VarName, PlannedRole>,
 ) -> Result<HashSet<VarName>, ToDaeError> {

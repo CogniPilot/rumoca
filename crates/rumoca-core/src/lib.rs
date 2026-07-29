@@ -46,6 +46,7 @@ mod modelica_builtins;
 mod statement_rewriter;
 mod structured_domain;
 mod subscript;
+pub mod text_position;
 pub use clock_lattice::{ClockLattice, ClockLatticeError, ClockLatticeErrorKind, ClockRational};
 pub use expression_rewriter::{ExpressionRewriter, FallibleExpressionRewriter};
 pub use expression_visitor::{ExpressionScope, ExpressionVisitor, FallibleExpressionVisitor};

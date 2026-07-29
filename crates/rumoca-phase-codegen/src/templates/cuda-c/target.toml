@@ -19,7 +19,7 @@ host_callbacks = false
 
 [capabilities.tensor]
 matmul = "scalar"
-linsolve = "scalar"
+linsolve = "unsupported"
 elementwise = "native"
 reductions = "native"
 layout = "row-major"

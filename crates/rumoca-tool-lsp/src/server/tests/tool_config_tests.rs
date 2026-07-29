@@ -283,7 +283,7 @@ fn formatting_replacement_range_ends_at_utf16_document_end() {
             .expect("formatting should produce an edit");
         assert_eq!(
             edits[0].range.end,
-            rumoca_lsp_position::byte_offset_to_position(source, source.len())
+            crate::text_position::byte_offset_to_position(source, source.len())
         );
     });
     let _ = std::fs::remove_dir_all(&temp);

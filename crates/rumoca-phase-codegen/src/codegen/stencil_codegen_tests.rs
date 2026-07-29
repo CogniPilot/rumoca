@@ -62,30 +62,27 @@ fn solve_problem_with_stencil_and_scalar_derivative() -> solve::SolveProblem {
 }
 
 #[test]
-fn test_solve_derivative_nodes_scalarize_affine_stencils_for_c_templates() {
+fn scalar_program_plan_exposes_scalarized_stencils_without_render_helpers() {
     let problem = solve_problem_with_stencil_and_scalar_derivative();
     let artifacts = solve::SolveArtifacts::default();
 
     let rendered = render_solve_template_with_name(
         &problem,
         &artifacts,
-        r#"
-{% set cfg = {"time": "m->time", "y": "Y({})", "p": "P({})"} %}
-{% set ns = namespace(offset=0) %}
-{% for node in solve_derivative_nodes %}
-{% if node.ScalarPrograms is defined %}
-{% for row in node.ScalarPrograms.programs %}
-{{ ns.offset }}={{ render_solve_row_c(row, cfg) }};
-{% set ns.offset = ns.offset + 1 %}
+        r#"{% for program in solve_blocks.continuous.derivative_rhs.scalar_plan.programs %}
+{% for op in program.ops %}
+{% if op.kind == "Const" %}value={{ op.value }}{% elif op.kind == "StoreOutput" %}output={{ op.output_index }}{% endif %}
 {% endfor %}
-{% endif %}
 {% endfor %}
 "#,
         "StencilDemo",
     )
     .expect("solve template should scalarize AffineStencil derivative nodes");
 
-    assert!(rendered.contains("0=1.0;"), "got:\n{rendered}");
-    assert!(rendered.contains("1=2.0;"), "got:\n{rendered}");
-    assert!(rendered.contains("2=3.0;"), "got:\n{rendered}");
+    assert!(rendered.contains("value=1.0"), "got:\n{rendered}");
+    assert!(rendered.contains("value=2.0"), "got:\n{rendered}");
+    assert!(rendered.contains("value=3.0"), "got:\n{rendered}");
+    assert!(rendered.contains("output=0"), "got:\n{rendered}");
+    assert!(rendered.contains("output=1"), "got:\n{rendered}");
+    assert!(rendered.contains("output=2"), "got:\n{rendered}");
 }

@@ -12,9 +12,6 @@ impl SolveRowsValue {
         }
     }
 
-    pub(in crate::codegen) fn from_arc(rows: Arc<Vec<Vec<solve::LinearOp>>>) -> Self {
-        Self { rows }
-    }
 }
 
 impl Object for SolveRowsValue {

@@ -26,6 +26,7 @@ thiserror = { workspace = true }
 # shipping `galec` render path uses (SPEC_0034 contract §6 sanctions the
 # duplication across the crate boundary; this proves the copies stay in sync).
 rumoca-galec-codegen = { workspace = true }
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

@@ -41,6 +41,7 @@ miette = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["unbounded_depth"] }
 bincode = { workspace = true }
+flate2 = { workspace = true }
 toml = { workspace = true }
 thiserror = { workspace = true }
 blake3 = { workspace = true }

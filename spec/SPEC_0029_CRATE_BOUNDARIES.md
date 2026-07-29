@@ -25,6 +25,11 @@ Rust compiler. See [Dependency Tiers](#dependency-tiers).
 contain only data types, display/debug implementations, and serde
 serialization. No evaluation logic, phase logic, or side effects.
 
+Every source-language parser, generated grammar, recoverable CST, parser state,
+and syntax diagnostic belongs in a `rumoca-phase-parse*` crate. IR crates MUST
+NOT contain or feature-gate source parsers. Current-version wire replay through
+checked constructors is data integrity, not source parsing.
+
 IR data types own the checked constructors needed to make their local
 invariants unrepresentable. `rumoca-ir-dae` also owns private current-version
 wire decoding, checked root assembly, and closed root-bound operations that
@@ -92,6 +97,7 @@ Shared helpers **must** have one designated implementation.
 | `runtime_defined_unknown_names`, `runtime_defined_continuous_unknown_names` | `rumoca-phase-structural::runtime_defined` | Single implementation; phase-structural is the authoritative caller. |
 | `expressions_semantically_equal`, `Expression::semantically_eq_ignoring_spans` | `rumoca-core` | Shared Flat/DAE expression identity. This is structural identity only; evaluation stays in `rumoca-eval-*`. |
 | `modelica_sign`, `escape_modelica_string` | `rumoca-core` | MLS `sign` and source-string escaping. |
+| UTF-8 byte offset ↔ UTF-16 text position/range helpers | `rumoca-core::text_position` | Protocol-neutral `TextPosition`/`TextRange`; LSP crates convert to/from `lsp_types` locally. No `rumoca-lsp-position` micro-crate. |
 | `INTERNAL_SAMPLE_FUNCTION_NAME`, `source_temporal_function_name`, `source_temporal_function_short_name`, `source_temporal_builtin_name` | `rumoca-core` | Single source for source temporal operator vocabulary shared by DAE and Solve boundary validation. |
 | `expr_contains_var` | `rumoca-ir-dae::expr_query` | Handles every `Expression` variant |
 | `expr_refers_to_var` | `rumoca-ir-dae::expr_query` | Same single-source rule. |
@@ -208,6 +214,7 @@ LSP, WASM, and CLI cannot drift into separate cache/invalidation policies.
 | Rule | Where | Why |
 |---|---|---|
 | Source-root membership, status, cache hydration live here | `rumoca-compile` | Single source of truth for project membership |
+| Portable source-root cache parsing/serialization lives here | `rumoca-compile` | `xtask` may invoke the compiler-owned command but MUST remain orchestration-only with no Rumoca workspace dependency; no documentation-tool micro-crate |
 | Incremental class graph + namespace/package views live here | `rumoca-compile` | One incremental story across all clients |
 | Workspace roots and imported roots are semantically identical | `rumoca-compile` | Retention/restore differ; semantics do not |
 | Clients MUST NOT implement their own invalidation policy or rebuild scope | tool-lsp / bind-wasm / CLI | Avoid divergent cache stories |
@@ -251,8 +258,11 @@ compiler/session → DAE structural → solve-IR lowering → runtime contracts 
 | Solver-facing prepared data + row ops | `rumoca-ir-solve` | Backend-neutral execution IR |
 | DAE → solve-IR lowering | `rumoca-phase-solve` | Lowering only, not structural mutation |
 | Optimization/training orchestration | `rumoca-opt` | Consumes Solve/eval APIs; no Modelica semantics |
+| GALEC `.alg` → checked GALEC parsing | `rumoca-phase-parse-galec` | Recoverable syntax state stays out of checked IR |
+| DAE/Solve → checked GALEC lowering | `rumoca-phase-galec` | Semantic export lowering and admissibility only; no text, templates, packaging, or target-language helpers |
+| Checked GALEC executable semantics | `rumoca-eval-galec` | Small explicit interpreter over `rumoca-ir-galec`; no DAE/Solve, lowering, rendering, target, or runtime-host dependencies |
 | Textual generated artifacts and templates | `rumoca-phase-codegen` | Jinja/minijinja rendering owns generated C, Rust, CUDA C, MLIR, FMI/eFMI and FMU/eFMU packaging text |
-| GALEC `.alg` text (recorded exception) | `rumoca-ir-galec` | Typed AST printing per eFMI conformance; routed via template context (SPEC_0034 GAL-009) |
+| GALEC `.alg` text | `rumoca-phase-codegen` | MiniJinja renders a checked GALEC semantic view; the language IR owns no text emitter (SPEC_0034 GAL-009) |
 | eFMI packaging XML (`__content.xml`, manifests) | `rumoca-phase-codegen` | Rendered like FMI `modelDescription`; validators + generic checksum/container build step, not typed serializers (SPEC_0034 D3 amended) |
 | Compiled/JIT execution adapter crates | `rumoca-exec-*` | Invoke tools, load artifacts, wrap Cranelift/LLVM/CUDA/NVRTC APIs, expose ergonomic runtime calls; no compiler semantics |
 | Backend-neutral solver interface types | `rumoca-solver` | Single contract shared across backends |
@@ -270,6 +280,49 @@ encoders, JITs, toolchains, or device APIs. Textual target policy lives in
 IR capability probes. Unsupported capabilities report
 `unsupported-feature:<feature_id>`. JIT/device adapters consume Solve IR or
 generated artifacts through stable execution ABIs and equivalence tests.
+
+Each target manifest selects one proven-valid canonical or checked export IR.
+`rumoca-phase-codegen` exposes a typed, read-only semantic view for each
+supported IR and dispatches that view generically. Rendering never performs a
+compiler transformation or repairs an artifact. Adding another target over an
+existing view MUST require no Rust change; adding support for another IR adds
+only its target-neutral semantic view and capability vocabulary. An export IR
+selectable by a target remains outside the canonical compiler pipeline.
+
+`rumoca-phase-codegen` Rust may derive target-neutral typed contexts, schedules,
+shapes, dependency/bounds proofs, symbols, and provenance. It MUST NOT spell or
+assemble target-language tokens, expressions, statements, declarations, or
+files. Those belong entirely to each target's `target.toml` and MiniJinja
+templates, so adding a textual target does not require a Rust dialect or
+renderer. Generic template operations consume semantic IR vocabulary and fail
+closed; they do not return pre-rendered language fragments.
+
+Target-specific semantic lowering is a compiler phase, not code generation.
+`rumoca-phase-codegen/src` MUST NOT contain target-named subsystems such as
+`galec/`, C lowering, XML manifest models, target manglers, or target dispatch.
+It MAY contain small IR-specific adapters under `views/` when they expose only
+typed, read-only semantic data. Checked export data and constructors belong to
+their `rumoca-ir-*` crate; semantic projection belongs to its
+`rumoca-phase-*` crate; all target syntax and presentation belong to the target
+directory.
+
+Within `rumoca-phase-codegen`, `src/codegen/` is reserved for the public
+MiniJinja extension-command surface. Rendering orchestration belongs in generic
+renderer modules and IR adapters belong under `src/views/`. Every registered
+command MUST be pure, deterministic, target-neutral, fail closed, and have
+documented template syntax, typed inputs/outputs, failure behavior, complexity,
+and focused tests. A single registry is the source of truth for registration
+and user-facing command documentation. Commands may return semantic values or
+checked arithmetic/query results; they MUST NOT return target-language
+fragments or perform lowering, name resolution, type repair, target dispatch,
+file assembly, or escaping for a particular output language.
+
+Architecture CI MUST reject production `rumoca-phase-codegen` Rust that builds
+generated or template-context text with formatting, concatenation, replacement,
+writer, or incremental string-assembly APIs. Diagnostic messages and generic
+template/file transport are the only string-handling exceptions; their values
+must not enter semantic template contexts. Target names are rendered from typed
+identity/path segments in templates, not pre-mangled Rust strings.
 
 Steady-state CI rejects reverse dependencies across this chain. `rumoca-compile`
 MUST NOT depend on concrete solvers or visualization assets; backend-selection

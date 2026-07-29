@@ -1,7 +1,7 @@
 //! Document formatting handler.
 
+use crate::text_position::byte_offset_to_position;
 use lsp_types::{Position, Range, TextEdit};
-use rumoca_lsp_position::byte_offset_to_position;
 use rumoca_tool_fmt::{FormatOptions, PartialFormatOptions, format};
 
 /// Handle document formatting request.

@@ -12,12 +12,10 @@ path = "src/main.rs"
 required-features = ["server"]
 
 [dependencies]
-# The WASM-safe layer (position + diagnostics) depends only on lsp-types and the
-# GALEC language module; the parser (the span producer) is behind `parse`.
-# `rumoca_core::Span` values flow through transitively via rumoca-ir-galec's
-# `span_of`, so no direct rumoca-core dependency is needed.
+# The WASM-safe layer depends only on the protocol-neutral foundation types,
+# lsp-types, and the GALEC language module.
+rumoca-core = { workspace = true }
 rumoca-ir-galec = { workspace = true, features = ["parse"] }
-rumoca-lsp-position = { workspace = true }
 lsp-types = { workspace = true }
 
 # Native stdio server only (a future WASM .alg playground reuses the layer above
