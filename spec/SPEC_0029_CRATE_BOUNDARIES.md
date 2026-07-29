@@ -279,6 +279,13 @@ templates, so adding a textual target does not require a Rust dialect or
 renderer. Generic template operations consume semantic IR vocabulary and fail
 closed; they do not return pre-rendered language fragments.
 
+Architecture CI MUST reject production `rumoca-phase-codegen` Rust that builds
+generated or template-context text with formatting, concatenation, replacement,
+writer, or incremental string-assembly APIs. Diagnostic messages and generic
+template/file transport are the only string-handling exceptions; their values
+must not enter semantic template contexts. Target names are rendered from typed
+identity/path segments in templates, not pre-mangled Rust strings.
+
 Steady-state CI rejects reverse dependencies across this chain. `rumoca-compile`
 MUST NOT depend on concrete solvers or visualization assets; backend-selection
 APIs MUST affect runtime behavior, not only metadata.
