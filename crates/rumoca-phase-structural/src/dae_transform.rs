@@ -12,7 +12,7 @@ mod tests;
 use rumoca_core::StateSelect;
 use rumoca_ir_dae as dae;
 
-use self::functions::{RebuiltFunction, rebuild_functions, reserve_functions};
+use self::functions::{RebuiltFunction, rebuild_functions};
 use crate::{StructuralError, sort};
 
 /// A finalized DAE ready for Solve lowering.
@@ -293,15 +293,13 @@ fn rebuild_holonomic_constraint(
         dae::Dae::construct(model.source_map().clone(), |target| {
             let types = rebuild_types(source, target)?;
             let domains = rebuild_domains(source, target)?;
-            let (functions, mut function_reservations) = reserve_functions(source, target, &types)?;
             let mut variables = reserve_variables(source, target, &types, None)?;
             let conditions = reserve_conditions(source, target)?;
             let clocks = rebuild_clocks(source, target, &variables, &conditions)?;
             let temporal = rebuild_temporal_coordinates(source, target, &variables, &clocks)?;
             let derivative_definitions = explicit_derivative_definitions(source);
-            let identities = RebuiltIdentities {
+            let base_identities = RebuiltBaseIdentities {
                 types: &types,
-                functions: &functions,
                 variables: &variables,
                 domains: &domains,
                 conditions: &conditions,
@@ -309,6 +307,18 @@ fn rebuild_holonomic_constraint(
                 terminals: &temporal.terminals,
             };
             let mut rebuilt_state = vec![None; source.expression_count()];
+            let functions = rebuild_functions(
+                source,
+                target,
+                base_identities,
+                &derivative_definitions,
+                None,
+                &mut rebuilt_state,
+            )?;
+            let identities = RebuiltIdentities {
+                base: base_identities,
+                functions: &functions,
+            };
             rebuild_delay_coordinates(
                 source,
                 target,
@@ -316,15 +326,6 @@ fn rebuild_holonomic_constraint(
                 &derivative_definitions,
                 None,
                 &mut rebuilt_state,
-            )?;
-            rebuild_functions(
-                source,
-                target,
-                identities,
-                &derivative_definitions,
-                None,
-                &mut rebuilt_state,
-                &mut function_reservations,
             )?;
             let (expressions, replacement) = target.expressions(|expressions| {
                 let mut rebuilder = ExpressionRebuilder::new(
@@ -378,15 +379,13 @@ fn rebuild_with_state_demotion(
         dae::Dae::construct(model.source_map().clone(), |target| {
             let types = rebuild_types(source, target)?;
             let domains = rebuild_domains(source, target)?;
-            let (functions, mut function_reservations) = reserve_functions(source, target, &types)?;
             let mut variables = reserve_variables(source, target, &types, Some(candidate.state))?;
             let conditions = reserve_conditions(source, target)?;
             let clocks = rebuild_clocks(source, target, &variables, &conditions)?;
             let temporal = rebuild_temporal_coordinates(source, target, &variables, &clocks)?;
             let derivative_definitions = explicit_derivative_definitions(source);
-            let identities = RebuiltIdentities {
+            let base_identities = RebuiltBaseIdentities {
                 types: &types,
-                functions: &functions,
                 variables: &variables,
                 domains: &domains,
                 conditions: &conditions,
@@ -394,6 +393,18 @@ fn rebuild_with_state_demotion(
                 terminals: &temporal.terminals,
             };
             let mut rebuilt_state = vec![None; source.expression_count()];
+            let functions = rebuild_functions(
+                source,
+                target,
+                base_identities,
+                &derivative_definitions,
+                Some(candidate),
+                &mut rebuilt_state,
+            )?;
+            let identities = RebuiltIdentities {
+                base: base_identities,
+                functions: &functions,
+            };
             rebuild_delay_coordinates(
                 source,
                 target,
@@ -401,15 +412,6 @@ fn rebuild_with_state_demotion(
                 &derivative_definitions,
                 Some(candidate),
                 &mut rebuilt_state,
-            )?;
-            rebuild_functions(
-                source,
-                target,
-                identities,
-                &derivative_definitions,
-                Some(candidate),
-                &mut rebuilt_state,
-                &mut function_reservations,
             )?;
             let expressions = target.expressions(|expressions| {
                 let mut rebuilder = ExpressionRebuilder::new(
@@ -1394,14 +1396,19 @@ struct ExpressionRebuilder<'source, 'borrow, 'storage, 'target> {
 }
 
 #[derive(Clone, Copy)]
-struct RebuiltIdentities<'borrow, 'target> {
+struct RebuiltBaseIdentities<'borrow, 'target> {
     types: &'borrow [dae::ValueTypeId<'target>],
-    functions: &'borrow [RebuiltFunction<'target>],
     variables: &'borrow [ReservedVariable<'target>],
     domains: &'borrow [RebuiltDomain<'target>],
     conditions: &'borrow [dae::ConditionId<'target>],
     previous: &'borrow [dae::PreviousId<'target>],
     terminals: &'borrow [dae::TerminalId<'target>],
+}
+
+#[derive(Clone, Copy)]
+struct RebuiltIdentities<'borrow, 'target> {
+    base: RebuiltBaseIdentities<'borrow, 'target>,
+    functions: &'borrow [RebuiltFunction<'target>],
 }
 
 impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 'storage, 'target> {
@@ -1416,13 +1423,13 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         Self {
             source,
             target,
-            types: identities.types,
+            types: identities.base.types,
             functions: identities.functions,
-            variables: identities.variables,
-            domains: identities.domains,
-            conditions: identities.conditions,
-            previous: identities.previous,
-            terminals: identities.terminals,
+            variables: identities.base.variables,
+            domains: identities.base.domains,
+            conditions: identities.base.conditions,
+            previous: identities.base.previous,
+            terminals: identities.base.terminals,
             derivative_definitions,
             candidate,
             rebuilt,

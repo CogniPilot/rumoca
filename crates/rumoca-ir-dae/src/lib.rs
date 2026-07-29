@@ -34,6 +34,22 @@
 //! # });
 //! ```
 //!
+//! A function-construction capability cannot escape its lexical owner:
+//!
+//! ```compile_fail
+//! # use rumoca_ir_dae::{
+//! #     DaeConstruction, DaeConstructionError, FunctionSignature,
+//! # };
+//! # fn escape<'dae>(
+//! #     dae: &mut DaeConstruction<'dae>,
+//! #     signature: FunctionSignature<'dae>,
+//! # ) -> Result<(), DaeConstructionError> {
+//! let escaped = dae.function(signature, |_, reservation| Ok(reservation))?;
+//! drop(escaped);
+//! # Ok(())
+//! # }
+//! ```
+//!
 //! An active function loop owns its parent body until the loop is finished:
 //!
 //! ```compile_fail
@@ -100,11 +116,12 @@ pub use model::{
     ContinuousOwnerView, CoordinateView, DAE_SCHEMA_VERSION, Dae, DaeConstruction, DaeView,
     DomainView, Domains, ExpressionKind, ExpressionOperands, ExpressionOperation, ExpressionView,
     FunctionBody, FunctionDefinitionValues, FunctionDefinitionView, FunctionFoldView, FunctionLoop,
-    FunctionParameterView, FunctionReservation, FunctionStatementView, FunctionStatements,
-    FunctionValueRole, FunctionValueView, FunctionView, Functions, InitializationOwnerView,
-    InputVariability, ResidualEquationView, StructuredFamilyView, SubscriptView, SubscriptsView,
-    ValueTypeOperands, ValueTypes, VariableAttributes, VariableCausality, VariableIdentity,
-    VariableOrigin, VariableReservation, VariableRole, VariableView, Variables,
+    FunctionParameterView, FunctionReservation, FunctionSignature, FunctionStatementView,
+    FunctionStatements, FunctionValueRole, FunctionValueView, FunctionView, Functions,
+    InitializationOwnerView, InputVariability, ResidualEquationView, StructuredFamilyView,
+    SubscriptView, SubscriptsView, ValueTypeOperands, ValueTypes, VariableAttributes,
+    VariableCausality, VariableIdentity, VariableOrigin, VariableReservation, VariableRole,
+    VariableView, Variables,
 };
 pub use provenance::{DaeGeneration, DaeProvenance, DaeProvenanceOrigin};
 pub use temporal::{

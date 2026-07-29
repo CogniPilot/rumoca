@@ -656,42 +656,45 @@ fn checked_function_call_is_inlined_into_solve_program() {
         let real = model.types(|types| {
             types.derived(dae::ValueType::scalar(dae::ScalarType::Real), function_at)
         })?;
-        let (function, reservation) = model.functions(|functions| {
-            functions.reserve_recursive(VarName::new("f"), [real], [real], function_at)
+        let signature = dae::FunctionSignature::new(VarName::new("f"), [real], [real], function_at);
+        let (function, ()) = model.function(signature, |model, reservation| {
+            let parameter = model.functions(|functions| {
+                functions.parameter(&reservation, VarName::new("u"), 0, function_at)
+            })?;
+            let output = model.functions(|functions| {
+                functions.output(&reservation, VarName::new("y"), 0, function_at)
+            })?;
+            let local = model.functions(|functions| {
+                functions.local(&reservation, VarName::new("tmp"), real, function_at)
+            })?;
+            let local_definition = model.expressions(|expressions| {
+                let parameter = expressions.at(function_at).function_parameter(parameter)?;
+                let one = expressions
+                    .at(function_at)
+                    .literal(dae::DaeLiteral::Real(1.0))?;
+                expressions
+                    .at(function_at)
+                    .binary(dae::BinaryOperator::Add, parameter, one)
+            })?;
+            let mut body =
+                model.functions(|functions| functions.begin(reservation, function_at))?;
+            model.functions(|functions| {
+                functions.assign(&mut body, local, local_definition, function_at)
+            })?;
+            let local_value =
+                model.functions(|functions| functions.read(&body, local, function_at))?;
+            let result = model.expressions(|expressions| {
+                let two = expressions
+                    .at(function_at)
+                    .literal(dae::DaeLiteral::Real(2.0))?;
+                expressions
+                    .at(function_at)
+                    .binary(dae::BinaryOperator::Multiply, local_value, two)
+            })?;
+            model
+                .functions(|functions| functions.assign(&mut body, output, result, function_at))?;
+            model.functions(|functions| functions.define(body, function_at))
         })?;
-        let parameter = model.functions(|functions| {
-            functions.parameter(&reservation, VarName::new("u"), 0, function_at)
-        })?;
-        let output = model.functions(|functions| {
-            functions.output(&reservation, VarName::new("y"), 0, function_at)
-        })?;
-        let local = model.functions(|functions| {
-            functions.local(&reservation, VarName::new("tmp"), real, function_at)
-        })?;
-        let local_definition = model.expressions(|expressions| {
-            let parameter = expressions.at(function_at).function_parameter(parameter)?;
-            let one = expressions
-                .at(function_at)
-                .literal(dae::DaeLiteral::Real(1.0))?;
-            expressions
-                .at(function_at)
-                .binary(dae::BinaryOperator::Add, parameter, one)
-        })?;
-        let mut body = model.functions(|functions| functions.begin(reservation, function_at))?;
-        model.functions(|functions| {
-            functions.assign(&mut body, local, local_definition, function_at)
-        })?;
-        let local_value = model.functions(|functions| functions.read(&body, local, function_at))?;
-        let result = model.expressions(|expressions| {
-            let two = expressions
-                .at(function_at)
-                .literal(dae::DaeLiteral::Real(2.0))?;
-            expressions
-                .at(function_at)
-                .binary(dae::BinaryOperator::Multiply, local_value, two)
-        })?;
-        model.functions(|functions| functions.assign(&mut body, output, result, function_at))?;
-        model.functions(|functions| functions.define(body, function_at))?;
         let algebraic = model.variables(|variables| {
             variables.algebraic(
                 VarName::new("z"),

@@ -23,25 +23,28 @@ fn functions_conditions_and_generated_runtime_nodes_use_the_same_arena() {
                 function_declaration,
             )
         })?;
-        let (function, reservation) = dae.functions(|functions| {
-            functions.reserve_recursive(VarName::new("f"), [real], [real], function_declaration)
-        })?;
-        let parameter = dae.functions(|functions| {
-            functions.parameter(&reservation, VarName::new("u"), 0, function_declaration)
-        })?;
-        let output = dae.functions(|functions| {
-            functions.output(&reservation, VarName::new("y"), 0, function_declaration)
-        })?;
-        let parameter_value =
-            dae.expressions(|expr| expr.at(function_declaration).function_parameter(parameter))?;
         let literal =
             dae.expressions(|expr| expr.at(literal_span).literal(DaeLiteral::Real(0.0)))?;
-        let mut body =
-            dae.functions(|functions| functions.begin(reservation, function_declaration))?;
-        dae.functions(|functions| {
-            functions.assign(&mut body, output, parameter_value, function_declaration)
-        })?;
-        dae.functions(|functions| functions.define(body, function_declaration))?;
+        let (function, ()) = dae.function(
+            FunctionSignature::new(VarName::new("f"), [real], [real], function_declaration),
+            |dae, reservation| {
+                let parameter = dae.functions(|functions| {
+                    functions.parameter(&reservation, VarName::new("u"), 0, function_declaration)
+                })?;
+                let output = dae.functions(|functions| {
+                    functions.output(&reservation, VarName::new("y"), 0, function_declaration)
+                })?;
+                let parameter_value = dae.expressions(|expr| {
+                    expr.at(function_declaration).function_parameter(parameter)
+                })?;
+                let mut body =
+                    dae.functions(|functions| functions.begin(reservation, function_declaration))?;
+                dae.functions(|functions| {
+                    functions.assign(&mut body, output, parameter_value, function_declaration)
+                })?;
+                dae.functions(|functions| functions.define(body, function_declaration))
+            },
+        )?;
 
         let condition = dae.conditions(|conditions| conditions.reserve(condition_owner))?;
         let condition_value =
@@ -153,50 +156,59 @@ fn function_parameters_cannot_cross_or_escape_semantic_owners() {
     let g_at = source.source("function g", 0);
     let result = Dae::construct(source.map, |dae| {
         let real = dae.types(|types| types.derived(ValueType::scalar(ScalarType::Real), f_at))?;
-        let (_f, f_reservation) = dae.functions(|functions| {
-            functions.reserve_recursive(VarName::new("f"), [real], [real], f_at)
-        })?;
-        let (_g, g_reservation) = dae.functions(|functions| {
-            functions.reserve_recursive(VarName::new("g"), [real], [real], g_at)
-        })?;
-        let f_parameter = dae.functions(|functions| {
-            functions.parameter(&f_reservation, VarName::new("u"), 0, f_at)
-        })?;
-        let g_parameter = dae.functions(|functions| {
-            functions.parameter(&g_reservation, VarName::new("u"), 0, g_at)
-        })?;
-        let f_output = dae
-            .functions(|functions| functions.output(&f_reservation, VarName::new("y"), 0, f_at))?;
-        let g_output = dae
-            .functions(|functions| functions.output(&g_reservation, VarName::new("y"), 0, g_at))?;
-        let mut f_body = dae.functions(|functions| functions.begin(f_reservation, f_at))?;
-        let mut g_body = dae.functions(|functions| functions.begin(g_reservation, g_at))?;
-        let f_value = dae.expressions(|expr| expr.at(f_at).function_parameter(f_parameter))?;
-        let g_value = dae.expressions(|expr| expr.at(g_at).function_parameter(g_parameter))?;
-        let rejected =
-            dae.functions(|functions| functions.current_definition(&f_body, g_output, f_at));
-        assert!(matches!(
-            rejected,
-            Err(DaeConstructionError::InvalidFunctionScope {
-                expected_function: Some(_),
-                ..
-            })
-        ));
-        let error =
-            dae.expressions(|expr| expr.at(f_at).binary(BinaryOperator::Add, f_value, g_value));
-        assert!(matches!(
-            error,
-            Err(DaeConstructionError::InvalidFunctionScope {
-                expected_function: Some(_),
-                ..
-            })
-        ));
-        dae.functions(|functions| functions.assign(&mut f_body, f_output, f_value, f_at))?;
-        dae.functions(|functions| functions.assign(&mut g_body, g_output, g_value, g_at))?;
-        let escaped =
-            dae.functions(|functions| functions.current_definition(&f_body, f_output, f_at))?;
-        dae.functions(|functions| functions.define(f_body, f_at))?;
-        dae.functions(|functions| functions.define(g_body, g_at))?;
+        let (_, (f_output, f_value, escaped)) = dae.function(
+            FunctionSignature::new(VarName::new("f"), [real], [real], f_at),
+            |dae, reservation| {
+                let parameter = dae.functions(|functions| {
+                    functions.parameter(&reservation, VarName::new("u"), 0, f_at)
+                })?;
+                let output = dae.functions(|functions| {
+                    functions.output(&reservation, VarName::new("y"), 0, f_at)
+                })?;
+                let value = dae.expressions(|expr| expr.at(f_at).function_parameter(parameter))?;
+                let mut body = dae.functions(|functions| functions.begin(reservation, f_at))?;
+                dae.functions(|functions| functions.assign(&mut body, output, value, f_at))?;
+                let escaped =
+                    dae.functions(|functions| functions.current_definition(&body, output, f_at))?;
+                dae.functions(|functions| functions.define(body, f_at))?;
+                Ok((output, value, escaped))
+            },
+        )?;
+        dae.function(
+            FunctionSignature::new(VarName::new("g"), [real], [real], g_at),
+            |dae, reservation| {
+                let parameter = dae.functions(|functions| {
+                    functions.parameter(&reservation, VarName::new("u"), 0, g_at)
+                })?;
+                let output = dae.functions(|functions| {
+                    functions.output(&reservation, VarName::new("y"), 0, g_at)
+                })?;
+                let mut body = dae.functions(|functions| functions.begin(reservation, g_at))?;
+                let g_value =
+                    dae.expressions(|expr| expr.at(g_at).function_parameter(parameter))?;
+                let rejected =
+                    dae.functions(|functions| functions.current_definition(&body, f_output, g_at));
+                assert!(matches!(
+                    rejected,
+                    Err(DaeConstructionError::InvalidFunctionScope {
+                        expected_function: Some(_),
+                        ..
+                    })
+                ));
+                let error = dae.expressions(|expr| {
+                    expr.at(g_at).binary(BinaryOperator::Add, f_value, g_value)
+                });
+                assert!(matches!(
+                    error,
+                    Err(DaeConstructionError::InvalidFunctionScope {
+                        expected_function: Some(_),
+                        ..
+                    })
+                ));
+                dae.functions(|functions| functions.assign(&mut body, output, g_value, g_at))?;
+                dae.functions(|functions| functions.define(body, g_at))
+            },
+        )?;
         dae.continuous(|continuous| continuous.value_equation(f_at, escaped))
     });
     assert!(matches!(
@@ -221,38 +233,46 @@ fn function_assignment_rejects_a_foreign_target_before_insertion() {
 
     let dae = Dae::construct(source.map, |dae| {
         let real = dae.types(|types| types.derived(ValueType::scalar(ScalarType::Real), f_at))?;
-        let (f, f_reservation) = dae.functions(|functions| {
-            functions.reserve_recursive(VarName::new("f"), [], [real], f_at)
-        })?;
-        let (g, g_reservation) = dae.functions(|functions| {
-            functions.reserve_recursive(VarName::new("g"), [], [real], g_at)
-        })?;
-        let f_output = dae
-            .functions(|functions| functions.output(&f_reservation, VarName::new("y"), 0, f_at))?;
-        let g_output = dae
-            .functions(|functions| functions.output(&g_reservation, VarName::new("y"), 0, g_at))?;
-        let mut f_body = dae.functions(|functions| functions.begin(f_reservation, f_at))?;
-        let mut g_body = dae.functions(|functions| functions.begin(g_reservation, g_at))?;
         let zero =
             dae.expressions(|expressions| expressions.at(zero_at).literal(DaeLiteral::Real(0.0)))?;
-
-        let rejected =
-            dae.functions(|functions| functions.assign(&mut f_body, g_output, zero, rejected_at));
-        assert!(matches!(
-            rejected,
-            Err(DaeConstructionError::InvalidFunctionScope {
-                expected_function: Some(expected),
-                found_function,
-                span,
-            }) if expected == f.index()
-                && found_function == g.index()
-                && span == rejected_at.span()
-        ));
-
-        dae.functions(|functions| functions.assign(&mut f_body, f_output, zero, accepted_at))?;
-        dae.functions(|functions| functions.assign(&mut g_body, g_output, zero, accepted_at))?;
-        dae.functions(|functions| functions.define(f_body, f_at))?;
-        dae.functions(|functions| functions.define(g_body, g_at))
+        let (g, g_output) = dae.function(
+            FunctionSignature::new(VarName::new("g"), [], [real], g_at),
+            |dae, reservation| {
+                let output = dae.functions(|functions| {
+                    functions.output(&reservation, VarName::new("y"), 0, g_at)
+                })?;
+                let mut body = dae.functions(|functions| functions.begin(reservation, g_at))?;
+                dae.functions(|functions| functions.assign(&mut body, output, zero, accepted_at))?;
+                dae.functions(|functions| functions.define(body, g_at))?;
+                Ok(output)
+            },
+        )?;
+        dae.function(
+            FunctionSignature::new(VarName::new("f"), [], [real], f_at),
+            |dae, reservation| {
+                let output = dae.functions(|functions| {
+                    functions.output(&reservation, VarName::new("y"), 0, f_at)
+                })?;
+                let f = reservation.function();
+                let mut body = dae.functions(|functions| functions.begin(reservation, f_at))?;
+                let rejected = dae.functions(|functions| {
+                    functions.assign(&mut body, g_output, zero, rejected_at)
+                });
+                assert!(matches!(
+                    rejected,
+                    Err(DaeConstructionError::InvalidFunctionScope {
+                        expected_function: Some(expected),
+                        found_function,
+                        span,
+                    }) if expected == f.index()
+                        && found_function == g.index()
+                        && span == rejected_at.span()
+                ));
+                dae.functions(|functions| functions.assign(&mut body, output, zero, accepted_at))?;
+                dae.functions(|functions| functions.define(body, f_at))
+            },
+        )
+        .map(|_| ())
     })
     .expect("foreign-target rejection leaves both function bodies usable");
 
@@ -284,30 +304,34 @@ fn function_assignment_rejects_a_wrong_typed_rhs_before_insertion() {
     let dae = Dae::construct(source.map, |dae| {
         let real =
             dae.types(|types| types.derived(ValueType::scalar(ScalarType::Real), function_at))?;
-        let (_function, reservation) = dae.functions(|functions| {
-            functions.reserve_recursive(VarName::new("f"), [], [real], function_at)
-        })?;
-        let output = dae.functions(|functions| {
-            functions.output(&reservation, VarName::new("y"), 0, function_at)
-        })?;
-        let mut body = dae.functions(|functions| functions.begin(reservation, function_at))?;
-        let (wrong, zero) = dae.expressions(|expressions| {
-            Ok((
-                expressions.at(true_at).literal(DaeLiteral::Boolean(true))?,
-                expressions.at(zero_at).literal(DaeLiteral::Real(0.0))?,
-            ))
-        })?;
+        dae.function(
+            FunctionSignature::new(VarName::new("f"), [], [real], function_at),
+            |dae, reservation| {
+                let output = dae.functions(|functions| {
+                    functions.output(&reservation, VarName::new("y"), 0, function_at)
+                })?;
+                let mut body =
+                    dae.functions(|functions| functions.begin(reservation, function_at))?;
+                let (wrong, zero) = dae.expressions(|expressions| {
+                    Ok((
+                        expressions.at(true_at).literal(DaeLiteral::Boolean(true))?,
+                        expressions.at(zero_at).literal(DaeLiteral::Real(0.0))?,
+                    ))
+                })?;
 
-        let rejected =
-            dae.functions(|functions| functions.assign(&mut body, output, wrong, rejected_at));
-        assert!(matches!(
-            rejected,
-            Err(DaeConstructionError::ShapeMismatch { span })
-                if span == rejected_at.span()
-        ));
+                let rejected = dae
+                    .functions(|functions| functions.assign(&mut body, output, wrong, rejected_at));
+                assert!(matches!(
+                    rejected,
+                    Err(DaeConstructionError::ShapeMismatch { span })
+                        if span == rejected_at.span()
+                ));
 
-        dae.functions(|functions| functions.assign(&mut body, output, zero, accepted_at))?;
-        dae.functions(|functions| functions.define(body, function_at))
+                dae.functions(|functions| functions.assign(&mut body, output, zero, accepted_at))?;
+                dae.functions(|functions| functions.define(body, function_at))
+            },
+        )
+        .map(|_| ())
     })
     .expect("wrong-type rejection leaves the function body usable");
 
@@ -346,64 +370,74 @@ fn pure_functions_reject_model_runtime_coordinates_at_the_exact_use_site() {
                 VariableAttributes::default(),
             )
         })?;
-        let (_function, reservation) = dae.functions(|functions| {
-            functions.reserve_recursive(VarName::new("f"), [], [real], function_at)
-        })?;
-        let output = dae.functions(|functions| {
-            functions.output(&reservation, VarName::new("y"), 0, output_at)
-        })?;
-        let mut body = dae.functions(|functions| functions.begin(reservation, function_at))?;
-        let state_use = dae.expressions(|expressions| {
-            expressions
-                .at(state_at)
-                .coordinate(CoordinateInput::State(state))
-        })?;
-        let rejected = dae
-            .functions(|functions| functions.assign(&mut body, output, state_use, assignment_at));
-        assert!(matches!(
-            rejected,
-            Err(DaeConstructionError::InvalidFunctionCoordinate {
-                coordinate: "state",
-                span,
-            }) if span == state_at.span()
-        ));
-        let time = dae
-            .expressions(|expressions| expressions.at(time_at).coordinate(CoordinateInput::Time))?;
-        let rejected =
-            dae.functions(|functions| functions.assign(&mut body, output, time, assignment_at));
-        assert!(matches!(
-            rejected,
-            Err(DaeConstructionError::InvalidFunctionCoordinate {
-                coordinate: "time",
-                span,
-            }) if span == time_at.span()
-        ));
-        let (delayed_state, one) = dae.expressions(|expressions| {
-            Ok((
-                expressions
-                    .at(delayed_state_at)
-                    .coordinate(CoordinateInput::State(state))?,
-                expressions.at(one_at).literal(DaeLiteral::Real(1.0))?,
-            ))
-        })?;
-        let delay = dae.temporal(|temporal| {
-            let positive = temporal.positive_parameter(one, 1.0, one_at)?;
-            temporal.delay(delayed_state, positive, delay_at, delay_at)
-        })?;
-        let rejected = dae.functions(|functions| {
-            functions.assign(&mut body, output, delay.expression(), assignment_at)
-        });
-        assert!(matches!(
-            rejected,
-            Err(DaeConstructionError::InvalidFunctionCoordinate {
-                coordinate: "delay",
-                span,
-            }) if span == delay_at.span()
-        ));
-        let zero =
-            dae.expressions(|expressions| expressions.at(zero_at).literal(DaeLiteral::Real(0.0)))?;
-        dae.functions(|functions| functions.assign(&mut body, output, zero, assignment_at))?;
-        dae.functions(|functions| functions.define(body, function_at))
+        dae.function(
+            FunctionSignature::new(VarName::new("f"), [], [real], function_at),
+            |dae, reservation| {
+                let output = dae.functions(|functions| {
+                    functions.output(&reservation, VarName::new("y"), 0, output_at)
+                })?;
+                let mut body =
+                    dae.functions(|functions| functions.begin(reservation, function_at))?;
+                let state_use = dae.expressions(|expressions| {
+                    expressions
+                        .at(state_at)
+                        .coordinate(CoordinateInput::State(state))
+                })?;
+                let rejected = dae.functions(|functions| {
+                    functions.assign(&mut body, output, state_use, assignment_at)
+                });
+                assert!(matches!(
+                    rejected,
+                    Err(DaeConstructionError::InvalidFunctionCoordinate {
+                        coordinate: "state",
+                        span,
+                    }) if span == state_at.span()
+                ));
+                let time = dae.expressions(|expressions| {
+                    expressions.at(time_at).coordinate(CoordinateInput::Time)
+                })?;
+                let rejected = dae.functions(|functions| {
+                    functions.assign(&mut body, output, time, assignment_at)
+                });
+                assert!(matches!(
+                    rejected,
+                    Err(DaeConstructionError::InvalidFunctionCoordinate {
+                        coordinate: "time",
+                        span,
+                    }) if span == time_at.span()
+                ));
+                let (delayed_state, one) = dae.expressions(|expressions| {
+                    Ok((
+                        expressions
+                            .at(delayed_state_at)
+                            .coordinate(CoordinateInput::State(state))?,
+                        expressions.at(one_at).literal(DaeLiteral::Real(1.0))?,
+                    ))
+                })?;
+                let delay = dae.temporal(|temporal| {
+                    let positive = temporal.positive_parameter(one, 1.0, one_at)?;
+                    temporal.delay(delayed_state, positive, delay_at, delay_at)
+                })?;
+                let rejected = dae.functions(|functions| {
+                    functions.assign(&mut body, output, delay.expression(), assignment_at)
+                });
+                assert!(matches!(
+                    rejected,
+                    Err(DaeConstructionError::InvalidFunctionCoordinate {
+                        coordinate: "delay",
+                        span,
+                    }) if span == delay_at.span()
+                ));
+                let zero = dae.expressions(|expressions| {
+                    expressions.at(zero_at).literal(DaeLiteral::Real(0.0))
+                })?;
+                dae.functions(|functions| {
+                    functions.assign(&mut body, output, zero, assignment_at)
+                })?;
+                dae.functions(|functions| functions.define(body, function_at))
+            },
+        )
+        .map(|_| ())
     })
     .expect("rejected assignments do not mutate the function environment");
     dae.inspect(|view| {
@@ -433,44 +467,51 @@ fn function_locals_keep_ordered_statements_and_exact_use_provenance() {
     let dae = Dae::construct(source.map, |dae| {
         let real =
             dae.types(|types| types.derived(ValueType::scalar(ScalarType::Real), function_at))?;
-        let (_function, reservation) = dae.functions(|functions| {
-            functions.reserve_recursive(VarName::new("f"), [real], [real], function_at)
-        })?;
-        let parameter = dae.functions(|functions| {
-            functions.parameter(&reservation, VarName::new("u"), 0, parameter_at)
-        })?;
-        let output = dae.functions(|functions| {
-            functions.output(&reservation, VarName::new("y"), 0, output_at)
-        })?;
-        let local = dae.functions(|functions| {
-            functions.local(&reservation, VarName::new("z"), real, local_at)
-        })?;
-        let mut body = dae.functions(|functions| functions.begin(reservation, function_at))?;
-        let parameter = dae.expressions(|expressions| {
-            expressions.at(parameter_use).function_parameter(parameter)
-        })?;
-        let one =
-            dae.expressions(|expressions| expressions.at(one_at).literal(DaeLiteral::Real(1.0)))?;
-        let local_definition = dae.expressions(|expressions| {
-            expressions
-                .at(first_rhs)
-                .binary(BinaryOperator::Add, parameter, one)
-        })?;
-        dae.functions(|functions| {
-            functions.assign(&mut body, local, local_definition, first_assignment)
-        })?;
-        let local_value = dae.functions(|functions| functions.read(&body, local, local_use))?;
-        let two =
-            dae.expressions(|expressions| expressions.at(two_at).literal(DaeLiteral::Real(2.0)))?;
-        let output_definition = dae.expressions(|expressions| {
-            expressions
-                .at(second_rhs)
-                .binary(BinaryOperator::Multiply, local_value, two)
-        })?;
-        dae.functions(|functions| {
-            functions.assign(&mut body, output, output_definition, second_assignment)
-        })?;
-        dae.functions(|functions| functions.define(body, function_at))
+        dae.function(
+            FunctionSignature::new(VarName::new("f"), [real], [real], function_at),
+            |dae, reservation| {
+                let parameter = dae.functions(|functions| {
+                    functions.parameter(&reservation, VarName::new("u"), 0, parameter_at)
+                })?;
+                let output = dae.functions(|functions| {
+                    functions.output(&reservation, VarName::new("y"), 0, output_at)
+                })?;
+                let local = dae.functions(|functions| {
+                    functions.local(&reservation, VarName::new("z"), real, local_at)
+                })?;
+                let mut body =
+                    dae.functions(|functions| functions.begin(reservation, function_at))?;
+                let parameter = dae.expressions(|expressions| {
+                    expressions.at(parameter_use).function_parameter(parameter)
+                })?;
+                let one = dae.expressions(|expressions| {
+                    expressions.at(one_at).literal(DaeLiteral::Real(1.0))
+                })?;
+                let local_definition = dae.expressions(|expressions| {
+                    expressions
+                        .at(first_rhs)
+                        .binary(BinaryOperator::Add, parameter, one)
+                })?;
+                dae.functions(|functions| {
+                    functions.assign(&mut body, local, local_definition, first_assignment)
+                })?;
+                let local_value =
+                    dae.functions(|functions| functions.read(&body, local, local_use))?;
+                let two = dae.expressions(|expressions| {
+                    expressions.at(two_at).literal(DaeLiteral::Real(2.0))
+                })?;
+                let output_definition = dae.expressions(|expressions| {
+                    expressions
+                        .at(second_rhs)
+                        .binary(BinaryOperator::Multiply, local_value, two)
+                })?;
+                dae.functions(|functions| {
+                    functions.assign(&mut body, output, output_definition, second_assignment)
+                })?;
+                dae.functions(|functions| functions.define(body, function_at))
+            },
+        )
+        .map(|_| ())
     })
     .expect("ordered local definitions construct a complete function");
 
@@ -766,59 +807,64 @@ fn function_for_loop_is_a_compact_checked_transition() {
     let dae = Dae::construct(source.map, |dae| {
         let real =
             dae.types(|types| types.derived(ValueType::scalar(ScalarType::Real), function_at))?;
-        let (_function, reservation) = dae.functions(|functions| {
-            functions.reserve_recursive(VarName::new("sum3"), [], [real], function_at)
-        })?;
-        let output = dae.functions(|functions| {
-            functions.output(&reservation, VarName::new("y"), 0, output_at)
-        })?;
-        let scratch = dae.functions(|functions| {
-            functions.local(&reservation, VarName::new("scratch"), real, scratch_at)
-        })?;
-        let mut body = dae.functions(|functions| functions.begin(reservation, function_at))?;
-        let zero =
-            dae.expressions(|expressions| expressions.at(zero_at).literal(DaeLiteral::Real(0.0)))?;
-        dae.functions(|functions| functions.assign(&mut body, output, zero, initial_at))?;
-        let domain = dae.domains(|domains| {
-            domains.structured(
-                StructuredIndexDomain {
-                    binders: vec![StructuredIndexBinder {
-                        id: 0,
-                        display_name: "k".to_string(),
-                        lower: 1,
-                        upper: 3,
-                        step: 1,
-                    }],
-                },
-                loop_at,
-            )
-        })?;
-        let binder = DomainBinderId::from_raw(domain.index(), 0);
-        let mut loop_body =
-            dae.functions(|functions| functions.begin_loop(body, domain, [output], loop_at))?;
-        let current =
-            dae.functions(|functions| functions.read(loop_body.body(), output, y_use_at))?;
-        let k = dae.expressions(|expressions| expressions.at(k_use_at).binder(binder))?;
-        let update = dae.expressions(|expressions| {
-            expressions
-                .at(update_value_at)
-                .binary(BinaryOperator::Add, current, k)
-        })?;
-        let rejected = dae.functions(|functions| {
-            functions.assign_loop(&mut loop_body, scratch, update, update_at)
-        });
-        assert!(matches!(
-            rejected,
-            Err(DaeConstructionError::IncompleteDefinition {
-                kind: "function loop target",
-                ..
-            })
-        ));
-        dae.functions(|functions| {
-            functions.assign_loop(&mut loop_body, output, update, update_at)
-        })?;
-        let body = dae.functions(|functions| functions.finish_loop(loop_body, loop_at))?;
-        dae.functions(|functions| functions.define(body, function_at))
+        dae.function(
+            FunctionSignature::new(VarName::new("sum3"), [], [real], function_at),
+            |dae, reservation| {
+                let output = dae.functions(|functions| {
+                    functions.output(&reservation, VarName::new("y"), 0, output_at)
+                })?;
+                let scratch = dae.functions(|functions| {
+                    functions.local(&reservation, VarName::new("scratch"), real, scratch_at)
+                })?;
+                let mut body =
+                    dae.functions(|functions| functions.begin(reservation, function_at))?;
+                let zero = dae.expressions(|expressions| {
+                    expressions.at(zero_at).literal(DaeLiteral::Real(0.0))
+                })?;
+                dae.functions(|functions| functions.assign(&mut body, output, zero, initial_at))?;
+                let domain = dae.domains(|domains| {
+                    domains.structured(
+                        StructuredIndexDomain {
+                            binders: vec![StructuredIndexBinder {
+                                id: 0,
+                                display_name: "k".to_string(),
+                                lower: 1,
+                                upper: 3,
+                                step: 1,
+                            }],
+                        },
+                        loop_at,
+                    )
+                })?;
+                let binder = DomainBinderId::from_raw(domain.index(), 0);
+                let mut loop_body = dae
+                    .functions(|functions| functions.begin_loop(body, domain, [output], loop_at))?;
+                let current =
+                    dae.functions(|functions| functions.read(loop_body.body(), output, y_use_at))?;
+                let k = dae.expressions(|expressions| expressions.at(k_use_at).binder(binder))?;
+                let update = dae.expressions(|expressions| {
+                    expressions
+                        .at(update_value_at)
+                        .binary(BinaryOperator::Add, current, k)
+                })?;
+                let rejected = dae.functions(|functions| {
+                    functions.assign_loop(&mut loop_body, scratch, update, update_at)
+                });
+                assert!(matches!(
+                    rejected,
+                    Err(DaeConstructionError::IncompleteDefinition {
+                        kind: "function loop target",
+                        ..
+                    })
+                ));
+                dae.functions(|functions| {
+                    functions.assign_loop(&mut loop_body, output, update, update_at)
+                })?;
+                let body = dae.functions(|functions| functions.finish_loop(loop_body, loop_at))?;
+                dae.functions(|functions| functions.define(body, function_at))
+            },
+        )
+        .map(|_| ())
     })
     .expect("loop-carried function state constructs as a checked fold");
 
@@ -826,8 +872,11 @@ fn function_for_loop_is_a_compact_checked_transition() {
     let encoded = serde_json::to_string(&dae).unwrap();
     let decoded: Dae = serde_json::from_str(&encoded).unwrap();
     decoded.inspect(assert_sum3_loop);
+    assert_invalid_function_loop_wires(&encoded);
+}
 
-    let mut missing_parameter: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+fn assert_invalid_function_loop_wires(encoded: &str) {
+    let mut missing_parameter: serde_json::Value = serde_json::from_str(encoded).unwrap();
     missing_parameter["storage"]["functions"][0]["statements"][1]["for"]["targets"] =
         serde_json::json!([]);
     assert!(
@@ -835,7 +884,7 @@ fn function_for_loop_is_a_compact_checked_transition() {
         "wire reconstruction rejects a loop operation inconsistent with generated parameters"
     );
 
-    let mut open_initial: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+    let mut open_initial: serde_json::Value = serde_json::from_str(encoded).unwrap();
     open_initial["storage"]["functions"][0]["statements"][1]["for"]["targets"][0] =
         serde_json::json!(1);
     assert!(
@@ -843,7 +892,7 @@ fn function_for_loop_is_a_compact_checked_transition() {
         "wire reconstruction rejects an uninitialized loop-carried local"
     );
 
-    let mut nested_fold: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+    let mut nested_fold: serde_json::Value = serde_json::from_str(encoded).unwrap();
     let outer = nested_fold["storage"]["functions"][0]["statements"][1].clone();
     nested_fold["storage"]["functions"][0]["statements"][1]["for"]["statements"] =
         serde_json::json!([outer]);
@@ -896,33 +945,41 @@ fn function_loop_rejects_duplicate_carried_targets() {
     let error = Dae::construct(source.map, |dae| {
         let real =
             dae.types(|types| types.derived(ValueType::scalar(ScalarType::Real), function_at))?;
-        let (_, reservation) = dae.functions(|functions| {
-            functions.reserve_recursive(VarName::new("f"), [], [real], function_at)
-        })?;
-        let output = dae.functions(|functions| {
-            functions.output(&reservation, VarName::new("x"), 0, output_at)
-        })?;
-        let mut body = dae.functions(|functions| functions.begin(reservation, function_at))?;
-        let zero =
-            dae.expressions(|expressions| expressions.at(zero_at).literal(DaeLiteral::Real(0.0)))?;
-        dae.functions(|functions| functions.assign(&mut body, output, zero, assignment_at))?;
-        let domain = dae.domains(|domains| {
-            domains.structured(
-                StructuredIndexDomain {
-                    binders: vec![StructuredIndexBinder {
-                        id: 0,
-                        display_name: "k".to_string(),
-                        lower: 1,
-                        upper: 2,
-                        step: 1,
-                    }],
-                },
-                loop_at,
-            )
-        })?;
-        let _ = dae
-            .functions(|functions| functions.begin_loop(body, domain, [output, output], loop_at))?;
-        Ok(())
+        dae.function(
+            FunctionSignature::new(VarName::new("f"), [], [real], function_at),
+            |dae, reservation| {
+                let output = dae.functions(|functions| {
+                    functions.output(&reservation, VarName::new("x"), 0, output_at)
+                })?;
+                let mut body =
+                    dae.functions(|functions| functions.begin(reservation, function_at))?;
+                let zero = dae.expressions(|expressions| {
+                    expressions.at(zero_at).literal(DaeLiteral::Real(0.0))
+                })?;
+                dae.functions(|functions| {
+                    functions.assign(&mut body, output, zero, assignment_at)
+                })?;
+                let domain = dae.domains(|domains| {
+                    domains.structured(
+                        StructuredIndexDomain {
+                            binders: vec![StructuredIndexBinder {
+                                id: 0,
+                                display_name: "k".to_string(),
+                                lower: 1,
+                                upper: 2,
+                                step: 1,
+                            }],
+                        },
+                        loop_at,
+                    )
+                })?;
+                let _ = dae.functions(|functions| {
+                    functions.begin_loop(body, domain, [output, output], loop_at)
+                })?;
+                Ok(())
+            },
+        )
+        .map(|_| ())
     })
     .unwrap_err();
     assert!(matches!(

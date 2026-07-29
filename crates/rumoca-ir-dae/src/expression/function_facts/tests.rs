@@ -51,6 +51,7 @@ fn push_facts(
         .function_illegal_coordinates
         .push(illegal_coordinate);
     storage.expressions.function_read_sets.push(read_set);
+    storage.expressions.function_latest_calls.push(None);
     storage.expressions.provenance.push(at);
 }
 

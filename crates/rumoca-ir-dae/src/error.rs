@@ -111,6 +111,14 @@ pub enum DaeConstructionError {
         coordinate: &'static str,
         span: Span,
     },
+    #[error("function {function} calls non-prior function {target} outside its recursive SCC")]
+    InvalidFunctionDependency {
+        function: u32,
+        target: u32,
+        span: Span,
+    },
+    #[error("reserved recursive functions do not form one strongly connected component")]
+    InvalidRecursiveFunctionGroup { span: Span },
     #[error("variable `{name}` has the wrong DAE coordinate role")]
     InvalidVariableRole { name: VarName, span: Span },
     #[error("duplicate {kind} definition for identity {index}")]
@@ -240,6 +248,8 @@ impl DaeConstructionError {
             | Self::InvalidFunctionScope { span, .. }
             | Self::InvalidFunctionValueRead { span, .. }
             | Self::InvalidFunctionCoordinate { span, .. }
+            | Self::InvalidFunctionDependency { span, .. }
+            | Self::InvalidRecursiveFunctionGroup { span }
             | Self::InvalidVariableRole { span, .. }
             | Self::DuplicateDefinition { span, .. }
             | Self::DuplicateKey { span, .. }

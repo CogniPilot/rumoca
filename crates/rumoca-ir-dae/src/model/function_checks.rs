@@ -1,4 +1,216 @@
 use super::*;
+use crate::expression::{OperandRange, PackedSubscriptKind};
+
+pub(super) fn expect_complete_function(
+    storage: &Storage,
+    function: FunctionId<'_>,
+    provenance: DaeProvenance,
+) -> Result<(), DaeConstructionError> {
+    let entry = storage
+        .functions
+        .get(function.index() as usize)
+        .ok_or_else(|| unknown("function", function.index(), provenance))?;
+    if entry.definition.is_some() {
+        return Ok(());
+    }
+    Err(DaeConstructionError::IncompleteDefinition {
+        kind: "function",
+        index: function.index(),
+        span: provenance.span(),
+    })
+}
+
+pub(super) fn validate_function_dependencies(
+    storage: &Storage,
+    body: &FunctionBody<'_>,
+    provenance: DaeProvenance,
+) -> Result<(), DaeConstructionError> {
+    let limit = match body.construction {
+        FunctionConstruction::Acyclic => body.function.index(),
+        FunctionConstruction::Recursive { start, end } => {
+            if !(start..end).contains(&body.function.index()) {
+                return Err(DaeConstructionError::InvalidRecursiveFunctionGroup {
+                    span: provenance.span(),
+                });
+            }
+            end
+        }
+    };
+    let function = &storage.functions[body.function.index() as usize];
+    for definition in &function.definitions {
+        let latest_call = storage
+            .expressions
+            .function_latest_calls
+            .get(definition.rhs as usize)
+            .copied()
+            .ok_or_else(|| unknown("expression", definition.rhs, provenance))?;
+        let Some(call) = latest_call else {
+            continue;
+        };
+        if call.target < limit {
+            continue;
+        }
+        let span = storage
+            .expressions
+            .provenance
+            .get(call.witness as usize)
+            .copied()
+            .ok_or_else(|| unknown("expression provenance", call.witness, provenance))?
+            .span();
+        return Err(DaeConstructionError::InvalidFunctionDependency {
+            function: body.function.index(),
+            target: call.target,
+            span,
+        });
+    }
+    Ok(())
+}
+
+pub(super) fn validate_recursive_function_group(
+    storage: &Storage,
+    functions: &[FunctionId<'_>],
+    provenance: DaeProvenance,
+) -> Result<(), DaeConstructionError> {
+    let start = functions[0].index();
+    let end = start + functions.len() as u32;
+    let mut edges = vec![Vec::new(); functions.len()];
+    for (ordinal, function) in functions.iter().enumerate() {
+        if function.index() != start + ordinal as u32 {
+            return Err(DaeConstructionError::InvalidRecursiveFunctionGroup {
+                span: provenance.span(),
+            });
+        }
+        collect_group_dependencies(storage, *function, start, end, &mut edges[ordinal])?;
+    }
+    if reaches_every_member(0, &edges) {
+        let mut reverse = vec![Vec::new(); edges.len()];
+        for (caller, dependencies) in edges.iter().enumerate() {
+            for &dependency in dependencies {
+                reverse[dependency].push(caller);
+            }
+        }
+        if reaches_every_member(0, &reverse) {
+            return Ok(());
+        }
+    }
+    Err(DaeConstructionError::InvalidRecursiveFunctionGroup {
+        span: provenance.span(),
+    })
+}
+
+fn collect_group_dependencies(
+    storage: &Storage,
+    function: FunctionId<'_>,
+    group_start: u32,
+    group_end: u32,
+    dependencies: &mut Vec<usize>,
+) -> Result<(), DaeConstructionError> {
+    let entry = &storage.functions[function.index() as usize];
+    let mut seen = vec![false; storage.expressions.nodes.len()];
+    let mut pending = entry
+        .definitions
+        .iter()
+        .map(|definition| definition.rhs)
+        .collect::<Vec<_>>();
+    while let Some(expression) = pending.pop() {
+        let index = expression as usize;
+        if std::mem::replace(&mut seen[index], true) {
+            continue;
+        }
+        match &storage.expressions.nodes[index] {
+            ExprNode::Call {
+                function, operands, ..
+            } => {
+                record_group_dependency(*function, group_start, group_end, dependencies);
+                push_operands(storage, *operands, &mut pending);
+            }
+            node => push_expression_children(storage, node, &mut pending),
+        }
+    }
+    dependencies.sort_unstable();
+    Ok(())
+}
+
+fn record_group_dependency(
+    function: u32,
+    group_start: u32,
+    group_end: u32,
+    dependencies: &mut Vec<usize>,
+) {
+    if !(group_start..group_end).contains(&function) {
+        return;
+    }
+    let ordinal = (function - group_start) as usize;
+    if !dependencies.contains(&ordinal) {
+        dependencies.push(ordinal);
+    }
+}
+
+fn push_expression_children(storage: &Storage, node: &ExprNode, pending: &mut Vec<u32>) {
+    match node {
+        ExprNode::Unary { operand, .. }
+        | ExprNode::Field { base: operand, .. }
+        | ExprNode::Comprehension { body: operand, .. } => pending.push(*operand),
+        ExprNode::Binary { lhs, rhs, .. } => pending.extend([*lhs, *rhs]),
+        ExprNode::Index { base, subscripts } => {
+            pending.push(*base);
+            push_subscripts(storage, *subscripts, pending);
+        }
+        ExprNode::ArrayUpdate {
+            base,
+            value,
+            subscripts,
+        } => {
+            pending.extend([*base, *value]);
+            push_subscripts(storage, *subscripts, pending);
+        }
+        ExprNode::Conditional { operands }
+        | ExprNode::Array { operands }
+        | ExprNode::Record { operands }
+        | ExprNode::Builtin { operands, .. }
+        | ExprNode::Call { operands, .. } => push_operands(storage, *operands, pending),
+        ExprNode::Literal(_)
+        | ExprNode::Coordinate(_)
+        | ExprNode::Range { .. }
+        | ExprNode::FunctionValue { .. }
+        | ExprNode::FunctionFoldParameter { .. }
+        | ExprNode::FunctionFoldOutput { .. } => {}
+    }
+}
+
+fn push_operands(storage: &Storage, operands: OperandRange, pending: &mut Vec<u32>) {
+    pending.extend(
+        storage.expressions.operands[operands.indices()]
+            .iter()
+            .copied(),
+    );
+}
+
+fn push_subscripts(storage: &Storage, subscripts: OperandRange, pending: &mut Vec<u32>) {
+    for subscript in &storage.expressions.subscripts[subscripts.indices()] {
+        match subscript.kind {
+            PackedSubscriptKind::Index(expression) | PackedSubscriptKind::Slice(expression) => {
+                pending.push(expression);
+            }
+            PackedSubscriptKind::Whole => {}
+        }
+    }
+}
+
+fn reaches_every_member(start: usize, edges: &[Vec<usize>]) -> bool {
+    let mut reached = vec![false; edges.len()];
+    reached[start] = true;
+    let mut pending = vec![start];
+    while let Some(node) = pending.pop() {
+        for &next in &edges[node] {
+            if !reached[next] {
+                reached[next] = true;
+                pending.push(next);
+            }
+        }
+    }
+    reached.into_iter().all(std::convert::identity)
+}
 
 pub(super) fn expect_function_body_expression(
     storage: &Storage,

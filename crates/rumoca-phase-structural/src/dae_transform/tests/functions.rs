@@ -649,6 +649,7 @@ fn declare_sum_function<'dae>(
     real: dae::ValueTypeId<'dae>,
     source: rumoca_core::SourceId,
     text: &str,
+    reservation: dae::FunctionReservation<'_, 'dae>,
 ) -> Result<SumFunctionOwners<'dae>, dae::DaeConstructionError> {
     let declaration = source_provenance(source, text, "function sum3");
     let loop_at = source_provenance(source, text, "for k in 1:3 loop");
@@ -668,9 +669,7 @@ fn declare_sum_function<'dae>(
         )
     })?;
     let binder = model.domains(|domains| domains.binder(domain, 0, binder_at))?;
-    let (function, reservation) = model.functions(|functions| {
-        functions.reserve_recursive(VarName::new("sum3"), [real], [real], declaration)
-    })?;
+    let function = reservation.function();
     let parameter = model.functions(|functions| {
         functions.parameter(
             &reservation,
@@ -747,44 +746,48 @@ fn insert_recursive_fold_function<'dae>(
     let output_use = nested_source_provenance(source, text, "y := acc", "acc", 0);
     let global_call_at = source_provenance(source, text, "sum3(1)");
     let global_argument_at = nested_source_provenance(source, text, "sum3(1)", "1", 0);
-    let mut owners = declare_sum_function(model, real, source, text)?;
-    initialize_sum_function(model, &mut owners, source, text, deep, same_rhs_definitions)?;
-    let mut loop_body = model.functions(|functions| {
-        functions.begin_loop(owners.body, owners.domain, [owners.accumulator], loop_at)
+    let signature = dae::FunctionSignature::new(VarName::new("sum3"), [real], [real], declaration);
+    let (functions, ()) = model.recursive_functions(signature, [], |model, reservations| {
+        let reservation = reservations
+            .into_iter()
+            .next()
+            .expect("one recursive fixture function is reserved");
+        let mut owners = declare_sum_function(model, real, source, text, reservation)?;
+        initialize_sum_function(model, &mut owners, source, text, deep, same_rhs_definitions)?;
+        let mut loop_body = model.functions(|functions| {
+            functions.begin_loop(owners.body, owners.domain, [owners.accumulator], loop_at)
+        })?;
+        let accumulator_value = model.functions(|functions| {
+            functions.read(loop_body.body(), owners.accumulator, accumulator_use)
+        })?;
+        let binder_value =
+            model.expressions(|expressions| expressions.at(binder_use).binder(owners.binder))?;
+        let update = model.expressions(|expressions| {
+            expressions.at(addition_at).binary(
+                dae::BinaryOperator::Add,
+                accumulator_value,
+                binder_value,
+            )
+        })?;
+        model.functions(|functions| {
+            functions.assign_loop(&mut loop_body, owners.accumulator, update, loop_assignment)
+        })?;
+        owners.body = model.functions(|functions| functions.finish_loop(loop_body, loop_at))?;
+        let result = model
+            .functions(|functions| functions.read(&owners.body, owners.accumulator, output_use))?;
+        model.functions(|functions| {
+            functions.assign(&mut owners.body, owners.output, result, output_assignment)
+        })?;
+        model.functions(|functions| functions.define(owners.body, declaration))
     })?;
-    let accumulator_value = model.functions(|functions| {
-        functions.read(loop_body.body(), owners.accumulator, accumulator_use)
-    })?;
-    let binder_value =
-        model.expressions(|expressions| expressions.at(binder_use).binder(owners.binder))?;
-    let update = model.expressions(|expressions| {
-        expressions.at(addition_at).binary(
-            dae::BinaryOperator::Add,
-            accumulator_value,
-            binder_value,
-        )
-    })?;
-    model.functions(|functions| {
-        functions.assign_loop(&mut loop_body, owners.accumulator, update, loop_assignment)
-    })?;
-    owners.body = model.functions(|functions| functions.finish_loop(loop_body, loop_at))?;
-    let result = model
-        .functions(|functions| functions.read(&owners.body, owners.accumulator, output_use))?;
-    model.functions(|functions| {
-        functions.assign(&mut owners.body, owners.output, result, output_assignment)
-    })?;
-    model.functions(|functions| functions.define(owners.body, declaration))?;
+    let function = functions[0];
     let argument = model.expressions(|expressions| {
         expressions
             .at(global_argument_at)
             .literal(dae::DaeLiteral::Real(1.0))
     })?;
     model
-        .expressions(|expressions| {
-            expressions
-                .at(global_call_at)
-                .call(owners.function, 0, [argument])
-        })
+        .expressions(|expressions| expressions.at(global_call_at).call(function, 0, [argument]))
         .map(|_| ())
 }
 
@@ -912,25 +915,27 @@ fn insert_record_function<'dae>(
     let call_at = source_provenance(source, text, "makePair(1)");
     let argument_at = nested_source_provenance(source, text, "makePair(1)", "1", 0);
     let projection_at = source_provenance(source, text, "makePair(1).left");
-    let (function, reservation) = model.functions(|functions| {
-        functions.reserve_recursive(VarName::new("makePair"), [real], [record], declaration)
+    let signature =
+        dae::FunctionSignature::new(VarName::new("makePair"), [real], [record], declaration);
+    let (function, ()) = model.function(signature, |model, reservation| {
+        let parameter = model.functions(|functions| {
+            functions.parameter(&reservation, VarName::new("u"), 0, parameter_at)
+        })?;
+        let output = model.functions(|functions| {
+            functions.output(&reservation, VarName::new("p"), 0, output_at)
+        })?;
+        let mut body = model.functions(|functions| functions.begin(reservation, declaration))?;
+        let fields = model.expressions(|expressions| {
+            Ok([
+                expressions.at(first_use).function_parameter(parameter)?,
+                expressions.at(second_use).function_parameter(parameter)?,
+            ])
+        })?;
+        let value = model
+            .expressions(|expressions| expressions.at(constructor_at).record(record, fields))?;
+        model.functions(|functions| functions.assign(&mut body, output, value, assignment_at))?;
+        model.functions(|functions| functions.define(body, declaration))
     })?;
-    let parameter = model.functions(|functions| {
-        functions.parameter(&reservation, VarName::new("u"), 0, parameter_at)
-    })?;
-    let output = model
-        .functions(|functions| functions.output(&reservation, VarName::new("p"), 0, output_at))?;
-    let mut body = model.functions(|functions| functions.begin(reservation, declaration))?;
-    let fields = model.expressions(|expressions| {
-        Ok([
-            expressions.at(first_use).function_parameter(parameter)?,
-            expressions.at(second_use).function_parameter(parameter)?,
-        ])
-    })?;
-    let value =
-        model.expressions(|expressions| expressions.at(constructor_at).record(record, fields))?;
-    model.functions(|functions| functions.assign(&mut body, output, value, assignment_at))?;
-    model.functions(|functions| functions.define(body, declaration))?;
     let argument = model.expressions(|expressions| {
         expressions
             .at(argument_at)

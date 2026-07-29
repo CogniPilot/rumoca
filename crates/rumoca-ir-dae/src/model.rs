@@ -422,6 +422,30 @@ pub struct DaeConstruction<'dae> {
     marker: PhantomData<&'dae mut &'dae ()>,
 }
 
+/// Complete function header supplied to one scoped construction operation.
+pub struct FunctionSignature<'dae> {
+    name: VarName,
+    parameters: Vec<ValueTypeId<'dae>>,
+    results: Vec<ValueTypeId<'dae>>,
+    declaration: DaeProvenance,
+}
+
+impl<'dae> FunctionSignature<'dae> {
+    pub fn new(
+        name: VarName,
+        parameters: impl IntoIterator<Item = ValueTypeId<'dae>>,
+        results: impl IntoIterator<Item = ValueTypeId<'dae>>,
+        declaration: DaeProvenance,
+    ) -> Self {
+        Self {
+            name,
+            parameters: parameters.into_iter().collect(),
+            results: results.into_iter().collect(),
+            declaration,
+        }
+    }
+}
+
 macro_rules! construction_owner_scopes {
     ($($method:ident => $owner:ident),+ $(,)?) => {
         $(pub fn $method<R>(
@@ -451,6 +475,70 @@ impl<'dae> DaeConstruction<'dae> {
         events => Events,
         clocks => Clocks,
         temporal => Temporal,
+    }
+
+    /// Construct one acyclic function after all of its callees.
+    pub fn function<R>(
+        &mut self,
+        signature: FunctionSignature<'dae>,
+        build: impl for<'function> FnOnce(
+            &mut DaeConstruction<'dae>,
+            FunctionReservation<'function, 'dae>,
+        ) -> Result<R, DaeConstructionError>,
+    ) -> Result<(FunctionId<'dae>, R), DaeConstructionError> {
+        let declaration = signature.declaration;
+        let function = self.functions(|functions| functions.insert_header(signature))?;
+        let result = build(
+            self,
+            FunctionReservation::new(function, FunctionConstruction::Acyclic),
+        )?;
+        expect_complete_function(self.storage, function, declaration)?;
+        Ok((function, result))
+    }
+
+    /// Construct one proven recursive SCC through a single lexical capability.
+    pub fn recursive_functions<R>(
+        &mut self,
+        first: FunctionSignature<'dae>,
+        additional: impl IntoIterator<Item = FunctionSignature<'dae>>,
+        build: impl for<'group> FnOnce(
+            &mut DaeConstruction<'dae>,
+            Vec<FunctionReservation<'group, 'dae>>,
+        ) -> Result<R, DaeConstructionError>,
+    ) -> Result<(Vec<FunctionId<'dae>>, R), DaeConstructionError> {
+        let owner = first.declaration;
+        let signatures = std::iter::once(first).chain(additional).collect::<Vec<_>>();
+        let start = checked_u32(self.storage.functions.len(), "function arena", owner)?;
+        let end = start
+            .checked_add(u32::try_from(signatures.len()).map_err(|_| {
+                DaeConstructionError::CapacityExceeded {
+                    arena: "function arena",
+                    attempted_index: self.storage.functions.len() + signatures.len(),
+                    span: owner.span(),
+                }
+            })?)
+            .ok_or(DaeConstructionError::CapacityExceeded {
+                arena: "function arena",
+                attempted_index: self.storage.functions.len() + signatures.len(),
+                span: owner.span(),
+            })?;
+        let construction = FunctionConstruction::Recursive { start, end };
+        let mut functions = Vec::with_capacity(signatures.len());
+        for signature in signatures {
+            let function = self.functions(|owner| owner.insert_header(signature))?;
+            functions.push(function);
+        }
+        let reservations = functions
+            .iter()
+            .copied()
+            .map(|function| FunctionReservation::new(function, construction))
+            .collect();
+        let result = build(self, reservations)?;
+        for &function in &functions {
+            expect_complete_function(self.storage, function, owner)?;
+        }
+        validate_recursive_function_group(self.storage, &functions, owner)?;
+        Ok((functions, result))
     }
 
     pub fn b1c(
@@ -721,12 +809,28 @@ pub struct Functions<'storage, 'dae> {
     marker: PhantomData<&'dae mut &'dae ()>,
 }
 
-/// Linear authority to define one forward-reserved recursive function.
-pub struct FunctionReservation<'dae> {
-    function: FunctionId<'dae>,
+#[derive(Clone, Copy)]
+enum FunctionConstruction {
+    Acyclic,
+    Recursive { start: u32, end: u32 },
 }
 
-impl<'dae> FunctionReservation<'dae> {
+/// Linear lexical authority to define one function.
+pub struct FunctionReservation<'function, 'dae> {
+    function: FunctionId<'dae>,
+    construction: FunctionConstruction,
+    marker: PhantomData<&'function mut &'function ()>,
+}
+
+impl<'function, 'dae> FunctionReservation<'function, 'dae> {
+    const fn new(function: FunctionId<'dae>, construction: FunctionConstruction) -> Self {
+        Self {
+            function,
+            construction,
+            marker: PhantomData,
+        }
+    }
+
     pub const fn function(&self) -> FunctionId<'dae> {
         self.function
     }
@@ -738,6 +842,7 @@ impl<'dae> FunctionReservation<'dae> {
 /// denotation of every currently assigned output or local.
 pub struct FunctionBody<'dae> {
     function: FunctionId<'dae>,
+    construction: FunctionConstruction,
     domain: Option<DomainId<'dae>>,
     current_values: Vec<Option<u32>>,
     statements: Vec<FunctionStatementWire>,
@@ -771,13 +876,16 @@ impl<'dae> Functions<'_, 'dae> {
         self.storage.function_value_facts(value, provenance)
     }
 
-    pub fn reserve_recursive(
+    fn insert_header(
         &mut self,
-        name: VarName,
-        parameters: impl IntoIterator<Item = ValueTypeId<'dae>>,
-        results: impl IntoIterator<Item = ValueTypeId<'dae>>,
-        declaration: DaeProvenance,
-    ) -> Result<(FunctionId<'dae>, FunctionReservation<'dae>), DaeConstructionError> {
+        signature: FunctionSignature<'dae>,
+    ) -> Result<FunctionId<'dae>, DaeConstructionError> {
+        let FunctionSignature {
+            name,
+            parameters,
+            results,
+            declaration,
+        } = signature;
         check_provenance(self.source_map, declaration)?;
         let parameters = parameters
             .into_iter()
@@ -804,13 +912,12 @@ impl<'dae> Functions<'_, 'dae> {
             definition: None,
         });
         self.storage.unfilled_functions += 1;
-        let function = FunctionId::from_raw(raw);
-        Ok((function, FunctionReservation { function }))
+        Ok(FunctionId::from_raw(raw))
     }
 
     pub fn parameter(
         &mut self,
-        reservation: &FunctionReservation<'dae>,
+        reservation: &FunctionReservation<'_, 'dae>,
         name: VarName,
         ordinal: usize,
         provenance: DaeProvenance,
@@ -843,7 +950,7 @@ impl<'dae> Functions<'_, 'dae> {
 
     pub fn output(
         &mut self,
-        reservation: &FunctionReservation<'dae>,
+        reservation: &FunctionReservation<'_, 'dae>,
         name: VarName,
         ordinal: usize,
         provenance: DaeProvenance,
@@ -889,7 +996,7 @@ impl<'dae> Functions<'_, 'dae> {
 
     pub fn local(
         &mut self,
-        reservation: &FunctionReservation<'dae>,
+        reservation: &FunctionReservation<'_, 'dae>,
         name: VarName,
         value_type: ValueTypeId<'dae>,
         provenance: DaeProvenance,
@@ -928,7 +1035,7 @@ impl<'dae> Functions<'_, 'dae> {
 
     pub fn begin(
         &self,
-        reservation: FunctionReservation<'dae>,
+        reservation: FunctionReservation<'_, 'dae>,
         provenance: DaeProvenance,
     ) -> Result<FunctionBody<'dae>, DaeConstructionError> {
         check_provenance(self.source_map, provenance)?;
@@ -961,6 +1068,7 @@ impl<'dae> Functions<'_, 'dae> {
         }
         Ok(FunctionBody {
             function: reservation.function,
+            construction: reservation.construction,
             domain: None,
             current_values: vec![None; entry.values.len()],
             statements: Vec::new(),
@@ -1278,6 +1386,7 @@ impl<'dae> Functions<'_, 'dae> {
         provenance: DaeProvenance,
     ) -> Result<(), DaeConstructionError> {
         check_provenance(self.source_map, provenance)?;
+        validate_function_dependencies(self.storage, &body, provenance)?;
         let function = body.function;
         let output_values = self.storage.functions[function.index() as usize]
             .output_values

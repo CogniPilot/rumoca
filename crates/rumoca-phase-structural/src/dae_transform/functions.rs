@@ -1,67 +1,38 @@
 use rumoca_ir_dae as dae;
 
-use super::{DirectStateConstraint, ExpressionRebuilder, RebuiltIdentities};
+use super::{DirectStateConstraint, ExpressionRebuilder, RebuiltBaseIdentities, RebuiltIdentities};
 
+#[derive(Clone)]
 pub(super) struct RebuiltFunction<'dae> {
     pub(super) id: dae::FunctionId<'dae>,
     pub(super) parameters: Vec<dae::FunctionParameterId<'dae>>,
     pub(super) values: Vec<dae::FunctionValueId<'dae>>,
 }
 
-pub(super) fn reserve_functions<'target>(
-    source: dae::DaeView<'_>,
-    target: &mut dae::DaeConstruction<'target>,
+fn function_signature<'target>(
+    function: dae::FunctionView<'_>,
     types: &[dae::ValueTypeId<'target>],
-) -> Result<
-    (
-        Vec<RebuiltFunction<'target>>,
-        Vec<Option<dae::FunctionReservation<'target>>>,
-    ),
-    dae::DaeConstructionError,
-> {
-    let mut rebuilt = Vec::with_capacity(source.function_count());
-    let mut reservations = Vec::with_capacity(source.function_count());
-    for index in 0..source.function_count() {
-        let source_id = source
-            .function_id(index)
-            .expect("finalized function ordinal resolves");
-        let function = source
-            .function(source_id)
-            .expect("finalized function identity resolves");
-        let parameters = function
-            .parameter_types()
-            .iter()
-            .map(|value_type| types[value_type.index() as usize])
-            .collect::<Vec<_>>();
-        let results = function
-            .result_types()
-            .iter()
-            .map(|value_type| types[value_type.index() as usize])
-            .collect::<Vec<_>>();
-        let (id, reservation) = target.functions(|functions| {
-            functions.reserve_recursive(
-                function.name().clone(),
-                parameters,
-                results,
-                function.declaration(),
-            )
-        })?;
-        let parameters = declare_parameters(target, function, &reservation)?;
-        let values = declare_values(target, function, types, &reservation)?;
-        rebuilt.push(RebuiltFunction {
-            id,
-            parameters,
-            values,
-        });
-        reservations.push(Some(reservation));
-    }
-    Ok((rebuilt, reservations))
+) -> dae::FunctionSignature<'target> {
+    let parameters = function
+        .parameter_types()
+        .iter()
+        .map(|value_type| types[value_type.index() as usize]);
+    let results = function
+        .result_types()
+        .iter()
+        .map(|value_type| types[value_type.index() as usize]);
+    dae::FunctionSignature::new(
+        function.name().clone(),
+        parameters,
+        results,
+        function.declaration(),
+    )
 }
 
 fn declare_parameters<'target>(
     target: &mut dae::DaeConstruction<'target>,
     function: dae::FunctionView<'_>,
-    reservation: &dae::FunctionReservation<'target>,
+    reservation: &dae::FunctionReservation<'_, 'target>,
 ) -> Result<Vec<dae::FunctionParameterId<'target>>, dae::DaeConstructionError> {
     function
         .parameters()
@@ -83,7 +54,7 @@ fn declare_values<'target>(
     target: &mut dae::DaeConstruction<'target>,
     function: dae::FunctionView<'_>,
     types: &[dae::ValueTypeId<'target>],
-    reservation: &dae::FunctionReservation<'target>,
+    reservation: &dae::FunctionReservation<'_, 'target>,
 ) -> Result<Vec<dae::FunctionValueId<'target>>, dae::DaeConstructionError> {
     let source_values = function.values().collect::<Vec<_>>();
     let mut rebuilt = vec![None; source_values.len()];
@@ -127,12 +98,11 @@ fn declare_values<'target>(
 pub(super) fn rebuild_functions<'source, 'target>(
     source: dae::DaeView<'source>,
     target: &mut dae::DaeConstruction<'target>,
-    identities: RebuiltIdentities<'_, 'target>,
+    identities: RebuiltBaseIdentities<'_, 'target>,
     derivative_definitions: &[Option<u32>],
     candidate: Option<DirectStateConstraint>,
     rebuilt: &mut [Option<dae::ExprId<'target>>],
-    reservations: &mut [Option<dae::FunctionReservation<'target>>],
-) -> Result<(), dae::DaeConstructionError> {
+) -> Result<Vec<RebuiltFunction<'target>>, dae::DaeConstructionError> {
     let (function_use_groups, function_uses) = index_function_uses(source);
     let function_definitions = (0..source.function_count())
         .map(|index| {
@@ -145,10 +115,10 @@ pub(super) fn rebuild_functions<'source, 'target>(
             vec![None; function.definition_count()]
         })
         .collect();
-    FunctionRebuilder {
+    let mut rebuilder = FunctionRebuilder {
         source,
-        target,
         identities,
+        functions: Vec::with_capacity(source.function_count()),
         derivative_definitions,
         candidate,
         rebuilt,
@@ -156,8 +126,9 @@ pub(super) fn rebuild_functions<'source, 'target>(
         function_use_groups,
         function_uses,
         function_definitions,
-    }
-    .rebuild_all(reservations)
+    };
+    rebuilder.rebuild_all(target)?;
+    Ok(rebuilder.functions)
 }
 
 #[derive(Clone, Copy)]
@@ -236,10 +207,115 @@ fn index_function_uses(source: dae::DaeView<'_>) -> (Vec<FunctionUseGroup>, Vec<
     (groups, expressions)
 }
 
+struct FunctionComponent {
+    members: Vec<usize>,
+    recursive: bool,
+}
+
+fn function_components(source: dae::DaeView<'_>) -> Vec<FunctionComponent> {
+    let mut dependencies = vec![Vec::new(); source.function_count()];
+    for index in 0..source.expression_count() {
+        let id = source
+            .expression_id(index)
+            .expect("finalized expression ordinal resolves");
+        let expression = source
+            .expression(id)
+            .expect("finalized expression identity resolves");
+        let Some(owner) = expression.function_scope() else {
+            continue;
+        };
+        let dae::ExpressionOperation::Call { function, .. } = expression.operation() else {
+            continue;
+        };
+        dependencies[owner.index() as usize].push(function.index() as usize);
+    }
+    for callees in &mut dependencies {
+        callees.sort_unstable();
+        callees.dedup();
+    }
+    dependency_first_components(&dependencies)
+}
+
+fn dependency_first_components(dependencies: &[Vec<usize>]) -> Vec<FunctionComponent> {
+    let finish_order = finish_order(dependencies);
+    let transposed = transpose(dependencies);
+    let mut seen = vec![false; dependencies.len()];
+    let mut components = Vec::new();
+    for &start in finish_order.iter().rev() {
+        if seen[start] {
+            continue;
+        }
+        let mut members = collect_component(start, &transposed, &mut seen);
+        members.sort_unstable();
+        let recursive = members.len() > 1
+            || dependencies[members[0]]
+                .iter()
+                .any(|&callee| callee == members[0]);
+        components.push(FunctionComponent { members, recursive });
+    }
+    components.reverse();
+    components
+}
+
+fn finish_order(edges: &[Vec<usize>]) -> Vec<usize> {
+    let mut seen = vec![false; edges.len()];
+    let mut finished = Vec::with_capacity(edges.len());
+    for start in 0..edges.len() {
+        if seen[start] {
+            continue;
+        }
+        seen[start] = true;
+        let mut stack = vec![(start, 0_usize)];
+        while let Some((node, next_edge)) = stack.last_mut() {
+            if let Some(&next) = edges[*node].get(*next_edge) {
+                *next_edge += 1;
+                push_unseen(next, &mut seen, &mut stack);
+            } else {
+                finished.push(*node);
+                stack.pop();
+            }
+        }
+    }
+    finished
+}
+
+fn push_unseen(next: usize, seen: &mut [bool], stack: &mut Vec<(usize, usize)>) {
+    if !seen[next] {
+        seen[next] = true;
+        stack.push((next, 0));
+    }
+}
+
+fn transpose(edges: &[Vec<usize>]) -> Vec<Vec<usize>> {
+    let mut transposed = vec![Vec::new(); edges.len()];
+    for (caller, dependencies) in edges.iter().enumerate() {
+        for &dependency in dependencies {
+            transposed[dependency].push(caller);
+        }
+    }
+    transposed
+}
+
+fn collect_component(start: usize, edges: &[Vec<usize>], seen: &mut [bool]) -> Vec<usize> {
+    seen[start] = true;
+    let mut members = Vec::new();
+    let mut stack = vec![start];
+    while let Some(node) = stack.pop() {
+        members.push(node);
+        for &next in edges[node].iter().rev() {
+            if !seen[next] {
+                seen[next] = true;
+                stack.push(next);
+            }
+        }
+    }
+    members
+}
+
 struct FunctionRebuilder<'source, 'borrow, 'target> {
     source: dae::DaeView<'source>,
-    target: &'borrow mut dae::DaeConstruction<'target>,
-    identities: RebuiltIdentities<'borrow, 'target>,
+    identities: RebuiltBaseIdentities<'borrow, 'target>,
+    functions: Vec<RebuiltFunction<'target>>,
     derivative_definitions: &'borrow [Option<u32>],
     candidate: Option<DirectStateConstraint>,
     rebuilt: &'borrow mut [Option<dae::ExprId<'target>>],
@@ -252,34 +328,118 @@ struct FunctionRebuilder<'source, 'borrow, 'target> {
 impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
     fn rebuild_all(
         &mut self,
-        reservations: &mut [Option<dae::FunctionReservation<'target>>],
+        target: &mut dae::DaeConstruction<'target>,
     ) -> Result<(), dae::DaeConstructionError> {
-        for (index, reservation) in reservations.iter_mut().enumerate() {
-            let source_id = self
-                .source
-                .function_id(index)
-                .expect("finalized function ordinal resolves");
-            let function = self
-                .source
-                .function(source_id)
-                .expect("finalized function identity resolves");
-            let reservation = reservation
-                .take()
-                .expect("each recursive function reservation is consumed once");
-            let body = self
-                .target
-                .functions(|functions| functions.begin(reservation, function.declaration()))?;
-            let body = self.rebuild_statements(
-                &self.identities.functions[index],
-                body,
-                function.statements(),
-            )?;
-            self.seed_results(function, &self.identities.functions[index], &body)?;
-            self.target
-                .functions(|functions| functions.define(body, function.declaration()))?;
+        for component in function_components(self.source) {
+            if component.recursive {
+                self.rebuild_recursive_component(target, &component.members)?;
+            } else {
+                self.rebuild_acyclic_function(target, component.members[0])?;
+            }
         }
         self.expect_all_definitions_mapped()?;
-        self.rebuild_orphaned_scoped_expressions()
+        self.expect_all_scoped_expressions_mapped()
+    }
+
+    fn rebuild_acyclic_function(
+        &mut self,
+        target: &mut dae::DaeConstruction<'target>,
+        index: usize,
+    ) -> Result<(), dae::DaeConstructionError> {
+        self.expect_next_function(index);
+        let function = self.source_function(index);
+        let signature = function_signature(function, self.identities.types);
+        target.function(signature, |target, reservation| {
+            self.declare_function(target, function, &reservation)?;
+            self.rebuild_function(target, index, reservation)
+        })?;
+        Ok(())
+    }
+
+    fn rebuild_recursive_component(
+        &mut self,
+        target: &mut dae::DaeConstruction<'target>,
+        members: &[usize],
+    ) -> Result<(), dae::DaeConstructionError> {
+        let first_index = self.functions.len();
+        let mut signatures = members
+            .iter()
+            .enumerate()
+            .map(|(offset, &index)| {
+                assert_eq!(
+                    first_index + offset,
+                    index,
+                    "checked DAE recursive SCCs occupy contiguous function ordinals"
+                );
+                function_signature(self.source_function(index), self.identities.types)
+            })
+            .collect::<Vec<_>>()
+            .into_iter();
+        let first = signatures
+            .next()
+            .expect("function components are constructor-proven nonempty");
+        target.recursive_functions(first, signatures, |target, reservations| {
+            for (&index, reservation) in members.iter().zip(&reservations) {
+                let function = self.source_function(index);
+                self.declare_function(target, function, reservation)?;
+            }
+            for (&index, reservation) in members.iter().zip(reservations) {
+                self.rebuild_function(target, index, reservation)?;
+            }
+            Ok(())
+        })?;
+        Ok(())
+    }
+
+    fn declare_function(
+        &mut self,
+        target: &mut dae::DaeConstruction<'target>,
+        function: dae::FunctionView<'source>,
+        reservation: &dae::FunctionReservation<'_, 'target>,
+    ) -> Result<(), dae::DaeConstructionError> {
+        let parameters = declare_parameters(target, function, reservation)?;
+        let values = declare_values(target, function, self.identities.types, reservation)?;
+        self.functions.push(RebuiltFunction {
+            id: reservation.function(),
+            parameters,
+            values,
+        });
+        Ok(())
+    }
+
+    fn rebuild_function(
+        &mut self,
+        target: &mut dae::DaeConstruction<'target>,
+        index: usize,
+        reservation: dae::FunctionReservation<'_, 'target>,
+    ) -> Result<(), dae::DaeConstructionError> {
+        let function = self.source_function(index);
+        let rebuilt_function = self.functions[index].clone();
+        let body =
+            target.functions(|functions| functions.begin(reservation, function.declaration()))?;
+        let body =
+            self.rebuild_statements(target, &rebuilt_function, body, function.statements())?;
+        self.seed_results(target, function, &rebuilt_function, &body)?;
+        self.rebuild_orphaned_scoped_expressions(target, index, &body)?;
+        target.functions(|functions| functions.define(body, function.declaration()))
+    }
+
+    fn source_function(&self, index: usize) -> dae::FunctionView<'source> {
+        let id = self
+            .source
+            .function_id(index)
+            .expect("finalized function ordinal resolves");
+        self.source
+            .function(id)
+            .expect("finalized function identity resolves")
+    }
+
+    fn expect_next_function(&self, index: usize) {
+        assert_eq!(
+            self.functions.len(),
+            index,
+            "checked DAE functions are stored in dependency-first SCC order"
+        );
     }
 
     fn expect_all_definitions_mapped(&self) -> Result<(), dae::DaeConstructionError> {
@@ -318,6 +478,7 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
 
     fn rebuild_statements(
         &mut self,
+        target: &mut dae::DaeConstruction<'target>,
         function: &RebuiltFunction<'target>,
         mut body: dae::FunctionBody<'target>,
         statements: dae::FunctionStatements<'source>,
@@ -325,13 +486,16 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
         for statement in statements {
             match statement {
                 dae::FunctionStatementView::Assignment { definition } => {
-                    self.assign_statement(function, &mut body, definition)?
+                    self.assign_statement(target, function, &mut body, definition)?
                 }
                 dae::FunctionStatementView::For {
                     fold,
                     statements,
                     provenance,
-                } => body = self.rebuild_loop(function, body, fold, statements, provenance)?,
+                } => {
+                    body =
+                        self.rebuild_loop(target, function, body, fold, statements, provenance)?
+                }
             }
         }
         Ok(body)
@@ -339,6 +503,7 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
 
     fn assign_statement(
         &mut self,
+        target: &mut dae::DaeConstruction<'target>,
         function: &RebuiltFunction<'target>,
         body: &mut dae::FunctionBody<'target>,
         source_definition: dae::FunctionDefinitionView<'source>,
@@ -346,14 +511,14 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
         let source_target = source_definition.target();
         let source_rhs = source_definition.rhs();
         let provenance = source_definition.provenance();
-        let value = self.rebuild_expression(body, source_rhs)?;
+        let value = self.rebuild_expression(target, body, source_rhs)?;
         let target_value = function.values[source_target.ordinal() as usize];
-        self.target
-            .functions(|functions| functions.assign(body, target_value, value, provenance))?;
-        let target_definition = self.target.functions(|functions| {
+        target.functions(|functions| functions.assign(body, target_value, value, provenance))?;
+        let target_definition = target.functions(|functions| {
             functions.current_definition_id(body, target_value, provenance)
         })?;
         self.materialize_definition_uses(
+            target,
             body,
             source_definition,
             source_target,
@@ -364,6 +529,7 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
 
     fn rebuild_loop(
         &mut self,
+        target: &mut dae::DaeConstruction<'target>,
         function: &RebuiltFunction<'target>,
         body: dae::FunctionBody<'target>,
         source_fold_id: dae::FunctionFoldId<'source>,
@@ -379,32 +545,34 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
             .map(|target| function.values[target.ordinal() as usize])
             .collect::<Vec<_>>();
         self.seed_current(
+            target,
             &body,
             source_fold.targets(),
             &targets,
             source_fold.initial_values(),
         )?;
         let domain = self.identities.domains[source_fold.domain().index() as usize].id;
-        let mut loop_body = self.target.functions(|functions| {
+        let mut loop_body = target.functions(|functions| {
             functions.begin_loop(body, domain, targets.clone(), source_fold.provenance())
         })?;
         self.seed_current(
+            target,
             loop_body.body(),
             source_fold.targets(),
             &targets,
             source_fold.parameter_values(),
         )?;
-        self.rebuild_loop_statements(function, &mut loop_body, statements)?;
+        self.rebuild_loop_statements(target, function, &mut loop_body, statements)?;
         self.seed_current(
+            target,
             loop_body.body(),
             source_fold.targets(),
             &targets,
             source_fold.update_values(),
         )?;
-        let body = self
-            .target
-            .functions(|functions| functions.finish_loop(loop_body, provenance))?;
+        let body = target.functions(|functions| functions.finish_loop(loop_body, provenance))?;
         self.seed_current(
+            target,
             &body,
             source_fold.targets(),
             &targets,
@@ -415,6 +583,7 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
 
     fn rebuild_loop_statements(
         &mut self,
+        target: &mut dae::DaeConstruction<'target>,
         function: &RebuiltFunction<'target>,
         loop_body: &mut dae::FunctionLoop<'target>,
         statements: dae::FunctionStatements<'source>,
@@ -427,14 +596,15 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
             let source_rhs = definition.rhs();
             let provenance = definition.provenance();
             let target_value = function.values[source_target.ordinal() as usize];
-            let value = self.rebuild_expression(loop_body.body(), source_rhs)?;
-            self.target.functions(|functions| {
+            let value = self.rebuild_expression(target, loop_body.body(), source_rhs)?;
+            target.functions(|functions| {
                 functions.assign_loop(loop_body, target_value, value, provenance)
             })?;
-            let target_definition = self.target.functions(|functions| {
+            let target_definition = target.functions(|functions| {
                 functions.current_definition_id(loop_body.body(), target_value, provenance)
             })?;
             self.materialize_definition_uses(
+                target,
                 loop_body.body(),
                 definition,
                 source_target,
@@ -447,13 +617,19 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
 
     fn rebuild_expression(
         &mut self,
+        target: &mut dae::DaeConstruction<'target>,
         body: &dae::FunctionBody<'target>,
         source_id: dae::ExprId<'source>,
     ) -> Result<dae::ExprId<'target>, dae::DaeConstructionError> {
-        self.rebuild_postorder(source_id, Some(body))
+        self.rebuild_postorder(target, source_id, Some(body))
     }
 
-    fn rebuild_orphaned_scoped_expressions(&mut self) -> Result<(), dae::DaeConstructionError> {
+    fn rebuild_orphaned_scoped_expressions(
+        &mut self,
+        target: &mut dae::DaeConstruction<'target>,
+        function: usize,
+        body: &dae::FunctionBody<'target>,
+    ) -> Result<(), dae::DaeConstructionError> {
         for index in 0..self.source.expression_count() {
             let source_id = self
                 .source
@@ -463,10 +639,33 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
                 .source
                 .expression(source_id)
                 .expect("finalized expression identity resolves");
-            if expression.function_scope().is_some()
+            if expression
+                .function_scope()
+                .is_some_and(|owner| owner.index() as usize == function)
                 && self.rebuilt[source_id.index() as usize].is_none()
             {
-                self.rebuild_postorder(source_id, None)?;
+                self.rebuild_postorder(target, source_id, Some(body))?;
+            }
+        }
+        Ok(())
+    }
+
+    fn expect_all_scoped_expressions_mapped(&self) -> Result<(), dae::DaeConstructionError> {
+        for index in 0..self.source.expression_count() {
+            let source_id = self
+                .source
+                .expression_id(index)
+                .expect("finalized expression ordinal resolves");
+            let expression = self
+                .source
+                .expression(source_id)
+                .expect("finalized expression identity resolves");
+            if expression.function_scope().is_some() && self.rebuilt[index].is_none() {
+                return Err(dae::DaeConstructionError::IncompleteDefinition {
+                    kind: "function expression",
+                    index: source_id.index(),
+                    span: expression.provenance().span(),
+                });
             }
         }
         Ok(())
@@ -474,6 +673,7 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
 
     fn rebuild_postorder(
         &mut self,
+        target: &mut dae::DaeConstruction<'target>,
         source_id: dae::ExprId<'source>,
         body: Option<&dae::FunctionBody<'target>>,
     ) -> Result<dae::ExprId<'target>, dae::DaeConstructionError> {
@@ -492,7 +692,7 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
             match expression.operation() {
                 dae::ExpressionOperation::FunctionValue { value, definition } => {
                     self.rebuild_function_value(
-                        current, value, definition, expanded, body, provenance,
+                        target, current, value, definition, expanded, body,
                     )?;
                 }
                 dae::ExpressionOperation::FunctionFoldParameter { .. }
@@ -503,7 +703,7 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
                         span: provenance.span(),
                     });
                 }
-                _operation if expanded => self.rebuild_expanded_expression(current)?,
+                _operation if expanded => self.rebuild_expanded_expression(target, current)?,
                 operation => {
                     self.pending.push((current, true));
                     Self::push_dependencies(&mut self.pending, operation);
@@ -526,26 +726,31 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
 
     fn rebuild_function_value(
         &mut self,
+        target: &mut dae::DaeConstruction<'target>,
         current: dae::ExprId<'source>,
         value: dae::FunctionValueId<'source>,
         source_definition: dae::FunctionDefinitionView<'source>,
         expanded: bool,
         body: Option<&dae::FunctionBody<'target>>,
-        provenance: dae::DaeProvenance,
     ) -> Result<(), dae::DaeConstructionError> {
+        let provenance = self
+            .source
+            .expression(current)
+            .expect("checked function expression resolves")
+            .provenance();
         if !expanded {
             self.pending.push((current, true));
             return Ok(());
         }
-        let target_value = self.identities.functions[value.function().index() as usize].values
-            [value.ordinal() as usize];
+        let target_value =
+            self.functions[value.function().index() as usize].values[value.ordinal() as usize];
         let body = body.ok_or(dae::DaeConstructionError::IncompleteDefinition {
             kind: "function value occurrence",
             index: current.index(),
             span: provenance.span(),
         })?;
         let target_definition = self.mapped_definition(source_definition.id(), provenance)?;
-        let current_definition = self.target.functions(|functions| {
+        let current_definition = target.functions(|functions| {
             functions.current_definition_id(body, target_value, provenance)
         })?;
         if current_definition != target_definition {
@@ -556,25 +761,33 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
                 span: provenance.span(),
             });
         }
-        let rebuilt = self
-            .target
-            .functions(|functions| functions.read(body, target_value, provenance))?;
+        let rebuilt =
+            target.functions(|functions| functions.read(body, target_value, provenance))?;
         self.rebuilt[current.index() as usize] = Some(rebuilt);
         Ok(())
     }
 
     fn rebuild_expanded_expression(
         &mut self,
+        target: &mut dae::DaeConstruction<'target>,
         current: dae::ExprId<'source>,
     ) -> Result<(), dae::DaeConstructionError> {
-        let rebuilt = self.target.expressions(|expressions| {
+        let identities = RebuiltIdentities {
+            base: self.identities,
+            functions: &self.functions,
+        };
+        let source = self.source;
+        let derivative_definitions = self.derivative_definitions;
+        let candidate = self.candidate;
+        let rebuilt_state = &mut *self.rebuilt;
+        let rebuilt = target.expressions(|expressions| {
             ExpressionRebuilder::new(
-                self.source,
+                source,
                 expressions,
-                self.identities,
-                self.derivative_definitions,
-                self.candidate,
-                self.rebuilt,
+                identities,
+                derivative_definitions,
+                candidate,
+                rebuilt_state,
             )
             .rebuild(current)
         })?;
@@ -649,6 +862,7 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
 
     fn seed_results(
         &mut self,
+        target: &mut dae::DaeConstruction<'target>,
         source: dae::FunctionView<'source>,
         function: &RebuiltFunction<'target>,
         body: &dae::FunctionBody<'target>,
@@ -658,14 +872,15 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
             .filter(|value| value.role() == dae::FunctionValueRole::Output);
         for (source_result, source_output) in source.result_values().iter().zip(outputs) {
             let target_output = function.values[source_output.id().ordinal() as usize];
-            let target_definition = self.target.functions(|functions| {
+            let target_definition = target.functions(|functions| {
                 functions.current_definition_id(body, target_output, source_result.provenance())
             })?;
-            let target_rhs = self.target.functions(|functions| {
+            let target_rhs = target.functions(|functions| {
                 functions.current_definition(body, target_output, source_result.provenance())
             })?;
             self.seed(source_result.rhs(), target_rhs, source_result.provenance())?;
             self.materialize_definition_uses(
+                target,
                 body,
                 source_result,
                 source_output.id(),
@@ -678,6 +893,7 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
 
     fn seed_current(
         &mut self,
+        target: &mut dae::DaeConstruction<'target>,
         body: &dae::FunctionBody<'target>,
         source_targets: impl IntoIterator<Item = dae::FunctionValueId<'source>>,
         targets: &[dae::FunctionValueId<'target>],
@@ -693,10 +909,10 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
                     span: source_definition.provenance().span(),
                 });
             }
-            let target_definition = self.target.functions(|functions| {
+            let target_definition = target.functions(|functions| {
                 functions.current_definition_id(body, target_value, source_definition.provenance())
             })?;
-            let target_rhs = self.target.functions(|functions| {
+            let target_rhs = target.functions(|functions| {
                 functions.current_definition(body, target_value, source_definition.provenance())
             })?;
             self.seed(
@@ -705,6 +921,7 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
                 source_definition.provenance(),
             )?;
             self.materialize_definition_uses(
+                target,
                 body,
                 source_definition,
                 source_target,
@@ -717,6 +934,7 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
 
     fn materialize_definition_uses(
         &mut self,
+        target: &mut dae::DaeConstruction<'target>,
         body: &dae::FunctionBody<'target>,
         source_definition: dae::FunctionDefinitionView<'source>,
         source_value: dae::FunctionValueId<'source>,
@@ -765,7 +983,7 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
                 .source
                 .expression(source_use)
                 .expect("indexed function-value occurrence resolves");
-            let current_definition = self.target.functions(|functions| {
+            let current_definition = target.functions(|functions| {
                 functions.current_definition_id(body, target_value, expression.provenance())
             })?;
             if current_definition != target_definition {
@@ -776,7 +994,7 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
                     span: expression.provenance().span(),
                 });
             }
-            let rebuilt = self.target.functions(|functions| {
+            let rebuilt = target.functions(|functions| {
                 functions.read(body, target_value, expression.provenance())
             })?;
             self.rebuilt[raw as usize] = Some(rebuilt);

@@ -10,7 +10,7 @@ use crate::{
     DomainBinderId, DomainId, ExprId, FunctionDefinitionId, FunctionFoldId, FunctionId,
     FunctionParameterId, FunctionValueId, InputId, ParameterId, StateId, ValueTypeId,
 };
-use function_facts::node_function_facts;
+use function_facts::{FunctionCallFact, node_function_facts};
 use type_rules::{
     binary_result, builtin_result, checked_u32, common_value_type, range_extent, type_mismatch,
     validate_static_quotient, validate_subscript,
@@ -461,6 +461,8 @@ pub(crate) struct ExpressionArenaStorage {
     pub(crate) function_illegal_coordinates: Vec<Option<u32>>,
     #[serde(skip)]
     pub(crate) function_read_sets: Vec<FunctionReadSet>,
+    #[serde(skip)]
+    pub(crate) function_latest_calls: Vec<Option<FunctionCallFact>>,
     pub(crate) operands: Vec<u32>,
     pub(crate) subscripts: Vec<PackedSubscript>,
 }
@@ -484,6 +486,7 @@ pub(crate) struct ExpressionInsertionFacts {
     pub(crate) function_scope: Option<u32>,
     pub(crate) function_illegal_coordinate: Option<u32>,
     pub(crate) function_read_set: FunctionReadSet,
+    pub(crate) function_latest_call: Option<FunctionCallFact>,
 }
 
 impl ExpressionArenaStorage {
@@ -503,6 +506,7 @@ impl ExpressionArenaStorage {
         self.function_illegal_coordinates
             .push(facts.function_illegal_coordinate);
         self.function_read_sets.push(facts.function_read_set);
+        self.function_latest_calls.push(facts.function_latest_call);
         debug_assert_eq!(self.nodes.len(), self.provenance.len());
         debug_assert_eq!(self.nodes.len(), self.value_types.len());
         debug_assert_eq!(self.nodes.len(), self.variability.len());
@@ -510,6 +514,7 @@ impl ExpressionArenaStorage {
         debug_assert_eq!(self.nodes.len(), self.function_scopes.len());
         debug_assert_eq!(self.nodes.len(), self.function_illegal_coordinates.len());
         debug_assert_eq!(self.nodes.len(), self.function_read_sets.len());
+        debug_assert_eq!(self.nodes.len(), self.function_latest_calls.len());
         Ok(id)
     }
 
@@ -526,6 +531,7 @@ impl ExpressionArenaStorage {
     pub(crate) fn freeze(mut self) -> FrozenExpressionArenaStorage {
         self.function_illegal_coordinates = Vec::new();
         self.function_read_sets = Vec::new();
+        self.function_latest_calls = Vec::new();
         FrozenExpressionArenaStorage {
             nodes: self.nodes.into_boxed_slice(),
             provenance: self.provenance.into_boxed_slice(),
@@ -1206,6 +1212,7 @@ impl<'dae> ExpressionAt<'_, 'dae> {
                     function_scope: function_facts.scope,
                     function_illegal_coordinate: function_facts.illegal_coordinate,
                     function_read_set: function_facts.read_set,
+                    function_latest_call: function_facts.latest_call,
                 },
                 self.provenance,
             )
