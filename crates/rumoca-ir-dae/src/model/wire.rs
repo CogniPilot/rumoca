@@ -1336,7 +1336,7 @@ fn rebuild_node<'dae>(
 ) -> Result<ExprId<'dae>, DaeConstructionError> {
     match node {
         ExprNodeWire::Literal(DaeLiteralWire::Enumeration(ordinal)) => {
-            at.enumeration_literal(expected_type, *ordinal)
+            at.enumeration_literal(*ordinal)
         }
         ExprNodeWire::Literal(value) => at.literal(value.as_literal()),
         ExprNodeWire::Coordinate(CoordinateWire::Binder { domain, ordinal }) => {

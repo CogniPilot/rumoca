@@ -566,27 +566,16 @@ impl<'dae> ExpressionAt<'_, 'dae> {
         )
     }
 
-    pub fn enumeration_literal(
-        self,
-        value_type: ValueTypeId<'dae>,
-        ordinal: i64,
-    ) -> Result<ExprId<'dae>, DaeConstructionError> {
+    pub fn enumeration_literal(self, ordinal: i64) -> Result<ExprId<'dae>, DaeConstructionError> {
         if ordinal < 1 {
             return Err(DaeConstructionError::InvalidEnumerationOrdinal {
                 ordinal,
                 span: self.provenance.span(),
             });
         }
-        let ty = self
+        let value_type = self
             .storage
-            .value_type_at(value_type.index(), self.provenance)?;
-        if !ty.is_scalar() || ty.scalar_type() != ScalarType::Integer {
-            return Err(DaeConstructionError::TypeMismatch {
-                expected: ScalarType::Integer,
-                found: ty.scalar_type(),
-                span: self.provenance.span(),
-            });
-        }
+            .intern_type(ValueType::scalar(ScalarType::Integer), self.provenance)?;
         self.insert(
             ExprNode::Literal(DaeLiteral::Enumeration(ordinal)),
             value_type,

@@ -13,7 +13,6 @@ pub(super) fn lower_expression<'dae>(
         shapes: functions.shapes.model_values(),
         function_body: None,
         values: None,
-        enumeration_literals: None,
     };
     lower_expression_scoped(
         construction,
@@ -31,8 +30,6 @@ pub(super) struct LoweringSymbols<'symbols, 'dae> {
     pub(super) shapes: &'symbols ShapeEnvironment,
     pub(super) function_body: Option<&'symbols dae::FunctionBody<'dae>>,
     pub(super) values: Option<&'symbols HashMap<VarName, dae::ExprId<'dae>>>,
-    pub(super) enumeration_literals:
-        Option<(&'symbols HashMap<String, i64>, dae::ValueTypeId<'dae>)>,
 }
 
 pub(super) fn lower_model_algorithm_expression<'dae>(
@@ -50,7 +47,6 @@ pub(super) fn lower_model_algorithm_expression<'dae>(
             shapes: functions.shapes.model_values(),
             function_body: None,
             values: Some(values),
-            enumeration_literals: None,
         },
         &HashMap::new(),
         expression,
@@ -94,7 +90,6 @@ pub(super) fn lower_function_expression_scoped<'dae>(
             shapes,
             function_body: Some(body),
             values: None,
-            enumeration_literals: None,
         },
         binders,
         expression,
@@ -315,14 +310,14 @@ fn lower_variable_reference<'dae>(
         );
     }
     if subscripts.is_empty()
-        && let Some((ordinals, value_type)) = symbols.enumeration_literals
-        && let Some(ordinal) = ordinals.get(name.as_str())
+        && let Some(ordinal) = symbols
+            .functions
+            .flat
+            .enum_literal_ordinals
+            .get(name.as_str())
     {
-        return construction.expressions(|expressions| {
-            expressions
-                .at(provenance)
-                .enumeration_literal(value_type, *ordinal)
-        });
+        return construction
+            .expressions(|expressions| expressions.at(provenance).enumeration_literal(*ordinal));
     }
     let coordinate = symbols
         .coordinates

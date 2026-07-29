@@ -133,7 +133,6 @@ struct ReservedVariable<'flat, 'dae> {
     flat: &'flat flat::Variable,
     role: PlannedRole,
     scalar_type: dae::ScalarType,
-    value_type: dae::ValueTypeId<'dae>,
     coordinate: Coordinate<'dae>,
     definition: dae::VariableReservation<'dae>,
 }
@@ -184,18 +183,12 @@ fn build_checked<'dae>(
         reserved_functions,
         &analysis.function_plans,
     )?;
-    let enum_literal_ordinals = flat
-        .enum_literal_ordinals
-        .iter()
-        .map(|(name, ordinal)| (name.clone(), *ordinal))
-        .collect::<HashMap<_, _>>();
     let assigned_discrete_targets = defined_discrete_targets(flat, &analysis.roles)
         .expect("analysis already validates discrete equation ownership");
     define_variables(
         construction,
         &coordinates,
         &functions,
-        &enum_literal_ordinals,
         &assigned_discrete_targets,
         &analysis.derived_parameters,
         reserved,
@@ -453,7 +446,6 @@ fn lower_function_assignment<'dae>(
                     shapes: symbols.shapes,
                     function_body: Some(body),
                     values: None,
-                    enumeration_literals: None,
                 },
                 binders: &binders,
                 target,
@@ -562,20 +554,11 @@ fn lower_optional_attribute_expression<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     coordinates: &HashMap<VarName, Coordinate<'dae>>,
     functions: &FunctionRegistry<'_, 'dae>,
-    enum_literal_ordinals: &HashMap<String, i64>,
-    value_type: dae::ValueTypeId<'dae>,
     expression: Option<&Expression>,
 ) -> Result<Option<dae::ExprId<'dae>>, dae::DaeConstructionError> {
     expression
         .map(|expression| {
-            lower_attribute_expression(
-                construction,
-                coordinates,
-                functions,
-                enum_literal_ordinals,
-                value_type,
-                expression,
-            )
+            lower_attribute_expression(construction, coordinates, functions, expression)
         })
         .transpose()
 }
@@ -584,8 +567,6 @@ fn lower_attribute_expression<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     coordinates: &HashMap<VarName, Coordinate<'dae>>,
     functions: &FunctionRegistry<'_, 'dae>,
-    enum_literal_ordinals: &HashMap<String, i64>,
-    value_type: dae::ValueTypeId<'dae>,
     expression: &Expression,
 ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
     lower_expression_scoped(
@@ -596,7 +577,6 @@ fn lower_attribute_expression<'dae>(
             shapes: functions.shapes.model_values(),
             function_body: None,
             values: None,
-            enumeration_literals: Some((enum_literal_ordinals, value_type)),
         },
         &HashMap::new(),
         expression,
@@ -1176,7 +1156,6 @@ fn lower_when_equations<'dae>(
                         shapes: functions.shapes.model_values(),
                         function_body: None,
                         values: None,
-                        enumeration_literals: None,
                     },
                     sample_lattices,
                     guard,
@@ -1552,7 +1531,6 @@ fn lower_change_expression<'dae>(
         shapes: functions.shapes.model_values(),
         function_body: None,
         values: None,
-        enumeration_literals: None,
     };
     let current = lower_coordinate_reference(
         construction,
@@ -1662,7 +1640,6 @@ fn lower_structured_equations<'dae>(
                         shapes: functions.shapes.model_values(),
                         function_body: None,
                         values: None,
-                        enumeration_literals: None,
                     };
                     lower_structured_body(
                         construction,
@@ -1767,7 +1744,6 @@ fn lower_materialized_family_bodies<'dae>(
                 shapes: functions.shapes.model_values(),
                 function_body: None,
                 values: None,
-                enumeration_literals: None,
             };
             scalar_bodies.push(lower_structured_body(
                 construction,

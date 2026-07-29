@@ -1290,6 +1290,41 @@ fn zeros_is_a_provenance_bearing_checked_array_operation() {
 }
 
 #[test]
+fn enumeration_literals_are_canonical_checked_integers_and_round_trip() {
+    let source = TestSource::new("E.a");
+    let literal_at = source.source("E.a", 0);
+    let dae = Dae::construct(source.map, |dae| {
+        dae.expressions(|expressions| expressions.at(literal_at).enumeration_literal(1))?;
+        Ok(())
+    })
+    .expect("positive enumeration ordinals construct");
+
+    let encoded = serde_json::to_string(&dae).unwrap();
+    let decoded: Dae = serde_json::from_str(&encoded).unwrap();
+    decoded.inspect(|view| {
+        let expression = view.expression(view.expression_id(0).unwrap()).unwrap();
+        assert_eq!(expression.value_type().scalar_type(), ScalarType::Integer);
+        assert!(expression.value_type().dimensions().is_empty());
+        assert_eq!(view.source_text(expression.provenance()), Some("E.a"));
+        assert!(matches!(
+            expression.operation(),
+            ExpressionOperation::Literal(DaeLiteral::Enumeration(1))
+        ));
+    });
+
+    let source = TestSource::new("E.invalid");
+    let invalid_at = source.source("E.invalid", 0);
+    let error = Dae::construct(source.map, |dae| {
+        dae.expressions(|expressions| expressions.at(invalid_at).enumeration_literal(0))?;
+        Ok(())
+    });
+    assert!(matches!(
+        error,
+        Err(DaeConstructionError::InvalidEnumerationOrdinal { ordinal: 0, .. })
+    ));
+}
+
+#[test]
 fn function_for_loop_is_a_compact_checked_transition() {
     let source = TestSource::new(
         "function sum3\n output Real y;\nalgorithm\n y := 0;\n for k in 1:3 loop\n  y := y + k;\n end for;\nend sum3;",

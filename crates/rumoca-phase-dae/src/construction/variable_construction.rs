@@ -77,7 +77,6 @@ pub(super) fn reserve_variables<'flat, 'dae>(
             role,
             scalar_type: effective_variable_scalar_type(&flat.variable_type_names[name], variable)
                 .expect("analysis accepts only primitive value types"),
-            value_type,
             coordinate,
             definition,
         });
@@ -89,7 +88,6 @@ pub(super) fn define_variables<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     coordinates: &HashMap<VarName, Coordinate<'dae>>,
     functions: &FunctionRegistry<'_, 'dae>,
-    enum_literal_ordinals: &HashMap<String, i64>,
     assigned_discrete_targets: &HashSet<VarName>,
     derived_parameters: &HashMap<VarName, DerivedParameterPlan>,
     reserved: Vec<ReservedVariable<'_, 'dae>>,
@@ -97,7 +95,6 @@ pub(super) fn define_variables<'dae>(
     let context = VariableDefinitionContext {
         coordinates,
         functions,
-        enum_literal_ordinals,
         assigned_discrete_targets,
         derived_parameters,
     };
@@ -111,7 +108,6 @@ pub(super) fn define_variables<'dae>(
 struct VariableDefinitionContext<'scope, 'dae> {
     coordinates: &'scope HashMap<VarName, Coordinate<'dae>>,
     functions: &'scope FunctionRegistry<'scope, 'dae>,
-    enum_literal_ordinals: &'scope HashMap<String, i64>,
     assigned_discrete_targets: &'scope HashSet<VarName>,
     derived_parameters: &'scope HashMap<VarName, DerivedParameterPlan>,
 }
@@ -128,8 +124,6 @@ fn define_variable<'dae>(
             construction,
             context.coordinates,
             context.functions,
-            context.enum_literal_ordinals,
-            reserved.value_type,
             start,
         )?),
         None if matches!(
@@ -153,24 +147,18 @@ fn define_variable<'dae>(
         construction,
         context.coordinates,
         context.functions,
-        context.enum_literal_ordinals,
-        reserved.value_type,
         reserved.flat.min.as_ref(),
     )?;
     let max = lower_optional_attribute_expression(
         construction,
         context.coordinates,
         context.functions,
-        context.enum_literal_ordinals,
-        reserved.value_type,
         reserved.flat.max.as_ref(),
     )?;
     let nominal = lower_optional_attribute_expression(
         construction,
         context.coordinates,
         context.functions,
-        context.enum_literal_ordinals,
-        reserved.value_type,
         reserved.flat.nominal.as_ref(),
     )?;
     let derived_parameter = context.derived_parameters.contains_key(&reserved.flat.name);
@@ -233,8 +221,6 @@ fn lower_variable_binding<'dae>(
         construction,
         context.coordinates,
         context.functions,
-        context.enum_literal_ordinals,
-        reserved.value_type,
         reserved.flat.binding.as_ref(),
     )
 }
@@ -258,7 +244,6 @@ fn lower_derived_parameter_binding<'dae>(
         shapes: functions.shapes.model_values(),
         function_body: None,
         values: None,
-        enumeration_literals: None,
     };
     let body = lower_expression_scoped(construction, symbols, &binders, &plan.body, None)?;
     let generated =

@@ -50,7 +50,6 @@ pub(super) fn lower_total_array_model_algorithm<'dae>(
             shapes: functions.shapes.model_values(),
             function_body: None,
             values: None,
-            enumeration_literals: None,
         },
         &binders,
         value,
@@ -102,7 +101,6 @@ pub(super) fn lower_separated_array_sum_model_algorithm<'dae>(
         shapes: functions.shapes.model_values(),
         function_body: None,
         values: None,
-        enumeration_literals: None,
     };
     let element = lower_expression_scoped(construction, symbols, &binders, element, None)?;
     let array = construction
