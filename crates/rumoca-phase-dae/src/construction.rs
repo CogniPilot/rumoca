@@ -28,6 +28,7 @@ mod structured_body;
 mod variable_construction;
 use algorithm::{
     AlgorithmStatementContext, lower_algorithm_assignment, lower_algorithm_function_call,
+    own_clocked_algorithm_targets,
 };
 use analysis::{
     Analysis, ComprehensionKey, ComprehensionPlan, DerivedParameterPlan, EquationPartition,
@@ -891,6 +892,9 @@ fn lower_algorithm_if<'dae>(
                 owner_clock,
             },
         };
+        if let Some(clock) = guard.owner_clock {
+            own_clocked_algorithm_targets(construction, coordinates, clock, &block.stmts)?;
+        }
         lower_algorithm_statements(
             construction,
             coordinates,
@@ -952,6 +956,7 @@ fn lower_algorithm_when<'dae>(
     span: Span,
 ) -> Result<(), dae::DaeConstructionError> {
     let mut previous = None;
+    let mut guarded_blocks = Vec::with_capacity(blocks.len());
     for block in blocks {
         let (condition, owner_clock) = lower_condition(
             construction,
@@ -985,6 +990,18 @@ fn lower_algorithm_when<'dae>(
                 owner_clock,
             },
         };
+        guarded_blocks.push((block, guard));
+        previous = Some(match previous {
+            Some(previous) => combine_conditions(construction, previous, condition, true, span)?,
+            None => condition,
+        });
+    }
+    for (block, guard) in &guarded_blocks {
+        if let Some(clock) = guard.owner_clock {
+            own_clocked_algorithm_targets(construction, coordinates, clock, &block.stmts)?;
+        }
+    }
+    for (block, guard) in guarded_blocks {
         lower_algorithm_statements(
             construction,
             coordinates,
@@ -994,10 +1011,6 @@ fn lower_algorithm_when<'dae>(
             &block.stmts,
             span,
         )?;
-        previous = Some(match previous {
-            Some(previous) => combine_conditions(construction, previous, condition, true, span)?,
-            None => condition,
-        });
     }
     Ok(())
 }

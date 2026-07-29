@@ -325,11 +325,11 @@ fn lower_temporal_identity<'dae>(
     provenance: dae::DaeProvenance,
 ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
     if let Some((name, subscripts)) = derivative_reference(value) {
-        return lower_coordinate_reference(
+        return lower_variable_reference(
             construction,
             symbols,
             binders,
-            symbols.coordinates[name.var_name()].current(),
+            name,
             subscripts,
             provenance,
         );

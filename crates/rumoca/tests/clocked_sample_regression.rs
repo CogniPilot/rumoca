@@ -270,6 +270,49 @@ end PreviousCounter;
     assert_eq!(trace_values(&result, "x"), &[1.0, 2.0, 3.0]);
 }
 
+#[test]
+fn sampled_algorithm_target_is_owned_before_its_guarded_value_is_constructed() {
+    let source = r#"
+model SampledAlgorithmCounter
+  discrete Real x(start = 0);
+algorithm
+  when sample(0.0, 0.1) then
+    x := pre(x) + 1;
+  end when;
+end SampledAlgorithmCounter;
+"#;
+    let compiled = rumoca::Compiler::new()
+        .model("SampledAlgorithmCounter")
+        .compile_str(source, "sampled_algorithm_counter.mo")
+        .expect("sampled algorithm history should be valid by construction");
+    compiled.dae.inspect(|view| {
+        assert_eq!(view.clock_count(), 1);
+        assert_eq!(view.clock_ownership_count(), 1);
+        let ownership = view
+            .clock_ownership(
+                view.clock_ownership_id(0)
+                    .expect("one branded clock-ownership identity"),
+            )
+            .expect("clock-ownership identity resolves");
+        assert_eq!(
+            view.source_text(ownership.provenance()),
+            Some("x"),
+            "ownership provenance must resolve to the algorithm target occurrence"
+        );
+    });
+
+    let result = simulate_dae(
+        &compiled.dae,
+        &SimOptions {
+            t_end: 0.2,
+            dt: Some(0.1),
+            ..SimOptions::default()
+        },
+    )
+    .expect("scheduled algorithm history should be runtime computable");
+    assert_eq!(trace_values(&result, "x"), &[1.0, 2.0, 3.0]);
+}
+
 fn assert_canonical_clock_ownership(model: &rumoca_ir_dae::Dae) {
     model.inspect(|view| {
         assert_eq!(
