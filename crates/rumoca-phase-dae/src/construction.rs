@@ -53,7 +53,9 @@ use function_body::{
     function_value_coordinate, lower_function_conditional, lower_function_fold,
     lower_guarded_function_return, lower_integer_reduction, lower_total_function_array_definition,
 };
-use function_construction::{FunctionRegistry, define_functions, reserve_functions};
+use function_construction::{
+    FunctionRegistry, define_functions, function_value_type, reserve_functions,
+};
 use function_record_assembly::lower_function_record_assembly;
 use function_shapes::{
     FunctionShapeAnalysis, FunctionSpecializationKey, ShapeEnvironment, ValueShape,

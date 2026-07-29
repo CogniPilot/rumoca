@@ -102,7 +102,7 @@ pub(super) fn reserve_functions<'flat, 'dae>(
     Ok((functions, reserved))
 }
 
-fn function_value_type<'dae>(
+pub(super) fn function_value_type<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     flat: &flat::Model,
     value: &rumoca_core::FunctionParam,

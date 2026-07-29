@@ -75,8 +75,10 @@ fn validate_when_equations(
             flat::WhenEquation::Conditional {
                 branches,
                 else_branch,
+                span,
                 ..
             } => {
+                validate_non_real_branch_targets(branches, else_branch, roles, *span)?;
                 for (condition, equations) in branches {
                     validate_condition_expression(
                         condition,
@@ -115,6 +117,63 @@ fn validate_when_equations(
         }
     }
     Ok(())
+}
+
+fn validate_non_real_branch_targets(
+    branches: &[(Expression, Vec<flat::WhenEquation>)],
+    else_branch: &[flat::WhenEquation],
+    roles: &HashMap<VarName, PlannedRole>,
+    span: Span,
+) -> Result<(), ToDaeError> {
+    let expected = branches
+        .first()
+        .map(|(_, equations)| non_real_targets(equations, roles))
+        .unwrap_or_default();
+    if branches
+        .iter()
+        .skip(1)
+        .map(|(_, equations)| non_real_targets(equations, roles))
+        .chain(std::iter::once(non_real_targets(else_branch, roles)))
+        .all(|targets| targets == expected)
+    {
+        return Ok(());
+    }
+    Err(ToDaeError::discrete_solved_form_violation(
+        "all branches of a non-Real if-equation must assign the same resolved coordinates",
+        span,
+    ))
+}
+
+fn non_real_targets(
+    equations: &[flat::WhenEquation],
+    roles: &HashMap<VarName, PlannedRole>,
+) -> HashSet<VarName> {
+    let mut targets = HashSet::new();
+    for equation in equations {
+        match equation {
+            flat::WhenEquation::Assign { target, .. }
+                if matches!(roles.get(target), Some(PlannedRole::DiscreteValue)) =>
+            {
+                targets.insert(target.clone());
+            }
+            flat::WhenEquation::Conditional {
+                branches,
+                else_branch,
+                ..
+            } => {
+                for (_, equations) in branches {
+                    targets.extend(non_real_targets(equations, roles));
+                }
+                targets.extend(non_real_targets(else_branch, roles));
+            }
+            flat::WhenEquation::Assign { .. }
+            | flat::WhenEquation::Reinit { .. }
+            | flat::WhenEquation::Assert { .. }
+            | flat::WhenEquation::Terminate { .. }
+            | flat::WhenEquation::FunctionCallOutputs { .. } => {}
+        }
+    }
+    targets
 }
 
 fn validate_assignment(

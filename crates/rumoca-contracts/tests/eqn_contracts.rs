@@ -1146,6 +1146,31 @@ fn eqn_012_branch_variable_sets_differ_rejected() {
     );
 }
 
+#[test]
+fn eqn_012_branch_variable_sets_match_accepted() {
+    expect_success(
+        r#"
+        model M
+            parameter Boolean sel = true;
+            Integer i(start = 0);
+            Integer j(start = 0);
+            Boolean c = time > 1;
+        equation
+            when c then
+                if sel then
+                    i = 1;
+                    j = 2;
+                else
+                    i = 3;
+                    j = 4;
+                end if;
+            end when;
+        end M;
+    "#,
+        "M",
+    );
+}
+
 // =============================================================================
 // EQN-034: Discrete-time variables keep their values until explicitly changed
 // =============================================================================

@@ -609,6 +609,16 @@ fn lower_function_call<'dae>(
         };
         return lower_expression_scoped(construction, symbols, binders, value, None);
     }
+    if is_constructor {
+        return lower_record_constructor(
+            construction,
+            symbols,
+            binders,
+            name,
+            arguments,
+            provenance,
+        );
+    }
     let (key, function) =
         symbols
             .functions
@@ -636,6 +646,47 @@ fn lower_function_call<'dae>(
         })
         .collect::<Result<Vec<_>, _>>()?;
     construction.expressions(|expressions| expressions.at(provenance).call(function, 0, arguments))
+}
+
+fn lower_record_constructor<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    symbols: LoweringSymbols<'_, 'dae>,
+    binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
+    name: &rumoca_core::Reference,
+    arguments: &[Expression],
+    provenance: dae::DaeProvenance,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    let constructor = &symbols.functions.flat.functions[name.var_name()];
+    let shapes = symbols
+        .functions
+        .shapes
+        .constructor_field_shapes(name, arguments, symbols.shapes)
+        .expect("analysis certifies every accepted record-constructor occurrence");
+    let mut active_records = HashSet::new();
+    let mut fields = Vec::with_capacity(arguments.len());
+    let mut values = Vec::with_capacity(arguments.len());
+    for ((parameter, shape), argument) in constructor.inputs.iter().zip(shapes).zip(arguments) {
+        fields.push((
+            VarName::new(&parameter.name),
+            function_value_type(
+                construction,
+                symbols.functions.flat,
+                parameter,
+                shape,
+                &mut active_records,
+            )?,
+        ));
+        values.push(lower_expression_scoped(
+            construction,
+            symbols,
+            binders,
+            argument,
+            None,
+        )?);
+    }
+    let value_type =
+        construction.types(|types| types.record(constructor.name.clone(), fields, provenance))?;
+    construction.expressions(|expressions| expressions.at(provenance).record(value_type, values))
 }
 
 fn lower_empty_function_argument<'dae>(
