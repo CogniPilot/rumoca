@@ -145,6 +145,40 @@ impl Clone for FunctionValueId<'_> {
     }
 }
 
+/// Owner-local identity of one function SSA definition.
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FunctionDefinitionId<'dae> {
+    function: u32,
+    ordinal: u32,
+    brand: Brand<'dae>,
+}
+
+impl<'dae> FunctionDefinitionId<'dae> {
+    pub(crate) const fn from_raw(function: u32, ordinal: u32) -> Self {
+        Self {
+            function,
+            ordinal,
+            brand: PhantomData,
+        }
+    }
+
+    pub const fn function(self) -> FunctionId<'dae> {
+        FunctionId::from_raw(self.function)
+    }
+
+    pub const fn ordinal(self) -> u32 {
+        self.ordinal
+    }
+}
+
+impl Copy for FunctionDefinitionId<'_> {}
+
+impl Clone for FunctionDefinitionId<'_> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
 /// Owner-local identity of one function loop transition.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FunctionFoldId<'dae> {

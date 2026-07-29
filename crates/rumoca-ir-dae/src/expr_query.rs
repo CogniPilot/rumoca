@@ -147,7 +147,7 @@ fn push_children<'dae>(
         } => pending.extend(operands.iter()),
         ExpressionOperation::Comprehension { body, .. } => pending.push(body),
         ExpressionOperation::Field { base, .. } => pending.push(base),
-        ExpressionOperation::FunctionValue { definition, .. } => pending.push(definition),
+        ExpressionOperation::FunctionValue { definition, .. } => pending.push(definition.rhs()),
         ExpressionOperation::FunctionFoldOutput { fold, .. } => {
             let fold = dae
                 .function_fold(fold)

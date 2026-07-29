@@ -1,11 +1,14 @@
+mod function_reads;
+
 use rumoca_core::Span;
 use serde::{Deserialize, Serialize};
 
-use crate::model::{Storage, invalid_arity};
+use crate::model::{FunctionReadSet, Storage, invalid_arity};
+use function_reads::node_function_read_set;
 use crate::{
     AlgebraicId, DaeConstructionError, DaeProvenance, DiscreteRealId, DiscreteValueId,
-    DomainBinderId, DomainId, ExprId, FunctionFoldId, FunctionId, FunctionParameterId,
-    FunctionValueId, InputId, ParameterId, StateId, ValueTypeId,
+    DomainBinderId, DomainId, ExprId, FunctionDefinitionId, FunctionFoldId, FunctionId,
+    FunctionParameterId, FunctionValueId, InputId, ParameterId, StateId, ValueTypeId,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -394,17 +397,19 @@ pub(crate) enum ExprNode {
     FunctionValue {
         function: u32,
         value: u32,
-        definition: u32,
+        definition_ordinal: u32,
     },
     FunctionFoldParameter {
         function: u32,
         fold: u32,
         carried: u32,
+        definition_ordinal: u32,
     },
     FunctionFoldOutput {
         function: u32,
         fold: u32,
         carried: u32,
+        definition_ordinal: u32,
     },
 }
 
@@ -433,6 +438,7 @@ pub(crate) struct ExpressionArenaStorage {
     pub(crate) binder_domains: Vec<Option<u32>>,
     pub(crate) function_scopes: Vec<Option<u32>>,
     pub(crate) function_illegal_coordinates: Vec<Option<u32>>,
+    pub(crate) function_read_sets: Vec<FunctionReadSet>,
     pub(crate) operands: Vec<u32>,
     pub(crate) subscripts: Vec<PackedSubscript>,
 }
@@ -456,6 +462,7 @@ pub(crate) struct ExpressionInsertionFacts {
     pub(crate) binder_domain: Option<u32>,
     pub(crate) function_scope: Option<u32>,
     pub(crate) function_illegal_coordinate: Option<u32>,
+    pub(crate) function_read_set: FunctionReadSet,
 }
 
 impl ExpressionArenaStorage {
@@ -474,12 +481,14 @@ impl ExpressionArenaStorage {
         self.function_scopes.push(facts.function_scope);
         self.function_illegal_coordinates
             .push(facts.function_illegal_coordinate);
+        self.function_read_sets.push(facts.function_read_set);
         debug_assert_eq!(self.nodes.len(), self.provenance.len());
         debug_assert_eq!(self.nodes.len(), self.value_types.len());
         debug_assert_eq!(self.nodes.len(), self.variability.len());
         debug_assert_eq!(self.nodes.len(), self.binder_domains.len());
         debug_assert_eq!(self.nodes.len(), self.function_scopes.len());
         debug_assert_eq!(self.nodes.len(), self.function_illegal_coordinates.len());
+        debug_assert_eq!(self.nodes.len(), self.function_read_sets.len());
         Ok(id)
     }
 
@@ -493,7 +502,9 @@ impl ExpressionArenaStorage {
         OperandRange::new(start, self.operands.len() - start, at)
     }
 
-    pub(crate) fn freeze(self) -> FrozenExpressionArenaStorage {
+    pub(crate) fn freeze(mut self) -> FrozenExpressionArenaStorage {
+        self.function_illegal_coordinates = Vec::new();
+        self.function_read_sets = Vec::new();
         FrozenExpressionArenaStorage {
             nodes: self.nodes.into_boxed_slice(),
             provenance: self.provenance.into_boxed_slice(),
@@ -641,23 +652,22 @@ impl<'dae> ExpressionAt<'_, 'dae> {
     fn function_value_use(
         self,
         value: FunctionValueId<'dae>,
-        definition: ExprId<'dae>,
+        definition: FunctionDefinitionId<'dae>,
+        rhs: ExprId<'dae>,
     ) -> Result<ExprId<'dae>, DaeConstructionError> {
         let ty = self.storage.function_value_facts(value, self.provenance)?;
         self.storage.expect_value_type_compatible(
             ty.index(),
-            definition_type(self.storage, definition, self.provenance)?,
+            definition_type(self.storage, rhs, self.provenance)?,
             self.provenance,
         )?;
-        let variability = self.storage.expr_variability(definition, self.provenance)?;
-        let binder_domain = self
-            .storage
-            .expr_binder_domain(definition, self.provenance)?;
+        let variability = self.storage.expr_variability(rhs, self.provenance)?;
+        let binder_domain = self.storage.expr_binder_domain(rhs, self.provenance)?;
         self.insert(
             ExprNode::FunctionValue {
                 function: value.function().index(),
                 value: value.ordinal(),
-                definition: definition.index(),
+                definition_ordinal: definition.ordinal(),
             },
             ty,
             variability,
@@ -1161,6 +1171,8 @@ impl<'dae> ExpressionAt<'_, 'dae> {
         let function_scope = node_function_scope(self.storage, &node, self.provenance)?;
         let function_illegal_coordinate =
             node_function_illegal_coordinate(self.storage, &node, self.provenance)?;
+        let function_read_set =
+            node_function_read_set(self.storage, &node, self.provenance)?;
         self.storage
             .expressions
             .push(
@@ -1171,6 +1183,7 @@ impl<'dae> ExpressionAt<'_, 'dae> {
                     binder_domain,
                     function_scope,
                     function_illegal_coordinate,
+                    function_read_set,
                 },
                 self.provenance,
             )
@@ -1443,14 +1456,17 @@ pub(crate) fn insert_function_value_use<'dae>(
     source_map: &rumoca_core::SourceMap,
     storage: &mut Storage,
     value: FunctionValueId<'dae>,
-    definition: ExprId<'dae>,
+    definition: FunctionDefinitionId<'dae>,
     domain: Option<DomainId<'dae>>,
     provenance: DaeProvenance,
 ) -> Result<ExprId<'dae>, DaeConstructionError> {
+    let rhs = crate::model::function_definition_rhs(storage, value, definition, provenance)?;
     match domain {
-        Some(domain) => storage.expect_domain_expression(definition, domain, provenance)?,
+        Some(domain) => {
+            storage.expect_domain_expression(rhs, domain, provenance)?;
+        }
         None => {
-            if let Some(found_domain) = storage.expr_binder_domain(definition, provenance)? {
+            if let Some(found_domain) = storage.expr_binder_domain(rhs, provenance)? {
                 return Err(DaeConstructionError::InvalidBinderScope {
                     expected_domain: None,
                     found_domain,
@@ -1459,7 +1475,7 @@ pub(crate) fn insert_function_value_use<'dae>(
             }
         }
     }
-    match storage.expr_function_scope(definition, provenance)? {
+    match storage.expr_function_scope(rhs, provenance)? {
         None => {}
         Some(function) if function == value.function().index() => {}
         Some(function) => {
@@ -1476,7 +1492,7 @@ pub(crate) fn insert_function_value_use<'dae>(
         provenance,
         marker: std::marker::PhantomData,
     }
-    .function_value_use(value, definition)
+    .function_value_use(value, definition, rhs)
 }
 
 pub(crate) fn insert_function_fold_parameter<'dae>(
@@ -1484,8 +1500,10 @@ pub(crate) fn insert_function_fold_parameter<'dae>(
     storage: &mut Storage,
     fold: FunctionFoldId<'dae>,
     carried: usize,
+    definition: FunctionDefinitionId<'dae>,
     provenance: DaeProvenance,
 ) -> Result<ExprId<'dae>, DaeConstructionError> {
+    expect_pending_fold_definition(storage, fold, definition, provenance)?;
     let (value_type, domain) = function_fold_value_facts(storage, fold, carried, provenance)?;
     ExpressionAt {
         source_map,
@@ -1498,6 +1516,7 @@ pub(crate) fn insert_function_fold_parameter<'dae>(
             function: fold.function().index(),
             fold: fold.ordinal(),
             carried: checked_u32(carried, "function fold parameter", provenance)?,
+            definition_ordinal: definition.ordinal(),
         },
         ValueTypeId::from_raw(value_type),
         ExpressionVariability::Parameter,
@@ -1510,12 +1529,32 @@ pub(crate) fn insert_function_fold_output<'dae>(
     storage: &mut Storage,
     fold: FunctionFoldId<'dae>,
     carried: usize,
+    definition: FunctionDefinitionId<'dae>,
     provenance: DaeProvenance,
 ) -> Result<ExprId<'dae>, DaeConstructionError> {
+    expect_pending_fold_definition(storage, fold, definition, provenance)?;
     let (value_type, _) = function_fold_value_facts(storage, fold, carried, provenance)?;
     let entry = function_fold_entry(storage, fold, provenance)?;
-    let initial = ExprId::from_raw(entry.initial_values[carried]);
-    let update = ExprId::from_raw(entry.update_values[carried]);
+    let initial = FunctionDefinitionId::from_raw(
+        fold.function().index(),
+        entry.initial_definitions[carried],
+    );
+    let update = FunctionDefinitionId::from_raw(
+        fold.function().index(),
+        entry.update_definitions[carried],
+    );
+    let initial = crate::model::function_definition_rhs(
+        storage,
+        FunctionValueId::from_raw(fold.function().index(), entry.targets[carried]),
+        initial,
+        provenance,
+    )?;
+    let update = crate::model::function_definition_rhs(
+        storage,
+        FunctionValueId::from_raw(fold.function().index(), entry.targets[carried]),
+        update,
+        provenance,
+    )?;
     let variability = storage
         .expr_variability(initial, provenance)?
         .max(storage.expr_variability(update, provenance)?);
@@ -1530,11 +1569,42 @@ pub(crate) fn insert_function_fold_output<'dae>(
             function: fold.function().index(),
             fold: fold.ordinal(),
             carried: checked_u32(carried, "function fold output", provenance)?,
+            definition_ordinal: definition.ordinal(),
         },
         ValueTypeId::from_raw(value_type),
         variability,
         None,
     )
+}
+
+fn expect_pending_fold_definition(
+    storage: &Storage,
+    fold: FunctionFoldId<'_>,
+    definition: FunctionDefinitionId<'_>,
+    provenance: DaeProvenance,
+) -> Result<(), DaeConstructionError> {
+    if definition.function() != fold.function() {
+        return Err(DaeConstructionError::InvalidFunctionScope {
+            expected_function: Some(fold.function().index()),
+            found_function: definition.function().index(),
+            span: provenance.span(),
+        });
+    }
+    let expected = storage
+        .functions
+        .get(fold.function().index() as usize)
+        .ok_or_else(|| crate::model::unknown("function", fold.function().index(), provenance))?
+        .definitions
+        .len();
+    if definition.ordinal() as usize == expected {
+        return Ok(());
+    }
+    Err(DaeConstructionError::InvalidFunctionValueRead {
+        value: 0,
+        expected_definition: u32::try_from(expected).ok(),
+        found_definition: definition.ordinal(),
+        span: provenance.span(),
+    })
 }
 
 fn function_fold_value_facts(

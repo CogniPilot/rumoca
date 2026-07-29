@@ -365,6 +365,7 @@ impl<'dae> Temporal<'_, 'dae> {
                 binder_domain: None,
                 function_scope: None,
                 function_illegal_coordinate: Some(expression_raw),
+                function_read_set: crate::model::FunctionReadSet::EMPTY,
             },
             coordinate_provenance,
         )?;

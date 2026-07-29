@@ -67,20 +67,20 @@ pub use expression::{
 pub use ids::{
     AlgebraicId, ClockId, ClockOwnershipId, ConditionId, ContinuousEquationId, ContinuousFamilyId,
     DelayId, DiscreteAssignmentId, DiscreteRealEquationId, DiscreteRealId, DiscreteValueId,
-    DomainBinderId, DomainId, EventActionId, ExprId, FunctionFoldId, FunctionId,
-    FunctionParameterId, FunctionValueId, InitializationEquationId, InitializationFamilyId,
-    InputId, ParameterId, PreviousId, RelationId, RootId, StateId, TerminalId, TimeEventId,
-    ValueTypeId, VariableId,
+    DomainBinderId, DomainId, EventActionId, ExprId, FunctionDefinitionId, FunctionFoldId,
+    FunctionId, FunctionParameterId, FunctionValueId, InitializationEquationId,
+    InitializationFamilyId, InputId, ParameterId, PreviousId, RelationId, RootId, StateId,
+    TerminalId, TimeEventId, ValueTypeId, VariableId,
 };
 pub use model::{
     ContinuousOwnerView, CoordinateView, DAE_SCHEMA_VERSION, Dae, DaeConstruction, DaeView,
     DomainView, Domains, ExpressionKind, ExpressionOperands, ExpressionOperation, ExpressionView,
-    FunctionBody, FunctionFoldView, FunctionLoop, FunctionParameterView, FunctionReservation,
-    FunctionStatementView, FunctionStatements, FunctionValueRole, FunctionValueView, FunctionView,
-    Functions, InitializationOwnerView, InputVariability, ResidualEquationView,
-    StructuredFamilyView, SubscriptView, SubscriptsView, ValueTypeOperands, ValueTypes,
-    VariableAttributes, VariableCausality, VariableIdentity, VariableOrigin, VariableReservation,
-    VariableRole, VariableView, Variables,
+    FunctionBody, FunctionDefinitionValues, FunctionDefinitionView, FunctionFoldView, FunctionLoop,
+    FunctionParameterView, FunctionReservation, FunctionStatementView, FunctionStatements,
+    FunctionValueRole, FunctionValueView, FunctionView, Functions, InitializationOwnerView,
+    InputVariability, ResidualEquationView, StructuredFamilyView, SubscriptView, SubscriptsView,
+    ValueTypeOperands, ValueTypes, VariableAttributes, VariableCausality, VariableIdentity,
+    VariableOrigin, VariableReservation, VariableRole, VariableView, Variables,
 };
 pub use provenance::{DaeGeneration, DaeProvenance, DaeProvenanceOrigin};
 pub use temporal::{

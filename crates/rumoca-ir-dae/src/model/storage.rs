@@ -1,7 +1,8 @@
 use super::*;
 
 impl Storage {
-    pub(super) fn freeze(self) -> FrozenStorage {
+    pub(super) fn freeze(mut self) -> FrozenStorage {
+        self.function_read_sets = FunctionReadSets::default();
         FrozenStorage {
             value_types: self.value_types.into_boxed_slice(),
             flat_type_ids: self.flat_type_ids.into_boxed_slice(),
