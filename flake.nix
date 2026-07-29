@@ -291,7 +291,11 @@
             ++ [
               ciPython
               pkgs.binaryen
+              pkgs.cargo-expand
               pkgs.cargo-llvm-cov
+              pkgs.cargo-nextest
+              pkgs.hyperfine
+              pkgs.jq
               pkgs.libxml2
               pkgs.maturin
               pkgs.mdbook
