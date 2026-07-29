@@ -9,6 +9,12 @@ pub(in crate::construction) enum ModelAlgorithmPlan {
         domain: StructuredIndexDomain,
         binder_spans: Vec<Span>,
     },
+    SeparatedArraySum {
+        array_target: VarName,
+        scalar_target: VarName,
+        domain: StructuredIndexDomain,
+        binder_spans: Vec<Span>,
+    },
     Event,
 }
 
@@ -34,6 +40,9 @@ pub(super) fn analyze_model_algorithm(
         return Ok(ModelAlgorithmPlan::Event);
     }
     let targets = model_algorithm_targets(flat, algorithm);
+    if let Some(plan) = analyze_separated_array_sum(flat, algorithm, &targets)? {
+        return Ok(plan);
+    }
     let [target] = targets.as_slice() else {
         return Err(ToDaeError::unsupported_algorithm(
             "model",
@@ -73,6 +82,157 @@ pub(super) fn analyze_model_algorithm(
     Ok(ModelAlgorithmPlan::Declarative {
         target: target.clone(),
     })
+}
+
+fn analyze_separated_array_sum(
+    flat: &flat::Model,
+    algorithm: &flat::Algorithm,
+    targets: &[VarName],
+) -> Result<Option<ModelAlgorithmPlan>, ToDaeError> {
+    let [first, second] = targets else {
+        return Ok(None);
+    };
+    let (array_target, scalar_target) = match (
+        flat.variables[first].dims.is_empty(),
+        flat.variables[second].dims.is_empty(),
+    ) {
+        (false, true) => (first, second),
+        (true, false) => (second, first),
+        _ => return Ok(None),
+    };
+    let [
+        rumoca_core::Statement::Assignment {
+            comp: initial_target,
+            value: initial,
+            ..
+        },
+        rumoca_core::Statement::For {
+            indices,
+            equations,
+            span,
+        },
+    ] = algorithm.statements.as_slice()
+    else {
+        return Ok(None);
+    };
+    let [
+        rumoca_core::Statement::Assignment {
+            comp: array_component,
+            value: element,
+            ..
+        },
+        rumoca_core::Statement::Assignment {
+            comp: update_target,
+            value: update,
+            ..
+        },
+    ] = equations.as_slice()
+    else {
+        return Ok(None);
+    };
+    if assignment_target(initial_target) != *scalar_target
+        || !is_zero(initial)
+        || assignment_target(array_component) != *array_target
+        || assignment_target(update_target) != *scalar_target
+    {
+        return Ok(None);
+    }
+    let Some(subscripts) = array_component.parts.last().map(|part| part.subs.as_slice()) else {
+        return Ok(None);
+    };
+    let dimensions = &flat.variables[array_target].dims;
+    if indices.len() != dimensions.len() || subscripts.len() != dimensions.len() {
+        return Ok(None);
+    }
+    let mut binders = Vec::with_capacity(indices.len());
+    let mut binder_spans = Vec::with_capacity(indices.len());
+    for (ordinal, ((index, subscript), extent)) in indices
+        .iter()
+        .zip(subscripts)
+        .zip(dimensions)
+        .enumerate()
+    {
+        validate_total_axis(index, subscript, *extent)?;
+        let range_span = expression_span(&index.range)?;
+        binders.push(StructuredIndexBinder {
+            id: ordinal,
+            display_name: index.ident.clone(),
+            lower: 1,
+            upper: *extent,
+            step: 1,
+        });
+        binder_spans.push(range_span);
+    }
+    reject_read_before_definition(element, array_target, false)?;
+    reject_read_before_definition(element, scalar_target, false)?;
+    if !is_additive_element_update(update, scalar_target, array_target, subscripts) {
+        return Ok(None);
+    }
+    let domain = StructuredIndexDomain { binders };
+    domain.scalar_count().map_err(|error| {
+        ToDaeError::unsupported_algorithm(
+            "model",
+            format!("separated array-reduction domain is not computable: {error}"),
+            *span,
+        )
+    })?;
+    Ok(Some(ModelAlgorithmPlan::SeparatedArraySum {
+        array_target: array_target.clone(),
+        scalar_target: scalar_target.clone(),
+        domain,
+        binder_spans,
+    }))
+}
+
+fn is_zero(expression: &Expression) -> bool {
+    matches!(
+        expression,
+        Expression::Literal {
+            value: Literal::Integer(0) | Literal::Real(0.0),
+            ..
+        }
+    )
+}
+
+fn is_additive_element_update(
+    expression: &Expression,
+    scalar_target: &VarName,
+    array_target: &VarName,
+    expected_subscripts: &[Subscript],
+) -> bool {
+    let Expression::Binary {
+        op: OpBinary::Add | OpBinary::AddElem,
+        lhs,
+        rhs,
+        ..
+    } = expression
+    else {
+        return false;
+    };
+    is_unsubscripted_reference(lhs, scalar_target)
+        && is_exact_element_reference(rhs, array_target, expected_subscripts)
+}
+
+fn is_unsubscripted_reference(expression: &Expression, target: &VarName) -> bool {
+    matches!(
+        expression,
+        Expression::VarRef {
+            name, subscripts, ..
+        } if name.var_name() == target && subscripts.is_empty()
+    )
+}
+
+fn is_exact_element_reference(
+    expression: &Expression,
+    target: &VarName,
+    expected_subscripts: &[Subscript],
+) -> bool {
+    matches!(
+        expression,
+        Expression::VarRef {
+            name, subscripts, ..
+        } if name.var_name() == target && subscripts == expected_subscripts
+    )
 }
 
 fn analyze_total_array_definition(
