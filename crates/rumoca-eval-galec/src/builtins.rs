@@ -1,7 +1,10 @@
+#[cfg(test)]
+mod tests;
+
 use std::collections::BTreeSet;
 
-use crate::Value;
 use crate::interpreter::{EvaluationError, Evaluator};
+use crate::{IntegerDomain, Value};
 
 type Factorization = (Vec<Vec<f64>>, Vec<usize>, bool);
 
@@ -280,8 +283,8 @@ pub(super) fn lu_factorize_builtin(
         Value::Array(
             pivots
                 .into_iter()
-                .map(|pivot| Value::Integer(i64::try_from(pivot + 1).unwrap_or(i64::MAX)))
-                .collect(),
+                .map(|pivot| pivot_value(pivot, evaluator.integer_domain))
+                .collect::<Result<Vec<_>, _>>()?,
         ),
     ])
 }
@@ -326,13 +329,7 @@ fn factorize(mut matrix: Vec<Vec<f64>>) -> Result<Factorization, EvaluationError
     let mut pivots = (0..n).collect::<Vec<_>>();
     let mut singular = false;
     for column in 0..n {
-        let pivot = (column..n)
-            .max_by(|&lhs, &rhs| {
-                matrix[lhs][column]
-                    .abs()
-                    .total_cmp(&matrix[rhs][column].abs())
-            })
-            .expect("non-empty pivot range");
+        let pivot = select_pivot(&matrix, column)?;
         matrix.swap(column, pivot);
         pivots.swap(column, pivot);
         let diagonal = matrix[column][column];
@@ -349,6 +346,28 @@ fn factorize(mut matrix: Vec<Vec<f64>>) -> Result<Factorization, EvaluationError
         }
     }
     Ok((matrix, pivots, singular))
+}
+
+fn select_pivot(matrix: &[Vec<f64>], column: usize) -> Result<usize, EvaluationError> {
+    (column..matrix.len())
+        .max_by(|&lhs, &rhs| {
+            matrix[lhs][column]
+                .abs()
+                .total_cmp(&matrix[rhs][column].abs())
+        })
+        .ok_or(EvaluationError::InvalidBuiltinArgument {
+            name: "luFactorize",
+            detail: "pivot column is outside the matrix",
+        })
+}
+
+fn pivot_value(pivot: usize, domain: IntegerDomain) -> Result<Value, EvaluationError> {
+    let one_based = pivot
+        .checked_add(1)
+        .and_then(|value| i64::try_from(value).ok())
+        .filter(|value| domain.contains(*value))
+        .ok_or(EvaluationError::IntegerOverflow)?;
+    Ok(Value::Integer(one_based))
 }
 
 fn solve_lu(
