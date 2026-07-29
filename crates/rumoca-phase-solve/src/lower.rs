@@ -88,12 +88,28 @@ fn structural_matching<'dae>(
         reason: error.to_string(),
         span: error.source_span(),
     })?;
-    let algebraic_blocks = sorted
-        .blocks
+    let rows = sorted
+        .matching
         .iter()
-        .filter_map(|block| match block {
-            BltBlock::Scalar { unknown, .. } => {
-                matches!(unknown, UnknownId::Algebraic { .. }).then(|| vec![*unknown])
+        .copied()
+        .map(|(EquationRef(equation), unknown)| (equation, unknown))
+        .collect::<HashMap<_, _>>();
+    let algebraic_blocks = algebraic_projection_blocks(&sorted.blocks, &rows)?;
+    Ok(StructuralMatching {
+        rows,
+        algebraic_blocks,
+    })
+}
+
+fn algebraic_projection_blocks<'dae>(
+    blocks: &[BltBlock<'dae>],
+    rows: &HashMap<usize, UnknownId<'dae>>,
+) -> Result<Vec<Vec<UnknownId<'dae>>>, LowerError> {
+    let mut algebraic_blocks = Vec::new();
+    for block in blocks {
+        match block {
+            BltBlock::Scalar { unknown, .. } if matches!(unknown, UnknownId::Algebraic { .. }) => {
+                algebraic_blocks.push(vec![*unknown]);
             }
             BltBlock::AlgebraicLoop { unknowns, .. } => {
                 let algebraic = unknowns
@@ -101,20 +117,35 @@ fn structural_matching<'dae>(
                     .copied()
                     .filter(|unknown| matches!(unknown, UnknownId::Algebraic { .. }))
                     .collect::<Vec<_>>();
-                (!algebraic.is_empty()).then_some(algebraic)
+                if !algebraic.is_empty() {
+                    algebraic_blocks.push(algebraic);
+                }
             }
-            BltBlock::StructuredScalar(_) => None,
-        })
-        .collect();
-    let rows = sorted
-        .matching
-        .into_iter()
-        .map(|(EquationRef(equation), unknown)| (equation, unknown))
-        .collect();
-    Ok(StructuralMatching {
-        rows,
-        algebraic_blocks,
-    })
+            BltBlock::StructuredScalar(family) => {
+                append_structured_algebraic_blocks(family, rows, &mut algebraic_blocks)?;
+            }
+            BltBlock::Scalar { .. } => {}
+        }
+    }
+    Ok(algebraic_blocks)
+}
+
+fn append_structured_algebraic_blocks<'dae>(
+    family: &rumoca_phase_structural::StructuredScalarBlock,
+    rows: &HashMap<usize, UnknownId<'dae>>,
+    blocks: &mut Vec<Vec<UnknownId<'dae>>>,
+) -> Result<(), LowerError> {
+    for row in family.scalar_rows() {
+        let (EquationRef(equation), _) = row.map_err(|error| LowerError::Structural {
+            reason: error.to_string(),
+            span: error.source_span(),
+        })?;
+        let Some(unknown @ UnknownId::Algebraic { .. }) = rows.get(&equation) else {
+            continue;
+        };
+        blocks.push(vec![*unknown]);
+    }
+    Ok(())
 }
 
 fn continuous_scalar_row_count(view: dae::DaeView<'_>) -> Result<usize, LowerError> {
