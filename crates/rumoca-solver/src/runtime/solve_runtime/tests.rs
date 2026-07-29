@@ -17,7 +17,13 @@ fn test_span(name: &'static str) -> rumoca_core::Span {
 }
 
 fn spanned_block(rows: Vec<Vec<solve::LinearOp>>, name: &'static str) -> solve::ScalarProgramBlock {
-    solve::ScalarProgramBlock::with_source_span(rows, test_span(name))
+    solve::ScalarProgramBlock::with_source_span(
+        rows,
+        test_span(name)
+            .require_provenance("solve-runtime fixture")
+            .expect("fixture span is source-backed"),
+    )
+    .expect("fixture program is computable")
 }
 
 fn mirror_scalar_implicit_jvp(model: &mut solve::SolveModel) {
@@ -533,8 +539,8 @@ fn uncertified_seed_keeps_its_projection_block_after_dependency_projection() {
             },
             continuous: solve::ContinuousSolveSystem {
                 implicit_rhs: solve::ComputeBlock::from_scalar_program_block(
-                    solve::ScalarProgramBlock {
-                        programs: vec![
+                    solve::ScalarProgramBlock::with_output_indices(
+                        vec![
                             vec![
                                 solve::LinearOp::LoadP { dst: 0, index: 0 },
                                 solve::LinearOp::LoadY { dst: 1, index: 0 },
@@ -565,9 +571,10 @@ fn uncertified_seed_keeps_its_projection_block_after_dependency_projection() {
                                 solve::LinearOp::StoreOutput { src: 4 },
                             ],
                         ],
-                        program_spans: vec![span, span],
-                        output_indices: vec![0, 1],
-                    },
+                        vec![span, span],
+                        vec![0, 1],
+                    )
+                    .expect("fixture scalar programs satisfy register flow"),
                 ),
                 implicit_row_targets: vec![None, Some(solve::scalar_slot_y(1))],
                 algebraic_projection_plan: solve::AlgebraicProjectionPlan {
@@ -1234,8 +1241,10 @@ fn refresh_iteration_propagates_semantic_errors_and_restores_snapshot() {
                             },
                             solve::LinearOp::StoreOutput { src: 2 },
                         ]],
-                        span,
-                    ),
+                        span.require_provenance("refresh semantic-error fixture")
+                            .expect("fixture span is source-backed"),
+                    )
+                    .expect("fixture program is computable"),
                 ),
                 implicit_row_targets: vec![Some(solve::scalar_slot_y(0))],
                 ..Default::default()

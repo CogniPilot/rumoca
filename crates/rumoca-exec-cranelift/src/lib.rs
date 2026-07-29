@@ -145,21 +145,21 @@ impl CompiledExpressionRows {
 pub fn compile_residual_scalar_program_block(
     rows: &ScalarProgramBlock,
 ) -> Result<CompiledResidual, CompileError> {
-    let jit = emit::compile_residual_rows(&rows.programs)?;
+    let jit = emit::compile_residual_rows(rows.programs())?;
     Ok(CompiledResidual { jit })
 }
 
 pub fn compile_jacobian_scalar_program_block(
     rows: &ScalarProgramBlock,
 ) -> Result<CompiledJacobianV, CompileError> {
-    let jit = emit::compile_jacobian_rows(&rows.programs)?;
+    let jit = emit::compile_jacobian_rows(rows.programs())?;
     Ok(CompiledJacobianV { jit })
 }
 
 pub fn compile_expression_scalar_program_block(
     rows: &ScalarProgramBlock,
 ) -> Result<CompiledExpressionRows, CompileError> {
-    let jit = emit::compile_residual_rows(&rows.programs)?;
+    let jit = emit::compile_residual_rows(rows.programs())?;
     Ok(CompiledExpressionRows { jit })
 }
 
@@ -183,8 +183,11 @@ mod tests {
                 LinearOp::Const { dst: 0, value: 3.0 },
                 LinearOp::StoreOutput { src: 0 },
             ]],
-            fixture_span(),
-        );
+            fixture_span()
+                .require_provenance("Cranelift constant fixture")
+                .expect("fixture span is source-backed"),
+        )
+        .expect("fixture program is computable");
         let compiled = compile_expression_scalar_program_block(&rows).expect("compile row");
         let mut out = [0.0];
 
@@ -207,8 +210,11 @@ mod tests {
                 },
                 LinearOp::StoreOutput { src: 2 },
             ]],
-            fixture_span(),
-        );
+            fixture_span()
+                .require_provenance("Cranelift input-requirement fixture")
+                .expect("fixture span is source-backed"),
+        )
+        .expect("fixture program is computable");
         let compiled = compile_expression_scalar_program_block(&rows).expect("compile row");
 
         assert_eq!(
@@ -228,8 +234,11 @@ mod tests {
                 LinearOp::LoadSeed { dst: 0, index: 2 },
                 LinearOp::StoreOutput { src: 0 },
             ]],
-            fixture_span(),
-        );
+            fixture_span()
+                .require_provenance("Cranelift Jacobian fixture")
+                .expect("fixture span is source-backed"),
+        )
+        .expect("fixture program is computable");
         let compiled = compile_jacobian_scalar_program_block(&rows).expect("compile row");
 
         assert_eq!(

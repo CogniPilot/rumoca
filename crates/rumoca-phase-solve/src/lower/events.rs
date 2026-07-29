@@ -134,7 +134,7 @@ impl DiscreteRows {
             update_targets: self.targets,
             row_roles: self.roles,
             pre_modes: self.pre_modes,
-            observation_refresh: vec![false; rhs.programs.len()],
+            observation_refresh: vec![false; rhs.programs().len()],
             clock_owners: self.clock_owners,
             rhs,
             ..solve::DiscreteSolveSystem::default()

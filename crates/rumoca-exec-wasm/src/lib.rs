@@ -234,7 +234,7 @@ pub fn compile_residual_scalar_program_block_wasm(
     layout: &VarLayout,
 ) -> Result<CompiledResidualWasm, WasmCompileError> {
     let kernel = CompiledKernelWasm::from_rows(
-        rows.programs.clone(),
+        rows.programs().to_vec(),
         layout.y_scalars(),
         layout.p_scalars(),
     )?;
@@ -246,7 +246,7 @@ pub fn compile_jacobian_scalar_program_block_wasm(
     layout: &VarLayout,
 ) -> Result<CompiledJacobianVWasm, WasmCompileError> {
     let kernel = CompiledKernelWasm::from_rows(
-        rows.programs.clone(),
+        rows.programs().to_vec(),
         layout.y_scalars(),
         layout.p_scalars(),
     )?;
@@ -260,7 +260,7 @@ pub fn compile_expression_scalar_program_block_wasm(
     compile_expression_rows_wasm(
         layout.y_scalars(),
         layout.p_scalars(),
-        rows.programs.clone(),
+        rows.programs().to_vec(),
     )
 }
 

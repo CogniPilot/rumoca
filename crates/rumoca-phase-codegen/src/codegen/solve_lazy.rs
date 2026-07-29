@@ -103,11 +103,11 @@ impl Object for SolveProgramsObject {
         ObjectRepr::Seq
     }
     fn enumerate(self: &Arc<Self>) -> Enumerator {
-        Enumerator::Seq(self.block.programs.len())
+        Enumerator::Seq(self.block.programs().len())
     }
     fn get_value(self: &Arc<Self>, key: &Value) -> Option<Value> {
         let idx = key.as_usize()?;
-        (idx < self.block.programs.len()).then(|| {
+        (idx < self.block.programs().len()).then(|| {
             Value::from_object(SolveOpListObject {
                 ops: OpListSource::Program(self.block.clone(), idx),
             })
@@ -131,7 +131,7 @@ enum OpListSource {
 impl SolveOpListObject {
     fn ops(&self) -> &[solve::LinearOp] {
         match &self.ops {
-            OpListSource::Program(block, idx) => &block.programs[*idx],
+            OpListSource::Program(block, idx) => &block.programs()[*idx],
             OpListSource::Raw(ops) => ops,
         }
     }
@@ -165,8 +165,8 @@ fn scalar_program_block_value(block: Arc<solve::ScalarProgramBlock>) -> Value {
             "programs" => Some(Value::from_object(SolveProgramsObject {
                 block: block.clone(),
             })),
-            "program_spans" => Some(Value::from_serialize(&block.program_spans)),
-            "output_indices" => Some(Value::from_serialize(&block.output_indices)),
+            "program_spans" => Some(Value::from_serialize(block.program_spans())),
+            "output_indices" => Some(Value::from_serialize(block.output_indices())),
             _ => None,
         },
     )

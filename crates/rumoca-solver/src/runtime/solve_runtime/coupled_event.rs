@@ -399,6 +399,10 @@ mod tests {
     use super::*;
     use crate::runtime::solve_runtime::{EventUpdateRowFilter, ProjectedEventUpdateInput};
 
+    fn fixture_span() -> rumoca_core::Span {
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 0, 1)
+    }
+
     fn coupled_event_test_model() -> solve::SolveModel {
         let implicit = ScalarProgramBlock::with_source_span(
             vec![vec![
@@ -412,8 +416,11 @@ mod tests {
                 },
                 LinearOp::StoreOutput { src: 2 },
             ]],
-            rumoca_core::Span::DUMMY,
-        );
+            fixture_span()
+                .require_provenance("coupled-event implicit fixture")
+                .expect("fixture span is source-backed"),
+        )
+        .expect("fixture program is computable");
         let discrete = ScalarProgramBlock::with_source_span(
             vec![
                 vec![
@@ -432,8 +439,11 @@ mod tests {
                     LinearOp::StoreOutput { src: 0 },
                 ],
             ],
-            rumoca_core::Span::DUMMY,
-        );
+            fixture_span()
+                .require_provenance("coupled-event discrete fixture")
+                .expect("fixture span is source-backed"),
+        )
+        .expect("fixture program is computable");
         solve::SolveModel {
             problem: solve::SolveProblem {
                 solve_layout: solve::SolveLayout {

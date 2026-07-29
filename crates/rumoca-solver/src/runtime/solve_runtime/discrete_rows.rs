@@ -106,10 +106,18 @@ impl SolveRuntime {
         let mut row_values = Vec::new();
         reserve_runtime_vec_capacity(
             &mut row_values,
-            self.model.problem.discrete.rhs.programs.len(),
+            self.model.problem.discrete.rhs.programs().len(),
             "discrete row values",
         )?;
-        for (row_idx, row) in self.model.problem.discrete.rhs.programs.iter().enumerate() {
+        for (row_idx, row) in self
+            .model
+            .problem
+            .discrete
+            .rhs
+            .programs()
+            .iter()
+            .enumerate()
+        {
             if scope.observation_only && !self.observation_refresh_row(row_idx)? {
                 continue;
             }

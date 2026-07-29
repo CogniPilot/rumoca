@@ -15,7 +15,8 @@ pub mod visitor;
 
 use indexmap::IndexMap;
 use rumoca_core::{
-    ExternalTableData, SourceId, Span, StructuredIndexDomain, StructuredIndexDomainError,
+    ExternalTableData, ProvenanceSpan, SourceId, Span, StructuredIndexDomain,
+    StructuredIndexDomainError,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -81,14 +82,76 @@ impl ExternalTables {
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+/// A checked block of scalar programs with exact row provenance and output identity.
+///
+/// Invariant-bearing columns cannot be mutated after construction:
+///
+/// ```compile_fail
+/// use rumoca_ir_solve::{LinearOp, ScalarProgramBlock};
+///
+/// let mut block = ScalarProgramBlock::default();
+/// block.programs.push(vec![LinearOp::StoreOutput { src: 0 }]);
+/// ```
+#[derive(Clone, Debug, Default)]
 pub struct ScalarProgramBlock {
-    pub programs: Vec<Vec<LinearOp>>,
-    pub program_spans: Vec<Span>,
-    pub output_indices: Vec<usize>,
+    programs: Vec<Vec<LinearOp>>,
+    program_spans: Vec<Span>,
+    output_indices: Vec<usize>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ScalarProgramBlockWire {
+    programs: Vec<Vec<LinearOp>>,
+    program_spans: Vec<Span>,
+    output_indices: Vec<usize>,
+}
+
+#[derive(Serialize)]
+struct ScalarProgramBlockWireRef<'a> {
+    programs: &'a [Vec<LinearOp>],
+    program_spans: &'a [Span],
+    output_indices: &'a [usize],
+}
+
+impl Serialize for ScalarProgramBlock {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        ScalarProgramBlockWireRef {
+            programs: &self.programs,
+            program_spans: &self.program_spans,
+            output_indices: &self.output_indices,
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for ScalarProgramBlock {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = ScalarProgramBlockWire::deserialize(deserializer)?;
+        Self::with_output_indices(wire.programs, wire.program_spans, wire.output_indices)
+            .map_err(serde::de::Error::custom)
+    }
 }
 
 impl ScalarProgramBlock {
+    /// Constructs programs whose stored outputs use dense local indices.
+    ///
+    /// Provenance is mandatory at the API boundary:
+    ///
+    /// ```compile_fail
+    /// use rumoca_ir_solve::{LinearOp, ScalarProgramBlock};
+    ///
+    /// let _ = ScalarProgramBlock::with_program_spans(vec![vec![
+    ///     LinearOp::Const { dst: 0, value: 1.0 },
+    ///     LinearOp::StoreOutput { src: 0 },
+    /// ]]);
+    /// ```
     pub fn with_program_spans(
         programs: Vec<Vec<LinearOp>>,
         program_spans: Vec<Span>,
@@ -111,6 +174,7 @@ impl ScalarProgramBlock {
             output_indices.len(),
             first_span(&program_spans),
         )?;
+        validate_scalar_program_provenance("ScalarProgramBlock", 0, &program_spans)?;
         validate_scalar_program_outputs("ScalarProgramBlock", 0, &programs, &program_spans)?;
         validate_scalar_program_register_flows("ScalarProgramBlock", 0, &programs, &program_spans)?;
         Ok(Self::from_valid_parts(
@@ -146,25 +210,55 @@ impl ScalarProgramBlock {
         Self::with_output_indices(programs, program_spans, output_indices)
     }
 
-    pub fn with_source_span(programs: Vec<Vec<LinearOp>>, span: Span) -> Self {
+    /// Constructs dense-output programs owned by one exact source occurrence.
+    ///
+    /// A raw or dummy [`Span`] cannot cross this boundary:
+    ///
+    /// ```compile_fail
+    /// use rumoca_core::{SourceId, Span};
+    /// use rumoca_ir_solve::{LinearOp, ScalarProgramBlock};
+    ///
+    /// let raw_span = Span::from_offsets(SourceId::from_source_name("fixture.mo"), 0, 1);
+    /// let _ = ScalarProgramBlock::with_source_span(
+    ///     vec![vec![
+    ///         LinearOp::Const { dst: 0, value: 1.0 },
+    ///         LinearOp::StoreOutput { src: 0 },
+    ///     ]],
+    ///     raw_span,
+    /// );
+    /// ```
+    pub fn with_source_span(
+        programs: Vec<Vec<LinearOp>>,
+        provenance: ProvenanceSpan,
+    ) -> Result<Self, SolveProblemShapeContractError> {
+        let span = provenance.span();
         let program_spans = vec![span; programs.len()];
         let output_indices = (0..stored_output_count(&programs)).collect();
         Self::with_output_indices(programs, program_spans, output_indices)
-            .expect("lowered scalar programs must have computable register flow and outputs")
     }
 
     pub fn program_span(&self, row: usize) -> Option<Span> {
-        self.program_spans
-            .get(row)
-            .copied()
-            .filter(|span| !span.is_dummy())
+        self.program_spans.get(row).copied()
+    }
+
+    pub fn programs(&self) -> &[Vec<LinearOp>] {
+        &self.programs
+    }
+
+    pub fn program(&self, index: usize) -> Option<&[LinearOp]> {
+        self.programs.get(index).map(Vec::as_slice)
+    }
+
+    pub fn program_spans(&self) -> &[Span] {
+        &self.program_spans
+    }
+
+    pub fn output_indices(&self) -> &[usize] {
+        &self.output_indices
     }
 
     pub fn first_source_span(&self) -> Option<Span> {
-        self.program_spans
-            .iter()
-            .copied()
-            .find(|span| !span.is_dummy())
+        self.program_spans.first().copied()
     }
 
     /// Number of `StoreOutput` ops in a single program.
@@ -301,39 +395,10 @@ impl ScalarProgramBlock {
     fn first_program_span(&self) -> Option<Span> {
         self.first_source_span()
     }
-
-    pub fn validate_shape_contract(
-        &self,
-        context: impl Into<String>,
-    ) -> Result<(), SolveProblemShapeContractError> {
-        let context = context.into();
-        if self.program_spans.len() != self.programs.len() {
-            return Err(SolveProblemShapeContractError::ScalarProgramSpanMismatch {
-                context,
-                node_index: 0,
-                programs: self.programs.len(),
-                spans: self.program_spans.len(),
-                span: self.first_program_span(),
-            });
-        }
-        if self.output_indices.len() != self.stored_output_count() {
-            return Err(
-                SolveProblemShapeContractError::ScalarProgramOutputIndexMismatch {
-                    context,
-                    node_index: 0,
-                    programs: self.stored_output_count(),
-                    output_indices: self.output_indices.len(),
-                    span: self.first_program_span(),
-                },
-            );
-        }
-        validate_scalar_program_outputs(&context, 0, &self.programs, &self.program_spans)?;
-        validate_scalar_program_register_flows(&context, 0, &self.programs, &self.program_spans)
-    }
 }
 
 fn first_span(spans: &[Span]) -> Option<Span> {
-    spans.iter().copied().find(|span| !span.is_dummy())
+    spans.first().copied()
 }
 
 fn stored_output_count(programs: &[Vec<LinearOp>]) -> usize {
@@ -341,6 +406,23 @@ fn stored_output_count(programs: &[Vec<LinearOp>]) -> usize {
         .iter()
         .map(|program| ScalarProgramBlock::program_output_count(program))
         .sum()
+}
+
+fn validate_scalar_program_provenance(
+    context: &str,
+    node_index: usize,
+    program_spans: &[Span],
+) -> Result<(), SolveProblemShapeContractError> {
+    let Some(program_index) = program_spans.iter().position(Span::is_dummy) else {
+        return Ok(());
+    };
+    Err(
+        SolveProblemShapeContractError::ScalarProgramMissingProvenance {
+            context: context.to_string(),
+            node_index,
+            program_index,
+        },
+    )
 }
 
 fn validate_scalar_program_metadata_lengths(
@@ -388,10 +470,7 @@ fn validate_scalar_program_outputs(
     else {
         return Ok(());
     };
-    let span = program_spans
-        .get(program_index)
-        .copied()
-        .filter(|span| !span.is_dummy());
+    let span = program_spans.get(program_index).copied();
     Err(SolveProblemShapeContractError::ScalarProgramMissingOutput {
         context: context.to_string(),
         node_index,
@@ -411,10 +490,7 @@ fn validate_scalar_program_register_flows(
             Ok(_) => continue,
             Err(error) => error,
         };
-        let span = program_spans
-            .get(program_index)
-            .copied()
-            .filter(|span| !span.is_dummy());
+        let span = program_spans.get(program_index).copied();
         return Err(SolveProblemShapeContractError::ScalarProgramRegisterFlow {
             context: context.to_string(),
             node_index,
@@ -636,9 +712,6 @@ fn validate_initialization_system_shape(
     system
         .residual
         .validate_shape_contract("initialization.residual")?;
-    system
-        .update_rhs
-        .validate_shape_contract("initialization.update_rhs")?;
     let residual_count = system.residual.len()?;
     validate_count(
         "initialization.row_targets",
@@ -669,10 +742,6 @@ fn validate_discrete_system_shape(
     problem: &SolveProblem,
 ) -> Result<(), SolveProblemShapeContractError> {
     let system = &problem.discrete;
-    system
-        .runtime_assignment_rhs
-        .validate_shape_contract("discrete.runtime_assignment_rhs")?;
-    system.rhs.validate_shape_contract("discrete.rhs")?;
     validate_count(
         "discrete.runtime_assignment_targets",
         system.runtime_assignment_rhs.len(),
@@ -714,9 +783,6 @@ fn validate_event_partition_shape(
     problem: &SolveProblem,
 ) -> Result<(), SolveProblemShapeContractError> {
     let events = &problem.events;
-    events
-        .root_conditions
-        .validate_shape_contract("events.root_conditions")?;
     validate_count(
         "events.root_relation_memory_targets",
         events.root_conditions.len(),
@@ -732,12 +798,6 @@ fn validate_event_partition_shape(
         &events.scheduled_root_conditions,
         events.root_conditions.len(),
     )?;
-    events
-        .dynamic_time_event_rhs
-        .validate_shape_contract("events.dynamic_time_event_rhs")?;
-    events
-        .action_conditions
-        .validate_shape_contract("events.action_conditions")?;
     validate_count(
         "events.action_conditions",
         events.actions.len(),
@@ -769,15 +829,6 @@ fn validate_delay_partition_shape(
     problem: &SolveProblem,
 ) -> Result<(), SolveProblemShapeContractError> {
     let delays = &problem.events.delays;
-    delays
-        .source_rhs
-        .validate_shape_contract("events.delays.source_rhs")?;
-    delays
-        .delay_time_rhs
-        .validate_shape_contract("events.delays.delay_time_rhs")?;
-    delays
-        .delay_max_rhs
-        .validate_shape_contract("events.delays.delay_max_rhs")?;
     let delay_count = delays.source_rhs.len();
     validate_count(
         "events.delays.delay_time_rhs",

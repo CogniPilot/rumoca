@@ -91,7 +91,7 @@ pub fn reverse_scalar_block_vjp(
         });
     }
     let mut output_ordinal = 0usize;
-    for (row_idx, row) in block.programs.iter().enumerate() {
+    for (row_idx, row) in block.programs().iter().enumerate() {
         let register_count = program.row_registers[row_idx];
         scratch.regs.clear();
         scratch.regs.resize(register_count, 0.0);
@@ -126,7 +126,7 @@ pub fn reverse_scalar_row_y_gradient(
     y_gradient: &mut [f64],
     scratch: &mut ReverseScratch,
 ) -> Result<bool, EvalSolveError> {
-    let Some(row) = program.block.programs.get(row_idx) else {
+    let Some(row) = program.block.programs().get(row_idx) else {
         return Ok(false);
     };
     let mut output_sources = row.iter().filter_map(|op| match op {
@@ -196,7 +196,7 @@ fn seed_row_output_adjoints(
             // `ordinal` and the dense output slot are in bounds by block invariant
             // (one `output_indices` entry per `StoreOutput`, values < output_count)
             // and the caller's `output_cotangents` length is validated up front.
-            let dense = block.output_indices[ordinal];
+            let dense = block.output_indices()[ordinal];
             add_adj(adj, src, output_cotangents[dense]);
             ordinal += 1;
         }
@@ -598,6 +598,10 @@ mod tests {
     use super::*;
     use rumoca_ir_solve::ScalarProgramBlock;
 
+    fn fixture_span() -> rumoca_core::Span {
+        rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 0, 1)
+    }
+
     /// Reverse over a program that *reuses and self-references* register 0:
     ///   r0 = y0; r1 = 3; r0 = r0 * r1; output = r0   (so f = 3·y0, df/dy0 = 3).
     /// A sweep that did not zero `adj[dst]` after consuming it would leak the
@@ -618,12 +622,12 @@ mod tests {
                 },
                 LinearOp::StoreOutput { src: 0 },
             ]],
-            vec![rumoca_core::Span::DUMMY],
+            vec![fixture_span()],
             vec![0],
         )
         .expect("valid scalar block");
         let row_registers: Vec<usize> = block
-            .programs
+            .programs()
             .iter()
             .map(|row| crate::required_registers(row).expect("register count"))
             .collect();
@@ -678,12 +682,12 @@ mod tests {
                 },
                 LinearOp::StoreOutput { src: 1 },
             ]],
-            vec![rumoca_core::Span::DUMMY],
+            vec![fixture_span()],
             vec![0],
         )
         .expect("valid indexed-parameter block");
         let row_registers =
-            [crate::required_registers(&block.programs[0]).expect("register count")];
+            [crate::required_registers(&block.programs()[0]).expect("register count")];
         let requirements =
             crate::scalar_program_block_input_requirements(&block).expect("requirements");
         let mut cot_y = [0.0];
@@ -746,14 +750,11 @@ mod tests {
             },
             LinearOp::StoreOutput { src: 6 },
         ];
-        let block = ScalarProgramBlock::with_output_indices(
-            vec![row],
-            vec![rumoca_core::Span::DUMMY],
-            vec![0],
-        )
-        .expect("valid block");
+        let block =
+            ScalarProgramBlock::with_output_indices(vec![row], vec![fixture_span()], vec![0])
+                .expect("valid block");
         let row_registers: Vec<usize> = block
-            .programs
+            .programs()
             .iter()
             .map(|row| crate::required_registers(row).expect("registers"))
             .collect();
@@ -772,7 +773,7 @@ mod tests {
         let forward_x0 = |y: &[f64]| -> f64 {
             let mut regs = vec![0.0_f64; row_registers[0]];
             forward_row_tape(
-                &block.programs[0],
+                &block.programs()[0],
                 &ReverseInputs {
                     y,
                     p: &[],

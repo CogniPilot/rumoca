@@ -559,57 +559,7 @@ impl ComputeNode {
         node_index: usize,
     ) -> Result<(), SolveProblemShapeContractError> {
         match self {
-            ComputeNode::ScalarPrograms(block) => {
-                block
-                    .validate_shape_contract(context)
-                    .map_err(|err| match err {
-                        SolveProblemShapeContractError::ScalarProgramSpanMismatch {
-                            programs,
-                            spans,
-                            ..
-                        } => SolveProblemShapeContractError::ScalarProgramSpanMismatch {
-                            context: context.to_string(),
-                            node_index,
-                            programs,
-                            spans,
-                            span: block.first_program_span(),
-                        },
-                        SolveProblemShapeContractError::ScalarProgramOutputIndexMismatch {
-                            programs,
-                            output_indices,
-                            ..
-                        } => SolveProblemShapeContractError::ScalarProgramOutputIndexMismatch {
-                            context: context.to_string(),
-                            node_index,
-                            programs,
-                            output_indices,
-                            span: block.first_program_span(),
-                        },
-                        SolveProblemShapeContractError::ScalarProgramMissingOutput {
-                            program_index,
-                            span,
-                            ..
-                        } => SolveProblemShapeContractError::ScalarProgramMissingOutput {
-                            context: context.to_string(),
-                            node_index,
-                            program_index,
-                            span,
-                        },
-                        SolveProblemShapeContractError::ScalarProgramRegisterFlow {
-                            program_index,
-                            error,
-                            span,
-                            ..
-                        } => SolveProblemShapeContractError::ScalarProgramRegisterFlow {
-                            context: context.to_string(),
-                            node_index,
-                            program_index,
-                            error,
-                            span,
-                        },
-                        other => other,
-                    })?;
-            }
+            ComputeNode::ScalarPrograms(_) => {}
             ComputeNode::MatMul { m, k, n, span, .. } => {
                 if *m == 0 || *k == 0 || *n == 0 {
                     return Err(SolveProblemShapeContractError::ZeroTensorDimension {

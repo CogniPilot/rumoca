@@ -133,14 +133,14 @@ fn explicit_state_equation_lowers_to_derivative_program() {
     else {
         panic!("one scalar derivative block expected");
     };
-    assert_eq!(rows.output_indices, [0]);
-    assert_eq!(rows.program_spans, [owner.span()]);
+    assert_eq!(rows.output_indices(), [0]);
+    assert_eq!(rows.program_spans(), [owner.span()]);
     assert!(matches!(
-        rows.programs[0][0],
+        rows.programs()[0][0],
         LinearOp::LoadY { index: 0, .. }
     ));
     assert!(matches!(
-        rows.programs[0][1],
+        rows.programs()[0][1],
         LinearOp::Unary {
             op: rumoca_ir_solve::UnaryOp::Neg,
             ..
@@ -158,7 +158,7 @@ fn affine_state_equation_preserves_its_runtime_parameter_coefficient() {
     else {
         panic!("one scalar derivative block expected");
     };
-    let program = &rows.programs[0];
+    let program = &rows.programs()[0];
     assert!(
         program
             .iter()
@@ -317,9 +317,9 @@ fn primitive_relation_root_lowers_to_signed_event_program() {
     .unwrap();
 
     let solve = lower_solve_problem(&model).unwrap();
-    assert_eq!(solve.events.root_conditions.programs.len(), 1);
+    assert_eq!(solve.events.root_conditions.programs().len(), 1);
     assert_eq!(
-        solve.events.root_conditions.program_spans,
+        solve.events.root_conditions.program_spans(),
         [when_owner.span()]
     );
     assert_eq!(
@@ -489,14 +489,14 @@ fn algebraic_residual_uses_checked_y_and_p_layouts() {
     let [ComputeNode::ScalarPrograms(rows)] = solve.continuous.residual.nodes.as_slice() else {
         panic!("one scalar residual block expected");
     };
-    assert_eq!(rows.output_indices, [0]);
+    assert_eq!(rows.output_indices(), [0]);
     assert!(
-        rows.programs[0]
+        rows.programs()[0]
             .iter()
             .any(|op| matches!(op, LinearOp::LoadY { index: 0, .. }))
     );
     assert!(
-        rows.programs[0]
+        rows.programs()[0]
             .iter()
             .any(|op| matches!(op, LinearOp::LoadP { index: 0, .. }))
     );
@@ -504,7 +504,7 @@ fn algebraic_residual_uses_checked_y_and_p_layouts() {
     else {
         panic!("the matched algebraic row must be executable by the runtime");
     };
-    assert_eq!(implicit.output_indices, [0]);
+    assert_eq!(implicit.output_indices(), [0]);
     assert_eq!(
         solve.continuous.implicit_row_targets,
         [Some(ScalarSlot::Y {
@@ -606,7 +606,7 @@ fn static_quotient_family_lowers_to_computable_solve_operations() {
     let [ComputeNode::ScalarPrograms(rows)] = solve.continuous.residual.nodes.as_slice() else {
         panic!("one scalar residual block expected");
     };
-    assert_static_quotient_program(&rows.programs[0]);
+    assert_static_quotient_program(&rows.programs()[0]);
 }
 
 fn assert_static_quotient_program(operations: &[LinearOp]) {
@@ -719,7 +719,7 @@ fn checked_function_call_is_inlined_into_solve_program() {
         panic!("one scalar residual block expected");
     };
     assert!(
-        rows.programs[0]
+        rows.programs()[0]
             .iter()
             .any(|operation| matches!(operation, LinearOp::Binary { .. }))
     );
@@ -830,7 +830,7 @@ fn clocked_discrete_definition_lowers_with_exact_row_owner() {
         lattice
     );
     assert!(
-        solve.discrete.rhs.programs[0]
+        solve.discrete.rhs.programs()[0]
             .iter()
             .any(|operation| matches!(operation, LinearOp::LoadTime { .. }))
     );
@@ -887,7 +887,7 @@ fn pre_discrete_value_loads_a_distinct_bound_history_lane() {
         [rumoca_ir_solve::DiscreteEventPreMode::EventEntry]
     );
     assert!(
-        solve.discrete.rhs.programs[0]
+        solve.discrete.rhs.programs()[0]
             .iter()
             .any(|operation| matches!(operation, LinearOp::LoadP { index: 1, .. }))
     );
@@ -957,7 +957,7 @@ fn previous_loads_history_owned_by_its_exact_clock_schedule() {
         lattice
     );
     assert!(
-        solve.discrete.rhs.programs[0]
+        solve.discrete.rhs.programs()[0]
             .iter()
             .any(|operation| matches!(operation, LinearOp::LoadP { index: 2, .. }))
     );
@@ -1061,7 +1061,7 @@ fn initial_condition_owns_a_dedicated_runtime_flag() {
         solve
             .discrete
             .rhs
-            .programs
+            .programs()
             .iter()
             .flatten()
             .any(|operation| matches!(operation, LinearOp::LoadP { index, .. } if *index == flag))
@@ -1139,7 +1139,7 @@ fn homotopy_owns_a_dedicated_continuation_parameter() {
         panic!("one scalar derivative block expected");
     };
     assert!(
-        rows.programs[0].iter().any(
+        rows.programs()[0].iter().any(
             |operation| matches!(operation, LinearOp::LoadP { index, .. } if *index == lambda)
         )
     );
@@ -1223,22 +1223,22 @@ fn delay_lowers_to_runtime_history_programs_and_a_typed_value_slot() {
     assert_eq!(delays.source_is_discrete, [false]);
     let delay_slot = delays.value_parameter_indices[0];
     assert!(matches!(
-        delays.source_rhs.programs[0][0],
+        delays.source_rhs.programs()[0][0],
         LinearOp::LoadY { index: 0, .. }
     ));
     assert!(matches!(
-        delays.delay_time_rhs.programs[0][0],
+        delays.delay_time_rhs.programs()[0][0],
         LinearOp::Const { value: 0.5, .. }
     ));
     assert!(matches!(
-        delays.delay_max_rhs.programs[0][0],
+        delays.delay_max_rhs.programs()[0][0],
         LinearOp::Const { value: 0.5, .. }
     ));
     let [ComputeNode::ScalarPrograms(rows)] = solve.continuous.derivative_rhs.nodes.as_slice()
     else {
         panic!("one scalar derivative block expected");
     };
-    assert!(rows.programs[0].iter().any(
+    assert!(rows.programs()[0].iter().any(
         |operation| matches!(operation, LinearOp::LoadP { index, .. } if *index == delay_slot)
     ));
 }

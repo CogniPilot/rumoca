@@ -52,7 +52,7 @@ pub(super) use template_partition::{
 #[cfg(test)]
 pub(super) use template_partition::{
     kernel_workgroup_count, scalar_kernel_chunk_count, scalar_program_block_source_span,
-    scalar_program_row_span, wgsl_kernel_schedule_entry_count, wgsl_kernel_workgroup_total,
+    wgsl_kernel_schedule_entry_count, wgsl_kernel_workgroup_total,
 };
 
 pub(super) fn register_target_assignment_functions(env: &mut Environment<'static>) {

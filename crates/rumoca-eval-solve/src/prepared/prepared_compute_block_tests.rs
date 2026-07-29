@@ -362,10 +362,15 @@ fn prepared_compute_block_places_local_scalar_node_after_tensor_output() {
     let block = ComputeBlock {
         nodes: vec![
             matmul_node(2.0, &[3.0, 4.0]),
-            ComputeNode::ScalarPrograms(ScalarProgramBlock::with_source_span(
-                vec![const_store_row(9.0)],
-                test_span("prepared_scalar.mo"),
-            )),
+            ComputeNode::ScalarPrograms(
+                ScalarProgramBlock::with_source_span(
+                    vec![const_store_row(9.0)],
+                    test_span("prepared_scalar.mo")
+                        .require_provenance("prepared compute-block fixture")
+                        .expect("fixture span is source-backed"),
+                )
+                .expect("prepared scalar fixture is computable"),
+            ),
             matmul_node(5.0, &[6.0]),
         ],
     };

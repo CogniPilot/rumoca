@@ -16,21 +16,21 @@ pub(crate) fn lower_solve_artifacts(
         rumoca_eval_solve::to_scalar_program_block(&problem.continuous.derivative_rhs)?;
     let implicit_jacobian_v_scalar = solve::ScalarProgramBlock::with_output_indices(
         lower_scalar_program_block_full_ad_with_spans(
-            &implicit_rhs.programs,
-            &implicit_rhs.program_spans,
+            implicit_rhs.programs(),
+            implicit_rhs.program_spans(),
             &problem.layout,
         )?,
-        implicit_rhs.program_spans,
-        implicit_rhs.output_indices,
+        implicit_rhs.program_spans().to_vec(),
+        implicit_rhs.output_indices().to_vec(),
     )?;
     let full_jacobian_v = solve::ScalarProgramBlock::with_output_indices(
         lower_scalar_program_block_full_ad_with_spans(
-            &derivative_rhs.programs,
-            &derivative_rhs.program_spans,
+            derivative_rhs.programs(),
+            derivative_rhs.program_spans(),
             &problem.layout,
         )?,
-        derivative_rhs.program_spans,
-        derivative_rhs.output_indices,
+        derivative_rhs.program_spans().to_vec(),
+        derivative_rhs.output_indices().to_vec(),
     )?;
     let implicit_jacobian_v = lower_compute_block_jvp(&problem.continuous.implicit_rhs)?;
     let manifold_jacobian_v = lower_compute_block_jvp(&problem.continuous.manifold_residual)?;

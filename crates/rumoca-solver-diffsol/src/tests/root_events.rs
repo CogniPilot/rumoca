@@ -3,8 +3,8 @@ use rumoca_ir_solve as solve;
 use rumoca_solver::SimOptions;
 
 use super::{
-    ordinary_equation_row_metadata, periodic_schedule, set_equation_row_metadata,
-    unit_integrator_model,
+    ordinary_equation_row_metadata, periodic_schedule, scalar_program_block,
+    set_equation_row_metadata, unit_integrator_model,
 };
 use crate::simulate;
 
@@ -158,7 +158,7 @@ fn state_only_bdf_uses_search_values_for_parameter_static_roots() {
     model.problem.solve_layout.parameter_count = 1;
     model.problem.solve_layout.compiled_parameter_len = 1;
     model.parameters = vec![0.0];
-    model.problem.events.root_conditions = solve::ScalarProgramBlock::with_source_span(
+    model.problem.events.root_conditions = scalar_program_block(
         vec![vec![
             solve::LinearOp::LoadP { dst: 0, index: 0 },
             solve::LinearOp::StoreOutput { src: 0 },
@@ -166,7 +166,7 @@ fn state_only_bdf_uses_search_values_for_parameter_static_roots() {
         fixture_span!(),
     );
     model.problem.discrete.update_targets = vec![solve::scalar_slot_y(0)];
-    model.problem.discrete.rhs = solve::ScalarProgramBlock::with_source_span(
+    model.problem.discrete.rhs = scalar_program_block(
         vec![vec![
             solve::LinearOp::LoadY { dst: 0, index: 0 },
             solve::LinearOp::Const { dst: 1, value: 0.0 },
@@ -347,18 +347,18 @@ fn sampled_mean_discrete_rhs() -> solve::ScalarProgramBlock {
         },
         solve::LinearOp::StoreOutput { src: 10 },
     ]);
-    solve::ScalarProgramBlock::with_source_span(vec![reinit_row, mean_row], fixture_span!())
+    scalar_program_block(vec![reinit_row, mean_row], fixture_span!())
 }
 
 fn rising_state_with_root_reinit() -> solve::SolveModel {
-    let rhs = solve::ScalarProgramBlock::with_source_span(
+    let rhs = scalar_program_block(
         vec![vec![
             solve::LinearOp::Const { dst: 0, value: 1.0 },
             solve::LinearOp::StoreOutput { src: 0 },
         ]],
         fixture_span!(),
     );
-    let zero = solve::ScalarProgramBlock::with_source_span(
+    let zero = scalar_program_block(
         vec![vec![
             solve::LinearOp::Const { dst: 0, value: 0.0 },
             solve::LinearOp::StoreOutput { src: 0 },
@@ -378,7 +378,7 @@ fn rising_state_with_root_reinit() -> solve::SolveModel {
     model.problem.solve_layout.solver_maps.name_to_idx = IndexMap::from([("x".to_string(), 0)]);
     model.problem.solve_layout.solver_maps.base_to_indices =
         IndexMap::from([("x".to_string(), vec![0])]);
-    model.problem.events.root_conditions = solve::ScalarProgramBlock::with_source_span(
+    model.problem.events.root_conditions = scalar_program_block(
         vec![vec![
             solve::LinearOp::LoadY { dst: 0, index: 0 },
             solve::LinearOp::Const {
@@ -396,7 +396,7 @@ fn rising_state_with_root_reinit() -> solve::SolveModel {
         fixture_span!(),
     );
     model.problem.discrete.update_targets = vec![solve::scalar_slot_y(0)];
-    model.problem.discrete.rhs = solve::ScalarProgramBlock::with_source_span(
+    model.problem.discrete.rhs = scalar_program_block(
         vec![vec![
             solve::LinearOp::LoadY { dst: 0, index: 0 },
             solve::LinearOp::Const {
@@ -456,7 +456,7 @@ fn falling_ball_with_strict_reinit_guard() -> solve::SolveModel {
             clock_schedule: None,
         },
     ];
-    model.problem.events.root_conditions = solve::ScalarProgramBlock::with_source_span(
+    model.problem.events.root_conditions = scalar_program_block(
         vec![vec![
             solve::LinearOp::LoadY { dst: 0, index: 0 },
             solve::LinearOp::StoreOutput { src: 0 },
@@ -477,7 +477,7 @@ fn falling_ball_with_strict_reinit_guard() -> solve::SolveModel {
 }
 
 fn falling_ball_continuous_blocks() -> (solve::ScalarProgramBlock, solve::ScalarProgramBlock) {
-    let rhs = solve::ScalarProgramBlock::with_source_span(
+    let rhs = scalar_program_block(
         vec![
             vec![
                 solve::LinearOp::LoadY { dst: 0, index: 1 },
@@ -493,7 +493,7 @@ fn falling_ball_continuous_blocks() -> (solve::ScalarProgramBlock, solve::Scalar
         ],
         fixture_span!(),
     );
-    let zero = solve::ScalarProgramBlock::with_source_span(
+    let zero = scalar_program_block(
         vec![
             vec![
                 solve::LinearOp::Const { dst: 0, value: 0.0 },
@@ -510,7 +510,7 @@ fn falling_ball_continuous_blocks() -> (solve::ScalarProgramBlock, solve::Scalar
 }
 
 fn falling_ball_strict_reinit_rhs() -> solve::ScalarProgramBlock {
-    solve::ScalarProgramBlock::with_source_span(
+    scalar_program_block(
         vec![vec![
             solve::LinearOp::LoadY { dst: 0, index: 0 },
             solve::LinearOp::Const { dst: 1, value: 0.0 },

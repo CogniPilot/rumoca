@@ -119,8 +119,11 @@ fn eval_event_action_message_concatenates_text_and_numeric_parts() {
                 LinearOp::Const { dst: 0, value: 1.0 },
                 LinearOp::StoreOutput { src: 0 },
             ]],
-            fixture_span(),
-        ),
+            fixture_span()
+                .require_provenance("evaluator fixture")
+                .expect("fixture span is source-backed"),
+        )
+        .expect("event action condition fixture is computable"),
         actions: vec![rumoca_ir_solve::SolveEventAction {
             kind: SolveEventActionKind::Assert,
             message: rumoca_ir_solve::SolveEventMessage {
@@ -132,7 +135,7 @@ fn eval_event_action_message_concatenates_text_and_numeric_parts() {
                     ]),
                 ],
             },
-            span: rumoca_core::Span::DUMMY,
+            span: fixture_span(),
             origin: "assert".to_string(),
         }],
         ..Default::default()
@@ -766,8 +769,11 @@ fn eval_scalar_program_block_short_output_is_error_not_truncation() {
                 LinearOp::StoreOutput { src: 0 },
             ],
         ],
-        fixture_span(),
-    );
+        fixture_span()
+            .require_provenance("evaluator fixture")
+            .expect("fixture span is source-backed"),
+    )
+    .expect("evaluation fixture is computable");
     let mut out = [0.0];
 
     let err = eval_scalar_program_block(&block, &[], &[], 0.0, None, &mut out)
@@ -849,8 +855,11 @@ fn eval_scalar_program_block_prevalidates_inputs_before_mutating_output() {
                 LinearOp::StoreOutput { src: 0 },
             ],
         ],
-        fixture_span(),
-    );
+        fixture_span()
+            .require_provenance("evaluator fixture")
+            .expect("fixture span is source-backed"),
+    )
+    .expect("evaluation fixture is computable");
     let mut out = [9.0, 9.0];
 
     let err = eval_scalar_program_block(&block, &[5.0], &[], 0.0, None, &mut out)
@@ -901,8 +910,11 @@ fn scalar_program_block_input_requirements_merge_all_rows() {
                 LinearOp::StoreOutput { src: 1 },
             ],
         ],
-        fixture_span(),
-    );
+        fixture_span()
+            .require_provenance("evaluator fixture")
+            .expect("fixture span is source-backed"),
+    )
+    .expect("input-requirement fixture is computable");
 
     assert_eq!(
         scalar_program_block_input_requirements(&block)
@@ -1086,14 +1098,15 @@ fn prepared_scalar_block_rejects_ambiguous_single_output_owners() {
 #[test]
 fn prepared_scalar_block_rejects_logical_output_count_overflow() {
     let span = fixture_span();
-    let block = ScalarProgramBlock {
-        programs: vec![vec![
+    let block = ScalarProgramBlock::with_output_indices(
+        vec![vec![
             LinearOp::Const { dst: 0, value: 1.0 },
             LinearOp::StoreOutput { src: 0 },
         ]],
-        program_spans: vec![span],
-        output_indices: vec![usize::MAX],
-    };
+        vec![span],
+        vec![usize::MAX],
+    )
+    .expect("sparse output fixture satisfies scalar-program contracts");
 
     let error = match PreparedScalarProgramBlock::new(block) {
         Ok(_) => panic!("logical output count overflow should fail preparation"),
@@ -1106,14 +1119,15 @@ fn prepared_scalar_block_rejects_logical_output_count_overflow() {
 #[test]
 fn prepared_scalar_block_rejects_unallocatable_sparse_output_index() {
     let span = fixture_span();
-    let block = ScalarProgramBlock {
-        programs: vec![vec![
+    let block = ScalarProgramBlock::with_output_indices(
+        vec![vec![
             LinearOp::Const { dst: 0, value: 1.0 },
             LinearOp::StoreOutput { src: 0 },
         ]],
-        program_spans: vec![span],
-        output_indices: vec![usize::MAX / 2],
-    };
+        vec![span],
+        vec![usize::MAX / 2],
+    )
+    .expect("sparse output fixture satisfies scalar-program contracts");
 
     let error = match PreparedScalarProgramBlock::new(block) {
         Ok(_) => panic!("unallocatable sparse output metadata should fail preparation"),

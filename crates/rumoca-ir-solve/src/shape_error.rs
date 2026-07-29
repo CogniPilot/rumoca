@@ -30,6 +30,11 @@ pub enum SolveProblemShapeContractError {
         spans: usize,
         span: Option<Span>,
     },
+    ScalarProgramMissingProvenance {
+        context: String,
+        node_index: usize,
+        program_index: usize,
+    },
     ScalarProgramOutputIndexMismatch {
         context: String,
         node_index: usize,
@@ -187,6 +192,7 @@ impl SolveProblemShapeContractError {
             | Self::DuplicateProjectionUnknown { span, .. }
             | Self::InvalidProjectionUnknown { span, .. }
             | Self::InvalidScheduledRootTiming { span, .. } => *span,
+            Self::ScalarProgramMissingProvenance { .. } => None,
             Self::ZeroTensorDimension { span, .. }
             | Self::StructuredIndexDomain { span, .. }
             | Self::TensorOutputMapDimension { span, .. }
@@ -217,6 +223,14 @@ impl std::fmt::Display for SolveProblemShapeContractError {
             } => write!(
                 f,
                 "{context} node {node_index} has {programs} scalar programs but {spans} spans"
+            ),
+            Self::ScalarProgramMissingProvenance {
+                context,
+                node_index,
+                program_index,
+            } => write!(
+                f,
+                "{context} node {node_index} scalar program {program_index} has no source provenance"
             ),
             Self::ScalarProgramOutputIndexMismatch {
                 context,

@@ -167,8 +167,11 @@ mod tests {
                 LinearOp::Const { dst: 0, value: 2.0 },
                 LinearOp::StoreOutput { src: 0 },
             ]],
-            fixture_span(),
-        );
+            fixture_span()
+                .require_provenance("update-row fixture")
+                .expect("fixture span is source-backed"),
+        )
+        .expect("update-row fixture is computable");
         let mut y = vec![1.0];
         let mut p = vec![0.0];
         let changed = eval_and_apply_update_rows(UpdateRowApplication {

@@ -283,10 +283,15 @@ mod tests {
     }
 
     fn block(programs: Vec<Vec<solve::LinearOp>>) -> solve::ComputeBlock {
-        solve::ComputeBlock::from_scalar_program_block(solve::ScalarProgramBlock::with_source_span(
-            programs,
-            test_span(),
-        ))
+        solve::ComputeBlock::from_scalar_program_block(
+            solve::ScalarProgramBlock::with_source_span(
+                programs,
+                test_span()
+                    .require_provenance("initial-projection runtime fixture")
+                    .expect("fixture span is source-backed"),
+            )
+            .expect("fixture program is computable"),
+        )
     }
 
     #[test]

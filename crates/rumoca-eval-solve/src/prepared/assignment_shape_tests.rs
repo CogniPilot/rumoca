@@ -61,10 +61,15 @@ fn affine_shape_with_deep_shared_dag_terminates() {
     }
 
     // And the public preparation path must also complete.
-    let _ = PreparedScalarProgramBlock::new(rumoca_ir_solve::ScalarProgramBlock::with_source_span(
-        vec![ops],
-        fixture_span(),
-    ))
+    let _ = PreparedScalarProgramBlock::new(
+        rumoca_ir_solve::ScalarProgramBlock::with_source_span(
+            vec![ops],
+            fixture_span()
+                .require_provenance("prepared assignment fixture")
+                .expect("fixture span is source-backed"),
+        )
+        .expect("scalar fixture is computable"),
+    )
     .expect("valid scalar block should prepare");
 }
 

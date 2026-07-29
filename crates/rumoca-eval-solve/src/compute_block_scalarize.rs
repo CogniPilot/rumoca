@@ -275,11 +275,11 @@ impl ScalarProgramCollector {
         block: &ScalarProgramBlock,
     ) -> Result<(), ScalarizeError> {
         let span = scalar_program_block_span(block);
-        let mut programs = cloned_scalar_rows_optional(&block.programs, "scalar programs", span)?;
+        let mut programs = cloned_scalar_rows_optional(block.programs(), "scalar programs", span)?;
         append_vec_optional(&mut self.rows, &mut programs, "scalar programs", span)?;
         extend_cloned_values(
             &mut self.program_spans,
-            &block.program_spans,
+            block.program_spans(),
             "scalar programs spans",
             span,
         )?;
@@ -459,7 +459,7 @@ impl ScalarProgramCollector {
 
 fn compute_node_trace_fields(node: &ComputeNode) -> (&'static str, String) {
     match node {
-        ComputeNode::ScalarPrograms(block) => ("scalar", format!("{:?}", block.output_indices)),
+        ComputeNode::ScalarPrograms(block) => ("scalar", format!("{:?}", block.output_indices())),
         ComputeNode::MatMul { m, n, .. } => ("matmul", format!("{m}x{n}")),
         ComputeNode::LinSolve { n, .. } => ("linsolve", n.to_string()),
         ComputeNode::Map { output_map, .. } => ("map", format!("{output_map:?}")),

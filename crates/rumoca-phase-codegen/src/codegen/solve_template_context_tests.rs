@@ -23,7 +23,13 @@ fn fixture_span() -> rumoca_core::Span {
 }
 
 fn scalar_block(rows: Vec<Vec<solve::LinearOp>>) -> solve::ScalarProgramBlock {
-    solve::ScalarProgramBlock::with_source_span(rows, fixture_span())
+    solve::ScalarProgramBlock::with_source_span(
+        rows,
+        fixture_span()
+            .require_provenance("solve-template fixture")
+            .expect("fixture span is source-backed"),
+    )
+    .expect("fixture program is computable")
 }
 
 fn scalar_block_with_output_indices(

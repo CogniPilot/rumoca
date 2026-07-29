@@ -20,8 +20,11 @@ fn compile_derivative_rhs(
 fn scalar_program_block(rows: Vec<Vec<LinearOp>>, label: &str) -> ScalarProgramBlock {
     ScalarProgramBlock::with_source_span(
         rows,
-        Span::from_offsets(SourceId::from_source_name(label), 0, label.len()),
+        Span::from_offsets(SourceId::from_source_name(label), 0, label.len())
+            .require_provenance("MLIR compile fixture")
+            .expect("fixture span is source-backed"),
     )
+    .expect("fixture program is computable")
 }
 
 /// Build a SolveProblem whose derivative_rhs computes:

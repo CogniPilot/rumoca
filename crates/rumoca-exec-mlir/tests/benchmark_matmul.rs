@@ -130,14 +130,26 @@ fn scalar_block() -> ComputeBlock {
         },
         LinearOp::StoreOutput { src: 2 },
     ];
-    ComputeBlock::from_scalar_program_block(ScalarProgramBlock::with_source_span(
-        vec![row0, row1],
-        fixture_span("benchmark_matmul_scalar.mo"),
-    ))
+    ComputeBlock::from_scalar_program_block(
+        ScalarProgramBlock::with_source_span(
+            vec![row0, row1],
+            fixture_span("benchmark_matmul_scalar.mo")
+                .require_provenance("MLIR matrix benchmark fixture")
+                .expect("fixture span is source-backed"),
+        )
+        .expect("fixture program is computable"),
+    )
 }
 
 fn solve_problem_for(derivative_rhs: ComputeBlock) -> SolveProblem {
-    SolveProblem::with_derivative_rhs(derivative_rhs)
+    let state_scalar_count = derivative_rhs
+        .len()
+        .expect("fixture derivative output shape is computable");
+    let mut problem = SolveProblem::with_derivative_rhs(derivative_rhs);
+    problem.solve_layout.state_scalar_count = state_scalar_count;
+    problem.layout =
+        rumoca_ir_solve::VarLayout::from_parts(indexmap::IndexMap::new(), state_scalar_count, 0);
+    problem
 }
 
 fn compile_derivative_rhs(

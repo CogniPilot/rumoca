@@ -45,8 +45,11 @@ use rumoca_ir_solve::{
 fn spb(rows: Vec<Vec<LinearOp>>, label: &str) -> ScalarProgramBlock {
     ScalarProgramBlock::with_source_span(
         rows,
-        Span::from_offsets(SourceId::from_source_name(label), 0, label.len()),
+        Span::from_offsets(SourceId::from_source_name(label), 0, label.len())
+            .require_provenance("MLIR Monte Carlo fixture")
+            .expect("fixture span is source-backed"),
     )
+    .expect("fixture program is computable")
 }
 
 fn compile_to_gpu_blob(

@@ -226,7 +226,7 @@ fn validate_sensitivity_artifacts(model: &solve::SolveModel) -> Result<(), OptEr
         .artifacts
         .continuous
         .full_jacobian_v
-        .programs
+        .programs()
         .is_empty()
     {
         return Err(OptError::Lowering(
@@ -238,7 +238,7 @@ fn validate_sensitivity_artifacts(model: &solve::SolveModel) -> Result<(), OptEr
             .artifacts
             .continuous
             .implicit_jacobian_v_scalar
-            .programs
+            .programs()
             .is_empty()
     {
         return Err(OptError::Lowering(

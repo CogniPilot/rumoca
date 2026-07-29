@@ -77,7 +77,7 @@ pub(super) fn visible_value_plan(model: &solve::SolveModel) -> Option<VisibleVal
     let mut entries = Vec::with_capacity(rows.row_count());
     let mut expression_rows = Vec::new();
     let mut expression_groups = Vec::new();
-    for (row_idx, row) in rows.programs.iter().enumerate() {
+    for (row_idx, row) in rows.programs().iter().enumerate() {
         let output_count = solve::ScalarProgramBlock::program_output_count(row);
         if output_count != 1 {
             return None;
@@ -121,7 +121,7 @@ pub(super) fn root_condition_plan(
         .iter()
         .map(|row| row.target_index)
         .collect::<BTreeSet<_>>();
-    for (row_idx, row) in roots.programs.iter().enumerate() {
+    for (row_idx, row) in roots.programs().iter().enumerate() {
         if solve::ScalarProgramBlock::program_output_count(row) != 1 {
             return None;
         }
@@ -263,7 +263,7 @@ fn visible_expression_group_index(
 ) -> Option<usize> {
     groups
         .iter()
-        .position(|group| rows.programs[group.row_index].as_slice() == row)
+        .position(|group| rows.programs()[group.row_index].as_slice() == row)
 }
 
 fn direct_visible_source(

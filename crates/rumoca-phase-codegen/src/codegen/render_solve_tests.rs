@@ -139,10 +139,14 @@ fn template_partition_keeps_native_family_rows_out_of_fallback_programs() {
         metadata: solve::TensorNodeMetadata::default(),
         span,
     };
-    let scalar = solve::ComputeNode::ScalarPrograms(solve::ScalarProgramBlock::with_source_span(
-        vec![const_store_row(7.0)],
-        span,
-    ));
+    let scalar = solve::ComputeNode::ScalarPrograms(
+        solve::ScalarProgramBlock::with_source_span(
+            vec![const_store_row(7.0)],
+            span.require_provenance("template-partition scalar fixture")
+                .expect("fixture span is source-backed"),
+        )
+        .expect("fixture program is computable"),
+    );
 
     let partition = native_family_template_partition(&solve::ComputeBlock {
         nodes: vec![map, scalar],
@@ -294,47 +298,29 @@ fn template_partition_rejects_tensor_fallback_without_source_span() {
 }
 
 #[test]
-fn template_partition_rejects_scalar_block_without_source_span() {
-    let block = solve::ComputeBlock {
-        nodes: vec![solve::ComputeNode::ScalarPrograms(
-            solve::ScalarProgramBlock::with_source_span(
-                vec![const_store_row(7.0)],
-                rumoca_core::Span::source_free_serde_default(),
-            ),
-        )],
-    };
-
-    let err = match native_family_template_partition(&block) {
-        Ok(_) => panic!("template partitioning should reject unspanned scalar fallback rows"),
-        Err(err) => err,
-    };
-
-    assert_eq!(err.source_span(), None);
-    assert!(
-        err.to_string().contains("missing source span metadata"),
-        "error should explain missing source span metadata: {err}"
-    );
-}
-
-#[test]
-fn scalar_program_block_source_span_skips_dummy_first_row() {
-    let span = rumoca_core::Span::from_offsets(
+fn scalar_program_block_source_queries_preserve_exact_row_spans() {
+    let first_span = rumoca_core::Span::from_offsets(
         rumoca_core::SourceId::from_source_name("render_scalar_source.mo"),
         17,
         29,
     );
+    let second_span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("render_scalar_source.mo"),
+        30,
+        42,
+    );
     let block = solve::ScalarProgramBlock::with_program_spans(
         vec![const_store_row(1.0), const_store_row(2.0)],
-        vec![rumoca_core::Span::DUMMY, span],
+        vec![first_span, second_span],
     )
     .expect("render scalar span fixture metadata should match row count");
 
     assert_eq!(
         scalar_program_block_source_span(&block).expect("source span"),
-        span
+        first_span
     );
-    assert_eq!(scalar_program_row_span(&block, 0, span), span);
-    assert_eq!(scalar_program_row_span(&block, 1, span), span);
+    assert_eq!(block.program_span(0), Some(first_span));
+    assert_eq!(block.program_span(1), Some(second_span));
 }
 
 #[test]

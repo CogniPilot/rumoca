@@ -586,8 +586,8 @@ pub fn eval_scalar_program_block_with_context(
     validate_scalar_program_block_io(block, y, p, context.seed, out)?;
     out.fill(0.0);
     let mut scratch = RowEvalScratch::default();
-    let mut sink = OutputCursor::with_output_indices(out, &block.output_indices);
-    for (row_idx, row) in block.programs.iter().enumerate() {
+    let mut sink = OutputCursor::with_output_indices(out, block.output_indices());
+    for (row_idx, row) in block.programs().iter().enumerate() {
         eval_row_prepared_with_context(
             PreparedRowEval::new(
                 row,
@@ -1484,7 +1484,7 @@ pub fn scalar_program_block_input_requirements(
     block: &ScalarProgramBlock,
 ) -> Result<RowInputRequirements, EvalSolveError> {
     block
-        .programs
+        .programs()
         .iter()
         .enumerate()
         .map(|(row_idx, row)| (row_idx, row_input_requirements(row)))
@@ -1557,7 +1557,6 @@ pub fn validate_scalar_program_block_io(
     seed: Option<&[f64]>,
     out: &[f64],
 ) -> Result<(), EvalSolveError> {
-    block.validate_shape_contract("scalar program block eval")?;
     validate_output_len(out, block.output_count())?;
     validate_input_requirements(scalar_program_block_input_requirements(block)?, y, p, seed)
 }
