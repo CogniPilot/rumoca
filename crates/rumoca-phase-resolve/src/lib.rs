@@ -38,8 +38,7 @@ pub use validation::{UnresolvedKind, UnresolvedSymbol, ValidationResult, validat
 
 use rumoca_core::{
     BUILTIN_FUNCTIONS, BUILTIN_TYPES, BUILTIN_VARIABLES, ComponentPath, DefId, Diagnostic,
-    DiagnosticSeverity, Diagnostics, PrimaryLabel, ScopeId, SourceMap, Span, maybe_elapsed_ms,
-    maybe_start_timer,
+    Diagnostics, PrimaryLabel, ScopeId, SourceMap, Span, maybe_elapsed_ms, maybe_start_timer,
 };
 use rumoca_ir_ast as ast;
 use rumoca_ir_ast::AstIndexMap as IndexMap;
@@ -93,35 +92,6 @@ impl std::ops::Deref for ResolvedTree {
     fn deref(&self) -> &Self::Target {
         self.inner()
     }
-}
-
-/// Resolution behavior options.
-#[derive(Debug, Clone, Copy)]
-pub struct ResolveOptions {
-    /// Whether ER070 (annotation Evaluate scope) is treated as a hard error.
-    pub evaluate_scope_is_error: bool,
-    /// Whether ER053 (single-assignment in when-equation) is treated as a hard error.
-    pub when_single_assign_is_error: bool,
-}
-
-impl Default for ResolveOptions {
-    fn default() -> Self {
-        Self {
-            evaluate_scope_is_error: true,
-            when_single_assign_is_error: true,
-        }
-    }
-}
-
-fn apply_semantic_diagnostic_policy(mut diag: Diagnostic, options: ResolveOptions) -> Diagnostic {
-    let code = diag.code.as_deref().unwrap_or_default();
-    if code == "ER070" && !options.evaluate_scope_is_error {
-        diag.severity = DiagnosticSeverity::Warning;
-    }
-    if code == "ER053" && !options.when_single_assign_is_error {
-        diag.severity = DiagnosticSeverity::Warning;
-    }
-    diag
 }
 
 const ER098_MISSING_SOURCE_CONTEXT: &str = "ER098";
@@ -588,15 +558,7 @@ impl Default for Resolver {
 /// but unresolved symbol references are treated as hard errors. Component
 /// references and function calls must resolve their leading name in scope.
 pub fn resolve(parsed: ParsedTree) -> Result<ResolvedTree, Diagnostics> {
-    resolve_with_options(parsed, ResolveOptions::default())
-}
-
-/// Resolve names in a ParsedTree with custom semantic-diagnostic policy.
-pub fn resolve_with_options(
-    parsed: ParsedTree,
-    options: ResolveOptions,
-) -> Result<ResolvedTree, Diagnostics> {
-    resolve_with_diagnostics(parsed, options)
+    resolve_with_diagnostics(parsed)
         .map(ResolveSuccess::into_tree)
         .map_err(ResolveFailure::into_diagnostics)
 }
@@ -651,11 +613,8 @@ impl ResolveFailure {
 /// Resolve names while preserving advisory diagnostics on success.
 ///
 /// Any error returns a planning-only artifact rather than a [`ResolvedTree`].
-pub fn resolve_with_diagnostics(
-    parsed: ParsedTree,
-    options: ResolveOptions,
-) -> Result<ResolveSuccess, ResolveFailure> {
-    complete_resolution(resolve_attempt(parsed, options))
+pub fn resolve_with_diagnostics(parsed: ParsedTree) -> Result<ResolveSuccess, ResolveFailure> {
+    complete_resolution(resolve_attempt(parsed))
 }
 
 struct ResolutionAttempt {
@@ -664,7 +623,7 @@ struct ResolutionAttempt {
     stats: ResolutionStats,
 }
 
-fn resolve_attempt(parsed: ParsedTree, options: ResolveOptions) -> ResolutionAttempt {
+fn resolve_attempt(parsed: ParsedTree) -> ResolutionAttempt {
     let total_start = maybe_start_timer();
     let mut tree = parsed.into_inner();
     let mut resolver = Resolver::new();
@@ -673,14 +632,10 @@ fn resolve_attempt(parsed: ParsedTree, options: ResolveOptions) -> ResolutionAtt
     // Run semantic checks on the AST.
     let semantic_checks_start = maybe_start_timer();
     for diag in semantic_checks::check_all_semantics(&tree.definitions, &tree.source_map) {
-        resolver
-            .diagnostics
-            .emit(apply_semantic_diagnostic_policy(diag, options));
+        resolver.diagnostics.emit(diag);
     }
     for diag in semantic_checks::check_resolved_semantics(&tree) {
-        resolver
-            .diagnostics
-            .emit(apply_semantic_diagnostic_policy(diag, options));
+        resolver.diagnostics.emit(diag);
     }
     let semantic_checks_ms = maybe_elapsed_ms(semantic_checks_start);
 
@@ -749,7 +704,7 @@ pub struct ResolveWithStatsResult {
 /// This is useful for diagnosing resolution behavior - it always returns stats
 /// even if resolution fails.
 pub fn resolve_with_stats(parsed: ParsedTree) -> ResolveWithStatsResult {
-    let attempt = resolve_attempt(parsed, ResolveOptions::default());
+    let attempt = resolve_attempt(parsed);
     let stats = attempt.stats.clone();
     let tree = match complete_resolution(attempt) {
         Ok(success) => Ok(success.into_tree()),

@@ -68,7 +68,7 @@ end UsesLoopIndexJ;
 }
 
 #[test]
-fn test_evaluate_on_non_parameter_component_is_error_by_default() {
+fn test_evaluate_on_non_parameter_component_is_always_an_error() {
     let source = r#"
 model EvaluateScopeWarning
   Real x annotation(Evaluate=true);
@@ -77,7 +77,7 @@ equation
 end EvaluateScopeWarning;
 "#;
     let diagnostics = resolve_test_source(source)
-        .expect_err("Evaluate annotation scope should fail by default in strict mode");
+        .expect_err("Evaluate annotation scope is a mandatory MLS error");
     assert!(
         diagnostics
             .iter()
@@ -87,7 +87,7 @@ end EvaluateScopeWarning;
 }
 
 #[test]
-fn test_evaluate_on_function_local_component_is_allowed() {
+fn test_evaluate_on_function_local_component_is_an_error() {
     let source = r#"
 function F
   input Real x[:];
@@ -98,8 +98,14 @@ algorithm
   y := m;
 end F;
 "#;
-    resolve_test_source(source)
-        .expect("Evaluate annotation on function local component should be accepted");
+    let diagnostics =
+        resolve_test_source(source).expect_err("function locals are not exempt from ANN-008");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code.as_deref() == Some("ER070")),
+        "expected ER070 for invalid function-local Evaluate annotation, got: {diagnostics:?}"
+    );
 }
 
 #[test]

@@ -20,7 +20,7 @@ use rumoca_phase_instantiate::{
     InstantiateError, InstantiateOptions, InstantiationOutcome,
     instantiate_model_with_outcome_options,
 };
-use rumoca_phase_resolve::{ResolveOptions, ResolvedTree, resolve_with_diagnostics};
+use rumoca_phase_resolve::{ResolvedTree, resolve_with_diagnostics};
 use rumoca_phase_typecheck::typecheck_instanced;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -2015,10 +2015,6 @@ pub struct Session {
     lightweight_snapshot_cache: SharedSessionSnapshotCache,
     /// Shared medium-weight snapshot for global workspace symbol reads.
     workspace_symbol_snapshot_cache: SharedSessionSnapshotCache,
-    /// Session-wide semantic strictness for ER070.
-    evaluate_scope_is_error: bool,
-    /// Session-wide semantic strictness for ER053.
-    when_single_assign_is_error: bool,
 }
 
 /// Detached query snapshot cloned from one host session revision.

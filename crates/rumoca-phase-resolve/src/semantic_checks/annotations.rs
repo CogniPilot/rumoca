@@ -24,10 +24,6 @@ pub(super) fn check_annotation_restrictions(class: &ClassDef, diags: &mut Vec<Di
         );
     }
 
-    if class.class_type == ClassType::Function {
-        return;
-    }
-
     for comp in class.components.values() {
         check_component_evaluate_annotations(comp, diags);
     }

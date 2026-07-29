@@ -1515,6 +1515,9 @@ pub(super) fn check_annotation_advisories(
 /// has no effect; warn so the annotation is not silently ignored.
 pub(super) fn check_evaluate_annotations(class: &ClassDef, diags: &mut Vec<Diagnostic>) {
     for (name, comp) in &class.components {
+        if !matches!(comp.variability, Variability::Parameter(_)) {
+            continue;
+        }
         let has_evaluate = comp.annotation.iter().any(|entry| {
             matches!(
                 entry,

@@ -476,11 +476,7 @@ impl Session {
         tree.source_map = session_source_map;
 
         let parsed = ast::ParsedTree::new(tree);
-        let resolve_options = ResolveOptions {
-            evaluate_scope_is_error: self.evaluate_scope_is_error,
-            when_single_assign_is_error: self.when_single_assign_is_error,
-        };
-        let (tree, diagnostics) = match resolve_with_diagnostics(parsed, resolve_options) {
+        let (tree, diagnostics) = match resolve_with_diagnostics(parsed) {
             Ok(success) => {
                 let (resolved, diagnostics) = success.into_parts();
                 (
@@ -526,11 +522,7 @@ impl Session {
         })?;
         let mut tree = ast::ClassTree::from_parsed(merged);
         tree.source_map = source_map;
-        let options = ResolveOptions {
-            evaluate_scope_is_error: self.evaluate_scope_is_error,
-            when_single_assign_is_error: self.when_single_assign_is_error,
-        };
-        match resolve_with_diagnostics(ast::ParsedTree::new(tree), options) {
+        match resolve_with_diagnostics(ast::ParsedTree::new(tree)) {
             Ok(success) => {
                 let (resolved, diagnostics) = success.into_parts();
                 Ok((Arc::new(resolved), diagnostics))
