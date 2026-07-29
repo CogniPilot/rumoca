@@ -64,15 +64,66 @@ pub(super) fn static_function_range(
     else {
         return Ok(None);
     };
-    let evaluate = |expression| {
-        static_integer_expression(expression, values)
-            .map(Ok)
-            .unwrap_or_else(|| evaluate_shape_integer(expression, shapes))
+    let evaluate = |expression| -> Result<Option<i64>, ToDaeError> {
+        if let Some(value) = static_integer_expression(expression, values) {
+            return Ok(Some(value));
+        }
+        if shape_integer_expression(expression, values) {
+            return evaluate_shape_integer(expression, shapes).map(Some);
+        }
+        Ok(None)
     };
-    let lower = evaluate(start)?;
-    let step = step.as_deref().map(evaluate).transpose()?.unwrap_or(1);
-    let upper = evaluate(end)?;
+    let Some(lower) = evaluate(start)? else {
+        return Ok(None);
+    };
+    let Some(step) = step
+        .as_deref()
+        .map(evaluate)
+        .transpose()?
+        .unwrap_or(Some(1))
+    else {
+        return Ok(None);
+    };
+    let Some(upper) = evaluate(end)? else {
+        return Ok(None);
+    };
     Ok((step != 0).then_some((lower, step, upper)))
+}
+
+fn shape_integer_expression(expression: &Expression, values: &HashMap<VarName, i64>) -> bool {
+    match expression {
+        Expression::Literal {
+            value: Literal::Integer(_),
+            ..
+        } => true,
+        Expression::VarRef {
+            name, subscripts, ..
+        } => subscripts.is_empty() && values.contains_key(name.var_name()),
+        Expression::BuiltinCall {
+            function: BuiltinFunction::Size,
+            ..
+        } => true,
+        Expression::Unary {
+            op: OpUnary::Plus | OpUnary::DotPlus | OpUnary::Minus | OpUnary::DotMinus,
+            rhs,
+            ..
+        } => shape_integer_expression(rhs, values),
+        Expression::Binary {
+            op:
+                OpBinary::Add
+                | OpBinary::AddElem
+                | OpBinary::Sub
+                | OpBinary::SubElem
+                | OpBinary::Mul
+                | OpBinary::MulElem
+                | OpBinary::Div
+                | OpBinary::DivElem,
+            lhs,
+            rhs,
+            ..
+        } => shape_integer_expression(lhs, values) && shape_integer_expression(rhs, values),
+        _ => false,
+    }
 }
 
 pub(super) fn validate_function_range_expression(
