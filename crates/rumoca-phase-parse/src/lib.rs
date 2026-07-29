@@ -40,7 +40,7 @@ pub use generated::modelica_parser;
 // Re-export types used by modelica_grammar_trait (generated code references these)
 pub use components::{ComponentList, TokenList};
 pub use definitions::{Composition, ElementList};
-pub use expressions::{ArraySubscripts, ExpressionList, ModificationArg};
+pub use expressions::{ArraySubscripts, ExpressionList, FunctionCallArguments, ModificationArg};
 pub use sections::{AlgorithmSection, EquationSection};
 
 /// A parsed comment with its location information
@@ -786,6 +786,28 @@ end Ball;
         };
 
         assert_eq!(source_slice(source, *span), "()");
+    }
+
+    #[test]
+    fn test_function_call_spans_include_both_delimiters() {
+        let source = "\
+model Test
+  Real y;
+  Real current = pre(y);
+  Real empty = marker();
+end Test;";
+        let parsed = parse_to_ast(source, "test.mo").expect("Parse should succeed");
+        let model = parsed.classes.get("Test").expect("Test should exist");
+        for (name, expected) in [("current", "pre(y)"), ("empty", "marker()")] {
+            let binding = model.components[name]
+                .binding
+                .as_ref()
+                .expect("binding should exist");
+            let ast::Expression::FunctionCall { span, .. } = binding else {
+                panic!("expected function-call binding");
+            };
+            assert_eq!(source_slice(source, *span), expected);
+        }
     }
 
     #[test]

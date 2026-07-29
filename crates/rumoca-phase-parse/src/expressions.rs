@@ -21,6 +21,13 @@ fn call_span(comp: &rumoca_ir_ast::ComponentReference, args: &[rumoca_ir_ast::Ex
         .map_or(comp.span, |last| merge_spans(comp.span, last.span()))
 }
 
+fn parsed_call_span(
+    comp: &rumoca_ir_ast::ComponentReference,
+    args: &FunctionCallArguments,
+) -> Span {
+    merge_spans(comp.span, args.delimiter_span)
+}
+
 fn binary_span(lhs: &rumoca_ir_ast::Expression, rhs: &rumoca_ir_ast::Expression) -> Span {
     merge_spans(lhs.span(), rhs.span())
 }
@@ -212,6 +219,16 @@ pub struct ExpressionList {
     pub redeclare_flags: Vec<bool>,
     /// Parallel to args - true if the corresponding arg is an element replaceable declaration
     pub replaceable_flags: Vec<bool>,
+}
+
+#[derive(Debug, Clone)]
+pub struct FunctionCallArguments {
+    pub args: Vec<rumoca_ir_ast::Expression>,
+    pub each_flags: Vec<bool>,
+    pub final_flags: Vec<bool>,
+    pub redeclare_flags: Vec<bool>,
+    pub replaceable_flags: Vec<bool>,
+    pub delimiter_span: Span,
 }
 
 /// Convert a NamedArgument to a NamedArgument expression
@@ -981,32 +998,35 @@ impl TryFrom<&modelica_grammar_trait::OutputExpressionList> for ExpressionList {
     }
 }
 
-impl TryFrom<&modelica_grammar_trait::FunctionCallArgs> for ExpressionList {
+impl TryFrom<&modelica_grammar_trait::FunctionCallArgs> for FunctionCallArguments {
     type Error = anyhow::Error;
 
     fn try_from(
         ast: &modelica_grammar_trait::FunctionCallArgs,
     ) -> std::result::Result<Self, Self::Error> {
+        let delimiter_span = merge_spans(token_span(&ast.l_paren)?, token_span(&ast.r_paren)?);
         if let Some(opt) = &ast.function_call_args_opt {
             let args = opt.function_arguments.args.clone();
             let each_flags = opt.function_arguments.each_flags.clone();
             let final_flags = opt.function_arguments.final_flags.clone();
             let redeclare_flags = opt.function_arguments.redeclare_flags.clone();
             let replaceable_flags = opt.function_arguments.replaceable_flags.clone();
-            Ok(ExpressionList {
+            Ok(FunctionCallArguments {
                 args,
                 each_flags,
                 final_flags,
                 redeclare_flags,
                 replaceable_flags,
+                delimiter_span,
             })
         } else {
-            Ok(ExpressionList {
+            Ok(FunctionCallArguments {
                 args: vec![],
                 each_flags: vec![],
                 final_flags: vec![],
                 redeclare_flags: vec![],
                 replaceable_flags: vec![],
+                delimiter_span,
             })
         }
     }
@@ -1139,7 +1159,7 @@ fn convert_global_function_call(
     };
     let args = gfc.function_call_args.args.clone();
     let func_call = rumoca_ir_ast::Expression::FunctionCall {
-        span: call_span(&comp, &args),
+        span: parsed_call_span(&comp, &gfc.function_call_args),
         comp,
         args,
         is_partial_application: false,
@@ -1169,7 +1189,7 @@ impl TryFrom<&modelica_grammar_trait::Primary> for rumoca_ir_ast::Expression {
                         let comp_ref = comp.component_primary.component_reference.clone();
                         let args_vec = args.function_call_args.args.clone();
                         let func_call = rumoca_ir_ast::Expression::FunctionCall {
-                            span: call_span(&comp_ref, &args_vec),
+                            span: parsed_call_span(&comp_ref, &args.function_call_args),
                             comp: comp_ref,
                             args: args_vec,
                             is_partial_application: false,

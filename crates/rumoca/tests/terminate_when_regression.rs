@@ -73,18 +73,19 @@ fn pre_state_in_reinit_reads_the_pre_action_state() {
         .expect("compile BallReinit");
     let pre_value_nodes = compiled.dae.inspect(|view| {
         (0..view.expression_count())
-            .filter(|index| {
+            .filter_map(|index| {
                 let expression = view
-                    .expression(view.expression_id(*index).expect("dense expression id"))
+                    .expression(view.expression_id(index).expect("dense expression id"))
                     .expect("dense expression resolves");
-                expression.provenance().origin()
-                    == dae::DaeProvenanceOrigin::Generated(dae::DaeGeneration::PreValueLowering)
-                    && view.source_text(expression.provenance()) == Some("pre")
+                (expression.provenance().origin()
+                    == dae::DaeProvenanceOrigin::Generated(dae::DaeGeneration::PreValueLowering))
+                .then(|| view.source_text(expression.provenance()).map(str::to_owned))
             })
-            .count()
+            .collect::<Vec<_>>()
     });
     assert_eq!(
-        pre_value_nodes, 1,
+        pre_value_nodes,
+        vec![Some("pre(v)".to_owned())],
         "the contextual state read keeps typed generated provenance"
     );
 
