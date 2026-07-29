@@ -1944,10 +1944,19 @@ fn lower_equations<'dae>(
                     system.real_equation(owner, |equation| equation.residual(residual))
                 })?;
             }
-            EquationPartition::DiscreteValue { target, value } => {
-                let value =
-                    lower_expression(construction, coordinates, functions, value, generation)?;
-                let Coordinate::DiscreteValue(target) = coordinates[target] else {
+            EquationPartition::DiscreteValue(plan) => {
+                let value = lower_expression(
+                    construction,
+                    coordinates,
+                    functions,
+                    plan.value.as_ref(),
+                    if plan.generated {
+                        Some(dae::DaeGeneration::DiscreteUpdate)
+                    } else {
+                        generation
+                    },
+                )?;
+                let Coordinate::DiscreteValue(target) = coordinates[plan.target] else {
                     unreachable!("analysis classifies the equation target as discrete-valued")
                 };
                 construction.discrete(|system| system.assignment(owner, target, value))?;

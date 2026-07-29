@@ -2,7 +2,7 @@
 //!
 //! Tests for the 38 equation contracts defined in SPEC_0022.
 
-use rumoca_compile::compile::{FailedPhase, VariableRole};
+use rumoca_compile::compile::{ExpressionOperation, FailedPhase, VariableRole};
 use rumoca_contracts::test_support::{
     expect_balanced, expect_failure_in_phase_with_code, expect_parse_err_with_code,
     expect_resolve_failure_with_code, expect_success,
@@ -857,6 +857,34 @@ fn eqn_007_discrete_equation_not_solved_form_rejected() {
         FailedPhase::ToDae,
         "ED010",
     );
+}
+
+#[test]
+fn eqn_007_discrete_conditional_solved_form_accepted() {
+    let result = expect_success(
+        r#"
+        model M
+            Integer i(start = 0);
+        equation
+            if time > 1 then
+                i = 1;
+            else
+                i = 0;
+            end if;
+        end M;
+    "#,
+        "M",
+    );
+    result.dae.inspect(|view| {
+        assert_eq!(view.discrete_assignment_count(), 1);
+        let assignment = view
+            .discrete_assignment(view.discrete_assignment_id(0).unwrap())
+            .unwrap();
+        assert!(matches!(
+            view.expression(assignment.value()).unwrap().operation(),
+            ExpressionOperation::Conditional(_)
+        ));
+    });
 }
 
 // =============================================================================

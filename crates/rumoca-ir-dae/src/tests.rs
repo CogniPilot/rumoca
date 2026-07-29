@@ -998,6 +998,64 @@ fn every_local_b1c_target_requires_exactly_one_definition() {
 }
 
 #[test]
+fn b1c_current_value_dependencies_must_be_acyclic() {
+    let source = TestSource::new("discrete Boolean a; discrete Boolean b; equation a = b; b = a;");
+    let a_declaration = source.source("discrete Boolean a", 0);
+    let b_declaration = source.source("discrete Boolean b", 0);
+    let a_assignment = source.source("a = b", 0);
+    let b_assignment = source.source("b = a", 0);
+    let error = Dae::construct(source.map, |dae| {
+        let boolean = dae.types(|types| {
+            types.intern(
+                TypeId::new(0),
+                ValueType::scalar(ScalarType::Boolean),
+                a_declaration,
+            )
+        })?;
+        let (a, b) = dae.variables(|variables| {
+            Ok((
+                variables.discrete_value(
+                    VarName::new("a"),
+                    boolean,
+                    a_declaration,
+                    VariableAttributes::default(),
+                )?,
+                variables.discrete_value(
+                    VarName::new("b"),
+                    boolean,
+                    b_declaration,
+                    VariableAttributes::default(),
+                )?,
+            ))
+        })?;
+        let a_value = dae.expressions(|expressions| {
+            expressions
+                .at(a_assignment)
+                .coordinate(CoordinateInput::DiscreteValue(a))
+        })?;
+        let b_value = dae.expressions(|expressions| {
+            expressions
+                .at(b_assignment)
+                .coordinate(CoordinateInput::DiscreteValue(b))
+        })?;
+        dae.discrete(|discrete| {
+            discrete.assignment(a_assignment, a, b_value)?;
+            discrete.assignment(b_assignment, b, a_value)?;
+            Ok(())
+        })
+    })
+    .unwrap_err();
+
+    assert!(matches!(
+        error,
+        DaeConstructionError::InvalidDiscreteDependencyCycle {
+            target,
+            span,
+        } if target == 0 && span == a_assignment.span()
+    ));
+}
+
+#[test]
 fn functions_conditions_and_generated_runtime_nodes_use_the_same_arena() {
     let source =
         TestSource::new("function f input Real u; output Real y; end f; when x > 0 then end when;");

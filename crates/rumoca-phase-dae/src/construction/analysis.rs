@@ -1,4 +1,5 @@
 use super::*;
+use std::borrow::Cow;
 
 mod clocks;
 mod comprehensions;
@@ -171,16 +172,18 @@ pub(super) struct RecordEquationFieldPlan {
     pub(super) ordinal: usize,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(super) enum EquationPartition<'flat> {
     Continuous,
-    DiscreteReal {
-        target: &'flat VarName,
-    },
-    DiscreteValue {
-        target: &'flat VarName,
-        value: &'flat Expression,
-    },
+    DiscreteReal { target: &'flat VarName },
+    DiscreteValue(DiscreteValueAssignmentPlan<'flat>),
+}
+
+#[derive(Clone)]
+pub(super) struct DiscreteValueAssignmentPlan<'flat> {
+    pub(super) target: &'flat VarName,
+    pub(super) value: Cow<'flat, Expression>,
+    pub(super) generated: bool,
 }
 
 pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
@@ -1547,10 +1550,13 @@ pub(super) fn equation_partition<'flat>(
     equation: &'flat flat::Equation,
     roles: &HashMap<VarName, PlannedRole>,
 ) -> Result<EquationPartition<'flat>, ToDaeError> {
+    if let Some(plan) = discrete_value_assignment(&equation.residual, roles, equation.span)? {
+        return Ok(EquationPartition::DiscreteValue(plan));
+    }
     let Expression::Binary {
         op: OpBinary::Sub,
         lhs,
-        rhs,
+        rhs: _,
         ..
     } = &equation.residual
     else {
@@ -1580,27 +1586,7 @@ pub(super) fn equation_partition<'flat>(
     match roles[target] {
         PlannedRole::DiscreteReal => Ok(EquationPartition::DiscreteReal { target }),
         PlannedRole::DiscreteValue => {
-            let Expression::VarRef {
-                name, subscripts, ..
-            } = lhs.as_ref()
-            else {
-                return Err(ToDaeError::unsupported_flat(
-                    "discrete-value equation",
-                    "a discrete-value equation must have one resolved variable as its left-hand side",
-                    equation.span,
-                ));
-            };
-            if !subscripts.is_empty() {
-                return Err(ToDaeError::unsupported_flat(
-                    "indexed discrete-value equation",
-                    "indexed discrete-value updates require an owned array-update operation",
-                    equation.span,
-                ));
-            }
-            Ok(EquationPartition::DiscreteValue {
-                target: name.var_name(),
-                value: rhs,
-            })
+            unreachable!("discrete-value equations are classified before residual equations")
         }
         PlannedRole::Parameter
         | PlannedRole::Constant
@@ -1614,6 +1600,103 @@ pub(super) fn equation_partition<'flat>(
             unreachable!("the target was selected as a discrete coordinate")
         }
     }
+}
+
+fn discrete_value_assignment<'flat>(
+    expression: &'flat Expression,
+    roles: &HashMap<VarName, PlannedRole>,
+    owner: Span,
+) -> Result<Option<DiscreteValueAssignmentPlan<'flat>>, ToDaeError> {
+    match expression {
+        Expression::Binary {
+            op: OpBinary::Sub,
+            lhs,
+            rhs,
+            ..
+        } => {
+            let mut references = Vec::new();
+            lhs.collect_var_refs(&mut references);
+            if !references
+                .iter()
+                .any(|name| matches!(roles.get(name), Some(PlannedRole::DiscreteValue)))
+            {
+                return Ok(None);
+            }
+            let Expression::VarRef {
+                name, subscripts, ..
+            } = lhs.as_ref()
+            else {
+                return Err(invalid_discrete_lhs(owner));
+            };
+            if !subscripts.is_empty()
+                || !matches!(roles.get(name.var_name()), Some(PlannedRole::DiscreteValue))
+            {
+                return Err(invalid_discrete_lhs(owner));
+            }
+            Ok(Some(DiscreteValueAssignmentPlan {
+                target: name.var_name(),
+                value: Cow::Borrowed(rhs),
+                generated: false,
+            }))
+        }
+        Expression::If {
+            branches,
+            else_branch,
+            span,
+        } => {
+            let Some(fallback) = discrete_value_assignment(else_branch, roles, owner)? else {
+                return if expression_mentions_discrete_value(expression, roles) {
+                    Err(invalid_discrete_lhs(owner))
+                } else {
+                    Ok(None)
+                };
+            };
+            let mut values = Vec::with_capacity(branches.len());
+            for (condition, branch) in branches {
+                let Some(branch) = discrete_value_assignment(branch, roles, owner)? else {
+                    return Err(invalid_discrete_lhs(owner));
+                };
+                if branch.target != fallback.target {
+                    return Err(ToDaeError::discrete_solved_form_violation(
+                        "all branches of a discrete-valued equation must assign the same coordinate",
+                        owner,
+                    ));
+                }
+                values.push((condition.clone(), branch.value.into_owned()));
+            }
+            Ok(Some(DiscreteValueAssignmentPlan {
+                target: fallback.target,
+                value: Cow::Owned(Expression::If {
+                    branches: values,
+                    else_branch: Box::new(fallback.value.into_owned()),
+                    span: *span,
+                }),
+                generated: true,
+            }))
+        }
+        _ if expression_mentions_discrete_value(expression, roles) => {
+            Err(invalid_discrete_lhs(owner))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn expression_mentions_discrete_value(
+    expression: &Expression,
+    roles: &HashMap<VarName, PlannedRole>,
+) -> bool {
+    let mut references = Vec::new();
+    expression.collect_var_refs(&mut references);
+    references
+        .iter()
+        .any(|name| matches!(roles.get(name), Some(PlannedRole::DiscreteValue)))
+}
+
+fn invalid_discrete_lhs(span: Span) -> ToDaeError {
+    ToDaeError::discrete_solved_form_violation(
+        "a discrete-valued equation must have one unsubscripted resolved coordinate as its left-hand side",
+        span,
+    )
 }
 
 fn assignment_target_names(expression: &Expression) -> Vec<&VarName> {
@@ -1676,9 +1759,11 @@ pub(super) fn defined_discrete_targets(
     for equation in &flat.equations {
         match equation_partition(equation, roles)? {
             EquationPartition::Continuous => {}
-            EquationPartition::DiscreteReal { target }
-            | EquationPartition::DiscreteValue { target, .. } => {
+            EquationPartition::DiscreteReal { target } => {
                 targets.insert(target.clone());
+            }
+            EquationPartition::DiscreteValue(plan) => {
+                targets.insert(plan.target.clone());
             }
         }
     }
