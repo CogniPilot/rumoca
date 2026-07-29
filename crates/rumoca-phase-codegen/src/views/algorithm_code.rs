@@ -3,15 +3,18 @@
 //! These adapters expose semantic facts only. Templates own every emitted
 //! identifier, keyword, filename, schema spelling, and target type.
 
-use rumoca_ir_galec::ast as ast;
+use rumoca_ir_galec::ast;
 use rumoca_ir_galec::package::{AlgorithmCodePackage, CheckedAlgorithmBlock};
 use serde::Serialize;
+
+use super::algorithm_code_symbols;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct AlgorithmCodeView<'a> {
     package: PackageRoot<'a>,
     block_name: &'a str,
     block_name_quoted: bool,
+    symbol_names: Vec<&'a str>,
     variables: Vec<VariableView<'a>>,
     methods: MethodsView,
 }
@@ -65,6 +68,7 @@ impl<'a> AlgorithmCodeView<'a> {
             },
             block_name,
             block_name_quoted,
+            symbol_names: algorithm_code_symbols::collect(block),
             variables,
             methods: MethodsView::new(block),
         })
@@ -118,7 +122,9 @@ impl<'a> VariableView<'a> {
             start: StartView::new(scalar, start, declaration.dimensions.is_empty())?,
             real_min,
             real_max,
-            real_nominal: (scalar == ast::ScalarType::Real).then_some(nominal).flatten(),
+            real_nominal: (scalar == ast::ScalarType::Real)
+                .then_some(nominal)
+                .flatten(),
             integer_min,
             integer_max,
         })
@@ -186,6 +192,7 @@ pub struct CheckedAlgorithmBlockView<'a> {
     package: CheckedBlockRoot<'a>,
     block_name: &'a str,
     block_name_quoted: bool,
+    symbol_names: Vec<&'a str>,
     variables: Vec<CheckedBlockVariable<'a>>,
     methods: MethodsView,
 }
@@ -252,6 +259,7 @@ impl<'a> CheckedAlgorithmBlockView<'a> {
             package: CheckedBlockRoot { block },
             block_name,
             block_name_quoted,
+            symbol_names: algorithm_code_symbols::collect(block),
             variables,
             methods: MethodsView::new(block),
         })

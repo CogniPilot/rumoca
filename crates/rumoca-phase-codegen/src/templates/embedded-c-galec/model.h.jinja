@@ -1,3 +1,22 @@
+{%- set c_reserved = [
+    "auto", "break", "case", "char", "const", "continue", "default", "do",
+    "double", "else", "enum", "extern", "float", "for", "goto", "if",
+    "inline", "int", "long", "register", "restrict", "return", "short",
+    "signed", "sizeof", "static", "struct", "switch", "typedef", "union",
+    "unsigned", "void", "volatile", "while",
+    "_Alignas", "_Alignof", "_Atomic", "_BitInt", "_Bool", "_Complex",
+    "_Decimal32", "_Decimal64", "_Decimal128", "_Generic", "_Imaginary",
+    "_Noreturn", "_Static_assert", "_Thread_local",
+    "alignas", "alignof", "bool", "constexpr", "false", "nullptr",
+    "static_assert", "thread_local", "true", "typeof", "typeof_unqual",
+    "self", "rumoca_galec_sign", "rumoca_galec_imin", "rumoca_galec_imax",
+    "rumoca_galec_division_towards_zero"
+] -%}
+{%- set c_symbols = allocate_symbols(
+    algorithm_code.symbol_names,
+    {"separator": "_", "reserved": c_reserved, "generated_prefixes": ["rumoca_galec_"]}
+) -%}
+{%- set c_model = symbol(c_symbols, algorithm_code.block_name) -%}
 {%- macro c_type(kind) -%}
 {%- if kind == "real" -%}double{%- elif kind == "integer" -%}int32_t{%- elif kind == "boolean" -%}bool{%- else -%}{{ fail_closed_scalar_type }}{%- endif -%}
 {%- endmacro -%}
@@ -5,21 +24,21 @@
  * GALEC-derived embedded C export (SPEC_0034 GAL-024).
  * NOT an eFMI Production Code container.
  * Target syntax and layout are owned by this template. */
-#ifndef {{ model_name | upper }}_GALEC_H
-#define {{ model_name | upper }}_GALEC_H
+#ifndef {{ c_model | upper }}_GALEC_H
+#define {{ c_model | upper }}_GALEC_H
 
 #include <stdbool.h>
 #include <stdint.h>
 
 typedef struct {
 {%- for variable in algorithm_code.variables %}
-    {{ c_type(variable.kind) }} {{ variable.name | sanitize }}{% for size in variable.dimensions %}[{{ size }}]{% endfor %}; /* declaration {{ variable.ordinal }}: {{ variable.name | replace("*/", "* /") | replace("/*", "/ *") }} ({{ variable.causality }}) */
+    {{ c_type(variable.kind) }} {{ symbol(c_symbols, variable.name) }}{% for size in variable.dimensions %}[{{ size }}]{% endfor %}; /* declaration {{ variable.ordinal }}: {{ variable.name | replace("*/", "* /") | replace("/*", "/ *") }} ({{ variable.causality }}) */
 {%- endfor %}
-} {{ model_name }}State;
+} {{ c_model }}State;
 
-void {{ model_name }}_startup({{ model_name }}State *self);
-void {{ model_name }}_recalibrate({{ model_name }}State *self);
-void {{ model_name }}_dostep({{ model_name }}State *self);
+void {{ c_model }}_startup({{ c_model }}State *self);
+void {{ c_model }}_recalibrate({{ c_model }}State *self);
+void {{ c_model }}_dostep({{ c_model }}State *self);
 
 #ifndef EFMI_STATE_TYPE
 #  define EFMI_STATE_TYPE(model) model##State
