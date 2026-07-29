@@ -23,13 +23,14 @@ mod function_construction;
 mod function_record_assembly;
 mod function_shapes;
 mod record_equation;
+mod variable_construction;
 use algorithm::{
     AlgorithmStatementContext, lower_algorithm_assignment, lower_algorithm_function_call,
 };
 use analysis::{
-    Analysis, ComprehensionKey, ComprehensionPlan, EquationPartition, FunctionArrayAssemblyPlan,
-    FunctionLoopLowering, FunctionPlan, FunctionRecordAssemblyPlan, FunctionStatementPlan,
-    PlannedRole, RecordEquationPlan, analyze, defined_discrete_targets,
+    Analysis, ComprehensionKey, ComprehensionPlan, DerivedParameterPlan, EquationPartition,
+    FunctionArrayAssemblyPlan, FunctionLoopLowering, FunctionPlan, FunctionRecordAssemblyPlan,
+    FunctionStatementPlan, PlannedRole, RecordEquationPlan, analyze, defined_discrete_targets,
     effective_variable_scalar_type, equation_partition, primitive_scalar_type,
     structured_assignment_names,
 };
@@ -55,6 +56,7 @@ use function_shapes::{
     evaluate_shape_integer,
 };
 use record_equation::lower_record_equation;
+use variable_construction::{define_variables, reserve_variables};
 
 #[derive(Clone, Copy)]
 enum Coordinate<'dae> {
@@ -184,6 +186,7 @@ fn build_checked<'dae>(
         &functions,
         &enum_literal_ordinals,
         &assigned_discrete_targets,
+        &analysis.derived_parameters,
         reserved,
     )?;
     let clocks = lower_clocks(construction, flat, &analysis.clock_plans)?;
@@ -528,250 +531,6 @@ fn lower_function_binders<'dae>(
         binders.insert(VarName::new(&index.ident), binder);
     }
     Ok(binders)
-}
-
-fn reserve_variables<'flat, 'dae>(
-    flat: &'flat flat::Model,
-    analysis: &Analysis,
-    construction: &mut dae::DaeConstruction<'dae>,
-    value_types: &HashMap<VarName, dae::ValueTypeId<'dae>>,
-) -> Result<
-    (
-        HashMap<VarName, Coordinate<'dae>>,
-        Vec<ReservedVariable<'flat, 'dae>>,
-    ),
-    dae::DaeConstructionError,
-> {
-    let mut coordinates = HashMap::new();
-    let mut reserved = Vec::with_capacity(flat.variables.len());
-    for (name, variable) in &flat.variables {
-        let role = analysis.roles[name];
-        if matches!(role, PlannedRole::Clock) {
-            continue;
-        }
-        let provenance = dae::DaeProvenance::source(variable.source_span)?;
-        let value_type = value_types[name];
-        let (coordinate, definition) = construction.variables(|variables| match role {
-            PlannedRole::Parameter => {
-                let (id, definition) =
-                    variables.reserve_parameter(name.clone(), value_type, provenance)?;
-                Ok((Coordinate::Parameter(id), definition))
-            }
-            PlannedRole::Constant => {
-                let (id, definition) =
-                    variables.reserve_constant(name.clone(), value_type, provenance)?;
-                Ok((Coordinate::Parameter(id), definition))
-            }
-            PlannedRole::Input => {
-                let (id, definition) = variables.reserve_input(
-                    name.clone(),
-                    value_type,
-                    planned_input_variability(variable),
-                    provenance,
-                )?;
-                Ok((Coordinate::Input(id), definition))
-            }
-            PlannedRole::State => {
-                let (id, definition) =
-                    variables.reserve_state(name.clone(), value_type, provenance)?;
-                Ok((Coordinate::State(id), definition))
-            }
-            PlannedRole::Algebraic => {
-                let (id, definition) =
-                    variables.reserve_algebraic(name.clone(), value_type, provenance)?;
-                Ok((Coordinate::Algebraic(id), definition))
-            }
-            PlannedRole::Output => {
-                let (id, definition) =
-                    variables.reserve_output(name.clone(), value_type, provenance)?;
-                Ok((Coordinate::Algebraic(id), definition))
-            }
-            PlannedRole::DiscreteReal => {
-                let (id, definition) =
-                    variables.reserve_discrete_real(name.clone(), value_type, provenance)?;
-                Ok((Coordinate::DiscreteReal(id), definition))
-            }
-            PlannedRole::DiscreteValue => {
-                let (id, definition) =
-                    variables.reserve_discrete_value(name.clone(), value_type, provenance)?;
-                Ok((Coordinate::DiscreteValue(id), definition))
-            }
-            PlannedRole::EnumerationLiteral | PlannedRole::Aggregate => {
-                unreachable!("expression-only roles are never reserved as variables")
-            }
-            PlannedRole::Clock => unreachable!("clock variables live in the clock arena"),
-        })?;
-        coordinates.insert(name.clone(), coordinate);
-        reserved.push(ReservedVariable {
-            flat: variable,
-            role,
-            scalar_type: effective_variable_scalar_type(&flat.variable_type_names[name], variable)
-                .expect("analysis accepts only primitive value types"),
-            value_type,
-            coordinate,
-            definition,
-        });
-    }
-    Ok((coordinates, reserved))
-}
-
-fn define_variables<'dae>(
-    construction: &mut dae::DaeConstruction<'dae>,
-    coordinates: &HashMap<VarName, Coordinate<'dae>>,
-    functions: &FunctionRegistry<'_, 'dae>,
-    enum_literal_ordinals: &HashMap<String, i64>,
-    assigned_discrete_targets: &HashSet<VarName>,
-    reserved: Vec<ReservedVariable<'_, 'dae>>,
-) -> Result<(), dae::DaeConstructionError> {
-    let context = VariableDefinitionContext {
-        coordinates,
-        functions,
-        enum_literal_ordinals,
-        assigned_discrete_targets,
-    };
-    for reserved in reserved {
-        define_variable(construction, context, reserved)?;
-    }
-    Ok(())
-}
-
-#[derive(Clone, Copy)]
-struct VariableDefinitionContext<'scope, 'dae> {
-    coordinates: &'scope HashMap<VarName, Coordinate<'dae>>,
-    functions: &'scope FunctionRegistry<'scope, 'dae>,
-    enum_literal_ordinals: &'scope HashMap<String, i64>,
-    assigned_discrete_targets: &'scope HashSet<VarName>,
-}
-
-fn define_variable<'dae>(
-    construction: &mut dae::DaeConstruction<'dae>,
-    context: VariableDefinitionContext<'_, 'dae>,
-    reserved: ReservedVariable<'_, 'dae>,
-) -> Result<(), dae::DaeConstructionError> {
-    let declaration = dae::DaeProvenance::source(reserved.flat.source_span)?;
-    let binding = if matches!(
-        reserved.role,
-        PlannedRole::Parameter | PlannedRole::Constant
-    ) {
-        lower_optional_attribute_expression(
-            construction,
-            context.coordinates,
-            context.functions,
-            context.enum_literal_ordinals,
-            reserved.value_type,
-            reserved.flat.binding.as_ref(),
-        )?
-    } else {
-        None
-    };
-    let start = match reserved.flat.start.as_ref() {
-        Some(start) => Some(lower_attribute_expression(
-            construction,
-            context.coordinates,
-            context.functions,
-            context.enum_literal_ordinals,
-            reserved.value_type,
-            start,
-        )?),
-        None if matches!(
-            reserved.role,
-            PlannedRole::State
-                | PlannedRole::Algebraic
-                | PlannedRole::Output
-                | PlannedRole::DiscreteReal
-                | PlannedRole::DiscreteValue
-        ) =>
-        {
-            Some(default_start_expression(
-                construction,
-                reserved.scalar_type,
-                reserved.flat.source_span,
-            )?)
-        }
-        None => None,
-    };
-    let min = lower_optional_attribute_expression(
-        construction,
-        context.coordinates,
-        context.functions,
-        context.enum_literal_ordinals,
-        reserved.value_type,
-        reserved.flat.min.as_ref(),
-    )?;
-    let max = lower_optional_attribute_expression(
-        construction,
-        context.coordinates,
-        context.functions,
-        context.enum_literal_ordinals,
-        reserved.value_type,
-        reserved.flat.max.as_ref(),
-    )?;
-    let nominal = lower_optional_attribute_expression(
-        construction,
-        context.coordinates,
-        context.functions,
-        context.enum_literal_ordinals,
-        reserved.value_type,
-        reserved.flat.nominal.as_ref(),
-    )?;
-    let causality = variable_causality(reserved.flat, reserved.role);
-    let attributes = dae::VariableAttributes {
-        component_ref: reserved.flat.component_ref.clone(),
-        binding,
-        start,
-        fixed: reserved.flat.fixed,
-        min,
-        max,
-        nominal,
-        unit: reserved.flat.unit.clone(),
-        state_select: reserved.flat.state_select,
-        description: reserved.flat.description.clone(),
-        causality,
-        is_tunable: matches!(reserved.role, PlannedRole::Parameter) && !reserved.flat.evaluate,
-        is_held: matches!(
-            reserved.role,
-            PlannedRole::DiscreteReal | PlannedRole::DiscreteValue
-        ) && reserved.flat.binding.is_none()
-            && !context
-                .assigned_discrete_targets
-                .contains(&reserved.flat.name),
-        origin: dae::VariableOrigin::Source,
-    };
-    construction
-        .variables(|variables| variables.define(reserved.definition, attributes, declaration))?;
-    let _ = reserved.coordinate;
-    Ok(())
-}
-
-fn variable_causality(variable: &flat::Variable, role: PlannedRole) -> dae::VariableCausality {
-    let top_level_port = variable
-        .component_ref
-        .as_ref()
-        .is_some_and(|reference| reference.parts.len() == 1);
-    match (&variable.causality, role, top_level_port) {
-        (Causality::Input(_), PlannedRole::Input, true) => dae::VariableCausality::Input,
-        (Causality::Output(_), _, true) => dae::VariableCausality::Output,
-        (_, PlannedRole::Parameter, _) => dae::VariableCausality::Parameter,
-        _ => dae::VariableCausality::Local,
-    }
-}
-
-fn default_start_expression<'dae>(
-    construction: &mut dae::DaeConstruction<'dae>,
-    scalar_type: dae::ScalarType,
-    owner_span: Span,
-) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
-    let provenance = dae::DaeProvenance::generated(dae::DaeGeneration::DefaultStart, owner_span)?;
-    let literal = match scalar_type {
-        dae::ScalarType::Real => dae::DaeLiteral::Real(0.0),
-        dae::ScalarType::Integer => dae::DaeLiteral::Integer(0),
-        dae::ScalarType::Boolean => dae::DaeLiteral::Boolean(false),
-        dae::ScalarType::String => dae::DaeLiteral::String(String::new()),
-        dae::ScalarType::Record => {
-            return Err(dae::DaeConstructionError::ShapeMismatch { span: owner_span });
-        }
-    };
-    construction.expressions(|expressions| expressions.at(provenance).literal(literal))
 }
 
 fn lower_optional_expression<'dae>(
@@ -1729,9 +1488,13 @@ fn lower_structured_equations<'dae>(
     functions: &FunctionRegistry<'_, 'dae>,
     equations: &[flat::Equation],
     families: &[flat::StructuredEquationFamily],
+    excluded_families: &HashSet<usize>,
     initialization: bool,
 ) -> Result<(), dae::DaeConstructionError> {
-    for family in families {
+    for (family_index, family) in families.iter().enumerate() {
+        if excluded_families.contains(&family_index) {
+            continue;
+        }
         let owner = equation_owner_provenance(&family.origin, family.span)?;
         let generated_root = equation_generation(&family.origin);
         let domain =

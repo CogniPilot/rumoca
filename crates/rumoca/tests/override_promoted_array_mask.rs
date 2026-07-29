@@ -55,6 +55,33 @@ fn mask_param_values(model: &rumoca_ir_solve::SolveModel) -> Vec<f64> {
 #[test]
 fn aoa_override_rederives_promoted_array_mask() {
     let dae = compile_mask_dae();
+    dae.inspect(|view| {
+        let (_, mask) = view
+            .variables()
+            .find(|(_, variable)| variable.name().as_str() == "m")
+            .expect("checked DAE retains the source declaration identity for m");
+        assert_eq!(mask.role(), rumoca_ir_dae::VariableRole::Parameter);
+        assert_eq!(
+            mask.causality(),
+            rumoca_ir_dae::VariableCausality::CalculatedParameter
+        );
+        let binding = view
+            .expression(
+                mask.binding()
+                    .expect("calculated parameter has one binding"),
+            )
+            .expect("binding expression resolves");
+        assert!(matches!(
+            binding.operation(),
+            rumoca_ir_dae::ExpressionOperation::Comprehension { .. }
+        ));
+        assert_eq!(
+            binding.provenance().origin(),
+            rumoca_ir_dae::DaeProvenanceOrigin::Generated(
+                rumoca_ir_dae::DaeGeneration::DerivedParameterLowering
+            )
+        );
+    });
 
     // Declared aoa = 0: cos(0 deg) = 1, so m[i] = 1 + i = {2, 3, 4}.
     let base = lower_dae_for_simulation(&dae, &SimOptions::default()).expect("lower default");

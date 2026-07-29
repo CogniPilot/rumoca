@@ -2,12 +2,14 @@ use super::*;
 
 mod clocks;
 mod comprehensions;
+mod derived_parameters;
 mod expression_validation;
 mod function_array_assemblies;
 mod function_conditionals;
 mod function_ranges;
 mod function_record_assemblies;
 mod function_value_types;
+mod model_roles;
 mod record_equations;
 mod source_balance;
 mod structured_families;
@@ -15,6 +17,8 @@ use clocks::analyze_clocks;
 pub(super) use clocks::{ClockPlan, SampledValuePlan};
 use comprehensions::analyze_comprehensions;
 pub(super) use comprehensions::{ComprehensionKey, ComprehensionPlan};
+pub(super) use derived_parameters::DerivedParameterPlan;
+use derived_parameters::analyze_derived_parameters;
 use expression_validation::{
     require_integer_literal, validate_array, validate_array_comprehension,
     validate_binary_operator, validate_builtin, validate_conditional, validate_subscripts_scoped,
@@ -27,6 +31,7 @@ use function_ranges::{
 };
 use function_record_assemblies::validate_record_output_assembly;
 use function_value_types::validate_function_value_type;
+use model_roles::{ModelRoles, analyze_model_roles};
 use record_equations::analyze_record_equations;
 use source_balance::source_balance;
 use structured_families::validate_structured_families;
@@ -43,6 +48,9 @@ pub(super) struct Analysis {
     pub(super) function_plans: HashMap<FunctionSpecializationKey, FunctionPlan>,
     pub(super) function_shapes: FunctionShapeAnalysis,
     pub(super) comprehension_plans: HashMap<ComprehensionKey, ComprehensionPlan>,
+    pub(super) derived_parameters: HashMap<VarName, DerivedParameterPlan>,
+    pub(super) derived_parameter_families: HashSet<usize>,
+    pub(super) derived_parameter_rows: HashSet<usize>,
     pub(super) record_equations: HashMap<usize, RecordEquationPlan>,
     pub(super) initial_record_equations: HashMap<usize, RecordEquationPlan>,
 }
@@ -127,12 +135,6 @@ pub(super) struct RecordEquationFieldPlan {
     pub(super) ordinal: usize,
 }
 
-struct ModelRoles {
-    states: HashSet<VarName>,
-    variables: HashMap<VarName, PlannedRole>,
-    expressions: HashMap<VarName, PlannedRole>,
-}
-
 #[derive(Clone, Copy)]
 pub(super) enum EquationPartition<'flat> {
     Continuous,
@@ -159,9 +161,14 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
 
     let ModelRoles {
         states,
-        variables: roles,
-        expressions: expression_roles,
+        variables: mut roles,
+        expressions: mut expression_roles,
     } = analyze_model_roles(flat, &clocks.sampled_values)?;
+    let derived_parameters = analyze_derived_parameters(flat, &roles)?;
+    for name in derived_parameters.plans.keys() {
+        roles.insert(name.clone(), PlannedRole::Parameter);
+        expression_roles.insert(name.clone(), PlannedRole::Parameter);
+    }
     for expression in all_model_expressions(flat) {
         validate_expression(expression, &expression_roles, &states)?;
         validate_known_function_calls(expression, flat)?;
@@ -216,7 +223,9 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
             validate_expression(level, &roles, &states)?;
         }
     }
-    let balance = source_balance(flat, &roles, &clocks.equation_rows, &record_equations)?;
+    let mut non_runtime_rows = clocks.equation_rows.clone();
+    non_runtime_rows.extend(&derived_parameters.rows);
+    let balance = source_balance(flat, &roles, &non_runtime_rows, &record_equations)?;
     Ok(Analysis {
         roles,
         balance,
@@ -229,52 +238,11 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
         function_plans,
         function_shapes,
         comprehension_plans,
+        derived_parameters: derived_parameters.plans,
+        derived_parameter_families: derived_parameters.families,
+        derived_parameter_rows: derived_parameters.rows,
         record_equations,
         initial_record_equations,
-    })
-}
-
-fn analyze_model_roles(
-    flat: &flat::Model,
-    sampled_values: &HashMap<VarName, SampledValuePlan>,
-) -> Result<ModelRoles, ToDaeError> {
-    let mut states = HashSet::new();
-    for equation in flat.equations.iter().chain(&flat.initial_equations) {
-        collect_derivative_targets(&equation.residual, &mut states)?;
-    }
-    for expression in flat
-        .variables
-        .values()
-        .flat_map(variable_attribute_expressions)
-    {
-        collect_derivative_targets(expression, &mut states)?;
-    }
-    let mut assigned_discrete = event_and_algorithm_targets(flat);
-    assigned_discrete.extend(sampled_values.keys().cloned());
-    let roles = flat
-        .variables
-        .iter()
-        .map(|(name, variable)| {
-            validate_variable(flat, name, variable, &states, &assigned_discrete)
-                .map(|role| (name.clone(), role))
-        })
-        .collect::<Result<HashMap<_, _>, _>>()?;
-    let mut expression_roles = roles.clone();
-    expression_roles.extend(
-        flat.enum_literal_ordinals
-            .keys()
-            .map(|literal| (VarName::new(literal), PlannedRole::EnumerationLiteral)),
-    );
-    expression_roles.extend(
-        flat.record_instances
-            .keys()
-            .cloned()
-            .map(|name| (name, PlannedRole::Aggregate)),
-    );
-    Ok(ModelRoles {
-        states,
-        variables: roles,
-        expressions: expression_roles,
     })
 }
 

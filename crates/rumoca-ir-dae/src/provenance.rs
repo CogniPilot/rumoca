@@ -27,6 +27,7 @@ pub enum DaeGeneration {
     FunctionLoopLowering,
     FunctionConditionLowering,
     FunctionAggregateLowering,
+    DerivedParameterLowering,
     IndexReduction,
     AliasElimination,
 }
@@ -53,6 +54,7 @@ impl std::fmt::Display for DaeGeneration {
             Self::FunctionLoopLowering => "function-loop lowering",
             Self::FunctionConditionLowering => "function-condition lowering",
             Self::FunctionAggregateLowering => "function-aggregate lowering",
+            Self::DerivedParameterLowering => "derived-parameter lowering",
             Self::IndexReduction => "index reduction",
             Self::AliasElimination => "alias elimination",
         })

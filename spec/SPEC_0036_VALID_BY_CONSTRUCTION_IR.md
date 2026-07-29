@@ -138,6 +138,8 @@ Facts attached to existing IDs are annotations.
 | Variable identity differs from display | `VariableArena` | No text identity |
 | Roles use distinct typed IDs | `VariableArena` | Compile-time roles |
 | Role and causality are orthogonal | `VariableArena` | Distinct semantics |
+| Proven parameter-variable families become calculated parameters atomically | ToDAE analysis/construction | One computable owner |
+| Calculated-parameter bindings require finite shape and acyclic dependency proofs | ToDAE analysis | Reject unsafe promotion |
 | Element type includes shape | Variables/expressions | Local compatibility |
 | Attributes are checked on attachment | Variable construction | No drift |
 
