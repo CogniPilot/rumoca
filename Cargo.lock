@@ -4689,6 +4689,7 @@ dependencies = [
  "rumoca-ir-dae",
  "rumoca-ir-galec",
  "rumoca-phase-structural",
+ "serde_json",
  "thiserror 2.0.18",
 ]
 
