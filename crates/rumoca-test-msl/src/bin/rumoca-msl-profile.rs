@@ -447,6 +447,8 @@ fn coordinate_variable_index(operation: ExpressionOperation<'_>) -> Option<u32> 
         | ExpressionOperation::Binary { .. }
         | ExpressionOperation::Conditional(_)
         | ExpressionOperation::Array(_)
+        | ExpressionOperation::Record(_)
+        | ExpressionOperation::Field { .. }
         | ExpressionOperation::ArrayUpdate { .. }
         | ExpressionOperation::Range { .. }
         | ExpressionOperation::Comprehension { .. }
