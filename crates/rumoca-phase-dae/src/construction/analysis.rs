@@ -8,12 +8,16 @@ mod function_array_assemblies;
 mod function_conditionals;
 mod function_ranges;
 mod function_record_assemblies;
+mod function_reductions;
+mod function_returns;
 mod function_value_types;
+mod model_algorithms;
 mod model_roles;
 mod record_array_fields;
 mod record_equations;
 mod source_balance;
 mod structured_families;
+mod when_clauses;
 use clocks::analyze_clocks;
 pub(super) use clocks::{ClockPlan, SampledValuePlan};
 use comprehensions::analyze_comprehensions;
@@ -31,13 +35,21 @@ use function_ranges::{
     immutable_integer_defaults, static_function_range, validate_function_range_expression,
 };
 use function_record_assemblies::validate_record_output_assembly;
+use function_reductions::validate_integer_reduction;
+use function_returns::validate_guarded_function_return;
 use function_value_types::validate_function_value_type;
+pub(super) use model_algorithms::ModelAlgorithmPlan;
+use model_algorithms::analyze_model_algorithm;
+pub(super) use model_algorithms::{
+    algorithm_targets, event_targets, model_algorithm_targets, when_clause_targets,
+};
 use model_roles::{ModelRoles, analyze_model_roles};
 pub(super) use record_array_fields::RecordArrayFieldPlan;
 use record_array_fields::{analyze_record_array_fields, expression_for_validation};
 use record_equations::analyze_record_equations;
 use source_balance::source_balance;
 use structured_families::validate_structured_families;
+use when_clauses::validate_when_clauses;
 
 pub(super) struct Analysis {
     pub(super) constants: EvalContext,
@@ -46,9 +58,11 @@ pub(super) struct Analysis {
     pub(super) continuous_family_rows: HashSet<usize>,
     pub(super) initialization_family_rows: HashSet<usize>,
     pub(super) sample_lattices: Vec<(Span, ClockLattice)>,
+    pub(super) reinit_state_pre: HashSet<Span>,
     pub(super) clock_plans: HashMap<VarName, ClockPlan>,
     pub(super) clock_equation_rows: HashSet<usize>,
     pub(super) sampled_values: HashMap<VarName, SampledValuePlan>,
+    pub(super) model_algorithm_plans: Vec<ModelAlgorithmPlan>,
     pub(super) function_plans: HashMap<FunctionSpecializationKey, FunctionPlan>,
     pub(super) function_shapes: FunctionShapeAnalysis,
     pub(super) comprehension_plans: HashMap<ComprehensionKey, ComprehensionPlan>,
@@ -60,8 +74,25 @@ pub(super) struct Analysis {
     pub(super) initial_record_equations: HashMap<usize, RecordEquationPlan>,
 }
 
-pub(super) struct FunctionPlan {
-    pub(super) statements: Vec<FunctionStatementPlan>,
+pub(super) enum FunctionPlan {
+    Statements {
+        statements: Vec<FunctionStatementPlan>,
+    },
+    GuardedReturn {
+        branches: Vec<Vec<FunctionStatementPlan>>,
+        tail: Vec<FunctionStatementPlan>,
+        targets: Vec<VarName>,
+    },
+    IntegerReduction {
+        initial: Vec<FunctionStatementPlan>,
+        result: VarName,
+        reduction: FunctionIntegerReduction,
+    },
+}
+
+pub(super) enum FunctionIntegerReduction {
+    WhileExclusive,
+    ForInclusiveCapped,
 }
 
 pub(super) enum FunctionStatementPlan {
@@ -194,37 +225,29 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
         &record_array_fields,
     )?;
     let mut sample_lattices = Vec::new();
-    for clause in &flat.when_clauses {
-        validate_when_clause(clause, &roles, &states, &constants, &mut sample_lattices)?;
-    }
-    for algorithm in &flat.algorithms {
-        validate_model_algorithm(
-            algorithm,
-            &expression_roles,
-            &states,
-            &constants,
-            &mut sample_lattices,
-        )?;
-    }
-    reject_initial_algorithm(flat)?;
-    for assertion in flat
-        .assert_equations
+    let reinit_state_pre = validate_when_clauses(
+        &flat.when_clauses,
+        &roles,
+        &states,
+        &constants,
+        &mut sample_lattices,
+    )?;
+    let model_algorithm_plans = flat
+        .algorithms
         .iter()
-        .chain(&flat.initial_assert_equations)
-    {
-        require_span(assertion.span, "assert equation")?;
-        validate_condition_expression(
-            &assertion.condition,
-            &roles,
-            &states,
-            &constants,
-            &mut sample_lattices,
-        )?;
-        validate_expression(&assertion.message, &roles, &states)?;
-        if let Some(level) = &assertion.level {
-            validate_expression(level, &roles, &states)?;
-        }
-    }
+        .map(|algorithm| {
+            validate_model_algorithm(
+                algorithm,
+                &expression_roles,
+                &states,
+                &constants,
+                &mut sample_lattices,
+            )?;
+            analyze_model_algorithm(flat, algorithm, &roles)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    reject_initial_algorithm(flat)?;
+    validate_assertions(flat, &roles, &states, &constants, &mut sample_lattices)?;
     let mut non_runtime_rows = clocks.equation_rows.clone();
     non_runtime_rows.extend(&derived_parameters.rows);
     let balance = source_balance(flat, &roles, &non_runtime_rows, &record_equations)?;
@@ -235,9 +258,11 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
         continuous_family_rows,
         initialization_family_rows,
         sample_lattices,
+        reinit_state_pre,
         clock_plans: clocks.plans,
         clock_equation_rows: clocks.equation_rows,
         sampled_values: clocks.sampled_values,
+        model_algorithm_plans,
         function_plans,
         function_shapes,
         comprehension_plans,
@@ -250,15 +275,42 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
     })
 }
 
+fn validate_assertions(
+    flat: &flat::Model,
+    roles: &HashMap<VarName, PlannedRole>,
+    states: &HashSet<VarName>,
+    constants: &EvalContext,
+    sample_lattices: &mut Vec<(Span, ClockLattice)>,
+) -> Result<(), ToDaeError> {
+    for assertion in flat
+        .assert_equations
+        .iter()
+        .chain(&flat.initial_assert_equations)
+    {
+        require_span(assertion.span, "assert equation")?;
+        validate_condition_expression(
+            &assertion.condition,
+            roles,
+            states,
+            constants,
+            sample_lattices,
+        )?;
+        validate_expression(&assertion.message, roles, states)?;
+        if let Some(level) = &assertion.level {
+            validate_expression(level, roles, states)?;
+        }
+    }
+    Ok(())
+}
+
 fn reject_initial_algorithm(flat: &flat::Model) -> Result<(), ToDaeError> {
-    let Some(algorithm) = flat.initial_algorithms.first() else {
-        return Ok(());
-    };
-    Err(ToDaeError::unsupported_algorithm(
-        "initial",
-        &algorithm.origin,
-        algorithm.span,
-    ))
+    flat.initial_algorithms.first().map_or(Ok(()), |algorithm| {
+        Err(ToDaeError::unsupported_algorithm(
+            "initial",
+            &algorithm.origin,
+            algorithm.span,
+        ))
+    })
 }
 
 fn analyze_record_array_field_plans(
@@ -281,102 +333,6 @@ fn structured_template_expressions(
         .iter()
         .filter_map(|family| family.template.as_ref())
         .flat_map(|template| &template.body)
-}
-
-fn validate_when_clause(
-    clause: &flat::WhenClause,
-    roles: &HashMap<VarName, PlannedRole>,
-    states: &HashSet<VarName>,
-    constants: &EvalContext,
-    sample_lattices: &mut Vec<(Span, ClockLattice)>,
-) -> Result<(), ToDaeError> {
-    require_span(clause.span, "when clause")?;
-    validate_condition_expression(&clause.condition, roles, states, constants, sample_lattices)?;
-    validate_when_equations(&clause.equations, roles, states, constants, sample_lattices)
-}
-
-fn validate_when_equations(
-    equations: &[flat::WhenEquation],
-    roles: &HashMap<VarName, PlannedRole>,
-    states: &HashSet<VarName>,
-    constants: &EvalContext,
-    sample_lattices: &mut Vec<(Span, ClockLattice)>,
-) -> Result<(), ToDaeError> {
-    for equation in equations {
-        require_span(equation.span(), "when equation")?;
-        match equation {
-            flat::WhenEquation::Assign {
-                target,
-                value,
-                span,
-                ..
-            } => {
-                if !matches!(
-                    roles.get(target),
-                    Some(PlannedRole::DiscreteReal | PlannedRole::DiscreteValue)
-                ) {
-                    return Err(ToDaeError::unsupported_flat(
-                        "when assignment",
-                        format!("`{target}` is not a discrete coordinate"),
-                        *span,
-                    ));
-                }
-                validate_expression(value, roles, states)?;
-            }
-            flat::WhenEquation::Reinit {
-                state, value, span, ..
-            } => {
-                if !matches!(roles.get(state), Some(PlannedRole::State)) {
-                    return Err(ToDaeError::unsupported_flat(
-                        "reinit",
-                        format!("`{state}` is not a continuous state"),
-                        *span,
-                    ));
-                }
-                validate_expression(value, roles, states)?;
-            }
-            flat::WhenEquation::Assert {
-                condition, message, ..
-            } => {
-                validate_condition_expression(
-                    condition,
-                    roles,
-                    states,
-                    constants,
-                    sample_lattices,
-                )?;
-                validate_expression(message, roles, states)?;
-            }
-            flat::WhenEquation::Terminate { message, .. } => {
-                validate_expression(message, roles, states)?;
-            }
-            flat::WhenEquation::Conditional {
-                branches,
-                else_branch,
-                ..
-            } => {
-                for (condition, equations) in branches {
-                    validate_condition_expression(
-                        condition,
-                        roles,
-                        states,
-                        constants,
-                        sample_lattices,
-                    )?;
-                    validate_when_equations(equations, roles, states, constants, sample_lattices)?;
-                }
-                validate_when_equations(else_branch, roles, states, constants, sample_lattices)?;
-            }
-            flat::WhenEquation::FunctionCallOutputs { span, .. } => {
-                return Err(ToDaeError::unsupported_flat(
-                    "when function-call outputs",
-                    "multi-output event calls require a checked function-action owner",
-                    *span,
-                ));
-            }
-        }
-    }
-    Ok(())
 }
 
 fn validate_condition_expression(
@@ -545,28 +501,28 @@ fn validate_algorithm_statements(
                         *span,
                     ));
                 }
-                let target = comp.to_var_name();
+                let target = rumoca_core::component_ref_to_base_reference(comp)
+                    .var_name()
+                    .clone();
                 let target_role = roles.get(&target);
-                if comp.parts.iter().any(|part| !part.subs.is_empty()) {
-                    return Err(ToDaeError::unsupported_algorithm(
-                        "model",
-                        format!(
-                            "algorithm assignment target `{target}` is not a whole discrete \
-                             coordinate (resolved role: {target_role:?})"
-                        ),
-                        *span,
-                    ));
+                for part in &comp.parts {
+                    validate_subscripts_scoped(&part.subs, roles, states, &HashSet::new())?;
                 }
                 if matches!(
                     target_role,
-                    Some(PlannedRole::DiscreteReal | PlannedRole::DiscreteValue)
+                    Some(
+                        PlannedRole::Algebraic
+                            | PlannedRole::Output
+                            | PlannedRole::DiscreteReal
+                            | PlannedRole::DiscreteValue
+                    )
                 ) {
                     validate_expression(value, roles, states)?;
                 } else if structured_assignment_pairs(&target, value, roles).is_none() {
                     return Err(ToDaeError::unsupported_algorithm(
                         "model",
                         format!(
-                            "algorithm assignment target `{target}` is not a whole discrete \
+                            "algorithm assignment target `{target}` is not a whole writable \
                              coordinate (resolved role: {target_role:?})"
                         ),
                         *span,
@@ -606,6 +562,33 @@ fn validate_algorithm_statements(
                         owner_span,
                     )?;
                 }
+            }
+            rumoca_core::Statement::For {
+                indices,
+                equations,
+                span,
+            } => {
+                require_span(*span, "algorithm for statement")?;
+                if indices.is_empty() {
+                    return Err(ToDaeError::unsupported_algorithm(
+                        "model",
+                        "for statement must declare at least one index",
+                        *span,
+                    ));
+                }
+                let mut loop_roles = roles.clone();
+                for index in indices {
+                    validate_expression(&index.range, &loop_roles, states)?;
+                    loop_roles.insert(VarName::new(&index.ident), PlannedRole::Parameter);
+                }
+                validate_algorithm_statements(
+                    equations,
+                    &loop_roles,
+                    states,
+                    constants,
+                    sample_lattices,
+                    owner_span,
+                )?;
             }
             rumoca_core::Statement::When { blocks, span } => {
                 require_span(*span, "algorithm when statement")?;
@@ -804,8 +787,16 @@ fn validate_functions(
             shapes: &certificate.values,
             shape_analysis: shapes,
         };
-        let statements = validate_function_statements(&function.body, context)?;
-        plans.insert(certificate.key.clone(), FunctionPlan { statements });
+        let plan = if let Some(plan) = validate_guarded_function_return(function, context)? {
+            plan
+        } else if let Some(plan) = validate_integer_reduction(function, context)? {
+            plan
+        } else {
+            FunctionPlan::Statements {
+                statements: validate_function_statements(&function.body, context)?,
+            }
+        };
+        plans.insert(certificate.key.clone(), plan);
     }
     Ok(plans)
 }
@@ -1656,67 +1647,17 @@ fn collect_assignment_target_names<'flat>(
     }
 }
 
-fn collect_algorithm_targets(
-    statements: &[rumoca_core::Statement],
-    targets: &mut HashSet<VarName>,
-) {
-    for statement in statements {
-        match statement {
-            rumoca_core::Statement::Assignment { comp, .. } if !comp.parts.is_empty() => {
-                targets.insert(comp.to_var_name());
-            }
-            rumoca_core::Statement::If {
-                cond_blocks,
-                else_block,
-                ..
-            } => {
-                for block in cond_blocks {
-                    collect_algorithm_targets(&block.stmts, targets);
-                }
-                if let Some(statements) = else_block {
-                    collect_algorithm_targets(statements, targets);
-                }
-            }
-            rumoca_core::Statement::When { blocks, .. } => {
-                for block in blocks {
-                    collect_algorithm_targets(&block.stmts, targets);
-                }
-            }
-            _ => {}
-        }
-    }
-}
-
-fn event_and_algorithm_targets(flat: &flat::Model) -> HashSet<VarName> {
-    let mut written = HashSet::new();
-    for clause in &flat.when_clauses {
-        collect_when_targets(&clause.equations, &mut written);
-    }
-    for algorithm in &flat.algorithms {
-        collect_algorithm_targets(&algorithm.statements, &mut written);
-    }
-    let mut targets = HashSet::new();
-    for target in written {
-        if flat.variables.contains_key(&target) {
-            targets.insert(target);
-            continue;
-        }
-        let prefix = format!("{target}.");
-        targets.extend(
-            flat.variables
-                .keys()
-                .filter(|name| name.as_str().starts_with(&prefix))
-                .cloned(),
-        );
-    }
-    targets
-}
-
 pub(super) fn defined_discrete_targets(
     flat: &flat::Model,
     roles: &HashMap<VarName, PlannedRole>,
 ) -> Result<HashSet<VarName>, ToDaeError> {
-    let mut targets = event_and_algorithm_targets(flat);
+    let mut targets = event_targets(flat);
+    targets.extend(algorithm_targets(flat).into_iter().filter(|target| {
+        matches!(
+            roles.get(target),
+            Some(PlannedRole::DiscreteReal | PlannedRole::DiscreteValue)
+        )
+    }));
     for equation in &flat.equations {
         match equation_partition(equation, roles)? {
             EquationPartition::Continuous => {}
@@ -1794,30 +1735,6 @@ pub(super) fn structured_assignment_names<'a>(
     }
     pairs.sort_by(|(lhs, _), (rhs, _)| lhs.as_str().cmp(rhs.as_str()));
     Some(pairs)
-}
-
-fn collect_when_targets(equations: &[flat::WhenEquation], targets: &mut HashSet<VarName>) {
-    for equation in equations {
-        match equation {
-            flat::WhenEquation::Assign { target, .. } => {
-                targets.insert(target.clone());
-            }
-            flat::WhenEquation::Conditional {
-                branches,
-                else_branch,
-                ..
-            } => {
-                for (_, equations) in branches {
-                    collect_when_targets(equations, targets);
-                }
-                collect_when_targets(else_branch, targets);
-            }
-            flat::WhenEquation::Reinit { .. }
-            | flat::WhenEquation::Assert { .. }
-            | flat::WhenEquation::Terminate { .. }
-            | flat::WhenEquation::FunctionCallOutputs { .. } => {}
-        }
-    }
 }
 
 fn checked_shape_size(name: &VarName, variable: &flat::Variable) -> Result<usize, ToDaeError> {

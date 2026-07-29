@@ -12,6 +12,7 @@ pub(super) fn lower_expression<'dae>(
         functions,
         shapes: functions.shapes.model_values(),
         function_body: None,
+        values: None,
     };
     lower_expression_scoped(
         construction,
@@ -28,6 +29,29 @@ pub(super) struct LoweringSymbols<'symbols, 'dae> {
     pub(super) functions: &'symbols FunctionRegistry<'symbols, 'dae>,
     pub(super) shapes: &'symbols ShapeEnvironment,
     pub(super) function_body: Option<&'symbols dae::FunctionBody<'dae>>,
+    pub(super) values: Option<&'symbols HashMap<VarName, dae::ExprId<'dae>>>,
+}
+
+pub(super) fn lower_model_algorithm_expression<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    coordinates: &HashMap<VarName, Coordinate<'dae>>,
+    functions: &FunctionRegistry<'_, 'dae>,
+    values: &HashMap<VarName, dae::ExprId<'dae>>,
+    expression: &Expression,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    lower_expression_scoped(
+        construction,
+        LoweringSymbols {
+            coordinates,
+            functions,
+            shapes: functions.shapes.model_values(),
+            function_body: None,
+            values: Some(values),
+        },
+        &HashMap::new(),
+        expression,
+        None,
+    )
 }
 
 pub(super) fn lower_function_expression<'dae>(
@@ -65,6 +89,7 @@ pub(super) fn lower_function_expression_scoped<'dae>(
             functions,
             shapes,
             function_body: Some(body),
+            values: None,
         },
         binders,
         expression,
@@ -270,6 +295,20 @@ fn lower_variable_reference<'dae>(
     {
         return construction.expressions(|expressions| expressions.at(provenance).binder(binder));
     }
+    if let Some(value) = symbols
+        .values
+        .and_then(|values| values.get(name.var_name()))
+        .copied()
+    {
+        return lower_index(
+            construction,
+            symbols,
+            binders,
+            value,
+            subscripts,
+            provenance,
+        );
+    }
     match symbols.coordinates[name.var_name()] {
         Coordinate::FunctionValue(value) => {
             let body = symbols
@@ -367,6 +406,20 @@ fn lower_pre<'dae>(
 ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
     let (name, subscripts) =
         derivative_reference(&arguments[0]).expect("analysis proves the pre-value target shape");
+    if symbols.functions.reinit_state_pre.contains(&span) {
+        let Coordinate::State(state) = symbols.coordinates[name.var_name()] else {
+            unreachable!("reinit pre analysis certifies a state coordinate")
+        };
+        let provenance = dae::DaeProvenance::generated(dae::DaeGeneration::PreValueLowering, span)?;
+        return lower_coordinate_reference(
+            construction,
+            symbols,
+            binders,
+            dae::CoordinateInput::State(state),
+            subscripts,
+            provenance,
+        );
+    }
     let coordinate = symbols.coordinates[name.var_name()]
         .previous(span)
         .expect("analysis proves the pre-value role");
@@ -773,6 +826,7 @@ fn pure_builtin(function: BuiltinFunction) -> dae::PureBuiltin {
         BuiltinFunction::Mod => dae::PureBuiltin::Mod,
         BuiltinFunction::Floor => dae::PureBuiltin::Floor,
         BuiltinFunction::Ceil => dae::PureBuiltin::Ceil,
+        BuiltinFunction::Integer => dae::PureBuiltin::Integer,
         BuiltinFunction::Sin => dae::PureBuiltin::Sin,
         BuiltinFunction::Cos => dae::PureBuiltin::Cos,
         BuiltinFunction::Tan => dae::PureBuiltin::Tan,

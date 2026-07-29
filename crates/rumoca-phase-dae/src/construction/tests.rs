@@ -323,7 +323,7 @@ fn assert_production_sum3_loop(view: dae::DaeView<'_>, loop_span: Span) {
 }
 
 #[test]
-fn reachable_function_loop_with_runtime_bound_fails_shape_proof() {
+fn reachable_function_loop_with_runtime_bound_fails_at_domain_owner() {
     let source = TestSource::new(
         "function sumN input Integer n; output Integer y; algorithm \
          y := 0; for k in 1:n loop y := y + k; end for; end sumN; \
@@ -414,7 +414,7 @@ fn reachable_function_loop_with_runtime_bound_fails_shape_proof() {
             feature,
             span,
             ..
-        } if feature == "function shape proof" && span == runtime_bound_span
+        } if feature == "function loop domain" && span == range_span
     ));
 }
 

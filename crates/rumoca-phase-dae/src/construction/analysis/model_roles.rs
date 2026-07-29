@@ -21,7 +21,7 @@ pub(super) fn analyze_model_roles(
     {
         collect_derivative_targets(expression, &mut states)?;
     }
-    let mut assigned_discrete = event_and_algorithm_targets(flat);
+    let mut assigned_discrete = event_targets(flat);
     assigned_discrete.extend(sampled_values.keys().cloned());
     let roles = flat
         .variables

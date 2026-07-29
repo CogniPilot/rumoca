@@ -1264,6 +1264,7 @@ fn unary_builtin(builtin: dae::PureBuiltin) -> solve::UnaryOp {
         dae::PureBuiltin::Sqrt => solve::UnaryOp::Sqrt,
         dae::PureBuiltin::Floor => solve::UnaryOp::Floor,
         dae::PureBuiltin::Ceil => solve::UnaryOp::Ceil,
+        dae::PureBuiltin::Integer => solve::UnaryOp::Trunc,
         dae::PureBuiltin::Sin => solve::UnaryOp::Sin,
         dae::PureBuiltin::Cos => solve::UnaryOp::Cos,
         dae::PureBuiltin::Tan => solve::UnaryOp::Tan,

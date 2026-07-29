@@ -68,16 +68,38 @@ pub(super) fn source_balance(
             }
         }
     }
-    for target in event_and_algorithm_targets(flat) {
-        let variable = &flat.variables[&target];
-        let scalar_count = checked_shape_size(&target, variable)?;
-        match roles[&target] {
-            PlannedRole::DiscreteReal => detail.discrete_real_equations += scalar_count,
-            PlannedRole::DiscreteValue => detail.discrete_assignments += scalar_count,
-            _ => {}
+    for target in when_clause_targets(flat) {
+        add_algorithm_target(&mut detail, flat, roles, &target)?;
+    }
+    for algorithm in &flat.algorithms {
+        for target in model_algorithm_targets(flat, algorithm) {
+            add_algorithm_target(&mut detail, flat, roles, &target)?;
         }
     }
     Ok(detail)
+}
+
+fn add_algorithm_target(
+    detail: &mut BalanceDetail,
+    flat: &flat::Model,
+    roles: &HashMap<VarName, PlannedRole>,
+    target: &VarName,
+) -> Result<(), ToDaeError> {
+    let scalar_count = checked_shape_size(target, &flat.variables[target])?;
+    match roles[target] {
+        PlannedRole::State | PlannedRole::Algebraic | PlannedRole::Output => {
+            detail.continuous_equations += scalar_count;
+        }
+        PlannedRole::DiscreteReal => detail.discrete_real_equations += scalar_count,
+        PlannedRole::DiscreteValue => detail.discrete_assignments += scalar_count,
+        PlannedRole::Parameter
+        | PlannedRole::Constant
+        | PlannedRole::Input
+        | PlannedRole::Clock
+        | PlannedRole::EnumerationLiteral
+        | PlannedRole::Aggregate => {}
+    }
+    Ok(())
 }
 
 fn record_equation_scalar_count(

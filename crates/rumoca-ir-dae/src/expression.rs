@@ -213,6 +213,7 @@ pub enum PureBuiltin {
     Mod,
     Floor,
     Ceil,
+    Integer,
     Sin,
     Cos,
     Tan,
@@ -1787,6 +1788,13 @@ fn builtin_result<'dae>(
         | PureBuiltin::NoEvent => {
             expect_arity(arguments, 1, at)?;
             Ok(first)
+        }
+        PureBuiltin::Integer => {
+            expect_arity(arguments, 1, at)?;
+            if !first.is_scalar() {
+                return Err(DaeConstructionError::ShapeMismatch { span: at.span() });
+            }
+            Ok(ValueType::scalar(ScalarType::Integer))
         }
         PureBuiltin::Atan2 | PureBuiltin::Mod => {
             expect_arity(arguments, 2, at)?;

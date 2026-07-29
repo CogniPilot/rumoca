@@ -716,16 +716,21 @@ fn test_parse_source_root_file_and_merge_parsed_source_roots_support_compilation
     let _guard = session_test_guard();
     clear_source_root_cache().expect("clear source-root cache");
 
-    let ast_json = parse_source_root_file(MINI_MODELICA_LIBRARY, "Modelica/package.mo")
-        .expect("parse_source_root_file should serialize an AST");
-    let parsed: rumoca_compile::parsing::ast::StoredDefinition =
-        serde_json::from_str(&ast_json).expect("parse_source_root_file should return AST JSON");
-    assert!(
-        parsed.classes.contains_key("Modelica"),
-        "expected parsed source-root AST to include the top-level package"
+    let parsed_source = parse_source_root_file(MINI_MODELICA_LIBRARY, "Modelica/package.mo")
+        .expect("parse_source_root_file should serialize a checked source");
+    let parsed: serde_json::Value =
+        serde_json::from_str(&parsed_source).expect("checked source JSON should decode");
+    assert_eq!(
+        parsed.get("filename").and_then(serde_json::Value::as_str),
+        Some("Modelica/package.mo")
+    );
+    assert_eq!(
+        parsed.get("source").and_then(serde_json::Value::as_str),
+        Some(MINI_MODELICA_LIBRARY),
+        "the parsed source artifact must retain the exact provenance text"
     );
 
-    let definitions_json = serde_json::to_string(&vec![("Modelica/package.mo", ast_json)])
+    let definitions_json = serde_json::to_string(&vec![("Modelica/package.mo", parsed_source)])
         .expect("serialize parsed source-root definitions");
     let merged = merge_parsed_source_roots(&definitions_json)
         .expect("merge_parsed_source_roots should succeed");
@@ -751,6 +756,33 @@ fn test_parse_source_root_file_and_merge_parsed_source_roots_support_compilation
         "expected merged source-root definitions to support successful compilation, got: {compiled_result:?}"
     );
 
+    clear_source_root_cache().expect("clear source-root cache");
+}
+
+#[test]
+fn test_binary_source_root_round_trip_retains_compilable_source_text() {
+    let _guard = session_test_guard();
+    clear_source_root_cache().expect("clear source-root cache");
+    load_source_roots(&mini_modelica_source_root_json()).expect("load source root");
+
+    let bytes = export_parsed_source_roots_binary(r#"["Modelica/package.mo"]"#)
+        .expect("export source-root snapshot");
+    clear_source_root_cache().expect("clear source-root cache before import");
+    assert_eq!(
+        merge_parsed_source_roots_binary(&bytes).expect("import source-root snapshot"),
+        1
+    );
+
+    let compiled = compile(USES_MODELICA_SOURCE, "UsesModelica")
+        .expect("binary source-root snapshot should remain compilable");
+    let response: serde_json::Value = serde_json::from_str(&compiled).expect("compile response");
+    assert_eq!(
+        response
+            .get("balance")
+            .and_then(|balance| balance.get("is_balanced"))
+            .and_then(serde_json::Value::as_bool),
+        Some(true)
+    );
     clear_source_root_cache().expect("clear source-root cache");
 }
 
@@ -1538,16 +1570,12 @@ fn test_compile_to_json_exposes_orbit_algebraics_from_native_dae() {
     let result: serde_json::Value =
         serde_json::from_str(&json).expect("compile should return valid JSON");
 
-    let native_y = result
+    let native_variables = result
         .get("dae_native")
-        .and_then(|d| d.get("y"))
-        .and_then(|y| y.as_object())
-        .expect("dae_native.y should exist for orbit model");
-    assert!(
-        native_y.contains_key("inv_r"),
-        "native dae should include algebraic variable inv_r, got keys: {:?}",
-        native_y.keys().collect::<Vec<_>>()
-    );
+        .and_then(|dae| dae.get("storage"))
+        .and_then(|storage| storage.get("variables"))
+        .and_then(serde_json::Value::as_array)
+        .expect("canonical dae_native variable catalog should exist");
     for expected in [
         "inv_r",
         "inv_v2",
@@ -1560,9 +1588,11 @@ fn test_compile_to_json_exposes_orbit_algebraics_from_native_dae() {
         "inv_ecc",
     ] {
         assert!(
-            native_y.contains_key(expected),
-            "missing expected algebraic `{expected}`; got: {:?}",
-            native_y.keys().collect::<Vec<_>>()
+            native_variables.iter().any(|variable| {
+                variable.get("name").and_then(serde_json::Value::as_str) == Some(expected)
+                    && variable.get("role").and_then(serde_json::Value::as_str) == Some("algebraic")
+            }),
+            "canonical native DAE should classify {expected} as algebraic"
         );
     }
 }

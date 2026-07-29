@@ -38,6 +38,11 @@ fn parse_definition(source: &str, file_name: &str) -> ast::StoredDefinition {
     rumoca_phase_parse::parse_to_ast(source, file_name).expect("test definition should parse")
 }
 
+fn parse_source_document(source: &str, file_name: &str) -> ParsedSourceDocument {
+    ParsedSourceDocument::parse(file_name.to_string(), source.to_string())
+        .expect("test source document should parse")
+}
+
 fn source_set_record<'a>(session: &'a Session, source_set_id: &str) -> &'a SourceSetRecord {
     session
         .source_sets
@@ -322,67 +327,40 @@ fn source_root_read_prewarm_is_disabled_for_workspace_only_sessions() {
     assert!(!snapshot.needs_source_root_read_prewarm());
 }
 
-fn partitioned_source_root_family_definitions_v1() -> Vec<(String, ast::StoredDefinition)> {
+fn partitioned_source_root_family_definitions_v1() -> Vec<ParsedSourceDocument> {
     vec![
-        (
-            "NewFolder/package.mo".to_string(),
-            parse_definition(
-                "within ;\npackage NewFolder\nend NewFolder;\n",
-                "NewFolder/package.mo",
-            ),
+        parse_source_document(
+            "within ;\npackage NewFolder\nend NewFolder;\n",
+            "NewFolder/package.mo",
         ),
-        (
-            "NewFolder/Test.mo".to_string(),
-            parse_definition(
-                "within NewFolder;\nmodel Test\nend Test;\n",
-                "NewFolder/Test.mo",
-            ),
+        parse_source_document(
+            "within NewFolder;\nmodel Test\nend Test;\n",
+            "NewFolder/Test.mo",
         ),
-        (
-            "NewFolder/Sub/package.mo".to_string(),
-            parse_definition(
-                "within NewFolder;\npackage Sub\nend Sub;\n",
-                "NewFolder/Sub/package.mo",
-            ),
+        parse_source_document(
+            "within NewFolder;\npackage Sub\nend Sub;\n",
+            "NewFolder/Sub/package.mo",
         ),
-        (
-            "NewFolder/Sub/Nested.mo".to_string(),
-            parse_definition(
-                "within NewFolder.Sub;\nmodel Nested\nend Nested;\n",
-                "NewFolder/Sub/Nested.mo",
-            ),
+        parse_source_document(
+            "within NewFolder.Sub;\nmodel Nested\nend Nested;\n",
+            "NewFolder/Sub/Nested.mo",
         ),
-        (
-            "Loose.mo".to_string(),
-            parse_definition("model Loose\nend Loose;\n", "Loose.mo"),
-        ),
-        (
-            "Other/package.mo".to_string(),
-            parse_definition("within ;\npackage Other\nend Other;\n", "Other/package.mo"),
-        ),
+        parse_source_document("model Loose\nend Loose;\n", "Loose.mo"),
+        parse_source_document("within ;\npackage Other\nend Other;\n", "Other/package.mo"),
     ]
 }
 
-fn partitioned_source_root_family_definitions_v2() -> Vec<(String, ast::StoredDefinition)> {
+fn partitioned_source_root_family_definitions_v2() -> Vec<ParsedSourceDocument> {
     vec![
-        (
-            "NewFolder/package.mo".to_string(),
-            parse_definition(
-                "within ;\npackage NewFolder\nend NewFolder;\n",
-                "NewFolder/package.mo",
-            ),
+        parse_source_document(
+            "within ;\npackage NewFolder\nend NewFolder;\n",
+            "NewFolder/package.mo",
         ),
-        (
-            "NewFolder/Test.mo".to_string(),
-            parse_definition(
-                "within NewFolder;\nmodel Test\n  Real x;\nend Test;\n",
-                "NewFolder/Test.mo",
-            ),
+        parse_source_document(
+            "within NewFolder;\nmodel Test\n  Real x;\nend Test;\n",
+            "NewFolder/Test.mo",
         ),
-        (
-            "Loose.mo".to_string(),
-            parse_definition("model Loose\n  Real y;\nend Loose;\n", "Loose.mo"),
-        ),
+        parse_source_document("model Loose\n  Real y;\nend Loose;\n", "Loose.mo"),
     ]
 }
 

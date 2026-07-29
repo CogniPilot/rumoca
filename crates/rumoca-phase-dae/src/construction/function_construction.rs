@@ -13,6 +13,7 @@ pub(super) struct FunctionRegistry<'shape, 'dae> {
     pub(super) comprehension_plans: &'shape HashMap<ComprehensionKey, ComprehensionPlan>,
     pub(super) record_array_fields: &'shape HashMap<Span, RecordArrayFieldPlan>,
     pub(super) constants: &'shape EvalContext,
+    pub(super) reinit_state_pre: &'shape HashSet<Span>,
 }
 
 impl<'dae> FunctionRegistry<'_, 'dae> {
@@ -227,14 +228,48 @@ pub(super) fn define_functions<'dae>(
             functions,
             shapes: &certificate.values,
         };
-        lower_function_statements(
-            construction,
-            symbols,
-            &mut body,
-            &reserved.flat.body,
-            &plan.statements,
-        )?;
+        lower_function_plan(construction, symbols, &mut body, reserved.flat, plan)?;
         construction.functions(|functions| functions.define(body, provenance))?;
     }
     Ok(())
+}
+
+fn lower_function_plan<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    symbols: FunctionSymbols<'_, 'dae>,
+    body: &mut dae::FunctionBody<'dae>,
+    function: &rumoca_core::Function,
+    plan: &FunctionPlan,
+) -> Result<(), dae::DaeConstructionError> {
+    match plan {
+        FunctionPlan::Statements { statements } => {
+            lower_function_statements(construction, symbols, body, &function.body, statements)
+        }
+        FunctionPlan::GuardedReturn {
+            branches,
+            tail,
+            targets,
+        } => lower_guarded_function_return(
+            construction,
+            symbols,
+            body,
+            function,
+            branches,
+            tail,
+            targets,
+        ),
+        FunctionPlan::IntegerReduction {
+            initial,
+            result,
+            reduction,
+        } => lower_integer_reduction(
+            construction,
+            symbols,
+            body,
+            function,
+            initial,
+            result,
+            reduction,
+        ),
+    }
 }

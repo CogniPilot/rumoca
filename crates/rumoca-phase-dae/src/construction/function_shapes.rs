@@ -839,6 +839,7 @@ fn builtin_shape(
                 )
             })
             .and_then(|value| expression_shape(value, values, function_result)),
+        BuiltinFunction::Integer => scalar_integer_shape(arguments, values, function_result, span),
         BuiltinFunction::Min | BuiltinFunction::Max if arguments.len() == 1 => Ok(Vec::new()),
         BuiltinFunction::Der
         | BuiltinFunction::Pre
@@ -894,6 +895,31 @@ fn builtin_shape(
             span,
         )),
     }
+}
+
+fn scalar_integer_shape(
+    arguments: &[Expression],
+    values: &ShapeEnvironment,
+    function_result: &mut FunctionResultShape<'_>,
+    span: Span,
+) -> Result<ValueShape, ToDaeError> {
+    let [value] = arguments else {
+        return Err(invalid_integer_shape(span));
+    };
+    let shape = expression_shape(value, values, function_result)?;
+    if shape.is_empty() {
+        Ok(shape)
+    } else {
+        Err(invalid_integer_shape(span))
+    }
+}
+
+fn invalid_integer_shape(span: Span) -> ToDaeError {
+    ToDaeError::unsupported_flat(
+        "function shape proof",
+        "integer requires one scalar argument",
+        span,
+    )
 }
 
 fn binary_shape(

@@ -225,6 +225,19 @@ impl Session {
         self.invalidate_source_root_completion_state(CacheInvalidationCause::SourceSetMutation);
     }
 
+    /// Add parser-produced in-memory sources while retaining their canonical
+    /// source text for downstream provenance.
+    pub fn add_in_memory_parsed_batch(&mut self, documents: Vec<ParsedSourceDocument>) {
+        let revision = self.bump_revision();
+        for document in documents {
+            let document = Document::from_parsed_source(document);
+            self.detach_uri_from_source_sets(&document.uri, revision, false);
+            self.insert_document(document, revision);
+        }
+        self.invalidate_resolved_state(CacheInvalidationCause::SourceSetMutation);
+        self.invalidate_source_root_completion_state(CacheInvalidationCause::SourceSetMutation);
+    }
+
     /// Remove all parsed documents previously loaded for a source-set id.
     pub fn remove_source_set(&mut self, source_set_id: &str) {
         let revision = self.bump_revision();
@@ -240,6 +253,12 @@ impl Session {
     /// Get a document by URI.
     pub fn get_document(&self, uri: &str) -> Option<&Document> {
         self.documents.get(uri).map(Arc::as_ref)
+    }
+
+    /// Return the canonical source text used to interpret this document's
+    /// parser spans.
+    pub fn document_source_text(&self, uri: &str) -> Option<Arc<str>> {
+        self.get_document(uri).map(source_map_content_for_doc)
     }
 
     /// Qualify a bare model name against a document's `within` prefix: a name

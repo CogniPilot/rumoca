@@ -30,9 +30,11 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 mod lru_cache;
+mod parsed_source_document;
 mod session_impl;
 mod session_impl_query_indexes;
 use lru_cache::{LruMap, SessionLruCache};
+pub use parsed_source_document::{ParsedSourceDocument, ParsedSourceRootLoad};
 
 #[cfg(test)]
 pub(crate) mod tests;
@@ -630,17 +632,6 @@ pub struct SourceRootRefreshPlan {
     pub unmatched_class_prefixes: Vec<String>,
     pub rebuild_package_membership: bool,
     pub full_root_fallback: bool,
-}
-
-#[derive(Debug, Clone)]
-pub struct ParsedSourceRootLoad<'a> {
-    pub source_root_kind: SourceRootKind,
-    pub source_root_path: &'a Path,
-    pub cache_status: SourceRootCacheStatus,
-    pub path_key: &'a str,
-    pub current_document_path: Option<&'a str>,
-    pub documents: Vec<(String, ast::StoredDefinition)>,
-    pub expected_epoch: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1515,6 +1506,9 @@ pub struct Document {
     pub uri: String,
     /// Source content.
     pub content: Arc<str>,
+    /// Source-root text retained for exact provenance while `content` remains
+    /// reserved for a live document overlay.
+    source_root_content: Option<Arc<str>>,
     syntax: Arc<crate::parse::SyntaxFile>,
     query_fingerprints: DocumentQueryFingerprints,
 }
@@ -1525,9 +1519,21 @@ impl Document {
         Self {
             uri,
             content: Arc::<str>::from(content),
+            source_root_content: None,
             syntax: Arc::new(syntax),
             query_fingerprints,
         }
+    }
+
+    fn from_parsed_source(document: ParsedSourceDocument) -> Self {
+        let (uri, source, definition) = document.into_parts();
+        let mut parsed = Self::new(
+            uri,
+            String::new(),
+            crate::parse::SyntaxFile::from_parsed(definition),
+        );
+        parsed.source_root_content = Some(source);
+        parsed
     }
 
     pub fn from_parsed(uri: String, content: String, parsed: ast::StoredDefinition) -> Self {
