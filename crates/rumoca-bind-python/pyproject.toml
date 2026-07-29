@@ -35,9 +35,8 @@ data = ["numpy", "pandas"]
 plot = ["matplotlib"]
 casadi = ["casadi"]
 jax = ["jax"]
-sympy = ["sympy"]
 notebook = ["ipython"]
-all = ["numpy", "pandas", "matplotlib", "casadi", "jax", "sympy", "ipython"]
+all = ["numpy", "pandas", "matplotlib", "casadi", "jax", "ipython"]
 
 [project.urls]
 Homepage = "https://github.com/cognipilot/rumoca"

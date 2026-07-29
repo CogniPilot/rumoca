@@ -295,24 +295,65 @@ fn push_var_ref(names: &mut Vec<VarName>, name: &VarName) {
     names.push(name.clone());
 }
 
+fn collect_checked_expr_refs<'dae>(
+    view: rumoca_ir_dae::DaeView<'dae>,
+    root: rumoca_ir_dae::ExprId<'dae>,
+    active: &mut Vec<VarName>,
+) {
+    rumoca_ir_dae::for_each_expression(view, root, |_, expression| {
+        let Some(variable_id) = expression.variable_coordinate() else {
+            return;
+        };
+        let variable = view
+            .variable(variable_id)
+            .expect("checked coordinate resolves to its declared variable");
+        push_var_ref(active, variable.name());
+    });
+}
+
 fn collect_active_refs_from_dae(dae: &Dae, active: &mut Vec<VarName>) {
-    for equations in [
-        &dae.continuous.equations,
-        &dae.initialization.equations,
-        &dae.discrete.real_updates,
-        &dae.discrete.valued_updates,
-        &dae.conditions.equations,
-    ] {
-        for eq in equations {
-            if let Some(lhs) = &eq.lhs {
-                push_var_ref(active, lhs.var_name());
-            }
-            eq.rhs.collect_var_refs(active);
+    dae.inspect(|view| {
+        for index in 0..view.continuous_equation_count() {
+            let equation = view
+                .continuous_equation(index)
+                .expect("dense checked continuous equation resolves");
+            collect_checked_expr_refs(view, equation.residual(), active);
         }
-    }
-    for relation in &dae.conditions.relations {
-        relation.collect_var_refs(active);
-    }
+        for index in 0..view.initialization_equation_count() {
+            let equation = view
+                .initialization_equation(index)
+                .expect("dense checked initialization equation resolves");
+            collect_checked_expr_refs(view, equation.residual(), active);
+        }
+        for index in 0..view.discrete_real_equation_count() {
+            let equation = view
+                .discrete_real_equation(index)
+                .expect("dense checked discrete equation resolves");
+            collect_checked_expr_refs(view, equation.residual(), active);
+        }
+        for index in 0..view.discrete_assignment_count() {
+            let assignment_id = view
+                .discrete_assignment_id(index)
+                .expect("dense checked discrete assignment identity resolves");
+            let assignment = view
+                .discrete_assignment(assignment_id)
+                .expect("dense checked discrete assignment resolves");
+            let variable = view
+                .variable(assignment.target().into())
+                .expect("checked assignment target resolves");
+            push_var_ref(active, variable.name());
+            collect_checked_expr_refs(view, assignment.value(), active);
+        }
+        for index in 0..view.relation_count() {
+            let relation_id = view
+                .relation_id(index)
+                .expect("dense checked relation identity resolves");
+            let relation = view
+                .relation(relation_id)
+                .expect("dense checked relation resolves");
+            collect_checked_expr_refs(view, relation.expression(), active);
+        }
+    });
 }
 
 fn collect_active_refs_from_flat_when_equation(
@@ -375,14 +416,18 @@ fn collect_active_refs_from_flat(flat: &rumoca_ir_flat::Model, active: &mut Vec<
 fn active_discrete_scalar_count(flat: &rumoca_ir_flat::Model, dae: &Dae) -> i64 {
     let active = ActiveNameIndex::build(flat, dae);
 
-    let active_discrete = dae
-        .variables
-        .discrete_reals
-        .iter()
-        .chain(dae.variables.discrete_valued.iter())
-        .filter(|(name, _)| active.matches_component(name.as_str()))
-        .map(|(_, v)| v.size())
-        .sum::<usize>();
+    let active_discrete = dae.inspect(|view| {
+        view.variables()
+            .filter(|(_, variable)| {
+                matches!(
+                    variable.role(),
+                    rumoca_ir_dae::VariableRole::DiscreteReal
+                        | rumoca_ir_dae::VariableRole::DiscreteValue
+                ) && active.matches_component(variable.name().as_str())
+            })
+            .map(|(_, variable)| variable.scalar_count())
+            .sum::<usize>()
+    });
 
     active_discrete as i64
 }
@@ -408,12 +453,17 @@ fn initialization_balance_check(
     scalar_equations: i64,
 ) -> InitializationBalanceCheck {
     let deficit_before = (scalar_unknowns - scalar_equations).max(0);
-    let initial_equation_scalars = dae
-        .initialization
-        .equations
-        .iter()
-        .map(|eq| eq.scalar_count as i64)
-        .sum::<i64>();
+    let initial_equation_scalars = dae.inspect(|view| {
+        let residual_rows = view.initialization_equation_count() as i64;
+        let structured_rows = (0..view.initialization_family_count())
+            .map(|index| {
+                view.initialization_family(index)
+                    .expect("dense checked initialization family resolves")
+                    .scalar_rows() as i64
+            })
+            .sum::<i64>();
+        residual_rows + structured_rows
+    });
     let initial_algorithm_scalars = 0;
     let initial_available = initial_equation_scalars + initial_algorithm_scalars;
     let closure_used = initial_available.min(deficit_before);

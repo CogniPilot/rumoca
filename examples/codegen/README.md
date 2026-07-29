@@ -7,8 +7,8 @@ Generated files go under `gen/`, which is ignored by git.
 cargo run -p rumoca -- \
   compile examples/models/Ball.mo \
   --model Ball \
-  --target jax \
-  --output examples/codegen/gen/ball_jax
+  --target jax-solve \
+  --output examples/codegen/gen/ball_jax_solve
 
 cargo run -p rumoca -- \
   compile examples/models/SympyDecay.mo \
@@ -31,10 +31,10 @@ cargo run -p rumoca -- \
 
 Scenarios:
 
-- `rumoca-scenario.ball_jax.toml`: built-in JAX target.
+- `rumoca-scenario.ball_jax_solve.toml`: checked Solve JAX target.
 - `rumoca-scenario.galec_counter_production.toml`: GALEC/eFMI Production
   Code target (`.alg` plus generated C).
-- `rumoca-scenario.sympy_decay_sympy.toml`: built-in SymPy target.
+- `rumoca-scenario.sympy_decay_c_solve.toml`: checked Solve C target.
 - `rumoca-scenario.sympy_decay_standalone_web.toml`: custom target directory that renders
   standalone HTML and companion JavaScript.
 - `rumoca-scenario.sympy_decay_custom_casadi.toml`: direct raw Jinja template example.

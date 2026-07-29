@@ -1512,10 +1512,8 @@ mod tests {
         let mut model = solve::SolveModel::default();
         model.problem.solve_layout.compiled_parameter_len = 1;
         model.problem.solve_layout.discrete_valued_scalar_names = vec!["m".to_string()];
-        model.problem.clocks.periodic_event_schedules = vec![solve::PeriodicEventSchedule {
-            period_seconds: 0.05,
-            phase_seconds: 0.05,
-        }];
+        model.problem.clocks.periodic_event_schedules =
+            vec![solve::PeriodicEventSchedule::from_seconds(0.05, 0.05).unwrap()];
         model.problem.discrete.update_targets = vec![solve::scalar_slot_p(0)];
         model.problem.discrete.rhs = ScalarProgramBlock::with_source_span(
             vec![vec![
@@ -1524,6 +1522,10 @@ mod tests {
             ]],
             fixture_span!(),
         );
+        model.problem.discrete.row_roles = vec![solve::DiscreteRowRole::Equation];
+        model.problem.discrete.pre_modes = vec![solve::DiscreteEventPreMode::FollowCurrent];
+        model.problem.discrete.observation_refresh = vec![false];
+        model.problem.discrete.clock_owners = vec![model.problem.clocks.periodic_clock_id(0)];
         model.parameters = vec![0.0];
         model.visible_names = vec!["m".to_string()];
         let mut session = SimulationSession::new(
@@ -1588,6 +1590,7 @@ mod tests {
                         name_to_idx: IndexMap::from([("x".to_string(), 0)]),
                         base_to_indices: IndexMap::from([("x".to_string(), vec![0])]),
                     },
+                    variable_base_slots: Vec::new(),
                     state_scalar_count: 1,
                     algebraic_scalar_count: 0,
                     output_scalar_count: 0,
@@ -1605,13 +1608,17 @@ mod tests {
             },
             artifacts: solve::SolveArtifacts {
                 continuous: solve::ContinuousSolveArtifacts {
+                    structural: solve::ContinuousStructuralArtifacts::default(),
                     mass_matrix: solve::MassMatrix::Identity,
                     implicit_jacobian_v: ComputeBlock::from_scalar_program_block(zero.clone()),
                     implicit_jacobian_v_scalar: zero.clone(),
                     manifold_jacobian_v: ComputeBlock::default(),
                     full_jacobian_v: zero.clone(),
                 },
-                ..solve::SolveArtifacts::default()
+                initialization: solve::InitializationSolveArtifacts {
+                    structural: solve::InitializationStructuralArtifacts::default(),
+                    residual_jacobian_v: ComputeBlock::from_scalar_program_block(zero.clone()),
+                },
             },
             initial_y: vec![0.0],
             solver_nominals: vec![1.0],
@@ -1688,6 +1695,7 @@ mod tests {
             },
             artifacts: solve::SolveArtifacts {
                 continuous: solve::ContinuousSolveArtifacts {
+                    structural: solve::ContinuousStructuralArtifacts::default(),
                     mass_matrix: solve::MassMatrix::Identity,
                     implicit_jacobian_v: ComputeBlock::from_scalar_program_block(
                         jacobian_v.clone(),
@@ -1696,7 +1704,12 @@ mod tests {
                     manifold_jacobian_v: ComputeBlock::default(),
                     full_jacobian_v: jacobian_v.clone(),
                 },
-                ..solve::SolveArtifacts::default()
+                initialization: solve::InitializationSolveArtifacts {
+                    structural: solve::InitializationStructuralArtifacts::default(),
+                    residual_jacobian_v: ComputeBlock::from_scalar_program_block(scalar_block(
+                        vec![zero_row(), zero_row()],
+                    )),
+                },
             },
             initial_y: vec![0.1, 0.0],
             solver_nominals: vec![1.0, 1.0],
@@ -1718,6 +1731,7 @@ mod tests {
                     ("force".to_string(), vec![1]),
                 ]),
             },
+            variable_base_slots: Vec::new(),
             state_scalar_count: 1,
             algebraic_scalar_count: 1,
             output_scalar_count: 0,

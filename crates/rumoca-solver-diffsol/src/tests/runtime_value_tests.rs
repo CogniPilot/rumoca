@@ -89,6 +89,7 @@ fn simulate_no_state_solve_ir_stops_for_root_event_updates() {
         ]],
         fixture_span!(),
     );
+    ordinary_equation_row_metadata(&mut model);
     model.parameters = vec![0.0];
     model.visible_names = vec!["m".to_string()];
 
@@ -192,6 +193,7 @@ fn no_state_root_search_refreshes_algebraic_root_dependencies() {
         ]],
         fixture_span!(),
     );
+    ordinary_equation_row_metadata(&mut model);
     model.initial_y = vec![0.0];
     model.parameters = vec![0.0];
     model.visible_names = vec!["m".to_string()];
@@ -370,6 +372,7 @@ fn root_event_update_model(root_time: f64) -> solve::SolveModel {
         ]],
         fixture_span!(),
     );
+    ordinary_equation_row_metadata(&mut model);
     model.parameters = vec![0.0];
     model.visible_names = vec!["m".to_string()];
     model
@@ -456,6 +459,7 @@ fn oscillatory_root_event_model() -> solve::SolveModel {
         ]],
         fixture_span!(),
     );
+    ordinary_equation_row_metadata(&mut model);
     model.parameters = vec![0.0];
     model.visible_names = vec!["m".to_string()];
     model
@@ -749,6 +753,7 @@ fn simulate_seeds_algebraics_from_initial_residual_before_runtime_projection() {
             fixture_span!(),
         ),
     );
+    set_initialization_jvp(&mut model, vec![zero_row(), algebraic_identity_jvp_row()]);
     install_scalar_initial_projection_plan(&mut model, 1, 1);
     model.initial_y = vec![0.0, 0.0];
     model.visible_names = vec!["z".to_string()];
@@ -785,6 +790,7 @@ fn initialization_projects_demoted_state_layout_slots() {
     model.problem.initialization.residual = solve::ComputeBlock::from_scalar_program_block(
         solve::ScalarProgramBlock::with_source_span(vec![z_minus_one()], fixture_span!()),
     );
+    set_initialization_jvp(&mut model, vec![algebraic_identity_jvp_row()]);
     model.problem.initialization.row_targets = vec![Some(solve::scalar_slot_y(1))];
     install_scalar_initial_projection_plan(&mut model, 0, 1);
     model.initial_y = vec![0.0, 0.0];
@@ -922,6 +928,7 @@ fn simulate_records_algebraically_consistent_initial_sample() {
             fixture_span!(),
         ),
     );
+    set_initialization_jvp(&mut model, vec![zero_row(), algebraic_identity_jvp_row()]);
     install_scalar_initial_projection_plan(&mut model, 1, 1);
     model.initial_y = vec![0.0, 0.0];
     model.visible_names = vec!["z".to_string()];
@@ -950,6 +957,7 @@ fn simulate_runs_solve_ir_initial_updates_after_initial_projection() {
     model.problem.solve_layout.state_scalar_count = 1;
     model.problem.solve_layout.algebraic_scalar_count = 1;
     model.problem.solve_layout.compiled_parameter_len = 1;
+    model.problem.layout = solve::VarLayout::from_parts(Default::default(), 2, 1);
     model.problem.solve_layout.discrete_valued_scalar_names = vec!["c[1]".to_string()];
     model.problem.continuous.implicit_rhs = solve::ComputeBlock::from_scalar_program_block(
         solve::ScalarProgramBlock::with_source_span(
@@ -972,6 +980,7 @@ fn simulate_runs_solve_ir_initial_updates_after_initial_projection() {
             fixture_span!(),
         ),
     );
+    set_initialization_jvp(&mut model, vec![zero_row(), algebraic_identity_jvp_row()]);
     install_scalar_initial_projection_plan(&mut model, 1, 1);
     model.problem.initialization.update_rhs = solve::ScalarProgramBlock::with_source_span(
         vec![z_greater_one_condition_row()],
@@ -1010,6 +1019,7 @@ fn simulate_seeds_initial_discrete_conditions_before_initial_residual() {
     model.problem.solve_layout.state_scalar_count = 1;
     model.problem.solve_layout.algebraic_scalar_count = 1;
     model.problem.solve_layout.compiled_parameter_len = 1;
+    model.problem.layout = solve::VarLayout::from_parts(Default::default(), 2, 1);
     model.problem.continuous.implicit_rhs = solve::ComputeBlock::from_scalar_program_block(
         solve::ScalarProgramBlock::with_source_span(
             vec![zero_row(), z_plus_one()],
@@ -1028,11 +1038,16 @@ fn simulate_seeds_initial_discrete_conditions_before_initial_residual() {
     model.problem.discrete.rhs =
         solve::ScalarProgramBlock::with_source_span(vec![const_one_row()], fixture_span!());
     model.problem.discrete.update_targets = vec![solve::scalar_slot_p(0)];
+    ordinary_equation_row_metadata(&mut model);
     model.problem.initialization.residual = solve::ComputeBlock::from_scalar_program_block(
         solve::ScalarProgramBlock::with_source_span(
             vec![zero_row(), z_minus_selected_condition()],
             fixture_span!(),
         ),
+    );
+    set_initialization_jvp(
+        &mut model,
+        vec![zero_row(), z_minus_selected_condition_jvp()],
     );
     install_scalar_initial_projection_plan(&mut model, 1, 1);
     model.initial_y = vec![0.0, 0.0];
@@ -1159,6 +1174,20 @@ fn z_minus_selected_condition() -> Vec<solve::LinearOp> {
     ]
 }
 
+fn z_minus_selected_condition_jvp() -> Vec<solve::LinearOp> {
+    vec![
+        solve::LinearOp::LoadSeed { dst: 0, index: 1 },
+        solve::LinearOp::LoadSeed { dst: 1, index: 2 },
+        solve::LinearOp::Binary {
+            dst: 2,
+            op: solve::BinaryOp::Sub,
+            lhs: 0,
+            rhs: 1,
+        },
+        solve::LinearOp::StoreOutput { src: 2 },
+    ]
+}
+
 fn z_plus_one() -> Vec<solve::LinearOp> {
     vec![
         solve::LinearOp::LoadY { dst: 0, index: 1 },
@@ -1238,4 +1267,23 @@ fn simulate_rejects_nonempty_solver_layout_without_residual_rows() {
 
     let err = simulate(&model, &SimOptions::default()).unwrap_err();
     assert!(matches!(err, SimError::EmptySystem));
+}
+
+#[test]
+fn validation_accepts_a_complete_explicit_derivative_system() {
+    let mut model = solve::SolveModel::default();
+    model.problem.solve_layout.solver_maps.names = vec!["x".to_string()];
+    model.problem.solve_layout.state_scalar_count = 1;
+    model.initial_y = vec![0.0];
+    model.problem.continuous.derivative_rhs = solve::ComputeBlock::from_scalar_program_block(
+        solve::ScalarProgramBlock::with_source_span(
+            vec![vec![
+                solve::LinearOp::Const { dst: 0, value: 0.0 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ]],
+            fixture_span!(),
+        ),
+    );
+
+    validate_model(&model).expect("an explicit derivative row computes the one state");
 }

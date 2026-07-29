@@ -17,7 +17,7 @@ pub(crate) const EX003_INVALID_OVERRIDE: &str = "EX003";
 
 #[derive(Debug)]
 pub enum SimulationDiagnosticError {
-    SolveLowering(rumoca_phase_solve::SolveModelLowerError),
+    SolveLowering(rumoca_phase_solve::LowerError),
     Solver(String),
     RuntimePreparation {
         message: String,
@@ -48,7 +48,7 @@ impl SimulationDiagnosticError {
 
     pub fn diagnostic_label(&self) -> String {
         match self {
-            Self::SolveLowering(error) => error.diagnostic_label(),
+            Self::SolveLowering(_) => "Solve lowering failed here".to_string(),
             Self::Solver(_) | Self::RuntimePreparation { .. } => {
                 "simulation failure originates here".to_string()
             }
@@ -86,18 +86,3 @@ impl From<rumoca_eval_solve::EvalSolveError> for SimulationDiagnosticError {
         }
     }
 }
-
-/// Every code this module mints, in numeric order — the registry the
-/// `EX0xx`-range tests check reachability against.
-///
-/// Test-only because production code reaches each constant directly from
-/// [`SimulationDiagnosticError::diagnostic_code`]; the shipped contract is the
-/// `&'static str` that method returns, which consumers compare by mnemonic.
-/// Delegated `EL0xx`/`ES0xx` codes are deliberately absent — they belong to the
-/// registries of the phases that produce them.
-#[cfg(test)]
-pub(crate) const SIM_RUNTIME_DIAGNOSTIC_CODES: &[&str] = &[
-    EX001_SOLVER_FAILURE,
-    EX002_RUNTIME_PREPARATION,
-    EX003_INVALID_OVERRIDE,
-];

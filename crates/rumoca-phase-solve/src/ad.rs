@@ -5,7 +5,7 @@
 //! multi-output programs are being stabilized. split plan: move tensor-node JVP
 //! lowering and indexed-load AD helpers into sibling modules behind this facade.
 
-use crate::lower::{LowerError, lower_initial_residual, lower_residual};
+use crate::LowerError;
 use rumoca_ir_solve::{
     AffineStencilConstStride, AffineStencilLoadStride, BinaryOp, CompareOp, ComputeBlock,
     ComputeNode, LinearOp, RandomGenerator, Reg, ScalarProgramBlock, UnaryOp, VarLayout,
@@ -16,38 +16,6 @@ use std::collections::HashMap;
 struct DualReg {
     re: Reg,
     du: Reg,
-}
-
-pub fn lower_residual_ad(
-    dae_model: &rumoca_ir_dae::Dae,
-    layout: &VarLayout,
-) -> Result<Vec<Vec<LinearOp>>, LowerError> {
-    let primal_rows = lower_residual(dae_model, layout)?;
-    lower_scalar_program_block_ad(&primal_rows)
-}
-
-pub fn lower_initial_residual_ad(
-    dae_model: &rumoca_ir_dae::Dae,
-    layout: &VarLayout,
-) -> Result<Vec<Vec<LinearOp>>, LowerError> {
-    let primal_rows = lower_initial_residual(dae_model, layout)?;
-    lower_scalar_program_block_ad(&primal_rows)
-}
-
-pub fn lower_residual_full_ad(
-    dae_model: &rumoca_ir_dae::Dae,
-    layout: &VarLayout,
-) -> Result<Vec<Vec<LinearOp>>, LowerError> {
-    let primal_rows = lower_residual(dae_model, layout)?;
-    lower_scalar_program_block_full_ad(&primal_rows, layout)
-}
-
-pub fn lower_initial_residual_full_ad(
-    dae_model: &rumoca_ir_dae::Dae,
-    layout: &VarLayout,
-) -> Result<Vec<Vec<LinearOp>>, LowerError> {
-    let primal_rows = lower_initial_residual(dae_model, layout)?;
-    lower_scalar_program_block_full_ad(&primal_rows, layout)
 }
 
 /// Compute the forward-mode JVP of a `ComputeBlock`, preserving tensor structure.
@@ -112,18 +80,20 @@ fn lower_compute_node_jvp(
             matrix_start,
             rhs_start,
             n,
+            matrix_pattern,
             metadata,
             span,
             ..
-        } => lower_linsolve_jvp_node(
+        } => lower_linsolve_jvp_node(LinSolveJvpInput {
             setup_ops,
-            *matrix_start,
-            *rhs_start,
-            *n,
-            metadata.clone(),
-            *span,
+            matrix_start: *matrix_start,
+            rhs_start: *rhs_start,
+            n: *n,
+            matrix_pattern: matrix_pattern.clone(),
+            metadata: metadata.clone(),
+            span: *span,
             seed_mode,
-        ),
+        }),
         ComputeNode::Map {
             domain,
             output_map,
@@ -296,8 +266,8 @@ fn lower_matmul_jvp_node(
         m,
         k,
         n,
-        lhs_sparsity,
-        rhs_sparsity,
+        lhs_pattern,
+        rhs_pattern,
         metadata,
         span,
     } = node
@@ -319,12 +289,13 @@ fn lower_matmul_jvp_node(
 
     let (mut lhs_builder, lhs) =
         lower_tensor_operand(lhs_ops, *lhs_start, lhs_len, 0, *span, seed_mode)?;
-    let (jvp_lhs_start, jvp_k, jvp_lhs_sparsity) = if lhs_depends_on_seed && rhs_depends_on_seed {
+    let (jvp_lhs_start, jvp_k, jvp_lhs_pattern) = if lhs_depends_on_seed && rhs_depends_on_seed {
         let regs = block_product_lhs_regs(&lhs, *m, *k, *span)?;
+        let block_k = checked_ad_product(2, *k, *span, "MatMul JVP block inner dimension")?;
         (
             lhs_builder.pack_registers(&regs)?,
-            checked_ad_product(2, *k, *span, "MatMul JVP block inner dimension")?,
-            rumoca_ir_solve::SparsityPattern::Dense,
+            block_k,
+            full_tensor_pattern(*m, block_k, *span)?,
         )
     } else {
         let regs = if lhs_depends_on_seed {
@@ -332,17 +303,17 @@ fn lower_matmul_jvp_node(
         } else {
             dual_regs(&lhs, DualPart::Primal, "MatMul JVP lhs primal", *span)?
         };
-        (lhs_builder.pack_registers(&regs)?, *k, lhs_sparsity.clone())
+        (lhs_builder.pack_registers(&regs)?, *k, lhs_pattern.clone())
     };
 
     let rhs_next_reg = lhs_builder.next_reg;
     let (mut rhs_builder, rhs) =
         lower_tensor_operand(rhs_ops, *rhs_start, rhs_len, rhs_next_reg, *span, seed_mode)?;
-    let (jvp_rhs_start, jvp_rhs_sparsity) = if lhs_depends_on_seed && rhs_depends_on_seed {
+    let (jvp_rhs_start, jvp_rhs_pattern) = if lhs_depends_on_seed && rhs_depends_on_seed {
         let regs = block_product_rhs_regs(&rhs, *span)?;
         (
             rhs_builder.pack_registers(&regs)?,
-            rumoca_ir_solve::SparsityPattern::Dense,
+            full_tensor_pattern(jvp_k, *n, *span)?,
         )
     } else {
         let regs = if rhs_depends_on_seed || !lhs_depends_on_seed {
@@ -350,7 +321,7 @@ fn lower_matmul_jvp_node(
         } else {
             dual_regs(&rhs, DualPart::Primal, "MatMul JVP rhs primal", *span)?
         };
-        (rhs_builder.pack_registers(&regs)?, rhs_sparsity.clone())
+        (rhs_builder.pack_registers(&regs)?, rhs_pattern.clone())
     };
 
     Ok(ComputeNode::MatMul {
@@ -361,11 +332,25 @@ fn lower_matmul_jvp_node(
         m: *m,
         k: jvp_k,
         n: *n,
-        lhs_sparsity: jvp_lhs_sparsity,
-        rhs_sparsity: jvp_rhs_sparsity,
+        lhs_pattern: jvp_lhs_pattern,
+        rhs_pattern: jvp_rhs_pattern,
         metadata: metadata.clone(),
         span: *span,
     })
+}
+
+fn full_tensor_pattern(
+    rows: usize,
+    columns: usize,
+    span: rumoca_core::Span,
+) -> Result<rumoca_ir_solve::StructuralPattern, LowerError> {
+    let provenance = rumoca_ir_solve::PatternProvenance::derived(
+        rumoca_ir_solve::PatternDerivation::DependencyPropagation,
+        span,
+    )
+    .map_err(|error| ad_contract_violation(error.to_string(), span))?;
+    rumoca_ir_solve::StructuralPattern::full(rows, columns, provenance)
+        .map_err(|error| ad_contract_violation(error.to_string(), span))
 }
 
 fn lower_tensor_operand(
@@ -494,15 +479,28 @@ fn ops_reference_seeded_inputs(ops: &[LinearOp], seed_mode: SeedMode) -> bool {
     })
 }
 
-fn lower_linsolve_jvp_node(
-    setup_ops: &[LinearOp],
+struct LinSolveJvpInput<'ops> {
+    setup_ops: &'ops [LinearOp],
     matrix_start: Reg,
     rhs_start: Reg,
     n: usize,
+    matrix_pattern: rumoca_ir_solve::StructuralPattern,
     metadata: rumoca_ir_solve::TensorNodeMetadata,
     span: rumoca_core::Span,
     seed_mode: SeedMode,
-) -> Result<ComputeNode, LowerError> {
+}
+
+fn lower_linsolve_jvp_node(input: LinSolveJvpInput<'_>) -> Result<ComputeNode, LowerError> {
+    let LinSolveJvpInput {
+        setup_ops,
+        matrix_start,
+        rhs_start,
+        n,
+        matrix_pattern,
+        metadata,
+        span,
+        seed_mode,
+    } = input;
     if n == 0 {
         return Err(unsupported("invalid zero-sized LinSolve in JVP"));
     }
@@ -567,6 +565,7 @@ fn lower_linsolve_jvp_node(
         rhs_start: tangent_rhs_start,
         n,
         next_reg,
+        matrix_pattern,
         metadata,
         span,
     })
@@ -602,19 +601,6 @@ pub fn lower_scalar_program_block_full_ad_with_spans(
             p_seed_offset: layout.y_scalars(),
         },
         "full scalar program AD row count",
-    )
-}
-
-#[cfg(test)]
-fn lower_scalar_program_block_ad_with_spans(
-    primal_rows: &[Vec<LinearOp>],
-    row_spans: &[rumoca_core::Span],
-) -> Result<Vec<Vec<LinearOp>>, LowerError> {
-    lower_scalar_program_rows_ad(
-        primal_rows,
-        row_spans,
-        SeedMode::SolverYOnly,
-        "spanned scalar program AD row count",
     )
 }
 
@@ -1609,7 +1595,7 @@ impl AdBuilder {
 }
 
 fn unsupported(reason: &str) -> LowerError {
-    LowerError::Unsupported {
+    LowerError::UnspannedContractViolation {
         reason: reason.to_string(),
     }
 }
@@ -1711,6 +1697,3 @@ fn checked_ad_reg_offset(
         )
     })
 }
-
-#[cfg(test)]
-mod tests;

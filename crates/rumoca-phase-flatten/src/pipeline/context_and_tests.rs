@@ -1780,7 +1780,11 @@ pub(crate) fn process_component_instance(
     );
     request.flat.variable_type_names.insert(
         var_name.clone(),
-        variables::flat_output_type_name(request.instance_data, request.tree)?,
+        variables::flat_output_type_name(
+            request.instance_data,
+            request.canonical_type_id,
+            request.tree,
+        )?,
     );
     if request.instance_data.is_final {
         request

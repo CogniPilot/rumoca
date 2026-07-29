@@ -116,3 +116,12 @@ kernel inventory must match the generated work.
 
 Name resolution, parameter-bound evaluation, zero-size handling, and ordering
 normalization are phase/evaluation behavior, not IR-crate behavior.
+
+### 6. Structural Sparsity
+
+Compact domains and affine access maps are also the authoritative source for
+compact dependency patterns. Solve lowering derives affine sparsity directly
+from these owners; it must not materialize scalar rows and then rediscover a
+pattern. Pattern soundness, coloring, storage-policy separation, and complex
+block expansion are specified by
+[SPEC_0039](SPEC_0039_PROOF_CARRYING_SPARSITY.md).

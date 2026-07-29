@@ -97,8 +97,8 @@ mod tests {
     #[test]
     fn strict_compile_failure_row_records_code_and_balance_detail() {
         let detail = BalanceDetail {
-            alg_unknowns: 5,
-            f_x_scalar: 3,
+            algebraic_unknowns: 5,
+            continuous_equations: 3,
             ..BalanceDetail::default()
         };
         let failure = StrictCompileFailure {
@@ -116,7 +116,9 @@ mod tests {
         assert_eq!(row.scalar_equations, Some(3));
         assert_eq!(row.scalar_unknowns, Some(5));
         assert_eq!(
-            row.balance_detail.as_ref().map(|detail| detail.f_x_scalar),
+            row.balance_detail
+                .as_ref()
+                .map(|detail| detail.continuous_equations),
             Some(3)
         );
     }

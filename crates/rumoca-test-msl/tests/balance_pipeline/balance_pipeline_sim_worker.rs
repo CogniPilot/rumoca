@@ -914,16 +914,17 @@ pub(super) fn prepare_simulation_run(
     let input_bytes = dae_payload.len();
     let prep_secs = prep_started.elapsed().as_secs_f64();
     if slow_sim_prep_log_threshold_secs().is_some_and(|threshold| prep_secs >= threshold) {
+        let counts = checked_dae_counts(dae);
         eprintln!(
             "    slow sim prep: model={model_name} total={prep_secs:.2}s create={artifact_create_secs:.2}s serialize_input={serialize_secs:.2}s input_bytes={input_bytes} states={} algebraics={} f_x={} f_z={} f_m={} f_c={} relation={} initial_eqs={}",
-            dae.variables.states.len(),
-            dae.variables.algebraics.len(),
-            dae.continuous.equations.len(),
-            dae.discrete.real_updates.len(),
-            dae.discrete.valued_updates.len(),
-            dae.conditions.equations.len(),
-            dae.conditions.relations.len(),
-            dae.initialization.equations.len(),
+            counts.state_variables,
+            counts.algebraic_variables,
+            counts.continuous_equations,
+            counts.discrete_real_equations,
+            counts.discrete_assignments,
+            counts.conditions,
+            counts.relations,
+            counts.initialization_equations,
         );
     }
 
@@ -1118,26 +1119,15 @@ pub(super) fn run_prepared_simulation(run: PreparedSimulationRun) -> MslSimModel
 }
 
 pub(super) fn is_trivial_static_model(dae: &Dae) -> bool {
-    let discrete_real_scalars: usize = dae
-        .variables
-        .discrete_reals
-        .values()
-        .map(|v| v.size())
-        .sum();
-    let discrete_valued_scalars: usize = dae
-        .variables
-        .discrete_valued
-        .values()
-        .map(|v| v.size())
-        .sum();
-    discrete_real_scalars == 0
-        && discrete_valued_scalars == 0
-        && dae.continuous.equations.is_empty()
-        && dae.discrete.real_updates.is_empty()
-        && dae.discrete.valued_updates.is_empty()
-        && dae.conditions.equations.is_empty()
-        && dae.conditions.relations.is_empty()
-        && dae.initialization.equations.is_empty()
+    let counts = checked_dae_counts(dae);
+    counts.discrete_real_scalars == 0
+        && counts.discrete_value_scalars == 0
+        && counts.continuous_equations == 0
+        && counts.discrete_real_equations == 0
+        && counts.discrete_assignments == 0
+        && counts.conditions == 0
+        && counts.relations == 0
+        && counts.initialization_equations == 0
 }
 
 pub(super) fn try_simulate_dae_with_settings(
@@ -1145,28 +1135,11 @@ pub(super) fn try_simulate_dae_with_settings(
     model_name: &str,
     settings: &SimExecutionSettings,
 ) -> MslSimModelResult {
-    let n_states = dae.variables.states.len();
-    let n_algebraics = dae.variables.algebraics.len();
-    let n_state_scalars: usize = dae.variables.states.values().map(|v| v.size()).sum();
-
-    let total_unknowns: usize = dae
-        .variables
-        .states
-        .values()
-        .map(|v| v.size())
-        .sum::<usize>()
-        + dae
-            .variables
-            .algebraics
-            .values()
-            .map(|v| v.size())
-            .sum::<usize>()
-        + dae
-            .variables
-            .outputs
-            .values()
-            .map(|v| v.size())
-            .sum::<usize>();
+    let counts = checked_dae_counts(dae);
+    let n_states = counts.state_variables;
+    let n_algebraics = counts.algebraic_variables;
+    let n_state_scalars = counts.state_scalars;
+    let total_unknowns = counts.state_scalars + counts.algebraic_scalars + counts.output_scalars;
     if total_unknowns == 0 && is_trivial_static_model(dae) {
         return MslSimModelResult {
             name: model_name.to_string(),
@@ -1349,6 +1322,8 @@ mod tests {
         let compiled = session
             .compile_model("WorkerPipe")
             .expect("compile worker pipe model");
+        let counts = checked_dae_counts(&compiled.dae);
+        assert_eq!(counts.continuous_scalar_rows, 1);
 
         let settings = SimExecutionSettings {
             t_start: 0.0,
@@ -1364,8 +1339,8 @@ mod tests {
             "WorkerPipe",
             settings,
             10,
-            compiled.dae.variables.states.len(),
-            compiled.dae.variables.algebraics.len(),
+            counts.state_variables,
+            counts.algebraic_variables,
         )
         .expect("prepare simulation");
         let result = run_prepared_simulation(prepared);

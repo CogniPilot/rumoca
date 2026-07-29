@@ -203,8 +203,9 @@ fn model_parameter_metadata_in_session(
     let (opts, _) = build_simulation_options(&result, 0.0, 0.0, "auto");
     let solve_model = lower_dae_for_simulation(&result.dae, &opts)
         .map_err(|e| JsValue::from_str(&format!("solve lowering error: {e}")))?;
-    serde_json::to_string(&build_tunable_parameter_meta(&result.dae, &solve_model))
-        .map_err(|e| JsValue::from_str(&format!("JSON error: {e}")))
+    let metadata = build_tunable_parameter_meta(&result.dae, &solve_model)
+        .map_err(|error| JsValue::from_str(&format!("parameter metadata error: {error}")))?;
+    serde_json::to_string(&metadata).map_err(|e| JsValue::from_str(&format!("JSON error: {e}")))
 }
 
 fn lower_solve_model_with_overrides(

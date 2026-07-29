@@ -1,7 +1,9 @@
 //! WGSL solve-target render tests (split from `codegen_tests` to stay
 //! under the SPEC_0021 file-size limit).
 
-use super::codegen_tests::{builtin_template, solve_problem_with_two_by_two_linsolve_derivative};
+use super::codegen_test_support::{
+    builtin_template, solve_problem_with_two_by_two_linsolve_derivative,
+};
 use super::render_solve_template_with_name;
 use rumoca_ir_solve as solve;
 

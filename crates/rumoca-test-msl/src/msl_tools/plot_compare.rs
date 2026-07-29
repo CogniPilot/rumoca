@@ -937,7 +937,8 @@ end NominalScaled;
             .compile_model_dae_strict_reachable_uncached_with_recovery("NominalScaled")
             .expect("fixture model compiles to DAE");
 
-        let meta = rumoca_sim::build_variable_meta(&compiled.dae, &["T".to_string()], 1);
+        let meta = rumoca_sim::build_variable_meta(&compiled.dae, &["T".to_string()])
+            .expect("checked DAE identity backs every requested output");
         let entry = meta.first().expect("one variable");
         let nominal = entry
             .nominal

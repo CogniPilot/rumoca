@@ -10,7 +10,9 @@ mod prepared_compute_block_tests;
 use std::cell::RefCell;
 
 use crate::refresh_plan::AlgebraicRefreshRow;
-use crate::tensor_policy::{MatMulKernel, select_matmul_kernel};
+use crate::tensor_policy::{
+    LinearSolveKernel, MatMulKernel, select_linear_solve_kernel, select_matmul_kernel,
+};
 use crate::{
     EvalSolveError, OutputCursor, PreparedRowEval, RowEvalContext, RowEvalScratch,
     RowInputRequirements, SimulationRuntimeState,
@@ -32,7 +34,7 @@ pub use assignment_shape::{
 use rumoca_core::StructuredIndexDomain;
 use rumoca_ir_solve::{
     AffineStencilConstStride, AffineStencilLoadStride, ComputeBlock, ComputeNode, LinearOp,
-    ScalarProgramBlock, SparsityPattern, TensorOutputMap,
+    ScalarProgramBlock, StructuralPattern, TensorOutputMap,
 };
 
 /// Reusable evaluator for one Solve-IR row block.
@@ -1134,6 +1136,7 @@ enum PreparedComputeNode {
         output_start: usize,
         matrix_len: usize,
         n: usize,
+        kernel: LinearSolveKernel,
         span: rumoca_core::Span,
     },
 }
@@ -1168,8 +1171,8 @@ struct PreparedMatMulInput<'a> {
     m: usize,
     k: usize,
     n: usize,
-    lhs_sparsity: &'a SparsityPattern,
-    rhs_sparsity: &'a SparsityPattern,
+    lhs_pattern: &'a StructuralPattern,
+    rhs_pattern: &'a StructuralPattern,
     span: rumoca_core::Span,
 }
 
@@ -1204,8 +1207,8 @@ fn prepared_matmul(
         m,
         k,
         n,
-        lhs_sparsity,
-        rhs_sparsity,
+        lhs_pattern,
+        rhs_pattern,
         span,
     } = input;
     let setup_op_count = checked_prepared_sum(
@@ -1223,7 +1226,7 @@ fn prepared_matmul(
     let output_len = checked_product(m, n, "prepared matmul output", span)?;
     let next_output_cursor =
         checked_contiguous_output_count(output_cursor, output_len, "prepared matmul output", span)?;
-    let kernel = select_matmul_kernel(m, k, n, lhs_sparsity, rhs_sparsity).map_err(|err| {
+    let kernel = select_matmul_kernel(m, k, n, lhs_pattern, rhs_pattern).map_err(|err| {
         EvalSolveError::ShapeContract {
             message: format!("prepared MatMul tensor policy failed: {err}"),
             span: Some(span),
@@ -1252,12 +1255,19 @@ fn prepared_linsolve(
     matrix_start: u32,
     rhs_start: u32,
     n: usize,
+    matrix_pattern: &StructuralPattern,
     span: rumoca_core::Span,
     output_cursor: usize,
 ) -> Result<(PreparedComputeNode, usize), EvalSolveError> {
     let matrix_len = checked_product(n, n, "prepared linsolve matrix", span)?;
     let next_output_cursor =
         checked_contiguous_output_count(output_cursor, n, "prepared linsolve output", span)?;
+    let kernel = select_linear_solve_kernel(n, matrix_pattern).map_err(|error| {
+        EvalSolveError::ShapeContract {
+            message: format!("prepared LinSolve policy failed: {error}"),
+            span: Some(span),
+        }
+    })?;
     Ok((
         PreparedComputeNode::LinSolve {
             setup: PreparedLinearOps::new(setup_ops.to_vec())?,
@@ -1266,6 +1276,7 @@ fn prepared_linsolve(
             output_start: output_cursor,
             matrix_len,
             n,
+            kernel,
             span,
         },
         next_output_cursor,
@@ -1619,8 +1630,8 @@ impl PreparedComputeNode {
                 m,
                 k,
                 n,
-                lhs_sparsity,
-                rhs_sparsity,
+                lhs_pattern,
+                rhs_pattern,
                 span,
                 ..
             } => prepared_matmul(
@@ -1632,8 +1643,8 @@ impl PreparedComputeNode {
                     m: *m,
                     k: *k,
                     n: *n,
-                    lhs_sparsity,
-                    rhs_sparsity,
+                    lhs_pattern,
+                    rhs_pattern,
                     span: *span,
                 },
                 output_cursor,
@@ -1643,6 +1654,7 @@ impl PreparedComputeNode {
                 matrix_start,
                 rhs_start,
                 n,
+                matrix_pattern,
                 span,
                 ..
             } => prepared_linsolve(
@@ -1650,6 +1662,7 @@ impl PreparedComputeNode {
                 *matrix_start,
                 *rhs_start,
                 *n,
+                matrix_pattern,
                 *span,
                 output_cursor,
             )?,
@@ -1772,6 +1785,7 @@ impl PreparedComputeNode {
                 output_start,
                 matrix_len,
                 n,
+                kernel,
                 span,
             } => {
                 setup.eval(y, p, t, context, scratch)?;
@@ -1785,6 +1799,7 @@ impl PreparedComputeNode {
                     *matrix_start,
                     *rhs_start,
                     *n,
+                    *kernel,
                     &mut out[*output_start..output_end],
                 )
                 .map_err(|error| {

@@ -212,8 +212,10 @@ fn matmul_value(node: Arc<solve::ComputeNode>) -> Value {
             "m",
             "k",
             "n",
-            "lhs_sparsity",
-            "rhs_sparsity",
+            "lhs_pattern",
+            "rhs_pattern",
+            "lhs_pattern_kind",
+            "lhs_pattern_nonzeros",
             "metadata",
             "span",
         ],
@@ -226,8 +228,8 @@ fn matmul_value(node: Arc<solve::ComputeNode>) -> Value {
                 m,
                 k: kk,
                 n,
-                lhs_sparsity,
-                rhs_sparsity,
+                lhs_pattern,
+                rhs_pattern,
                 metadata,
                 span,
             } = node.as_ref()
@@ -242,14 +244,37 @@ fn matmul_value(node: Arc<solve::ComputeNode>) -> Value {
                 "m" => Some(Value::from(*m)),
                 "k" => Some(Value::from(*kk)),
                 "n" => Some(Value::from(*n)),
-                "lhs_sparsity" => Some(Value::from_serialize(lhs_sparsity)),
-                "rhs_sparsity" => Some(Value::from_serialize(rhs_sparsity)),
+                "lhs_pattern" => Some(Value::from_serialize(lhs_pattern)),
+                "rhs_pattern" => Some(Value::from_serialize(rhs_pattern)),
+                "lhs_pattern_kind" => Some(Value::from(pattern_kind(lhs_pattern))),
+                "lhs_pattern_nonzeros" => {
+                    Some(Value::from_serialize(pattern_nonzeros(lhs_pattern)))
+                }
                 "metadata" => Some(Value::from_serialize(metadata)),
                 "span" => Some(Value::from_serialize(span)),
                 _ => None,
             }
         },
     )
+}
+
+fn pattern_kind(pattern: &solve::StructuralPattern) -> &'static str {
+    match pattern.view() {
+        solve::StructuralPatternView::Empty => "empty",
+        solve::StructuralPatternView::Full => "full",
+        solve::StructuralPatternView::Diagonal => "diagonal",
+        solve::StructuralPatternView::Banded { .. } => "banded",
+        solve::StructuralPatternView::Csr { .. } => "csr",
+    }
+}
+
+fn pattern_nonzeros(pattern: &solve::StructuralPattern) -> Vec<(u32, u32)> {
+    let mut entries = Vec::with_capacity(pattern.nonzero_upper_bound().unwrap_or(0));
+    for (column, rows) in pattern.column_rows().into_iter().enumerate() {
+        entries.extend(rows.into_iter().map(|row| (row as u32, column as u32)));
+    }
+    entries.sort_unstable();
+    entries
 }
 
 fn linsolve_value(node: Arc<solve::ComputeNode>) -> Value {
@@ -260,6 +285,7 @@ fn linsolve_value(node: Arc<solve::ComputeNode>) -> Value {
             "rhs_start",
             "n",
             "next_reg",
+            "matrix_pattern",
             "metadata",
             "span",
         ],
@@ -270,6 +296,7 @@ fn linsolve_value(node: Arc<solve::ComputeNode>) -> Value {
                 rhs_start,
                 n,
                 next_reg,
+                matrix_pattern,
                 metadata,
                 span,
             } = node.as_ref()
@@ -282,6 +309,7 @@ fn linsolve_value(node: Arc<solve::ComputeNode>) -> Value {
                 "rhs_start" => Some(Value::from(*rhs_start)),
                 "n" => Some(Value::from(*n)),
                 "next_reg" => Some(Value::from(*next_reg)),
+                "matrix_pattern" => Some(Value::from_serialize(matrix_pattern)),
                 "metadata" => Some(Value::from_serialize(metadata)),
                 "span" => Some(Value::from_serialize(span)),
                 _ => None,

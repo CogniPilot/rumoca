@@ -92,13 +92,7 @@ pub fn run(args: Args) -> Result<()> {
     Ok(())
 }
 
-/// Print the ED001 component breakdown for a single model.
-///
-/// This is the documented one-model entry point that the MSL triage report's
-/// `reproduction` column points at: it names which unknown/equation partition
-/// dominates the gap, which balance clamps discarded rows (each clamp names a
-/// specific upstream analysis to audit), and how many continuous equation rows
-/// were filtered out of `f_x` and why.
+/// Print the exact checked-construction balance inputs for a single model.
 fn print_balance_breakdown(detail: Option<&rumoca_compile::analysis::BalanceDetail>) {
     let Some(detail) = detail else {
         return;
@@ -108,25 +102,18 @@ fn print_balance_breakdown(detail: Option<&rumoca_compile::analysis::BalanceDeta
         "balance: {} ({equations} equations, {unknowns} unknowns)",
         detail.balance()
     );
-    println!("  dominant term: {}", detail.dominant_term());
-    print!("{detail}");
-    println!();
-    let clamps = detail.clamps();
-    if clamps.is_inert() {
-        println!("  clamps: none exercised");
-    } else {
-        println!("  clamps: {clamps}");
-        println!("  clamps exercised: {}", clamps.exercised().join(", "));
-    }
-    if detail.excluded.is_inert() {
-        println!("  excluded rows: none");
-    } else {
-        println!(
-            "  excluded rows ({}): {}",
-            detail.excluded.total(),
-            detail.excluded
-        );
-    }
+    println!(
+        "  unknowns: state={} algebraic={} output={} discrete_real={} discrete_value={}",
+        detail.state_unknowns,
+        detail.algebraic_unknowns,
+        detail.output_unknowns,
+        detail.discrete_real_unknowns,
+        detail.discrete_value_unknowns,
+    );
+    println!(
+        "  equations: continuous={} discrete_real={} discrete_assignment={}",
+        detail.continuous_equations, detail.discrete_real_equations, detail.discrete_assignments,
+    );
 }
 
 fn ensure_msl_cache_exists(paths: &MslPaths) -> Result<()> {

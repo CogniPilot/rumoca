@@ -118,7 +118,7 @@ typed views classify `p`, `x`, `y`, `z`, and `m`, while input/output causality
 is orthogonal metadata. Dedicated continuous, initialization, discrete,
 condition, event, and clock systems own their respective behavior. Schema
 version 11 is the only supported wire version; every other version is rejected
-without legacy readers or adapters.
+without superseded readers or adapters.
 
 Finalized DAE is valid by construction. Invariant-bearing fields are private,
 checked child constructors establish local expression/type/shape/domain
@@ -222,6 +222,7 @@ scalar-program blocks) live in `SolveArtifacts`, materialized by
 | Scalarization is a backend/evaluator choice, not an IR or lowering choice | Do not flatten tensor nodes in `rumoca-ir-solve` / `rumoca-phase-solve`; IR crates must not define scalarization helpers |
 | Forward and reverse AD products are Solve artifacts, not base Solve IR fields | Keeps base Solve payloads lean while allowing Rumoca-owned JVP/VJP/adjoint paths for runtime and generated targets |
 | Jacobian products live in `SolveArtifacts`, not base `SolveProblem` | Avoids unconditional AD materialization for codegen/IDE paths that do not consume them |
+| Structural sparsity is derived with `SolveArtifacts`, never accepted as a raw hint | A false-negative pattern can corrupt compressed AD and sparse solves |
 | Mass-matrix form lives in `ContinuousSolveArtifacts`, not DAE | It is solver-facing derived metadata, not canonical Modelica DAE semantics |
 | BLT orderings from DAE-IR MAY drive `ComputeBlock` layout | Reuses upstream structural analysis |
 
@@ -231,6 +232,11 @@ over Solve artifacts, not canonical `SolveProblem` payload fields.
 
 **Do here:** lower DAE-IR expression trees + for-loops to `LinearOp` sequences
 and preserve tensor nodes/sparsity metadata for downstream consumers.
+
+Sparsity metadata follows [SPEC_0039](SPEC_0039_PROOF_CARRYING_SPARSITY.md):
+it is a constructor-derived may-depend certificate, distinct from numerical
+zeros and target storage format. Compact affine patterns originate from
+SPEC_0032 owners rather than scalar-row recovery.
 **Do NOT do here:** DAE-level structural transformations, MLS semantics changes,
 expression-level symbolic rewrites, concrete JIT/toolchain invocation, CUDA
 runtime compilation, native object loading, or Jinja/minijinja template
@@ -261,7 +267,7 @@ rendering (those live in DAE-IR/upstream lowering, `rumoca-exec-*`, or
 
 4. **Each stage's output is serializable.** DAE and Solve roots carry mandatory
    `schema_version`; unsupported versions are rejected. Compiler-owned wire
-   formats support only their current version; no legacy reader or migration
+   formats support only their current version; no superseded reader or migration
    path is retained. Private wire decoders reconstruct checked stage values;
    invariant-bearing IR children do not derive `Deserialize`.
 

@@ -2,7 +2,10 @@ use indexmap::IndexMap;
 use rumoca_ir_solve as solve;
 use rumoca_solver::SimOptions;
 
-use super::unit_integrator_model;
+use super::{
+    ordinary_equation_row_metadata, periodic_schedule, set_equation_row_metadata,
+    unit_integrator_model,
+};
 use crate::simulate;
 
 macro_rules! fixture_span {
@@ -77,14 +80,8 @@ fn state_only_root_event_is_independent_of_output_grid() {
 fn root_at_scheduled_stop_resumes_to_simulation_horizon() {
     let mut model = rising_state_with_root_reinit();
     model.problem.clocks.periodic_event_schedules = vec![
-        solve::PeriodicEventSchedule {
-            phase_seconds: 0.05,
-            period_seconds: 10.0,
-        },
-        solve::PeriodicEventSchedule {
-            phase_seconds: 0.075,
-            period_seconds: 10.0,
-        },
+        periodic_schedule(10.0, 0.05),
+        periodic_schedule(10.0, 0.075),
     ];
 
     let result = simulate(
@@ -193,6 +190,7 @@ fn state_only_bdf_uses_search_values_for_parameter_static_roots() {
         ]],
         fixture_span!(),
     );
+    ordinary_equation_row_metadata(&mut model);
 
     let result = simulate(
         &model,
@@ -255,10 +253,7 @@ fn scheduled_sample_still_fires_when_a_root_lands_on_its_instant() {
 /// `y_last = 100*pre(x)` and reinitialises `x` to 0.
 fn sampled_mean_with_coincident_root() -> solve::SolveModel {
     let mut model = rising_state_with_root_reinit();
-    model.problem.clocks.periodic_event_schedules = vec![solve::PeriodicEventSchedule {
-        phase_seconds: 0.05,
-        period_seconds: 10.0,
-    }];
+    model.problem.clocks.periodic_event_schedules = vec![periodic_schedule(10.0, 0.05)];
     model.problem.solve_layout.parameter_count = 0;
     model.problem.solve_layout.compiled_parameter_len = 2;
     model.problem.solve_layout.discrete_real_scalar_names = vec!["y_last".to_string()];
@@ -269,11 +264,15 @@ fn sampled_mean_with_coincident_root() -> solve::SolveModel {
         clock_schedule: None,
     }];
     model.problem.discrete.update_targets = vec![solve::scalar_slot_y(0), solve::scalar_slot_p(0)];
-    model.problem.discrete.pre_modes = vec![
-        solve::DiscreteEventPreMode::FollowCurrent,
-        solve::DiscreteEventPreMode::Fixed,
-    ];
     model.problem.discrete.rhs = sampled_mean_discrete_rhs();
+    set_equation_row_metadata(
+        &mut model,
+        vec![
+            solve::DiscreteEventPreMode::FollowCurrent,
+            solve::DiscreteEventPreMode::Fixed,
+        ],
+        vec![false, false],
+    );
     model.parameters = vec![0.0, 0.0];
     model.visible_names = vec!["x".to_string(), "y_last".to_string()];
     model
@@ -421,6 +420,7 @@ fn rising_state_with_root_reinit() -> solve::SolveModel {
         ]],
         fixture_span!(),
     );
+    ordinary_equation_row_metadata(&mut model);
     model.initial_y = vec![0.0];
     model.visible_names = vec!["x".to_string()];
     model
@@ -464,8 +464,12 @@ fn falling_ball_with_strict_reinit_guard() -> solve::SolveModel {
         fixture_span!(),
     );
     model.problem.discrete.update_targets = vec![solve::scalar_slot_y(1)];
-    model.problem.discrete.pre_modes = vec![solve::DiscreteEventPreMode::Fixed];
     model.problem.discrete.rhs = falling_ball_strict_reinit_rhs();
+    set_equation_row_metadata(
+        &mut model,
+        vec![solve::DiscreteEventPreMode::Fixed],
+        vec![false],
+    );
     model.initial_y = vec![10.0, 1.0];
     model.parameters = vec![10.0, 1.0];
     model.visible_names = vec!["x".to_string(), "v".to_string()];

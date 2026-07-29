@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use clap::Parser;
-use rumoca_compile::compile::{CompilationResult, Session, SessionConfig};
+use rumoca_compile::compile::{CompilationResult, Session, SessionConfig, VariableRole};
 use serde::Serialize;
 
 const DEFAULT_SIZES: &[usize] = &[128, 512, 2048];
@@ -171,46 +171,66 @@ fn compile_once(workload: Workload, size: usize) -> Result<(Duration, CompileInv
 }
 
 fn inventory(result: &CompilationResult) -> Result<CompileInventory> {
-    let families = &result.dae.continuous.structured_equations;
-    let mut compact_domain_points = 0usize;
-    let mut row_major_families = 0usize;
-    let mut binder_substitution_families = 0usize;
-    let mut non_materialized_families = 0usize;
-    for family in families {
-        let points = family
-            .domain
-            .scalar_count()
-            .context("invalid compact structured-family domain")?;
-        compact_domain_points = compact_domain_points
-            .checked_add(points)
-            .context("compact structured-family point count overflowed")?;
-        if !family.interiors_materialized {
-            non_materialized_families += 1;
-        }
-        match family
-            .template
-            .as_ref()
-            .map(|template| template.scalar_view)
-        {
-            Some(rumoca_compile::compile::core::ComprehensionScalarView::RowMajorProjection) => {
-                row_major_families += 1;
+    let (
+        states,
+        algebraics,
+        equations,
+        structured_families,
+        compact_domain_points,
+        row_major_families,
+        binder_substitution_families,
+    ) = result.dae.inspect(|view| {
+        let states = view
+            .variables()
+            .filter(|(_, variable)| variable.role() == VariableRole::State)
+            .count();
+        let algebraics = view
+            .variables()
+            .filter(|(_, variable)| variable.role() == VariableRole::Algebraic)
+            .count();
+        let mut compact_domain_points = 0usize;
+        let mut row_major_families = 0usize;
+        let mut binder_substitution_families = 0usize;
+        for index in 0..view.continuous_family_count() {
+            let family = view
+                .continuous_family(index)
+                .expect("finalized continuous family resolves");
+            compact_domain_points = compact_domain_points
+                .checked_add(
+                    view.domain(family.domain())
+                        .expect("branded family domain resolves")
+                        .scalar_count() as usize,
+                )
+                .expect("checked family domain total fits usize");
+            match family.scalar_view() {
+                rumoca_compile::compile::core::ComprehensionScalarView::RowMajorProjection => {
+                    row_major_families += 1;
+                }
+                rumoca_compile::compile::core::ComprehensionScalarView::BinderSubstitution => {
+                    binder_substitution_families += 1;
+                }
             }
-            Some(rumoca_compile::compile::core::ComprehensionScalarView::BinderSubstitution) => {
-                binder_substitution_families += 1;
-            }
-            None => {}
         }
-    }
-    let dae_scalar_residual_view_available =
-        rumoca_compile::codegen::validate_dae_scalar_residual_view(&result.dae).is_ok();
+        (
+            states,
+            algebraics,
+            view.continuous_equation_count(),
+            view.continuous_family_count(),
+            compact_domain_points,
+            row_major_families,
+            binder_substitution_families,
+        )
+    });
+    let non_materialized_families = structured_families;
+    let dae_scalar_residual_view_available = structured_families == 0;
     let solve = rumoca_sim::lower_solve_problem(&result.dae)
         .context("tensor workload failed Solve-IR lowering")?;
     let solve_counts = solve.compute_node_counts();
     Ok(CompileInventory {
-        states: result.dae.variables.states.len(),
-        algebraics: result.dae.variables.algebraics.len(),
-        equations: result.dae.continuous.equations.len(),
-        structured_families: families.len(),
+        states,
+        algebraics,
+        equations,
+        structured_families,
         compact_domain_points,
         row_major_families,
         binder_substitution_families,

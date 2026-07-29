@@ -1,0 +1,53 @@
+use super::*;
+
+pub(super) fn lower_equation_systems<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    flat: &flat::Model,
+    analysis: &Analysis,
+    coordinates: &HashMap<VarName, Coordinate<'dae>>,
+    functions: &FunctionRegistry<'_, 'dae>,
+) -> Result<(), dae::DaeConstructionError> {
+    let mut excluded_equation_rows = analysis.continuous_family_rows.clone();
+    excluded_equation_rows.extend(&analysis.clock_equation_rows);
+    lower_equations(
+        construction,
+        coordinates,
+        functions,
+        EquationRows {
+            equations: &flat.equations,
+            excluded: &excluded_equation_rows,
+            records: &analysis.record_equations,
+            roles: &analysis.roles,
+            initialization: false,
+        },
+    )?;
+    lower_structured_equations(
+        construction,
+        coordinates,
+        functions,
+        &flat.equations,
+        &flat.structured_equations,
+        false,
+    )?;
+    lower_equations(
+        construction,
+        coordinates,
+        functions,
+        EquationRows {
+            equations: &flat.initial_equations,
+            excluded: &analysis.initialization_family_rows,
+            records: &analysis.initial_record_equations,
+            roles: &analysis.roles,
+            initialization: true,
+        },
+    )?;
+    lower_structured_equations(
+        construction,
+        coordinates,
+        functions,
+        &flat.initial_equations,
+        &flat.initial_structured_equations,
+        true,
+    )?;
+    Ok(())
+}

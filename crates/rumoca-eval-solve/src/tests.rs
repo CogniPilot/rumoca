@@ -1,6 +1,5 @@
 use super::*;
 use crate::random_runtime::checked_random_reg_offset;
-use rumoca_eval_dae::{VarEnv, eval_expr};
 use rumoca_ir_solve::RandomGenerator;
 
 fn fixture_span() -> rumoca_core::Span {
@@ -11,72 +10,18 @@ fn fixture_span() -> rumoca_core::Span {
     )
 }
 
-fn lit(value: f64) -> rumoca_core::Expression {
-    rumoca_core::Expression::Literal {
-        value: rumoca_core::Literal::Real(value),
-        span: rumoca_core::Span::DUMMY,
-    }
-}
-
-fn int_lit(value: i64) -> rumoca_core::Expression {
-    rumoca_core::Expression::Literal {
-        value: rumoca_core::Literal::Integer(value),
-        span: rumoca_core::Span::DUMMY,
-    }
-}
-
-fn array(elements: Vec<rumoca_core::Expression>, is_matrix: bool) -> rumoca_core::Expression {
-    rumoca_core::Expression::Array {
-        elements,
-        is_matrix,
-        span: rumoca_core::Span::DUMMY,
-    }
-}
-
-fn function_call(name: &str, args: Vec<rumoca_core::Expression>) -> rumoca_core::Expression {
-    rumoca_core::Expression::FunctionCall {
-        name: rumoca_core::VarName::new(name).into(),
-        args,
-        is_constructor: false,
-        span: rumoca_core::Span::DUMMY,
-    }
-}
-
-fn table_expr() -> rumoca_core::Expression {
-    array(
-        vec![
-            array(vec![lit(0.0), lit(10.0)], false),
-            array(vec![lit(2.0), lit(14.0)], false),
-        ],
-        true,
-    )
-}
-
-fn columns_expr() -> rumoca_core::Expression {
-    array(vec![int_lit(2)], false)
-}
-
 fn time_table() -> (f64, Vec<rumoca_core::ExternalTableData>) {
-    let env = VarEnv::<f64>::new();
-    let table_id = eval_expr::<f64>(
-        &function_call(
-            "ExternalCombiTimeTable",
-            vec![
-                lit(0.0),
-                lit(0.0),
-                table_expr(),
-                lit(0.0),
-                columns_expr(),
-                int_lit(1),
-                int_lit(1),
-            ],
-        ),
-        &env,
+    let table_id = 1_u64;
+    (
+        table_id as f64,
+        vec![rumoca_core::ExternalTableData {
+            id: table_id,
+            data: vec![vec![0.0, 10.0], vec![2.0, 14.0]],
+            columns: vec![2],
+            smoothness: 1,
+            extrapolation: 1,
+        }],
     )
-    .expect("table id should evaluate");
-    let tables =
-        rumoca_eval_dae::eval::external_table_data_for_parameter_values_in(&env, &[table_id]);
-    (table_id, tables)
 }
 
 #[test]
@@ -795,8 +740,15 @@ fn batched_linsolve_rejects_short_output_instead_of_truncating() {
     let regs = [1.0, 0.0, 0.0, 1.0, 2.0, 3.0];
     let mut out = [0.0];
 
-    let err = crate::linear_solve::solve_all_unchecked(&regs, 0, 4, 2, &mut out)
-        .expect_err("a short output buffer must not truncate a linear solution");
+    let err = crate::linear_solve::solve_all_unchecked(
+        &regs,
+        0,
+        4,
+        2,
+        crate::tensor_policy::LinearSolveKernel::Dense,
+        &mut out,
+    )
+    .expect_err("a short output buffer must not truncate a linear solution");
 
     assert_eq!(
         err,

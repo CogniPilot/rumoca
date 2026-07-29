@@ -372,6 +372,8 @@ ir = "dae"
 name = "web"
 readiness_level = 2
 
+[capabilities]
+
 [[files]]
 id = "alg"
 path = "AlgorithmCode/M.alg"
@@ -448,6 +450,8 @@ ir = "dae"
 name = "cycle"
 readiness_level = 2
 
+[capabilities]
+
 [[files]]
 id = "a"
 path = "a.xml"
@@ -480,6 +484,8 @@ ir = "dae"
 name = "self"
 readiness_level = 2
 
+[capabilities]
+
 [[files]]
 id = "m"
 path = "m.xml"
@@ -502,6 +508,8 @@ version = 1
 ir = "dae"
 name = "dangling"
 readiness_level = 2
+
+[capabilities]
 
 [[files]]
 id = "c"
@@ -528,6 +536,8 @@ version = 1
 ir = "dae"
 name = "e2e"
 readiness_level = 2
+
+[capabilities]
 
 [[assets]]
 bundle = "fake-bundle"
@@ -578,6 +588,8 @@ version = 1
 ir = "dae"
 name = "e2e"
 readiness_level = 2
+
+[capabilities]
 
 [[assets]]
 bundle = "fake-bundle"

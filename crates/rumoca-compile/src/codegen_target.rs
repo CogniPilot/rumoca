@@ -24,14 +24,12 @@ pub enum TargetTemplateIr {
     Ast,
 }
 
-/// Post-render packaging step selected by a target's `build` field. The
-/// build kind is the packaging mechanism — there is no CLI flag: `fmu`
-/// compiles + zips an FMU, `efmu` assembles a schema-valid eFMU container
-/// (directory + `.efmu` zip forms) from the invocation's rendered files.
+/// Post-render packaging step selected by a target's `build` field.
+/// `efmu` assembles a schema-valid eFMU container (directory + `.efmu` zip
+/// forms) from the invocation's rendered files.
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum TargetBuildKind {
-    Fmu,
     Efmu,
 }
 
@@ -117,7 +115,6 @@ pub enum TensorLayoutCapability {
 pub struct TargetFile {
     pub path: String,
     pub template: String,
-    pub render_context: Option<TargetFileRenderContext>,
     pub mode: Option<String>,
     /// Stable logical identity of this rendered file within the target
     /// (contract §4a). Only files a checksum edge points at (`of = <id>`)
@@ -132,13 +129,6 @@ pub struct TargetFile {
     /// entry fails loudly at render — declaration and use cannot drift.
     #[serde(default)]
     pub checksums: Vec<ChecksumNeed>,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum TargetFileRenderContext {
-    FmiModelDescription,
-    FmiImplementation,
 }
 
 /// One consumer-declared checksum edge: "embed the producer `of`'s SHA-1
@@ -453,20 +443,13 @@ pub fn render_dae_target_files(
         .as_ref()
         .context("DAE target manifest must declare a [capabilities] table")?;
     validate_dae_target_capabilities(dae, manifest, capabilities)?;
-    let structured_ownership = manifest
-        .capabilities
-        .as_ref()
-        .and_then(|capabilities| capabilities.structured_equation_families)
-        == Some(true);
-
     let mut files = Vec::with_capacity(manifest.files.len());
     for file in &manifest.files {
-        let path = render_dae_target_str(dae, &file.path, model_name, structured_ownership)
+        let path = render_dae_target_str(dae, &file.path, model_name)
             .with_context(|| format!("Render target output path '{}'", file.path))?;
         let template = source.template_source(&file.template)?;
-        let content =
-            render_dae_target_str(dae, template.as_ref(), model_name, structured_ownership)
-                .with_context(|| format!("Render target template '{}'", file.template))?;
+        let content = render_dae_target_str(dae, template.as_ref(), model_name)
+            .with_context(|| format!("Render target template '{}'", file.template))?;
         files.push(RenderedTargetFile {
             path: path.trim().to_string(),
             content,
@@ -486,29 +469,42 @@ pub fn validate_dae_target_capabilities(
             manifest.name.as_deref().unwrap_or("<unnamed>")
         );
     }
-    if capabilities.structured_equation_families == Some(true) {
-        crate::codegen_api::validate_dae_structured_ownership(dae)?;
-    } else if let Err(error) = crate::codegen_api::validate_dae_scalar_residual_view(dae) {
-        unsupported_feature(manifest, "structured_equation_families", error)?;
+    let (state_count, continuous_equation_count, continuous_family_count) = dae.inspect(|view| {
+        let state_count = view
+            .variables()
+            .filter(|(_, variable)| variable.role() == dae::VariableRole::State)
+            .count();
+        let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
+        (
+            state_count,
+            definitions.remaining_owner_count(),
+            view.continuous_family_count(),
+        )
+    });
+    if capabilities.structured_equation_families != Some(true) && continuous_family_count != 0 {
+        unsupported_feature(
+            manifest,
+            "structured_equation_families",
+            format!("{continuous_family_count} compact equation family owner(s)"),
+        )?;
     }
     if capabilities.continuous_states == Some(false)
-        && (!dae.variables.states.is_empty() || !dae.continuous.equations.is_empty())
+        && (state_count != 0 || continuous_equation_count != 0)
     {
         unsupported_feature(
             manifest,
             "continuous_states",
             format!(
                 "{} state(s), {} residual derivative equation(s)",
-                dae.variables.states.len(),
-                dae.continuous.equations.len()
+                state_count, continuous_equation_count
             ),
         )?;
     }
-    if capabilities.residual_equations == Some(false) && !dae.continuous.equations.is_empty() {
+    if capabilities.residual_equations == Some(false) && continuous_equation_count != 0 {
         unsupported_feature(
             manifest,
             "residual_equations",
-            format!("{} equation(s)", dae.continuous.equations.len()),
+            format!("{continuous_equation_count} equation(s)"),
         )?;
     }
     if capabilities.external_functions == Some(false) && dae_has_external_functions(dae) {
@@ -759,19 +755,9 @@ fn validate_target_capabilities(
     Ok(())
 }
 
-fn render_dae_target_str(
-    dae: &dae::Dae,
-    template: &str,
-    model_name: &str,
-    structured_ownership: bool,
-) -> Result<String> {
-    if structured_ownership {
-        crate::codegen_api::render_structured_dae_template_with_name(dae, template, model_name)
-            .map_err(anyhow::Error::from)
-    } else {
-        crate::codegen_api::render_dae_template_with_name(dae, template, model_name)
-            .map_err(anyhow::Error::from)
-    }
+fn render_dae_target_str(dae: &dae::Dae, template: &str, model_name: &str) -> Result<String> {
+    crate::codegen_api::render_dae_template_with_name(dae, template, model_name)
+        .map_err(anyhow::Error::from)
 }
 
 fn unsupported_feature(
@@ -793,81 +779,53 @@ fn unsupported_feature(
 #[cfg(test)]
 mod tests {
     use super::{
-        TargetFeatureSupport, TargetFileRenderContext, TargetManifest, TargetTemplateIr,
-        TensorCapability, TensorLayoutCapability, builtin_target_compatibility_matrix,
+        TargetFeatureSupport, TargetManifest, TargetTemplateIr, TensorCapability,
+        TensorLayoutCapability, builtin_target_compatibility_matrix,
         ensure_target_has_rendered_files, parse_target_manifest, safe_target_join, templates,
         validate_dae_target_capabilities, validate_target_manifest,
     };
-    use rumoca_core::{
-        BuiltinFunction, Expression, ExternalFunction, Function, Literal, Reference, Span,
-        Subscript, VarName,
-    };
-    use rumoca_ir_dae::{Dae, Equation};
+    use rumoca_core::{SourceMap, StructuredIndexBinder, StructuredIndexDomain};
+    use rumoca_ir_dae::{Dae, DaeLiteral, DaeProvenance};
     use std::path::Path;
 
-    fn function_call(name: &str) -> Expression {
-        Expression::FunctionCall {
-            name: Reference::new(name),
-            args: Vec::new(),
-            is_constructor: false,
-            span: Span::DUMMY,
-        }
-    }
-
-    fn var(name: &str) -> Expression {
-        Expression::VarRef {
-            name: Reference::new(name),
-            subscripts: Vec::new(),
-            span: Span::DUMMY,
-        }
-    }
-
-    fn int(value: i64) -> Expression {
-        Expression::Literal {
-            value: Literal::Integer(value),
-            span: Span::DUMMY,
-        }
-    }
-
-    fn residual(rhs: Expression, origin: &str) -> Equation {
-        Equation::residual(rhs, Span::DUMMY, origin)
-    }
-
     fn dae_with_placeholder_family() -> Dae {
-        let mut dae = Dae::new();
-        let placeholder = Expression::Literal {
-            value: Literal::Real(0.0),
-            span: Span::DUMMY,
-        };
-        for _ in 0..4 {
-            dae.continuous
-                .equations
-                .push(residual(placeholder.clone(), "family"));
-        }
-        dae.continuous
-            .structured_equations
-            .push(rumoca_ir_dae::StructuredEquationFamily {
-                domain: rumoca_core::StructuredIndexDomain {
-                    binders: vec![rumoca_core::StructuredIndexBinder {
-                        id: 0,
-                        display_name: "i".to_string(),
-                        lower: 1,
-                        upper: 4,
-                        step: 1,
-                    }],
-                },
-                first_equation_index: 0,
-                equations_per_point: 1,
-                span: Span::DUMMY,
-                origin: "family".to_string(),
-                regular: None,
-                template: Some(rumoca_core::ComprehensionTemplate {
-                    body: vec![placeholder],
-                    scalar_view: rumoca_core::ComprehensionScalarView::BinderSubstitution,
-                }),
-                interiors_materialized: false,
-            });
-        dae
+        let source_text = "for i in 1:4 loop 0.0 = 0.0; end for;";
+        let mut source_map = SourceMap::new();
+        let source_id = source_map.add("target-capability.mo", source_text);
+        let owner = DaeProvenance::source(rumoca_core::Span::from_offsets(
+            source_id,
+            0,
+            source_text.len(),
+        ))
+        .expect("fixture source span is exact");
+        Dae::construct(source_map, |dae| {
+            let domain = dae.domains(|domains| {
+                domains.structured(
+                    StructuredIndexDomain {
+                        binders: vec![StructuredIndexBinder {
+                            id: 0,
+                            display_name: "i".to_string(),
+                            lower: 1,
+                            upper: 4,
+                            step: 1,
+                        }],
+                    },
+                    owner,
+                )
+            })?;
+            let residual = dae
+                .expressions(|expressions| expressions.at(owner).literal(DaeLiteral::Real(0.0)))?;
+            dae.continuous(|equations| {
+                equations.structured_family(
+                    owner,
+                    domain,
+                    rumoca_core::ComprehensionScalarView::BinderSubstitution,
+                    |family| family.body(residual),
+                )
+            })?;
+            Ok(())
+        })
+        .expect("checked structured-family fixture is valid")
     }
 
     fn manifest_with_capabilities(capabilities: &str) -> TargetManifest {
@@ -945,50 +903,6 @@ host_callbacks = false
     }
 
     #[test]
-    fn target_manifest_parses_file_render_context() {
-        let manifest = super::parse_target_manifest(
-            r#"
-version = 1
-ir = "solve"
-name = "custom"
-
-[[files]]
-path = "modelDescription.xml"
-template = "modelDescription.xml.jinja"
-render_context = "fmi-model-description"
-"#,
-        )
-        .expect("parse target manifest with file render context");
-
-        assert_eq!(
-            manifest.files[0].render_context,
-            Some(TargetFileRenderContext::FmiModelDescription)
-        );
-    }
-
-    #[test]
-    fn target_manifest_parses_fmi_implementation_render_context() {
-        let manifest = super::parse_target_manifest(
-            r#"
-version = 1
-ir = "solve"
-name = "custom"
-
-[[files]]
-path = "sources/model.c"
-template = "model.c.jinja"
-render_context = "fmi-implementation"
-"#,
-        )
-        .expect("parse target manifest with FMI implementation context");
-
-        assert_eq!(
-            manifest.files[0].render_context,
-            Some(TargetFileRenderContext::FmiImplementation)
-        );
-    }
-
-    #[test]
     fn all_builtin_target_manifests_parse() {
         for target in templates::builtin_targets() {
             parse_target_manifest(target.manifest).unwrap_or_else(|err| {
@@ -1015,21 +929,66 @@ render_context = "fmi-implementation"
                 target
                     .templates
                     .iter()
-                    .any(|template| template.source.contains("render_dae_equations(")),
+                    .any(|template| template.source.contains("dae.modelica.equations")),
                 "built-in target '{}' declares structured family ownership but no template \
-                 consumes the canonical family",
+                 consumes the checked owner projection",
                 target.name
             );
             assert!(
                 target
                     .templates
                     .iter()
-                    .all(|template| !template.source.contains("for eq in dae.f_x")),
-                "built-in target '{}' declares structured family ownership but directly loops \
-                 over scalar f_x",
+                    .all(|template| !template.source.contains("dae.f_x")),
+                "built-in target '{}' declares structured family ownership but reads the removed \
+                 scalar residual field",
                 target.name
             );
         }
+    }
+
+    #[test]
+    fn builtin_dae_consumers_use_only_the_checked_template_schema() {
+        fn dae_root_fields(source: &str) -> impl Iterator<Item = &str> {
+            source.match_indices("dae.").filter_map(|(start, _)| {
+                let field = &source[start + "dae.".len()..];
+                let end = field
+                    .find(|character: char| !character.is_ascii_alphanumeric() && character != '_')
+                    .unwrap_or(field.len());
+                (end != 0).then_some(&field[..end])
+            })
+        }
+
+        const CHECKED_ROOT_FIELDS: &[&str] = &[
+            "schema",
+            "value_types",
+            "variables",
+            "functions",
+            "domains",
+            "expressions",
+            "modelica",
+            "systems",
+        ];
+        let mut offenders = Vec::new();
+        for target in templates::builtin_targets() {
+            let manifest = parse_target_manifest(target.manifest).unwrap_or_else(|error| {
+                panic!("built-in target '{}' failed to parse: {error}", target.name)
+            });
+            if !matches!(manifest.ir, TargetTemplateIr::Dae | TargetTemplateIr::Solve) {
+                continue;
+            }
+            for template in target.templates {
+                offenders.extend(
+                    dae_root_fields(template.source)
+                        .filter(|field| !CHECKED_ROOT_FIELDS.contains(field))
+                        .map(|field| format!("{}:{}:dae.{field}", target.name, template.path)),
+                );
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "built-in templates still consume fields outside the checked DAE schema: \
+             {offenders:#?}"
+        );
     }
 
     #[test]
@@ -1141,13 +1100,39 @@ render_context = "fmi-implementation"
         assert_eq!(wgsl_solve.elementwise, TargetFeatureSupport::Native);
         assert_eq!(wgsl_solve.stencil, TargetFeatureSupport::Native);
 
-        let sympy = matrix
-            .iter()
-            .find(|entry| entry.id == "sympy")
-            .expect("sympy target should be listed");
-        assert_eq!(sympy.ir, TargetTemplateIr::Dae);
-        assert_eq!(sympy.scalar_programs, TargetFeatureSupport::Unsupported);
-        assert_eq!(sympy.matmul, TargetFeatureSupport::Unsupported);
+        for removed in [
+            "casadi-mx",
+            "casadi-sx",
+            "fmi2",
+            "fmi3",
+            "jax",
+            "julia-mtk",
+            "onnx",
+            "symforce",
+            "sympy",
+        ] {
+            assert!(
+                matrix.iter().all(|entry| entry.id != removed),
+                "target `{removed}` consumed the removed DAE template schema"
+            );
+        }
+    }
+
+    #[test]
+    fn removed_file_render_context_is_rejected() {
+        parse_target_manifest(
+            r#"
+version = 1
+ir = "solve"
+name = "removed-context"
+
+[[files]]
+path = "modelDescription.xml"
+template = "modelDescription.xml.jinja"
+render_context = "fmi-model-description"
+"#,
+        )
+        .expect_err("removed per-file render contexts must not parse");
     }
 
     #[test]
@@ -1374,92 +1359,6 @@ residual_equations = false
     }
 
     #[test]
-    fn target_capabilities_reject_external_functions_generically() {
-        let manifest = manifest_with_capabilities(
-            r#"
-[capabilities]
-external_functions = false
-"#,
-        );
-        let capabilities = manifest.capabilities.as_ref().expect("capabilities");
-        let mut dae = Dae::new();
-        let mut function = Function::new("ExternalUser", rumoca_core::Span::DUMMY);
-        function.external = Some(ExternalFunction::default());
-        dae.symbols
-            .functions
-            .insert(VarName::new("ExternalUser"), function);
-
-        let err = validate_dae_target_capabilities(&dae, &manifest, capabilities)
-            .expect_err("external function should be rejected");
-
-        let message = err.to_string();
-        assert!(message.contains("custom"));
-        assert!(message.contains("external_functions"));
-    }
-
-    #[test]
-    fn target_capabilities_reject_events_generically() {
-        let manifest = manifest_with_capabilities(
-            r#"
-[capabilities]
-events = false
-"#,
-        );
-        let capabilities = manifest.capabilities.as_ref().expect("capabilities");
-        let mut dae = Dae::new();
-        dae.events.scheduled_time_events.push(0.1);
-
-        let err = validate_dae_target_capabilities(&dae, &manifest, capabilities)
-            .expect_err("events should be rejected");
-
-        assert!(err.to_string().contains("events"));
-    }
-
-    #[test]
-    fn target_capabilities_reject_runtime_events_generically() {
-        let manifest = manifest_with_capabilities(
-            r#"
-[capabilities]
-runtime_events = false
-"#,
-        );
-        let capabilities = manifest.capabilities.as_ref().expect("capabilities");
-        let mut dae = Dae::new();
-        dae.events.has_terminal_event = true;
-
-        let err = validate_dae_target_capabilities(&dae, &manifest, capabilities)
-            .expect_err("terminal runtime event should be rejected");
-
-        assert!(
-            err.to_string()
-                .contains("unsupported-feature:runtime_events")
-        );
-    }
-
-    #[test]
-    fn shared_dae_renderer_enforces_runtime_event_capability() {
-        let manifest = manifest_with_capabilities(
-            r#"
-[capabilities]
-runtime_events = false
-"#,
-        );
-        let mut dae = Dae::new();
-        dae.events.has_terminal_event = true;
-        let templates =
-            std::collections::BTreeMap::from([("model.out.jinja".to_string(), String::new())]);
-
-        let err = super::render_dae_target_files(&templates, &manifest, &dae, "M")
-            .expect_err("shared DAE rendering must not bypass target capabilities");
-
-        assert!(
-            err.to_string()
-                .contains("unsupported-feature:runtime_events"),
-            "{err}"
-        );
-    }
-
-    #[test]
     fn shared_dae_renderer_blocks_placeholder_scalar_residuals() {
         let manifest = manifest_with_capabilities(
             r#"
@@ -1497,7 +1396,7 @@ structured_equation_families = true
         );
         let templates = std::collections::BTreeMap::from([(
             "model.out.jinja".to_string(),
-            "{{ dae.structured_equations | length }}".to_string(),
+            "{{ dae.systems.continuous.owners | length }}".to_string(),
         )]);
 
         let files = super::render_dae_target_files(
@@ -1509,106 +1408,6 @@ structured_equation_families = true
         .expect("declared family-aware consumer may render the canonical owner");
 
         assert_eq!(files[0].content, "1");
-    }
-
-    #[test]
-    fn target_capabilities_reject_external_tables_generically() {
-        let manifest = manifest_with_capabilities(
-            r#"
-[capabilities]
-external_tables = false
-"#,
-        );
-        let capabilities = manifest.capabilities.as_ref().expect("capabilities");
-        let mut dae = Dae::new();
-        dae.continuous.equations.push(residual(
-            function_call("ModelicaStandardTables.CombiTable1D.getTable1DValue"),
-            "external table call",
-        ));
-
-        let err = validate_dae_target_capabilities(&dae, &manifest, capabilities)
-            .expect_err("external table calls should be rejected");
-
-        assert!(err.to_string().contains("external_tables"));
-    }
-
-    #[test]
-    fn target_capabilities_reject_random_generically() {
-        let manifest = manifest_with_capabilities(
-            r#"
-[capabilities]
-random = false
-"#,
-        );
-        let capabilities = manifest.capabilities.as_ref().expect("capabilities");
-        let mut dae = Dae::new();
-        dae.discrete.valued_updates.push(residual(
-            function_call("Modelica.Math.Random.Utilities.initializeImpureRandom"),
-            "random call",
-        ));
-
-        let err = validate_dae_target_capabilities(&dae, &manifest, capabilities)
-            .expect_err("random calls should be rejected");
-
-        assert!(err.to_string().contains("random"));
-    }
-
-    #[test]
-    fn target_capabilities_reject_dynamic_ranges_generically() {
-        let manifest = manifest_with_capabilities(
-            r#"
-[capabilities]
-dynamic_ranges = false
-"#,
-        );
-        let capabilities = manifest.capabilities.as_ref().expect("capabilities");
-        let mut dae = Dae::new();
-        dae.continuous.equations.push(residual(
-            Expression::Range {
-                start: Box::new(int(1)),
-                step: None,
-                end: Box::new(var("n")),
-                span: Span::DUMMY,
-            },
-            "dynamic range",
-        ));
-
-        let err = validate_dae_target_capabilities(&dae, &manifest, capabilities)
-            .expect_err("dynamic ranges should be rejected");
-
-        assert!(err.to_string().contains("dynamic_ranges"));
-    }
-
-    #[test]
-    fn target_capabilities_reject_dynamic_derivative_subscripts_generically() {
-        let manifest = manifest_with_capabilities(
-            r#"
-[capabilities]
-dynamic_derivative_subscripts = false
-"#,
-        );
-        let capabilities = manifest.capabilities.as_ref().expect("capabilities");
-        let mut dae = Dae::new();
-        dae.continuous.equations.push(residual(
-            Expression::BuiltinCall {
-                function: BuiltinFunction::Der,
-                args: vec![Expression::VarRef {
-                    name: Reference::new("x"),
-                    subscripts: vec![Subscript::generated_expr(
-                        Box::new(var("i")),
-                        rumoca_core::Span::DUMMY,
-                    )],
-                    span: Span::DUMMY,
-                }],
-                span: Span::DUMMY,
-            },
-            "dynamic derivative subscript",
-        ));
-
-        let err = validate_dae_target_capabilities(&dae, &manifest, capabilities)
-            .expect_err("dynamic derivative subscripts should be rejected");
-
-        assert!(err.to_string().contains("dynamic_derivative_subscripts"));
     }
 
     // --- checksum-web / asset-bundle validators (each fail-early branch) ---

@@ -1,6 +1,7 @@
 //! Regressions for array-shape preservation while projecting Modelica functions.
 
 use rumoca::Compiler;
+use rumoca_ir_dae::{DaeGeneration, DaeProvenanceOrigin, ExpressionKind};
 use rumoca_sim::{EvalAtReport, SimOptions, eval_dae_at};
 
 const NESTED_ARRAY_CALL_MODEL: &str = r#"
@@ -125,4 +126,77 @@ fn observed_scalar_field_lowers_record_function_matrix_slice_assignments() {
         probe.report.error
     );
     assert_eq!(slot_value(&probe.report, "observed"), 6.0);
+
+    let (record_nodes, field_nodes, record_provenance) = compiled.dae.inspect(|view| {
+        let mut record_nodes = 0;
+        let mut field_nodes = 0;
+        let mut record_provenance = None;
+        for index in 0..view.expression_count() {
+            let expression = view
+                .expression(view.expression_id(index).expect("dense expression id"))
+                .expect("dense expression resolves");
+            match expression.kind() {
+                ExpressionKind::Record => {
+                    record_nodes += 1;
+                    record_provenance = Some(expression.provenance());
+                }
+                ExpressionKind::Field => field_nodes += 1,
+                _ => {}
+            }
+        }
+        (record_nodes, field_nodes, record_provenance)
+    });
+    assert_eq!(record_nodes, 1, "one total record value owns the result");
+    assert_eq!(
+        field_nodes, 2,
+        "each record field equation is a typed projection"
+    );
+    let record_provenance = record_provenance.expect("record aggregate provenance");
+    assert_eq!(
+        record_provenance.origin(),
+        DaeProvenanceOrigin::Generated(DaeGeneration::FunctionAggregateLowering)
+    );
+    assert!(
+        compiled
+            .dae
+            .source_text(record_provenance)
+            .is_some_and(|source| source.contains("result.matrix")),
+        "generated aggregate retains its semantically responsible source assignment"
+    );
+
+    let wire = serde_json::to_string(&compiled.dae).expect("record DAE wire encoding");
+    let decoded: rumoca_ir_dae::Dae =
+        serde_json::from_str(&wire).expect("record DAE wire reconstruction");
+    let decoded_probe = eval_dae_at(&decoded, &SimOptions::default(), &[], 0.0)
+        .expect("wire-reconstructed record projection should evaluate");
+    assert_eq!(slot_value(&decoded_probe.report, "observed"), 6.0);
+}
+
+#[test]
+fn incomplete_record_output_fails_before_dae_construction() {
+    let source = RECORD_RESULT_MODEL.replace("  result.scalar := u + 6.0;\n", "");
+    let error = Compiler::new()
+        .model("ObserveRecordScalar")
+        .compile_str(&source, "IncompleteRecord.mo")
+        .expect_err("an incomplete record result must not construct a DAE");
+    assert!(
+        error.to_string().contains("leaves scalar 1 undefined"),
+        "unexpected diagnostic: {error}"
+    );
+}
+
+#[test]
+fn overlapping_record_output_fails_before_dae_construction() {
+    let source = RECORD_RESULT_MODEL.replace(
+        "result.matrix[:, 3] := {7.0, 8.0, 9.0}",
+        "result.matrix[:, 2] := {7.0, 8.0, 9.0}",
+    );
+    let error = Compiler::new()
+        .model("ObserveRecordScalar")
+        .compile_str(&source, "OverlappingRecord.mo")
+        .expect_err("overlapping record-field coverage must not construct a DAE");
+    assert!(
+        error.to_string().contains("assigned more than once"),
+        "unexpected diagnostic: {error}"
+    );
 }

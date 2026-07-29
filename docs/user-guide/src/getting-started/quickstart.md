@@ -84,8 +84,8 @@ Render a target:
 ```bash
 rumoca compile examples/models/SympyDecay.mo \
   --model SympyDecay \
-  --target sympy \
-  --output /tmp/sympy_decay
+  --target c-solve \
+  --output /tmp/decay_c_solve
 ```
 
 Dump an intermediate representation of the compiler instead:

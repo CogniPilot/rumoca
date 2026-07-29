@@ -1375,13 +1375,13 @@ ctx.onFrame = (api) => {
         ['3d', '3d'],
     ];
     const SCENARIO_CODEGEN_TARGET_OPTIONS = [
-        ['sympy', 'sympy'],
-        ['jax', 'jax'],
-        ['casadi-sx', 'casadi-sx'],
-        ['casadi-mx', 'casadi-mx'],
-        ['onnx', 'onnx'],
-        ['fmi2', 'fmi2'],
-        ['fmi3', 'fmi3'],
+        ['c-solve', 'c-solve'],
+        ['casadi-solve', 'casadi-solve'],
+        ['jax-solve', 'jax-solve'],
+        ['rust-solve', 'rust-solve'],
+        ['rust-fixed-solve', 'rust-fixed-solve'],
+        ['wgsl-solve', 'wgsl-solve'],
+        ['embedded-c', 'embedded-c'],
         ['galec', 'galec (eFMI Algorithm Code)'],
         ['galec-production', 'galec-production (eFMI Production Code)'],
         ['embedded-c-galec', 'embedded-c-galec (embedded C)'],
@@ -1616,7 +1616,7 @@ ctx.onFrame = (api) => {
                 label: 'Target',
                 path: ['codegen', 'target'],
                 kind: 'select',
-                value: scenarioFieldValue(config, ['codegen', 'target'], 'sympy'),
+                value: scenarioFieldValue(config, ['codegen', 'target'], 'c-solve'),
                 options: SCENARIO_CODEGEN_TARGET_OPTIONS,
                 hint: 'Built-in renderer used when task is codegen.',
             },
@@ -2145,7 +2145,7 @@ ctx.onFrame = (api) => {
             return scenarioOptionLabel(SCENARIO_VIEWER_MODE_OPTIONS, scenarioFieldByPath(fields, ['viewer', 'mode'])?.value || 'results_panel');
         }
         if (section === 'codegen') {
-            return scenarioFieldByPath(fields, ['codegen', 'target'])?.value || 'sympy';
+            return scenarioFieldByPath(fields, ['codegen', 'target'])?.value || 'c-solve';
         }
         if (section === 'source_roots') {
             const roots = normalizeStringArray(scenarioFieldByPath(fields, ['source_roots'])?.value);

@@ -24,16 +24,15 @@ pub(super) struct BalanceFailureRecord {
     pub balance: i64,
     pub equations: usize,
     pub unknowns: usize,
-    /// Component whose count dominates the gap; the first place to look.
-    pub dominant_term: String,
-    /// Balance clamps that discarded at least one row for this model.
-    pub clamps_exercised: Vec<String>,
-    /// Continuous equation rows filtered out of `f_x`, by reason.
-    pub excluded_redundant_connection_alias: usize,
-    pub excluded_connection_no_continuous_ref: usize,
-    pub excluded_binding_input_alias: usize,
-    pub excluded_no_continuous_or_input_ref: usize,
-    /// One-line component breakdown (states/alg/out/f_x/iflow/oc/brk/...).
+    pub state_unknowns: usize,
+    pub algebraic_unknowns: usize,
+    pub output_unknowns: usize,
+    pub discrete_real_unknowns: usize,
+    pub discrete_value_unknowns: usize,
+    pub continuous_equations: usize,
+    pub discrete_real_equations: usize,
+    pub discrete_assignments: usize,
+    /// One-line exact phase-owned component breakdown.
     pub detail: String,
     /// Command that reproduces this single failure with full instrumentation.
     pub reproduction: String,
@@ -100,17 +99,14 @@ fn balance_failure_record(result: &MslModelResult) -> Option<BalanceFailureRecor
         balance: detail.balance(),
         equations,
         unknowns,
-        dominant_term: detail.dominant_term().to_string(),
-        clamps_exercised: detail
-            .clamps()
-            .exercised()
-            .into_iter()
-            .map(str::to_string)
-            .collect(),
-        excluded_redundant_connection_alias: detail.excluded.redundant_connection_alias,
-        excluded_connection_no_continuous_ref: detail.excluded.connection_no_continuous_ref,
-        excluded_binding_input_alias: detail.excluded.binding_input_alias,
-        excluded_no_continuous_or_input_ref: detail.excluded.no_continuous_or_input_ref,
+        state_unknowns: detail.state_unknowns,
+        algebraic_unknowns: detail.algebraic_unknowns,
+        output_unknowns: detail.output_unknowns,
+        discrete_real_unknowns: detail.discrete_real_unknowns,
+        discrete_value_unknowns: detail.discrete_value_unknowns,
+        continuous_equations: detail.continuous_equations,
+        discrete_real_equations: detail.discrete_real_equations,
+        discrete_assignments: detail.discrete_assignments,
         detail: rumoca_compile::analysis::BalanceBreakdown::from(detail.clone()).to_string(),
         reproduction: format!(
             "cargo run -p rumoca-test-msl --bin rumoca-msl-tools -- debug-model --model {} --allow-unbalanced",
@@ -165,9 +161,8 @@ mod tests {
             Some("ED001".to_string()),
         );
         row.balance_detail = Some(Box::new(BalanceDetail {
-            alg_unknowns: unknowns,
-            f_x_scalar: f_x,
-            interface_flow_count: 3,
+            algebraic_unknowns: unknowns,
+            continuous_equations: f_x,
             ..BalanceDetail::default()
         }));
         row
@@ -284,17 +279,21 @@ mod tests {
     }
 
     #[test]
-    fn cohort_record_names_the_dominant_term_and_clamps() {
+    fn cohort_record_preserves_exact_balance_dimensions() {
         let results = vec![balance_failure_row("Modelica.Fluid.Examples.A", 2, 5)];
         let cohort = build_balance_failure_cohort(&results);
         let record = &cohort.records[0];
         assert_eq!(record.package, "Modelica.Fluid");
-        // 2 strict rows + 3 interface flows == 5 unknowns, so this fixture is
-        // balanced; the point is that the instrumentation is carried through.
-        assert_eq!(record.equations, 5);
+        assert_eq!(record.equations, 2);
         assert_eq!(record.unknowns, 5);
-        assert_eq!(record.balance, 0);
-        assert!(record.detail.contains("f_x=2"), "{}", record.detail);
+        assert_eq!(record.balance, -3);
+        assert_eq!(record.algebraic_unknowns, 5);
+        assert_eq!(record.continuous_equations, 2);
+        assert!(
+            record.detail.contains("algebraic=5") && record.detail.contains("continuous=2"),
+            "{}",
+            record.detail
+        );
         assert!(
             record.reproduction.contains("--allow-unbalanced"),
             "{}",

@@ -307,9 +307,9 @@ fn execute_command_dispatches_workspace_target_catalog_command() {
             .expect("target catalog should serialize to an array");
         assert!(
             targets.iter().any(|target| {
-                target.get("id").and_then(serde_json::Value::as_str) == Some("sympy")
+                target.get("id").and_then(serde_json::Value::as_str) == Some("c-solve")
             }),
-            "workspace target catalog should include the SymPy built-in"
+            "workspace target catalog should include the checked Solve C built-in"
         );
     });
 }
@@ -1923,7 +1923,10 @@ fn compile_model_for_simulation_loads_same_directory_siblings_from_disk() {
             .compile_model_for_simulation("Root", &focus.to_string_lossy())
             .await
             .expect("compile with sibling file should succeed");
-        assert_eq!(compiled.dae.variables.states.len(), 1);
+        assert_eq!(
+            checked_variable_count(&compiled.dae, rumoca_compile::compile::VariableRole::State),
+            1
+        );
     });
 }
 

@@ -172,8 +172,8 @@ fn render_galec_impl(
     //    projects to GALEC, and renders the .alg + C with the target's
     //    conformance header). GALEC identifiers/C names cannot contain dots.
     let model_id = model_name.replace('.', "_");
-    let sources = render_galec_sources(&result.dae, &result.flat, &model_id, target)
-        .map_err(|error| error.to_string())?;
+    let sources =
+        render_galec_sources(&result.dae, &model_id, target).map_err(|error| error.to_string())?;
 
     Ok(json!({
         "ok": true,
@@ -300,7 +300,7 @@ end GalecWasmDemo;
         let value = parse(&render_galec(
             &workspace("input.mo", DISCRETE_SOURCE),
             "GalecWasmDemo",
-            "fmi3",
+            "not-a-galec-target",
         ));
         assert_eq!(value["ok"], false);
         assert!(

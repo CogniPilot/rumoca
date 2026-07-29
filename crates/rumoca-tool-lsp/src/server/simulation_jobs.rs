@@ -41,8 +41,7 @@ pub(super) fn simulate_dae_with_parameter_overrides(
     if parameter_overrides.is_empty() {
         return simulate_dae_with_diagnostics(dae, opts);
     }
-    let mut solve_model = rumoca_sim::lower_dae_for_simulation(dae, opts)
-        .map_err(SimulationDiagnosticError::SolveLowering)?;
+    let mut solve_model = rumoca_sim::lower_dae_for_simulation(dae, opts)?;
     let (initial_y, parameters) =
         rumoca_sim::refresh_prepared_vectors(&solve_model, opts.t_start, parameter_overrides)
             .map_err(SimulationDiagnosticError::from)?;

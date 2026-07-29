@@ -17,6 +17,7 @@ fn decay_solve_layout() -> rumoca_ir_solve::SolveLayout {
             name_to_idx: IndexMap::from([("x".to_string(), 0)]),
             base_to_indices: IndexMap::from([("x".to_string(), vec![0])]),
         },
+        variable_base_slots: Vec::new(),
         state_scalar_count: 1,
         algebraic_scalar_count: 0,
         output_scalar_count: 0,
@@ -115,6 +116,7 @@ fn decay_model() -> rumoca_ir_solve::SolveModel {
         },
         artifacts: rumoca_ir_solve::SolveArtifacts {
             continuous: rumoca_ir_solve::ContinuousSolveArtifacts {
+                structural: rumoca_ir_solve::ContinuousStructuralArtifacts::default(),
                 mass_matrix: rumoca_ir_solve::MassMatrix::Identity,
                 implicit_jacobian_v: zero_block,
                 implicit_jacobian_v_scalar: zero_rb.clone(),

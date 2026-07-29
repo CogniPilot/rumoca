@@ -72,37 +72,44 @@ fn test_record_forwarding_rebinds_dependent_record_fields() {
 /// a literal. Asserting on the resolved value keeps this test on the language
 /// semantics instead of on how far constant folding happened to get.
 fn resolved_parameter_value(dae: &dae::Dae, name: &str) -> f64 {
-    let mut current = rumoca_core::VarName::new(name);
-    // Chains are short; the cap turns a binding cycle into a clear failure.
-    for _ in 0..16 {
-        let parameter = dae
-            .variables
-            .parameters
-            .get(&current)
-            .unwrap_or_else(|| panic!("{current} must exist in DAE parameters"));
-        let binding = parameter
-            .start
-            .as_ref()
-            .unwrap_or_else(|| panic!("{current} must have a binding"));
-        match binding {
-            rumoca_core::Expression::Literal {
-                value: rumoca_core::Literal::Integer(v),
-                ..
-            } => return *v as f64,
-            rumoca_core::Expression::Literal {
-                value: rumoca_core::Literal::Real(v),
-                ..
-            } => return *v,
-            rumoca_core::Expression::VarRef {
-                name: reference,
-                subscripts,
-                ..
-            } if subscripts.is_empty() => current = reference.var_name().clone(),
-            other => panic!(
-                "{current} binding is neither a numeric literal nor a scalar \
-                 parameter reference: {other:?}"
-            ),
+    dae.inspect(|view| {
+        let mut current = view
+            .variables()
+            .find(|(_, variable)| variable.name().as_str() == name)
+            .map(|(id, _)| id)
+            .unwrap_or_else(|| panic!("{name} must exist in checked DAE parameters"));
+        for _ in 0..16 {
+            let variable = view
+                .variable(current)
+                .expect("branded parameter identity resolves");
+            let binding = variable
+                .binding()
+                .or_else(|| variable.start())
+                .unwrap_or_else(|| panic!("{} must have a binding", variable.name()));
+            match view
+                .expression(binding)
+                .expect("branded binding expression resolves")
+                .operation()
+            {
+                dae::ExpressionOperation::Literal(dae::DaeLiteral::Integer(value)) => {
+                    return *value as f64;
+                }
+                dae::ExpressionOperation::Literal(dae::DaeLiteral::Real(value)) => {
+                    return *value;
+                }
+                dae::ExpressionOperation::Coordinate(dae::CoordinateView::Parameter(id)) => {
+                    current = view
+                        .variables()
+                        .find(|(variable_id, _)| variable_id.index() == id.index())
+                        .map(|(variable_id, _)| variable_id)
+                        .expect("parameter coordinate resolves to its declaration");
+                }
+                _ => panic!(
+                    "{} binding is neither a numeric literal nor a scalar parameter reference",
+                    variable.name()
+                ),
+            }
         }
-    }
-    panic!("parameter binding chain starting at {name} did not terminate")
+        panic!("parameter binding chain starting at {name} did not terminate")
+    })
 }

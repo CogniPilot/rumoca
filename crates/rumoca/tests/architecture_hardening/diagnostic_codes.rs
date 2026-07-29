@@ -47,14 +47,7 @@ const MANDATED_PHASE_ERROR_IMPLS: &[(&str, &[&str])] = &[
         "crates/rumoca-phase-structural/src/types.rs",
         &["StructuralError"],
     ),
-    (
-        "crates/rumoca-phase-solve/src/lower/error.rs",
-        &["LowerError"],
-    ),
-    (
-        "crates/rumoca-phase-solve/src/solve_model.rs",
-        &["SolveModelLowerError", "ParameterOverrideError"],
-    ),
+    ("crates/rumoca-phase-solve/src/error.rs", &["LowerError"]),
 ];
 
 #[test]
@@ -242,7 +235,7 @@ fn span_free_offenders(content: &str, enum_name: &str) -> Vec<String> {
 fn test_structural_and_solve_error_variants_document_span_freedom() {
     let root = workspace_root();
     let cases = [
-        ("crates/rumoca-phase-solve/src/lower/error.rs", "LowerError"),
+        ("crates/rumoca-phase-solve/src/error.rs", "LowerError"),
         (
             "crates/rumoca-phase-structural/src/types.rs",
             "StructuralError",
@@ -258,7 +251,7 @@ fn test_structural_and_solve_error_variants_document_span_freedom() {
     }
 
     assert!(
-        scanned >= 20,
+        scanned >= 8,
         "the enum scan found only {scanned} variants; the parser is out of sync with the source"
     );
     assert!(

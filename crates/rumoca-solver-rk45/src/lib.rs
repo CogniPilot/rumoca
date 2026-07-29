@@ -560,16 +560,16 @@ fn validate_explicit_solve_model(model: &solve::SolveModel) -> Result<(), SimErr
             model.solver_scalar_count()
         )));
     }
-    let implicit_rhs_len = model
+    let derivative_rhs_len = model
         .problem
         .continuous
-        .implicit_rhs
+        .derivative_rhs
         .len()
         .map_err(|err| SimError::SolveIr(err.to_string()))?;
-    if implicit_rhs_len < layout.state_scalar_count {
+    if derivative_rhs_len != layout.state_scalar_count {
         return Err(SimError::SolveIr(format!(
-            "implicit RHS has {} rows for {} states",
-            implicit_rhs_len, layout.state_scalar_count
+            "derivative RHS has {} rows for {} states",
+            derivative_rhs_len, layout.state_scalar_count
         )));
     }
     Ok(())
@@ -1315,7 +1315,7 @@ impl Rk45Backend {
         event_time: f64,
         target_t: f64,
     ) -> Result<Option<StepUntilOutcome>, SimError> {
-        let outcome = process_runtime_event_boundary(
+        process_runtime_event_boundary(
             RuntimeEventBoundary {
                 event_t: event_time,
                 horizon_t: event_time.min(target_t),
@@ -1324,7 +1324,6 @@ impl Rk45Backend {
             },
             self,
         )?;
-        self.apply_event_actions(outcome.final_t)?;
         Ok(Some(
             self.termination
                 .as_ref()
@@ -1351,7 +1350,6 @@ impl Rk45Backend {
             self,
         )?;
         self.post_event_eval_time = outcome.right_limit_t;
-        self.apply_event_actions(outcome.final_t)?;
         self.clear_event_entry_scheduled_root_relation_memory(outcome.final_t, event)?;
         self.clear_runtime_caches();
         Ok(Some(
@@ -1361,17 +1359,6 @@ impl Rk45Backend {
                     StepUntilOutcome::Finished
                 }),
         ))
-    }
-
-    fn apply_event_actions(&mut self, event_time: f64) -> Result<(), SimError> {
-        let solver_y = self.current_solver_y()?;
-        match self
-            .model
-            .eval_event_actions(&solver_y, &self.params, event_time)?
-        {
-            EventActionOutcome::Continue => Ok(()),
-            outcome => self.apply_event_action_outcome(outcome, event_time),
-        }
     }
 
     fn apply_event_action_outcome(

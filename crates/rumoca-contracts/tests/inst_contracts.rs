@@ -85,7 +85,11 @@ fn inst_002_outer_overrides_inner() {
     );
     // The DAE should have p=5, not p=1
     assert!(
-        !result.dae.variables.parameters.is_empty(),
+        result.dae.inspect(|view| {
+            view.variables().any(|(_, variable)| {
+                variable.role() == rumoca_compile::compile::VariableRole::Parameter
+            })
+        }),
         "Should have parameters in DAE"
     );
 }

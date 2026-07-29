@@ -44,8 +44,7 @@ pub fn eval_dae_at(
     state_overrides: &[(String, f64)],
     t: f64,
 ) -> Result<EvalAtProbe, SimulationDiagnosticError> {
-    let solve_model = lower_dae_for_simulation(dae_model, opts)
-        .map_err(SimulationDiagnosticError::SolveLowering)?;
+    let solve_model = lower_dae_for_simulation(dae_model, opts)?;
     let (state_used, state_names) =
         resolve_probe_state(&solve_model, state_overrides, "--inspect eval --at")?;
 
@@ -123,8 +122,7 @@ pub fn jacobian_for_dae(
     state_overrides: &[(String, f64)],
     t: f64,
 ) -> Result<JacobianProbe, SimulationDiagnosticError> {
-    let solve_model = lower_dae_for_simulation(dae_model, opts)
-        .map_err(SimulationDiagnosticError::SolveLowering)?;
+    let solve_model = lower_dae_for_simulation(dae_model, opts)?;
     let (state_used, state_names) =
         resolve_probe_state(&solve_model, state_overrides, "--inspect jacobian --at")?;
 
@@ -171,8 +169,7 @@ pub fn parameter_jacobian_for_dae(
     state_overrides: &[(String, f64)],
     t: f64,
 ) -> Result<ParameterJacobianProbe, SimulationDiagnosticError> {
-    let solve_model = lower_dae_for_simulation(dae_model, opts)
-        .map_err(SimulationDiagnosticError::SolveLowering)?;
+    let solve_model = lower_dae_for_simulation(dae_model, opts)?;
     let (state_used, state_names) =
         resolve_probe_state(&solve_model, state_overrides, "--inspect jacobian --at")?;
 
@@ -303,8 +300,7 @@ pub fn steady_state_parameter_sensitivity_for_dae(
     state_overrides: &[(String, f64)],
     t: f64,
 ) -> Result<SteadyStateSensitivityProbe, SimulationDiagnosticError> {
-    let solve_model = lower_dae_for_simulation(dae_model, opts)
-        .map_err(SimulationDiagnosticError::SolveLowering)?;
+    let solve_model = lower_dae_for_simulation(dae_model, opts)?;
     let (state_used, state_names) = resolve_probe_state(
         &solve_model,
         state_overrides,
@@ -354,8 +350,7 @@ pub fn state_and_parameter_jacobian_for_dae(
     state_overrides: &[(String, f64)],
     t: f64,
 ) -> Result<StateAndParameterJacobianProbe, SimulationDiagnosticError> {
-    let solve_model = lower_dae_for_simulation(dae_model, opts)
-        .map_err(SimulationDiagnosticError::SolveLowering)?;
+    let solve_model = lower_dae_for_simulation(dae_model, opts)?;
     let (state_used, state_names) =
         resolve_probe_state(&solve_model, state_overrides, "--inspect jacobian --at")?;
 

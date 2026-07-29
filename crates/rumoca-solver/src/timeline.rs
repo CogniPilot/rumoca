@@ -183,8 +183,8 @@ fn next_schedule_event_time(
     current_t: f64,
     target_t: f64,
 ) -> Option<f64> {
-    let period = schedule.period_seconds;
-    let phase = schedule.phase_seconds;
+    let period = schedule.period_seconds();
+    let phase = schedule.phase_seconds();
     if !period.is_finite()
         || !phase.is_finite()
         || period <= 0.0
@@ -221,10 +221,9 @@ fn next_schedule_event_time(
 ///
 /// This is the one place where the exact rational lattice becomes a simulation
 /// time. Evaluating the tick in exact integer arithmetic and rounding once
-/// keeps a long-horizon grid on the analytic instants; the seconds fallback is
-/// used only for schedules with no rational form.
+/// keeps a long-horizon grid on the analytic instants.
 pub fn schedule_tick_time(schedule: &solve::PeriodicEventSchedule, tick: f64) -> f64 {
-    let fallback = schedule.phase_seconds + tick * schedule.period_seconds;
+    let fallback = schedule.phase_seconds() + tick * schedule.period_seconds();
     if tick != tick.trunc()
         || !tick.is_finite()
         || tick >= i128::MAX as f64
@@ -261,8 +260,8 @@ pub fn scheduled_time_in_horizon(event_t: f64, t_start: f64, t_end: f64) -> bool
 }
 
 pub fn periodic_schedule_matches_time(schedule: &solve::PeriodicEventSchedule, t: f64) -> bool {
-    let period = schedule.period_seconds;
-    let phase = schedule.phase_seconds;
+    let period = schedule.period_seconds();
+    let phase = schedule.phase_seconds();
     if !period.is_finite() || !phase.is_finite() || period <= 0.0 || t + period < phase {
         return false;
     }
@@ -271,13 +270,15 @@ pub fn periodic_schedule_matches_time(schedule: &solve::PeriodicEventSchedule, t
 }
 
 pub fn scheduled_root_matches_time(root: &solve::ScheduledRootCondition, t: f64) -> bool {
-    periodic_schedule_matches_time(
-        &solve::PeriodicEventSchedule {
-            period_seconds: root.period_seconds,
-            phase_seconds: root.phase_seconds,
-        },
-        t,
-    )
+    let Ok(lattice) =
+        rumoca_core::ClockLattice::from_seconds(root.period_seconds, root.phase_seconds)
+    else {
+        return false;
+    };
+    let Ok(schedule) = solve::PeriodicEventSchedule::new(lattice) else {
+        return false;
+    };
+    periodic_schedule_matches_time(&schedule, t)
 }
 
 pub fn scheduled_root_indices_at_time(
@@ -423,6 +424,13 @@ pub fn merge_output_times_with_event_observations(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn periodic(period: f64, phase: f64) -> solve::PeriodicEventSchedule {
+        solve::PeriodicEventSchedule::new(
+            rumoca_core::ClockLattice::from_seconds(period, phase).unwrap(),
+        )
+        .unwrap()
+    }
 
     #[test]
     fn scheduled_time_events_advances_exact_boundary_hits() {
@@ -584,10 +592,7 @@ mod tests {
 
     #[test]
     fn next_periodic_event_is_not_limited_by_prior_tick_count() {
-        let schedules = [solve::PeriodicEventSchedule {
-            period_seconds: 1.0e-4,
-            phase_seconds: 0.0,
-        }];
+        let schedules = [periodic(1.0e-4, 0.0)];
 
         let next = next_periodic_event_time(&schedules, 20.000_05, 100.0)
             .expect("ticks after the former 200,000-event cap must remain scheduled");
@@ -599,10 +604,7 @@ mod tests {
     fn tick_grid_is_generated_from_the_exact_rational_lattice() {
         // MLS §16.3: tick k of a periodic clock is exactly `phase + k * period`.
         // At this horizon the f64 product misses the analytic instant.
-        let schedule = solve::PeriodicEventSchedule {
-            period_seconds: 0.001,
-            phase_seconds: 0.0,
-        };
+        let schedule = periodic(0.001, 0.0);
 
         assert_ne!(999_983.0_f64 * 0.001, 999.983);
         assert_eq!(schedule_tick_time(&schedule, 999_983.0), 999.983);
@@ -610,10 +612,7 @@ mod tests {
 
     #[test]
     fn exact_tick_scheduler_supports_two_to_the_sixty_third() {
-        let schedule = solve::PeriodicEventSchedule {
-            period_seconds: 1.0,
-            phase_seconds: 0.0,
-        };
+        let schedule = periodic(1.0, 0.0);
         let boundary = 1i128 << 63;
 
         assert_eq!(
@@ -624,10 +623,7 @@ mod tests {
 
     #[test]
     fn long_horizon_scheduling_lands_on_the_exact_instant() {
-        let schedules = [solve::PeriodicEventSchedule {
-            period_seconds: 0.001,
-            phase_seconds: 0.0,
-        }];
+        let schedules = [periodic(0.001, 0.0)];
 
         let next = next_periodic_event_time(&schedules, 999.982_5, 1000.0)
             .expect("a tick must remain scheduled at this horizon");
@@ -638,42 +634,23 @@ mod tests {
     #[test]
     fn shifted_schedule_ticks_stay_on_the_lattice() {
         // phase 1/3 s, period 1/3 s: tick k lands on (k + 1) / 3 exactly.
-        let schedule = solve::PeriodicEventSchedule {
-            period_seconds: 1.0 / 3.0,
-            phase_seconds: 1.0 / 3.0,
-        };
+        let schedule = periodic(1.0 / 3.0, 1.0 / 3.0);
 
         assert_eq!(schedule_tick_time(&schedule, 2.0), 1.0);
         assert_eq!(schedule_tick_time(&schedule, 5.0), 2.0);
     }
 
     #[test]
-    fn schedules_without_a_rational_form_fall_back_to_seconds() {
-        let schedule = solve::PeriodicEventSchedule {
-            period_seconds: f64::MIN_POSITIVE,
-            phase_seconds: 0.0,
-        };
-
-        let tick = schedule_tick_time(&schedule, 1.0);
-        assert_eq!(tick, f64::MIN_POSITIVE);
+    fn schedules_without_an_exact_rational_form_are_rejected() {
         assert_eq!(
-            try_schedule_tick_time(&schedule, 1),
+            rumoca_core::ClockLattice::from_seconds(f64::MIN_POSITIVE, 0.0),
             Err(rumoca_core::ClockLatticeErrorKind::NotRationallyRepresentable)
         );
     }
 
     #[test]
     fn periodic_event_iterator_merges_coincident_schedules() {
-        let schedules = [
-            solve::PeriodicEventSchedule {
-                period_seconds: 0.1,
-                phase_seconds: 0.0,
-            },
-            solve::PeriodicEventSchedule {
-                period_seconds: 0.2,
-                phase_seconds: 0.0,
-            },
-        ];
+        let schedules = [periodic(0.1, 0.0), periodic(0.2, 0.0)];
 
         let events = periodic_event_times(&schedules, 0.0, 0.4).collect::<Vec<_>>();
 

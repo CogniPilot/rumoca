@@ -3,8 +3,7 @@ use rumoca_core::{SourceId, Span, StructuredIndexBinder, StructuredIndexDomain};
 use crate::{
     AffineStencilConstStride, AffineStencilConstStrideTerm, AffineStencilIndexStrideTerm,
     AffineStencilLoadStride, ComputeBlock, ComputeNode, LinearOp, ScalarProgramBlock, SolveProblem,
-    SolveProblemShapeContractError, SparsityPattern, TensorNodeMetadata, TensorOutputMap,
-    TensorOutputMapError,
+    SolveProblemShapeContractError, TensorNodeMetadata, TensorOutputMap, TensorOutputMapError,
 };
 
 fn test_domain(count: usize) -> StructuredIndexDomain {
@@ -32,8 +31,8 @@ fn tensor_node(output_width: usize) -> ComputeNode {
         m: 1,
         k: 1,
         n: output_width,
-        lhs_sparsity: SparsityPattern::Dense,
-        rhs_sparsity: SparsityPattern::Dense,
+        lhs_pattern: crate::fixture_pattern(1, 1, false),
+        rhs_pattern: crate::fixture_pattern(1, output_width, false),
         metadata: TensorNodeMetadata::default(),
         span: Span::DUMMY,
     }
@@ -77,6 +76,7 @@ fn linsolve_node() -> ComputeNode {
         rhs_start: 1,
         n: 1,
         next_reg: 2,
+        matrix_pattern: crate::fixture_pattern(1, 1, false),
         metadata: TensorNodeMetadata::default(),
         span: Span::DUMMY,
     }
@@ -217,8 +217,8 @@ fn compute_block_len_rejects_matmul_output_count_overflow_with_span() {
             m: usize::MAX,
             k: 1,
             n: 2,
-            lhs_sparsity: SparsityPattern::Dense,
-            rhs_sparsity: SparsityPattern::Dense,
+            lhs_pattern: crate::fixture_pattern(1, 1, false),
+            rhs_pattern: crate::fixture_pattern(1, 1, false),
             metadata: TensorNodeMetadata::default(),
             span,
         }],
@@ -247,8 +247,8 @@ fn compute_block_len_rejects_scalar_cursor_overflow_with_span() {
                 m: usize::MAX,
                 k: 1,
                 n: 1,
-                lhs_sparsity: SparsityPattern::Dense,
-                rhs_sparsity: SparsityPattern::Dense,
+                lhs_pattern: crate::fixture_pattern(1, 1, false),
+                rhs_pattern: crate::fixture_pattern(1, 1, false),
                 metadata: TensorNodeMetadata::default(),
                 span: Span::DUMMY,
             },

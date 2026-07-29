@@ -66,12 +66,21 @@ fn diagnostics_clean_source_has_no_syntax_error() {
 }
 
 #[test]
-fn builtin_targets_include_sympy() {
+fn builtin_targets_exclude_removed_dae_symbolic_schema() {
     let ids: Vec<String> = targets::list_targets().into_iter().map(|t| t.id).collect();
-    assert!(
-        ids.iter().any(|id| id == "sympy"),
-        "expected a sympy target, got {ids:?}"
-    );
+    for removed in [
+        "casadi-mx",
+        "casadi-sx",
+        "jax",
+        "julia-mtk",
+        "onnx",
+        "symforce",
+        "sympy",
+    ] {
+        assert!(!ids.iter().any(|id| id == removed), "{removed}: {ids:?}");
+    }
+    assert!(ids.iter().any(|id| id == "casadi-solve"));
+    assert!(ids.iter().any(|id| id == "jax-solve"));
 }
 
 #[test]

@@ -479,8 +479,8 @@ mod tests {
             m: 1,
             k: 1,
             n: 1,
-            lhs_sparsity: crate::SparsityPattern::Dense,
-            rhs_sparsity: crate::SparsityPattern::Dense,
+            lhs_pattern: crate::fixture_pattern(1, 1, false),
+            rhs_pattern: crate::fixture_pattern(1, 1, false),
             metadata: crate::TensorNodeMetadata::default(),
             span,
         }
@@ -502,6 +502,7 @@ mod tests {
             rhs_start: 1,
             n: 1,
             next_reg: 3,
+            matrix_pattern: crate::fixture_pattern(1, 1, false),
             metadata: crate::TensorNodeMetadata::default(),
             span,
         }

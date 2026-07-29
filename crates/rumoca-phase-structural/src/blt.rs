@@ -14,11 +14,11 @@ use crate::types::{BltBlock, EquationRef, StructuredScalarBlock, UnknownId};
 /// Tarjan emits SCCs in reverse topological order of the condensation DAG.
 /// Since dependency edges point from dependent → dependency, this output order
 /// is already the correct BLT evaluation order (dependencies first).
-pub(crate) fn build_blt_blocks(
-    incidence: &Incidence,
+pub(crate) fn build_blt_blocks<'dae>(
+    incidence: &Incidence<'dae>,
     match_eq: &[Option<usize>],
     adj: &[Vec<usize>],
-) -> Vec<BltBlock> {
+) -> Vec<BltBlock<'dae>> {
     let (structured, condensed) = split_self_contained_families(incidence, match_eq);
     let Some(condensed) = condensed else {
         return sccs_to_blocks(tarjan_scc(incidence.n_eq, adj), incidence, match_eq);
@@ -32,7 +32,7 @@ pub(crate) fn build_blt_blocks(
     // after a row that needs it.
     let (sub_adj, node_of_local) = condense_nodes(adj, &condensed.keep);
     let sccs = tarjan_scc(node_of_local.len(), &sub_adj);
-    let mut blocks: Vec<BltBlock> = structured
+    let mut blocks: Vec<BltBlock<'dae>> = structured
         .into_iter()
         .map(BltBlock::StructuredScalar)
         .collect();
@@ -46,11 +46,11 @@ pub(crate) fn build_blt_blocks(
     blocks
 }
 
-fn sccs_to_blocks(
+fn sccs_to_blocks<'dae>(
     sccs: Vec<Vec<usize>>,
-    incidence: &Incidence,
+    incidence: &Incidence<'dae>,
     match_eq: &[Option<usize>],
-) -> Vec<BltBlock> {
+) -> Vec<BltBlock<'dae>> {
     sccs.into_iter()
         .map(|scc| scc_to_block(&scc, incidence, match_eq))
         .collect()
@@ -67,7 +67,7 @@ struct CondensedNodes {
 /// Returns `(blocks, None)` when no family qualifies, so the common
 /// (array-free) path allocates nothing extra.
 fn split_self_contained_families(
-    incidence: &Incidence,
+    incidence: &Incidence<'_>,
     match_eq: &[Option<usize>],
 ) -> (Vec<StructuredScalarBlock>, Option<CondensedNodes>) {
     let mut blocks = Vec::new();
@@ -133,7 +133,7 @@ fn claim_rows(flags: &mut [bool], range: std::ops::Range<usize>) -> bool {
 /// order as the Tarjan pass it replaces.
 fn family_is_self_contained(
     family: &StructuredMatchingFamily,
-    incidence: &Incidence,
+    incidence: &Incidence<'_>,
     match_eq: &[Option<usize>],
 ) -> bool {
     let Some(range) = family.row_range() else {
@@ -212,12 +212,16 @@ fn condense_nodes(adj: &[Vec<usize>], keep: &[bool]) -> (Vec<Vec<usize>>, Vec<us
 }
 
 /// Convert a single SCC into a BLT block.
-fn scc_to_block(scc: &[usize], incidence: &Incidence, match_eq: &[Option<usize>]) -> BltBlock {
+fn scc_to_block<'dae>(
+    scc: &[usize],
+    incidence: &Incidence<'dae>,
+    match_eq: &[Option<usize>],
+) -> BltBlock<'dae> {
     if let [eq_idx] = scc {
         let eq_idx = *eq_idx;
-        let eq_ref = incidence.equation_refs[eq_idx].clone();
+        let eq_ref = incidence.equation_refs[eq_idx];
         let unknown = match match_eq[eq_idx] {
-            Some(var_idx) => incidence.unknown_names[var_idx].clone(),
+            Some(var_idx) => incidence.unknowns[var_idx],
             None => UnknownId::Unmatched { equation: eq_idx },
         };
         return BltBlock::Scalar {
@@ -225,19 +229,13 @@ fn scc_to_block(scc: &[usize], incidence: &Incidence, match_eq: &[Option<usize>]
             unknown,
         };
     }
-    let equations: Vec<EquationRef> = scc
+    let equations: Vec<EquationRef> = scc.iter().map(|&i| incidence.equation_refs[i]).collect();
+    let unknowns: Vec<UnknownId<'dae>> = scc
         .iter()
-        .map(|&i| incidence.equation_refs[i].clone())
-        .collect();
-    let unknowns: Vec<UnknownId> = scc
-        .iter()
-        .filter_map(|&i| match_eq[i].map(|v| incidence.unknown_names[v].clone()))
+        .filter_map(|&i| match_eq[i].map(|v| incidence.unknowns[v]))
         .collect();
     BltBlock::AlgebraicLoop {
         equations,
         unknowns,
     }
 }
-
-#[cfg(test)]
-mod tests;

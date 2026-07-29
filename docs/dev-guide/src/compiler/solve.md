@@ -43,7 +43,7 @@ rewrites, no template policy:
 | `rumoca-exec-wasm` | WASM execution backend |
 
 The generated-code targets (`rust-solve`, `c-solve`, `embedded-c`,
-`cuda-c`, `cuda-nvrtc-solve-jit`, `fmi2`/`fmi3`) consume Solve through the
+`cuda-c`, `cuda-nvrtc-solve-jit`, `c-solve`, and `embedded-c`) consume Solve through the
 codegen engine instead — see
 [Code Generation Engine](../runtime/codegen.md).
 

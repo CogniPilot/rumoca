@@ -15,12 +15,6 @@ pub const ES002_ALGEBRAIC_LOOP: &str = "ES002";
 pub const ES010_SINGULAR_SYSTEM: &str = "ES010";
 /// [`crate::StructuralError::EmptySystem`]: no equations and no unknowns.
 pub const ES011_EMPTY_SYSTEM: &str = "ES011";
-/// [`crate::StructuralError::InvalidIcPlanUnknown`]: an IC-plan unknown does not
-/// map to a solver-vector slot.
-pub const ES012_INVALID_IC_PLAN_UNKNOWN: &str = "ES012";
-/// [`crate::StructuralError::InconsistentEquation`]: a source equation has a
-/// compiler-known nonzero constant residual.
-pub const ES013_INCONSISTENT_EQUATION: &str = "ES013";
 /// [`crate::StructuralError::ContractViolation`] and
 /// [`crate::StructuralError::UnspannedContractViolation`]: DAE IR metadata
 /// required by structural analysis is missing or inconsistent.
@@ -40,8 +34,6 @@ pub const STRUCTURAL_DIAGNOSTIC_CODES: &[&str] = &[
     ES002_ALGEBRAIC_LOOP,
     ES010_SINGULAR_SYSTEM,
     ES011_EMPTY_SYSTEM,
-    ES012_INVALID_IC_PLAN_UNKNOWN,
-    ES013_INCONSISTENT_EQUATION,
     ES014_CONTRACT_VIOLATION,
 ];
 
@@ -72,16 +64,12 @@ mod tests {
                 n_matched: 2,
                 unmatched_equations: Vec::new(),
                 unmatched_unknowns: vec!["x".to_string()],
-                unmatched_unknown_spans: vec![Some(structural_code_test_span())],
+                unmatched_unknown_spans: vec![structural_code_test_span()],
                 over_determined_block: Box::default(),
             },
             StructuralError::EmptySystem,
-            StructuralError::InvalidIcPlanUnknown {
-                name: "x".to_string(),
-            },
-            StructuralError::InconsistentEquation {
-                residual: 1.0,
-                origin: "eq[0]".to_string(),
+            StructuralError::Projection {
+                reason: "dynamic index".to_string(),
                 span: structural_code_test_span(),
             },
             StructuralError::ContractViolation {
@@ -147,9 +135,9 @@ mod tests {
             .collect();
         let unique: BTreeSet<&&str> = codes.iter().collect();
 
-        // Six variants, five codes: only the contract-violation pair aliases.
-        assert_eq!(codes.len(), 6);
-        assert_eq!(unique.len(), 5, "unexpected code aliasing: {codes:?}");
+        // Five variants, three codes: all checked-contract failures share ES014.
+        assert_eq!(codes.len(), 5);
+        assert_eq!(unique.len(), 3, "unexpected code aliasing: {codes:?}");
     }
 
     #[test]
@@ -158,8 +146,6 @@ mod tests {
         assert_eq!(ES002_ALGEBRAIC_LOOP, "ES002");
         assert_eq!(ES010_SINGULAR_SYSTEM, "ES010");
         assert_eq!(ES011_EMPTY_SYSTEM, "ES011");
-        assert_eq!(ES012_INVALID_IC_PLAN_UNKNOWN, "ES012");
-        assert_eq!(ES013_INCONSISTENT_EQUATION, "ES013");
         assert_eq!(ES014_CONTRACT_VIOLATION, "ES014");
     }
 
@@ -177,7 +163,7 @@ mod tests {
             n_matched: 1,
             unmatched_equations: Vec::new(),
             unmatched_unknowns: vec!["x".to_string(), "y".to_string()],
-            unmatched_unknown_spans: vec![Some(primary), Some(secondary)],
+            unmatched_unknown_spans: vec![primary, secondary],
             over_determined_block: Box::default(),
         };
 

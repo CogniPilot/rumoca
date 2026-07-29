@@ -7,8 +7,8 @@ use std::process::Command;
 use crate::{CompilationResult, TemplateIr, error::CompilerError};
 use anyhow::{Context, Result, bail};
 use rumoca_compile::codegen::targets::{
-    RenderedTargetFile, TargetBundle, TargetCapabilities, TargetFileRenderContext, TargetManifest,
-    TargetTemplateIr, TargetTemplateSource, TensorCapability, ensure_target_has_rendered_files,
+    RenderedTargetFile, TargetBundle, TargetCapabilities, TargetManifest, TargetTemplateIr,
+    TargetTemplateSource, TensorCapability, ensure_target_has_rendered_files,
     validate_dae_target_capabilities,
 };
 #[cfg(feature = "scheduled-sim")]
@@ -143,18 +143,12 @@ fn build_galec_plan(
     }
     match manifest.name.as_deref() {
         Some("galec") => Ok(Some(
-            rumoca_compile::galec::plan_galec_export(
-                &result.dae,
-                &result.flat,
-                model_identifier,
-                model,
-            )
-            .map_err(|error| galec_plan_error(result, error, "galec"))?,
+            rumoca_compile::galec::plan_galec_export(&result.dae, model_identifier, model)
+                .map_err(|error| galec_plan_error(result, error, "galec"))?,
         )),
         Some("galec-production") => Ok(Some(
             rumoca_compile::galec::plan_galec_production_export(
                 &result.dae,
-                &result.flat,
                 model_identifier,
                 model,
             )
@@ -284,14 +278,9 @@ fn render_manifest_files(
             .render(result, &file.path, model_identifier)
             .with_context(|| format!("Render target output path '{}'", file.path))?;
         let template = bundle.template_source(&file.template)?;
-        let content = render_manifest_template(
-            result,
-            renderer,
-            file.render_context,
-            template.as_ref(),
-            model_identifier,
-        )
-        .with_context(|| format!("Render target template '{}'", file.template))?;
+        let content =
+            render_manifest_template(result, renderer, template.as_ref(), model_identifier)
+                .with_context(|| format!("Render target template '{}'", file.template))?;
         files.push(RenderedTargetFile {
             path: path.trim().to_string(),
             content,
@@ -318,40 +307,9 @@ fn render_raw_template(
     let template =
         std::fs::read_to_string(target).with_context(|| format!("Read template: {target}"))?;
     let model_identifier = model.replace('.', "_");
-    match raw_template_render_context(&template)? {
-        Some(TargetFileRenderContext::FmiModelDescription) => result
-            .render_fmi_model_description_template_str_with_name(&template, &model_identifier)
-            .with_context(|| format!("Render raw FMI modelDescription template: {target}")),
-        Some(TargetFileRenderContext::FmiImplementation) => result
-            .render_fmi_implementation_template_str_with_name(&template, &model_identifier)
-            .with_context(|| format!("Render raw FMI implementation template: {target}")),
-        None => result
-            .render_template_str_with_name_and_ir(&template, &model_identifier, ir)
-            .with_context(|| format!("Render raw template: {target}")),
-    }
-}
-
-fn raw_template_render_context(template: &str) -> Result<Option<TargetFileRenderContext>> {
-    for line in template.lines().take(8) {
-        let comment = line
-            .trim()
-            .strip_prefix("{#")
-            .and_then(|line| line.strip_suffix("#}"))
-            .map(str::trim)
-            .map(|line| line.trim_start_matches('-').trim_end_matches('-').trim());
-        let Some(comment) = comment else {
-            continue;
-        };
-        let Some(value) = comment.strip_prefix("rumoca-render-context:") else {
-            continue;
-        };
-        return match value.trim() {
-            "fmi-model-description" => Ok(Some(TargetFileRenderContext::FmiModelDescription)),
-            "fmi-implementation" => Ok(Some(TargetFileRenderContext::FmiImplementation)),
-            other => bail!("unknown raw template render context '{other}'"),
-        };
-    }
-    Ok(None)
+    result
+        .render_template_str_with_name_and_ir(&template, &model_identifier, ir)
+        .with_context(|| format!("Render raw template: {target}"))
 }
 
 #[cfg(feature = "scheduled-sim")]
@@ -422,22 +380,10 @@ fn compile_manifest_target(
         eprintln!("  {description}");
     }
 
-    // The target.toml `build` field decides whether/how to package the
-    // rendered output (FMU zip); the eFMU case is handled above. There is no
-    // CLI flag.
+    // The target.toml `build` field decides whether to package the rendered
+    // output; the eFMU case is handled above. There is no CLI flag.
     match manifest.build {
         Some(TargetBuildKind::Efmu) => unreachable!("efmu targets are dispatched above"),
-        Some(TargetBuildKind::Fmu) => {
-            write_manifest_files(
-                result,
-                &renderer,
-                bundle,
-                manifest,
-                &out_dir,
-                &model_identifier,
-            )?;
-            crate::fmu::build_fmu(&out_dir, &model_identifier, manifest.name.as_deref())?;
-        }
         None => {
             write_manifest_files(
                 result,
@@ -551,22 +497,16 @@ fn validate_target_requirements(
     let Some(capabilities) = &manifest.capabilities else {
         return Ok(());
     };
-    let projection_dae = is_galec_dae_target(manifest)
-        .then(|| rumoca_compile::galec::dae_for_galec_projection(&result.dae));
-    let dae = projection_dae.as_ref().unwrap_or(&result.dae);
-    validate_dae_target_capabilities(dae, manifest, capabilities)?;
-    if manifest.ir == TargetTemplateIr::Solve {
-        validate_solve_target_capabilities(result, manifest, capabilities)?;
+    match manifest.ir {
+        TargetTemplateIr::Dae => {
+            validate_dae_target_capabilities(&result.dae, manifest, capabilities)?;
+        }
+        TargetTemplateIr::Solve => {
+            validate_solve_target_capabilities(result, manifest, capabilities)?;
+        }
+        TargetTemplateIr::Flat | TargetTemplateIr::Ast => {}
     }
     Ok(())
-}
-
-fn is_galec_dae_target(manifest: &TargetManifest) -> bool {
-    manifest.ir == TargetTemplateIr::Dae
-        && manifest
-            .name
-            .as_deref()
-            .is_some_and(rumoca_compile::galec::is_galec_target)
 }
 
 fn validate_solve_target_capabilities(
@@ -687,7 +627,6 @@ fn unsupported_tensor_feature(
 #[cfg(feature = "scheduled-sim")]
 fn default_target_output_dir(manifest: &TargetManifest, model_identifier: &str) -> PathBuf {
     match manifest.build {
-        Some(TargetBuildKind::Fmu) => PathBuf::from(format!("{model_identifier}.fmu")),
         // The eFMU out dir holds both package forms (`<model>/` directory
         // form + `<model>.efmu` zip; layout docs in `efmu.rs`), so it keeps
         // the plain model name rather than a package extension.
@@ -713,14 +652,8 @@ fn write_manifest_file(
     }
 
     let template = bundle.template_source(&file.template)?;
-    let rendered = render_manifest_template(
-        result,
-        renderer,
-        file.render_context,
-        template.as_ref(),
-        model_identifier,
-    )
-    .with_context(|| format!("Render target template '{}'", file.template))?;
+    let rendered = render_manifest_template(result, renderer, template.as_ref(), model_identifier)
+        .with_context(|| format!("Render target template '{}'", file.template))?;
     std::fs::write(&output_path, rendered)?;
     apply_manifest_file_mode(&output_path, file.mode.as_deref())?;
     eprintln!("  wrote {}", output_path.display());
@@ -737,8 +670,6 @@ fn write_manifest_file(
 enum ManifestRenderer {
     /// Generic path: the IR-keyed JSON template context.
     Ir(TemplateIr),
-    /// DAE template that declares compact structured-family ownership.
-    DaeStructured,
     /// `wgsl-solve` renders Solve kernels without the DAE JSON context.
     WgslSolve,
     /// `embedded-c-galec` renders thin C templates over one typed
@@ -763,22 +694,9 @@ fn resolve_manifest_renderer(
     }
     if manifest.ir == TargetTemplateIr::Dae && manifest.name.as_deref() == Some("embedded-c-galec")
     {
-        let export = rumoca_compile::galec::render_galec_c_export(
-            &result.dae,
-            &result.flat,
-            model_identifier,
-        )
-        .context("GALEC C export for target 'embedded-c-galec'")?;
+        let export = rumoca_compile::galec::render_galec_c_export(&result.dae, model_identifier)
+            .context("GALEC C export for target 'embedded-c-galec'")?;
         return Ok(ManifestRenderer::GalecC(export));
-    }
-    if manifest.ir == TargetTemplateIr::Dae
-        && manifest
-            .capabilities
-            .as_ref()
-            .and_then(|capabilities| capabilities.structured_equation_families)
-            == Some(true)
-    {
-        return Ok(ManifestRenderer::DaeStructured);
     }
     Ok(ManifestRenderer::Ir(template_ir_to_cli(manifest.ir)))
 }
@@ -786,19 +704,10 @@ fn resolve_manifest_renderer(
 fn render_manifest_template(
     result: &CompilationResult,
     renderer: &ManifestRenderer,
-    context: Option<TargetFileRenderContext>,
     template: &str,
     model_identifier: &str,
 ) -> Result<String> {
-    match context {
-        Some(TargetFileRenderContext::FmiModelDescription) => result
-            .render_fmi_model_description_template_str_with_name(template, model_identifier)
-            .map_err(Into::into),
-        Some(TargetFileRenderContext::FmiImplementation) => result
-            .render_fmi_implementation_template_str_with_name(template, model_identifier)
-            .map_err(Into::into),
-        None => renderer.render(result, template, model_identifier),
-    }
+    renderer.render(result, template, model_identifier)
 }
 
 impl ManifestRenderer {
@@ -813,9 +722,6 @@ impl ManifestRenderer {
         match self {
             Self::Ir(ir) => result
                 .render_template_str_with_name_and_ir(template, model_identifier, *ir)
-                .map_err(Into::into),
-            Self::DaeStructured => result
-                .render_structured_dae_template_str_with_name(template, model_identifier)
                 .map_err(Into::into),
             Self::WgslSolve => result
                 .render_solve_template_str_without_dae(template, model_identifier)

@@ -15,6 +15,7 @@ use rumoca_ir_ast::{
 };
 use std::borrow::Borrow;
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ComponentSemantics {
@@ -82,8 +83,14 @@ impl CandidateSet {
 /// segment. Keeping this boundary typed prevents it from being mistaken for a
 /// rendered component path; every matching segment retains all candidate
 /// `InstanceId`s and is resolved only by metadata consensus.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct UnresolvedMemberSegment(Box<str>);
+
+impl Hash for UnresolvedMemberSegment {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.0.len().hash(state);
+    }
+}
 
 impl From<&str> for UnresolvedMemberSegment {
     fn from(value: &str) -> Self {
@@ -255,7 +262,7 @@ impl InstanceSemanticScope {
             let exact = ComponentPath::from_flat_path(rendered_path);
             insert_consensus_shape(&mut self.array_shapes, exact, shape.clone());
 
-            // Legacy `array_parent_dims` has no structured instance-family key.
+            // Obsolete `array_parent_dims` has no structured instance-family key.
             // Keep one de-indexed compatibility alias only when every
             // contributing family reports the same shape.
             let deindexed =

@@ -1,6 +1,6 @@
 use crate::{
-    CoupledEventNewtonModel, RuntimeSolveError, discrete_row_pre_mode, runtime_values_changed,
-    solve_coupled_event_newton,
+    CoupledEventNewtonModel, RuntimeSolveError, discrete_row_active_at, discrete_row_pre_mode,
+    runtime_values_changed, solve_coupled_event_newton,
 };
 use rumoca_ir_solve as solve;
 
@@ -43,7 +43,7 @@ impl SolveRuntime {
         snapshot: &DiscretePreSnapshot<'_>,
         input: &mut DiscreteRowsSettleInput<'_>,
     ) -> Result<bool, RuntimeSolveError> {
-        let inventory = self.coupled_event_inventory(snapshot)?;
+        let inventory = self.coupled_event_inventory(snapshot, input.t)?;
         if inventory
             .residuals
             .iter()
@@ -96,6 +96,7 @@ impl SolveRuntime {
     fn coupled_event_inventory(
         &self,
         snapshot: &DiscretePreSnapshot<'_>,
+        t: f64,
     ) -> Result<CoupledEventInventory, RuntimeSolveError> {
         let mut inventory = CoupledEventInventory {
             unknowns: Vec::new(),
@@ -132,7 +133,10 @@ impl SolveRuntime {
             .copied()
             .enumerate()
         {
-            let mode = discrete_row_pre_mode(&self.model, row);
+            if !discrete_row_active_at(&self.model, row, t)? {
+                continue;
+            }
+            let mode = discrete_row_pre_mode(&self.model, row)?;
             if !snapshot.row_filter.accepts(mode) {
                 continue;
             }
@@ -456,11 +460,16 @@ mod tests {
                 discrete: solve::DiscreteSolveSystem {
                     rhs: discrete,
                     update_targets: vec![solve::scalar_slot_p(0), solve::scalar_slot_p(1)],
+                    row_roles: vec![
+                        solve::DiscreteRowRole::Equation,
+                        solve::DiscreteRowRole::Equation,
+                    ],
                     pre_modes: vec![
                         solve::DiscreteEventPreMode::FollowCurrent,
                         solve::DiscreteEventPreMode::FollowCurrent,
                     ],
                     observation_refresh: vec![false, false],
+                    clock_owners: vec![None, None],
                     ..Default::default()
                 },
                 ..Default::default()

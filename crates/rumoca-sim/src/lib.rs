@@ -5,6 +5,7 @@
 //! and the scheduled simulation module that drives scheduled scenario simulations.
 
 use indexmap::IndexSet;
+use rumoca_core::Span;
 use rumoca_ir_solve as solve;
 use serde::{Deserialize, Serialize};
 
@@ -66,7 +67,7 @@ pub use solve_lowering::{
     lower_for_simulation_with_overrides, parameter_jacobian_for_dae,
     state_and_parameter_jacobian_for_dae, steady_state_adjoint_objective_gradient_for_dae,
     steady_state_objective_gradient_for_dae, steady_state_parameter_sensitivity_for_dae,
-    structural_report_for_dae, structurally_lowered_dae_for_simulation_artifact,
+    structural_report_for_dae,
 };
 
 #[cfg(feature = "scenario-config")]
@@ -231,52 +232,51 @@ fn simulate_with_auto_diagnostics(
 mod solver_mode_tests {
     use super::*;
 
-    fn test_span() -> rumoca_core::Span {
-        rumoca_core::Span::from_offsets(
-            rumoca_core::SourceId::from_source_name("solver_mode_test.mo"),
-            0,
-            8,
-        )
-    }
-
     #[test]
     fn auto_mode_uses_rk45_when_diffsol_is_not_built() {
-        let span = test_span();
-        let mut model = dae::Dae::new();
-        model.variables.states.insert(
-            rumoca_core::VarName::new("x"),
-            dae::Variable::new(
-                rumoca_core::VarName::new("x"),
-                rumoca_core::Span::from_offsets(
-                    rumoca_core::SourceId::from_source_name(file!()),
-                    1,
-                    2,
-                ),
-            ),
-        );
-        model.continuous.equations.push(dae::Equation {
-            lhs: None,
-            rhs: rumoca_core::Expression::Binary {
-                op: rumoca_core::OpBinary::Sub,
-                lhs: Box::new(rumoca_core::Expression::BuiltinCall {
-                    function: rumoca_core::BuiltinFunction::Der,
-                    args: vec![rumoca_core::Expression::VarRef {
-                        name: rumoca_core::VarName::new("x"),
-                        subscripts: Vec::new(),
-                        span,
-                    }],
-                    span,
-                }),
-                rhs: Box::new(rumoca_core::Expression::Literal {
-                    value: rumoca_core::Literal::Real(1.0),
-                    span,
-                }),
-                span,
-            },
-            span,
-            origin: "test".to_string(),
-            scalar_count: 1,
-        });
+        let mut source_map = rumoca_core::SourceMap::new();
+        let source = source_map.add("solver_mode_test.mo", "Real x(start=0); der(x)=1;");
+        let declaration =
+            dae::DaeProvenance::source(rumoca_core::Span::from_offsets(source, 0, 15))
+                .expect("test declaration has real provenance");
+        let owner = dae::DaeProvenance::source(rumoca_core::Span::from_offsets(source, 17, 26))
+            .expect("test equation has real provenance");
+        let model = dae::Dae::construct(source_map, |construction| {
+            let real = construction.types(|types| {
+                types.intern(
+                    rumoca_core::TypeId::new(0),
+                    dae::ValueType::scalar(dae::ScalarType::Real),
+                    declaration,
+                )
+            })?;
+            let start = construction.expressions(|expressions| {
+                expressions
+                    .at(declaration)
+                    .literal(dae::DaeLiteral::Real(0.0))
+            })?;
+            let state = construction.variables(|variables| {
+                variables.state(
+                    rumoca_core::VarName::new("x"),
+                    real,
+                    declaration,
+                    dae::VariableAttributes {
+                        start: Some(start),
+                        ..dae::VariableAttributes::default()
+                    },
+                )
+            })?;
+            let residual = construction.expressions(|expressions| {
+                let derivative = expressions
+                    .at(owner)
+                    .coordinate(dae::CoordinateInput::Derivative(state))?;
+                let one = expressions.at(owner).literal(dae::DaeLiteral::Real(1.0))?;
+                expressions
+                    .at(owner)
+                    .binary(dae::BinaryOperator::Subtract, derivative, one)
+            })?;
+            construction.continuous(|continuous| continuous.value_equation(owner, residual))
+        })
+        .expect("test DAE is valid by construction");
         let result = simulate_with_diagnostics(
             &model,
             &SimOptions {
@@ -342,207 +342,102 @@ fn simulate_with_diffsol_diagnostics(
 #[cfg(feature = "report")]
 pub mod web;
 
-struct VariableSource<'a> {
-    var: &'a dae::Variable,
-    role: &'static str,
-    is_state: bool,
-}
-
-fn lookup_variable_exact<'a>(dae_model: &'a dae::Dae, name: &str) -> Option<VariableSource<'a>> {
-    let key = rumoca_core::VarName::new(name);
-    if let Some(var) = dae_model.variables.states.get(&key) {
-        return Some(VariableSource {
-            var,
-            role: "state",
-            is_state: true,
-        });
-    }
-    if let Some(var) = dae_model.variables.algebraics.get(&key) {
-        return Some(VariableSource {
-            var,
-            role: "algebraic",
-            is_state: false,
-        });
-    }
-    if let Some(var) = dae_model.variables.outputs.get(&key) {
-        return Some(VariableSource {
-            var,
-            role: "output",
-            is_state: false,
-        });
-    }
-    if let Some(var) = dae_model.variables.inputs.get(&key) {
-        return Some(VariableSource {
-            var,
-            role: "input",
-            is_state: false,
-        });
-    }
-    if let Some(var) = dae_model.variables.parameters.get(&key) {
-        return Some(VariableSource {
-            var,
-            role: "parameter",
-            is_state: false,
-        });
-    }
-    if let Some(var) = dae_model.variables.constants.get(&key) {
-        return Some(VariableSource {
-            var,
-            role: "constant",
-            is_state: false,
-        });
-    }
-    if let Some(var) = dae_model.variables.discrete_reals.get(&key) {
-        return Some(VariableSource {
-            var,
-            role: "discrete-real",
-            is_state: false,
-        });
-    }
-    if let Some(var) = dae_model.variables.discrete_valued.get(&key) {
-        return Some(VariableSource {
-            var,
-            role: "discrete-valued",
-            is_state: false,
-        });
-    }
-    None
-}
-
-fn trim_trailing_scalar_indices(name: &str) -> &str {
-    let mut trimmed = name;
-    while let Some((base, index_text)) = rumoca_core::split_trailing_subscript_suffix(trimmed) {
-        if index_text.is_empty() || !index_text.chars().all(|c| c.is_ascii_digit()) {
-            break;
-        }
-        trimmed = base;
-    }
-    trimmed
-}
-
-fn lookup_variable_source<'a>(dae_model: &'a dae::Dae, name: &str) -> Option<VariableSource<'a>> {
-    lookup_variable_exact(dae_model, name).or_else(|| {
-        let base = trim_trailing_scalar_indices(name);
-        if base != name {
-            lookup_variable_exact(dae_model, base)
-        } else {
-            None
-        }
-    })
-}
-
-fn truncate_meta_expr(expr: &rumoca_core::Expression) -> String {
-    let rendered = format!("{expr:?}");
-    truncate_utf8_with_ellipsis(&rendered, 160)
-}
-
-fn truncate_utf8_with_ellipsis(value: &str, max_bytes: usize) -> String {
-    if value.len() <= max_bytes {
-        value.to_string()
-    } else {
-        let end = value
-            .char_indices()
-            .map(|(index, _)| index)
-            .take_while(|index| *index <= max_bytes)
-            .last()
-            .unwrap_or(0);
-        format!("{}...", &value[..end])
-    }
-}
-
-fn classify_role(role: &str, is_state: bool) -> (Option<String>, Option<String>, Option<String>) {
-    if is_state {
-        return (
-            Some("Real".to_string()),
-            Some("continuous".to_string()),
-            Some("continuous-time".to_string()),
-        );
-    }
-
-    match role {
-        "algebraic" | "output" | "input" => (
-            Some("Real".to_string()),
-            Some("continuous".to_string()),
-            Some("continuous-time".to_string()),
-        ),
-        "parameter" => (
-            Some("Real".to_string()),
-            Some("parameter".to_string()),
-            Some("static".to_string()),
-        ),
-        "constant" => (
-            Some("Real".to_string()),
-            Some("constant".to_string()),
-            Some("static".to_string()),
-        ),
-        "discrete-real" => (
-            Some("Real".to_string()),
-            Some("discrete".to_string()),
-            Some("event-discrete".to_string()),
-        ),
-        "discrete-valued" => (
-            Some("Boolean/Integer/Enum".to_string()),
-            Some("discrete".to_string()),
-            Some("event-discrete".to_string()),
-        ),
-        _ => (None, None, None),
-    }
-}
-
 pub fn build_variable_meta(
     dae_model: &dae::Dae,
     names: &[String],
-    n_states: usize,
-) -> Vec<SimVariableMeta> {
-    names
-        .iter()
-        .enumerate()
-        .map(|(idx, name)| {
-            if let Some(source) = lookup_variable_source(dae_model, name) {
-                let (value_type, variability, time_domain) =
-                    classify_role(source.role, source.is_state);
-                SimVariableMeta {
-                    name: name.clone(),
-                    role: source.role.to_string(),
-                    is_state: source.is_state,
-                    value_type,
-                    variability,
-                    time_domain,
-                    unit: source.var.unit.clone(),
-                    start: source.var.start.as_ref().map(truncate_meta_expr),
-                    min: source.var.min.as_ref().map(truncate_meta_expr),
-                    max: source.var.max.as_ref().map(truncate_meta_expr),
-                    nominal: source.var.nominal.as_ref().map(truncate_meta_expr),
-                    fixed: source.var.fixed,
-                    description: source.var.description.clone(),
-                }
-            } else {
-                let inferred_is_state = idx < n_states;
-                let inferred_role = if inferred_is_state {
-                    "state"
-                } else {
-                    "unknown"
-                };
-                let (value_type, variability, time_domain) =
-                    classify_role(inferred_role, inferred_is_state);
-                SimVariableMeta {
-                    name: name.clone(),
-                    role: inferred_role.to_string(),
-                    is_state: inferred_is_state,
-                    value_type,
-                    variability,
-                    time_domain,
-                    unit: None,
-                    start: None,
-                    min: None,
-                    max: None,
-                    nominal: None,
-                    fixed: None,
-                    description: None,
-                }
+) -> Result<Vec<SimVariableMeta>, SimulationDiagnosticError> {
+    dae_model.inspect(|view| {
+        let mut by_name = std::collections::HashMap::new();
+        for (_, variable) in view.variables() {
+            for scalar in 0..variable.scalar_count() {
+                let name = variable
+                    .scalar_name(scalar)
+                    .expect("checked scalar variable has a name");
+                by_name.insert(
+                    name.clone(),
+                    checked_variable_meta(dae_model, view, variable, name),
+                );
             }
-        })
-        .collect()
+        }
+        names
+            .iter()
+            .map(|name| {
+                by_name.get(name).cloned().ok_or_else(|| {
+                    SimulationDiagnosticError::RuntimePreparation {
+                        message: format!(
+                            "Solve output `{name}` has no checked DAE variable identity"
+                        ),
+                        span: None,
+                    }
+                })
+            })
+            .collect()
+    })
+}
+
+fn checked_variable_meta<'dae>(
+    model: &dae::Dae,
+    view: dae::DaeView<'dae>,
+    variable: dae::VariableView<'dae>,
+    name: String,
+) -> SimVariableMeta {
+    SimVariableMeta {
+        name,
+        role: variable_role_name(variable.role()).to_string(),
+        is_state: variable.role() == dae::VariableRole::State,
+        value_type: Some(format!("{:?}", variable.value_type().scalar_type())),
+        variability: Some(format!("{:?}", variable.variability())),
+        time_domain: Some(variable_time_domain(variable.role()).to_string()),
+        unit: variable.unit().map(str::to_string),
+        start: variable
+            .start()
+            .and_then(|id| expression_source(model, view, id)),
+        min: variable
+            .minimum()
+            .and_then(|id| expression_source(model, view, id)),
+        max: variable
+            .maximum()
+            .and_then(|id| expression_source(model, view, id)),
+        nominal: variable
+            .nominal()
+            .and_then(|id| expression_source(model, view, id)),
+        fixed: variable.fixed(),
+        description: variable.description().map(str::to_string),
+    }
+}
+
+fn expression_source<'dae>(
+    model: &dae::Dae,
+    view: dae::DaeView<'dae>,
+    expression: dae::ExprId<'dae>,
+) -> Option<String> {
+    model
+        .source_text(view.expression(expression)?.provenance())
+        .map(str::to_string)
+}
+
+const fn variable_role_name(role: dae::VariableRole) -> &'static str {
+    match role {
+        dae::VariableRole::Parameter => "parameter",
+        dae::VariableRole::Constant => "constant",
+        dae::VariableRole::Input => "input",
+        dae::VariableRole::State => "state",
+        dae::VariableRole::Algebraic => "algebraic",
+        dae::VariableRole::Output => "output",
+        dae::VariableRole::DiscreteReal => "discrete-real",
+        dae::VariableRole::DiscreteValue => "discrete-valued",
+    }
+}
+
+const fn variable_time_domain(role: dae::VariableRole) -> &'static str {
+    match role {
+        dae::VariableRole::Parameter | dae::VariableRole::Constant => "static",
+        dae::VariableRole::DiscreteReal | dae::VariableRole::DiscreteValue => "event-discrete",
+        dae::VariableRole::Input
+        | dae::VariableRole::State
+        | dae::VariableRole::Algebraic
+        | dae::VariableRole::Output => "continuous-time",
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -564,55 +459,123 @@ pub struct TunableParameterMeta {
 pub fn build_tunable_parameter_meta(
     dae_model: &dae::Dae,
     solve_model: &solve::SolveModel,
-) -> Vec<TunableParameterMeta> {
-    solve_model
-        .problem
-        .layout
-        .bindings()
-        .iter()
-        .filter_map(|(name, slot)| {
-            let solve::ScalarSlot::P { index, .. } = *slot else {
-                return None;
-            };
-            let source = lookup_variable_source(dae_model, name.as_str())?;
-            if source.role != "parameter" || !source.var.is_tunable {
-                return None;
-            }
-            Some(TunableParameterMeta {
-                name: name.to_string(),
-                default_value: solve_model.parameters.get(index).copied().unwrap_or(0.0),
-                unit: source.var.unit.clone(),
-                start: source.var.start.as_ref().map(truncate_meta_expr),
-                min: source.var.min.as_ref().map(truncate_meta_expr),
-                max: source.var.max.as_ref().map(truncate_meta_expr),
-                nominal: source.var.nominal.as_ref().map(truncate_meta_expr),
-                min_value: source.var.min.as_ref().and_then(numeric_expression_value),
-                max_value: source.var.max.as_ref().and_then(numeric_expression_value),
-                fixed: source.var.fixed,
-                description: source.var.description.clone(),
-            })
-        })
-        .collect()
+) -> Result<Vec<TunableParameterMeta>, SimulationDiagnosticError> {
+    dae_model.inspect(|view| {
+        let mut evaluator = rumoca_eval_dae::NumericEvaluator::new(view);
+        let mut result = Vec::new();
+        for (_, variable) in view.variables().filter(|(_, variable)| {
+            variable.role() == dae::VariableRole::Parameter && variable.is_tunable()
+        }) {
+            result.extend(tunable_variable_meta(
+                dae_model,
+                view,
+                solve_model,
+                &mut evaluator,
+                variable,
+            )?);
+        }
+        Ok(result)
+    })
 }
 
-fn numeric_expression_value(expr: &rumoca_core::Expression) -> Option<f64> {
-    match expr {
-        rumoca_core::Expression::Literal { value, .. } => match value {
-            rumoca_core::Literal::Real(value) => Some(*value),
-            rumoca_core::Literal::Integer(value) => Some(*value as f64),
-            _ => None,
-        },
-        rumoca_core::Expression::Unary { op, rhs, .. } => {
-            let value = numeric_expression_value(rhs)?;
-            match op {
-                rumoca_core::OpUnary::Minus | rumoca_core::OpUnary::DotMinus => Some(-value),
-                rumoca_core::OpUnary::Plus
-                | rumoca_core::OpUnary::DotPlus
-                | rumoca_core::OpUnary::Empty => Some(value),
-                rumoca_core::OpUnary::Not => None,
-            }
-        }
-        _ => None,
+fn tunable_variable_meta<'dae>(
+    dae_model: &dae::Dae,
+    view: dae::DaeView<'dae>,
+    solve_model: &solve::SolveModel,
+    evaluator: &mut rumoca_eval_dae::NumericEvaluator<'dae>,
+    variable: dae::VariableView<'dae>,
+) -> Result<Vec<TunableParameterMeta>, SimulationDiagnosticError> {
+    let minimum = evaluated_attribute(evaluator, variable, variable.minimum())?;
+    let maximum = evaluated_attribute(evaluator, variable, variable.maximum())?;
+    let mut result = Vec::with_capacity(variable.scalar_count());
+    for scalar in 0..variable.scalar_count() {
+        let name = variable
+            .scalar_name(scalar)
+            .expect("checked scalar variable has a name");
+        let index = parameter_slot(solve_model, variable, &name)?;
+        let default_value = solve_model.parameters.get(index).copied().ok_or_else(|| {
+            runtime_preparation(
+                format!("tunable parameter `{name}` has an invalid Solve P slot"),
+                variable.declaration().span(),
+            )
+        })?;
+        result.push(TunableParameterMeta {
+            name,
+            default_value,
+            unit: variable.unit().map(str::to_string),
+            start: variable
+                .start()
+                .and_then(|id| expression_source(dae_model, view, id)),
+            min: variable
+                .minimum()
+                .and_then(|id| expression_source(dae_model, view, id)),
+            max: variable
+                .maximum()
+                .and_then(|id| expression_source(dae_model, view, id)),
+            nominal: variable
+                .nominal()
+                .and_then(|id| expression_source(dae_model, view, id)),
+            min_value: minimum.as_ref().map(|values| values[scalar]),
+            max_value: maximum.as_ref().map(|values| values[scalar]),
+            fixed: variable.fixed(),
+            description: variable.description().map(str::to_string),
+        });
+    }
+    Ok(result)
+}
+
+fn evaluated_attribute<'dae>(
+    evaluator: &mut rumoca_eval_dae::NumericEvaluator<'dae>,
+    variable: dae::VariableView<'dae>,
+    expression: Option<dae::ExprId<'dae>>,
+) -> Result<Option<Vec<f64>>, SimulationDiagnosticError> {
+    let Some(expression) = expression else {
+        return Ok(None);
+    };
+    let mut values = evaluator
+        .expression(expression)
+        .map_err(numeric_evaluation_error)?;
+    if values.len() == 1 && variable.scalar_count() > 1 {
+        values.resize(variable.scalar_count(), values[0]);
+    }
+    if values.len() != variable.scalar_count() {
+        return Err(runtime_preparation(
+            format!(
+                "numeric attribute for `{}` contains {} scalars; expected {}",
+                variable.name(),
+                values.len(),
+                variable.scalar_count()
+            ),
+            variable.declaration().span(),
+        ));
+    }
+    Ok(Some(values))
+}
+
+fn parameter_slot(
+    solve_model: &solve::SolveModel,
+    variable: dae::VariableView<'_>,
+    name: &str,
+) -> Result<usize, SimulationDiagnosticError> {
+    let Some(solve::ScalarSlot::P { index, .. }) = solve_model.problem.layout.binding(name) else {
+        return Err(runtime_preparation(
+            format!("tunable parameter `{name}` has no Solve P slot"),
+            variable.declaration().span(),
+        ));
+    };
+    Ok(index)
+}
+
+fn numeric_evaluation_error(
+    error: rumoca_eval_dae::NumericEvaluationError,
+) -> SimulationDiagnosticError {
+    runtime_preparation(error.to_string(), error.span())
+}
+
+fn runtime_preparation(message: String, span: Span) -> SimulationDiagnosticError {
+    SimulationDiagnosticError::RuntimePreparation {
+        message,
+        span: Some(span),
     }
 }
 
@@ -645,66 +608,4 @@ pub fn compiled_layout_related_bindings_debug(
         })
         .map(|(binding_name, slot)| (binding_name.to_string(), format!("{slot:?}")))
         .collect())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use rumoca_ir_dae::Variable;
-
-    #[test]
-    fn trim_trailing_scalar_indices_uses_balanced_trailing_groups() {
-        assert_eq!(trim_trailing_scalar_indices("x[1]"), "x");
-        assert_eq!(trim_trailing_scalar_indices("x[1][2]"), "x");
-        assert_eq!(trim_trailing_scalar_indices("x[1,2]"), "x[1,2]");
-        assert_eq!(
-            trim_trailing_scalar_indices("record[1].field[2]"),
-            "record[1].field"
-        );
-        assert_eq!(
-            trim_trailing_scalar_indices("record[index.re]"),
-            "record[index.re]"
-        );
-    }
-
-    #[test]
-    fn build_variable_meta_resolves_scalarized_names_back_to_array_variable() {
-        let mut dae_model = dae::Dae::default();
-        let mut state = Variable::new(
-            rumoca_core::VarName::new("x"),
-            rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 1, 2),
-        );
-        state.dims = vec![2];
-        state.unit = Some("m".to_string());
-        dae_model
-            .variables
-            .states
-            .insert(rumoca_core::VarName::new("x"), state);
-
-        let meta = build_variable_meta(&dae_model, &["x[1]".to_string(), "x[2]".to_string()], 2);
-
-        assert_eq!(meta.len(), 2);
-        assert!(meta.iter().all(|entry| entry.is_state));
-        assert!(meta.iter().all(|entry| entry.role == "state"));
-        assert!(meta.iter().all(|entry| entry.unit.as_deref() == Some("m")));
-    }
-
-    #[test]
-    fn truncate_meta_expr_never_slices_inside_utf8() {
-        let expr = rumoca_core::Expression::VarRef {
-            name: rumoca_core::Reference::new("é".repeat(200)),
-            subscripts: Vec::new(),
-            span: rumoca_core::Span::DUMMY,
-        };
-        let rendered = truncate_meta_expr(&expr);
-        assert!(rendered.ends_with("..."));
-        assert!(rendered.len() <= 163);
-    }
-
-    #[test]
-    fn truncate_meta_expr_cuts_before_a_character_crossing_the_limit() {
-        let name = format!("{}🙂suffix", "a".repeat(159));
-        let rendered = truncate_utf8_with_ellipsis(&name, 160);
-        assert_eq!(rendered, format!("{}...", "a".repeat(159)));
-    }
 }

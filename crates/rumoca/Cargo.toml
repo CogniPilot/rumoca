@@ -112,18 +112,8 @@ path = "tests/standalone_template_regression.rs"
 required-features = ["template-runtime-tests"]
 
 [[test]]
-name = "sympy_template_regression"
-path = "tests/sympy_template_regression.rs"
-required-features = ["template-runtime-tests"]
-
-[[test]]
 name = "backend_template_runtime_regression"
 path = "tests/backend_template_runtime_regression.rs"
-required-features = ["template-runtime-tests"]
-
-[[test]]
-name = "symforce_template_regression"
-path = "tests/symforce_template_regression.rs"
 required-features = ["template-runtime-tests"]
 
 [[test]]

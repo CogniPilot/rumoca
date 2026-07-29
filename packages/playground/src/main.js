@@ -180,7 +180,7 @@ let outlineBranchKeys = [];
 let selectedExplorerPath = '';
 let sidebarContextActions = [];
 const EXPLORER_ROOT_SELECTION = '.';
-const DEFAULT_CODEGEN_TARGET_ID = 'sympy';
+const DEFAULT_CODEGEN_TARGET_ID = 'c-solve';
 const PLAYGROUND_THEME_STORAGE_KEY = 'rumoca-playground-theme';
 const PLAYGROUND_THEME_IDS = new Set(['system', 'light', 'rust', 'coal', 'navy', 'ayu']);
 const systemThemeMedia = typeof window.matchMedia === 'function'

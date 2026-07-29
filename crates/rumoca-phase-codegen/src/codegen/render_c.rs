@@ -1,7 +1,7 @@
 //! C-backend template functions for FMI2 and embedded-C code generation.
 //!
 //! These functions are registered in the minijinja environment and used by
-//! `fmi2/model.c.jinja` and `embedded_c/model.c.jinja` templates to extract explicit
+//! C-family templates use these helpers to extract explicit
 //! ODE/algebraic RHS expressions from residual-form DAE equations.
 
 use super::{ExprConfig, RenderResult, join_usize_values, render_vec_with_capacity};
@@ -167,7 +167,7 @@ pub(super) fn has_complex_params_function(func: Value) -> String {
 ///
 /// Given an equation in residual form `0 = der(x) - expr` (MLS Appendix B.1a),
 /// returns the rendered `expr`. This converts the implicit DAE form used internally
-/// to explicit ODE form needed by FMI 2.0 `fmi2GetDerivatives` (FMI 2.0.4 §3.2.2).
+/// to explicit ODE form needed by derivative-producing targets.
 ///
 /// Usage in templates:
 /// ```jinja
@@ -197,7 +197,7 @@ pub(super) fn ode_rhs_function(eq: Value, config: Value) -> RenderResult {
 /// Searches through f_x equations (MLS Appendix B.1a residual form) to find the one
 /// matching `der(state_name)`, and returns the explicit RHS. This correctly handles
 /// cases where state ordering in `dae.x` differs from equation ordering in `dae.f_x`,
-/// which is required for FMI 2.0 `fmi2GetDerivatives` (FMI 2.0.4 §3.2.2).
+/// which is required by derivative-producing targets.
 ///
 /// Usage in templates:
 /// ```jinja

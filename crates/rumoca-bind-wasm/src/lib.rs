@@ -489,27 +489,8 @@ fn build_compile_response(
         serde_json::to_value(dae).map_err(|e| JsValue::from_str(&format!("JSON error: {}", e)))?;
     attach_build_metadata(&mut dae_native_json);
 
-    let num_eqs = dae.num_equations();
-    let continuous_unknowns = dae
-        .variables
-        .states
-        .values()
-        .map(|v| v.size())
-        .sum::<usize>()
-        + dae
-            .variables
-            .algebraics
-            .values()
-            .map(|v| v.size())
-            .sum::<usize>()
-        + dae
-            .variables
-            .outputs
-            .values()
-            .map(|v| v.size())
-            .sum::<usize>();
-    let balance_val = num_eqs as i64 - continuous_unknowns as i64;
-    let num_unknowns = num_eqs as i64 - balance_val;
+    let (num_eqs, num_unknowns) = result.balance_detail.equations_unknowns();
+    let balance_val = result.balance_detail.balance();
     let balance = serde_json::json!({
         "is_balanced": balance_val == 0,
         "num_equations": num_eqs,
@@ -1138,10 +1119,8 @@ pub fn render_target(
     manifest_source: &str,
     templates_json: &str,
 ) -> Result<JsValue, JsValue> {
-    let mut dae = serde_json::from_str::<rumoca_compile::compile::Dae>(dae_json)
+    let dae = serde_json::from_str::<rumoca_compile::compile::Dae>(dae_json)
         .map_err(|e| JsValue::from_str(&format!("Invalid DAE JSON: {e}")))?;
-    rumoca_compile::phase_structural::scalarize_equations(&mut dae)
-        .map_err(|e| JsValue::from_str(&format!("Structural scalarization failed: {e}")))?;
 
     let custom_templates: BTreeMap<String, String> = serde_json::from_str(templates_json)
         .map_err(|e| JsValue::from_str(&format!("Invalid target template map: {e}")))?;

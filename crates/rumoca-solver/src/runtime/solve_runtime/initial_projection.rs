@@ -351,6 +351,7 @@ mod tests {
                 },
                 initialization: solve::InitializationSolveArtifacts {
                     residual_jacobian_v: jacobian,
+                    ..Default::default()
                 },
             },
             initial_y: vec![0.0],

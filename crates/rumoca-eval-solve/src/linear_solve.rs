@@ -1,7 +1,4 @@
-use crate::tensor_policy::{
-    LinearSolveKernel, TensorPolicyError, matrix_is_diagonal, matrix_nonzeros,
-    select_linear_solve_kernel,
-};
+use crate::tensor_policy::LinearSolveKernel;
 use crate::{EvalSolveError, get};
 
 /// Evaluate a [`LinearOp::LinearSolveComponent`] op directly, destructuring its
@@ -64,6 +61,7 @@ pub(crate) fn solve_all_unchecked(
     matrix_start: u32,
     rhs_start: u32,
     n: usize,
+    kernel: LinearSolveKernel,
     out: &mut [f64],
 ) -> Result<(), EvalSolveError> {
     if n == 0 {
@@ -76,21 +74,10 @@ pub(crate) fn solve_all_unchecked(
             span: None,
         });
     }
-    let start = matrix_start as usize;
     let matrix_len = checked_product(n, n, "linear solve matrix")?;
-    let matrix_end = checked_register_end(matrix_start, matrix_len)?;
-    let matrix_values = regs
-        .get(start..matrix_end)
-        .ok_or(EvalSolveError::RegisterOutOfBounds {
-            access: "read",
-            register: range_end_register(matrix_start, matrix_len),
-            len: regs.len(),
-            span: None,
-        })?;
+    ensure_register_range(regs, "read", matrix_start, matrix_len)?;
     ensure_register_range(regs, "read", rhs_start, n)?;
-    let diagonal = matrix_is_diagonal(matrix_values, n, 1.0e-14).map_err(tensor_policy_error)?;
-    let nonzeros = matrix_nonzeros(matrix_values, 1.0e-14);
-    match select_linear_solve_kernel(n, diagonal, nonzeros).map_err(tensor_policy_error)? {
+    match kernel {
         LinearSolveKernel::Diagonal => {
             solve_diagonal_unchecked(regs, matrix_start, rhs_start, n, out)?;
         }
@@ -107,13 +94,6 @@ pub(crate) fn solve_all_unchecked(
         }
     }
     Ok(())
-}
-
-pub(crate) fn tensor_policy_error(error: TensorPolicyError) -> EvalSolveError {
-    EvalSolveError::ShapeContract {
-        message: format!("tensor policy failed: {error}"),
-        span: None,
-    }
 }
 
 fn solve_diagonal_unchecked(

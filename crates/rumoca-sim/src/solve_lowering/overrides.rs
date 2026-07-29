@@ -1,6 +1,6 @@
-//! Solver-neutral application of a request's tunable-parameter and state-start
-//! overrides onto a freshly lowered solve model. Every backend (diffsol, rk45)
-//! funnels through here so overrides behave identically regardless of engine.
+//! Solver-neutral simulation overrides over checked declarations.
+
+use std::collections::{HashMap, HashSet};
 
 use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
@@ -8,147 +8,149 @@ use rumoca_solver::SimOptions;
 
 use super::diagnostics::SimulationDiagnosticError;
 
-/// Lower a DAE to a simulation-ready solve model and apply the request's tunable
-/// parameter / state-start overrides. Solver-neutral: every backend (diffsol,
-/// rk45) funnels through here, so overrides are applied identically regardless of
-/// which engine runs.
 pub fn lower_for_simulation_with_overrides(
-    dae_model: &dae::Dae,
+    model: &dae::Dae,
     opts: &SimOptions,
 ) -> Result<solve::SolveModel, SimulationDiagnosticError> {
-    // Tunable scalar-parameter overrides are applied *during* parameter-value
-    // computation so their dependents — including parameter-derived array masks
-    // (`sc/nc/sig`) that no scalar post-pass can re-derive — re-evaluate from the
-    // override at parameter-set time. Non-tunable (structural) overrides are left
-    // out of lowering so they cannot change sizing; `apply_simulation_overrides`
-    // rejects them below with a clear "recompile" error.
-    let param_overrides = tunable_param_overrides(dae_model, opts);
-    let mut solve_model = super::entry::lower_dae_for_simulation_with_param_overrides(
-        dae_model,
-        opts,
-        &param_overrides,
-    )
-    .map_err(SimulationDiagnosticError::SolveLowering)?;
-    // Validate overrides and apply state-start overrides. Parameter dependents were
-    // already re-derived during lowering, so do not re-derive them again here.
-    apply_simulation_overrides(&mut solve_model, dae_model, opts)?;
+    let overrides = tunable_param_overrides(model, opts)?;
+    let mut solve_model =
+        super::entry::lower_dae_for_simulation_with_stage_timing_and_param_overrides(
+            model,
+            opts,
+            &overrides,
+            |_| {},
+        )?
+        .0;
+    apply_state_overrides(&mut solve_model, opts)?;
     Ok(solve_model)
 }
 
-/// Lower a DAE to a differentiable runtime solve model and apply the same
-/// tunable-parameter / state-start overrides as simulation lowering.
-///
-/// Unlike [`lower_for_simulation_with_overrides`], this entry point always
-/// requests full sensitivity artifacts. `SimOptions::solver_mode` chooses an
-/// integration backend for simulation, but optimization needs backend-neutral
-/// derivative programs even when callers prefer the value-only RK path for
-/// ordinary simulation.
 pub fn lower_for_differentiation_with_overrides(
-    dae_model: &dae::Dae,
+    model: &dae::Dae,
     opts: &SimOptions,
 ) -> Result<solve::SolveModel, SimulationDiagnosticError> {
-    let param_overrides = tunable_param_overrides(dae_model, opts);
-    let mut solve_model = super::entry::lower_dae_for_differentiation_with_param_overrides(
-        dae_model,
-        opts,
-        &param_overrides,
-    )
-    .map_err(SimulationDiagnosticError::SolveLowering)?;
-    apply_simulation_overrides(&mut solve_model, dae_model, opts)?;
-    Ok(solve_model)
+    lower_for_simulation_with_overrides(model, opts)
 }
 
 pub(crate) fn tunable_param_overrides(
-    dae_model: &dae::Dae,
+    model: &dae::Dae,
     opts: &SimOptions,
-) -> std::collections::HashMap<String, f64> {
-    opts.param_overrides
-        .iter()
-        .filter(|(name, _)| {
-            dae_model
-                .variables
-                .parameters
-                .iter()
-                .find(|(key, _)| key.as_str() == name)
-                .is_some_and(|(_, var)| var.is_tunable)
-        })
-        .map(|(name, value)| (name.clone(), *value))
-        .collect()
+) -> Result<HashMap<String, f64>, SimulationDiagnosticError> {
+    model.inspect(|view| {
+        let mut tunable_names = HashSet::new();
+        let mut structural_names = HashSet::new();
+        for (_, variable) in view.variables().filter(|(_, variable)| {
+            matches!(
+                variable.role(),
+                dae::VariableRole::Parameter | dae::VariableRole::Constant
+            )
+        }) {
+            record_parameter_names(variable, &mut tunable_names, &mut structural_names);
+        }
+
+        let mut overrides = HashMap::with_capacity(opts.param_overrides.len());
+        for (name, value) in &opts.param_overrides {
+            if !value.is_finite() {
+                return Err(invalid(format!("override for `{name}` must be finite")));
+            }
+            if tunable_names.contains(name) {
+                overrides.insert(name.clone(), *value);
+            } else if structural_names.contains(name) {
+                return Err(invalid(format!(
+                    "`{name}` is structural or constant; change it by recompiling"
+                )));
+            } else {
+                return Err(invalid(format!(
+                    "`{name}` is not a tunable parameter of this model"
+                )));
+            }
+        }
+        Ok(overrides)
+    })
 }
 
-/// Validate tunable parameter overrides and apply explicit parameter / state
-/// start pins to a freshly lowered solve model in place. Dependent parameter
-/// values are re-derived before this point by override-aware lowering; this
-/// pass rejects structural parameters and folded parameters so an override is
-/// never silently dropped or applied to the wrong runtime slot.
-///
-/// Exposed `pub(crate)` so the prepared-simulation and interactive-session entry
-/// points apply overrides identically to the one-shot `simulate` path — an
-/// override set in `SimOptions` is honored on every entry, never silently
-/// ignored.
+fn record_parameter_names(
+    variable: dae::VariableView<'_>,
+    tunable_names: &mut HashSet<String>,
+    structural_names: &mut HashSet<String>,
+) {
+    let names = (0..variable.scalar_count()).map(|scalar| {
+        variable
+            .scalar_name(scalar)
+            .expect("checked scalar variable has a name")
+    });
+    if variable.role() == dae::VariableRole::Parameter && variable.is_tunable() {
+        tunable_names.extend(names);
+    } else {
+        structural_names.extend(names);
+    }
+}
+
+#[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 pub(crate) fn apply_simulation_overrides(
     solve_model: &mut solve::SolveModel,
-    dae_model: &dae::Dae,
+    model: &dae::Dae,
     opts: &SimOptions,
 ) -> Result<(), SimulationDiagnosticError> {
-    let reject = |message: String| SimulationDiagnosticError::InvalidOverride { message };
-
-    if !opts.param_overrides.is_empty() {
-        for (name, value) in &opts.param_overrides {
-            match dae_model
-                .variables
-                .parameters
-                .iter()
-                .find(|(key, _)| key.as_str() == name)
-                .map(|(_, var)| var.is_tunable)
-            {
-                None => {
-                    return Err(reject(format!("`{name}` is not a parameter of this model")));
-                }
-                Some(false) => {
-                    return Err(reject(format!(
-                        "`{name}` is a structural parameter (it affects sizing/instantiation); \
-                         change it by recompiling, not by a simulation override"
-                    )));
-                }
-                Some(true) => {}
-            }
-            let Some(solve::ScalarSlot::P { index, .. }) = solve_model.problem.layout.binding(name)
-            else {
-                return Err(reject(format!(
-                    "`{name}` has no runtime parameter slot (it was folded during lowering) and \
-                     cannot be overridden at simulation time"
-                )));
-            };
-            if solve_model
-                .problem
-                .solve_layout
-                .discrete_valued_parameter_index(name)
-                .is_some()
-                && value.fract() != 0.0
-            {
-                return Err(reject(format!(
-                    "`{name}` is a discrete-valued (Boolean/Integer/enum) parameter; override \
-                     value {value} must be a whole number"
-                )));
-            }
-            solve_model.parameters[index] = *value;
+    // Parameter overrides must be incorporated while evaluating dependent
+    // bindings, so rebuilding in place here would be incorrect. Verify that
+    // callers supplied a model assembled through the override-aware entry.
+    let expected = tunable_param_overrides(model, opts)?;
+    for (name, value) in expected {
+        let Some(solve::ScalarSlot::P { index, .. }) = solve_model.problem.layout.binding(&name)
+        else {
+            return Err(invalid(format!(
+                "`{name}` has no runtime parameter slot and cannot be overridden"
+            )));
+        };
+        let Some(actual) = solve_model.parameters.get(index) else {
+            return Err(invalid(format!(
+                "runtime parameter slot for `{name}` is outside the parameter vector"
+            )));
+        };
+        if *actual != value {
+            return Err(invalid(format!(
+                "override for `{name}` was not applied while evaluating dependent bindings"
+            )));
         }
     }
+    apply_state_overrides(solve_model, opts)
+}
 
-    if !opts.start_overrides.is_empty() {
-        let state_count = solve_model.state_scalar_count();
-        let names = &solve_model.problem.solve_layout.solver_maps.names;
-        let state_names = &names[..state_count.min(names.len())];
-        for (name, value) in &opts.start_overrides {
-            let Some(index) = state_names.iter().position(|candidate| candidate == name) else {
-                return Err(reject(format!(
-                    "`{name}` is not a state of this model; start overrides apply to states"
-                )));
-            };
-            solve_model.initial_y[index] = *value;
+fn apply_state_overrides(
+    solve_model: &mut solve::SolveModel,
+    opts: &SimOptions,
+) -> Result<(), SimulationDiagnosticError> {
+    let state_count = solve_model.state_scalar_count();
+    let state_names = solve_model
+        .problem
+        .solve_layout
+        .solver_maps
+        .names
+        .get(..state_count)
+        .ok_or_else(|| invalid("state count exceeds the checked Solve name layout"))?;
+    for (name, value) in &opts.start_overrides {
+        if !value.is_finite() {
+            return Err(invalid(format!(
+                "start override for `{name}` must be finite"
+            )));
         }
+        let index = state_names
+            .iter()
+            .position(|candidate| candidate == name)
+            .ok_or_else(|| invalid(format!("`{name}` is not a state of this model")))?;
+        let target = solve_model.initial_y.get_mut(index).ok_or_else(|| {
+            invalid(format!(
+                "state `{name}` has no initial-value slot in the checked Solve model"
+            ))
+        })?;
+        *target = *value;
     }
-
     Ok(())
+}
+
+fn invalid(message: impl Into<String>) -> SimulationDiagnosticError {
+    SimulationDiagnosticError::InvalidOverride {
+        message: message.into(),
+    }
 }

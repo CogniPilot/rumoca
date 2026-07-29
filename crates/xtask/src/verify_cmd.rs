@@ -71,15 +71,9 @@ pub(crate) enum TemplateRuntimeBackend {
     #[default]
     All,
     Render,
-    Native,
-    EmbeddedC,
-    Fmi,
+    C,
     Casadi,
-    Sympy,
-    Symforce,
-    Onnx,
     Jax,
-    Julia,
 }
 
 #[derive(Debug, Args, Clone, PartialEq, Eq, Default)]
@@ -650,19 +644,9 @@ const TEMPLATE_RUNTIME_GROUPS: &[TemplateRuntimeTestGroup] = &[
         filters: &[],
     },
     TemplateRuntimeTestGroup {
-        backend: TemplateRuntimeBackend::Native,
+        backend: TemplateRuntimeBackend::C,
         test: "backend_template_runtime_regression",
-        filters: &["native_simulates"],
-    },
-    TemplateRuntimeTestGroup {
-        backend: TemplateRuntimeBackend::EmbeddedC,
-        test: "backend_template_runtime_regression",
-        filters: &["embedded_c_"],
-    },
-    TemplateRuntimeTestGroup {
-        backend: TemplateRuntimeBackend::Fmi,
-        test: "backend_template_runtime_regression",
-        filters: &["fmi2_", "fmi3_"],
+        filters: &["c_solve_"],
     },
     TemplateRuntimeTestGroup {
         backend: TemplateRuntimeBackend::Casadi,
@@ -670,34 +654,9 @@ const TEMPLATE_RUNTIME_GROUPS: &[TemplateRuntimeTestGroup] = &[
         filters: &["casadi_"],
     },
     TemplateRuntimeTestGroup {
-        backend: TemplateRuntimeBackend::Sympy,
-        test: "sympy_template_regression",
-        filters: &[],
-    },
-    TemplateRuntimeTestGroup {
-        backend: TemplateRuntimeBackend::Sympy,
-        test: "backend_template_runtime_regression",
-        filters: &["sympy_"],
-    },
-    TemplateRuntimeTestGroup {
-        backend: TemplateRuntimeBackend::Symforce,
-        test: "symforce_template_regression",
-        filters: &[],
-    },
-    TemplateRuntimeTestGroup {
-        backend: TemplateRuntimeBackend::Onnx,
-        test: "backend_template_runtime_regression",
-        filters: &["onnx_"],
-    },
-    TemplateRuntimeTestGroup {
         backend: TemplateRuntimeBackend::Jax,
         test: "backend_template_runtime_regression",
         filters: &["jax_"],
-    },
-    TemplateRuntimeTestGroup {
-        backend: TemplateRuntimeBackend::Julia,
-        test: "backend_template_runtime_regression",
-        filters: &["julia_"],
     },
 ];
 
@@ -761,8 +720,6 @@ fn trim_template_runtime_artifacts(root: &Path) -> Result<()> {
     let test_stems = [
         "template_target_ci",
         "standalone_template_regression",
-        "sympy_template_regression",
-        "symforce_template_regression",
         "backend_template_runtime_regression",
     ];
     for entry in fs::read_dir(&deps_dir)

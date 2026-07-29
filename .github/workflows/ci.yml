@@ -407,30 +407,15 @@ jobs:
         include:
           - backend: render
             nix_shell: ci-template-core
-          - backend: native
-            nix_shell: ci-template-core
-          - backend: embedded-c
-            nix_shell: ci-template-core
-          - backend: fmi
+          - backend: c
             nix_shell: ci-template-core
           - backend: casadi
             nix_shell: ci-template-python
-          - backend: sympy
-            nix_shell: ci-template-python
-          - backend: symforce
-            nix_shell: ci-template-python
-          - backend: onnx
-            nix_shell: ci-template-python
           - backend: jax
             nix_shell: ci-template-python
-          - backend: julia
-            nix_shell: ci-template-julia
     env:
       CARGO_PROFILE_DEV_DEBUG: 0
       CARGO_PROFILE_TEST_DEBUG: 0
-      JULIA_DEPOT_PATH: "${{ github.workspace }}/target/julia-depot:"
-      JULIA_PKG_PRECOMPILE_AUTO: '0'
-      JULIA_PROJECT: ${{ github.workspace }}/infra/julia
     steps:
       - uses: actions/checkout@v5
         with:
@@ -476,15 +461,6 @@ jobs:
           df -h . / /tmp /home/runner/actions-runner/cached 2>/dev/null || true
           du -sh target target/debug ~/.cargo ~/.rustup /home/runner/actions-runner/cached/_diag 2>/dev/null || true
 
-      - name: Julia template runtime cache
-        if: matrix.backend == 'julia'
-        uses: actions/cache@v5
-        with:
-          path: target/julia-depot
-          key: ${{ runner.os }}-julia-template-${{ hashFiles('infra/julia/Manifest.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-julia-template-
-
       - name: Prepare Python template runtime dependencies
         if: matrix.nix_shell == 'ci-template-python'
         env:
@@ -501,18 +477,6 @@ jobs:
               python -m pip install casadi==3.7.2 numpy==2.4.3
               python -c 'import casadi, numpy; print("casadi template deps ok")'
               ;;
-            sympy)
-              python -m pip install sympy==1.14.0
-              python -c 'import sympy; print("sympy template deps ok")'
-              ;;
-            symforce)
-              python -m pip install numpy==2.4.3 scipy==1.17.1 symforce==0.11.0 sympy==1.14.0
-              python -c 'import symforce; print("symforce template deps ok")'
-              ;;
-            onnx)
-              python -m pip install numpy==2.4.3 onnx==1.20.1 onnxruntime==1.24.3
-              python -c 'import numpy, onnx, onnxruntime; print("onnx template deps ok")'
-              ;;
             jax)
               python -m pip install diffrax==0.7.2 jax==0.9.2 numpy==2.4.3 scipy==1.17.1
               python -c 'import diffrax, jax, numpy; print("jax template deps ok")'
@@ -522,19 +486,6 @@ jobs:
               exit 1
               ;;
           esac
-          EOF
-
-      - name: Prepare Julia template runtime dependencies
-        if: matrix.backend == 'julia'
-        run: |
-          nix develop .#${{ matrix.nix_shell }} --command bash <<'EOF'
-          set -euo pipefail
-          julia --project=infra/julia <<'JL'
-          using Pkg
-          Pkg.instantiate()
-          using ModelingToolkit, OrdinaryDiffEqTsit5, IfElse, SciMLBase, Sundials
-          println("julia template runtime deps ok")
-          JL
           EOF
 
       - name: Run template runtime checks

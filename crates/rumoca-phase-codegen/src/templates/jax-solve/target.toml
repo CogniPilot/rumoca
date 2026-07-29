@@ -1,7 +1,7 @@
 version = 1
 ir = "solve"
 name = "jax-solve"
-description = "JAX explicit ODE rhs(x, u, p) from the solve IR"
+description = "JAX explicit ODE rhs(t, x, u, p) from the solve IR"
 execution_mode = "symbolic"
 deployment_class = "symbolic"
 

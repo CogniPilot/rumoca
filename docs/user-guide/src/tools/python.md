@@ -106,32 +106,18 @@ m6.simulate(t=(0, 10))
 
 ## Live symbolic export
 
-Turn a model into a live object in the symbolic framework of your choice — no
-file dance:
+CasADi and JAX exports consume the same checked, computable Solve program used
+by compiled backends. A `SolveExport` exposes
+`xdot = rhs(t, x, u, p)`, `state_names`, `input_names`, and `parameter_names`:
 
 ```python
-cm = m.to_casadi()                 # CasadiModel (form="dae")
-cm.ode                             # explicit RHS (CasADi's native DAE form)
-cm.dae                             # {x, z, p, t, ode, alg} — feed ca.integrator
-S  = cm.jacobian("ode", "p")       # exact AD parameter sensitivity
-
-sm = m.to_sympy()                  # SymPy model; sm.solve_explicit()
-jm = m.to_jax()                    # JAX ode_fn + diffrax simulate
-```
-
-Pass `form="solve"` for the scalarized, causalized explicit form (the same
-source the C/FMI/Rust backends use) — you get a `SolveExport` exposing the
-explicit right-hand side `xdot = rhs(x, u, p)` plus `state_names`/
-`parameter_names`:
-
-```python
-se = m.to_casadi(form="solve")     # SolveExport; se.rhs is a ca.Function
-se = m.to_jax(form="solve")        # SolveExport; se.rhs is jit/grad/vmap-able
+casadi_model = m.to_casadi()       # rhs is a differentiable ca.Function
+jax_model = m.to_jax()             # rhs is jit/grad/vmap-able
 ```
 
 These render the same tested codegen targets used by `m.codegen(target)`, so the
 live object and the generated files never drift. For writing files instead, use
-`m.codegen("casadi-mx").save_all("out/")`.
+`m.codegen("casadi-solve").save_all("out/")`.
 
 For build systems that need a single callable operation, use:
 

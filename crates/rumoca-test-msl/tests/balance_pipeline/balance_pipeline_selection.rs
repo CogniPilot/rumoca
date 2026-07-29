@@ -1015,7 +1015,11 @@ mod tests {
         blocks.classes.insert("Examples".to_string(), examples);
         modelica.classes.insert("Blocks".to_string(), blocks);
         def.classes.insert("Modelica".to_string(), modelica);
-        let source_root = CompiledSourceRoot::from_stored_definition(def).expect("source root");
+        let source_root = CompiledSourceRoot::from_stored_definition(
+            def,
+            rumoca_compile::compile::core::SourceMap::new(),
+        )
+        .expect("source root");
 
         let names = vec![
             "Modelica.Blocks.Examples.BooleanNetwork1".to_string(),

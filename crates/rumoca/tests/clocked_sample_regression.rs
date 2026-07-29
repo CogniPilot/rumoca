@@ -140,6 +140,7 @@ fn native_simulation_updates_condition_memory_after_clocked_sample_time() {
         .model("SampleTime")
         .compile_str(SAMPLE_TIME_SOURCE, "sample_time.mo")
         .expect("clocked sample(time) model should compile");
+    assert_canonical_clock_ownership(&compiled.dae);
     let sim = simulate_dae(
         &compiled.dae,
         &SimOptions {
@@ -170,6 +171,7 @@ fn rk_like_simulation_updates_condition_memory_after_clocked_sample_time() {
         .model("SampleTime")
         .compile_str(SAMPLE_TIME_SOURCE, "sample_time.mo")
         .expect("clocked sample(time) model should compile");
+    assert_canonical_clock_ownership(&compiled.dae);
     let sim = simulate_dae(
         &compiled.dae,
         &SimOptions {
@@ -193,6 +195,58 @@ fn rk_like_simulation_updates_condition_memory_after_clocked_sample_time() {
         y[1]
     );
     assert_first_clock_assignment_reads_same_tick_input(&sim, "RK-like");
+}
+
+#[test]
+fn equal_period_independent_clocks_do_not_supply_an_ambiguous_sample_owner() {
+    let source = r#"
+model AmbiguousClockOwner
+  Clock a;
+  Clock b;
+  discrete Real sampledTime;
+equation
+  a = Clock(0.1);
+  b = Clock(0.1);
+  sampledTime = sample(time);
+end AmbiguousClockOwner;
+"#;
+    let error = rumoca::Compiler::new()
+        .model("AmbiguousClockOwner")
+        .compile_str(source, "ambiguous_clock_owner.mo")
+        .expect_err("two independent clock constructors must not be conflated by period");
+
+    assert!(
+        error
+            .to_string()
+            .contains("more than one possible inferred clock"),
+        "ambiguous sample ownership should fail at DAE construction: {error}"
+    );
+}
+
+fn assert_canonical_clock_ownership(model: &rumoca_ir_dae::Dae) {
+    model.inspect(|view| {
+        assert_eq!(
+            view.clock_count(),
+            1,
+            "clock aliases must share one canonical semantic owner"
+        );
+        assert_eq!(
+            view.clock_ownership_count(),
+            2,
+            "sampled time and the clocked assignment each require explicit ownership"
+        );
+        let first = view
+            .clock_ownership(view.clock_ownership_id(0).unwrap())
+            .unwrap();
+        let second = view
+            .clock_ownership(view.clock_ownership_id(1).unwrap())
+            .unwrap();
+        assert_eq!(
+            first.clock(),
+            second.clock(),
+            "both clocked coordinates must reference the same branded clock identity"
+        );
+    });
 }
 
 fn assert_first_clock_assignment_reads_same_tick_input(sim: &rumoca_sim::SimResult, backend: &str) {

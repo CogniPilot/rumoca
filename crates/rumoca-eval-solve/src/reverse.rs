@@ -389,7 +389,14 @@ fn solve_linear_system(
     n: usize,
 ) -> Result<Vec<f64>, EvalSolveError> {
     let mut x = vec![0.0_f64; n];
-    crate::linear_solve::solve_all_unchecked(regs, matrix_start, rhs_start, n, &mut x)?;
+    crate::linear_solve::solve_all_unchecked(
+        regs,
+        matrix_start,
+        rhs_start,
+        n,
+        crate::tensor_policy::LinearSolveKernel::Dense,
+        &mut x,
+    )?;
     Ok(x)
 }
 

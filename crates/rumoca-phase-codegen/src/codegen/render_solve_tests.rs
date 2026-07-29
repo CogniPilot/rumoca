@@ -32,6 +32,28 @@ fn fixture_span(name: &'static str) -> rumoca_core::Span {
     rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(name), 5, 13)
 }
 
+fn pattern(
+    rows: usize,
+    columns: usize,
+    dependencies: Vec<Vec<usize>>,
+    span: rumoca_core::Span,
+) -> solve::StructuralPattern {
+    let provenance =
+        solve::PatternProvenance::derived(solve::PatternDerivation::TensorOperand, span)
+            .expect("fixture provenance");
+    solve::StructuralPattern::from_row_dependencies(rows, columns, &dependencies, provenance)
+        .expect("fixture structural pattern")
+}
+
+fn full_pattern(rows: usize, columns: usize, span: rumoca_core::Span) -> solve::StructuralPattern {
+    pattern(
+        rows,
+        columns,
+        (0..rows).map(|_| (0..columns).collect()).collect(),
+        span,
+    )
+}
+
 fn one_by_one_matmul_node(lhs: f64, rhs: f64, span: rumoca_core::Span) -> solve::ComputeNode {
     solve::ComputeNode::MatMul {
         lhs_ops: vec![solve::LinearOp::Const { dst: 0, value: lhs }],
@@ -41,8 +63,8 @@ fn one_by_one_matmul_node(lhs: f64, rhs: f64, span: rumoca_core::Span) -> solve:
         m: 1,
         k: 1,
         n: 1,
-        lhs_sparsity: solve::SparsityPattern::Dense,
-        rhs_sparsity: solve::SparsityPattern::Dense,
+        lhs_pattern: full_pattern(1, 1, span),
+        rhs_pattern: full_pattern(1, 1, span),
         metadata: solve::TensorNodeMetadata::default(),
         span,
     }
@@ -66,8 +88,8 @@ fn one_by_one_matmul_with_compare(span: rumoca_core::Span) -> solve::ComputeNode
         m: 1,
         k: 1,
         n: 1,
-        lhs_sparsity: solve::SparsityPattern::Dense,
-        rhs_sparsity: solve::SparsityPattern::Dense,
+        lhs_pattern: full_pattern(1, 1, span),
+        rhs_pattern: full_pattern(1, 1, span),
         metadata: solve::TensorNodeMetadata::default(),
         span,
     }
@@ -90,6 +112,7 @@ fn one_by_one_linsolve_with_compare(span: rumoca_core::Span) -> solve::ComputeNo
         rhs_start: 3,
         n: 1,
         next_reg: 4,
+        matrix_pattern: full_pattern(1, 1, span),
         metadata: solve::TensorNodeMetadata::default(),
         span,
     }
@@ -173,8 +196,8 @@ fn template_partition_tracks_multi_output_tensor_fallback_program() {
             m: 2,
             k: 1,
             n: 2,
-            lhs_sparsity: solve::SparsityPattern::Dense,
-            rhs_sparsity: solve::SparsityPattern::Dense,
+            lhs_pattern: full_pattern(2, 1, span),
+            rhs_pattern: full_pattern(1, 2, span),
             metadata: solve::TensorNodeMetadata::default(),
             span,
         }],

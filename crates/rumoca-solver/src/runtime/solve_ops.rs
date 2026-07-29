@@ -1,3 +1,4 @@
+use rumoca_eval_solve as solve_eval;
 use rumoca_ir_solve as solve;
 
 use crate::{
@@ -147,7 +148,10 @@ pub fn replace_last_visible_values(
     Ok(())
 }
 
-pub fn discrete_row_pre_mode(model: &solve::SolveModel, row_idx: usize) -> EventPreMode {
+pub fn discrete_row_pre_mode(
+    model: &solve::SolveModel,
+    row_idx: usize,
+) -> Result<EventPreMode, RuntimeSolveError> {
     model
         .problem
         .discrete
@@ -155,7 +159,53 @@ pub fn discrete_row_pre_mode(model: &solve::SolveModel, row_idx: usize) -> Event
         .get(row_idx)
         .copied()
         .map(EventPreMode::from)
-        .unwrap_or(EventPreMode::FollowCurrent)
+        .ok_or_else(|| {
+            RuntimeSolveError::solve_ir(format!(
+                "discrete pre-mode row index {row_idx} is out of bounds"
+            ))
+        })
+}
+
+pub fn discrete_row_active_at(
+    model: &solve::SolveModel,
+    row_idx: usize,
+    t: f64,
+) -> Result<bool, RuntimeSolveError> {
+    let owner = model
+        .problem
+        .discrete
+        .clock_owners
+        .get(row_idx)
+        .copied()
+        .ok_or_else(|| {
+            RuntimeSolveError::solve_ir(format!(
+                "discrete clock-owner row index {row_idx} is out of bounds"
+            ))
+        })?;
+    let Some(owner) = owner else {
+        return Ok(true);
+    };
+    let schedule = model
+        .problem
+        .clocks
+        .periodic_schedule(owner)
+        .ok_or_else(|| {
+            RuntimeSolveError::solve_ir(format!(
+                "discrete row {row_idx} refers to periodic clock {} outside the clock partition",
+                owner.index()
+            ))
+        })?;
+    Ok(crate::timeline::periodic_schedule_matches_time(schedule, t))
+}
+
+pub fn apply_discrete_slot_value(
+    target: solve::ScalarSlot,
+    value: f64,
+    y: &mut [f64],
+    p: &mut [f64],
+    tol: f64,
+) -> Result<bool, solve_eval::EvalSolveError> {
+    solve_eval::apply_scalar_slot_value(target, value, y, p, tol)
 }
 
 pub fn row_reads_solver_or_time(row: &[solve::LinearOp]) -> bool {
@@ -442,6 +492,36 @@ fn signed_root_crossing(index: usize, old: f64, new: f64, tol: f64) -> Option<Ro
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn periodic_clock_owner_activates_only_on_its_exact_lattice() {
+        let lattice = rumoca_core::ClockLattice::from_interval_counter(1, 10)
+            .expect("one-tenth-second lattice is valid");
+        let schedule =
+            solve::PeriodicEventSchedule::new(lattice).expect("periodic schedule is valid");
+        let clocks = solve::SolveClockPartition {
+            periodic_event_schedules: vec![schedule],
+        };
+        let owner = clocks
+            .periodic_clock_id(0)
+            .expect("inserted periodic clock has a typed identity");
+        let model = solve::SolveModel {
+            problem: solve::SolveProblem {
+                clocks,
+                discrete: solve::DiscreteSolveSystem {
+                    clock_owners: vec![Some(owner)],
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        assert!(!discrete_row_active_at(&model, 0, 0.05).unwrap());
+        assert!(discrete_row_active_at(&model, 0, 0.1).unwrap());
+        assert!(!discrete_row_active_at(&model, 0, 0.15).unwrap());
+        assert!(discrete_row_active_at(&model, 0, 0.2).unwrap());
+    }
 
     #[test]
     fn root_crossings_detect_leaving_tolerance_on_opposite_side() {

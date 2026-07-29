@@ -114,7 +114,6 @@ def run_modelica_cell(user_ns: dict[str, Any], line: str, cell: str) -> Any:
             live = {
                 "casadi": model.to_casadi,
                 "jax": model.to_jax,
-                "sympy": model.to_sympy,
             }.get(args.export_target)
             result = live() if live else model.codegen(args.export_target)
         else:

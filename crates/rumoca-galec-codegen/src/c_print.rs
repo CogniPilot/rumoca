@@ -29,7 +29,8 @@
 //!   GAL-012).
 
 use rumoca_ir_galec::ast::{
-    BinaryOp, Expression, FunctionCall, IfExpression, Name, RefPart, Reference, Statement,
+    BinaryOp, Condition, Expression, FunctionCall, IfExpression, IfStatement, Name, RefPart,
+    Reference, Statement,
 };
 
 use crate::c_mangle::CNameTable;
@@ -146,11 +147,45 @@ impl<'a> CPrinter<'a> {
                 Err(unsupported_statement("a multi-assignment statement"))
             }
             Statement::Call(_) => Err(unsupported_statement("a bare call statement")),
-            Statement::If(_) => Err(unsupported_statement("an if statement")),
+            Statement::If(statement) => self.if_statement_lines(statement),
             Statement::For(_) => Err(unsupported_statement("a for loop")),
             Statement::Limit(_) => Err(unsupported_statement("a limit statement")),
             Statement::Signal(_) => Err(unsupported_statement("a signal statement")),
         }
+    }
+
+    fn if_statement_lines(&self, statement: &IfStatement) -> Result<Vec<String>, GalecTargetError> {
+        let mut lines = Vec::new();
+        for (index, branch) in statement.branches.iter().enumerate() {
+            let Condition::Expression(condition) = &branch.condition else {
+                return Err(unsupported_statement("an error-signal condition"));
+            };
+            let keyword = if index == 0 { "if" } else { "else if" };
+            lines.push(format!("{keyword} ({}) {{", self.expression(condition)?));
+            self.indented_statement_lines(&branch.body, &mut lines)?;
+            lines.push("}".to_owned());
+        }
+        if let Some(else_body) = &statement.else_body {
+            lines.push("else {".to_owned());
+            self.indented_statement_lines(else_body, &mut lines)?;
+            lines.push("}".to_owned());
+        }
+        Ok(lines)
+    }
+
+    fn indented_statement_lines(
+        &self,
+        statements: &[rumoca_ir_galec::ast::Spanned<Statement>],
+        lines: &mut Vec<String>,
+    ) -> Result<(), GalecTargetError> {
+        for statement in statements {
+            lines.extend(
+                self.statement_lines(&statement.node)?
+                    .into_iter()
+                    .map(|line| format!("  {line}")),
+            );
+        }
+        Ok(())
     }
 
     /// `target[i][j]… = element;` lines for a whole-array literal, indices
@@ -745,25 +780,6 @@ mod tests {
             CPrinter::new(&table).expression(&previous).unwrap(),
             "self->previous_y"
         );
-    }
-
-    #[test]
-    fn every_emittable_builtin_has_a_c_mapping_with_matching_arity() {
-        let table = table(&["a", "b"]);
-        let printer = CPrinter::new(&table);
-        for (name, arity) in crate::lower::expr::emittable_builtin_targets() {
-            let (_, mapped_arity, _) = C_BUILTIN_MAP
-                .iter()
-                .find(|(mapped, _, _)| *mapped == name)
-                .unwrap_or_else(|| panic!("emittable builtin `{name}` has no C mapping"));
-            assert_eq!(*mapped_arity, arity, "arity drift for `{name}`");
-            let call = Expression::Call(FunctionCall {
-                function: Name::ident(name),
-                arguments: (0..arity).map(|_| state("a")).collect(),
-            });
-            let printed = printer.expression(&call).unwrap();
-            assert!(!printed.is_empty());
-        }
     }
 
     #[test]

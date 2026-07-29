@@ -1175,15 +1175,9 @@ fn render_ir_as_modelica(
         rumoca_compile::codegen::templates::builtin_template_source(target, template_file)
             .ok_or_else(|| anyhow::anyhow!("missing built-in {target} template"))?;
     let model_identifier = model.replace('.', "_");
-    if phase == CompilePhase::Dae {
-        result
-            .render_structured_dae_template_str_with_name(template, &model_identifier)
-            .map_err(Into::into)
-    } else {
-        result
-            .render_template_str_with_name_and_ir(template, &model_identifier, phase.into())
-            .map_err(Into::into)
-    }
+    result
+        .render_template_str_with_name_and_ir(template, &model_identifier, phase.into())
+        .map_err(Into::into)
 }
 
 fn run_sim(args: SimCommandArgs) -> Result<()> {
@@ -1618,24 +1612,44 @@ pub(crate) fn compile_str_dae_with_inferred_model(
 }
 
 fn print_summary(model: &str, result: &CompilationResult) {
+    let (states, algebraics, parameters, constants, inputs, outputs, continuous, initial) =
+        result.dae.inspect(|view| {
+            let mut roles = [0usize; 6];
+            for (_, variable) in view.variables() {
+                match variable.role() {
+                    rumoca_compile::compile::VariableRole::State => roles[0] += 1,
+                    rumoca_compile::compile::VariableRole::Algebraic => roles[1] += 1,
+                    rumoca_compile::compile::VariableRole::Parameter => roles[2] += 1,
+                    rumoca_compile::compile::VariableRole::Constant => roles[3] += 1,
+                    rumoca_compile::compile::VariableRole::Input => roles[4] += 1,
+                    rumoca_compile::compile::VariableRole::Output => roles[5] += 1,
+                    rumoca_compile::compile::VariableRole::DiscreteReal
+                    | rumoca_compile::compile::VariableRole::DiscreteValue => {}
+                }
+            }
+            (
+                roles[0],
+                roles[1],
+                roles[2],
+                roles[3],
+                roles[4],
+                roles[5],
+                view.continuous_owner_count(),
+                view.initialization_owner_count(),
+            )
+        });
     println!("Compilation successful!");
     println!();
     println!("Model: {}", model);
-    println!("States: {}", result.dae.variables.states.len());
-    println!("Algebraics: {}", result.dae.variables.algebraics.len());
-    println!("Parameters: {}", result.dae.variables.parameters.len());
-    println!("Constants: {}", result.dae.variables.constants.len());
-    println!("Inputs: {}", result.dae.variables.inputs.len());
-    println!("Outputs: {}", result.dae.variables.outputs.len());
+    println!("States: {states}");
+    println!("Algebraics: {algebraics}");
+    println!("Parameters: {parameters}");
+    println!("Constants: {constants}");
+    println!("Inputs: {inputs}");
+    println!("Outputs: {outputs}");
     println!();
-    println!(
-        "Continuous equations (f_x): {}",
-        result.dae.continuous.equations.len()
-    );
-    println!(
-        "Initial equations: {}",
-        result.dae.initialization.equations.len()
-    );
+    println!("Continuous equations (f_x): {}", continuous);
+    println!("Initial equations: {}", initial);
     println!();
     println!("Balance: {} (equations - unknowns)", result.balance());
     if result.is_balanced() {

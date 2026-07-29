@@ -1084,12 +1084,12 @@ fn test_eval_dae_silent_default_fallback_inventory_is_explicit() {
 
 #[test]
 fn test_phase_solve_explicit_starts_do_not_default_failed_checked_eval() {
-    let path = workspace_root().join("crates/rumoca-phase-solve/src/solve_model.rs");
-    let content = fs::read_to_string(&path).expect("read phase-solve solve_model");
+    let path = workspace_root().join("crates/rumoca-sim/src/solve_lowering/initial_values.rs");
+    let content = fs::read_to_string(&path).expect("read checked initial-value projection");
     let production = content
         .split("#[cfg(test)]")
         .next()
-        .expect("solve_model source should include production section");
+        .expect("initial-value projection should include production section");
     let banned = [
         "eval_expr::<f64>(expr, env).unwrap_or(default_start)",
         ".map(|value| finite_start_value(value, default_start)).unwrap_or(default_start)",
@@ -1681,8 +1681,8 @@ fn test_event_threshold_analysis_is_owned_by_solve_lowering() {
     let root = workspace_root();
     let ir_analysis = root.join("crates/rumoca-ir-dae/src/event_threshold.rs");
     let ir_root = root.join("crates/rumoca-ir-dae/src/lib.rs");
-    let phase_analysis = root.join("crates/rumoca-phase-solve/src/lower/event_threshold.rs");
-    let root_lowering = root.join("crates/rumoca-phase-solve/src/lower/root_conditions.rs");
+    let solve_lowering = root.join("crates/rumoca-phase-solve/src/lower.rs");
+    let event_lowering = root.join("crates/rumoca-phase-solve/src/lower/events.rs");
 
     assert!(
         !ir_analysis.exists(),
@@ -1698,15 +1698,21 @@ rumoca-ir-dae (SPEC_0007 key invariant 2; SPEC_0029 §3)"
         "rumoca-ir-dae must not expose event-threshold phase analysis"
     );
 
+    let solve_lowering = fs::read_to_string(solve_lowering).expect("read checked Solve lowering");
     assert!(
-        phase_analysis.is_file(),
-        "event-threshold classification must be owned by solve lowering"
+        !solve_lowering.contains("(view.root_count(), \"root surfaces\")"),
+        "checked root semantics must not regress to a blanket unsupported-system rejection"
     );
-    let root_lowering =
-        fs::read_to_string(root_lowering).expect("read solve root-condition lowering");
+
+    let event_lowering =
+        fs::read_to_string(event_lowering).expect("read checked Solve event lowering");
     assert!(
-        root_lowering.contains("event_threshold::is_event_constant_time_threshold_relation"),
-        "root-condition lowering must use its phase-owned event-threshold analysis"
+        event_lowering.contains("fn lower_roots")
+            && event_lowering.contains("fn root_zero_domain")
+            && event_lowering.contains("root_conditions: roots.programs")
+            && event_lowering.contains(".root_program(root.relation())"),
+        "Solve lowering must own signed root-program construction and threshold-domain \
+classification"
     );
 }
 
@@ -1852,11 +1858,9 @@ fn test_exec_wasm_consumes_solve_ir_not_dae_or_lowering_phase() {
 }
 
 #[test]
-fn test_runtime_and_codegen_crates_do_not_depend_on_eval_dae() {
+fn test_concrete_solver_crates_do_not_depend_on_eval_dae() {
     let root = workspace_root();
     let checked_crates = [
-        "rumoca-phase-codegen",
-        "rumoca-sim",
         "rumoca-solver",
         "rumoca-solver-diffsol",
         "rumoca-solver-rk45",
@@ -1876,8 +1880,8 @@ fn test_runtime_and_codegen_crates_do_not_depend_on_eval_dae() {
 
     assert!(
         offenders.is_empty(),
-        "simulation codegen/runtime/solver crates must not depend on rumoca-eval-dae; \
-table runtime helpers belong behind solver-facing APIs in rumoca-eval-solve: {offenders:#?}"
+        "concrete solver crates consume Solve IR and must not depend on DAE evaluation: \
+{offenders:#?}"
     );
 }
 

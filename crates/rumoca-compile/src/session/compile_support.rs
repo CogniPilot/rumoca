@@ -353,14 +353,14 @@ pub(super) fn flat_model_outcome_from_typed(
 }
 
 pub(super) fn dae_model_outcome_from_flat(
-    _tree: &ast::ClassTree,
+    tree: &ast::ClassTree,
     flat_outcome: FlatModelOutcome,
 ) -> (DaeModelOutcome, bool) {
-    dae_model_outcome_from_flat_with_options(_tree, flat_outcome, todae_options_for_target_model())
+    dae_model_outcome_from_flat_with_options(tree, flat_outcome, todae_options_for_target_model())
 }
 
 pub(super) fn dae_model_outcome_from_flat_with_options(
-    _tree: &ast::ClassTree,
+    tree: &ast::ClassTree,
     flat_outcome: FlatModelOutcome,
     todae_options: ToDaeOptions,
 ) -> (DaeModelOutcome, bool) {
@@ -391,14 +391,23 @@ pub(super) fn dae_model_outcome_from_flat_with_options(
 
     // MLS §5.6 / SPEC_0007: ToDae stays downstream of flatten and should
     // consume the cached flat artifact rather than rebuilding earlier phases.
-    match to_dae_with_options(&artifact.flat, todae_options) {
-        Ok(dae) => (
-            DaeModelOutcome::Success(Box::new(DaeModelArtifactData {
-                flat: Arc::new(artifact.flat),
-                dae: Arc::new(dae),
-            })),
-            true,
-        ),
+    match to_dae_with_options(&artifact.flat, tree.source_map.clone(), todae_options) {
+        Ok(dae) => match rumoca_phase_dae::balance_detail(&artifact.flat) {
+            Ok(balance_detail) => (
+                DaeModelOutcome::Success(Box::new(DaeModelArtifactData {
+                    flat: Arc::new(artifact.flat),
+                    dae: Arc::new(dae),
+                    balance_detail,
+                })),
+                true,
+            ),
+            Err(error) => (
+                DaeModelOutcome::ToDaeError {
+                    error: Box::new(error),
+                },
+                true,
+            ),
+        },
         Err(error) => (
             DaeModelOutcome::ToDaeError {
                 error: Box::new(error),
@@ -412,133 +421,25 @@ fn unwrap_or_clone_arc<T: Clone>(value: Arc<T>) -> T {
     Arc::unwrap_or_clone(value)
 }
 
-fn has_component_boundary_prefix(candidate: &str, prefix: &str) -> bool {
-    candidate
-        .strip_prefix(prefix)
-        .and_then(|rest| rest.chars().next())
-        .is_some_and(|ch| ch == '.' || ch == '[')
-}
+fn active_discrete_scalar_count(dae_model: &dae::Dae) -> i64 {
+    dae_model.inspect(|view| {
+        let active = (0..view.expression_count())
+            .filter_map(|index| view.expression_id(index))
+            .filter_map(|expression| view.expression(expression))
+            .filter_map(dae::ExpressionView::variable_coordinate)
+            .collect::<HashSet<_>>();
 
-fn names_match_via_component_prefix(active_name: &str, discrete_name: &str) -> bool {
-    active_name == discrete_name
-        || has_component_boundary_prefix(discrete_name, active_name)
-        || has_component_boundary_prefix(active_name, discrete_name)
-}
-
-fn collect_active_refs_from_dae(dae_model: &dae::Dae, active: &mut HashSet<String>) {
-    for eq in [
-        dae_model.continuous.equations.as_slice(),
-        dae_model.initialization.equations.as_slice(),
-        dae_model.discrete.real_updates.as_slice(),
-        dae_model.discrete.valued_updates.as_slice(),
-        dae_model.conditions.equations.as_slice(),
-    ] {
-        for equation in eq {
-            if let Some(lhs) = &equation.lhs {
-                active.insert(lhs.as_str().to_string());
-            }
-            let mut refs = HashSet::new();
-            equation.rhs.collect_var_refs(&mut refs);
-            active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
-        }
-    }
-    for relation in &dae_model.conditions.relations {
-        let mut refs = HashSet::new();
-        relation.collect_var_refs(&mut refs);
-        active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
-    }
-}
-
-fn collect_active_refs_from_flat_when_equation(
-    equation: &flat::WhenEquation,
-    active: &mut HashSet<String>,
-) {
-    match equation {
-        flat::WhenEquation::Assign { target, value, .. } => {
-            active.insert(target.as_str().to_string());
-            let mut refs = HashSet::new();
-            value.collect_var_refs(&mut refs);
-            active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
-        }
-        flat::WhenEquation::Reinit { state, value, .. } => {
-            active.insert(state.as_str().to_string());
-            let mut refs = HashSet::new();
-            value.collect_var_refs(&mut refs);
-            active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
-        }
-        flat::WhenEquation::Assert {
-            condition, message, ..
-        } => {
-            let mut refs = HashSet::new();
-            condition.collect_var_refs(&mut refs);
-            message.collect_var_refs(&mut refs);
-            active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
-        }
-        flat::WhenEquation::Terminate { message, .. } => {
-            let mut refs = HashSet::new();
-            message.collect_var_refs(&mut refs);
-            active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
-        }
-        flat::WhenEquation::Conditional {
-            branches,
-            else_branch,
-            ..
-        } => {
-            for (condition, equations) in branches {
-                let mut refs = HashSet::new();
-                condition.collect_var_refs(&mut refs);
-                active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
-                for nested in equations {
-                    collect_active_refs_from_flat_when_equation(nested, active);
-                }
-            }
-            for nested in else_branch {
-                collect_active_refs_from_flat_when_equation(nested, active);
-            }
-        }
-        flat::WhenEquation::FunctionCallOutputs {
-            outputs, function, ..
-        } => {
-            for out in outputs {
-                active.insert(out.as_str().to_string());
-            }
-            let mut refs = HashSet::new();
-            function.collect_var_refs(&mut refs);
-            active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
-        }
-    }
-}
-
-fn collect_active_refs_from_flat(flat_model: &flat::Model, active: &mut HashSet<String>) {
-    for when in &flat_model.when_clauses {
-        let mut refs = HashSet::new();
-        when.condition.collect_var_refs(&mut refs);
-        active.extend(refs.into_iter().map(|name| name.as_str().to_string()));
-        for equation in &when.equations {
-            collect_active_refs_from_flat_when_equation(equation, active);
-        }
-    }
-}
-
-fn active_discrete_scalar_count(flat_model: &flat::Model, dae_model: &dae::Dae) -> i64 {
-    let mut active = HashSet::<String>::new();
-    collect_active_refs_from_dae(dae_model, &mut active);
-    collect_active_refs_from_flat(flat_model, &mut active);
-
-    let count_discrete = |variables: &IndexMap<rumoca_core::VarName, dae::Variable>| {
-        variables
-            .iter()
-            .filter(|(name, _)| {
-                active
-                    .iter()
-                    .any(|active_name| names_match_via_component_prefix(active_name, name.as_str()))
+        view.variables()
+            .filter(|(id, variable)| {
+                active.contains(id)
+                    && matches!(
+                        variable.role(),
+                        dae::VariableRole::DiscreteReal | dae::VariableRole::DiscreteValue
+                    )
             })
-            .map(|(_, variable)| variable.size())
-            .sum::<usize>()
-    };
-
-    (count_discrete(&dae_model.variables.discrete_reals)
-        + count_discrete(&dae_model.variables.discrete_valued)) as i64
+            .map(|(_, variable)| variable.scalar_count())
+            .sum::<usize>() as i64
+    })
 }
 
 fn dae_compilation_result_from_artifact(
@@ -547,8 +448,7 @@ fn dae_compilation_result_from_artifact(
     source_map: SourceMap,
 ) -> Result<DaeCompilationResult, ToDaeError> {
     let has_unbound_fixed_parameters = artifact.flat.has_unbound_fixed_parameters();
-    let active_discrete_scalar_count = active_discrete_scalar_count(&artifact.flat, &artifact.dae);
-    let balance_detail = rumoca_phase_dae::balance_detail(&artifact.dae)?;
+    let active_discrete_scalar_count = active_discrete_scalar_count(&artifact.dae);
 
     Ok(DaeCompilationResult {
         flat: artifact.flat,
@@ -556,7 +456,7 @@ fn dae_compilation_result_from_artifact(
         source_map: Some(source_map),
         has_unbound_fixed_parameters,
         active_discrete_scalar_count,
-        balance_detail,
+        balance_detail: artifact.balance_detail,
         experiment_start_time: experiment_settings.start_time,
         experiment_stop_time: experiment_settings.stop_time,
         experiment_tolerance: experiment_settings.tolerance,
@@ -722,24 +622,10 @@ pub(super) fn compile_phase_result_from_dae(
         }
     };
 
-    let balance_detail = match rumoca_phase_dae::balance_detail(&artifact.dae) {
-        Ok(detail) => detail,
-        Err(error) => {
-            let error = ToDaeError::from(error);
-            let (error, error_code, diagnostics) = phase_error_payload(&error);
-            return PhaseResult::Failed {
-                phase: FailedPhase::ToDae,
-                error,
-                error_code,
-                diagnostics,
-            };
-        }
-    };
-
     PhaseResult::Success(Box::new(CompilationResult {
         flat: unwrap_or_clone_arc(artifact.flat),
         dae: unwrap_or_clone_arc(artifact.dae),
-        balance_detail,
+        balance_detail: artifact.balance_detail,
         experiment_start_time: experiment_settings.start_time,
         experiment_stop_time: experiment_settings.stop_time,
         experiment_tolerance: experiment_settings.tolerance,

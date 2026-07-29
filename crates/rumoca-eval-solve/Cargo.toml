@@ -13,9 +13,5 @@ rumoca-core = { workspace = true }
 rumoca-ir-solve = { workspace = true }
 tracing = { workspace = true }
 
-[dev-dependencies]
-rumoca-ir-dae = { workspace = true }
-rumoca-eval-dae = { workspace = true }
-
 [lints]
 workspace = true

@@ -36,6 +36,47 @@ pub(super) fn effective_function_param_class_type(
     class_def.class_type.clone()
 }
 
+fn primitive_type_name(name: &str) -> Option<&'static str> {
+    match name {
+        "Real" => Some("Real"),
+        "Integer" => Some("Integer"),
+        "Boolean" => Some("Boolean"),
+        "String" => Some("String"),
+        _ => None,
+    }
+}
+
+fn effective_function_param_primitive_type(
+    class_index: &ast::ClassDefIndex<'_>,
+    component: &ast::Component,
+    declared_name: &str,
+) -> Option<&'static str> {
+    if let Some(name) = primitive_type_name(declared_name) {
+        return Some(name);
+    }
+    let mut current = component
+        .type_def_id
+        .or(component.type_name.def_id)
+        .and_then(|def_id| class_index.get(def_id));
+    let mut visited = HashSet::new();
+    const MAX_ALIAS_DEPTH: usize = 32;
+    for _ in 0..MAX_ALIAS_DEPTH {
+        let class = current?;
+        if let Some(def_id) = class.def_id
+            && !visited.insert(def_id)
+        {
+            return None;
+        }
+        let base = class.extends.first()?;
+        let base_name = base.base_name.to_string();
+        if let Some(name) = primitive_type_name(&base_name) {
+            return Some(name);
+        }
+        current = class_by_name_or_def_id(class_index, &base_name, base.base_def_id);
+    }
+    None
+}
+
 /// Convert an AST ExternalFunction to ExternalFunction.
 pub(super) fn convert_external_function(
     ext: &rumoca_ir_ast::ExternalFunction,
@@ -450,6 +491,11 @@ pub(super) fn convert_component_to_param(
     }
     if let Some(type_class) = function_param_type_class(class_index, component) {
         param = param.with_type_class(type_class);
+    }
+    if let Some(type_name) =
+        effective_function_param_primitive_type(class_index, component, &param.type_name)
+    {
+        param.type_name = type_name.to_string();
     }
 
     // Get array dimensions from shape (resolved) or shape_expr (expressions).

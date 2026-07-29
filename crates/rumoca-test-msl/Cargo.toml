@@ -9,7 +9,6 @@ publish = false
 
 [features]
 default = []
-backend-stress-tests = []
 msl-external-tests = []
 msl-full-test = []
 
@@ -41,6 +40,7 @@ serde = { workspace = true }
 serde_json = { workspace = true, features = ["unbounded_depth"] }
 rumoca-compile = { workspace = true, features = ["strict-ir-validation"] }
 rumoca-ir-solve = { workspace = true }
+rumoca-eval-dae = { workspace = true }
 rumoca-sim = { workspace = true, features = ["solver-diffsol", "strict-ir-validation", "report"] }
 rumoca-worker = { workspace = true }
 # Used by the MSL tooling moved from xtask (zmq: OMC worker pool; nix: process

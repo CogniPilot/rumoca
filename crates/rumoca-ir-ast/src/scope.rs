@@ -17,6 +17,10 @@ pub enum InheritedMember {
     Ambiguous,
 }
 
+fn inherited_candidate(definition: DefId, exclude: Option<DefId>) -> Option<DefId> {
+    (exclude != Some(definition)).then_some(definition)
+}
+
 /// MLS §5.3: Scope tree for name lookup.
 ///
 /// The scope tree tracks the hierarchical structure of scopes and
@@ -216,9 +220,7 @@ impl ScopeTree {
 
             if let Some(inherited) = s.inherited_members.get(name) {
                 return match inherited {
-                    InheritedMember::Unique(def_id) => {
-                        Some(*def_id).filter(|&id| exclude.is_none_or(|ex| id != ex))
-                    }
+                    InheritedMember::Unique(def_id) => inherited_candidate(*def_id, exclude),
                     InheritedMember::Ambiguous => None,
                 };
             }

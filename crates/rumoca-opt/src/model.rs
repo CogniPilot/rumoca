@@ -261,82 +261,78 @@ fn collect_model_parameter_slots(
     dae_model: &dae::Dae,
     model: &solve::SolveModel,
 ) -> Vec<TrainableParameter> {
-    let excluded = parameter_dependency_participants(dae_model);
-    let mut seen_slots = IndexSet::new();
-    let mut parameters = Vec::new();
-    for (name, var) in &dae_model.variables.parameters {
-        if independent_trainable_parameter(name.as_str(), var, &excluded) {
-            write_trainable_parameter_slots(
-                name.as_str(),
-                var,
-                model,
-                &mut seen_slots,
-                &mut parameters,
-            );
+    dae_model.inspect(|view| {
+        let excluded = parameter_dependency_participants(view);
+        let mut seen_slots = IndexSet::new();
+        let mut parameters = Vec::new();
+        for (id, variable) in view
+            .variables()
+            .filter(|(_, variable)| variable.role() == dae::VariableRole::Parameter)
+        {
+            if independent_trainable_parameter(id, variable, &excluded) {
+                write_trainable_parameter_slots(variable, model, &mut seen_slots, &mut parameters);
+            }
         }
-    }
-    parameters.sort_by_key(|parameter| parameter.slot);
-    parameters
+        parameters.sort_by_key(|parameter| parameter.slot);
+        parameters
+    })
 }
 
-fn independent_trainable_parameter(
-    name: &str,
-    var: &dae::Variable,
-    excluded: &IndexSet<String>,
+fn independent_trainable_parameter<'dae>(
+    id: dae::VariableId<'dae>,
+    variable: dae::VariableView<'dae>,
+    excluded: &IndexSet<u32>,
 ) -> bool {
-    var.is_tunable
-        && var.origin == dae::VariableOrigin::Source
-        && var.causality == dae::VariableCausality::Parameter
-        && !excluded.contains(name)
+    variable.is_tunable()
+        && variable.origin() == dae::VariableOrigin::Source
+        && variable.causality() == dae::VariableCausality::Parameter
+        && !excluded.contains(&id.index())
 }
 
-fn parameter_dependency_participants(dae_model: &dae::Dae) -> IndexSet<String> {
-    let parameter_names = dae_model
-        .variables
-        .parameters
-        .keys()
-        .map(|name| name.as_str().to_string())
-        .collect::<IndexSet<_>>();
+fn parameter_dependency_participants(view: dae::DaeView<'_>) -> IndexSet<u32> {
     let mut participants = IndexSet::new();
-    for (name, var) in &dae_model.variables.parameters {
-        let refs = parameter_start_refs(var, &parameter_names);
+    for (id, variable) in view
+        .variables()
+        .filter(|(_, variable)| variable.role() == dae::VariableRole::Parameter)
+    {
+        let refs = parameter_start_refs(view, variable);
         if refs.is_empty() {
             continue;
         }
-        participants.insert(name.as_str().to_string());
+        participants.insert(id.index());
         participants.extend(refs);
     }
     participants
 }
 
-fn parameter_start_refs(
-    var: &dae::Variable,
-    parameter_names: &IndexSet<String>,
-) -> IndexSet<String> {
-    let Some(start) = var.start.as_ref() else {
+fn parameter_start_refs<'dae>(
+    view: dae::DaeView<'dae>,
+    variable: dae::VariableView<'dae>,
+) -> IndexSet<u32> {
+    let Some(start) = variable.start() else {
         return IndexSet::new();
     };
-    let mut refs = Vec::new();
-    start.collect_var_refs(&mut refs);
-    refs.into_iter()
-        .filter_map(|reference| {
-            let name = reference.as_str();
-            parameter_names.contains(name).then(|| name.to_string())
-        })
-        .collect()
+    let mut references = IndexSet::new();
+    dae::for_each_expression(view, start, |_, expression| {
+        if let dae::ExpressionOperation::Coordinate(dae::CoordinateView::Parameter(id)) =
+            expression.operation()
+        {
+            references.insert(id.index());
+        }
+    });
+    references
 }
 
 fn write_trainable_parameter_slots(
-    name: &str,
-    var: &dae::Variable,
+    variable: dae::VariableView<'_>,
     model: &solve::SolveModel,
     seen_slots: &mut IndexSet<usize>,
     parameters: &mut Vec<TrainableParameter>,
 ) {
-    let Ok(size) = var.try_size() else {
-        return;
-    };
-    for scalar_name in trainable_scalar_names(name, var, size) {
+    for scalar in 0..variable.scalar_count() {
+        let scalar_name = variable
+            .scalar_name(scalar)
+            .expect("checked parameter scalar has a name");
         if let Some(solve::ScalarSlot::P { index, .. }) = model.problem.layout.binding(&scalar_name)
             && !scalar_name.starts_with("__")
             && seen_slots.insert(index)
@@ -347,13 +343,4 @@ fn write_trainable_parameter_slots(
             });
         }
     }
-}
-
-fn trainable_scalar_names(name: &str, var: &dae::Variable, size: usize) -> Vec<String> {
-    if size <= 1 && var.dims.is_empty() {
-        return vec![name.to_string()];
-    }
-    (0..size)
-        .map(|index| dae::scalar_name_text_for_flat_index(name, &var.dims, index))
-        .collect()
 }

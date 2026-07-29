@@ -190,48 +190,6 @@ pub(crate) fn line_has_dummy_span_use(line: &str) -> bool {
         && (code.contains("Span::DUMMY") || code.contains("rumoca_core::Span::DUMMY"))
 }
 
-pub(crate) fn line_has_unspanned_test_span_use(line: &str) -> bool {
-    let code = line_without_literals_or_line_comment(line);
-    let trimmed = line.trim_start();
-    !trimmed.starts_with("//")
-        && (code.contains("unspanned_test_span()")
-            || code.contains("unspanned_solve_test_span()")
-            || code.contains("unspanned_event_action_test_span()")
-            || code.contains("unspanned_residual_test_span()")
-            || code.contains("unspanned_runtime_assignment_test_span()")
-            || code.contains("unspanned_dynamic_event_test_span()")
-            || code.contains("unspanned_layout_test_span()")
-            || code.contains("unspanned_solve_model_test_span()")
-            || code.contains("unspanned_ad_test_span()")
-            || code.contains("unspanned_fft_test_span()")
-            || code.contains("unspanned_compile_time_test_span()")
-            || code.contains("unspanned_random_test_span()")
-            || code.contains("unspanned_root_condition_test_span()")
-            || code.contains("unspanned_derivative_rhs_test_span()")
-            || code.contains("unspanned_projection_selection_test_span()")
-            || code.contains("unspanned_linear_parts_test_span()")
-            || code.contains("unspanned_runtime_intrinsics_test_span()")
-            || code.contains("unspanned_statement_test_span()")
-            || code.contains("unspanned_function_projection_test_span()")
-            || code.contains("unspanned_discrete_update_test_span()")
-            || code.contains("unspanned_complex_operator_test_span()")
-            || code.contains("unspanned_stencil_test_span()")
-            || code.contains("unspanned_array_values_test_span()"))
-}
-
-pub(crate) fn line_has_named_unspanned_test_span_use(line: &str, helper_call: &str) -> bool {
-    let code = line_without_literals_or_line_comment(line);
-    let trimmed = line.trim_start();
-    !trimmed.starts_with("//") && code.contains(helper_call)
-}
-
-pub(crate) fn line_has_dummy_source_id_use(line: &str) -> bool {
-    let code = line_without_literals_or_line_comment(line);
-    let trimmed = line.trim_start();
-    !trimmed.starts_with("//")
-        && (code.contains("SourceId::DUMMY") || code.contains("rumoca_core::SourceId::DUMMY"))
-}
-
 pub(crate) fn line_has_source_free_span_escape_hatch(line: &str) -> bool {
     let code = line_without_literals_or_line_comment(line);
     code.contains("Span::source_free_serde_default(")

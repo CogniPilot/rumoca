@@ -1,1368 +1,422 @@
 use indexmap::IndexMap;
-use rumoca_core::{ExpressionVisitor, Span};
 use rumoca_ir_dae as dae;
-use rumoca_ir_dae::{DaeVisitor, StatementVisitor};
+use rumoca_ir_solve as solve;
 
-use crate::lower::LowerError;
-use rumoca_ir_solve::{ComponentReferenceKey, IndexedScalarSlot, ScalarSlot, VarLayout};
-
-pub(crate) const INITIAL_EVENT_PARAMETER_NAME: &str = "__rumoca.initial_event";
-pub(crate) const HOMOTOPY_LAMBDA_PARAMETER_NAME: &str = "__rumoca.homotopy_lambda";
-const F64_BYTES: usize = std::mem::size_of::<f64>();
+use crate::LowerError;
 
 #[derive(Debug, Clone, Copy)]
-enum SlotStorage {
+pub(crate) enum StorageClass {
     Y,
     P,
 }
 
-pub fn build_var_layout(dae_model: &dae::Dae) -> Result<VarLayout, LowerError> {
-    build_var_layout_with_solver_len(dae_model, usize::MAX)
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct VariableSlot {
+    pub(crate) storage: StorageClass,
+    pub(crate) base: usize,
+    pub(crate) count: usize,
 }
 
-pub fn build_var_layout_with_solver_len(
-    dae_model: &dae::Dae,
-    solver_len: usize,
-) -> Result<VarLayout, LowerError> {
+pub(crate) struct LoweredLayout<'dae> {
+    pub(crate) variables: Vec<VariableSlot>,
+    pub(crate) pre_variables: Vec<Option<usize>>,
+    pub(crate) condition_memory: Vec<usize>,
+    pub(crate) layout: solve::VarLayout,
+    pub(crate) solve_layout: solve::SolveLayout,
+    pub(crate) marker: std::marker::PhantomData<&'dae mut &'dae ()>,
+}
+
+/// Build the public variable layout directly from checked declarations.
+pub fn build_var_layout(dae: &dae::Dae) -> Result<solve::VarLayout, LowerError> {
+    dae.inspect(|view| lower_layout(view).map(|layout| layout.layout))
+}
+
+pub(crate) fn lower_layout<'dae>(
+    view: dae::DaeView<'dae>,
+) -> Result<LoweredLayout<'dae>, LowerError> {
     let mut bindings = IndexMap::new();
     let mut shapes = IndexMap::new();
     let mut shape_spans = IndexMap::new();
-    let mut shape_indexed_keys = IndexMap::new();
-    let mut indexed_bindings = IndexMap::new();
-    bindings.insert("time".to_string(), ScalarSlot::Time);
-
-    let y_scalars = map_y_bindings(
-        dae_model,
+    let mut variables = vec![
+        VariableSlot {
+            storage: StorageClass::P,
+            base: 0,
+            count: 0,
+        };
+        view.variable_count()
+    ];
+    let y = append_y_variables(
+        view,
         &mut bindings,
         &mut shapes,
         &mut shape_spans,
-        &mut shape_indexed_keys,
-        &mut indexed_bindings,
-        solver_len,
+        &mut variables,
     )?;
-    let mut p_scalars = map_p_bindings(
-        dae_model,
-        LayoutBindingMaps {
-            bindings: &mut bindings,
-            shapes: &mut shapes,
-            shape_spans: &mut shape_spans,
-            shape_indexed_keys: &mut shape_indexed_keys,
-            indexed_bindings: &mut indexed_bindings,
-        },
+    let p = append_p_variables(
+        view,
+        &mut bindings,
+        &mut shapes,
+        &mut shape_spans,
+        &mut variables,
     )?;
-    bindings.insert(
-        INITIAL_EVENT_PARAMETER_NAME.to_string(),
-        synthetic_scalar_slot(SlotStorage::P, p_scalars, INITIAL_EVENT_PARAMETER_NAME)?,
-    );
-    p_scalars = add_synthetic_slot_count(p_scalars, 1, INITIAL_EVENT_PARAMETER_NAME)?;
-    if dae_uses_homotopy(dae_model) {
-        bindings.insert(
-            HOMOTOPY_LAMBDA_PARAMETER_NAME.to_string(),
-            synthetic_scalar_slot(SlotStorage::P, p_scalars, HOMOTOPY_LAMBDA_PARAMETER_NAME)?,
-        );
-        p_scalars = add_synthetic_slot_count(p_scalars, 1, HOMOTOPY_LAMBDA_PARAMETER_NAME)?;
-    }
-    map_enum_literal_bindings(dae_model, &mut bindings);
-    map_constant_bindings(
-        dae_model,
-        LayoutBindingMaps {
-            bindings: &mut bindings,
-            shapes: &mut shapes,
-            shape_spans: &mut shape_spans,
-            shape_indexed_keys: &mut shape_indexed_keys,
-            indexed_bindings: &mut indexed_bindings,
-        },
-    )?;
+    let (pre_variables, pre_param_bindings, pre_scalar_count) =
+        append_pre_variables(view, &variables, p.names.len())?;
 
-    VarLayout::from_parts_with_shapes_spans_keys_and_indexed_bindings(
+    let y_scalars = y.names.len();
+    let condition_base =
+        p.names.len().checked_add(pre_scalar_count).ok_or_else(|| {
+            LowerError::contract("pre-value layout overflow", first_model_span(view))
+        })?;
+    let condition_memory = (0..view.condition_count())
+        .map(|offset| {
+            condition_base.checked_add(offset).ok_or_else(|| {
+                LowerError::contract("condition-memory layout overflow", first_model_span(view))
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let p_scalars = condition_base
+        .checked_add(condition_memory.len())
+        .ok_or_else(|| LowerError::contract("parameter layout overflow", first_model_span(view)))?;
+    let layout = solve::VarLayout::from_parts_with_shapes_and_spans(
         bindings,
         shapes,
         shape_spans,
-        shape_indexed_keys,
-        indexed_bindings,
         y_scalars,
         p_scalars,
     )
-    .map_err(|err| {
-        layout_optional_contract_violation(
-            format!("invalid solve variable layout contract: {err}"),
-            err.source_span(),
+    .map_err(|error| {
+        LowerError::contract(
+            error.to_string(),
+            error
+                .source_span()
+                .unwrap_or_else(|| first_model_span(view)),
         )
+    })?;
+    let solver_maps = solve::SolverNameIndexMaps {
+        name_to_idx: y
+            .names
+            .iter()
+            .enumerate()
+            .map(|(index, name)| (name.clone(), index))
+            .collect(),
+        base_to_indices: solver_base_indices(view, &variables),
+        names: y.names,
+    };
+    let solve_layout = solve::SolveLayout {
+        solver_maps,
+        variable_base_slots: variables
+            .iter()
+            .map(|slot| match slot.storage {
+                StorageClass::Y => solve::scalar_slot_y(slot.base),
+                StorageClass::P => solve::scalar_slot_p(slot.base),
+            })
+            .collect(),
+        state_scalar_count: y.state_count,
+        algebraic_scalar_count: y.algebraic_count,
+        output_scalar_count: y.output_count,
+        parameter_count: p.parameter_count,
+        compiled_parameter_len: p_scalars,
+        input_scalar_names: p.input_names,
+        discrete_real_scalar_names: p.discrete_real_names,
+        discrete_valued_scalar_names: p.discrete_value_names,
+        relation_memory_parameter_indices: Vec::new(),
+        initial_event_parameter_index: None,
+        terminal_event_parameter_index: None,
+        initial_homotopy_parameter_index: None,
+        pre_param_bindings,
+    };
+    Ok(LoweredLayout {
+        variables,
+        pre_variables,
+        condition_memory,
+        layout,
+        solve_layout,
+        marker: std::marker::PhantomData,
     })
 }
 
-fn dae_uses_homotopy(dae_model: &dae::Dae) -> bool {
-    let mut finder = HomotopyFinder { found: false };
-    finder.visit_dae(dae_model);
-    for statement in dae_model
-        .symbols
-        .functions
-        .values()
-        .flat_map(|function| &function.body)
-    {
-        if finder.found {
-            break;
-        }
-        StatementVisitor::visit_statement(&mut finder, statement);
-    }
-    finder.found
-}
-
-struct HomotopyFinder {
-    found: bool,
-}
-
-impl DaeVisitor for HomotopyFinder {
-    fn visit_expression(&mut self, expression: &rumoca_core::Expression) {
-        ExpressionVisitor::visit_expression(self, expression);
-    }
-}
-
-impl ExpressionVisitor for HomotopyFinder {
-    fn visit_builtin_call(
-        &mut self,
-        function: &rumoca_core::BuiltinFunction,
-        args: &[rumoca_core::Expression],
-    ) {
-        if *function == rumoca_core::BuiltinFunction::Homotopy {
-            self.found = true;
-            return;
-        }
-        if !self.found {
-            self.walk_builtin_call(function, args);
-        }
-    }
-}
-
-impl StatementVisitor for HomotopyFinder {}
-
-fn layout_contract_violation(reason: impl Into<String>, span: Span) -> LowerError {
-    let reason = reason.into();
-    if span.is_dummy() {
-        LowerError::UnspannedContractViolation { reason }
-    } else {
-        LowerError::ContractViolation { reason, span }
-    }
-}
-
-fn layout_optional_contract_violation(reason: impl Into<String>, span: Option<Span>) -> LowerError {
-    let reason = reason.into();
-    match span.filter(|span| !span.is_dummy()) {
-        Some(span) => LowerError::ContractViolation { reason, span },
-        None => LowerError::UnspannedContractViolation { reason },
-    }
-}
-
-fn map_y_bindings(
-    dae_model: &dae::Dae,
-    bindings: &mut IndexMap<String, ScalarSlot>,
-    shapes: &mut IndexMap<String, Vec<usize>>,
-    shape_spans: &mut IndexMap<String, Span>,
-    shape_indexed_keys: &mut IndexMap<String, ComponentReferenceKey>,
-    indexed_bindings: &mut IndexMap<ComponentReferenceKey, Vec<IndexedScalarSlot>>,
-    solver_len: usize,
-) -> Result<usize, LowerError> {
-    let mut offset = 0usize;
-    for (name, var) in dae_model
-        .variables
-        .states
-        .iter()
-        .chain(dae_model.variables.algebraics.iter())
-        .chain(dae_model.variables.outputs.iter())
-    {
-        if is_runtime_parameter_tail_variable(dae_model, name) {
-            continue;
-        }
-        if offset >= solver_len {
-            break;
-        }
-        let size = variable_size(name.as_str(), var)?;
-        let visible_size = size.min(solver_len - offset);
-        let consumed = insert_var_bindings_limited(
-            LayoutBindingMaps {
-                bindings: &mut *bindings,
-                shapes: &mut *shapes,
-                shape_spans: &mut *shape_spans,
-                shape_indexed_keys: &mut *shape_indexed_keys,
-                indexed_bindings: &mut *indexed_bindings,
-            },
-            name.as_str(),
-            var,
-            SlotStorage::Y,
-            offset,
-            visible_size,
-        )?;
-        offset = add_slot_count(offset, consumed, name.as_str(), var.source_span)?;
-        if visible_size < size {
-            break;
-        }
-    }
-    Ok(offset)
-}
-
-pub(crate) fn is_runtime_parameter_tail_variable(
-    dae_model: &dae::Dae,
-    name: &rumoca_core::VarName,
-) -> bool {
-    dae_model.variables.parameters.contains_key(name)
-        || dae_model.variables.inputs.contains_key(name)
-        || dae_model.variables.discrete_reals.contains_key(name)
-        || dae_model.variables.discrete_valued.contains_key(name)
-}
-
-fn map_p_bindings(
-    dae_model: &dae::Dae,
-    mut maps: LayoutBindingMaps<'_>,
-) -> Result<usize, LowerError> {
-    let mut offset = 0usize;
-    for (name, var) in dae_model
-        .variables
-        .parameters
-        .iter()
-        .chain(dae_model.variables.inputs.iter())
-        .chain(dae_model.variables.discrete_reals.iter())
-        .chain(dae_model.variables.discrete_valued.iter())
-    {
-        let consumed =
-            insert_var_bindings(maps.reborrow(), name.as_str(), var, SlotStorage::P, offset)?;
-        offset = add_slot_count(offset, consumed, name.as_str(), var.source_span)?;
-    }
-    Ok(offset)
-}
-
-struct LayoutBindingMaps<'a> {
-    bindings: &'a mut IndexMap<String, ScalarSlot>,
-    shapes: &'a mut IndexMap<String, Vec<usize>>,
-    shape_spans: &'a mut IndexMap<String, Span>,
-    shape_indexed_keys: &'a mut IndexMap<String, ComponentReferenceKey>,
-    indexed_bindings: &'a mut IndexMap<ComponentReferenceKey, Vec<IndexedScalarSlot>>,
-}
-
-struct ArraySlotBinding<'a> {
-    name: &'a str,
-    component_key: ComponentReferenceKey,
-    dims: &'a [i64],
-    size: usize,
-    storage: SlotStorage,
-    start_index: usize,
-    span: Span,
-}
-
-impl<'a> LayoutBindingMaps<'a> {
-    fn reborrow(&mut self) -> LayoutBindingMaps<'_> {
-        LayoutBindingMaps {
-            bindings: self.bindings,
-            shapes: self.shapes,
-            shape_spans: self.shape_spans,
-            shape_indexed_keys: self.shape_indexed_keys,
-            indexed_bindings: self.indexed_bindings,
-        }
-    }
-}
-
-fn map_constant_bindings(
-    dae_model: &dae::Dae,
-    mut maps: LayoutBindingMaps<'_>,
-) -> Result<(), LowerError> {
-    for (name, var) in &dae_model.variables.constants {
-        insert_constant_bindings(
-            maps.reborrow(),
-            name.as_str(),
-            var,
-            &dae_model.symbols.enum_literal_ordinals,
-        )?;
-    }
-    Ok(())
-}
-
-fn map_enum_literal_bindings(dae_model: &dae::Dae, bindings: &mut IndexMap<String, ScalarSlot>) {
-    for (name, ordinal) in &dae_model.symbols.enum_literal_ordinals {
-        insert_enum_literal_binding_aliases(bindings, name, *ordinal as f64);
-    }
-}
-
-fn insert_var_bindings(
-    maps: LayoutBindingMaps<'_>,
-    name: &str,
-    var: &dae::Variable,
-    storage: SlotStorage,
-    start_index: usize,
-) -> Result<usize, LowerError> {
-    let size = variable_size(name, var)?;
-    insert_var_shape(maps.shapes, maps.shape_spans, name, var)?;
-    if size == 0 {
-        return Ok(0);
-    }
-
-    if size <= 1 && var.dims.is_empty() {
-        let slot = scalar_slot(storage, start_index, name, var.source_span)?;
-        maps.bindings.insert(name.to_string(), slot);
-        return Ok(1);
-    }
-
-    let component_key = variable_component_key(name, var)?;
-    insert_array_slot_bindings(
-        maps,
-        ArraySlotBinding {
-            name,
-            component_key,
-            dims: &var.dims,
-            size,
-            storage,
-            start_index,
-            span: var.source_span,
-        },
-    )?;
-    Ok(size)
-}
-
-fn insert_var_bindings_limited(
-    maps: LayoutBindingMaps<'_>,
-    name: &str,
-    var: &dae::Variable,
-    storage: SlotStorage,
-    start_index: usize,
-    visible_size: usize,
-) -> Result<usize, LowerError> {
-    let size = variable_size(name, var)?;
-    if visible_size == size {
-        insert_var_shape(maps.shapes, maps.shape_spans, name, var)?;
-    }
-    if size == 0 || visible_size == 0 {
-        return Ok(0);
-    }
-
-    if size <= 1 && var.dims.is_empty() {
-        let slot = scalar_slot(storage, start_index, name, var.source_span)?;
-        maps.bindings.insert(name.to_string(), slot);
-        return Ok(1);
-    }
-
-    let component_key = variable_component_key(name, var)?;
-    insert_array_slot_bindings(
-        maps,
-        ArraySlotBinding {
-            name,
-            component_key,
-            dims: &var.dims,
-            size: visible_size,
-            storage,
-            start_index,
-            span: var.source_span,
-        },
-    )?;
-    Ok(visible_size)
-}
-
-fn insert_constant_bindings(
-    maps: LayoutBindingMaps<'_>,
-    name: &str,
-    var: &dae::Variable,
-    enum_literal_ordinals: &IndexMap<String, i64>,
-) -> Result<(), LowerError> {
-    let Some(start) = var.start.as_ref() else {
-        return Ok(());
-    };
-    let Some(raw_values) = eval_const_values(start, enum_literal_ordinals) else {
-        return Ok(());
-    };
-
-    let size = variable_size(name, var)?;
-    insert_var_shape(maps.shapes, maps.shape_spans, name, var)?;
-    if size == 0 {
-        return Ok(());
-    }
-    let values = expand_values_to_size(raw_values, size, name, var.source_span)?;
-
-    if size <= 1 && var.dims.is_empty() {
-        let slot = ScalarSlot::Constant(values[0]);
-        maps.bindings.insert(name.to_string(), slot);
-        return Ok(());
-    }
-
-    let component_key = variable_component_key(name, var)?;
-    maps.shape_indexed_keys
-        .insert(name.to_string(), component_key.clone());
-    insert_array_constant_bindings(
-        maps.bindings,
-        maps.indexed_bindings,
-        name,
-        component_key,
-        &var.dims,
-        &values,
-        var.source_span,
-    )?;
-    Ok(())
-}
-
-fn insert_array_slot_bindings(
-    maps: LayoutBindingMaps<'_>,
-    binding: ArraySlotBinding<'_>,
-) -> Result<(), LowerError> {
-    let root_slot = scalar_slot(
-        binding.storage,
-        binding.start_index,
-        binding.name,
-        binding.span,
-    )?;
-    let mut indexed = Vec::new();
-    reserve_indexed_slot_capacity(&mut indexed, binding.size, binding.name, binding.span)?;
-    maps.bindings.insert(binding.name.to_string(), root_slot);
-    for flat_index in 0..binding.size {
-        let scalar_index =
-            add_slot_count(binding.start_index, flat_index, binding.name, binding.span)?;
-        let slot = scalar_slot(binding.storage, scalar_index, binding.name, binding.span)?;
-        if let Some(indices) = dae::flat_index_to_subscripts(binding.dims, flat_index) {
-            indexed.push(IndexedScalarSlot {
-                indices: indices.clone(),
-                slot,
+fn append_pre_variables(
+    view: dae::DaeView<'_>,
+    variables: &[VariableSlot],
+    first_pre_index: usize,
+) -> Result<(Vec<Option<usize>>, Vec<solve::PreParamBinding>, usize), LowerError> {
+    let mut pre_variables = vec![None; view.variable_count()];
+    let mut bindings = Vec::new();
+    let mut scalar_count = 0usize;
+    for (id, variable) in view.variables().filter(|(_, variable)| {
+        matches!(
+            variable.role(),
+            dae::VariableRole::DiscreteReal | dae::VariableRole::DiscreteValue
+        )
+    }) {
+        let current = variables[id.index() as usize];
+        debug_assert!(matches!(current.storage, StorageClass::P));
+        let pre_base = first_pre_index.checked_add(scalar_count).ok_or_else(|| {
+            LowerError::contract("pre-value layout overflow", variable.declaration().span())
+        })?;
+        pre_variables[id.index() as usize] = Some(pre_base);
+        for scalar in 0..current.count {
+            let source = current.base.checked_add(scalar).ok_or_else(|| {
+                LowerError::contract(
+                    "pre-value source layout overflow",
+                    variable.declaration().span(),
+                )
+            })?;
+            let dest_p_index = pre_base.checked_add(scalar).ok_or_else(|| {
+                LowerError::contract(
+                    "pre-value destination layout overflow",
+                    variable.declaration().span(),
+                )
+            })?;
+            bindings.push(solve::PreParamBinding {
+                dest_p_index,
+                source: solve::PreParamSource::P { index: source },
+                clock_schedule: None,
             });
         }
-        maps.bindings.insert(
-            dae::scalar_name_text_for_flat_index(binding.name, binding.dims, flat_index),
-            slot,
-        );
-    }
-    if !indexed.is_empty() {
-        maps.shape_indexed_keys
-            .insert(binding.name.to_string(), binding.component_key.clone());
-        maps.indexed_bindings.insert(binding.component_key, indexed);
-    }
-    Ok(())
-}
-
-fn insert_array_constant_bindings(
-    bindings: &mut IndexMap<String, ScalarSlot>,
-    indexed_bindings: &mut IndexMap<ComponentReferenceKey, Vec<IndexedScalarSlot>>,
-    name: &str,
-    component_key: ComponentReferenceKey,
-    dims: &[i64],
-    values: &[f64],
-    span: Span,
-) -> Result<(), LowerError> {
-    let Some(first) = values.first().copied() else {
-        return Ok(());
-    };
-    let mut indexed = Vec::new();
-    reserve_indexed_slot_capacity(&mut indexed, values.len(), name, span)?;
-    bindings.insert(name.to_string(), ScalarSlot::Constant(first));
-    for (flat_index, value) in values.iter().copied().enumerate() {
-        if let Some(indices) = dae::flat_index_to_subscripts(dims, flat_index) {
-            indexed.push(IndexedScalarSlot {
-                indices: indices.clone(),
-                slot: ScalarSlot::Constant(value),
-            });
-        }
-        bindings.insert(
-            dae::scalar_name_text_for_flat_index(name, dims, flat_index),
-            ScalarSlot::Constant(value),
-        );
-    }
-    if !indexed.is_empty() {
-        indexed_bindings.insert(component_key, indexed);
-    }
-    Ok(())
-}
-
-fn variable_component_key(
-    name: &str,
-    var: &dae::Variable,
-) -> Result<ComponentReferenceKey, LowerError> {
-    // Generated DAE variables (event conditions, `__pre__` parameters) carry
-    // explicit compiler identity; their structured reference exists for
-    // provenance, not for source-layout keying.
-    if source_free_layout_name(name, var) {
-        return Ok(ComponentReferenceKey::generated(name));
-    }
-    if let Some(component_ref) = var.component_ref.as_ref() {
-        #[cfg(test)]
-        if let Some(key) = crate::test_support::fixture_key_for_component_ref(component_ref, name) {
-            return Ok(key);
-        }
-        return ComponentReferenceKey::from_component_reference(component_ref).map_err(|err| {
-            layout_contract_violation(
-                format!(
-                    "array variable `{name}` has non-static structured component reference: {err}"
-                ),
-                err.span,
+        scalar_count = scalar_count.checked_add(current.count).ok_or_else(|| {
+            LowerError::contract(
+                "pre-value scalar count overflow",
+                variable.declaration().span(),
             )
-        });
+        })?;
     }
-    #[cfg(test)]
-    if let Some(key) = crate::test_support::fixture_key_for_variable(name, var) {
-        return Ok(key);
-    }
-    Err(layout_contract_violation(
-        format!("array variable `{name}` is missing structured component reference"),
-        var.source_span,
-    ))
+    Ok((pre_variables, bindings, scalar_count))
 }
 
-fn source_free_layout_name(_name: &str, var: &dae::Variable) -> bool {
-    // `ComponentReference` is required for source Modelica variables.
-    // Generated DAE variables have explicit compiler identity instead.
-    var.origin == dae::VariableOrigin::Generated
+struct YColumns {
+    names: Vec<String>,
+    state_count: usize,
+    algebraic_count: usize,
+    output_count: usize,
 }
 
-fn insert_var_shape(
+fn append_y_variables(
+    view: dae::DaeView<'_>,
+    bindings: &mut IndexMap<String, solve::ScalarSlot>,
     shapes: &mut IndexMap<String, Vec<usize>>,
-    shape_spans: &mut IndexMap<String, Span>,
-    name: &str,
-    var: &dae::Variable,
-) -> Result<(), LowerError> {
-    if var.dims.is_empty() {
-        return Ok(());
-    }
-    let dims = var
-        .dims
-        .iter()
-        .map(|dim| usize::try_from(*dim).ok())
-        .collect::<Option<Vec<_>>>();
-    let Some(dims) = dims else {
-        return Err(invalid_variable_shape(name, var));
+    shape_spans: &mut IndexMap<String, rumoca_core::Span>,
+    slots: &mut [VariableSlot],
+) -> Result<YColumns, LowerError> {
+    let mut columns = YColumns {
+        names: Vec::new(),
+        state_count: 0,
+        algebraic_count: 0,
+        output_count: 0,
     };
-    shapes.insert(name.to_string(), dims);
-    shape_spans.insert(name.to_string(), var.source_span);
+    for role in [
+        dae::VariableRole::State,
+        dae::VariableRole::Algebraic,
+        dae::VariableRole::Output,
+    ] {
+        for (id, variable) in view
+            .variables()
+            .filter(|(_, variable)| variable.role() == role)
+        {
+            let base = columns.names.len();
+            insert_scalar_bindings(
+                bindings,
+                &mut columns.names,
+                variable,
+                StorageClass::Y,
+                base,
+            )?;
+            record_shape(shapes, shape_spans, variable);
+            slots[id.index() as usize] = VariableSlot {
+                storage: StorageClass::Y,
+                base,
+                count: variable.scalar_count(),
+            };
+            match role {
+                dae::VariableRole::State => columns.state_count += variable.scalar_count(),
+                dae::VariableRole::Algebraic => {
+                    columns.algebraic_count += variable.scalar_count();
+                }
+                dae::VariableRole::Output => columns.output_count += variable.scalar_count(),
+                _ => unreachable!("selected solver variable role"),
+            }
+        }
+    }
+    Ok(columns)
+}
+
+struct PColumns {
+    names: Vec<String>,
+    parameter_count: usize,
+    input_names: Vec<String>,
+    discrete_real_names: Vec<String>,
+    discrete_value_names: Vec<String>,
+}
+
+fn append_p_variables(
+    view: dae::DaeView<'_>,
+    bindings: &mut IndexMap<String, solve::ScalarSlot>,
+    shapes: &mut IndexMap<String, Vec<usize>>,
+    shape_spans: &mut IndexMap<String, rumoca_core::Span>,
+    slots: &mut [VariableSlot],
+) -> Result<PColumns, LowerError> {
+    let mut columns = PColumns {
+        names: Vec::new(),
+        parameter_count: 0,
+        input_names: Vec::new(),
+        discrete_real_names: Vec::new(),
+        discrete_value_names: Vec::new(),
+    };
+    for role in [
+        dae::VariableRole::Parameter,
+        dae::VariableRole::Constant,
+        dae::VariableRole::Input,
+        dae::VariableRole::DiscreteReal,
+        dae::VariableRole::DiscreteValue,
+    ] {
+        for (id, variable) in view
+            .variables()
+            .filter(|(_, variable)| variable.role() == role)
+        {
+            let base = columns.names.len();
+            insert_scalar_bindings(
+                bindings,
+                &mut columns.names,
+                variable,
+                StorageClass::P,
+                base,
+            )?;
+            record_shape(shapes, shape_spans, variable);
+            slots[id.index() as usize] = VariableSlot {
+                storage: StorageClass::P,
+                base,
+                count: variable.scalar_count(),
+            };
+            append_parameter_role_names(&mut columns, variable)?;
+        }
+    }
+    Ok(columns)
+}
+
+fn append_parameter_role_names(
+    columns: &mut PColumns,
+    variable: dae::VariableView<'_>,
+) -> Result<(), LowerError> {
+    let names = variable_scalar_names(variable)?;
+    match variable.role() {
+        dae::VariableRole::Parameter | dae::VariableRole::Constant => {
+            columns.parameter_count += names.len();
+        }
+        dae::VariableRole::Input => columns.input_names.extend(names),
+        dae::VariableRole::DiscreteReal => columns.discrete_real_names.extend(names),
+        dae::VariableRole::DiscreteValue => columns.discrete_value_names.extend(names),
+        dae::VariableRole::State | dae::VariableRole::Algebraic | dae::VariableRole::Output => {
+            unreachable!("filtered parameter variable role")
+        }
+    }
     Ok(())
 }
 
-fn variable_size(name: &str, var: &dae::Variable) -> Result<usize, LowerError> {
-    var.try_size()
-        .map_err(|_| invalid_variable_shape(name, var))
-}
-
-fn invalid_variable_shape(name: &str, var: &dae::Variable) -> LowerError {
-    layout_contract_violation(
-        format!(
-            "invalid DAE dimensions {} for `{}`",
-            format_i64_dims(&var.dims),
-            name
-        ),
-        var.source_span,
-    )
-}
-
-fn format_i64_dims(dims: &[i64]) -> String {
-    let dims = dims
-        .iter()
-        .map(i64::to_string)
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!("[{dims}]")
-}
-
-fn scalar_slot(
-    storage: SlotStorage,
-    index: usize,
-    name: &str,
-    span: Span,
-) -> Result<ScalarSlot, LowerError> {
-    let byte_offset = index
-        .checked_mul(F64_BYTES)
-        .ok_or_else(|| slot_byte_offset_overflow(name, span))?;
-    Ok(match storage {
-        SlotStorage::Y => ScalarSlot::Y { index, byte_offset },
-        SlotStorage::P => ScalarSlot::P { index, byte_offset },
-    })
-}
-
-fn synthetic_scalar_slot(
-    storage: SlotStorage,
-    index: usize,
-    name: &str,
-) -> Result<ScalarSlot, LowerError> {
-    let byte_offset = index
-        .checked_mul(F64_BYTES)
-        .ok_or_else(|| unspanned_slot_byte_offset_overflow(name))?;
-    Ok(match storage {
-        SlotStorage::Y => ScalarSlot::Y { index, byte_offset },
-        SlotStorage::P => ScalarSlot::P { index, byte_offset },
-    })
-}
-
-fn add_slot_count(start: usize, count: usize, name: &str, span: Span) -> Result<usize, LowerError> {
-    start
-        .checked_add(count)
-        .ok_or_else(|| slot_index_overflow(name, span))
-}
-
-fn add_synthetic_slot_count(start: usize, count: usize, name: &str) -> Result<usize, LowerError> {
-    start
-        .checked_add(count)
-        .ok_or_else(|| unspanned_slot_index_overflow(name))
-}
-
-fn slot_index_overflow(name: &str, span: Span) -> LowerError {
-    layout_contract_violation(
-        format!("solve layout scalar slot index for `{name}` overflows"),
-        span,
-    )
-}
-
-fn slot_byte_offset_overflow(name: &str, span: Span) -> LowerError {
-    layout_contract_violation(
-        format!("solve layout scalar slot byte offset for `{name}` overflows"),
-        span,
-    )
-}
-
-fn unspanned_slot_index_overflow(name: &str) -> LowerError {
-    LowerError::UnspannedContractViolation {
-        reason: format!("solve layout scalar slot index for `{name}` overflows"),
-    }
-}
-
-fn unspanned_slot_byte_offset_overflow(name: &str) -> LowerError {
-    LowerError::UnspannedContractViolation {
-        reason: format!("solve layout scalar slot byte offset for `{name}` overflows"),
-    }
-}
-
-fn reserve_indexed_slot_capacity(
-    slots: &mut Vec<IndexedScalarSlot>,
-    capacity: usize,
-    name: &str,
-    span: Span,
+fn insert_scalar_bindings(
+    bindings: &mut IndexMap<String, solve::ScalarSlot>,
+    names: &mut Vec<String>,
+    variable: dae::VariableView<'_>,
+    storage: StorageClass,
+    base: usize,
 ) -> Result<(), LowerError> {
-    slots
-        .try_reserve_exact(capacity)
-        .map_err(|_| indexed_slot_capacity_overflow(name, span))
-}
-
-fn indexed_slot_capacity_overflow(name: &str, span: Span) -> LowerError {
-    layout_contract_violation(
-        format!("solve layout indexed slot capacity for `{name}` overflows"),
-        span,
-    )
-}
-
-fn reserve_constant_value_capacity(
-    values: &mut Vec<f64>,
-    capacity: usize,
-    name: &str,
-    span: Span,
-) -> Result<(), LowerError> {
-    values
-        .try_reserve_exact(capacity)
-        .map_err(|_| constant_value_capacity_overflow(name, span))
-}
-
-fn constant_value_capacity_overflow(name: &str, span: Span) -> LowerError {
-    layout_contract_violation(
-        format!("solve layout constant value capacity for `{name}` overflows"),
-        span,
-    )
-}
-
-fn literal_to_f64(literal: &rumoca_core::Literal) -> Option<f64> {
-    match literal {
-        rumoca_core::Literal::Real(v) => Some(*v),
-        rumoca_core::Literal::Integer(v) => Some(*v as f64),
-        rumoca_core::Literal::Boolean(v) => Some(if *v { 1.0 } else { 0.0 }),
-        rumoca_core::Literal::String(_) => None,
+    if !variable.value_type().is_scalar() && variable.scalar_count() != 0 {
+        let slot = match storage {
+            StorageClass::Y => solve::scalar_slot_y(base),
+            StorageClass::P => solve::scalar_slot_p(base),
+        };
+        if bindings.insert(variable.name().to_string(), slot).is_some() {
+            return Err(LowerError::contract(
+                format!("duplicate aggregate layout name `{}`", variable.name()),
+                variable.declaration().span(),
+            ));
+        }
     }
+    for scalar in 0..variable.scalar_count() {
+        let name = variable.scalar_name(scalar).ok_or_else(|| {
+            LowerError::contract(
+                format!(
+                    "checked variable `{}` has no scalar name at ordinal {scalar}",
+                    variable.name()
+                ),
+                variable.declaration().span(),
+            )
+        })?;
+        let index = base.checked_add(scalar).ok_or_else(|| {
+            LowerError::contract(
+                "variable layout index overflow",
+                variable.declaration().span(),
+            )
+        })?;
+        let slot = match storage {
+            StorageClass::Y => solve::scalar_slot_y(index),
+            StorageClass::P => solve::scalar_slot_p(index),
+        };
+        if bindings.insert(name.clone(), slot).is_some() {
+            return Err(LowerError::contract(
+                format!("duplicate scalar layout name `{name}`"),
+                variable.declaration().span(),
+            ));
+        }
+        names.push(name);
+    }
+    Ok(())
 }
 
-fn insert_enum_literal_binding_aliases(
-    bindings: &mut IndexMap<String, ScalarSlot>,
-    name: &str,
-    value: f64,
+fn record_shape(
+    shapes: &mut IndexMap<String, Vec<usize>>,
+    spans: &mut IndexMap<String, rumoca_core::Span>,
+    variable: dae::VariableView<'_>,
 ) {
-    insert_enum_literal_binding_key(bindings, name, value);
-    if let Some(alternate) = alternate_enum_literal_key(name) {
-        insert_enum_literal_binding_key(bindings, alternate.as_str(), value);
+    if variable.value_type().is_scalar() {
+        return;
     }
+    let name = variable.name().to_string();
+    shapes.insert(
+        name.clone(),
+        variable
+            .value_type()
+            .dimensions()
+            .iter()
+            .map(|extent| *extent as usize)
+            .collect(),
+    );
+    spans.insert(name, variable.declaration().span());
 }
 
-fn insert_enum_literal_binding_key(
-    bindings: &mut IndexMap<String, ScalarSlot>,
-    name: &str,
-    value: f64,
-) {
-    bindings
-        .entry(name.to_string())
-        .or_insert(ScalarSlot::Constant(value));
+fn variable_scalar_names(variable: dae::VariableView<'_>) -> Result<Vec<String>, LowerError> {
+    (0..variable.scalar_count())
+        .map(|scalar| {
+            variable.scalar_name(scalar).ok_or_else(|| {
+                LowerError::contract(
+                    format!(
+                        "checked variable `{}` has no scalar name at ordinal {scalar}",
+                        variable.name()
+                    ),
+                    variable.declaration().span(),
+                )
+            })
+        })
+        .collect()
 }
 
-fn eval_const_scalar(
-    expr: &rumoca_core::Expression,
-    enum_literal_ordinals: &IndexMap<String, i64>,
-) -> Option<f64> {
-    let values = eval_const_values(expr, enum_literal_ordinals)?;
-    if values.len() == 1 {
-        return values.first().copied();
-    }
-    None
+fn solver_base_indices(
+    view: dae::DaeView<'_>,
+    variables: &[VariableSlot],
+) -> IndexMap<String, Vec<usize>> {
+    view.variables()
+        .filter_map(|(id, variable)| {
+            let slot = variables[id.index() as usize];
+            matches!(slot.storage, StorageClass::Y).then(|| {
+                (
+                    variable.name().to_string(),
+                    (slot.base..slot.base + slot.count).collect(),
+                )
+            })
+        })
+        .collect()
 }
 
-fn eval_const_values(
-    expr: &rumoca_core::Expression,
-    enum_literal_ordinals: &IndexMap<String, i64>,
-) -> Option<Vec<f64>> {
-    match expr {
-        rumoca_core::Expression::Literal { value: literal, .. } => {
-            Some(vec![literal_to_f64(literal)?])
-        }
-        // MLS §4.9.5 / SPEC_0022 EXPR-021: enumeration literals are
-        // translation-time constants with 1-based ordinal numeric semantics.
-        rumoca_core::Expression::VarRef {
-            name, subscripts, ..
-        } if subscripts.is_empty() => {
-            lookup_enum_literal_ordinal(name.as_str(), enum_literal_ordinals)
-                .map(|ordinal| vec![ordinal as f64])
-        }
-        rumoca_core::Expression::BuiltinCall { function, args, .. } => {
-            eval_const_builtin(*function, args, enum_literal_ordinals)
-        }
-        rumoca_core::Expression::Unary { op, rhs, .. } => {
-            let values = eval_const_values(rhs, enum_literal_ordinals)?;
-            match op {
-                rumoca_core::OpUnary::Plus | rumoca_core::OpUnary::DotPlus => Some(values),
-                rumoca_core::OpUnary::Minus | rumoca_core::OpUnary::DotMinus => {
-                    Some(values.into_iter().map(|v| -v).collect())
-                }
-                rumoca_core::OpUnary::Not | rumoca_core::OpUnary::Empty => None,
-            }
-        }
-        rumoca_core::Expression::Binary { op, lhs, rhs, .. } => {
-            let lhs = eval_const_scalar(lhs, enum_literal_ordinals)?;
-            let rhs = eval_const_scalar(rhs, enum_literal_ordinals)?;
-            let value = match op {
-                rumoca_core::OpBinary::Add | rumoca_core::OpBinary::AddElem => lhs + rhs,
-                rumoca_core::OpBinary::Sub | rumoca_core::OpBinary::SubElem => lhs - rhs,
-                rumoca_core::OpBinary::Mul | rumoca_core::OpBinary::MulElem => lhs * rhs,
-                rumoca_core::OpBinary::Div | rumoca_core::OpBinary::DivElem => lhs / rhs,
-                rumoca_core::OpBinary::Exp | rumoca_core::OpBinary::ExpElem => lhs.powf(rhs),
-                _ => return None,
-            };
-            Some(vec![value])
-        }
-        rumoca_core::Expression::Array { elements, .. }
-        | rumoca_core::Expression::Tuple { elements, .. } => {
-            let mut values = Vec::new();
-            for element in elements {
-                values.extend(eval_const_values(element, enum_literal_ordinals)?);
-            }
-            Some(values)
-        }
-        rumoca_core::Expression::Range {
-            start, step, end, ..
-        } => {
-            let start = eval_const_scalar(start, enum_literal_ordinals)?;
-            let end = eval_const_scalar(end, enum_literal_ordinals)?;
-            let step = if let Some(step_expr) = step {
-                eval_const_scalar(step_expr, enum_literal_ordinals)?
-            } else if end >= start {
-                1.0
-            } else {
-                -1.0
-            };
-            if !start.is_finite()
-                || !end.is_finite()
-                || !step.is_finite()
-                || step.abs() <= f64::EPSILON
-            {
-                return None;
-            }
-
-            let mut values = Vec::new();
-            let mut value = start;
-            let tol = step.abs() * 1.0e-9 + 1.0e-12;
-            for _ in 0..100_000 {
-                let is_past_end =
-                    (step > 0.0 && value > end + tol) || (step < 0.0 && value < end - tol);
-                if is_past_end {
-                    break;
-                }
-                values.push(value);
-                value += step;
-                if !value.is_finite() {
-                    return None;
-                }
-            }
-            Some(values)
-        }
-        _ => None,
-    }
-}
-
-fn eval_const_builtin(
-    function: rumoca_core::BuiltinFunction,
-    args: &[rumoca_core::Expression],
-    enum_literal_ordinals: &IndexMap<String, i64>,
-) -> Option<Vec<f64>> {
-    use rumoca_core::BuiltinFunction as Builtin;
-
-    let unary = |f: fn(f64) -> f64| {
-        let value = eval_const_scalar(args.first()?, enum_literal_ordinals)?;
-        Some(vec![f(value)])
-    };
-    let binary = |f: fn(f64, f64) -> f64| {
-        let lhs = eval_const_scalar(args.first()?, enum_literal_ordinals)?;
-        let rhs = eval_const_scalar(args.get(1)?, enum_literal_ordinals)?;
-        Some(vec![f(lhs, rhs)])
-    };
-    let binary_builtin = |function| {
-        let lhs = eval_const_scalar(args.first()?, enum_literal_ordinals)?;
-        let rhs = eval_const_scalar(args.get(1)?, enum_literal_ordinals)?;
-        rumoca_core::apply_scalar_binary_math(function, lhs, rhs).map(|value| vec![value])
-    };
-
-    match function {
-        Builtin::Abs => unary(f64::abs),
-        Builtin::Sign => unary(f64::signum),
-        Builtin::Sqrt => unary(f64::sqrt),
-        Builtin::Floor => unary(f64::floor),
-        Builtin::Ceil => unary(f64::ceil),
-        Builtin::Sin => unary(f64::sin),
-        Builtin::Cos => unary(f64::cos),
-        Builtin::Tan => unary(f64::tan),
-        Builtin::Asin => unary(f64::asin),
-        Builtin::Acos => unary(f64::acos),
-        Builtin::Atan => unary(f64::atan),
-        Builtin::Sinh => unary(f64::sinh),
-        Builtin::Cosh => unary(f64::cosh),
-        Builtin::Tanh => unary(f64::tanh),
-        Builtin::Exp => unary(f64::exp),
-        Builtin::Log => unary(f64::ln),
-        Builtin::Log10 => unary(f64::log10),
-        Builtin::Integer => unary(f64::trunc),
-        Builtin::Atan2 => binary(f64::atan2),
-        Builtin::Min => binary(f64::min),
-        Builtin::Max => binary(f64::max),
-        Builtin::Div => binary_builtin(Builtin::Div),
-        Builtin::Mod => binary_builtin(Builtin::Mod),
-        Builtin::Rem => binary_builtin(Builtin::Rem),
-        Builtin::NoEvent => eval_const_values(args.first()?, enum_literal_ordinals),
-        Builtin::Smooth => eval_const_values(args.get(1)?, enum_literal_ordinals),
-        Builtin::Homotopy => eval_const_values(args.first()?, enum_literal_ordinals),
-        _ => None,
-    }
-}
-
-fn lookup_enum_literal_ordinal(raw: &str, ordinals: &IndexMap<String, i64>) -> Option<i64> {
-    if let Some(&ordinal) = ordinals.get(raw) {
-        return Some(ordinal);
-    }
-    let alternate = alternate_enum_literal_key(raw)?;
-    ordinals.get(&alternate).copied()
-}
-
-fn alternate_enum_literal_key(raw: &str) -> Option<String> {
-    let (prefix, literal) = crate::path_utils::scope_split(raw)?;
-    if literal.len() >= 2 && literal.starts_with('\'') && literal.ends_with('\'') {
-        return Some(format!("{prefix}.{}", &literal[1..literal.len() - 1]));
-    }
-    Some(format!("{prefix}.'{literal}'"))
-}
-
-fn expand_values_to_size(
-    raw_values: Vec<f64>,
-    size: usize,
-    name: &str,
-    span: Span,
-) -> Result<Vec<f64>, LowerError> {
-    if size == 0 {
-        return Ok(Vec::new());
-    }
-    if raw_values.len() == size {
-        return Ok(raw_values);
-    }
-
-    let mut expanded = Vec::new();
-    reserve_constant_value_capacity(&mut expanded, size, name, span)?;
-    if raw_values.is_empty() {
-        expanded.resize(size, 0.0);
-        return Ok(expanded);
-    }
-    if raw_values.len() == 1 {
-        expanded.resize(size, raw_values[0]);
-        return Ok(expanded);
-    }
-
-    let Some(last) = raw_values.last().copied() else {
-        return Err(layout_contract_violation(
-            format!("constant `{name}` expansion missing tail value"),
-            span,
-        ));
-    };
-    for idx in 0..size {
-        if idx < raw_values.len() {
-            expanded.push(raw_values[idx]);
-        } else {
-            expanded.push(last);
-        }
-    }
-    Ok(expanded)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn test_span() -> Span {
-        Span::from_offsets(
-            rumoca_core::SourceId::from_source_name("phase_solve_layout_fixture.mo"),
-            1,
-            2,
-        )
-    }
-
-    fn unspanned_layout_test_span() -> Span {
-        Span::DUMMY
-    }
-
-    fn real(value: f64) -> rumoca_core::Expression {
-        rumoca_core::Expression::Literal {
-            value: rumoca_core::Literal::Real(value),
-            span: test_span(),
-        }
-    }
-
-    fn builtin(function: rumoca_core::BuiltinFunction) -> rumoca_core::Expression {
-        rumoca_core::Expression::BuiltinCall {
-            function,
-            args: vec![real(-5.5), real(2.0)],
-            span: test_span(),
-        }
-    }
-
-    #[test]
-    fn homotopy_models_receive_a_dedicated_lambda_parameter_slot() {
-        let mut dae_model = dae::Dae::default();
-        dae_model.continuous.equations.push(dae::Equation::residual(
-            builtin(rumoca_core::BuiltinFunction::Homotopy),
-            test_span(),
-            "homotopy layout row",
-        ));
-
-        let layout = build_var_layout(&dae_model).expect("homotopy layout should build");
-
-        assert!(matches!(
-            layout.binding(HOMOTOPY_LAMBDA_PARAMETER_NAME),
-            Some(ScalarSlot::P { index: 1, .. })
-        ));
-        assert_eq!(layout.p_scalars(), 2);
-    }
-
-    #[test]
-    fn models_without_homotopy_do_not_pay_for_a_lambda_slot() {
-        let layout = build_var_layout(&dae::Dae::default()).expect("empty layout should build");
-
-        assert_eq!(layout.binding(HOMOTOPY_LAMBDA_PARAMETER_NAME), None);
-        assert_eq!(layout.p_scalars(), 1);
-    }
-
-    #[test]
-    fn const_builtin_div_mod_and_rem_follow_modelica_rounding() {
-        let ordinals = IndexMap::new();
-        assert_eq!(
-            eval_const_values(&builtin(rumoca_core::BuiltinFunction::Div), &ordinals),
-            Some(vec![-2.0])
-        );
-        assert_eq!(
-            eval_const_values(&builtin(rumoca_core::BuiltinFunction::Mod), &ordinals),
-            Some(vec![0.5])
-        );
-        assert_eq!(
-            eval_const_values(&builtin(rumoca_core::BuiltinFunction::Rem), &ordinals),
-            Some(vec![-1.5])
-        );
-    }
-
-    #[test]
-    fn build_var_layout_indexes_arrays_by_component_reference() {
-        let span = test_span();
-        let component_ref = rumoca_core::ComponentReference {
-            local: false,
-            span,
-            parts: vec![
-                rumoca_core::ComponentRefPart {
-                    ident: "plant".to_string(),
-                    span,
-                    subs: Vec::new(),
-                },
-                rumoca_core::ComponentRefPart {
-                    ident: "motor".to_string(),
-                    span,
-                    subs: Vec::new(),
-                },
-                rumoca_core::ComponentRefPart {
-                    ident: "tau".to_string(),
-                    span,
-                    subs: Vec::new(),
-                },
-            ],
-            def_id: Some(rumoca_core::DefId::new(42)),
-        };
-        let mut dae_model = dae::Dae::default();
-        dae_model.variables.algebraics.insert(
-            rumoca_core::VarName::new("flat_display_is_not_authoritative"),
-            dae::Variable {
-                name: rumoca_core::VarName::new("flat_display_is_not_authoritative"),
-                component_ref: Some(component_ref.clone()),
-                dims: vec![2],
-                ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
-                    rumoca_core::SourceId::from_source_name(file!()),
-                    1,
-                    2,
-                ))
-            },
-        );
-
-        let layout = build_var_layout(&dae_model).expect("test DAE layout should build");
-        let component_key =
-            ComponentReferenceKey::from_component_reference(&component_ref).unwrap();
-        let display_key = ComponentReferenceKey::generated("flat_display_is_not_authoritative");
-
-        assert_eq!(layout.indexed_bindings()[&component_key].len(), 2);
-        assert!(!layout.indexed_bindings().contains_key(&display_key));
-    }
-
-    #[test]
-    fn build_var_layout_rejects_source_array_without_component_reference() {
-        let span = Span::from_offsets(
-            rumoca_core::SourceId::from_source_name("phase_solve_layout_fixture.mo"),
-            3,
-            8,
-        );
-        let mut dae_model = dae::Dae::default();
-        dae_model.variables.algebraics.insert(
-            rumoca_core::VarName::new("a"),
-            dae::Variable {
-                name: rumoca_core::VarName::new("a"),
-                source_span: span,
-                dims: vec![2],
-                ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
-                    rumoca_core::SourceId::from_source_name(file!()),
-                    1,
-                    2,
-                ))
-            },
-        );
-
-        let err = build_var_layout(&dae_model)
-            .expect_err("source arrays must carry structured component references");
-
-        assert_eq!(err.source_span(), Some(span));
-        assert!(
-            err.reason()
-                .contains("array variable `a` is missing structured component reference"),
-            "{err:?}"
-        );
-    }
-
-    #[test]
-    fn build_var_layout_preserves_zero_size_array_shape_without_scalar_slot() {
-        let span = Span::from_offsets(
-            rumoca_core::SourceId::from_source_name("phase_solve_layout_fixture.mo"),
-            5,
-            11,
-        );
-        let mut dae_model = dae::Dae::default();
-        dae_model.variables.algebraics.insert(
-            rumoca_core::VarName::new("empty"),
-            dae::Variable {
-                name: rumoca_core::VarName::new("empty"),
-                source_span: span,
-                dims: vec![0],
-                ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
-                    rumoca_core::SourceId::from_source_name(file!()),
-                    1,
-                    2,
-                ))
-            },
-        );
-
-        let layout = build_var_layout(&dae_model).expect("zero-size array layout should build");
-
-        assert_eq!(layout.shape("empty"), Some([0].as_slice()));
-        assert_eq!(layout.shape_span("empty"), Some(span));
-        assert_eq!(layout.binding("empty"), None);
-        assert!(layout.indexed_bindings().is_empty());
-        assert_eq!(layout.y_scalars(), 0);
-    }
-
-    #[test]
-    fn insert_var_bindings_reports_slot_byte_offset_overflow_with_source_span() {
-        let span = Span::from_offsets(
-            rumoca_core::SourceId::from_source_name("phase_solve_layout_fixture.mo"),
-            7,
-            14,
-        );
-        let var = dae::Variable {
-            name: rumoca_core::VarName::new("huge"),
-            source_span: span,
-            ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
-                rumoca_core::SourceId::from_source_name(file!()),
-                1,
-                2,
-            ))
-        };
-        let mut bindings = IndexMap::new();
-        let mut shapes = IndexMap::new();
-        let mut shape_spans = IndexMap::new();
-        let mut shape_indexed_keys = IndexMap::new();
-        let mut indexed_bindings = IndexMap::new();
-
-        let err = insert_var_bindings(
-            LayoutBindingMaps {
-                bindings: &mut bindings,
-                shapes: &mut shapes,
-                shape_spans: &mut shape_spans,
-                shape_indexed_keys: &mut shape_indexed_keys,
-                indexed_bindings: &mut indexed_bindings,
-            },
-            "huge",
-            &var,
-            SlotStorage::Y,
-            usize::MAX / F64_BYTES + 1,
-        )
-        .expect_err("oversized scalar slot byte offset must fail layout construction");
-
-        assert_eq!(err.source_span(), Some(span));
-        assert_eq!(
-            err.reason(),
-            "invalid IR contract: solve layout scalar slot byte offset for `huge` overflows"
-        );
-    }
-
-    #[test]
-    fn add_slot_count_reports_overflow_with_source_span() {
-        let span = Span::from_offsets(
-            rumoca_core::SourceId::from_source_name("phase_solve_layout_fixture.mo"),
-            11,
-            19,
-        );
-
-        let err = add_slot_count(usize::MAX, 1, "tail", span)
-            .expect_err("slot count overflow must fail layout construction");
-
-        assert_eq!(err.source_span(), Some(span));
-        assert_eq!(
-            err.reason(),
-            "invalid IR contract: solve layout scalar slot index for `tail` overflows"
-        );
-    }
-
-    #[test]
-    fn scalar_slot_reports_byte_offset_overflow_without_dummy_span() {
-        let err = scalar_slot(
-            SlotStorage::Y,
-            usize::MAX / F64_BYTES + 1,
-            "dummy_source",
-            unspanned_layout_test_span(),
-        )
-        .expect_err("dummy-span scalar slot byte offset overflow must fail");
-
-        assert_eq!(err.source_span(), None);
-        assert!(matches!(err, LowerError::UnspannedContractViolation { .. }));
-        assert_eq!(
-            err.reason(),
-            "invalid IR contract: solve layout scalar slot byte offset for `dummy_source` overflows"
-        );
-    }
-
-    #[test]
-    fn synthetic_scalar_slot_reports_byte_offset_overflow_without_source_span() {
-        let err = synthetic_scalar_slot(
-            SlotStorage::P,
-            usize::MAX / F64_BYTES + 1,
-            INITIAL_EVENT_PARAMETER_NAME,
-        )
-        .expect_err("synthetic slot byte offset overflow must fail layout construction");
-
-        assert_eq!(err.source_span(), None);
-        assert!(matches!(err, LowerError::UnspannedContractViolation { .. }));
-        assert_eq!(
-            err.reason(),
-            "invalid IR contract: solve layout scalar slot byte offset for `__rumoca.initial_event` overflows"
-        );
-    }
-
-    #[test]
-    fn add_synthetic_slot_count_reports_overflow_without_source_span() {
-        let err = add_synthetic_slot_count(usize::MAX, 1, INITIAL_EVENT_PARAMETER_NAME)
-            .expect_err("synthetic slot count overflow must fail layout construction");
-
-        assert_eq!(err.source_span(), None);
-        assert!(matches!(err, LowerError::UnspannedContractViolation { .. }));
-        assert_eq!(
-            err.reason(),
-            "invalid IR contract: solve layout scalar slot index for `__rumoca.initial_event` overflows"
-        );
-    }
-
-    #[test]
-    fn insert_array_slot_bindings_reports_capacity_overflow_with_source_span() {
-        let span = Span::from_offsets(
-            rumoca_core::SourceId::from_source_name("phase_solve_layout_fixture.mo"),
-            2,
-            9,
-        );
-        let mut bindings = IndexMap::new();
-        let mut shapes = IndexMap::new();
-        let mut shape_spans = IndexMap::new();
-        let mut shape_indexed_keys = IndexMap::new();
-        let mut indexed_bindings = IndexMap::new();
-
-        let err = insert_array_slot_bindings(
-            LayoutBindingMaps {
-                bindings: &mut bindings,
-                shapes: &mut shapes,
-                shape_spans: &mut shape_spans,
-                shape_indexed_keys: &mut shape_indexed_keys,
-                indexed_bindings: &mut indexed_bindings,
-            },
-            ArraySlotBinding {
-                name: "huge_array",
-                component_key: ComponentReferenceKey::generated("huge_array"),
-                dims: &[1],
-                size: usize::MAX,
-                storage: SlotStorage::Y,
-                start_index: 0,
-                span,
-            },
-        )
-        .expect_err("oversized indexed slot capacity must fail layout construction");
-
-        assert_eq!(err.source_span(), Some(span));
-        assert_eq!(
-            err.reason(),
-            "invalid IR contract: solve layout indexed slot capacity for `huge_array` overflows"
-        );
-        assert!(bindings.is_empty());
-        assert!(indexed_bindings.is_empty());
-    }
-
-    #[test]
-    fn reserve_indexed_slot_capacity_reports_overflow_without_dummy_span() {
-        let mut slots = Vec::new();
-
-        let err = reserve_indexed_slot_capacity(
-            &mut slots,
-            usize::MAX,
-            "dummy_indexed",
-            unspanned_layout_test_span(),
-        )
-        .expect_err("dummy-span indexed slot capacity overflow must fail");
-
-        assert_eq!(err.source_span(), None);
-        assert!(matches!(err, LowerError::UnspannedContractViolation { .. }));
-        assert_eq!(
-            err.reason(),
-            "invalid IR contract: solve layout indexed slot capacity for `dummy_indexed` overflows"
-        );
-    }
-
-    #[test]
-    fn expand_values_to_size_reports_capacity_overflow_with_source_span() {
-        let span = Span::from_offsets(
-            rumoca_core::SourceId::from_source_name("phase_solve_layout_fixture.mo"),
-            4,
-            13,
-        );
-
-        let err = expand_values_to_size(vec![1.0], usize::MAX, "huge_constant", span)
-            .expect_err("oversized constant value expansion must fail layout construction");
-
-        assert_eq!(err.source_span(), Some(span));
-        assert_eq!(
-            err.reason(),
-            "invalid IR contract: solve layout constant value capacity for `huge_constant` overflows"
-        );
-    }
-
-    #[test]
-    fn expand_values_to_size_reports_capacity_overflow_without_dummy_span() {
-        let err = expand_values_to_size(
-            vec![1.0],
-            usize::MAX,
-            "dummy_constant",
-            unspanned_layout_test_span(),
-        )
-        .expect_err("dummy-span constant value expansion must fail layout construction");
-
-        assert_eq!(err.source_span(), None);
-        assert!(matches!(err, LowerError::UnspannedContractViolation { .. }));
-        assert_eq!(
-            err.reason(),
-            "invalid IR contract: solve layout constant value capacity for `dummy_constant` overflows"
-        );
-    }
-
-    #[test]
-    fn expand_values_to_size_preserves_broadcast_and_padding_behavior() {
-        let broadcast = expand_values_to_size(vec![2.5], 3, "constant", test_span());
-        let Ok(broadcast) = broadcast else {
-            panic!("scalar constant should broadcast");
-        };
-        assert_eq!(broadcast, vec![2.5, 2.5, 2.5]);
-        let padded = expand_values_to_size(vec![1.0, 2.0], 4, "constant", test_span());
-        let Ok(padded) = padded else {
-            panic!("short explicit constant should pad with the last value");
-        };
-        assert_eq!(padded, vec![1.0, 2.0, 2.0, 2.0]);
-    }
-
-    #[test]
-    fn build_var_layout_reports_invalid_dims_with_source_span() {
-        let span = Span::from_offsets(
-            rumoca_core::SourceId::from_source_name("phase_solve_layout_fixture.mo"),
-            7,
-            14,
-        );
-        let mut dae_model = dae::Dae::default();
-        dae_model.variables.algebraics.insert(
-            rumoca_core::VarName::new("bad"),
-            dae::Variable {
-                name: rumoca_core::VarName::new("bad"),
-                source_span: span,
-                dims: vec![2, -1],
-                ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
-                    rumoca_core::SourceId::from_source_name(file!()),
-                    1,
-                    2,
-                ))
-            },
-        );
-
-        let err = build_var_layout(&dae_model)
-            .expect_err("negative DAE dimensions must fail layout construction");
-
-        assert_eq!(err.source_span(), Some(span));
-        assert_eq!(
-            err.reason(),
-            "invalid IR contract: invalid DAE dimensions [2, -1] for `bad`"
-        );
-    }
-
-    #[test]
-    fn build_var_layout_reports_invalid_dims_without_dummy_span() {
-        let mut dae_model = dae::Dae::default();
-        dae_model.variables.algebraics.insert(
-            rumoca_core::VarName::new("bad"),
-            dae::Variable {
-                name: rumoca_core::VarName::new("bad"),
-                source_span: unspanned_layout_test_span(),
-                dims: vec![2, -1],
-                component_ref: Some(crate::test_support::component_ref_from_name("bad")),
-                ..rumoca_ir_dae::Variable::empty_with_span(rumoca_core::Span::from_offsets(
-                    rumoca_core::SourceId::from_source_name(file!()),
-                    1,
-                    2,
-                ))
-            },
-        );
-
-        let err = build_var_layout(&dae_model)
-            .expect_err("negative DAE dimensions must fail layout construction");
-
-        assert_eq!(err.source_span(), None);
-        assert!(matches!(err, LowerError::UnspannedContractViolation { .. }));
-        assert_eq!(
-            err.reason(),
-            "invalid IR contract: invalid DAE dimensions [2, -1] for `bad`"
-        );
-    }
+fn first_model_span(view: dae::DaeView<'_>) -> rumoca_core::Span {
+    view.responsible_span()
+        .expect("nonempty checked DAE has responsible provenance")
 }

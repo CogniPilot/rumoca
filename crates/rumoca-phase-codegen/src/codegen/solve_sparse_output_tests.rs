@@ -1,7 +1,7 @@
 use super::*;
 use rumoca_ir_solve as solve;
 
-use super::codegen_tests::builtin_template;
+use super::codegen_test_support::builtin_template;
 
 fn fixture_span() -> rumoca_core::Span {
     rumoca_core::Span::from_offsets(
@@ -102,27 +102,6 @@ fn scalar_solve_targets_write_sparse_output_indices() {
     assert!(
         !cuda.contains("batch_out[0] ="),
         "CUDA ignored output_indices:\n{cuda}"
-    );
-
-    let embedded = render_solve_template_with_name(
-        &problem,
-        &artifacts,
-        builtin_template("embedded-c", "model.c.jinja"),
-        "SparseDemo",
-    )
-    .expect("embedded-c template should render");
-    assert!(embedded.contains("out[i] = 0.0;"));
-    assert!(
-        embedded
-            .contains("real_t dx[SPARSEDEMO_DERIVATIVE_LEN > 0 ? SPARSEDEMO_DERIVATIVE_LEN : 1]")
-    );
-    assert!(embedded.contains("for (int i = 0; i < SPARSEDEMO_STATE_LEN; ++i)"));
-    assert!(embedded.contains("out[2] ="));
-    assert!(embedded.contains("out[4] ="));
-    assert!(embedded.contains("out[6] ="));
-    assert!(
-        !embedded.contains("out[0] ="),
-        "embedded C ignored output_indices:\n{embedded}"
     );
 
     let mlir = render_solve_template_with_name(

@@ -23,9 +23,7 @@ pub enum ScalarSlot {
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct VarLayout {
     bindings: IndexMap<VarName, ScalarSlot>,
-    #[serde(default)]
     shapes: IndexMap<VarName, Vec<usize>>,
-    #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
     shape_spans: IndexMap<VarName, Span>,
     #[serde(skip)]
     shape_indexed_keys: IndexMap<VarName, ComponentReferenceKey>,
@@ -151,14 +149,10 @@ impl Serialize for VarLayout {
     where
         S: serde::Serializer,
     {
-        let include_shape_spans = !serializer.is_human_readable() || !self.shape_spans.is_empty();
-        let field_count = if include_shape_spans { 5 } else { 4 };
-        let mut state = serializer.serialize_struct("VarLayout", field_count)?;
+        let mut state = serializer.serialize_struct("VarLayout", 5)?;
         state.serialize_field("bindings", &self.bindings)?;
         state.serialize_field("shapes", &self.shapes)?;
-        if include_shape_spans {
-            state.serialize_field("shape_spans", &self.shape_spans)?;
-        }
+        state.serialize_field("shape_spans", &self.shape_spans)?;
         state.serialize_field("y_scalars", &self.y_scalars)?;
         state.serialize_field("p_scalars", &self.p_scalars)?;
         state.end()

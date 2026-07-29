@@ -1215,6 +1215,7 @@ fn test_convert_component_to_param_inherits_type_alias_dims() {
     .unwrap();
 
     assert_eq!(param.dims, vec![3, 3]);
+    assert_eq!(param.type_name, "Real");
 }
 
 #[test]
