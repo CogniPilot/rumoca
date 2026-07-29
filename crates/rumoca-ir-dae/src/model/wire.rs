@@ -3,7 +3,8 @@ mod expression_wire;
 mod function_replay;
 mod helpers;
 
-use serde::Deserialize;
+use serde::ser::SerializeStruct;
+use serde::{Deserialize, Serialize};
 
 use super::*;
 use crate::expression::Subscript;
@@ -14,7 +15,9 @@ use crate::{
 
 use equation_systems::reconstruct_equation_systems;
 use expression_wire::*;
-use helpers::{expect_ordinal, map_expression_operands, map_many, mapped, wire_operands};
+use helpers::{
+    expect_ordinal, map_expression_operands, map_many, mapped, take_packed, wire_operands,
+};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -52,6 +55,56 @@ struct DaeWire {
     storage: StorageWire,
 }
 
+impl Serialize for FrozenStorage {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut state = serializer.serialize_struct("DaeStorage", 21)?;
+        state.serialize_field("value_types", &self.value_types)?;
+        state.serialize_field("flat_type_ids", &self.flat_type_ids)?;
+        state.serialize_field("value_type_provenance", &self.value_type_provenance)?;
+        state.serialize_field("variables", &self.variables)?;
+        state.serialize_field(
+            "functions",
+            &function_replay::FunctionArenaOutput::new(&self.functions, &self.function_folds),
+        )?;
+        state.serialize_field("domains", &self.domains)?;
+        state.serialize_field("expressions", &self.expressions)?;
+        state.serialize_field(
+            "continuous_equation_operations",
+            &equation_systems::EquationOperationsOutput::new(
+                &self.continuous_equation_owners,
+                &self.continuous_equations,
+                &self.continuous_families,
+                &self.equation_family_bodies,
+            ),
+        )?;
+        state.serialize_field(
+            "initialization_equation_operations",
+            &equation_systems::EquationOperationsOutput::new(
+                &self.initialization_equation_owners,
+                &self.initialization_equations,
+                &self.initialization_families,
+                &self.equation_family_bodies,
+            ),
+        )?;
+        state.serialize_field("discrete_real_equations", &self.discrete_real_equations)?;
+        state.serialize_field("discrete_assignments", &self.discrete_assignments)?;
+        state.serialize_field("relations", &self.relations)?;
+        state.serialize_field("conditions", &self.conditions)?;
+        state.serialize_field("roots", &self.roots)?;
+        state.serialize_field("time_events", &self.time_events)?;
+        state.serialize_field("event_actions", &self.event_actions)?;
+        state.serialize_field("clocks", &self.clocks)?;
+        state.serialize_field("clock_ownerships", &self.clock_ownerships)?;
+        state.serialize_field("previous_values", &self.previous_values)?;
+        state.serialize_field("terminals", &self.terminals)?;
+        state.serialize_field("delays", &self.delays)?;
+        state.end()
+    }
+}
+
 /// Private schema-v11 input records.
 ///
 /// These mirror the serialized column names, but they are deliberately
@@ -67,18 +120,12 @@ struct StorageWire {
     value_type_provenance: Vec<DaeProvenance>,
     variables: Vec<VariableEntryWire>,
     functions: Vec<FunctionEntryWire>,
-    function_folds: Vec<FunctionFoldEntryWire>,
     domains: Vec<DomainEntryWire>,
     expressions: ExpressionArenaWire,
-    continuous_equations: Vec<ResidualEquationWire>,
-    initialization_equations: Vec<ResidualEquationWire>,
+    continuous_equation_operations: Vec<EquationOperationInput>,
+    initialization_equation_operations: Vec<EquationOperationInput>,
     discrete_real_equations: Vec<ResidualEquationWire>,
     discrete_assignments: Vec<DiscreteAssignmentWire>,
-    continuous_families: Vec<StructuredFamilyWire>,
-    initialization_families: Vec<StructuredFamilyWire>,
-    continuous_equation_owners: Vec<EquationOwnerWire>,
-    initialization_equation_owners: Vec<EquationOwnerWire>,
-    equation_family_bodies: Vec<u32>,
     relations: Vec<RelationEntryWire>,
     conditions: Vec<ConditionEntryWire>,
     roots: Vec<RootEntryWire>,
@@ -156,80 +203,41 @@ struct VariableAttributesInput {
 #[serde(deny_unknown_fields)]
 struct FunctionEntryWire {
     name: rumoca_core::VarName,
-    parameters: Vec<u32>,
-    results: Vec<u32>,
-    parameter_values: Vec<FunctionParameterEntryInput>,
-    values: Vec<FunctionValueEntryInput>,
-    output_values: Vec<u32>,
-    definitions: Vec<FunctionSsaDefinitionInput>,
-    folds: Vec<u32>,
-    #[serde(deserialize_with = "deserialize_provenance")]
-    declaration: DaeProvenance,
-    definition: Option<FunctionDefinitionInput>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct FunctionParameterEntryInput {
-    name: rumoca_core::VarName,
-    value_type: u32,
-    #[serde(deserialize_with = "deserialize_provenance")]
-    declaration: DaeProvenance,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct FunctionValueEntryInput {
-    name: rumoca_core::VarName,
-    value_type: u32,
-    role: FunctionValueRole,
-    #[serde(deserialize_with = "deserialize_provenance")]
-    declaration: DaeProvenance,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct FunctionDefinitionInput {
+    parameters: Vec<FunctionNamedValueInput>,
+    outputs: Vec<FunctionNamedValueInput>,
+    locals: Vec<FunctionNamedValueInput>,
     statements: Vec<FunctionStatementInput>,
-    results: Vec<u32>,
+    #[serde(deserialize_with = "deserialize_provenance")]
+    declaration: DaeProvenance,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct FunctionSsaDefinitionInput {
-    target: u32,
-    rhs: u32,
+struct FunctionNamedValueInput {
+    name: rumoca_core::VarName,
+    value_type: u32,
     #[serde(deserialize_with = "deserialize_provenance")]
-    provenance: DaeProvenance,
+    declaration: DaeProvenance,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 enum FunctionStatementInput {
     Assignment {
-        definition: u32,
-    },
-    For {
-        fold: u32,
-        statements: Vec<FunctionStatementInput>,
+        target: u32,
+        rhs: u32,
         #[serde(deserialize_with = "deserialize_provenance")]
         provenance: DaeProvenance,
     },
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct FunctionFoldEntryWire {
-    function: u32,
-    ordinal: u32,
-    domain: u32,
-    targets: Vec<u32>,
-    parameter_definitions: Vec<u32>,
-    initial_definitions: Vec<u32>,
-    update_definitions: Vec<u32>,
-    output_definitions: Vec<u32>,
-    #[serde(deserialize_with = "deserialize_provenance")]
-    provenance: DaeProvenance,
+    For {
+        domain: u32,
+        targets: Vec<u32>,
+        statements: Vec<FunctionStatementInput>,
+        #[serde(deserialize_with = "deserialize_provenance")]
+        begin_provenance: DaeProvenance,
+        #[serde(deserialize_with = "deserialize_provenance")]
+        finish_provenance: DaeProvenance,
+    },
 }
 
 #[derive(Deserialize)]
@@ -250,44 +258,29 @@ struct ResidualEquationWire {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+enum EquationOperationInput {
+    Residual {
+        residual: u32,
+        #[serde(deserialize_with = "deserialize_provenance")]
+        provenance: DaeProvenance,
+    },
+    Structured {
+        domain: u32,
+        scalar_view: rumoca_core::ComprehensionScalarView,
+        bodies: Vec<u32>,
+        #[serde(deserialize_with = "deserialize_provenance")]
+        provenance: DaeProvenance,
+    },
+}
+
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct DiscreteAssignmentWire {
     target: u32,
     value: u32,
     #[serde(deserialize_with = "deserialize_provenance")]
     provenance: DaeProvenance,
-}
-
-#[derive(Deserialize, Clone, Copy)]
-#[serde(deny_unknown_fields)]
-struct FamilyBodyRangeWire {
-    start: u32,
-    len: u32,
-}
-
-impl FamilyBodyRangeWire {
-    fn indices(self) -> Option<std::ops::Range<usize>> {
-        let start = self.start as usize;
-        let end = start.checked_add(self.len as usize)?;
-        Some(start..end)
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct StructuredFamilyWire {
-    domain: u32,
-    scalar_view: rumoca_core::ComprehensionScalarView,
-    bodies: FamilyBodyRangeWire,
-    #[serde(deserialize_with = "deserialize_provenance")]
-    provenance: DaeProvenance,
-}
-
-#[derive(Deserialize, Clone, Copy)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
-enum EquationOwnerWire {
-    Residual(u32),
-    Structured(u32),
 }
 
 #[derive(Deserialize, Clone, Copy)]
@@ -444,12 +437,22 @@ struct PositiveParameterWire {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+enum DelayKindWire {
+    ParameterDelay {
+        delay_time: PositiveParameterWire,
+    },
+    BoundedDelay {
+        delay_time: u32,
+        delay_max: PositiveParameterWire,
+    },
+}
+
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct DelayEntryWire {
     source: u32,
-    delay_time: u32,
-    delay_time_evidence: Option<PositiveParameterWire>,
-    delay_max: Option<PositiveParameterWire>,
+    kind: DelayKindWire,
     #[serde(deserialize_with = "deserialize_provenance")]
     provenance: DaeProvenance,
 }
@@ -477,7 +480,6 @@ struct WireIds<'dae> {
     types: Vec<ValueTypeId<'dae>>,
     variables: Vec<VariableId<'dae>>,
     functions: Vec<FunctionId<'dae>>,
-    function_folds: Vec<Option<FunctionFoldId<'dae>>>,
     domains: Vec<DomainId<'dae>>,
     conditions: Vec<ConditionId<'dae>>,
     relations: Vec<RelationId<'dae>>,
@@ -487,6 +489,8 @@ struct WireIds<'dae> {
     delays: Vec<DelayId<'dae>>,
     expressions: Vec<ExprId<'dae>>,
     next_expression_type_anchor: usize,
+    next_operand: usize,
+    next_subscript: usize,
 }
 
 fn mapped_expression<'dae>(
@@ -510,7 +514,6 @@ fn reconstruct<'dae>(
         types,
         variables,
         functions,
-        function_folds: vec![None; wire.function_folds.len()],
         domains,
         conditions,
         relations: Vec::with_capacity(wire.relations.len()),
@@ -520,6 +523,8 @@ fn reconstruct<'dae>(
         delays: Vec::with_capacity(wire.delays.len()),
         expressions: Vec::with_capacity(wire.expressions.nodes.len()),
         next_expression_type_anchor: 0,
+        next_operand: 0,
+        next_subscript: 0,
     };
     reconstruct_clocks(wire, dae, &mut ids)?;
     reconstruct_temporal(wire, dae, &mut ids)?;
@@ -686,13 +691,8 @@ fn reconstruct_functions<'dae>(
     let mut ids = Vec::with_capacity(wire.functions.len());
     let mut reservations = Vec::with_capacity(wire.functions.len());
     for function in &wire.functions {
-        let parameters = map_many(
-            types,
-            &function.parameters,
-            "value type",
-            function.declaration,
-        )?;
-        let results = map_many(types, &function.results, "value type", function.declaration)?;
+        let parameters = map_function_value_types(types, &function.parameters)?;
+        let results = map_function_value_types(types, &function.outputs)?;
         let (id, reservation) = dae.functions(|functions| {
             functions.reserve_recursive(
                 function.name.clone(),
@@ -708,13 +708,23 @@ fn reconstruct_functions<'dae>(
     Ok((ids, reservations))
 }
 
+fn map_function_value_types<'dae>(
+    types: &[ValueTypeId<'dae>],
+    values: &[FunctionNamedValueInput],
+) -> Result<Vec<ValueTypeId<'dae>>, DaeConstructionError> {
+    values
+        .iter()
+        .map(|value| mapped(types, value.value_type, "value type", value.declaration))
+        .collect()
+}
+
 fn reconstruct_function_values<'dae>(
     function: &FunctionEntryWire,
     dae: &mut DaeConstruction<'dae>,
     types: &[ValueTypeId<'dae>],
     reservation: &FunctionReservation<'dae>,
 ) -> Result<(), DaeConstructionError> {
-    for (ordinal, parameter) in function.parameter_values.iter().enumerate() {
+    for (ordinal, parameter) in function.parameters.iter().enumerate() {
         let rebuilt = dae.functions(|functions| {
             functions.parameter(
                 reservation,
@@ -723,20 +733,6 @@ fn reconstruct_function_values<'dae>(
                 parameter.declaration,
             )
         })?;
-        let wire_type = mapped(
-            types,
-            parameter.value_type,
-            "value type",
-            parameter.declaration,
-        )?;
-        let rebuilt_type = dae.storage.functions[reservation.function().index() as usize]
-            .parameter_values[rebuilt.ordinal() as usize]
-            .value_type;
-        if rebuilt_type != wire_type.index() {
-            return Err(DaeConstructionError::ShapeMismatch {
-                span: parameter.declaration.span(),
-            });
-        }
         expect_ordinal(
             "function parameter",
             ordinal,
@@ -744,25 +740,19 @@ fn reconstruct_function_values<'dae>(
             parameter.declaration,
         )?;
     }
-    if function.output_values.len() > function.values.len() {
-        return Err(malformed("functions.output_values"));
+    for (ordinal, value) in function.outputs.iter().enumerate() {
+        let rebuilt = dae.functions(|functions| {
+            functions.output(reservation, value.name.clone(), ordinal, value.declaration)
+        })?;
+        expect_ordinal(
+            "function value",
+            ordinal,
+            rebuilt.ordinal(),
+            value.declaration,
+        )?;
     }
-    for (raw, value) in function.values.iter().enumerate() {
-        if raw < function.output_values.len() {
-            let expected = u32::try_from(raw).map_err(|_| malformed("functions.values"))?;
-            if function.output_values[raw] != expected || value.role != FunctionValueRole::Output {
-                return Err(malformed("functions.output_values"));
-            }
-            let rebuilt = dae.functions(|functions| {
-                functions.output(reservation, value.name.clone(), raw, value.declaration)
-            })?;
-            expect_function_value_type(dae, types, reservation, value, rebuilt)?;
-            expect_ordinal("function value", raw, rebuilt.ordinal(), value.declaration)?;
-            continue;
-        }
-        if value.role != FunctionValueRole::Local {
-            return Err(malformed("functions.values"));
-        }
+    let output_count = function.outputs.len();
+    for (local, value) in function.locals.iter().enumerate() {
         let value_type = mapped(types, value.value_type, "value type", value.declaration)?;
         let rebuilt = dae.functions(|functions| {
             functions.local(
@@ -772,29 +762,14 @@ fn reconstruct_function_values<'dae>(
                 value.declaration,
             )
         })?;
-        expect_ordinal("function value", raw, rebuilt.ordinal(), value.declaration)?;
+        expect_ordinal(
+            "function value",
+            output_count + local,
+            rebuilt.ordinal(),
+            value.declaration,
+        )?;
     }
     Ok(())
-}
-
-fn expect_function_value_type<'dae>(
-    dae: &DaeConstruction<'dae>,
-    types: &[ValueTypeId<'dae>],
-    reservation: &FunctionReservation<'dae>,
-    value: &FunctionValueEntryInput,
-    rebuilt: FunctionValueId<'dae>,
-) -> Result<(), DaeConstructionError> {
-    let wire_type = mapped(types, value.value_type, "value type", value.declaration)?;
-    let rebuilt_type = dae.storage.functions[reservation.function().index() as usize].values
-        [rebuilt.ordinal() as usize]
-        .value_type;
-    if rebuilt_type == wire_type.index() {
-        Ok(())
-    } else {
-        Err(DaeConstructionError::ShapeMismatch {
-            span: value.declaration.span(),
-        })
-    }
 }
 
 fn reconstruct_domains<'dae>(
@@ -837,7 +812,6 @@ fn reconstruct_next_expression<'dae>(
     let expression = wire_expression(wire, index)?;
     let provenance = expression.provenance;
     let node = expression.node;
-    expect_next_packed_ranges(wire, dae, node)?;
     let type_anchor = take_expression_type_anchor(wire, ids, node, provenance)?;
     let id = match node {
         ExprNodeWire::Coordinate(CoordinateWire::Delay(delay)) => {
@@ -876,7 +850,7 @@ fn take_expression_type_anchor<'dae>(
 ) -> Result<Option<ValueTypeId<'dae>>, DaeConstructionError> {
     let expression = checked_u32(ids.expressions.len(), "expression arena", provenance)?;
     let required = matches!(node, ExprNodeWire::Record { .. })
-        || matches!(node, ExprNodeWire::Array { operands } if operands.len == 0);
+        || matches!(node, ExprNodeWire::Array { operand_count: 0 });
     let next = wire
         .expressions
         .type_anchors
@@ -915,48 +889,6 @@ fn expect_no_expression_type_anchor(
     Ok(())
 }
 
-fn expect_next_packed_ranges(
-    wire: &StorageWire,
-    dae: &DaeConstruction<'_>,
-    node: &ExprNodeWire,
-) -> Result<(), DaeConstructionError> {
-    match node {
-        ExprNodeWire::Conditional { operands }
-        | ExprNodeWire::Array { operands }
-        | ExprNodeWire::Record { operands }
-        | ExprNodeWire::Builtin { operands, .. }
-        | ExprNodeWire::Call { operands, .. } => expect_packed_range(
-            *operands,
-            dae.storage.expressions.operands.len(),
-            wire.expressions.operands.len(),
-            "expressions.operands",
-        ),
-        ExprNodeWire::Index { subscripts, .. } | ExprNodeWire::ArrayUpdate { subscripts, .. } => {
-            expect_packed_range(
-                *subscripts,
-                dae.storage.expressions.subscripts.len(),
-                wire.expressions.subscripts.len(),
-                "expressions.subscripts",
-            )
-        }
-        _ => Ok(()),
-    }
-}
-
-fn expect_packed_range(
-    range: OperandRangeWire,
-    cursor: usize,
-    buffer_len: usize,
-    column: &'static str,
-) -> Result<(), DaeConstructionError> {
-    let indices = range.indices().ok_or_else(|| malformed(column))?;
-    if indices.start == cursor && indices.end <= buffer_len {
-        Ok(())
-    } else {
-        Err(malformed(column))
-    }
-}
-
 fn expect_expression_arena_consumed(
     wire: &StorageWire,
     dae: &DaeConstruction<'_>,
@@ -965,6 +897,9 @@ fn expect_expression_arena_consumed(
     let count = wire.expressions.nodes.len();
     if wire.expressions.provenance.len() != count
         || ids.next_expression_type_anchor != wire.expressions.type_anchors.len()
+        || ids.next_operand != wire.expressions.operands.len()
+        || ids.next_subscript != wire.expressions.subscripts.len()
+        || ids.delays.len() != wire.delays.len()
         || dae.storage.expressions.nodes.len() != count
         || dae.storage.expressions.operands.len() != wire.expressions.operands.len()
         || dae.storage.expressions.subscripts.len() != wire.expressions.subscripts.len()
@@ -997,8 +932,10 @@ fn reconstruct_delay_coordinate<'dae>(
         "expression",
         delay.provenance,
     )?;
-    let coordinate = match (&delay.delay_time_evidence, &delay.delay_max) {
-        (Some(evidence), None) if evidence.expression == delay.delay_time => {
+    let coordinate = match &delay.kind {
+        DelayKindWire::ParameterDelay {
+            delay_time: evidence,
+        } => {
             let expression = mapped(
                 &ids.expressions,
                 evidence.expression,
@@ -1011,10 +948,13 @@ fn reconstruct_delay_coordinate<'dae>(
                 temporal.delay(source, positive, delay.provenance, coordinate_provenance)
             })?
         }
-        (None, Some(maximum)) => {
+        DelayKindWire::BoundedDelay {
+            delay_time,
+            delay_max: maximum,
+        } => {
             let delay_time = mapped(
                 &ids.expressions,
-                delay.delay_time,
+                *delay_time,
                 "expression",
                 delay.provenance,
             )?;
@@ -1039,11 +979,6 @@ fn reconstruct_delay_coordinate<'dae>(
                 )
             })?
         }
-        _ => {
-            return Err(DaeConstructionError::MalformedWire {
-                column: "delay evidence",
-            });
-        }
     };
     expect_ordinal("delay", index, coordinate.id().index(), delay.provenance)?;
     ids.delays.push(coordinate.id());
@@ -1052,7 +987,7 @@ fn reconstruct_delay_coordinate<'dae>(
 
 fn rebuild_node<'dae>(
     wire: &StorageWire,
-    ids: &WireIds<'dae>,
+    ids: &mut WireIds<'dae>,
     at: ExpressionAt<'_, 'dae>,
     node: &ExprNodeWire,
     type_anchor: Option<ValueTypeId<'dae>>,
@@ -1079,20 +1014,20 @@ fn rebuild_node<'dae>(
             mapped(&ids.expressions, *lhs, "expression", provenance)?,
             mapped(&ids.expressions, *rhs, "expression", provenance)?,
         ),
-        ExprNodeWire::Conditional { operands } => {
-            rebuild_conditional(wire, ids, at, *operands, provenance)
+        ExprNodeWire::Conditional { operand_count } => {
+            rebuild_conditional(wire, ids, at, *operand_count, provenance)
         }
-        ExprNodeWire::Array { operands } => {
-            let operands = map_expression_operands(wire, ids, *operands, provenance)?;
+        ExprNodeWire::Array { operand_count } => {
+            let operands = map_expression_operands(wire, ids, *operand_count, provenance)?;
             if operands.is_empty() {
                 at.empty_array(type_anchor.ok_or_else(|| malformed("expressions.type_anchors"))?)
             } else {
                 at.array(operands)
             }
         }
-        ExprNodeWire::Record { operands } => at.record(
+        ExprNodeWire::Record { operand_count } => at.record(
             type_anchor.ok_or_else(|| malformed("expressions.type_anchors"))?,
-            map_expression_operands(wire, ids, *operands, provenance)?,
+            map_expression_operands(wire, ids, *operand_count, provenance)?,
         ),
         ExprNodeWire::Field { base, field } => at.field(
             mapped(&ids.expressions, *base, "expression", provenance)?,
@@ -1103,30 +1038,34 @@ fn rebuild_node<'dae>(
             mapped(&ids.domains, *domain, "domain", provenance)?,
             mapped(&ids.expressions, *body, "expression", provenance)?,
         ),
-        ExprNodeWire::Index { base, subscripts } => {
-            rebuild_index(wire, ids, at, *base, *subscripts, provenance)
-        }
+        ExprNodeWire::Index {
+            base,
+            subscript_count,
+        } => rebuild_index(wire, ids, at, *base, *subscript_count, provenance),
         ExprNodeWire::ArrayUpdate {
             base,
             value,
-            subscripts,
+            subscript_count,
         } => at.array_update(
             mapped(&ids.expressions, *base, "expression", provenance)?,
             mapped(&ids.expressions, *value, "expression", provenance)?,
-            rebuild_subscripts(wire, ids, *subscripts, provenance)?,
+            rebuild_subscripts(wire, ids, *subscript_count, provenance)?,
         ),
-        ExprNodeWire::Builtin { builtin, operands } => at.builtin(
+        ExprNodeWire::Builtin {
+            builtin,
+            operand_count,
+        } => at.builtin(
             *builtin,
-            map_expression_operands(wire, ids, *operands, provenance)?,
+            map_expression_operands(wire, ids, *operand_count, provenance)?,
         ),
         ExprNodeWire::Call {
             function,
             output,
-            operands,
+            operand_count,
         } => at.call(
             mapped(&ids.functions, *function, "function", provenance)?,
             *output as usize,
-            map_expression_operands(wire, ids, *operands, provenance)?,
+            map_expression_operands(wire, ids, *operand_count, provenance)?,
         ),
         ExprNodeWire::FunctionValue { .. } => Err(malformed("expressions.nodes.function_value")),
         ExprNodeWire::FunctionFoldParameter { .. } | ExprNodeWire::FunctionFoldOutput { .. } => {
@@ -1202,12 +1141,12 @@ fn rebuild_coordinate<'dae>(
 
 fn rebuild_conditional<'dae>(
     wire: &StorageWire,
-    ids: &WireIds<'dae>,
+    ids: &mut WireIds<'dae>,
     at: ExpressionAt<'_, 'dae>,
-    range: OperandRangeWire,
+    count: u32,
     provenance: DaeProvenance,
 ) -> Result<ExprId<'dae>, DaeConstructionError> {
-    let operands = wire_operands(wire, range, provenance)?;
+    let operands = wire_operands(wire, &mut ids.next_operand, count)?;
     let Some((&fallback, branch_operands)) = operands.split_last() else {
         return Err(invalid_arity(1, 0, provenance));
     };
@@ -1235,13 +1174,13 @@ fn rebuild_conditional<'dae>(
 
 fn rebuild_index<'dae>(
     wire: &StorageWire,
-    ids: &WireIds<'dae>,
+    ids: &mut WireIds<'dae>,
     at: ExpressionAt<'_, 'dae>,
     base: u32,
-    range: OperandRangeWire,
+    count: u32,
     provenance: DaeProvenance,
 ) -> Result<ExprId<'dae>, DaeConstructionError> {
-    let subscripts = rebuild_subscripts(wire, ids, range, provenance)?;
+    let subscripts = rebuild_subscripts(wire, ids, count, provenance)?;
     at.index(
         mapped(&ids.expressions, base, "expression", provenance)?,
         subscripts,
@@ -1250,17 +1189,16 @@ fn rebuild_index<'dae>(
 
 fn rebuild_subscripts<'dae>(
     wire: &StorageWire,
-    ids: &WireIds<'dae>,
-    range: OperandRangeWire,
+    ids: &mut WireIds<'dae>,
+    count: u32,
     provenance: DaeProvenance,
 ) -> Result<Vec<Subscript<'dae>>, DaeConstructionError> {
-    let packed = wire
-        .expressions
-        .subscripts
-        .get(range.indices().ok_or(DaeConstructionError::MalformedWire {
-            column: "subscript range",
-        })?)
-        .ok_or_else(|| unknown("subscript range", range.start, provenance))?;
+    let packed = take_packed(
+        &wire.expressions.subscripts,
+        &mut ids.next_subscript,
+        count,
+        "expressions.subscripts",
+    )?;
     packed
         .iter()
         .map(|subscript| rebuild_subscript(ids, subscript, provenance))

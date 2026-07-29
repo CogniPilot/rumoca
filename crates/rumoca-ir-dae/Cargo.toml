@@ -11,6 +11,7 @@ rumoca-core = { workspace = true }
 indexmap = { workspace = true }
 rustc-hash = { workspace = true }
 serde = { workspace = true }
+thiserror = { workspace = true }
 
 [dev-dependencies]
 bincode = { workspace = true }

@@ -1,11 +1,147 @@
 use super::*;
+use serde::Serialize;
+use serde::ser::SerializeSeq;
+
+pub(super) struct EquationOperationsOutput<'storage> {
+    owners: &'storage [EquationOwnerEntry],
+    residuals: &'storage [ResidualEquationEntry],
+    families: &'storage [StructuredFamilyEntry],
+    bodies: &'storage [u32],
+}
+
+impl<'storage> EquationOperationsOutput<'storage> {
+    pub(super) const fn new(
+        owners: &'storage [EquationOwnerEntry],
+        residuals: &'storage [ResidualEquationEntry],
+        families: &'storage [StructuredFamilyEntry],
+        bodies: &'storage [u32],
+    ) -> Self {
+        Self {
+            owners,
+            residuals,
+            families,
+            bodies,
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+enum EquationOperationOutput<'storage> {
+    Residual {
+        residual: u32,
+        provenance: DaeProvenance,
+    },
+    Structured {
+        domain: u32,
+        scalar_view: rumoca_core::ComprehensionScalarView,
+        bodies: &'storage [u32],
+        provenance: DaeProvenance,
+    },
+}
+
+impl Serialize for EquationOperationsOutput<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut residual_cursor = 0usize;
+        let mut family_cursor = 0usize;
+        let mut sequence = serializer.serialize_seq(Some(self.owners.len()))?;
+        for owner in self.owners {
+            let operation = self
+                .project_operation(owner, &mut residual_cursor, &mut family_cursor)
+                .map_err(serde::ser::Error::custom)?;
+            sequence.serialize_element(&operation)?;
+        }
+        if residual_cursor != self.residuals.len() || family_cursor != self.families.len() {
+            return Err(serde::ser::Error::custom(
+                "equation owner sequence is incomplete",
+            ));
+        }
+        sequence.end()
+    }
+}
+
+impl<'storage> EquationOperationsOutput<'storage> {
+    fn project_operation(
+        &self,
+        owner: &EquationOwnerEntry,
+        residual_cursor: &mut usize,
+        family_cursor: &mut usize,
+    ) -> Result<EquationOperationOutput<'storage>, &'static str> {
+        match owner {
+            EquationOwnerEntry::Residual(raw) => {
+                let operation = self.project_residual(*raw, *residual_cursor)?;
+                *residual_cursor += 1;
+                Ok(operation)
+            }
+            EquationOwnerEntry::Structured(raw) => {
+                let operation = self.project_family(*raw, *family_cursor)?;
+                *family_cursor += 1;
+                Ok(operation)
+            }
+        }
+    }
+
+    fn project_residual(
+        &self,
+        raw: u32,
+        cursor: usize,
+    ) -> Result<EquationOperationOutput<'storage>, &'static str> {
+        if raw as usize != cursor {
+            return Err("equation residual owner is not dense");
+        }
+        let equation = self
+            .residuals
+            .get(cursor)
+            .ok_or("equation residual is missing")?;
+        Ok(EquationOperationOutput::Residual {
+            residual: equation.residual,
+            provenance: equation.provenance,
+        })
+    }
+
+    fn project_family(
+        &self,
+        raw: u32,
+        cursor: usize,
+    ) -> Result<EquationOperationOutput<'storage>, &'static str> {
+        if raw as usize != cursor {
+            return Err("structured equation owner is not dense");
+        }
+        let family = self
+            .families
+            .get(cursor)
+            .ok_or("structured equation family is missing")?;
+        let start = family.bodies.start as usize;
+        let end = start
+            .checked_add(family.bodies.len as usize)
+            .ok_or("structured equation body range overflows")?;
+        let bodies = self
+            .bodies
+            .get(start..end)
+            .ok_or("structured equation bodies are missing")?;
+        Ok(EquationOperationOutput::Structured {
+            domain: family.domain,
+            scalar_view: family.scalar_view,
+            bodies,
+            provenance: family.provenance,
+        })
+    }
+}
 
 pub(super) fn reconstruct_equation_systems<'dae>(
     wire: &StorageWire,
     dae: &mut DaeConstruction<'dae>,
     ids: &WireIds<'dae>,
 ) -> Result<(), DaeConstructionError> {
-    reconstruct_equation_owners(wire, dae, ids)?;
+    for operation in &wire.continuous_equation_operations {
+        reconstruct_continuous_operation(operation, dae, ids)?;
+    }
+    for operation in &wire.initialization_equation_operations {
+        reconstruct_initialization_operation(operation, dae, ids)?;
+    }
     for equation in &wire.discrete_real_equations {
         let residual = mapped_residual(ids, equation)?;
         dae.discrete(|discrete| {
@@ -31,162 +167,69 @@ pub(super) fn reconstruct_equation_systems<'dae>(
     Ok(())
 }
 
-#[derive(Default)]
-struct OwnerReplay {
-    next: usize,
-    residuals: usize,
-    families: usize,
-}
-
-fn reconstruct_equation_owners<'dae>(
-    wire: &StorageWire,
+fn reconstruct_continuous_operation<'dae>(
+    operation: &EquationOperationInput,
     dae: &mut DaeConstruction<'dae>,
     ids: &WireIds<'dae>,
 ) -> Result<(), DaeConstructionError> {
-    let mut continuous = OwnerReplay::default();
-    let mut initialization = OwnerReplay::default();
-    let mut body_cursor = 0usize;
-    while continuous.next < wire.continuous_equation_owners.len()
-        || initialization.next < wire.initialization_equation_owners.len()
-    {
-        replay_continuous_residuals(wire, dae, ids, &mut continuous)?;
-        replay_initialization_residuals(wire, dae, ids, &mut initialization)?;
-        let continuous_start = next_family_start(
-            &wire.continuous_equation_owners,
-            &wire.continuous_families,
-            &continuous,
-            "continuous equation owner order",
-        )?;
-        let initialization_start = next_family_start(
-            &wire.initialization_equation_owners,
-            &wire.initialization_families,
-            &initialization,
-            "initialization equation owner order",
-        )?;
-        if continuous_start == Some(body_cursor) {
-            let family = &wire.continuous_families[continuous.families];
-            reconstruct_continuous_family(wire, dae, ids, family, &mut body_cursor)?;
-            continuous.families += 1;
-            continuous.next += 1;
-        } else if initialization_start == Some(body_cursor) {
-            let family = &wire.initialization_families[initialization.families];
-            reconstruct_initialization_family(wire, dae, ids, family, &mut body_cursor)?;
-            initialization.families += 1;
-            initialization.next += 1;
-        } else if continuous_start.is_some() || initialization_start.is_some() {
-            return Err(malformed("equation family body order"));
+    match operation {
+        EquationOperationInput::Residual {
+            residual,
+            provenance,
+        } => {
+            let residual = mapped(&ids.expressions, *residual, "expression", *provenance)?;
+            dae.continuous(|continuous| {
+                continuous.equation(*provenance, |owner| owner.residual(residual))
+            })?;
         }
-    }
-    expect_owner_replay_consumed(wire, dae, continuous, initialization, body_cursor)
-}
-
-fn replay_continuous_residuals<'dae>(
-    wire: &StorageWire,
-    dae: &mut DaeConstruction<'dae>,
-    ids: &WireIds<'dae>,
-    replay: &mut OwnerReplay,
-) -> Result<(), DaeConstructionError> {
-    while let Some(EquationOwnerWire::Residual(raw)) =
-        wire.continuous_equation_owners.get(replay.next)
-    {
-        if *raw as usize != replay.residuals {
-            return Err(malformed("continuous equation owner order"));
-        }
-        let equation = wire
-            .continuous_equations
-            .get(replay.residuals)
-            .ok_or_else(|| malformed("continuous equation owner order"))?;
-        let residual = mapped_residual(ids, equation)?;
-        dae.continuous(|continuous| {
-            continuous.equation(equation.provenance, |owner| owner.residual(residual))
-        })?;
-        replay.residuals += 1;
-        replay.next += 1;
-    }
-    Ok(())
-}
-
-fn replay_initialization_residuals<'dae>(
-    wire: &StorageWire,
-    dae: &mut DaeConstruction<'dae>,
-    ids: &WireIds<'dae>,
-    replay: &mut OwnerReplay,
-) -> Result<(), DaeConstructionError> {
-    while let Some(EquationOwnerWire::Residual(raw)) =
-        wire.initialization_equation_owners.get(replay.next)
-    {
-        if *raw as usize != replay.residuals {
-            return Err(malformed("initialization equation owner order"));
-        }
-        let equation = wire
-            .initialization_equations
-            .get(replay.residuals)
-            .ok_or_else(|| malformed("initialization equation owner order"))?;
-        let residual = mapped_residual(ids, equation)?;
-        dae.initialization(|initialization| {
-            initialization.equation(equation.provenance, |owner| owner.residual(residual))
-        })?;
-        replay.residuals += 1;
-        replay.next += 1;
-    }
-    Ok(())
-}
-
-fn next_family_start(
-    owners: &[EquationOwnerWire],
-    families: &[StructuredFamilyWire],
-    replay: &OwnerReplay,
-    column: &'static str,
-) -> Result<Option<usize>, DaeConstructionError> {
-    let Some(owner) = owners.get(replay.next) else {
-        return Ok(None);
-    };
-    let EquationOwnerWire::Structured(raw) = owner else {
-        return Err(malformed(column));
-    };
-    if *raw as usize != replay.families {
-        return Err(malformed(column));
-    }
-    let family = families
-        .get(replay.families)
-        .ok_or_else(|| malformed(column))?;
-    Ok(Some(family.bodies.start as usize))
-}
-
-fn reconstruct_continuous_family<'dae>(
-    wire: &StorageWire,
-    dae: &mut DaeConstruction<'dae>,
-    ids: &WireIds<'dae>,
-    family: &StructuredFamilyWire,
-    body_cursor: &mut usize,
-) -> Result<(), DaeConstructionError> {
-    let domain = mapped(&ids.domains, family.domain, "domain", family.provenance)?;
-    let bodies = mapped_family_bodies(wire, ids, family, body_cursor)?;
-    dae.continuous(|continuous| {
-        continuous.structured_family(family.provenance, domain, family.scalar_view, |residuals| {
-            attach_family_bodies(residuals, &bodies)
-        })
-    })?;
-    Ok(())
-}
-
-fn reconstruct_initialization_family<'dae>(
-    wire: &StorageWire,
-    dae: &mut DaeConstruction<'dae>,
-    ids: &WireIds<'dae>,
-    family: &StructuredFamilyWire,
-    body_cursor: &mut usize,
-) -> Result<(), DaeConstructionError> {
-    let domain = mapped(&ids.domains, family.domain, "domain", family.provenance)?;
-    let bodies = mapped_family_bodies(wire, ids, family, body_cursor)?;
-    dae.initialization(|initialization| {
-        initialization.structured_family(
-            family.provenance,
+        EquationOperationInput::Structured {
             domain,
-            family.scalar_view,
-            |residuals| attach_family_bodies(residuals, &bodies),
-        )
-    })?;
+            scalar_view,
+            bodies,
+            provenance,
+        } => {
+            let domain = mapped(&ids.domains, *domain, "domain", *provenance)?;
+            let bodies = map_many(&ids.expressions, bodies, "expression", *provenance)?;
+            dae.continuous(|continuous| {
+                continuous.structured_family(*provenance, domain, *scalar_view, |residuals| {
+                    attach_family_bodies(residuals, &bodies)
+                })
+            })?;
+        }
+    }
+    Ok(())
+}
+
+fn reconstruct_initialization_operation<'dae>(
+    operation: &EquationOperationInput,
+    dae: &mut DaeConstruction<'dae>,
+    ids: &WireIds<'dae>,
+) -> Result<(), DaeConstructionError> {
+    match operation {
+        EquationOperationInput::Residual {
+            residual,
+            provenance,
+        } => {
+            let residual = mapped(&ids.expressions, *residual, "expression", *provenance)?;
+            dae.initialization(|initialization| {
+                initialization.equation(*provenance, |owner| owner.residual(residual))
+            })?;
+        }
+        EquationOperationInput::Structured {
+            domain,
+            scalar_view,
+            bodies,
+            provenance,
+        } => {
+            let domain = mapped(&ids.domains, *domain, "domain", *provenance)?;
+            let bodies = map_many(&ids.expressions, bodies, "expression", *provenance)?;
+            dae.initialization(|initialization| {
+                initialization.structured_family(*provenance, domain, *scalar_view, |residuals| {
+                    attach_family_bodies(residuals, &bodies)
+                })
+            })?;
+        }
+    }
     Ok(())
 }
 
@@ -196,53 +239,6 @@ fn attach_family_bodies<'dae>(
 ) -> Result<(), DaeConstructionError> {
     for body in bodies {
         residuals.body(*body)?;
-    }
-    Ok(())
-}
-
-fn mapped_family_bodies<'dae>(
-    wire: &StorageWire,
-    ids: &WireIds<'dae>,
-    family: &StructuredFamilyWire,
-    cursor: &mut usize,
-) -> Result<Vec<ExprId<'dae>>, DaeConstructionError> {
-    let indices = family
-        .bodies
-        .indices()
-        .ok_or_else(|| malformed("equation family body range"))?;
-    if indices.start != *cursor {
-        return Err(malformed("equation family body order"));
-    }
-    let raw = wire
-        .equation_family_bodies
-        .get(indices.clone())
-        .ok_or_else(|| {
-            unknown(
-                "equation family body range",
-                family.bodies.start,
-                family.provenance,
-            )
-        })?;
-    let bodies = map_many(&ids.expressions, raw, "expression", family.provenance)?;
-    *cursor = indices.end;
-    Ok(bodies)
-}
-
-fn expect_owner_replay_consumed(
-    wire: &StorageWire,
-    dae: &DaeConstruction<'_>,
-    continuous: OwnerReplay,
-    initialization: OwnerReplay,
-    body_cursor: usize,
-) -> Result<(), DaeConstructionError> {
-    if continuous.residuals != wire.continuous_equations.len()
-        || continuous.families != wire.continuous_families.len()
-        || initialization.residuals != wire.initialization_equations.len()
-        || initialization.families != wire.initialization_families.len()
-        || body_cursor != wire.equation_family_bodies.len()
-        || dae.storage.equation_family_bodies != wire.equation_family_bodies
-    {
-        return Err(malformed("equation owners"));
     }
     Ok(())
 }

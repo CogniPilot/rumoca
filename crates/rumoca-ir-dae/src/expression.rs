@@ -10,9 +10,7 @@ use crate::{
     DomainBinderId, DomainId, ExprId, FunctionDefinitionId, FunctionFoldId, FunctionId,
     FunctionParameterId, FunctionValueId, InputId, ParameterId, StateId, ValueTypeId,
 };
-use function_facts::{
-    node_function_illegal_coordinate, node_function_read_set, node_function_scope,
-};
+use function_facts::node_function_facts;
 use type_rules::{
     binary_result, builtin_result, checked_u32, common_value_type, range_extent, type_mismatch,
     validate_static_quotient, validate_subscript,
@@ -326,11 +324,19 @@ impl CoordinateInput<'_> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct OperandRange {
     pub(crate) start: u32,
     pub(crate) len: u32,
+}
+
+impl Serialize for OperandRange {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_u32(self.len)
+    }
 }
 
 impl OperandRange {
@@ -362,12 +368,15 @@ pub(crate) enum ExprNode {
         rhs: u32,
     },
     Conditional {
+        #[serde(rename = "operand_count")]
         operands: OperandRange,
     },
     Array {
+        #[serde(rename = "operand_count")]
         operands: OperandRange,
     },
     Record {
+        #[serde(rename = "operand_count")]
         operands: OperandRange,
     },
     Field {
@@ -385,20 +394,24 @@ pub(crate) enum ExprNode {
     },
     Index {
         base: u32,
+        #[serde(rename = "subscript_count")]
         subscripts: OperandRange,
     },
     ArrayUpdate {
         base: u32,
         value: u32,
+        #[serde(rename = "subscript_count")]
         subscripts: OperandRange,
     },
     Builtin {
         builtin: PureBuiltin,
+        #[serde(rename = "operand_count")]
         operands: OperandRange,
     },
     Call {
         function: u32,
         output: u32,
+        #[serde(rename = "operand_count")]
         operands: OperandRange,
     },
     FunctionValue {
@@ -1181,10 +1194,7 @@ impl<'dae> ExpressionAt<'_, 'dae> {
         binder_domain: Option<u32>,
     ) -> Result<ExprId<'dae>, DaeConstructionError> {
         crate::model::check_provenance(self.source_map, self.provenance)?;
-        let function_scope = node_function_scope(self.storage, &node, self.provenance)?;
-        let function_illegal_coordinate =
-            node_function_illegal_coordinate(self.storage, &node, self.provenance)?;
-        let function_read_set = node_function_read_set(self.storage, &node, self.provenance)?;
+        let function_facts = node_function_facts(self.storage, &node, self.provenance)?;
         self.storage
             .expressions
             .push(
@@ -1193,9 +1203,9 @@ impl<'dae> ExpressionAt<'_, 'dae> {
                     value_type: ty.index(),
                     variability,
                     binder_domain,
-                    function_scope,
-                    function_illegal_coordinate,
-                    function_read_set,
+                    function_scope: function_facts.scope,
+                    function_illegal_coordinate: function_facts.illegal_coordinate,
+                    function_read_set: function_facts.read_set,
                 },
                 self.provenance,
             )

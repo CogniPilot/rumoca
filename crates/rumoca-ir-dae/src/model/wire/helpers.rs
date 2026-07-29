@@ -2,25 +2,43 @@ use super::*;
 
 pub(super) fn map_expression_operands<'dae>(
     wire: &StorageWire,
-    ids: &WireIds<'dae>,
-    range: OperandRangeWire,
+    ids: &mut WireIds<'dae>,
+    count: u32,
     at: DaeProvenance,
 ) -> Result<Vec<ExprId<'dae>>, DaeConstructionError> {
-    let operands = wire_operands(wire, range, at)?;
+    let operands = wire_operands(wire, &mut ids.next_operand, count)?;
     map_many(&ids.expressions, operands, "expression", at)
 }
 
-pub(super) fn wire_operands(
-    wire: &StorageWire,
-    range: OperandRangeWire,
-    at: DaeProvenance,
-) -> Result<&[u32], DaeConstructionError> {
-    wire.expressions
-        .operands
-        .get(range.indices().ok_or(DaeConstructionError::MalformedWire {
-            column: "operand range",
-        })?)
-        .ok_or_else(|| unknown("operand range", range.start, at))
+pub(super) fn wire_operands<'wire>(
+    wire: &'wire StorageWire,
+    cursor: &mut usize,
+    count: u32,
+) -> Result<&'wire [u32], DaeConstructionError> {
+    take_packed(
+        &wire.expressions.operands,
+        cursor,
+        count,
+        "expressions.operands",
+    )
+}
+
+pub(super) fn take_packed<'wire, T>(
+    buffer: &'wire [T],
+    cursor: &mut usize,
+    count: u32,
+    column: &'static str,
+) -> Result<&'wire [T], DaeConstructionError> {
+    let count =
+        usize::try_from(count).map_err(|_| DaeConstructionError::MalformedWire { column })?;
+    let end = cursor
+        .checked_add(count)
+        .ok_or(DaeConstructionError::MalformedWire { column })?;
+    let values = buffer
+        .get(*cursor..end)
+        .ok_or(DaeConstructionError::MalformedWire { column })?;
+    *cursor = end;
+    Ok(values)
 }
 
 pub(super) fn mapped<T: Copy>(

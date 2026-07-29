@@ -1,5 +1,6 @@
 mod derived_wire;
 mod function_wire;
+mod provenance;
 mod temporal_wire;
 mod wire_buffers;
 
@@ -615,12 +616,12 @@ fn assert_structured_binders_round_trip_and_reject_forgery(encoded: &str) {
     assert!(serde_json::from_value::<Dae>(forged).is_err());
 
     let mut forged: serde_json::Value = serde_json::from_str(encoded).unwrap();
-    forged["storage"]["continuous_equation_owners"][1] =
-        forged["storage"]["continuous_equation_owners"][0].clone();
-    assert!(matches!(
-        serde_json::from_value::<Dae>(forged),
-        Err(error) if error.to_string().contains("continuous equation owner order")
-    ));
+    forged["storage"]["continuous_equation_operations"][1]["residual"]["residual"] =
+        serde_json::json!(u32::MAX);
+    assert!(
+        serde_json::from_value::<Dae>(forged).is_err(),
+        "a residual operation cannot name an unknown expression"
+    );
 }
 
 #[test]
@@ -1322,7 +1323,10 @@ fn assert_function_runtime_arena(view: DaeView<'_>) {
         ConditionOperation::Discrete(_)
     ));
     let delay = view.delay(view.delay_id(0).unwrap()).unwrap();
-    assert_eq!(delay.delay_time_evidence().unwrap().value(), 1.0);
+    assert!(matches!(
+        delay.operation(),
+        DelayOperation::ParameterDelay { delay_time } if delay_time.value() == 1.0
+    ));
     let expressions = (0..view.expression_count())
         .filter_map(|index| view.expression_id(index))
         .filter_map(|id| view.expression(id))
@@ -1415,6 +1419,119 @@ fn function_parameters_cannot_cross_or_escape_semantic_owners() {
             ..
         })
     ));
+}
+
+#[test]
+fn function_assignment_rejects_a_foreign_target_before_insertion() {
+    let source = TestSource::new(
+        "function f output Real y; algorithm y := 0; end f; function g output Real y; algorithm y := 0; end g;",
+    );
+    let f_at = source.source("function f", 0);
+    let g_at = source.source("function g", 0);
+    let rejected_at = source.source("y := 0", 0);
+    let accepted_at = source.source("y := 0", 1);
+    let zero_at = source.source("0", 0);
+
+    let dae = Dae::construct(source.map, |dae| {
+        let real = dae.types(|types| types.derived(ValueType::scalar(ScalarType::Real), f_at))?;
+        let (f, f_reservation) = dae.functions(|functions| {
+            functions.reserve_recursive(VarName::new("f"), [], [real], f_at)
+        })?;
+        let (g, g_reservation) = dae.functions(|functions| {
+            functions.reserve_recursive(VarName::new("g"), [], [real], g_at)
+        })?;
+        let f_output = dae
+            .functions(|functions| functions.output(&f_reservation, VarName::new("y"), 0, f_at))?;
+        let g_output = dae
+            .functions(|functions| functions.output(&g_reservation, VarName::new("y"), 0, g_at))?;
+        let mut f_body = dae.functions(|functions| functions.begin(f_reservation, f_at))?;
+        let mut g_body = dae.functions(|functions| functions.begin(g_reservation, g_at))?;
+        let zero =
+            dae.expressions(|expressions| expressions.at(zero_at).literal(DaeLiteral::Real(0.0)))?;
+
+        let rejected =
+            dae.functions(|functions| functions.assign(&mut f_body, g_output, zero, rejected_at));
+        assert!(matches!(
+            rejected,
+            Err(DaeConstructionError::InvalidFunctionScope {
+                expected_function: Some(expected),
+                found_function,
+                span,
+            }) if expected == f.index()
+                && found_function == g.index()
+                && span == rejected_at.span()
+        ));
+
+        dae.functions(|functions| functions.assign(&mut f_body, f_output, zero, accepted_at))?;
+        dae.functions(|functions| functions.assign(&mut g_body, g_output, zero, accepted_at))?;
+        dae.functions(|functions| functions.define(f_body, f_at))?;
+        dae.functions(|functions| functions.define(g_body, g_at))
+    })
+    .expect("foreign-target rejection leaves both function bodies usable");
+
+    dae.inspect(|view| {
+        assert_eq!(
+            view.function(view.function_id(0).unwrap())
+                .unwrap()
+                .definition_count(),
+            1
+        );
+        assert_eq!(
+            view.function(view.function_id(1).unwrap())
+                .unwrap()
+                .definition_count(),
+            1
+        );
+    });
+}
+
+#[test]
+fn function_assignment_rejects_a_wrong_typed_rhs_before_insertion() {
+    let source = TestSource::new("function f output Real y; algorithm y := true; y := 0; end f;");
+    let function_at = source.source("function f", 0);
+    let rejected_at = source.source("y := true", 0);
+    let accepted_at = source.source("y := 0", 0);
+    let true_at = source.source("true", 0);
+    let zero_at = source.source("0", 0);
+
+    let dae = Dae::construct(source.map, |dae| {
+        let real =
+            dae.types(|types| types.derived(ValueType::scalar(ScalarType::Real), function_at))?;
+        let (_function, reservation) = dae.functions(|functions| {
+            functions.reserve_recursive(VarName::new("f"), [], [real], function_at)
+        })?;
+        let output = dae.functions(|functions| {
+            functions.output(&reservation, VarName::new("y"), 0, function_at)
+        })?;
+        let mut body = dae.functions(|functions| functions.begin(reservation, function_at))?;
+        let (wrong, zero) = dae.expressions(|expressions| {
+            Ok((
+                expressions.at(true_at).literal(DaeLiteral::Boolean(true))?,
+                expressions.at(zero_at).literal(DaeLiteral::Real(0.0))?,
+            ))
+        })?;
+
+        let rejected =
+            dae.functions(|functions| functions.assign(&mut body, output, wrong, rejected_at));
+        assert!(matches!(
+            rejected,
+            Err(DaeConstructionError::ShapeMismatch { span })
+                if span == rejected_at.span()
+        ));
+
+        dae.functions(|functions| functions.assign(&mut body, output, zero, accepted_at))?;
+        dae.functions(|functions| functions.define(body, function_at))
+    })
+    .expect("wrong-type rejection leaves the function body usable");
+
+    dae.inspect(|view| {
+        assert_eq!(
+            view.function(view.function_id(0).unwrap())
+                .unwrap()
+                .definition_count(),
+            1
+        );
+    });
 }
 
 #[test]
@@ -1924,29 +2041,28 @@ fn function_for_loop_is_a_compact_checked_transition() {
     decoded.inspect(assert_sum3_loop);
 
     let mut missing_parameter: serde_json::Value = serde_json::from_str(&encoded).unwrap();
-    missing_parameter["storage"]["function_folds"][0]["parameter_definitions"] =
+    missing_parameter["storage"]["functions"][0]["statements"][1]["for"]["targets"] =
         serde_json::json!([]);
     assert!(
         serde_json::from_value::<Dae>(missing_parameter).is_err(),
-        "wire reconstruction rejects a missing loop-transition parameter"
+        "wire reconstruction rejects a loop operation inconsistent with generated parameters"
     );
 
     let mut open_initial: serde_json::Value = serde_json::from_str(&encoded).unwrap();
-    let parameter =
-        open_initial["storage"]["function_folds"][0]["parameter_definitions"][0].clone();
-    open_initial["storage"]["function_folds"][0]["initial_definitions"][0] = parameter;
+    open_initial["storage"]["functions"][0]["statements"][1]["for"]["targets"][0] =
+        serde_json::json!(1);
     assert!(
         serde_json::from_value::<Dae>(open_initial).is_err(),
-        "wire reconstruction rejects an initial value that names a generated loop parameter"
+        "wire reconstruction rejects an uninitialized loop-carried local"
     );
 
     let mut nested_fold: serde_json::Value = serde_json::from_str(&encoded).unwrap();
-    let outer = nested_fold["storage"]["functions"][0]["definition"]["statements"][1].clone();
-    nested_fold["storage"]["functions"][0]["definition"]["statements"][1]["for"]["statements"] =
+    let outer = nested_fold["storage"]["functions"][0]["statements"][1].clone();
+    nested_fold["storage"]["functions"][0]["statements"][1]["for"]["statements"] =
         serde_json::json!([outer]);
     let error = serde_json::from_value::<Dae>(nested_fold).unwrap_err();
     assert!(
-        error.to_string().contains("function_folds.nesting"),
+        error.to_string().contains("functions.statements.nesting"),
         "wire reconstruction rejects a nested fold that normal construction cannot express: {error}"
     );
 }

@@ -23,6 +23,48 @@ macro_rules! storage_id_accessors {
     };
 }
 
+macro_rules! view_getters {
+    (
+        $(const fn $const_name:ident -> $const_return:ty = |$const_view:ident| $const_body:expr;)*
+        $(fn $name:ident -> $return:ty = |$view:ident| $body:expr;)*
+    ) => {
+        $(pub const fn $const_name(self) -> $const_return {
+            let $const_view = self;
+            $const_body
+        })*
+
+        $(pub fn $name(self) -> $return {
+            let $view = self;
+            $body
+        })*
+    };
+}
+
+macro_rules! raw_id_slice_view {
+    ($view:ident => $id:ident) => {
+        #[derive(Clone, Copy)]
+        pub struct $view<'dae> {
+            raw: &'dae [u32],
+            marker: PhantomData<&'dae mut &'dae ()>,
+        }
+
+        impl<'dae> $view<'dae> {
+            view_getters! {
+                const fn len -> usize = |view| view.raw.len();
+                const fn is_empty -> bool = |view| view.raw.is_empty();
+            }
+
+            pub fn get(self, index: usize) -> Option<$id<'dae>> {
+                self.raw.get(index).copied().map($id::from_raw)
+            }
+
+            pub fn iter(self) -> impl ExactSizeIterator<Item = $id<'dae>> {
+                self.raw.iter().copied().map($id::from_raw)
+            }
+        }
+    };
+}
+
 impl<'dae> DaeView<'dae> {
     /// Returns one exact source span that can own a whole-model diagnostic.
     ///
@@ -495,14 +537,21 @@ impl<'dae> DaeView<'dae> {
 
     pub fn delay(self, id: DelayId<'dae>) -> Option<DelayView<'dae>> {
         let entry = self.dae.storage.delays.get(id.index() as usize)?;
+        let operation = match &entry.kind {
+            DelayKind::ParameterDelay { delay_time } => DelayOperation::ParameterDelay {
+                delay_time: positive_parameter_view(delay_time),
+            },
+            DelayKind::BoundedDelay {
+                delay_time,
+                delay_max,
+            } => DelayOperation::BoundedDelay {
+                delay_time: ExprId::from_raw(*delay_time),
+                delay_max: positive_parameter_view(delay_max),
+            },
+        };
         Some(DelayView {
             source: ExprId::from_raw(entry.source),
-            delay_time: ExprId::from_raw(entry.delay_time),
-            delay_time_evidence: entry
-                .delay_time_evidence
-                .as_ref()
-                .map(positive_parameter_view),
-            delay_max: entry.delay_max.as_ref().map(positive_parameter_view),
+            operation,
             value_type: self
                 .dae
                 .storage
@@ -557,8 +606,35 @@ pub struct VariableView<'dae> {
 }
 
 impl<'dae> VariableView<'dae> {
-    pub const fn id(self) -> VariableId<'dae> {
-        self.id
+    view_getters! {
+        const fn id -> VariableId<'dae> = |view| view.id;
+        const fn role -> VariableRole = |view| view.entry.role;
+        const fn variability -> ExpressionVariability = |view| view.entry.variability;
+        const fn value_type -> &'dae ValueType = |view| view.value_type;
+        const fn value_type_id -> ValueTypeId<'dae> = |view| view.value_type_id;
+        const fn declaration -> DaeProvenance = |view| view.entry.declaration;
+        fn name -> &'dae VarName = |view| &view.entry.name;
+        fn component_reference -> Option<&'dae ComponentReference> =
+            |view| view.attributes().component_ref.as_ref();
+        fn binding -> Option<ExprId<'dae>> =
+            |view| view.attributes().binding.map(ExprId::from_raw);
+        fn start -> Option<ExprId<'dae>> =
+            |view| view.attributes().start.map(ExprId::from_raw);
+        fn fixed -> Option<bool> = |view| view.attributes().fixed;
+        fn minimum -> Option<ExprId<'dae>> =
+            |view| view.attributes().min.map(ExprId::from_raw);
+        fn maximum -> Option<ExprId<'dae>> =
+            |view| view.attributes().max.map(ExprId::from_raw);
+        fn nominal -> Option<ExprId<'dae>> =
+            |view| view.attributes().nominal.map(ExprId::from_raw);
+        fn unit -> Option<&'dae str> = |view| view.attributes().unit.as_deref();
+        fn state_select -> StateSelect = |view| view.attributes().state_select;
+        fn description -> Option<&'dae str> =
+            |view| view.attributes().description.as_deref();
+        fn causality -> VariableCausality = |view| view.attributes().causality;
+        fn is_tunable -> bool = |view| view.attributes().is_tunable;
+        fn is_held -> bool = |view| view.attributes().is_held;
+        fn origin -> VariableOrigin = |view| view.attributes().origin;
     }
 
     pub fn identity(self) -> VariableIdentity<'dae> {
@@ -580,26 +656,6 @@ impl<'dae> VariableView<'dae> {
         }
     }
 
-    pub fn name(self) -> &'dae VarName {
-        &self.entry.name
-    }
-
-    pub const fn role(self) -> VariableRole {
-        self.entry.role
-    }
-
-    pub const fn variability(self) -> ExpressionVariability {
-        self.entry.variability
-    }
-
-    pub const fn value_type(self) -> &'dae ValueType {
-        self.value_type
-    }
-
-    pub const fn value_type_id(self) -> ValueTypeId<'dae> {
-        self.value_type_id
-    }
-
     pub fn scalar_count(self) -> usize {
         self.value_type
             .scalar_count()
@@ -617,66 +673,6 @@ impl<'dae> VariableView<'dae> {
             .collect::<Vec<_>>()
             .join(",");
         Some(format!("{}[{indices}]", self.entry.name))
-    }
-
-    pub const fn declaration(self) -> DaeProvenance {
-        self.entry.declaration
-    }
-
-    pub fn component_reference(self) -> Option<&'dae ComponentReference> {
-        self.attributes().component_ref.as_ref()
-    }
-
-    pub fn binding(self) -> Option<ExprId<'dae>> {
-        self.attributes().binding.map(ExprId::from_raw)
-    }
-
-    pub fn start(self) -> Option<ExprId<'dae>> {
-        self.attributes().start.map(ExprId::from_raw)
-    }
-
-    pub fn fixed(self) -> Option<bool> {
-        self.attributes().fixed
-    }
-
-    pub fn minimum(self) -> Option<ExprId<'dae>> {
-        self.attributes().min.map(ExprId::from_raw)
-    }
-
-    pub fn maximum(self) -> Option<ExprId<'dae>> {
-        self.attributes().max.map(ExprId::from_raw)
-    }
-
-    pub fn nominal(self) -> Option<ExprId<'dae>> {
-        self.attributes().nominal.map(ExprId::from_raw)
-    }
-
-    pub fn unit(self) -> Option<&'dae str> {
-        self.attributes().unit.as_deref()
-    }
-
-    pub fn state_select(self) -> StateSelect {
-        self.attributes().state_select
-    }
-
-    pub fn description(self) -> Option<&'dae str> {
-        self.attributes().description.as_deref()
-    }
-
-    pub fn causality(self) -> VariableCausality {
-        self.attributes().causality
-    }
-
-    pub fn is_tunable(self) -> bool {
-        self.attributes().is_tunable
-    }
-
-    pub fn is_held(self) -> bool {
-        self.attributes().is_held
-    }
-
-    pub fn origin(self) -> VariableOrigin {
-        self.attributes().origin
     }
 
     fn attributes(self) -> &'dae VariableAttributesWire {
@@ -705,19 +701,20 @@ pub struct FunctionView<'dae> {
 }
 
 impl<'dae> FunctionView<'dae> {
-    pub const fn id(self) -> FunctionId<'dae> {
-        self.id
-    }
-
-    pub fn name(self) -> &'dae VarName {
-        &self.entry.name
-    }
-
-    pub fn parameter_types(self) -> ValueTypeOperands<'dae> {
-        ValueTypeOperands {
-            raw: &self.entry.parameters,
+    view_getters! {
+        const fn id -> FunctionId<'dae> = |view| view.id;
+        const fn declaration -> DaeProvenance = |view| view.entry.declaration;
+        fn name -> &'dae VarName = |view| &view.entry.name;
+        fn parameter_types -> ValueTypeOperands<'dae> = |view| ValueTypeOperands {
+            raw: &view.entry.parameters,
             marker: PhantomData,
-        }
+        };
+        fn result_types -> ValueTypeOperands<'dae> = |view| ValueTypeOperands {
+            raw: &view.entry.results,
+            marker: PhantomData,
+        };
+        fn definition_count -> usize = |view| view.entry.definitions.len();
+        fn fold_count -> usize = |view| view.entry.folds.len();
     }
 
     pub fn parameters(self) -> impl ExactSizeIterator<Item = FunctionParameterView<'dae>> {
@@ -734,13 +731,6 @@ impl<'dae> FunctionView<'dae> {
             })
     }
 
-    pub fn result_types(self) -> ValueTypeOperands<'dae> {
-        ValueTypeOperands {
-            raw: &self.entry.results,
-            marker: PhantomData,
-        }
-    }
-
     pub fn result_values(self) -> FunctionDefinitionValues<'dae> {
         let definition = self
             .entry
@@ -754,18 +744,10 @@ impl<'dae> FunctionView<'dae> {
         }
     }
 
-    pub fn definition_count(self) -> usize {
-        self.entry.definitions.len()
-    }
-
     pub fn definition_id(self, index: usize) -> Option<FunctionDefinitionId<'dae>> {
         let ordinal = u32::try_from(index).ok()?;
         (index < self.entry.definitions.len())
             .then(|| FunctionDefinitionId::from_raw(self.id.index(), ordinal))
-    }
-
-    pub fn fold_count(self) -> usize {
-        self.entry.folds.len()
     }
 
     pub fn fold_id(self, index: usize) -> Option<FunctionFoldId<'dae>> {
@@ -803,10 +785,6 @@ impl<'dae> FunctionView<'dae> {
             next: 0,
         }
     }
-
-    pub const fn declaration(self) -> DaeProvenance {
-        self.entry.declaration
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -816,20 +794,12 @@ pub struct FunctionParameterView<'dae> {
 }
 
 impl<'dae> FunctionParameterView<'dae> {
-    pub const fn id(self) -> FunctionParameterId<'dae> {
-        self.id
-    }
-
-    pub fn name(self) -> &'dae VarName {
-        &self.entry.name
-    }
-
-    pub const fn value_type(self) -> ValueTypeId<'dae> {
-        ValueTypeId::from_raw(self.entry.value_type)
-    }
-
-    pub const fn declaration(self) -> DaeProvenance {
-        self.entry.declaration
+    view_getters! {
+        const fn id -> FunctionParameterId<'dae> = |view| view.id;
+        const fn value_type -> ValueTypeId<'dae> =
+            |view| ValueTypeId::from_raw(view.entry.value_type);
+        const fn declaration -> DaeProvenance = |view| view.entry.declaration;
+        fn name -> &'dae VarName = |view| &view.entry.name;
     }
 }
 
@@ -840,24 +810,13 @@ pub struct FunctionValueView<'dae> {
 }
 
 impl<'dae> FunctionValueView<'dae> {
-    pub const fn id(self) -> FunctionValueId<'dae> {
-        self.id
-    }
-
-    pub fn name(self) -> &'dae VarName {
-        &self.entry.name
-    }
-
-    pub const fn value_type(self) -> ValueTypeId<'dae> {
-        ValueTypeId::from_raw(self.entry.value_type)
-    }
-
-    pub const fn role(self) -> FunctionValueRole {
-        self.entry.role
-    }
-
-    pub const fn declaration(self) -> DaeProvenance {
-        self.entry.declaration
+    view_getters! {
+        const fn id -> FunctionValueId<'dae> = |view| view.id;
+        const fn value_type -> ValueTypeId<'dae> =
+            |view| ValueTypeId::from_raw(view.entry.value_type);
+        const fn role -> FunctionValueRole = |view| view.entry.role;
+        const fn declaration -> DaeProvenance = |view| view.entry.declaration;
+        fn name -> &'dae VarName = |view| &view.entry.name;
     }
 }
 
@@ -868,20 +827,14 @@ pub struct FunctionDefinitionView<'dae> {
 }
 
 impl<'dae> FunctionDefinitionView<'dae> {
-    pub const fn id(self) -> FunctionDefinitionId<'dae> {
-        self.id
-    }
-
-    pub const fn target(self) -> FunctionValueId<'dae> {
-        FunctionValueId::from_raw(self.id.function().index(), self.entry.target)
-    }
-
-    pub const fn rhs(self) -> ExprId<'dae> {
-        ExprId::from_raw(self.entry.rhs)
-    }
-
-    pub const fn provenance(self) -> DaeProvenance {
-        self.entry.provenance
+    view_getters! {
+        const fn id -> FunctionDefinitionId<'dae> = |view| view.id;
+        const fn target -> FunctionValueId<'dae> = |view| FunctionValueId::from_raw(
+            view.id.function().index(),
+            view.entry.target,
+        );
+        const fn rhs -> ExprId<'dae> = |view| ExprId::from_raw(view.entry.rhs);
+        const fn provenance -> DaeProvenance = |view| view.entry.provenance;
     }
 }
 
@@ -893,12 +846,9 @@ pub struct FunctionDefinitionValues<'dae> {
 }
 
 impl<'dae> FunctionDefinitionValues<'dae> {
-    pub const fn len(self) -> usize {
-        self.raw.len()
-    }
-
-    pub const fn is_empty(self) -> bool {
-        self.raw.is_empty()
+    view_getters! {
+        const fn len -> usize = |view| view.raw.len();
+        const fn is_empty -> bool = |view| view.raw.is_empty();
     }
 
     pub fn get(self, index: usize) -> Option<FunctionDefinitionView<'dae>> {
@@ -1016,12 +966,30 @@ pub struct FunctionFoldView<'dae> {
 }
 
 impl<'dae> FunctionFoldView<'dae> {
-    pub const fn id(self) -> FunctionFoldId<'dae> {
-        self.id
-    }
-
-    pub const fn domain(self) -> DomainId<'dae> {
-        DomainId::from_raw(self.entry.domain)
+    view_getters! {
+        const fn id -> FunctionFoldId<'dae> = |view| view.id;
+        const fn domain -> DomainId<'dae> = |view| DomainId::from_raw(view.entry.domain);
+        const fn provenance -> DaeProvenance = |view| view.entry.provenance;
+        fn initial_values -> FunctionDefinitionValues<'dae> = |view| FunctionDefinitionValues {
+            dae: view.dae,
+            function: view.id.function(),
+            raw: &view.entry.initial_definitions,
+        };
+        fn parameter_values -> FunctionDefinitionValues<'dae> = |view| FunctionDefinitionValues {
+            dae: view.dae,
+            function: view.id.function(),
+            raw: &view.entry.parameter_definitions,
+        };
+        fn update_values -> FunctionDefinitionValues<'dae> = |view| FunctionDefinitionValues {
+            dae: view.dae,
+            function: view.id.function(),
+            raw: &view.entry.update_definitions,
+        };
+        fn output_values -> FunctionDefinitionValues<'dae> = |view| FunctionDefinitionValues {
+            dae: view.dae,
+            function: view.id.function(),
+            raw: &view.entry.output_definitions,
+        };
     }
 
     pub fn targets(self) -> impl ExactSizeIterator<Item = FunctionValueId<'dae>> {
@@ -1031,67 +999,9 @@ impl<'dae> FunctionFoldView<'dae> {
             .copied()
             .map(move |target| FunctionValueId::from_raw(self.entry.function, target))
     }
-
-    pub fn initial_values(self) -> FunctionDefinitionValues<'dae> {
-        FunctionDefinitionValues {
-            dae: self.dae,
-            function: self.id.function(),
-            raw: &self.entry.initial_definitions,
-        }
-    }
-
-    pub fn parameter_values(self) -> FunctionDefinitionValues<'dae> {
-        FunctionDefinitionValues {
-            dae: self.dae,
-            function: self.id.function(),
-            raw: &self.entry.parameter_definitions,
-        }
-    }
-
-    pub fn update_values(self) -> FunctionDefinitionValues<'dae> {
-        FunctionDefinitionValues {
-            dae: self.dae,
-            function: self.id.function(),
-            raw: &self.entry.update_definitions,
-        }
-    }
-
-    pub fn output_values(self) -> FunctionDefinitionValues<'dae> {
-        FunctionDefinitionValues {
-            dae: self.dae,
-            function: self.id.function(),
-            raw: &self.entry.output_definitions,
-        }
-    }
-
-    pub const fn provenance(self) -> DaeProvenance {
-        self.entry.provenance
-    }
 }
 
-#[derive(Clone, Copy)]
-pub struct ValueTypeOperands<'dae> {
-    raw: &'dae [u32],
-    marker: PhantomData<&'dae mut &'dae ()>,
-}
-
-impl<'dae> ValueTypeOperands<'dae> {
-    pub const fn len(self) -> usize {
-        self.raw.len()
-    }
-
-    pub const fn is_empty(self) -> bool {
-        self.raw.is_empty()
-    }
-
-    pub fn get(self, index: usize) -> Option<ValueTypeId<'dae>> {
-        self.raw.get(index).copied().map(ValueTypeId::from_raw)
-    }
-
-    pub fn iter(self) -> impl ExactSizeIterator<Item = ValueTypeId<'dae>> {
-        self.raw.iter().copied().map(ValueTypeId::from_raw)
-    }
-}
+raw_id_slice_view!(ValueTypeOperands => ValueTypeId);
 
 #[derive(Clone, Copy)]
 pub struct DomainView<'dae> {
@@ -1100,24 +1010,13 @@ pub struct DomainView<'dae> {
 }
 
 impl<'dae> DomainView<'dae> {
-    pub fn parent(self) -> Option<DomainId<'dae>> {
-        self.entry.parent.map(DomainId::from_raw)
-    }
-
-    pub fn structured(self) -> &'dae StructuredIndexDomain {
-        &self.entry.domain
-    }
-
-    pub fn extents(self) -> &'dae [u32] {
-        &self.entry.extents
-    }
-
-    pub const fn scalar_count(self) -> u32 {
-        self.entry.scalar_count
-    }
-
-    pub const fn provenance(self) -> DaeProvenance {
-        self.entry.provenance
+    view_getters! {
+        const fn scalar_count -> u32 = |view| view.entry.scalar_count;
+        const fn provenance -> DaeProvenance = |view| view.entry.provenance;
+        fn parent -> Option<DomainId<'dae>> =
+            |view| view.entry.parent.map(DomainId::from_raw);
+        fn structured -> &'dae StructuredIndexDomain = |view| &view.entry.domain;
+        fn extents -> &'dae [u32] = |view| &view.entry.extents;
     }
 }
 
@@ -1134,28 +1033,15 @@ pub struct ExpressionView<'dae> {
 }
 
 impl<'dae> ExpressionView<'dae> {
-    pub const fn provenance(self) -> DaeProvenance {
-        self.provenance
-    }
-
-    pub const fn value_type(self) -> &'dae ValueType {
-        self.value_type
-    }
-
-    pub const fn value_type_id(self) -> ValueTypeId<'dae> {
-        self.value_type_id
-    }
-
-    pub const fn variability(self) -> ExpressionVariability {
-        self.variability
-    }
-
-    pub fn binder_domain(self) -> Option<DomainId<'dae>> {
-        self.binder_domain.map(DomainId::from_raw)
-    }
-
-    pub fn function_scope(self) -> Option<FunctionId<'dae>> {
-        self.function_scope.map(FunctionId::from_raw)
+    view_getters! {
+        const fn provenance -> DaeProvenance = |view| view.provenance;
+        const fn value_type -> &'dae ValueType = |view| view.value_type;
+        const fn value_type_id -> ValueTypeId<'dae> = |view| view.value_type_id;
+        const fn variability -> ExpressionVariability = |view| view.variability;
+        fn binder_domain -> Option<DomainId<'dae>> =
+            |view| view.binder_domain.map(DomainId::from_raw);
+        fn function_scope -> Option<FunctionId<'dae>> =
+            |view| view.function_scope.map(FunctionId::from_raw);
     }
 
     pub fn kind(self) -> ExpressionKind {
@@ -1368,29 +1254,7 @@ impl<'dae> ExpressionView<'dae> {
     }
 }
 
-#[derive(Clone, Copy)]
-pub struct ExpressionOperands<'dae> {
-    raw: &'dae [u32],
-    marker: PhantomData<&'dae mut &'dae ()>,
-}
-
-impl<'dae> ExpressionOperands<'dae> {
-    pub const fn len(self) -> usize {
-        self.raw.len()
-    }
-
-    pub const fn is_empty(self) -> bool {
-        self.raw.is_empty()
-    }
-
-    pub fn get(self, index: usize) -> Option<ExprId<'dae>> {
-        self.raw.get(index).copied().map(ExprId::from_raw)
-    }
-
-    pub fn iter(self) -> impl ExactSizeIterator<Item = ExprId<'dae>> {
-        self.raw.iter().copied().map(ExprId::from_raw)
-    }
-}
+raw_id_slice_view!(ExpressionOperands => ExprId);
 
 #[derive(Clone, Copy)]
 pub struct SubscriptsView<'dae> {
@@ -1399,12 +1263,9 @@ pub struct SubscriptsView<'dae> {
 }
 
 impl<'dae> SubscriptsView<'dae> {
-    pub const fn len(self) -> usize {
-        self.raw.len()
-    }
-
-    pub const fn is_empty(self) -> bool {
-        self.raw.is_empty()
+    view_getters! {
+        const fn len -> usize = |view| view.raw.len();
+        const fn is_empty -> bool = |view| view.raw.is_empty();
     }
 
     pub fn get(self, index: usize) -> Option<SubscriptView<'dae>> {
@@ -1624,34 +1485,20 @@ pub enum InitializationOwnerView<'dae> {
 }
 
 impl<'dae> StructuredFamilyView<'dae> {
-    pub const fn domain(self) -> DomainId<'dae> {
-        self.domain
-    }
-
-    pub const fn scalar_view(self) -> rumoca_core::ComprehensionScalarView {
-        self.scalar_view
-    }
-
-    pub const fn bodies(self) -> ExpressionOperands<'dae> {
-        self.bodies
-    }
-
-    pub const fn scalar_rows(self) -> u32 {
-        self.scalar_rows
-    }
-
-    pub const fn provenance(self) -> DaeProvenance {
-        self.provenance
+    view_getters! {
+        const fn domain -> DomainId<'dae> = |view| view.domain;
+        const fn scalar_view -> rumoca_core::ComprehensionScalarView =
+            |view| view.scalar_view;
+        const fn bodies -> ExpressionOperands<'dae> = |view| view.bodies;
+        const fn scalar_rows -> u32 = |view| view.scalar_rows;
+        const fn provenance -> DaeProvenance = |view| view.provenance;
     }
 }
 
 impl<'dae> ResidualEquationView<'dae> {
-    pub const fn residual(self) -> ExprId<'dae> {
-        self.residual
-    }
-
-    pub const fn provenance(self) -> DaeProvenance {
-        self.provenance
+    view_getters! {
+        const fn residual -> ExprId<'dae> = |view| view.residual;
+        const fn provenance -> DaeProvenance = |view| view.provenance;
     }
 }
 

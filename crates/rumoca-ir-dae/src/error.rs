@@ -1,403 +1,185 @@
+#[cfg(test)]
+mod tests;
+
+use std::fmt;
+
 use rumoca_core::{ClockLatticeErrorKind, Span, StructuredIndexDomainError, TypeId, VarName};
 
 use crate::{DaeProvenanceOrigin, ScalarType};
 
 /// Failure to construct or decode the DAE.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum DaeConstructionError {
+    #[error("missing source provenance for {origin}")]
     MissingProvenance {
         origin: DaeProvenanceOrigin,
         attempted_span: Span,
     },
-    UnknownSource {
-        span: Span,
-    },
-    InvalidSourceRange {
-        span: Span,
-        source_len: usize,
-    },
-    InvalidEffectiveTypeId {
-        type_id: TypeId,
-        span: Span,
-    },
+    #[error("DAE provenance references an unknown source: {span:?}")]
+    UnknownSource { span: Span },
+    #[error("DAE provenance range {span:?} is invalid for source length {source_len}")]
+    InvalidSourceRange { span: Span, source_len: usize },
+    #[error("invalid effective Flat type identity {type_id}")]
+    InvalidEffectiveTypeId { type_id: TypeId, span: Span },
+    #[error("invalid structured DAE domain: {source}")]
     InvalidDomain {
+        #[source]
         source: StructuredIndexDomainError,
         span: Span,
     },
+    #[error("invalid exact DAE clock value: {source}")]
     InvalidClockLattice {
+        #[source]
         source: ClockLatticeErrorKind,
         span: Span,
     },
+    #[error("{arena} exceeded its u32 identity capacity at {attempted_index}")]
     CapacityExceeded {
         arena: &'static str,
         attempted_index: usize,
         span: Span,
     },
+    #[error("unknown {kind} identity {index}")]
     UnknownId {
         kind: &'static str,
         index: u32,
         span: Span,
     },
+    #[error("expression type mismatch: expected {expected:?}, found {found:?}")]
     TypeMismatch {
         expected: ScalarType,
         found: ScalarType,
         span: Span,
     },
-    ShapeMismatch {
-        span: Span,
-    },
-    ExpectedScalar {
-        span: Span,
-    },
-    ExpectedNumeric {
-        found: ScalarType,
-        span: Span,
-    },
-    ExpectedPrimitiveRelation {
-        span: Span,
-    },
+    #[error("expression shape mismatch")]
+    ShapeMismatch { span: Span },
+    #[error("expected a scalar expression")]
+    ExpectedScalar { span: Span },
+    #[error("expected a numeric expression, found {found:?}")]
+    ExpectedNumeric { found: ScalarType, span: Span },
+    #[error("expected a primitive relational expression")]
+    ExpectedPrimitiveRelation { span: Span },
+    #[error("invalid expression arity: expected {expected}, found {found}")]
     InvalidArity {
         expected: usize,
         found: usize,
         span: Span,
     },
-    EmptyArray {
-        span: Span,
-    },
-    ZeroRangeStep {
-        span: Span,
-    },
-    RangeExtentOverflow {
-        span: Span,
-    },
-    InvalidArrayExtent {
-        span: Span,
-    },
-    InvalidPositiveParameter {
-        span: Span,
-    },
-    NonStaticDiscontinuity {
-        operator: &'static str,
-        span: Span,
-    },
-    UndefinedBuiltinDomain {
-        operator: &'static str,
-        span: Span,
-    },
-    InvalidSubscript {
-        span: Span,
-    },
-    InvalidEnumerationOrdinal {
-        ordinal: i64,
-        span: Span,
-    },
+    #[error("empty array needs an explicit type")]
+    EmptyArray { span: Span },
+    #[error("range step cannot be zero")]
+    ZeroRangeStep { span: Span },
+    #[error("range extent exceeds the DAE u32 domain")]
+    RangeExtentOverflow { span: Span },
+    #[error("array extent must be a nonnegative literal Integer")]
+    InvalidArrayExtent { span: Span },
+    #[error("expected a finite, strictly-positive parameter expression")]
+    InvalidPositiveParameter { span: Span },
+    #[error(
+        "discontinuous builtin `{operator}` requires statically computable operands until it has a checked event owner"
+    )]
+    NonStaticDiscontinuity { operator: &'static str, span: Span },
+    #[error("builtin `{operator}` operands are outside the defined numeric domain")]
+    UndefinedBuiltinDomain { operator: &'static str, span: Span },
+    #[error("invalid array subscript")]
+    InvalidSubscript { span: Span },
+    #[error("invalid one-based enumeration ordinal {ordinal}")]
+    InvalidEnumerationOrdinal { ordinal: i64, span: Span },
+    #[error("{}", binder_scope(.expected_domain, .found_domain))]
     InvalidBinderScope {
         expected_domain: Option<u32>,
         found_domain: u32,
         span: Span,
     },
+    #[error("{}", function_scope(.expected_function, .found_function))]
     InvalidFunctionScope {
         expected_function: Option<u32>,
         found_function: u32,
         span: Span,
     },
+    #[error(
+        "function value {value} reads definition {found_definition}, expected {expected_definition:?}"
+    )]
     InvalidFunctionValueRead {
         value: u32,
         expected_definition: Option<u32>,
         found_definition: u32,
         span: Span,
     },
+    #[error("model coordinate `{coordinate}` cannot be captured by a pure function")]
     InvalidFunctionCoordinate {
         coordinate: &'static str,
         span: Span,
     },
-    InvalidVariableRole {
-        name: VarName,
-        span: Span,
-    },
+    #[error("variable `{name}` has the wrong DAE coordinate role")]
+    InvalidVariableRole { name: VarName, span: Span },
+    #[error("duplicate {kind} definition for identity {index}")]
     DuplicateDefinition {
         kind: &'static str,
         index: u32,
         span: Span,
     },
+    #[error("duplicate {kind} key `{key}`")]
     DuplicateKey {
         kind: &'static str,
         key: String,
         span: Span,
     },
+    #[error("variable identity {variable} is not owned by clock identity {clock}")]
     MissingClockOwnership {
         variable: u32,
         clock: u32,
         span: Span,
     },
-    InvalidDiscreteDependencyCycle {
-        target: u32,
-        span: Span,
-    },
+    #[error("discrete-value target identity {target} has a cyclic current-value dependency")]
+    InvalidDiscreteDependencyCycle { target: u32, span: Span },
+    #[error("missing {kind} definition for identity {index}")]
     IncompleteDefinition {
         kind: &'static str,
         index: u32,
         span: Span,
     },
-    InvalidSchemaVersion {
-        expected: u16,
-        found: u16,
-    },
-    MalformedWire {
-        column: &'static str,
-    },
+    #[error("unsupported DAE schema version {found}; expected {expected}")]
+    InvalidSchemaVersion { expected: u16, found: u16 },
+    #[error("malformed DAE wire column `{column}`")]
+    MalformedWire { column: &'static str },
 }
 
-impl std::fmt::Display for DaeConstructionError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::MissingProvenance { .. }
-            | Self::UnknownSource { .. }
-            | Self::InvalidSourceRange { .. } => format_provenance_error(self, formatter),
-            Self::InvalidEffectiveTypeId { type_id, .. } => {
-                write!(formatter, "invalid effective Flat type identity {type_id}")
-            }
-            Self::InvalidDomain { source, .. } => {
-                write!(formatter, "invalid structured DAE domain: {source}")
-            }
-            Self::InvalidClockLattice { source, .. } => {
-                write!(formatter, "invalid exact DAE clock value: {source}")
-            }
-            Self::CapacityExceeded {
-                arena,
-                attempted_index,
-                ..
-            } => write!(
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScopeViolation {
+    Binder(Option<u32>, u32),
+    Function(Option<u32>, u32),
+}
+
+fn binder_scope(expected: &Option<u32>, found: &u32) -> ScopeViolation {
+    ScopeViolation::Binder(*expected, *found)
+}
+
+fn function_scope(expected: &Option<u32>, found: &u32) -> ScopeViolation {
+    ScopeViolation::Function(*expected, *found)
+}
+
+impl fmt::Display for ScopeViolation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            Self::Binder(Some(expected), found) => write!(
                 formatter,
-                "{arena} exceeded its u32 identity capacity at {attempted_index}"
+                "domain binder from {found} cannot be used in domain {expected}"
             ),
-            Self::UnknownId { kind, index, .. } => {
-                write!(formatter, "unknown {kind} identity {index}")
-            }
-            Self::TypeMismatch {
-                expected, found, ..
-            } => write!(
+            Self::Binder(None, found) => write!(
                 formatter,
-                "expression type mismatch: expected {expected:?}, found {found:?}"
+                "domain binder from {found} escaped its structured owner"
             ),
-            Self::ShapeMismatch { .. } => formatter.write_str("expression shape mismatch"),
-            Self::ExpectedScalar { .. } => formatter.write_str("expected a scalar expression"),
-            Self::ExpectedNumeric { found, .. } => {
-                write!(formatter, "expected a numeric expression, found {found:?}")
-            }
-            Self::ExpectedPrimitiveRelation { .. } => {
-                formatter.write_str("expected a primitive relational expression")
-            }
-            Self::InvalidArity {
-                expected, found, ..
-            } => format_arity(formatter, *expected, *found),
-            Self::EmptyArray { .. } => formatter.write_str("empty array needs an explicit type"),
-            Self::ZeroRangeStep { .. } => formatter.write_str("range step cannot be zero"),
-            Self::RangeExtentOverflow { .. } => {
-                formatter.write_str("range extent exceeds the DAE u32 domain")
-            }
-            Self::InvalidArrayExtent { .. } => {
-                formatter.write_str("array extent must be a nonnegative literal Integer")
-            }
-            error @ (Self::InvalidPositiveParameter { .. }
-            | Self::NonStaticDiscontinuity { .. }
-            | Self::UndefinedBuiltinDomain { .. }) => format_numeric_error(error, formatter),
-            Self::InvalidSubscript { .. } => formatter.write_str("invalid array subscript"),
-            Self::InvalidEnumerationOrdinal { ordinal, .. } => {
-                format_enumeration_ordinal(formatter, *ordinal)
-            }
-            Self::InvalidBinderScope {
-                expected_domain,
-                found_domain,
-                ..
-            } => format_binder_scope(formatter, *expected_domain, *found_domain),
-            Self::InvalidFunctionScope {
-                expected_function,
-                found_function,
-                ..
-            } => format_function_scope(formatter, *expected_function, *found_function),
-            Self::InvalidFunctionValueRead { .. } => format_function_value_read(self, formatter),
-            Self::InvalidFunctionCoordinate { coordinate, .. } => {
-                format_function_coordinate(formatter, coordinate)
-            }
-            Self::InvalidVariableRole { name, .. } => {
-                write!(
-                    formatter,
-                    "variable `{name}` has the wrong DAE coordinate role"
-                )
-            }
-            Self::DuplicateDefinition { kind, index, .. } => {
-                format_duplicate(formatter, kind, *index)
-            }
-            Self::DuplicateKey { kind, key, .. } => {
-                write!(formatter, "duplicate {kind} key `{key}`")
-            }
-            Self::MissingClockOwnership {
-                variable, clock, ..
-            } => format_clock_ownership(formatter, *variable, *clock),
-            Self::InvalidDiscreteDependencyCycle { target, .. } => write!(
+            Self::Function(Some(expected), found) => write!(
                 formatter,
-                "discrete-value target identity {target} has a cyclic current-value dependency"
+                "parameter from function {found} cannot be used in function {expected}"
             ),
-            Self::IncompleteDefinition { kind, index, .. } => {
-                write!(formatter, "missing {kind} definition for identity {index}")
-            }
-            Self::InvalidSchemaVersion { expected, found } => write!(
+            Self::Function(None, found) => write!(
                 formatter,
-                "unsupported DAE schema version {found}; expected {expected}"
+                "parameter from function {found} escaped its function owner"
             ),
-            Self::MalformedWire { column } => {
-                write!(formatter, "malformed DAE wire column `{column}`")
-            }
         }
     }
-}
-
-fn format_numeric_error(
-    error: &DaeConstructionError,
-    formatter: &mut std::fmt::Formatter<'_>,
-) -> std::fmt::Result {
-    match error {
-        DaeConstructionError::InvalidPositiveParameter { .. } => {
-            formatter.write_str("expected a finite, strictly-positive parameter expression")
-        }
-        DaeConstructionError::NonStaticDiscontinuity { operator, .. } => write!(
-            formatter,
-            "discontinuous builtin `{operator}` requires statically computable operands until it has a checked event owner"
-        ),
-        DaeConstructionError::UndefinedBuiltinDomain { operator, .. } => write!(
-            formatter,
-            "builtin `{operator}` operands are outside the defined numeric domain"
-        ),
-        _ => unreachable!("caller restricts numeric construction errors"),
-    }
-}
-
-impl std::error::Error for DaeConstructionError {}
-
-fn format_provenance_error(
-    error: &DaeConstructionError,
-    formatter: &mut std::fmt::Formatter<'_>,
-) -> std::fmt::Result {
-    match error {
-        DaeConstructionError::MissingProvenance { origin, .. } => {
-            write!(formatter, "missing source provenance for {origin}")
-        }
-        DaeConstructionError::UnknownSource { span } => {
-            write!(
-                formatter,
-                "DAE provenance references an unknown source: {span:?}"
-            )
-        }
-        DaeConstructionError::InvalidSourceRange { span, source_len } => write!(
-            formatter,
-            "DAE provenance range {span:?} is invalid for source length {source_len}"
-        ),
-        _ => unreachable!("provenance formatting receives only provenance errors"),
-    }
-}
-
-fn format_function_value_read(
-    error: &DaeConstructionError,
-    formatter: &mut std::fmt::Formatter<'_>,
-) -> std::fmt::Result {
-    let DaeConstructionError::InvalidFunctionValueRead {
-        value,
-        expected_definition,
-        found_definition,
-        ..
-    } = error
-    else {
-        unreachable!("function-value formatting receives its matching error")
-    };
-    write!(
-        formatter,
-        "function value {value} reads definition {found_definition}, expected {expected_definition:?}"
-    )
-}
-
-fn format_function_coordinate(
-    formatter: &mut std::fmt::Formatter<'_>,
-    coordinate: &str,
-) -> std::fmt::Result {
-    write!(
-        formatter,
-        "model coordinate `{coordinate}` cannot be captured by a pure function"
-    )
-}
-
-fn format_binder_scope(
-    formatter: &mut std::fmt::Formatter<'_>,
-    expected_domain: Option<u32>,
-    found_domain: u32,
-) -> std::fmt::Result {
-    match expected_domain {
-        Some(expected) => write!(
-            formatter,
-            "domain binder from {found_domain} cannot be used in domain {expected}"
-        ),
-        None => write!(
-            formatter,
-            "domain binder from {found_domain} escaped its structured owner"
-        ),
-    }
-}
-
-fn format_function_scope(
-    formatter: &mut std::fmt::Formatter<'_>,
-    expected_function: Option<u32>,
-    found_function: u32,
-) -> std::fmt::Result {
-    match expected_function {
-        Some(expected) => write!(
-            formatter,
-            "parameter from function {found_function} cannot be used in function {expected}"
-        ),
-        None => write!(
-            formatter,
-            "parameter from function {found_function} escaped its function owner"
-        ),
-    }
-}
-
-fn format_arity(
-    formatter: &mut std::fmt::Formatter<'_>,
-    expected: usize,
-    found: usize,
-) -> std::fmt::Result {
-    write!(
-        formatter,
-        "invalid expression arity: expected {expected}, found {found}"
-    )
-}
-
-fn format_enumeration_ordinal(
-    formatter: &mut std::fmt::Formatter<'_>,
-    ordinal: i64,
-) -> std::fmt::Result {
-    write!(formatter, "invalid one-based enumeration ordinal {ordinal}")
-}
-
-fn format_duplicate(
-    formatter: &mut std::fmt::Formatter<'_>,
-    kind: &'static str,
-    index: u32,
-) -> std::fmt::Result {
-    write!(
-        formatter,
-        "duplicate {kind} definition for identity {index}"
-    )
-}
-
-fn format_clock_ownership(
-    formatter: &mut std::fmt::Formatter<'_>,
-    variable: u32,
-    clock: u32,
-) -> std::fmt::Result {
-    write!(
-        formatter,
-        "variable identity {variable} is not owned by clock identity {clock}"
-    )
 }
 
 impl DaeConstructionError {

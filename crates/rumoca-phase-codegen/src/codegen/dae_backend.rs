@@ -858,14 +858,26 @@ fn project_temporal(view: dae::DaeView<'_>) -> Value {
                     .delay_id(index)
                     .expect("dense checked delay identity resolves");
                 let delay = view.delay(id).expect("checked delay resolves");
+                let operation = match delay.operation() {
+                    dae::DelayOperation::ParameterDelay { delay_time } => json!({
+                        "parameter_delay": {
+                            "delay_time": project_positive_parameter(delay_time),
+                        }
+                    }),
+                    dae::DelayOperation::BoundedDelay {
+                        delay_time,
+                        delay_max,
+                    } => json!({
+                        "bounded_delay": {
+                            "delay_time": delay_time.index(),
+                            "delay_max": project_positive_parameter(delay_max),
+                        }
+                    }),
+                };
                 json!({
                     "id": id.index(),
                     "source": delay.source().index(),
-                    "delay_time": delay.delay_time().index(),
-                    "delay_time_evidence": delay
-                        .delay_time_evidence()
-                        .map(project_positive_parameter),
-                    "delay_max": delay.delay_max().map(project_positive_parameter),
+                    "operation": operation,
                     "value_type": {
                         "scalar": delay.value_type().scalar_type(),
                         "dimensions": delay.value_type().dimensions(),

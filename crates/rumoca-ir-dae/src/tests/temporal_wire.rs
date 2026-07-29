@@ -164,6 +164,164 @@ fn assert_clock_views(view: DaeView<'_>) {
 }
 
 #[test]
+fn tagged_delay_kinds_round_trip_with_exact_provenance() {
+    let dae = tagged_delay_fixture();
+    dae.inspect(|view| {
+        let parameter = view.delay(view.delay_id(0).unwrap()).unwrap();
+        let DelayOperation::ParameterDelay { delay_time } = parameter.operation() else {
+            panic!("first delay retains its parameter timing capability");
+        };
+        assert_eq!(
+            view.source_text(parameter.provenance()),
+            Some("delay(1, 2)")
+        );
+        assert_eq!(view.source_text(delay_time.provenance()), Some("2"));
+        let bounded = view.delay(view.delay_id(1).unwrap()).unwrap();
+        let DelayOperation::BoundedDelay { delay_max, .. } = bounded.operation() else {
+            panic!("second delay retains its bounded timing capability");
+        };
+        assert_eq!(
+            view.source_text(bounded.provenance()),
+            Some("delay(1, 0.5, 3)")
+        );
+        assert_eq!(view.source_text(delay_max.provenance()), Some("3"));
+        let coordinates = (0..view.expression_count())
+            .filter_map(|index| view.expression_id(index))
+            .filter_map(|id| view.expression(id))
+            .filter(|expression| {
+                matches!(
+                    expression.operation(),
+                    ExpressionOperation::Coordinate(CoordinateView::Delay(_))
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(coordinates.len(), 2);
+        assert!(coordinates.iter().all(|coordinate| {
+            matches!(
+                coordinate.provenance().origin(),
+                DaeProvenanceOrigin::Generated(DaeGeneration::DelayLowering)
+            )
+        }));
+    });
+
+    let encoded = serde_json::to_string(&dae).unwrap();
+    let canonical: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+    assert!(canonical["storage"]["delays"][0]["kind"]["parameter_delay"].is_object());
+    assert!(canonical["storage"]["delays"][1]["kind"]["bounded_delay"].is_object());
+    let decoded: Dae = serde_json::from_str(&encoded).expect("tagged delays replay");
+    assert_eq!(serde_json::to_string(&decoded).unwrap(), encoded);
+    let binary = bincode::serialize(&dae).unwrap();
+    let decoded: Dae = bincode::deserialize(&binary).expect("binary tagged delays replay");
+    assert_eq!(bincode::serialize(&decoded).unwrap(), binary);
+}
+
+#[test]
+fn tagged_delay_wire_rejects_removed_and_malformed_states() {
+    let canonical = serde_json::to_value(tagged_delay_fixture()).unwrap();
+
+    let mut old = canonical.clone();
+    let delay = old["storage"]["delays"][0].as_object_mut().unwrap();
+    delay.remove("kind");
+    delay.insert("delay_time".to_owned(), 1.into());
+    delay.insert(
+        "delay_time_evidence".to_owned(),
+        serde_json::json!({"expression": 1, "value": 2.0}),
+    );
+    delay.insert("delay_max".to_owned(), serde_json::Value::Null);
+    assert!(
+        serde_json::from_value::<Dae>(old).is_err(),
+        "the removed untagged Option-pair shape is not accepted"
+    );
+
+    let mut missing_maximum = canonical.clone();
+    missing_maximum["storage"]["delays"][1]["kind"]["bounded_delay"]
+        .as_object_mut()
+        .unwrap()
+        .remove("delay_max");
+    assert!(serde_json::from_value::<Dae>(missing_maximum).is_err());
+
+    let mut invalid_positive = canonical.clone();
+    invalid_positive["storage"]["delays"][0]["kind"]["parameter_delay"]["delay_time"]["value"] =
+        0.0.into();
+    assert!(serde_json::from_value::<Dae>(invalid_positive).is_err());
+
+    let mut unknown_expression = canonical.clone();
+    unknown_expression["storage"]["delays"][1]["kind"]["bounded_delay"]["delay_max"]["expression"] =
+        u32::MAX.into();
+    assert!(serde_json::from_value::<Dae>(unknown_expression).is_err());
+
+    let mut wrong_order = canonical.clone();
+    let first_delay = wrong_order["storage"]["expressions"]["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .filter_map(|node| node.get_mut("coordinate"))
+        .find_map(|coordinate| coordinate.get_mut("delay"))
+        .unwrap();
+    *first_delay = 1.into();
+    assert!(serde_json::from_value::<Dae>(wrong_order).is_err());
+
+    let mut trailing = canonical;
+    let extra = trailing["storage"]["delays"][0].clone();
+    trailing["storage"]["delays"]
+        .as_array_mut()
+        .unwrap()
+        .push(extra);
+    assert!(
+        serde_json::from_value::<Dae>(trailing).is_err(),
+        "every delay operation requires its ordered coordinate occurrence"
+    );
+}
+
+fn tagged_delay_fixture() -> Dae {
+    let source = TestSource::new("delay(1, 2); delay(1, 0.5, 3)");
+    let parameter_owner = source.source("delay(1, 2)", 0);
+    let bounded_owner = source.source("delay(1, 0.5, 3)", 0);
+    let first_source = source.source("1", 0);
+    let parameter_time = source.source("2", 0);
+    let second_source = source.source("1", 1);
+    let bounded_time = source.source("0.5", 0);
+    let maximum = source.source("3", 0);
+    let parameter_coordinate =
+        DaeProvenance::generated(DaeGeneration::DelayLowering, parameter_owner.span()).unwrap();
+    let bounded_coordinate =
+        DaeProvenance::generated(DaeGeneration::DelayLowering, bounded_owner.span()).unwrap();
+    Dae::construct(source.map, |dae| {
+        let values = dae.expressions(|expressions| {
+            Ok((
+                expressions
+                    .at(first_source)
+                    .literal(DaeLiteral::Real(1.0))?,
+                expressions
+                    .at(parameter_time)
+                    .literal(DaeLiteral::Real(2.0))?,
+                expressions
+                    .at(second_source)
+                    .literal(DaeLiteral::Real(1.0))?,
+                expressions
+                    .at(bounded_time)
+                    .literal(DaeLiteral::Real(0.5))?,
+                expressions.at(maximum).literal(DaeLiteral::Real(3.0))?,
+            ))
+        })?;
+        dae.temporal(|temporal| {
+            let delay_time = temporal.positive_parameter(values.1, 2.0, parameter_time)?;
+            temporal.delay(values.0, delay_time, parameter_owner, parameter_coordinate)?;
+            let delay_max = temporal.positive_parameter(values.4, 3.0, maximum)?;
+            temporal.bounded_delay(
+                values.2,
+                values.3,
+                delay_max,
+                bounded_owner,
+                bounded_coordinate,
+            )?;
+            Ok(())
+        })
+    })
+    .expect("both checked delay kinds construct")
+}
+
+#[test]
 fn wire_v11_round_trip_preserves_checked_quotients_and_their_provenance() {
     let source = TestSource::new("div(-7, 3); mod(-7, 3); rem(-7, 3)");
     let div_owner = source.source("div(-7, 3)", 0);

@@ -1203,15 +1203,10 @@ fn delay_lowers_to_runtime_history_programs_and_a_typed_value_slot() {
             .delay(view.delay_id(0).expect("dense delay identity"))
             .expect("checked delay owner resolves");
         assert_eq!(view.source_text(delay.provenance()), Some("delay(x, 0.5)"));
-        assert_eq!(
-            view.source_text(
-                delay
-                    .delay_time_evidence()
-                    .expect("fixed delay has timing evidence")
-                    .provenance()
-            ),
-            Some("0.5")
-        );
+        let dae::DelayOperation::ParameterDelay { delay_time } = delay.operation() else {
+            panic!("fixed delay has parameter timing evidence");
+        };
+        assert_eq!(view.source_text(delay_time.provenance()), Some("0.5"));
     });
 
     let solve = lower_solve_problem(&model).unwrap();

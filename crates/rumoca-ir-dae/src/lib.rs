@@ -102,8 +102,8 @@ pub use model::{
 };
 pub use provenance::{DaeGeneration, DaeProvenance, DaeProvenanceOrigin};
 pub use temporal::{
-    DelayCoordinate, DelayView, PositiveParameter, PositiveParameterView, PreviousView, Temporal,
-    TerminalView,
+    DelayCoordinate, DelayOperation, DelayView, PositiveParameter, PositiveParameterView,
+    PreviousView, Temporal, TerminalView,
 };
 
 #[cfg(test)]

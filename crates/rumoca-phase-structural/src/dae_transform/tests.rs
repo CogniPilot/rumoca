@@ -1119,15 +1119,10 @@ fn state_demotion_preserves_delay_owner_coordinate_and_timing_provenance() {
         let delay_id = view.delay_id(0).expect("dense delay identity survives");
         let delay = view.delay(delay_id).expect("delay owner survives");
         assert_eq!(view.source_text(delay.provenance()), Some("delay(y, 0.5)"));
-        assert_eq!(
-            view.source_text(
-                delay
-                    .delay_time_evidence()
-                    .expect("fixed delay retains positive evidence")
-                    .provenance()
-            ),
-            Some("0.5")
-        );
+        let dae::DelayOperation::ParameterDelay { delay_time } = delay.operation() else {
+            panic!("fixed delay retains parameter timing evidence");
+        };
+        assert_eq!(view.source_text(delay_time.provenance()), Some("0.5"));
         assert_eq!(
             view.source_text(
                 view.expression(delay.source())
@@ -1180,15 +1175,18 @@ fn state_demotion_preserves_bounded_delay_capability_and_provenance() {
             view.source_text(delay.provenance()),
             Some("delay(y, 0.5, 1.0)")
         );
-        assert!(delay.delay_time_evidence().is_none());
-        let maximum = delay
-            .delay_max()
-            .expect("bounded delay retains maximum capability");
+        let dae::DelayOperation::BoundedDelay {
+            delay_time,
+            delay_max: maximum,
+        } = delay.operation()
+        else {
+            panic!("bounded delay retains maximum capability");
+        };
         assert_eq!(maximum.value(), 1.0);
         assert_eq!(view.source_text(maximum.provenance()), Some("1.0"));
         assert_eq!(
             view.source_text(
-                view.expression(delay.delay_time())
+                view.expression(delay_time)
                     .expect("bounded delay timing resolves")
                     .provenance()
             ),

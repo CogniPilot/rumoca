@@ -17,7 +17,7 @@ fn wire_rejects_a_noncanonical_source_map_before_dae_construction() {
 }
 
 #[test]
-fn wire_replay_stops_before_a_ready_later_definition() {
+fn function_operations_are_canonical_and_replay_in_owner_order() {
     let source = TestSource::new("function f output Real x; x:=0; 1; old_x; x:=1; end f;");
     let function_at = source.source("function f", 0);
     let output_at = source.source("output Real x", 0);
@@ -49,16 +49,53 @@ fn wire_replay_stops_before_a_ready_later_definition() {
 
     let encoded = serde_json::to_string(&dae).unwrap();
     let _: Dae = serde_json::from_str(&encoded).expect("owner-scheduled replay round trips");
+    let binary = bincode::serialize(&dae).expect("function operation log serializes");
+    let decoded: Dae = bincode::deserialize(&binary).expect("function operation log reconstructs");
+    assert_eq!(
+        bincode::serialize(&decoded).unwrap(),
+        binary,
+        "binary function operations have one canonical representation"
+    );
 
-    let mut orphan_definition: serde_json::Value = serde_json::from_str(&encoded).unwrap();
-    let duplicate = orphan_definition["storage"]["functions"][0]["definitions"][1].clone();
-    orphan_definition["storage"]["functions"][0]["definitions"]
-        .as_array_mut()
-        .unwrap()
-        .push(duplicate);
+    let canonical: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+    let storage = canonical["storage"].as_object().unwrap();
     assert!(
-        serde_json::from_value::<Dae>(orphan_definition).is_err(),
-        "every serialized definition must be consumed exactly once"
+        !storage.contains_key("function_folds"),
+        "constructor-derived fold facts are not wire state"
+    );
+    let function = canonical["storage"]["functions"][0].as_object().unwrap();
+    for removed in [
+        "parameter_values",
+        "values",
+        "output_values",
+        "definitions",
+        "folds",
+        "definition",
+        "results",
+    ] {
+        assert!(
+            !function.contains_key(removed),
+            "{removed} is constructor-derived and must not be serialized"
+        );
+    }
+    assert_eq!(
+        function["statements"].as_array().unwrap().len(),
+        2,
+        "assignments are the readable semantic operation log"
+    );
+    assert!(
+        function["statements"][0].get("assignment").is_some(),
+        "an assignment stores its target, RHS, and provenance inline"
+    );
+
+    let mut legacy_definition = canonical;
+    legacy_definition["storage"]["functions"][0]
+        .as_object_mut()
+        .unwrap()
+        .insert("definitions".to_owned(), serde_json::json!([]));
+    assert!(
+        serde_json::from_value::<Dae>(legacy_definition).is_err(),
+        "wire-v11 rejects the removed definition mirror"
     );
 }
 
@@ -85,6 +122,92 @@ fn wire_replay_rejects_future_and_stale_function_reads() {
 
 #[test]
 fn wire_replay_routes_domain_free_reads_to_the_active_loop_owner() {
+    let (dae, x_read_at) = active_loop_fixture();
+    dae.inspect(|view| {
+        let read = (0..view.expression_count())
+            .filter_map(|index| view.expression_id(index))
+            .filter_map(|id| view.expression(id))
+            .find(|expression| expression.provenance() == x_read_at)
+            .expect("loop read remains present");
+        assert!(read.binder_domain().is_none());
+    });
+    let encoded = serde_json::to_string(&dae).unwrap();
+    let decoded: Dae =
+        serde_json::from_str(&encoded).expect("active loop replay is definition-led");
+    assert_eq!(
+        serde_json::to_string(&decoded).unwrap(),
+        encoded,
+        "wire replay preserves every canonical column"
+    );
+}
+
+#[test]
+fn wire_replay_rejects_invalid_fold_transitions() {
+    let (dae, _) = active_loop_fixture();
+    let canonical = serde_json::to_value(dae).unwrap();
+
+    let mut end_before_begin = canonical.clone();
+    let nodes = end_before_begin["storage"]["expressions"]["nodes"]
+        .as_array_mut()
+        .unwrap();
+    let parameter = nodes
+        .iter_mut()
+        .find(|node| node.get("function_fold_parameter").is_some())
+        .expect("fixture contains a generated fold parameter")
+        .as_object_mut()
+        .unwrap();
+    let payload = parameter.remove("function_fold_parameter").unwrap();
+    parameter.insert("function_fold_output".to_owned(), payload);
+    assert!(
+        serde_json::from_value::<Dae>(end_before_begin).is_err(),
+        "a fold cannot end before its begin operation"
+    );
+
+    let mut nested_begin = canonical.clone();
+    let statements = nested_begin["storage"]["functions"][0]["statements"]
+        .as_array_mut()
+        .unwrap();
+    let nested = statements
+        .iter()
+        .find(|statement| statement.get("for").is_some())
+        .cloned()
+        .expect("fixture contains a fold statement");
+    statements
+        .iter_mut()
+        .find_map(|statement| statement.get_mut("for"))
+        .unwrap()["statements"]
+        .as_array_mut()
+        .unwrap()
+        .push(nested);
+    assert!(
+        serde_json::from_value::<Dae>(nested_begin).is_err(),
+        "a fold cannot begin while another fold capability is active"
+    );
+
+    let mut trailing_assignment = canonical;
+    let output_index = trailing_assignment["storage"]["expressions"]["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .position(|node| node.get("function_fold_output").is_some())
+        .expect("fixture contains a generated fold output");
+    let statements = trailing_assignment["storage"]["functions"][0]["statements"]
+        .as_array_mut()
+        .unwrap();
+    let assignments = statements
+        .iter_mut()
+        .find_map(|statement| statement.get_mut("for"))
+        .unwrap()["statements"]
+        .as_array_mut()
+        .unwrap();
+    assignments.last_mut().unwrap()["assignment"]["rhs"] = output_index.into();
+    assert!(
+        serde_json::from_value::<Dae>(trailing_assignment).is_err(),
+        "a fold cannot end while an assignment still waits on its RHS"
+    );
+}
+
+fn active_loop_fixture() -> (Dae, DaeProvenance) {
     let source = TestSource::new(
         "function f output Real x; output Real y; x:=0; y:=0; \
          for k in 1:2 loop x:=1; y:=x; end for; end f;",
@@ -141,23 +264,7 @@ fn wire_replay_routes_domain_free_reads_to_the_active_loop_owner() {
         dae.functions(|functions| functions.define(body, function_at))
     })
     .expect("domain-free loop updates remain owned by the loop transition");
-
-    dae.inspect(|view| {
-        let read = (0..view.expression_count())
-            .filter_map(|index| view.expression_id(index))
-            .filter_map(|id| view.expression(id))
-            .find(|expression| expression.provenance() == x_read_at)
-            .expect("loop read remains present");
-        assert!(read.binder_domain().is_none());
-    });
-    let encoded = serde_json::to_string(&dae).unwrap();
-    let decoded: Dae =
-        serde_json::from_str(&encoded).expect("active loop replay is definition-led");
-    let reencoded = serde_json::to_string(&decoded).unwrap();
-    assert_eq!(
-        reencoded, encoded,
-        "wire replay preserves every canonical column"
-    );
+    (dae, x_read_at)
 }
 
 #[test]

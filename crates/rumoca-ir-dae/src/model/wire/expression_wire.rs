@@ -94,13 +94,13 @@ pub(super) enum ExprNodeWire {
         rhs: u32,
     },
     Conditional {
-        operands: OperandRangeWire,
+        operand_count: u32,
     },
     Array {
-        operands: OperandRangeWire,
+        operand_count: u32,
     },
     Record {
-        operands: OperandRangeWire,
+        operand_count: u32,
     },
     Field {
         base: u32,
@@ -117,21 +117,21 @@ pub(super) enum ExprNodeWire {
     },
     Index {
         base: u32,
-        subscripts: OperandRangeWire,
+        subscript_count: u32,
     },
     ArrayUpdate {
         base: u32,
         value: u32,
-        subscripts: OperandRangeWire,
+        subscript_count: u32,
     },
     Builtin {
         builtin: PureBuiltin,
-        operands: OperandRangeWire,
+        operand_count: u32,
     },
     Call {
         function: u32,
         output: u32,
-        operands: OperandRangeWire,
+        operand_count: u32,
     },
     FunctionValue {
         function: u32,
@@ -193,21 +193,6 @@ pub(super) enum CoordinateWire {
     Terminal(u32),
     Binder { domain: u32, ordinal: u32 },
     FunctionParameter { function: u32, ordinal: u32 },
-}
-
-#[derive(Deserialize, Clone, Copy)]
-#[serde(deny_unknown_fields)]
-pub(super) struct OperandRangeWire {
-    pub(super) start: u32,
-    pub(super) len: u32,
-}
-
-impl OperandRangeWire {
-    pub(super) fn indices(self) -> Option<std::ops::Range<usize>> {
-        let start = self.start as usize;
-        let end = start.checked_add(self.len as usize)?;
-        Some(start..end)
-    }
 }
 
 #[derive(Deserialize, Clone, Copy)]
