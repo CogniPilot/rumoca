@@ -191,6 +191,9 @@ source identity, never text.
 | Nodes derive type, shape, variability, domain | Expression API | O(1) checks |
 | Composite variability is operand maximum | Expression API | No tree walk |
 | Coordinate owners supply variability | DAE aggregate | One source |
+| Nested domains name their checked lexical parent | Domain arena | Explicit scope tree |
+| Expression domain merging requires an ancestry relation | Expression API | Reject unrelated binders |
+| A comprehension consumes its local domain and retains its parent scope | Expression API | Nested capture stays typed |
 | Source temporal/flow calls are absent | Expression grammar | Closed boundary |
 | Role conversion returns typed expression IDs | Expression API | Compile-time roles |
 | Equations accept role-specific IDs | Equation systems | No generic forgery |
