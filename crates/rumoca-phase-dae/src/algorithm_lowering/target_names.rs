@@ -72,7 +72,15 @@ pub(super) fn varname_with_subscripts(name: &VarName, subscripts: &[Subscript]) 
         match subscript {
             Subscript::Index { value: index, .. } => index.to_string(),
             Subscript::Colon { .. } => ":".to_string(),
-            Subscript::Expr { expr, .. } => format!("{expr:?}"),
+            // A constant subscript must render as its value, exactly like
+            // `Subscript::Index` — the `{expr:?}` fallback embeds the AST
+            // including spans, so two references to the same element written at
+            // different source positions would otherwise never match. Uses the
+            // same constant folding as explicit assignment targets.
+            Subscript::Expr { expr, .. } => {
+                crate::equation_conversion::const_subscript_index_expr(expr)
+                    .map_or_else(|| format!("{expr:?}"), |index| index.to_string())
+            }
         }
     }
 

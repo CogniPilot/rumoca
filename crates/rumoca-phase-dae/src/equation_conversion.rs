@@ -1344,7 +1344,9 @@ fn pre_of_target(
     }
 }
 
-fn const_subscript_index_expr(expr: &rumoca_core::Expression) -> Option<i64> {
+/// Shared with `algorithm_lowering::target_names`, which must name array
+/// elements the same way explicit assignment targets do.
+pub(crate) fn const_subscript_index_expr(expr: &rumoca_core::Expression) -> Option<i64> {
     let value = match expr {
         rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Integer(value),
