@@ -296,6 +296,7 @@
               pkgs.maturin
               pkgs.mdbook
               pkgs.nodejs_22
+              pkgs.ripgrep
               pkgs.wasm-pack
             ];
           shellHook = ''
