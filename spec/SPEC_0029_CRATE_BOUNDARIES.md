@@ -271,6 +271,14 @@ IR capability probes. Unsupported capabilities report
 `unsupported-feature:<feature_id>`. JIT/device adapters consume Solve IR or
 generated artifacts through stable execution ABIs and equivalence tests.
 
+`rumoca-phase-codegen` Rust may derive target-neutral typed contexts, schedules,
+shapes, dependency/bounds proofs, symbols, and provenance. It MUST NOT spell or
+assemble target-language tokens, expressions, statements, declarations, or
+files. Those belong entirely to each target's `target.toml` and MiniJinja
+templates, so adding a textual target does not require a Rust dialect or
+renderer. Generic template operations consume semantic IR vocabulary and fail
+closed; they do not return pre-rendered language fragments.
+
 Steady-state CI rejects reverse dependencies across this chain. `rumoca-compile`
 MUST NOT depend on concrete solvers or visualization assets; backend-selection
 APIs MUST affect runtime behavior, not only metadata.
