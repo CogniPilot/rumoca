@@ -36,9 +36,8 @@ impl PreparedLinearOps {
     ) -> Result<(), EvalSolveError> {
         // Operand setup ops compute matrix/rhs entries into the register file
         // and contain no `StoreOutput`; the matmul/linsolve kernel reads the
-        // registers afterward. The single-output helper drives the op loop and
-        // its (unused) return value is discarded.
-        eval_program_single(
+        // registers afterward.
+        eval_program_no_output(
             PreparedRowEval::new(&self.ops, self.register_count, y, p, t, context),
             self.register_safe,
             scratch,

@@ -285,7 +285,13 @@ fn tensor_shape_contract_rejects_non_finite_combined_constant_stride() {
 
 #[test]
 fn scalar_program_block_with_source_span_preserves_explicit_fixture_span() {
-    let block = ScalarProgramBlock::with_source_span(vec![vec![]], fixture_span());
+    let block = ScalarProgramBlock::with_source_span(
+        vec![vec![
+            LinearOp::Const { dst: 0, value: 1.0 },
+            LinearOp::StoreOutput { src: 0 },
+        ]],
+        fixture_span(),
+    );
     assert_eq!(block.program_spans, vec![fixture_span()]);
 }
 

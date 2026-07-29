@@ -585,6 +585,16 @@ impl ComputeNode {
                             output_indices,
                             span: block.first_program_span(),
                         },
+                        SolveProblemShapeContractError::ScalarProgramMissingOutput {
+                            program_index,
+                            span,
+                            ..
+                        } => SolveProblemShapeContractError::ScalarProgramMissingOutput {
+                            context: context.to_string(),
+                            node_index,
+                            program_index,
+                            span,
+                        },
                         other => other,
                     })?;
             }

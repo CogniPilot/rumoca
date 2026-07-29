@@ -20,7 +20,7 @@ use crate::{
         checked_contiguous_output_count, scalar_program_output_count,
         scalar_program_output_indices, tensor_output_count, validate_affine_stride_metadata,
     },
-    eval_program_single, eval_row_prepared_maybe_fast,
+    eval_program_no_output, eval_program_single, eval_row_prepared_maybe_fast,
     linear_solve::solve_all_unchecked,
     record_solve_block_eval, required_registers, row_input_requirements,
     row_register_flow_is_valid, validate_input_requirements, validate_input_requirements_with_span,
@@ -78,6 +78,7 @@ impl Clone for PreparedScalarProgramBlock {
 
 impl PreparedScalarProgramBlock {
     pub fn new(block: ScalarProgramBlock) -> Result<Self, EvalSolveError> {
+        block.validate_shape_contract("prepared scalar program block")?;
         let row_count = block.programs.len();
         let block_span = block.program_span(0);
         let output_count = checked_prepared_output_count(&block)?;
@@ -770,7 +771,7 @@ impl PreparedScalarProgramBlock {
             .map_err(|error| error.with_source_span(self.block.program_span(request.row_idx)))?;
             return Ok((!row_loads_y_index(row, request.target_y_index)).then_some(output));
         };
-        eval_program_single(
+        eval_program_no_output(
             PreparedRowEval::new(
                 &row[..shape.expr_eval_len()],
                 self.row_registers[request.row_idx],
@@ -813,7 +814,7 @@ impl PreparedScalarProgramBlock {
                 self.block.program_span(request.row_idx),
             ));
         };
-        eval_program_single(
+        eval_program_no_output(
             PreparedRowEval::new(
                 &row[..shape.expr_eval_len()],
                 self.row_registers[request.row_idx],

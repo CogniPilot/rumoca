@@ -28,6 +28,8 @@ mod prepared;
 mod random_runtime;
 pub mod refresh_plan;
 pub mod reverse;
+#[cfg(test)]
+mod scalar_program_contract_tests;
 mod sparsity;
 mod table_runtime;
 pub mod tensor_policy;
@@ -856,19 +858,44 @@ pub fn eval_row_with_context(
 ///
 /// Convenience for callers that operate on programs with exactly one
 /// `StoreOutput` (residual rows, root conditions, event-message numbers,
-/// target-assignment rows). Returns the last value stored, matching the
-/// historical "last `StoreOutput` wins" behavior for those programs.
+/// target-assignment rows).
 pub(crate) fn eval_program_single(
     input: PreparedRowEval<'_, '_>,
     register_safe: bool,
     scratch: &mut RowEvalScratch,
 ) -> Result<f64, EvalSolveError> {
+    require_program_output_count(input.row, 1, input.source_span)?;
     let mut buf = [0.0f64];
     {
         let mut sink = OutputCursor::new(&mut buf);
         eval_row_prepared_maybe_fast(input, register_safe, scratch, &mut sink)?;
     }
     Ok(buf[0])
+}
+
+pub(crate) fn eval_program_no_output(
+    input: PreparedRowEval<'_, '_>,
+    register_safe: bool,
+    scratch: &mut RowEvalScratch,
+) -> Result<(), EvalSolveError> {
+    require_program_output_count(input.row, 0, input.source_span)?;
+    let mut sink = OutputCursor::new(&mut []);
+    eval_row_prepared_maybe_fast(input, register_safe, scratch, &mut sink)
+}
+
+fn require_program_output_count(
+    row: &[LinearOp],
+    expected: usize,
+    span: Option<rumoca_core::Span>,
+) -> Result<(), EvalSolveError> {
+    let actual = ScalarProgramBlock::program_output_count(row);
+    if actual == expected {
+        return Ok(());
+    }
+    Err(EvalSolveError::InvalidRow {
+        message: format!("single-program evaluation expected {expected} outputs, found {actual}"),
+        span,
+    })
 }
 
 #[inline(always)]
