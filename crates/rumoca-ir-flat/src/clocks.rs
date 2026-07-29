@@ -6,7 +6,7 @@
 //! - Sub-clock partitions
 //! - Clock inference data
 
-use indexmap::{IndexMap, IndexSet};
+use indexmap::IndexMap;
 use rumoca_core::{
     ClockLattice, ClockLatticeError, ClockLatticeErrorKind, ClockRational, ProvenanceSpan, Span,
 };
@@ -27,30 +27,194 @@ pub type ClockLatticeResult<T> = Result<T, ClockLatticeError>;
 /// After flattening, equations are partitioned into clock partitions:
 /// - Base-clock partitions: sets that must execute together in one task
 /// - Sub-clock partitions: subsets within a base partition with different sub-sampling
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct ClockPartitions {
+    /// Source span for the flattened model whose clock ownership is represented.
+    source_span: ProvenanceSpan,
     /// Base-clock partitions (execute asynchronously from each other).
-    pub base_partitions: Vec<BaseClockPartition>,
+    base_partitions: Vec<BaseClockPartition>,
+    /// Dense-position lookup for globally unique base-clock IDs.
+    base_partition_index: IndexMap<u32, usize>,
     /// The continuous-time partition (if any).
     /// This contains equations without explicit clock associations.
-    pub continuous_partition: Option<ContinuousPartition>,
+    continuous_partition: Option<ContinuousPartition>,
+    /// Authoritative variable-to-clock ownership, derived during insertion.
+    variable_owners: IndexMap<VarName, VariableClockOwner>,
 }
 
 impl ClockPartitions {
-    /// Create a new empty clock partitions structure.
-    pub fn new() -> Self {
-        Self::default()
+    /// Construct the clock ownership root for one flattened model.
+    ///
+    /// ```compile_fail
+    /// use rumoca_core::Span;
+    /// use rumoca_ir_flat::ClockPartitions;
+    ///
+    /// let _ = ClockPartitions::construct(Span::DUMMY);
+    /// ```
+    pub fn construct(source_span: ProvenanceSpan) -> Self {
+        Self {
+            source_span,
+            base_partitions: Vec::new(),
+            base_partition_index: IndexMap::new(),
+            continuous_partition: None,
+            variable_owners: IndexMap::new(),
+        }
     }
 
-    /// Add a base-clock partition.
-    pub fn add_base_partition(&mut self, partition: BaseClockPartition) {
+    pub fn source_span(&self) -> Span {
+        self.source_span.span()
+    }
+
+    /// Add a checked base-clock partition and derive all variable associations.
+    pub fn add_base_partition(
+        &mut self,
+        partition: BaseClockPartition,
+    ) -> Result<(), ClockPartitionError> {
+        if let Some(&index) = self.base_partition_index.get(&partition.id) {
+            return Err(ClockPartitionError::DuplicateBasePartition {
+                id: partition.id,
+                first_span: self.base_partitions[index].source_span(),
+                duplicate_span: partition.source_span(),
+            });
+        }
+        let pending_owners = partition.variable_owners();
+        for (name, owner) in &pending_owners {
+            self.require_unowned(name, *owner)?;
+        }
+        let index = self.base_partitions.len();
+        self.base_partition_index.insert(partition.id, index);
+        self.variable_owners.extend(pending_owners);
         self.base_partitions.push(partition);
+        Ok(())
     }
 
-    /// Get the number of base partitions.
     pub fn num_base_partitions(&self) -> usize {
         self.base_partitions.len()
     }
+
+    pub fn base_partitions(&self) -> &[BaseClockPartition] {
+        &self.base_partitions
+    }
+
+    pub fn base_partition(&self, id: u32) -> Option<&BaseClockPartition> {
+        self.base_partition_index
+            .get(&id)
+            .map(|&index| &self.base_partitions[index])
+    }
+
+    /// Define the single continuous-time owner, including an intentionally
+    /// empty continuous partition.
+    pub fn define_continuous_partition(
+        &mut self,
+        source_span: ProvenanceSpan,
+    ) -> Result<(), ClockPartitionError> {
+        if let Some(first) = &self.continuous_partition {
+            return Err(ClockPartitionError::DuplicateContinuousPartition {
+                first_span: first.source_span(),
+                duplicate_span: source_span.span(),
+            });
+        }
+        self.continuous_partition = Some(ContinuousPartition::new(source_span));
+        Ok(())
+    }
+
+    /// Add one continuous-time variable and make its unclocked ownership
+    /// authoritative.
+    pub fn add_continuous_variable(
+        &mut self,
+        name: VarName,
+        occurrence: ProvenanceSpan,
+    ) -> Result<(), ClockPartitionError> {
+        let owner = VariableClockOwner {
+            association: ClockAssociation::Continuous,
+            span: occurrence,
+        };
+        self.require_unowned(&name, owner)?;
+        self.continuous_partition
+            .get_or_insert_with(|| ContinuousPartition::new(occurrence))
+            .variables
+            .insert(name.clone(), occurrence);
+        self.variable_owners.insert(name, owner);
+        Ok(())
+    }
+
+    /// Add one source-proven continuous-time equation.
+    pub fn add_continuous_equation(
+        &mut self,
+        equation: Equation,
+    ) -> Result<(), ClockPartitionError> {
+        let occurrence = equation
+            .span
+            .require_provenance("Flat continuous partition equation")
+            .map_err(ClockPartitionError::MissingProvenance)?;
+        self.continuous_partition
+            .get_or_insert_with(|| ContinuousPartition::new(occurrence))
+            .equations
+            .push(equation);
+        Ok(())
+    }
+
+    pub fn continuous_source_span(&self) -> Option<Span> {
+        self.continuous_partition
+            .as_ref()
+            .map(ContinuousPartition::source_span)
+    }
+
+    pub fn continuous_variables(&self) -> impl Iterator<Item = &VarName> {
+        self.continuous_partition
+            .as_ref()
+            .into_iter()
+            .flat_map(|partition| partition.variables.keys())
+    }
+
+    pub fn continuous_equations(&self) -> &[Equation] {
+        self.continuous_partition
+            .as_ref()
+            .map_or(&[], |partition| partition.equations.as_slice())
+    }
+
+    pub fn association(&self, name: &VarName) -> Option<ClockAssociation> {
+        self.variable_owners
+            .get(name)
+            .map(|owner| owner.association)
+    }
+
+    pub fn association_span(&self, name: &VarName) -> Option<Span> {
+        self.variable_owners
+            .get(name)
+            .map(|owner| owner.span.span())
+    }
+
+    fn require_unowned(
+        &self,
+        name: &VarName,
+        pending: VariableClockOwner,
+    ) -> Result<(), ClockPartitionError> {
+        if let Some(first) = self.variable_owners.get(name) {
+            return Err(ClockPartitionError::VariableInMultipleClockPartitions {
+                name: name.clone(),
+                first: first.association,
+                second: pending.association,
+                first_span: first.span.span(),
+                duplicate_span: pending.span.span(),
+            });
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClockAssociation {
+    Continuous,
+    Base { base_id: u32 },
+    Sub { base_id: u32, sub_id: u32 },
+}
+
+#[derive(Debug, Clone, Copy)]
+struct VariableClockOwner {
+    association: ClockAssociation,
+    span: ProvenanceSpan,
 }
 
 /// MLS §16.7: Base-Clock Partition.
@@ -71,6 +235,10 @@ pub struct BaseClockPartition {
     equations: Vec<Equation>,
     /// Sub-clock partitions within this base partition.
     sub_partitions: Vec<SubClockPartition>,
+    /// Dense-position lookup for unique sub-clock IDs.
+    sub_partition_index: IndexMap<u32, usize>,
+    /// Variable occurrence and owning sub-clock ID.
+    sub_variable_owners: IndexMap<VarName, (u32, ProvenanceSpan)>,
     /// Whether this is a discretized partition (contains der(), delay(), etc.).
     /// MLS §16.8.1: "If the partition contains a Discretized Variables, it is called discretized."
     discretized_at: Option<ProvenanceSpan>,
@@ -94,6 +262,8 @@ impl BaseClockPartition {
             variables: IndexMap::new(),
             equations: Vec::new(),
             sub_partitions: Vec::new(),
+            sub_partition_index: IndexMap::new(),
+            sub_variable_owners: IndexMap::new(),
             discretized_at: None,
         }
     }
@@ -162,24 +332,15 @@ impl BaseClockPartition {
 
     /// Add one checked sub-clock owner atomically.
     pub fn add_sub_partition(&mut self, sub: SubClockPartition) -> Result<(), ClockPartitionError> {
-        if let Some(first) = self
-            .sub_partitions
-            .iter()
-            .find(|partition| partition.id == sub.id)
-        {
+        if let Some(&index) = self.sub_partition_index.get(&sub.id) {
             return Err(ClockPartitionError::DuplicateSubPartition {
                 id: sub.id,
-                first_span: first.source_span(),
+                first_span: self.sub_partitions[index].source_span(),
                 duplicate_span: sub.source_span(),
             });
         }
         for (name, occurrence) in &sub.variables {
-            if let Some((_, first)) = self.sub_partitions.iter().find_map(|partition| {
-                partition
-                    .variables
-                    .get_key_value(name)
-                    .map(|entry| (partition, entry.1))
-            }) {
+            if let Some((_, first)) = self.sub_variable_owners.get(name) {
                 return Err(ClockPartitionError::VariableInMultipleSubPartitions {
                     name: name.clone(),
                     first_span: first.span(),
@@ -189,7 +350,11 @@ impl BaseClockPartition {
         }
         for (name, occurrence) in &sub.variables {
             self.variables.entry(name.clone()).or_insert(*occurrence);
+            self.sub_variable_owners
+                .insert(name.clone(), (sub.id, *occurrence));
         }
+        self.sub_partition_index
+            .insert(sub.id, self.sub_partitions.len());
         self.sub_partitions.push(sub);
         Ok(())
     }
@@ -197,6 +362,33 @@ impl BaseClockPartition {
     /// Record the source construct that makes this partition discretized.
     pub fn mark_discretized(&mut self, responsible_span: ProvenanceSpan) {
         self.discretized_at.get_or_insert(responsible_span);
+    }
+
+    fn variable_owners(&self) -> IndexMap<VarName, VariableClockOwner> {
+        self.variables
+            .iter()
+            .map(|(name, span)| {
+                let (association, owner_span) = self.sub_variable_owners.get(name).map_or(
+                    (ClockAssociation::Base { base_id: self.id }, *span),
+                    |(sub_id, sub_span)| {
+                        (
+                            ClockAssociation::Sub {
+                                base_id: self.id,
+                                sub_id: *sub_id,
+                            },
+                            *sub_span,
+                        )
+                    },
+                );
+                (
+                    name.clone(),
+                    VariableClockOwner {
+                        association,
+                        span: owner_span,
+                    },
+                )
+            })
+            .collect()
     }
 }
 
@@ -291,8 +483,24 @@ pub enum ClockPartitionError {
         first_span: Span,
         duplicate_span: Span,
     },
+    DuplicateBasePartition {
+        id: u32,
+        first_span: Span,
+        duplicate_span: Span,
+    },
+    DuplicateContinuousPartition {
+        first_span: Span,
+        duplicate_span: Span,
+    },
     VariableInMultipleSubPartitions {
         name: VarName,
+        first_span: Span,
+        duplicate_span: Span,
+    },
+    VariableInMultipleClockPartitions {
+        name: VarName,
+        first: ClockAssociation,
+        second: ClockAssociation,
         first_span: Span,
         duplicate_span: Span,
     },
@@ -308,9 +516,24 @@ impl std::fmt::Display for ClockPartitionError {
             Self::DuplicateSubPartition { id, .. } => {
                 write!(formatter, "duplicate sub-clock partition id {id}")
             }
+            Self::DuplicateBasePartition { id, .. } => {
+                write!(formatter, "duplicate base-clock partition id {id}")
+            }
+            Self::DuplicateContinuousPartition { .. } => {
+                write!(formatter, "duplicate continuous-time partition")
+            }
             Self::VariableInMultipleSubPartitions { name, .. } => write!(
                 formatter,
                 "variable `{name}` belongs to multiple sibling sub-clock partitions"
+            ),
+            Self::VariableInMultipleClockPartitions {
+                name,
+                first,
+                second,
+                ..
+            } => write!(
+                formatter,
+                "variable `{name}` belongs to both {first:?} and {second:?}"
             ),
             Self::MissingProvenance(error) => error.fmt(formatter),
         }
@@ -346,6 +569,102 @@ struct BaseClockPartitionWire {
     equations: Vec<Equation>,
     sub_partitions: Vec<SubClockPartitionWire>,
     discretized_at: Option<Span>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ContinuousPartitionWire {
+    source_span: Span,
+    variables: Vec<ClockPartitionVariableWire>,
+    equations: Vec<Equation>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ClockPartitionsWire {
+    source_span: Span,
+    base_partitions: Vec<BaseClockPartitionWire>,
+    continuous_partition: Option<ContinuousPartitionWire>,
+}
+
+impl Serialize for ClockPartitions {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        ClockPartitionsWire {
+            source_span: self.source_span(),
+            base_partitions: self
+                .base_partitions
+                .iter()
+                .map(BaseClockPartitionWire::from)
+                .collect(),
+            continuous_partition: self
+                .continuous_partition
+                .as_ref()
+                .map(ContinuousPartitionWire::from),
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for ClockPartitions {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        ClockPartitionsWire::deserialize(deserializer)?.reconstruct::<D::Error>()
+    }
+}
+
+impl From<&ContinuousPartition> for ContinuousPartitionWire {
+    fn from(partition: &ContinuousPartition) -> Self {
+        Self {
+            source_span: partition.source_span(),
+            variables: partition
+                .variables
+                .iter()
+                .map(|(name, span)| ClockPartitionVariableWire {
+                    name: name.clone(),
+                    span: span.span(),
+                })
+                .collect(),
+            equations: partition.equations.clone(),
+        }
+    }
+}
+
+impl ClockPartitionsWire {
+    fn reconstruct<E: serde::de::Error>(self) -> Result<ClockPartitions, E> {
+        let source_span = self
+            .source_span
+            .require_provenance("Flat clock-partition root")
+            .map_err(E::custom)?;
+        let mut partitions = ClockPartitions::construct(source_span);
+        for base_partition in self.base_partitions {
+            partitions
+                .add_base_partition(base_partition.reconstruct::<E>()?)
+                .map_err(E::custom)?;
+        }
+        if let Some(continuous) = self.continuous_partition {
+            let owner = continuous
+                .source_span
+                .require_provenance("Flat continuous partition owner")
+                .map_err(E::custom)?;
+            partitions
+                .define_continuous_partition(owner)
+                .map_err(E::custom)?;
+            for variable in continuous.variables {
+                let occurrence = variable
+                    .span
+                    .require_provenance("Flat continuous partition variable")
+                    .map_err(E::custom)?;
+                partitions
+                    .add_continuous_variable(variable.name, occurrence)
+                    .map_err(E::custom)?;
+            }
+            for equation in continuous.equations {
+                partitions
+                    .add_continuous_equation(equation)
+                    .map_err(E::custom)?;
+            }
+        }
+        Ok(partitions)
+    }
 }
 
 impl Serialize for SubClockPartition {
@@ -475,12 +794,25 @@ impl BaseClockPartitionWire {
 }
 
 /// The continuous-time partition (non-clocked equations).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ContinuousPartition {
-    /// Variables in the continuous partition.
-    pub variables: IndexSet<VarName>,
-    /// Equations in the continuous partition.
-    pub equations: Vec<Equation>,
+#[derive(Debug, Clone)]
+struct ContinuousPartition {
+    source_span: ProvenanceSpan,
+    variables: IndexMap<VarName, ProvenanceSpan>,
+    equations: Vec<Equation>,
+}
+
+impl ContinuousPartition {
+    fn new(source_span: ProvenanceSpan) -> Self {
+        Self {
+            source_span,
+            variables: IndexMap::new(),
+            equations: Vec::new(),
+        }
+    }
+
+    fn source_span(&self) -> Span {
+        self.source_span.span()
+    }
 }
 
 // =============================================================================
@@ -1082,37 +1414,6 @@ impl ClockInterval {
             Self::Rational(period) => period.to_f64(),
             Self::Seconds(seconds) => *seconds,
         }
-    }
-}
-
-// =============================================================================
-// Clock Variable Association (MLS §16.2.1)
-// =============================================================================
-
-/// MLS §16.2.1: Clock association for variables.
-///
-/// "Every clocked variable associates uniquely with exactly one clock."
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ClockAssociations {
-    /// Map from variable name to its associated clock partition.
-    pub variable_to_partition: IndexMap<VarName, (u32, Option<u32>)>,
-}
-
-impl ClockAssociations {
-    /// Create a new empty associations map.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Associate a variable with a partition.
-    /// `base_id` is the base partition ID, `sub_id` is the optional sub-partition ID.
-    pub fn associate(&mut self, var: VarName, base_id: u32, sub_id: Option<u32>) {
-        self.variable_to_partition.insert(var, (base_id, sub_id));
-    }
-
-    /// Get the partition for a variable.
-    pub fn get(&self, var: &VarName) -> Option<(u32, Option<u32>)> {
-        self.variable_to_partition.get(var).copied()
     }
 }
 

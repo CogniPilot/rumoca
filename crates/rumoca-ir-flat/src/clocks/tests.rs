@@ -521,3 +521,188 @@ fn base_clock_partition_wire_reconstructs_the_checked_aggregate() {
         .expect_err("legacy public-field wire shape must fail");
     assert!(error.to_string().contains("unknown field"));
 }
+
+#[test]
+fn clock_partitions_is_the_authoritative_variable_owner() {
+    let root_span = named_span("clock_root.mo", 1);
+    let continuous_span = named_span("clock_root.mo", 3);
+    let base_span = named_span("clock_root.mo", 5);
+    let base_variable_span = named_span("clock_root.mo", 7);
+    let sub_span = named_span("clock_root.mo", 9);
+    let sub_variable_span = named_span("clock_root.mo", 11);
+    let mut root = ClockPartitions::construct(provenance(root_span));
+    root.define_continuous_partition(provenance(continuous_span))
+        .expect("one continuous owner");
+    root.add_continuous_variable(VarName::new("continuous"), provenance(continuous_span))
+        .expect("continuous variable is unowned");
+
+    let mut base =
+        BaseClockPartition::construct(4, BaseClock::inferred(base_span), provenance(base_span));
+    base.add_variable(VarName::new("base"), provenance(base_variable_span))
+        .expect("unique base variable");
+    let mut sub = SubClockPartition::construct(
+        2,
+        SubClock::identity(provenance(sub_span)),
+        provenance(sub_span),
+    );
+    sub.add_variable(VarName::new("sub"), provenance(sub_variable_span))
+        .expect("unique sub variable");
+    base.add_sub_partition(sub).expect("unique sub owner");
+    root.add_base_partition(base)
+        .expect("base variables are globally unowned");
+
+    assert_eq!(root.source_span(), root_span);
+    assert_eq!(root.continuous_source_span(), Some(continuous_span));
+    assert_eq!(root.continuous_variables().count(), 1);
+    assert_eq!(root.num_base_partitions(), 1);
+    assert_eq!(root.base_partition(4).map(BaseClockPartition::id), Some(4));
+    assert_eq!(
+        root.association(&VarName::new("continuous")),
+        Some(ClockAssociation::Continuous)
+    );
+    assert_eq!(
+        root.association(&VarName::new("base")),
+        Some(ClockAssociation::Base { base_id: 4 })
+    );
+    assert_eq!(
+        root.association(&VarName::new("sub")),
+        Some(ClockAssociation::Sub {
+            base_id: 4,
+            sub_id: 2,
+        })
+    );
+    assert_eq!(
+        root.association_span(&VarName::new("sub")),
+        Some(sub_variable_span)
+    );
+}
+
+#[test]
+fn clock_partitions_rejects_duplicate_ids_and_cross_domain_ownership_atomically() {
+    let root_span = named_span("clock_root_conflict.mo", 1);
+    let continuous_span = named_span("clock_root_conflict.mo", 3);
+    let first_base_span = named_span("clock_root_conflict.mo", 5);
+    let duplicate_base_span = named_span("clock_root_conflict.mo", 7);
+    let conflict_span = named_span("clock_root_conflict.mo", 9);
+    let name = VarName::new("shared");
+    let mut root = ClockPartitions::construct(provenance(root_span));
+    root.add_continuous_variable(name.clone(), provenance(continuous_span))
+        .expect("first ownership");
+
+    let mut conflicting_base = BaseClockPartition::construct(
+        1,
+        BaseClock::inferred(first_base_span),
+        provenance(first_base_span),
+    );
+    conflicting_base
+        .add_variable(name.clone(), provenance(conflict_span))
+        .expect("locally unique base variable");
+    let error = root
+        .add_base_partition(conflicting_base)
+        .expect_err("continuous and clocked ownership must be exclusive");
+    assert!(matches!(
+        error,
+        ClockPartitionError::VariableInMultipleClockPartitions {
+            name: conflict_name,
+            first: ClockAssociation::Continuous,
+            second: ClockAssociation::Base { base_id: 1 },
+            first_span,
+            duplicate_span,
+        } if conflict_name == name
+            && first_span == continuous_span
+            && duplicate_span == conflict_span
+    ));
+    assert_eq!(root.num_base_partitions(), 0);
+    assert_eq!(root.association(&name), Some(ClockAssociation::Continuous));
+
+    root.add_base_partition(BaseClockPartition::construct(
+        1,
+        BaseClock::inferred(first_base_span),
+        provenance(first_base_span),
+    ))
+    .expect("first base ID");
+    let error = root
+        .add_base_partition(BaseClockPartition::construct(
+            1,
+            BaseClock::inferred(duplicate_base_span),
+            provenance(duplicate_base_span),
+        ))
+        .expect_err("base IDs are globally unique");
+    assert!(matches!(
+        error,
+        ClockPartitionError::DuplicateBasePartition {
+            id: 1,
+            first_span,
+            duplicate_span,
+        } if first_span == first_base_span && duplicate_span == duplicate_base_span
+    ));
+    assert_eq!(root.num_base_partitions(), 1);
+}
+
+#[test]
+fn clock_partitions_wire_derives_indexes_and_rejects_forged_ownership() {
+    let root_span = named_span("clock_root_wire.mo", 1);
+    let continuous_span = named_span("clock_root_wire.mo", 3);
+    let base_span = named_span("clock_root_wire.mo", 5);
+    let base_variable_span = named_span("clock_root_wire.mo", 7);
+    let mut root = ClockPartitions::construct(provenance(root_span));
+    root.add_continuous_variable(VarName::new("continuous"), provenance(continuous_span))
+        .expect("continuous owner");
+    let mut base =
+        BaseClockPartition::construct(6, BaseClock::inferred(base_span), provenance(base_span));
+    base.add_variable(VarName::new("clocked"), provenance(base_variable_span))
+        .expect("clocked owner");
+    root.add_base_partition(base).expect("unique base owner");
+
+    let encoded = serde_json::to_value(&root).expect("clock root serializes");
+    assert!(encoded.get("variable_owners").is_none());
+    assert!(encoded.get("base_partition_index").is_none());
+    let decoded: ClockPartitions =
+        serde_json::from_value(encoded.clone()).expect("clock root reconstructs");
+    assert_eq!(
+        decoded.association(&VarName::new("continuous")),
+        Some(ClockAssociation::Continuous)
+    );
+    assert_eq!(
+        decoded.association(&VarName::new("clocked")),
+        Some(ClockAssociation::Base { base_id: 6 })
+    );
+    assert!(decoded.base_partition(6).is_some());
+
+    let mut duplicate_base = encoded.clone();
+    let first_base = duplicate_base["base_partitions"][0].clone();
+    duplicate_base["base_partitions"]
+        .as_array_mut()
+        .expect("base partitions are an array")
+        .push(first_base);
+    let error = serde_json::from_value::<ClockPartitions>(duplicate_base)
+        .expect_err("wire cannot forge duplicate base IDs");
+    assert!(
+        error
+            .to_string()
+            .contains("duplicate base-clock partition id")
+    );
+
+    let mut conflicting_owner = encoded.clone();
+    conflicting_owner["base_partitions"][0]["variables"][0]["name"] =
+        serde_json::Value::String("continuous".into());
+    let error = serde_json::from_value::<ClockPartitions>(conflicting_owner)
+        .expect_err("wire cannot assign one variable to two clock domains");
+    assert!(error.to_string().contains("belongs to both"));
+
+    let mut missing_root = encoded.clone();
+    missing_root["source_span"] = serde_json::to_value(Span::DUMMY).expect("dummy span serializes");
+    let error = serde_json::from_value::<ClockPartitions>(missing_root)
+        .expect_err("wire root provenance is required");
+    assert!(
+        error
+            .to_string()
+            .contains("missing source provenance for Flat clock-partition root")
+    );
+
+    let mut obsolete_associations = encoded;
+    obsolete_associations["variable_to_partition"] = serde_json::json!({});
+    let error = serde_json::from_value::<ClockPartitions>(obsolete_associations)
+        .expect_err("independent legacy associations are not accepted");
+    assert!(error.to_string().contains("unknown field"));
+}
