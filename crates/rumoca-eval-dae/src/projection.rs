@@ -39,9 +39,10 @@ pub fn for_each_scalar_coordinate<'dae>(
 ) -> Result<(), ProjectionError> {
     let mut projection = Projection {
         view,
-        domain_points: domain_point
-            .map(|(domain, point)| vec![(domain, point.to_vec())])
-            .unwrap_or_default(),
+        domain_points: match domain_point {
+            Some((domain, point)) => vec![(domain, point.to_vec())],
+            None => Vec::new(),
+        },
         integer_stack: vec![false; view.expression_count()],
         function_arguments: Vec::new(),
         visit: &mut visit,

@@ -9,7 +9,7 @@ pub(in crate::construction) struct ComprehensionPlan {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(in crate::construction) struct ComprehensionKey {
     owner: Span,
-    binders: Vec<(String, Span)>,
+    binders: Vec<(VarName, Span)>,
 }
 
 impl ComprehensionKey {
@@ -19,7 +19,7 @@ impl ComprehensionKey {
     ) -> Option<Self> {
         indices
             .iter()
-            .map(|index| Some((index.name.clone(), index.range.span()?)))
+            .map(|index| Some((VarName::new(&index.name), index.range.span()?)))
             .collect::<Option<Vec<_>>>()
             .map(|binders| Self { owner, binders })
     }
