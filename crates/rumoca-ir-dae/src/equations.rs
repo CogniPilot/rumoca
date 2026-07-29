@@ -80,145 +80,181 @@ pub(crate) enum EquationOwnerEntry {
     Structured(u32),
 }
 
-pub struct ContinuousEquations<'storage, 'dae> {
-    pub(crate) source_map: &'storage rumoca_core::SourceMap,
-    pub(crate) storage: &'storage mut Storage,
-    pub(crate) marker: PhantomData<&'dae mut &'dae ()>,
+trait ResidualPartition {
+    fn insert(
+        storage: &mut Storage,
+        entry: ResidualEquationEntry,
+        owner: DaeProvenance,
+    ) -> Result<u32, DaeConstructionError>;
 }
 
-impl<'dae> ContinuousEquations<'_, 'dae> {
-    /// Attach one scalar or array-valued Real residual as one semantic owner.
-    ///
-    /// Array residuals become a compact row-major family whose domain is
-    /// derived from the checked expression shape.
-    pub fn value_equation(
-        &mut self,
+trait StructuredPartition: ResidualPartition {
+    fn insert_family(
+        storage: &mut Storage,
+        entry: StructuredFamilyEntry,
         owner: DaeProvenance,
-        residual: ExprId<'dae>,
-    ) -> Result<(), DaeConstructionError> {
-        build_value_equation(
-            self.source_map,
-            self.storage,
-            owner,
-            residual,
-            StructuredPartition::Continuous,
-        )
-    }
-
-    pub fn equation(
-        &mut self,
-        owner: DaeProvenance,
-        build: impl FnOnce(&mut ResidualEquation<'_, 'dae>) -> Result<(), DaeConstructionError>,
-    ) -> Result<ContinuousEquationId<'dae>, DaeConstructionError> {
-        let raw = build_residual(
-            self.source_map,
-            self.storage,
-            owner,
-            build,
-            ResidualPartition::Continuous,
-        )?;
-        Ok(ContinuousEquationId::from_raw(raw))
-    }
-
-    pub fn structured_family(
-        &mut self,
-        owner: DaeProvenance,
-        domain: DomainId<'dae>,
-        scalar_view: ComprehensionScalarView,
-        build: impl FnOnce(&mut StructuredResiduals<'_, 'dae>) -> Result<(), DaeConstructionError>,
-    ) -> Result<ContinuousFamilyId<'dae>, DaeConstructionError> {
-        build_structured_family(
-            self.source_map,
-            self.storage,
-            owner,
-            domain,
-            scalar_view,
-            build,
-            StructuredPartition::Continuous,
-        )
-        .map(ContinuousFamilyId::from_raw)
-    }
+    ) -> Result<u32, DaeConstructionError>;
 }
 
-pub struct InitializationEquations<'storage, 'dae> {
-    pub(crate) source_map: &'storage rumoca_core::SourceMap,
-    pub(crate) storage: &'storage mut Storage,
-    pub(crate) marker: PhantomData<&'dae mut &'dae ()>,
+macro_rules! equation_partitions {
+    (
+        $(
+            structured $partition:ident, $scope:ident {
+                residual $equation:ident -> $equation_id:ident, $equations:ident;
+                family $value_equation:ident, $family:ident
+                    -> $family_id:ident, $families:ident, $owners:ident;
+            }
+        )*
+        residual $discrete_partition:ident, $discrete_scope:ident {
+            residual $real_equation:ident
+                -> $discrete_equation_id:ident, $discrete_equations:ident;
+        }
+    ) => {
+        $(
+            struct $partition;
+
+            impl ResidualPartition for $partition {
+                fn insert(
+                    storage: &mut Storage,
+                    entry: ResidualEquationEntry,
+                    owner: DaeProvenance,
+                ) -> Result<u32, DaeConstructionError> {
+                    let raw = push_dense(&mut storage.$equations, entry, "equation arena", owner)?;
+                    storage.$owners.push(EquationOwnerEntry::Residual(raw));
+                    Ok(raw)
+                }
+            }
+
+            impl StructuredPartition for $partition {
+                fn insert_family(
+                    storage: &mut Storage,
+                    entry: StructuredFamilyEntry,
+                    owner: DaeProvenance,
+                ) -> Result<u32, DaeConstructionError> {
+                    let raw = push_dense(
+                        &mut storage.$families,
+                        entry,
+                        "structured equation family arena",
+                        owner,
+                    )?;
+                    storage.$owners.push(EquationOwnerEntry::Structured(raw));
+                    Ok(raw)
+                }
+            }
+
+            pub struct $scope<'storage, 'dae> {
+                pub(crate) source_map: &'storage rumoca_core::SourceMap,
+                pub(crate) storage: &'storage mut Storage,
+                pub(crate) marker: PhantomData<&'dae mut &'dae ()>,
+            }
+
+            impl<'dae> $scope<'_, 'dae> {
+                pub fn $value_equation(
+                    &mut self,
+                    owner: DaeProvenance,
+                    residual: ExprId<'dae>,
+                ) -> Result<(), DaeConstructionError> {
+                    build_value_equation::<$partition>(
+                        self.source_map,
+                        self.storage,
+                        owner,
+                        residual,
+                    )
+                }
+
+                pub fn $equation(
+                    &mut self,
+                    owner: DaeProvenance,
+                    build: impl FnOnce(
+                        &mut ResidualEquation<'_, 'dae>,
+                    ) -> Result<(), DaeConstructionError>,
+                ) -> Result<$equation_id<'dae>, DaeConstructionError> {
+                    build_residual::<$partition>(self.source_map, self.storage, owner, build)
+                        .map($equation_id::from_raw)
+                }
+
+                pub fn $family(
+                    &mut self,
+                    owner: DaeProvenance,
+                    domain: DomainId<'dae>,
+                    scalar_view: ComprehensionScalarView,
+                    build: impl FnOnce(
+                        &mut StructuredResiduals<'_, 'dae>,
+                    ) -> Result<(), DaeConstructionError>,
+                ) -> Result<$family_id<'dae>, DaeConstructionError> {
+                    build_structured_family::<$partition>(
+                        self.source_map,
+                        self.storage,
+                        owner,
+                        domain,
+                        scalar_view,
+                        build,
+                    )
+                    .map($family_id::from_raw)
+                }
+            }
+        )*
+
+        struct $discrete_partition;
+
+        impl ResidualPartition for $discrete_partition {
+            fn insert(
+                storage: &mut Storage,
+                entry: ResidualEquationEntry,
+                owner: DaeProvenance,
+            ) -> Result<u32, DaeConstructionError> {
+                push_dense(
+                    &mut storage.$discrete_equations,
+                    entry,
+                    "equation arena",
+                    owner,
+                )
+            }
+        }
+
+        pub struct $discrete_scope<'storage, 'dae> {
+            pub(crate) source_map: &'storage rumoca_core::SourceMap,
+            pub(crate) storage: &'storage mut Storage,
+            pub(crate) marker: PhantomData<&'dae mut &'dae ()>,
+        }
+
+        impl<'dae> $discrete_scope<'_, 'dae> {
+            pub fn $real_equation(
+                &mut self,
+                owner: DaeProvenance,
+                build: impl FnOnce(
+                    &mut ResidualEquation<'_, 'dae>,
+                ) -> Result<(), DaeConstructionError>,
+            ) -> Result<$discrete_equation_id<'dae>, DaeConstructionError> {
+                build_residual::<$discrete_partition>(
+                    self.source_map,
+                    self.storage,
+                    owner,
+                    build,
+                )
+                .map($discrete_equation_id::from_raw)
+            }
+        }
+    };
 }
 
-impl<'dae> InitializationEquations<'_, 'dae> {
-    /// Attach one scalar or array-valued initialization residual.
-    pub fn value_equation(
-        &mut self,
-        owner: DaeProvenance,
-        residual: ExprId<'dae>,
-    ) -> Result<(), DaeConstructionError> {
-        build_value_equation(
-            self.source_map,
-            self.storage,
-            owner,
-            residual,
-            StructuredPartition::Initialization,
-        )
+equation_partitions! {
+    structured ContinuousPartition, ContinuousEquations {
+        residual equation -> ContinuousEquationId, continuous_equations;
+        family value_equation, structured_family
+            -> ContinuousFamilyId, continuous_families, continuous_equation_owners;
     }
-
-    pub fn equation(
-        &mut self,
-        owner: DaeProvenance,
-        build: impl FnOnce(&mut ResidualEquation<'_, 'dae>) -> Result<(), DaeConstructionError>,
-    ) -> Result<InitializationEquationId<'dae>, DaeConstructionError> {
-        let raw = build_residual(
-            self.source_map,
-            self.storage,
-            owner,
-            build,
-            ResidualPartition::Initialization,
-        )?;
-        Ok(InitializationEquationId::from_raw(raw))
+    structured InitializationPartition, InitializationEquations {
+        residual equation -> InitializationEquationId, initialization_equations;
+        family value_equation, structured_family
+            -> InitializationFamilyId, initialization_families, initialization_equation_owners;
     }
-
-    pub fn structured_family(
-        &mut self,
-        owner: DaeProvenance,
-        domain: DomainId<'dae>,
-        scalar_view: ComprehensionScalarView,
-        build: impl FnOnce(&mut StructuredResiduals<'_, 'dae>) -> Result<(), DaeConstructionError>,
-    ) -> Result<InitializationFamilyId<'dae>, DaeConstructionError> {
-        build_structured_family(
-            self.source_map,
-            self.storage,
-            owner,
-            domain,
-            scalar_view,
-            build,
-            StructuredPartition::Initialization,
-        )
-        .map(InitializationFamilyId::from_raw)
+    residual DiscreteRealPartition, DiscreteEquations {
+        residual real_equation -> DiscreteRealEquationId, discrete_real_equations;
     }
-}
-
-pub struct DiscreteEquations<'storage, 'dae> {
-    pub(crate) source_map: &'storage rumoca_core::SourceMap,
-    pub(crate) storage: &'storage mut Storage,
-    pub(crate) marker: PhantomData<&'dae mut &'dae ()>,
 }
 
 impl<'dae> DiscreteEquations<'_, 'dae> {
-    pub fn real_equation(
-        &mut self,
-        owner: DaeProvenance,
-        build: impl FnOnce(&mut ResidualEquation<'_, 'dae>) -> Result<(), DaeConstructionError>,
-    ) -> Result<DiscreteRealEquationId<'dae>, DaeConstructionError> {
-        let raw = build_residual(
-            self.source_map,
-            self.storage,
-            owner,
-            build,
-            ResidualPartition::DiscreteReal,
-        )?;
-        Ok(DiscreteRealEquationId::from_raw(raw))
-    }
-
     pub fn assignment(
         &mut self,
         owner: DaeProvenance,
@@ -373,23 +409,11 @@ impl<'dae> StructuredResiduals<'_, 'dae> {
     }
 }
 
-enum ResidualPartition {
-    Continuous,
-    Initialization,
-    DiscreteReal,
-}
-
-enum StructuredPartition {
-    Continuous,
-    Initialization,
-}
-
-fn build_value_equation<'dae>(
+fn build_value_equation<'dae, P: StructuredPartition>(
     source_map: &rumoca_core::SourceMap,
     storage: &mut Storage,
     owner: DaeProvenance,
     residual: ExprId<'dae>,
-    partition: StructuredPartition,
 ) -> Result<(), DaeConstructionError> {
     check_provenance(source_map, owner)?;
     storage.expect_closed_expression(residual, owner)?;
@@ -402,17 +426,9 @@ fn build_value_equation<'dae>(
         });
     }
     if ty.is_scalar() {
-        let residual_partition = match partition {
-            StructuredPartition::Continuous => ResidualPartition::Continuous,
-            StructuredPartition::Initialization => ResidualPartition::Initialization,
-        };
-        build_residual(
-            source_map,
-            storage,
-            owner,
-            |equation| equation.residual(residual),
-            residual_partition,
-        )?;
+        build_residual::<P>(source_map, storage, owner, |equation| {
+            equation.residual(residual)
+        })?;
         return Ok(());
     }
     let domain_provenance =
@@ -424,14 +440,13 @@ fn build_value_equation<'dae>(
         projection_domain(ty.dimensions()),
         domain_provenance,
     )?;
-    build_structured_family(
+    build_structured_family::<P>(
         source_map,
         storage,
         owner,
         domain,
         ComprehensionScalarView::RowMajorProjection,
         |family| family.body(residual),
-        partition,
     )?;
     Ok(())
 }
@@ -452,14 +467,13 @@ fn projection_domain(dimensions: &[u32]) -> StructuredIndexDomain {
     }
 }
 
-fn build_structured_family<'dae>(
+fn build_structured_family<'dae, P: StructuredPartition>(
     source_map: &rumoca_core::SourceMap,
     storage: &mut Storage,
     owner: DaeProvenance,
     domain: DomainId<'dae>,
     scalar_view: ComprehensionScalarView,
     build: impl FnOnce(&mut StructuredResiduals<'_, 'dae>) -> Result<(), DaeConstructionError>,
-    partition: StructuredPartition,
 ) -> Result<u32, DaeConstructionError> {
     check_provenance(source_map, owner)?;
     let scalar_count = storage.domain_scalar_count(domain, owner)?;
@@ -496,43 +510,14 @@ fn build_structured_family<'dae>(
         scalar_rows: checked_u32(scalar_rows, "structured equation scalar rows", owner)?,
         provenance: owner,
     };
-    let raw = match partition {
-        StructuredPartition::Continuous => {
-            let raw = checked_u32(
-                residuals.storage.continuous_families.len(),
-                "structured equation family arena",
-                owner,
-            )?;
-            residuals.storage.continuous_families.push(entry);
-            residuals
-                .storage
-                .continuous_equation_owners
-                .push(EquationOwnerEntry::Structured(raw));
-            raw
-        }
-        StructuredPartition::Initialization => {
-            let raw = checked_u32(
-                residuals.storage.initialization_families.len(),
-                "structured equation family arena",
-                owner,
-            )?;
-            residuals.storage.initialization_families.push(entry);
-            residuals
-                .storage
-                .initialization_equation_owners
-                .push(EquationOwnerEntry::Structured(raw));
-            raw
-        }
-    };
-    Ok(raw)
+    P::insert_family(residuals.storage, entry, owner)
 }
 
-fn build_residual<'dae>(
+fn build_residual<'dae, P: ResidualPartition>(
     source_map: &rumoca_core::SourceMap,
     storage: &mut Storage,
     owner: DaeProvenance,
     build: impl FnOnce(&mut ResidualEquation<'_, 'dae>) -> Result<(), DaeConstructionError>,
-    partition: ResidualPartition,
 ) -> Result<u32, DaeConstructionError> {
     check_provenance(source_map, owner)?;
     let mut equation = ResidualEquation {
@@ -554,42 +539,16 @@ fn build_residual<'dae>(
         residual,
         provenance: owner,
     };
-    let raw = match partition {
-        ResidualPartition::Continuous => {
-            let raw = checked_u32(
-                equation.storage.continuous_equations.len(),
-                "equation arena",
-                owner,
-            )?;
-            equation.storage.continuous_equations.push(entry);
-            equation
-                .storage
-                .continuous_equation_owners
-                .push(EquationOwnerEntry::Residual(raw));
-            raw
-        }
-        ResidualPartition::Initialization => {
-            let raw = checked_u32(
-                equation.storage.initialization_equations.len(),
-                "equation arena",
-                owner,
-            )?;
-            equation.storage.initialization_equations.push(entry);
-            equation
-                .storage
-                .initialization_equation_owners
-                .push(EquationOwnerEntry::Residual(raw));
-            raw
-        }
-        ResidualPartition::DiscreteReal => {
-            let raw = checked_u32(
-                equation.storage.discrete_real_equations.len(),
-                "equation arena",
-                owner,
-            )?;
-            equation.storage.discrete_real_equations.push(entry);
-            raw
-        }
-    };
+    P::insert(equation.storage, entry, owner)
+}
+
+fn push_dense<T>(
+    arena: &mut Vec<T>,
+    entry: T,
+    name: &'static str,
+    owner: DaeProvenance,
+) -> Result<u32, DaeConstructionError> {
+    let raw = checked_u32(arena.len(), name, owner)?;
+    arena.push(entry);
     Ok(raw)
 }
