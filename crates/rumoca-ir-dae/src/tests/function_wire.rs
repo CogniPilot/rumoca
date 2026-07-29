@@ -122,6 +122,92 @@ fn wire_replay_rejects_future_and_stale_function_reads() {
 
 #[test]
 fn wire_replay_routes_domain_free_reads_to_the_active_loop_owner() {
+    let (dae, x_read_at) = active_loop_fixture();
+    dae.inspect(|view| {
+        let read = (0..view.expression_count())
+            .filter_map(|index| view.expression_id(index))
+            .filter_map(|id| view.expression(id))
+            .find(|expression| expression.provenance() == x_read_at)
+            .expect("loop read remains present");
+        assert!(read.binder_domain().is_none());
+    });
+    let encoded = serde_json::to_string(&dae).unwrap();
+    let decoded: Dae =
+        serde_json::from_str(&encoded).expect("active loop replay is definition-led");
+    assert_eq!(
+        serde_json::to_string(&decoded).unwrap(),
+        encoded,
+        "wire replay preserves every canonical column"
+    );
+}
+
+#[test]
+fn wire_replay_rejects_invalid_fold_transitions() {
+    let (dae, _) = active_loop_fixture();
+    let canonical = serde_json::to_value(dae).unwrap();
+
+    let mut end_before_begin = canonical.clone();
+    let nodes = end_before_begin["storage"]["expressions"]["nodes"]
+        .as_array_mut()
+        .unwrap();
+    let parameter = nodes
+        .iter_mut()
+        .find(|node| node.get("function_fold_parameter").is_some())
+        .expect("fixture contains a generated fold parameter")
+        .as_object_mut()
+        .unwrap();
+    let payload = parameter.remove("function_fold_parameter").unwrap();
+    parameter.insert("function_fold_output".to_owned(), payload);
+    assert!(
+        serde_json::from_value::<Dae>(end_before_begin).is_err(),
+        "a fold cannot end before its begin operation"
+    );
+
+    let mut nested_begin = canonical.clone();
+    let statements = nested_begin["storage"]["functions"][0]["statements"]
+        .as_array_mut()
+        .unwrap();
+    let nested = statements
+        .iter()
+        .find(|statement| statement.get("for").is_some())
+        .cloned()
+        .expect("fixture contains a fold statement");
+    statements
+        .iter_mut()
+        .find_map(|statement| statement.get_mut("for"))
+        .unwrap()["statements"]
+        .as_array_mut()
+        .unwrap()
+        .push(nested);
+    assert!(
+        serde_json::from_value::<Dae>(nested_begin).is_err(),
+        "a fold cannot begin while another fold capability is active"
+    );
+
+    let mut trailing_assignment = canonical;
+    let output_index = trailing_assignment["storage"]["expressions"]["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .position(|node| node.get("function_fold_output").is_some())
+        .expect("fixture contains a generated fold output");
+    let statements = trailing_assignment["storage"]["functions"][0]["statements"]
+        .as_array_mut()
+        .unwrap();
+    let assignments = statements
+        .iter_mut()
+        .find_map(|statement| statement.get_mut("for"))
+        .unwrap()["statements"]
+        .as_array_mut()
+        .unwrap();
+    assignments.last_mut().unwrap()["assignment"]["rhs"] = output_index.into();
+    assert!(
+        serde_json::from_value::<Dae>(trailing_assignment).is_err(),
+        "a fold cannot end while an assignment still waits on its RHS"
+    );
+}
+
+fn active_loop_fixture() -> (Dae, DaeProvenance) {
     let source = TestSource::new(
         "function f output Real x; output Real y; x:=0; y:=0; \
          for k in 1:2 loop x:=1; y:=x; end for; end f;",
@@ -178,23 +264,7 @@ fn wire_replay_routes_domain_free_reads_to_the_active_loop_owner() {
         dae.functions(|functions| functions.define(body, function_at))
     })
     .expect("domain-free loop updates remain owned by the loop transition");
-
-    dae.inspect(|view| {
-        let read = (0..view.expression_count())
-            .filter_map(|index| view.expression_id(index))
-            .filter_map(|id| view.expression(id))
-            .find(|expression| expression.provenance() == x_read_at)
-            .expect("loop read remains present");
-        assert!(read.binder_domain().is_none());
-    });
-    let encoded = serde_json::to_string(&dae).unwrap();
-    let decoded: Dae =
-        serde_json::from_str(&encoded).expect("active loop replay is definition-led");
-    let reencoded = serde_json::to_string(&decoded).unwrap();
-    assert_eq!(
-        reencoded, encoded,
-        "wire replay preserves every canonical column"
-    );
+    (dae, x_read_at)
 }
 
 #[test]

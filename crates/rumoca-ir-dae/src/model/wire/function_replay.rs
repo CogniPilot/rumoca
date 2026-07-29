@@ -201,19 +201,24 @@ pub(super) fn reconstruct<'dae>(
 
 struct FunctionReplay<'wire, 'dae> {
     function_index: usize,
-    body: Option<FunctionBody<'dae>>,
-    statements: &'wire [FunctionStatementInput],
-    next_statement: usize,
-    active_loop: Option<LoopReplay<'wire, 'dae>>,
+    operations: Vec<ReplayOp<'wire>>,
+    next_operation: usize,
+    capability: Option<ReplayCapability<'dae>>,
 }
 
-struct LoopReplay<'wire, 'dae> {
-    fold_ordinal: u32,
-    statements: &'wire [FunctionStatementInput],
-    next_statement: usize,
-    finish_provenance: DaeProvenance,
-    target_count: usize,
-    body: FunctionLoop<'dae>,
+enum ReplayCapability<'dae> {
+    Body(FunctionBody<'dae>),
+    Fold {
+        ordinal: u32,
+        body: FunctionLoop<'dae>,
+    },
+}
+
+#[derive(Clone, Copy)]
+enum ReplayOp<'wire> {
+    Assign(AssignmentInput),
+    BeginFold(FoldInput<'wire>),
+    EndFold(FoldEnd),
 }
 
 #[derive(Clone, Copy)]
@@ -223,12 +228,17 @@ struct AssignmentInput {
     provenance: DaeProvenance,
 }
 
-struct LoopInput<'wire> {
+#[derive(Clone, Copy)]
+struct FoldInput<'wire> {
     domain: u32,
     targets: &'wire [u32],
-    statements: &'wire [FunctionStatementInput],
-    begin_provenance: DaeProvenance,
-    finish_provenance: DaeProvenance,
+    provenance: DaeProvenance,
+}
+
+#[derive(Clone, Copy)]
+struct FoldEnd {
+    target_count: usize,
+    provenance: DaeProvenance,
 }
 
 fn begin_functions<'wire, 'dae>(
@@ -248,13 +258,74 @@ fn begin_functions<'wire, 'dae>(
                 dae.functions(|functions| functions.begin(reservation, function.declaration))?;
             Ok(FunctionReplay {
                 function_index,
-                body: Some(body),
-                statements: &function.statements,
-                next_statement: 0,
-                active_loop: None,
+                operations: flatten_operations(&function.statements)?,
+                next_operation: 0,
+                capability: Some(ReplayCapability::Body(body)),
             })
         })
         .collect()
+}
+
+fn flatten_operations(
+    statements: &[FunctionStatementInput],
+) -> Result<Vec<ReplayOp<'_>>, DaeConstructionError> {
+    let mut operations = Vec::with_capacity(statements.len());
+    for statement in statements {
+        match statement {
+            FunctionStatementInput::Assignment { .. } => {
+                operations.push(ReplayOp::Assign(assignment(statement)?));
+            }
+            FunctionStatementInput::For {
+                domain,
+                targets,
+                statements,
+                begin_provenance,
+                finish_provenance,
+            } => push_fold_operations(
+                &mut operations,
+                FoldInput {
+                    domain: *domain,
+                    targets,
+                    provenance: *begin_provenance,
+                },
+                statements,
+                *finish_provenance,
+            )?,
+        }
+    }
+    Ok(operations)
+}
+
+fn push_fold_operations<'wire>(
+    operations: &mut Vec<ReplayOp<'wire>>,
+    begin: FoldInput<'wire>,
+    statements: &'wire [FunctionStatementInput],
+    finish: DaeProvenance,
+) -> Result<(), DaeConstructionError> {
+    operations.push(ReplayOp::BeginFold(begin));
+    for statement in statements {
+        operations.push(ReplayOp::Assign(assignment(statement)?));
+    }
+    operations.push(ReplayOp::EndFold(FoldEnd {
+        target_count: begin.targets.len(),
+        provenance: finish,
+    }));
+    Ok(())
+}
+
+fn assignment(statement: &FunctionStatementInput) -> Result<AssignmentInput, DaeConstructionError> {
+    match statement {
+        FunctionStatementInput::Assignment {
+            target,
+            rhs,
+            provenance,
+        } => Ok(AssignmentInput {
+            target: *target,
+            rhs: *rhs,
+            provenance: *provenance,
+        }),
+        FunctionStatementInput::For { .. } => Err(malformed("functions.statements.nesting")),
+    }
 }
 
 fn replay_read<'dae>(
@@ -269,7 +340,7 @@ fn replay_read<'dae>(
     let provenance = expression.provenance;
     let state = function_state_mut(functions, function_raw, provenance)?;
     expect_function_value(wire, state.function_index, value_raw, provenance)?;
-    prepare_definition_for_read(
+    advance_to_definition(
         wire,
         dae,
         ids,
@@ -294,26 +365,7 @@ fn replay_read<'dae>(
     record_expression(wire, dae, ids, rebuilt, provenance)
 }
 
-fn prepare_definition_for_read<'dae>(
-    wire: &StorageWire,
-    dae: &mut DaeConstruction<'dae>,
-    ids: &WireIds<'dae>,
-    state: &mut FunctionReplay<'_, 'dae>,
-    value: u32,
-    definition: u32,
-    provenance: DaeProvenance,
-) -> Result<(), DaeConstructionError> {
-    if body_for_definition(state, value, definition, provenance).is_ok() {
-        return Ok(());
-    }
-    if state.active_loop.is_some() {
-        advance_loop_to_definition(wire, dae, ids, state, value, definition, provenance)
-    } else {
-        advance_root_to_definition(wire, dae, ids, state, value, definition, provenance)
-    }
-}
-
-fn advance_root_to_definition<'dae>(
+fn advance_to_definition<'dae>(
     wire: &StorageWire,
     dae: &mut DaeConstruction<'dae>,
     ids: &WireIds<'dae>,
@@ -323,53 +375,63 @@ fn advance_root_to_definition<'dae>(
     provenance: DaeProvenance,
 ) -> Result<(), DaeConstructionError> {
     while body_for_definition(state, value, definition, provenance).is_err() {
-        let Some(assignment) = state
-            .statements
-            .get(state.next_statement)
-            .and_then(assignment_input)
-        else {
-            break;
-        };
-        if assignment.rhs as usize >= ids.expressions.len() {
+        if !apply_next_ready_assignment(wire, dae, ids, state)? {
             break;
         }
-        apply_root_assignment(wire, dae, ids, state, assignment)?;
-        state.next_statement += 1;
     }
     body_for_definition(state, value, definition, provenance).map(|_| ())
 }
 
-fn advance_loop_to_definition<'dae>(
+fn apply_next_ready_assignment<'dae>(
     wire: &StorageWire,
     dae: &mut DaeConstruction<'dae>,
     ids: &WireIds<'dae>,
     state: &mut FunctionReplay<'_, 'dae>,
-    value: u32,
-    definition: u32,
-    provenance: DaeProvenance,
-) -> Result<(), DaeConstructionError> {
-    while body_for_definition(state, value, definition, provenance).is_err() {
-        let statement = state
-            .active_loop
-            .as_ref()
-            .and_then(|active| active.statements.get(active.next_statement));
-        let Some(assignment) = statement.and_then(assignment_input) else {
-            if matches!(statement, Some(FunctionStatementInput::For { .. })) {
-                return Err(malformed("functions.statements.nesting"));
-            }
-            break;
-        };
-        if assignment.rhs as usize >= ids.expressions.len() {
-            break;
-        }
-        apply_loop_assignment(wire, dae, ids, state, assignment)?;
-        state
-            .active_loop
-            .as_mut()
-            .ok_or_else(|| malformed("functions.statements"))?
-            .next_statement += 1;
+) -> Result<bool, DaeConstructionError> {
+    let Some(ReplayOp::Assign(assignment)) = state.operations.get(state.next_operation).copied()
+    else {
+        return Ok(false);
+    };
+    if assignment.rhs as usize >= ids.expressions.len() {
+        return Ok(false);
     }
-    body_for_definition(state, value, definition, provenance).map(|_| ())
+    apply_assignment(wire, dae, ids, state, assignment)?;
+    state.next_operation += 1;
+    Ok(true)
+}
+
+fn apply_ready_assignments<'dae>(
+    wire: &StorageWire,
+    dae: &mut DaeConstruction<'dae>,
+    ids: &WireIds<'dae>,
+    state: &mut FunctionReplay<'_, 'dae>,
+) -> Result<(), DaeConstructionError> {
+    while apply_next_ready_assignment(wire, dae, ids, state)? {}
+    Ok(())
+}
+
+fn apply_assignment<'dae>(
+    wire: &StorageWire,
+    dae: &mut DaeConstruction<'dae>,
+    ids: &WireIds<'dae>,
+    state: &mut FunctionReplay<'_, 'dae>,
+    input: AssignmentInput,
+) -> Result<(), DaeConstructionError> {
+    let target = checked_assignment_target(wire, state.function_index, input)?;
+    let rhs = mapped_expression(ids, input.rhs, input.provenance)?;
+    let capability = state.capability.as_mut().ok_or_else(|| {
+        incomplete(
+            "function capability",
+            state.function_index,
+            input.provenance,
+        )
+    })?;
+    dae.functions(|functions| match capability {
+        ReplayCapability::Body(body) => functions.assign(body, target, rhs, input.provenance),
+        ReplayCapability::Fold { body, .. } => {
+            functions.assign_loop(body, target, rhs, input.provenance)
+        }
+    })
 }
 
 fn body_for_definition<'state, 'wire, 'dae>(
@@ -378,25 +440,17 @@ fn body_for_definition<'state, 'wire, 'dae>(
     definition: u32,
     provenance: DaeProvenance,
 ) -> Result<&'state FunctionBody<'dae>, DaeConstructionError> {
-    if let Some(active) = &state.active_loop {
-        let current = active
-            .body
-            .body
-            .current_values
-            .get(value as usize)
-            .copied()
-            .flatten();
-        if current == Some(definition) {
-            return Ok(&active.body.body);
-        }
-    }
-    let root = state
-        .body
+    let body = match state
+        .capability
         .as_ref()
-        .ok_or_else(|| incomplete("function body", state.function_index, provenance))?;
-    let current = root.current_values.get(value as usize).copied().flatten();
+        .ok_or_else(|| incomplete("function capability", state.function_index, provenance))?
+    {
+        ReplayCapability::Body(body) => body,
+        ReplayCapability::Fold { body, .. } => body.body(),
+    };
+    let current = body.current_values.get(value as usize).copied().flatten();
     if current == Some(definition) {
-        Ok(root)
+        Ok(body)
     } else {
         Err(DaeConstructionError::InvalidFunctionValueRead {
             value,
@@ -417,33 +471,35 @@ fn replay_loop_entry<'dae>(
 ) -> Result<(), DaeConstructionError> {
     let provenance = wire_expression(wire, ids.expressions.len())?.provenance;
     let state = function_state_mut(functions, function_raw, provenance)?;
-    if state.active_loop.is_some() {
-        return Err(malformed("functions.statements.nesting"));
-    }
-    apply_ready_root_assignments(wire, dae, ids, state)?;
-    let input = next_root_loop(state.statements, state.next_statement)
-        .ok_or_else(|| incomplete("function fold", fold_ordinal as usize, provenance))?;
+    apply_ready_assignments(wire, dae, ids, state)?;
+    let Some(ReplayOp::BeginFold(input)) = state.operations.get(state.next_operation).copied()
+    else {
+        return Err(incomplete(
+            "function fold begin",
+            fold_ordinal as usize,
+            provenance,
+        ));
+    };
     let expected_fold = checked_u32(
         dae.storage.functions[state.function_index].folds.len(),
         "function fold",
-        input.begin_provenance,
+        input.provenance,
     )?;
     if fold_ordinal != expected_fold {
         return Err(malformed("functions.statements.fold"));
     }
-    let targets = checked_loop_targets(
-        wire,
-        state.function_index,
-        input.targets,
-        input.begin_provenance,
-    )?;
-    let parent = state.body.take().ok_or_else(|| {
+    let targets =
+        checked_loop_targets(wire, state.function_index, input.targets, input.provenance)?;
+    let capability = state.capability.take().ok_or_else(|| {
         incomplete(
-            "function body",
+            "function capability",
             state.function_index,
-            input.begin_provenance,
+            input.provenance,
         )
     })?;
+    let ReplayCapability::Body(parent) = capability else {
+        return Err(malformed("functions.statements.nesting"));
+    };
     let expression_start = ids.expressions.len();
     let definition_start = dae.storage.functions[state.function_index]
         .definitions
@@ -451,9 +507,9 @@ fn replay_loop_entry<'dae>(
     let loop_body = dae.functions(|functions| {
         functions.begin_loop(
             parent,
-            mapped(&ids.domains, input.domain, "domain", input.begin_provenance)?,
+            mapped(&ids.domains, input.domain, "domain", input.provenance)?,
             targets,
-            input.begin_provenance,
+            input.provenance,
         )
     })?;
     if loop_body.fold().ordinal() != fold_ordinal {
@@ -472,13 +528,9 @@ fn replay_loop_entry<'dae>(
             definition_start,
         },
     )?;
-    state.next_statement += 1;
-    state.active_loop = Some(LoopReplay {
-        fold_ordinal,
-        statements: input.statements,
-        next_statement: 0,
-        finish_provenance: input.finish_provenance,
-        target_count: input.targets.len(),
+    state.next_operation += 1;
+    state.capability = Some(ReplayCapability::Fold {
+        ordinal: fold_ordinal,
         body: loop_body,
     });
     Ok(())
@@ -494,25 +546,32 @@ fn replay_loop_exit<'dae>(
 ) -> Result<(), DaeConstructionError> {
     let provenance = wire_expression(wire, ids.expressions.len())?.provenance;
     let state = function_state_mut(functions, function_raw, provenance)?;
-    apply_ready_loop_assignments(wire, dae, ids, state)?;
-    let active = state
-        .active_loop
-        .as_ref()
-        .ok_or_else(|| incomplete("function fold", fold_ordinal as usize, provenance))?;
-    if active.fold_ordinal != fold_ordinal || active.next_statement != active.statements.len() {
-        return Err(malformed("functions.statements"));
-    }
+    apply_ready_assignments(wire, dae, ids, state)?;
+    let Some(ReplayOp::EndFold(input)) = state.operations.get(state.next_operation).copied() else {
+        return Err(incomplete(
+            "function fold end",
+            fold_ordinal as usize,
+            provenance,
+        ));
+    };
     let expression_start = ids.expressions.len();
     let definition_start = dae.storage.functions[state.function_index]
         .definitions
         .len();
-    let active = state
-        .active_loop
-        .take()
-        .ok_or_else(|| incomplete("function fold", fold_ordinal as usize, provenance))?;
-    let target_count = active.target_count;
-    let body =
-        dae.functions(|functions| functions.finish_loop(active.body, active.finish_provenance))?;
+    let capability = state.capability.take().ok_or_else(|| {
+        incomplete(
+            "function capability",
+            state.function_index,
+            input.provenance,
+        )
+    })?;
+    let ReplayCapability::Fold { ordinal, body } = capability else {
+        return Err(malformed("functions.statements.fold"));
+    };
+    if ordinal != fold_ordinal {
+        return Err(malformed("functions.statements.fold"));
+    }
+    let body = dae.functions(|functions| functions.finish_loop(body, input.provenance))?;
     record_generated_group(
         wire,
         dae,
@@ -520,99 +579,15 @@ fn replay_loop_exit<'dae>(
         GeneratedGroupReplay {
             function: function_raw,
             fold: fold_ordinal,
-            target_count,
+            target_count: input.target_count,
             group: GeneratedGroup::Output,
             expression_start,
             definition_start,
         },
     )?;
-    state.body = Some(body);
+    state.next_operation += 1;
+    state.capability = Some(ReplayCapability::Body(body));
     Ok(())
-}
-
-fn apply_ready_root_assignments<'dae>(
-    wire: &StorageWire,
-    dae: &mut DaeConstruction<'dae>,
-    ids: &WireIds<'dae>,
-    state: &mut FunctionReplay<'_, 'dae>,
-) -> Result<(), DaeConstructionError> {
-    loop {
-        let Some(assignment) = state
-            .statements
-            .get(state.next_statement)
-            .and_then(assignment_input)
-        else {
-            return Ok(());
-        };
-        if assignment.rhs as usize >= ids.expressions.len() {
-            return Ok(());
-        }
-        apply_root_assignment(wire, dae, ids, state, assignment)?;
-        state.next_statement += 1;
-    }
-}
-
-fn apply_ready_loop_assignments<'dae>(
-    wire: &StorageWire,
-    dae: &mut DaeConstruction<'dae>,
-    ids: &WireIds<'dae>,
-    state: &mut FunctionReplay<'_, 'dae>,
-) -> Result<(), DaeConstructionError> {
-    loop {
-        let statement = state
-            .active_loop
-            .as_ref()
-            .and_then(|active| active.statements.get(active.next_statement));
-        let Some(assignment) = statement.and_then(assignment_input) else {
-            if matches!(statement, Some(FunctionStatementInput::For { .. })) {
-                return Err(malformed("functions.statements.nesting"));
-            }
-            return Ok(());
-        };
-        if assignment.rhs as usize >= ids.expressions.len() {
-            return Ok(());
-        }
-        apply_loop_assignment(wire, dae, ids, state, assignment)?;
-        state
-            .active_loop
-            .as_mut()
-            .ok_or_else(|| malformed("functions.statements"))?
-            .next_statement += 1;
-    }
-}
-
-fn apply_root_assignment<'dae>(
-    wire: &StorageWire,
-    dae: &mut DaeConstruction<'dae>,
-    ids: &WireIds<'dae>,
-    state: &mut FunctionReplay<'_, 'dae>,
-    input: AssignmentInput,
-) -> Result<(), DaeConstructionError> {
-    let target = checked_assignment_target(wire, state.function_index, input)?;
-    let rhs = mapped_expression(ids, input.rhs, input.provenance)?;
-    let body = state
-        .body
-        .as_mut()
-        .ok_or_else(|| incomplete("function body", state.function_index, input.provenance))?;
-    dae.functions(|functions| functions.assign(body, target, rhs, input.provenance))
-}
-
-fn apply_loop_assignment<'dae>(
-    wire: &StorageWire,
-    dae: &mut DaeConstruction<'dae>,
-    ids: &WireIds<'dae>,
-    state: &mut FunctionReplay<'_, 'dae>,
-    input: AssignmentInput,
-) -> Result<(), DaeConstructionError> {
-    let target = checked_assignment_target(wire, state.function_index, input)?;
-    let rhs = mapped_expression(ids, input.rhs, input.provenance)?;
-    let active = state
-        .active_loop
-        .as_mut()
-        .ok_or_else(|| incomplete("function fold", input.target as usize, input.provenance))?;
-    dae.functions(|functions| {
-        functions.assign_loop(&mut active.body, target, rhs, input.provenance)
-    })
 }
 
 fn finish_functions<'dae>(
@@ -622,21 +597,28 @@ fn finish_functions<'dae>(
     mut functions: Vec<FunctionReplay<'_, 'dae>>,
 ) -> Result<(), DaeConstructionError> {
     for state in &mut functions {
-        apply_ready_root_assignments(wire, dae, ids, state)?;
-        if state.active_loop.is_some() || state.next_statement != state.statements.len() {
+        apply_ready_assignments(wire, dae, ids, state)?;
+        if state.next_operation != state.operations.len() {
             return Err(incomplete(
-                "function statement",
-                state.next_statement,
+                "function operation",
+                state.next_operation,
                 function_declaration(wire, state.function_index),
             ));
         }
-        let body = state.body.take().ok_or_else(|| {
+        let capability = state.capability.take().ok_or_else(|| {
             incomplete(
-                "function body",
+                "function capability",
                 state.function_index,
                 function_declaration(wire, state.function_index),
             )
         })?;
+        let ReplayCapability::Body(body) = capability else {
+            return Err(incomplete(
+                "function fold",
+                state.function_index,
+                function_declaration(wire, state.function_index),
+            ));
+        };
         dae.functions(|functions| {
             functions.define(body, function_declaration(wire, state.function_index))
         })?;
@@ -767,43 +749,6 @@ fn record_expression<'dae>(
     }
     ids.expressions.push(rebuilt);
     Ok(())
-}
-
-fn assignment_input(statement: &FunctionStatementInput) -> Option<AssignmentInput> {
-    match statement {
-        FunctionStatementInput::Assignment {
-            target,
-            rhs,
-            provenance,
-        } => Some(AssignmentInput {
-            target: *target,
-            rhs: *rhs,
-            provenance: *provenance,
-        }),
-        FunctionStatementInput::For { .. } => None,
-    }
-}
-
-fn next_root_loop(
-    statements: &[FunctionStatementInput],
-    next_statement: usize,
-) -> Option<LoopInput<'_>> {
-    match statements.get(next_statement)? {
-        FunctionStatementInput::For {
-            domain,
-            targets,
-            statements,
-            begin_provenance,
-            finish_provenance,
-        } => Some(LoopInput {
-            domain: *domain,
-            targets,
-            statements,
-            begin_provenance: *begin_provenance,
-            finish_provenance: *finish_provenance,
-        }),
-        FunctionStatementInput::Assignment { .. } => None,
-    }
 }
 
 fn checked_loop_targets<'dae>(
