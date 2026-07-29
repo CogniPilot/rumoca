@@ -4,7 +4,10 @@
 //! checked language IR and has no lowering, rendering, target, or runtime-host
 //! dependencies.
 
+mod builtins;
+mod execution;
 mod interpreter;
+mod runtime;
 mod value;
 
 pub use interpreter::{EvaluationError, Evaluator};
