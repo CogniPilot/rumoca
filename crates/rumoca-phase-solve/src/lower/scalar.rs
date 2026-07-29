@@ -1,5 +1,41 @@
 use super::*;
 
+pub(super) struct ScaledDerivativeProgram<'dae> {
+    pub(super) numerator: dae::ExprId<'dae>,
+    pub(super) numerator_scalar: usize,
+    pub(super) coefficient: dae::ExprId<'dae>,
+    pub(super) coefficient_scalar: usize,
+    pub(super) negate: bool,
+    pub(super) span: Span,
+}
+
+#[derive(Clone, Copy)]
+enum ReductionKind {
+    Sum,
+    Product,
+    Minimum,
+    Maximum,
+}
+
+impl ReductionKind {
+    fn operator(self) -> solve::BinaryOp {
+        match self {
+            Self::Sum => solve::BinaryOp::Add,
+            Self::Product => solve::BinaryOp::Mul,
+            Self::Minimum => solve::BinaryOp::Min,
+            Self::Maximum => solve::BinaryOp::Max,
+        }
+    }
+
+    fn identity(self) -> Option<f64> {
+        match self {
+            Self::Sum => Some(0.0),
+            Self::Product => Some(1.0),
+            Self::Minimum | Self::Maximum => None,
+        }
+    }
+}
+
 pub(super) struct ScalarCompiler<'layout, 'dae> {
     view: dae::DaeView<'dae>,
     layout: &'layout LoweredLayout<'dae>,
@@ -37,6 +73,25 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         scalar: usize,
     ) -> Result<Vec<solve::LinearOp>, LowerError> {
         let output = self.expression(expression, scalar)?;
+        self.ops.push(solve::LinearOp::StoreOutput { src: output });
+        Ok(self.ops)
+    }
+
+    pub(super) fn scaled_derivative_program(
+        mut self,
+        input: ScaledDerivativeProgram<'dae>,
+    ) -> Result<Vec<solve::LinearOp>, LowerError> {
+        let mut numerator = self.expression(input.numerator, input.numerator_scalar)?;
+        if input.negate {
+            numerator = self.unary(dae::UnaryOperator::Negate, numerator, input.span)?;
+        }
+        let coefficient = self.expression(input.coefficient, input.coefficient_scalar)?;
+        let output = self.binary(
+            dae::BinaryOperator::Divide,
+            numerator,
+            coefficient,
+            input.span,
+        )?;
         self.ops.push(solve::LinearOp::StoreOutput { src: output });
         Ok(self.ops)
     }
@@ -606,7 +661,19 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 span,
             ));
         }
-        let slot = if let Some(variable) = pre_coordinate_variable(coordinate) {
+        let slot = if let dae::CoordinateView::Previous(previous_id) = coordinate {
+            let previous = self
+                .view
+                .previous(previous_id)
+                .expect("checked previous identity resolves");
+            if self.active_clock != Some(previous.clock()) {
+                return Err(LowerError::non_computable(
+                    "previous coordinate escaped its owning clock schedule",
+                    span,
+                ));
+            }
+            previous_value_scalar_slot(self.layout, previous_id.index(), scalar, span)?
+        } else if let Some(variable) = pre_coordinate_variable(coordinate) {
             pre_variable_scalar_slot(self.layout, variable, scalar, span)?
         } else {
             let variable = coordinate_variable(coordinate).ok_or_else(|| {
@@ -1096,28 +1163,26 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 arguments.get(0).expect("checked noEvent value argument"),
                 scalar,
             ),
-            dae::PureBuiltin::Sum | dae::PureBuiltin::Product => {
-                let argument = arguments.get(0).expect("checked reduction argument");
-                self.reduction(
-                    argument,
-                    if builtin == dae::PureBuiltin::Sum {
-                        solve::BinaryOp::Add
-                    } else {
-                        solve::BinaryOp::Mul
-                    },
-                    span,
-                )
-            }
+            dae::PureBuiltin::Sum => self.reduction(
+                arguments.get(0).expect("checked reduction argument"),
+                ReductionKind::Sum,
+                span,
+            ),
+            dae::PureBuiltin::Product => self.reduction(
+                arguments.get(0).expect("checked reduction argument"),
+                ReductionKind::Product,
+                span,
+            ),
             dae::PureBuiltin::Min | dae::PureBuiltin::Max => {
-                let op = if builtin == dae::PureBuiltin::Min {
-                    solve::BinaryOp::Min
+                let reduction = if builtin == dae::PureBuiltin::Min {
+                    ReductionKind::Minimum
                 } else {
-                    solve::BinaryOp::Max
+                    ReductionKind::Maximum
                 };
                 if arguments.len() == 1 {
                     self.reduction(
                         arguments.get(0).expect("checked reduction argument"),
-                        op,
+                        reduction,
                         span,
                     )
                 } else {
@@ -1125,25 +1190,79 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                         .iter()
                         .map(|argument| self.expression(argument, scalar))
                         .collect::<Result<Vec<_>, _>>()?;
-                    self.fold_registers(values, op, span)
+                    self.fold_registers(values, reduction.operator(), span)
                 }
             }
             dae::PureBuiltin::Size => self.size_builtin(arguments, scalar, span),
             dae::PureBuiltin::Zeros => self.constant(0.0, span),
+            dae::PureBuiltin::Ones => self.constant(1.0, span),
+            dae::PureBuiltin::Fill => {
+                self.expression(arguments.get(0).expect("checked fill value argument"), 0)
+            }
+            dae::PureBuiltin::Linspace => self.linspace(arguments, scalar, span),
+            dae::PureBuiltin::Cross => self.cross(arguments, scalar, span),
         }
+    }
+
+    fn linspace(
+        &mut self,
+        arguments: dae::ExpressionOperands<'dae>,
+        scalar: usize,
+        span: Span,
+    ) -> Result<solve::Reg, LowerError> {
+        let start = self.expression(arguments.get(0).expect("checked linspace start"), 0)?;
+        let stop = self.expression(arguments.get(1).expect("checked linspace stop"), 0)?;
+        let count = u32::try_from(
+            ScalarSelector::from_points(self.view, &self.domain_points)
+                .integer(arguments.get(2).expect("checked linspace extent"), 0)?,
+        )
+        .expect("checked linspace extent is in the u32 domain");
+        let ordinal = u32::try_from(scalar).expect("linspace scalar is below its u32 extent");
+        let fraction = self.constant(f64::from(ordinal) / f64::from(count - 1), span)?;
+        let difference = self.binary(dae::BinaryOperator::Subtract, stop, start, span)?;
+        let scaled = self.binary(dae::BinaryOperator::Multiply, difference, fraction, span)?;
+        self.binary(dae::BinaryOperator::Add, start, scaled, span)
+    }
+
+    fn cross(
+        &mut self,
+        arguments: dae::ExpressionOperands<'dae>,
+        scalar: usize,
+        span: Span,
+    ) -> Result<solve::Reg, LowerError> {
+        let (first, second) = [(1, 2), (2, 0), (0, 1)][scalar];
+        let lhs = self.expression(arguments.get(0).expect("checked cross lhs"), first)?;
+        let rhs = self.expression(arguments.get(1).expect("checked cross rhs"), second)?;
+        let positive = self.binary(dae::BinaryOperator::Multiply, lhs, rhs, span)?;
+        let lhs = self.expression(arguments.get(0).expect("checked cross lhs"), second)?;
+        let rhs = self.expression(arguments.get(1).expect("checked cross rhs"), first)?;
+        let negative = self.binary(dae::BinaryOperator::Multiply, lhs, rhs, span)?;
+        self.binary(dae::BinaryOperator::Subtract, positive, negative, span)
     }
 
     fn reduction(
         &mut self,
         expression: dae::ExprId<'dae>,
-        operator: solve::BinaryOp,
+        reduction: ReductionKind,
         span: Span,
     ) -> Result<solve::Reg, LowerError> {
-        let mut values = Vec::with_capacity(scalar_count(self.view, expression));
-        for scalar in 0..scalar_count(self.view, expression) {
+        let count = scalar_count(self.view, expression);
+        if count == 0 {
+            return reduction.identity().map_or_else(
+                || {
+                    Err(LowerError::non_computable(
+                        "minimum and maximum require a nonempty array",
+                        span,
+                    ))
+                },
+                |identity| self.constant(identity, span),
+            );
+        }
+        let mut values = Vec::with_capacity(count);
+        for scalar in 0..count {
             values.push(self.expression(expression, scalar)?);
         }
-        self.fold_registers(values, operator, span)
+        self.fold_registers(values, reduction.operator(), span)
     }
 
     fn fold_registers(
@@ -1153,9 +1272,9 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         span: Span,
     ) -> Result<solve::Reg, LowerError> {
         let mut values = values.into_iter();
-        let mut result = values.next().ok_or_else(|| {
-            LowerError::non_computable("zero-length reduction has no identity in checked DAE", span)
-        })?;
+        let mut result = values
+            .next()
+            .expect("checked reduction supplies an identity or a nonempty operand");
         for value in values {
             let dst = self.register(span)?;
             self.ops.push(solve::LinearOp::Binary {
@@ -1259,6 +1378,10 @@ pub(super) struct ScalarSelector<'dae> {
 }
 
 impl<'dae> ScalarSelector<'dae> {
+    pub(super) const fn view(&self) -> dae::DaeView<'dae> {
+        self.view
+    }
+
     pub(super) fn new(
         view: dae::DaeView<'dae>,
         domain_point: Option<(dae::DomainId<'dae>, &[i64])>,
@@ -1534,6 +1657,69 @@ impl<'dae> ScalarSelector<'dae> {
         Ok((scalar, end))
     }
 
+    pub(super) fn constant_real(
+        &self,
+        expression: dae::ExprId<'dae>,
+        scalar: usize,
+    ) -> Result<f64, LowerError> {
+        self.constant_real_inner(expression, scalar, &mut Vec::new())
+    }
+
+    fn constant_real_inner(
+        &self,
+        expression: dae::ExprId<'dae>,
+        scalar: usize,
+        active: &mut Vec<dae::ExprId<'dae>>,
+    ) -> Result<f64, LowerError> {
+        let node = self.node(expression);
+        let span = node.provenance().span();
+        check_constant_recursion(active, expression, span)?;
+        active.push(expression);
+        let result = match node.operation() {
+            dae::ExpressionOperation::Literal(dae::DaeLiteral::Real(value)) => Ok(*value),
+            dae::ExpressionOperation::Literal(
+                dae::DaeLiteral::Integer(value) | dae::DaeLiteral::Enumeration(value),
+            ) => Ok(*value as f64),
+            dae::ExpressionOperation::Coordinate(dae::CoordinateView::Parameter(parameter)) => {
+                let variable = self
+                    .view
+                    .variable(parameter.into())
+                    .expect("checked parameter coordinate resolves");
+                let binding = variable.binding().ok_or_else(|| {
+                    LowerError::non_computable(
+                        "affine derivative coefficient parameter has no static binding",
+                        span,
+                    )
+                })?;
+                self.constant_real_inner(binding, scalar, active)
+            }
+            dae::ExpressionOperation::Unary { operator, operand } => {
+                let value = self.constant_real_inner(operand, scalar, active)?;
+                match operator {
+                    dae::UnaryOperator::Plus => Ok(value),
+                    dae::UnaryOperator::Negate => Ok(-value),
+                    dae::UnaryOperator::Not => Err(LowerError::non_computable(
+                        "affine derivative coefficient is not numeric",
+                        span,
+                    )),
+                }
+            }
+            dae::ExpressionOperation::Binary { operator, lhs, rhs } => {
+                let lhs_scalar = scalar_operand(self.view, lhs, scalar);
+                let rhs_scalar = scalar_operand(self.view, rhs, scalar);
+                let lhs = self.constant_real_inner(lhs, lhs_scalar, active)?;
+                let rhs = self.constant_real_inner(rhs, rhs_scalar, active)?;
+                constant_binary(operator, lhs, rhs, span)
+            }
+            _ => Err(LowerError::non_computable(
+                "affine derivative coefficient is not compile-time numeric",
+                span,
+            )),
+        };
+        active.pop();
+        result.and_then(|value| finite_constant(value, span))
+    }
+
     fn integer(&self, expression: dae::ExprId<'dae>, scalar: usize) -> Result<i64, LowerError> {
         let node = self.node(expression);
         let span = node.provenance().span();
@@ -1630,5 +1816,78 @@ impl<'dae> ScalarSelector<'dae> {
         self.view
             .expression(expression)
             .expect("branded expression resolves in its DAE")
+    }
+}
+
+fn scalar_operand<'dae>(
+    view: dae::DaeView<'dae>,
+    expression: dae::ExprId<'dae>,
+    scalar: usize,
+) -> usize {
+    if scalar_count(view, expression) == 1 {
+        0
+    } else {
+        scalar
+    }
+}
+
+fn check_constant_recursion<'dae>(
+    active: &[dae::ExprId<'dae>],
+    expression: dae::ExprId<'dae>,
+    span: Span,
+) -> Result<(), LowerError> {
+    if active.contains(&expression) {
+        return Err(LowerError::non_computable(
+            "affine derivative coefficient has a cyclic parameter definition",
+            span,
+        ));
+    }
+    if active.len() >= 256 {
+        return Err(LowerError::non_computable(
+            "affine derivative coefficient exceeded the checked recursion limit",
+            span,
+        ));
+    }
+    Ok(())
+}
+
+fn constant_binary(
+    operator: dae::BinaryOperator,
+    lhs: f64,
+    rhs: f64,
+    span: Span,
+) -> Result<f64, LowerError> {
+    let value = match operator {
+        dae::BinaryOperator::Add | dae::BinaryOperator::ElementwiseAdd => lhs + rhs,
+        dae::BinaryOperator::Subtract | dae::BinaryOperator::ElementwiseSubtract => lhs - rhs,
+        dae::BinaryOperator::Multiply | dae::BinaryOperator::ElementwiseMultiply => lhs * rhs,
+        dae::BinaryOperator::Divide | dae::BinaryOperator::ElementwiseDivide if rhs != 0.0 => {
+            lhs / rhs
+        }
+        dae::BinaryOperator::Power | dae::BinaryOperator::ElementwisePower => lhs.powf(rhs),
+        dae::BinaryOperator::Divide | dae::BinaryOperator::ElementwiseDivide => {
+            return Err(LowerError::non_computable(
+                "affine derivative coefficient divides by zero",
+                span,
+            ));
+        }
+        _ => {
+            return Err(LowerError::non_computable(
+                "affine derivative coefficient is not numeric",
+                span,
+            ));
+        }
+    };
+    finite_constant(value, span)
+}
+
+fn finite_constant(value: f64, span: Span) -> Result<f64, LowerError> {
+    if value.is_finite() {
+        Ok(value)
+    } else {
+        Err(LowerError::non_computable(
+            "affine derivative coefficient is not finite",
+            span,
+        ))
     }
 }

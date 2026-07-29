@@ -6,6 +6,23 @@ pub struct DaeView<'dae> {
     pub(super) marker: PhantomData<&'dae mut &'dae ()>,
 }
 
+macro_rules! storage_count_accessors {
+    ($($name:ident => $($field:ident).+),+ $(,)?) => {
+        $(pub fn $name(self) -> usize {
+            self.dae.storage.$($field).+.len()
+        })+
+    };
+}
+
+macro_rules! storage_id_accessors {
+    ($($name:ident => ($id:ident, $($field:ident).+)),+ $(,)?) => {
+        $(pub fn $name(self, index: usize) -> Option<$id<'dae>> {
+            let raw = u32::try_from(index).ok()?;
+            (index < self.dae.storage.$($field).+.len()).then(|| $id::from_raw(raw))
+        })+
+    };
+}
+
 impl<'dae> DaeView<'dae> {
     /// Returns one exact source span that can own a whole-model diagnostic.
     ///
@@ -49,25 +66,49 @@ impl<'dae> DaeView<'dae> {
             })
     }
 
-    pub fn expression_count(self) -> usize {
-        self.dae.storage.expressions.nodes.len()
+    storage_count_accessors! {
+        expression_count => expressions.nodes,
+        variable_count => variables,
+        domain_count => domains,
+        value_type_count => value_types,
+        function_count => functions,
+        continuous_equation_count => continuous_equations,
+        continuous_owner_count => continuous_equation_owners,
+        continuous_family_count => continuous_families,
+        initialization_family_count => initialization_families,
+        initialization_equation_count => initialization_equations,
+        initialization_owner_count => initialization_equation_owners,
+        discrete_real_equation_count => discrete_real_equations,
+        discrete_assignment_count => discrete_assignments,
+        relation_count => relations,
+        condition_count => conditions,
+        root_count => roots,
+        time_event_count => time_events,
+        event_action_count => event_actions,
+        clock_count => clocks,
+        clock_ownership_count => clock_ownerships,
+        previous_value_count => previous_values,
+        terminal_count => terminals,
+        delay_count => delays,
     }
 
-    pub fn variable_count(self) -> usize {
-        self.dae.storage.variables.len()
-    }
-
-    pub fn domain_count(self) -> usize {
-        self.dae.storage.domains.len()
-    }
-
-    pub fn domain_id(self, index: usize) -> Option<DomainId<'dae>> {
-        self.dae
-            .storage
-            .domains
-            .get(index)
-            .and_then(|_| u32::try_from(index).ok())
-            .map(DomainId::from_raw)
+    storage_id_accessors! {
+        domain_id => (DomainId, domains),
+        value_type_id => (ValueTypeId, value_types),
+        expression_id => (ExprId, expressions.nodes),
+        function_id => (FunctionId, functions),
+        variable_id => (VariableId, variables),
+        discrete_assignment_id => (DiscreteAssignmentId, discrete_assignments),
+        relation_id => (RelationId, relations),
+        condition_id => (ConditionId, conditions),
+        root_id => (RootId, roots),
+        time_event_id => (TimeEventId, time_events),
+        event_action_id => (EventActionId, event_actions),
+        clock_id => (ClockId, clocks),
+        clock_ownership_id => (ClockOwnershipId, clock_ownerships),
+        previous_id => (PreviousId, previous_values),
+        terminal_id => (TerminalId, terminals),
+        delay_id => (DelayId, delays),
     }
 
     pub fn domain(self, id: DomainId<'dae>) -> Option<DomainView<'dae>> {
@@ -75,19 +116,6 @@ impl<'dae> DaeView<'dae> {
             entry: self.dae.storage.domains.get(id.index() as usize)?,
             marker: PhantomData,
         })
-    }
-
-    pub fn value_type_count(self) -> usize {
-        self.dae.storage.value_types.len()
-    }
-
-    pub fn value_type_id(self, index: usize) -> Option<ValueTypeId<'dae>> {
-        self.dae
-            .storage
-            .value_types
-            .get(index)
-            .and_then(|_| u32::try_from(index).ok())
-            .map(ValueTypeId::from_raw)
     }
 
     pub fn value_type(self, id: ValueTypeId<'dae>) -> Option<&'dae ValueType> {
@@ -123,101 +151,6 @@ impl<'dae> DaeView<'dae> {
             .flatten()
     }
 
-    pub fn function_count(self) -> usize {
-        self.dae.storage.functions.len()
-    }
-
-    pub fn continuous_equation_count(self) -> usize {
-        self.dae.storage.continuous_equations.len()
-    }
-
-    pub fn continuous_owner_count(self) -> usize {
-        self.dae.storage.continuous_equation_owners.len()
-    }
-
-    pub fn continuous_family_count(self) -> usize {
-        self.dae.storage.continuous_families.len()
-    }
-
-    pub fn initialization_family_count(self) -> usize {
-        self.dae.storage.initialization_families.len()
-    }
-
-    pub fn initialization_equation_count(self) -> usize {
-        self.dae.storage.initialization_equations.len()
-    }
-
-    pub fn initialization_owner_count(self) -> usize {
-        self.dae.storage.initialization_equation_owners.len()
-    }
-
-    pub fn discrete_real_equation_count(self) -> usize {
-        self.dae.storage.discrete_real_equations.len()
-    }
-
-    pub fn discrete_assignment_count(self) -> usize {
-        self.dae.storage.discrete_assignments.len()
-    }
-
-    pub fn relation_count(self) -> usize {
-        self.dae.storage.relations.len()
-    }
-
-    pub fn condition_count(self) -> usize {
-        self.dae.storage.conditions.len()
-    }
-
-    pub fn root_count(self) -> usize {
-        self.dae.storage.roots.len()
-    }
-
-    pub fn time_event_count(self) -> usize {
-        self.dae.storage.time_events.len()
-    }
-
-    pub fn event_action_count(self) -> usize {
-        self.dae.storage.event_actions.len()
-    }
-
-    pub fn clock_count(self) -> usize {
-        self.dae.storage.clocks.len()
-    }
-
-    pub fn clock_ownership_count(self) -> usize {
-        self.dae.storage.clock_ownerships.len()
-    }
-
-    pub fn previous_value_count(self) -> usize {
-        self.dae.storage.previous_values.len()
-    }
-
-    pub fn terminal_count(self) -> usize {
-        self.dae.storage.terminals.len()
-    }
-
-    pub fn delay_count(self) -> usize {
-        self.dae.storage.delays.len()
-    }
-
-    pub fn expression_id(self, index: usize) -> Option<ExprId<'dae>> {
-        self.dae
-            .storage
-            .expressions
-            .nodes
-            .get(index)
-            .and_then(|_| u32::try_from(index).ok())
-            .map(ExprId::from_raw)
-    }
-
-    pub fn function_id(self, index: usize) -> Option<FunctionId<'dae>> {
-        self.dae
-            .storage
-            .functions
-            .get(index)
-            .and_then(|_| u32::try_from(index).ok())
-            .map(FunctionId::from_raw)
-    }
-
     pub fn function(self, id: FunctionId<'dae>) -> Option<FunctionView<'dae>> {
         Some(FunctionView {
             id,
@@ -240,15 +173,6 @@ impl<'dae> DaeView<'dae> {
                 marker: PhantomData,
             },
         )
-    }
-
-    pub fn variable_id(self, index: usize) -> Option<VariableId<'dae>> {
-        self.dae
-            .storage
-            .variables
-            .get(index)
-            .and_then(|_| u32::try_from(index).ok())
-            .map(VariableId::from_raw)
     }
 
     pub fn variable_declaration(self, id: VariableId<'dae>) -> Option<DaeProvenance> {
@@ -401,15 +325,6 @@ impl<'dae> DaeView<'dae> {
         ))
     }
 
-    pub fn discrete_assignment_id(self, index: usize) -> Option<DiscreteAssignmentId<'dae>> {
-        self.dae
-            .storage
-            .discrete_assignments
-            .get(index)
-            .and_then(|_| u32::try_from(index).ok())
-            .map(DiscreteAssignmentId::from_raw)
-    }
-
     pub fn discrete_assignment(
         self,
         id: DiscreteAssignmentId<'dae>,
@@ -426,30 +341,12 @@ impl<'dae> DaeView<'dae> {
         })
     }
 
-    pub fn relation_id(self, index: usize) -> Option<RelationId<'dae>> {
-        self.dae
-            .storage
-            .relations
-            .get(index)
-            .and_then(|_| u32::try_from(index).ok())
-            .map(RelationId::from_raw)
-    }
-
     pub fn relation(self, id: RelationId<'dae>) -> Option<RelationView<'dae>> {
         let entry = self.dae.storage.relations.get(id.index() as usize)?;
         Some(RelationView {
             expression: ExprId::from_raw(entry.expression),
             provenance: entry.provenance,
         })
-    }
-
-    pub fn condition_id(self, index: usize) -> Option<ConditionId<'dae>> {
-        self.dae
-            .storage
-            .conditions
-            .get(index)
-            .and_then(|_| u32::try_from(index).ok())
-            .map(ConditionId::from_raw)
     }
 
     pub fn condition(self, id: ConditionId<'dae>) -> Option<ConditionView<'dae>> {
@@ -484,15 +381,6 @@ impl<'dae> DaeView<'dae> {
         })
     }
 
-    pub fn root_id(self, index: usize) -> Option<RootId<'dae>> {
-        self.dae
-            .storage
-            .roots
-            .get(index)
-            .and_then(|_| u32::try_from(index).ok())
-            .map(RootId::from_raw)
-    }
-
     pub fn root(self, id: RootId<'dae>) -> Option<RootView<'dae>> {
         let entry = self.dae.storage.roots.get(id.index() as usize)?;
         Some(RootView {
@@ -502,30 +390,12 @@ impl<'dae> DaeView<'dae> {
         })
     }
 
-    pub fn time_event_id(self, index: usize) -> Option<TimeEventId<'dae>> {
-        self.dae
-            .storage
-            .time_events
-            .get(index)
-            .and_then(|_| u32::try_from(index).ok())
-            .map(TimeEventId::from_raw)
-    }
-
     pub fn time_event(self, id: TimeEventId<'dae>) -> Option<TimeEventView<'dae>> {
         let entry = self.dae.storage.time_events.get(id.index() as usize)?;
         Some(TimeEventView {
             instant: &entry.instant,
             provenance: entry.provenance,
         })
-    }
-
-    pub fn event_action_id(self, index: usize) -> Option<EventActionId<'dae>> {
-        self.dae
-            .storage
-            .event_actions
-            .get(index)
-            .and_then(|_| u32::try_from(index).ok())
-            .map(EventActionId::from_raw)
     }
 
     pub fn event_action(self, id: EventActionId<'dae>) -> Option<EventActionView<'dae>> {
@@ -563,15 +433,6 @@ impl<'dae> DaeView<'dae> {
         })
     }
 
-    pub fn clock_id(self, index: usize) -> Option<ClockId<'dae>> {
-        self.dae
-            .storage
-            .clocks
-            .get(index)
-            .and_then(|_| u32::try_from(index).ok())
-            .map(ClockId::from_raw)
-    }
-
     pub fn clock(self, id: ClockId<'dae>) -> Option<ClockView<'dae>> {
         let entry = self.dae.storage.clocks.get(id.index() as usize)?;
         let operation = match &entry.kind {
@@ -584,15 +445,6 @@ impl<'dae> DaeView<'dae> {
             operation,
             provenance: entry.provenance,
         })
-    }
-
-    pub fn clock_ownership_id(self, index: usize) -> Option<ClockOwnershipId<'dae>> {
-        self.dae
-            .storage
-            .clock_ownerships
-            .get(index)
-            .and_then(|_| u32::try_from(index).ok())
-            .map(ClockOwnershipId::from_raw)
     }
 
     pub fn clock_ownership(self, id: ClockOwnershipId<'dae>) -> Option<ClockOwnershipView<'dae>> {
@@ -608,15 +460,6 @@ impl<'dae> DaeView<'dae> {
         })
     }
 
-    pub fn previous_id(self, index: usize) -> Option<PreviousId<'dae>> {
-        self.dae
-            .storage
-            .previous_values
-            .get(index)
-            .and_then(|_| u32::try_from(index).ok())
-            .map(PreviousId::from_raw)
-    }
-
     pub fn previous(self, id: PreviousId<'dae>) -> Option<PreviousView<'dae>> {
         let entry = self.dae.storage.previous_values.get(id.index() as usize)?;
         Some(PreviousView {
@@ -626,29 +469,11 @@ impl<'dae> DaeView<'dae> {
         })
     }
 
-    pub fn terminal_id(self, index: usize) -> Option<TerminalId<'dae>> {
-        self.dae
-            .storage
-            .terminals
-            .get(index)
-            .and_then(|_| u32::try_from(index).ok())
-            .map(TerminalId::from_raw)
-    }
-
     pub fn terminal(self, id: TerminalId<'dae>) -> Option<TerminalView> {
         let entry = self.dae.storage.terminals.get(id.index() as usize)?;
         Some(TerminalView {
             provenance: entry.provenance,
         })
-    }
-
-    pub fn delay_id(self, index: usize) -> Option<DelayId<'dae>> {
-        self.dae
-            .storage
-            .delays
-            .get(index)
-            .and_then(|_| u32::try_from(index).ok())
-            .map(DelayId::from_raw)
     }
 
     pub fn delay(self, id: DelayId<'dae>) -> Option<DelayView<'dae>> {

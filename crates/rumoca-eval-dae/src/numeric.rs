@@ -387,6 +387,9 @@ where
             .view
             .variable(id)
             .expect("finalized variable identity resolves");
+        if variable.scalar_count() == 0 {
+            return Ok(Vec::new());
+        }
         if matches!(
             variable.role(),
             dae::VariableRole::Parameter | dae::VariableRole::Constant
@@ -440,6 +443,10 @@ where
             .view
             .variable(id)
             .expect("finalized parameter identity resolves");
+        if variable.scalar_count() == 0 {
+            self.values[index] = Some(Vec::new());
+            return Ok(Vec::new());
+        }
         if !matches!(
             variable.role(),
             dae::VariableRole::Parameter | dae::VariableRole::Constant
@@ -760,6 +767,28 @@ where
         arguments: dae::ExpressionOperands<'dae>,
         span: Span,
     ) -> Result<Vec<f64>, NumericEvaluationError> {
+        if matches!(builtin, dae::PureBuiltin::Zeros | dae::PureBuiltin::Ones) {
+            let value = if builtin == dae::PureBuiltin::Ones {
+                1.0
+            } else {
+                0.0
+            };
+            return self.filled_array(arguments, 0, value, span);
+        }
+        if builtin == dae::PureBuiltin::Fill {
+            let fill =
+                self.expression(arguments.get(0).expect("checked fill has a value argument"))?;
+            let [fill] = fill.as_slice() else {
+                unreachable!("checked fill value is scalar")
+            };
+            return self.filled_array(arguments, 1, *fill, span);
+        }
+        if builtin == dae::PureBuiltin::Linspace {
+            return self.linspace(arguments);
+        }
+        if builtin == dae::PureBuiltin::Cross {
+            return self.cross(arguments);
+        }
         let first = arguments
             .get(0)
             .expect("checked builtin has its required operand");
@@ -806,42 +835,85 @@ where
                 values = self.extremum(builtin, arguments, values, span)?;
             }
             dae::PureBuiltin::Size => values = self.size(arguments, first, span)?,
-            dae::PureBuiltin::Zeros => values = self.zeros(arguments, span)?,
+            dae::PureBuiltin::Zeros
+            | dae::PureBuiltin::Ones
+            | dae::PureBuiltin::Fill
+            | dae::PureBuiltin::Linspace
+            | dae::PureBuiltin::Cross => {
+                unreachable!("array constructors return before operand evaluation")
+            }
         }
         Ok(values)
     }
 
-    fn zeros(
+    fn filled_array(
         &mut self,
         arguments: dae::ExpressionOperands<'dae>,
+        first_extent: usize,
+        value: f64,
         span: Span,
     ) -> Result<Vec<f64>, NumericEvaluationError> {
         let mut count = 1_usize;
-        for argument in arguments.iter() {
+        for argument in arguments.iter().skip(first_extent) {
             let extent = self.expression(argument)?;
             let [extent] = extent.as_slice() else {
                 return Err(failure(
                     NumericEvaluationErrorKind::ShapeMismatch,
-                    "checked zeros extent is not scalar",
+                    "checked array-constructor extent is not scalar",
                     span,
                 ));
             };
             if *extent < 0.0 || extent.fract() != 0.0 {
                 return Err(failure(
                     NumericEvaluationErrorKind::InvalidValue,
-                    "checked zeros extent is not a nonnegative integer",
+                    "checked array-constructor extent is not a nonnegative integer",
                     span,
                 ));
             }
             count = count.checked_mul(*extent as usize).ok_or_else(|| {
                 failure(
                     NumericEvaluationErrorKind::Overflow,
-                    "checked zeros scalar count overflowed",
+                    "checked array-constructor scalar count overflowed",
                     span,
                 )
             })?;
         }
-        Ok(vec![0.0; count])
+        Ok(vec![value; count])
+    }
+
+    fn linspace(
+        &mut self,
+        arguments: dae::ExpressionOperands<'dae>,
+    ) -> Result<Vec<f64>, NumericEvaluationError> {
+        let start = self.expression(arguments.get(0).expect("checked linspace start"))?[0];
+        let stop = self.expression(arguments.get(1).expect("checked linspace stop"))?[0];
+        let count = arguments.get(2).expect("checked linspace extent");
+        let dae::ExpressionOperation::Literal(dae::DaeLiteral::Integer(count)) = self
+            .view
+            .expression(count)
+            .expect("checked linspace extent resolves")
+            .operation()
+        else {
+            unreachable!("checked linspace extent is a literal Integer")
+        };
+        let count = u32::try_from(*count).expect("checked linspace extent is in the u32 domain");
+        let denominator = f64::from(count - 1);
+        Ok((0..count)
+            .map(|ordinal| start + (stop - start) * f64::from(ordinal) / denominator)
+            .collect())
+    }
+
+    fn cross(
+        &mut self,
+        arguments: dae::ExpressionOperands<'dae>,
+    ) -> Result<Vec<f64>, NumericEvaluationError> {
+        let lhs = self.expression(arguments.get(0).expect("checked cross lhs"))?;
+        let rhs = self.expression(arguments.get(1).expect("checked cross rhs"))?;
+        Ok(vec![
+            lhs[1] * rhs[2] - lhs[2] * rhs[1],
+            lhs[2] * rhs[0] - lhs[0] * rhs[2],
+            lhs[0] * rhs[1] - lhs[1] * rhs[0],
+        ])
     }
 
     fn extremum(
@@ -1303,6 +1375,169 @@ mod tests {
                 NumericEvaluator::new(view).expression(zeros).unwrap(),
                 vec![0.0; 6]
             );
+        });
+    }
+
+    #[test]
+    fn checked_ones_and_fill_evaluate_without_materialized_dae_arrays() {
+        let text = "ones(2); fill(0.5, 3)";
+        let mut source_map = SourceMap::new();
+        let source = source_map.add("constructors.mo", text);
+        let at = |needle: &str, occurrence: usize| {
+            let start = text.match_indices(needle).nth(occurrence).unwrap().0;
+            DaeProvenance::source(Span::from_offsets(source, start, start + needle.len())).unwrap()
+        };
+        let dae = Dae::construct(source_map, |dae| {
+            let two = dae.expressions(|expressions| {
+                expressions.at(at("2", 0)).literal(DaeLiteral::Integer(2))
+            })?;
+            dae.expressions(|expressions| {
+                expressions
+                    .at(at("ones(2)", 0))
+                    .builtin(PureBuiltin::Ones, [two])
+            })?;
+            let value = dae.expressions(|expressions| {
+                expressions.at(at("0.5", 0)).literal(DaeLiteral::Real(0.5))
+            })?;
+            let three = dae.expressions(|expressions| {
+                expressions.at(at("3", 0)).literal(DaeLiteral::Integer(3))
+            })?;
+            dae.expressions(|expressions| {
+                expressions
+                    .at(at("fill(0.5, 3)", 0))
+                    .builtin(PureBuiltin::Fill, [value, three])
+            })?;
+            Ok(())
+        })
+        .unwrap();
+
+        dae.inspect(|view| {
+            let mut evaluator = NumericEvaluator::new(view);
+            assert_eq!(
+                evaluator
+                    .expression(view.expression_id(1).unwrap())
+                    .unwrap(),
+                vec![1.0, 1.0]
+            );
+            assert_eq!(
+                evaluator
+                    .expression(view.expression_id(4).unwrap())
+                    .unwrap(),
+                vec![0.5, 0.5, 0.5]
+            );
+        });
+    }
+
+    #[test]
+    fn checked_linspace_and_cross_evaluate_their_vector_semantics() {
+        let text = "linspace(0.0, 2.0, 3); cross({1.0,0.0,0.0},{0.0,1.0,0.0})";
+        let mut source_map = SourceMap::new();
+        let source = source_map.add("vectors.mo", text);
+        let at = |needle: &str, occurrence: usize| {
+            let start = text.match_indices(needle).nth(occurrence).unwrap().0;
+            DaeProvenance::source(Span::from_offsets(source, start, start + needle.len())).unwrap()
+        };
+        let dae = Dae::construct(source_map, |dae| {
+            dae.expressions(|expressions| {
+                let start = expressions
+                    .at(at("0.0", 0))
+                    .literal(DaeLiteral::Real(0.0))?;
+                let stop = expressions
+                    .at(at("2.0", 0))
+                    .literal(DaeLiteral::Real(2.0))?;
+                let count = expressions.at(at("3", 0)).literal(DaeLiteral::Integer(3))?;
+                expressions
+                    .at(at("linspace(0.0, 2.0, 3)", 0))
+                    .builtin(PureBuiltin::Linspace, [start, stop, count])?;
+                let lhs_values = [
+                    expressions
+                        .at(at("1.0", 0))
+                        .literal(DaeLiteral::Real(1.0))?,
+                    expressions
+                        .at(at("0.0", 1))
+                        .literal(DaeLiteral::Real(0.0))?,
+                    expressions
+                        .at(at("0.0", 2))
+                        .literal(DaeLiteral::Real(0.0))?,
+                ];
+                let lhs = expressions.at(at("{1.0,0.0,0.0}", 0)).array(lhs_values)?;
+                let rhs_values = [
+                    expressions
+                        .at(at("0.0", 3))
+                        .literal(DaeLiteral::Real(0.0))?,
+                    expressions
+                        .at(at("1.0", 1))
+                        .literal(DaeLiteral::Real(1.0))?,
+                    expressions
+                        .at(at("0.0", 4))
+                        .literal(DaeLiteral::Real(0.0))?,
+                ];
+                let rhs = expressions.at(at("{0.0,1.0,0.0}", 0)).array(rhs_values)?;
+                expressions
+                    .at(at("cross({1.0,0.0,0.0},{0.0,1.0,0.0})", 0))
+                    .builtin(PureBuiltin::Cross, [lhs, rhs])?;
+                Ok(())
+            })
+        })
+        .unwrap();
+
+        dae.inspect(|view| {
+            let mut evaluator = NumericEvaluator::new(view);
+            assert_eq!(
+                evaluator
+                    .expression(view.expression_id(3).unwrap())
+                    .unwrap(),
+                vec![0.0, 1.0, 2.0]
+            );
+            assert_eq!(
+                evaluator
+                    .expression(view.expression_id(12).unwrap())
+                    .unwrap(),
+                vec![0.0, 0.0, 1.0]
+            );
+        });
+    }
+
+    #[test]
+    fn zero_cardinality_variables_have_the_unique_empty_value() {
+        let text = "parameter Real p[0]; Real z[0];";
+        let mut source_map = SourceMap::new();
+        let source = source_map.add("empty.mo", text);
+        let at = |needle: &str| {
+            let start = text.find(needle).unwrap();
+            DaeProvenance::source(Span::from_offsets(source, start, start + needle.len())).unwrap()
+        };
+        let dae = Dae::construct(source_map, |dae| {
+            let empty = dae.types(|types| {
+                types.derived(ValueType::array(ScalarType::Real, [0]), at("Real p[0]"))
+            })?;
+            dae.variables(|variables| {
+                variables.parameter(
+                    VarName::new("p"),
+                    empty,
+                    at("parameter Real p[0]"),
+                    rumoca_ir_dae::VariableAttributes::default(),
+                )?;
+                variables.algebraic(
+                    VarName::new("z"),
+                    empty,
+                    at("Real z[0]"),
+                    rumoca_ir_dae::VariableAttributes::default(),
+                )?;
+                Ok(())
+            })
+        })
+        .unwrap();
+
+        dae.inspect(|view| {
+            let mut evaluator = NumericEvaluator::new(view);
+            for index in 0..2 {
+                let variable = view.variable_id(index).unwrap();
+                assert_eq!(
+                    evaluator.initial_value(variable).unwrap(),
+                    Vec::<f64>::new()
+                );
+            }
         });
     }
 

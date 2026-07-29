@@ -56,9 +56,9 @@ pub(crate) fn expression_from_ast_with_context(
             expression_from_component_ref_with_def_map(cr, context.def_map)
         }
 
-        ast::Expression::FunctionCall { comp, args, .. } => {
-            convert_function_call_with_context(comp, args, context)
-        }
+        ast::Expression::FunctionCall {
+            comp, args, span, ..
+        } => convert_function_call_with_context(comp, args, *span, context),
 
         ast::Expression::Terminal {
             terminal_type,
@@ -875,6 +875,7 @@ fn convert_function_call_with_def_map(
     convert_function_call_with_context(
         comp,
         args,
+        comp.span,
         LoweringContext {
             def_map,
             instance_name: None,
@@ -885,10 +886,11 @@ fn convert_function_call_with_def_map(
 fn convert_function_call_with_context(
     comp: &ast::ComponentReference,
     args: &[ast::Expression],
+    call_span: Span,
     context: LoweringContext<'_>,
 ) -> LowerResult<rumoca_core::Expression> {
     if is_get_instance_name_call(comp) {
-        return lower_get_instance_name_call(args, context, comp.span);
+        return lower_get_instance_name_call(args, context, call_span);
     }
 
     if comp.parts.len() == 1 {
@@ -896,7 +898,7 @@ fn convert_function_call_with_context(
         if rumoca_core::predefined_component_type(func_name.as_ref())
             == Some(rumoca_core::PredefinedComponentType::String)
         {
-            return predefined_type_constructor_call(comp, args, context);
+            return predefined_type_constructor_call(comp, args, call_span, context);
         }
         if let Some(builtin) = rumoca_core::BuiltinFunction::from_name(func_name) {
             return Ok(rumoca_core::Expression::BuiltinCall {
@@ -905,7 +907,7 @@ fn convert_function_call_with_context(
                     .iter()
                     .map(|a| expression_from_ast_with_context(a, context))
                     .collect::<LowerResult<Vec<_>>>()?,
-                span: comp.span,
+                span: call_span,
             });
         }
     }
@@ -922,13 +924,14 @@ fn convert_function_call_with_context(
             .map(|a| convert_call_arg_with_context(a, context))
             .collect::<LowerResult<Vec<_>>>()?,
         is_constructor: false,
-        span: comp.span,
+        span: call_span,
     })
 }
 
 fn predefined_type_constructor_call(
     comp: &ast::ComponentReference,
     args: &[ast::Expression],
+    call_span: Span,
     context: LoweringContext<'_>,
 ) -> LowerResult<rumoca_core::Expression> {
     Ok(rumoca_core::Expression::FunctionCall {
@@ -941,7 +944,7 @@ fn predefined_type_constructor_call(
             .map(|a| convert_call_arg_with_context(a, context))
             .collect::<LowerResult<Vec<_>>>()?,
         is_constructor: true,
-        span: comp.span,
+        span: call_span,
     })
 }
 
@@ -1270,6 +1273,7 @@ mod tests {
         let expr = convert_function_call_with_context(
             &function_ref("getInstanceName"),
             &[],
+            test_span(),
             LoweringContext {
                 def_map: None,
                 instance_name: Some("Vehicle.engine.controller"),
@@ -1287,10 +1291,28 @@ mod tests {
     }
 
     #[test]
+    fn function_call_lowering_preserves_the_ast_call_span() {
+        let call_span = Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("ast_lower_test.mo"),
+            10,
+            24,
+        );
+        let expression = ast::Expression::FunctionCall {
+            comp: function_ref("previous"),
+            args: vec![ast_var("x")],
+            is_partial_application: false,
+            span: call_span,
+        };
+        let lowered = expression_from_ast(&expression).unwrap();
+        assert_eq!(lowered.span(), Some(call_span));
+    }
+
+    #[test]
     fn get_instance_name_requires_instance_scope() {
         let err = convert_function_call_with_context(
             &function_ref("getInstanceName"),
             &[],
+            test_span(),
             LoweringContext::default(),
         )
         .unwrap_err();
@@ -1306,6 +1328,7 @@ mod tests {
         let err = convert_function_call_with_context(
             &function_ref("getInstanceName"),
             &[ast_var("x")],
+            test_span(),
             LoweringContext {
                 def_map: None,
                 instance_name: Some("Vehicle.engine.controller"),

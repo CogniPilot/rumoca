@@ -210,11 +210,27 @@ pub enum ComprehensionScalarView {
     BinderSubstitution,
     /// Select the row-major domain element from the aggregate body.
     RowMajorProjection,
+    /// Substitute the leading binders and project the remaining row-major axes.
+    BinderPrefixProjection { binder_count: u32 },
 }
 
 impl ComprehensionScalarView {
     pub fn is_binder_substitution(&self) -> bool {
         matches!(self, Self::BinderSubstitution)
+    }
+
+    pub fn body_scalar(self, point: usize, extents: &[u32]) -> Option<usize> {
+        match self {
+            Self::BinderSubstitution => Some(0),
+            Self::RowMajorProjection => Some(point),
+            Self::BinderPrefixProjection { binder_count } => {
+                let suffix = extents.get(usize::try_from(binder_count).ok()?..)?;
+                let count = suffix.iter().try_fold(1usize, |count, extent| {
+                    count.checked_mul(usize::try_from(*extent).ok()?)
+                })?;
+                (count > 0).then_some(point % count)
+            }
+        }
     }
 }
 

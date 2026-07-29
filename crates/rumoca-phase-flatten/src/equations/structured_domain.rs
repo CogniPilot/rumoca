@@ -74,11 +74,32 @@ pub(super) fn lift_full_iteration_child_family(
     };
     let remove_indices = group.remove_indices;
     let first_family = families[remove_indices[0]].clone();
+    let child_view = family_scalar_view(&first_family);
     let mut binders = parent_domain.binders.clone();
     binders.extend(offset_child_binders(
         &first_family.domain.binders,
         parent_domain.binders.len(),
     ));
+    let template = template.map(|mut template| {
+        template.scalar_view = match child_view {
+            rumoca_core::ComprehensionScalarView::BinderSubstitution => template.scalar_view,
+            rumoca_core::ComprehensionScalarView::RowMajorProjection => {
+                rumoca_core::ComprehensionScalarView::BinderPrefixProjection {
+                    binder_count: u32::try_from(parent_domain.binders.len())
+                        .expect("structured domain rank fits u32"),
+                }
+            }
+            rumoca_core::ComprehensionScalarView::BinderPrefixProjection { binder_count } => {
+                rumoca_core::ComprehensionScalarView::BinderPrefixProjection {
+                    binder_count: u32::try_from(parent_domain.binders.len())
+                        .expect("structured domain rank fits u32")
+                        .checked_add(binder_count)
+                        .expect("combined structured domain rank fits u32"),
+                }
+            }
+        };
+        template
+    });
     let lifted = flat::StructuredEquationFamily {
         domain: rumoca_core::StructuredIndexDomain { binders },
         first_equation_index: first_family.first_equation_index,
@@ -135,12 +156,14 @@ fn complete_liftable_child_group(
 struct ChildFamilySignature {
     domain: rumoca_core::StructuredIndexDomain,
     equations_per_point: usize,
+    scalar_view: rumoca_core::ComprehensionScalarView,
 }
 
 fn child_signature(family: &flat::StructuredEquationFamily) -> ChildFamilySignature {
     ChildFamilySignature {
         domain: family.domain.clone(),
         equations_per_point: family.equations_per_point,
+        scalar_view: family_scalar_view(family),
     }
 }
 
@@ -149,17 +172,35 @@ fn full_iteration_child_index(
     iterations: &[SourceStructuredIteration],
     starts: &[usize],
 ) -> Option<usize> {
-    let total_count = family
-        .domain
-        .scalar_count()
-        .ok()?
-        .checked_mul(family.equations_per_point)?;
+    let extents = family.domain.extents().ok()?;
+    let projected = match family_scalar_view(family) {
+        rumoca_core::ComprehensionScalarView::BinderSubstitution => extents.len(),
+        rumoca_core::ComprehensionScalarView::RowMajorProjection => 0,
+        rumoca_core::ComprehensionScalarView::BinderPrefixProjection { binder_count } => {
+            usize::try_from(binder_count).ok()?
+        }
+    };
+    let total_count = extents
+        .get(..projected)?
+        .iter()
+        .try_fold(family.equations_per_point, |count, extent| {
+            count.checked_mul(*extent)
+        })?;
     starts
         .iter()
         .zip(iterations)
         .position(|(start, iteration)| {
             family.first_equation_index == *start && total_count == iteration.equation_count
         })
+}
+
+fn family_scalar_view(
+    family: &flat::StructuredEquationFamily,
+) -> rumoca_core::ComprehensionScalarView {
+    family.template.as_ref().map_or(
+        rumoca_core::ComprehensionScalarView::RowMajorProjection,
+        |template| template.scalar_view,
+    )
 }
 
 fn iteration_starts(iterations: &[SourceStructuredIteration]) -> Vec<usize> {

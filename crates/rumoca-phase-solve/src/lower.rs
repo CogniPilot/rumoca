@@ -11,7 +11,7 @@ use crate::layout::{LoweredLayout, StorageClass, lower_layout};
 mod clocks;
 mod events;
 mod scalar;
-use scalar::{ScalarCompiler, ScalarSelector};
+use scalar::{ScalarCompiler, ScalarSelector, ScaledDerivativeProgram};
 
 pub(crate) fn lower_solve_problem<'dae>(
     view: dae::DaeView<'dae>,
@@ -47,7 +47,6 @@ pub(crate) fn lower_solve_problem<'dae>(
 
 fn reject_unimplemented_systems(view: dae::DaeView<'_>) -> Result<(), LowerError> {
     let unsupported = [
-        (view.previous_value_count(), "previous-value history"),
         (view.terminal_count(), "terminal coordinates"),
         (view.delay_count(), "transport delays"),
     ];
@@ -527,11 +526,14 @@ fn lower_continuous_family_point<'dae>(
     residual: &mut ScalarRows,
     derivative: &mut DerivativeRows,
 ) -> Result<usize, LowerError> {
+    let domain = view
+        .domain(family.domain())
+        .expect("checked family domain resolves");
     for body in family.bodies().iter() {
-        let scalar = match family.scalar_view() {
-            ComprehensionScalarView::BinderSubstitution => 0,
-            ComprehensionScalarView::RowMajorProjection => point,
-        };
+        let scalar = family
+            .scalar_view()
+            .body_scalar(point, domain.extents())
+            .expect("checked family view projects its domain point");
         lower_continuous_row(
             view,
             layout,
@@ -570,7 +572,7 @@ fn lower_continuous_row<'dae>(
             state,
             scalar: target,
         } => {
-            let rhs = explicit_derivative_rhs(
+            let rhs = derivative_rhs(
                 view,
                 expression,
                 scalar,
@@ -578,7 +580,27 @@ fn lower_continuous_row<'dae>(
                 state,
                 target as usize,
             )?;
-            let program = ScalarCompiler::new(view, layout, domain_point).program(rhs.0, rhs.1)?;
+            let program = match rhs {
+                DerivativeRhs::Explicit { expression, scalar } => {
+                    ScalarCompiler::new(view, layout, domain_point).program(expression, scalar)?
+                }
+                DerivativeRhs::Scaled {
+                    numerator,
+                    numerator_scalar,
+                    coefficient,
+                    coefficient_scalar,
+                    span,
+                } => ScalarCompiler::new(view, layout, domain_point).scaled_derivative_program(
+                    ScaledDerivativeProgram {
+                        numerator,
+                        numerator_scalar,
+                        coefficient,
+                        coefficient_scalar,
+                        negate: false,
+                        span,
+                    },
+                )?,
+            };
             let target = variable_scalar_slot(layout, state.index(), target as usize, span)?;
             let solve::ScalarSlot::Y { index, .. } = target else {
                 unreachable!("state declarations are Y slots")
@@ -874,14 +896,28 @@ fn push_subscript_expression<'dae>(
     }
 }
 
-fn explicit_derivative_rhs<'dae>(
+enum DerivativeRhs<'dae> {
+    Explicit {
+        expression: dae::ExprId<'dae>,
+        scalar: usize,
+    },
+    Scaled {
+        numerator: dae::ExprId<'dae>,
+        numerator_scalar: usize,
+        coefficient: dae::ExprId<'dae>,
+        coefficient_scalar: usize,
+        span: Span,
+    },
+}
+
+fn derivative_rhs<'dae>(
     view: dae::DaeView<'dae>,
     residual: dae::ExprId<'dae>,
     scalar: usize,
     domain_point: Option<(dae::DomainId<'dae>, &[i64])>,
     state: dae::StateId<'dae>,
     state_scalar: usize,
-) -> Result<(dae::ExprId<'dae>, usize), LowerError> {
+) -> Result<DerivativeRhs<'dae>, LowerError> {
     let selector = ScalarSelector::new(view, domain_point);
     let (residual, scalar) = selector.select_array_element(residual, scalar)?;
     let node = view
@@ -894,31 +930,125 @@ fn explicit_derivative_rhs<'dae>(
     } = node.operation()
     else {
         return Err(LowerError::non_computable(
-            "state equation is not an explicit `der(x) - rhs` residual",
+            "state equation is not a subtractive derivative residual",
             node.provenance().span(),
         ));
     };
-    if matches!(
-        selector.coordinate(lhs, scalar)?,
-        Some((dae::CoordinateView::Derivative(found), found_scalar))
-            if found == state && found_scalar == state_scalar
-    ) {
-        return Ok((rhs, scalar));
+    let lhs_direct = is_target_derivative(&selector, lhs, scalar, state, state_scalar)?;
+    let rhs_direct = is_target_derivative(&selector, rhs, scalar, state, state_scalar)?;
+    if lhs_direct && !expression_contains_derivative(view, rhs) {
+        return Ok(DerivativeRhs::Explicit {
+            expression: rhs,
+            scalar,
+        });
     }
-    if matches!(
-        selector.coordinate(rhs, scalar)?,
+    if rhs_direct && !expression_contains_derivative(view, lhs) {
+        return Ok(DerivativeRhs::Explicit {
+            expression: lhs,
+            scalar,
+        });
+    }
+    let lhs_scaled = scaled_derivative_factor(&selector, lhs, scalar, state, state_scalar)?;
+    let rhs_scaled = scaled_derivative_factor(&selector, rhs, scalar, state, state_scalar)?;
+    match (lhs_scaled, rhs_scaled) {
+        (Some((coefficient, coefficient_scalar)), None)
+            if !expression_contains_derivative(view, rhs) =>
+        {
+            Ok(DerivativeRhs::Scaled {
+                numerator: rhs,
+                numerator_scalar: scalar,
+                coefficient,
+                coefficient_scalar,
+                span: node.provenance().span(),
+            })
+        }
+        (None, Some((coefficient, coefficient_scalar)))
+            if !expression_contains_derivative(view, lhs) =>
+        {
+            Ok(DerivativeRhs::Scaled {
+                numerator: lhs,
+                numerator_scalar: scalar,
+                coefficient,
+                coefficient_scalar,
+                span: node.provenance().span(),
+            })
+        }
+        _ => Err(LowerError::non_computable(
+            "matched derivative is not an isolated affine product",
+            node.provenance().span(),
+        )),
+    }
+}
+
+fn is_target_derivative<'dae>(
+    selector: &ScalarSelector<'dae>,
+    expression: dae::ExprId<'dae>,
+    scalar: usize,
+    state: dae::StateId<'dae>,
+    state_scalar: usize,
+) -> Result<bool, LowerError> {
+    Ok(matches!(
+        selector.coordinate(expression, scalar)?,
         Some((dae::CoordinateView::Derivative(found), found_scalar))
             if found == state && found_scalar == state_scalar
-    ) {
+    ))
+}
+
+fn scaled_derivative_factor<'dae>(
+    selector: &ScalarSelector<'dae>,
+    expression: dae::ExprId<'dae>,
+    scalar: usize,
+    state: dae::StateId<'dae>,
+    state_scalar: usize,
+) -> Result<Option<(dae::ExprId<'dae>, usize)>, LowerError> {
+    let view = selector.view();
+    let node = view
+        .expression(expression)
+        .expect("branded derivative term resolves");
+    let dae::ExpressionOperation::Binary {
+        operator: dae::BinaryOperator::Multiply | dae::BinaryOperator::ElementwiseMultiply,
+        lhs,
+        rhs,
+    } = node.operation()
+    else {
+        return Ok(None);
+    };
+    let lhs_scalar = if scalar_count(view, lhs) == 1 {
+        0
+    } else {
+        scalar
+    };
+    let rhs_scalar = if scalar_count(view, rhs) == 1 {
+        0
+    } else {
+        scalar
+    };
+    let lhs_target = is_target_derivative(selector, lhs, lhs_scalar, state, state_scalar)?;
+    let rhs_target = is_target_derivative(selector, rhs, rhs_scalar, state, state_scalar)?;
+    let factor = match (lhs_target, rhs_target) {
+        (true, false) => (rhs, rhs_scalar),
+        (false, true) => (lhs, lhs_scalar),
+        (true, true) => {
+            return Err(LowerError::non_computable(
+                "matched derivative occurs nonlinearly in a product",
+                node.provenance().span(),
+            ));
+        }
+        (false, false) => return Ok(None),
+    };
+    if expression_contains_derivative(view, factor.0) {
         return Err(LowerError::non_computable(
-            "state equation uses `rhs - der(x)`; normalization is required upstream",
+            "affine derivative coefficient contains another derivative",
             node.provenance().span(),
         ));
     }
-    Err(LowerError::non_computable(
-        "matched derivative is not the explicit left operand",
-        node.provenance().span(),
-    ))
+    if selector.constant_real(factor.0, factor.1)? == 0.0 {
+        return Err(LowerError::non_computable(
+            "matched derivative has a zero affine coefficient",
+            node.provenance().span(),
+        ));
+    }
+    Ok(Some(factor))
 }
 
 fn lower_initialization<'dae>(
@@ -975,11 +1105,14 @@ fn lower_initialization_family_point<'dae>(
     values: &[i64],
     rows: &mut ScalarRows,
 ) -> Result<(), LowerError> {
+    let domain = view
+        .domain(family.domain())
+        .expect("checked family domain resolves");
     for body in family.bodies().iter() {
-        let scalar = match family.scalar_view() {
-            ComprehensionScalarView::BinderSubstitution => 0,
-            ComprehensionScalarView::RowMajorProjection => point,
-        };
+        let scalar = family
+            .scalar_view()
+            .body_scalar(point, domain.extents())
+            .expect("checked family view projects its domain point");
         let program = ScalarCompiler::new(view, layout, Some((family.domain(), values)))
             .program(body, scalar)?;
         let output = rows.programs.len();
@@ -1206,6 +1339,25 @@ pub(super) fn pre_variable_scalar_slot(
     Ok(solve::scalar_slot_p(index))
 }
 
+pub(super) fn previous_value_scalar_slot(
+    layout: &LoweredLayout<'_>,
+    previous: u32,
+    scalar: usize,
+    span: Span,
+) -> Result<solve::ScalarSlot, LowerError> {
+    let base = layout
+        .previous_values
+        .get(previous as usize)
+        .copied()
+        .ok_or_else(|| {
+            LowerError::contract("previous value has no Solve history layout entry", span)
+        })?;
+    let index = base
+        .checked_add(scalar)
+        .ok_or_else(|| LowerError::contract("previous-value scalar layout overflow", span))?;
+    Ok(solve::scalar_slot_p(index))
+}
+
 fn coordinate_variable(coordinate: dae::CoordinateView<'_>) -> Option<u32> {
     match coordinate {
         dae::CoordinateView::Parameter(id) => Some(id.index()),
@@ -1286,7 +1438,11 @@ fn unary_builtin(builtin: dae::PureBuiltin) -> solve::UnaryOp {
         | dae::PureBuiltin::Sum
         | dae::PureBuiltin::Product
         | dae::PureBuiltin::Size
-        | dae::PureBuiltin::Zeros => unreachable!("non-unary builtin"),
+        | dae::PureBuiltin::Zeros
+        | dae::PureBuiltin::Ones
+        | dae::PureBuiltin::Fill
+        | dae::PureBuiltin::Linspace
+        | dae::PureBuiltin::Cross => unreachable!("non-unary builtin"),
     }
 }
 

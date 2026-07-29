@@ -10,9 +10,7 @@ use crate::{
 mod equation_systems;
 use equation_systems::reconstruct_equation_systems;
 mod helpers;
-use helpers::{
-    expect_ordinal, invalid_arity, map_expression_operands, map_many, mapped, wire_operands,
-};
+use helpers::{expect_ordinal, map_expression_operands, map_many, mapped, wire_operands};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1336,7 +1334,7 @@ fn rebuild_node<'dae>(
 ) -> Result<ExprId<'dae>, DaeConstructionError> {
     match node {
         ExprNodeWire::Literal(DaeLiteralWire::Enumeration(ordinal)) => {
-            at.enumeration_literal(expected_type, *ordinal)
+            at.enumeration_literal(*ordinal)
         }
         ExprNodeWire::Literal(value) => at.literal(value.as_literal()),
         ExprNodeWire::Coordinate(CoordinateWire::Binder { domain, ordinal }) => {

@@ -3,7 +3,9 @@ use std::marker::PhantomData;
 use rumoca_core::{ComprehensionScalarView, StructuredIndexBinder, StructuredIndexDomain};
 
 use crate::events::EventActionKind;
-use crate::model::{Storage, check_provenance, checked_u32, duplicate, insert_domain};
+use crate::model::{
+    Storage, check_provenance, checked_u32, duplicate, insert_domain, invalid_arity,
+};
 use crate::{
     BinaryOperator, ContinuousEquationId, ContinuousFamilyId, DaeConstructionError, DaeGeneration,
     DaeProvenance, DiscreteAssignmentId, DiscreteRealEquationId, DiscreteValueId, DomainId, ExprId,
@@ -354,6 +356,14 @@ impl<'dae> StructuredResiduals<'_, 'dae> {
                     span: self.owner.span(),
                 });
             }
+            ComprehensionScalarView::BinderPrefixProjection { binder_count }
+                if extents.get(usize::try_from(binder_count).unwrap_or(usize::MAX)..)
+                    != Some(ty.dimensions()) =>
+            {
+                return Err(DaeConstructionError::ShapeMismatch {
+                    span: self.owner.span(),
+                });
+            }
             _ => {}
         }
         self.storage.equation_family_bodies.push(residual.index());
@@ -464,11 +474,7 @@ fn build_structured_family<'dae>(
     };
     build(&mut residuals)?;
     if residuals.body_count == 0 {
-        return Err(DaeConstructionError::InvalidArity {
-            expected: 1,
-            found: 0,
-            span: owner.span(),
-        });
+        return Err(invalid_arity(1, 0, owner));
     }
     let body_count = residuals.body_count;
     let scalar_rows =

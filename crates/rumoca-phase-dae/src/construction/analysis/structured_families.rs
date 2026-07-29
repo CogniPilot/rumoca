@@ -103,6 +103,31 @@ fn represented_template_rows(
             checked_materialized_rows(family, domain_count)
         }
         rumoca_core::ComprehensionScalarView::RowMajorProjection => Ok(family.equations_per_point),
+        rumoca_core::ComprehensionScalarView::BinderPrefixProjection { binder_count } => {
+            let extents = family.domain.extents().map_err(|error| {
+                ToDaeError::unsupported_flat(
+                    "structured equation domain",
+                    error.to_string(),
+                    family.span,
+                )
+            })?;
+            extents
+                .get(..usize::try_from(binder_count).unwrap_or(usize::MAX))
+                .and_then(|prefix| {
+                    prefix
+                        .iter()
+                        .try_fold(family.equations_per_point, |count, extent| {
+                            count.checked_mul(*extent)
+                        })
+                })
+                .ok_or_else(|| {
+                    ToDaeError::unsupported_flat(
+                        "structured equation family",
+                        "the binder-prefix projection is outside its domain",
+                        family.span,
+                    )
+                })
+        }
     }
 }
 

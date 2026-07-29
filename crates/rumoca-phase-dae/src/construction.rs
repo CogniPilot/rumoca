@@ -28,6 +28,7 @@ mod structured_body;
 mod variable_construction;
 use algorithm::{
     AlgorithmStatementContext, lower_algorithm_assignment, lower_algorithm_function_call,
+    own_clocked_algorithm_targets,
 };
 use analysis::{
     Analysis, ComprehensionKey, ComprehensionPlan, DerivedParameterPlan, EquationPartition,
@@ -41,10 +42,10 @@ use clocks::{LoweredClocks, lower_clocks, lower_sampled_value_clocks};
 use equation_systems::lower_equation_systems;
 use expression::{
     FunctionArrayUpdate, LoweringSymbols, all_model_expressions, derivative_reference,
-    expression_children, expression_span, lower_coordinate_reference, lower_expression,
-    lower_expression_scoped, lower_function_array_update, lower_function_expression,
-    lower_function_expression_scoped, lower_model_algorithm_expression, planned_input_variability,
-    require_span, variable_attribute_expressions,
+    expression_children, expression_span, lower_clocked_expression, lower_coordinate_reference,
+    lower_expression, lower_expression_scoped, lower_function_array_update,
+    lower_function_expression, lower_function_expression_scoped, lower_model_algorithm_expression,
+    planned_input_variability, require_span, variable_attribute_expressions,
 };
 use function_array_assembly::lower_function_array_assembly;
 use function_body::{
@@ -133,7 +134,6 @@ struct ReservedVariable<'flat, 'dae> {
     flat: &'flat flat::Variable,
     role: PlannedRole,
     scalar_type: dae::ScalarType,
-    value_type: dae::ValueTypeId<'dae>,
     coordinate: Coordinate<'dae>,
     definition: dae::VariableReservation<'dae>,
 }
@@ -184,18 +184,12 @@ fn build_checked<'dae>(
         reserved_functions,
         &analysis.function_plans,
     )?;
-    let enum_literal_ordinals = flat
-        .enum_literal_ordinals
-        .iter()
-        .map(|(name, ordinal)| (name.clone(), *ordinal))
-        .collect::<HashMap<_, _>>();
     let assigned_discrete_targets = defined_discrete_targets(flat, &analysis.roles)
         .expect("analysis already validates discrete equation ownership");
     define_variables(
         construction,
         &coordinates,
         &functions,
-        &enum_literal_ordinals,
         &assigned_discrete_targets,
         &analysis.derived_parameters,
         reserved,
@@ -208,7 +202,13 @@ fn build_checked<'dae>(
         &analysis.sampled_values,
         &clocks,
     )?;
-    lower_bindings(construction, &coordinates, &functions, flat)?;
+    lower_bindings(
+        construction,
+        &coordinates,
+        &functions,
+        &analysis.roles,
+        flat,
+    )?;
     lower_equation_systems(construction, flat, analysis, &coordinates, &functions)?;
     lower_assertions(
         construction,
@@ -453,6 +453,7 @@ fn lower_function_assignment<'dae>(
                     shapes: symbols.shapes,
                     function_body: Some(body),
                     values: None,
+                    owner_clock: None,
                 },
                 binders: &binders,
                 target,
@@ -561,20 +562,11 @@ fn lower_optional_attribute_expression<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     coordinates: &HashMap<VarName, Coordinate<'dae>>,
     functions: &FunctionRegistry<'_, 'dae>,
-    enum_literal_ordinals: &HashMap<String, i64>,
-    value_type: dae::ValueTypeId<'dae>,
     expression: Option<&Expression>,
 ) -> Result<Option<dae::ExprId<'dae>>, dae::DaeConstructionError> {
     expression
         .map(|expression| {
-            lower_attribute_expression(
-                construction,
-                coordinates,
-                functions,
-                enum_literal_ordinals,
-                value_type,
-                expression,
-            )
+            lower_attribute_expression(construction, coordinates, functions, expression)
         })
         .transpose()
 }
@@ -583,45 +575,46 @@ fn lower_attribute_expression<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     coordinates: &HashMap<VarName, Coordinate<'dae>>,
     functions: &FunctionRegistry<'_, 'dae>,
-    enum_literal_ordinals: &HashMap<String, i64>,
-    value_type: dae::ValueTypeId<'dae>,
     expression: &Expression,
 ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
-    if let Expression::VarRef {
-        name,
-        subscripts,
-        span,
-    } = expression
-        && subscripts.is_empty()
-        && let Some(ordinal) = enum_literal_ordinals.get(name.as_str())
-    {
-        let provenance = dae::DaeProvenance::source(*span)?;
-        return construction.expressions(|expressions| {
-            expressions
-                .at(provenance)
-                .enumeration_literal(value_type, *ordinal)
-        });
-    }
-    lower_expression(construction, coordinates, functions, expression, None)
+    lower_expression_scoped(
+        construction,
+        LoweringSymbols {
+            coordinates,
+            functions,
+            shapes: functions.shapes.model_values(),
+            function_body: None,
+            values: None,
+            owner_clock: None,
+        },
+        &HashMap::new(),
+        expression,
+        None,
+    )
 }
 
 fn lower_bindings<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     coordinates: &HashMap<VarName, Coordinate<'dae>>,
     functions: &FunctionRegistry<'_, 'dae>,
+    roles: &HashMap<VarName, PlannedRole>,
     flat: &flat::Model,
 ) -> Result<(), dae::DaeConstructionError> {
     for (name, variable) in &flat.variables {
         let Some(binding) = &variable.binding else {
             continue;
         };
-        if matches!(coordinates[name], Coordinate::Parameter(_)) {
+        if matches!(roles[name], PlannedRole::Clock) {
+            continue;
+        }
+        let coordinate = coordinates[name];
+        if matches!(coordinate, Coordinate::Parameter(_)) {
             continue;
         }
         let owner_span = binding.span().unwrap_or(variable.source_span);
         let owner = dae::DaeProvenance::generated(dae::DaeGeneration::BindingEquation, owner_span)?;
         let rhs = lower_expression(construction, coordinates, functions, binding, None)?;
-        match coordinates[name] {
+        match coordinate {
             Coordinate::Input(_) => unreachable!("analysis rejects bound inputs"),
             Coordinate::DiscreteValue(target) => {
                 construction.discrete(|discrete| discrete.assignment(owner, target, rhs))?;
@@ -899,6 +892,9 @@ fn lower_algorithm_if<'dae>(
                 owner_clock,
             },
         };
+        if let Some(clock) = guard.owner_clock {
+            own_clocked_algorithm_targets(construction, coordinates, clock, &block.stmts)?;
+        }
         lower_algorithm_statements(
             construction,
             coordinates,
@@ -960,6 +956,7 @@ fn lower_algorithm_when<'dae>(
     span: Span,
 ) -> Result<(), dae::DaeConstructionError> {
     let mut previous = None;
+    let mut guarded_blocks = Vec::with_capacity(blocks.len());
     for block in blocks {
         let (condition, owner_clock) = lower_condition(
             construction,
@@ -993,6 +990,18 @@ fn lower_algorithm_when<'dae>(
                 owner_clock,
             },
         };
+        guarded_blocks.push((block, guard));
+        previous = Some(match previous {
+            Some(previous) => combine_conditions(construction, previous, condition, true, span)?,
+            None => condition,
+        });
+    }
+    for (block, guard) in &guarded_blocks {
+        if let Some(clock) = guard.owner_clock {
+            own_clocked_algorithm_targets(construction, coordinates, clock, &block.stmts)?;
+        }
+    }
+    for (block, guard) in guarded_blocks {
         lower_algorithm_statements(
             construction,
             coordinates,
@@ -1002,10 +1011,6 @@ fn lower_algorithm_when<'dae>(
             &block.stmts,
             span,
         )?;
-        previous = Some(match previous {
-            Some(previous) => combine_conditions(construction, previous, condition, true, span)?,
-            None => condition,
-        });
     }
     Ok(())
 }
@@ -1040,6 +1045,7 @@ fn lower_when_clauses<'dae>(
     clocks: &LoweredClocks<'dae>,
     clauses: &[flat::WhenClause],
 ) -> Result<(), dae::DaeConstructionError> {
+    let mut guards = Vec::with_capacity(clauses.len());
     for clause in clauses {
         let (condition, owner_clock) = lower_when_condition(
             construction,
@@ -1049,11 +1055,18 @@ fn lower_when_clauses<'dae>(
             clocks,
             &clause.condition,
         )?;
-        let guard = EventGuard {
+        guards.push(EventGuard {
             trigger: condition,
             condition,
             owner_clock,
-        };
+        });
+    }
+    for (clause, guard) in clauses.iter().zip(&guards) {
+        if let Some(clock) = guard.owner_clock {
+            own_clocked_targets(construction, coordinates, clock, &clause.equations)?;
+        }
+    }
+    for (clause, guard) in clauses.iter().zip(guards) {
         lower_when_equations(
             construction,
             coordinates,
@@ -1062,6 +1075,49 @@ fn lower_when_clauses<'dae>(
             guard,
             &clause.equations,
         )?;
+    }
+    Ok(())
+}
+
+fn own_clocked_targets<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    coordinates: &HashMap<VarName, Coordinate<'dae>>,
+    clock: dae::ClockId<'dae>,
+    equations: &[flat::WhenEquation],
+) -> Result<(), dae::DaeConstructionError> {
+    for equation in equations {
+        match equation {
+            flat::WhenEquation::Assign { target, .. } => {
+                let provenance = dae::DaeProvenance::source(equation.span())?;
+                construction.clocks(|clocks| match coordinates[target] {
+                    Coordinate::DiscreteReal(variable) => {
+                        clocks.own_discrete_real(clock, variable, provenance)?;
+                        Ok(())
+                    }
+                    Coordinate::DiscreteValue(variable) => {
+                        clocks.own_discrete_value(clock, variable, provenance)?;
+                        Ok(())
+                    }
+                    _ => unreachable!("clock analysis accepts only discrete clocked targets"),
+                })?;
+            }
+            flat::WhenEquation::Conditional {
+                branches,
+                else_branch,
+                ..
+            } => {
+                for (_, branch) in branches {
+                    own_clocked_targets(construction, coordinates, clock, branch)?;
+                }
+                own_clocked_targets(construction, coordinates, clock, else_branch)?;
+            }
+            flat::WhenEquation::Reinit { .. }
+            | flat::WhenEquation::Assert { .. }
+            | flat::WhenEquation::Terminate { .. } => {}
+            flat::WhenEquation::FunctionCallOutputs { .. } => {
+                unreachable!("analysis rejects unchecked event function calls")
+            }
+        }
     }
     Ok(())
 }
@@ -1121,7 +1177,16 @@ fn lower_when_equations<'dae>(
         let provenance = dae::DaeProvenance::source(equation.span())?;
         match equation {
             flat::WhenEquation::Assign { target, value, .. } => {
-                let value = lower_expression(construction, coordinates, functions, value, None)?;
+                let value = match guard.owner_clock {
+                    Some(clock) => lower_clocked_expression(
+                        construction,
+                        coordinates,
+                        functions,
+                        clock,
+                        value,
+                    )?,
+                    None => lower_expression(construction, coordinates, functions, value, None)?,
+                };
                 lower_when_assignment(construction, coordinates[target], guard, value, provenance)?;
             }
             flat::WhenEquation::Reinit { state, value, .. } => {
@@ -1177,6 +1242,7 @@ fn lower_when_equations<'dae>(
                         shapes: functions.shapes.model_values(),
                         function_body: None,
                         values: None,
+                        owner_clock: guard.owner_clock,
                     },
                     sample_lattices,
                     guard,
@@ -1201,40 +1267,28 @@ fn lower_when_assignment<'dae>(
     provenance: dae::DaeProvenance,
 ) -> Result<(), dae::DaeConstructionError> {
     match target {
-        Coordinate::DiscreteReal(target) => {
-            if let Some(clock) = guard.owner_clock {
-                construction
-                    .clocks(|clocks| clocks.own_discrete_real(clock, target, provenance))?;
-            }
-            construction
-                .events(|events| {
-                    events.assign_discrete_real(
-                        guard.trigger,
-                        guard.condition,
-                        target,
-                        value,
-                        provenance,
-                    )
-                })
-                .map(|_| ())
-        }
-        Coordinate::DiscreteValue(target) => {
-            if let Some(clock) = guard.owner_clock {
-                construction
-                    .clocks(|clocks| clocks.own_discrete_value(clock, target, provenance))?;
-            }
-            construction
-                .events(|events| {
-                    events.assign_discrete_value(
-                        guard.trigger,
-                        guard.condition,
-                        target,
-                        value,
-                        provenance,
-                    )
-                })
-                .map(|_| ())
-        }
+        Coordinate::DiscreteReal(target) => construction
+            .events(|events| {
+                events.assign_discrete_real(
+                    guard.trigger,
+                    guard.condition,
+                    target,
+                    value,
+                    provenance,
+                )
+            })
+            .map(|_| ()),
+        Coordinate::DiscreteValue(target) => construction
+            .events(|events| {
+                events.assign_discrete_value(
+                    guard.trigger,
+                    guard.condition,
+                    target,
+                    value,
+                    provenance,
+                )
+            })
+            .map(|_| ()),
         _ => unreachable!("analysis accepts only discrete when targets"),
     }
 }
@@ -1552,6 +1606,7 @@ fn lower_change_expression<'dae>(
         shapes: functions.shapes.model_values(),
         function_body: None,
         values: None,
+        owner_clock: None,
     };
     let current = lower_coordinate_reference(
         construction,
@@ -1661,6 +1716,7 @@ fn lower_structured_equations<'dae>(
                         shapes: functions.shapes.model_values(),
                         function_body: None,
                         values: None,
+                        owner_clock: None,
                     };
                     lower_structured_body(
                         construction,
@@ -1765,6 +1821,7 @@ fn lower_materialized_family_bodies<'dae>(
                 shapes: functions.shapes.model_values(),
                 function_body: None,
                 values: None,
+                owner_clock: None,
             };
             scalar_bodies.push(lower_structured_body(
                 construction,

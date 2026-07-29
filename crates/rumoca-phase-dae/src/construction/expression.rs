@@ -13,6 +13,7 @@ pub(super) fn lower_expression<'dae>(
         shapes: functions.shapes.model_values(),
         function_body: None,
         values: None,
+        owner_clock: None,
     };
     lower_expression_scoped(
         construction,
@@ -30,6 +31,30 @@ pub(super) struct LoweringSymbols<'symbols, 'dae> {
     pub(super) shapes: &'symbols ShapeEnvironment,
     pub(super) function_body: Option<&'symbols dae::FunctionBody<'dae>>,
     pub(super) values: Option<&'symbols HashMap<VarName, dae::ExprId<'dae>>>,
+    pub(super) owner_clock: Option<dae::ClockId<'dae>>,
+}
+
+pub(super) fn lower_clocked_expression<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    coordinates: &HashMap<VarName, Coordinate<'dae>>,
+    functions: &FunctionRegistry<'_, 'dae>,
+    owner_clock: dae::ClockId<'dae>,
+    expression: &Expression,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    lower_expression_scoped(
+        construction,
+        LoweringSymbols {
+            coordinates,
+            functions,
+            shapes: functions.shapes.model_values(),
+            function_body: None,
+            values: None,
+            owner_clock: Some(owner_clock),
+        },
+        &HashMap::new(),
+        expression,
+        None,
+    )
 }
 
 pub(super) fn lower_model_algorithm_expression<'dae>(
@@ -47,6 +72,7 @@ pub(super) fn lower_model_algorithm_expression<'dae>(
             shapes: functions.shapes.model_values(),
             function_body: None,
             values: Some(values),
+            owner_clock: None,
         },
         &HashMap::new(),
         expression,
@@ -90,6 +116,7 @@ pub(super) fn lower_function_expression_scoped<'dae>(
             shapes,
             function_body: Some(body),
             values: None,
+            owner_clock: None,
         },
         binders,
         expression,
@@ -169,10 +196,10 @@ pub(super) fn lower_expression_scoped<'dae>(
             args,
             ..
         } => {
-            let [value] = args.as_slice() else {
-                unreachable!("clock ownership proof admits only unary value sampling")
+            let Some(value) = args.first() else {
+                unreachable!("clock analysis rejects value sampling without an operand")
             };
-            lower_expression_scoped(construction, symbols, binders, value, None)
+            lower_temporal_identity(construction, symbols, binders, value, provenance)
         }
         Expression::BuiltinCall { function, args, .. } => {
             lower_builtin_call(construction, symbols, binders, *function, args, provenance)
@@ -220,15 +247,19 @@ pub(super) fn lower_expression_scoped<'dae>(
             args,
             is_constructor,
             ..
-        } => lower_function_call(
-            construction,
-            symbols,
-            binders,
-            name,
-            args,
-            *is_constructor,
-            provenance,
-        ),
+        } => match name.as_str() {
+            "previous" => lower_previous(construction, symbols, binders, args, provenance),
+            "hold" => lower_hold(construction, symbols, binders, args, provenance),
+            _ => lower_function_call(
+                construction,
+                symbols,
+                binders,
+                name,
+                args,
+                *is_constructor,
+                provenance,
+            ),
+        },
         Expression::FieldAccess { .. } => {
             lower_record_array_field_projection(construction, symbols, binders, provenance)
         }
@@ -236,6 +267,74 @@ pub(super) fn lower_expression_scoped<'dae>(
             unreachable!("analysis rejects expressions outside the checked lowering grammar")
         }
     }
+}
+
+fn lower_hold<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    symbols: LoweringSymbols<'_, 'dae>,
+    binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
+    arguments: &[Expression],
+    provenance: dae::DaeProvenance,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    let [value] = arguments else {
+        unreachable!("intrinsic analysis proves hold arity")
+    };
+    lower_temporal_identity(construction, symbols, binders, value, provenance)
+}
+
+fn lower_previous<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    symbols: LoweringSymbols<'_, 'dae>,
+    binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
+    arguments: &[Expression],
+    provenance: dae::DaeProvenance,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    let [value] = arguments else {
+        unreachable!("intrinsic analysis proves previous arity")
+    };
+    let (name, subscripts) =
+        derivative_reference(value).expect("clock analysis proves a coordinate previous operand");
+    let clock = symbols
+        .owner_clock
+        .expect("clock analysis supplies the owning previous clock");
+    let previous =
+        construction.temporal(|temporal| match symbols.coordinates[name.var_name()] {
+            Coordinate::DiscreteReal(variable) => {
+                temporal.previous_discrete_real(clock, variable, provenance)
+            }
+            Coordinate::DiscreteValue(variable) => {
+                temporal.previous_discrete_value(clock, variable, provenance)
+            }
+            _ => unreachable!("clock analysis classifies previous operands as clocked discrete"),
+        })?;
+    lower_coordinate_reference(
+        construction,
+        symbols,
+        binders,
+        dae::CoordinateInput::Previous(previous),
+        subscripts,
+        provenance,
+    )
+}
+
+fn lower_temporal_identity<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    symbols: LoweringSymbols<'_, 'dae>,
+    binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
+    value: &Expression,
+    provenance: dae::DaeProvenance,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    if let Some((name, subscripts)) = derivative_reference(value) {
+        return lower_variable_reference(
+            construction,
+            symbols,
+            binders,
+            name,
+            subscripts,
+            provenance,
+        );
+    }
+    lower_expression_scoped(construction, symbols, binders, value, None)
 }
 
 fn lower_record_array_field_projection<'dae>(
@@ -309,7 +408,25 @@ fn lower_variable_reference<'dae>(
             provenance,
         );
     }
-    match symbols.coordinates[name.var_name()] {
+    if subscripts.is_empty()
+        && let Some(ordinal) = symbols
+            .functions
+            .flat
+            .enum_literal_ordinals
+            .get(name.as_str())
+    {
+        return construction
+            .expressions(|expressions| expressions.at(provenance).enumeration_literal(*ordinal));
+    }
+    let coordinate = symbols
+        .coordinates
+        .get(name.var_name())
+        .copied()
+        .ok_or_else(|| dae::DaeConstructionError::InvalidVariableRole {
+            name: name.var_name().clone(),
+            span: provenance.span(),
+        })?;
+    match coordinate {
         Coordinate::FunctionValue(value) => {
             let body = symbols
                 .function_body
@@ -848,6 +965,10 @@ fn pure_builtin(function: BuiltinFunction) -> dae::PureBuiltin {
         BuiltinFunction::Product => dae::PureBuiltin::Product,
         BuiltinFunction::Size => dae::PureBuiltin::Size,
         BuiltinFunction::Zeros => dae::PureBuiltin::Zeros,
+        BuiltinFunction::Ones => dae::PureBuiltin::Ones,
+        BuiltinFunction::Fill => dae::PureBuiltin::Fill,
+        BuiltinFunction::Linspace => dae::PureBuiltin::Linspace,
+        BuiltinFunction::Cross => dae::PureBuiltin::Cross,
         _ => unreachable!("analysis restricts pure builtins"),
     }
 }

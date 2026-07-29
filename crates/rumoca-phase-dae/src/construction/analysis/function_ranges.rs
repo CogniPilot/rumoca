@@ -2,7 +2,8 @@ use super::*;
 
 pub(super) fn immutable_integer_defaults(
     function: &rumoca_core::Function,
-) -> HashMap<VarName, i64> {
+    shapes: &ShapeEnvironment,
+) -> Result<HashMap<VarName, i64>, ToDaeError> {
     let mut assigned = HashSet::new();
     collect_function_assignment_targets(&function.body, &mut assigned);
     let candidates = function
@@ -21,7 +22,7 @@ pub(super) fn immutable_integer_defaults(
             let Some(default) = &local.default else {
                 continue;
             };
-            let Some(value) = static_integer_expression(default, &values) else {
+            let Some(value) = static_shape_integer_expression(default, &values, shapes)? else {
                 continue;
             };
             values.insert(name, value);
@@ -31,7 +32,7 @@ pub(super) fn immutable_integer_defaults(
             break;
         }
     }
-    values
+    Ok(values)
 }
 
 fn collect_function_assignment_targets(
@@ -64,15 +65,7 @@ pub(super) fn static_function_range(
     else {
         return Ok(None);
     };
-    let evaluate = |expression| -> Result<Option<i64>, ToDaeError> {
-        if let Some(value) = static_integer_expression(expression, values) {
-            return Ok(Some(value));
-        }
-        if shape_integer_expression(expression, values) {
-            return evaluate_shape_integer(expression, shapes).map(Some);
-        }
-        Ok(None)
-    };
+    let evaluate = |expression| static_shape_integer_expression(expression, values, shapes);
     let Some(lower) = evaluate(start)? else {
         return Ok(None);
     };
@@ -90,39 +83,43 @@ pub(super) fn static_function_range(
     Ok((step != 0).then_some((lower, step, upper)))
 }
 
-fn shape_integer_expression(expression: &Expression, values: &HashMap<VarName, i64>) -> bool {
+fn static_shape_integer_expression(
+    expression: &Expression,
+    values: &HashMap<VarName, i64>,
+    shapes: &ShapeEnvironment,
+) -> Result<Option<i64>, ToDaeError> {
+    if let Some(value) = static_integer_expression(expression, values) {
+        return Ok(Some(value));
+    }
     match expression {
-        Expression::Literal {
-            value: Literal::Integer(_),
-            ..
-        } => true,
-        Expression::VarRef {
-            name, subscripts, ..
-        } => subscripts.is_empty() && values.contains_key(name.var_name()),
         Expression::BuiltinCall {
             function: BuiltinFunction::Size,
             ..
-        } => true,
-        Expression::Unary {
-            op: OpUnary::Plus | OpUnary::DotPlus | OpUnary::Minus | OpUnary::DotMinus,
-            rhs,
-            ..
-        } => shape_integer_expression(rhs, values),
-        Expression::Binary {
-            op:
-                OpBinary::Add
-                | OpBinary::AddElem
-                | OpBinary::Sub
-                | OpBinary::SubElem
-                | OpBinary::Mul
-                | OpBinary::MulElem
-                | OpBinary::Div
-                | OpBinary::DivElem,
-            lhs,
-            rhs,
-            ..
-        } => shape_integer_expression(lhs, values) && shape_integer_expression(rhs, values),
-        _ => false,
+        } => evaluate_shape_integer(expression, shapes).map(Some),
+        Expression::Unary { op, rhs, .. }
+            if matches!(
+                op,
+                OpUnary::Plus | OpUnary::DotPlus | OpUnary::Minus | OpUnary::DotMinus
+            ) =>
+        {
+            let Some(value) = static_shape_integer_expression(rhs, values, shapes)? else {
+                return Ok(None);
+            };
+            Ok(match op {
+                OpUnary::Minus | OpUnary::DotMinus => value.checked_neg(),
+                _ => Some(value),
+            })
+        }
+        Expression::Binary { op, lhs, rhs, .. } => {
+            let Some(lhs) = static_shape_integer_expression(lhs, values, shapes)? else {
+                return Ok(None);
+            };
+            let Some(rhs) = static_shape_integer_expression(rhs, values, shapes)? else {
+                return Ok(None);
+            };
+            Ok(checked_static_integer_binary(op, lhs, rhs))
+        }
+        _ => Ok(None),
     }
 }
 
@@ -173,14 +170,18 @@ pub(in crate::construction) fn static_integer_expression(
         Expression::Binary { op, lhs, rhs, .. } => {
             let lhs = static_integer_expression(lhs, values)?;
             let rhs = static_integer_expression(rhs, values)?;
-            match op {
-                OpBinary::Add | OpBinary::AddElem => lhs.checked_add(rhs),
-                OpBinary::Sub | OpBinary::SubElem => lhs.checked_sub(rhs),
-                OpBinary::Mul | OpBinary::MulElem => lhs.checked_mul(rhs),
-                OpBinary::Div | OpBinary::DivElem if rhs != 0 && lhs % rhs == 0 => Some(lhs / rhs),
-                _ => None,
-            }
+            checked_static_integer_binary(op, lhs, rhs)
         }
+        _ => None,
+    }
+}
+
+fn checked_static_integer_binary(operator: &OpBinary, lhs: i64, rhs: i64) -> Option<i64> {
+    match operator {
+        OpBinary::Add | OpBinary::AddElem => lhs.checked_add(rhs),
+        OpBinary::Sub | OpBinary::SubElem => lhs.checked_sub(rhs),
+        OpBinary::Mul | OpBinary::MulElem => lhs.checked_mul(rhs),
+        OpBinary::Div | OpBinary::DivElem if rhs != 0 && lhs % rhs == 0 => Some(lhs / rhs),
         _ => None,
     }
 }

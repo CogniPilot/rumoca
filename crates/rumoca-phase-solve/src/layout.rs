@@ -20,6 +20,7 @@ pub(crate) struct VariableSlot {
 pub(crate) struct LoweredLayout<'dae> {
     pub(crate) variables: Vec<VariableSlot>,
     pub(crate) pre_variables: Vec<Option<usize>>,
+    pub(crate) previous_values: Vec<usize>,
     pub(crate) condition_memory: Vec<usize>,
     pub(crate) layout: solve::VarLayout,
     pub(crate) solve_layout: solve::SolveLayout,
@@ -127,6 +128,7 @@ pub(crate) fn lower_layout<'dae>(
     Ok(LoweredLayout {
         variables,
         pre_variables: pre.variables,
+        previous_values: pre.previous_values,
         condition_memory,
         layout,
         solve_layout,
@@ -136,6 +138,7 @@ pub(crate) fn lower_layout<'dae>(
 
 struct PreVariableLayout {
     variables: Vec<Option<usize>>,
+    previous_values: Vec<usize>,
     bindings: Vec<solve::PreParamBinding>,
     scalar_count: usize,
 }
@@ -186,10 +189,76 @@ fn append_pre_variables(
             )
         })?;
     }
+    let mut previous_values = Vec::with_capacity(view.previous_value_count());
+    for index in 0..view.previous_value_count() {
+        let previous = view
+            .previous(
+                view.previous_id(index)
+                    .expect("dense previous identity resolves"),
+            )
+            .expect("checked previous entry resolves");
+        let variable = previous.variable().index() as usize;
+        let current = variables[variable];
+        let base = first_pre_index.checked_add(scalar_count).ok_or_else(|| {
+            LowerError::contract(
+                "previous-value layout overflow",
+                previous.provenance().span(),
+            )
+        })?;
+        previous_values.push(base);
+        let clock_schedule = previous_schedule(view, previous)?;
+        for scalar in 0..current.count {
+            let source = current.base.checked_add(scalar).ok_or_else(|| {
+                LowerError::contract(
+                    "previous-value source layout overflow",
+                    previous.provenance().span(),
+                )
+            })?;
+            let dest_p_index = base.checked_add(scalar).ok_or_else(|| {
+                LowerError::contract(
+                    "previous-value destination layout overflow",
+                    previous.provenance().span(),
+                )
+            })?;
+            bindings.push(solve::PreParamBinding {
+                dest_p_index,
+                source: solve::PreParamSource::P { index: source },
+                clock_schedule: Some(clock_schedule.clone()),
+            });
+        }
+        scalar_count = scalar_count.checked_add(current.count).ok_or_else(|| {
+            LowerError::contract(
+                "previous-value scalar count overflow",
+                previous.provenance().span(),
+            )
+        })?;
+    }
     Ok(PreVariableLayout {
         variables: pre_variables,
+        previous_values,
         bindings,
         scalar_count,
+    })
+}
+
+fn previous_schedule<'dae>(
+    view: dae::DaeView<'dae>,
+    previous: dae::PreviousView<'dae>,
+) -> Result<solve::PeriodicEventSchedule, LowerError> {
+    let clock = view
+        .clock(previous.clock())
+        .expect("checked previous clock resolves");
+    let dae::ClockOperation::Periodic(lattice) = clock.operation() else {
+        return Err(LowerError::unsupported(
+            "triggered-clock previous history has no periodic Solve schedule",
+            previous.provenance().span(),
+        ));
+    };
+    solve::PeriodicEventSchedule::new(*lattice).map_err(|error| {
+        LowerError::contract(
+            format!("invalid previous-value clock schedule: {error}"),
+            previous.provenance().span(),
+        )
     })
 }
 

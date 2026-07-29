@@ -5,6 +5,8 @@ use rumoca_core::{
 
 use crate::*;
 
+mod temporal_wire;
+
 struct TestSource {
     map: SourceMap,
     id: SourceId,
@@ -324,6 +326,69 @@ fn structured_families_derive_rows_and_preserve_multidimensional_domains() {
     assert_structured_owner_views(&dae);
     let encoded = serde_json::to_string(&dae).unwrap();
     assert_structured_binders_round_trip_and_reject_forgery(&encoded);
+}
+
+#[test]
+fn binder_prefix_projection_compacts_nested_array_families() {
+    let source = TestSource::new("for i in 1:2 loop r[:] = a[i,:]; end for;");
+    let owner = source.source("for i in 1:2 loop r[:] = a[i,:]; end for", 0);
+    let dae = Dae::construct(source.map, |dae| {
+        let domain = dae.domains(|domains| {
+            domains.structured(
+                StructuredIndexDomain {
+                    binders: vec![
+                        StructuredIndexBinder {
+                            id: 0,
+                            display_name: "i".to_string(),
+                            lower: 1,
+                            upper: 2,
+                            step: 1,
+                        },
+                        StructuredIndexBinder {
+                            id: 1,
+                            display_name: "j".to_string(),
+                            lower: 1,
+                            upper: 3,
+                            step: 1,
+                        },
+                    ],
+                },
+                owner,
+            )
+        })?;
+        let row = dae.expressions(|expressions| {
+            let zero = expressions.at(owner).literal(DaeLiteral::Real(0.0))?;
+            expressions.at(owner).array([zero, zero, zero])
+        })?;
+        dae.continuous(|continuous| {
+            continuous.structured_family(
+                owner,
+                domain,
+                rumoca_core::ComprehensionScalarView::BinderPrefixProjection { binder_count: 1 },
+                |family| family.body(row),
+            )?;
+            Ok(())
+        })
+    })
+    .unwrap();
+
+    let encoded = serde_json::to_string(&dae).unwrap();
+    let decoded: Dae = serde_json::from_str(&encoded).unwrap();
+    decoded.inspect(|view| {
+        let family = view.continuous_family(0).unwrap();
+        assert_eq!(family.scalar_rows(), 6);
+        let projection = family.scalar_view();
+        assert!(matches!(
+            projection,
+            rumoca_core::ComprehensionScalarView::BinderPrefixProjection { binder_count: 1 }
+        ));
+        assert_eq!(
+            (0..6)
+                .map(|point| projection.body_scalar(point, &[2, 3]).unwrap())
+                .collect::<Vec<_>>(),
+            [0, 1, 2, 0, 1, 2]
+        );
+    });
 }
 
 fn assert_structured_owner_views(dae: &Dae) {
@@ -1290,6 +1355,164 @@ fn zeros_is_a_provenance_bearing_checked_array_operation() {
 }
 
 #[test]
+fn ones_and_fill_are_compact_typed_array_operations() {
+    let source = TestSource::new("ones(2, 2); fill(0.5, 3)");
+    let ones_at = source.source("ones(2, 2)", 0);
+    let fill_at = source.source("fill(0.5, 3)", 0);
+    let first_two_at = source.source("2", 0);
+    let second_two_at = source.source("2", 1);
+    let value_at = source.source("0.5", 0);
+    let extent_at = source.source("3", 0);
+    let dae = Dae::construct(source.map, |dae| {
+        let first_two = dae.expressions(|expressions| {
+            expressions.at(first_two_at).literal(DaeLiteral::Integer(2))
+        })?;
+        let second_two = dae.expressions(|expressions| {
+            expressions
+                .at(second_two_at)
+                .literal(DaeLiteral::Integer(2))
+        })?;
+        dae.expressions(|expressions| {
+            expressions
+                .at(ones_at)
+                .builtin(PureBuiltin::Ones, [first_two, second_two])
+        })?;
+        let value =
+            dae.expressions(|expressions| expressions.at(value_at).literal(DaeLiteral::Real(0.5)))?;
+        let extent = dae
+            .expressions(|expressions| expressions.at(extent_at).literal(DaeLiteral::Integer(3)))?;
+        dae.expressions(|expressions| {
+            expressions
+                .at(fill_at)
+                .builtin(PureBuiltin::Fill, [value, extent])
+        })?;
+        Ok(())
+    })
+    .unwrap();
+
+    let encoded = serde_json::to_string(&dae).unwrap();
+    let decoded: Dae = serde_json::from_str(&encoded).unwrap();
+    decoded.inspect(|view| {
+        for (index, builtin, dimensions, text) in [
+            (2, PureBuiltin::Ones, &[2, 2][..], "ones(2, 2)"),
+            (5, PureBuiltin::Fill, &[3][..], "fill(0.5, 3)"),
+        ] {
+            let expression = view.expression(view.expression_id(index).unwrap()).unwrap();
+            assert_eq!(expression.value_type().scalar_type(), ScalarType::Real);
+            assert_eq!(expression.value_type().dimensions(), dimensions);
+            assert_eq!(view.source_text(expression.provenance()), Some(text));
+            assert!(matches!(
+                expression.operation(),
+                ExpressionOperation::Builtin { builtin: found, .. } if found == builtin
+            ));
+        }
+    });
+}
+
+#[test]
+fn linspace_and_cross_are_checked_compact_vector_operations() {
+    let source = TestSource::new("linspace(2.0, 4.0, 3); cross({1.0,2.0,3.0},{4.0,5.0,6.0})");
+    let linspace_at = source.source("linspace(2.0, 4.0, 3)", 0);
+    let cross_at = source.source("cross({1.0,2.0,3.0},{4.0,5.0,6.0})", 0);
+    let provenances = [
+        source.source("2.0", 0),
+        source.source("4.0", 0),
+        source.source("3", 0),
+        source.source("1.0", 0),
+        source.source("2.0", 1),
+        source.source("3.0", 0),
+        source.source("4.0", 1),
+        source.source("5.0", 0),
+        source.source("6.0", 0),
+    ];
+    let dae = Dae::construct(source.map, |dae| {
+        dae.expressions(|expressions| {
+            let start = expressions
+                .at(provenances[0])
+                .literal(DaeLiteral::Real(2.0))?;
+            let stop = expressions
+                .at(provenances[1])
+                .literal(DaeLiteral::Real(4.0))?;
+            let count = expressions
+                .at(provenances[2])
+                .literal(DaeLiteral::Integer(3))?;
+            expressions
+                .at(linspace_at)
+                .builtin(PureBuiltin::Linspace, [start, stop, count])?;
+            let lhs = provenances[3..6]
+                .iter()
+                .zip([1.0, 2.0, 3.0])
+                .map(|(at, value)| expressions.at(*at).literal(DaeLiteral::Real(value)))
+                .collect::<Result<Vec<_>, _>>()?;
+            let lhs = expressions.at(cross_at).array(lhs)?;
+            let rhs = provenances[6..]
+                .iter()
+                .zip([4.0, 5.0, 6.0])
+                .map(|(at, value)| expressions.at(*at).literal(DaeLiteral::Real(value)))
+                .collect::<Result<Vec<_>, _>>()?;
+            let rhs = expressions.at(cross_at).array(rhs)?;
+            expressions
+                .at(cross_at)
+                .builtin(PureBuiltin::Cross, [lhs, rhs])?;
+            Ok(())
+        })
+    })
+    .unwrap();
+
+    let encoded = serde_json::to_string(&dae).unwrap();
+    let decoded: Dae = serde_json::from_str(&encoded).unwrap();
+    decoded.inspect(|view| {
+        for (index, builtin, text) in [
+            (3, PureBuiltin::Linspace, "linspace(2.0, 4.0, 3)"),
+            (12, PureBuiltin::Cross, "cross({1.0,2.0,3.0},{4.0,5.0,6.0})"),
+        ] {
+            let expression = view.expression(view.expression_id(index).unwrap()).unwrap();
+            assert_eq!(expression.value_type().dimensions(), &[3]);
+            assert_eq!(view.source_text(expression.provenance()), Some(text));
+            assert!(matches!(
+                expression.operation(),
+                ExpressionOperation::Builtin { builtin: found, .. } if found == builtin
+            ));
+        }
+    });
+}
+
+#[test]
+fn enumeration_literals_are_canonical_checked_integers_and_round_trip() {
+    let source = TestSource::new("E.a");
+    let literal_at = source.source("E.a", 0);
+    let dae = Dae::construct(source.map, |dae| {
+        dae.expressions(|expressions| expressions.at(literal_at).enumeration_literal(1))?;
+        Ok(())
+    })
+    .expect("positive enumeration ordinals construct");
+
+    let encoded = serde_json::to_string(&dae).unwrap();
+    let decoded: Dae = serde_json::from_str(&encoded).unwrap();
+    decoded.inspect(|view| {
+        let expression = view.expression(view.expression_id(0).unwrap()).unwrap();
+        assert_eq!(expression.value_type().scalar_type(), ScalarType::Integer);
+        assert!(expression.value_type().dimensions().is_empty());
+        assert_eq!(view.source_text(expression.provenance()), Some("E.a"));
+        assert!(matches!(
+            expression.operation(),
+            ExpressionOperation::Literal(DaeLiteral::Enumeration(1))
+        ));
+    });
+
+    let source = TestSource::new("E.invalid");
+    let invalid_at = source.source("E.invalid", 0);
+    let error = Dae::construct(source.map, |dae| {
+        dae.expressions(|expressions| expressions.at(invalid_at).enumeration_literal(0))?;
+        Ok(())
+    });
+    assert!(matches!(
+        error,
+        Err(DaeConstructionError::InvalidEnumerationOrdinal { ordinal: 0, .. })
+    ));
+}
+
+#[test]
 fn function_for_loop_is_a_compact_checked_transition() {
     let source = TestSource::new(
         "function sum3\n output Real y;\nalgorithm\n y := 0;\n for k in 1:3 loop\n  y := y + k;\n end for;\nend sum3;",
@@ -1624,298 +1847,4 @@ fn assert_event_wire_requires_trigger(encoded: &str) {
         .remove("trigger");
     let error = serde_json::from_value::<Dae>(value).unwrap_err();
     assert!(error.to_string().contains("missing field `trigger`"));
-}
-
-#[test]
-fn exact_clocks_own_each_clocked_variable_once() {
-    let source = TestSource::new(
-        "discrete Real z; discrete Boolean m; when trigger then z = 1; m = true; end when; \
-         previous(z); terminal();",
-    );
-    let z_at = source.source("discrete Real z", 0);
-    let m_at = source.source("discrete Boolean m", 0);
-    let trigger_at = source.source("trigger", 0);
-    let owner = source.source("when trigger then z = 1; m = true; end when", 0);
-    let previous_at = source.source("previous(z)", 0);
-    let terminal_at = source.source("terminal()", 0);
-
-    let dae = Dae::construct(source.map, |dae| {
-        let real = dae.types(|types| {
-            types.intern(TypeId::new(0), ValueType::scalar(ScalarType::Real), z_at)
-        })?;
-        let boolean = dae.types(|types| {
-            types.intern(TypeId::new(1), ValueType::scalar(ScalarType::Boolean), m_at)
-        })?;
-        let (z, m) = dae.variables(|variables| {
-            Ok((
-                variables.discrete_real(
-                    VarName::new("z"),
-                    real,
-                    z_at,
-                    VariableAttributes::default(),
-                )?,
-                variables.discrete_value(
-                    VarName::new("m"),
-                    boolean,
-                    m_at,
-                    VariableAttributes::default(),
-                )?,
-            ))
-        })?;
-        let condition = dae.conditions(|conditions| conditions.reserve(trigger_at))?;
-        let trigger = dae.expressions(|expressions| {
-            expressions
-                .at(trigger_at)
-                .literal(DaeLiteral::Boolean(true))
-        })?;
-        dae.conditions(|conditions| {
-            conditions.define(condition, ConditionInput::Discrete(trigger), trigger_at)
-        })?;
-        dae.discrete(|discrete| discrete.assignment(owner, m, trigger))?;
-
-        let periodic = dae.clocks(|clocks| {
-            let lattice = ClockLattice::new(
-                ClockRational::new(1, 10).unwrap(),
-                ClockRational::new(1, 20).unwrap(),
-            )
-            .unwrap();
-            let periodic = clocks.periodic(lattice, owner)?;
-            let triggered = clocks.triggered(condition, trigger_at)?;
-            let first_owner = clocks.own_discrete_real(periodic, z, owner)?;
-            let repeated_owner = clocks.own_discrete_real(periodic, z, owner)?;
-            assert_eq!(first_owner, repeated_owner);
-            clocks.own_discrete_value(triggered, m, owner)?;
-            let duplicate = clocks.own_discrete_real(triggered, z, owner);
-            assert!(matches!(
-                duplicate,
-                Err(DaeConstructionError::DuplicateKey {
-                    kind: "clocked variable owner",
-                    ..
-                })
-            ));
-            Ok(periodic)
-        })?;
-        let (previous, terminal) = dae.temporal(|temporal| {
-            Ok((
-                temporal.previous_discrete_real(periodic, z, previous_at)?,
-                temporal.terminal(terminal_at)?,
-            ))
-        })?;
-        dae.expressions(|expressions| {
-            expressions
-                .at(previous_at)
-                .coordinate(CoordinateInput::Previous(previous))?;
-            expressions
-                .at(terminal_at)
-                .coordinate(CoordinateInput::Terminal(terminal))?;
-            Ok(())
-        })
-    })
-    .unwrap();
-
-    dae.inspect(assert_clock_views);
-    let encoded = serde_json::to_string(&dae).unwrap();
-    let decoded: Dae = serde_json::from_str(&encoded).unwrap();
-    decoded.inspect(|view| {
-        assert_eq!(view.clock_count(), 2);
-        assert_eq!(view.clock_ownership_count(), 2);
-        assert_eq!(view.previous_value_count(), 1);
-        assert_eq!(view.terminal_count(), 1);
-    });
-
-    let mut forged: serde_json::Value = serde_json::from_str(&encoded).unwrap();
-    forged["storage"]["clocks"][0]["kind"]["periodic"]["period"]["den"] = 0.into();
-    assert!(matches!(
-        serde_json::from_value::<Dae>(forged),
-        Err(error) if error.to_string().contains("invalid exact DAE clock value")
-    ));
-}
-
-#[test]
-fn clock_guarded_assignment_requires_matching_clock_ownership() {
-    let source = TestSource::new("discrete Real z; when sample(0, 1) then z = 1; end when;");
-    let z_at = source.source("discrete Real z", 0);
-    let sample_at = source.source("sample(0, 1)", 0);
-    let assignment_at = source.source("z = 1", 0);
-    let error = Dae::construct(source.map, |dae| {
-        let real = dae.types(|types| {
-            types.intern(TypeId::new(0), ValueType::scalar(ScalarType::Real), z_at)
-        })?;
-        let z = dae.variables(|variables| {
-            variables.discrete_real(VarName::new("z"), real, z_at, VariableAttributes::default())
-        })?;
-        let clock = dae.clocks(|clocks| {
-            clocks.periodic(
-                ClockLattice::new(ClockRational::ONE, ClockRational::ZERO).unwrap(),
-                sample_at,
-            )
-        })?;
-        let guard = dae.conditions(|conditions| conditions.reserve(sample_at))?;
-        dae.conditions(|conditions| {
-            conditions.define(guard, ConditionInput::Clock(clock), sample_at)
-        })?;
-        let value = dae.expressions(|expressions| {
-            expressions.at(assignment_at).literal(DaeLiteral::Real(1.0))
-        })?;
-        dae.events(|events| events.assign_discrete_real(guard, guard, z, value, assignment_at))?;
-        Ok(())
-    })
-    .unwrap_err();
-    assert!(matches!(
-        error,
-        DaeConstructionError::MissingClockOwnership { .. }
-    ));
-}
-
-fn assert_clock_views(view: DaeView<'_>) {
-    assert_eq!(view.clock_count(), 2);
-    assert_eq!(view.clock_ownership_count(), 2);
-    assert_eq!(view.previous_value_count(), 1);
-    assert_eq!(view.terminal_count(), 1);
-    assert!(matches!(
-        view.clock(view.clock_id(0).unwrap()).unwrap().operation(),
-        ClockOperation::Periodic(_)
-    ));
-    assert!(matches!(
-        view.clock(view.clock_id(1).unwrap()).unwrap().operation(),
-        ClockOperation::Triggered(_)
-    ));
-    let ownership = view
-        .clock_ownership(view.clock_ownership_id(0).unwrap())
-        .unwrap();
-    assert_eq!(ownership.kind(), ClockedVariableKind::DiscreteReal);
-    let previous = view.previous(view.previous_id(0).unwrap()).unwrap();
-    assert_eq!(previous.clock(), ownership.clock());
-    assert!(view.terminal(view.terminal_id(0).unwrap()).is_some());
-}
-
-#[test]
-fn wire_v11_round_trip_preserves_checked_mod_and_its_provenance() {
-    let source = TestSource::new("mod(-7, 3)");
-    let owner = source.source("mod(-7, 3)", 0);
-    let lhs_at = source.source("-7", 0);
-    let rhs_at = source.source("3", 0);
-    let dae = Dae::construct(source.map, |dae| {
-        let lhs =
-            dae.expressions(|expressions| expressions.at(lhs_at).literal(DaeLiteral::Integer(-7)))?;
-        let rhs =
-            dae.expressions(|expressions| expressions.at(rhs_at).literal(DaeLiteral::Integer(3)))?;
-        dae.expressions(|expressions| expressions.at(owner).builtin(PureBuiltin::Mod, [lhs, rhs]))?;
-        Ok(())
-    })
-    .unwrap();
-
-    let encoded = serde_json::to_string(&dae).unwrap();
-    let decoded: Dae = serde_json::from_str(&encoded).unwrap();
-    decoded.inspect(|view| {
-        let expression = view
-            .expression(view.expression_id(2).unwrap())
-            .expect("wire-reconstructed mod expression");
-        assert!(matches!(
-            expression.operation(),
-            ExpressionOperation::Builtin {
-                builtin: PureBuiltin::Mod,
-                ..
-            }
-        ));
-        assert_eq!(
-            view.source_text(expression.provenance()),
-            Some("mod(-7, 3)")
-        );
-    });
-}
-
-#[test]
-fn wire_v11_round_trip_preserves_provenance_without_inline_source_copies() {
-    let source = TestSource::new("42");
-    let literal = source.source("42", 0);
-    let dae = Dae::construct(source.map, |dae| {
-        dae.expressions(|expr| {
-            expr.at(literal).literal(DaeLiteral::Integer(42))?;
-            Ok(())
-        })
-    })
-    .unwrap();
-
-    let json = serde_json::to_string(&dae).unwrap();
-    assert_eq!(
-        json.matches("42").count(),
-        2,
-        "source text plus literal value"
-    );
-    let decoded: Dae = serde_json::from_str(&json).unwrap();
-    assert_eq!(decoded.schema_version(), DAE_SCHEMA_VERSION);
-    decoded.inspect(|view| {
-        let expression = view.expression(view.expression_id(0).unwrap()).unwrap();
-        assert_eq!(view.source_text(expression.provenance()), Some("42"));
-    });
-
-    let binary = bincode::serialize(&dae).unwrap();
-    let decoded_binary: Dae = bincode::deserialize(&binary).unwrap();
-    decoded_binary.inspect(|view| {
-        let expression = view.expression(view.expression_id(0).unwrap()).unwrap();
-        assert_eq!(view.source_text(expression.provenance()), Some("42"));
-    });
-
-    let wrong_version = json.replacen(
-        &format!("\"schema_version\":{DAE_SCHEMA_VERSION}"),
-        "\"schema_version\":10",
-        1,
-    );
-    assert!(matches!(
-        serde_json::from_str::<Dae>(&wrong_version),
-        Err(error) if error.to_string().contains("unsupported DAE schema version 10")
-    ));
-
-    let mut malformed: serde_json::Value = serde_json::from_str(&json).unwrap();
-    malformed["storage"]["expressions"]["provenance"]
-        .as_array_mut()
-        .unwrap()
-        .clear();
-    assert!(matches!(
-        serde_json::from_value::<Dae>(malformed),
-        Err(error) if error.to_string().contains("malformed DAE wire column")
-    ));
-}
-
-#[test]
-fn construction_rejects_dummy_unknown_and_out_of_range_provenance() {
-    assert!(matches!(
-        DaeProvenance::source(Span::DUMMY),
-        Err(DaeConstructionError::MissingProvenance { .. })
-    ));
-
-    let source = TestSource::new("x");
-    let unknown = DaeProvenance::source(Span::from_offsets(
-        SourceId::from_source_name("missing.mo"),
-        0,
-        1,
-    ))
-    .unwrap();
-    let out_of_range =
-        DaeProvenance::source(Span::from_offsets(source.id, 0, source.text.len() + 1)).unwrap();
-
-    let result = Dae::construct(source.map, |dae| {
-        dae.expressions(|expr| {
-            expr.at(unknown).literal(DaeLiteral::Integer(1))?;
-            Ok(())
-        })
-    });
-    assert!(matches!(
-        result,
-        Err(DaeConstructionError::UnknownSource { .. })
-    ));
-
-    let mut map = SourceMap::new();
-    map.add("construction.mo", "x");
-    let result = Dae::construct(map, |dae| {
-        dae.expressions(|expr| {
-            expr.at(out_of_range).literal(DaeLiteral::Integer(1))?;
-            Ok(())
-        })
-    });
-    assert!(matches!(
-        result,
-        Err(DaeConstructionError::InvalidSourceRange { .. })
-    ));
 }

@@ -706,11 +706,28 @@ fn expression_shape(
             };
             expression_shape(value, values, function_result)
         }
-        Expression::FunctionCall { name, args, .. } if name.as_str() == "Clock" => {
+        Expression::FunctionCall { name, args, .. }
+            if matches!(
+                name.as_str(),
+                "Clock" | "subSample" | "superSample" | "shiftSample" | "backSample" | "noClock"
+            ) =>
+        {
             for argument in args {
                 expression_shape(argument, values, function_result)?;
             }
             Ok(Vec::new())
+        }
+        Expression::FunctionCall { name, args, .. }
+            if matches!(name.as_str(), "previous" | "hold") =>
+        {
+            let [value] = args.as_slice() else {
+                return Err(ToDaeError::unsupported_flat(
+                    "temporal expression shape",
+                    format!("{} requires exactly one value", name.as_str()),
+                    span,
+                ));
+            };
+            expression_shape(value, values, function_result)
         }
         Expression::FunctionCall { name, args, .. } => function_result(name, args, span),
         Expression::If {

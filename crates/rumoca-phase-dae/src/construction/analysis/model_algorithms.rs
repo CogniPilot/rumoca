@@ -23,7 +23,7 @@ pub(super) fn analyze_model_algorithm(
     algorithm: &flat::Algorithm,
     roles: &HashMap<VarName, PlannedRole>,
 ) -> Result<ModelAlgorithmPlan, ToDaeError> {
-    if contains_when(&algorithm.statements) {
+    if contains_event_control(&algorithm.statements) {
         let targets = model_algorithm_targets(flat, algorithm);
         if targets.iter().any(|target| {
             !matches!(
@@ -488,7 +488,7 @@ fn reject_read_before_definition(
 pub(in crate::construction) fn event_targets(flat: &flat::Model) -> HashSet<VarName> {
     let mut written = when_clause_targets(flat);
     for algorithm in &flat.algorithms {
-        collect_nested_when_targets(&algorithm.statements, &mut written);
+        collect_event_control_targets(&algorithm.statements, &mut written);
     }
     resolve_written_targets(flat, written)
 }
@@ -561,24 +561,46 @@ fn collect_statement_targets(
     }
 }
 
-fn contains_when(statements: &[rumoca_core::Statement]) -> bool {
+fn contains_event_control(statements: &[rumoca_core::Statement]) -> bool {
     statements.iter().any(|statement| match statement {
         rumoca_core::Statement::When { .. } => true,
-        rumoca_core::Statement::For { equations, .. } => contains_when(equations),
-        rumoca_core::Statement::While { block, .. } => contains_when(&block.stmts),
+        rumoca_core::Statement::For { equations, .. } => contains_event_control(equations),
+        rumoca_core::Statement::While { block, .. } => contains_event_control(&block.stmts),
         rumoca_core::Statement::If {
             cond_blocks,
             else_block,
             ..
         } => {
-            cond_blocks.iter().any(|block| contains_when(&block.stmts))
-                || else_block.as_deref().is_some_and(contains_when)
+            cond_blocks.iter().any(|block| {
+                is_event_condition(&block.cond) || contains_event_control(&block.stmts)
+            }) || else_block.as_deref().is_some_and(contains_event_control)
         }
         _ => false,
     })
 }
 
-fn collect_nested_when_targets(
+fn is_event_condition(expression: &Expression) -> bool {
+    match expression {
+        Expression::BuiltinCall {
+            function: BuiltinFunction::Change | BuiltinFunction::Sample,
+            ..
+        } => true,
+        Expression::Unary {
+            op: OpUnary::Not,
+            rhs,
+            ..
+        } => is_event_condition(rhs),
+        Expression::Binary {
+            op: OpBinary::And | OpBinary::Or,
+            lhs,
+            rhs,
+            ..
+        } => is_event_condition(lhs) || is_event_condition(rhs),
+        _ => false,
+    }
+}
+
+fn collect_event_control_targets(
     statements: &[rumoca_core::Statement],
     targets: &mut HashSet<VarName>,
 ) {
@@ -590,24 +612,36 @@ fn collect_nested_when_targets(
                 }
             }
             rumoca_core::Statement::For { equations, .. } => {
-                collect_nested_when_targets(equations, targets);
+                collect_event_control_targets(equations, targets);
             }
             rumoca_core::Statement::While { block, .. } => {
-                collect_nested_when_targets(&block.stmts, targets);
+                collect_event_control_targets(&block.stmts, targets);
             }
             rumoca_core::Statement::If {
                 cond_blocks,
                 else_block,
                 ..
-            } => {
-                for block in cond_blocks {
-                    collect_nested_when_targets(&block.stmts, targets);
-                }
-                if let Some(fallback) = else_block {
-                    collect_nested_when_targets(fallback, targets);
-                }
-            }
+            } => collect_conditional_event_targets(cond_blocks, else_block.as_deref(), targets),
             _ => {}
+        }
+    }
+}
+
+fn collect_conditional_event_targets(
+    blocks: &[rumoca_core::StatementBlock],
+    fallback: Option<&[rumoca_core::Statement]>,
+    targets: &mut HashSet<VarName>,
+) {
+    let event_control = blocks.iter().any(|block| is_event_condition(&block.cond));
+    for statements in blocks
+        .iter()
+        .map(|block| block.stmts.as_slice())
+        .chain(fallback)
+    {
+        if event_control {
+            collect_statement_targets(statements, targets);
+        } else {
+            collect_event_control_targets(statements, targets);
         }
     }
 }

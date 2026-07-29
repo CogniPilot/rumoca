@@ -777,7 +777,7 @@ fn validate_functions(
                 validate_function_expression(default, function, flat)?;
             }
         }
-        let static_integers = immutable_integer_defaults(function);
+        let static_integers = immutable_integer_defaults(function, &certificate.values)?;
         let roles = function_expression_roles(function, flat);
         let context = FunctionValidationContext {
             function,
@@ -1064,6 +1064,7 @@ fn validate_nested_function_loop(
         loop_statements,
         &statements,
         context.function,
+        context.shapes,
     );
     Ok(Some(FunctionStatementPlan::For {
         domain: validated.domain,
@@ -1104,6 +1105,7 @@ fn validate_function_loop_body(
         equations,
         &statements,
         context.function,
+        context.shapes,
     );
     Ok(FunctionStatementPlan::For {
         domain: validated.domain,
@@ -1120,6 +1122,7 @@ fn classify_function_loop(
     statements: &[rumoca_core::Statement],
     plans: &[FunctionStatementPlan],
     function: &rumoca_core::Function,
+    shapes: &ShapeEnvironment,
 ) -> FunctionLoopLowering {
     let targets = function_loop_targets(plans);
     let (
@@ -1134,19 +1137,21 @@ fn classify_function_loop(
     else {
         return FunctionLoopLowering::Fold { targets };
     };
-    let Some(declaration) = function
+    if !function
         .outputs
         .iter()
         .chain(&function.locals)
-        .find(|declaration| declaration.name == target.as_str())
-    else {
+        .any(|declaration| declaration.name == target.as_str())
+    {
         return FunctionLoopLowering::Fold { targets };
-    };
+    }
     let Ok(extents) = domain.extents() else {
         return FunctionLoopLowering::Fold { targets };
     };
-    let dimensions = declaration
-        .dims
+    let Some(shape) = shapes.get(target) else {
+        return FunctionLoopLowering::Fold { targets };
+    };
+    let dimensions = shape
         .iter()
         .map(|dimension| usize::try_from(*dimension))
         .collect::<Result<Vec<_>, _>>();
@@ -1305,14 +1310,10 @@ fn validate_known_function_calls(
                     *span,
                 ));
             }
-        } else if name.as_str() == "Clock" {
-            if args.len() != 1 {
-                return Err(ToDaeError::unsupported_runtime_operator(
-                    "Clock",
-                    "the canonical clock proof currently requires Clock(interval)",
-                    *span,
-                ));
-            }
+        } else if let Some(result) =
+            validate_intrinsic_function_call(name.as_str(), args.len(), *span)
+        {
+            result?;
         } else {
             let function = flat
                 .functions
@@ -1336,6 +1337,28 @@ fn validate_known_function_calls(
         validate_known_function_calls(child, flat)?;
     }
     Ok(())
+}
+
+fn validate_intrinsic_function_call(
+    name: &str,
+    arity: usize,
+    span: Span,
+) -> Option<Result<(), ToDaeError>> {
+    let valid = match name {
+        "Clock" | "previous" | "hold" | "noClock" => arity == 1,
+        "subSample" | "superSample" => arity == 2,
+        "shiftSample" | "backSample" => matches!(arity, 2 | 3),
+        _ => return None,
+    };
+    Some(if valid {
+        Ok(())
+    } else {
+        Err(ToDaeError::unsupported_runtime_operator(
+            name,
+            format!("invalid intrinsic arity {arity}"),
+            span,
+        ))
+    })
 }
 
 fn validate_variable(

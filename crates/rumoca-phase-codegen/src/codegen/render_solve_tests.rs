@@ -274,9 +274,12 @@ fn template_partition_tracks_multi_output_scalar_program() {
 
 #[test]
 fn template_partition_rejects_tensor_fallback_without_source_span() {
-    let block = solve::ComputeBlock {
-        nodes: vec![one_by_one_matmul_node(2.0, 3.0, rumoca_core::Span::DUMMY)],
+    let mut node = one_by_one_matmul_node(2.0, 3.0, fixture_span("unspanned_tensor_fallback.mo"));
+    let solve::ComputeNode::MatMul { span, .. } = &mut node else {
+        unreachable!("fixture helper constructs a matrix product")
     };
+    *span = rumoca_core::Span::DUMMY;
+    let block = solve::ComputeBlock { nodes: vec![node] };
 
     let err = match native_family_template_partition(&block) {
         Ok(_) => panic!("template partitioning should reject unspanned tensor fallback nodes"),

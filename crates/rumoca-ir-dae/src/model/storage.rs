@@ -171,6 +171,25 @@ impl Storage {
             .ok_or_else(|| unknown("expression", expression.index(), at))
     }
 
+    pub(crate) fn static_integer(&self, expression: ExprId<'_>) -> Option<i64> {
+        let mut current = expression.index();
+        for _ in 0..=self.variables.len() {
+            match self.expressions.nodes.get(current as usize)? {
+                ExprNode::Literal(crate::DaeLiteral::Integer(value)) => return Some(*value),
+                ExprNode::Coordinate(crate::expression::Coordinate::Parameter(variable)) => {
+                    current = self
+                        .variables
+                        .get(*variable as usize)?
+                        .attributes
+                        .as_ref()?
+                        .binding?;
+                }
+                _ => return None,
+            }
+        }
+        None
+    }
+
     pub(crate) fn expect_closed_expression(
         &self,
         expression: ExprId<'_>,

@@ -209,6 +209,11 @@ fn inventory(result: &CompilationResult) -> Result<CompileInventory> {
                 rumoca_compile::compile::core::ComprehensionScalarView::BinderSubstitution => {
                     binder_substitution_families += 1;
                 }
+                rumoca_compile::compile::core::ComprehensionScalarView::BinderPrefixProjection {
+                    ..
+                } => {
+                    row_major_families += 1;
+                }
             }
         }
         (
