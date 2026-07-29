@@ -226,6 +226,7 @@ struct FunctionFoldEntryWire {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct DomainEntryWire {
+    parent: Option<u32>,
     domain: rumoca_core::StructuredIndexDomain,
     extents: Box<[u32]>,
     scalar_count: u32,
@@ -1025,8 +1026,14 @@ fn reconstruct_domains<'dae>(
 ) -> Result<Vec<DomainId<'dae>>, DaeConstructionError> {
     let mut ids = Vec::with_capacity(wire.domains.len());
     for (index, domain) in wire.domains.iter().enumerate() {
-        let id =
-            dae.domains(|domains| domains.structured(domain.domain.clone(), domain.provenance))?;
+        let parent = domain
+            .parent
+            .map(|parent| mapped(&ids, parent, "domain", domain.provenance))
+            .transpose()?;
+        let id = dae.domains(|domains| match parent {
+            Some(parent) => domains.nested(parent, domain.domain.clone(), domain.provenance),
+            None => domains.structured(domain.domain.clone(), domain.provenance),
+        })?;
         expect_ordinal("domain", index, id.index(), domain.provenance)?;
         let rebuilt = &dae.storage.domains[id.index() as usize];
         if rebuilt.extents != domain.extents || rebuilt.scalar_count != domain.scalar_count {
@@ -1352,7 +1359,12 @@ fn rebuild_node<'dae>(
             rebuild_conditional(wire, ids, at, *operands, provenance)
         }
         ExprNodeWire::Array { operands } => {
-            at.array(map_expression_operands(wire, ids, *operands, provenance)?)
+            let operands = map_expression_operands(wire, ids, *operands, provenance)?;
+            if operands.is_empty() {
+                at.empty_array(expected_type)
+            } else {
+                at.array(operands)
+            }
         }
         ExprNodeWire::Record { operands } => at.record(
             expected_type,

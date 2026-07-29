@@ -3,7 +3,7 @@ use super::*;
 pub(super) struct ScalarCompiler<'layout, 'dae> {
     view: dae::DaeView<'dae>,
     layout: &'layout LoweredLayout<'dae>,
-    domain_point: Option<(dae::DomainId<'dae>, Vec<i64>)>,
+    domain_points: Vec<(dae::DomainId<'dae>, Vec<i64>)>,
     function_arguments: Vec<(dae::FunctionId<'dae>, Vec<dae::ExprId<'dae>>)>,
     function_fold_values: Vec<(dae::FunctionFoldId<'dae>, Vec<Vec<solve::Reg>>)>,
     active_clock: Option<dae::ClockId<'dae>>,
@@ -20,7 +20,9 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         Self {
             view,
             layout,
-            domain_point: domain_point.map(|(domain, values)| (domain, values.to_vec())),
+            domain_points: domain_point
+                .map(|(domain, values)| vec![(domain, values.to_vec())])
+                .unwrap_or_default(),
             function_arguments: Vec::new(),
             function_fold_values: Vec::new(),
             active_clock: None,
@@ -238,18 +240,13 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 value,
                 subscripts,
             } => {
-                let selected = ScalarSelector::new(
-                    self.view,
-                    self.domain_point
-                        .as_ref()
-                        .map(|(domain, values)| (*domain, values.as_slice())),
-                )
-                .array_update_value_scalar(
-                    base,
-                    subscripts,
-                    self.node(value).value_type().dimensions(),
-                    scalar,
-                )?;
+                let selected = ScalarSelector::from_points(self.view, &self.domain_points)
+                    .array_update_value_scalar(
+                        base,
+                        subscripts,
+                        self.node(value).value_type().dimensions(),
+                        scalar,
+                    )?;
                 match selected {
                     Some(value_scalar) => self.expression(value, value_scalar),
                     None => self.expression(base, scalar),
@@ -409,13 +406,12 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 span,
             )
         })?;
-        let prior_domain = self.domain_point.take();
         for point in 0..point_count {
             let indices = structured
                 .index_tuple_at(point)
                 .expect("checked function fold domain remains valid")
                 .expect("checked function fold point is in range");
-            self.domain_point = Some((fold_view.domain(), indices));
+            self.domain_points.push((fold_view.domain(), indices));
             self.function_fold_values.push((fold, values));
             let updates = fold_view
                 .update_values()
@@ -430,20 +426,14 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 .function_fold_values
                 .pop()
                 .expect("function fold frame was just pushed");
-            values = match updates {
-                Ok(updates) => updates,
-                Err(error) => {
-                    self.domain_point = prior_domain;
-                    return Err(error);
-                }
-            };
+            self.domain_points.pop();
+            values = updates?;
             debug_assert_eq!(
                 previous.len(),
                 values.len(),
                 "checked DAE fold preserves carried arity"
             );
         }
-        self.domain_point = prior_domain;
         values
             .get(carried as usize)
             .and_then(|value| value.get(scalar))
@@ -471,9 +461,9 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             .index_tuple_at(point)
             .expect("checked domain remains valid")
             .expect("checked comprehension scalar point is in range");
-        let previous = self.domain_point.replace((domain, values));
+        self.domain_points.push((domain, values));
         let result = self.expression(body, body_scalar);
-        self.domain_point = previous;
+        self.domain_points.pop();
         result
     }
 
@@ -484,12 +474,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         dimensions: &[u32],
         scalar: usize,
     ) -> Result<solve::Reg, LowerError> {
-        let selector = ScalarSelector::new(
-            self.view,
-            self.domain_point
-                .as_ref()
-                .map(|(domain, values)| (*domain, values.as_slice())),
-        );
+        let selector = ScalarSelector::from_points(self.view, &self.domain_points);
         match selector.indexed_base_scalar(base, subscripts, dimensions, scalar) {
             Ok(selected) => self.expression(base, selected),
             Err(LowerError::NonComputable { reason, .. })
@@ -593,18 +578,17 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             return self.function_parameter(parameter, scalar, span);
         }
         if let dae::CoordinateView::Binder(binder) = coordinate {
-            let Some((domain, values)) = self.domain_point.as_ref() else {
+            let Some((_, values)) = self
+                .domain_points
+                .iter()
+                .rev()
+                .find(|(domain, _)| *domain == binder.domain())
+            else {
                 return Err(LowerError::non_computable(
                     "domain binder escaped its structured owner",
                     span,
                 ));
             };
-            if *domain != binder.domain() {
-                return Err(LowerError::non_computable(
-                    "domain binder belongs to a different structured owner",
-                    span,
-                ));
-            }
             let value = values
                 .get(binder.ordinal() as usize)
                 .copied()
@@ -1193,13 +1177,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         let value = arguments.get(0).expect("checked size value");
         let dimensions = self.node(value).value_type().dimensions();
         let dimension = if let Some(dimension) = arguments.get(1) {
-            ScalarSelector::new(
-                self.view,
-                self.domain_point
-                    .as_ref()
-                    .map(|(domain, values)| (*domain, values.as_slice())),
-            )
-            .integer(dimension, 0)?
+            ScalarSelector::from_points(self.view, &self.domain_points).integer(dimension, 0)?
         } else {
             i64::try_from(scalar + 1)
                 .map_err(|_| LowerError::contract("size dimension overflow", span))?
@@ -1276,7 +1254,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
 #[derive(Clone)]
 pub(super) struct ScalarSelector<'dae> {
     view: dae::DaeView<'dae>,
-    domain_point: Option<(dae::DomainId<'dae>, Vec<i64>)>,
+    domain_points: Vec<(dae::DomainId<'dae>, Vec<i64>)>,
 }
 
 impl<'dae> ScalarSelector<'dae> {
@@ -1286,7 +1264,19 @@ impl<'dae> ScalarSelector<'dae> {
     ) -> Self {
         Self {
             view,
-            domain_point: domain_point.map(|(domain, values)| (domain, values.to_vec())),
+            domain_points: domain_point
+                .map(|(domain, values)| vec![(domain, values.to_vec())])
+                .unwrap_or_default(),
+        }
+    }
+
+    fn from_points(
+        view: dae::DaeView<'dae>,
+        domain_points: &[(dae::DomainId<'dae>, Vec<i64>)],
+    ) -> Self {
+        Self {
+            view,
+            domain_points: domain_points.to_vec(),
         }
     }
 
@@ -1324,7 +1314,7 @@ impl<'dae> ScalarSelector<'dae> {
                     .expect("checked domain remains valid")
                     .expect("checked scalar selects a domain point");
                 let mut nested = self.clone();
-                nested.domain_point = Some((domain, values));
+                nested.domain_points.push((domain, values));
                 nested.coordinate(body, scalar % body_count)
             }
             dae::ExpressionOperation::Index { base, subscripts } => {
@@ -1337,6 +1327,39 @@ impl<'dae> ScalarSelector<'dae> {
                 self.coordinate(base, selected)
             }
             _ => Ok(None),
+        }
+    }
+
+    pub(super) fn select_array_element(
+        &self,
+        mut expression: dae::ExprId<'dae>,
+        mut scalar: usize,
+    ) -> Result<(dae::ExprId<'dae>, usize), LowerError> {
+        loop {
+            let node = self.node(expression);
+            let dae::ExpressionOperation::Array(elements) = node.operation() else {
+                return Ok((expression, scalar));
+            };
+            let Some(first) = elements.get(0) else {
+                return Err(LowerError::contract(
+                    "structured row cannot select an empty aggregate body",
+                    node.provenance().span(),
+                ));
+            };
+            let element_count = scalar_count(self.view, first);
+            if element_count == 0 {
+                return Err(LowerError::contract(
+                    "structured row cannot select an empty aggregate element",
+                    node.provenance().span(),
+                ));
+            }
+            expression = elements.get(scalar / element_count).ok_or_else(|| {
+                LowerError::contract(
+                    "structured row selects outside its checked aggregate body",
+                    node.provenance().span(),
+                )
+            })?;
+            scalar %= element_count;
         }
     }
 
@@ -1528,18 +1551,17 @@ impl<'dae> ScalarSelector<'dae> {
                     .ok_or_else(|| LowerError::contract("integer overflow", span))
             }
             dae::ExpressionOperation::Coordinate(dae::CoordinateView::Binder(binder)) => {
-                let Some((domain, values)) = self.domain_point.as_ref() else {
+                let Some((_, values)) = self
+                    .domain_points
+                    .iter()
+                    .rev()
+                    .find(|(domain, _)| *domain == binder.domain())
+                else {
                     return Err(LowerError::non_computable(
                         "binder-valued subscript has no active domain",
                         span,
                     ));
                 };
-                if *domain != binder.domain() {
-                    return Err(LowerError::non_computable(
-                        "binder-valued subscript belongs to another domain",
-                        span,
-                    ));
-                }
                 values
                     .get(binder.ordinal() as usize)
                     .copied()

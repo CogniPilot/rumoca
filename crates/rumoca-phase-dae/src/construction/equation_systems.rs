@@ -9,6 +9,7 @@ pub(super) fn lower_equation_systems<'dae>(
 ) -> Result<(), dae::DaeConstructionError> {
     let mut excluded_equation_rows = analysis.continuous_family_rows.clone();
     excluded_equation_rows.extend(&analysis.clock_equation_rows);
+    excluded_equation_rows.extend(&analysis.derived_parameter_rows);
     lower_equations(
         construction,
         coordinates,
@@ -27,6 +28,7 @@ pub(super) fn lower_equation_systems<'dae>(
         functions,
         &flat.equations,
         &flat.structured_equations,
+        &analysis.derived_parameter_families,
         false,
     )?;
     lower_equations(
@@ -47,6 +49,7 @@ pub(super) fn lower_equation_systems<'dae>(
         functions,
         &flat.initial_equations,
         &flat.initial_structured_equations,
+        &HashSet::new(),
         true,
     )?;
     Ok(())

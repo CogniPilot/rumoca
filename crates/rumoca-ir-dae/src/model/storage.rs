@@ -226,12 +226,48 @@ impl Storage {
     ) -> Result<(), DaeConstructionError> {
         match self.expr_binder_domain(expression, at)? {
             None => Ok(()),
-            Some(found_domain) if found_domain == domain.index() => Ok(()),
+            Some(found_domain)
+                if self.domain_is_ancestor_or_same(found_domain, domain.index(), at)? =>
+            {
+                Ok(())
+            }
             Some(found_domain) => Err(DaeConstructionError::InvalidBinderScope {
                 expected_domain: Some(domain.index()),
                 found_domain,
                 span: at.span(),
             }),
+        }
+    }
+
+    pub(crate) fn domain_parent(
+        &self,
+        domain: DomainId<'_>,
+        at: DaeProvenance,
+    ) -> Result<Option<u32>, DaeConstructionError> {
+        self.domains
+            .get(domain.index() as usize)
+            .map(|entry| entry.parent)
+            .ok_or_else(|| unknown("domain", domain.index(), at))
+    }
+
+    pub(crate) fn domain_is_ancestor_or_same(
+        &self,
+        ancestor: u32,
+        mut domain: u32,
+        at: DaeProvenance,
+    ) -> Result<bool, DaeConstructionError> {
+        loop {
+            if ancestor == domain {
+                return Ok(true);
+            }
+            let entry = self
+                .domains
+                .get(domain as usize)
+                .ok_or_else(|| unknown("domain", domain, at))?;
+            let Some(parent) = entry.parent else {
+                return Ok(false);
+            };
+            domain = parent;
         }
     }
 

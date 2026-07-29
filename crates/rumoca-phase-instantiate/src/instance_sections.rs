@@ -4,7 +4,7 @@ use rumoca_ir_ast as ast;
 use super::connections;
 use super::inheritance::required_location_to_span;
 use super::source_scope::{location_source_scope, location_source_scope_id};
-use super::{InstantiateContext, InstantiateResult};
+use super::{InstantiateContext, InstantiateError, InstantiateResult};
 
 /// Convert algorithm statements to instance statements.
 pub(super) fn algorithms_to_instance(
@@ -111,10 +111,28 @@ fn append_instance_equations(
             origin: origin.clone(),
             source_scope: location_source_scope(ctx, location),
             source_scope_id: location_source_scope_id(ctx, location),
-            span: required_location_to_span(location, source_map, "equation")?,
+            span: equation_owner_span(equation, location, source_map)?,
         });
     }
     Ok(())
+}
+
+fn equation_owner_span(
+    equation: &ast::Equation,
+    location: Option<&rumoca_core::Location>,
+    source_map: &rumoca_core::SourceMap,
+) -> InstantiateResult<rumoca_core::Span> {
+    let ast::Equation::Simple { lhs, rhs } = equation else {
+        return required_location_to_span(location, source_map, "equation");
+    };
+    let lhs = lhs.span();
+    let rhs = rhs.span();
+    if lhs.source != rhs.source || lhs.start > rhs.end {
+        return Err(Box::new(InstantiateError::missing_source_context(
+            "simple equation operands do not form one ordered source span",
+        )));
+    }
+    Ok(rumoca_core::Span::new(lhs.source, lhs.start, rhs.end))
 }
 
 /// Select an if-equation branch at instantiation time.

@@ -409,6 +409,7 @@ fn build_value_equation<'dae>(
     let domain = insert_domain(
         source_map,
         storage,
+        None,
         projection_domain(ty.dimensions()),
         domain_provenance,
     )?;

@@ -169,6 +169,12 @@ pub(super) fn lower_expression_scoped<'dae>(
         Expression::Array { elements, .. } => {
             lower_array_expression(construction, symbols, binders, elements, provenance)
         }
+        Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter: _,
+            ..
+        } => lower_array_comprehension(construction, symbols, binders, expr, indices, provenance),
         Expression::Range {
             start, step, end, ..
         } => {
@@ -198,13 +204,50 @@ pub(super) fn lower_expression_scoped<'dae>(
             *is_constructor,
             provenance,
         ),
-        Expression::Tuple { .. }
-        | Expression::ArrayComprehension { .. }
-        | Expression::FieldAccess { .. }
-        | Expression::Empty { .. } => {
+        Expression::FieldAccess { .. } => {
+            lower_record_array_field_projection(construction, symbols, binders, provenance)
+        }
+        Expression::Tuple { .. } | Expression::Empty { .. } => {
             unreachable!("analysis rejects expressions outside the checked lowering grammar")
         }
     }
+}
+
+fn lower_record_array_field_projection<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    symbols: LoweringSymbols<'_, 'dae>,
+    binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
+    provenance: dae::DaeProvenance,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    let plan = symbols
+        .functions
+        .record_array_fields
+        .get(&provenance.span())
+        .expect("analysis certifies every lowered record-array field projection");
+    let generated = dae::DaeProvenance::generated(
+        dae::DaeGeneration::RecordEquationProjection,
+        provenance.span(),
+    )?;
+    let elements = plan
+        .coordinates
+        .iter()
+        .map(|coordinate| {
+            construction.expressions(|expressions| {
+                expressions
+                    .at(generated)
+                    .coordinate(symbols.coordinates[coordinate].current())
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let base = construction.expressions(|expressions| expressions.at(generated).array(elements))?;
+    lower_index(
+        construction,
+        symbols,
+        binders,
+        base,
+        &plan.subscripts,
+        provenance,
+    )
 }
 
 fn lower_variable_reference<'dae>(
@@ -396,14 +439,55 @@ fn lower_function_call<'dae>(
         };
         return lower_expression_scoped(construction, symbols, binders, value, None);
     }
-    let function = symbols
-        .functions
-        .select(name, arguments, symbols.shapes, provenance.span());
+    let (key, function) =
+        symbols
+            .functions
+            .select_with_key(name, arguments, symbols.shapes, provenance.span());
     let arguments = arguments
         .iter()
-        .map(|argument| lower_expression_scoped(construction, symbols, binders, argument, None))
+        .enumerate()
+        .map(|(ordinal, argument)| {
+            if matches!(
+                argument,
+                Expression::Array {
+                    elements,
+                    ..
+                } if elements.is_empty()
+            ) {
+                return lower_empty_function_argument(
+                    construction,
+                    symbols,
+                    &key,
+                    ordinal,
+                    argument,
+                );
+            }
+            lower_expression_scoped(construction, symbols, binders, argument, None)
+        })
         .collect::<Result<Vec<_>, _>>()?;
     construction.expressions(|expressions| expressions.at(provenance).call(function, 0, arguments))
+}
+
+fn lower_empty_function_argument<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    symbols: LoweringSymbols<'_, 'dae>,
+    key: &FunctionSpecializationKey,
+    ordinal: usize,
+    argument: &Expression,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    let provenance = dae::DaeProvenance::source(
+        argument
+            .span()
+            .expect("analysis proves empty argument provenance"),
+    )?;
+    let scalar = symbols.functions.primitive_parameter_scalar(key, ordinal);
+    let value_type = construction.types(|types| {
+        types.derived(
+            dae::ValueType::array(scalar, key.inputs[ordinal].clone()),
+            provenance,
+        )
+    })?;
+    construction.expressions(|expressions| expressions.at(provenance).empty_array(value_type))
 }
 
 fn lower_conditional_expression<'dae>(
@@ -438,6 +522,35 @@ fn lower_array_expression<'dae>(
         .map(|element| lower_expression_scoped(construction, symbols, binders, element, None))
         .collect::<Result<Vec<_>, _>>()?;
     construction.expressions(|expressions| expressions.at(provenance).array(elements))
+}
+
+fn lower_array_comprehension<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    symbols: LoweringSymbols<'_, 'dae>,
+    enclosing_binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
+    body: &Expression,
+    indices: &[rumoca_core::ComprehensionIndex],
+    provenance: dae::DaeProvenance,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    let key = ComprehensionKey::new(provenance.span(), indices)
+        .expect("analysis proves comprehension-owner provenance");
+    let plan = &symbols.functions.comprehension_plans[&key];
+    let domain = construction.domains(|domains| {
+        domains.nested_in_scope(
+            enclosing_binders.values().copied(),
+            plan.domain.clone(),
+            provenance,
+        )
+    })?;
+    let mut binders = enclosing_binders.clone();
+    for (ordinal, (index, span)) in indices.iter().zip(&plan.binder_spans).enumerate() {
+        let binder_provenance = dae::DaeProvenance::source(*span)?;
+        let binder =
+            construction.domains(|domains| domains.binder(domain, ordinal, binder_provenance))?;
+        binders.insert(VarName::new(&index.name), binder);
+    }
+    let body = lower_expression_scoped(construction, symbols, &binders, body, None)?;
+    construction.expressions(|expressions| expressions.at(provenance).comprehension(domain, body))
 }
 
 pub(super) fn lower_coordinate_reference<'dae>(

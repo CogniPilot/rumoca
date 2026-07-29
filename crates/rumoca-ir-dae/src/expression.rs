@@ -776,6 +776,35 @@ impl<'dae> ExpressionAt<'_, 'dae> {
         self.insert(ExprNode::Array { operands }, ty, variability, binder_domain)
     }
 
+    /// Construct an empty array using its context-proven value type.
+    ///
+    /// An empty literal has no element expression from which to derive its
+    /// scalar type or trailing dimensions, so its semantic owner must supply
+    /// an array type whose outer extent is zero.
+    pub fn empty_array(
+        self,
+        value_type: ValueTypeId<'dae>,
+    ) -> Result<ExprId<'dae>, DaeConstructionError> {
+        let ty = self
+            .storage
+            .value_type_at(value_type.index(), self.provenance)?;
+        if ty.is_record() || ty.dimensions().first() != Some(&0) {
+            return Err(DaeConstructionError::ShapeMismatch {
+                span: self.provenance.span(),
+            });
+        }
+        let operands = self
+            .storage
+            .expressions
+            .push_operands(std::iter::empty(), self.provenance)?;
+        self.insert(
+            ExprNode::Array { operands },
+            value_type,
+            ExpressionVariability::Constant,
+            None,
+        )
+    }
+
     pub fn record(
         self,
         value_type: ValueTypeId<'dae>,
@@ -890,6 +919,7 @@ impl<'dae> ExpressionAt<'_, 'dae> {
             ValueType::array(body_ty.scalar_type(), dimensions),
             self.provenance,
         )?;
+        let binder_domain = self.storage.domain_parent(domain, self.provenance)?;
         self.insert(
             ExprNode::Comprehension {
                 domain: domain.index(),
@@ -897,7 +927,7 @@ impl<'dae> ExpressionAt<'_, 'dae> {
             },
             ty,
             variability,
-            None,
+            binder_domain,
         )
     }
 
@@ -962,6 +992,7 @@ impl<'dae> ExpressionAt<'_, 'dae> {
             .variability
             .max(self.storage.expr_variability(value, self.provenance)?);
         let binder_domain = merge_binder_domain(
+            self.storage,
             selection.binder_domain,
             self.storage.expr_binder_domain(value, self.provenance)?,
             self.provenance,
@@ -1170,6 +1201,7 @@ fn pack_subscripts(
                 validate_subscript(storage, expression, ty.is_scalar(), provenance)?;
                 variability = variability.max(storage.expr_variability(expression, provenance)?);
                 binder_domain = merge_binder_domain(
+                    storage,
                     binder_domain,
                     storage.expr_binder_domain(expression, provenance)?,
                     provenance,
@@ -1180,6 +1212,7 @@ fn pack_subscripts(
                 validate_subscript(storage, expression, true, provenance)?;
                 variability = variability.max(storage.expr_variability(expression, provenance)?);
                 binder_domain = merge_binder_domain(
+                    storage,
                     binder_domain,
                     storage.expr_binder_domain(expression, provenance)?,
                     provenance,
@@ -1196,6 +1229,7 @@ fn pack_subscripts(
                     .extend_from_slice(storage.expr_type(expression, provenance)?.dimensions());
                 variability = variability.max(storage.expr_variability(expression, provenance)?);
                 binder_domain = merge_binder_domain(
+                    storage,
                     binder_domain,
                     storage.expr_binder_domain(expression, provenance)?,
                     provenance,
@@ -1481,11 +1515,17 @@ fn merged_binder_domain<'dae>(
     expressions
         .into_iter()
         .try_fold(None, |domain, expression| {
-            merge_binder_domain(domain, storage.expr_binder_domain(expression, at)?, at)
+            merge_binder_domain(
+                storage,
+                domain,
+                storage.expr_binder_domain(expression, at)?,
+                at,
+            )
         })
 }
 
 fn merge_binder_domain(
+    storage: &Storage,
     lhs: Option<u32>,
     rhs: Option<u32>,
     at: DaeProvenance,
@@ -1493,6 +1533,12 @@ fn merge_binder_domain(
     match (lhs, rhs) {
         (None, domain) | (domain, None) => Ok(domain),
         (Some(lhs), Some(rhs)) if lhs == rhs => Ok(Some(lhs)),
+        (Some(lhs), Some(rhs)) if storage.domain_is_ancestor_or_same(lhs, rhs, at)? => {
+            Ok(Some(rhs))
+        }
+        (Some(lhs), Some(rhs)) if storage.domain_is_ancestor_or_same(rhs, lhs, at)? => {
+            Ok(Some(lhs))
+        }
         (Some(expected), Some(found)) => Err(DaeConstructionError::InvalidBinderScope {
             expected_domain: Some(expected),
             found_domain: found,

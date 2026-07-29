@@ -21,8 +21,9 @@ pub use runtime::jacobian::{
 };
 pub use runtime::mass_matrix::{PreparedMassMatrix, solve_mass_matrix};
 pub use runtime::no_state::{
-    NoStateEventStep, NoStateOrchestrationBackend, NoStateRootSearchScratch, NoStateScheduledStop,
-    first_no_state_root_crossing, no_state_root_scan_step_ceiling, run_no_state_output_schedule,
+    NoStateEventStep, NoStateOrchestrationBackend, NoStateRootBoundary, NoStateRootSearchScratch,
+    NoStateScheduledStop, first_no_state_root_crossing, no_state_root_scan_step_ceiling,
+    run_no_state_output_schedule,
 };
 pub use runtime::orchestration::{LoopStats, run_with_runtime_schedule};
 pub use runtime::pre_params::{

@@ -1,7 +1,7 @@
 # SPEC_0031: Compiler Scope and Philosophy
 
 ## Status
-ACCEPTED
+REFERENCE
 
 ## Summary
 Rumoca is a Modelica-to-symbolic-system compiler whose core scope ends at DAE

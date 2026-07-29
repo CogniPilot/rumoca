@@ -5,6 +5,7 @@ pub(super) fn validate_structured_families(
     equation_count: usize,
     roles: &HashMap<VarName, PlannedRole>,
     states: &HashSet<VarName>,
+    record_array_fields: &HashMap<Span, RecordArrayFieldPlan>,
 ) -> Result<HashSet<usize>, ToDaeError> {
     let mut covered = HashSet::new();
     for family in families {
@@ -38,9 +39,14 @@ pub(super) fn validate_structured_families(
             ));
         }
         let represented_rows = match &family.template {
-            Some(template) => {
-                represented_template_rows(template, family, domain_count, roles, states)?
-            }
+            Some(template) => represented_template_rows(
+                template,
+                family,
+                domain_count,
+                roles,
+                states,
+                record_array_fields,
+            )?,
             None => checked_materialized_rows(family, domain_count)?,
         };
         let end = family
@@ -73,6 +79,7 @@ fn represented_template_rows(
     domain_count: usize,
     roles: &HashMap<VarName, PlannedRole>,
     states: &HashSet<VarName>,
+    record_array_fields: &HashMap<Span, RecordArrayFieldPlan>,
 ) -> Result<usize, ToDaeError> {
     if template.body.len() != family.equations_per_point {
         return Err(ToDaeError::unsupported_flat(
@@ -88,7 +95,8 @@ fn represented_template_rows(
         .map(|binder| VarName::new(&binder.display_name))
         .collect::<HashSet<_>>();
     for body in &template.body {
-        validate_expression_scoped(body, roles, states, &binders)?;
+        let validation_expression = expression_for_validation(body, record_array_fields);
+        validate_expression_scoped(&validation_expression, roles, states, &binders)?;
     }
     match template.scalar_view {
         rumoca_core::ComprehensionScalarView::BinderSubstitution => {

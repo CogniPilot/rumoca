@@ -1,4 +1,4 @@
-use rumoca_core::{SourceMap, Span, TypeId, VarName};
+use rumoca_core::{SourceMap, Span, StructuredIndexBinder, StructuredIndexDomain, TypeId, VarName};
 use rumoca_ir_dae as dae;
 use rumoca_ir_solve::{ComputeNode, LinearOp, ScalarSlot};
 
@@ -64,8 +64,11 @@ fn explicit_state_equation_lowers_to_derivative_program() {
     assert_eq!(solve.solve_layout.state_scalar_count(), 1);
     assert!(solve.continuous.residual.nodes.is_empty());
     assert!(solve.continuous.implicit_rhs.nodes.is_empty());
-    assert_eq!(solve.continuous.implicit_row_targets, [None]);
+    assert!(solve.continuous.implicit_row_targets.is_empty());
     assert!(solve.continuous.algebraic_projection_plan.is_empty());
+    solve
+        .validate()
+        .expect("lowered explicit state system satisfies the Solve shape contract");
     let [ComputeNode::ScalarPrograms(rows)] = solve.continuous.derivative_rhs.nodes.as_slice()
     else {
         panic!("one scalar derivative block expected");
@@ -83,6 +86,69 @@ fn explicit_state_equation_lowers_to_derivative_program() {
             ..
         }
     ));
+}
+
+#[test]
+fn nested_comprehension_binders_lower_through_lexical_domain_scopes() {
+    let source = TestSource::new("Real x[2,3]; equation x = {{i + j for j in 1:3} for i in 1:2};");
+    let declaration = source.at(0, 11);
+    let owner = source.at(22, 61);
+    let outer_range = source.at(57, 60);
+    let inner_range = source.at(43, 46);
+    let singleton_domain = |name: &str, upper| StructuredIndexDomain {
+        binders: vec![StructuredIndexBinder {
+            id: 0,
+            display_name: name.to_string(),
+            lower: 1,
+            upper,
+            step: 1,
+        }],
+    };
+    let model = dae::Dae::construct(source.map, |model| {
+        let real_array = model.types(|types| {
+            types.intern(
+                TypeId::new(0),
+                dae::ValueType::array(dae::ScalarType::Real, [2, 3]),
+                declaration,
+            )
+        })?;
+        let x = model.variables(|variables| {
+            variables.algebraic(
+                VarName::new("x"),
+                real_array,
+                declaration,
+                dae::VariableAttributes::default(),
+            )
+        })?;
+        let outer =
+            model.domains(|domains| domains.structured(singleton_domain("i", 2), outer_range))?;
+        let i = model.domains(|domains| domains.binder(outer, 0, owner))?;
+        let inner = model.domains(|domains| {
+            domains.nested_in_scope([i], singleton_domain("j", 3), inner_range)
+        })?;
+        let j = model.domains(|domains| domains.binder(inner, 0, owner))?;
+        let residual = model.expressions(|expressions| {
+            let x = expressions
+                .at(owner)
+                .coordinate(dae::CoordinateInput::Algebraic(x))?;
+            let i = expressions.at(owner).binder(i)?;
+            let j = expressions.at(owner).binder(j)?;
+            let sum = expressions
+                .at(owner)
+                .binary(dae::BinaryOperator::Add, i, j)?;
+            let inner = expressions.at(owner).comprehension(inner, sum)?;
+            let nested = expressions.at(owner).comprehension(outer, inner)?;
+            expressions
+                .at(owner)
+                .binary(dae::BinaryOperator::Subtract, x, nested)
+        })?;
+        model.continuous(|continuous| continuous.value_equation(owner, residual))
+    })
+    .unwrap();
+
+    let solve = lower_solve_problem(&model).unwrap();
+    assert_eq!(solve.solve_layout.algebraic_scalar_count(), 6);
+    assert_eq!(solve.continuous.residual.len().unwrap(), 6);
 }
 
 #[test]

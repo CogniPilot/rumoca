@@ -41,11 +41,14 @@ use crate::{
 
 pub const DAE_SCHEMA_VERSION: u16 = 11;
 
+mod domains;
 mod function_checks;
 mod storage;
 mod value_types;
 mod view;
 mod wire;
+pub use domains::Domains;
+pub(crate) use domains::insert_domain;
 use function_checks::*;
 pub use value_types::ValueTypes;
 
@@ -237,6 +240,7 @@ pub(crate) struct FunctionFoldEntry {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 struct DomainEntry {
+    parent: Option<u32>,
     domain: StructuredIndexDomain,
     extents: Box<[u32]>,
     scalar_count: u32,
@@ -1773,82 +1777,6 @@ impl<'dae> Functions<'_, 'dae> {
         self.storage.unfilled_functions -= 1;
         Ok(())
     }
-}
-
-pub struct Domains<'storage, 'dae> {
-    source_map: &'storage SourceMap,
-    storage: &'storage mut Storage,
-    marker: PhantomData<&'dae mut &'dae ()>,
-}
-
-impl<'dae> Domains<'_, 'dae> {
-    pub fn structured(
-        &mut self,
-        domain: StructuredIndexDomain,
-        provenance: DaeProvenance,
-    ) -> Result<DomainId<'dae>, DaeConstructionError> {
-        insert_domain(self.source_map, self.storage, domain, provenance)
-    }
-
-    pub fn binder(
-        &self,
-        domain: DomainId<'dae>,
-        ordinal: usize,
-        provenance: DaeProvenance,
-    ) -> Result<DomainBinderId<'dae>, DaeConstructionError> {
-        check_provenance(self.source_map, provenance)?;
-        let ordinal = checked_u32(ordinal, "domain binder ordinal", provenance)?;
-        self.storage
-            .domain_binder(domain.index(), ordinal, provenance)?;
-        Ok(DomainBinderId::from_raw(domain.index(), ordinal))
-    }
-}
-
-pub(crate) fn insert_domain<'dae>(
-    source_map: &SourceMap,
-    storage: &mut Storage,
-    domain: StructuredIndexDomain,
-    provenance: DaeProvenance,
-) -> Result<DomainId<'dae>, DaeConstructionError> {
-    check_provenance(source_map, provenance)?;
-    let scalar_count =
-        domain
-            .scalar_count()
-            .map_err(|source| DaeConstructionError::InvalidDomain {
-                source,
-                span: provenance.span(),
-            })?;
-    for (index, binder) in domain.binders.iter().enumerate() {
-        if domain.binders[..index]
-            .iter()
-            .any(|candidate| candidate.id == binder.id)
-        {
-            return Err(DaeConstructionError::DuplicateKey {
-                kind: "domain binder",
-                key: binder.display_name.clone(),
-                span: provenance.span(),
-            });
-        }
-    }
-    let extents = domain
-        .extents()
-        .map_err(|source| DaeConstructionError::InvalidDomain {
-            source,
-            span: provenance.span(),
-        })?
-        .into_iter()
-        .map(|extent| checked_u32(extent, "domain extent", provenance))
-        .collect::<Result<Vec<_>, _>>()?
-        .into_boxed_slice();
-    let scalar_count = checked_u32(scalar_count, "domain scalar count", provenance)?;
-    let raw = checked_u32(storage.domains.len(), "domain arena", provenance)?;
-    storage.domains.push(DomainEntry {
-        domain,
-        extents,
-        scalar_count,
-        provenance,
-    });
-    Ok(DomainId::from_raw(raw))
 }
 
 fn validate_function_results(
