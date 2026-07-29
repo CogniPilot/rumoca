@@ -415,18 +415,8 @@ fn replay_read<'dae>(
         definition_ordinal,
         provenance,
     )?;
-    let body = body_for_definition(state, value_raw, definition_ordinal, provenance)?;
+    let body = body_for_definition(dae, state, value_raw, definition_ordinal, provenance)?;
     let value = FunctionValueId::from_raw(function_raw, value_raw);
-    let current =
-        dae.functions(|functions| functions.current_definition_id(body, value, provenance))?;
-    if current.ordinal() != definition_ordinal {
-        return Err(DaeConstructionError::InvalidFunctionValueRead {
-            value: value_raw,
-            expected_definition: Some(current.ordinal()),
-            found_definition: definition_ordinal,
-            span: provenance.span(),
-        });
-    }
     let rebuilt = dae.functions(|functions| functions.read(body, value, provenance))?;
     record_expression(wire, dae, ids, rebuilt, provenance)
 }
@@ -440,12 +430,12 @@ fn advance_to_definition<'dae>(
     definition: u32,
     provenance: DaeProvenance,
 ) -> Result<(), DaeConstructionError> {
-    while body_for_definition(state, value, definition, provenance).is_err() {
+    while body_for_definition(dae, state, value, definition, provenance).is_err() {
         if !apply_next_ready_assignment(wire, dae, ids, state)? {
             break;
         }
     }
-    body_for_definition(state, value, definition, provenance).map(|_| ())
+    body_for_definition(dae, state, value, definition, provenance).map(|_| ())
 }
 
 fn apply_next_ready_assignment<'dae>(
@@ -501,6 +491,7 @@ fn apply_assignment<'dae>(
 }
 
 fn body_for_definition<'state, 'wire, 'dae>(
+    dae: &mut DaeConstruction<'dae>,
     state: &'state FunctionReplay<'wire, 'dae>,
     value: u32,
     definition: u32,
@@ -514,13 +505,15 @@ fn body_for_definition<'state, 'wire, 'dae>(
         ReplayCapability::Body(body) => body,
         ReplayCapability::Fold { body, .. } => body.body(),
     };
-    let current = body.current_values.get(value as usize).copied().flatten();
-    if current == Some(definition) {
+    let value_id = FunctionValueId::from_raw(state.function_index as u32, value);
+    let current =
+        dae.functions(|functions| functions.current_definition_id(body, value_id, provenance))?;
+    if current.ordinal() == definition {
         Ok(body)
     } else {
         Err(DaeConstructionError::InvalidFunctionValueRead {
             value,
-            expected_definition: current,
+            expected_definition: Some(current.ordinal()),
             found_definition: definition,
             span: provenance.span(),
         })

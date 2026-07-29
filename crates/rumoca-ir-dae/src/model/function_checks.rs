@@ -20,6 +20,26 @@ pub(super) fn expect_complete_function(
     })
 }
 
+pub(super) fn function_build_state<'storage>(
+    storage: &'storage Storage,
+    body: &FunctionBody<'_>,
+) -> &'storage FunctionBuildState {
+    storage.functions[body.function.index() as usize]
+        .build
+        .as_ref()
+        .expect("linear function body capability references aggregate build state")
+}
+
+pub(super) fn function_build_state_mut<'storage>(
+    storage: &'storage mut Storage,
+    body: &FunctionBody<'_>,
+) -> &'storage mut FunctionBuildState {
+    storage.functions[body.function.index() as usize]
+        .build
+        .as_mut()
+        .expect("linear function body capability references aggregate build state")
+}
+
 pub(super) fn validate_function_dependencies(
     storage: &Storage,
     body: &FunctionBody<'_>,
@@ -411,12 +431,9 @@ pub(super) fn validate_function_value_reads(
         .get(expression.index() as usize)
         .copied()
         .ok_or_else(|| unknown("expression", expression.index(), provenance))?;
+    let current_values = &function_build_state(storage, body).current_values;
     storage.function_read_sets.try_for_each(reads, &mut |fact| {
-        let expected = body
-            .current_values
-            .get(fact.value as usize)
-            .copied()
-            .flatten();
+        let expected = current_values.get(fact.value as usize).copied().flatten();
         if expected == Some(fact.definition) {
             return Ok(());
         }

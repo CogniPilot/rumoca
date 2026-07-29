@@ -208,6 +208,15 @@ pub(crate) struct FunctionEntry {
     pub(crate) folds: Vec<u32>,
     declaration: DaeProvenance,
     definition: Option<FunctionDefinitionWire>,
+    build: Option<FunctionBuildState>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct FunctionBuildState {
+    current_values: Vec<Option<u32>>,
+    statements: Vec<FunctionStatementWire>,
+    carried_targets: rustc_hash::FxHashSet<u32>,
+    parent_statements: Vec<FunctionStatementWire>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -836,23 +845,16 @@ impl<'function, 'dae> FunctionReservation<'function, 'dae> {
     }
 }
 
-/// In-progress body owned by exactly one forward-reserved function.
-///
-/// The body records source-order statements and the constructor-proven
-/// denotation of every currently assigned output or local.
+/// Non-owning linear capability for one aggregate-owned function body.
 pub struct FunctionBody<'dae> {
     function: FunctionId<'dae>,
     construction: FunctionConstruction,
     domain: Option<DomainId<'dae>>,
-    current_values: Vec<Option<u32>>,
-    statements: Vec<FunctionStatementWire>,
 }
 
-/// Linear authority for one compact function-loop transition.
+/// Non-owning linear capability for one compact function-loop transition.
 pub struct FunctionLoop<'dae> {
     fold: FunctionFoldId<'dae>,
-    carried_targets: rustc_hash::FxHashSet<u32>,
-    parent_statements: Vec<FunctionStatementWire>,
     body: FunctionBody<'dae>,
 }
 
@@ -910,6 +912,7 @@ impl<'dae> Functions<'_, 'dae> {
             folds: Vec::new(),
             declaration,
             definition: None,
+            build: None,
         });
         self.storage.unfilled_functions += 1;
         Ok(FunctionId::from_raw(raw))
@@ -1034,7 +1037,7 @@ impl<'dae> Functions<'_, 'dae> {
     }
 
     pub fn begin(
-        &self,
+        &mut self,
         reservation: FunctionReservation<'_, 'dae>,
         provenance: DaeProvenance,
     ) -> Result<FunctionBody<'dae>, DaeConstructionError> {
@@ -1042,7 +1045,7 @@ impl<'dae> Functions<'_, 'dae> {
         let entry = self
             .storage
             .functions
-            .get(reservation.function.index() as usize)
+            .get_mut(reservation.function.index() as usize)
             .ok_or_else(|| unknown("function", reservation.function.index(), provenance))?;
         if entry.parameter_values.len() != entry.parameters.len() {
             return Err(DaeConstructionError::IncompleteDefinition {
@@ -1066,12 +1069,16 @@ impl<'dae> Functions<'_, 'dae> {
                 span: provenance.span(),
             });
         }
+        entry.build = Some(FunctionBuildState {
+            current_values: vec![None; entry.values.len()],
+            statements: Vec::new(),
+            carried_targets: rustc_hash::FxHashSet::default(),
+            parent_statements: Vec::new(),
+        });
         Ok(FunctionBody {
             function: reservation.function,
             construction: reservation.construction,
             domain: None,
-            current_values: vec![None; entry.values.len()],
-            statements: Vec::new(),
         })
     }
 
@@ -1117,7 +1124,8 @@ impl<'dae> Functions<'_, 'dae> {
     ) -> Result<FunctionDefinitionId<'dae>, DaeConstructionError> {
         check_provenance(self.source_map, provenance)?;
         check_function_value_owner(body.function, value, provenance)?;
-        let definition = body
+        function_value_entry(self.storage, value, provenance)?;
+        let definition = function_build_state(self.storage, body)
             .current_values
             .get(value.ordinal() as usize)
             .copied()
@@ -1164,8 +1172,9 @@ impl<'dae> Functions<'_, 'dae> {
         self.storage
             .expect_value_type_compatible(entry.value_type, found, provenance)?;
         let definition = insert_function_definition(self.storage, target, value, provenance)?;
-        body.current_values[target.ordinal() as usize] = Some(definition.ordinal());
-        body.statements.push(FunctionStatementWire::Assignment {
+        let build = function_build_state_mut(self.storage, body);
+        build.current_values[target.ordinal() as usize] = Some(definition.ordinal());
+        build.statements.push(FunctionStatementWire::Assignment {
             definition: definition.ordinal(),
         });
         Ok(())
@@ -1197,7 +1206,6 @@ impl<'dae> Functions<'_, 'dae> {
         let mut seen = rustc_hash::FxHashSet::default();
         seen.reserve(targets.len());
         let mut raw_targets = Vec::with_capacity(targets.len());
-        let mut initial_values = Vec::with_capacity(targets.len());
         for target in &targets {
             check_function_value_owner(parent.function, *target, provenance)?;
             if !seen.insert(target.ordinal()) {
@@ -1208,14 +1216,20 @@ impl<'dae> Functions<'_, 'dae> {
                 });
             }
             raw_targets.push(target.ordinal());
-            initial_values.push(parent.current_values[target.ordinal() as usize].ok_or(
-                DaeConstructionError::IncompleteDefinition {
-                    kind: "function loop initial value",
-                    index: target.ordinal(),
-                    span: provenance.span(),
-                },
-            )?);
         }
+        let build = function_build_state(self.storage, &parent);
+        let initial_values = targets
+            .iter()
+            .map(|target| {
+                build.current_values[target.ordinal() as usize].ok_or(
+                    DaeConstructionError::IncompleteDefinition {
+                        kind: "function loop initial value",
+                        index: target.ordinal(),
+                        span: provenance.span(),
+                    },
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         let fold = reserve_function_fold(
             self.storage,
             parent.function,
@@ -1227,7 +1241,9 @@ impl<'dae> Functions<'_, 'dae> {
         let raw = function_fold_raw(self.storage, fold, provenance)?;
         let generated =
             DaeProvenance::generated(DaeGeneration::FunctionLoopLowering, provenance.span())?;
-        let parent_statements = std::mem::take(&mut parent.statements);
+        let build = function_build_state_mut(self.storage, &parent);
+        build.parent_statements = std::mem::take(&mut build.statements);
+        build.carried_targets = seen;
         parent.domain = Some(domain);
         for (carried, target) in targets.iter().enumerate() {
             let definition = next_function_definition_id(self.storage, parent.function, generated)?;
@@ -1248,14 +1264,10 @@ impl<'dae> Functions<'_, 'dae> {
             self.storage.function_folds[raw as usize]
                 .parameter_definitions
                 .push(definition.ordinal());
-            parent.current_values[target.ordinal() as usize] = Some(definition.ordinal());
+            function_build_state_mut(self.storage, &parent).current_values
+                [target.ordinal() as usize] = Some(definition.ordinal());
         }
-        Ok(FunctionLoop {
-            fold,
-            carried_targets: seen,
-            parent_statements,
-            body: parent,
-        })
+        Ok(FunctionLoop { fold, body: parent })
     }
 
     pub fn assign_loop(
@@ -1267,7 +1279,10 @@ impl<'dae> Functions<'_, 'dae> {
     ) -> Result<(), DaeConstructionError> {
         check_provenance(self.source_map, provenance)?;
         check_function_value_owner(loop_body.body.function, target, provenance)?;
-        if !loop_body.carried_targets.contains(&target.ordinal()) {
+        let carries_target = function_build_state(self.storage, &loop_body.body)
+            .carried_targets
+            .contains(&target.ordinal());
+        if !carries_target {
             return Err(DaeConstructionError::IncompleteDefinition {
                 kind: "function loop target",
                 index: target.ordinal(),
@@ -1305,10 +1320,11 @@ impl<'dae> Functions<'_, 'dae> {
                 span: provenance.span(),
             });
         }
+        let build = function_build_state(self.storage, &loop_body.body);
         let updates = targets
             .iter()
             .map(|target| {
-                loop_body.body.current_values[*target as usize].ok_or(
+                build.current_values[*target as usize].ok_or(
                     DaeConstructionError::IncompleteDefinition {
                         kind: "function loop update",
                         index: *target,
@@ -1365,16 +1381,18 @@ impl<'dae> Functions<'_, 'dae> {
             self.storage.function_folds[raw as usize]
                 .output_definitions
                 .push(definition.ordinal());
-            loop_body.body.current_values[*target as usize] = Some(definition.ordinal());
+            function_build_state_mut(self.storage, &loop_body.body).current_values
+                [*target as usize] = Some(definition.ordinal());
         }
-        loop_body
-            .parent_statements
-            .push(FunctionStatementWire::For {
-                fold: loop_body.fold.ordinal(),
-                statements: std::mem::take(&mut loop_body.body.statements),
-                provenance,
-            });
-        loop_body.body.statements = loop_body.parent_statements;
+        let build = function_build_state_mut(self.storage, &loop_body.body);
+        let loop_statements = std::mem::take(&mut build.statements);
+        build.statements = std::mem::take(&mut build.parent_statements);
+        build.carried_targets.clear();
+        build.statements.push(FunctionStatementWire::For {
+            fold: loop_body.fold.ordinal(),
+            statements: loop_statements,
+            provenance,
+        });
         loop_body.body.domain = None;
         self.storage.unfilled_function_folds -= 1;
         Ok(loop_body.body)
@@ -1391,12 +1409,13 @@ impl<'dae> Functions<'_, 'dae> {
         let output_values = self.storage.functions[function.index() as usize]
             .output_values
             .clone();
+        let build = function_build_state(self.storage, &body);
         // Checked assignment and loop transitions are the only writers of
         // current values; finalization only has to prove every output is set.
         let results = output_values
             .iter()
             .map(|value| {
-                body.current_values[*value as usize].ok_or(
+                build.current_values[*value as usize].ok_or(
                     DaeConstructionError::IncompleteDefinition {
                         kind: "function output",
                         index: *value,
@@ -1411,8 +1430,12 @@ impl<'dae> Functions<'_, 'dae> {
         if entry.definition.is_some() {
             return Err(duplicate("function", function.index(), provenance));
         }
+        let build = entry
+            .build
+            .take()
+            .expect("checked function body remains aggregate-owned until definition");
         entry.definition = Some(FunctionDefinitionWire {
-            statements: body.statements,
+            statements: build.statements,
             results,
         });
         self.storage.unfilled_functions -= 1;
