@@ -40,7 +40,7 @@ pub(super) fn analyze_model_algorithm(
         return Ok(ModelAlgorithmPlan::Event);
     }
     let targets = model_algorithm_targets(flat, algorithm);
-    if let Some(plan) = analyze_separated_array_sum(flat, algorithm, &targets)? {
+    if let Some(plan) = analyze_separated_array_sum(flat, algorithm, &targets, roles)? {
         return Ok(plan);
     }
     let [target] = targets.as_slice() else {
@@ -54,13 +54,7 @@ pub(super) fn analyze_model_algorithm(
     if !variable.dims.is_empty() {
         return analyze_total_array_definition(algorithm, target, &variable.dims);
     }
-    if !matches!(
-        roles[target],
-        PlannedRole::Algebraic
-            | PlannedRole::Output
-            | PlannedRole::DiscreteReal
-            | PlannedRole::DiscreteValue
-    ) {
+    if !is_declarative_role(roles[target]) {
         return Err(ToDaeError::unsupported_algorithm(
             "model",
             format!(
@@ -88,17 +82,12 @@ fn analyze_separated_array_sum(
     flat: &flat::Model,
     algorithm: &flat::Algorithm,
     targets: &[VarName],
+    roles: &HashMap<VarName, PlannedRole>,
 ) -> Result<Option<ModelAlgorithmPlan>, ToDaeError> {
-    let [first, second] = targets else {
+    let Some((array_target, scalar_target)) =
+        separated_array_sum_targets(flat, algorithm, targets, roles)?
+    else {
         return Ok(None);
-    };
-    let (array_target, scalar_target) = match (
-        flat.variables[first].dims.is_empty(),
-        flat.variables[second].dims.is_empty(),
-    ) {
-        (false, true) => (first, second),
-        (true, false) => (second, first),
-        _ => return Ok(None),
     };
     let [
         rumoca_core::Statement::Assignment {
@@ -137,7 +126,11 @@ fn analyze_separated_array_sum(
     {
         return Ok(None);
     }
-    let Some(subscripts) = array_component.parts.last().map(|part| part.subs.as_slice()) else {
+    let Some(subscripts) = array_component
+        .parts
+        .last()
+        .map(|part| part.subs.as_slice())
+    else {
         return Ok(None);
     };
     let dimensions = &flat.variables[array_target].dims;
@@ -146,11 +139,8 @@ fn analyze_separated_array_sum(
     }
     let mut binders = Vec::with_capacity(indices.len());
     let mut binder_spans = Vec::with_capacity(indices.len());
-    for (ordinal, ((index, subscript), extent)) in indices
-        .iter()
-        .zip(subscripts)
-        .zip(dimensions)
-        .enumerate()
+    for (ordinal, ((index, subscript), extent)) in
+        indices.iter().zip(subscripts).zip(dimensions).enumerate()
     {
         validate_total_axis(index, subscript, *extent)?;
         let range_span = expression_span(&index.range)?;
@@ -182,6 +172,43 @@ fn analyze_separated_array_sum(
         domain,
         binder_spans,
     }))
+}
+
+fn separated_array_sum_targets<'targets>(
+    flat: &flat::Model,
+    algorithm: &flat::Algorithm,
+    targets: &'targets [VarName],
+    roles: &HashMap<VarName, PlannedRole>,
+) -> Result<Option<(&'targets VarName, &'targets VarName)>, ToDaeError> {
+    let [first, second] = targets else {
+        return Ok(None);
+    };
+    let targets = match (
+        flat.variables[first].dims.is_empty(),
+        flat.variables[second].dims.is_empty(),
+    ) {
+        (false, true) => (first, second),
+        (true, false) => (second, first),
+        _ => return Ok(None),
+    };
+    if !is_declarative_role(roles[targets.0]) || !is_declarative_role(roles[targets.1]) {
+        return Err(ToDaeError::unsupported_algorithm(
+            "model",
+            "separated array reduction has a non-computable target role",
+            algorithm.span,
+        ));
+    }
+    Ok(Some(targets))
+}
+
+fn is_declarative_role(role: PlannedRole) -> bool {
+    matches!(
+        role,
+        PlannedRole::Algebraic
+            | PlannedRole::Output
+            | PlannedRole::DiscreteReal
+            | PlannedRole::DiscreteValue
+    )
 }
 
 fn is_zero(expression: &Expression) -> bool {
@@ -227,12 +254,23 @@ fn is_exact_element_reference(
     target: &VarName,
     expected_subscripts: &[Subscript],
 ) -> bool {
-    matches!(
-        expression,
-        Expression::VarRef {
-            name, subscripts, ..
-        } if name.var_name() == target && subscripts == expected_subscripts
-    )
+    let Expression::VarRef {
+        name, subscripts, ..
+    } = expression
+    else {
+        return false;
+    };
+    name.var_name() == target
+        && subscripts.len() == expected_subscripts.len()
+        && subscripts
+            .iter()
+            .zip(expected_subscripts)
+            .all(|(actual, expected)| match (actual, expected) {
+                (Subscript::Expr { expr: actual, .. }, Subscript::Expr { expr: expected, .. }) => {
+                    rumoca_core::expressions_semantically_equal(actual, expected)
+                }
+                _ => false,
+            })
 }
 
 fn analyze_total_array_definition(

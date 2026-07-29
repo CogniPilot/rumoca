@@ -40,16 +40,8 @@ pub(super) fn lower_total_array_model_algorithm<'dae>(
     let [rumoca_core::Statement::Assignment { value, .. }] = equations.as_slice() else {
         unreachable!("analysis proves one array element assignment")
     };
-    let owner =
-        dae::DaeProvenance::generated(dae::DaeGeneration::AlgorithmEquation, algorithm.span)?;
-    let domain_provenance = match binder_spans {
-        [span] => dae::DaeProvenance::source(*span)?,
-        _ => owner,
-    };
-    let domain_id =
-        construction.domains(|domains| domains.structured(domain.clone(), domain_provenance))?;
-    let indices = indices.iter().collect::<Vec<_>>();
-    let binders = lower_function_binders(construction, domain_id, &indices, binder_spans)?;
+    let (owner, domain_id, binders) =
+        lower_model_algorithm_domain(construction, algorithm.span, indices, domain, binder_spans)?;
     let body = lower_expression_scoped(
         construction,
         LoweringSymbols {
@@ -66,6 +58,113 @@ pub(super) fn lower_total_array_model_algorithm<'dae>(
     let array = construction
         .expressions(|expressions| expressions.at(owner).comprehension(domain_id, body))?;
     finish_model_algorithm_value(construction, coordinates, algorithm, target, array)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn lower_separated_array_sum_model_algorithm<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    coordinates: &HashMap<VarName, Coordinate<'dae>>,
+    functions: &FunctionRegistry<'_, 'dae>,
+    algorithm: &flat::Algorithm,
+    array_target: &VarName,
+    scalar_target: &VarName,
+    domain: &StructuredIndexDomain,
+    binder_spans: &[Span],
+) -> Result<(), dae::DaeConstructionError> {
+    let [
+        rumoca_core::Statement::Assignment { value: initial, .. },
+        rumoca_core::Statement::For {
+            indices, equations, ..
+        },
+    ] = algorithm.statements.as_slice()
+    else {
+        unreachable!("analysis proves a separated array-reduction sequence")
+    };
+    let [
+        rumoca_core::Statement::Assignment { value: element, .. },
+        rumoca_core::Statement::Assignment { value: update, .. },
+    ] = equations.as_slice()
+    else {
+        unreachable!("analysis proves an element definition followed by an additive update")
+    };
+    let Expression::Binary {
+        rhs: contribution, ..
+    } = update
+    else {
+        unreachable!("analysis proves an additive scalar update")
+    };
+    let (owner, domain_id, binders) =
+        lower_model_algorithm_domain(construction, algorithm.span, indices, domain, binder_spans)?;
+    let symbols = LoweringSymbols {
+        coordinates,
+        functions,
+        shapes: functions.shapes.model_values(),
+        function_body: None,
+        values: None,
+    };
+    let element = lower_expression_scoped(construction, symbols, &binders, element, None)?;
+    let array = construction
+        .expressions(|expressions| expressions.at(owner).comprehension(domain_id, element))?;
+
+    let mut values = HashMap::new();
+    values.insert(array_target.clone(), array);
+    let contribution = lower_expression_scoped(
+        construction,
+        LoweringSymbols {
+            values: Some(&values),
+            ..symbols
+        },
+        &binders,
+        contribution,
+        None,
+    )?;
+    let contributions = construction
+        .expressions(|expressions| expressions.at(owner).comprehension(domain_id, contribution))?;
+    let reduction_span = update
+        .span()
+        .expect("analysis proves additive update provenance");
+    let reduction =
+        dae::DaeProvenance::generated(dae::DaeGeneration::AlgorithmEquation, reduction_span)?;
+    let sum = construction.expressions(|expressions| {
+        expressions
+            .at(reduction)
+            .builtin(dae::PureBuiltin::Sum, [contributions])
+    })?;
+    let initial = lower_expression_scoped(construction, symbols, &HashMap::new(), initial, None)?;
+    let scalar = construction.expressions(|expressions| {
+        expressions
+            .at(reduction)
+            .binary(dae::BinaryOperator::Add, initial, sum)
+    })?;
+
+    finish_model_algorithm_value(construction, coordinates, algorithm, array_target, array)?;
+    finish_model_algorithm_value(construction, coordinates, algorithm, scalar_target, scalar)
+}
+
+fn lower_model_algorithm_domain<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    owner_span: Span,
+    indices: &[rumoca_core::ForIndex],
+    domain: &StructuredIndexDomain,
+    binder_spans: &[Span],
+) -> Result<
+    (
+        dae::DaeProvenance,
+        dae::DomainId<'dae>,
+        HashMap<VarName, dae::DomainBinderId<'dae>>,
+    ),
+    dae::DaeConstructionError,
+> {
+    let owner = dae::DaeProvenance::generated(dae::DaeGeneration::AlgorithmEquation, owner_span)?;
+    let domain_provenance = match binder_spans {
+        [span] => dae::DaeProvenance::source(*span)?,
+        _ => owner,
+    };
+    let domain_id =
+        construction.domains(|domains| domains.structured(domain.clone(), domain_provenance))?;
+    let indices = indices.iter().collect::<Vec<_>>();
+    let binders = lower_function_binders(construction, domain_id, &indices, binder_spans)?;
+    Ok((owner, domain_id, binders))
 }
 
 fn finish_model_algorithm_value<'dae>(

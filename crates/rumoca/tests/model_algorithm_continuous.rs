@@ -175,3 +175,66 @@ end TotalArrayAlgorithm;
         assert!((value - index as f64).abs() <= 1.0e-10);
     }
 }
+
+#[test]
+fn separated_array_reduction_stays_compact_and_computable() {
+    let compiled = Compiler::new()
+        .model("SeparatedArrayReduction")
+        .compile_str(
+            r#"
+model SeparatedArrayReduction
+  Real x[3];
+  Real total;
+algorithm
+  total := 0;
+  for i in 1:3 loop
+    x[i] := i * 2.0;
+    total := total + x[i];
+  end for;
+end SeparatedArrayReduction;
+"#,
+            "separated_array_reduction.mo",
+        )
+        .expect("proved array reduction should construct checked DAE");
+
+    compiled.dae.inspect(|view| {
+        let total = view
+            .variables()
+            .find(|(_, variable)| variable.name().as_str() == "total")
+            .map(|(_, variable)| variable)
+            .expect("reduction result remains in the checked catalog");
+        assert_eq!(total.role(), VariableRole::Algebraic);
+        assert_eq!(view.continuous_owner_count(), 2);
+        let structured = view
+            .continuous_owners()
+            .find_map(|owner| match owner {
+                ContinuousOwnerView::Structured { family, .. } => Some(family),
+                ContinuousOwnerView::Residual { .. } => None,
+            })
+            .expect("array definition remains one structured owner");
+        assert_eq!(structured.scalar_rows(), 3);
+        assert_eq!(
+            structured.provenance().origin(),
+            DaeProvenanceOrigin::Generated(DaeGeneration::AlgorithmEquation)
+        );
+    });
+
+    let wire = serde_json::to_string(&compiled.dae)
+        .expect("compact array reduction should serialize through wire-v11");
+    let decoded: rumoca_compile::compile::Dae =
+        serde_json::from_str(&wire).expect("wire-v11 should reconstruct both checked owners");
+    let simulation = simulate_dae(&decoded, &SimOptions::default())
+        .expect("array reduction should lower to computable Solve IR");
+    for (name, expected) in [("x[1]", 2.0), ("x[2]", 4.0), ("x[3]", 6.0), ("total", 12.0)] {
+        let variable = simulation
+            .names
+            .iter()
+            .position(|candidate| candidate == name)
+            .unwrap_or_else(|| panic!("{name} is visible"));
+        let value = simulation.data[variable]
+            .last()
+            .copied()
+            .expect("reduction trace is non-empty");
+        assert!((value - expected).abs() <= 1.0e-10, "{name} = {value}");
+    }
+}

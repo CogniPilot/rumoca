@@ -57,7 +57,10 @@ use function_shapes::{
     FunctionShapeAnalysis, FunctionSpecializationKey, ShapeEnvironment, ValueShape,
     evaluate_shape_integer,
 };
-use model_algorithm::{lower_declarative_model_algorithm, lower_total_array_model_algorithm};
+use model_algorithm::{
+    lower_declarative_model_algorithm, lower_separated_array_sum_model_algorithm,
+    lower_total_array_model_algorithm,
+};
 use record_equation::lower_record_equation;
 use structured_body::lower_structured_body;
 use variable_construction::{define_variables, reserve_variables};
@@ -749,6 +752,23 @@ fn lower_algorithms<'dae>(
                     functions,
                     algorithm,
                     target,
+                    domain,
+                    binder_spans,
+                )?;
+            }
+            ModelAlgorithmPlan::SeparatedArraySum {
+                array_target,
+                scalar_target,
+                domain,
+                binder_spans,
+            } => {
+                lower_separated_array_sum_model_algorithm(
+                    construction,
+                    coordinates,
+                    functions,
+                    algorithm,
+                    array_target,
+                    scalar_target,
                     domain,
                     binder_spans,
                 )?;
