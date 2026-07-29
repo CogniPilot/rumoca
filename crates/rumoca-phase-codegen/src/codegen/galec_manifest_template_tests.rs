@@ -145,3 +145,30 @@ fn galec_c_templates_do_not_use_lossy_sanitization() {
         }
     }
 }
+
+#[test]
+fn galec_real_min_max_are_relational_target_helpers() {
+    let source = templates::builtin_template_source("embedded-c-galec", "model.c.jinja")
+        .expect("C source template");
+
+    assert!(!source.contains(r#"function == "min" -%}fmin"#), "{source}");
+    assert!(!source.contains(r#"function == "max" -%}fmax"#), "{source}");
+    assert!(
+        source.contains(r#"function == "min" -%}rumoca_galec_min"#),
+        "{source}"
+    );
+    assert!(
+        source.contains(r#"function == "max" -%}rumoca_galec_max"#),
+        "{source}"
+    );
+    assert!(source.contains("return u1 < u2 ? u1 : u2;"), "{source}");
+    assert!(source.contains("return u1 > u2 ? u1 : u2;"), "{source}");
+    assert!(
+        source.contains("#define rumoca_galec_imin"),
+        "Integer min must retain its distinct builtin mapping"
+    );
+    assert!(
+        source.contains("#define rumoca_galec_imax"),
+        "Integer max must retain its distinct builtin mapping"
+    );
+}

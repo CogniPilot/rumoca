@@ -76,6 +76,35 @@ int main(void) {
 }
 ";
 
+const MIN_MAX_DRIVER: &str = r#"
+#include <math.h>
+#include "EmbeddedGalecSmoke.c"
+
+int main(void) {
+    const double qnan = NAN;
+
+    if (rumoca_galec_min(2.0, 3.0) != 2.0
+        || rumoca_galec_min(3.0, 2.0) != 2.0
+        || rumoca_galec_max(2.0, 3.0) != 3.0
+        || rumoca_galec_max(3.0, 2.0) != 3.0) {
+        return 1;
+    }
+    if (rumoca_galec_min(2.0, 2.0) != 2.0
+        || rumoca_galec_max(2.0, 2.0) != 2.0) {
+        return 2;
+    }
+    if (rumoca_galec_min(qnan, 2.0) != 2.0
+        || rumoca_galec_max(qnan, 2.0) != 2.0) {
+        return 3;
+    }
+    if (!isnan(rumoca_galec_min(2.0, qnan))
+        || !isnan(rumoca_galec_max(2.0, qnan))) {
+        return 4;
+    }
+    return 0;
+}
+"#;
+
 fn run_compile_embedded_c_galec(file: &Path, out_dir: &Path) -> Output {
     run_compile_target(file, "embedded-c-galec", out_dir)
 }
@@ -93,6 +122,46 @@ fn build_sources(work_dir: &Path, out_dir: &Path) -> String {
         String::from_utf8_lossy(&output.stderr)
     );
     String::from_utf8_lossy(&output.stderr).into_owned()
+}
+
+#[test]
+fn real_min_max_use_order_sensitive_relational_nan_semantics() {
+    let dir = tempdir().expect("tempdir");
+    let out_dir = dir.path().join("out");
+    build_sources(dir.path(), &out_dir);
+
+    let driver = out_dir.join("min_max.c");
+    fs::write(&driver, MIN_MAX_DRIVER).expect("write min/max driver");
+    let generated_source =
+        fs::read_to_string(out_dir.join(format!("{MODEL}.c"))).expect("read generated C source");
+    let program = out_dir.join("min_max");
+    let compile = cc()
+        .arg("-std=c99")
+        .arg("-pedantic")
+        .arg("-Wall")
+        .arg("-Wextra")
+        .arg("-Wconversion")
+        .arg("-Wsign-conversion")
+        .arg("-Werror")
+        .arg("-o")
+        .arg(&program)
+        .arg(&driver)
+        .arg("-lm")
+        .output()
+        .expect("run cc");
+    assert!(
+        compile.status.success(),
+        "strict min/max probe compile failed.\nstderr:\n{}\nsource:\n{}",
+        String::from_utf8_lossy(&compile.stderr),
+        generated_source
+    );
+
+    let run = Command::new(&program).output().expect("run min/max probe");
+    assert!(
+        run.status.success(),
+        "GALEC relational min/max probe exited with {:?}",
+        run.status.code()
+    );
 }
 
 /// The emitted sources compile under strict ISO C99 warnings, link against libm

@@ -9,8 +9,8 @@
     "_Noreturn", "_Static_assert", "_Thread_local",
     "alignas", "alignof", "bool", "constexpr", "false", "nullptr",
     "static_assert", "thread_local", "true", "typeof", "typeof_unqual",
-    "self", "rumoca_galec_sign", "rumoca_galec_imin", "rumoca_galec_imax",
-    "rumoca_galec_division_towards_zero"
+    "self", "rumoca_galec_sign", "rumoca_galec_min", "rumoca_galec_max",
+    "rumoca_galec_imin", "rumoca_galec_imax", "rumoca_galec_division_towards_zero"
 ] -%}
 {%- set c_symbols = allocate_symbols(
     algorithm_code.symbol_names,
@@ -58,8 +58,8 @@
 {%- elif function == "sinh" -%}sinh
 {%- elif function == "cosh" -%}cosh
 {%- elif function == "tanh" -%}tanh
-{%- elif function == "min" -%}fmin
-{%- elif function == "max" -%}fmax
+{%- elif function == "min" -%}rumoca_galec_min
+{%- elif function == "max" -%}rumoca_galec_max
 {%- elif function == "imin" -%}rumoca_galec_imin
 {%- elif function == "imax" -%}rumoca_galec_imax
 {%- elif function == "real" -%}((double)
@@ -145,6 +145,15 @@
 #include <math.h>
 
 #define rumoca_galec_sign(x) ((x) > 0.0 ? 1.0 : ((x) < 0.0 ? -1.0 : 0.0))
+/* GALEC Real min/max select by a relational comparison. C99 fmin/fmax
+ * instead discard one qNaN operand, so they are not semantic substitutes.
+ * Functions also guarantee that each argument is evaluated exactly once. */
+static inline double rumoca_galec_min(double u1, double u2) {
+    return u1 < u2 ? u1 : u2;
+}
+static inline double rumoca_galec_max(double u1, double u2) {
+    return u1 > u2 ? u1 : u2;
+}
 #define rumoca_galec_imin(a, b) ((a) < (b) ? (a) : (b))
 #define rumoca_galec_imax(a, b) ((a) > (b) ? (a) : (b))
 #define rumoca_galec_division_towards_zero(a, b) ((a) / (b))
