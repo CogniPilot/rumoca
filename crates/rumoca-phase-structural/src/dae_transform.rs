@@ -328,6 +328,7 @@ fn rebuild_holonomic_constraint(
                 source,
                 target,
                 &expressions,
+                &variables,
                 &domains,
                 Some((constraint.residual, replacement)),
             )
@@ -365,7 +366,7 @@ fn rebuild_with_state_demotion(
                 rebuilder.rebuild_all()
             })?;
             define_variables(source, target, &expressions, &mut variables)?;
-            rebuild_equations(source, target, &expressions, &domains, None)
+            rebuild_equations(source, target, &expressions, &variables, &domains, None)
         })
     });
     rebuilt
@@ -443,8 +444,6 @@ fn supports_reconstruction(view: dae::DaeView<'_>, candidate: DirectStateConstra
 
 fn supports_common_reconstruction(view: dae::DaeView<'_>) -> bool {
     let unsupported_owner = view.function_count() != 0
-        || view.discrete_real_equation_count() != 0
-        || view.discrete_assignment_count() != 0
         || view.relation_count() != 0
         || view.condition_count() != 0
         || view.root_count() != 0
@@ -458,13 +457,10 @@ fn supports_common_reconstruction(view: dae::DaeView<'_>) -> bool {
     if unsupported_owner {
         return false;
     }
-    if view.variables().any(|(_, variable)| {
-        variable.value_type().is_record()
-            || matches!(
-                variable.role(),
-                dae::VariableRole::DiscreteReal | dae::VariableRole::DiscreteValue
-            )
-    }) {
+    if view
+        .variables()
+        .any(|(_, variable)| variable.value_type().is_record())
+    {
         return false;
     }
     if (0..view.value_type_count()).any(|index| {
@@ -502,6 +498,10 @@ fn supports_common_reconstruction(view: dae::DaeView<'_>) -> bool {
                     | dae::CoordinateView::State(_)
                     | dae::CoordinateView::Derivative(_)
                     | dae::CoordinateView::Algebraic(_)
+                    | dae::CoordinateView::DiscreteReal(_)
+                    | dae::CoordinateView::DiscreteValue(_)
+                    | dae::CoordinateView::PreDiscreteReal(_)
+                    | dae::CoordinateView::PreDiscreteValue(_)
                     | dae::CoordinateView::Time
                     | dae::CoordinateView::Binder(_)
             ),
@@ -592,6 +592,8 @@ enum TargetVariable<'dae> {
     Input(dae::InputId<'dae>),
     State(dae::StateId<'dae>),
     Algebraic(dae::AlgebraicId<'dae>),
+    DiscreteReal(dae::DiscreteRealId<'dae>),
+    DiscreteValue(dae::DiscreteValueId<'dae>),
 }
 
 impl Copy for TargetVariable<'_> {}
@@ -667,8 +669,15 @@ fn reserve_variable<'target>(
             let (id, reservation) = variables.reserve_output(name, value_type, declaration)?;
             (TargetVariable::Algebraic(id), reservation)
         }
-        dae::VariableRole::DiscreteReal | dae::VariableRole::DiscreteValue => {
-            unreachable!("reconstruction preflight rejects discrete variables")
+        dae::VariableRole::DiscreteReal => {
+            let (id, reservation) =
+                variables.reserve_discrete_real(name, value_type, declaration)?;
+            (TargetVariable::DiscreteReal(id), reservation)
+        }
+        dae::VariableRole::DiscreteValue => {
+            let (id, reservation) =
+                variables.reserve_discrete_value(name, value_type, declaration)?;
+            (TargetVariable::DiscreteValue(id), reservation)
         }
     };
     Ok(ReservedVariable {
@@ -727,6 +736,7 @@ fn rebuild_equations<'target>(
     source: dae::DaeView<'_>,
     target: &mut dae::DaeConstruction<'target>,
     expressions: &[dae::ExprId<'target>],
+    variables: &[ReservedVariable<'target>],
     domains: &[RebuiltDomain<'target>],
     replacement: Option<(u32, dae::ExprId<'target>)>,
 ) -> Result<(), dae::DaeConstructionError> {
@@ -762,6 +772,44 @@ fn rebuild_equations<'target>(
                     rebuild_initialization_family(target, family, expressions, domains)?;
                 }
             }
+        }
+        Ok(())
+    })?;
+    rebuild_discrete_equations(source, target, expressions, variables)
+}
+
+fn rebuild_discrete_equations<'target>(
+    source: dae::DaeView<'_>,
+    target: &mut dae::DaeConstruction<'target>,
+    expressions: &[dae::ExprId<'target>],
+    variables: &[ReservedVariable<'target>],
+) -> Result<(), dae::DaeConstructionError> {
+    target.discrete(|target| {
+        for index in 0..source.discrete_real_equation_count() {
+            let equation = source
+                .discrete_real_equation(index)
+                .expect("finalized discrete-real equation resolves");
+            target.real_equation(equation.provenance(), |target| {
+                target.residual(expressions[equation.residual().index() as usize])
+            })?;
+        }
+        for index in 0..source.discrete_assignment_count() {
+            let id = source
+                .discrete_assignment_id(index)
+                .expect("finalized discrete assignment resolves");
+            let assignment = source
+                .discrete_assignment(id)
+                .expect("finalized discrete assignment identity resolves");
+            let TargetVariable::DiscreteValue(target_id) =
+                variables[assignment.target().index() as usize].identity
+            else {
+                unreachable!("checked assignment target retains its discrete-value role")
+            };
+            target.assignment(
+                assignment.provenance(),
+                target_id,
+                expressions[assignment.value().index() as usize],
+            )?;
         }
         Ok(())
     })
@@ -1063,6 +1111,38 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                 }
             }
             dae::CoordinateView::Time => dae::CoordinateInput::Time,
+            dae::CoordinateView::DiscreteReal(source) => {
+                let TargetVariable::DiscreteReal(target) =
+                    self.variables[source.index() as usize].identity
+                else {
+                    unreachable!("discrete-real coordinate retains its variable role")
+                };
+                dae::CoordinateInput::DiscreteReal(target)
+            }
+            dae::CoordinateView::DiscreteValue(source) => {
+                let TargetVariable::DiscreteValue(target) =
+                    self.variables[source.index() as usize].identity
+                else {
+                    unreachable!("discrete-value coordinate retains its variable role")
+                };
+                dae::CoordinateInput::DiscreteValue(target)
+            }
+            dae::CoordinateView::PreDiscreteReal(source) => {
+                let TargetVariable::DiscreteReal(target) =
+                    self.variables[source.index() as usize].identity
+                else {
+                    unreachable!("pre(discrete-real) retains its variable role")
+                };
+                dae::CoordinateInput::PreDiscreteReal(target)
+            }
+            dae::CoordinateView::PreDiscreteValue(source) => {
+                let TargetVariable::DiscreteValue(target) =
+                    self.variables[source.index() as usize].identity
+                else {
+                    unreachable!("pre(discrete-value) retains its variable role")
+                };
+                dae::CoordinateInput::PreDiscreteValue(target)
+            }
             dae::CoordinateView::Binder(binder) => {
                 return self.target.at(provenance).binder(
                     self.domains[binder.domain().index() as usize].binders
@@ -1345,6 +1425,14 @@ mod tests {
         y: dae::StateId<'dae>,
         a: dae::AlgebraicId<'dae>,
         z: Option<dae::AlgebraicId<'dae>>,
+        d: Option<dae::DiscreteRealId<'dae>>,
+        b: Option<dae::DiscreteValueId<'dae>>,
+    }
+
+    #[derive(Clone, Copy, Default)]
+    struct FixtureFeatures {
+        family: bool,
+        discrete: bool,
     }
 
     #[derive(Clone, Copy)]
@@ -1357,7 +1445,14 @@ mod tests {
     fn fixture_types<'dae>(
         model: &mut dae::DaeConstruction<'dae>,
         declaration: dae::DaeProvenance,
-    ) -> Result<(dae::ValueTypeId<'dae>, dae::ValueTypeId<'dae>), dae::DaeConstructionError> {
+    ) -> Result<
+        (
+            dae::ValueTypeId<'dae>,
+            dae::ValueTypeId<'dae>,
+            dae::ValueTypeId<'dae>,
+        ),
+        dae::DaeConstructionError,
+    > {
         model.types(|types| {
             Ok((
                 types.intern(
@@ -1368,6 +1463,11 @@ mod tests {
                 types.intern(
                     TypeId::new(1),
                     dae::ValueType::array(dae::ScalarType::Real, [2]),
+                    declaration,
+                )?,
+                types.intern(
+                    TypeId::new(2),
+                    dae::ValueType::scalar(dae::ScalarType::Boolean),
                     declaration,
                 )?,
             ))
@@ -1402,14 +1502,35 @@ mod tests {
         model: &mut dae::DaeConstruction<'dae>,
         real: dae::ValueTypeId<'dae>,
         vector: dae::ValueTypeId<'dae>,
+        boolean: dae::ValueTypeId<'dae>,
         declaration: dae::DaeProvenance,
-        with_family: bool,
+        features: FixtureFeatures,
     ) -> Result<FixtureVariables<'dae>, dae::DaeConstructionError> {
         model.variables(|variables| {
-            let z = if with_family {
+            let z = if features.family {
                 Some(variables.algebraic(
                     VarName::new("z"),
                     vector,
+                    declaration,
+                    dae::VariableAttributes::default(),
+                )?)
+            } else {
+                None
+            };
+            let d = if features.discrete {
+                Some(variables.discrete_real(
+                    VarName::new("d"),
+                    real,
+                    declaration,
+                    dae::VariableAttributes::default(),
+                )?)
+            } else {
+                None
+            };
+            let b = if features.discrete {
+                Some(variables.discrete_value(
+                    VarName::new("b"),
+                    boolean,
                     declaration,
                     dae::VariableAttributes::default(),
                 )?)
@@ -1442,6 +1563,8 @@ mod tests {
                     dae::VariableAttributes::default(),
                 )?,
                 z,
+                d,
+                b,
             })
         })
     }
@@ -1481,6 +1604,7 @@ mod tests {
         spans: FixtureSpans,
         residuals: [dae::ExprId<'dae>; 3],
         family: Option<(dae::DomainId<'dae>, dae::DaeProvenance, dae::ExprId<'dae>)>,
+        discrete: Option<FixtureDiscrete<'dae>>,
     ) -> Result<(), dae::DaeConstructionError> {
         model.continuous(|continuous| {
             continuous.value_equation(spans.constraint, residuals[0])?;
@@ -1507,25 +1631,96 @@ mod tests {
                 Ok(())
             })?;
         }
+        insert_fixture_discrete(model, discrete)?;
         Ok(())
+    }
+
+    fn insert_fixture_discrete<'dae>(
+        model: &mut dae::DaeConstruction<'dae>,
+        discrete: Option<FixtureDiscrete<'dae>>,
+    ) -> Result<(), dae::DaeConstructionError> {
+        let Some(discrete) = discrete else {
+            return Ok(());
+        };
+        model.discrete(|equations| {
+            equations.real_equation(discrete.real_owner, |equation| {
+                equation.residual(discrete.real_residual)
+            })?;
+            equations.assignment(discrete.value_owner, discrete.value_target, discrete.value)?;
+            Ok(())
+        })
+    }
+
+    #[derive(Clone, Copy)]
+    struct FixtureDiscrete<'dae> {
+        real_owner: dae::DaeProvenance,
+        real_residual: dae::ExprId<'dae>,
+        value_owner: dae::DaeProvenance,
+        value_target: dae::DiscreteValueId<'dae>,
+        value: dae::ExprId<'dae>,
+    }
+
+    fn fixture_discrete<'dae>(
+        model: &mut dae::DaeConstruction<'dae>,
+        variables: FixtureVariables<'dae>,
+        owners: Option<(dae::DaeProvenance, dae::DaeProvenance)>,
+    ) -> Result<Option<FixtureDiscrete<'dae>>, dae::DaeConstructionError> {
+        let (Some(d), Some(b), Some((real_owner, value_owner))) =
+            (variables.d, variables.b, owners)
+        else {
+            return Ok(None);
+        };
+        model.expressions(|expressions| {
+            let d = expressions
+                .at(real_owner)
+                .coordinate(dae::CoordinateInput::DiscreteReal(d))?;
+            let two = expressions
+                .at(real_owner)
+                .literal(dae::DaeLiteral::Real(2.0))?;
+            let real_residual =
+                expressions
+                    .at(real_owner)
+                    .binary(dae::BinaryOperator::Subtract, d, two)?;
+            let value = expressions
+                .at(value_owner)
+                .literal(dae::DaeLiteral::Boolean(true))?;
+            Ok(Some(FixtureDiscrete {
+                real_owner,
+                real_residual,
+                value_owner,
+                value_target: b,
+                value,
+            }))
+        })
     }
 
     fn constrained_state_model(
         nonlinear_constraint: bool,
-        with_family: bool,
+        features: FixtureFeatures,
     ) -> (dae::Dae, dae::DaeProvenance) {
         let rhs = if nonlinear_constraint {
             "sin(y)"
         } else {
             "p*y"
         };
-        let family = if with_family {
-            " Real z[2]; for i in 1:2 loop z[i] = i; end for;"
+        let family_declaration = if features.family { " Real z[2];" } else { "" };
+        let family_equation = if features.family {
+            " for i in 1:2 loop z[i] = i; end for;"
+        } else {
+            ""
+        };
+        let discrete_declaration = if features.discrete {
+            " discrete Real d; Boolean b;"
+        } else {
+            ""
+        };
+        let discrete_equations = if features.discrete {
+            " d = 2; b = true;"
         } else {
             ""
         };
         let text = format!(
-            "parameter Real p; Real x; Real y; Real a;{family} equation x = {rhs}; der(y) = a; der(x) = 1;"
+            "parameter Real p; Real x; Real y; Real a;{family_declaration}{discrete_declaration} equation x = {rhs}; der(y) = a; der(x) = 1;{family_equation}{discrete_equations}"
         );
         let mut sources = SourceMap::new();
         let source = sources.add("checked_index_reduction.mo", &text);
@@ -1533,12 +1728,19 @@ mod tests {
         let constraint = source_provenance(source, &text, &format!("x = {rhs}"));
         let derivative_y = source_provenance(source, &text, "der(y) = a");
         let derivative_x = source_provenance(source, &text, "der(x) = 1");
-        let family_owner =
-            with_family.then(|| source_provenance(source, &text, "for i in 1:2 loop z[i] = i"));
+        let family_owner = features
+            .family
+            .then(|| source_provenance(source, &text, "for i in 1:2 loop z[i] = i"));
+        let discrete_owners = features.discrete.then(|| {
+            (
+                source_provenance(source, &text, "d = 2"),
+                source_provenance(source, &text, "b = true"),
+            )
+        });
         let model = dae::Dae::construct(sources, |model| {
-            let (real, vector) = fixture_types(model, declaration)?;
+            let (real, vector, boolean) = fixture_types(model, declaration)?;
             let domain = fixture_domain(model, family_owner)?;
-            let variables = fixture_variables(model, real, vector, declaration, with_family)?;
+            let variables = fixture_variables(model, real, vector, boolean, declaration, features)?;
             let spans = FixtureSpans {
                 constraint,
                 derivative_y,
@@ -1553,7 +1755,8 @@ mod tests {
                 .zip(family_owner)
                 .zip(family_residual)
                 .map(|((domain, owner), residual)| (domain, owner, residual));
-            insert_fixture_equations(model, spans, residuals, family)
+            let discrete = fixture_discrete(model, variables, discrete_owners)?;
+            insert_fixture_equations(model, spans, residuals, family, discrete)
         })
         .expect("fixture DAE is valid");
         (model, constraint)
@@ -1630,7 +1833,7 @@ mod tests {
 
     #[test]
     fn direct_state_demotion_reconstructs_a_finalized_dae_with_exact_provenance() {
-        let (model, constraint) = constrained_state_model(false, false);
+        let (model, constraint) = constrained_state_model(false, FixtureFeatures::default());
         let prepared = prepare_for_solve(&model).expect("index-one constraint is reducible");
         assert!(matches!(prepared, PreparedDae::Transformed { .. }));
 
@@ -1674,7 +1877,13 @@ mod tests {
 
     #[test]
     fn state_demotion_preserves_structured_families_and_binder_provenance() {
-        let (model, _) = constrained_state_model(false, true);
+        let (model, _) = constrained_state_model(
+            false,
+            FixtureFeatures {
+                family: true,
+                ..FixtureFeatures::default()
+            },
+        );
         let prepared = prepare_for_solve(&model).expect("structured companion family is preserved");
         let transformed = match prepared {
             PreparedDae::Transformed { dae, .. } => dae,
@@ -1719,8 +1928,49 @@ mod tests {
     }
 
     #[test]
+    fn state_demotion_preserves_discrete_equations_and_exact_provenance() {
+        let (model, _) = constrained_state_model(
+            false,
+            FixtureFeatures {
+                discrete: true,
+                ..FixtureFeatures::default()
+            },
+        );
+        let prepared = prepare_for_solve(&model).expect("discrete companion equations survive");
+        let transformed = match prepared {
+            PreparedDae::Transformed { dae, .. } => dae,
+            PreparedDae::Borrowed(_) => panic!("singular fixture requires state demotion"),
+        };
+        transformed.inspect(|view| {
+            assert_eq!(view.discrete_real_equation_count(), 1);
+            assert_eq!(view.discrete_assignment_count(), 1);
+            let real = view
+                .discrete_real_equation(0)
+                .expect("discrete-real equation survives reconstruction");
+            assert_eq!(view.source_text(real.provenance()), Some("d = 2"));
+            let assignment_id = view
+                .discrete_assignment_id(0)
+                .expect("discrete assignment identity resolves");
+            let assignment = view
+                .discrete_assignment(assignment_id)
+                .expect("discrete assignment survives reconstruction");
+            assert_eq!(view.source_text(assignment.provenance()), Some("b = true"));
+            assert!(matches!(
+                view.variable(assignment.target().into())
+                    .expect("assignment target resolves")
+                    .role(),
+                dae::VariableRole::DiscreteValue
+            ));
+            assert!(
+                sort(view).is_ok(),
+                "replacement DAE remains structurally square"
+            );
+        });
+    }
+
+    #[test]
     fn unsupported_symbolic_derivative_preserves_the_original_singular_error() {
-        let (model, _) = constrained_state_model(true, false);
+        let (model, _) = constrained_state_model(true, FixtureFeatures::default());
         let error = match prepare_for_solve(&model) {
             Ok(_) => panic!("unsupported differentiation must not guess a replacement"),
             Err(error) => error,
