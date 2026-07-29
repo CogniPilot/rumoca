@@ -25,6 +25,70 @@ end Test;
 }
 
 #[test]
+fn known_package_missing_function_is_rejected_at_the_call_target() {
+    let source = r#"
+package Known
+  function present
+    input Real u;
+    output Real y;
+  algorithm
+    y := u;
+  end present;
+end Known;
+
+model Test
+  Real y;
+equation
+  y = Known.missing(1.0);
+end Test;
+"#;
+    let diagnostics =
+        resolve_parsed_tree_source(source).expect_err("missing package member must fail resolve");
+    let diagnostic = diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code.as_deref() == Some("ER002"))
+        .expect("missing function must produce ER002");
+    let span = diagnostic
+        .labels
+        .first()
+        .expect("undefined call must carry source provenance")
+        .span;
+
+    assert_eq!(
+        span.source,
+        rumoca_core::SourceId::from_source_name("test.mo")
+    );
+    assert_eq!(&source[span.start.0..span.end.0], "Known.missing");
+}
+
+#[test]
+fn known_package_function_carries_the_member_identity() {
+    let source = r#"
+package Known
+  function present
+    input Real u;
+    output Real y;
+  algorithm
+    y := u;
+  end present;
+end Known;
+
+model Test
+  Real y = Known.present(1.0);
+end Test;
+"#;
+    let tree = resolve_tree_source(source).into_inner();
+    let binding = tree.definitions.classes["Test"].components["y"]
+        .binding
+        .as_ref()
+        .expect("source has a binding");
+    let target = extract_call_target(binding).expect("binding calls Known.present");
+    let target_def_id = target.def_id.expect("successful call must carry identity");
+
+    assert_eq!(tree.def_map[&target_def_id], "Known.present");
+}
+
+#[test]
 fn test_unresolved_function_call_can_be_lenient() {
     let source = r#"
 model Test

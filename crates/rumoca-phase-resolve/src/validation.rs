@@ -132,7 +132,10 @@ impl Validator<'_> {
             if self.is_likely_component_receiver_call(cr) {
                 return;
             }
-            let source_location = cr.parts[0].ident.location.clone();
+            let source_location = cr.parts[0]
+                .ident
+                .location
+                .merged_with(&cr.parts[cr.parts.len() - 1].ident.location);
             self.add(
                 ComponentPath::from_parts(cr.parts.iter().map(|part| part.ident.text.as_ref())),
                 UnresolvedKind::FunctionCall,
