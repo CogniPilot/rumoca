@@ -138,6 +138,8 @@ use strict_compile_diagnostics::{
     collect_target_source_files, dae_phase_result_to_failures, default_tree_span,
     document_parse_diagnostics, phase_result_to_failures, same_path,
 };
+mod strict_compile_report;
+pub use strict_compile_report::{StrictCompilation, StrictCompileReport};
 mod session_impl_caches;
 mod session_impl_diagnostics;
 mod session_impl_inputs;
@@ -1699,58 +1701,12 @@ pub struct ModelFailureDiagnostic {
     pub primary_label: Option<Label>,
 }
 
-/// Report type from strict-reachable-with-recovery compilation.
-///
-/// The requested model remains strict: it must compile successfully for callers
-/// to treat the compile as successful. Other related models are still compiled
-/// so additional diagnostics can be surfaced to the user.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct StrictCompileReport {
-    pub requested_model: String,
-    pub requested_result: Option<PhaseResult>,
-    pub summary: CompilationSummary,
-    pub failures: Vec<ModelFailureDiagnostic>,
-    pub source_map: Option<SourceMap>,
-}
-
 /// Coarse timing breakdown for strict requested-only model checks.
 #[derive(Debug, Clone, Default)]
 pub struct StrictCheckTiming {
     pub target_resolution_ms: u64,
     pub dae_phase_query_ms: u64,
     pub total_ms: u64,
-}
-
-impl StrictCompileReport {
-    /// Returns true when strict compile succeeded for the requested closure.
-    pub fn requested_succeeded(&self) -> bool {
-        matches!(self.requested_result, Some(PhaseResult::Success(_))) && self.failures.is_empty()
-    }
-
-    /// Build a concise failure summary for user-facing diagnostics.
-    pub fn failure_summary(&self, max_related: usize) -> String {
-        let requested = match &self.requested_result {
-            Some(PhaseResult::Success(_)) => {
-                format!("{} compiled successfully", self.requested_model)
-            }
-            Some(PhaseResult::NeedsInner { missing_inners, .. }) => format!(
-                "{} requires inner declarations: {}",
-                self.requested_model,
-                missing_inners.join(", ")
-            ),
-            Some(PhaseResult::Failed { phase, error, .. }) => {
-                format!("{} failed in {}: {}", self.requested_model, phase, error)
-            }
-            None => requested_missing_result_message(&self.requested_model, &self.failures),
-        };
-
-        format_strict_failure_summary(
-            &self.requested_model,
-            requested,
-            &self.failures,
-            max_related,
-        )
-    }
 }
 
 fn requested_missing_result_message(

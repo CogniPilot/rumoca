@@ -1272,7 +1272,19 @@ impl Session {
         &mut self,
         model_name: &str,
     ) -> StrictCompileReport {
-        self.compile_model_strict_reachable_report(model_name, true)
+        match self.compile_model_strict_reachable_attempt(model_name, true) {
+            Ok((report, _)) => report,
+            Err(report) => *report,
+        }
+    }
+
+    /// Compile one strict reachable target and return its Resolve proof.
+    pub fn compile_model_strict(
+        &mut self,
+        model_name: &str,
+    ) -> std::result::Result<StrictCompilation, Box<StrictCompileReport>> {
+        let (report, resolved) = self.compile_model_strict_reachable_attempt(model_name, true)?;
+        report.into_compilation(resolved)
     }
 
     /// Check strict-recovery compilation for the requested model without
@@ -1343,7 +1355,10 @@ impl Session {
         &mut self,
         model_name: &str,
     ) -> StrictCompileReport {
-        self.compile_model_strict_reachable_report(model_name, false)
+        match self.compile_model_strict_reachable_attempt(model_name, false) {
+            Ok((report, _)) => report,
+            Err(report) => *report,
+        }
     }
 
     /// Compile the requested model through DAE using strict-reachable
@@ -1412,42 +1427,43 @@ impl Session {
         }
     }
 
-    fn compile_model_strict_reachable_report(
+    fn compile_model_strict_reachable_attempt(
         &mut self,
         model_name: &str,
         use_compile_cache: bool,
-    ) -> StrictCompileReport {
+    ) -> std::result::Result<(StrictCompileReport, ResolvedTree), Box<StrictCompileReport>> {
         let target = match self.resolve_strict_target(model_name) {
             Ok(target) => target,
             Err(failure) => {
-                return StrictCompileReport {
+                return Err(Box::new(StrictCompileReport {
                     requested_model: model_name.to_string(),
                     requested_result: None,
                     summary: CompilationSummary::default(),
                     failures: failure.failures,
                     source_map: Some(*failure.source_map),
-                };
+                }));
             }
         };
 
         let tree = target.resolved.inner();
         let failures = Vec::new();
-        if !use_compile_cache {
-            return finalize_strict_compile_report_from_uncached_targets(
+        let report = if use_compile_cache {
+            let results = self.compile_models_with_cache(
+                tree,
+                ResolveBuildMode::StrictCompileRecovery,
+                &target.closure.compile_targets,
+            );
+            finalize_strict_compile_report(tree, model_name, failures, results)
+        } else {
+            finalize_strict_compile_report_from_uncached_targets(
                 tree,
                 model_name,
                 failures,
                 &target.closure.compile_targets,
                 self.instantiation_options.clone(),
-            );
-        }
-
-        let results = self.compile_models_with_cache(
-            tree,
-            ResolveBuildMode::StrictCompileRecovery,
-            &target.closure.compile_targets,
-        );
-        finalize_strict_compile_report(tree, model_name, failures, results)
+            )
+        };
+        Ok((report, target.resolved.as_ref().clone()))
     }
 
     /// Compile a model with an explicit compilation mode.

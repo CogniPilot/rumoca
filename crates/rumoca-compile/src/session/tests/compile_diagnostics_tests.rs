@@ -601,6 +601,78 @@ fn test_strict_reachable_ignores_unrelated_source_root_resolve_errors() {
 }
 
 #[test]
+fn strict_compilation_carries_exact_target_resolve_proof() {
+    let mut session = Session::default();
+    session
+        .add_document(
+            "good_dep.mo",
+            r#"
+            within Lib;
+            model GoodDep
+              Real x(start=0);
+            equation
+              der(x) = 1;
+            end GoodDep;
+            "#,
+        )
+        .expect("good dependency should parse");
+    session
+        .add_document(
+            "broken.mo",
+            r#"
+            within Lib;
+            model Broken
+              MissingType value;
+            end Broken;
+            "#,
+        )
+        .expect("broken sibling should parse");
+    session
+        .add_document(
+            "lib.mo",
+            r#"
+            package Lib
+            end Lib;
+            "#,
+        )
+        .expect("source-root package should parse");
+    session
+        .add_document(
+            "root.mo",
+            r#"
+            model Root
+              Lib.GoodDep dep;
+            end Root;
+            "#,
+        )
+        .expect("root should parse");
+
+    let compilation = session
+        .compile_model_strict("Root")
+        .expect("the selected target closure should compile");
+
+    assert!(
+        !session.has_resolved_cached(),
+        "the unrelated invalid sibling must keep global planning incomplete"
+    );
+    let resolved = compilation.resolved().inner();
+    assert!(
+        resolved.get_class_by_qualified_name("Root").is_some(),
+        "the proof must contain the requested model"
+    );
+    assert!(
+        resolved
+            .get_class_by_qualified_name("Lib.GoodDep")
+            .is_some(),
+        "the proof must contain the requested model's dependency"
+    );
+    assert!(
+        resolved.get_class_by_qualified_name("Lib.Broken").is_none(),
+        "the proof must be the retained target closure, not the incomplete global plan"
+    );
+}
+
+#[test]
 fn test_strict_reachable_ignores_broken_sibling_in_the_same_document() {
     let source = r#"
         package Types
