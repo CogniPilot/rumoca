@@ -1370,6 +1370,15 @@ fn function_parameters_cannot_cross_or_escape_semantic_owners() {
         let mut g_body = dae.functions(|functions| functions.begin(g_reservation, g_at))?;
         let f_value = dae.expressions(|expr| expr.at(f_at).function_parameter(f_parameter))?;
         let g_value = dae.expressions(|expr| expr.at(g_at).function_parameter(g_parameter))?;
+        let rejected =
+            dae.functions(|functions| functions.current_definition(&f_body, g_output, f_at));
+        assert!(matches!(
+            rejected,
+            Err(DaeConstructionError::InvalidFunctionScope {
+                expected_function: Some(_),
+                ..
+            })
+        ));
         let error =
             dae.expressions(|expr| expr.at(f_at).binary(BinaryOperator::Add, f_value, g_value));
         assert!(matches!(
@@ -1381,9 +1390,11 @@ fn function_parameters_cannot_cross_or_escape_semantic_owners() {
         ));
         dae.functions(|functions| functions.assign(&mut f_body, f_output, f_value, f_at))?;
         dae.functions(|functions| functions.assign(&mut g_body, g_output, g_value, g_at))?;
+        let escaped =
+            dae.functions(|functions| functions.current_definition(&f_body, f_output, f_at))?;
         dae.functions(|functions| functions.define(f_body, f_at))?;
         dae.functions(|functions| functions.define(g_body, g_at))?;
-        dae.continuous(|continuous| continuous.value_equation(f_at, f_value))
+        dae.continuous(|continuous| continuous.value_equation(f_at, escaped))
     });
     assert!(matches!(
         result,
@@ -1392,6 +1403,97 @@ fn function_parameters_cannot_cross_or_escape_semantic_owners() {
             ..
         })
     ));
+}
+
+#[test]
+fn pure_functions_reject_model_runtime_coordinates_at_the_exact_use_site() {
+    let source = TestSource::new(
+        "function f output Real y; algorithm y := state_x; y := time; y := delay(state_x, 1); y := 0; end f;",
+    );
+    let function_at = source.source("function f", 0);
+    let output_at = source.source("output Real y", 0);
+    let state_at = source.source("state_x", 0);
+    let time_at = source.source("time", 0);
+    let delay_at = source.source("delay(state_x, 1)", 0);
+    let delayed_state_at = source.source("state_x", 1);
+    let one_at = source.source("1", 0);
+    let zero_at = source.source("0", 0);
+    let assignment_at = source.source("y := 0", 0);
+    let dae = Dae::construct(source.map, |dae| {
+        let real =
+            dae.types(|types| types.derived(ValueType::scalar(ScalarType::Real), function_at))?;
+        let state = dae.variables(|variables| {
+            variables.state(
+                VarName::new("state_x"),
+                real,
+                state_at,
+                VariableAttributes::default(),
+            )
+        })?;
+        let (_function, reservation) = dae.functions(|functions| {
+            functions.reserve_recursive(VarName::new("f"), [], [real], function_at)
+        })?;
+        let output = dae.functions(|functions| {
+            functions.output(&reservation, VarName::new("y"), 0, output_at)
+        })?;
+        let mut body = dae.functions(|functions| functions.begin(reservation, function_at))?;
+        let state_use = dae.expressions(|expressions| {
+            expressions
+                .at(state_at)
+                .coordinate(CoordinateInput::State(state))
+        })?;
+        let rejected = dae
+            .functions(|functions| functions.assign(&mut body, output, state_use, assignment_at));
+        assert!(matches!(
+            rejected,
+            Err(DaeConstructionError::InvalidFunctionCoordinate {
+                coordinate: "state",
+                span,
+            }) if span == state_at.span()
+        ));
+        let time = dae
+            .expressions(|expressions| expressions.at(time_at).coordinate(CoordinateInput::Time))?;
+        let rejected =
+            dae.functions(|functions| functions.assign(&mut body, output, time, assignment_at));
+        assert!(matches!(
+            rejected,
+            Err(DaeConstructionError::InvalidFunctionCoordinate {
+                coordinate: "time",
+                span,
+            }) if span == time_at.span()
+        ));
+        let (delayed_state, one) = dae.expressions(|expressions| {
+            Ok((
+                expressions
+                    .at(delayed_state_at)
+                    .coordinate(CoordinateInput::State(state))?,
+                expressions.at(one_at).literal(DaeLiteral::Real(1.0))?,
+            ))
+        })?;
+        let delay = dae.temporal(|temporal| {
+            let positive = temporal.positive_parameter(one, 1.0, one_at)?;
+            temporal.delay(delayed_state, positive, delay_at, delay_at)
+        })?;
+        let rejected = dae.functions(|functions| {
+            functions.assign(&mut body, output, delay.expression(), assignment_at)
+        });
+        assert!(matches!(
+            rejected,
+            Err(DaeConstructionError::InvalidFunctionCoordinate {
+                coordinate: "delay",
+                span,
+            }) if span == delay_at.span()
+        ));
+        let zero =
+            dae.expressions(|expressions| expressions.at(zero_at).literal(DaeLiteral::Real(0.0)))?;
+        dae.functions(|functions| functions.assign(&mut body, output, zero, assignment_at))?;
+        dae.functions(|functions| functions.define(body, function_at))
+    })
+    .expect("rejected assignments do not mutate the function environment");
+    dae.inspect(|view| {
+        let function = view.function(view.function_id(0).unwrap()).unwrap();
+        assert_eq!(function.statements().count(), 1);
+    });
 }
 
 #[test]
@@ -1774,6 +1876,18 @@ fn function_for_loop_is_a_compact_checked_transition() {
         let binder = DomainBinderId::from_raw(domain.index(), 0);
         let mut loop_body =
             dae.functions(|functions| functions.begin_loop(&body, domain, [output], loop_at))?;
+        let loop_definition = dae.functions(|functions| {
+            functions.current_definition(loop_body.body(), output, loop_at)
+        })?;
+        let rejected = dae
+            .functions(|functions| functions.assign(&mut body, output, loop_definition, loop_at));
+        assert!(matches!(
+            rejected,
+            Err(DaeConstructionError::InvalidBinderScope {
+                expected_domain: None,
+                ..
+            })
+        ));
         let current =
             dae.functions(|functions| functions.read(loop_body.body(), output, y_use_at))?;
         let k = dae.expressions(|expressions| expressions.at(k_use_at).binder(binder))?;
@@ -1809,6 +1923,16 @@ fn function_for_loop_is_a_compact_checked_transition() {
     assert!(
         error.to_string().contains("domain binder"),
         "wire reconstruction rejects a binder-dependent initial value: {error}"
+    );
+
+    let mut nested_fold: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+    let outer = nested_fold["storage"]["functions"][0]["definition"]["statements"][1].clone();
+    nested_fold["storage"]["functions"][0]["definition"]["statements"][1]["for"]["statements"] =
+        serde_json::json!([outer]);
+    let error = serde_json::from_value::<Dae>(nested_fold).unwrap_err();
+    assert!(
+        error.to_string().contains("binder"),
+        "wire reconstruction rejects a nested fold that normal construction cannot express: {error}"
     );
 }
 

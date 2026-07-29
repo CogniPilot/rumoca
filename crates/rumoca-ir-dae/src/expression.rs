@@ -432,6 +432,7 @@ pub(crate) struct ExpressionArenaStorage {
     pub(crate) variability: Vec<ExpressionVariability>,
     pub(crate) binder_domains: Vec<Option<u32>>,
     pub(crate) function_scopes: Vec<Option<u32>>,
+    pub(crate) function_illegal_coordinates: Vec<Option<u32>>,
     pub(crate) operands: Vec<u32>,
     pub(crate) subscripts: Vec<PackedSubscript>,
 }
@@ -449,28 +450,36 @@ pub(crate) struct FrozenExpressionArenaStorage {
     pub(crate) subscripts: Box<[PackedSubscript]>,
 }
 
+pub(crate) struct ExpressionInsertionFacts {
+    pub(crate) value_type: u32,
+    pub(crate) variability: ExpressionVariability,
+    pub(crate) binder_domain: Option<u32>,
+    pub(crate) function_scope: Option<u32>,
+    pub(crate) function_illegal_coordinate: Option<u32>,
+}
+
 impl ExpressionArenaStorage {
     pub(crate) fn push(
         &mut self,
         node: ExprNode,
-        ty: u32,
-        variability: ExpressionVariability,
-        binder_domain: Option<u32>,
-        function_scope: Option<u32>,
+        facts: ExpressionInsertionFacts,
         provenance: DaeProvenance,
     ) -> Result<u32, DaeConstructionError> {
         let id = checked_u32(self.nodes.len(), "expression arena", provenance)?;
         self.nodes.push(node);
         self.provenance.push(provenance);
-        self.value_types.push(ty);
-        self.variability.push(variability);
-        self.binder_domains.push(binder_domain);
-        self.function_scopes.push(function_scope);
+        self.value_types.push(facts.value_type);
+        self.variability.push(facts.variability);
+        self.binder_domains.push(facts.binder_domain);
+        self.function_scopes.push(facts.function_scope);
+        self.function_illegal_coordinates
+            .push(facts.function_illegal_coordinate);
         debug_assert_eq!(self.nodes.len(), self.provenance.len());
         debug_assert_eq!(self.nodes.len(), self.value_types.len());
         debug_assert_eq!(self.nodes.len(), self.variability.len());
         debug_assert_eq!(self.nodes.len(), self.binder_domains.len());
         debug_assert_eq!(self.nodes.len(), self.function_scopes.len());
+        debug_assert_eq!(self.nodes.len(), self.function_illegal_coordinates.len());
         Ok(id)
     }
 
@@ -1150,14 +1159,19 @@ impl<'dae> ExpressionAt<'_, 'dae> {
     ) -> Result<ExprId<'dae>, DaeConstructionError> {
         crate::model::check_provenance(self.source_map, self.provenance)?;
         let function_scope = node_function_scope(self.storage, &node, self.provenance)?;
+        let function_illegal_coordinate =
+            node_function_illegal_coordinate(self.storage, &node, self.provenance)?;
         self.storage
             .expressions
             .push(
                 node,
-                ty.index(),
-                variability,
-                binder_domain,
-                function_scope,
+                ExpressionInsertionFacts {
+                    value_type: ty.index(),
+                    variability,
+                    binder_domain,
+                    function_scope,
+                    function_illegal_coordinate,
+                },
                 self.provenance,
             )
             .map(ExprId::from_raw)
@@ -1299,6 +1313,108 @@ fn node_function_scope(
             .ok_or_else(|| crate::model::unknown("expression", expression, at))?;
         merge_function_scope(scope, found, at)
     })
+}
+
+fn node_function_illegal_coordinate(
+    storage: &Storage,
+    node: &ExprNode,
+    at: DaeProvenance,
+) -> Result<Option<u32>, DaeConstructionError> {
+    let direct = match node {
+        ExprNode::Coordinate(Coordinate::FunctionParameter { .. } | Coordinate::Binder { .. })
+        | ExprNode::Literal(_)
+        | ExprNode::Range { .. }
+        | ExprNode::FunctionValue { .. }
+        | ExprNode::FunctionFoldParameter { .. }
+        | ExprNode::FunctionFoldOutput { .. } => return Ok(None),
+        ExprNode::Coordinate(_) => {
+            return checked_u32(storage.expressions.nodes.len(), "expression arena", at).map(Some);
+        }
+        ExprNode::Unary { operand, .. }
+        | ExprNode::Field { base: operand, .. }
+        | ExprNode::Comprehension { body: operand, .. } => {
+            return function_illegal_coordinate_of(storage, *operand, at);
+        }
+        ExprNode::Binary { lhs, rhs, .. } => {
+            return function_illegal_coordinate_of(storage, *lhs, at)?.map_or_else(
+                || function_illegal_coordinate_of(storage, *rhs, at),
+                |illegal| Ok(Some(illegal)),
+            );
+        }
+        ExprNode::Index { base, subscripts } => {
+            if let Some(illegal) = function_illegal_coordinate_of(storage, *base, at)? {
+                return Ok(Some(illegal));
+            }
+            return subscript_function_illegal_coordinate(storage, *subscripts, at);
+        }
+        ExprNode::ArrayUpdate {
+            base,
+            value,
+            subscripts,
+        } => {
+            if let Some(illegal) = function_illegal_coordinate_of(storage, *base, at)?
+                .or(function_illegal_coordinate_of(storage, *value, at)?)
+            {
+                return Ok(Some(illegal));
+            }
+            return subscript_function_illegal_coordinate(storage, *subscripts, at);
+        }
+        ExprNode::Conditional { operands }
+        | ExprNode::Array { operands }
+        | ExprNode::Record { operands }
+        | ExprNode::Builtin { operands, .. }
+        | ExprNode::Call { operands, .. } => *operands,
+    };
+    storage
+        .expressions
+        .operands
+        .get(direct.indices())
+        .ok_or_else(|| crate::model::unknown("operand range", direct.start, at))?
+        .iter()
+        .try_fold(None, |found, expression| {
+            if found.is_some() {
+                Ok(found)
+            } else {
+                function_illegal_coordinate_of(storage, *expression, at)
+            }
+        })
+}
+
+fn subscript_function_illegal_coordinate(
+    storage: &Storage,
+    subscripts: OperandRange,
+    at: DaeProvenance,
+) -> Result<Option<u32>, DaeConstructionError> {
+    storage
+        .expressions
+        .subscripts
+        .get(subscripts.indices())
+        .ok_or_else(|| crate::model::unknown("subscript range", subscripts.start, at))?
+        .iter()
+        .try_fold(None, |found, subscript| {
+            if found.is_some() {
+                return Ok(found);
+            }
+            match subscript.kind {
+                PackedSubscriptKind::Index(expression) | PackedSubscriptKind::Slice(expression) => {
+                    function_illegal_coordinate_of(storage, expression, at)
+                }
+                PackedSubscriptKind::Whole => Ok(None),
+            }
+        })
+}
+
+fn function_illegal_coordinate_of(
+    storage: &Storage,
+    expression: u32,
+    at: DaeProvenance,
+) -> Result<Option<u32>, DaeConstructionError> {
+    storage
+        .expressions
+        .function_illegal_coordinates
+        .get(expression as usize)
+        .copied()
+        .ok_or_else(|| crate::model::unknown("expression", expression, at))
 }
 
 fn expression_with_subscripts(

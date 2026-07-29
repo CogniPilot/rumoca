@@ -1028,6 +1028,7 @@ pub struct FunctionBody<'dae> {
     domain: Option<DomainId<'dae>>,
     current_values: Vec<Option<u32>>,
     statements: Vec<FunctionStatementWire>,
+    validation_pending: std::collections::BinaryHeap<u32>,
 }
 
 /// Linear authority for one compact function-loop transition.
@@ -1239,6 +1240,7 @@ impl<'dae> Functions<'_, 'dae> {
             domain: None,
             current_values: vec![None; entry.values.len()],
             statements: Vec::new(),
+            validation_pending: std::collections::BinaryHeap::new(),
         })
     }
 
@@ -1248,6 +1250,29 @@ impl<'dae> Functions<'_, 'dae> {
         value: FunctionValueId<'dae>,
         provenance: DaeProvenance,
     ) -> Result<ExprId<'dae>, DaeConstructionError> {
+        let definition = self.current_definition(body, value, provenance)?;
+        crate::expression::insert_function_value_use(
+            self.source_map,
+            self.storage,
+            value,
+            definition,
+            body.domain,
+            provenance,
+        )
+    }
+
+    /// Return the current checked denotation of a function value.
+    ///
+    /// The body capability proves the function and lexical-domain owner. This
+    /// query lets aggregate-preserving transforms correlate constructor-created
+    /// loop parameters and outputs without exposing mutable function storage.
+    pub fn current_definition(
+        &self,
+        body: &FunctionBody<'dae>,
+        value: FunctionValueId<'dae>,
+        provenance: DaeProvenance,
+    ) -> Result<ExprId<'dae>, DaeConstructionError> {
+        check_provenance(self.source_map, provenance)?;
         check_function_value_owner(body.function, value, provenance)?;
         let definition = body
             .current_values
@@ -1259,14 +1284,9 @@ impl<'dae> Functions<'_, 'dae> {
                 index: value.ordinal(),
                 span: provenance.span(),
             })?;
-        crate::expression::insert_function_value_use(
-            self.source_map,
-            self.storage,
-            value,
-            ExprId::from_raw(definition),
-            body.domain,
-            provenance,
-        )
+        let definition = ExprId::from_raw(definition);
+        expect_function_body_expression(self.storage, body, definition, provenance)?;
+        Ok(definition)
     }
 
     pub(crate) fn reconstruct_read(
@@ -1340,11 +1360,19 @@ impl<'dae> Functions<'_, 'dae> {
         if targets.is_empty() {
             return Err(invalid_arity(1, 0, provenance));
         }
+        let value_count = self
+            .storage
+            .functions
+            .get(parent.function.index() as usize)
+            .ok_or_else(|| unknown("function", parent.function.index(), provenance))?
+            .values
+            .len();
+        let mut seen = vec![false; value_count];
         let mut raw_targets = Vec::with_capacity(targets.len());
         let mut initial_values = Vec::with_capacity(targets.len());
         for target in &targets {
             check_function_value_owner(parent.function, *target, provenance)?;
-            if raw_targets.contains(&target.ordinal()) {
+            if std::mem::replace(&mut seen[target.ordinal() as usize], true) {
                 return Err(DaeConstructionError::DuplicateDefinition {
                     kind: "function loop target",
                     index: target.ordinal(),
@@ -1376,6 +1404,7 @@ impl<'dae> Functions<'_, 'dae> {
             domain: Some(domain),
             current_values: parent.current_values.clone(),
             statements: Vec::new(),
+            validation_pending: std::collections::BinaryHeap::new(),
         };
         for (carried, target) in targets.iter().enumerate() {
             let parameter = crate::expression::insert_function_fold_parameter(
@@ -1409,10 +1438,18 @@ impl<'dae> Functions<'_, 'dae> {
             .domains
             .get(domain.index() as usize)
             .ok_or_else(|| unknown("domain", domain.index(), provenance))?;
+        let value_count = self
+            .storage
+            .functions
+            .get(function.index() as usize)
+            .ok_or_else(|| unknown("function", function.index(), provenance))?
+            .values
+            .len();
+        let mut seen = vec![false; value_count];
         let mut raw_targets = Vec::with_capacity(targets.len());
         for target in targets {
             check_function_value_owner(function, target, provenance)?;
-            if raw_targets.contains(&target.ordinal()) {
+            if std::mem::replace(&mut seen[target.ordinal() as usize], true) {
                 return Err(DaeConstructionError::DuplicateDefinition {
                     kind: "function loop target",
                     index: target.ordinal(),
@@ -1567,6 +1604,13 @@ impl<'dae> Functions<'_, 'dae> {
     ) -> Result<FunctionLoop<'dae>, DaeConstructionError> {
         let raw = function_fold_raw(self.storage, fold, provenance)?;
         let entry = &self.storage.function_folds[raw as usize];
+        if parent.domain.is_some() {
+            return Err(DaeConstructionError::InvalidBinderScope {
+                expected_domain: parent.domain.map(DomainId::index),
+                found_domain: entry.domain,
+                span: provenance.span(),
+            });
+        }
         if entry.function != parent.function.index()
             || entry.targets.len() != entry.parameter_values.len()
             || entry.targets.len() != entry.initial_values.len()
@@ -1592,6 +1636,7 @@ impl<'dae> Functions<'_, 'dae> {
             domain: Some(DomainId::from_raw(entry.domain)),
             current_values: parent.current_values.clone(),
             statements: Vec::new(),
+            validation_pending: std::collections::BinaryHeap::new(),
         };
         for (target, parameter) in entry.targets.iter().zip(&entry.parameter_values) {
             body.current_values[*target as usize] = Some(*parameter);

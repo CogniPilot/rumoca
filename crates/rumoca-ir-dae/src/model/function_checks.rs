@@ -180,22 +180,44 @@ pub(super) fn check_function_value_owner<'dae>(
 
 pub(super) fn validate_function_value_reads(
     storage: &Storage,
-    body: &FunctionBody<'_>,
+    body: &mut FunctionBody<'_>,
     expression: ExprId<'_>,
     provenance: DaeProvenance,
 ) -> Result<(), DaeConstructionError> {
-    let mut pending = vec![expression.index()];
-    let mut visited = vec![false; storage.expressions.nodes.len()];
-    while let Some(raw) = pending.pop() {
+    if let Some(raw) = storage
+        .expressions
+        .function_illegal_coordinates
+        .get(expression.index() as usize)
+        .copied()
+        .ok_or_else(|| unknown("expression", expression.index(), provenance))?
+    {
         let node = storage
             .expressions
             .nodes
             .get(raw as usize)
             .ok_or_else(|| unknown("expression", raw, provenance))?;
-        if std::mem::replace(&mut visited[raw as usize], true) {
+        let coordinate_provenance = storage
+            .expressions
+            .provenance
+            .get(raw as usize)
+            .copied()
+            .ok_or_else(|| unknown("expression provenance", raw, provenance))?;
+        reject_model_coordinate(node, coordinate_provenance)?;
+    }
+    body.validation_pending.clear();
+    body.validation_pending.push(expression.index());
+    let mut last = None;
+    while let Some(raw) = body.validation_pending.pop() {
+        if last == Some(raw) {
             continue;
         }
-        push_function_expression_children(storage, node, &mut pending, provenance)?;
+        last = Some(raw);
+        let node = storage
+            .expressions
+            .nodes
+            .get(raw as usize)
+            .ok_or_else(|| unknown("expression", raw, provenance))?;
+        push_function_expression_children(storage, node, &mut body.validation_pending, provenance)?;
         if let ExprNode::FunctionValue {
             function,
             value,
@@ -223,10 +245,53 @@ pub(super) fn validate_function_value_reads(
     Ok(())
 }
 
+fn reject_model_coordinate(
+    node: &ExprNode,
+    provenance: DaeProvenance,
+) -> Result<(), DaeConstructionError> {
+    let coordinate = match node {
+        ExprNode::Coordinate(Coordinate::FunctionParameter { .. } | Coordinate::Binder { .. })
+        | ExprNode::Literal(_)
+        | ExprNode::Range { .. }
+        | ExprNode::FunctionValue { .. }
+        | ExprNode::FunctionFoldParameter { .. }
+        | ExprNode::FunctionFoldOutput { .. }
+        | ExprNode::Unary { .. }
+        | ExprNode::Binary { .. }
+        | ExprNode::Field { .. }
+        | ExprNode::Comprehension { .. }
+        | ExprNode::Index { .. }
+        | ExprNode::ArrayUpdate { .. }
+        | ExprNode::Conditional { .. }
+        | ExprNode::Array { .. }
+        | ExprNode::Record { .. }
+        | ExprNode::Builtin { .. }
+        | ExprNode::Call { .. } => return Ok(()),
+        ExprNode::Coordinate(Coordinate::Parameter(_)) => "parameter",
+        ExprNode::Coordinate(Coordinate::Input(_)) => "input",
+        ExprNode::Coordinate(Coordinate::State(_)) => "state",
+        ExprNode::Coordinate(Coordinate::Derivative(_)) => "derivative",
+        ExprNode::Coordinate(Coordinate::Algebraic(_)) => "algebraic",
+        ExprNode::Coordinate(Coordinate::DiscreteReal(_)) => "discrete real",
+        ExprNode::Coordinate(Coordinate::DiscreteValue(_)) => "discrete value",
+        ExprNode::Coordinate(Coordinate::PreDiscreteReal(_)) => "pre(discrete real)",
+        ExprNode::Coordinate(Coordinate::PreDiscreteValue(_)) => "pre(discrete value)",
+        ExprNode::Coordinate(Coordinate::Time) => "time",
+        ExprNode::Coordinate(Coordinate::Condition(_)) => "condition",
+        ExprNode::Coordinate(Coordinate::Delay(_)) => "delay",
+        ExprNode::Coordinate(Coordinate::Previous(_)) => "previous",
+        ExprNode::Coordinate(Coordinate::Terminal(_)) => "terminal",
+    };
+    Err(DaeConstructionError::InvalidFunctionCoordinate {
+        coordinate,
+        span: provenance.span(),
+    })
+}
+
 fn push_function_expression_children(
     storage: &Storage,
     node: &ExprNode,
-    pending: &mut Vec<u32>,
+    pending: &mut std::collections::BinaryHeap<u32>,
     provenance: DaeProvenance,
 ) -> Result<(), DaeConstructionError> {
     match node {
@@ -260,13 +325,17 @@ fn push_function_expression_children(
         | ExprNode::Array { operands }
         | ExprNode::Record { operands }
         | ExprNode::Builtin { operands, .. }
-        | ExprNode::Call { operands, .. } => pending.extend(
-            storage
-                .expressions
-                .operands
-                .get(operands.indices())
-                .ok_or_else(|| unknown("operand range", operands.start, provenance))?,
-        ),
+        | ExprNode::Call { operands, .. } => {
+            pending.extend(
+                storage
+                    .expressions
+                    .operands
+                    .get(operands.indices())
+                    .ok_or_else(|| unknown("operand range", operands.start, provenance))?
+                    .iter()
+                    .copied(),
+            );
+        }
     }
     Ok(())
 }
@@ -274,7 +343,7 @@ fn push_function_expression_children(
 fn push_subscript_children(
     storage: &Storage,
     subscripts: OperandRange,
-    pending: &mut Vec<u32>,
+    pending: &mut std::collections::BinaryHeap<u32>,
     provenance: DaeProvenance,
 ) -> Result<(), DaeConstructionError> {
     for subscript in storage

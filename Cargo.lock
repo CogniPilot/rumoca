@@ -4752,6 +4752,7 @@ dependencies = [
  "rumoca-core",
  "rumoca-eval-dae",
  "rumoca-ir-dae",
+ "serde_json",
  "thiserror 2.0.18",
  "tracing",
 ]

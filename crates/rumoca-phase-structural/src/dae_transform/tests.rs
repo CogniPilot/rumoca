@@ -1,15 +1,52 @@
+mod functions;
+
 use rumoca_core::{SourceMap, Span, TypeId, VarName};
 
 use super::*;
+use functions::{fixture_function_declarations, insert_fixture_functions};
 
 fn source_provenance(
     source: rumoca_core::SourceId,
     text: &str,
     needle: &str,
 ) -> dae::DaeProvenance {
-    let start = text.find(needle).expect("fixture snippet exists");
+    source_provenance_occurrence(source, text, needle, 0)
+}
+
+fn source_provenance_occurrence(
+    source: rumoca_core::SourceId,
+    text: &str,
+    needle: &str,
+    occurrence: usize,
+) -> dae::DaeProvenance {
+    let start = text
+        .match_indices(needle)
+        .nth(occurrence)
+        .map(|(start, _)| start)
+        .expect("fixture snippet occurrence exists");
     dae::DaeProvenance::source(Span::from_offsets(source, start, start + needle.len()))
         .expect("fixture span is source-backed")
+}
+
+fn nested_source_provenance(
+    source: rumoca_core::SourceId,
+    text: &str,
+    outer: &str,
+    inner: &str,
+    occurrence: usize,
+) -> dae::DaeProvenance {
+    let outer_start = text.find(outer).expect("fixture owner snippet exists");
+    let inner_start = outer
+        .match_indices(inner)
+        .nth(occurrence)
+        .map(|(start, _)| start)
+        .expect("fixture nested snippet occurrence exists");
+    dae::DaeProvenance::source(Span::from_offsets(
+        source,
+        outer_start + inner_start,
+        outer_start + inner_start + inner.len(),
+    ))
+    .expect("fixture nested span is source-backed")
 }
 
 #[derive(Clone, Copy)]
@@ -32,6 +69,9 @@ struct FixtureFeatures {
     delay: bool,
     bounded_delay: bool,
     record_companion: bool,
+    functions: bool,
+    holonomic: bool,
+    deep_function: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -558,6 +598,22 @@ fn constrained_state_model(
     nonlinear_constraint: bool,
     features: FixtureFeatures,
 ) -> (dae::Dae, dae::DaeProvenance) {
+    let text = fixture_source_text(nonlinear_constraint, features);
+    let mut sources = SourceMap::new();
+    let source = sources.add("checked_index_reduction.mo", &text);
+    let spans = fixture_source_spans(source, &text, nonlinear_constraint, features);
+    let model = build_constrained_fixture(
+        sources,
+        source,
+        &text,
+        nonlinear_constraint,
+        features,
+        spans,
+    );
+    (model, spans.equations.constraint)
+}
+
+fn fixture_source_text(nonlinear_constraint: bool, features: FixtureFeatures) -> String {
     let rhs = if nonlinear_constraint {
         "sin(y)"
     } else {
@@ -601,51 +657,104 @@ fn constrained_state_model(
     } else {
         ""
     };
-    let text = format!(
-        "{record_declarations} parameter Real p; Real x; Real y; Real a;{family_declaration}{discrete_declaration} equation x = {rhs}; der(y) = a; der(x) = 1;{family_equation}{discrete_equations}{event_equations}{clock_equations}{delay_equations}"
-    );
-    let mut sources = SourceMap::new();
-    let source = sources.add("checked_index_reduction.mo", &text);
-    let declaration = source_provenance(source, &text, "parameter Real p");
-    let constraint = source_provenance(source, &text, &format!("x = {rhs}"));
-    let derivative_y = source_provenance(source, &text, "der(y) = a");
-    let derivative_x = source_provenance(source, &text, "der(x) = 1");
+    let function_declarations = fixture_function_declarations(features);
+    let derivative_y_rhs = if features.holonomic { "x" } else { "a" };
+    format!(
+        "{record_declarations}{function_declarations} parameter Real p; Real x; Real y; Real a;{family_declaration}{discrete_declaration} equation x = {rhs}; der(y) = {derivative_y_rhs}; der(x) = 1;{family_equation}{discrete_equations}{event_equations}{clock_equations}{delay_equations}"
+    )
+}
+
+#[derive(Clone, Copy)]
+struct FixtureSourceSpans {
+    declaration: dae::DaeProvenance,
+    equations: FixtureSpans,
+    family_owner: Option<dae::DaeProvenance>,
+    discrete_owners: Option<(dae::DaeProvenance, dae::DaeProvenance)>,
+}
+
+fn fixture_source_spans(
+    source: rumoca_core::SourceId,
+    text: &str,
+    nonlinear_constraint: bool,
+    features: FixtureFeatures,
+) -> FixtureSourceSpans {
+    let rhs = if nonlinear_constraint {
+        "sin(y)"
+    } else {
+        "p*y"
+    };
+    let derivative_y_rhs = if features.holonomic { "x" } else { "a" };
+    let declaration = source_provenance(source, text, "parameter Real p");
+    let constraint = source_provenance(source, text, &format!("x = {rhs}"));
+    let derivative_y = source_provenance(source, text, &format!("der(y) = {derivative_y_rhs}"));
+    let derivative_x = source_provenance(source, text, "der(x) = 1");
     let family_owner = features
         .family
-        .then(|| source_provenance(source, &text, "for i in 1:2 loop z[i] = i"));
+        .then(|| source_provenance(source, text, "for i in 1:2 loop z[i] = i"));
     let discrete_owners = features.discrete.then(|| {
         (
-            source_provenance(source, &text, "d = 2"),
-            source_provenance(source, &text, "b = true"),
+            source_provenance(source, text, "d = 2"),
+            source_provenance(source, text, "b = true"),
         )
     });
-    let model = dae::Dae::construct(sources, |model| {
-        let (real, vector, boolean) = fixture_types(model, declaration)?;
-        let record = fixture_record_type(model, real, source, &text, features.record_companion)?;
-        let domain = fixture_domain(model, family_owner)?;
-        let variables = fixture_variables(model, real, vector, boolean, declaration, features)?;
-        insert_fixture_record_companion(model, record, source, &text)?;
-        insert_fixture_clock(model, variables, source, &text, features.clocks)?;
-        insert_fixture_delay(model, variables, source, &text, features)?;
-        let spans = FixtureSpans {
+    FixtureSourceSpans {
+        declaration,
+        equations: FixtureSpans {
             constraint,
             derivative_y,
             derivative_x,
-        };
+        },
+        family_owner,
+        discrete_owners,
+    }
+}
+
+fn build_constrained_fixture(
+    sources: SourceMap,
+    source: rumoca_core::SourceId,
+    text: &str,
+    nonlinear_constraint: bool,
+    features: FixtureFeatures,
+    spans: FixtureSourceSpans,
+) -> dae::Dae {
+    dae::Dae::construct(sources, |model| {
+        let (real, vector, boolean) = fixture_types(model, spans.declaration)?;
+        let record = fixture_record_type(model, real, source, text, features.record_companion)?;
+        let domain = fixture_domain(model, spans.family_owner)?;
+        let variables =
+            fixture_variables(model, real, vector, boolean, spans.declaration, features)?;
+        insert_fixture_record_companion(model, record, source, text)?;
+        insert_fixture_functions(
+            model,
+            real,
+            record,
+            source,
+            text,
+            features.functions,
+            features.deep_function,
+        )?;
+        insert_fixture_clock(model, variables, source, text, features.clocks)?;
+        insert_fixture_delay(model, variables, source, text, features)?;
         let residuals = model.expressions(|expressions| {
-            fixture_residuals(expressions, variables, spans, nonlinear_constraint)
+            fixture_residuals(
+                expressions,
+                variables,
+                spans.equations,
+                nonlinear_constraint,
+                features.holonomic,
+            )
         })?;
-        let family_residual = fixture_family_residual(model, domain, family_owner, variables.z)?;
+        let family_residual =
+            fixture_family_residual(model, domain, spans.family_owner, variables.z)?;
         let family = domain
-            .zip(family_owner)
+            .zip(spans.family_owner)
             .zip(family_residual)
             .map(|((domain, owner), residual)| (domain, owner, residual));
-        let discrete = fixture_discrete(model, variables, discrete_owners)?;
-        insert_fixture_equations(model, spans, residuals, family, discrete)?;
-        insert_fixture_events(model, variables, source, &text, features.events)
+        let discrete = fixture_discrete(model, variables, spans.discrete_owners)?;
+        insert_fixture_equations(model, spans.equations, residuals, family, discrete)?;
+        insert_fixture_events(model, variables, source, text, features.events)
     })
-    .expect("fixture DAE is valid");
-    (model, constraint)
+    .expect("fixture DAE is valid")
 }
 
 fn fixture_residuals<'dae>(
@@ -653,6 +762,7 @@ fn fixture_residuals<'dae>(
     variables: FixtureVariables<'dae>,
     spans: FixtureSpans,
     nonlinear_constraint: bool,
+    holonomic: bool,
 ) -> Result<[dae::ExprId<'dae>; 3], dae::DaeConstructionError> {
     let x_value = expressions
         .at(spans.constraint)
@@ -675,13 +785,19 @@ fn fixture_residuals<'dae>(
     let y_derivative = expressions
         .at(spans.derivative_y)
         .coordinate(dae::CoordinateInput::Derivative(variables.y))?;
-    let a_value = expressions
-        .at(spans.derivative_y)
-        .coordinate(dae::CoordinateInput::Algebraic(variables.a))?;
+    let derivative_value = if holonomic {
+        expressions
+            .at(spans.derivative_y)
+            .coordinate(dae::CoordinateInput::State(variables.x))?
+    } else {
+        expressions
+            .at(spans.derivative_y)
+            .coordinate(dae::CoordinateInput::Algebraic(variables.a))?
+    };
     let derivative_y = expressions.at(spans.derivative_y).binary(
         dae::BinaryOperator::Subtract,
         y_derivative,
-        a_value,
+        derivative_value,
     )?;
     let x_derivative = expressions
         .at(spans.derivative_x)
@@ -1215,7 +1331,6 @@ fn assert_record_projections(view: dae::DaeView<'_>) {
         dae::ExpressionOperation::Field { field: 1, .. }
     ));
 }
-
 #[test]
 fn continuous_record_unknown_fails_at_its_declaration_before_matching() {
     let text = "record Pair Real left; end Pair; Pair unresolved;";

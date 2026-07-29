@@ -1,7 +1,7 @@
 use std::marker::PhantomData;
 
 use crate::clocks::ClockedVariableRole;
-use crate::expression::{Coordinate, ExprNode};
+use crate::expression::{Coordinate, ExprNode, ExpressionInsertionFacts};
 use crate::model::{Storage, check_provenance, checked_u32, unknown};
 use crate::{
     ClockId, DaeConstructionError, DaeProvenance, DelayId, DiscreteRealId, DiscreteValueId, ExprId,
@@ -343,7 +343,7 @@ impl<'dae> Temporal<'_, 'dae> {
             });
         }
         let raw = checked_u32(self.storage.delays.len(), "delay arena", provenance)?;
-        checked_u32(
+        let expression_raw = checked_u32(
             self.storage.expressions.nodes.len(),
             "expression arena",
             coordinate_provenance,
@@ -359,10 +359,13 @@ impl<'dae> Temporal<'_, 'dae> {
         });
         let expression = self.storage.expressions.push(
             ExprNode::Coordinate(Coordinate::Delay(raw)),
-            value_type,
-            variability,
-            None,
-            None,
+            ExpressionInsertionFacts {
+                value_type,
+                variability,
+                binder_domain: None,
+                function_scope: None,
+                function_illegal_coordinate: Some(expression_raw),
+            },
             coordinate_provenance,
         )?;
         Ok(DelayCoordinate {
