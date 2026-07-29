@@ -22,73 +22,30 @@ impl Serialize for FunctionArenaOutput<'_> {
         S: serde::Serializer,
     {
         let mut sequence = serializer.serialize_seq(Some(self.functions.len()))?;
-        for (index, function) in self.functions.iter().enumerate() {
-            let output =
-                function_output(index, function, self.folds).map_err(serde::ser::Error::custom)?;
+        for function in self.functions {
+            let output = function_output(function, self.folds);
             sequence.serialize_element(&output)?;
         }
         sequence.end()
     }
 }
 
-#[derive(Serialize)]
-struct FunctionOutput<'storage> {
-    name: &'storage rumoca_core::VarName,
-    parameters: Vec<NamedValueOutput<'storage>>,
-    outputs: Vec<NamedValueOutput<'storage>>,
-    locals: Vec<NamedValueOutput<'storage>>,
-    statements: Vec<FunctionStatementOutput>,
-    declaration: DaeProvenance,
-}
-
-#[derive(Serialize)]
-struct NamedValueOutput<'storage> {
-    name: &'storage rumoca_core::VarName,
-    value_type: u32,
-    declaration: DaeProvenance,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "snake_case")]
-enum FunctionStatementOutput {
-    Assignment {
-        target: u32,
-        rhs: u32,
-        provenance: DaeProvenance,
-    },
-    For {
-        domain: u32,
-        targets: Vec<u32>,
-        statements: Vec<FunctionStatementOutput>,
-        begin_provenance: DaeProvenance,
-        finish_provenance: DaeProvenance,
-    },
-}
-
 fn function_output<'storage>(
-    function_index: usize,
     function: &'storage FunctionEntry,
     folds: &[FunctionFoldEntry],
-) -> Result<FunctionOutput<'storage>, &'static str> {
+) -> FunctionEntryWire<&'storage rumoca_core::VarName> {
     let output_count = function.output_values.len();
-    let outputs = function
-        .values
-        .get(..output_count)
-        .ok_or("function output values are not a prefix")?;
-    let locals = function
-        .values
-        .get(output_count..)
-        .ok_or("function local values are not a suffix")?;
+    let (outputs, locals) = function.values.split_at(output_count);
     let definition = function
         .definition
         .as_ref()
-        .ok_or("function body is incomplete")?;
-    Ok(FunctionOutput {
+        .expect("finalized function has a body");
+    FunctionEntryWire {
         name: &function.name,
         parameters: function
             .parameter_values
             .iter()
-            .map(|value| NamedValueOutput {
+            .map(|value| FunctionNamedValueWire {
                 name: &value.name,
                 value_type: value.value_type,
                 declaration: value.declaration,
@@ -96,15 +53,17 @@ fn function_output<'storage>(
             .collect(),
         outputs: named_values(outputs),
         locals: named_values(locals),
-        statements: project_statements(function_index, function, folds, &definition.statements)?,
+        statements: project_statements(function, folds, &definition.statements),
         declaration: function.declaration,
-    })
+    }
 }
 
-fn named_values(values: &[FunctionValueEntry]) -> Vec<NamedValueOutput<'_>> {
+fn named_values(
+    values: &[FunctionValueEntry],
+) -> Vec<FunctionNamedValueWire<&rumoca_core::VarName>> {
     values
         .iter()
-        .map(|value| NamedValueOutput {
+        .map(|value| FunctionNamedValueWire {
             name: &value.name,
             value_type: value.value_type,
             declaration: value.declaration,
@@ -113,49 +72,34 @@ fn named_values(values: &[FunctionValueEntry]) -> Vec<NamedValueOutput<'_>> {
 }
 
 fn project_statements(
-    function_index: usize,
     function: &FunctionEntry,
     folds: &[FunctionFoldEntry],
     statements: &[FunctionStatementWire],
-) -> Result<Vec<FunctionStatementOutput>, &'static str> {
+) -> Vec<FunctionStatementInput> {
     statements
         .iter()
         .map(|statement| match statement {
             FunctionStatementWire::Assignment { definition } => {
-                let definition = function
-                    .definitions
-                    .get(*definition as usize)
-                    .ok_or("function assignment definition is missing")?;
-                Ok(FunctionStatementOutput::Assignment {
+                let definition = &function.definitions[*definition as usize];
+                FunctionStatementInput::Assignment {
                     target: definition.target,
                     rhs: definition.rhs,
                     provenance: definition.provenance,
-                })
+                }
             }
             FunctionStatementWire::For {
                 fold: fold_ordinal,
                 statements,
                 provenance,
             } => {
-                let raw_function =
-                    u32::try_from(function_index).map_err(|_| "function index exceeds u32")?;
-                let raw = function
-                    .folds
-                    .get(*fold_ordinal as usize)
-                    .ok_or("function fold identity is missing")?;
-                let fold = folds
-                    .get(*raw as usize)
-                    .ok_or("function fold entry is missing")?;
-                if fold.function != raw_function || fold.ordinal != *fold_ordinal {
-                    return Err("function fold owner is inconsistent");
-                }
-                Ok(FunctionStatementOutput::For {
+                let fold = &folds[function.folds[*fold_ordinal as usize] as usize];
+                FunctionStatementInput::For {
                     domain: fold.domain,
                     targets: fold.targets.clone(),
-                    statements: project_statements(function_index, function, folds, statements)?,
+                    statements: project_statements(function, folds, statements),
                     begin_provenance: fold.provenance,
                     finish_provenance: *provenance,
-                })
+                }
             }
         })
         .collect()
