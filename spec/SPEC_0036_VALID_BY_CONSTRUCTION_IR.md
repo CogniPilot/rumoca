@@ -157,6 +157,21 @@ Partition ordinals are layout, never semantic identity.
 | Reinit branches preserve ordering and exclusivity | Event system | Multiple legal branches remain expressible |
 | Caller-supplied scalar counts are prohibited | Equation domains | Counts are derived |
 
+Each non-input `m` has exactly one B.1c definition owner. A source
+`when`/`elsewhen` chain becomes one atomic, source-priority-ordered conditional
+definition of the branch target set; independent `when` owners cannot define
+the same target, as required by SPEC_0022 EQN-020. Event-only updates of `m`
+are therefore B.1c definitions, not a second generic event-action assignment
+path.
+
+The B.1c topology includes every current-`m` dependency reachable through the
+value, branch guard, trigger condition, condition DAG, and relation
+expression. `pre(m)` is a dependency leaf. The producer supplies stable
+topological owner order, and the linear construction capability independently
+checks that every reachable current-`m` dependency has already been issued in
+that owner group before consuming the target. No exclusivity claim, event
+iteration, or final graph scan repairs an invalid order.
+
 Structured families own compact domains, checked bodies, typed scalar views,
 and constructor-derived row counts; `rumoca-eval-dae` owns evaluation/lazy projection.
 
