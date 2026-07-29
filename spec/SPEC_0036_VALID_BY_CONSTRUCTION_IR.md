@@ -50,11 +50,20 @@ supplied proofs and local integrity.
 |---|---|---|
 | `flat::Model` owns private class-free grammar and equation families | `rumoca-ir-flat` | No classes/duplicate owners |
 | Sequential scopes freeze the aggregate | `flat::Model::construct` | Checked ownership |
-| Semantic references use typed aggregate-local targets and exact use spans | `flat::Model::construct` | No unresolved target |
+| Core expression shape is generic over its stage-owned reference payload | `rumoca-core` | One structural grammar |
+| Generic expression shape has no default or untyped Flat payload | Core/Flat boundary | No unresolved mode |
+| Flat owns total value, function, function-value, binder, enum, intrinsic, and generated targets | `FlatReferenceTarget` | Exhaustive reference kinds |
+| Target views and nested function/domain IDs are branded | `flat::Model::construct` | No cross-owner IDs |
+| Every reference occurrence carries its exact use span | Flat expression grammar | Exact diagnostics |
+| Source `DefId` identifies declaration provenance only | Flat target entries | Instances need distinct identity |
+| Names and source paths are display/protocol data only | Flat root views | No textual lookup |
+| Flat wire decode replays root construction operations | Flat root wire | Constructor-enforced invariants |
+| Flat display/serialization resolves targets through root-owned projections | Flat root views | IDs never leak |
+| Synthetic instance `DefId` allocation and late reference repair are absent | Flatten/Flat boundary | No identity adapters |
+| SPEC 0029 helper ownership changes with the implementing cutover | Same atomic change | Specs remain consistent |
 | Every node requires source/generated provenance | `flat::Model::construct` | No dummy provenance |
 
-Declarations retain exact spans. Textual names remain only at
-source/protocol/config/display and external-name boundaries. Per SPEC_0032,
+Declarations retain exact spans. Per SPEC_0032,
 `InstanceOverlay::component_families` remains a non-authoritative descriptor;
 per-element instance entries own Instance semantics. `flat::Model` owns only
 the flattened structured families, whose scalar views/counts derive.
