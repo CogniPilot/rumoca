@@ -92,6 +92,7 @@ Shared helpers **must** have one designated implementation.
 | `runtime_defined_unknown_names`, `runtime_defined_continuous_unknown_names` | `rumoca-phase-structural::runtime_defined` | Single implementation; phase-structural is the authoritative caller. |
 | `expressions_semantically_equal`, `Expression::semantically_eq_ignoring_spans` | `rumoca-core` | Shared Flat/DAE expression identity. This is structural identity only; evaluation stays in `rumoca-eval-*`. |
 | `modelica_sign`, `escape_modelica_string` | `rumoca-core` | MLS `sign` and source-string escaping. |
+| UTF-8 byte offset ↔ UTF-16 text position/range helpers | `rumoca-core::text_position` | Protocol-neutral `TextPosition`/`TextRange`; LSP crates convert to/from `lsp_types` locally. No `rumoca-lsp-position` micro-crate. |
 | `INTERNAL_SAMPLE_FUNCTION_NAME`, `source_temporal_function_name`, `source_temporal_function_short_name`, `source_temporal_builtin_name` | `rumoca-core` | Single source for source temporal operator vocabulary shared by DAE and Solve boundary validation. |
 | `expr_contains_var` | `rumoca-ir-dae::expr_query` | Handles every `Expression` variant |
 | `expr_refers_to_var` | `rumoca-ir-dae::expr_query` | Same single-source rule. |
@@ -252,6 +253,7 @@ compiler/session → DAE structural → solve-IR lowering → runtime contracts 
 | DAE → solve-IR lowering | `rumoca-phase-solve` | Lowering only, not structural mutation |
 | Optimization/training orchestration | `rumoca-opt` | Consumes Solve/eval APIs; no Modelica semantics |
 | DAE/Solve → checked GALEC lowering | `rumoca-phase-galec` | Semantic export lowering and admissibility only; no text, templates, packaging, or target-language helpers |
+| Checked GALEC executable semantics | `rumoca-eval-galec` | Small explicit interpreter over `rumoca-ir-galec`; no DAE/Solve, lowering, rendering, target, or runtime-host dependencies |
 | Textual generated artifacts and templates | `rumoca-phase-codegen` | Jinja/minijinja rendering owns generated C, Rust, CUDA C, MLIR, FMI/eFMI and FMU/eFMU packaging text |
 | GALEC `.alg` text | `rumoca-phase-codegen` | MiniJinja renders a checked GALEC semantic view; the language IR owns no text emitter (SPEC_0034 GAL-009) |
 | eFMI packaging XML (`__content.xml`, manifests) | `rumoca-phase-codegen` | Rendered like FMI `modelDescription`; validators + generic checksum/container build step, not typed serializers (SPEC_0034 D3 amended) |

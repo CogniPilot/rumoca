@@ -28,6 +28,7 @@ DAE (+ optional provenance)
 ```text
 rumoca-compile -> rumoca-phase-galec -> rumoca-ir-dae/solve
                                       -> rumoca-ir-galec
+rumoca-eval-galec -> rumoca-ir-galec
 rumoca-phase-codegen -> typed Algorithm Code view -> MiniJinja
 rumoca -> generic artifact/checksum/container graph + vendored schemas
 ```
@@ -62,6 +63,7 @@ rumoca -> generic artifact/checksum/container graph + vendored schemas
 | GAL-024 | Embedded C is two-track: `embedded-c-galec` is a non-eFMI export; `galec-production` earns the Production Code rung. Neither fabricates a higher claim. | target templates | **Why** below. |
 | GAL-025 | v1 scope rejections say "not yet supported by the Rumoca GALEC projection" — never "unsupported by eFMI". | `rumoca-phase-galec` | eFMI expects discretized models. |
 | GAL-026 | Checked GALEC data, package data, semantic views, and templates are array-native; scalarized lowering is an implementation stage, never a language-layer assumption. | IR + phase + templates | Scalarization curtails optimization. |
+| GAL-027 | `rumoca-eval-galec` defines explicit semantics for checked blocks: statement order, method transitions, signals, escape sets, `limit`, NaN comparisons, and conversions. It returns typed failures and has no lowering/codegen dependency. | `rumoca-eval-galec` | Independent proof/differential oracle. |
 
 **Why (GAL-016):** GALEC has no `previous()`/`sample()` (T2); `pre(x)` becomes
 protected state `'previous(x)'` committed at end of DoStep; the sample period is a
@@ -154,6 +156,7 @@ array sizes rejected.
 | Manifest XSD-validate + SHA-1 recompute + id uniqueness; full-container validation (all XMLs vs XSDs, all checksums); negative schema cases (missing element, wrong order, bad enum, malformed UUID/timestamp, dim < 1) | GAL-021 |
 | `--target galec` CLI smoke + real template-CI render | GAL-011/012 |
 | Generated-C compile check (`cc -Wall -Werror`, temp dir) when C output exists | GAL-012/024 |
+| Differential execution: checked source semantics ↔ `rumoca-eval-galec` ↔ generated C/eFMI, including signal/error cases | GAL-027 |
 
 ## Non-Goals
 
