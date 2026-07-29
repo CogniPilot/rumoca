@@ -10,6 +10,7 @@ mod function_ranges;
 mod function_record_assemblies;
 mod function_value_types;
 mod model_roles;
+mod record_array_fields;
 mod record_equations;
 mod source_balance;
 mod structured_families;
@@ -32,6 +33,8 @@ use function_ranges::{
 use function_record_assemblies::validate_record_output_assembly;
 use function_value_types::validate_function_value_type;
 use model_roles::{ModelRoles, analyze_model_roles};
+pub(super) use record_array_fields::RecordArrayFieldPlan;
+use record_array_fields::{analyze_record_array_fields, expression_for_validation};
 use record_equations::analyze_record_equations;
 use source_balance::source_balance;
 use structured_families::validate_structured_families;
@@ -48,6 +51,7 @@ pub(super) struct Analysis {
     pub(super) function_plans: HashMap<FunctionSpecializationKey, FunctionPlan>,
     pub(super) function_shapes: FunctionShapeAnalysis,
     pub(super) comprehension_plans: HashMap<ComprehensionKey, ComprehensionPlan>,
+    pub(super) record_array_fields: HashMap<Span, RecordArrayFieldPlan>,
     pub(super) derived_parameters: HashMap<VarName, DerivedParameterPlan>,
     pub(super) derived_parameter_families: HashSet<usize>,
     pub(super) derived_parameter_rows: HashSet<usize>,
@@ -157,6 +161,7 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
     let initial_record_equations = analyze_record_equations(flat, &flat.initial_equations)?;
     let constants = constant_context(flat);
     let comprehension_plans = analyze_comprehensions(all_model_expressions(flat), &constants)?;
+    let record_array_fields = analyze_record_array_field_plans(flat)?;
     let clocks = analyze_clocks(flat, &constants)?;
 
     let ModelRoles {
@@ -170,7 +175,8 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
         expression_roles.insert(name.clone(), PlannedRole::Parameter);
     }
     for expression in all_model_expressions(flat) {
-        validate_expression(expression, &expression_roles, &states)?;
+        let validation_expression = expression_for_validation(expression, &record_array_fields);
+        validate_expression(&validation_expression, &expression_roles, &states)?;
         validate_known_function_calls(expression, flat)?;
     }
     let continuous_family_rows = validate_structured_families(
@@ -178,12 +184,14 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
         flat.equations.len(),
         &roles,
         &states,
+        &record_array_fields,
     )?;
     let initialization_family_rows = validate_structured_families(
         &flat.initial_structured_equations,
         flat.initial_equations.len(),
         &roles,
         &states,
+        &record_array_fields,
     )?;
     let mut sample_lattices = Vec::new();
     for clause in &flat.when_clauses {
@@ -238,12 +246,35 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
         function_plans,
         function_shapes,
         comprehension_plans,
+        record_array_fields,
         derived_parameters: derived_parameters.plans,
         derived_parameter_families: derived_parameters.families,
         derived_parameter_rows: derived_parameters.rows,
         record_equations,
         initial_record_equations,
     })
+}
+
+fn analyze_record_array_field_plans(
+    flat: &flat::Model,
+) -> Result<HashMap<Span, RecordArrayFieldPlan>, ToDaeError> {
+    analyze_record_array_fields(
+        flat,
+        all_model_expressions(flat)
+            .chain(structured_template_expressions(&flat.structured_equations))
+            .chain(structured_template_expressions(
+                &flat.initial_structured_equations,
+            )),
+    )
+}
+
+fn structured_template_expressions(
+    families: &[flat::StructuredEquationFamily],
+) -> impl Iterator<Item = &Expression> {
+    families
+        .iter()
+        .filter_map(|family| family.template.as_ref())
+        .flat_map(|template| &template.body)
 }
 
 fn validate_when_clause(

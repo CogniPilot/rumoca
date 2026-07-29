@@ -204,10 +204,50 @@ pub(super) fn lower_expression_scoped<'dae>(
             *is_constructor,
             provenance,
         ),
-        Expression::Tuple { .. } | Expression::FieldAccess { .. } | Expression::Empty { .. } => {
+        Expression::FieldAccess { .. } => {
+            lower_record_array_field_projection(construction, symbols, binders, provenance)
+        }
+        Expression::Tuple { .. } | Expression::Empty { .. } => {
             unreachable!("analysis rejects expressions outside the checked lowering grammar")
         }
     }
+}
+
+fn lower_record_array_field_projection<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    symbols: LoweringSymbols<'_, 'dae>,
+    binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
+    provenance: dae::DaeProvenance,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    let plan = symbols
+        .functions
+        .record_array_fields
+        .get(&provenance.span())
+        .expect("analysis certifies every lowered record-array field projection");
+    let generated = dae::DaeProvenance::generated(
+        dae::DaeGeneration::RecordEquationProjection,
+        provenance.span(),
+    )?;
+    let elements = plan
+        .coordinates
+        .iter()
+        .map(|coordinate| {
+            construction.expressions(|expressions| {
+                expressions
+                    .at(generated)
+                    .coordinate(symbols.coordinates[coordinate].current())
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let base = construction.expressions(|expressions| expressions.at(generated).array(elements))?;
+    lower_index(
+        construction,
+        symbols,
+        binders,
+        base,
+        &plan.subscripts,
+        provenance,
+    )
 }
 
 fn lower_variable_reference<'dae>(

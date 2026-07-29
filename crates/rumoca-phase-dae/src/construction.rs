@@ -30,9 +30,9 @@ use algorithm::{
 use analysis::{
     Analysis, ComprehensionKey, ComprehensionPlan, DerivedParameterPlan, EquationPartition,
     FunctionArrayAssemblyPlan, FunctionLoopLowering, FunctionPlan, FunctionRecordAssemblyPlan,
-    FunctionStatementPlan, PlannedRole, RecordEquationPlan, analyze, defined_discrete_targets,
-    effective_variable_scalar_type, equation_partition, primitive_scalar_type,
-    structured_assignment_names,
+    FunctionStatementPlan, PlannedRole, RecordArrayFieldPlan, RecordEquationPlan, analyze,
+    defined_discrete_targets, effective_variable_scalar_type, equation_partition,
+    primitive_scalar_type, structured_assignment_names,
 };
 use clocks::{LoweredClocks, lower_clocks, lower_sampled_value_clocks};
 use equation_systems::lower_equation_systems;
@@ -163,6 +163,7 @@ fn build_checked<'dae>(
         shapes: &analysis.function_shapes,
         ids: function_ids,
         comprehension_plans: &analysis.comprehension_plans,
+        record_array_fields: &analysis.record_array_fields,
     };
     let (coordinates, reserved) = reserve_variables(flat, analysis, construction, &value_types)?;
     define_functions(

@@ -11,6 +11,7 @@ pub(super) struct FunctionRegistry<'shape, 'dae> {
     pub(super) shapes: &'shape FunctionShapeAnalysis,
     pub(super) ids: HashMap<FunctionSpecializationKey, dae::FunctionId<'dae>>,
     pub(super) comprehension_plans: &'shape HashMap<ComprehensionKey, ComprehensionPlan>,
+    pub(super) record_array_fields: &'shape HashMap<Span, RecordArrayFieldPlan>,
 }
 
 impl<'dae> FunctionRegistry<'_, 'dae> {
