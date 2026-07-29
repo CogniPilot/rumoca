@@ -237,8 +237,6 @@ struct FunctionFoldEntryWire {
 struct DomainEntryWire {
     parent: Option<u32>,
     domain: rumoca_core::StructuredIndexDomain,
-    extents: Box<[u32]>,
-    scalar_count: u32,
     #[serde(deserialize_with = "deserialize_provenance")]
     provenance: DaeProvenance,
 }
@@ -281,7 +279,6 @@ struct StructuredFamilyWire {
     domain: u32,
     scalar_view: rumoca_core::ComprehensionScalarView,
     bodies: FamilyBodyRangeWire,
-    scalar_rows: u32,
     #[serde(deserialize_with = "deserialize_provenance")]
     provenance: DaeProvenance,
 }
@@ -416,26 +413,16 @@ struct ClockEntryWire {
 #[serde(deny_unknown_fields)]
 struct ClockOwnershipEntryWire {
     variable: u32,
-    role: ClockedVariableRoleWire,
     clock: u32,
     #[serde(deserialize_with = "deserialize_provenance")]
     provenance: DaeProvenance,
-}
-
-#[derive(Deserialize, Clone, Copy)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
-enum ClockedVariableRoleWire {
-    DiscreteReal,
-    DiscreteValue,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PreviousEntryWire {
     variable: u32,
-    role: ClockedVariableRoleWire,
     clock: u32,
-    value_type: u32,
     #[serde(deserialize_with = "deserialize_provenance")]
     provenance: DaeProvenance,
 }
@@ -463,8 +450,6 @@ struct DelayEntryWire {
     delay_time: u32,
     delay_time_evidence: Option<PositiveParameterWire>,
     delay_max: Option<PositiveParameterWire>,
-    value_type: u32,
-    variability: ExpressionVariability,
     #[serde(deserialize_with = "deserialize_provenance")]
     provenance: DaeProvenance,
 }
@@ -501,6 +486,7 @@ struct WireIds<'dae> {
     terminals: Vec<TerminalId<'dae>>,
     delays: Vec<DelayId<'dae>>,
     expressions: Vec<ExprId<'dae>>,
+    next_expression_type_anchor: usize,
 }
 
 fn mapped_expression<'dae>(
@@ -533,6 +519,7 @@ fn reconstruct<'dae>(
         terminals: Vec::with_capacity(wire.terminals.len()),
         delays: Vec::with_capacity(wire.delays.len()),
         expressions: Vec::with_capacity(wire.expressions.nodes.len()),
+        next_expression_type_anchor: 0,
     };
     reconstruct_clocks(wire, dae, &mut ids)?;
     reconstruct_temporal(wire, dae, &mut ids)?;
@@ -825,12 +812,6 @@ fn reconstruct_domains<'dae>(
             None => domains.structured(domain.domain.clone(), domain.provenance),
         })?;
         expect_ordinal("domain", index, id.index(), domain.provenance)?;
-        let rebuilt = &dae.storage.domains[id.index() as usize];
-        if rebuilt.extents != domain.extents || rebuilt.scalar_count != domain.scalar_count {
-            return Err(DaeConstructionError::ShapeMismatch {
-                span: domain.provenance.span(),
-            });
-        }
         ids.push(id);
     }
     Ok(ids)
@@ -857,7 +838,7 @@ fn reconstruct_next_expression<'dae>(
     let provenance = expression.provenance;
     let node = expression.node;
     expect_next_packed_ranges(wire, dae, node)?;
-    let expected_type = mapped(&ids.types, expression.value_type, "value type", provenance)?;
+    let type_anchor = take_expression_type_anchor(wire, ids, node, provenance)?;
     let id = match node {
         ExprNodeWire::Coordinate(CoordinateWire::Delay(delay)) => {
             reconstruct_delay_coordinate(wire, dae, ids, *delay, provenance)?
@@ -873,7 +854,7 @@ fn reconstruct_next_expression<'dae>(
                 ids,
                 expressions.at(provenance),
                 node,
-                expected_type,
+                type_anchor,
                 provenance,
             )
         })?,
@@ -883,9 +864,55 @@ fn reconstruct_next_expression<'dae>(
             column: "expressions.nodes",
         });
     }
-    verify_rebuilt_expression(wire, dae, index, id, expected_type, provenance)?;
     ids.expressions.push(id);
     Ok(true)
+}
+
+fn take_expression_type_anchor<'dae>(
+    wire: &StorageWire,
+    ids: &mut WireIds<'dae>,
+    node: &ExprNodeWire,
+    provenance: DaeProvenance,
+) -> Result<Option<ValueTypeId<'dae>>, DaeConstructionError> {
+    let expression = checked_u32(ids.expressions.len(), "expression arena", provenance)?;
+    let required = matches!(node, ExprNodeWire::Record { .. })
+        || matches!(node, ExprNodeWire::Array { operands } if operands.len == 0);
+    let next = wire
+        .expressions
+        .type_anchors
+        .get(ids.next_expression_type_anchor);
+    let raw = match next {
+        Some(anchor) if anchor.expression < expression => {
+            return Err(malformed("expressions.type_anchors"));
+        }
+        Some(anchor) if anchor.expression == expression => {
+            ids.next_expression_type_anchor += 1;
+            Some(anchor.value_type)
+        }
+        _ => None,
+    };
+    if required != raw.is_some() {
+        return Err(malformed("expressions.type_anchors"));
+    }
+    raw.map(|raw| mapped(&ids.types, raw, "value type", provenance))
+        .transpose()
+}
+
+fn expect_no_expression_type_anchor(
+    wire: &StorageWire,
+    ids: &WireIds<'_>,
+    provenance: DaeProvenance,
+) -> Result<(), DaeConstructionError> {
+    let expression = checked_u32(ids.expressions.len(), "expression arena", provenance)?;
+    if let Some(anchor) = wire
+        .expressions
+        .type_anchors
+        .get(ids.next_expression_type_anchor)
+        && anchor.expression <= expression
+    {
+        return Err(malformed("expressions.type_anchors"));
+    }
+    Ok(())
 }
 
 fn expect_next_packed_ranges(
@@ -930,324 +957,21 @@ fn expect_packed_range(
     }
 }
 
-fn verify_rebuilt_expression(
-    wire: &StorageWire,
-    dae: &DaeConstruction<'_>,
-    index: usize,
-    id: ExprId<'_>,
-    expected_type: ValueTypeId<'_>,
-    provenance: DaeProvenance,
-) -> Result<(), DaeConstructionError> {
-    let raw = id.index() as usize;
-    let expression = wire_expression(wire, index)?;
-    if dae.storage.expressions.provenance[raw] != provenance
-        || dae.storage.expressions.value_types[raw] != expected_type.index()
-        || dae.storage.expressions.variability[raw] != expression.variability
-        || dae.storage.expressions.binder_domains[raw] != expression.binder_domain
-        || dae.storage.expressions.function_scopes[raw] != expression.function_scope
-    {
-        return Err(DaeConstructionError::ShapeMismatch {
-            span: provenance.span(),
-        });
-    }
-    Ok(())
-}
-
 fn expect_expression_arena_consumed(
     wire: &StorageWire,
     dae: &DaeConstruction<'_>,
+    ids: &WireIds<'_>,
 ) -> Result<(), DaeConstructionError> {
     let count = wire.expressions.nodes.len();
     if wire.expressions.provenance.len() != count
-        || wire.expressions.value_types.len() != count
-        || wire.expressions.variability.len() != count
-        || wire.expressions.binder_domains.len() != count
-        || wire.expressions.function_scopes.len() != count
+        || ids.next_expression_type_anchor != wire.expressions.type_anchors.len()
         || dae.storage.expressions.nodes.len() != count
-        || dae.storage.expressions.operands != wire.expressions.operands
+        || dae.storage.expressions.operands.len() != wire.expressions.operands.len()
         || dae.storage.expressions.subscripts.len() != wire.expressions.subscripts.len()
     {
         return Err(malformed("expressions"));
     }
-    for (actual, expected) in dae
-        .storage
-        .expressions
-        .nodes
-        .iter()
-        .zip(&wire.expressions.nodes)
-    {
-        if !expression_node_matches(actual, expected) {
-            return Err(malformed("expressions.nodes"));
-        }
-    }
-    for (actual, expected) in dae
-        .storage
-        .expressions
-        .subscripts
-        .iter()
-        .zip(&wire.expressions.subscripts)
-    {
-        if actual.provenance != expected.provenance
-            || !subscript_kind_matches(&actual.kind, expected.kind)
-        {
-            return Err(malformed("expressions.subscripts"));
-        }
-    }
     Ok(())
-}
-
-fn expression_node_matches(actual: &ExprNode, expected: &ExprNodeWire) -> bool {
-    match (actual, expected) {
-        (ExprNode::Literal(actual), ExprNodeWire::Literal(expected)) => {
-            literal_matches(actual, expected)
-        }
-        (ExprNode::Coordinate(actual), ExprNodeWire::Coordinate(expected)) => {
-            coordinate_matches(*actual, expected)
-        }
-        (ExprNode::FunctionValue { .. }, ExprNodeWire::FunctionValue { .. })
-        | (ExprNode::FunctionFoldParameter { .. }, ExprNodeWire::FunctionFoldParameter { .. })
-        | (ExprNode::FunctionFoldOutput { .. }, ExprNodeWire::FunctionFoldOutput { .. }) => {
-            function_node_matches(actual, expected)
-        }
-        (ExprNode::Index { .. }, ExprNodeWire::Index { .. })
-        | (ExprNode::ArrayUpdate { .. }, ExprNodeWire::ArrayUpdate { .. })
-        | (ExprNode::Builtin { .. }, ExprNodeWire::Builtin { .. })
-        | (ExprNode::Call { .. }, ExprNodeWire::Call { .. }) => {
-            buffer_node_matches(actual, expected)
-        }
-        _ => operator_node_matches(actual, expected),
-    }
-}
-
-fn operator_node_matches(actual: &ExprNode, expected: &ExprNodeWire) -> bool {
-    match (actual, expected) {
-        (
-            ExprNode::Unary {
-                operator: ao,
-                operand: aa,
-            },
-            ExprNodeWire::Unary {
-                operator: eo,
-                operand: ea,
-            },
-        ) => ao == eo && aa == ea,
-        (
-            ExprNode::Binary {
-                operator: ao,
-                lhs: al,
-                rhs: ar,
-            },
-            ExprNodeWire::Binary {
-                operator: eo,
-                lhs: el,
-                rhs: er,
-            },
-        ) => ao == eo && al == el && ar == er,
-        (ExprNode::Conditional { operands: a }, ExprNodeWire::Conditional { operands: e })
-        | (ExprNode::Array { operands: a }, ExprNodeWire::Array { operands: e })
-        | (ExprNode::Record { operands: a }, ExprNodeWire::Record { operands: e }) => {
-            range_matches(*a, *e)
-        }
-        (
-            ExprNode::Field {
-                base: ab,
-                field: af,
-            },
-            ExprNodeWire::Field {
-                base: eb,
-                field: ef,
-            },
-        ) => ab == eb && af == ef,
-        (
-            ExprNode::Range {
-                start: aa,
-                step: ab,
-                stop: ac,
-            },
-            ExprNodeWire::Range {
-                start: ea,
-                step: eb,
-                stop: ec,
-            },
-        ) => aa == ea && ab == eb && ac == ec,
-        (
-            ExprNode::Comprehension {
-                domain: ad,
-                body: ab,
-            },
-            ExprNodeWire::Comprehension {
-                domain: ed,
-                body: eb,
-            },
-        ) => ad == ed && ab == eb,
-        _ => false,
-    }
-}
-
-fn buffer_node_matches(actual: &ExprNode, expected: &ExprNodeWire) -> bool {
-    match (actual, expected) {
-        (
-            ExprNode::Index {
-                base: ab,
-                subscripts: as_,
-            },
-            ExprNodeWire::Index {
-                base: eb,
-                subscripts: es,
-            },
-        ) => ab == eb && range_matches(*as_, *es),
-        (
-            ExprNode::ArrayUpdate {
-                base: ab,
-                value: av,
-                subscripts: as_,
-            },
-            ExprNodeWire::ArrayUpdate {
-                base: eb,
-                value: ev,
-                subscripts: es,
-            },
-        ) => ab == eb && av == ev && range_matches(*as_, *es),
-        (
-            ExprNode::Builtin {
-                builtin: ab,
-                operands: ao,
-            },
-            ExprNodeWire::Builtin {
-                builtin: eb,
-                operands: eo,
-            },
-        ) => ab == eb && range_matches(*ao, *eo),
-        (
-            ExprNode::Call {
-                function: af,
-                output: ao,
-                operands: aa,
-            },
-            ExprNodeWire::Call {
-                function: ef,
-                output: eo,
-                operands: ea,
-            },
-        ) => af == ef && ao == eo && range_matches(*aa, *ea),
-        _ => false,
-    }
-}
-
-fn function_node_matches(actual: &ExprNode, expected: &ExprNodeWire) -> bool {
-    match (actual, expected) {
-        (
-            ExprNode::FunctionValue {
-                function: af,
-                value: av,
-                definition_ordinal: ad,
-            },
-            ExprNodeWire::FunctionValue {
-                function: ef,
-                value: ev,
-                definition_ordinal: ed,
-            },
-        ) => af == ef && av == ev && ad == ed,
-        (
-            ExprNode::FunctionFoldParameter {
-                function: af,
-                fold: ax,
-                carried: ac,
-                definition_ordinal: ad,
-            },
-            ExprNodeWire::FunctionFoldParameter {
-                function: ef,
-                fold: ex,
-                carried: ec,
-                definition_ordinal: ed,
-            },
-        )
-        | (
-            ExprNode::FunctionFoldOutput {
-                function: af,
-                fold: ax,
-                carried: ac,
-                definition_ordinal: ad,
-            },
-            ExprNodeWire::FunctionFoldOutput {
-                function: ef,
-                fold: ex,
-                carried: ec,
-                definition_ordinal: ed,
-            },
-        ) => af == ef && ax == ex && ac == ec && ad == ed,
-        _ => false,
-    }
-}
-
-fn literal_matches(actual: &DaeLiteral, expected: &DaeLiteralWire) -> bool {
-    match (actual, expected) {
-        (DaeLiteral::Real(a), DaeLiteralWire::Real(e)) => a.to_bits() == e.to_bits(),
-        (DaeLiteral::Integer(a), DaeLiteralWire::Integer(e)) => a == e,
-        (DaeLiteral::Enumeration(a), DaeLiteralWire::Enumeration(e)) => a == e,
-        (DaeLiteral::Boolean(a), DaeLiteralWire::Boolean(e)) => a == e,
-        (DaeLiteral::String(a), DaeLiteralWire::String(e)) => a == e,
-        _ => false,
-    }
-}
-
-fn coordinate_matches(actual: Coordinate, expected: &CoordinateWire) -> bool {
-    match (actual, expected) {
-        (Coordinate::Parameter(a), CoordinateWire::Parameter(e))
-        | (Coordinate::Input(a), CoordinateWire::Input(e))
-        | (Coordinate::State(a), CoordinateWire::State(e))
-        | (Coordinate::Derivative(a), CoordinateWire::Derivative(e))
-        | (Coordinate::Algebraic(a), CoordinateWire::Algebraic(e))
-        | (Coordinate::DiscreteReal(a), CoordinateWire::DiscreteReal(e))
-        | (Coordinate::DiscreteValue(a), CoordinateWire::DiscreteValue(e))
-        | (Coordinate::PreDiscreteReal(a), CoordinateWire::PreDiscreteReal(e))
-        | (Coordinate::PreDiscreteValue(a), CoordinateWire::PreDiscreteValue(e))
-        | (Coordinate::Condition(a), CoordinateWire::Condition(e))
-        | (Coordinate::Delay(a), CoordinateWire::Delay(e))
-        | (Coordinate::Previous(a), CoordinateWire::Previous(e))
-        | (Coordinate::Terminal(a), CoordinateWire::Terminal(e)) => a == *e,
-        (Coordinate::Time, CoordinateWire::Time) => true,
-        (
-            Coordinate::Binder {
-                domain: ad,
-                ordinal: ao,
-            },
-            CoordinateWire::Binder {
-                domain: ed,
-                ordinal: eo,
-            },
-        )
-        | (
-            Coordinate::FunctionParameter {
-                function: ad,
-                ordinal: ao,
-            },
-            CoordinateWire::FunctionParameter {
-                function: ed,
-                ordinal: eo,
-            },
-        ) => ad == *ed && ao == *eo,
-        _ => false,
-    }
-}
-
-const fn range_matches(
-    actual: crate::expression::OperandRange,
-    expected: OperandRangeWire,
-) -> bool {
-    actual.start == expected.start && actual.len == expected.len
-}
-
-const fn subscript_kind_matches(
-    actual: &PackedSubscriptKind,
-    expected: PackedSubscriptKindWire,
-) -> bool {
-    match (actual, expected) {
-        (PackedSubscriptKind::Index(a), PackedSubscriptKindWire::Index(e))
-        | (PackedSubscriptKind::Slice(a), PackedSubscriptKindWire::Slice(e)) => *a == e,
-        (PackedSubscriptKind::Whole, PackedSubscriptKindWire::Whole) => true,
-        _ => false,
-    }
 }
 
 fn reconstruct_delay_coordinate<'dae>(
@@ -1322,12 +1046,6 @@ fn reconstruct_delay_coordinate<'dae>(
         }
     };
     expect_ordinal("delay", index, coordinate.id().index(), delay.provenance)?;
-    let rebuilt = &dae.storage.delays[coordinate.id().index() as usize];
-    if rebuilt.value_type != delay.value_type || rebuilt.variability != delay.variability {
-        return Err(DaeConstructionError::ShapeMismatch {
-            span: delay.provenance.span(),
-        });
-    }
     ids.delays.push(coordinate.id());
     Ok(coordinate.expression())
 }
@@ -1337,7 +1055,7 @@ fn rebuild_node<'dae>(
     ids: &WireIds<'dae>,
     at: ExpressionAt<'_, 'dae>,
     node: &ExprNodeWire,
-    expected_type: ValueTypeId<'dae>,
+    type_anchor: Option<ValueTypeId<'dae>>,
     provenance: DaeProvenance,
 ) -> Result<ExprId<'dae>, DaeConstructionError> {
     match node {
@@ -1367,13 +1085,13 @@ fn rebuild_node<'dae>(
         ExprNodeWire::Array { operands } => {
             let operands = map_expression_operands(wire, ids, *operands, provenance)?;
             if operands.is_empty() {
-                at.empty_array(expected_type)
+                at.empty_array(type_anchor.ok_or_else(|| malformed("expressions.type_anchors"))?)
             } else {
                 at.array(operands)
             }
         }
         ExprNodeWire::Record { operands } => at.record(
-            expected_type,
+            type_anchor.ok_or_else(|| malformed("expressions.type_anchors"))?,
             map_expression_operands(wire, ids, *operands, provenance)?,
         ),
         ExprNodeWire::Field { base, field } => at.field(
@@ -1790,17 +1508,22 @@ fn reconstruct_clocks<'dae>(
             "variable",
             ownership.provenance,
         )?;
-        let id = dae.clocks(|clocks| match ownership.role {
-            ClockedVariableRoleWire::DiscreteReal => clocks.own_discrete_real(
+        let role = dae.storage.variables[variable.index() as usize].role;
+        let id = dae.clocks(|clocks| match role {
+            VariableRole::DiscreteReal => clocks.own_discrete_real(
                 clock,
                 DiscreteRealId::from_raw(variable.index()),
                 ownership.provenance,
             ),
-            ClockedVariableRoleWire::DiscreteValue => clocks.own_discrete_value(
+            VariableRole::DiscreteValue => clocks.own_discrete_value(
                 clock,
                 DiscreteValueId::from_raw(variable.index()),
                 ownership.provenance,
             ),
+            _ => Err(DaeConstructionError::InvalidVariableRole {
+                name: ownership_variable_name(wire, ownership.variable, ownership.provenance)?,
+                span: ownership.provenance.span(),
+            }),
         })?;
         expect_ordinal("clock ownership", index, id.index(), ownership.provenance)?;
     }
@@ -1820,24 +1543,24 @@ fn reconstruct_temporal<'dae>(
             "variable",
             previous.provenance,
         )?;
-        let id = dae.temporal(|temporal| match previous.role {
-            ClockedVariableRoleWire::DiscreteReal => temporal.previous_discrete_real(
+        let role = dae.storage.variables[variable.index() as usize].role;
+        let id = dae.temporal(|temporal| match role {
+            VariableRole::DiscreteReal => temporal.previous_discrete_real(
                 clock,
                 DiscreteRealId::from_raw(variable.index()),
                 previous.provenance,
             ),
-            ClockedVariableRoleWire::DiscreteValue => temporal.previous_discrete_value(
+            VariableRole::DiscreteValue => temporal.previous_discrete_value(
                 clock,
                 DiscreteValueId::from_raw(variable.index()),
                 previous.provenance,
             ),
+            _ => Err(DaeConstructionError::InvalidVariableRole {
+                name: ownership_variable_name(wire, previous.variable, previous.provenance)?,
+                span: previous.provenance.span(),
+            }),
         })?;
         expect_ordinal("previous value", index, id.index(), previous.provenance)?;
-        if dae.storage.previous_values[id.index() as usize].value_type != previous.value_type {
-            return Err(DaeConstructionError::ShapeMismatch {
-                span: previous.provenance.span(),
-            });
-        }
         ids.previous_values.push(id);
     }
     for (index, terminal) in wire.terminals.iter().enumerate() {
@@ -1851,6 +1574,17 @@ fn reconstruct_temporal<'dae>(
         ids.terminals.push(id);
     }
     Ok(())
+}
+
+fn ownership_variable_name(
+    wire: &StorageWire,
+    raw: u32,
+    provenance: DaeProvenance,
+) -> Result<rumoca_core::VarName, DaeConstructionError> {
+    wire.variables
+        .get(raw as usize)
+        .map(|variable| variable.name.clone())
+        .ok_or_else(|| unknown("variable", raw, provenance))
 }
 
 const fn malformed(column: &'static str) -> DaeConstructionError {

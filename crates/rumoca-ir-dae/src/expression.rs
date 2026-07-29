@@ -452,8 +452,7 @@ pub(crate) struct ExpressionArenaStorage {
     pub(crate) subscripts: Vec<PackedSubscript>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct FrozenExpressionArenaStorage {
     pub(crate) nodes: Box<[ExprNode]>,
     pub(crate) provenance: Box<[DaeProvenance]>,

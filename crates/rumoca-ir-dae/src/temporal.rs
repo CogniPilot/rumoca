@@ -12,8 +12,10 @@ use crate::{
 #[serde(deny_unknown_fields)]
 pub(crate) struct PreviousEntry {
     pub(crate) variable: u32,
+    #[serde(skip_serializing)]
     pub(crate) role: ClockedVariableRole,
     pub(crate) clock: u32,
+    #[serde(skip_serializing)]
     pub(crate) value_type: u32,
     pub(crate) provenance: DaeProvenance,
 }
@@ -39,7 +41,9 @@ pub(crate) struct DelayEntry {
     pub(crate) delay_time: u32,
     pub(crate) delay_time_evidence: Option<PositiveParameterEntry>,
     pub(crate) delay_max: Option<PositiveParameterEntry>,
+    #[serde(skip_serializing)]
     pub(crate) value_type: u32,
+    #[serde(skip_serializing)]
     pub(crate) variability: ExpressionVariability,
     pub(crate) provenance: DaeProvenance,
 }

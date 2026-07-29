@@ -1,4 +1,6 @@
 use super::*;
+use serde::ser::SerializeStruct;
+use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -6,21 +8,21 @@ pub(super) struct ExpressionArenaWire {
     pub(super) nodes: Vec<ExprNodeWire>,
     #[serde(deserialize_with = "deserialize_provenance_vec")]
     pub(super) provenance: Vec<DaeProvenance>,
-    pub(super) value_types: Vec<u32>,
-    pub(super) variability: Vec<ExpressionVariability>,
-    pub(super) binder_domains: Vec<Option<u32>>,
-    pub(super) function_scopes: Vec<Option<u32>>,
+    pub(super) type_anchors: Vec<ExpressionTypeAnchorWire>,
     pub(super) operands: Vec<u32>,
     pub(super) subscripts: Vec<PackedSubscriptWire>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ExpressionTypeAnchorWire {
+    pub(super) expression: u32,
+    pub(super) value_type: u32,
 }
 
 pub(super) struct WireExpression<'wire> {
     pub(super) node: &'wire ExprNodeWire,
     pub(super) provenance: DaeProvenance,
-    pub(super) value_type: u32,
-    pub(super) variability: ExpressionVariability,
-    pub(super) binder_domain: Option<u32>,
-    pub(super) function_scope: Option<u32>,
 }
 
 pub(super) fn wire_expression(
@@ -38,27 +40,43 @@ pub(super) fn wire_expression(
             .provenance
             .get(index)
             .ok_or_else(|| malformed("expressions.provenance"))?,
-        value_type: *wire
-            .expressions
-            .value_types
-            .get(index)
-            .ok_or_else(|| malformed("expressions.value_types"))?,
-        variability: *wire
-            .expressions
-            .variability
-            .get(index)
-            .ok_or_else(|| malformed("expressions.variability"))?,
-        binder_domain: *wire
-            .expressions
-            .binder_domains
-            .get(index)
-            .ok_or_else(|| malformed("expressions.binder_domains"))?,
-        function_scope: *wire
-            .expressions
-            .function_scopes
-            .get(index)
-            .ok_or_else(|| malformed("expressions.function_scopes"))?,
     })
+}
+
+#[derive(Serialize)]
+struct ExpressionTypeAnchorOutput {
+    expression: u32,
+    value_type: u32,
+}
+
+impl Serialize for FrozenExpressionArenaStorage {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut type_anchors = Vec::new();
+        for (index, (node, value_type)) in self.nodes.iter().zip(&self.value_types).enumerate() {
+            if expression_requires_type_anchor(node) {
+                let expression = u32::try_from(index).map_err(serde::ser::Error::custom)?;
+                type_anchors.push(ExpressionTypeAnchorOutput {
+                    expression,
+                    value_type: *value_type,
+                });
+            }
+        }
+        let mut state = serializer.serialize_struct("ExpressionArena", 5)?;
+        state.serialize_field("nodes", &self.nodes)?;
+        state.serialize_field("provenance", &self.provenance)?;
+        state.serialize_field("type_anchors", &type_anchors)?;
+        state.serialize_field("operands", &self.operands)?;
+        state.serialize_field("subscripts", &self.subscripts)?;
+        state.end()
+    }
+}
+
+fn expression_requires_type_anchor(node: &ExprNode) -> bool {
+    matches!(node, ExprNode::Record { .. })
+        || matches!(node, ExprNode::Array { operands } if operands.len == 0)
 }
 
 #[derive(Deserialize)]

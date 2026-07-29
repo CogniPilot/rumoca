@@ -162,16 +162,11 @@ fn reconstruct_continuous_family<'dae>(
 ) -> Result<(), DaeConstructionError> {
     let domain = mapped(&ids.domains, family.domain, "domain", family.provenance)?;
     let bodies = mapped_family_bodies(wire, ids, family, body_cursor)?;
-    let id = dae.continuous(|continuous| {
+    dae.continuous(|continuous| {
         continuous.structured_family(family.provenance, domain, family.scalar_view, |residuals| {
             attach_family_bodies(residuals, &bodies)
         })
     })?;
-    if dae.storage.continuous_families[id.index() as usize].scalar_rows != family.scalar_rows {
-        return Err(DaeConstructionError::ShapeMismatch {
-            span: family.provenance.span(),
-        });
-    }
     Ok(())
 }
 
@@ -184,7 +179,7 @@ fn reconstruct_initialization_family<'dae>(
 ) -> Result<(), DaeConstructionError> {
     let domain = mapped(&ids.domains, family.domain, "domain", family.provenance)?;
     let bodies = mapped_family_bodies(wire, ids, family, body_cursor)?;
-    let id = dae.initialization(|initialization| {
+    dae.initialization(|initialization| {
         initialization.structured_family(
             family.provenance,
             domain,
@@ -192,11 +187,6 @@ fn reconstruct_initialization_family<'dae>(
             |residuals| attach_family_bodies(residuals, &bodies),
         )
     })?;
-    if dae.storage.initialization_families[id.index() as usize].scalar_rows != family.scalar_rows {
-        return Err(DaeConstructionError::ShapeMismatch {
-            span: family.provenance.span(),
-        });
-    }
     Ok(())
 }
 

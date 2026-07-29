@@ -35,7 +35,7 @@ pub(super) fn reconstruct<'dae>(
             }
         }
     }
-    expect_expression_arena_consumed(wire, dae)?;
+    expect_expression_arena_consumed(wire, dae, ids)?;
     finish_functions(wire, dae, ids, functions)
 }
 
@@ -665,13 +665,12 @@ fn record_expression<'dae>(
     if rebuilt.index() as usize != index {
         return Err(malformed("expressions.nodes"));
     }
-    let expected_type = mapped(
-        &ids.types,
-        wire_expression(wire, index)?.value_type,
-        "value type",
-        provenance,
-    )?;
-    verify_rebuilt_expression(wire, dae, index, rebuilt, expected_type, provenance)?;
+    expect_no_expression_type_anchor(wire, ids, provenance)?;
+    if dae.storage.expressions.provenance[index] != provenance {
+        return Err(DaeConstructionError::ShapeMismatch {
+            span: provenance.span(),
+        });
+    }
     ids.expressions.push(rebuilt);
     Ok(())
 }

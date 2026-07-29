@@ -1,3 +1,4 @@
+mod derived_wire;
 mod function_wire;
 mod temporal_wire;
 mod wire_buffers;
@@ -609,11 +610,9 @@ fn assert_structured_binders_round_trip_and_reject_forgery(encoded: &str) {
     });
 
     let mut forged: serde_json::Value = serde_json::from_str(encoded).unwrap();
-    forged["storage"]["expressions"]["binder_domains"][3] = serde_json::Value::Null;
-    assert!(matches!(
-        serde_json::from_value::<Dae>(forged),
-        Err(error) if error.to_string().contains("expression shape mismatch")
-    ));
+    forged["storage"]["expressions"]["nodes"][3]["coordinate"]["binder"]["ordinal"] =
+        serde_json::json!(2);
+    assert!(serde_json::from_value::<Dae>(forged).is_err());
 
     let mut forged: serde_json::Value = serde_json::from_str(encoded).unwrap();
     forged["storage"]["continuous_equation_owners"][1] =

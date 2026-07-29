@@ -255,7 +255,9 @@ pub(crate) struct FunctionFoldEntry {
 struct DomainEntry {
     parent: Option<u32>,
     domain: StructuredIndexDomain,
+    #[serde(skip_serializing)]
     extents: Box<[u32]>,
+    #[serde(skip_serializing)]
     scalar_count: u32,
     provenance: DaeProvenance,
 }
