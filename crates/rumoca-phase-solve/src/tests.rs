@@ -862,7 +862,12 @@ fn pre_discrete_value_loads_a_distinct_bound_history_lane() {
                 .at(owner)
                 .coordinate(dae::CoordinateInput::PreDiscreteValue(count))
         })?;
-        model.discrete(|discrete| discrete.assignment(owner, count, previous))?;
+        model.b1c([count], |topology| {
+            topology.owner(owner, [count], |owner_scope| {
+                owner_scope.always(owner, [(previous, owner)])
+            })?;
+            Ok(())
+        })?;
         Ok(())
     })
     .unwrap();

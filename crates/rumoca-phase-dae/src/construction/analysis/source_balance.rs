@@ -44,7 +44,7 @@ pub(super) fn source_balance(
                 detail.discrete_real_equations += equation.scalar_count;
             }
             EquationPartition::DiscreteValue(_) => {
-                detail.discrete_assignments += equation.scalar_count;
+                detail.discrete_value_definitions += equation.scalar_count;
             }
         }
     }
@@ -62,7 +62,7 @@ pub(super) fn source_balance(
                 detail.continuous_equations += scalar_count;
             }
             PlannedRole::DiscreteReal => detail.discrete_real_equations += scalar_count,
-            PlannedRole::DiscreteValue => detail.discrete_assignments += scalar_count,
+            PlannedRole::DiscreteValue => detail.discrete_value_definitions += scalar_count,
             PlannedRole::EnumerationLiteral | PlannedRole::Aggregate => {
                 unreachable!("expression-only roles are not model variables")
             }
@@ -91,7 +91,7 @@ fn add_algorithm_target(
             detail.continuous_equations += scalar_count;
         }
         PlannedRole::DiscreteReal => detail.discrete_real_equations += scalar_count,
-        PlannedRole::DiscreteValue => detail.discrete_assignments += scalar_count,
+        PlannedRole::DiscreteValue => detail.discrete_value_definitions += scalar_count,
         PlannedRole::Parameter
         | PlannedRole::Constant
         | PlannedRole::Input

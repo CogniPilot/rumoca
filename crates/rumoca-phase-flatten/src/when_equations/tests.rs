@@ -432,11 +432,19 @@ fn assignments_before_and_after_nested_conditionals_are_duplicate_definitions() 
 #[test]
 fn for_expansion_cannot_define_one_scalar_target_twice() {
     let span = test_span();
+    let target_span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("when_equations_test.mo"),
+        20,
+        29,
+    );
     let blocks = [ast::EquationBlock {
         cond: bool_expr(true, span),
         eqs: vec![ast::Equation::For {
             indices: vec![for_index("i", 1, 2)],
-            equations: vec![assignment("duplicate", 1)],
+            equations: vec![ast::Equation::Simple {
+                lhs: var_expr_with_span("duplicate", target_span),
+                rhs: int_expr(1),
+            }],
         }],
     }];
     let error = flatten_when_blocks(
@@ -451,7 +459,7 @@ fn for_expansion_cannot_define_one_scalar_target_twice() {
     assert!(matches!(
         error,
         FlattenError::UnsupportedEquation { description, span: found }
-            if found == span && description.contains("`duplicate`")
+            if found == target_span && description.contains("`duplicate`")
     ));
 }
 

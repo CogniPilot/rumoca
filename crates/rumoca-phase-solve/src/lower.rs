@@ -20,7 +20,7 @@ pub(crate) fn lower_solve_problem<'dae>(
     if view.variable_count() == 0
         && view.continuous_owner_count() == 0
         && view.initialization_owner_count() == 0
-        && view.discrete_assignment_count() == 0
+        && view.discrete_value_owner_count() == 0
     {
         return Err(LowerError::unspanned_non_computable(
             "the model has no variables or equations to simulate",

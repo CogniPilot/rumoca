@@ -90,7 +90,7 @@ impl Serialize for FrozenStorage {
             ),
         )?;
         state.serialize_field("discrete_real_equations", &self.discrete_real_equations)?;
-        state.serialize_field("discrete_assignments", &self.discrete_assignments)?;
+        state.serialize_field("discrete_value_owners", &discrete_value_owner_output(self))?;
         state.serialize_field("relations", &self.relations)?;
         state.serialize_field("conditions", &self.conditions)?;
         state.serialize_field("roots", &self.roots)?;
@@ -125,7 +125,7 @@ struct StorageWire {
     continuous_equation_operations: Vec<EquationOperationInput>,
     initialization_equation_operations: Vec<EquationOperationInput>,
     discrete_real_equations: Vec<ResidualEquationWire>,
-    discrete_assignments: Vec<DiscreteAssignmentWire>,
+    discrete_value_owners: Vec<DiscreteValueOwnerInput>,
     relations: Vec<RelationEntryWire>,
     conditions: Vec<ConditionEntryWire>,
     roots: Vec<RootEntryWire>,
@@ -276,11 +276,91 @@ enum EquationOperationInput {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct DiscreteAssignmentWire {
-    target: u32,
+struct DiscreteValueOwnerInput {
+    targets: Vec<u32>,
+    branches: Vec<DiscreteValueBranchInput>,
+    #[serde(deserialize_with = "deserialize_provenance")]
+    provenance: DaeProvenance,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DiscreteValueBranchInput {
+    activation: DiscreteBranchActivationInput,
+    values: Vec<DiscreteValueActionInput>,
+    #[serde(deserialize_with = "deserialize_provenance")]
+    provenance: DaeProvenance,
+}
+
+#[derive(Deserialize, Clone, Copy)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+enum DiscreteBranchActivationInput {
+    Always,
+    When { trigger: u32, guard: u32 },
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DiscreteValueActionInput {
     value: u32,
     #[serde(deserialize_with = "deserialize_provenance")]
     provenance: DaeProvenance,
+}
+
+#[derive(Serialize)]
+#[serde(deny_unknown_fields)]
+struct DiscreteValueOwnerOutput<'a> {
+    targets: &'a [u32],
+    branches: Vec<DiscreteValueBranchOutput>,
+    provenance: DaeProvenance,
+}
+
+#[derive(Serialize)]
+#[serde(deny_unknown_fields)]
+struct DiscreteValueBranchOutput {
+    activation: DiscreteBranchActivationEntry,
+    values: Vec<DiscreteValueActionOutput>,
+    provenance: DaeProvenance,
+}
+
+#[derive(Serialize)]
+#[serde(deny_unknown_fields)]
+struct DiscreteValueActionOutput {
+    value: u32,
+    provenance: DaeProvenance,
+}
+
+fn discrete_value_owner_output(storage: &FrozenStorage) -> Vec<DiscreteValueOwnerOutput<'_>> {
+    storage
+        .discrete_value_owners
+        .iter()
+        .map(|owner| {
+            let targets = &storage.discrete_value_targets[owner.targets.indices()];
+            let branches = storage.discrete_value_branches[owner.branches.indices()]
+                .iter()
+                .map(|branch| {
+                    let values = branch
+                        .values
+                        .indices()
+                        .map(|index| DiscreteValueActionOutput {
+                            value: storage.discrete_value_branch_values[index],
+                            provenance: storage.discrete_value_branch_value_provenance[index],
+                        })
+                        .collect();
+                    DiscreteValueBranchOutput {
+                        activation: branch.activation,
+                        values,
+                        provenance: branch.provenance,
+                    }
+                })
+                .collect();
+            DiscreteValueOwnerOutput {
+                targets,
+                branches,
+                provenance: owner.provenance,
+            }
+        })
+        .collect()
 }
 
 #[derive(Deserialize, Clone, Copy)]
@@ -335,7 +415,6 @@ enum EventActionKindWire {
     Terminate { message: u32 },
     Reinitialize { state: u32, value: u32 },
     AssignDiscreteReal { target: u32, value: u32 },
-    AssignDiscreteValue { target: u32, value: u32 },
 }
 
 #[derive(Deserialize)]
@@ -534,7 +613,8 @@ fn reconstruct<'dae>(
     define_conditions(wire, dae, &ids)?;
     reconstruct_roots(wire, dae, &ids)?;
     reconstruct_events(wire, dae, &ids)?;
-    reconstruct_equation_systems(wire, dae, &ids)
+    reconstruct_equation_systems(wire, dae, &ids)?;
+    reconstruct_discrete_value_owners(wire, dae, &ids)
 }
 
 fn reconstruct_types<'dae>(
@@ -1404,20 +1484,91 @@ fn reconstruct_events<'dae>(
                     action.provenance,
                 )
             }
-            EventActionKindWire::AssignDiscreteValue { target, value } => {
-                let target = mapped(&ids.variables, target, "variable", action.provenance)?;
-                events.assign_discrete_value(
-                    trigger,
-                    guard,
-                    crate::DiscreteValueId::from_raw(target.index()),
-                    mapped(&ids.expressions, value, "expression", action.provenance)?,
-                    action.provenance,
-                )
-            }
         })?;
         expect_ordinal("event action", index, id.index(), action.provenance)?;
     }
     Ok(())
+}
+
+fn reconstruct_discrete_value_owners<'dae>(
+    wire: &StorageWire,
+    dae: &mut DaeConstruction<'dae>,
+    ids: &WireIds<'dae>,
+) -> Result<(), DaeConstructionError> {
+    let plan = wire
+        .discrete_value_owners
+        .iter()
+        .flat_map(|owner| {
+            owner
+                .targets
+                .iter()
+                .copied()
+                .map(move |target| (target, owner.provenance))
+        })
+        .map(|(target, provenance)| {
+            let variable = mapped(&ids.variables, target, "variable", provenance)?;
+            Ok(DiscreteValueId::from_raw(variable.index()))
+        })
+        .collect::<Result<Vec<_>, DaeConstructionError>>()?;
+    dae.b1c(plan, |topology| {
+        for (ordinal, owner) in wire.discrete_value_owners.iter().enumerate() {
+            let rebuilt = replay_discrete_value_owner(owner, topology, ids)?;
+            expect_ordinal("B.1c owner", ordinal, rebuilt.index(), owner.provenance)?;
+        }
+        Ok(())
+    })
+}
+
+fn replay_discrete_value_owner<'dae>(
+    owner: &DiscreteValueOwnerInput,
+    topology: &mut crate::DiscreteValueTopology<'_, 'dae>,
+    ids: &WireIds<'dae>,
+) -> Result<crate::DiscreteValueOwnerId<'dae>, DaeConstructionError> {
+    let targets = owner
+        .targets
+        .iter()
+        .map(|&target| {
+            let variable = mapped(&ids.variables, target, "variable", owner.provenance)?;
+            Ok(DiscreteValueId::from_raw(variable.index()))
+        })
+        .collect::<Result<Vec<_>, DaeConstructionError>>()?;
+    topology.owner(owner.provenance, targets, |staged| {
+        for branch in &owner.branches {
+            replay_discrete_value_branch(branch, staged, ids)?;
+        }
+        Ok(())
+    })
+}
+
+fn replay_discrete_value_branch<'dae>(
+    branch: &DiscreteValueBranchInput,
+    staged: &mut crate::DiscreteValueOwner<'_, 'dae>,
+    ids: &WireIds<'dae>,
+) -> Result<(), DaeConstructionError> {
+    let values = branch
+        .values
+        .iter()
+        .map(|action| {
+            Ok((
+                mapped(
+                    &ids.expressions,
+                    action.value,
+                    "expression",
+                    action.provenance,
+                )?,
+                action.provenance,
+            ))
+        })
+        .collect::<Result<Vec<_>, DaeConstructionError>>()?;
+    match branch.activation {
+        DiscreteBranchActivationInput::Always => staged.always(branch.provenance, values),
+        DiscreteBranchActivationInput::When { trigger, guard } => staged.when(
+            mapped(&ids.conditions, trigger, "condition", branch.provenance)?,
+            mapped(&ids.conditions, guard, "condition", branch.provenance)?,
+            branch.provenance,
+            values,
+        ),
+    }
 }
 
 fn reconstruct_clocks<'dae>(

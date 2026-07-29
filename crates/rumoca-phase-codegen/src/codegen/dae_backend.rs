@@ -7,7 +7,7 @@
 use rumoca_ir_dae as dae;
 use serde_json::{Value, json};
 
-pub(super) const TEMPLATE_SCHEMA_VERSION: u16 = 2;
+pub(super) const TEMPLATE_SCHEMA_VERSION: u16 = 3;
 
 #[derive(Debug, thiserror::Error)]
 pub(super) enum DaeBackendError {
@@ -60,7 +60,7 @@ fn project_view(view: dae::DaeView<'_>) -> Result<Value, DaeBackendError> {
             "continuous": project_continuous(view),
             "initialization": project_initialization(view),
             "discrete_real": project_discrete_real(view),
-            "discrete_assignments": project_discrete_assignments(view),
+            "discrete_values": project_discrete_values(view),
             "conditions": project_conditions(view),
             "events": project_events(view),
             "clocks": project_clocks(view),
@@ -623,23 +623,55 @@ fn project_discrete_real(view: dae::DaeView<'_>) -> Value {
     })
 }
 
-fn project_discrete_assignments(view: dae::DaeView<'_>) -> Vec<Value> {
-    (0..view.discrete_assignment_count())
+fn project_discrete_values(view: dae::DaeView<'_>) -> Value {
+    let owners = (0..view.discrete_value_owner_count())
         .map(|index| {
             let id = view
-                .discrete_assignment_id(index)
-                .expect("dense checked discrete assignment identity resolves");
-            let assignment = view
-                .discrete_assignment(id)
-                .expect("checked discrete assignment resolves");
+                .discrete_value_owner_id(index)
+                .expect("dense checked B.1c owner identity resolves");
+            let owner = view
+                .discrete_value_owner(id)
+                .expect("checked B.1c owner resolves");
             json!({
                 "id": id.index(),
-                "target": assignment.target().index(),
-                "value": assignment.value().index(),
-                "provenance": assignment.provenance(),
+                "targets": owner
+                    .targets()
+                    .iter()
+                    .map(|target| target.index())
+                    .collect::<Vec<_>>(),
+                "branches": owner
+                    .branches()
+                    .iter()
+                    .map(|branch| {
+                        let activation = match branch.activation() {
+                            dae::DiscreteBranchActivation::Always => {
+                                json!({ "kind": "always" })
+                            }
+                            dae::DiscreteBranchActivation::When { trigger, guard } => json!({
+                                "kind": "when",
+                                "trigger": trigger.index(),
+                                "guard": guard.index(),
+                            }),
+                        };
+                        json!({
+                            "activation": activation,
+                            "values": branch
+                                .values()
+                                .iter()
+                                .map(|(value, provenance)| json!({
+                                    "expression": value.index(),
+                                    "provenance": provenance,
+                                }))
+                                .collect::<Vec<_>>(),
+                            "provenance": branch.provenance(),
+                        })
+                    })
+                    .collect::<Vec<_>>(),
+                "provenance": owner.provenance(),
             })
         })
-        .collect()
+        .collect::<Vec<_>>();
+    json!({ "owners": owners })
 }
 
 fn project_conditions(view: dae::DaeView<'_>) -> Value {
@@ -765,11 +797,6 @@ fn project_event_action(operation: dae::EventActionOperation<'_>) -> Value {
         }),
         dae::EventActionOperation::AssignDiscreteReal { target, value } => json!({
             "kind": "assign_discrete_real",
-            "target": target.index(),
-            "value": value.index(),
-        }),
-        dae::EventActionOperation::AssignDiscreteValue { target, value } => json!({
-            "kind": "assign_discrete_value",
             "target": target.index(),
             "value": value.index(),
         }),

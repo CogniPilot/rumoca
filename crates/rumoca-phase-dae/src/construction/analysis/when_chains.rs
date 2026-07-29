@@ -1,8 +1,6 @@
 use super::*;
 use rumoca_core::ExpressionRewriter;
 
-type DefinitionMap = flat::VarNameIndexMap<Span>;
-
 pub(super) fn validate_when_chains(
     chains: &[flat::WhenChain],
     roles: &HashMap<VarName, PlannedRole>,
@@ -10,7 +8,6 @@ pub(super) fn validate_when_chains(
     constants: &EvalContext,
     sample_lattices: &mut Vec<(Span, ClockLattice)>,
 ) -> Result<HashSet<Span>, ToDaeError> {
-    validate_unique_when_owners(chains)?;
     let mut reinit_state_pre = HashSet::new();
     for chain in chains {
         for branch in chain.branches() {
@@ -38,107 +35,6 @@ pub(super) fn validate_when_chains(
         }
     }
     Ok(reinit_state_pre)
-}
-
-fn validate_unique_when_owners(chains: &[flat::WhenChain]) -> Result<(), ToDaeError> {
-    let mut owners = DefinitionMap::default();
-    for chain in chains {
-        require_span(chain.span(), "when chain")?;
-        let mut chain_definitions = DefinitionMap::default();
-        for branch in chain.branches() {
-            require_span(branch.span, "when branch")?;
-            merge_alternative_definitions(
-                &mut chain_definitions,
-                summarize_when_definitions(&branch.equations)?,
-            );
-        }
-        for (target, _) in chain_definitions {
-            insert_when_owner(&mut owners, target, chain.span())?;
-        }
-    }
-    Ok(())
-}
-
-fn summarize_when_definitions(
-    equations: &[flat::WhenEquation],
-) -> Result<DefinitionMap, ToDaeError> {
-    let mut definitions = DefinitionMap::default();
-    for equation in equations {
-        require_span(equation.span(), "when equation")?;
-        match equation {
-            flat::WhenEquation::Assign { target, span, .. } => {
-                insert_when_definition(&mut definitions, target.clone(), *span)?;
-            }
-            flat::WhenEquation::Reinit { state, span, .. } => {
-                insert_when_definition(&mut definitions, state.clone(), *span)?;
-            }
-            flat::WhenEquation::FunctionCallOutputs { outputs, span, .. } => {
-                for output in outputs {
-                    insert_when_definition(&mut definitions, output.clone(), *span)?;
-                }
-            }
-            flat::WhenEquation::Conditional {
-                branches,
-                else_branch,
-                ..
-            } => {
-                let mut alternatives = DefinitionMap::default();
-                for (_, branch) in branches {
-                    merge_alternative_definitions(
-                        &mut alternatives,
-                        summarize_when_definitions(branch)?,
-                    );
-                }
-                if let Some(else_branch) = else_branch {
-                    merge_alternative_definitions(
-                        &mut alternatives,
-                        summarize_when_definitions(else_branch)?,
-                    );
-                }
-                for (target, span) in alternatives {
-                    insert_when_definition(&mut definitions, target, span)?;
-                }
-            }
-            flat::WhenEquation::Assert { .. } | flat::WhenEquation::Terminate { .. } => {}
-        }
-    }
-    Ok(definitions)
-}
-
-fn merge_alternative_definitions(definitions: &mut DefinitionMap, alternative: DefinitionMap) {
-    for (target, span) in alternative {
-        definitions.entry(target).or_insert(span);
-    }
-}
-
-fn insert_when_definition(
-    definitions: &mut DefinitionMap,
-    target: VarName,
-    span: Span,
-) -> Result<(), ToDaeError> {
-    if definitions.contains_key(&target) {
-        return Err(ToDaeError::discrete_solved_form_violation(
-            format!("when branch target `{target}` is defined more than once"),
-            span,
-        ));
-    }
-    definitions.insert(target, span);
-    Ok(())
-}
-
-fn insert_when_owner(
-    owners: &mut DefinitionMap,
-    target: VarName,
-    owner_span: Span,
-) -> Result<(), ToDaeError> {
-    if owners.contains_key(&target) {
-        return Err(ToDaeError::discrete_solved_form_violation(
-            format!("when target `{target}` is defined by more than one source when owner"),
-            owner_span,
-        ));
-    }
-    owners.insert(target, owner_span);
-    Ok(())
 }
 
 fn validate_when_equations(

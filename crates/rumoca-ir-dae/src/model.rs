@@ -21,9 +21,13 @@ use crate::conditions::{
     ConditionEntry, ConditionOperation, ConditionView, Conditions, RelationEntry, RelationView,
     RootEntry, RootView,
 };
+use crate::discrete_values::{
+    DiscreteBranchActivationEntry, DiscreteValueBranchEntry, DiscreteValueOwnerEntry,
+    DiscreteValueOwnerView, DiscreteValueTopology, build_discrete_value_topology,
+};
 use crate::equations::{
-    ContinuousEquations, DiscreteAssignmentEntry, DiscreteAssignmentView, DiscreteEquations,
-    EquationOwnerEntry, InitializationEquations, ResidualEquationEntry, StructuredFamilyEntry,
+    ContinuousEquations, DiscreteEquations, EquationOwnerEntry, InitializationEquations,
+    ResidualEquationEntry, StructuredFamilyEntry,
 };
 use crate::events::{
     EventActionEntry, EventActionKind, EventActionOperation, EventActionView, Events,
@@ -31,8 +35,7 @@ use crate::events::{
 };
 use crate::expression::{
     BinaryOperator, Coordinate, CoordinateInput, ExprNode, ExpressionArenaStorage,
-    ExpressionVariability, Expressions, FrozenExpressionArenaStorage, PackedSubscriptKind,
-    ValueType, source_text,
+    ExpressionVariability, Expressions, FrozenExpressionArenaStorage, ValueType, source_text,
 };
 use crate::temporal::{
     DelayEntry, DelayKind, DelayOperation, DelayView, PositiveParameterEntry,
@@ -40,8 +43,8 @@ use crate::temporal::{
 };
 use crate::{
     AlgebraicId, ClockId, ClockOwnershipId, ConditionId, ContinuousEquationId, ContinuousFamilyId,
-    DaeConstructionError, DaeGeneration, DaeLiteral, DaeProvenance, DelayId, DiscreteAssignmentId,
-    DiscreteRealId, DiscreteValueId, DomainBinderId, DomainId, EventActionId, ExprId,
+    DaeConstructionError, DaeGeneration, DaeLiteral, DaeProvenance, DelayId, DiscreteRealId,
+    DiscreteValueId, DiscreteValueOwnerId, DomainBinderId, DomainId, EventActionId, ExprId,
     FunctionDefinitionId, FunctionFoldId, FunctionId, FunctionParameterId, FunctionValueId,
     InitializationEquationId, InitializationFamilyId, InputId, ParameterId, PreviousId, RelationId,
     RootId, ScalarType, StateId, TerminalId, TimeEventId, ValueTypeId, VariableId,
@@ -73,13 +76,13 @@ pub(crate) struct VariableEntry {
     pub(crate) role: VariableRole,
     variability: ExpressionVariability,
     pub(crate) value_type: u32,
-    declaration: DaeProvenance,
-    attributes: Option<VariableAttributesWire>,
+    pub(crate) declaration: DaeProvenance,
+    pub(crate) attributes: Option<VariableAttributesWire>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-struct VariableAttributesWire {
+pub(crate) struct VariableAttributesWire {
     component_ref: Option<ComponentReference>,
     binding: Option<u32>,
     start: Option<u32>,
@@ -90,10 +93,34 @@ struct VariableAttributesWire {
     unit: Option<String>,
     state_select: StateSelect,
     description: Option<String>,
-    causality: VariableCausality,
+    pub(crate) causality: VariableCausality,
     is_tunable: bool,
     is_held: bool,
     origin: VariableOrigin,
+}
+
+impl VariableEntry {
+    pub(crate) const fn declaration(&self) -> DaeProvenance {
+        self.declaration
+    }
+
+    pub(crate) const fn attributes_missing(&self) -> bool {
+        self.attributes.is_none()
+    }
+
+    pub(crate) fn is_discrete_value_input(&self) -> bool {
+        self.role == VariableRole::DiscreteValue
+            && self
+                .attributes
+                .as_ref()
+                .is_some_and(|attributes| attributes.causality == VariableCausality::Input)
+    }
+
+    pub(crate) fn requires_discrete_value_owner(&self) -> bool {
+        self.role == VariableRole::DiscreteValue
+            && self.attributes.is_some()
+            && !self.is_discrete_value_input()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -260,7 +287,7 @@ pub(crate) struct Storage {
     pub(crate) value_types: Vec<ValueType>,
     flat_type_ids: Vec<Option<TypeId>>,
     value_type_provenance: Vec<DaeProvenance>,
-    variables: Vec<VariableEntry>,
+    pub(crate) variables: Vec<VariableEntry>,
     pub(crate) functions: Vec<FunctionEntry>,
     pub(crate) function_folds: Vec<FunctionFoldEntry>,
     domains: Vec<DomainEntry>,
@@ -268,7 +295,11 @@ pub(crate) struct Storage {
     pub(crate) continuous_equations: Vec<ResidualEquationEntry>,
     pub(crate) initialization_equations: Vec<ResidualEquationEntry>,
     pub(crate) discrete_real_equations: Vec<ResidualEquationEntry>,
-    pub(crate) discrete_assignments: Vec<DiscreteAssignmentEntry>,
+    pub(crate) discrete_value_owners: Vec<DiscreteValueOwnerEntry>,
+    pub(crate) discrete_value_targets: Vec<u32>,
+    pub(crate) discrete_value_branches: Vec<DiscreteValueBranchEntry>,
+    pub(crate) discrete_value_branch_values: Vec<u32>,
+    pub(crate) discrete_value_branch_value_provenance: Vec<DaeProvenance>,
     pub(crate) continuous_families: Vec<StructuredFamilyEntry>,
     pub(crate) initialization_families: Vec<StructuredFamilyEntry>,
     pub(crate) continuous_equation_owners: Vec<EquationOwnerEntry>,
@@ -289,7 +320,9 @@ pub(crate) struct Storage {
     unfilled_functions: usize,
     unfilled_function_folds: usize,
     pub(crate) unfilled_conditions: usize,
-    pub(crate) unassigned_discrete_values: usize,
+    pub(crate) required_discrete_value_count: usize,
+    pub(crate) first_required_discrete_value: Option<(u32, DaeProvenance)>,
+    pub(crate) discrete_value_topology_complete: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -305,7 +338,11 @@ struct FrozenStorage {
     continuous_equations: Box<[ResidualEquationEntry]>,
     initialization_equations: Box<[ResidualEquationEntry]>,
     discrete_real_equations: Box<[ResidualEquationEntry]>,
-    discrete_assignments: Box<[DiscreteAssignmentEntry]>,
+    discrete_value_owners: Box<[DiscreteValueOwnerEntry]>,
+    discrete_value_targets: Box<[u32]>,
+    discrete_value_branches: Box<[DiscreteValueBranchEntry]>,
+    discrete_value_branch_values: Box<[u32]>,
+    discrete_value_branch_value_provenance: Box<[DaeProvenance]>,
     continuous_families: Box<[StructuredFamilyEntry]>,
     initialization_families: Box<[StructuredFamilyEntry]>,
     continuous_equation_owners: Box<[EquationOwnerEntry]>,
@@ -415,6 +452,14 @@ impl<'dae> DaeConstruction<'dae> {
         clocks => Clocks,
         temporal => Temporal,
     }
+
+    pub fn b1c(
+        &mut self,
+        plan: impl IntoIterator<Item = DiscreteValueId<'dae>>,
+        build: impl FnOnce(&mut DiscreteValueTopology<'_, 'dae>) -> Result<(), DaeConstructionError>,
+    ) -> Result<(), DaeConstructionError> {
+        build_discrete_value_topology(self.source_map, self.storage, plan, build)
+    }
 }
 
 pub struct Variables<'storage, 'dae> {
@@ -505,16 +550,11 @@ impl<'dae> Variables<'_, 'dae> {
             .get(variable.index() as usize)
             .map(|entry| entry.role)
             .ok_or_else(|| unknown("variable", variable.index(), provenance))?;
-        if role == VariableRole::DiscreteValue && !attributes.is_held {
-            if attributes.causality == VariableCausality::Input {
-                return Err(DaeConstructionError::InvalidVariableRole {
-                    name: self.storage.variables[variable.index() as usize]
-                        .name
-                        .clone(),
-                    span: provenance.span(),
-                });
-            }
-            self.storage.unassigned_discrete_values += 1;
+        let requires_discrete_value_owner =
+            role == VariableRole::DiscreteValue && attributes.causality != VariableCausality::Input;
+        if requires_discrete_value_owner {
+            self.storage
+                .expect_discrete_value_topology_open(provenance)?;
         }
         let Some(entry) = self.storage.variables.get_mut(variable.index() as usize) else {
             return Err(unknown("variable", variable.index(), provenance));
@@ -523,6 +563,10 @@ impl<'dae> Variables<'_, 'dae> {
             return Err(duplicate("variable", variable.index(), provenance));
         }
         entry.attributes = Some(erase_variable_attributes(attributes));
+        if requires_discrete_value_owner {
+            self.storage
+                .register_required_discrete_value(variable.index(), provenance);
+        }
         self.storage.unfilled_variables -= 1;
         Ok(())
     }
@@ -536,19 +580,20 @@ impl<'dae> Variables<'_, 'dae> {
         declaration: DaeProvenance,
         attributes: VariableAttributes<'dae>,
     ) -> Result<VariableId<'dae>, DaeConstructionError> {
+        let requires_discrete_value_owner =
+            role == VariableRole::DiscreteValue && attributes.causality != VariableCausality::Input;
+        if requires_discrete_value_owner {
+            self.storage
+                .expect_discrete_value_topology_open(declaration)?;
+        }
         let id = self.reserve_forward(name, role, variability, value_type, declaration)?;
         self.validate_attributes(id, &attributes, declaration)?;
-        if role == VariableRole::DiscreteValue && !attributes.is_held {
-            if attributes.causality == VariableCausality::Input {
-                return Err(DaeConstructionError::InvalidVariableRole {
-                    name: self.storage.variables[id.index() as usize].name.clone(),
-                    span: declaration.span(),
-                });
-            }
-            self.storage.unassigned_discrete_values += 1;
-        }
         self.storage.variables[id.index() as usize].attributes =
             Some(erase_variable_attributes(attributes));
+        if requires_discrete_value_owner {
+            self.storage
+                .register_required_discrete_value(id.index(), declaration);
+        }
         self.storage.unfilled_variables -= 1;
         Ok(id)
     }

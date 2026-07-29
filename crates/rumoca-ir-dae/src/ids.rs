@@ -120,8 +120,8 @@ branded_ids! {
     InitializationEquationId;
     /// Identity of one coupled discrete Real B.1b residual equation.
     DiscreteRealEquationId;
-    /// Identity of one ordered discrete-valued B.1c assignment.
-    DiscreteAssignmentId;
+    /// Identity of one atomic source-priority B.1c definition owner.
+    DiscreteValueOwnerId;
     /// Identity of one condition reserved for a forward body definition.
     ConditionId;
     /// Identity of one primitive relation.

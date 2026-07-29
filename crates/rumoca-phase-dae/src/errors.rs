@@ -227,9 +227,17 @@ impl ToDaeError {
 
 impl From<dae::DaeConstructionError> for ToDaeError {
     fn from(source: dae::DaeConstructionError) -> Self {
-        if let dae::DaeConstructionError::InvalidDiscreteDependencyCycle { target, span } = source {
+        if let dae::DaeConstructionError::UnissuedDiscreteDependency {
+            target,
+            dependency,
+            span,
+        } = source
+        {
             return Self::discrete_solved_form_violation(
-                format!("target identity {target} participates in a current-value cycle"),
+                format!(
+                    "target identity {target} reads discrete-value identity {dependency} before \
+                     its semantic owner"
+                ),
                 span,
             );
         }

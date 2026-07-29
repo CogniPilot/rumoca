@@ -119,6 +119,11 @@ pub enum DaeConstructionError {
         index: u32,
         span: Span,
     },
+    #[error("duplicate {kind} construction")]
+    DuplicateTopology {
+        kind: &'static str,
+        span: Option<Span>,
+    },
     #[error("duplicate {kind} key `{key}`")]
     DuplicateKey {
         kind: &'static str,
@@ -131,8 +136,26 @@ pub enum DaeConstructionError {
         clock: u32,
         span: Span,
     },
-    #[error("discrete-value target identity {target} has a cyclic current-value dependency")]
-    InvalidDiscreteDependencyCycle { target: u32, span: Span },
+    #[error("invalid B.1c topology plan at discrete-value target identity {target}")]
+    InvalidDiscreteTopologyPlan { target: u32, span: Span },
+    #[error("B.1c owner target order mismatch: expected {expected:?}, found {found:?}")]
+    InvalidDiscreteTargetOrder {
+        expected: Option<u32>,
+        found: Option<u32>,
+        span: Span,
+    },
+    #[error("B.1c owner must contain at least one target and one branch")]
+    EmptyDiscreteValueOwner { span: Span },
+    #[error("an unconditional B.1c owner must contain exactly one `always` branch")]
+    InvalidDiscreteBranchSet { span: Span },
+    #[error(
+        "B.1c target identity {target} reads not-yet-issued current discrete value {dependency}"
+    )]
+    UnissuedDiscreteDependency {
+        target: u32,
+        dependency: u32,
+        span: Span,
+    },
     #[error("missing {kind} definition for identity {index}")]
     IncompleteDefinition {
         kind: &'static str,
@@ -185,8 +208,9 @@ impl fmt::Display for ScopeViolation {
 impl DaeConstructionError {
     /// Source owner for construction failures that arise from a semantic add.
     ///
-    /// Schema-version and malformed-column failures are wire-container errors
-    /// and therefore have no semantic owner span.
+    /// Schema-version and malformed-column failures are wire-container errors.
+    /// Reusing an already-consumed empty topology capability is also source-free:
+    /// there is no semantic owner from which an honest span could be obtained.
     pub const fn source_span(&self) -> Option<Span> {
         match self {
             Self::MissingProvenance { attempted_span, .. } => Some(*attempted_span),
@@ -220,8 +244,13 @@ impl DaeConstructionError {
             | Self::DuplicateDefinition { span, .. }
             | Self::DuplicateKey { span, .. }
             | Self::MissingClockOwnership { span, .. }
-            | Self::InvalidDiscreteDependencyCycle { span, .. }
+            | Self::InvalidDiscreteTopologyPlan { span, .. }
+            | Self::InvalidDiscreteTargetOrder { span, .. }
+            | Self::EmptyDiscreteValueOwner { span }
+            | Self::InvalidDiscreteBranchSet { span }
+            | Self::UnissuedDiscreteDependency { span, .. }
             | Self::IncompleteDefinition { span, .. } => Some(*span),
+            Self::DuplicateTopology { span, .. } => *span,
             Self::InvalidSchemaVersion { .. } | Self::MalformedWire { .. } => None,
         }
     }

@@ -129,7 +129,7 @@ end IndexedWhenTargets;
 }
 
 #[test]
-fn test_when_single_assign_rejects_same_target_across_when_equations() {
+fn test_when_single_assign_leaves_cross_owner_identity_to_typed_ir() {
     let source = r#"
 model DuplicateWhenTarget
   Boolean open1;
@@ -144,23 +144,16 @@ t0 = time;
   end when;
 end DuplicateWhenTarget;
 "#;
-    let result = resolve_test_source(source);
-    assert!(result.is_err(), "duplicate when target should fail");
-    let diagnostics = result.expect_err("expected diagnostics");
-    assert!(
-        diagnostics
-            .iter()
-            .any(|diag| diag.code.as_deref() == Some("ER053")),
-        "expected ER053 for duplicate when target, got: {diagnostics:?}"
-    );
+    resolve_test_source(source)
+        .expect("Resolve does not compare ownership using rendered component references");
 }
 
 #[test]
-fn test_when_single_assign_rejects_duplicate_in_one_branch_at_second_target() {
+fn test_when_single_assign_does_not_claim_branch_local_multiplicity() {
     let source = r#"
 model DuplicateWithinWhenBranch
   Boolean trigger;
-  Real x;
+  discrete Real x;
 equation
   when edge(trigger) then
     x = 1;
@@ -169,62 +162,31 @@ equation
 end DuplicateWithinWhenBranch;
 "#;
 
-    let diagnostics =
-        resolve_test_source(source).expect_err("one when branch cannot define x twice");
-    let diagnostic = diagnostics
-        .iter()
-        .find(|diagnostic| diagnostic.code.as_deref() == Some("ER053"))
-        .expect("duplicate definition must report ER053");
-    let label = diagnostic
-        .labels
-        .iter()
-        .find(|label| label.primary)
-        .expect("ER053 must identify the second definition");
-    assert_eq!(&source[label.span.start.0..label.span.end.0], "x");
-    assert_eq!(
-        label.span.start.0,
-        source.find("x = 2").expect("second assignment is present"),
-        "ER053 must point at the second target, not the first"
-    );
+    resolve_test_source(source)
+        .expect("EQN-020 only compares definitions owned by distinct when-equations");
 }
 
 #[test]
-fn test_when_single_assign_rejects_assignment_before_conditional_definition() {
+fn test_eqn_012_branch_mismatch_is_not_claimed_by_when_owner_check() {
     let source = r#"
-model AssignmentBeforeConditional
-  Boolean trigger;
-  Boolean choose;
-  Real x;
+model BranchVariableSetMismatch
+  Boolean sel;
+  Integer i(start = 0);
+  Integer j(start = 0);
+  Boolean c = time > 1;
 equation
-  when edge(trigger) then
-    x = 1;
-    if choose then
-      x = 2;
+  when c then
+    if sel then
+      i = 1;
     else
-      x = 3;
+      j = 2;
     end if;
   end when;
-end AssignmentBeforeConditional;
+end BranchVariableSetMismatch;
 "#;
 
-    let diagnostics = resolve_test_source(source)
-        .expect_err("a conditional contributes its target once to the enclosing sequence");
-    let diagnostic = diagnostics
-        .iter()
-        .find(|diagnostic| diagnostic.code.as_deref() == Some("ER053"))
-        .expect("sequential assignment and conditional definition must report ER053");
-    let label = diagnostic
-        .labels
-        .iter()
-        .find(|label| label.primary)
-        .expect("ER053 must identify the colliding conditional target");
-    assert_eq!(&source[label.span.start.0..label.span.end.0], "x");
-    assert_eq!(
-        label.span.start.0,
-        source
-            .find("x = 2")
-            .expect("first conditional target is present"),
-        "the conditional's representative target is the second occurrence"
+    resolve_test_source(source).expect(
+        "Resolve must leave EQN-012 branch-set validation to ToDAE's semantic-owner constructor",
     );
 }
 
@@ -296,7 +258,7 @@ end MutuallyExclusiveOuterIfTargets;
 }
 
 #[test]
-fn test_when_single_assign_rejects_sequential_owners_in_outer_if_branch() {
+fn test_when_single_assign_leaves_nested_cross_owner_identity_to_typed_ir() {
     let source = r#"
 model SequentialWhenOwnersInOuterIf
   parameter Boolean enabled = true;
@@ -315,25 +277,8 @@ equation
 end SequentialWhenOwnersInOuterIf;
 "#;
 
-    let diagnostics = resolve_test_source(source)
-        .expect_err("sequential when owners on one selected path cannot share a target");
-    let diagnostic = diagnostics
-        .iter()
-        .find(|diagnostic| diagnostic.code.as_deref() == Some("ER053"))
-        .expect("sequential owners must report ER053");
-    let label = diagnostic
-        .labels
-        .iter()
-        .find(|label| label.primary)
-        .expect("ER053 must identify the second owner");
-    assert_eq!(&source[label.span.start.0..label.span.end.0], "x");
-    assert_eq!(
-        label.span.start.0,
-        source
-            .find("x = 2")
-            .expect("second owner target is present"),
-        "ER053 must point at the target in the second sequential owner"
-    );
+    resolve_test_source(source)
+        .expect("Resolve leaves cross-owner comparison to a typed semantic-owner constructor");
 }
 
 #[test]
@@ -363,7 +308,7 @@ end MutuallyExclusiveOuterIfReinit;
 }
 
 #[test]
-fn test_reinit_rejects_sequential_owners_in_outer_if_branch_at_second_target() {
+fn test_reinit_leaves_cross_owner_identity_to_typed_ir() {
     let source = r#"
 model SequentialReinitOwnersInOuterIf
   parameter Boolean enabled = true;
@@ -383,25 +328,8 @@ equation
 end SequentialReinitOwnersInOuterIf;
 "#;
 
-    let diagnostics = resolve_test_source(source)
-        .expect_err("sequential when owners cannot both reinitialize one state");
-    let diagnostic = diagnostics
-        .iter()
-        .find(|diagnostic| diagnostic.code.as_deref() == Some("ER051"))
-        .expect("sequential reinit owners must report ER051");
-    let label = diagnostic
-        .labels
-        .iter()
-        .find(|label| label.primary)
-        .expect("ER051 must identify the second reinit target");
-    assert_eq!(&source[label.span.start.0..label.span.end.0], "x");
-    assert_eq!(
-        label.span.start.0,
-        source
-            .find("x, 2")
-            .expect("second reinit target is present"),
-        "ER051 must point at the target in the second sequential owner"
-    );
+    resolve_test_source(source)
+        .expect("Resolve leaves cross-owner comparison to the typed DAE constructor");
 }
 
 #[test]
@@ -428,7 +356,7 @@ end MutuallyExclusiveInnerIfReinit;
 }
 
 #[test]
-fn test_reinit_rejects_overlapping_sequential_inner_if_paths() {
+fn test_reinit_leaves_branch_distribution_to_flatten() {
     let source = r#"
 model OverlappingSequentialInnerIfReinit
   Boolean trigger;
@@ -450,25 +378,8 @@ equation
 end OverlappingSequentialInnerIfReinit;
 "#;
 
-    let diagnostics = resolve_test_source(source)
-        .expect_err("two sequential inner if paths may both reinitialize x");
-    let diagnostic = diagnostics
-        .iter()
-        .find(|diagnostic| diagnostic.code.as_deref() == Some("ER052"))
-        .expect("overlapping reinit paths must report ER052");
-    let label = diagnostic
-        .labels
-        .iter()
-        .find(|label| label.primary)
-        .expect("ER052 must identify the second reinit target");
-    assert_eq!(&source[label.span.start.0..label.span.end.0], "x");
-    assert_eq!(
-        label.span.start.0,
-        source
-            .find("x, 2")
-            .expect("second reinit target is present"),
-        "ER052 must point at the second potentially executable reinit"
-    );
+    resolve_test_source(source)
+        .expect("Resolve leaves branch-distribution checks to Flat target identity");
 }
 
 #[test]

@@ -148,22 +148,6 @@ pub(super) fn reconstruct_equation_systems<'dae>(
             discrete.real_equation(equation.provenance, |owner| owner.residual(residual))
         })?;
     }
-    for assignment in &wire.discrete_assignments {
-        let variable = mapped(
-            &ids.variables,
-            assignment.target,
-            "variable",
-            assignment.provenance,
-        )?;
-        let target = DiscreteValueId::from_raw(variable.index());
-        let value = mapped(
-            &ids.expressions,
-            assignment.value,
-            "expression",
-            assignment.provenance,
-        )?;
-        dae.discrete(|discrete| discrete.assignment(assignment.provenance, target, value))?;
-    }
     Ok(())
 }
 

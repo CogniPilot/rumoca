@@ -25,6 +25,60 @@ fn variable_attributes(dae: &Dae, role: VariableRole, name: &str) -> Option<(boo
     })
 }
 
+fn owner_target_index(dae: &Dae, owner_index: usize, target_name: &str) -> Option<usize> {
+    dae.inspect(|view| {
+        let owner_id = view.discrete_value_owner_id(owner_index)?;
+        let owner = view.discrete_value_owner(owner_id)?;
+        owner
+            .targets()
+            .iter()
+            .enumerate()
+            .find_map(|(target_index, target)| {
+                let variable = view.variable(target.into())?;
+                (variable.name().as_str() == target_name).then_some(target_index)
+            })
+    })
+}
+
+fn owner_target_reads_pre(dae: &Dae, owner_index: usize, target_index: usize) -> bool {
+    dae.inspect(|view| {
+        let Some(owner) = view
+            .discrete_value_owner_id(owner_index)
+            .and_then(|id| view.discrete_value_owner(id))
+        else {
+            return false;
+        };
+        let Some(target) = owner.targets().get(target_index) else {
+            return false;
+        };
+        owner.branches().iter().any(|branch| {
+            let Some((value, _)) = branch.values().get(target_index) else {
+                return false;
+            };
+            let mut reads_pre = false;
+            rumoca_compile::compile::for_each_expression(view, value, |_, expression| {
+                reads_pre |= matches!(
+                    expression.operation(),
+                    rumoca_compile::compile::ExpressionOperation::Coordinate(
+                        rumoca_compile::compile::CoordinateView::PreDiscreteValue(candidate)
+                    ) if candidate == target
+                );
+            });
+            reads_pre
+        })
+    })
+}
+
+fn owner_reads_its_pre_fallback(dae: &Dae, owner_index: usize, target_name: &str) -> bool {
+    owner_target_index(dae, owner_index, target_name)
+        .is_some_and(|target_index| owner_target_reads_pre(dae, owner_index, target_index))
+}
+
+fn dae_reads_pre_fallback(dae: &Dae, target_name: &str) -> bool {
+    let owner_count = dae.inspect(|view| view.discrete_value_owner_count());
+    (0..owner_count).any(|index| owner_reads_its_pre_fallback(dae, index, target_name))
+}
+
 // =============================================================================
 // SIM-002: Initialization fixed
 // "Continuous Real with fixed=true adds equation vc = startExpression"
@@ -381,8 +435,8 @@ fn sim_009_sample_allowed_in_discrete_when_condition() {
     assert!(
         result
             .dae
-            .inspect(|view| view.discrete_assignment_count() > 0),
-        "sample() in when-condition should lower to discrete partition equations"
+            .inspect(|view| view.discrete_value_owner_count() > 0),
+        "sample() in when-condition should lower to checked B.1c owners"
     );
 }
 
@@ -506,8 +560,8 @@ fn sim_005_discrete_solved_form_acyclic_dependency() {
     assert!(
         result
             .dae
-            .inspect(|view| view.discrete_assignment_count() == 2),
-        "the checked discrete partition must contain two typed assignments"
+            .inspect(|view| view.discrete_value_definition_count() == 2),
+        "the checked discrete partition must contain two typed B.1c definitions"
     );
 }
 
@@ -531,36 +585,7 @@ fn sim_005_conditional_when_missing_branch_uses_pre_fallback() {
     );
 
     assert!(
-        result.dae.inspect(|view| {
-            (0..view.discrete_assignment_count()).any(|index| {
-                let assignment = view
-                    .discrete_assignment(
-                        view.discrete_assignment_id(index)
-                            .expect("dense discrete assignment"),
-                    )
-                    .expect("checked discrete assignment resolves");
-                let target = view
-                    .variable(assignment.target().into())
-                    .expect("assignment target resolves");
-                if target.name().as_str() != "k" {
-                    return false;
-                }
-                let mut has_pre_fallback = false;
-                rumoca_compile::compile::for_each_expression(
-                    view,
-                    assignment.value(),
-                    |_, expression| {
-                        has_pre_fallback |= matches!(
-                            expression.operation(),
-                            rumoca_compile::compile::ExpressionOperation::Coordinate(
-                                rumoca_compile::compile::CoordinateView::PreDiscreteValue(candidate)
-                            ) if candidate == assignment.target()
-                        );
-                    },
-                );
-                has_pre_fallback
-            })
-        }),
+        dae_reads_pre_fallback(&result.dae, "k"),
         "conditional when lowering must preserve the typed pre(k) fallback"
     );
 }

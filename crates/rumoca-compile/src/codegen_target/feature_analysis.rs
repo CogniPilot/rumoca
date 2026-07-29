@@ -63,7 +63,7 @@ pub(super) fn dae_has_events(model: &dae::Dae) -> bool {
             || view.time_event_count() != 0
             || view.event_action_count() != 0
             || view.discrete_real_equation_count() != 0
-            || view.discrete_assignment_count() != 0
+            || view.discrete_value_owner_count() != 0
     })
 }
 

@@ -2,6 +2,12 @@ use super::*;
 
 #[test]
 fn exact_clocks_own_each_clocked_variable_once() {
+    let dae = exact_clock_fixture();
+    dae.inspect(assert_clock_views);
+    assert_clock_wire_round_trip(&dae);
+}
+
+fn exact_clock_fixture() -> Dae {
     let source = TestSource::new(
         "discrete Real z; discrete Boolean m; when trigger then z = 1; m = true; end when; \
          previous(z); terminal();",
@@ -13,7 +19,7 @@ fn exact_clocks_own_each_clocked_variable_once() {
     let previous_at = source.source("previous(z)", 0);
     let terminal_at = source.source("terminal()", 0);
 
-    let dae = Dae::construct(source.map, |dae| {
+    Dae::construct(source.map, |dae| {
         let real = dae.types(|types| {
             types.intern(TypeId::new(0), ValueType::scalar(ScalarType::Real), z_at)
         })?;
@@ -45,8 +51,6 @@ fn exact_clocks_own_each_clocked_variable_once() {
         dae.conditions(|conditions| {
             conditions.define(condition, ConditionInput::Discrete(trigger), trigger_at)
         })?;
-        dae.discrete(|discrete| discrete.assignment(owner, m, trigger))?;
-
         let periodic = dae.clocks(|clocks| {
             let lattice = ClockLattice::new(
                 ClockRational::new(1, 10).unwrap(),
@@ -69,6 +73,12 @@ fn exact_clocks_own_each_clocked_variable_once() {
             ));
             Ok(periodic)
         })?;
+        dae.b1c([m], |topology| {
+            topology.owner(owner, [m], |branch_owner| {
+                branch_owner.when(condition, condition, trigger_at, [(trigger, owner)])
+            })?;
+            Ok(())
+        })?;
         let (previous, terminal) = dae.temporal(|temporal| {
             Ok((
                 temporal.previous_discrete_real(periodic, z, previous_at)?,
@@ -85,10 +95,11 @@ fn exact_clocks_own_each_clocked_variable_once() {
             Ok(())
         })
     })
-    .unwrap();
+    .unwrap()
+}
 
-    dae.inspect(assert_clock_views);
-    let encoded = serde_json::to_string(&dae).unwrap();
+fn assert_clock_wire_round_trip(dae: &Dae) {
+    let encoded = serde_json::to_string(dae).unwrap();
     let decoded: Dae = serde_json::from_str(&encoded).unwrap();
     decoded.inspect(|view| {
         assert_eq!(view.clock_count(), 2);

@@ -56,10 +56,6 @@ struct Args {
     #[arg(long = "inspect-sim-time")]
     inspect_sim_times: Vec<f64>,
 
-    /// Materialize DAE even when strict balance validation would reject it.
-    #[arg(long)]
-    allow_unbalanced: bool,
-
     /// Directory for focused JSON artifacts.
     #[arg(long)]
     artifact_dir: Option<PathBuf>,
@@ -131,22 +127,6 @@ fn print_compile_phase_snapshot() {
     );
 }
 
-fn write_strict_flat_artifact(
-    session: &mut Session,
-    model: &str,
-    artifact_dir: Option<&std::path::Path>,
-) -> Result<()> {
-    let Some(artifact_dir) = artifact_dir else {
-        return Ok(());
-    };
-    let flat = session
-        .compile_model_flat_strict_reachable_uncached_with_recovery(model)
-        .map_err(anyhow::Error::msg)?;
-    std::fs::create_dir_all(artifact_dir)
-        .with_context(|| format!("failed to create {}", artifact_dir.display()))?;
-    write_artifact(&artifact_dir.join("ir-flat.json"), &flat)
-}
-
 fn print_structural_summary(dae: &Dae) {
     let structural = dae.inspect(rumoca_compile::phase_structural::analyze);
     println!(
@@ -182,7 +162,6 @@ fn print_bounded_names(heading: &str, names: &[String], limit: usize) {
 fn load_profiled_model(
     source_root: &std::path::Path,
     model: &str,
-    allow_unbalanced: bool,
     artifact_dir: Option<&std::path::Path>,
 ) -> Result<Box<CompilationResult>> {
     let parsed = parse_source_root_with_cache(source_root).with_context(|| {
@@ -208,18 +187,8 @@ fn load_profiled_model(
 
     reset_compile_phase_timing_stats();
     let compile_started = Instant::now();
-    let result = if allow_unbalanced {
-        write_strict_flat_artifact(&mut session, model, artifact_dir)?;
-        match session.compile_model_allow_unbalanced_for_diagnostics(model) {
-            Ok(result) => Box::new(result),
-            Err(error) => {
-                return Err(error);
-            }
-        }
-    } else {
-        let report = session.compile_model_strict_reachable_uncached_with_recovery(model);
-        compile_report_to_result(report)?
-    };
+    let report = session.compile_model_strict_reachable_uncached_with_recovery(model);
+    let result = compile_report_to_result(report)?;
     let compile_elapsed = compile_started.elapsed();
 
     println!(
@@ -532,12 +501,7 @@ fn nearest_time_index(times: &[f64], requested: f64) -> Option<usize> {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let result = load_profiled_model(
-        &args.source_root,
-        &args.model,
-        args.allow_unbalanced,
-        args.artifact_dir.as_deref(),
-    )?;
+    let result = load_profiled_model(&args.source_root, &args.model, args.artifact_dir.as_deref())?;
 
     if !args.inspect_names.is_empty() {
         inspect_dae_names(&result.dae, &args.inspect_names)?;
@@ -655,8 +619,7 @@ end Lib;
     fn load_profiled_model_compiles_minimal_source_root() {
         let temp = tempfile::tempdir().expect("tempdir");
         let source_root = write_library(&temp);
-        let result =
-            load_profiled_model(&source_root, "Lib.M", false, None).expect("focused compile");
+        let result = load_profiled_model(&source_root, "Lib.M", None).expect("focused compile");
         assert_eq!(
             result.dae.inspect(|view| {
                 view.variables()
@@ -672,8 +635,7 @@ end Lib;
     fn build_sim_options_uses_experiment_metadata() {
         let temp = tempfile::tempdir().expect("tempdir");
         let source_root = write_library(&temp);
-        let result =
-            load_profiled_model(&source_root, "Lib.M", false, None).expect("focused compile");
+        let result = load_profiled_model(&source_root, "Lib.M", None).expect("focused compile");
         let options = build_sim_options(&result, None);
         assert_eq!(options.t_start, 0.25);
         assert_eq!(options.t_end, 1.5);
@@ -687,8 +649,7 @@ end Lib;
     fn build_sim_options_honors_stop_time_override() {
         let temp = tempfile::tempdir().expect("tempdir");
         let source_root = write_library(&temp);
-        let result =
-            load_profiled_model(&source_root, "Lib.M", false, None).expect("focused compile");
+        let result = load_profiled_model(&source_root, "Lib.M", None).expect("focused compile");
         let options = build_sim_options(&result, Some(2.0));
         assert_eq!(options.t_end, 2.0);
     }
@@ -697,8 +658,7 @@ end Lib;
     fn run_profiled_simulations_repeats_simulation_path() {
         let temp = tempfile::tempdir().expect("tempdir");
         let source_root = write_library(&temp);
-        let result =
-            load_profiled_model(&source_root, "Lib.M", false, None).expect("focused compile");
+        let result = load_profiled_model(&source_root, "Lib.M", None).expect("focused compile");
         let options = build_sim_options(&result, None);
         let (elapsed, sim_result) =
             run_profiled_simulations(&result, &options, 2).expect("repeat simulate succeeds");

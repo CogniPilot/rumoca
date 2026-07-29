@@ -28,7 +28,7 @@ use rumoca_worker::{
     WorkerMemorySnapshot, WorkerModelResult, WorkerProgressEvent, WorkerProgressEventKind,
     WorkerProgressPhase, embedded_diagnostic_code, pin_current_thread_to_cpu_core,
     read_model_worker_request_file, sim_error_diagnostic_code, start_worker_memory_limit,
-    strict_compile_failure_row, summary_only_failure_row, write_model_worker_response_file,
+    strict_compile_failure_row, write_model_worker_response_file,
 };
 
 const DEFAULT_SIM_END_TIME_SECS: f64 = 1.0;
@@ -690,9 +690,6 @@ fn summarize_dae_success(
     row.is_balanced = Some(balance_for_report == 0);
     row.is_partial = Some(result.flat.is_partial);
     row.class_type = Some(result.flat.class_type.as_str().to_string());
-    // Carry the breakdown whenever the continuous balance is non-zero, so the
-    // `--allow-unbalanced-for-diagnostics` lane (which reaches this success
-    // path) still exposes the component counts for triage.
     if !detail.is_balanced() {
         row.balance_detail = Some(Box::new(detail.clone()));
     }
@@ -1157,35 +1154,14 @@ fn run_model_request(session: &mut Session, request: &ModelWorkerRequest) -> Wor
         observer_phase_timer.borrow_mut().observe(phase, event);
         phase_progress.compile_phase_event(phase, event)
     });
-    let compile_result = if request.allow_unbalanced_for_diagnostics {
-        session
-            .compile_model_dae_allow_unbalanced_for_diagnostics(&request.model_name)
-            .map_err(|error| {
-                let summary = error.to_string();
-                Box::new(rumoca_compile::compile::StrictCompileFailure {
-                    phase: None,
-                    error_code: None,
-                    balance_detail: None,
-                    failures: Vec::new(),
-                    summary,
-                })
-            })
-    } else {
-        session
-            .compile_model_dae_strict_reachable_uncached_with_recovery_detailed(&request.model_name)
-    };
+    let compile_result = session
+        .compile_model_dae_strict_reachable_uncached_with_recovery_detailed(&request.model_name);
     drop(_compile_phase_observer);
     let compile_seconds = compile_start.elapsed().as_secs_f64();
     let result = match compile_result {
         Ok(result) => result,
         Err(failure) => {
-            let mut row = if request.allow_unbalanced_for_diagnostics {
-                // The diagnostics lane has no structured phase; fall back to
-                // marker sniffing on the rendered summary.
-                summary_only_failure_row(&request.model_name, failure.summary.clone())
-            } else {
-                strict_compile_failure_row(&request.model_name, &failure)
-            };
+            let mut row = strict_compile_failure_row(&request.model_name, &failure);
             row.compile_seconds = Some(compile_seconds);
             apply_compile_phase_durations(&mut row, phase_timer.borrow().durations());
             progress.memory("after_compile_failure");
@@ -1244,7 +1220,7 @@ fn is_trivial_static_dae(result: &DaeCompilationResult) -> bool {
         && result.dae.inspect(|view| {
             view.continuous_owner_count() == 0
                 && view.discrete_real_equation_count() == 0
-                && view.discrete_assignment_count() == 0
+                && view.discrete_value_owner_count() == 0
                 && view.condition_count() == 0
                 && view.relation_count() == 0
                 && view.initialization_owner_count() == 0
@@ -1434,6 +1410,16 @@ fn compile_request(session: &mut Session, request: ModelWorkerRequest) -> ModelW
     }
 }
 
+fn validate_request_protocol(request: &ModelWorkerRequest) -> Result<(), String> {
+    if request.protocol_version == MODEL_WORKER_PROTOCOL_VERSION {
+        return Ok(());
+    }
+    Err(format!(
+        "unsupported model worker protocol {}; expected {}",
+        request.protocol_version, MODEL_WORKER_PROTOCOL_VERSION
+    ))
+}
+
 fn worker_stack_size_bytes() -> usize {
     DEFAULT_WORKER_STACK_MB.saturating_mul(1024 * 1024)
 }
@@ -1444,12 +1430,7 @@ fn run_worker(args: Args) -> Result<(), String> {
         .as_deref()
         .ok_or_else(|| "--request-json is required for one-shot worker mode".to_string())?;
     let request = read_model_worker_request_file(request_json)?;
-    if request.protocol_version != MODEL_WORKER_PROTOCOL_VERSION {
-        return Err(format!(
-            "unsupported model worker protocol {}; expected {}",
-            request.protocol_version, MODEL_WORKER_PROTOCOL_VERSION
-        ));
-    }
+    validate_request_protocol(&request)?;
     fs::create_dir_all(&request.output_dir).map_err(|error| {
         format!(
             "failed to create model worker output directory '{}': {error}",
@@ -1546,6 +1527,13 @@ fn run_worker_daemon(source_root_path: &Path) -> Result<(), String> {
             .map_err(|_| "model worker command reader disconnected".to_string())??;
         match command {
             ModelWorkerCommand::Run { request } => {
+                if let Err(message) = validate_request_protocol(&request) {
+                    write_control_message(&ModelWorkerControlMessage::Error {
+                        protocol_version: MODEL_WORKER_PROTOCOL_VERSION,
+                        message,
+                    })?;
+                    continue;
+                }
                 let _ = fs::remove_file(artifact_path(&request, "progress.jsonl"));
                 let _ = fs::remove_file(request.output_dir.join(MODEL_WORKER_RESULT_FILE));
                 let _ = fs::remove_file(request.output_dir.join(MODEL_WORKER_PARTIAL_RESULT_FILE));
@@ -1638,7 +1626,6 @@ mod tests {
             explicit_sim_target: false,
             sim_timeout_secs: None,
             emit_json: false,
-            allow_unbalanced_for_diagnostics: false,
             nan_trace: false,
             emit_modelica: false,
             source_root_path: PathBuf::new(),
@@ -1662,12 +1649,20 @@ mod tests {
     #[test]
     fn worker_simulates_zero_sized_inputs_and_fixed_parameters() {
         let result = compile_zero_sized_standalone_model();
+        let (_, flat_input) = result
+            .flat
+            .variables
+            .iter()
+            .find(|(name, _)| name.as_str() == "u")
+            .expect("Flat retains the zero-sized input declaration");
+        assert_eq!(flat_input.dims, [0]);
         result.dae.inspect(|view| {
             let input = view
                 .variables()
-                .find(|(_, variable)| variable.role() == VariableRole::Input)
+                .find(|(_, variable)| variable.name().as_str() == "u")
                 .map(|(_, variable)| variable)
-                .expect("zero-sized input declaration is retained");
+                .expect("DAE retains the zero-sized input declaration");
+            assert_eq!(input.role(), VariableRole::Input);
             assert_eq!(input.scalar_count(), 0);
         });
         assert!(!result.has_unbound_fixed_parameters);
@@ -1688,6 +1683,21 @@ mod tests {
                 .expect("parse result should be delivered")
                 .expect_err("invalid JSON should fail")
                 .contains("failed to parse model worker command")
+        );
+    }
+
+    #[test]
+    fn request_protocol_check_is_shared_by_one_shot_and_daemon_modes() {
+        let mut request = simulation_request("Modelica.Test.Examples.Protocol");
+        assert!(validate_request_protocol(&request).is_ok());
+        request.protocol_version -= 1;
+        assert_eq!(
+            validate_request_protocol(&request).unwrap_err(),
+            format!(
+                "unsupported model worker protocol {}; expected {}",
+                MODEL_WORKER_PROTOCOL_VERSION - 1,
+                MODEL_WORKER_PROTOCOL_VERSION
+            )
         );
     }
 

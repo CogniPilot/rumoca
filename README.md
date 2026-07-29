@@ -223,8 +223,8 @@ Render a codegen scenario:
 cargo run -p rumoca -- \
   compile examples/models/SympyDecay.mo \
   --model SympyDecay \
-  --target examples/codegen/standalone_web \
-  --output examples/codegen/gen/sympy_decay_standalone_web
+  --target examples/codegen/checked_dae_report \
+  --output examples/codegen/gen/sympy_decay_checked_dae_report
 ```
 
 Codegen scenarios write generated files under `examples/codegen/gen/`, which is
@@ -382,8 +382,9 @@ equivalent Cargo command for opt-in example-template runtime checks:
 ## Code Generation Targets
 
 Use explicit template files you own and version with your project.
-The raw template example in `examples/codegen/custom_casadi.jinja` is a
-starting point, not a stable production artifact.
+The raw template example in
+`examples/codegen/custom_checked_variables.jinja` is a starting point, not a
+stable production artifact.
 
 ## VS Code Extension
 

@@ -12,7 +12,7 @@ struct Case {
 }
 
 fn span() -> Span {
-    Span::from_offsets(SourceId(7), 2, 5)
+    Span::from_offsets(SourceId::from_source_name("dae-error-tests.mo"), 2, 5)
 }
 
 fn assert_cases(cases: impl IntoIterator<Item = Case>) {
@@ -44,7 +44,7 @@ fn provenance_and_foundation_messages_are_exact() {
         },
         Case {
             error: DaeConstructionError::UnknownSource { span: at },
-            message: "DAE provenance references an unknown source: Span { source: SourceId(7), start: BytePos(2), end: BytePos(5) }",
+            message: "DAE provenance references an unknown source: Span { source: SourceId(1350506341627150748), start: BytePos(2), end: BytePos(5) }",
             span: Some(at),
         },
         Case {
@@ -52,7 +52,7 @@ fn provenance_and_foundation_messages_are_exact() {
                 span: at,
                 source_len: 9,
             },
-            message: "DAE provenance range Span { source: SourceId(7), start: BytePos(2), end: BytePos(5) } is invalid for source length 9",
+            message: "DAE provenance range Span { source: SourceId(1350506341627150748), start: BytePos(2), end: BytePos(5) } is invalid for source length 9",
             span: Some(at),
         },
         Case {
@@ -313,11 +313,12 @@ fn definition_messages_are_exact() {
             span: Some(at),
         },
         Case {
-            error: DaeConstructionError::InvalidDiscreteDependencyCycle {
+            error: DaeConstructionError::UnissuedDiscreteDependency {
                 target: 6,
+                dependency: 7,
                 span: at,
             },
-            message: "discrete-value target identity 6 has a cyclic current-value dependency",
+            message: "B.1c target identity 6 reads not-yet-issued current discrete value 7",
             span: Some(at),
         },
         Case {
@@ -333,8 +334,16 @@ fn definition_messages_are_exact() {
 }
 
 #[test]
-fn wire_messages_are_exact_and_unspanned() {
+fn source_free_messages_are_exact_and_unspanned() {
     assert_cases([
+        Case {
+            error: DaeConstructionError::DuplicateTopology {
+                kind: "B.1c topology",
+                span: None,
+            },
+            message: "duplicate B.1c topology construction",
+            span: None,
+        },
         Case {
             error: DaeConstructionError::InvalidSchemaVersion {
                 expected: 11,

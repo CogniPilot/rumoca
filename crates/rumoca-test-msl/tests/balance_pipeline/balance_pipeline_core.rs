@@ -1207,7 +1207,6 @@ fn prepare_model_worker_request(
         explicit_sim_target: plan.explicit_sim_target,
         sim_timeout_secs: Some(sim_timeout_secs()),
         emit_json: false,
-        allow_unbalanced_for_diagnostics: false,
         nan_trace: false,
         emit_modelica: false,
         source_root_path: plan.source_root_path.to_path_buf(),

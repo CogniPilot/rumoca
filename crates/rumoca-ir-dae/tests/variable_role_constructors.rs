@@ -43,7 +43,7 @@ fn add_complete_roles<'dae>(
     boolean: ValueTypeId<'dae>,
     held_start: ExprId<'dae>,
     at: DaeProvenance,
-) -> Result<(), DaeConstructionError> {
+) -> Result<DiscreteValueId<'dae>, DaeConstructionError> {
     complete_fixed_roles! {
         variables, real, held_start, at;
         parameter => ParameterId, "complete_parameter", VariableAttributes::default();
@@ -60,13 +60,13 @@ fn add_complete_roles<'dae>(
         at,
         VariableAttributes::default(),
     )?;
-    let _: DiscreteValueId<'_> = variables.discrete_value(
+    let discrete_value = variables.discrete_value(
         VarName::new("complete_discrete_value"),
         boolean,
         at,
         held(held_start),
     )?;
-    Ok(())
+    Ok(discrete_value)
 }
 
 fn add_reserved_roles<'dae>(
@@ -75,7 +75,7 @@ fn add_reserved_roles<'dae>(
     boolean: ValueTypeId<'dae>,
     held_start: ExprId<'dae>,
     at: DaeProvenance,
-) -> Result<(), DaeConstructionError> {
+) -> Result<DiscreteValueId<'dae>, DaeConstructionError> {
     reserve_fixed_roles! {
         variables, real, held_start, at;
         reserve_parameter => ParameterId, "reserved_parameter", VariableAttributes::default();
@@ -92,10 +92,10 @@ fn add_reserved_roles<'dae>(
         at,
     )?;
     variables.define(input, VariableAttributes::default(), at)?;
-    let (_, discrete_value): (DiscreteValueId<'_>, _) =
+    let (id, discrete_value): (DiscreteValueId<'_>, _) =
         variables.reserve_discrete_value(VarName::new("reserved_discrete_value"), boolean, at)?;
     variables.define(discrete_value, held(held_start), at)?;
-    Ok(())
+    Ok(id)
 }
 
 #[test]
@@ -112,9 +112,30 @@ fn complete_and_reserved_role_tables_preserve_typed_semantics() {
         })?;
         let held_start =
             dae.expressions(|expressions| expressions.at(at).literal(DaeLiteral::Boolean(false)))?;
-        dae.variables(|variables| {
-            add_complete_roles(variables, real, boolean, held_start, at)?;
-            add_reserved_roles(variables, real, boolean, held_start, at)
+        let (complete, reserved) = dae.variables(|variables| {
+            Ok((
+                add_complete_roles(variables, real, boolean, held_start, at)?,
+                add_reserved_roles(variables, real, boolean, held_start, at)?,
+            ))
+        })?;
+        let (complete_pre, reserved_pre) = dae.expressions(|expressions| {
+            Ok((
+                expressions
+                    .at(at)
+                    .coordinate(rumoca_ir_dae::CoordinateInput::PreDiscreteValue(complete))?,
+                expressions
+                    .at(at)
+                    .coordinate(rumoca_ir_dae::CoordinateInput::PreDiscreteValue(reserved))?,
+            ))
+        })?;
+        dae.b1c([complete, reserved], |topology| {
+            topology.owner(at, [complete], |owner| {
+                owner.always(at, [(complete_pre, at)])
+            })?;
+            topology.owner(at, [reserved], |owner| {
+                owner.always(at, [(reserved_pre, at)])
+            })?;
+            Ok(())
         })
     })
     .expect("all complete and reserved variable roles construct");

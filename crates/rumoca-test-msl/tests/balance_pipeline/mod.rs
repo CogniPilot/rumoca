@@ -74,7 +74,7 @@ pub(super) struct CheckedDaeCounts {
     pub initialization_families: usize,
     pub initialization_scalar_rows: usize,
     pub discrete_real_equations: usize,
-    pub discrete_assignments: usize,
+    pub discrete_value_definitions: usize,
     pub relations: usize,
     pub conditions: usize,
 }
@@ -88,7 +88,7 @@ pub(super) fn checked_dae_counts(dae: &Dae) -> CheckedDaeCounts {
             initialization_equations: view.initialization_equation_count(),
             initialization_families: view.initialization_family_count(),
             discrete_real_equations: view.discrete_real_equation_count(),
-            discrete_assignments: view.discrete_assignment_count(),
+            discrete_value_definitions: view.discrete_value_definition_count(),
             relations: view.relation_count(),
             conditions: view.condition_count(),
             ..CheckedDaeCounts::default()

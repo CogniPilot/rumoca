@@ -309,7 +309,15 @@ fn insert_fixture_discrete<'dae>(
         equations.real_equation(discrete.real_owner, |equation| {
             equation.residual(discrete.real_residual)
         })?;
-        equations.assignment(discrete.value_owner, discrete.value_target, discrete.value)?;
+        Ok(())
+    })?;
+    model.b1c([discrete.value_target], |topology| {
+        topology.owner(discrete.value_owner, [discrete.value_target], |owner| {
+            owner.always(
+                discrete.value_owner,
+                [(discrete.value, discrete.value_owner)],
+            )
+        })?;
         Ok(())
     })
 }
@@ -949,24 +957,35 @@ fn state_demotion_preserves_discrete_equations_and_exact_provenance() {
     };
     transformed.inspect(|view| {
         assert_eq!(view.discrete_real_equation_count(), 1);
-        assert_eq!(view.discrete_assignment_count(), 1);
+        assert_eq!(view.discrete_value_owner_count(), 1);
         let real = view
             .discrete_real_equation(0)
             .expect("discrete-real equation survives reconstruction");
         assert_eq!(view.source_text(real.provenance()), Some("d = 2"));
-        let assignment_id = view
-            .discrete_assignment_id(0)
-            .expect("discrete assignment identity resolves");
-        let assignment = view
-            .discrete_assignment(assignment_id)
-            .expect("discrete assignment survives reconstruction");
-        assert_eq!(view.source_text(assignment.provenance()), Some("b = true"));
+        let owner = view
+            .discrete_value_owner(
+                view.discrete_value_owner_id(0)
+                    .expect("B.1c owner identity resolves"),
+            )
+            .expect("B.1c owner survives reconstruction");
+        assert_eq!(view.source_text(owner.provenance()), Some("b = true"));
+        let target = owner.targets().get(0).expect("B.1c target survives");
         assert!(matches!(
-            view.variable(assignment.target().into())
+            view.variable(target.into())
                 .expect("assignment target resolves")
                 .role(),
             dae::VariableRole::DiscreteValue
         ));
+        let branch = owner.branches().get(0).expect("B.1c branch survives");
+        assert!(matches!(
+            branch.activation(),
+            dae::DiscreteBranchActivation::Always
+        ));
+        assert_eq!(view.source_text(branch.provenance()), Some("b = true"));
+        assert_eq!(
+            view.source_text(branch.values().get(0).unwrap().1),
+            Some("b = true")
+        );
         assert!(
             sort(view).is_ok(),
             "replacement DAE remains structurally square"

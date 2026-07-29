@@ -22,8 +22,10 @@ use crate::manifest_context::algorithm_code_manifest::{
 use crate::manifest_context::{Identifier, NormalizedText};
 use crate::package::{AlgorithmCodePackage, ManifestFragment};
 
+mod clocked_assignments;
 mod expression_helpers;
 mod manifest_start;
+use clocked_assignments::lower_clocked_assignments;
 use expression_helpers::*;
 use manifest_start::manifest_start_expression;
 
@@ -57,12 +59,6 @@ struct ClassifiedVariable<'dae> {
     class: VariableClass,
     scalar_type: gast::ScalarType,
     name: gast::Name,
-}
-
-struct PendingAssignment<'dae> {
-    target: dae::VariableId<'dae>,
-    reads: HashSet<u32>,
-    statements: Vec<gast::Spanned<gast::Statement>>,
 }
 
 struct ProjectionParts {
@@ -118,7 +114,7 @@ fn lower_view<'dae>(
     )?;
 
     let mut do_step =
-        lower_event_assignments(view, clock_id, &by_id, &pre_names).map_err(single)?;
+        lower_clocked_assignments(view, clock_id, &by_id, &pre_names).map_err(single)?;
     append_pre_commits(&referenced_pre, &by_id, &pre_names, &mut do_step)?;
 
     let block_name = crate::mangle::galec_variable_name(
@@ -678,9 +674,10 @@ fn referenced_pre_variables<'dae>(
                     .expect("dense checked action identity"),
             )
             .expect("checked action resolves");
+        collect_condition_pre(view, action.trigger(), &mut seen, &mut ids)?;
+        collect_condition_pre(view, action.guard(), &mut seen, &mut ids)?;
         let value = match action.operation() {
             dae::EventActionOperation::AssignDiscreteReal { value, .. }
-            | dae::EventActionOperation::AssignDiscreteValue { value, .. }
             | dae::EventActionOperation::Reinitialize { value, .. } => Some(value),
             dae::EventActionOperation::Assert { message, level } => {
                 collect_pre(view, message, &mut seen, &mut ids)?;
@@ -692,7 +689,61 @@ fn referenced_pre_variables<'dae>(
             collect_pre(view, value, &mut seen, &mut ids)?;
         }
     }
+    for index in 0..view.discrete_value_owner_count() {
+        let owner = view
+            .discrete_value_owner(
+                view.discrete_value_owner_id(index)
+                    .expect("dense checked B.1c owner identity"),
+            )
+            .expect("checked B.1c owner resolves");
+        for branch in owner.branches().iter() {
+            if let dae::DiscreteBranchActivation::When { trigger, guard } = branch.activation() {
+                collect_condition_pre(view, trigger, &mut seen, &mut ids)?;
+                collect_condition_pre(view, guard, &mut seen, &mut ids)?;
+            }
+            for (value, _) in branch.values().iter() {
+                collect_pre(view, value, &mut seen, &mut ids)?;
+            }
+        }
+    }
     Ok(ids)
+}
+
+fn collect_condition_pre<'dae>(
+    view: dae::DaeView<'dae>,
+    root: dae::ConditionId<'dae>,
+    seen_variables: &mut HashSet<u32>,
+    ids: &mut Vec<dae::VariableId<'dae>>,
+) -> Result<(), Vec<GalecTargetError>> {
+    let mut pending = vec![root];
+    let mut seen_conditions = HashSet::new();
+    while let Some(condition) = pending.pop() {
+        if !seen_conditions.insert(condition.index()) {
+            continue;
+        }
+        match view
+            .condition(condition)
+            .expect("checked condition identity resolves")
+            .operation()
+        {
+            dae::ConditionOperation::Initial | dae::ConditionOperation::Clock(_) => {}
+            dae::ConditionOperation::Relation(relation) => {
+                let expression = view
+                    .relation(relation)
+                    .expect("checked relation identity resolves")
+                    .expression();
+                collect_pre(view, expression, seen_variables, ids)?;
+            }
+            dae::ConditionOperation::Discrete(expression) => {
+                collect_pre(view, expression, seen_variables, ids)?;
+            }
+            dae::ConditionOperation::Not(inner) => pending.push(inner),
+            dae::ConditionOperation::And(lhs, rhs) | dae::ConditionOperation::Or(lhs, rhs) => {
+                pending.extend([lhs, rhs]);
+            }
+        }
+    }
+    Ok(())
 }
 
 fn collect_pre<'dae>(
@@ -855,183 +906,6 @@ fn append_clock_period(
         span,
     ));
     Ok(id)
-}
-
-fn lower_event_assignments<'dae>(
-    view: dae::DaeView<'dae>,
-    clock: dae::ClockId<'dae>,
-    by_id: &HashMap<u32, ClassifiedVariable<'dae>>,
-    pre_names: &HashMap<u32, gast::Name>,
-) -> Result<Vec<gast::Spanned<gast::Statement>>, GalecTargetError> {
-    let mut pending = Vec::new();
-    for index in 0..view.event_action_count() {
-        let action = view
-            .event_action(
-                view.event_action_id(index)
-                    .expect("dense checked action identity"),
-            )
-            .expect("checked action resolves");
-        let (target, value) = match action.operation() {
-            dae::EventActionOperation::AssignDiscreteReal { target, value } => {
-                (dae::VariableId::from(target), value)
-            }
-            dae::EventActionOperation::AssignDiscreteValue { target, value } => {
-                (dae::VariableId::from(target), value)
-            }
-            operation => {
-                return Err(unsupported(
-                    "event-action",
-                    format!(
-                        "event action `{}` cannot be represented in GALEC DoStep",
-                        event_name(operation)
-                    ),
-                    action.provenance().span(),
-                ));
-            }
-        };
-        let classified = by_id.get(&target.index()).ok_or_else(|| {
-            GalecTargetError::UnknownVariableReference {
-                name: format!("#{}", target.index()),
-                span: Some(action.provenance().span()),
-            }
-        })?;
-        let mut lowerer = ExpressionLowerer::new(view, by_id, pre_names);
-        let guard = lower_action_guard(
-            view,
-            action.guard(),
-            clock,
-            &mut lowerer,
-            action.provenance().span(),
-        )?;
-        let mut assignments = Vec::with_capacity(classified.variable.scalar_count());
-        for indices in row_major_indices(classified.variable.value_type().dimensions()) {
-            let lowered = lowerer.lower_element(value, &indices)?;
-            let value = coerce(lowered, classified.scalar_type, action.provenance().span())?;
-            assignments.push(gast::Spanned::new(
-                gast::Statement::Assignment {
-                    target: state_reference_indexed(
-                        classified.name.clone(),
-                        &indices,
-                        action.provenance().span(),
-                    ),
-                    value,
-                },
-                action.provenance().span(),
-            ));
-        }
-        let statements = match guard {
-            Some(condition) => vec![gast::Spanned::new(
-                gast::Statement::If(gast::IfStatement {
-                    branches: vec![gast::IfBranch {
-                        condition: gast::Condition::Expression(condition),
-                        body: assignments,
-                        span: action.provenance().span(),
-                    }],
-                    else_body: None,
-                }),
-                action.provenance().span(),
-            )],
-            None => assignments,
-        };
-        let mut reads = HashSet::new();
-        collect_current_reads(view, value_expression_id(action.operation()), &mut reads);
-        pending.push(PendingAssignment {
-            target,
-            reads,
-            statements,
-        });
-    }
-    order_assignments(pending)
-}
-
-fn value_expression_id<'dae>(operation: dae::EventActionOperation<'dae>) -> dae::ExprId<'dae> {
-    match operation {
-        dae::EventActionOperation::AssignDiscreteReal { value, .. }
-        | dae::EventActionOperation::AssignDiscreteValue { value, .. }
-        | dae::EventActionOperation::Reinitialize { value, .. } => value,
-        dae::EventActionOperation::Assert { message, .. }
-        | dae::EventActionOperation::Terminate { message } => message,
-    }
-}
-
-fn collect_current_reads<'dae>(
-    view: dae::DaeView<'dae>,
-    expression: dae::ExprId<'dae>,
-    reads: &mut HashSet<u32>,
-) {
-    dae::for_each_expression(view, expression, |_, node| {
-        let id = match node.operation() {
-            dae::ExpressionOperation::Coordinate(dae::CoordinateView::Parameter(id)) => {
-                Some(dae::VariableId::from(id))
-            }
-            dae::ExpressionOperation::Coordinate(dae::CoordinateView::Input(id)) => {
-                Some(dae::VariableId::from(id))
-            }
-            dae::ExpressionOperation::Coordinate(dae::CoordinateView::State(id)) => {
-                Some(dae::VariableId::from(id))
-            }
-            dae::ExpressionOperation::Coordinate(dae::CoordinateView::Algebraic(id)) => {
-                Some(dae::VariableId::from(id))
-            }
-            dae::ExpressionOperation::Coordinate(dae::CoordinateView::DiscreteReal(id)) => {
-                Some(dae::VariableId::from(id))
-            }
-            dae::ExpressionOperation::Coordinate(dae::CoordinateView::DiscreteValue(id)) => {
-                Some(dae::VariableId::from(id))
-            }
-            _ => None,
-        };
-        if let Some(id) = id {
-            reads.insert(id.index());
-        }
-    });
-}
-
-fn order_assignments<'dae>(
-    pending: Vec<PendingAssignment<'dae>>,
-) -> Result<Vec<gast::Spanned<gast::Statement>>, GalecTargetError> {
-    let unique_targets = pending
-        .iter()
-        .map(|assignment| assignment.target.index())
-        .collect::<HashSet<_>>();
-    if unique_targets.len() != pending.len() {
-        return Ok(pending
-            .into_iter()
-            .flat_map(|assignment| assignment.statements)
-            .collect());
-    }
-    let targets = pending
-        .iter()
-        .enumerate()
-        .map(|(index, assignment)| (assignment.target.index(), index))
-        .collect::<HashMap<_, _>>();
-    let mut emitted = vec![false; pending.len()];
-    let mut emitted_owners = 0usize;
-    let mut ordered = Vec::with_capacity(pending.len());
-    while emitted_owners < pending.len() {
-        let Some(index) = pending.iter().enumerate().position(|(index, assignment)| {
-            !emitted[index]
-                && assignment.reads.iter().all(|read| {
-                    targets
-                        .get(read)
-                        .is_none_or(|dependency| emitted[*dependency])
-                })
-        }) else {
-            return Err(unsupported(
-                "discrete-algebraic-loop",
-                "clocked assignments contain a current-tick dependency cycle".to_owned(),
-                pending
-                    .iter()
-                    .find(|assignment| !emitted[targets[&assignment.target.index()]])
-                    .and_then(|assignment| assignment.statements.first())
-                    .map_or(Span::DUMMY, |statement| statement.span),
-            ));
-        };
-        emitted[index] = true;
-        emitted_owners += 1;
-        ordered.extend(pending[index].statements.iter().cloned());
-    }
-    Ok(ordered)
 }
 
 fn append_pre_commits<'dae>(
@@ -1963,7 +1837,6 @@ const fn event_name(operation: dae::EventActionOperation<'_>) -> &'static str {
         dae::EventActionOperation::Terminate { .. } => "terminate",
         dae::EventActionOperation::Reinitialize { .. } => "reinitialize",
         dae::EventActionOperation::AssignDiscreteReal { .. } => "assign discrete Real",
-        dae::EventActionOperation::AssignDiscreteValue { .. } => "assign discrete value",
     }
 }
 

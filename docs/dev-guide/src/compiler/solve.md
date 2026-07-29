@@ -42,9 +42,9 @@ rewrites, no template policy:
 | `rumoca-exec-mlir` | MLIR-based compilation path |
 | `rumoca-exec-wasm` | WASM execution backend |
 
-The generated-code targets (`rust-solve`, `c-solve`, `embedded-c`,
-`cuda-c`, `cuda-nvrtc-solve-jit`, `c-solve`, and `embedded-c`) consume Solve through the
-codegen engine instead — see
+The generated-code targets (`rust-solve`, `c-solve`, `cuda-c`,
+`cuda-nvrtc-solve-jit`, `wgsl-solve`, and the symbolic Solve targets)
+consume Solve through the codegen engine instead — see
 [Code Generation Engine](../runtime/codegen.md).
 
 ## Adding a New Backend

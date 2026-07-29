@@ -121,7 +121,7 @@ impl<'dae> DaeView<'dae> {
         initialization_equation_count => initialization_equations,
         initialization_owner_count => initialization_equation_owners,
         discrete_real_equation_count => discrete_real_equations,
-        discrete_assignment_count => discrete_assignments,
+        discrete_value_owner_count => discrete_value_owners,
         relation_count => relations,
         condition_count => conditions,
         root_count => roots,
@@ -140,7 +140,7 @@ impl<'dae> DaeView<'dae> {
         expression_id => (ExprId, expressions.nodes),
         function_id => (FunctionId, functions),
         variable_id => (VariableId, variables),
-        discrete_assignment_id => (DiscreteAssignmentId, discrete_assignments),
+        discrete_value_owner_id => (DiscreteValueOwnerId, discrete_value_owners),
         relation_id => (RelationId, relations),
         condition_id => (ConditionId, conditions),
         root_id => (RootId, roots),
@@ -383,20 +383,45 @@ impl<'dae> DaeView<'dae> {
         ))
     }
 
-    pub fn discrete_assignment(
+    pub fn discrete_value_owner(
         self,
-        id: DiscreteAssignmentId<'dae>,
-    ) -> Option<DiscreteAssignmentView<'dae>> {
+        id: DiscreteValueOwnerId<'dae>,
+    ) -> Option<DiscreteValueOwnerView<'dae>> {
         let entry = self
             .dae
             .storage
-            .discrete_assignments
+            .discrete_value_owners
             .get(id.index() as usize)?;
-        Some(DiscreteAssignmentView {
-            target: DiscreteValueId::from_raw(entry.target),
-            value: ExprId::from_raw(entry.value),
+        Some(DiscreteValueOwnerView {
+            targets: crate::DiscreteValueTargets {
+                raw: self
+                    .dae
+                    .storage
+                    .discrete_value_targets
+                    .get(entry.targets.indices())?,
+                marker: PhantomData,
+            },
+            branches: crate::DiscreteValueBranches {
+                entries: self
+                    .dae
+                    .storage
+                    .discrete_value_branches
+                    .get(entry.branches.indices())?,
+                values: &self.dae.storage.discrete_value_branch_values,
+                value_provenance: &self.dae.storage.discrete_value_branch_value_provenance,
+                marker: PhantomData,
+            },
             provenance: entry.provenance,
         })
+    }
+
+    pub fn discrete_value_definition_count(self) -> usize {
+        self.dae
+            .storage
+            .discrete_value_owners
+            .iter()
+            .map(|owner| owner.targets.len as usize)
+            .sum()
     }
 
     pub fn relation(self, id: RelationId<'dae>) -> Option<RelationView<'dae>> {
@@ -474,12 +499,6 @@ impl<'dae> DaeView<'dae> {
             EventActionKind::AssignDiscreteReal { target, value } => {
                 EventActionOperation::AssignDiscreteReal {
                     target: DiscreteRealId::from_raw(target),
-                    value: ExprId::from_raw(value),
-                }
-            }
-            EventActionKind::AssignDiscreteValue { target, value } => {
-                EventActionOperation::AssignDiscreteValue {
-                    target: DiscreteValueId::from_raw(target),
                     value: ExprId::from_raw(value),
                 }
             }

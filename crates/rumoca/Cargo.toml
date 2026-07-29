@@ -109,8 +109,8 @@ path = "tests/template_target_ci.rs"
 required-features = ["template-runtime-tests"]
 
 [[test]]
-name = "standalone_template_regression"
-path = "tests/standalone_template_regression.rs"
+name = "codegen_example_regression"
+path = "tests/codegen_example_regression.rs"
 required-features = ["template-runtime-tests"]
 
 [[test]]

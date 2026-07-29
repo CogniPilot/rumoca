@@ -545,20 +545,6 @@ impl Session {
         self.resolve_strict_target_from_plan(model_name, plan)
     }
 
-    pub(in crate::session) fn resolve_strict_target_uncached(
-        &mut self,
-        model_name: &str,
-    ) -> Result<StrictTargetResolution, StrictTargetResolutionFailure> {
-        let (plan, _, _) = self
-            .resolve_documents_for_mode(ResolveBuildMode::StrictCompileRecovery)
-            .map_err(|diagnostics| StrictTargetResolutionFailure {
-                failures: diagnostics.iter().map(resolve_diagnostic_failure).collect(),
-                diagnostics: diagnostics.iter().cloned().collect(),
-                source_map: Box::new(self.session_source_map()),
-            })?;
-        self.resolve_strict_target_from_plan(model_name, plan)
-    }
-
     fn resolve_strict_target_from_plan(
         &mut self,
         model_name: &str,
@@ -1072,60 +1058,6 @@ impl Session {
                 } else {
                     Err(anyhow::anyhow!("{} error: {}", phase, error))
                 }
-            }
-        }
-    }
-
-    /// Compile a model for diagnostics while allowing unbalanced DAE output.
-    ///
-    /// Normal production callers must use `compile_model`; this path exists so
-    /// profiling/debug tools can inspect the DAE that strict balance validation
-    /// rejected.
-    pub fn compile_model_allow_unbalanced_for_diagnostics(
-        &mut self,
-        model_name: &str,
-    ) -> Result<CompilationResult> {
-        self.build_resolved()?;
-        let resolved = self.ensure_resolved()?.clone();
-        match compile_model_internal_allow_unbalanced_for_diagnostics(resolved.inner(), model_name)
-        {
-            PhaseResult::Success(result) => Ok(*result),
-            PhaseResult::NeedsInner { missing_inners, .. } => Err(anyhow::anyhow!(
-                "Instantiate error: missing inner declarations: {}",
-                missing_inners.join(", ")
-            )),
-            PhaseResult::Failed {
-                phase,
-                error,
-                error_code,
-                ..
-            } => {
-                if let Some(code) = error_code {
-                    Err(anyhow::anyhow!("{} error [{}]: {}", phase, code, error))
-                } else {
-                    Err(anyhow::anyhow!("{} error: {}", phase, error))
-                }
-            }
-        }
-    }
-
-    pub fn compile_model_dae_allow_unbalanced_for_diagnostics(
-        &mut self,
-        model_name: &str,
-    ) -> std::result::Result<Box<DaeCompilationResult>, String> {
-        let target = self.resolve_strict_target(model_name).map_err(|failure| {
-            let requested = requested_missing_result_message(model_name, &failure.failures);
-            format_strict_failure_summary(model_name, requested, &failure.failures, 8)
-        })?;
-        let tree = target.resolved.inner();
-        match compile_model_dae_internal_allow_unbalanced_for_diagnostics(tree, model_name) {
-            DaePhaseResult::Success(result) => Ok(result),
-            DaePhaseResult::NeedsInner { missing_inners, .. } => Err(format!(
-                "{model_name} requires inner declarations: {}",
-                missing_inners.join(", ")
-            )),
-            DaePhaseResult::Failed { phase, error, .. } => {
-                Err(format!("{model_name} failed in {phase}: {error}"))
             }
         }
     }

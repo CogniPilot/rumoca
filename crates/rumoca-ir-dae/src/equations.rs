@@ -2,14 +2,13 @@ use std::marker::PhantomData;
 
 use rumoca_core::{ComprehensionScalarView, StructuredIndexBinder, StructuredIndexDomain};
 
-use crate::events::EventActionKind;
 use crate::model::{
     Storage, check_provenance, checked_u32, duplicate, insert_domain, invalid_arity,
 };
 use crate::{
     BinaryOperator, ContinuousEquationId, ContinuousFamilyId, DaeConstructionError, DaeGeneration,
-    DaeProvenance, DiscreteAssignmentId, DiscreteRealEquationId, DiscreteValueId, DomainId, ExprId,
-    InitializationEquationId, InitializationFamilyId, ScalarType,
+    DaeProvenance, DiscreteRealEquationId, DomainId, ExprId, InitializationEquationId,
+    InitializationFamilyId, ScalarType,
 };
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -17,35 +16,6 @@ use crate::{
 pub(crate) struct ResidualEquationEntry {
     pub(crate) residual: u32,
     pub(crate) provenance: DaeProvenance,
-}
-
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct DiscreteAssignmentEntry {
-    pub(crate) target: u32,
-    pub(crate) value: u32,
-    pub(crate) provenance: DaeProvenance,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct DiscreteAssignmentView<'dae> {
-    pub(crate) target: DiscreteValueId<'dae>,
-    pub(crate) value: ExprId<'dae>,
-    pub(crate) provenance: DaeProvenance,
-}
-
-impl<'dae> DiscreteAssignmentView<'dae> {
-    pub const fn target(self) -> DiscreteValueId<'dae> {
-        self.target
-    }
-
-    pub const fn value(self) -> ExprId<'dae> {
-        self.value
-    }
-
-    pub const fn provenance(self) -> DaeProvenance {
-        self.provenance
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -251,57 +221,6 @@ equation_partitions! {
     }
     residual DiscreteRealPartition, DiscreteEquations {
         residual real_equation -> DiscreteRealEquationId, discrete_real_equations;
-    }
-}
-
-impl<'dae> DiscreteEquations<'_, 'dae> {
-    pub fn assignment(
-        &mut self,
-        owner: DaeProvenance,
-        target: DiscreteValueId<'dae>,
-        value: ExprId<'dae>,
-    ) -> Result<DiscreteAssignmentId<'dae>, DaeConstructionError> {
-        check_provenance(self.source_map, owner)?;
-        self.storage
-            .expect_discrete_value_target(target, value, owner)?;
-        if self
-            .storage
-            .discrete_assignments
-            .iter()
-            .any(|entry| entry.target == target.index())
-            || self.storage.event_actions.iter().any(|entry| {
-                matches!(
-                    entry.kind,
-                    EventActionKind::AssignDiscreteValue {
-                        target: found,
-                        ..
-                    } if found == target.index()
-                )
-            })
-        {
-            return Err(DaeConstructionError::DuplicateKey {
-                kind: "B.1c target",
-                key: self
-                    .storage
-                    .variable_name(target.index(), owner)?
-                    .to_string(),
-                span: owner.span(),
-            });
-        }
-        let raw = checked_u32(
-            self.storage.discrete_assignments.len(),
-            "discrete assignment arena",
-            owner,
-        )?;
-        self.storage
-            .discrete_assignments
-            .push(DiscreteAssignmentEntry {
-                target: target.index(),
-                value: value.index(),
-                provenance: owner,
-            });
-        self.storage.unassigned_discrete_values -= 1;
-        Ok(DiscreteAssignmentId::from_raw(raw))
     }
 }
 

@@ -555,6 +555,119 @@ pub fn validate_dae_target_capabilities(
     Ok(())
 }
 
+pub fn validate_solve_target_capabilities(
+    solve: &rumoca_ir_solve::SolveProblem,
+    manifest: &TargetManifest,
+    capabilities: &TargetCapabilities,
+) -> Result<()> {
+    let mut inventory = solve.compute_node_counts();
+    inventory.add_assign(solve.initialization.residual.compute_node_counts());
+    let uses_linear_solve_component = solve.uses_linear_solve_component()
+        || solve.initialization.residual.uses_linear_solve_component();
+    validate_solve_tensor_inventory(
+        manifest,
+        capabilities,
+        inventory,
+        uses_linear_solve_component,
+    )
+}
+
+pub fn validate_solve_tensor_inventory(
+    manifest: &TargetManifest,
+    capabilities: &TargetCapabilities,
+    inventory: rumoca_ir_solve::ComputeNodeCounts,
+    uses_linear_solve_component: bool,
+) -> Result<()> {
+    let scalar_fallback = capabilities.scalar_fallback.unwrap_or(true);
+    let tensor = capabilities.tensor.as_ref();
+
+    validate_solve_tensor_feature(
+        manifest,
+        "tensor.matmul",
+        "MatMul",
+        inventory.matmul,
+        tensor.and_then(|tensor| tensor.matmul),
+        scalar_fallback,
+    )?;
+    validate_solve_tensor_feature(
+        manifest,
+        "tensor.linsolve",
+        "LinSolve",
+        inventory
+            .linsolve
+            .saturating_add(usize::from(uses_linear_solve_component)),
+        tensor.and_then(|tensor| tensor.linsolve),
+        scalar_fallback,
+    )?;
+    validate_solve_tensor_feature(
+        manifest,
+        "tensor.elementwise",
+        "Map",
+        inventory.map,
+        tensor.and_then(|tensor| tensor.elementwise),
+        scalar_fallback,
+    )?;
+    validate_solve_tensor_feature(
+        manifest,
+        "tensor.stencil",
+        "AffineStencil",
+        inventory.affine_stencil,
+        tensor.and_then(|tensor| tensor.stencil),
+        scalar_fallback,
+    )
+}
+
+fn validate_solve_tensor_feature(
+    manifest: &TargetManifest,
+    feature: &str,
+    display_name: &str,
+    count: usize,
+    capability: Option<TensorCapability>,
+    scalar_fallback: bool,
+) -> Result<()> {
+    if count == 0 {
+        return Ok(());
+    }
+    match capability {
+        Some(TensorCapability::Native) => Ok(()),
+        Some(TensorCapability::Scalar) if scalar_fallback => Ok(()),
+        Some(TensorCapability::Scalar) => unsupported_tensor_feature(
+            manifest,
+            feature,
+            format!(
+                "{display_name} is configured for scalar fallback but scalar fallback is disabled"
+            ),
+        ),
+        Some(TensorCapability::Unsupported) => unsupported_tensor_feature(
+            manifest,
+            feature,
+            format!(
+                "{display_name} nodes are present but the target declares {feature} unsupported"
+            ),
+        ),
+        None if scalar_fallback => Ok(()),
+        None => unsupported_tensor_feature(
+            manifest,
+            feature,
+            format!(
+                "{display_name} nodes are present but the target does not declare native \
+                 {display_name} support and scalar fallback is disabled"
+            ),
+        ),
+    }
+}
+
+fn unsupported_tensor_feature(
+    manifest: &TargetManifest,
+    feature: &str,
+    detail: impl std::fmt::Display,
+) -> Result<()> {
+    bail!(
+        "unsupported-feature:{feature}: Target '{}' does not support feature '{feature}': {detail}",
+        manifest.name.as_deref().unwrap_or("custom")
+    )
+}
+
 pub fn safe_target_join(root: &Path, relative: impl AsRef<Path>) -> Result<PathBuf> {
     let relative = relative.as_ref();
     if relative.as_os_str().is_empty() {

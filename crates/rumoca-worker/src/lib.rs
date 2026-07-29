@@ -11,9 +11,7 @@ mod diagnostic_codes;
 mod failure_row;
 mod memory_limit;
 pub use diagnostic_codes::{embedded_diagnostic_code, sim_error_diagnostic_code};
-pub use failure_row::{
-    strict_compile_failure_row, strict_dae_failure_phase, summary_only_failure_row,
-};
+pub use failure_row::strict_compile_failure_row;
 pub use memory_limit::{
     WorkerMemoryLimitEnforcement, WorkerMemoryLimitStartError, start_worker_memory_limit,
 };
@@ -23,7 +21,7 @@ pub use memory_limit::{
 /// only fairly comparable when both tools are given identical time to simulate).
 pub const MSL_SIM_TIMEOUT_SECS: f64 = 10.0;
 
-pub const MODEL_WORKER_PROTOCOL_VERSION: u32 = 1;
+pub const MODEL_WORKER_PROTOCOL_VERSION: u32 = 2;
 pub const MODEL_WORKER_RESULT_FILE: &str = "result.json";
 pub const MODEL_WORKER_PARTIAL_RESULT_FILE: &str = "partial_result.json";
 /// Resident-plus-swap ceiling for one persistent MSL model worker.
@@ -41,6 +39,7 @@ const MODEL_WORKER_POLL_MILLIS: u64 = 20;
 static MODEL_WORKER_EXE: OnceLock<Result<PathBuf, String>> = OnceLock::new();
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ModelWorkerRequest {
     pub protocol_version: u32,
     pub model_name: String,
@@ -56,8 +55,6 @@ pub struct ModelWorkerRequest {
     /// default for interactive debugging (the readable `ir-*.mo` Modelica dumps
     /// are preferred); enable when exact op/index or span detail is needed.
     pub emit_json: bool,
-    #[serde(default)]
-    pub allow_unbalanced_for_diagnostics: bool,
     /// Enable NaN/non-finite runtime tracing (a first-class debug flag rather
     /// than an env var) — see `rumoca_eval_solve::nan_trace`.
     #[serde(default)]

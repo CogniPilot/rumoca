@@ -31,7 +31,7 @@ pub(super) struct BalanceFailureRecord {
     pub discrete_value_unknowns: usize,
     pub continuous_equations: usize,
     pub discrete_real_equations: usize,
-    pub discrete_assignments: usize,
+    pub discrete_value_definitions: usize,
     /// One-line exact phase-owned component breakdown.
     pub detail: String,
     /// Command that reproduces this single failure with full instrumentation.
@@ -106,10 +106,10 @@ fn balance_failure_record(result: &MslModelResult) -> Option<BalanceFailureRecor
         discrete_value_unknowns: detail.discrete_value_unknowns,
         continuous_equations: detail.continuous_equations,
         discrete_real_equations: detail.discrete_real_equations,
-        discrete_assignments: detail.discrete_assignments,
+        discrete_value_definitions: detail.discrete_value_definitions,
         detail: rumoca_compile::analysis::BalanceBreakdown::from(detail.clone()).to_string(),
         reproduction: format!(
-            "cargo run -p rumoca-test-msl --bin rumoca-msl-tools -- debug-model --model {} --allow-unbalanced",
+            "cargo run -p rumoca-test-msl --bin rumoca-msl-tools -- debug-model --model {}",
             result.model_name
         ),
     })
@@ -294,10 +294,6 @@ mod tests {
             "{}",
             record.detail
         );
-        assert!(
-            record.reproduction.contains("--allow-unbalanced"),
-            "{}",
-            record.reproduction
-        );
+        assert!(record.reproduction.contains("debug-model"));
     }
 }

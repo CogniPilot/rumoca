@@ -17,9 +17,6 @@ pub struct Args {
     /// Run simulation after successful DAE/Solve lowering.
     #[arg(long)]
     simulate: bool,
-    /// Materialize DAE artifacts even when strict balance validation rejects the model.
-    #[arg(long)]
-    allow_unbalanced: bool,
     /// Record a perf.data profile around the worker process.
     #[arg(long)]
     perf: bool,
@@ -63,7 +60,6 @@ pub fn run(args: Args) -> Result<()> {
         explicit_sim_target: args.simulate,
         sim_timeout_secs: Some(args.timeout_secs),
         emit_json: args.json,
-        allow_unbalanced_for_diagnostics: args.allow_unbalanced,
         nan_trace: args.nan_trace,
         emit_modelica: true,
         source_root_path: paths.msl_dir.clone(),
@@ -111,8 +107,10 @@ fn print_balance_breakdown(detail: Option<&rumoca_compile::analysis::BalanceDeta
         detail.discrete_value_unknowns,
     );
     println!(
-        "  equations: continuous={} discrete_real={} discrete_assignment={}",
-        detail.continuous_equations, detail.discrete_real_equations, detail.discrete_assignments,
+        "  equations: continuous={} discrete_real={} b1c_definition={}",
+        detail.continuous_equations,
+        detail.discrete_real_equations,
+        detail.discrete_value_definitions,
     );
 }
 

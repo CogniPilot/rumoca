@@ -40,15 +40,21 @@ fn collect_discrete_definitions<'dae>(
     view: dae::DaeView<'dae>,
     defined: &mut HashSet<dae::VariableId<'dae>>,
 ) {
-    for index in 0..view.discrete_assignment_count() {
-        let assignment = view
-            .discrete_assignment(
-                view.discrete_assignment_id(index)
-                    .expect("dense B.1c assignment identity"),
+    for index in 0..view.discrete_value_owner_count() {
+        let owner = view
+            .discrete_value_owner(
+                view.discrete_value_owner_id(index)
+                    .expect("dense B.1c owner identity"),
             )
-            .expect("dense B.1c assignment resolves");
-        defined.insert(view.variable(assignment.target().into()).unwrap().id());
-        collect_expression_variables(view, assignment.value(), defined);
+            .expect("dense B.1c owner resolves");
+        for target in owner.targets().iter() {
+            defined.insert(view.variable(target.into()).unwrap().id());
+        }
+        for branch in owner.branches().iter() {
+            for (value, _) in branch.values().iter() {
+                collect_expression_variables(view, value, defined);
+            }
+        }
     }
     for index in 0..view.discrete_real_equation_count() {
         let equation = view
@@ -168,6 +174,21 @@ fn included_role(role: dae::VariableRole, include_discrete: bool) -> bool {
 }
 
 #[cfg(test)]
+fn define_test_discrete_value<'dae>(
+    model: &mut dae::DaeConstruction<'dae>,
+    target: dae::DiscreteValueId<'dae>,
+    value: dae::ExprId<'dae>,
+    provenance: dae::DaeProvenance,
+) -> Result<(), dae::DaeConstructionError> {
+    model.b1c([target], |topology| {
+        topology.owner(provenance, [target], |owner| {
+            owner.always(provenance, [(value, provenance)])
+        })?;
+        Ok(())
+    })
+}
+
+#[cfg(test)]
 mod tests {
     use rumoca_core::{SourceMap, Span, TypeId, VarName};
 
@@ -220,7 +241,7 @@ mod tests {
                         .literal(dae::DaeLiteral::Boolean(true))?,
                 ))
             })?;
-            model.discrete(|discrete| discrete.assignment(enable_at, enable, enabled))?;
+            define_test_discrete_value(model, enable, enabled, enable_at)?;
             let condition = model.conditions(|conditions| conditions.reserve(enable_at))?;
             model.conditions(|conditions| {
                 conditions.define(condition, dae::ConditionInput::Discrete(enabled), enable_at)

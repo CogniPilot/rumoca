@@ -3,6 +3,7 @@
 //! Tests for the 38 equation contracts defined in SPEC_0022.
 
 use rumoca_compile::compile::{ExpressionOperation, FailedPhase, VariableRole};
+use rumoca_compile::{Session, SessionConfig};
 use rumoca_contracts::test_support::{
     expect_balanced, expect_failure_in_phase_with_code, expect_parse_err_with_code,
     expect_resolve_failure_with_code, expect_success,
@@ -695,7 +696,7 @@ fn eqn_017_single_reinit_accepted() {
 
 #[test]
 fn eqn_017_reinit_in_two_when_equations_rejected() {
-    expect_resolve_failure_with_code(
+    expect_failure_in_phase_with_code(
         r#"
         model Test
             Real x(start = 0, fixed = true);
@@ -708,10 +709,29 @@ fn eqn_017_reinit_in_two_when_equations_rejected() {
                 reinit(x, 0.1);
             end when;
         end Test;
-    "#,
+        "#,
         "Test",
-        "ER051",
+        FailedPhase::ToDae,
+        "ED020",
     );
+}
+
+#[test]
+fn eqn_017_references_share_typed_state_owner_and_preserve_second_span() {
+    let source = r#"
+        model Test
+            Real x(start = 0, fixed = true);
+        equation
+            der(x) = 1;
+            when x > 0.5 then
+                reinit(x, 0);
+            end when;
+            when x > 0.7 then
+                reinit(x, 0.1);
+            end when;
+        end Test;
+    "#;
+    expect_compile_failure_at_last_source_slice(source, "Test", "ED020", "x");
 }
 
 // =============================================================================
@@ -721,7 +741,7 @@ fn eqn_017_reinit_in_two_when_equations_rejected() {
 
 #[test]
 fn eqn_018_multiple_reinit_same_branch_rejected() {
-    expect_resolve_failure_with_code(
+    expect_failure_in_phase_with_code(
         r#"
         model Test
             Real x(start = 0, fixed = true);
@@ -732,9 +752,10 @@ fn eqn_018_multiple_reinit_same_branch_rejected() {
                 reinit(x, 0.1);
             end when;
         end Test;
-    "#,
+        "#,
         "Test",
-        "ER052",
+        FailedPhase::Flatten,
+        "EF004",
     );
 }
 
@@ -767,7 +788,7 @@ fn eqn_020_distinct_when_targets_accepted() {
 
 #[test]
 fn eqn_020_same_variable_in_two_when_equations_rejected() {
-    expect_resolve_failure_with_code(
+    expect_failure_in_phase_with_code(
         r#"
         model Test
             Real x(start = 0);
@@ -781,9 +802,75 @@ fn eqn_020_same_variable_in_two_when_equations_rejected() {
                 d = 2;
             end when;
         end Test;
-    "#,
+        "#,
         "Test",
-        "ER053",
+        FailedPhase::ToDae,
+        "ED020",
+    );
+}
+
+#[test]
+fn eqn_020_equivalent_local_references_fail_at_second_typed_owner() {
+    let source = r#"
+        model Test
+            discrete Real d;
+            Boolean firstTrigger = time > 0.5;
+            Boolean secondTrigger = time > 0.7;
+        equation
+            when firstTrigger then
+                d = 1;
+            end when;
+            when secondTrigger then
+                .d = 2;
+            end when;
+        end Test;
+    "#;
+    expect_compile_failure_at_last_source_slice(source, "Test", "ED020", ".d");
+}
+
+fn expect_compile_failure_at_last_source_slice(
+    source: &str,
+    model: &str,
+    expected_code: &str,
+    expected_slice: &str,
+) {
+    let mut session = Session::new(SessionConfig::default());
+    session
+        .add_document("test.mo", source)
+        .expect("contract source parses");
+    let diagnostics = session.compile_model_diagnostics(model);
+    let diagnostic = diagnostics
+        .diagnostics
+        .iter()
+        .find(|diagnostic| {
+            diagnostic
+                .code
+                .as_deref()
+                .is_some_and(|code| code.ends_with(expected_code))
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "expected diagnostic {expected_code}, got {:?}",
+                diagnostics.diagnostics
+            )
+        });
+    let label = diagnostic
+        .labels
+        .iter()
+        .find(|label| label.primary)
+        .expect("contract failure has a primary source label");
+    let expected_start = source
+        .rfind(expected_slice)
+        .expect("expected offending source slice is present");
+    let (expected_start, expected_label) = expected_slice
+        .strip_prefix('.')
+        .map_or((expected_start, expected_slice), |identifier| {
+            (expected_start + 1, identifier)
+        });
+    assert_eq!(label.span.start.0, expected_start);
+    assert_eq!(
+        &source[label.span.start.0..label.span.end.0],
+        expected_label
     );
 }
 
@@ -876,12 +963,13 @@ fn eqn_007_discrete_conditional_solved_form_accepted() {
         "M",
     );
     result.dae.inspect(|view| {
-        assert_eq!(view.discrete_assignment_count(), 1);
-        let assignment = view
-            .discrete_assignment(view.discrete_assignment_id(0).unwrap())
+        assert_eq!(view.discrete_value_definition_count(), 1);
+        let owner = view
+            .discrete_value_owner(view.discrete_value_owner_id(0).unwrap())
             .unwrap();
+        let (value, _) = owner.branches().get(0).unwrap().values().get(0).unwrap();
         assert!(matches!(
-            view.expression(assignment.value()).unwrap().operation(),
+            view.expression(value).unwrap().operation(),
             ExpressionOperation::Conditional(_)
         ));
     });
@@ -1141,8 +1229,8 @@ fn eqn_012_branch_variable_sets_differ_rejected() {
         end M;
     "#,
         "M",
-        FailedPhase::ToDae,
-        "ED010",
+        FailedPhase::Flatten,
+        "EF004",
     );
 }
 

@@ -54,6 +54,7 @@
 
 mod clocks;
 mod conditions;
+mod discrete_values;
 mod equations;
 mod error;
 mod events;
@@ -68,9 +69,14 @@ pub use clocks::{ClockOperation, ClockOwnershipView, ClockView, ClockedVariableK
 pub use conditions::{
     ConditionInput, ConditionOperation, ConditionView, Conditions, RelationView, RootView,
 };
+pub use discrete_values::{
+    DiscreteBranchActivation, DiscreteValueBranchValues, DiscreteValueBranchView,
+    DiscreteValueBranches, DiscreteValueOwner, DiscreteValueOwnerView, DiscreteValueTargets,
+    DiscreteValueTopology,
+};
 pub use equations::{
-    ContinuousEquations, DiscreteAssignmentView, DiscreteEquations, InitializationEquations,
-    ResidualEquation, StructuredResiduals,
+    ContinuousEquations, DiscreteEquations, InitializationEquations, ResidualEquation,
+    StructuredResiduals,
 };
 pub use error::DaeConstructionError;
 pub use events::{EventActionOperation, EventActionView, Events, TimeEventView};
@@ -84,7 +90,7 @@ pub use expression::{
 };
 pub use ids::{
     AlgebraicId, ClockId, ClockOwnershipId, ConditionId, ContinuousEquationId, ContinuousFamilyId,
-    DelayId, DiscreteAssignmentId, DiscreteRealEquationId, DiscreteRealId, DiscreteValueId,
+    DelayId, DiscreteRealEquationId, DiscreteRealId, DiscreteValueId, DiscreteValueOwnerId,
     DomainBinderId, DomainId, EventActionId, ExprId, FunctionDefinitionId, FunctionFoldId,
     FunctionId, FunctionParameterId, FunctionValueId, InitializationEquationId,
     InitializationFamilyId, InputId, ParameterId, PreviousId, RelationId, RootId, StateId,

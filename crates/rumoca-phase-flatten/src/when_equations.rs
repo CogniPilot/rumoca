@@ -513,6 +513,7 @@ fn flatten_when_simple_equation(
     imports: &crate::qualify::ImportMap,
     def_map: Option<&crate::ResolveDefMap>,
 ) -> Result<Option<flat::WhenEquation>, FlattenError> {
+    let target_span = lhs.span();
     // Check for tuple assignment (multi-output function call)
     if let ast::Expression::Tuple { elements, .. } = lhs {
         // Extract output variable names from the tuple
@@ -545,7 +546,10 @@ fn flatten_when_simple_equation(
         );
 
         return Ok(Some(flat::WhenEquation::function_call_outputs(
-            outputs, function, span, origin,
+            outputs,
+            function,
+            target_span,
+            origin,
         )));
     }
 
@@ -555,7 +559,10 @@ fn flatten_when_simple_equation(
         qualify_expression_imports_with_def_map_ctx(rhs, prefix, imports, def_map, ctx, None)?;
     let origin = format!("when equation assignment to {}", target);
     Ok(Some(flat::WhenEquation::assign(
-        target, value, span, origin,
+        target,
+        value,
+        target_span,
+        origin,
     )))
 }
 
@@ -811,10 +818,16 @@ fn flatten_reinit_call(
     let value =
         qualify_expression_imports_with_def_map_ctx(&args[1], prefix, imports, def_map, ctx, None)?;
     let origin = format!("reinit({})", state);
+    let target_span = args[0].span();
 
     // Note: EQN-016 validation (reinit target must be state) is done in ToDae phase
     // where we have full variable classification
-    Ok(Some(flat::WhenEquation::reinit(state, value, span, origin)))
+    Ok(Some(flat::WhenEquation::reinit(
+        state,
+        value,
+        target_span,
+        origin,
+    )))
 }
 
 /// Extract the target variable name from an assignment LHS.

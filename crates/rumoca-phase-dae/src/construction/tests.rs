@@ -187,11 +187,79 @@ fn duplicate_when_model(source: &TestSource, nested: bool) -> flat::Model {
     model
 }
 
+fn atomic_when_dependency_model(source: &TestSource, cyclic: bool) -> flat::Model {
+    let mut model = flat::Model::new();
+    add_primitive_variable(
+        &mut model,
+        source,
+        "a",
+        "discrete Boolean a",
+        8,
+        Vec::new(),
+        true,
+    );
+    add_primitive_variable(
+        &mut model,
+        source,
+        "z",
+        "discrete Boolean z",
+        9,
+        Vec::new(),
+        true,
+    );
+    let condition_span = source.span("true", 0);
+    let mut branch = flat::WhenBranch::new(
+        Expression::Literal {
+            value: Literal::Boolean(true),
+            span: condition_span,
+        },
+        condition_span,
+    );
+    let a_action = source.span("a = z", 0);
+    branch.add_equation(flat::WhenEquation::assign(
+        VarName::new("a"),
+        Expression::VarRef {
+            name: Reference::new("z"),
+            subscripts: Vec::new(),
+            span: Span::from_offsets(source.source, a_action.end.0 - 1, a_action.end.0),
+        },
+        a_action,
+        "consumer action",
+    ));
+    let z_action = if cyclic {
+        source.span("z = a", 0)
+    } else {
+        source.span("z = true", 0)
+    };
+    let z_value = if cyclic {
+        Expression::VarRef {
+            name: Reference::new("a"),
+            subscripts: Vec::new(),
+            span: Span::from_offsets(source.source, z_action.end.0 - 1, z_action.end.0),
+        }
+    } else {
+        Expression::Literal {
+            value: Literal::Boolean(true),
+            span: source.span("true", 1),
+        }
+    };
+    branch.add_equation(flat::WhenEquation::assign(
+        VarName::new("z"),
+        z_value,
+        z_action,
+        "producer action",
+    ));
+    model
+        .when_chains
+        .push(flat::WhenChain::new(branch, source.span("when true", 0)));
+    model
+}
+
 #[test]
 fn production_lowering_enters_only_through_construct() {
     let source = TestSource::new("model M Real x; equation 0 = x - 1.0; end M;");
     let model = scalar_real_model(&source);
-    let dae = construct(&model, source.map, ToDaeOptions::default()).unwrap();
+    let dae = construct(&model, source.map).unwrap();
 
     dae.inspect(|view| {
         assert_eq!(view.variable_count(), 1);
@@ -218,18 +286,42 @@ fn when_chain_lowers_source_priority_with_exact_branch_provenance() {
     );
     let second_condition_span = source.span("true", 2);
     let model = source_priority_when_model(&source);
-    let dae = construct(&model, source.map, ToDaeOptions::default()).unwrap();
+    let dae = construct(&model, source.map).unwrap();
 
     dae.inspect(|view| {
-        assert_eq!(view.event_action_count(), 2);
-        let first = view.event_action(view.event_action_id(0).unwrap()).unwrap();
-        let second = view.event_action(view.event_action_id(1).unwrap()).unwrap();
-        assert_eq!(view.source_text(first.provenance()), Some("m = true"));
-        assert_eq!(view.source_text(second.provenance()), Some("m = false"));
-        assert_eq!(first.guard(), first.trigger());
-        assert_ne!(second.guard(), second.trigger());
+        assert_eq!(view.event_action_count(), 0);
+        assert_eq!(view.discrete_value_owner_count(), 1);
+        let owner = view
+            .discrete_value_owner(view.discrete_value_owner_id(0).unwrap())
+            .unwrap();
+        let first = owner.branches().get(0).unwrap();
+        let second = owner.branches().get(1).unwrap();
+        assert_eq!(
+            view.source_text(first.values().get(0).unwrap().1),
+            Some("m = true")
+        );
+        assert_eq!(
+            view.source_text(second.values().get(0).unwrap().1),
+            Some("m = false")
+        );
+        let dae::DiscreteBranchActivation::When {
+            trigger: first_trigger,
+            guard: first_guard,
+        } = first.activation()
+        else {
+            panic!("source when branch must remain condition-owned");
+        };
+        let dae::DiscreteBranchActivation::When {
+            trigger: second_trigger,
+            guard: second_guard,
+        } = second.activation()
+        else {
+            panic!("source elsewhen branch must remain condition-owned");
+        };
+        assert_eq!(first_guard, first_trigger);
+        assert_ne!(second_guard, second_trigger);
 
-        let guard = view.condition(second.guard()).unwrap();
+        let guard = view.condition(second_guard).unwrap();
         assert_eq!(guard.provenance().span(), second_condition_span);
         assert_eq!(
             guard.provenance().origin(),
@@ -238,7 +330,7 @@ fn when_chain_lowers_source_priority_with_exact_branch_provenance() {
         let dae::ConditionOperation::And(branch_trigger, no_previous) = guard.operation() else {
             panic!("later branch guard must combine its trigger with source priority");
         };
-        assert_eq!(branch_trigger, second.trigger());
+        assert_eq!(branch_trigger, second_trigger);
         let negated = view.condition(no_previous).unwrap();
         assert_eq!(negated.provenance().span(), second_condition_span);
         assert_eq!(
@@ -247,7 +339,164 @@ fn when_chain_lowers_source_priority_with_exact_branch_provenance() {
         );
         assert!(matches!(
             negated.operation(),
-            dae::ConditionOperation::Not(previous) if previous == first.trigger()
+            dae::ConditionOperation::Not(previous) if previous == first_trigger
+        ));
+    });
+}
+
+#[test]
+fn b1c_topology_orders_producers_before_declaration_order_consumers() {
+    let source =
+        TestSource::new("model M discrete Boolean a = z; discrete Boolean z = true; end M;");
+    let mut model = flat::Model::new();
+    add_primitive_variable(
+        &mut model,
+        &source,
+        "a",
+        "discrete Boolean a",
+        8,
+        Vec::new(),
+        true,
+    );
+    add_primitive_variable(
+        &mut model,
+        &source,
+        "z",
+        "discrete Boolean z",
+        9,
+        Vec::new(),
+        true,
+    );
+    model.variables.get_mut(&VarName::new("a")).unwrap().binding = Some(Expression::VarRef {
+        name: Reference::new("z"),
+        subscripts: Vec::new(),
+        span: source.span("z", 0),
+    });
+    model.variables.get_mut(&VarName::new("z")).unwrap().binding = Some(Expression::Literal {
+        value: Literal::Boolean(true),
+        span: source.span("true", 0),
+    });
+
+    let dae = construct(&model, source.map).unwrap();
+    dae.inspect(|view| {
+        assert_eq!(view.discrete_value_owner_count(), 2);
+        let producer = view
+            .discrete_value_owner(view.discrete_value_owner_id(0).unwrap())
+            .unwrap();
+        let consumer = view
+            .discrete_value_owner(view.discrete_value_owner_id(1).unwrap())
+            .unwrap();
+        assert_eq!(producer.targets().get(0).unwrap().index(), 1);
+        assert_eq!(consumer.targets().get(0).unwrap().index(), 0);
+    });
+}
+
+#[test]
+fn b1c_topology_orders_targets_inside_one_atomic_owner() {
+    let source = TestSource::new(
+        "model M discrete Boolean a; discrete Boolean z; equation \
+         when true then a = z; z = true; end when; end M;",
+    );
+    let model = atomic_when_dependency_model(&source, false);
+
+    let dae = construct(&model, source.map).unwrap();
+    dae.inspect(|view| {
+        assert_eq!(view.discrete_value_owner_count(), 1);
+        let owner = view
+            .discrete_value_owner(view.discrete_value_owner_id(0).unwrap())
+            .unwrap();
+        assert_eq!(owner.targets().len(), 2);
+        assert_eq!(owner.targets().get(0).unwrap().index(), 1);
+        assert_eq!(owner.targets().get(1).unwrap().index(), 0);
+    });
+}
+
+#[test]
+fn b1c_topology_rejects_internal_atomic_owner_cycles_at_action_span() {
+    let source = TestSource::new(
+        "model M discrete Boolean a; discrete Boolean z; equation \
+         when true then a = z; z = a; end when; end M;",
+    );
+    let first_action = source.span("a = z", 0);
+    let model = atomic_when_dependency_model(&source, true);
+
+    let error = construct(&model, source.map).unwrap_err();
+    assert!(matches!(
+        error,
+        ToDaeError::DiscreteSolvedFormViolation { detail, span }
+            if detail.contains("internal current-value dependency cycle")
+                && span == first_action
+    ));
+}
+
+#[test]
+fn b1c_topology_rejects_current_value_cycles_before_construction() {
+    let source = TestSource::new("model M discrete Boolean a = z; discrete Boolean z = a; end M;");
+    let mut model = flat::Model::new();
+    for (name, declaration, type_id, dependency, occurrence) in [
+        ("a", "discrete Boolean a", 8, "z", 0),
+        ("z", "discrete Boolean z", 9, "a", 1),
+    ] {
+        add_primitive_variable(
+            &mut model,
+            &source,
+            name,
+            declaration,
+            type_id,
+            Vec::new(),
+            true,
+        );
+        model
+            .variables
+            .get_mut(&VarName::new(name))
+            .unwrap()
+            .binding = Some(Expression::VarRef {
+            name: Reference::new(dependency),
+            subscripts: Vec::new(),
+            span: source.span(dependency, occurrence),
+        });
+    }
+
+    let error = construct(&model, source.map).unwrap_err();
+    assert!(matches!(
+        error,
+        ToDaeError::DiscreteSolvedFormViolation { detail, .. }
+            if detail.contains("current-value dependency cycle")
+    ));
+}
+
+#[test]
+fn unassigned_discrete_value_has_explicit_generated_hold_owner() {
+    let source = TestSource::new("model M discrete Boolean m; end M;");
+    let mut model = flat::Model::new();
+    add_primitive_variable(
+        &mut model,
+        &source,
+        "m",
+        "discrete Boolean m",
+        8,
+        Vec::new(),
+        true,
+    );
+
+    let dae = construct(&model, source.map).unwrap();
+    dae.inspect(|view| {
+        let owner = view
+            .discrete_value_owner(view.discrete_value_owner_id(0).unwrap())
+            .unwrap();
+        assert_eq!(
+            owner.provenance().origin(),
+            dae::DaeProvenanceOrigin::Generated(dae::DaeGeneration::DiscreteUpdate)
+        );
+        let branch = owner.branches().get(0).unwrap();
+        assert!(matches!(
+            branch.activation(),
+            dae::DiscreteBranchActivation::Always
+        ));
+        let value = view.expression(branch.values().get(0).unwrap().0).unwrap();
+        assert!(matches!(
+            value.operation(),
+            dae::ExpressionOperation::Coordinate(dae::CoordinateView::PreDiscreteValue(_))
         ));
     });
 }
@@ -260,7 +509,7 @@ fn malformed_flat_when_branch_rejects_direct_duplicate_at_second_definition() {
     );
     let second_span = source.span("m = false", 0);
     let model = duplicate_when_model(&source, false);
-    let error = construct(&model, source.map, ToDaeOptions::default()).unwrap_err();
+    let error = construct(&model, source.map).unwrap_err();
 
     assert!(matches!(
         error,
@@ -277,7 +526,7 @@ fn malformed_flat_when_branch_rejects_nested_duplicate_at_inner_definition() {
     );
     let second_span = source.span("m = false", 0);
     let model = duplicate_when_model(&source, true);
-    let error = construct(&model, source.map, ToDaeOptions::default()).unwrap_err();
+    let error = construct(&model, source.map).unwrap_err();
 
     assert!(matches!(
         error,
@@ -340,7 +589,7 @@ fn malformed_flat_rejects_second_independent_when_owner_for_one_target() {
             .push(flat::WhenChain::new(branch, source.span(owner, 0)));
     }
     let second_owner = source.span("when false then m = false; end when", 0);
-    let error = construct(&model, source.map, ToDaeOptions::default()).unwrap_err();
+    let error = construct(&model, source.map).unwrap_err();
 
     assert!(matches!(
         error,
@@ -431,7 +680,7 @@ fn nested_duplicate_diagnostic_follows_source_insertion_order() {
     model
         .when_chains
         .push(flat::WhenChain::new(branch, owner_span));
-    let error = construct(&model, source.map, ToDaeOptions::default()).unwrap_err();
+    let error = construct(&model, source.map).unwrap_err();
 
     assert!(matches!(
         error,
@@ -477,7 +726,7 @@ fn when_assert_level_reaches_checked_event_action_with_exact_provenance() {
     );
     let mut model = flat::Model::new();
     model.when_chains.push(chain);
-    let dae = construct(&model, source.map, ToDaeOptions::default()).unwrap();
+    let dae = construct(&model, source.map).unwrap();
 
     dae.inspect(|view| {
         assert_eq!(view.event_action_count(), 1);
@@ -552,7 +801,7 @@ fn production_lowering_constructs_delay_with_exact_timing_evidence() {
     ));
     model.is_partial = true;
 
-    let dae = construct(&model, source.map, ToDaeOptions::default()).unwrap();
+    let dae = construct(&model, source.map).unwrap();
     dae.inspect(|view| {
         assert_eq!(view.delay_count(), 1);
         let delay = view
@@ -659,7 +908,7 @@ fn production_lowering_preserves_function_locals_and_statement_order() {
         },
     ));
 
-    let dae = construct(&model, source.map, ToDaeOptions::default()).unwrap();
+    let dae = construct(&model, source.map).unwrap();
     dae.inspect(|view| {
         let function = view.function(view.function_id(0).unwrap()).unwrap();
         let values = function.values().collect::<Vec<_>>();
@@ -715,7 +964,7 @@ fn dynamic_quotient_fails_at_its_runtime_operator_owner() {
     ));
     model.is_partial = true;
 
-    let error = construct(&model, source.map, ToDaeOptions::default()).unwrap_err();
+    let error = construct(&model, source.map).unwrap_err();
     assert!(matches!(
         error,
         ToDaeError::UnsupportedRuntimeOperator {
@@ -822,7 +1071,7 @@ fn production_lowering_constructs_a_compact_checked_function_loop() {
         },
     ));
 
-    let dae = construct(&model, source.map, ToDaeOptions::default()).unwrap();
+    let dae = construct(&model, source.map).unwrap();
     dae.inspect(|view| assert_production_sum3_loop(view, loop_span));
 }
 
@@ -947,7 +1196,7 @@ fn reachable_function_loop_with_runtime_bound_fails_at_domain_owner() {
         },
     ));
 
-    let error = construct(&model, source.map, ToDaeOptions::default()).unwrap_err();
+    let error = construct(&model, source.map).unwrap_err();
     assert!(matches!(
         error,
         ToDaeError::UnsupportedFlatSemantics {
@@ -975,7 +1224,7 @@ fn input_ownership_requires_resolved_component_identity() {
         .insert(VarName::new("u"), "Real".to_string());
     model.top_level_input_components.insert("u".to_string());
 
-    let error = construct(&model, source.map, ToDaeOptions::default()).unwrap_err();
+    let error = construct(&model, source.map).unwrap_err();
     assert!(matches!(
         error,
         ToDaeError::UnsupportedFlatSemantics {
@@ -993,7 +1242,7 @@ fn primitive_arrays_parameters_and_discrete_values_keep_checked_owners() {
          discrete Boolean m = true; equation x = p; y = x[2];",
     );
     let model = array_and_discrete_model(&source);
-    let dae = construct(&model, source.map, ToDaeOptions::default()).unwrap();
+    let dae = construct(&model, source.map).unwrap();
 
     dae.inspect(|view| {
         assert_eq!(view.variable_count(), 4);
@@ -1010,7 +1259,7 @@ fn primitive_arrays_parameters_and_discrete_values_keep_checked_owners() {
             view.variable(view.variable_id(3).unwrap()).unwrap().role(),
             dae::VariableRole::DiscreteValue
         );
-        assert_eq!(view.discrete_assignment_count(), 1);
+        assert_eq!(view.discrete_value_definition_count(), 1);
         assert_eq!(view.continuous_owner_count(), 2);
         assert!(matches!(
             view.continuous_owner(0),
@@ -1186,7 +1435,7 @@ fn undefined_references_fail_before_construction() {
     };
 
     assert!(matches!(
-        construct(&model, source.map, ToDaeOptions::default()),
+        construct(&model, source.map),
         Err(ToDaeError::UnresolvedReference { name, span: found })
             if name == "missing" && found == span
     ));
@@ -1203,7 +1452,7 @@ fn missing_expression_provenance_is_not_defaulted() {
     };
 
     assert!(matches!(
-        construct(&model, source.map, ToDaeOptions::default()),
+        construct(&model, source.map),
         Err(ToDaeError::MissingProvenance { .. })
     ));
 }

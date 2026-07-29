@@ -1,13 +1,8 @@
 use super::*;
-use rumoca_ir_ast::AstIndexMap;
-
 pub(super) const ER047_OPERATOR_CONTENTS: &str = "ER047";
 pub(super) const ER048_OPERATOR_PLACEMENT: &str = "ER048";
 pub(super) const ER049_CONNECTOR_COMPONENT_TYPES: &str = "ER049";
 pub(super) const ER050_OPERATOR_RECORD_BASE: &str = "ER050";
-pub(super) const ER051_REINIT_SINGLE_WHEN: &str = "ER051";
-pub(super) const ER052_REINIT_BRANCH_DISTRIBUTION: &str = "ER052";
-pub(super) const ER053_WHEN_SINGLE_ASSIGN: &str = "ER053";
 pub(super) const ER054_CONSTANT_FIXED_FALSE: &str = "ER054";
 pub(super) const ER055_OPERATOR_SINGLE_OUTPUT: &str = "ER055";
 pub(super) const ER056_OPERATOR_RECORD_INPUT: &str = "ER056";
@@ -18,6 +13,7 @@ pub(super) const ER072_ZERO_OPERATOR_SIGNATURE: &str = "ER072";
 
 pub(super) fn check_operator_restrictions(
     class: &ClassDef,
+    def: &StoredDefinition,
     parent_is_operator_record: bool,
     parent_is_operator_class: bool,
     operator_record: Option<&OperatorRecordContext>,
@@ -42,6 +38,7 @@ pub(super) fn check_operator_restrictions(
             parent_is_operator_class,
             operator_record,
             operator_name,
+            def,
             diags,
         );
     }
@@ -159,6 +156,7 @@ fn check_operator_function_contracts(
     parent_is_operator_class: bool,
     operator_record: Option<&OperatorRecordContext>,
     operator_name: Option<&str>,
+    def: &StoredDefinition,
     diags: &mut Vec<Diagnostic>,
 ) {
     // MLS §14 treats direct functions inside an operator record as operator
@@ -209,22 +207,23 @@ fn check_operator_function_contracts(
     }
 
     if let Some(record) = operator_record {
-        check_operator_record_input_contract(class, record, operator_name, diags);
-        check_operator_constructor_output_contract(class, record, operator_name, diags);
+        check_operator_record_input_contract(class, record, operator_name, def, diags);
+        check_operator_constructor_output_contract(class, record, operator_name, def, diags);
     }
 
-    check_operator_string_output_contract(class, operator_name, diags);
+    check_operator_string_output_contract(class, operator_name, def, diags);
 }
 
 fn check_operator_record_input_contract(
     class: &ClassDef,
     record: &OperatorRecordContext,
     operator_name: Option<&str>,
+    def: &StoredDefinition,
     diags: &mut Vec<Diagnostic>,
 ) {
     if is_constructor_operator(operator_name, class)
         || is_zero_operator(operator_name, class)
-        || has_operator_record_input(class, record)
+        || has_operator_record_input(class, record, def)
     {
         return;
     }
@@ -249,9 +248,12 @@ fn check_operator_constructor_output_contract(
     class: &ClassDef,
     record: &OperatorRecordContext,
     operator_name: Option<&str>,
+    def: &StoredDefinition,
     diags: &mut Vec<Diagnostic>,
 ) {
-    if !is_constructor_operator(operator_name, class) || has_operator_record_output(class, record) {
+    if !is_constructor_operator(operator_name, class)
+        || has_operator_record_output(class, record, def)
+    {
         return;
     }
     diags.push(semantic_error(
@@ -274,9 +276,10 @@ fn check_operator_constructor_output_contract(
 fn check_operator_string_output_contract(
     class: &ClassDef,
     operator_name: Option<&str>,
+    def: &StoredDefinition,
     diags: &mut Vec<Diagnostic>,
 ) {
-    if !is_string_operator(operator_name) || has_string_output(class) {
+    if !is_string_operator(operator_name) || has_string_output(class, def) {
         return;
     }
     diags.push(semantic_error(
@@ -374,14 +377,22 @@ fn check_zero_operator_contract(class: &ClassDef, diags: &mut Vec<Diagnostic>) {
     ));
 }
 
-fn has_operator_record_input(class: &ClassDef, record: &OperatorRecordContext) -> bool {
+fn has_operator_record_input(
+    class: &ClassDef,
+    record: &OperatorRecordContext,
+    def: &StoredDefinition,
+) -> bool {
     class.components.values().any(|comp| {
         matches!(comp.causality, Causality::Input(_))
-            && component_matches_operator_record(comp, record)
+            && component_matches_operator_record(comp, record, def)
     })
 }
 
-fn has_operator_record_output(class: &ClassDef, record: &OperatorRecordContext) -> bool {
+fn has_operator_record_output(
+    class: &ClassDef,
+    record: &OperatorRecordContext,
+    def: &StoredDefinition,
+) -> bool {
     let mut outputs = class
         .components
         .values()
@@ -389,10 +400,10 @@ fn has_operator_record_output(class: &ClassDef, record: &OperatorRecordContext) 
     let Some(output) = outputs.next() else {
         return false;
     };
-    outputs.next().is_none() && component_matches_operator_record(output, record)
+    outputs.next().is_none() && component_matches_operator_record(output, record, def)
 }
 
-fn has_string_output(class: &ClassDef) -> bool {
+fn has_string_output(class: &ClassDef, def: &StoredDefinition) -> bool {
     let mut outputs = class
         .components
         .values()
@@ -400,17 +411,22 @@ fn has_string_output(class: &ClassDef) -> bool {
     let Some(output) = outputs.next() else {
         return false;
     };
-    outputs.next().is_none() && output.type_name.to_string() == "String"
+    outputs.next().is_none()
+        && matches!(
+            resolve_component_type_root(output, def),
+            Some(ResolvedTypeRoot::Builtin("String"))
+        )
 }
 
 fn component_matches_operator_record(
     component: &ast::Component,
     record: &OperatorRecordContext,
+    def: &StoredDefinition,
 ) -> bool {
-    if let Some(record_def_id) = record.def_id {
-        return component.type_def_id == Some(record_def_id);
-    }
-    component.type_name.to_string() == record.name
+    matches!(
+        resolve_component_type_root(component, def),
+        Some(ResolvedTypeRoot::Class(class)) if class.def_id == Some(record.def_id)
+    )
 }
 
 pub(super) fn check_constant_fixed_false(class: &ClassDef, diags: &mut Vec<Diagnostic>) {
@@ -498,385 +514,6 @@ pub(super) fn check_operator_record_base_restrictions(
             ));
         }
     }
-}
-
-pub(super) fn check_when_reinit_contracts(class: &ClassDef, diags: &mut Vec<Diagnostic>) {
-    let mut targets = WhenOwnerTargets::default();
-    collect_when_owner_sequence(&class.equations, &mut targets, diags);
-}
-
-type DefinitionTargets = AstIndexMap<String, Span>;
-
-#[derive(Default)]
-struct WhenOwnerTargets {
-    reinit: DefinitionTargets,
-    defined: DefinitionTargets,
-}
-
-fn collect_when_owner_sequence(
-    equations: &[Equation],
-    targets: &mut WhenOwnerTargets,
-    diags: &mut Vec<Diagnostic>,
-) {
-    for equation in equations {
-        match equation {
-            Equation::When(blocks) => {
-                let owner = collect_when_owner_contracts(blocks, diags);
-                merge_sequential_when_owner_targets(targets, owner, diags);
-            }
-            Equation::If {
-                cond_blocks,
-                else_block,
-            } => {
-                let mut alternatives = WhenOwnerTargets::default();
-                for block in cond_blocks {
-                    let mut branch = WhenOwnerTargets::default();
-                    collect_when_owner_sequence(&block.eqs, &mut branch, diags);
-                    merge_exclusive_when_owner_targets(&mut alternatives, branch);
-                }
-                if let Some(else_block) = else_block {
-                    let mut branch = WhenOwnerTargets::default();
-                    collect_when_owner_sequence(else_block, &mut branch, diags);
-                    merge_exclusive_when_owner_targets(&mut alternatives, branch);
-                }
-                merge_sequential_when_owner_targets(targets, alternatives, diags);
-            }
-            Equation::For { equations, .. } => {
-                let mut loop_targets = WhenOwnerTargets::default();
-                collect_when_owner_sequence(equations, &mut loop_targets, diags);
-                merge_sequential_when_owner_targets(targets, loop_targets, diags);
-            }
-            Equation::FunctionCall { .. }
-            | Equation::Assert { .. }
-            | Equation::Connect { .. }
-            | Equation::Empty
-            | Equation::Simple { .. } => {}
-        }
-    }
-}
-
-fn merge_exclusive_when_owner_targets(targets: &mut WhenOwnerTargets, branch: WhenOwnerTargets) {
-    merge_exclusive_definition_targets(&mut targets.reinit, branch.reinit);
-    merge_exclusive_definition_targets(&mut targets.defined, branch.defined);
-}
-
-fn merge_sequential_when_owner_targets(
-    targets: &mut WhenOwnerTargets,
-    sequential: WhenOwnerTargets,
-    diags: &mut Vec<Diagnostic>,
-) {
-    for (name, span) in sequential.reinit {
-        record_sequential_reinit(&mut targets.reinit, name, span, diags);
-    }
-    for (name, span) in sequential.defined {
-        record_sequential_when_definition(&mut targets.defined, name, span, diags);
-    }
-}
-
-fn collect_when_owner_contracts(
-    blocks: &[ast::EquationBlock],
-    diags: &mut Vec<Diagnostic>,
-) -> WhenOwnerTargets {
-    WhenOwnerTargets {
-        reinit: collect_when_chain_reinit_targets(blocks, diags),
-        defined: collect_when_chain_definition_targets(blocks, diags),
-    }
-}
-
-fn record_sequential_reinit(
-    targets: &mut DefinitionTargets,
-    name: String,
-    span: Span,
-    diags: &mut Vec<Diagnostic>,
-) {
-    match targets.entry(name) {
-        indexmap::map::Entry::Occupied(entry) => {
-            let name = entry.key();
-            diags.push(semantic_error(
-                ER051_REINIT_SINGLE_WHEN,
-                format!(
-                    "reinit for variable '{name}' is used in more than one when-equation (MLS §8.3.5)"
-                ),
-                label_from_span(
-                    span,
-                    format!("second when-equation applies reinit to '{name}'"),
-                ),
-            ));
-        }
-        indexmap::map::Entry::Vacant(entry) => {
-            entry.insert(span);
-        }
-    }
-}
-
-fn record_sequential_when_definition(
-    targets: &mut DefinitionTargets,
-    name: String,
-    span: Span,
-    diags: &mut Vec<Diagnostic>,
-) {
-    match targets.entry(name) {
-        indexmap::map::Entry::Occupied(entry) => {
-            let name = entry.key();
-            diags.push(semantic_error(
-                ER053_WHEN_SINGLE_ASSIGN,
-                format!(
-                    "the same variable '{name}' is defined in more than one when-equation (MLS §8.3.5)"
-                ),
-                label_from_span(
-                    span,
-                    format!("second when-equation defines '{name}' again"),
-                ),
-            ));
-        }
-        indexmap::map::Entry::Vacant(entry) => {
-            entry.insert(span);
-        }
-    }
-}
-
-fn collect_when_chain_reinit_targets(
-    blocks: &[ast::EquationBlock],
-    diags: &mut Vec<Diagnostic>,
-) -> DefinitionTargets {
-    let mut chain_targets = DefinitionTargets::default();
-    for block in blocks {
-        let mut branch_targets = DefinitionTargets::default();
-        collect_reinit_sequence(&block.eqs, &mut branch_targets, diags);
-        merge_exclusive_definition_targets(&mut chain_targets, branch_targets);
-    }
-    chain_targets
-}
-
-fn collect_reinit_sequence(
-    equations: &[Equation],
-    targets: &mut DefinitionTargets,
-    diags: &mut Vec<Diagnostic>,
-) {
-    for equation in equations {
-        match equation {
-            Equation::FunctionCall { comp, args, .. } => {
-                if let Some((name, span)) = extract_reinit_target(comp, args) {
-                    record_sequential_branch_reinit(targets, name, span, diags);
-                }
-            }
-            Equation::If {
-                cond_blocks,
-                else_block,
-            } => {
-                let mut alternatives = DefinitionTargets::default();
-                for block in cond_blocks {
-                    let mut branch = DefinitionTargets::default();
-                    collect_reinit_sequence(&block.eqs, &mut branch, diags);
-                    merge_exclusive_definition_targets(&mut alternatives, branch);
-                }
-                if let Some(else_block) = else_block {
-                    let mut branch = DefinitionTargets::default();
-                    collect_reinit_sequence(else_block, &mut branch, diags);
-                    merge_exclusive_definition_targets(&mut alternatives, branch);
-                }
-                merge_sequential_reinit_targets(targets, alternatives, diags);
-            }
-            Equation::For { equations, .. } => {
-                let mut loop_targets = DefinitionTargets::default();
-                collect_reinit_sequence(equations, &mut loop_targets, diags);
-                merge_sequential_reinit_targets(targets, loop_targets, diags);
-            }
-            Equation::When(blocks) => {
-                let nested_targets = collect_when_chain_reinit_targets(blocks, diags);
-                merge_sequential_reinit_targets(targets, nested_targets, diags);
-            }
-            Equation::Assert { .. }
-            | Equation::Connect { .. }
-            | Equation::Empty
-            | Equation::Simple { .. } => {}
-        }
-    }
-}
-
-fn merge_sequential_reinit_targets(
-    targets: &mut DefinitionTargets,
-    sequential: DefinitionTargets,
-    diags: &mut Vec<Diagnostic>,
-) {
-    for (name, span) in sequential {
-        record_sequential_branch_reinit(targets, name, span, diags);
-    }
-}
-
-fn record_sequential_branch_reinit(
-    targets: &mut DefinitionTargets,
-    name: String,
-    span: Span,
-    diags: &mut Vec<Diagnostic>,
-) {
-    match targets.entry(name) {
-        indexmap::map::Entry::Occupied(entry) => {
-            let name = entry.key();
-            diags.push(semantic_error(
-                ER052_REINIT_BRANCH_DISTRIBUTION,
-                format!(
-                    "multiple reinit calls for '{name}' in one when-branch are not allowed (MLS §8.3.5)"
-                ),
-                label_from_span(
-                    span,
-                    format!("second reinit for '{name}' in this branch"),
-                ),
-            ));
-        }
-        indexmap::map::Entry::Vacant(entry) => {
-            entry.insert(span);
-        }
-    }
-}
-
-fn collect_when_chain_definition_targets(
-    blocks: &[ast::EquationBlock],
-    diags: &mut Vec<Diagnostic>,
-) -> DefinitionTargets {
-    let mut chain_targets = DefinitionTargets::default();
-    for block in blocks {
-        let mut branch_targets = DefinitionTargets::default();
-        collect_definition_sequence(&block.eqs, &mut branch_targets, diags);
-        merge_exclusive_definition_targets(&mut chain_targets, branch_targets);
-    }
-    chain_targets
-}
-
-fn collect_definition_sequence(
-    equations: &[Equation],
-    targets: &mut DefinitionTargets,
-    diags: &mut Vec<Diagnostic>,
-) {
-    for equation in equations {
-        match equation {
-            Equation::Simple { lhs, .. } => {
-                for (name, span) in extract_definition_targets(lhs) {
-                    record_sequential_definition(targets, name, span, diags);
-                }
-            }
-            Equation::If {
-                cond_blocks,
-                else_block,
-            } => {
-                let mut conditional_targets = DefinitionTargets::default();
-                for block in cond_blocks {
-                    let mut branch_targets = DefinitionTargets::default();
-                    collect_definition_sequence(&block.eqs, &mut branch_targets, diags);
-                    merge_exclusive_definition_targets(&mut conditional_targets, branch_targets);
-                }
-                if let Some(else_block) = else_block {
-                    let mut branch_targets = DefinitionTargets::default();
-                    collect_definition_sequence(else_block, &mut branch_targets, diags);
-                    merge_exclusive_definition_targets(&mut conditional_targets, branch_targets);
-                }
-                merge_sequential_definition_targets(targets, conditional_targets, diags);
-            }
-            Equation::For { equations, .. } => {
-                let mut loop_targets = DefinitionTargets::default();
-                collect_definition_sequence(equations, &mut loop_targets, diags);
-                merge_sequential_definition_targets(targets, loop_targets, diags);
-            }
-            Equation::When(blocks) => {
-                let nested_targets = collect_when_chain_definition_targets(blocks, diags);
-                merge_sequential_definition_targets(targets, nested_targets, diags);
-            }
-            Equation::FunctionCall { .. }
-            | Equation::Assert { .. }
-            | Equation::Connect { .. }
-            | Equation::Empty => {}
-        }
-    }
-}
-
-fn merge_exclusive_definition_targets(
-    targets: &mut DefinitionTargets,
-    branch_targets: DefinitionTargets,
-) {
-    for (name, span) in branch_targets {
-        targets.entry(name).or_insert(span);
-    }
-}
-
-fn merge_sequential_definition_targets(
-    targets: &mut DefinitionTargets,
-    sequential_targets: DefinitionTargets,
-    diags: &mut Vec<Diagnostic>,
-) {
-    for (name, span) in sequential_targets {
-        record_sequential_definition(targets, name, span, diags);
-    }
-}
-
-fn record_sequential_definition(
-    targets: &mut DefinitionTargets,
-    name: String,
-    span: Span,
-    diags: &mut Vec<Diagnostic>,
-) {
-    match targets.entry(name) {
-        indexmap::map::Entry::Occupied(entry) => {
-            let name = entry.key();
-            diags.push(semantic_error(
-                ER053_WHEN_SINGLE_ASSIGN,
-                format!(
-                    "the variable '{name}' is defined more than once in one when/elsewhen branch (MLS §8.3.5)"
-                ),
-                label_from_span(span, format!("second definition of '{name}' in this branch")),
-            ));
-        }
-        indexmap::map::Entry::Vacant(entry) => {
-            entry.insert(span);
-        }
-    }
-}
-
-fn extract_definition_targets(expr: &Expression) -> Vec<(String, Span)> {
-    let mut targets = Vec::new();
-    collect_definition_targets(expr, &mut targets);
-    targets
-}
-
-fn collect_definition_targets(expr: &Expression, targets: &mut Vec<(String, Span)>) {
-    match expr {
-        Expression::ComponentReference(_) => {
-            if let Some(target) = extract_component_reference_target(expr) {
-                targets.push(target);
-            }
-        }
-        Expression::Tuple { elements, .. } => {
-            for element in elements {
-                collect_definition_targets(element, targets);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn extract_reinit_target(comp: &ComponentReference, args: &[Expression]) -> Option<(String, Span)> {
-    let first = comp.parts.first()?;
-    if first.ident.text.as_ref() != "reinit" {
-        return None;
-    }
-    let Expression::ComponentReference(target) = args.first()? else {
-        return None;
-    };
-    let first_target_part = target.parts.first()?;
-    let target_key = target.to_string();
-    span_from_location(&first_target_part.ident.location).map(|span| (target_key, span))
-}
-
-fn extract_component_reference_target(expr: &Expression) -> Option<(String, Span)> {
-    let Expression::ComponentReference(comp) = expr else {
-        return None;
-    };
-    let first_part = comp.parts.first()?;
-    let target_key = comp.to_string();
-    span_from_location(&first_part.ident.location).map(|span| (target_key, span))
-}
-
-fn label_from_span(span: Span, message: String) -> PrimaryLabel {
-    PrimaryLabel::new(span).with_message(message)
 }
 
 fn fixed_mod_false(expr: &Expression) -> bool {

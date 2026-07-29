@@ -13,14 +13,14 @@ cargo run -p rumoca -- \
 cargo run -p rumoca -- \
   compile examples/models/SympyDecay.mo \
   --model SympyDecay \
-  --target examples/codegen/standalone_web \
-  --output examples/codegen/gen/sympy_decay_standalone_web
+  --target examples/codegen/checked_dae_report \
+  --output examples/codegen/gen/sympy_decay_checked_dae_report
 
 cargo run -p rumoca -- \
   compile examples/models/SympyDecay.mo \
   --model SympyDecay \
-  --target examples/codegen/custom_casadi.jinja \
-  --output examples/codegen/gen/sympy_decay_custom_casadi.py
+  --target examples/codegen/custom_checked_variables.jinja \
+  --output examples/codegen/gen/sympy_decay_custom_checked_variables.txt
 
 cargo run -p rumoca -- \
   compile examples/models/GalecCounter.mo \
@@ -35,11 +35,13 @@ Scenarios:
 - `rumoca-scenario.galec_counter_production.toml`: GALEC/eFMI Production
   Code target (`.alg` plus generated C).
 - `rumoca-scenario.sympy_decay_c_solve.toml`: checked Solve C target.
-- `rumoca-scenario.sympy_decay_standalone_web.toml`: custom target directory that renders
-  standalone HTML and companion JavaScript.
-- `rumoca-scenario.sympy_decay_custom_casadi.toml`: direct raw Jinja template example.
+- `rumoca-scenario.sympy_decay_checked_dae_report.toml`: custom target
+  directory that renders a readable report from the canonical checked DAE
+  projection.
+- `rumoca-scenario.sympy_decay_custom_checked_variables.toml`: direct raw
+  Jinja template over the canonical checked DAE projection.
 
 Custom target directories and direct templates live beside scenarios:
 
-- `standalone_web/`
-- `custom_casadi.jinja`
+- `checked_dae_report/`
+- `custom_checked_variables.jinja`

@@ -127,12 +127,6 @@ fn summarize_typecheck_error_code(diags: &CommonDiagnostics) -> Option<String> {
     }
 }
 
-pub(super) fn todae_options_for_target_model() -> ToDaeOptions {
-    ToDaeOptions {
-        error_on_unbalanced: true,
-    }
-}
-
 pub(super) fn flatten_options_for_tree() -> FlattenOptions {
     // Connection compatibility is model-local at flatten time (overlay-scoped),
     // so strict validation should always be enabled for compiled models even
@@ -152,20 +146,6 @@ fn dae_model_outcome_internal_with_options(
     tree: &ast::ClassTree,
     model_name: &str,
     instantiation_options: InstantiateOptions,
-) -> DaeModelOutcome {
-    dae_model_outcome_internal_with_phase_options(
-        tree,
-        model_name,
-        instantiation_options,
-        todae_options_for_target_model(),
-    )
-}
-
-fn dae_model_outcome_internal_with_phase_options(
-    tree: &ast::ClassTree,
-    model_name: &str,
-    instantiation_options: InstantiateOptions,
-    todae_options: ToDaeOptions,
 ) -> DaeModelOutcome {
     notify_compile_phase(FailedPhase::Instantiate, CompilePhaseEvent::Started);
     let instantiate_start = maybe_start_timer();
@@ -195,8 +175,7 @@ fn dae_model_outcome_internal_with_phase_options(
 
     notify_compile_phase(FailedPhase::ToDae, CompilePhaseEvent::Started);
     let todae_start = maybe_start_timer();
-    let (dae_outcome, todae_built) =
-        dae_model_outcome_from_flat_with_options(tree, flat_outcome, todae_options);
+    let (dae_outcome, todae_built) = dae_model_outcome_from_flat(tree, flat_outcome);
     if todae_built {
         maybe_record_compile_phase_timing(FailedPhase::ToDae, todae_start);
     }
@@ -229,21 +208,6 @@ pub(super) fn compile_model_internal_with_options(
     compile_phase_result_from_dae(tree, model_name, dae_outcome)
 }
 
-pub(super) fn compile_model_internal_allow_unbalanced_for_diagnostics(
-    tree: &ast::ClassTree,
-    model_name: &str,
-) -> PhaseResult {
-    let dae_outcome = dae_model_outcome_internal_with_phase_options(
-        tree,
-        model_name,
-        InstantiateOptions::default(),
-        ToDaeOptions {
-            error_on_unbalanced: false,
-        },
-    );
-    compile_phase_result_from_dae(tree, model_name, dae_outcome)
-}
-
 pub(super) fn compile_model_dae_internal(
     tree: &ast::ClassTree,
     model_name: &str,
@@ -259,21 +223,6 @@ pub(super) fn compile_model_dae_internal_with_options(
 ) -> DaePhaseResult {
     let dae_outcome =
         dae_model_outcome_internal_with_options(tree, model_name, instantiation_options);
-    dae_phase_result_from_dae(tree, model_name, dae_outcome)
-}
-
-pub(super) fn compile_model_dae_internal_allow_unbalanced_for_diagnostics(
-    tree: &ast::ClassTree,
-    model_name: &str,
-) -> DaePhaseResult {
-    let dae_outcome = dae_model_outcome_internal_with_phase_options(
-        tree,
-        model_name,
-        InstantiateOptions::default(),
-        ToDaeOptions {
-            error_on_unbalanced: false,
-        },
-    );
     dae_phase_result_from_dae(tree, model_name, dae_outcome)
 }
 
@@ -356,14 +305,6 @@ pub(super) fn dae_model_outcome_from_flat(
     tree: &ast::ClassTree,
     flat_outcome: FlatModelOutcome,
 ) -> (DaeModelOutcome, bool) {
-    dae_model_outcome_from_flat_with_options(tree, flat_outcome, todae_options_for_target_model())
-}
-
-pub(super) fn dae_model_outcome_from_flat_with_options(
-    tree: &ast::ClassTree,
-    flat_outcome: FlatModelOutcome,
-    todae_options: ToDaeOptions,
-) -> (DaeModelOutcome, bool) {
     let artifact = match flat_outcome {
         FlatModelOutcome::Success(artifact) => *artifact,
         FlatModelOutcome::NeedsInner {
@@ -391,7 +332,7 @@ pub(super) fn dae_model_outcome_from_flat_with_options(
 
     // MLS §5.6 / SPEC_0007: ToDae stays downstream of flatten and should
     // consume the cached flat artifact rather than rebuilding earlier phases.
-    match to_dae_with_options(&artifact.flat, tree.source_map.clone(), todae_options) {
+    match to_dae(&artifact.flat, tree.source_map.clone()) {
         Ok(dae) => match rumoca_phase_dae::balance_detail(&artifact.flat) {
             Ok(balance_detail) => (
                 DaeModelOutcome::Success(Box::new(DaeModelArtifactData {

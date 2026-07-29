@@ -8,6 +8,13 @@ pub(super) struct AlgorithmStatementContext<'scope, 'shape, 'dae> {
     pub(super) owner_span: Span,
 }
 
+pub(super) struct AlgorithmFunctionCall<'source> {
+    pub(super) component: &'source rumoca_core::ComponentReference,
+    pub(super) arguments: &'source [Expression],
+    pub(super) outputs: &'source [Option<rumoca_core::ComponentReference>],
+    pub(super) span: Span,
+}
+
 fn statement_guard<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     context: AlgorithmStatementContext<'_, '_, 'dae>,
@@ -20,6 +27,12 @@ fn statement_guard<'dae>(
                 trigger: always,
                 condition: always,
                 owner_clock: None,
+                branch_provenance: dae::DaeProvenance::generated(
+                    dae::DaeGeneration::AlgorithmEquation,
+                    context.owner_span,
+                )?,
+                always: true,
+                parent_activation: None,
             })
         }
     }
@@ -27,6 +40,8 @@ fn statement_guard<'dae>(
 
 pub(super) fn lower_algorithm_assignment<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
+    discrete_values: &mut DiscreteValueStaging<'dae>,
+    discrete_owner: Option<DiscreteValueOwnerHandle>,
     context: AlgorithmStatementContext<'_, '_, 'dae>,
     component: &rumoca_core::ComponentReference,
     value: &Expression,
@@ -37,7 +52,15 @@ pub(super) fn lower_algorithm_assignment<'dae>(
     let provenance = dae::DaeProvenance::source(span)?;
     if let Some(&target_coordinate) = context.coordinates.get(&target) {
         let value = lower_algorithm_expression(construction, context, value)?;
-        return lower_when_assignment(construction, target_coordinate, guard, value, provenance);
+        return lower_when_assignment(
+            construction,
+            discrete_values,
+            discrete_owner,
+            target_coordinate,
+            guard,
+            value,
+            provenance,
+        );
     }
     let pairs = structured_assignment_names(&target, value, context.coordinates.keys())
         .expect("algorithm analysis proves structured assignment leaves");
@@ -54,6 +77,8 @@ pub(super) fn lower_algorithm_assignment<'dae>(
         })?;
         lower_when_assignment(
             construction,
+            discrete_values,
+            discrete_owner,
             context.coordinates[&target_leaf],
             guard,
             source,
@@ -65,26 +90,27 @@ pub(super) fn lower_algorithm_assignment<'dae>(
 
 pub(super) fn lower_algorithm_function_call<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
+    discrete_values: &mut DiscreteValueStaging<'dae>,
+    discrete_owner: Option<DiscreteValueOwnerHandle>,
     context: AlgorithmStatementContext<'_, '_, 'dae>,
-    component: &rumoca_core::ComponentReference,
-    arguments: &[Expression],
-    outputs: &[Option<rumoca_core::ComponentReference>],
-    span: Span,
+    call: AlgorithmFunctionCall<'_>,
 ) -> Result<(), dae::DaeConstructionError> {
     let guard = statement_guard(construction, context)?;
-    let function_reference = rumoca_core::Reference::from_component_reference(component.clone());
+    let function_reference =
+        rumoca_core::Reference::from_component_reference(call.component.clone());
     let function = context.functions.select(
         &function_reference,
-        arguments,
+        call.arguments,
         context.functions.shapes.model_values(),
-        span,
+        call.span,
     );
-    let arguments = arguments
+    let arguments = call
+        .arguments
         .iter()
         .map(|argument| lower_algorithm_expression(construction, context, argument))
         .collect::<Result<Vec<_>, _>>()?;
-    let provenance = dae::DaeProvenance::source(span)?;
-    for (ordinal, output) in outputs.iter().enumerate() {
+    let provenance = dae::DaeProvenance::source(call.span)?;
+    for (ordinal, output) in call.outputs.iter().enumerate() {
         let Some(output) = output else {
             continue;
         };
@@ -95,6 +121,8 @@ pub(super) fn lower_algorithm_function_call<'dae>(
         })?;
         lower_when_assignment(
             construction,
+            discrete_values,
+            discrete_owner,
             context.coordinates[&output.to_var_name()],
             guard,
             value,
