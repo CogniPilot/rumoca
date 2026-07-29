@@ -297,6 +297,12 @@ templates, so adding a textual target does not require a Rust dialect or
 renderer. Generic template operations consume semantic IR vocabulary and fail
 closed; they do not return pre-rendered language fragments.
 
+Target-specific package/schema models, constants, filenames, and artifact
+graphs also belong in the owning target directory, not in IR or phase Rust.
+Generic documented artifact commands may hash rendered bytes, validate a
+declared schema, and assemble the declared graph without understanding eFMI or
+another target format.
+
 Target-specific semantic lowering is a compiler phase, not code generation.
 `rumoca-phase-codegen/src` MUST NOT contain target-named subsystems such as
 `galec/`, C lowering, XML manifest models, target manglers, or target dispatch.
