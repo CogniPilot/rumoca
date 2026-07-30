@@ -17,6 +17,52 @@ struct BodySemanticDiagnosticsResult {
 }
 
 impl Session {
+    pub(in crate::session) fn cached_save_resolution_proof(
+        &mut self,
+        model_name: &str,
+    ) -> Option<StrictTargetResolution> {
+        let key = SemanticDiagnosticsCacheKey::new(model_name, SemanticDiagnosticsMode::Save);
+        let proof = self
+            .query_state
+            .flat
+            .semantic_diagnostics
+            .save_resolution_proofs
+            .shift_remove(&key)?;
+        let result = proof.clone();
+        self.query_state
+            .flat
+            .semantic_diagnostics
+            .save_resolution_proofs
+            .insert(key, proof);
+        Some(result)
+    }
+
+    fn insert_save_resolution_proof(
+        &mut self,
+        model_name: &str,
+        proof: StrictTargetResolution,
+    ) {
+        let key = SemanticDiagnosticsCacheKey::new(model_name, SemanticDiagnosticsMode::Save);
+        self.query_state
+            .flat
+            .semantic_diagnostics
+            .save_resolution_proofs
+            .shift_remove(&key);
+        self.query_state
+            .flat
+            .semantic_diagnostics
+            .save_resolution_proofs
+            .insert(key, proof);
+        Self::trim_lru_cache(
+            &mut self
+                .query_state
+                .flat
+                .semantic_diagnostics
+                .save_resolution_proofs,
+            MAX_SESSION_SEMANTIC_DIAGNOSTICS_CACHE_ENTRIES,
+        );
+    }
+
     fn cached_interface_semantic_diagnostics(
         &mut self,
         model_name: &str,
@@ -216,10 +262,19 @@ impl Session {
         }
 
         if mode == SemanticDiagnosticsMode::Save {
-            return self
+            if let Some(target) = self.cached_save_resolution_proof(model_name) {
+                return Ok((
+                    target.resolved,
+                    diagnostics_from_vec(target.diagnostics),
+                ));
+            }
+            let target = self
                 .resolve_strict_target_from_fresh_plan(model_name)
-                .map(|target| (target.resolved, diagnostics_from_vec(target.diagnostics)))
-                .map_err(|failure| diagnostics_from_vec(failure.diagnostics));
+                .map_err(|failure| diagnostics_from_vec(failure.diagnostics))?;
+            let resolved = target.resolved.clone();
+            let diagnostics = diagnostics_from_vec(target.diagnostics.clone());
+            self.insert_save_resolution_proof(model_name, target);
+            return Ok((resolved, diagnostics));
         }
 
         let build_started = maybe_start_timer();

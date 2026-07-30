@@ -415,6 +415,7 @@ struct SemanticDiagnosticsQueryState {
     resolved_by_mode: IndexMap<SemanticDiagnosticsMode, Arc<ResolvedTree>>,
     resolved_diagnostics_by_mode: IndexMap<SemanticDiagnosticsMode, Vec<CommonDiagnostic>>,
     dependency_fingerprints_by_mode: IndexMap<SemanticDiagnosticsMode, DependencyFingerprintCache>,
+    save_resolution_proofs: LruMap<SemanticDiagnosticsCacheKey, StrictTargetResolution>,
     interface_artifacts: LruMap<SemanticDiagnosticsCacheKey, InterfaceSemanticDiagnosticsArtifact>,
     body_artifacts: LruMap<SemanticDiagnosticsCacheKey, BodySemanticDiagnosticsArtifact>,
     model_stage_artifacts: LruMap<SemanticDiagnosticsCacheKey, SemanticDiagnosticsArtifact>,
@@ -425,12 +426,16 @@ impl SemanticDiagnosticsQueryState {
         self.resolved_by_mode.clear();
         self.resolved_diagnostics_by_mode.clear();
         self.dependency_fingerprints_by_mode.clear();
+        self.save_resolution_proofs = LruMap::default();
     }
 
     fn invalidate_inputs_for_mode(&mut self, mode: SemanticDiagnosticsMode) {
         self.resolved_by_mode.shift_remove(&mode);
         self.resolved_diagnostics_by_mode.shift_remove(&mode);
         self.dependency_fingerprints_by_mode.shift_remove(&mode);
+        if mode == SemanticDiagnosticsMode::Save {
+            self.save_resolution_proofs = LruMap::default();
+        }
     }
 }
 
@@ -647,6 +652,7 @@ pub(in crate::session) enum ResolutionPlanningTree {
     Incomplete(Arc<ast::ClassTree>),
 }
 
+#[derive(Debug, Clone)]
 pub(in crate::session) struct StrictTargetResolution {
     resolved: Arc<ResolvedTree>,
     closure: ReachableModelClosure,
