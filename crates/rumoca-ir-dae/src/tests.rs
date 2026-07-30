@@ -2,6 +2,7 @@ mod derived_wire;
 mod function_owners;
 mod function_wire;
 mod provenance;
+mod range_wire;
 mod runtime_owners;
 mod temporal_wire;
 mod wire_buffers;
@@ -172,6 +173,8 @@ fn exact_expression_provenance_resolves_through_the_source_map() {
     let two_first = source.source("2", 0);
     let array = source.source("{x, 2}", 0);
     let range = source.source("1:3", 0);
+    let range_start = source.source("1", 0);
+    let range_stop = source.source("3", 0);
     let index = source.source("x[1]", 0);
     let subscript = source.source("1", 1);
     let comprehension = source.source("[x for i in 1:3]", 0);
@@ -212,7 +215,9 @@ fn exact_expression_provenance_resolves_through_the_source_map() {
             let two = expr.at(two_first).literal(DaeLiteral::Real(2.0))?;
             let _sum = expr.at(plus).binary(BinaryOperator::Add, x_node, two)?;
             let _array_node = expr.at(array).array([x_node, two])?;
-            let range_node = expr.at(range).range(1, 1, 3)?;
+            let range_start = expr.at(range_start).literal(DaeLiteral::Integer(1))?;
+            let range_stop = expr.at(range_stop).literal(DaeLiteral::Integer(3))?;
+            let range_node = expr.at(range).range(range_start, None, range_stop)?;
             let one = expr.at(subscript).literal(DaeLiteral::Integer(1))?;
             let _index_node = expr.at(index).index(
                 range_node,
@@ -233,6 +238,8 @@ fn exact_expression_provenance_resolves_through_the_source_map() {
         "2",
         "+",
         "{x, 2}",
+        "1",
+        "3",
         "1:3",
         "1",
         "x[1]",

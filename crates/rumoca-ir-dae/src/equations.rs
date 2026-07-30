@@ -584,12 +584,19 @@ fn push_expression_children(storage: &Storage, node: &ExprNode, pending: &mut Ve
     match node {
         ExprNode::Literal(_)
         | ExprNode::Coordinate(_)
-        | ExprNode::Range { .. }
         | ExprNode::FunctionValue { .. }
         | ExprNode::FunctionFoldParameter { .. }
         | ExprNode::FunctionFoldOutput { .. } => {}
         ExprNode::Unary { operand, .. } => pending.push(*operand),
         ExprNode::Binary { lhs, rhs, .. } => pending.extend([lhs, rhs]),
+        ExprNode::Range {
+            start,
+            explicit_step,
+            stop,
+        } => {
+            pending.extend([start, stop]);
+            pending.extend(explicit_step);
+        }
         ExprNode::Conditional { operands }
         | ExprNode::Array { operands }
         | ExprNode::Record { operands }

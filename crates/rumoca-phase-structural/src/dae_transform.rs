@@ -800,39 +800,12 @@ fn rebuild_delay_coordinates<'target>(
                 }),
             }
         })?;
-        let coordinate = target.temporal(|temporal| match rebuilt_delay {
-            RebuiltDelay::Parameter {
-                source,
-                delay_time,
-                evidence,
-            } => {
-                let positive = temporal.positive_parameter(
-                    delay_time,
-                    evidence.value(),
-                    evidence.provenance(),
-                )?;
-                temporal.delay(source, positive, delay.provenance(), coordinate_provenance)
-            }
-            RebuiltDelay::Bounded {
-                source,
-                delay_time,
-                delay_max,
-                evidence,
-            } => {
-                let positive = temporal.positive_parameter(
-                    delay_max,
-                    evidence.value(),
-                    evidence.provenance(),
-                )?;
-                temporal.bounded_delay(
-                    source,
-                    delay_time,
-                    positive,
-                    delay.provenance(),
-                    coordinate_provenance,
-                )
-            }
-        })?;
+        let coordinate = construct_rebuilt_delay_coordinate(
+            target,
+            rebuilt_delay,
+            delay.provenance(),
+            coordinate_provenance,
+        )?;
         if coordinate.id().index() as usize != index {
             return Err(dae::DaeConstructionError::ShapeMismatch {
                 span: delay.provenance().span(),
@@ -841,6 +814,45 @@ fn rebuild_delay_coordinates<'target>(
         rebuilt[coordinate_index] = Some(coordinate.expression());
     }
     Ok(())
+}
+
+fn construct_rebuilt_delay_coordinate<'target>(
+    target: &mut dae::DaeConstruction<'target>,
+    delay: RebuiltDelay<'_, 'target>,
+    owner: dae::DaeProvenance,
+    coordinate_provenance: dae::DaeProvenance,
+) -> Result<dae::DelayCoordinate<'target>, dae::DaeConstructionError> {
+    match delay {
+        RebuiltDelay::Parameter {
+            source,
+            delay_time,
+            evidence,
+        } => {
+            let positive = target.temporal(|temporal| {
+                temporal.positive_parameter(delay_time, evidence.value(), evidence.provenance())
+            })?;
+            target.expressions(|expressions| {
+                expressions
+                    .at(coordinate_provenance)
+                    .delay(source, positive, owner)
+            })
+        }
+        RebuiltDelay::Bounded {
+            source,
+            delay_time,
+            delay_max,
+            evidence,
+        } => {
+            let maximum = target.temporal(|temporal| {
+                temporal.positive_parameter(delay_max, evidence.value(), evidence.provenance())
+            })?;
+            target.expressions(|expressions| {
+                expressions
+                    .at(coordinate_provenance)
+                    .bounded_delay(source, delay_time, maximum, owner)
+            })
+        }
+    }
 }
 
 enum TargetVariable<'dae> {
@@ -1346,9 +1358,7 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                 let base = self.rebuild(base)?;
                 self.target.at(provenance).field(base, field as usize)?
             }
-            dae::ExpressionOperation::Range { start, step, stop } => {
-                self.target.at(provenance).range(start, step, stop)?
-            }
+            dae::ExpressionOperation::Range(range) => self.rebuild_range(range, provenance)?,
             dae::ExpressionOperation::Comprehension { domain, body } => {
                 let body = self.rebuild(body)?;
                 self.target
@@ -1406,6 +1416,20 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             .iter()
             .map(|operand| self.rebuild(operand))
             .collect()
+    }
+
+    fn rebuild_range(
+        &mut self,
+        range: dae::RangeView<'source>,
+        provenance: dae::DaeProvenance,
+    ) -> Result<dae::ExprId<'target>, dae::DaeConstructionError> {
+        let start = self.rebuild(range.start().expression())?;
+        let explicit_step = range
+            .explicit_step()
+            .map(|step| self.rebuild(step.expression()))
+            .transpose()?;
+        let stop = self.rebuild(range.stop().expression())?;
+        self.target.at(provenance).range(start, explicit_step, stop)
     }
 
     fn rebuild_conditional(

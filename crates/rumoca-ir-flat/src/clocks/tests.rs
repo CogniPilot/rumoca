@@ -515,10 +515,10 @@ fn base_clock_partition_wire_reconstructs_the_checked_aggregate() {
             .contains("missing source provenance for Flat base-clock partition equation")
     );
 
-    let mut legacy_shape = encoded;
-    legacy_shape["is_discretized"] = serde_json::Value::Bool(false);
-    let error = serde_json::from_value::<BaseClockPartition>(legacy_shape)
-        .expect_err("legacy public-field wire shape must fail");
+    let mut removed_public_field_shape = encoded;
+    removed_public_field_shape["is_discretized"] = serde_json::Value::Bool(false);
+    let error = serde_json::from_value::<BaseClockPartition>(removed_public_field_shape)
+        .expect_err("the removed public-field wire shape must fail");
     assert!(error.to_string().contains("unknown field"));
 }
 
@@ -703,6 +703,6 @@ fn clock_partitions_wire_derives_indexes_and_rejects_forged_ownership() {
     let mut obsolete_associations = encoded;
     obsolete_associations["variable_to_partition"] = serde_json::json!({});
     let error = serde_json::from_value::<ClockPartitions>(obsolete_associations)
-        .expect_err("independent legacy associations are not accepted");
+        .expect_err("removed independent associations are not accepted");
     assert!(error.to_string().contains("unknown field"));
 }

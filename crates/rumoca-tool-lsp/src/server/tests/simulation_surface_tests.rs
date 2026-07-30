@@ -711,68 +711,111 @@ fn render_target_command_renders_compiled_open_document_model() {
     });
 }
 
+async fn render_sampled_galec_target(target: &str, temp_name: &str) -> serde_json::Value {
+    let temp = new_temp_dir(temp_name);
+    let focus = temp.join("Sampler.mo");
+    // A fixed-sample discrete model (GALEC rejects continuous der()).
+    std::fs::write(
+        &focus,
+        "model Sampler\n  constant Real dt = 0.001;\n  parameter Real gain = 2.0;\n  \
+         discrete Integer n(start = 0);\n  discrete output Real y(start = 0.0);\nequation\n  \
+         when sample(0.0, dt) then\n    n = pre(n) + 1;\n    y = gain * n;\n  end when;\nend Sampler;\n",
+    )
+    .expect("write focus");
+
+    let service = new_test_service();
+    let server = service.inner();
+    {
+        let mut session = server.session.write().await;
+        session.update_document(
+            &focus.to_string_lossy(),
+            &std::fs::read_to_string(&focus).expect("read focus"),
+        );
+    }
+
+    server
+        .execute_command(ExecuteCommandParams {
+            command: "rumoca.workspace.renderTarget".to_string(),
+            arguments: vec![serde_json::json!({
+                "uri": Url::from_file_path(&focus).expect("file uri").to_string(),
+                "model": "Sampler",
+                "target": target,
+            })],
+            work_done_progress_params: WorkDoneProgressParams::default(),
+        })
+        .await
+        .expect("execute command should succeed")
+        .expect("execute command should return a payload")
+}
+
+fn rendered_target_paths(response: &serde_json::Value) -> Vec<&str> {
+    response
+        .get("files")
+        .and_then(serde_json::Value::as_array)
+        .expect("files array")
+        .iter()
+        .filter_map(|file| file.get("path").and_then(serde_json::Value::as_str))
+        .collect()
+}
+
+fn rendered_target_content<'a>(response: &'a serde_json::Value, path: &str) -> &'a str {
+    response
+        .get("files")
+        .and_then(serde_json::Value::as_array)
+        .expect("files array")
+        .iter()
+        .find(|file| file.get("path").and_then(serde_json::Value::as_str) == Some(path))
+        .and_then(|file| file.get("content"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_else(|| panic!("missing rendered content for {path}"))
+}
+
 #[test]
-fn render_target_command_renders_galec_embedded_c_from_compiled_model() {
+fn render_target_command_renders_manifest_declared_embedded_c_galec_sources() {
     run_async_test(async {
-        let temp = new_temp_dir("render-target-galec");
-        let focus = temp.join("Sampler.mo");
-        // A fixed-sample discrete model (GALEC rejects continuous der()).
-        std::fs::write(
-            &focus,
-            "model Sampler\n  constant Real dt = 0.001;\n  parameter Real gain = 2.0;\n  \
-             discrete Integer n(start = 0);\n  discrete output Real y(start = 0.0);\nequation\n  \
-             when sample(0.0, dt) then\n    n = pre(n) + 1;\n    y = gain * n;\n  end when;\nend Sampler;\n",
-        )
-        .expect("write focus");
-
-        let service = new_test_service();
-        let server = service.inner();
-        {
-            let mut session = server.session.write().await;
-            session.update_document(
-                &focus.to_string_lossy(),
-                &std::fs::read_to_string(&focus).expect("read focus"),
-            );
-        }
-
-        let response = server
-            .execute_command(ExecuteCommandParams {
-                command: "rumoca.workspace.renderTarget".to_string(),
-                arguments: vec![serde_json::json!({
-                    "uri": Url::from_file_path(&focus).expect("file uri").to_string(),
-                    "model": "Sampler",
-                    "target": "embedded-c-galec",
-                })],
-                work_done_progress_params: WorkDoneProgressParams::default(),
-            })
-            .await
-            .expect("execute command should succeed")
-            .expect("execute command should return a payload");
+        let response =
+            render_sampled_galec_target("embedded-c-galec", "render-target-embedded-c-galec").await;
 
         assert_eq!(
             response.get("ok").and_then(serde_json::Value::as_bool),
             Some(true),
-            "GALEC codegen should succeed natively: {response}"
+            "GALEC-derived C codegen should succeed: {response}"
         );
-        let paths: Vec<&str> = response
-            .get("files")
-            .and_then(serde_json::Value::as_array)
-            .expect("files array")
-            .iter()
-            .filter_map(|file| file.get("path").and_then(serde_json::Value::as_str))
-            .collect();
-        assert!(
-            paths.contains(&"Sampler.alg"),
-            "expected the .alg: {paths:?}"
+        assert_eq!(
+            rendered_target_paths(&response),
+            ["Sampler.h", "Sampler.c"],
+            "the non-eFMI GAL-024 target emits only its manifest-declared C sources"
         );
         assert!(
-            paths.contains(&"Sampler.h"),
-            "expected the C header: {paths:?}"
+            rendered_target_content(&response, "Sampler.h").contains("} SamplerState;"),
+            "the declared header artifact must contain the checked block state"
         );
         assert!(
-            paths.contains(&"Sampler.c"),
-            "expected the C source: {paths:?}"
+            rendered_target_content(&response, "Sampler.c")
+                .contains("void Sampler_dostep(SamplerState *self)"),
+            "the declared source artifact must contain the checked DoStep implementation"
         );
+    });
+}
+
+#[test]
+fn render_target_command_renders_manifest_declared_galec_algorithm_source() {
+    run_async_test(async {
+        let response = render_sampled_galec_target("galec", "render-target-galec").await;
+
+        assert_eq!(
+            response.get("ok").and_then(serde_json::Value::as_bool),
+            Some(true),
+            "GALEC Algorithm Code rendering should succeed: {response}"
+        );
+        assert_eq!(
+            rendered_target_paths(&response),
+            ["AlgorithmCode/Sampler.alg"],
+            "the Algorithm Code target exposes its manifest-declared .alg source"
+        );
+        let algorithm = rendered_target_content(&response, "AlgorithmCode/Sampler.alg");
+        assert!(algorithm.contains("block Sampler"), "{algorithm}");
+        assert!(algorithm.contains("method DoStep"), "{algorithm}");
     });
 }
 

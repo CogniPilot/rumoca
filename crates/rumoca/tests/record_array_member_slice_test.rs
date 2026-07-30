@@ -8,6 +8,7 @@
 //! the MSL PowerConverters `vAC = ac.pin[:].v` pattern.
 
 use rumoca::Compiler;
+use rumoca_ir_dae::{DaeGeneration, DaeProvenanceOrigin};
 use rumoca_sim::{SimOptions, eval_dae_at};
 
 const SLICE_MEMBER_MODEL: &str = r#"
@@ -34,6 +35,23 @@ fn record_array_member_slice_scalarizes_per_element() {
         .model("SliceMember")
         .compile_str(SLICE_MEMBER_MODEL, "SliceMember.mo")
         .expect("member slice model should compile to DAE");
+
+    let projected_expressions = compiled.dae.inspect(|dae| {
+        (0..dae.expression_count())
+            .filter_map(|index| {
+                let expression = dae.expression(dae.expression_id(index)?)?;
+                (expression.provenance().origin()
+                    == DaeProvenanceOrigin::Generated(DaeGeneration::RecordEquationProjection))
+                .then_some(expression.provenance())
+            })
+            .collect::<Vec<_>>()
+    });
+    assert!(
+        projected_expressions
+            .iter()
+            .any(|provenance| compiled.dae.source_text(*provenance) == Some("pin[:].v")),
+        "record projection expressions must retain the exact source occurrence"
+    );
 
     let probe = eval_dae_at(&compiled.dae, &SimOptions::default(), &[], 0.0)
         .expect("member slice model should lower and evaluate at t=0");

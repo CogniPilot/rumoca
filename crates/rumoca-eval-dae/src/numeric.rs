@@ -113,9 +113,12 @@ where
             dae::ExpressionOperation::Field { base, field } => {
                 self.record_field(base, field as usize, span)?
             }
-            dae::ExpressionOperation::Range { start, step, stop } => {
-                range_values(start, step, stop, span)?
-            }
+            dae::ExpressionOperation::Range(range) => range_values(
+                range.start().value(),
+                range.effective_step(),
+                range.stop().value(),
+                span,
+            )?,
             dae::ExpressionOperation::Index { base, subscripts } => {
                 self.index(base, subscripts, node.value_type(), span)?
             }

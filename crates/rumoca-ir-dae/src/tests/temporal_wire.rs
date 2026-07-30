@@ -321,16 +321,21 @@ fn tagged_delay_fixture() -> Dae {
                 expressions.at(maximum).literal(DaeLiteral::Real(3.0))?,
             ))
         })?;
-        dae.temporal(|temporal| {
-            let delay_time = temporal.positive_parameter(values.1, 2.0, parameter_time)?;
-            temporal.delay(values.0, delay_time, parameter_owner, parameter_coordinate)?;
-            let delay_max = temporal.positive_parameter(values.4, 3.0, maximum)?;
-            temporal.bounded_delay(
+        let (delay_time, delay_max) = dae.temporal(|temporal| {
+            Ok((
+                temporal.positive_parameter(values.1, 2.0, parameter_time)?,
+                temporal.positive_parameter(values.4, 3.0, maximum)?,
+            ))
+        })?;
+        dae.expressions(|expressions| {
+            expressions
+                .at(parameter_coordinate)
+                .delay(values.0, delay_time, parameter_owner)?;
+            expressions.at(bounded_coordinate).bounded_delay(
                 values.2,
                 values.3,
                 delay_max,
                 bounded_owner,
-                bounded_coordinate,
             )?;
             Ok(())
         })

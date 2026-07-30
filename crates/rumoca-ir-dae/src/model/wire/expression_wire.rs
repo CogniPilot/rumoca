@@ -107,9 +107,10 @@ pub(super) enum ExprNodeWire {
         field: u32,
     },
     Range {
-        start: i64,
-        step: i64,
-        stop: i64,
+        start_expression: u32,
+        #[serde(deserialize_with = "deserialize_required_option")]
+        explicit_step_expression: Option<u32>,
+        stop_expression: u32,
     },
     Comprehension {
         domain: u32,
@@ -150,6 +151,13 @@ pub(super) enum ExprNodeWire {
         carried: u32,
         definition_ordinal: u32,
     },
+}
+
+fn deserialize_required_option<'de, D>(deserializer: D) -> Result<Option<u32>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<u32>::deserialize(deserializer)
 }
 
 #[derive(Deserialize)]

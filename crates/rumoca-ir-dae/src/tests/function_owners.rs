@@ -58,9 +58,11 @@ fn functions_conditions_and_generated_runtime_nodes_use_the_same_arena() {
         })?;
         let delay_time =
             dae.expressions(|expr| expr.at(delay_generated).literal(DaeLiteral::Real(1.0)))?;
-        let delay = dae.temporal(|temporal| {
-            let positive = temporal.positive_parameter(delay_time, 1.0, delay_generated)?;
-            temporal.delay(literal, positive, delay_generated, delay_generated)
+        let positive =
+            dae.temporal(|temporal| temporal.positive_parameter(delay_time, 1.0, delay_generated))?;
+        let delay = dae.expressions(|expr| {
+            expr.at(delay_generated)
+                .delay(literal, positive, delay_generated)
         })?;
 
         dae.expressions(|expr| {
@@ -495,9 +497,12 @@ fn pure_functions_reject_model_runtime_coordinates_at_the_exact_use_site() {
                         expressions.at(one_at).literal(DaeLiteral::Real(1.0))?,
                     ))
                 })?;
-                let delay = dae.temporal(|temporal| {
-                    let positive = temporal.positive_parameter(one, 1.0, one_at)?;
-                    temporal.delay(delayed_state, positive, delay_at, delay_at)
+                let positive =
+                    dae.temporal(|temporal| temporal.positive_parameter(one, 1.0, one_at))?;
+                let delay = dae.expressions(|expressions| {
+                    expressions
+                        .at(delay_at)
+                        .delay(delayed_state, positive, delay_at)
                 })?;
                 let rejected = dae.functions(|functions| {
                     functions.assign(&mut body, output, delay.expression(), assignment_at)

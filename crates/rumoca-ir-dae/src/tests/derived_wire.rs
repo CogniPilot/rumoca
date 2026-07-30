@@ -248,10 +248,8 @@ fn derived_wire_fixture() -> Dae {
             expressions.at(empty_at).empty_array(empty)?;
             Ok((zero, one))
         })?;
-        dae.temporal(|temporal| {
-            let positive = temporal.positive_parameter(one, 1.0, delay_at)?;
-            temporal.delay(one, positive, delay_at, delay_at)
-        })?;
+        let positive = dae.temporal(|temporal| temporal.positive_parameter(one, 1.0, delay_at))?;
+        dae.expressions(|expressions| expressions.at(delay_at).delay(one, positive, delay_at))?;
         let domain = dae.domains(|domains| {
             domains.structured(
                 StructuredIndexDomain {

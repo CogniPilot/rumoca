@@ -101,9 +101,26 @@ pub struct NoStateEventStep {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NoStateRootBoundary {
-    pub event_time: f64,
-    pub evaluation_time: f64,
-    pub continuation_time: f64,
+    event_time: f64,
+    evaluation_time: f64,
+    continuation_time: f64,
+}
+
+impl NoStateRootBoundary {
+    /// User-visible timestamp of the accepted post-event observation.
+    pub fn observation_time(self) -> f64 {
+        self.event_time
+    }
+
+    /// Internal time used to evaluate the strict post-root branch.
+    pub fn evaluation_time(self) -> f64 {
+        self.evaluation_time
+    }
+
+    /// Internal time from which continuous advancement resumes.
+    pub fn continuation_time(self) -> f64 {
+        self.continuation_time
+    }
 }
 
 impl NoStateEventStep {
@@ -444,21 +461,25 @@ mod tests {
     }
 
     #[test]
-    fn coincident_root_boundary_separates_evaluation_from_output_time() {
+    fn root_boundary_roles_keep_observation_time_semantic() {
         let step = NoStateEventStep {
-            target: 0.2,
-            stop_time: 0.2,
+            target: 0.1,
+            stop_time: 0.1,
             event_stop: None,
-            root_event_time: Some(0.2),
+            root_event_time: Some(0.05),
             root_event: true,
             tol: 1.0e-6,
         };
 
         let boundary = step.root_boundary().unwrap();
 
-        assert_eq!(boundary.event_time, step.target);
-        assert_eq!(boundary.evaluation_time, 0.2_f64.next_up());
-        assert_eq!(boundary.continuation_time, step.target);
+        assert_eq!(boundary.observation_time(), 0.05);
+        assert_eq!(boundary.evaluation_time(), 0.05_f64.next_up());
+        assert_eq!(
+            boundary.continuation_time(),
+            crate::timeline::event_right_limit_time(0.05, step.tol)
+        );
+        assert_ne!(boundary.observation_time(), boundary.continuation_time());
     }
 
     struct OscillatoryBackend {

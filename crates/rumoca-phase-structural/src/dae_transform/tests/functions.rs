@@ -258,9 +258,15 @@ fn function_expression_edges<'dae>(
     match expression.operation() {
         dae::ExpressionOperation::Literal(_)
         | dae::ExpressionOperation::Coordinate(_)
-        | dae::ExpressionOperation::Range { .. }
         | dae::ExpressionOperation::FunctionFoldParameter { .. }
         | dae::ExpressionOperation::FunctionFoldOutput { .. } => {}
+        dae::ExpressionOperation::Range(range) => {
+            push(range.start().expression());
+            if let Some(step) = range.explicit_step() {
+                push(step.expression());
+            }
+            push(range.stop().expression());
+        }
         dae::ExpressionOperation::Unary { operand, .. } => push(operand),
         dae::ExpressionOperation::Binary { lhs, rhs, .. } => {
             push(lhs);
@@ -322,9 +328,12 @@ fn function_operation_fingerprint(operation: dae::ExpressionOperation<'_>) -> St
         dae::ExpressionOperation::Array(operands) => format!("array:{}", operands.len()),
         dae::ExpressionOperation::Record(fields) => format!("record:{}", fields.len()),
         dae::ExpressionOperation::Field { field, .. } => format!("field:{field}"),
-        dae::ExpressionOperation::Range { start, step, stop } => {
-            format!("range:{start}:{step}:{stop}")
-        }
+        dae::ExpressionOperation::Range(range) => format!(
+            "range:{}:{:?}:{}",
+            range.start().value(),
+            range.explicit_step().map(|step| step.value()),
+            range.stop().value()
+        ),
         dae::ExpressionOperation::Comprehension { domain, .. } => {
             format!("comprehension:{}", domain.index())
         }

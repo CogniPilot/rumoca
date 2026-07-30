@@ -52,6 +52,17 @@ pub(super) fn node_function_facts(
             fold.merge_expression(storage, *lhs, at)?;
             fold.merge_expression(storage, *rhs, at)?;
         }
+        ExprNode::Range {
+            start,
+            explicit_step,
+            stop,
+        } => {
+            fold.merge_expression(storage, *start, at)?;
+            if let Some(step) = explicit_step {
+                fold.merge_expression(storage, *step, at)?;
+            }
+            fold.merge_expression(storage, *stop, at)?;
+        }
         ExprNode::Index { base, subscripts } => {
             fold.merge_expression(storage, *base, at)?;
             fold.merge_subscripts(storage, *subscripts, at)?;
@@ -77,7 +88,6 @@ pub(super) fn node_function_facts(
         }
         ExprNode::Literal(_)
         | ExprNode::Coordinate(_)
-        | ExprNode::Range { .. }
         | ExprNode::FunctionValue { .. }
         | ExprNode::FunctionFoldParameter { .. }
         | ExprNode::FunctionFoldOutput { .. } => unreachable!("leaf expressions returned above"),
@@ -152,9 +162,7 @@ fn leaf_function_facts(
                 ..FunctionInsertionFacts::EMPTY
             }))
         }
-        ExprNode::Coordinate(Coordinate::Binder { .. })
-        | ExprNode::Literal(_)
-        | ExprNode::Range { .. } => {
+        ExprNode::Coordinate(Coordinate::Binder { .. }) | ExprNode::Literal(_) => {
             checked_u32(storage.expressions.nodes.len(), "expression arena", at)?;
             Ok(Some(FunctionInsertionFacts::EMPTY))
         }
@@ -171,6 +179,7 @@ fn leaf_function_facts(
         | ExprNode::Array { .. }
         | ExprNode::Record { .. }
         | ExprNode::Field { .. }
+        | ExprNode::Range { .. }
         | ExprNode::Comprehension { .. }
         | ExprNode::Index { .. }
         | ExprNode::ArrayUpdate { .. }

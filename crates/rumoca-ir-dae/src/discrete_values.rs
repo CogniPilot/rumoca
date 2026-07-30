@@ -624,9 +624,16 @@ impl<'dae> DiscreteValueTopology<'_, 'dae> {
                             .ok_or_else(|| unknown("operand range", operands.start, provenance))?,
                     );
                 }
+                ExprNode::Range {
+                    start,
+                    explicit_step,
+                    stop,
+                } => {
+                    pending.extend([*start, *stop]);
+                    pending.extend(explicit_step);
+                }
                 ExprNode::Literal(_)
                 | ExprNode::Coordinate(_)
-                | ExprNode::Range { .. }
                 | ExprNode::FunctionValue { .. }
                 | ExprNode::FunctionFoldParameter { .. }
                 | ExprNode::FunctionFoldOutput { .. } => {}

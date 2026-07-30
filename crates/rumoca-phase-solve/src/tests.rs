@@ -1326,10 +1326,10 @@ fn delay_lowers_to_runtime_history_programs_and_a_typed_value_slot() {
                     .literal(dae::DaeLiteral::Real(0.5))?,
             ))
         })?;
-        let delay = model.temporal(|temporal| {
-            let timing = temporal.positive_parameter(delay_time, 0.5, timing_at)?;
-            temporal.delay(source, timing, delay_at, delay_at)
-        })?;
+        let timing =
+            model.temporal(|temporal| temporal.positive_parameter(delay_time, 0.5, timing_at))?;
+        let delay = model
+            .expressions(|expressions| expressions.at(delay_at).delay(source, timing, delay_at))?;
         let residual = model.expressions(|expressions| {
             let derivative = expressions
                 .at(derivative_at)

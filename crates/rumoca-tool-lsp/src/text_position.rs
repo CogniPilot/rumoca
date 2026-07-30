@@ -1,7 +1,7 @@
 //! Local adaptation between protocol-neutral text positions and LSP types.
 
 use lsp_types::{Position, Range};
-use rumoca_core::text_position::{self, TextPosition, TextRange};
+use rumoca_compile::compile::core::text_position::{self, TextPosition, TextRange};
 
 #[must_use]
 pub(crate) fn byte_offset_to_position(source: &str, byte_offset: usize) -> Position {

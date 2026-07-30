@@ -7,7 +7,7 @@
 use rumoca_ir_dae as dae;
 use serde_json::{Value, json};
 
-pub(super) const TEMPLATE_SCHEMA_VERSION: u16 = 3;
+pub(super) const TEMPLATE_SCHEMA_VERSION: u16 = 4;
 
 #[derive(Debug, thiserror::Error)]
 pub(super) enum DaeBackendError {
@@ -23,19 +23,13 @@ pub(super) enum DaeBackendError {
         expected: usize,
         span: rumoca_core::Span,
     },
-    #[error("array-update expression escaped its checked function assignment owner")]
-    EscapedArrayUpdate { span: rumoca_core::Span },
-    #[error("record value escaped the function-only checked DAE type boundary")]
-    EscapedRecord { span: rumoca_core::Span },
 }
 
 impl DaeBackendError {
     pub(super) const fn span(&self) -> rumoca_core::Span {
         match self {
             Self::Numeric(error) => error.span(),
-            Self::AttributeShape { span, .. }
-            | Self::EscapedArrayUpdate { span }
-            | Self::EscapedRecord { span } => *span,
+            Self::AttributeShape { span, .. } => *span,
         }
     }
 }
@@ -55,7 +49,6 @@ fn project_view(view: dae::DaeView<'_>) -> Result<Value, DaeBackendError> {
         "functions": project_functions(view),
         "domains": project_domains(view),
         "expressions": project_expressions(view),
-        "modelica": super::checked_modelica::project(view)?,
         "systems": {
             "continuous": project_continuous(view),
             "initialization": project_initialization(view),
@@ -116,6 +109,7 @@ fn project_variables(view: dae::DaeView<'_>) -> Result<Vec<Value>, DaeBackendErr
                 "scalar": variable.value_type().scalar_type(),
                 "dimensions": variable.value_type().dimensions(),
             },
+            "value_type_id": variable.value_type_id().index(),
             "scalar_count": variable.scalar_count(),
             "scalar_names": (0..variable.scalar_count())
                 .filter_map(|scalar| variable.scalar_name(scalar))
@@ -312,6 +306,7 @@ fn project_expressions(view: dae::DaeView<'_>) -> Vec<Value> {
             json!({
                 "id": id.index(),
                 "operation": project_expression_operation(expression.operation()),
+                "value_type_id": expression.value_type_id().index(),
                 "value_type": {
                     "scalar": expression.value_type().scalar_type(),
                     "dimensions": expression.value_type().dimensions(),
@@ -362,12 +357,7 @@ fn project_expression_operation(operation: dae::ExpressionOperation<'_>) -> Valu
             "base": base.index(),
             "field": field,
         }),
-        dae::ExpressionOperation::Range { start, step, stop } => json!({
-            "kind": "range",
-            "start": start,
-            "step": step,
-            "stop": stop,
-        }),
+        dae::ExpressionOperation::Range(range) => project_range_operation(range),
         dae::ExpressionOperation::Comprehension { domain, body } => json!({
             "kind": "comprehension",
             "domain": domain.index(),
@@ -403,6 +393,23 @@ fn project_expression_operation(operation: dae::ExpressionOperation<'_>) -> Valu
             definition,
         } => project_function_fold_operation("function_fold_output", fold, carried, definition),
     }
+}
+
+fn project_range_operation(range: dae::RangeView<'_>) -> Value {
+    json!({
+        "kind": "range",
+        "start": project_range_bound(range.start()),
+        "explicit_step": range.explicit_step().map(project_range_bound),
+        "stop": project_range_bound(range.stop()),
+    })
+}
+
+fn project_range_bound(bound: dae::RangeBoundView<'_>) -> Value {
+    json!({
+        "expression": bound.expression().index(),
+        "value": bound.value(),
+        "provenance": bound.provenance(),
+    })
 }
 
 fn project_index_operation(base: dae::ExprId<'_>, subscripts: dae::SubscriptsView<'_>) -> Value {

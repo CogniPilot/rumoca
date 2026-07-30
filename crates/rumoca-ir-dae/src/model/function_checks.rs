@@ -166,6 +166,14 @@ fn push_expression_children(storage: &Storage, node: &ExprNode, pending: &mut Ve
         | ExprNode::Field { base: operand, .. }
         | ExprNode::Comprehension { body: operand, .. } => pending.push(*operand),
         ExprNode::Binary { lhs, rhs, .. } => pending.extend([*lhs, *rhs]),
+        ExprNode::Range {
+            start,
+            explicit_step,
+            stop,
+        } => {
+            pending.extend([*start, *stop]);
+            pending.extend(explicit_step);
+        }
         ExprNode::Index { base, subscripts } => {
             pending.push(*base);
             push_subscripts(storage, *subscripts, pending);
@@ -185,7 +193,6 @@ fn push_expression_children(storage: &Storage, node: &ExprNode, pending: &mut Ve
         | ExprNode::Call { operands, .. } => push_operands(storage, *operands, pending),
         ExprNode::Literal(_)
         | ExprNode::Coordinate(_)
-        | ExprNode::Range { .. }
         | ExprNode::FunctionValue { .. }
         | ExprNode::FunctionFoldParameter { .. }
         | ExprNode::FunctionFoldOutput { .. } => {}
@@ -460,13 +467,13 @@ fn reject_model_coordinate(
     let coordinate = match node {
         ExprNode::Coordinate(Coordinate::FunctionParameter { .. } | Coordinate::Binder { .. })
         | ExprNode::Literal(_)
-        | ExprNode::Range { .. }
         | ExprNode::FunctionValue { .. }
         | ExprNode::FunctionFoldParameter { .. }
         | ExprNode::FunctionFoldOutput { .. }
         | ExprNode::Unary { .. }
         | ExprNode::Binary { .. }
         | ExprNode::Field { .. }
+        | ExprNode::Range { .. }
         | ExprNode::Comprehension { .. }
         | ExprNode::Index { .. }
         | ExprNode::ArrayUpdate { .. }

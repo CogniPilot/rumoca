@@ -14,14 +14,16 @@ fn delay_owner_rejects_invalid_evidence_and_coordinate_provenance_atomically() {
                 expressions.at(literal_at).literal(DaeLiteral::Real(0.0))?,
             ))
         })?;
-        dae.temporal(|temporal| {
+        let positive = dae.temporal(|temporal| {
             let rejected = temporal.positive_parameter(delay_time, 0.0, literal_at);
             assert!(matches!(
                 rejected,
                 Err(DaeConstructionError::InvalidPositiveParameter { .. })
             ));
-            let positive = temporal.positive_parameter(source, 1.0, owner)?;
-            let rejected = temporal.delay(source, positive, owner, foreign);
+            temporal.positive_parameter(source, 1.0, owner)
+        })?;
+        dae.expressions(|expressions| {
+            let rejected = expressions.at(foreign).delay(source, positive, owner);
             assert!(matches!(
                 rejected,
                 Err(DaeConstructionError::UnknownSource { span }) if span == foreign_span
@@ -30,7 +32,70 @@ fn delay_owner_rejects_invalid_evidence_and_coordinate_provenance_atomically() {
         })
     })
     .expect("a rejected capability cannot leave a partial delay owner");
-    assert_eq!(dae.inspect(|view| view.delay_count()), 0);
+    dae.inspect(|view| {
+        assert_eq!(view.delay_count(), 0);
+        assert_eq!(view.expression_count(), 2);
+    });
+}
+
+#[test]
+fn delay_operand_errors_use_exact_occurrence_spans_before_insertion() {
+    let source = TestSource::new(r#"delay("bad", 1.0); delay(1.0, 7, 2.0)"#);
+    let string_at = source.source(r#""bad""#, 0);
+    let fixed_time_at = source.source("1.0", 0);
+    let fixed_owner = source.source(r#"delay("bad", 1.0)"#, 0);
+    let real_at = source.source("1.0", 1);
+    let integer_time_at = source.source("7", 0);
+    let maximum_at = source.source("2.0", 0);
+    let bounded_owner = source.source("delay(1.0, 7, 2.0)", 0);
+    let dae = Dae::construct(source.map, |dae| {
+        let (string, fixed_time, real, integer_time, maximum) = dae.expressions(|expressions| {
+            Ok((
+                expressions
+                    .at(string_at)
+                    .literal(DaeLiteral::String("bad".to_owned()))?,
+                expressions
+                    .at(fixed_time_at)
+                    .literal(DaeLiteral::Real(1.0))?,
+                expressions.at(real_at).literal(DaeLiteral::Real(1.0))?,
+                expressions
+                    .at(integer_time_at)
+                    .literal(DaeLiteral::Integer(7))?,
+                expressions.at(maximum_at).literal(DaeLiteral::Real(2.0))?,
+            ))
+        })?;
+        let fixed =
+            dae.temporal(|temporal| temporal.positive_parameter(fixed_time, 1.0, fixed_time_at))?;
+        let rejected = dae.expressions(|expressions| {
+            expressions
+                .at(fixed_owner)
+                .delay(string, fixed, fixed_owner)
+        });
+        assert!(matches!(
+            rejected,
+            Err(DaeConstructionError::ExpectedNumeric { span, .. })
+                if span == string_at.span()
+        ));
+
+        let maximum =
+            dae.temporal(|temporal| temporal.positive_parameter(maximum, 2.0, maximum_at))?;
+        let rejected = dae.expressions(|expressions| {
+            expressions
+                .at(bounded_owner)
+                .bounded_delay(real, integer_time, maximum, bounded_owner)
+        });
+        assert!(matches!(
+            rejected,
+            Err(DaeConstructionError::TypeMismatch { span, .. })
+                if span == integer_time_at.span()
+        ));
+        Ok(())
+    })
+    .expect("operand failures do not leave partial delay owners or coordinates");
+    dae.inspect(|view| {
+        assert_eq!(view.delay_count(), 0);
+        assert_eq!(view.expression_count(), 5);
+    });
 }
 
 #[test]

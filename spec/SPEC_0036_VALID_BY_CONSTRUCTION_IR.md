@@ -28,7 +28,17 @@ hide invariant fields/root validators. Solve sparsity follows
 | Constructor checks replace validators | DAE cutover | One owner |
 | Delete superseded DAE and wire atomically | DAE cutover | No compatibility |
 | Report before/after repository LOC; DAE production is net-negative | PR metrics | Demonstrate savings |
-| Checked-DAE production ≤11,000 LOC | `rumoca-ir-dae` | Bounds ceremony |
+| Core above 11,000 LOC requires a module review | `rumoca-ir-dae`, excluding `model/wire*` | Bounds core ceremony |
+| Wire above 3,250 LOC requires a module review | `rumoca-ir-dae::model::wire` | Bounds replay ceremony |
+| Total above 14,250 LOC requires a module review | `rumoca-ir-dae` | Bounds aggregate ceremony |
+
+These thresholds are review triggers, not acceptance ceilings. A fresh
+module-level report must inventory code above a threshold, remove demonstrated
+duplication and obsolete ceremony, and explain the semantics, construction
+evidence, or readability carried by the remainder. Necessary explicit code may
+remain above a threshold when that report finds no bloat. Audit-hostile
+metaprogramming, code golfing, test deletion, and capability deletion are not
+valid LOC reductions.
 
 ### One Aggregate Owns Construction
 
@@ -43,6 +53,25 @@ hide invariant fields/root validators. Solve sparsity follows
 Data-owning builders, partial roots, unchecked insertion, and
 finalized mutation are prohibited. Producers own analysis; insertion checks
 supplied proofs and local integrity.
+
+### Solve Aggregate and Discrete Definitions
+
+| Rule | Owner/Where | Brief Justification |
+|---|---|---|
+| `SolveProblem::construct` lends branded scopes over private invariant fields | `rumoca-ir-solve` | One construction authority |
+| `initial()` creates a typed activation, never a generic P load | Activation arena | Phase state cannot become a value |
+| A B.1c definition owns a target and either `Always` or ordered activated branches | Discrete system | Preserve source priority |
+| No active branch holds the current target | Discrete system | Hold cannot be omitted |
+| Each typed owner derives pre, observation, and clock policy | Solve construction | Parallel metadata cannot disagree |
+| B.1b residuals, B.1c definitions, reinit, and condition memory are distinct owners | Solve construction | Tags cannot conflate semantics |
+| Definitions, branches, generated edges, and holds retain exact typed provenance | Construction scopes | No dummy source claims |
+| Dense vectors, packed branches, and `u32` IDs freeze without rescanning | Solve aggregate | Linear construction |
+| Wire decode replays the same owner operations | Solve serialization | Bytes cannot forge definitions |
+| Old schemas, raw insertion, validators, defaults, and adapters are absent | Solve boundary | No weaker path survives |
+| Tests use production construction and cannot bypass provenance or activation | Solve tests | Evidence exercises the boundary |
+
+For target `x`, the first true `(a_k, v_k)` gives `x' = v_k`; otherwise
+`x' = x`. Activations are shared per iteration; inactive values are skipped.
 
 ### Flat Aggregate Construction
 
@@ -293,7 +322,7 @@ differential, and refinement tests exercise each relation.
 | Shared/compound relations are tested | DAE/Solve tests | B.1 cardinality |
 | Transform tests preserve families | DAE/structural tests | Consistent views |
 | Consumers have no malformed-DAE branches | Repository review | Guarantees replace checks |
-| LOC limits are CI/review metrics | DAE cutover | Bounded complexity |
+| LOC thresholds trigger documented review | DAE cutover | Bounded complexity |
 
 Tests may privately audit the complete aggregate. Production audits, public
 validation, superseded fallbacks, and compatibility are prohibited.

@@ -37,6 +37,7 @@ use wasm_bindgen_futures::JsFuture;
 use wasm_bindgen_rayon::init_thread_pool;
 
 use rumoca_compile::Session;
+use rumoca_compile::codegen::render_algorithm_code_template_with_artifact;
 use rumoca_compile::codegen::targets::{
     RenderedTargetFile, TargetBundle, TargetTemplateIr, builtin_target_descriptors_for_ir,
     parse_target_manifest, render_dae_target_files,
@@ -1210,11 +1211,11 @@ fn render_algorithm_code_source_files(
         if !matches!(extension, Some("alg" | "h" | "c")) {
             continue;
         }
-        let path = rumoca_phase_codegen::render_algorithm_code_template_with_artifact(
+        let path = render_algorithm_code_template_with_artifact(
             &package, &artifact, &file.path, &model_id,
         )?;
         let template = source.template_source(&file.template)?;
-        let content = rumoca_phase_codegen::render_algorithm_code_template_with_artifact(
+        let content = render_algorithm_code_template_with_artifact(
             &package,
             &artifact,
             template.as_ref(),

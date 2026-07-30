@@ -4,11 +4,13 @@ mod type_rules;
 use rumoca_core::Span;
 use serde::{Deserialize, Serialize};
 
-use crate::model::{FunctionReadSet, Storage, invalid_arity};
+use crate::model::{FunctionReadSet, Storage, invalid_arity, unknown};
+use crate::temporal::{DelayEntry, DelayKind};
 use crate::{
-    AlgebraicId, DaeConstructionError, DaeProvenance, DiscreteRealId, DiscreteValueId,
-    DomainBinderId, DomainId, ExprId, FunctionDefinitionId, FunctionFoldId, FunctionId,
-    FunctionParameterId, FunctionValueId, InputId, ParameterId, StateId, ValueTypeId,
+    AlgebraicId, DaeConstructionError, DaeProvenance, DelayCoordinate, DelayId, DiscreteRealId,
+    DiscreteValueId, DomainBinderId, DomainId, ExprId, FunctionDefinitionId, FunctionFoldId,
+    FunctionId, FunctionParameterId, FunctionValueId, InputId, ParameterId, PositiveParameter,
+    StateId, ValueTypeId,
 };
 use function_facts::{FunctionCallFact, node_function_facts};
 use type_rules::{
@@ -384,9 +386,12 @@ pub(crate) enum ExprNode {
         field: u32,
     },
     Range {
-        start: i64,
-        step: i64,
-        stop: i64,
+        #[serde(rename = "start_expression")]
+        start: u32,
+        #[serde(rename = "explicit_step_expression")]
+        explicit_step: Option<u32>,
+        #[serde(rename = "stop_expression")]
+        stop: u32,
     },
     Comprehension {
         domain: u32,
@@ -490,13 +495,14 @@ pub(crate) struct ExpressionInsertionFacts {
 }
 
 impl ExpressionArenaStorage {
-    pub(crate) fn push(
+    fn push(
         &mut self,
+        id: u32,
         node: ExprNode,
         facts: ExpressionInsertionFacts,
         provenance: DaeProvenance,
-    ) -> Result<u32, DaeConstructionError> {
-        let id = checked_u32(self.nodes.len(), "expression arena", provenance)?;
+    ) -> u32 {
+        debug_assert_eq!(usize::try_from(id).ok(), Some(self.nodes.len()));
         self.nodes.push(node);
         self.provenance.push(provenance);
         self.value_types.push(facts.value_type);
@@ -515,7 +521,7 @@ impl ExpressionArenaStorage {
         debug_assert_eq!(self.nodes.len(), self.function_illegal_coordinates.len());
         debug_assert_eq!(self.nodes.len(), self.function_read_sets.len());
         debug_assert_eq!(self.nodes.len(), self.function_latest_calls.len());
-        Ok(id)
+        id
     }
 
     fn push_operands(
@@ -655,6 +661,54 @@ impl<'dae> ExpressionAt<'_, 'dae> {
             ty,
             variability,
             None,
+        )
+    }
+
+    /// Construct one runtime-managed fixed transport-delay coordinate.
+    ///
+    /// The delay owner and its sole coordinate occurrence are committed
+    /// together only after all owner and expression facts have been checked.
+    pub fn delay(
+        self,
+        source: ExprId<'dae>,
+        delay_time: PositiveParameter<'dae>,
+        owner: DaeProvenance,
+    ) -> Result<DelayCoordinate<'dae>, DaeConstructionError> {
+        self.insert_delay_coordinate(
+            source,
+            DelayKind::ParameterDelay {
+                delay_time: delay_time.entry,
+            },
+            owner,
+        )
+    }
+
+    /// Construct one runtime-managed bounded transport-delay coordinate.
+    pub fn bounded_delay(
+        self,
+        source: ExprId<'dae>,
+        delay_time: ExprId<'dae>,
+        delay_max: PositiveParameter<'dae>,
+        owner: DaeProvenance,
+    ) -> Result<DelayCoordinate<'dae>, DaeConstructionError> {
+        let timing_at = self.storage.expr_provenance(delay_time, owner)?;
+        self.storage
+            .expect_closed_expression(delay_time, timing_at)?;
+        let timing_type = self.storage.expr_type(delay_time, timing_at)?;
+        if !timing_type.is_scalar() || timing_type.scalar_type() != ScalarType::Real {
+            return Err(DaeConstructionError::TypeMismatch {
+                expected: ScalarType::Real,
+                found: timing_type.scalar_type(),
+                span: timing_at.span(),
+            });
+        }
+        self.insert_delay_coordinate(
+            source,
+            DelayKind::BoundedDelay {
+                delay_time: delay_time.index(),
+                delay_max: delay_max.entry,
+            },
+            owner,
         )
     }
 
@@ -922,22 +976,35 @@ impl<'dae> ExpressionAt<'_, 'dae> {
 
     pub fn range(
         self,
-        start: i64,
-        step: i64,
-        stop: i64,
+        start: ExprId<'dae>,
+        explicit_step: Option<ExprId<'dae>>,
+        stop: ExprId<'dae>,
     ) -> Result<ExprId<'dae>, DaeConstructionError> {
-        if step == 0 {
-            return Err(DaeConstructionError::ZeroRangeStep {
-                span: self.provenance.span(),
-            });
-        }
-        let extent = range_extent(start, step, stop, self.provenance)?;
+        let start_value = range_bound(self.storage, start, self.provenance)?;
+        let explicit_step_value = explicit_step
+            .map(|step| range_bound(self.storage, step, self.provenance))
+            .transpose()?;
+        let stop_value = range_bound(self.storage, stop, self.provenance)?;
+        let step_value = match explicit_step_value {
+            Some((0, provenance)) => {
+                return Err(DaeConstructionError::ZeroRangeStep {
+                    span: provenance.span(),
+                });
+            }
+            Some((value, _)) => value,
+            None => 1,
+        };
+        let extent = range_extent(start_value.0, step_value, stop_value.0, self.provenance)?;
         let ty = self.storage.intern_type(
             ValueType::array(ScalarType::Integer, [extent]),
             self.provenance,
         )?;
         self.insert(
-            ExprNode::Range { start, step, stop },
+            ExprNode::Range {
+                start: start.index(),
+                explicit_step: explicit_step.map(ExprId::index),
+                stop: stop.index(),
+            },
             ty,
             ExpressionVariability::Constant,
             None,
@@ -1193,30 +1260,111 @@ impl<'dae> ExpressionAt<'_, 'dae> {
     }
 
     fn insert(
-        self,
+        mut self,
         node: ExprNode,
         ty: ValueTypeId<'dae>,
         variability: ExpressionVariability,
         binder_domain: Option<u32>,
     ) -> Result<ExprId<'dae>, DaeConstructionError> {
-        crate::model::check_provenance(self.source_map, self.provenance)?;
-        let function_facts = node_function_facts(self.storage, &node, self.provenance)?;
-        self.storage
+        let (id, facts) = self.prepare_insertion(&node, ty, variability, binder_domain)?;
+        Ok(self.commit_insertion(id, node, facts))
+    }
+
+    fn insert_delay_coordinate(
+        mut self,
+        source: ExprId<'dae>,
+        kind: DelayKind,
+        owner: DaeProvenance,
+    ) -> Result<DelayCoordinate<'dae>, DaeConstructionError> {
+        crate::model::check_provenance(self.source_map, owner)?;
+        let source_at = self.storage.expr_provenance(source, owner)?;
+        self.storage.expect_closed_expression(source, source_at)?;
+        let source_type = self.storage.expr_type(source, source_at)?;
+        if source_type.scalar_type() == ScalarType::String {
+            return Err(DaeConstructionError::ExpectedNumeric {
+                found: ScalarType::String,
+                span: source_at.span(),
+            });
+        }
+        let value_type = self
+            .storage
             .expressions
-            .push(
-                node,
-                ExpressionInsertionFacts {
-                    value_type: ty.index(),
-                    variability,
-                    binder_domain,
-                    function_scope: function_facts.scope,
-                    function_illegal_coordinate: function_facts.illegal_coordinate,
-                    function_read_set: function_facts.read_set,
-                    function_latest_call: function_facts.latest_call,
-                },
-                self.provenance,
-            )
-            .map(ExprId::from_raw)
+            .value_types
+            .get(source.index() as usize)
+            .copied()
+            .ok_or_else(|| crate::model::unknown("expression", source.index(), source_at))?;
+        let variability = self.storage.expr_variability(source, source_at)?;
+        let delay = checked_u32(self.storage.delays.len(), "delay arena", owner)?;
+        let node = ExprNode::Coordinate(Coordinate::Delay(delay));
+        let (expression, facts) =
+            self.prepare_insertion(&node, ValueTypeId::from_raw(value_type), variability, None)?;
+
+        self.storage.delays.push(DelayEntry {
+            source: source.index(),
+            kind,
+            value_type,
+            variability,
+            provenance: owner,
+        });
+        let expression = self.commit_insertion(expression, node, facts);
+        Ok(DelayCoordinate::new(DelayId::from_raw(delay), expression))
+    }
+
+    fn prepare_insertion(
+        &mut self,
+        node: &ExprNode,
+        ty: ValueTypeId<'dae>,
+        variability: ExpressionVariability,
+        binder_domain: Option<u32>,
+    ) -> Result<(u32, ExpressionInsertionFacts), DaeConstructionError> {
+        crate::model::check_provenance(self.source_map, self.provenance)?;
+        let id = checked_u32(
+            self.storage.expressions.nodes.len(),
+            "expression arena",
+            self.provenance,
+        )?;
+        let function_facts = node_function_facts(self.storage, node, self.provenance)?;
+        Ok((
+            id,
+            ExpressionInsertionFacts {
+                value_type: ty.index(),
+                variability,
+                binder_domain,
+                function_scope: function_facts.scope,
+                function_illegal_coordinate: function_facts.illegal_coordinate,
+                function_read_set: function_facts.read_set,
+                function_latest_call: function_facts.latest_call,
+            },
+        ))
+    }
+
+    fn commit_insertion(
+        self,
+        id: u32,
+        node: ExprNode,
+        facts: ExpressionInsertionFacts,
+    ) -> ExprId<'dae> {
+        ExprId::from_raw(
+            self.storage
+                .expressions
+                .push(id, node, facts, self.provenance),
+        )
+    }
+}
+
+fn range_bound<'dae>(
+    storage: &Storage,
+    expression: ExprId<'dae>,
+    owner: DaeProvenance,
+) -> Result<(i64, DaeProvenance), DaeConstructionError> {
+    let provenance = storage.expr_provenance(expression, owner)?;
+    storage.expect_closed_expression(expression, provenance)?;
+    match storage.expressions.nodes.get(expression.index() as usize) {
+        Some(ExprNode::Literal(DaeLiteral::Integer(value))) => Ok((*value, provenance)),
+        Some(_) => Err(DaeConstructionError::InvalidRangeBound {
+            span: provenance.span(),
+        }),
+        None => Err(unknown("expression", expression.index(), owner)),
     }
 }
 

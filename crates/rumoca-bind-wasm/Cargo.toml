@@ -21,7 +21,6 @@ rumoca-compile = { workspace = true }
 rumoca-core = { workspace = true }
 rumoca-eval-ast = { workspace = true }
 rumoca-ir-solve = { workspace = true, optional = true }
-rumoca-phase-codegen = { workspace = true }
 rumoca-phase-galec = { workspace = true }
 rumoca-sim = { workspace = true, default-features = false, optional = true }
 rumoca-tool-lint = { workspace = true }

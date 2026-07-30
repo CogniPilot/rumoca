@@ -281,6 +281,41 @@ fn test_todae_uses_constructor_enforced_invariants_without_validation_passes() {
     );
 }
 
+#[test]
+fn test_dae_expression_insertion_is_confined_to_expression_at() {
+    let root = workspace_root();
+    let dae_source = root.join("crates/rumoca-ir-dae/src");
+    let expression_source = dae_source.join("expression.rs");
+    let expression =
+        fs::read_to_string(&expression_source).expect("read canonical DAE expression arena");
+    assert!(
+        !expression.contains("pub(crate) fn push(") && !expression.contains("pub fn push("),
+        "raw DAE expression arena insertion must remain private to ExpressionAt"
+    );
+
+    let mut files = Vec::new();
+    collect_rs_files(&dae_source, &mut files);
+    let offenders = files
+        .into_iter()
+        .filter(|path| path != &expression_source)
+        .filter_map(|path| {
+            let content = fs::read_to_string(&path).ok()?;
+            let compact = content
+                .chars()
+                .filter(|character| !character.is_whitespace())
+                .collect::<String>();
+            (content.contains("ExpressionInsertionFacts")
+                || compact.contains("storage.expressions.push("))
+            .then(|| path.display().to_string())
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        offenders.is_empty(),
+        "raw DAE expression insertion and its facts must remain inside ExpressionAt: \
+{offenders:#?}"
+    );
+}
+
 /// SPEC_0029 §12 + WASM optionality: `rumoca-bind-wasm` must not pull in
 /// `diffsol` (or any concrete solver backend) transitively in its default
 /// feature set. Confirmed via `cargo metadata --no-deps` + a feature-aware

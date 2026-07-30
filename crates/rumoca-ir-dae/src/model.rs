@@ -65,9 +65,9 @@ pub use view::{
     ContinuousOwnerView, CoordinateView, DaeView, DomainView, ExpressionKind, ExpressionOperands,
     ExpressionOperation, ExpressionView, FunctionDefinitionValues, FunctionDefinitionView,
     FunctionFoldView, FunctionParameterView, FunctionStatementView, FunctionStatements,
-    FunctionValueView, FunctionView, InitializationOwnerView, ResidualEquationView,
-    StructuredFamilyView, SubscriptView, SubscriptsView, ValueTypeOperands, VariableIdentity,
-    VariableView,
+    FunctionValueView, FunctionView, InitializationOwnerView, RangeBoundView, RangeView,
+    ResidualEquationView, StructuredFamilyView, SubscriptView, SubscriptsView, ValueTypeOperands,
+    VariableIdentity, VariableView,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize)]

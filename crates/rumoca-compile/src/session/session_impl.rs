@@ -535,6 +535,9 @@ impl Session {
         &mut self,
         model_name: &str,
     ) -> Result<StrictTargetResolution, StrictTargetResolutionFailure> {
+        if let Some(proof) = self.cached_save_resolution_proof(model_name) {
+            return Ok(proof);
+        }
         let (plan, _) = self
             .build_resolution_plan_for_strict_compile()
             .map_err(|diagnostics| StrictTargetResolutionFailure {

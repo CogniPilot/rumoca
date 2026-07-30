@@ -835,8 +835,14 @@ fn expression_contains_derivative<'dae>(
             }
             dae::ExpressionOperation::Literal(_)
             | dae::ExpressionOperation::Coordinate(_)
-            | dae::ExpressionOperation::Range { .. }
             | dae::ExpressionOperation::FunctionFoldParameter { .. } => {}
+            dae::ExpressionOperation::Range(range) => {
+                pending.push(range.stop().expression());
+                if let Some(step) = range.explicit_step() {
+                    pending.push(step.expression());
+                }
+                pending.push(range.start().expression());
+            }
             dae::ExpressionOperation::Unary { operand, .. } => pending.push(operand),
             dae::ExpressionOperation::Binary { lhs, rhs, .. } => {
                 pending.push(lhs);

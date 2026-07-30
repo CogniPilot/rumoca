@@ -378,7 +378,7 @@ fn apply_no_state_event_step(
     let event_pre_p = runtime.params.clone();
     runtime.current_t = step
         .root_boundary()
-        .map_or(event_t, |boundary| boundary.evaluation_time);
+        .map_or(event_t, |boundary| boundary.evaluation_time());
     apply_event_updates(
         &runtime.runtime,
         &runtime.equilibrium_model,
@@ -444,10 +444,10 @@ fn record_no_state_event_step(
             SamplePoint {
                 y: &runtime.current_y,
                 params: &runtime.params,
-                t: boundary.continuation_time,
+                t: boundary.observation_time(),
             },
         )?;
-        runtime.current_t = boundary.continuation_time;
+        runtime.current_t = boundary.continuation_time();
         return Ok(());
     }
     let event = step.event_stop.unwrap_or(RuntimeEventStop {

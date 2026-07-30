@@ -73,6 +73,7 @@ struct FixtureFeatures {
     holonomic: bool,
     deep_function: bool,
     same_rhs_definitions: bool,
+    range: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -602,15 +603,24 @@ fn insert_fixture_delay<'dae>(
                 .transpose()?,
         ))
     })?;
-    model.temporal(|temporal| {
+    let positive = model.temporal(|temporal| {
         if let (Some(maximum), Some(maximum_at)) = (maximum, maximum_at) {
-            let positive = temporal.positive_parameter(maximum, 1.0, maximum_at)?;
-            temporal
-                .bounded_delay(delayed, timing, positive, owner, owner)
+            temporal.positive_parameter(maximum, 1.0, maximum_at)
+        } else {
+            temporal.positive_parameter(timing, 0.5, timing_at)
+        }
+    })?;
+    model.expressions(|expressions| {
+        if maximum.is_some() {
+            expressions
+                .at(owner)
+                .bounded_delay(delayed, timing, positive, owner)
                 .map(|_| ())
         } else {
-            let positive = temporal.positive_parameter(timing, 0.5, timing_at)?;
-            temporal.delay(delayed, positive, owner, owner).map(|_| ())
+            expressions
+                .at(owner)
+                .delay(delayed, positive, owner)
+                .map(|_| ())
         }
     })
 }
@@ -684,9 +694,14 @@ fn fixture_source_text(nonlinear_constraint: bool, features: FixtureFeatures) ->
         ""
     };
     let function_declarations = fixture_function_declarations(features);
+    let range_declaration = if features.range {
+        " parameter Integer r[3] = 1:1:3;"
+    } else {
+        ""
+    };
     let derivative_y_rhs = if features.holonomic { "x" } else { "a" };
     format!(
-        "{record_declarations}{function_declarations} parameter Real p; Real x; Real y; Real a;{family_declaration}{discrete_declaration} equation x = {rhs}; der(y) = {derivative_y_rhs}; der(x) = 1;{family_equation}{discrete_equations}{event_equations}{clock_equations}{delay_equations}"
+        "{record_declarations}{function_declarations} parameter Real p;{range_declaration} Real x; Real y; Real a;{family_declaration}{discrete_declaration} equation x = {rhs}; der(y) = {derivative_y_rhs}; der(x) = 1;{family_equation}{discrete_equations}{event_equations}{clock_equations}{delay_equations}"
     )
 }
 
@@ -749,6 +764,7 @@ fn build_constrained_fixture(
         let domain = fixture_domain(model, spans.family_owner)?;
         let variables =
             fixture_variables(model, real, vector, boolean, spans.declaration, features)?;
+        insert_fixture_range_parameter(model, source, text, features.range)?;
         insert_fixture_record_companion(model, record, source, text)?;
         insert_fixture_functions(
             model,
@@ -785,6 +801,47 @@ fn build_constrained_fixture(
         Ok(())
     })
     .expect("fixture DAE is valid")
+}
+
+fn insert_fixture_range_parameter<'dae>(
+    model: &mut dae::DaeConstruction<'dae>,
+    source: rumoca_core::SourceId,
+    text: &str,
+    enabled: bool,
+) -> Result<(), dae::DaeConstructionError> {
+    if !enabled {
+        return Ok(());
+    }
+    let declaration = source_provenance(source, text, "parameter Integer r[3]");
+    let owner = source_provenance(source, text, "1:1:3");
+    let start = nested_source_provenance(source, text, "1:1:3", "1", 0);
+    let step = nested_source_provenance(source, text, "1:1:3", "1", 1);
+    let stop = nested_source_provenance(source, text, "1:1:3", "3", 0);
+    let integer_array = model.types(|types| {
+        types.derived(
+            dae::ValueType::array(dae::ScalarType::Integer, [3]),
+            declaration,
+        )
+    })?;
+    let binding = model.expressions(|expressions| {
+        let start = expressions.at(start).literal(dae::DaeLiteral::Integer(1))?;
+        let step = expressions.at(step).literal(dae::DaeLiteral::Integer(1))?;
+        let stop = expressions.at(stop).literal(dae::DaeLiteral::Integer(3))?;
+        expressions.at(owner).range(start, Some(step), stop)
+    })?;
+    model.variables(|variables| {
+        variables
+            .parameter(
+                VarName::new("r"),
+                integer_array,
+                declaration,
+                dae::VariableAttributes {
+                    binding: Some(binding),
+                    ..dae::VariableAttributes::default()
+                },
+            )
+            .map(|_| ())
+    })
 }
 
 fn fixture_residuals<'dae>(
@@ -906,6 +963,37 @@ fn direct_state_demotion_reconstructs_a_finalized_dae_with_exact_provenance() {
                     )
                 })
         );
+    });
+}
+
+#[test]
+fn state_demotion_preserves_range_bound_identity_and_provenance() {
+    let (model, _) = constrained_state_model(
+        false,
+        FixtureFeatures {
+            range: true,
+            ..FixtureFeatures::default()
+        },
+    );
+    let prepared = prepare_for_solve(&model).expect("range companion survives state demotion");
+    assert!(matches!(prepared, PreparedDae::Transformed { .. }));
+
+    prepared.as_dae().inspect(|view| {
+        let variable = view
+            .variables()
+            .find(|(_, variable)| variable.name().as_str() == "r")
+            .map(|(_, variable)| variable)
+            .expect("range parameter survives reconstruction");
+        let binding = view.expression(variable.binding().unwrap()).unwrap();
+        let dae::ExpressionOperation::Range(range) = binding.operation() else {
+            unreachable!("reconstructed parameter retains its checked range")
+        };
+        let step = range.explicit_step().expect("explicit unit step survives");
+        assert_eq!(view.source_text(binding.provenance()), Some("1:1:3"));
+        assert_eq!(view.source_text(range.start().provenance()), Some("1"));
+        assert_eq!(view.source_text(step.provenance()), Some("1"));
+        assert_eq!(view.source_text(range.stop().provenance()), Some("3"));
+        assert_ne!(range.start().expression(), step.expression());
     });
 }
 

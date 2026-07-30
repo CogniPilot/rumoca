@@ -369,7 +369,7 @@ fn apply_no_state_event_step(
                 event_t,
                 horizon_t: root_boundary.map_or_else(
                     || runtime_event_horizon(event, step.target, opts.t_end),
-                    |boundary| boundary.evaluation_time,
+                    |boundary| boundary.evaluation_time(),
                 ),
                 tolerance: step.tol,
                 event,
@@ -378,7 +378,7 @@ fn apply_no_state_event_step(
         )?
     };
     runtime.current_t =
-        root_boundary.map_or(outcome.final_t, |boundary| boundary.continuation_time);
+        root_boundary.map_or(outcome.final_t, |boundary| boundary.continuation_time());
     commit_pre_params_after_event_at(
         model,
         &runtime.current_y,

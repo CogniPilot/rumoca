@@ -419,7 +419,7 @@ fn coordinate_variable_index(operation: ExpressionOperation<'_>) -> Option<u32> 
         | ExpressionOperation::Record(_)
         | ExpressionOperation::Field { .. }
         | ExpressionOperation::ArrayUpdate { .. }
-        | ExpressionOperation::Range { .. }
+        | ExpressionOperation::Range(_)
         | ExpressionOperation::Comprehension { .. }
         | ExpressionOperation::Index { .. }
         | ExpressionOperation::Builtin { .. }

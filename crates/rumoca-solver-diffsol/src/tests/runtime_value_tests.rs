@@ -106,7 +106,10 @@ fn simulate_no_state_solve_ir_stops_for_root_event_updates() {
 
     assert_eq!(result.times.len(), 3);
     assert_eq!(result.times[0], 0.0);
-    assert!((result.times[1] - 0.05).abs() <= 2.0e-6);
+    assert_eq!(
+        result.times[1], 0.05,
+        "the post-event observation keeps the semantic root timestamp"
+    );
     assert_eq!(result.times[2], 0.1);
     assert_eq!(result.data, vec![vec![0.0, 2.0, 2.0]]);
 }
@@ -209,7 +212,10 @@ fn no_state_root_search_refreshes_algebraic_root_dependencies() {
 
     assert_eq!(result.times.len(), 3);
     assert_eq!(result.times[0], 0.0);
-    assert!((result.times[1] - 0.05).abs() <= 2.0e-6);
+    assert_eq!(
+        result.times[1], 0.05,
+        "an algebraic-dependent root keeps its semantic event timestamp"
+    );
     assert_eq!(result.times[2], 0.1);
     assert_eq!(result.data, vec![vec![0.0, 2.0, 2.0]]);
 }

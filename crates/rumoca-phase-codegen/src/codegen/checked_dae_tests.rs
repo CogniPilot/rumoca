@@ -41,6 +41,101 @@ fn dae_render_context_accepts_only_a_finalized_checked_root() {
 }
 
 #[test]
+fn checked_modelica_distinguishes_omitted_and_explicit_unit_range_steps() {
+    let source = "parameter Integer a[3] = 1:3; parameter Integer b[3] = 4:1:6;";
+    let mut source_map = SourceMap::new();
+    let source_id = source_map.add("ranges.mo", source);
+    let at = |snippet: &str, occurrence: usize| {
+        let start = source
+            .match_indices(snippet)
+            .nth(occurrence)
+            .map(|(start, _)| start)
+            .unwrap();
+        dae::DaeProvenance::source(Span::from_offsets(source_id, start, start + snippet.len()))
+            .unwrap()
+    };
+    let dae = dae::Dae::construct(source_map, |model| {
+        let integers = model.types(|types| {
+            types.derived(
+                dae::ValueType::array(dae::ScalarType::Integer, [3]),
+                at("Integer a[3]", 0),
+            )
+        })?;
+        let omitted = model.expressions(|expressions| {
+            let start = expressions
+                .at(at("1", 0))
+                .literal(dae::DaeLiteral::Integer(1))?;
+            let stop = expressions
+                .at(at("3", 1))
+                .literal(dae::DaeLiteral::Integer(3))?;
+            expressions.at(at("1:3", 0)).range(start, None, stop)
+        })?;
+        let explicit = model.expressions(|expressions| {
+            let start = expressions
+                .at(at("4", 0))
+                .literal(dae::DaeLiteral::Integer(4))?;
+            let step = expressions
+                .at(at("1", 1))
+                .literal(dae::DaeLiteral::Integer(1))?;
+            let stop = expressions
+                .at(at("6", 0))
+                .literal(dae::DaeLiteral::Integer(6))?;
+            expressions
+                .at(at("4:1:6", 0))
+                .range(start, Some(step), stop)
+        })?;
+        model.variables(|variables| {
+            variables.parameter(
+                VarName::new("a"),
+                integers,
+                at("parameter Integer a[3]", 0),
+                dae::VariableAttributes {
+                    binding: Some(omitted),
+                    ..dae::VariableAttributes::default()
+                },
+            )?;
+            variables.parameter(
+                VarName::new("b"),
+                integers,
+                at("parameter Integer b[3]", 0),
+                dae::VariableAttributes {
+                    binding: Some(explicit),
+                    ..dae::VariableAttributes::default()
+                },
+            )?;
+            Ok(())
+        })
+    })
+    .unwrap();
+
+    let projected = dae_template_json(&dae).unwrap();
+    let ranges = projected["expressions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|expression| {
+            (expression["operation"]["kind"] == "range").then_some(&expression["operation"])
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(ranges.len(), 2);
+    assert_eq!(ranges[0]["start"]["value"], 1);
+    assert!(ranges[0]["explicit_step"].is_null());
+    assert_eq!(ranges[0]["stop"]["value"], 3);
+    assert_eq!(ranges[1]["explicit_step"]["value"], 1);
+    assert!(ranges[0].get("step").is_none());
+    for bound in [&ranges[0]["start"], &ranges[0]["stop"]] {
+        assert!(bound["expression"].is_u64());
+        assert!(bound["provenance"]["span"].is_object());
+    }
+
+    let template =
+        crate::templates::builtin_template_source("dae-modelica", "dae_modelica.mo.jinja").unwrap();
+    let rendered = render_template_with_name(&dae, template, "Ranges").unwrap();
+    assert!(rendered.contains("parameter Integer a[3] = 1:3;"));
+    assert!(rendered.contains("parameter Integer b[3] = 4:1:6;"));
+}
+
+#[test]
 fn dae_modelica_target_walks_the_checked_expression_arena() {
     let source = "model M parameter Real p = 2; Real x; equation der(x) = p; end M;";
     let mut source_map = SourceMap::new();
@@ -116,6 +211,64 @@ fn dae_modelica_target_walks_the_checked_expression_arena() {
         dae_template_json(&dae).unwrap()["schema"]["name"],
         "rumoca.checked-dae-template"
     );
+}
+
+#[test]
+fn dae_modelica_target_fails_closed_on_unowned_array_update() {
+    let source = "parameter Integer a[2] = {1, 2};";
+    let mut source_map = SourceMap::new();
+    let source_id = source_map.add("array_update.mo", source);
+    let at = |snippet: &str| {
+        let start = source.find(snippet).expect("fixture snippet exists");
+        dae::DaeProvenance::source(Span::from_offsets(source_id, start, start + snippet.len()))
+            .expect("fixture provenance is exact")
+    };
+    let dae = dae::Dae::construct(source_map, |dae| {
+        let integers = dae.types(|types| {
+            types.derived(
+                dae::ValueType::array(dae::ScalarType::Integer, [2]),
+                at("Integer a[2]"),
+            )
+        })?;
+        let update = dae.expressions(|expressions| {
+            let one = expressions
+                .at(at("1"))
+                .literal(dae::DaeLiteral::Integer(1))?;
+            let two = expressions
+                .at(at("2"))
+                .literal(dae::DaeLiteral::Integer(2))?;
+            let base = expressions.at(at("{1, 2}")).array([one, two])?;
+            expressions.at(at("{1, 2}")).array_update(
+                base,
+                two,
+                [dae::Subscript::Index {
+                    expression: one,
+                    provenance: at("1"),
+                }],
+            )
+        })?;
+        dae.variables(|variables| {
+            variables.parameter(
+                VarName::new("a"),
+                integers,
+                at("parameter Integer a[2]"),
+                dae::VariableAttributes {
+                    binding: Some(update),
+                    ..dae::VariableAttributes::default()
+                },
+            )
+        })?;
+        Ok(())
+    })
+    .expect("checked DAE accepts the typed array update");
+    let template =
+        crate::templates::builtin_template_source("dae-modelica", "dae_modelica.mo.jinja").unwrap();
+
+    let error = render_template_with_name(&dae, template, "M")
+        .expect_err("the Modelica target must reject an unowned array update")
+        .to_string();
+
+    assert!(error.contains("unsupported-feature:dae-modelica-expression:array_update"));
 }
 
 #[test]

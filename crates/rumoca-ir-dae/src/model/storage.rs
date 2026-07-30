@@ -117,6 +117,18 @@ impl Storage {
             .ok_or_else(|| unknown("expression", expression.index(), at))
     }
 
+    pub(crate) fn expr_provenance(
+        &self,
+        expression: ExprId<'_>,
+        at: DaeProvenance,
+    ) -> Result<DaeProvenance, DaeConstructionError> {
+        self.expressions
+            .provenance
+            .get(expression.index() as usize)
+            .copied()
+            .ok_or_else(|| unknown("expression", expression.index(), at))
+    }
+
     pub(crate) fn expect_value_type_compatible(
         &self,
         expected: u32,

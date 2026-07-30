@@ -4320,7 +4320,6 @@ dependencies = [
  "rumoca-core",
  "rumoca-eval-ast",
  "rumoca-ir-solve",
- "rumoca-phase-codegen",
  "rumoca-phase-galec",
  "rumoca-sim",
  "rumoca-tool-lint",

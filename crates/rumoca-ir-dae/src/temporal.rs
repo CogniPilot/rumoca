@@ -1,7 +1,6 @@
 use std::marker::PhantomData;
 
 use crate::clocks::ClockedVariableRole;
-use crate::expression::{Coordinate, ExprNode, ExpressionInsertionFacts};
 use crate::model::{Storage, check_provenance, checked_u32, unknown};
 use crate::{
     ClockId, DaeConstructionError, DaeProvenance, DelayId, DiscreteRealId, DiscreteValueId, ExprId,
@@ -154,7 +153,7 @@ impl<'dae> DelayView<'dae> {
 }
 
 pub struct PositiveParameter<'dae> {
-    entry: PositiveParameterEntry,
+    pub(crate) entry: PositiveParameterEntry,
     marker: PhantomData<&'dae mut &'dae ()>,
 }
 
@@ -165,6 +164,10 @@ pub struct DelayCoordinate<'dae> {
 }
 
 impl<'dae> DelayCoordinate<'dae> {
+    pub(crate) const fn new(id: DelayId<'dae>, expression: ExprId<'dae>) -> Self {
+        Self { id, expression }
+    }
+
     pub const fn id(self) -> DelayId<'dae> {
         self.id
     }
@@ -210,45 +213,6 @@ impl<'dae> Temporal<'_, 'dae> {
             },
             marker: PhantomData,
         })
-    }
-
-    pub fn delay(
-        &mut self,
-        source: ExprId<'dae>,
-        delay_time: PositiveParameter<'dae>,
-        provenance: DaeProvenance,
-        coordinate_provenance: DaeProvenance,
-    ) -> Result<DelayCoordinate<'dae>, DaeConstructionError> {
-        self.insert_delay_coordinate(
-            source,
-            DelayKind::ParameterDelay {
-                delay_time: delay_time.entry,
-            },
-            provenance,
-            coordinate_provenance,
-        )
-    }
-
-    pub fn bounded_delay(
-        &mut self,
-        source: ExprId<'dae>,
-        delay_time: ExprId<'dae>,
-        delay_max: PositiveParameter<'dae>,
-        provenance: DaeProvenance,
-        coordinate_provenance: DaeProvenance,
-    ) -> Result<DelayCoordinate<'dae>, DaeConstructionError> {
-        self.storage
-            .expect_closed_expression(delay_time, provenance)?;
-        check_scalar_real(self.storage, delay_time, provenance)?;
-        self.insert_delay_coordinate(
-            source,
-            DelayKind::BoundedDelay {
-                delay_time: delay_time.index(),
-                delay_max: delay_max.entry,
-            },
-            provenance,
-            coordinate_provenance,
-        )
     }
 
     pub fn previous_discrete_real(
@@ -335,71 +299,4 @@ impl<'dae> Temporal<'_, 'dae> {
         });
         Ok(PreviousId::from_raw(raw))
     }
-
-    fn insert_delay_coordinate(
-        &mut self,
-        source: ExprId<'dae>,
-        kind: DelayKind,
-        provenance: DaeProvenance,
-        coordinate_provenance: DaeProvenance,
-    ) -> Result<DelayCoordinate<'dae>, DaeConstructionError> {
-        check_provenance(self.source_map, provenance)?;
-        check_provenance(self.source_map, coordinate_provenance)?;
-        self.storage.expect_closed_expression(source, provenance)?;
-        let source_type = self.storage.expr_type(source, provenance)?;
-        let value_type = self.storage.expressions.value_types[source.index() as usize];
-        let variability = self.storage.expr_variability(source, provenance)?;
-        if source_type.scalar_type() == ScalarType::String {
-            return Err(DaeConstructionError::ExpectedNumeric {
-                found: ScalarType::String,
-                span: provenance.span(),
-            });
-        }
-        let raw = checked_u32(self.storage.delays.len(), "delay arena", provenance)?;
-        let expression_raw = checked_u32(
-            self.storage.expressions.nodes.len(),
-            "expression arena",
-            coordinate_provenance,
-        )?;
-        self.storage.delays.push(DelayEntry {
-            source: source.index(),
-            kind,
-            value_type,
-            variability,
-            provenance,
-        });
-        let expression = self.storage.expressions.push(
-            ExprNode::Coordinate(Coordinate::Delay(raw)),
-            ExpressionInsertionFacts {
-                value_type,
-                variability,
-                binder_domain: None,
-                function_scope: None,
-                function_illegal_coordinate: Some(expression_raw),
-                function_read_set: crate::model::FunctionReadSet::EMPTY,
-                function_latest_call: None,
-            },
-            coordinate_provenance,
-        )?;
-        Ok(DelayCoordinate {
-            id: DelayId::from_raw(raw),
-            expression: ExprId::from_raw(expression),
-        })
-    }
-}
-
-fn check_scalar_real(
-    storage: &Storage,
-    expression: ExprId<'_>,
-    provenance: DaeProvenance,
-) -> Result<(), DaeConstructionError> {
-    let ty = storage.expr_type(expression, provenance)?;
-    if ty.is_scalar() && ty.scalar_type() == ScalarType::Real {
-        return Ok(());
-    }
-    Err(DaeConstructionError::TypeMismatch {
-        expected: ScalarType::Real,
-        found: ty.scalar_type(),
-        span: provenance.span(),
-    })
 }
