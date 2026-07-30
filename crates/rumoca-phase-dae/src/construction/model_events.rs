@@ -576,17 +576,27 @@ pub(super) fn lower_when_assignment<'dae>(
     provenance: dae::DaeProvenance,
 ) -> Result<(), dae::DaeConstructionError> {
     match target {
-        Coordinate::DiscreteReal(target) => construction
-            .events(|events| {
-                events.assign_discrete_real(
-                    guard.trigger,
-                    guard.condition,
-                    target,
-                    value,
-                    provenance,
-                )
-            })
-            .map(|_| ()),
+        Coordinate::DiscreteReal(target) => {
+            let lhs = construction.expressions(|expressions| {
+                expressions
+                    .at(provenance)
+                    .coordinate(dae::CoordinateInput::DiscreteReal(target))
+            })?;
+            let residual = generated_residual(construction, provenance, lhs, value)?;
+            construction.discrete(|discrete| {
+                if guard.always {
+                    discrete.real_equation(provenance, |equation| equation.residual(residual))
+                } else {
+                    discrete.when_real_equation(
+                        guard.trigger,
+                        guard.condition,
+                        provenance,
+                        |equation| equation.residual(residual),
+                    )
+                }
+            })?;
+            Ok(())
+        }
         Coordinate::DiscreteValue(target) => {
             let owner = discrete_owner
                 .expect("a discrete-value event assignment has one semantic B.1c owner");

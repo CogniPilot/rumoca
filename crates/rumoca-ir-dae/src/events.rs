@@ -4,8 +4,8 @@ use rumoca_core::ClockRational;
 
 use crate::model::{Storage, check_provenance, checked_u32, unknown};
 use crate::{
-    ConditionId, DaeConstructionError, DaeProvenance, DiscreteRealId, EventActionId, ExprId,
-    ScalarType, StateId, TimeEventId,
+    ConditionId, DaeConstructionError, DaeProvenance, EventActionId, ExprId, ScalarType, StateId,
+    TimeEventId,
 };
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -21,7 +21,6 @@ pub(crate) enum EventActionKind {
     Assert { message: u32, level: Option<u32> },
     Terminate { message: u32 },
     Reinitialize { state: u32, value: u32 },
-    AssignDiscreteReal { target: u32, value: u32 },
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -60,10 +59,6 @@ pub enum EventActionOperation<'dae> {
     },
     Reinitialize {
         state: StateId<'dae>,
-        value: ExprId<'dae>,
-    },
-    AssignDiscreteReal {
-        target: DiscreteRealId<'dae>,
         value: ExprId<'dae>,
     },
 }
@@ -207,31 +202,6 @@ impl<'dae> Events<'_, 'dae> {
         )
     }
 
-    pub fn assign_discrete_real(
-        &mut self,
-        trigger: ConditionId<'dae>,
-        guard: ConditionId<'dae>,
-        target: DiscreteRealId<'dae>,
-        value: ExprId<'dae>,
-        provenance: DaeProvenance,
-    ) -> Result<EventActionId<'dae>, DaeConstructionError> {
-        check_provenance(self.source_map, provenance)?;
-        self.expect_guard(trigger, provenance)?;
-        self.expect_guard(guard, provenance)?;
-        self.storage
-            .expect_discrete_real_target(target, value, provenance)?;
-        self.expect_clock_ownership(guard, target.index(), provenance)?;
-        self.insert_action(
-            trigger,
-            guard,
-            EventActionKind::AssignDiscreteReal {
-                target: target.index(),
-                value: value.index(),
-            },
-            provenance,
-        )
-    }
-
     fn message_action(
         &mut self,
         trigger: ConditionId<'dae>,
@@ -275,30 +245,6 @@ impl<'dae> Events<'_, 'dae> {
         Ok(())
     }
 
-    fn expect_clock_ownership(
-        &self,
-        guard: ConditionId<'dae>,
-        variable: u32,
-        provenance: DaeProvenance,
-    ) -> Result<(), DaeConstructionError> {
-        let Some(clock) = condition_owner_clock(self.storage, guard.index()) else {
-            return Ok(());
-        };
-        if self
-            .storage
-            .clock_ownerships
-            .iter()
-            .any(|ownership| ownership.variable == variable && ownership.clock == clock)
-        {
-            return Ok(());
-        }
-        Err(DaeConstructionError::MissingClockOwnership {
-            variable,
-            clock,
-            span: provenance.span(),
-        })
-    }
-
     fn insert_action(
         &mut self,
         trigger: ConditionId<'dae>,
@@ -318,34 +264,5 @@ impl<'dae> Events<'_, 'dae> {
             provenance,
         });
         Ok(EventActionId::from_raw(raw))
-    }
-}
-
-fn condition_owner_clock(storage: &Storage, condition: u32) -> Option<u32> {
-    let node = storage.conditions.get(condition as usize)?.node?;
-    match node {
-        crate::conditions::ConditionNode::Initial => None,
-        crate::conditions::ConditionNode::Clock(clock) => Some(clock),
-        crate::conditions::ConditionNode::And { lhs, rhs } => merge_owner_clocks(
-            condition_owner_clock(storage, lhs),
-            condition_owner_clock(storage, rhs),
-            false,
-        ),
-        crate::conditions::ConditionNode::Or { lhs, rhs } => merge_owner_clocks(
-            condition_owner_clock(storage, lhs),
-            condition_owner_clock(storage, rhs),
-            true,
-        ),
-        crate::conditions::ConditionNode::Relation(_)
-        | crate::conditions::ConditionNode::Discrete(_)
-        | crate::conditions::ConditionNode::Not(_) => None,
-    }
-}
-
-fn merge_owner_clocks(lhs: Option<u32>, rhs: Option<u32>, disjunction: bool) -> Option<u32> {
-    match (lhs, rhs) {
-        (Some(lhs), Some(rhs)) if lhs == rhs => Some(lhs),
-        (Some(clock), None) | (None, Some(clock)) if !disjunction => Some(clock),
-        _ => None,
     }
 }

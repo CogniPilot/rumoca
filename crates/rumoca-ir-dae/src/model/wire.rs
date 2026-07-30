@@ -125,7 +125,7 @@ struct StorageWire {
     expressions: ExpressionArenaWire,
     continuous_equation_operations: Vec<EquationOperationInput>,
     initialization_equation_operations: Vec<EquationOperationInput>,
-    discrete_real_equations: Vec<ResidualEquationWire>,
+    discrete_real_equations: Vec<DiscreteRealEquationWire>,
     discrete_value_owners: Vec<DiscreteValueOwnerWire>,
     relations: Vec<RelationEntryWire>,
     conditions: Vec<ConditionEntryWire>,
@@ -252,10 +252,18 @@ struct DomainEntryWire {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ResidualEquationWire {
+struct DiscreteRealEquationWire {
     residual: u32,
+    activation: DiscreteRealActivationWire,
     #[serde(deserialize_with = "deserialize_provenance")]
     provenance: DaeProvenance,
+}
+
+#[derive(Deserialize, Clone, Copy)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+enum DiscreteRealActivationWire {
+    Always,
+    When { trigger: u32, guard: u32 },
 }
 
 #[derive(Deserialize)]
@@ -400,7 +408,6 @@ enum EventActionKindWire {
     Assert { message: u32, level: Option<u32> },
     Terminate { message: u32 },
     Reinitialize { state: u32, value: u32 },
-    AssignDiscreteReal { target: u32, value: u32 },
 }
 
 #[derive(Deserialize)]
@@ -1430,16 +1437,6 @@ fn reconstruct_events<'dae>(
                     trigger,
                     guard,
                     StateId::from_raw(state.index()),
-                    mapped(&ids.expressions, value, "expression", action.provenance)?,
-                    action.provenance,
-                )
-            }
-            EventActionKindWire::AssignDiscreteReal { target, value } => {
-                let target = mapped(&ids.variables, target, "variable", action.provenance)?;
-                events.assign_discrete_real(
-                    trigger,
-                    guard,
-                    crate::DiscreteRealId::from_raw(target.index()),
                     mapped(&ids.expressions, value, "expression", action.provenance)?,
                     action.provenance,
                 )

@@ -146,14 +146,7 @@ pub(super) fn render_flattened_preview(
             |index| view.continuous_equation(index),
             view,
         );
-        push_checked_residuals(
-            &mut lines,
-            "f_z",
-            view.discrete_real_equation_count(),
-            4,
-            |index| view.discrete_real_equation(index),
-            view,
-        );
+        push_checked_discrete_real_equations(&mut lines, 4, view);
         lines.push(format!(
             "f_m ({} definitions in {} owners):",
             view.discrete_value_definition_count(),
@@ -299,6 +292,39 @@ fn push_checked_residuals<'dae>(
         lines.push(format!("  {index}: {}", truncate_text(source, 140)));
     }
     push_more_equations_line(lines, total, limit, label);
+}
+
+fn push_checked_discrete_real_equations(
+    lines: &mut Vec<String>,
+    limit: usize,
+    view: rumoca_compile::compile::DaeView<'_>,
+) {
+    let total = view.discrete_real_equation_count();
+    lines.push(format!("f_z ({total}):"));
+    for index in 0..total.min(limit) {
+        let equation = view
+            .discrete_real_equation(index)
+            .expect("finalized discrete Real equation resolves");
+        let source = view
+            .expression(equation.residual())
+            .and_then(|expression| view.source_text(expression.provenance()))
+            .map_or("<generated residual>", |source| source);
+        let activation = match equation.activation() {
+            rumoca_compile::compile::DiscreteRealActivation::Always => "always".to_string(),
+            rumoca_compile::compile::DiscreteRealActivation::When { trigger, guard } => format!(
+                "when trigger=`{}` guard=`{}`",
+                condition_text(view, trigger),
+                condition_text(view, guard)
+            ),
+        };
+        lines.push(format!(
+            "  {index}: {} | {activation} | owner {} at `{}`",
+            truncate_text(source, 140),
+            equation.provenance().origin(),
+            provenance_text(view, equation.provenance())
+        ));
+    }
+    push_more_equations_line(lines, total, limit, "f_z");
 }
 
 fn push_more_equations_line(lines: &mut Vec<String>, total: usize, shown: usize, label: &str) {

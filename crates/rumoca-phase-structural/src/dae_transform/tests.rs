@@ -306,9 +306,17 @@ fn insert_fixture_discrete<'dae>(
         return Ok(());
     };
     model.discrete(|equations| {
-        equations.real_equation(discrete.real_owner, |equation| {
+        let build = |equation: &mut dae::ResidualEquation<'_, 'dae>| {
             equation.residual(discrete.real_residual)
-        })?;
+        };
+        match discrete.activation {
+            Some(condition) => {
+                equations.when_real_equation(condition, condition, discrete.real_owner, build)?;
+            }
+            None => {
+                equations.real_equation(discrete.real_owner, build)?;
+            }
+        }
         Ok(())
     })?;
     model.b1c([discrete.value_target], |topology| {
@@ -326,6 +334,7 @@ fn insert_fixture_discrete<'dae>(
 struct FixtureDiscrete<'dae> {
     real_owner: dae::DaeProvenance,
     real_residual: dae::ExprId<'dae>,
+    activation: Option<dae::ConditionId<'dae>>,
     value_owner: dae::DaeProvenance,
     value_target: dae::DiscreteValueId<'dae>,
     value: dae::ExprId<'dae>,
@@ -335,6 +344,7 @@ fn fixture_discrete<'dae>(
     model: &mut dae::DaeConstruction<'dae>,
     variables: FixtureVariables<'dae>,
     owners: Option<(dae::DaeProvenance, dae::DaeProvenance)>,
+    activation: Option<dae::ConditionId<'dae>>,
 ) -> Result<Option<FixtureDiscrete<'dae>>, dae::DaeConstructionError> {
     let (Some(d), Some(b), Some((real_owner, value_owner))) = (variables.d, variables.b, owners)
     else {
@@ -357,6 +367,7 @@ fn fixture_discrete<'dae>(
         Ok(Some(FixtureDiscrete {
             real_owner,
             real_residual,
+            activation,
             value_owner,
             value_target: b,
             value,
@@ -370,9 +381,9 @@ fn insert_fixture_events<'dae>(
     source: rumoca_core::SourceId,
     text: &str,
     enabled: bool,
-) -> Result<(), dae::DaeConstructionError> {
+) -> Result<Option<dae::ConditionId<'dae>>, dae::DaeConstructionError> {
     if !enabled {
-        return Ok(());
+        return Ok(None);
     }
     let relation_at = source_provenance(source, text, "y > 0");
     let reinitialize_at = source_provenance(source, text, "reinit(y, 0)");
@@ -422,7 +433,8 @@ fn insert_fixture_events<'dae>(
         events.reinitialize(condition, condition, variables.y, value, reinitialize_at)?;
         events.assert(condition, condition, message, assert_at)?;
         Ok(())
-    })
+    })?;
+    Ok(Some(condition))
 }
 
 fn insert_fixture_record_companion<'dae>(
@@ -639,15 +651,20 @@ fn fixture_source_text(nonlinear_constraint: bool, features: FixtureFeatures) ->
     } else {
         ""
     };
-    let discrete_equations = if features.discrete {
+    let discrete_equations = if features.discrete && features.events {
+        " b = true;"
+    } else if features.discrete {
         " d = 2; b = true;"
     } else {
         ""
     };
     let event_equations = if features.events {
-        " when y > 0 then reinit(y, 0); assert(y > 0, \"event fired\"); end when; sample(0.5);"
+        let discrete_real = if features.discrete { " d = 2;" } else { "" };
+        format!(
+            " when y > 0 then{discrete_real} reinit(y, 0); assert(y > 0, \"event fired\"); end when; sample(0.5);"
+        )
     } else {
-        ""
+        String::new()
     };
     let clock_equations = if features.clocks {
         " Clock(1, 10); previous(d); terminal();"
@@ -760,9 +777,12 @@ fn build_constrained_fixture(
             .zip(spans.family_owner)
             .zip(family_residual)
             .map(|((domain, owner), residual)| (domain, owner, residual));
-        let discrete = fixture_discrete(model, variables, spans.discrete_owners)?;
+        let discrete_activation =
+            insert_fixture_events(model, variables, source, text, features.events)?;
+        let discrete =
+            fixture_discrete(model, variables, spans.discrete_owners, discrete_activation)?;
         insert_fixture_equations(model, spans.equations, residuals, family, discrete)?;
-        insert_fixture_events(model, variables, source, text, features.events)
+        Ok(())
     })
     .expect("fixture DAE is valid")
 }
@@ -962,6 +982,10 @@ fn state_demotion_preserves_discrete_equations_and_exact_provenance() {
             .discrete_real_equation(0)
             .expect("discrete-real equation survives reconstruction");
         assert_eq!(view.source_text(real.provenance()), Some("d = 2"));
+        assert!(matches!(
+            real.activation(),
+            dae::DiscreteRealActivation::Always
+        ));
         let owner = view
             .discrete_value_owner(
                 view.discrete_value_owner_id(0)
@@ -990,6 +1014,34 @@ fn state_demotion_preserves_discrete_equations_and_exact_provenance() {
             sort(view).is_ok(),
             "replacement DAE remains structurally square"
         );
+    });
+}
+
+#[test]
+fn state_demotion_preserves_conditional_discrete_real_activation() {
+    let (model, _) = constrained_state_model(
+        false,
+        FixtureFeatures {
+            discrete: true,
+            events: true,
+            ..FixtureFeatures::default()
+        },
+    );
+    let prepared = prepare_for_solve(&model).expect("conditional B.1b equation survives");
+    let transformed = match prepared {
+        PreparedDae::Transformed { dae, .. } => dae,
+        PreparedDae::Borrowed(_) => panic!("singular fixture requires state demotion"),
+    };
+    transformed.inspect(|view| {
+        let equation = view
+            .discrete_real_equation(0)
+            .expect("conditional discrete-real equation survives reconstruction");
+        let dae::DiscreteRealActivation::When { trigger, guard } = equation.activation() else {
+            panic!("conditional B.1b activation is not weakened");
+        };
+        assert_eq!(trigger, guard);
+        assert_eq!(view.source_text(equation.provenance()), Some("d = 2"));
+        assert!(view.condition(trigger).is_some());
     });
 }
 

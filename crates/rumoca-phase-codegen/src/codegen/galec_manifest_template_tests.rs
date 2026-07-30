@@ -44,9 +44,11 @@ fn galec_templates_consume_checked_algorithm_code_and_artifact_facts() {
 
 fn is_conformant_real_literal(text: &str) -> bool {
     let text = text.strip_prefix('-').unwrap_or(text);
-    let Some((integer, fraction)) = text.split_once('.') else {
+    let Some(decimal_index) = text.find('.') else {
         return false;
     };
+    let (integer, fraction_with_separator) = text.split_at(decimal_index);
+    let fraction = &fraction_with_separator[1..];
     if integer.is_empty()
         || !integer.bytes().all(|byte| byte.is_ascii_digit())
         || integer.starts_with('0') && integer.len() != 1

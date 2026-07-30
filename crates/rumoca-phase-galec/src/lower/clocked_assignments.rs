@@ -17,69 +17,54 @@ pub(super) fn lower_clocked_assignments<'dae>(
 ) -> Result<Vec<gast::Spanned<gast::Statement>>, GalecTargetError> {
     let mut pending = Vec::new();
     lower_discrete_value_owners(view, clock, by_id, pre_names, &mut pending)?;
-    lower_discrete_real_actions(view, clock, by_id, pre_names, &mut pending)?;
+    lower_discrete_real_equations(view, clock, by_id, pre_names, &mut pending)?;
+    reject_event_actions(view)?;
     order_assignments(pending)
 }
 
-fn lower_discrete_real_actions<'dae>(
+fn lower_discrete_real_equations<'dae>(
     view: dae::DaeView<'dae>,
     clock: dae::ClockId<'dae>,
     by_id: &HashMap<u32, ClassifiedVariable<'dae>>,
     pre_names: &HashMap<u32, gast::Name>,
     pending: &mut Vec<PendingAssignment<'dae>>,
 ) -> Result<(), GalecTargetError> {
-    let mut owners: HashMap<u32, usize> = HashMap::new();
-    for index in 0..view.event_action_count() {
-        let action = view
-            .event_action(
-                view.event_action_id(index)
-                    .expect("dense checked action identity"),
-            )
-            .expect("checked action resolves");
-        let (target, value) = match action.operation() {
-            dae::EventActionOperation::AssignDiscreteReal { target, value } => {
-                (dae::VariableId::from(target), value)
-            }
-            operation => {
-                return Err(unsupported(
-                    "event-action",
-                    format!(
-                        "event action `{}` cannot be represented in GALEC DoStep",
-                        event_name(operation)
-                    ),
-                    action.provenance().span(),
-                ));
-            }
-        };
+    let mut owners: HashMap<u32, (usize, bool)> = HashMap::new();
+    let clock_owners = discrete_real_clock_owners(view);
+    for index in 0..view.discrete_real_equation_count() {
+        let equation = view
+            .discrete_real_equation(index)
+            .expect("dense checked discrete Real equation resolves");
+        let span = equation.provenance().span();
+        let (target, value) = explicit_discrete_real_definition(view, equation)?;
+        require_discrete_real_clock_owner(&clock_owners, target, clock, span)?;
         let classified = by_id.get(&target.index()).ok_or_else(|| {
             GalecTargetError::UnknownVariableReference {
                 name: format!("#{}", target.index()),
-                span: Some(action.provenance().span()),
+                span: Some(span),
             }
         })?;
         let mut lowerer = ExpressionLowerer::new(view, by_id, pre_names);
-        require_periodic_trigger(view, action.trigger(), clock, action.provenance().span())?;
-        let guard = lower_action_guard(
-            view,
-            action.guard(),
-            clock,
-            &mut lowerer,
-            action.provenance().span(),
-        )?;
+        let (guard, unconditional) = match equation.activation() {
+            dae::DiscreteRealActivation::Always => (None, true),
+            dae::DiscreteRealActivation::When { trigger, guard } => {
+                require_periodic_trigger(view, trigger, clock, span)?;
+                (
+                    lower_action_guard(view, guard, clock, &mut lowerer, span)?,
+                    false,
+                )
+            }
+        };
         let mut assignments = Vec::with_capacity(classified.variable.scalar_count());
         for indices in row_major_indices(classified.variable.value_type().dimensions()) {
             let lowered = lowerer.lower_element(value, &indices)?;
-            let value = coerce(lowered, classified.scalar_type, action.provenance().span())?;
+            let value = coerce(lowered, classified.scalar_type, span)?;
             assignments.push(gast::Spanned::new(
                 gast::Statement::Assignment {
-                    target: state_reference_indexed(
-                        classified.name.clone(),
-                        &indices,
-                        action.provenance().span(),
-                    ),
+                    target: state_reference_indexed(classified.name.clone(), &indices, span),
                     value,
                 },
-                action.provenance().span(),
+                span,
             ));
         }
         let statements = match guard {
@@ -88,31 +73,161 @@ fn lower_discrete_real_actions<'dae>(
                     branches: vec![gast::IfBranch {
                         condition: gast::Condition::Expression(condition),
                         body: assignments,
-                        span: action.provenance().span(),
+                        span,
                     }],
                     else_body: None,
                 }),
-                action.provenance().span(),
+                span,
             )],
             None => assignments,
         };
         let mut reads = HashSet::new();
         collect_current_reads(view, value, &mut reads);
-        collect_condition_current_reads(view, action.trigger(), &mut reads);
-        collect_condition_current_reads(view, action.guard(), &mut reads);
+        if let dae::DiscreteRealActivation::When { trigger, guard } = equation.activation() {
+            collect_condition_current_reads(view, trigger, &mut reads);
+            collect_condition_current_reads(view, guard, &mut reads);
+        }
         let assignment = PendingAssignment {
             targets: vec![target],
             reads,
             statements,
-            span: action.provenance().span(),
+            span,
         };
-        if let Some(&owner) = owners.get(&target.index()) {
+        if let Some(&(owner, owner_unconditional)) = owners.get(&target.index()) {
+            if unconditional || owner_unconditional {
+                return Err(unsupported(
+                    "multiple-discrete-real-definitions",
+                    format!(
+                        "discrete Real `{}` has multiple definitions without one conditional owner",
+                        classified.variable.name()
+                    ),
+                    span,
+                ));
+            }
             pending[owner].reads.extend(assignment.reads);
             pending[owner].statements.extend(assignment.statements);
         } else {
-            owners.insert(target.index(), pending.len());
+            owners.insert(target.index(), (pending.len(), unconditional));
             pending.push(assignment);
         }
+    }
+    Ok(())
+}
+
+fn explicit_discrete_real_definition<'dae>(
+    view: dae::DaeView<'dae>,
+    equation: dae::DiscreteRealEquationView<'dae>,
+) -> Result<(dae::VariableId<'dae>, dae::ExprId<'dae>), GalecTargetError> {
+    let span = equation.provenance().span();
+    let dae::ExpressionOperation::Binary {
+        operator: dae::BinaryOperator::Subtract,
+        lhs,
+        rhs,
+    } = view
+        .expression(equation.residual())
+        .expect("checked discrete Real residual resolves")
+        .operation()
+    else {
+        return Err(coupled_discrete_real_equation(span));
+    };
+    match (
+        direct_discrete_real_coordinate(view, lhs),
+        direct_discrete_real_coordinate(view, rhs),
+    ) {
+        (Some(target), None) if !reads_current_target(view, rhs, target) => {
+            Ok((dae::VariableId::from(target), rhs))
+        }
+        (None, Some(target)) if !reads_current_target(view, lhs, target) => {
+            Ok((dae::VariableId::from(target), lhs))
+        }
+        _ => Err(coupled_discrete_real_equation(span)),
+    }
+}
+
+fn direct_discrete_real_coordinate<'dae>(
+    view: dae::DaeView<'dae>,
+    expression: dae::ExprId<'dae>,
+) -> Option<dae::DiscreteRealId<'dae>> {
+    match view
+        .expression(expression)
+        .expect("checked residual operand resolves")
+        .operation()
+    {
+        dae::ExpressionOperation::Coordinate(dae::CoordinateView::DiscreteReal(id)) => Some(id),
+        _ => None,
+    }
+}
+
+fn reads_current_target<'dae>(
+    view: dae::DaeView<'dae>,
+    expression: dae::ExprId<'dae>,
+    target: dae::DiscreteRealId<'dae>,
+) -> bool {
+    let mut reads = HashSet::new();
+    collect_current_reads(view, expression, &mut reads);
+    reads.contains(&dae::VariableId::from(target).index())
+}
+
+fn coupled_discrete_real_equation(span: Span) -> GalecTargetError {
+    unsupported(
+        "coupled-discrete-real-equation",
+        "a coupled B.1b residual cannot be represented as one GALEC state assignment".to_owned(),
+        span,
+    )
+}
+
+fn require_discrete_real_clock_owner<'dae>(
+    owners: &HashMap<u32, u32>,
+    target: dae::VariableId<'dae>,
+    expected: dae::ClockId<'dae>,
+    span: Span,
+) -> Result<(), GalecTargetError> {
+    match owners.get(&target.index()).copied() {
+        Some(clock) if clock == expected.index() => Ok(()),
+        Some(clock) => Err(unsupported(
+            "clock-domain",
+            format!(
+                "discrete Real definition belongs to clock #{clock}, not admitted DoStep clock #{}",
+                expected.index()
+            ),
+            span,
+        )),
+        None => Err(unsupported(
+            "clock-domain",
+            "discrete Real definition has no explicit clock owner".to_owned(),
+            span,
+        )),
+    }
+}
+
+fn discrete_real_clock_owners(view: dae::DaeView<'_>) -> HashMap<u32, u32> {
+    (0..view.clock_ownership_count())
+        .filter_map(|index| {
+            let id = view
+                .clock_ownership_id(index)
+                .expect("dense checked clock ownership identity");
+            let ownership = view
+                .clock_ownership(id)
+                .expect("checked clock ownership resolves");
+            (ownership.kind() == dae::ClockedVariableKind::DiscreteReal)
+                .then_some((ownership.variable().index(), ownership.clock().index()))
+        })
+        .collect()
+}
+
+fn reject_event_actions(view: dae::DaeView<'_>) -> Result<(), GalecTargetError> {
+    if let Some(id) = view.event_action_id(0) {
+        let action = view
+            .event_action(id)
+            .expect("checked event action resolves");
+        return Err(unsupported(
+            "event-action",
+            format!(
+                "event action `{}` cannot be represented in GALEC DoStep",
+                event_name(action.operation())
+            ),
+            action.provenance().span(),
+        ));
     }
     Ok(())
 }
@@ -436,6 +551,38 @@ mod tests {
                 provenance,
             )
         })
+    }
+
+    fn define_real_equation<'dae>(
+        dae: &mut dae::DaeConstruction<'dae>,
+        provenance: dae::DaeProvenance,
+        lhs: dae::ExprId<'dae>,
+        rhs: dae::ExprId<'dae>,
+    ) -> Result<(), dae::DaeConstructionError> {
+        dae.discrete(|discrete| {
+            discrete.real_equation(provenance, |equation| {
+                equation.equal(lhs, rhs)?;
+                Ok(())
+            })
+        })?;
+        Ok(())
+    }
+
+    fn define_when_real_equation<'dae>(
+        dae: &mut dae::DaeConstruction<'dae>,
+        trigger: dae::ConditionId<'dae>,
+        guard: dae::ConditionId<'dae>,
+        provenance: dae::DaeProvenance,
+        lhs: dae::ExprId<'dae>,
+        rhs: dae::ExprId<'dae>,
+    ) -> Result<(), dae::DaeConstructionError> {
+        dae.discrete(|discrete| {
+            discrete.when_real_equation(trigger, guard, provenance, |equation| {
+                equation.equal(lhs, rhs)?;
+                Ok(())
+            })
+        })?;
+        Ok(())
     }
 
     fn assignment_target(statement: &gast::Spanned<gast::Statement>) -> &str {
@@ -847,6 +994,232 @@ mod tests {
                 .collect::<Vec<_>>(),
             [a_action.span(), b_action.span()]
         );
+    }
+
+    #[test]
+    fn explicit_clocked_b1b_definition_lowers_with_equation_provenance() {
+        let text = "discrete Real z; when sample(0, 1) then z = 1.0; end when;";
+        let mut sources = SourceMap::new();
+        let source = sources.add("clocked-real.mo", text);
+        let declaration = at(source, text, "discrete Real z");
+        let clock_at = at(source, text, "sample(0, 1)");
+        let assignment = at(source, text, "z = 1.0");
+        let model = dae::Dae::construct(sources, |dae| {
+            let real = dae.types(|types| {
+                types.intern(
+                    TypeId::new(0),
+                    dae::ValueType::scalar(dae::ScalarType::Real),
+                    declaration,
+                )
+            })?;
+            let z = dae.variables(|variables| {
+                variables.discrete_real(
+                    VarName::new("z"),
+                    real,
+                    declaration,
+                    dae::VariableAttributes::default(),
+                )
+            })?;
+            let (lhs, rhs) = dae.expressions(|expressions| {
+                Ok((
+                    expressions
+                        .at(assignment)
+                        .coordinate(dae::CoordinateInput::DiscreteReal(z))?,
+                    expressions
+                        .at(assignment)
+                        .literal(dae::DaeLiteral::Real(1.0))?,
+                ))
+            })?;
+            let clock = periodic_clock(dae, clock_at)?;
+            dae.clocks(|clocks| {
+                clocks.own_discrete_real(clock, z, declaration)?;
+                Ok(())
+            })?;
+            let tick = dae.conditions(|conditions| {
+                let tick = conditions.reserve(clock_at)?;
+                conditions.define(tick, dae::ConditionInput::Clock(clock), clock_at)?;
+                Ok(tick)
+            })?;
+            define_when_real_equation(dae, tick, tick, assignment, lhs, rhs)?;
+            Ok(())
+        })
+        .expect("checked conditional B.1b fixture");
+
+        let statements = project(&model).expect("explicit B.1b definition projects");
+        assert_eq!(statements.len(), 1);
+        assert_eq!(statements[0].span, assignment.span());
+        assert_eq!(assignment_target(&statements[0]), "z");
+        assert!(matches!(
+            statements[0].node,
+            gast::Statement::Assignment {
+                value: gast::Expression::Real(value),
+                ..
+            } if value == 1.0
+        ));
+    }
+
+    #[test]
+    fn b1b_residual_pre_reads_materialize_the_previous_state() {
+        let text = "discrete Real z; z = pre(z); sample(0, 1);";
+        let mut sources = SourceMap::new();
+        let source = sources.add("previous-real.mo", text);
+        let declaration = at(source, text, "discrete Real z");
+        let equation_at = at(source, text, "z = pre(z)");
+        let previous_at = at(source, text, "pre(z)");
+        let clock_at = at(source, text, "sample(0, 1)");
+        let model = dae::Dae::construct(sources, |dae| {
+            let real = dae.types(|types| {
+                types.intern(
+                    TypeId::new(0),
+                    dae::ValueType::scalar(dae::ScalarType::Real),
+                    declaration,
+                )
+            })?;
+            let z = dae.variables(|variables| {
+                variables.discrete_real(
+                    VarName::new("z"),
+                    real,
+                    declaration,
+                    dae::VariableAttributes::default(),
+                )
+            })?;
+            let clock = periodic_clock(dae, clock_at)?;
+            dae.clocks(|clocks| {
+                clocks.own_discrete_real(clock, z, declaration)?;
+                Ok(())
+            })?;
+            let (lhs, rhs) = dae.expressions(|expressions| {
+                Ok((
+                    expressions
+                        .at(equation_at)
+                        .coordinate(dae::CoordinateInput::DiscreteReal(z))?,
+                    expressions
+                        .at(previous_at)
+                        .coordinate(dae::CoordinateInput::PreDiscreteReal(z))?,
+                ))
+            })?;
+            define_real_equation(dae, equation_at, lhs, rhs)?;
+            Ok(())
+        })
+        .expect("checked previous-value B.1b fixture");
+
+        model.inspect(|view| {
+            let referenced =
+                referenced_pre_variables(view).expect("B.1b previous read is supported");
+            assert_eq!(referenced.len(), 1);
+            assert_eq!(referenced[0].index(), 0);
+        });
+    }
+
+    #[test]
+    fn unowned_explicit_b1b_definition_fails_before_galec_lowering() {
+        let text = "discrete Real z; z = 1.0; sample(0, 1);";
+        let mut sources = SourceMap::new();
+        let source = sources.add("unowned-real.mo", text);
+        let declaration = at(source, text, "discrete Real z");
+        let equation_at = at(source, text, "z = 1.0");
+        let clock_at = at(source, text, "sample(0, 1)");
+        let model = dae::Dae::construct(sources, |dae| {
+            let real = dae.types(|types| {
+                types.intern(
+                    TypeId::new(0),
+                    dae::ValueType::scalar(dae::ScalarType::Real),
+                    declaration,
+                )
+            })?;
+            let z = dae.variables(|variables| {
+                variables.discrete_real(
+                    VarName::new("z"),
+                    real,
+                    declaration,
+                    dae::VariableAttributes::default(),
+                )
+            })?;
+            let (lhs, rhs) = dae.expressions(|expressions| {
+                Ok((
+                    expressions
+                        .at(equation_at)
+                        .coordinate(dae::CoordinateInput::DiscreteReal(z))?,
+                    expressions
+                        .at(equation_at)
+                        .literal(dae::DaeLiteral::Real(1.0))?,
+                ))
+            })?;
+            periodic_clock(dae, clock_at)?;
+            define_real_equation(dae, equation_at, lhs, rhs)?;
+            Ok(())
+        })
+        .expect("checked unowned B.1b fixture");
+
+        let error = project(&model).expect_err("GALEC requires explicit clock ownership");
+        assert!(matches!(
+            error,
+            GalecTargetError::UnsupportedFeature {
+                feature,
+                span: Some(span),
+                ..
+            } if feature == "clock-domain" && span == equation_at.span()
+        ));
+    }
+
+    #[test]
+    fn coupled_b1b_residual_fails_closed_at_equation_provenance() {
+        let text = "discrete Real z; discrete Real w; z = w; sample(0, 1);";
+        let mut sources = SourceMap::new();
+        let source = sources.add("coupled-real.mo", text);
+        let z_declaration = at(source, text, "discrete Real z");
+        let w_declaration = at(source, text, "discrete Real w");
+        let equation_at = at(source, text, "z = w");
+        let clock_at = at(source, text, "sample(0, 1)");
+        let model = dae::Dae::construct(sources, |dae| {
+            let real = dae.types(|types| {
+                types.intern(
+                    TypeId::new(0),
+                    dae::ValueType::scalar(dae::ScalarType::Real),
+                    z_declaration,
+                )
+            })?;
+            let (z, w) = dae.variables(|variables| {
+                Ok((
+                    variables.discrete_real(
+                        VarName::new("z"),
+                        real,
+                        z_declaration,
+                        dae::VariableAttributes::default(),
+                    )?,
+                    variables.discrete_real(
+                        VarName::new("w"),
+                        real,
+                        w_declaration,
+                        dae::VariableAttributes::default(),
+                    )?,
+                ))
+            })?;
+            let (lhs, rhs) = dae.expressions(|expressions| {
+                Ok((
+                    expressions
+                        .at(equation_at)
+                        .coordinate(dae::CoordinateInput::DiscreteReal(z))?,
+                    expressions
+                        .at(equation_at)
+                        .coordinate(dae::CoordinateInput::DiscreteReal(w))?,
+                ))
+            })?;
+            periodic_clock(dae, clock_at)?;
+            define_real_equation(dae, equation_at, lhs, rhs)?;
+            Ok(())
+        })
+        .expect("checked coupled B.1b fixture");
+
+        let error = project(&model).expect_err("coupled B.1b is not an assignment");
+        assert!(matches!(
+            error,
+            GalecTargetError::UnsupportedFeature {
+                feature,
+                span: Some(span),
+                ..
+            } if feature == "coupled-discrete-real-equation" && span == equation_at.span()
+        ));
     }
 
     #[test]

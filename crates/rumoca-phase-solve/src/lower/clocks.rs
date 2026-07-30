@@ -6,7 +6,7 @@ use crate::LowerError;
 pub(super) struct LoweredClocks<'dae> {
     pub(super) partition: solve::SolveClockPartition,
     dae_clocks: Vec<solve::PeriodicClockId>,
-    variable_owners: Vec<Option<solve::PeriodicClockId>>,
+    variable_owners: Vec<Option<(dae::ClockId<'dae>, solve::PeriodicClockId)>>,
     marker: std::marker::PhantomData<&'dae mut &'dae ()>,
 }
 
@@ -28,7 +28,7 @@ impl<'dae> LoweredClocks<'dae> {
     pub(super) fn variable_owner(
         &self,
         variable: dae::VariableId<'dae>,
-    ) -> Option<solve::PeriodicClockId> {
+    ) -> Option<(dae::ClockId<'dae>, solve::PeriodicClockId)> {
         self.variable_owners
             .get(variable.index() as usize)
             .copied()
@@ -75,7 +75,7 @@ pub(super) fn lower_clocks<'dae>(
             .expect("dense checked clock ownership resolves");
         let solve_clock = dae_clocks[ownership.clock().index() as usize];
         let slot = &mut variable_owners[ownership.variable().index() as usize];
-        if slot.replace(solve_clock).is_some() {
+        if slot.replace((ownership.clock(), solve_clock)).is_some() {
             return Err(LowerError::contract(
                 "checked DAE variable has more than one clock owner",
                 ownership.provenance().span(),

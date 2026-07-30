@@ -157,7 +157,7 @@ Partition ordinals are layout, never semantic identity.
 |---|---|---|
 | Continuous equations own checked residual IDs | Continuous system | B.1a has one form |
 | Initialization uses initialization-specific IDs | Initialization system | Runtime rules differ |
-| Discrete Real equations own Real residual IDs | Discrete system | B.1b may be coupled |
+| Discrete Real equations own activated Real residual IDs | Discrete system | B.1b may be coupled; trigger/guard ownership is explicit |
 | B.1c updates own typed `m` targets and values | Discrete system | Assignment shape is explicit |
 | Every non-input B.1c target has one definition | Discrete system | Missing or duplicate is impossible |
 | Input `m` capabilities are read-only | Variable/discrete systems | Inputs cannot be assigned |

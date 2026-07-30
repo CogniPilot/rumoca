@@ -91,8 +91,8 @@ pub use discrete_values::{
     DiscreteValueTopology,
 };
 pub use equations::{
-    ContinuousEquations, DiscreteEquations, InitializationEquations, ResidualEquation,
-    StructuredResiduals,
+    ContinuousEquations, DiscreteEquations, DiscreteRealActivation, DiscreteRealEquationView,
+    InitializationEquations, ResidualEquation, StructuredResiduals,
 };
 pub use error::DaeConstructionError;
 pub use events::{EventActionOperation, EventActionView, Events, TimeEventView};

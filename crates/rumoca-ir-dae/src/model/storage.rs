@@ -551,32 +551,6 @@ impl Storage {
             .get_or_insert((target, declaration));
     }
 
-    pub(crate) fn expect_discrete_real_target(
-        &self,
-        target: DiscreteRealId<'_>,
-        value: ExprId<'_>,
-        at: DaeProvenance,
-    ) -> Result<(), DaeConstructionError> {
-        self.expect_closed_expression(value, at)?;
-        let variable = self
-            .variables
-            .get(target.index() as usize)
-            .ok_or_else(|| unknown("variable", target.index(), at))?;
-        if variable.role != VariableRole::DiscreteReal {
-            return Err(DaeConstructionError::InvalidVariableRole {
-                name: variable.name.clone(),
-                span: at.span(),
-            });
-        }
-        let found = self
-            .expressions
-            .value_types
-            .get(value.index() as usize)
-            .copied()
-            .ok_or_else(|| unknown("expression", value.index(), at))?;
-        self.expect_value_type_compatible(variable.value_type, found, at)
-    }
-
     pub(crate) fn expect_state_update(
         &self,
         state: StateId<'_>,

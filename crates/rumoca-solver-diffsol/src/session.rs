@@ -1184,16 +1184,16 @@ mod tests {
         };
     }
 
-    fn scalar_program_block(
-        rows: Vec<Vec<LinearOp>>,
-        span: rumoca_core::Span,
-    ) -> ScalarProgramBlock {
-        ScalarProgramBlock::with_source_span(
-            rows,
-            span.require_provenance("Diffsol session fixture")
-                .expect("fixture span is source-backed"),
-        )
-        .expect("fixture program is computable")
+    macro_rules! scalar_program_block {
+        ($rows:expr, $span:expr $(,)?) => {{
+            let span = $span;
+            ScalarProgramBlock::with_source_span(
+                $rows,
+                span.require_provenance("Diffsol session fixture")
+                    .expect("fixture span is source-backed"),
+            )
+            .expect("fixture program is computable")
+        }};
     }
 
     fn advance_by(session: &mut SimulationSession, dt: f64, context: &str) {
@@ -1527,7 +1527,7 @@ mod tests {
         model.problem.clocks.periodic_event_schedules =
             vec![solve::PeriodicEventSchedule::from_seconds(0.05, 0.05).unwrap()];
         model.problem.discrete.update_targets = vec![solve::scalar_slot_p(0)];
-        model.problem.discrete.rhs = scalar_program_block(
+        model.problem.discrete.rhs = scalar_program_block!(
             vec![vec![
                 LinearOp::Const { dst: 0, value: 3.0 },
                 LinearOp::StoreOutput { src: 0 },
@@ -1558,14 +1558,14 @@ mod tests {
     }
 
     fn single_input_integrator() -> solve::SolveModel {
-        let rhs = scalar_program_block(
+        let rhs = scalar_program_block!(
             vec![vec![
                 LinearOp::LoadP { dst: 0, index: 0 },
                 LinearOp::StoreOutput { src: 0 },
             ]],
             fixture_span!(),
         );
-        let zero = scalar_program_block(
+        let zero = scalar_program_block!(
             vec![vec![
                 LinearOp::Const { dst: 0, value: 0.0 },
                 LinearOp::StoreOutput { src: 0 },
@@ -1761,7 +1761,7 @@ mod tests {
     }
 
     fn scalar_block(rows: Vec<Vec<LinearOp>>) -> ScalarProgramBlock {
-        scalar_program_block(rows, fixture_span!())
+        scalar_program_block!(rows, fixture_span!())
     }
 
     fn algebraic_contact_residual_row() -> Vec<LinearOp> {

@@ -26,8 +26,9 @@ use crate::discrete_values::{
     DiscreteValueOwnerView, DiscreteValueTopology, build_discrete_value_topology,
 };
 use crate::equations::{
-    ContinuousEquations, DiscreteEquations, EquationOwnerEntry, InitializationEquations,
-    ResidualEquationEntry, StructuredFamilyEntry,
+    ContinuousEquations, DiscreteEquations, DiscreteRealActivation, DiscreteRealEquationEntry,
+    DiscreteRealEquationView, EquationOwnerEntry, InitializationEquations, ResidualEquationEntry,
+    StructuredFamilyEntry,
 };
 use crate::events::{
     EventActionEntry, EventActionKind, EventActionOperation, EventActionView, Events,
@@ -303,7 +304,7 @@ pub(crate) struct Storage {
     pub(crate) expressions: ExpressionArenaStorage,
     pub(crate) continuous_equations: Vec<ResidualEquationEntry>,
     pub(crate) initialization_equations: Vec<ResidualEquationEntry>,
-    pub(crate) discrete_real_equations: Vec<ResidualEquationEntry>,
+    pub(crate) discrete_real_equations: Vec<DiscreteRealEquationEntry>,
     pub(crate) discrete_value_owners: Vec<DiscreteValueOwnerEntry>,
     pub(crate) discrete_value_targets: Vec<u32>,
     pub(crate) discrete_value_branches: Vec<DiscreteValueBranchEntry>,
@@ -346,7 +347,7 @@ struct FrozenStorage {
     expressions: FrozenExpressionArenaStorage,
     continuous_equations: Box<[ResidualEquationEntry]>,
     initialization_equations: Box<[ResidualEquationEntry]>,
-    discrete_real_equations: Box<[ResidualEquationEntry]>,
+    discrete_real_equations: Box<[DiscreteRealEquationEntry]>,
     discrete_value_owners: Box<[DiscreteValueOwnerEntry]>,
     discrete_value_targets: Box<[u32]>,
     discrete_value_branches: Box<[DiscreteValueBranchEntry]>,

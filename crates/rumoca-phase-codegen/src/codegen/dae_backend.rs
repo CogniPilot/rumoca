@@ -613,9 +613,20 @@ fn project_discrete_real(view: dae::DaeView<'_>) -> Value {
                 let equation = view
                     .discrete_real_equation(index)
                     .expect("dense checked discrete Real equation resolves");
+                let activation = match equation.activation() {
+                    dae::DiscreteRealActivation::Always => {
+                        json!({ "kind": "always" })
+                    }
+                    dae::DiscreteRealActivation::When { trigger, guard } => json!({
+                        "kind": "when",
+                        "trigger": trigger.index(),
+                        "guard": guard.index(),
+                    }),
+                };
                 json!({
                     "id": index,
                     "residual": equation.residual().index(),
+                    "activation": activation,
                     "provenance": equation.provenance(),
                 })
             })
@@ -793,11 +804,6 @@ fn project_event_action(operation: dae::EventActionOperation<'_>) -> Value {
         dae::EventActionOperation::Reinitialize { state, value } => json!({
             "kind": "reinitialize",
             "state": state.index(),
-            "value": value.index(),
-        }),
-        dae::EventActionOperation::AssignDiscreteReal { target, value } => json!({
-            "kind": "assign_discrete_real",
-            "target": target.index(),
             "value": value.index(),
         }),
     }

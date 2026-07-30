@@ -1368,7 +1368,7 @@ host_callbacks = false
         assert_eq!(cuda_c.readiness_level, Some(1));
         assert_eq!(cuda_c.deployment_class.as_deref(), Some("gpu"));
         assert_eq!(cuda_c.matmul, TargetFeatureSupport::Scalar);
-        assert_eq!(cuda_c.linsolve, TargetFeatureSupport::Scalar);
+        assert_eq!(cuda_c.linsolve, TargetFeatureSupport::Unsupported);
         assert_eq!(cuda_c.sparse, TargetFeatureSupport::Unsupported);
         assert_eq!(cuda_c.dtypes, vec!["f64"]);
 

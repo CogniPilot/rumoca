@@ -545,6 +545,22 @@ impl Session {
         self.resolve_strict_target_from_plan(model_name, plan)
     }
 
+    /// Resolve one strict target without installing its planning tree in the
+    /// session-wide resolved-build cache.
+    pub(in crate::session) fn resolve_strict_target_from_fresh_plan(
+        &mut self,
+        model_name: &str,
+    ) -> Result<StrictTargetResolution, StrictTargetResolutionFailure> {
+        let (plan, _, _) = self
+            .resolve_documents_for_mode(ResolveBuildMode::StrictCompileRecovery)
+            .map_err(|diagnostics| StrictTargetResolutionFailure {
+                failures: diagnostics.iter().map(resolve_diagnostic_failure).collect(),
+                diagnostics: diagnostics.iter().cloned().collect(),
+                source_map: Box::new(self.session_source_map()),
+            })?;
+        self.resolve_strict_target_from_plan(model_name, plan)
+    }
+
     fn resolve_strict_target_from_plan(
         &mut self,
         model_name: &str,
