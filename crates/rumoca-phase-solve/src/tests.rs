@@ -777,6 +777,53 @@ fn implicit_derivative_form_fails_at_the_equation_span() {
 }
 
 #[test]
+fn unconditional_discrete_real_definition_does_not_require_a_clock() {
+    let source = TestSource::new("discrete Real d; d=time;");
+    let declaration = source.at(0, 15);
+    let owner = source.at(17, 23);
+    let model = dae::Dae::construct(source.map, |model| {
+        let real = model.types(|types| {
+            types.intern(
+                TypeId::new(0),
+                dae::ValueType::scalar(dae::ScalarType::Real),
+                declaration,
+            )
+        })?;
+        let variable = model.variables(|variables| {
+            variables.discrete_real(
+                VarName::new("d"),
+                real,
+                declaration,
+                dae::VariableAttributes::default(),
+            )
+        })?;
+        let residual = model.expressions(|expressions| {
+            let target = expressions
+                .at(owner)
+                .coordinate(dae::CoordinateInput::DiscreteReal(variable))?;
+            let time = expressions
+                .at(owner)
+                .coordinate(dae::CoordinateInput::Time)?;
+            expressions
+                .at(owner)
+                .binary(dae::BinaryOperator::Subtract, target, time)
+        })?;
+        model.discrete(|discrete| {
+            discrete.real_equation(owner, |equation| equation.residual(residual))
+        })?;
+        Ok(())
+    })
+    .unwrap();
+
+    let solve = lower_solve_problem(&model).unwrap();
+    assert_eq!(
+        solve.discrete.row_roles,
+        [rumoca_ir_solve::DiscreteRowRole::Equation]
+    );
+    assert_eq!(solve.discrete.clock_owners, [None]);
+}
+
+#[test]
 fn clocked_discrete_definition_lowers_with_exact_row_owner() {
     let source = TestSource::new("Real d; Clock c=Clock(0.1); d=sample(time);");
     let declaration = source.at(0, 6);
@@ -935,17 +982,25 @@ fn previous_loads_history_owned_by_its_exact_clock_schedule() {
         })?;
         let previous =
             model.temporal(|temporal| temporal.previous_discrete_real(clock, variable, owner))?;
-        let value = model.expressions(|expressions| {
+        let residual = model.expressions(|expressions| {
             let previous = expressions
                 .at(owner)
                 .coordinate(dae::CoordinateInput::Previous(previous))?;
             let one = expressions.at(owner).literal(dae::DaeLiteral::Real(1.0))?;
+            let value = expressions
+                .at(owner)
+                .binary(dae::BinaryOperator::Add, previous, one)?;
+            let target = expressions
+                .at(owner)
+                .coordinate(dae::CoordinateInput::DiscreteReal(variable))?;
             expressions
                 .at(owner)
-                .binary(dae::BinaryOperator::Add, previous, one)
+                .binary(dae::BinaryOperator::Subtract, target, value)
         })?;
-        model.events(|events| {
-            events.assign_discrete_real(condition, condition, variable, value, owner)
+        model.discrete(|discrete| {
+            discrete.when_real_equation(condition, condition, owner, |equation| {
+                equation.residual(residual)
+            })
         })?;
         Ok(())
     })
@@ -972,11 +1027,14 @@ fn previous_loads_history_owned_by_its_exact_clock_schedule() {
 }
 
 #[test]
-fn clocked_self_dependent_discrete_residual_fails_before_runtime() {
-    let source = TestSource::new("Real d; Clock c=Clock(0.1); d=d+1;");
-    let declaration = source.at(0, 6);
-    let clock_at = source.at(16, 26);
-    let owner = source.at(28, 34);
+fn nonlinear_conditional_discrete_residual_fails_before_runtime() {
+    let source = TestSource::new(
+        "discrete Real z; Clock c=Clock(0.1); when c then z=3*pre(z)-z^2; end when;",
+    );
+    let declaration = source.at(0, 15);
+    let clock_at = source.at(25, 35);
+    let condition_at = source.at(44, 45);
+    let owner = source.at(51, 65);
     let lattice = rumoca_core::ClockLattice::from_interval_counter(1, 10).unwrap();
     let model = dae::Dae::construct(source.map, |model| {
         let real = model.types(|types| {
@@ -988,7 +1046,7 @@ fn clocked_self_dependent_discrete_residual_fails_before_runtime() {
         })?;
         let variable = model.variables(|variables| {
             variables.discrete_real(
-                VarName::new("d"),
+                VarName::new("z"),
                 real,
                 declaration,
                 dae::VariableAttributes::default(),
@@ -996,20 +1054,39 @@ fn clocked_self_dependent_discrete_residual_fails_before_runtime() {
         })?;
         let clock = model.clocks(|clocks| clocks.periodic(lattice, clock_at))?;
         model.clocks(|clocks| clocks.own_discrete_real(clock, variable, owner))?;
+        let condition = model.conditions(|conditions| conditions.reserve(condition_at))?;
+        model.conditions(|conditions| {
+            conditions.define(condition, dae::ConditionInput::Clock(clock), condition_at)
+        })?;
         let residual = model.expressions(|expressions| {
             let target = expressions
                 .at(owner)
                 .coordinate(dae::CoordinateInput::DiscreteReal(variable))?;
-            let one = expressions.at(owner).literal(dae::DaeLiteral::Real(1.0))?;
-            let value = expressions
+            let previous = expressions
                 .at(owner)
-                .binary(dae::BinaryOperator::Add, target, one)?;
+                .coordinate(dae::CoordinateInput::PreDiscreteReal(variable))?;
+            let three = expressions.at(owner).literal(dae::DaeLiteral::Real(3.0))?;
+            let scaled_previous =
+                expressions
+                    .at(owner)
+                    .binary(dae::BinaryOperator::Multiply, three, previous)?;
+            let two = expressions.at(owner).literal(dae::DaeLiteral::Real(2.0))?;
+            let squared = expressions
+                .at(owner)
+                .binary(dae::BinaryOperator::Power, target, two)?;
+            let value = expressions.at(owner).binary(
+                dae::BinaryOperator::Subtract,
+                scaled_previous,
+                squared,
+            )?;
             expressions
                 .at(owner)
                 .binary(dae::BinaryOperator::Subtract, target, value)
         })?;
         model.discrete(|discrete| {
-            discrete.real_equation(owner, |equation| equation.residual(residual))
+            discrete.when_real_equation(condition, condition, owner, |equation| {
+                equation.residual(residual)
+            })
         })?;
         Ok(())
     })
@@ -1018,16 +1095,20 @@ fn clocked_self_dependent_discrete_residual_fails_before_runtime() {
     let error = lower_solve_problem(&model).unwrap_err();
     assert!(matches!(
         error,
-        LowerError::Unsupported { span, .. } if span == owner.span()
+        LowerError::NonComputable { span, .. } if span == owner.span()
     ));
 }
 
 #[test]
 fn initial_condition_owns_a_dedicated_runtime_flag() {
-    let source = TestSource::new("discrete Real x; when initial() then x = 1; end when;");
+    let source = TestSource::new(
+        "discrete Real x; when initial() then x = 1; elsewhen false then x = 2; end when;",
+    );
     let declaration = source.at(0, 15);
     let initial_at = source.at(22, 31);
     let assignment = source.at(37, 42);
+    let false_at = source.at(53, 58);
+    let second_assignment = source.at(64, 69);
     let model = dae::Dae::construct(source.map, |model| {
         let real = model.types(|types| {
             types.intern(
@@ -1048,23 +1129,80 @@ fn initial_condition_owns_a_dedicated_runtime_flag() {
         model.conditions(|conditions| {
             conditions.define(condition, dae::ConditionInput::Initial, initial_at)
         })?;
-        let value = model.expressions(|expressions| {
+        let false_value = model.expressions(|expressions| {
+            expressions
+                .at(false_at)
+                .literal(dae::DaeLiteral::Boolean(false))
+        })?;
+        let otherwise = model.conditions(|conditions| conditions.reserve(false_at))?;
+        model.conditions(|conditions| {
+            conditions.define(
+                otherwise,
+                dae::ConditionInput::Discrete(false_value),
+                false_at,
+            )
+        })?;
+        let residual = model.expressions(|expressions| {
+            let value = expressions
+                .at(assignment)
+                .literal(dae::DaeLiteral::Real(1.0))?;
+            let target = expressions
+                .at(assignment)
+                .coordinate(dae::CoordinateInput::DiscreteReal(variable))?;
             expressions
                 .at(assignment)
-                .literal(dae::DaeLiteral::Real(1.0))
+                .binary(dae::BinaryOperator::Subtract, target, value)
         })?;
-        model.events(|events| {
-            events.assign_discrete_real(condition, condition, variable, value, assignment)
+        let second_residual = model.expressions(|expressions| {
+            let value = expressions
+                .at(second_assignment)
+                .literal(dae::DaeLiteral::Real(2.0))?;
+            let target = expressions
+                .at(second_assignment)
+                .coordinate(dae::CoordinateInput::DiscreteReal(variable))?;
+            expressions
+                .at(second_assignment)
+                .binary(dae::BinaryOperator::Subtract, target, value)
+        })?;
+        model.discrete(|discrete| {
+            discrete.when_real_equation(condition, condition, assignment, |equation| {
+                equation.residual(residual)
+            })?;
+            discrete.when_real_equation(otherwise, otherwise, second_assignment, |equation| {
+                equation.residual(second_residual)
+            })?;
+            Ok(())
         })?;
         Ok(())
     })
     .unwrap();
 
     let solve = lower_solve_problem(&model).unwrap();
+    assert_grouped_initial_b1b(&solve);
+}
+
+fn assert_grouped_initial_b1b(solve: &rumoca_ir_solve::SolveProblem) {
     let flag = solve
         .solve_layout
         .initial_event_parameter_index
         .expect("initial() owns one checked runtime flag");
+    let guarded_rows = solve
+        .discrete
+        .row_roles
+        .iter()
+        .enumerate()
+        .filter(|(_, role)| **role == rumoca_ir_solve::DiscreteRowRole::Equation)
+        .collect::<Vec<_>>();
+    let [(guarded_row, _)] = guarded_rows.as_slice() else {
+        panic!("one conditional B.1b equation row expected");
+    };
+    assert_eq!(
+        solve.discrete.rhs.programs()[*guarded_row]
+            .iter()
+            .filter(|operation| matches!(operation, LinearOp::Select { .. }))
+            .count(),
+        2
+    );
     assert!(
         solve
             .discrete

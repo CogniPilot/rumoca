@@ -77,6 +77,18 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         Ok(self.ops)
     }
 
+    pub(super) fn clocked_program(
+        mut self,
+        clock: dae::ClockId<'dae>,
+        expression: dae::ExprId<'dae>,
+        scalar: usize,
+    ) -> Result<Vec<solve::LinearOp>, LowerError> {
+        self.active_clock = Some(clock);
+        let output = self.expression(expression, scalar)?;
+        self.ops.push(solve::LinearOp::StoreOutput { src: output });
+        Ok(self.ops)
+    }
+
     pub(super) fn scaled_derivative_program(
         mut self,
         input: ScaledDerivativeProgram<'dae>,

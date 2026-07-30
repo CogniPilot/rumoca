@@ -153,6 +153,7 @@ fn lower_discrete_real_equations<'dae>(
     clocks: &LoweredClocks<'dae>,
     rows: &mut DiscreteRows,
 ) -> Result<(), LowerError> {
+    let mut conditional = Vec::new();
     for index in 0..view.discrete_real_equation_count() {
         let equation = view
             .discrete_real_equation(index)
@@ -160,37 +161,102 @@ fn lower_discrete_real_equations<'dae>(
         let span = equation.provenance().span();
         let (target, value) = direct_discrete_real_definition(view, equation.residual())
             .ok_or_else(|| {
-                LowerError::unsupported(
+                LowerError::non_computable(
                     "coupled discrete Real residual is not an explicit computable definition",
                     span,
                 )
             })?;
         let variable = dae::VariableId::from(target);
-        let clock_owner = clocks.variable_owner(variable).ok_or_else(|| {
-            LowerError::unsupported(
-                "discrete Real definition has no checked clock activation owner",
-                span,
-            )
-        })?;
-        let value_type = view
-            .expression(value)
-            .expect("checked discrete definition value resolves")
-            .value_type();
-        for scalar in 0..value_type
-            .scalar_count()
-            .expect("checked expression scalar capacity")
-        {
-            let program = ScalarCompiler::new(view, layout, None).program(value, scalar)?;
-            let target = variable_scalar_slot(layout, variable.index(), scalar, span)?;
-            rows.push(
-                program,
-                span,
-                target,
-                solve::DiscreteRowRole::Equation,
-                expression_pre_mode(view, value),
-                Some(clock_owner),
-            );
+        match equation.activation() {
+            dae::DiscreteRealActivation::Always => {
+                lower_unconditional_discrete_real(
+                    view, layout, clocks, rows, variable, value, span,
+                )?;
+            }
+            dae::DiscreteRealActivation::When { trigger, guard } => {
+                conditional.push(EventUpdate {
+                    trigger,
+                    guard,
+                    variable: variable.index(),
+                    value,
+                    span,
+                    clock: checked_discrete_real_activation_clock(
+                        view, clocks, variable, guard, span,
+                    )?,
+                });
+            }
         }
+    }
+    lower_guarded_updates(
+        view,
+        layout,
+        clocks,
+        rows,
+        &conditional,
+        solve::DiscreteRowRole::Equation,
+    )
+}
+
+fn checked_discrete_real_activation_clock<'dae>(
+    view: dae::DaeView<'dae>,
+    clocks: &LoweredClocks<'dae>,
+    variable: dae::VariableId<'dae>,
+    guard: dae::ConditionId<'dae>,
+    span: Span,
+) -> Result<Option<dae::ClockId<'dae>>, LowerError> {
+    let activation = condition_clock_owner(view, guard);
+    let owner = clocks.variable_owner(variable).map(|(clock, _)| clock);
+    match (activation, owner) {
+        (None, None) => Ok(None),
+        (Some(activation), Some(owner)) if activation == owner => Ok(Some(owner)),
+        (Some(_), None) => Err(LowerError::non_computable(
+            "clock-activated discrete Real definition has no matching target clock owner",
+            span,
+        )),
+        (None, Some(_)) => Err(LowerError::non_computable(
+            "clock-owned discrete Real target has a non-clock event activation",
+            span,
+        )),
+        (Some(_), Some(_)) => Err(LowerError::non_computable(
+            "discrete Real definition activation does not match its target clock owner",
+            span,
+        )),
+    }
+}
+
+fn lower_unconditional_discrete_real<'dae>(
+    view: dae::DaeView<'dae>,
+    layout: &LoweredLayout<'dae>,
+    clocks: &LoweredClocks<'dae>,
+    rows: &mut DiscreteRows,
+    variable: dae::VariableId<'dae>,
+    value: dae::ExprId<'dae>,
+    span: Span,
+) -> Result<(), LowerError> {
+    let value_type = view
+        .expression(value)
+        .expect("checked discrete definition value resolves")
+        .value_type();
+    let clock = clocks.variable_owner(variable);
+    for scalar in 0..value_type
+        .scalar_count()
+        .expect("checked expression scalar capacity")
+    {
+        let program = match clock {
+            Some((clock, _)) => {
+                ScalarCompiler::new(view, layout, None).clocked_program(clock, value, scalar)?
+            }
+            None => ScalarCompiler::new(view, layout, None).program(value, scalar)?,
+        };
+        let target = variable_scalar_slot(layout, variable.index(), scalar, span)?;
+        rows.push(
+            program,
+            span,
+            target,
+            solve::DiscreteRowRole::Equation,
+            expression_pre_mode(view, value),
+            clock.map(|(_, solve)| solve),
+        );
     }
     Ok(())
 }
@@ -478,19 +544,16 @@ fn lower_event_actions<'dae>(
                     clock: condition_clock_owner(view, action.guard()),
                 });
             }
-            dae::EventActionOperation::AssignDiscreteReal { target, value } => {
-                updates.push(EventUpdate {
-                    trigger: action.trigger(),
-                    guard: action.guard(),
-                    variable: target.index(),
-                    value,
-                    span: action.provenance().span(),
-                    clock: condition_clock_owner(view, action.guard()),
-                });
-            }
         }
     }
-    lower_guarded_updates(view, layout, clocks, discrete, &updates)
+    lower_guarded_updates(
+        view,
+        layout,
+        clocks,
+        discrete,
+        &updates,
+        solve::DiscreteRowRole::EventAction,
+    )
 }
 
 fn push_message_action<'dae>(
@@ -572,6 +635,7 @@ fn lower_guarded_updates<'dae>(
     clocks: &LoweredClocks<'dae>,
     rows: &mut DiscreteRows,
     updates: &[EventUpdate<'dae>],
+    role: solve::DiscreteRowRole,
 ) -> Result<(), LowerError> {
     let mut targets = Vec::<GuardedTarget<'dae>>::new();
     for update in updates {
@@ -621,7 +685,7 @@ fn lower_guarded_updates<'dae>(
             program,
             target.span,
             target.target,
-            solve::DiscreteRowRole::EventAction,
+            role,
             target.pre_mode,
             target.clock.map(|(_, clock)| clock),
         );
