@@ -877,8 +877,21 @@ impl<'a> IndexProjectionContext<'a> {
                 {
                     return project_dimmed_var_ref(name, dims, subscripts, expr, self);
                 }
+                if let [Subscript::Index { value, .. }] = subscripts.as_slice()
+                    && let Ok(index) = usize::try_from(*value)
+                    && index > 0
+                {
+                    let selected_base = self.project_at(base, index)?;
+                    if self
+                        .expression_dims(&selected_base)
+                        .is_some_and(|dims| dims.is_empty())
+                    {
+                        return Ok(selected_base);
+                    }
+                }
+                let projected_base = self.project(base)?;
                 Ok(Expression::Index {
-                    base: Box::new(self.project(base)?),
+                    base: Box::new(projected_base),
                     subscripts: subscripts.clone(),
                     span: *span,
                 })
@@ -1898,24 +1911,6 @@ fn expand_scalarized_equation(
         scalar_count,
         expanded,
     )
-}
-
-fn equation_scalar_count(
-    eq: &Equation,
-    projection: &ScalarProjectionContext<'_>,
-    lhs_targets: &[ScalarizedLhsTarget],
-    has_residual_lhs_targets: bool,
-) -> usize {
-    if has_residual_lhs_targets {
-        return lhs_targets.len().max(1);
-    }
-    let rhs_shape_count = shape_scalar_count(projection.expression_shape(&eq.rhs));
-    if let Some(rhs_count) = rhs_shape_count.filter(|count| *count > 1) {
-        // MLS 10.6 / SPEC_0019: array equations represent one scalar equation
-        // per array element. Prefer expression IR shape over stale metadata.
-        return rhs_count.max(lhs_targets.len());
-    }
-    eq.scalar_count.max(lhs_targets.len()).max(1)
 }
 
 fn expand_single_scalar_equation(
