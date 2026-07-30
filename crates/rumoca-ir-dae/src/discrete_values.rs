@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 
 use rustc_hash::FxHashSet;
 
-use crate::conditions::ConditionNode;
+use crate::conditions::{ConditionNode, condition_owner_clock};
 use crate::expression::{Coordinate, ExprNode, PackedSubscriptKind};
 use crate::model::{Storage, check_provenance, checked_u32, unknown};
 use crate::{
@@ -837,13 +837,14 @@ fn expect_clock_ownership(
     variable: u32,
     provenance: DaeProvenance,
 ) -> Result<(), DaeConstructionError> {
-    let Some(clock) = condition_owner_clock(storage, guard) else {
+    let Some(clock) = condition_owner_clock(storage, guard, provenance)? else {
         return Ok(());
     };
     if storage
-        .clock_ownerships
-        .iter()
-        .any(|ownership| ownership.variable == variable && ownership.clock == clock)
+        .clock_ownership_by_variable
+        .get(&variable)
+        .and_then(|&index| storage.clock_ownerships.get(index as usize))
+        .is_some_and(|ownership| ownership.clock == clock)
     {
         return Ok(());
     }
@@ -852,31 +853,4 @@ fn expect_clock_ownership(
         clock,
         span: provenance.span(),
     })
-}
-
-fn condition_owner_clock(storage: &Storage, condition: u32) -> Option<u32> {
-    let node = storage.conditions.get(condition as usize)?.node?;
-    match node {
-        ConditionNode::Initial => None,
-        ConditionNode::Clock(clock) => Some(clock),
-        ConditionNode::And { lhs, rhs } => merge_owner_clocks(
-            condition_owner_clock(storage, lhs),
-            condition_owner_clock(storage, rhs),
-            false,
-        ),
-        ConditionNode::Or { lhs, rhs } => merge_owner_clocks(
-            condition_owner_clock(storage, lhs),
-            condition_owner_clock(storage, rhs),
-            true,
-        ),
-        ConditionNode::Relation(_) | ConditionNode::Discrete(_) | ConditionNode::Not(_) => None,
-    }
-}
-
-fn merge_owner_clocks(lhs: Option<u32>, rhs: Option<u32>, disjunction: bool) -> Option<u32> {
-    match (lhs, rhs) {
-        (Some(lhs), Some(rhs)) if lhs == rhs => Some(lhs),
-        (Some(clock), None) | (None, Some(clock)) if !disjunction => Some(clock),
-        _ => None,
-    }
 }

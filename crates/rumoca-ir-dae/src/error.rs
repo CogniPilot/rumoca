@@ -146,6 +146,17 @@ pub enum DaeConstructionError {
         clock: u32,
         span: Span,
     },
+    #[error(
+        "variable identity {variable} is already owned by clock identity {established_clock}, \
+         not clock identity {attempted_clock}"
+    )]
+    ConflictingClockOwnership {
+        variable: u32,
+        established_clock: u32,
+        attempted_clock: u32,
+        established: crate::DaeProvenance,
+        attempted: crate::DaeProvenance,
+    },
     #[error("invalid B.1c topology plan at discrete-value target identity {target}")]
     InvalidDiscreteTopologyPlan { target: u32, span: Span },
     #[error("B.1c owner target order mismatch: expected {expected:?}, found {found:?}")]
@@ -221,7 +232,7 @@ impl DaeConstructionError {
     /// Schema-version and malformed-column failures are wire-container errors.
     /// Reusing an already-consumed empty topology capability is also source-free:
     /// there is no semantic owner from which an honest span could be obtained.
-    pub const fn source_span(&self) -> Option<Span> {
+    pub fn source_span(&self) -> Option<Span> {
         match self {
             Self::MissingProvenance { attempted_span, .. } => *attempted_span,
             Self::UnknownSource { span }
@@ -263,6 +274,7 @@ impl DaeConstructionError {
             | Self::InvalidDiscreteBranchSet { span }
             | Self::UnissuedDiscreteDependency { span, .. }
             | Self::IncompleteDefinition { span, .. } => Some(*span),
+            Self::ConflictingClockOwnership { attempted, .. } => Some(attempted.span()),
             Self::DuplicateTopology { span, .. } => *span,
             Self::InvalidSchemaVersion { .. } | Self::MalformedWire { .. } => None,
         }
