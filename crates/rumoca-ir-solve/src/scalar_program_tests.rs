@@ -231,15 +231,15 @@ fn scalar_program_wire_rejects_invalid_register_flow() {
 fn scalar_program_wire_rejects_non_current_fields() {
     let mut value =
         serde_json::to_value(sparse_wire_fixture()).expect("serialize current scalar-program wire");
-    value["legacy_programs"] = serde_json::json!([]);
+    value["removed_programs"] = serde_json::json!([]);
 
     let error = serde_json::from_value::<ScalarProgramBlock>(value)
-        .expect_err("the current wire must reject compatibility fields");
+        .expect_err("the current wire must reject removed fields");
 
     assert!(
         error
             .to_string()
-            .contains("unknown field `legacy_programs`"),
+            .contains("unknown field `removed_programs`"),
         "unexpected error: {error}"
     );
 }

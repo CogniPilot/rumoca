@@ -94,13 +94,13 @@ fn function_operations_are_canonical_and_replay_in_owner_order() {
         "an assignment stores its target, RHS, and provenance inline"
     );
 
-    let mut legacy_definition = canonical;
-    legacy_definition["storage"]["functions"][0]
+    let mut removed_definition_mirror = canonical;
+    removed_definition_mirror["storage"]["functions"][0]
         .as_object_mut()
         .unwrap()
         .insert("definitions".to_owned(), serde_json::json!([]));
     assert!(
-        serde_json::from_value::<Dae>(legacy_definition).is_err(),
+        serde_json::from_value::<Dae>(removed_definition_mirror).is_err(),
         "wire-v11 rejects the removed definition mirror"
     );
 }
@@ -318,7 +318,7 @@ fn wire_replay_rejects_trailing_dense_columns_and_packed_operands() {
 }
 
 #[test]
-fn wire_replay_rejects_legacy_function_read_shape() {
+fn wire_replay_rejects_removed_function_read_shape() {
     let dae = function_read_fixture(false);
     let mut wire: serde_json::Value = serde_json::to_value(&dae).unwrap();
     let read = function_value_nodes_mut(&mut wire)
