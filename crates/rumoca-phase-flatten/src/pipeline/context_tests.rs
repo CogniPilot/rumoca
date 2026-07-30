@@ -48,6 +48,7 @@ mod tests {
             type_id: rumoca_core::TypeId::default(),
             type_name: String::new(),
             type_def_id: None,
+            type_reference_root_def_id: None,
             declaration_source_scope: None,
             class_overrides: ast::ClassOverrideMap::default(),
             has_forwarding_class_redeclare: false,

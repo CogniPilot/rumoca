@@ -14,6 +14,7 @@ pub(crate) struct FunctionSignature {
 #[derive(Clone, Default)]
 pub(crate) struct CallTypeOverrides {
     by_alias: HashMap<String, HashMap<DefId, DefId>>,
+    by_alias_def_id: HashMap<DefId, HashMap<DefId, DefId>>,
     unqualified: HashMap<DefId, DefId>,
 }
 
@@ -23,13 +24,31 @@ impl CallTypeOverrides {
         call: &rumoca_ir_ast::ComponentReference,
         declaration_type: DefId,
     ) -> Option<DefId> {
-        let alias_specialization = call
-            .parts
-            .first()
-            .and_then(|part| self.by_alias.get(part.ident.text.as_ref()))
+        let alias = call.parts.first().map(|part| part.ident.text.as_ref());
+        self.specialized_declared_type(alias, declaration_type)
+    }
+
+    pub(crate) fn specialized_declared_type(
+        &self,
+        alias: Option<&str>,
+        declaration_type: DefId,
+    ) -> Option<DefId> {
+        let alias_specialization = alias
+            .and_then(|alias| self.by_alias.get(alias))
             .and_then(|overrides| overrides.get(&declaration_type));
         alias_specialization
             .or_else(|| self.unqualified.get(&declaration_type))
+            .copied()
+    }
+
+    pub(super) fn specialized_declared_type_by_alias_def_id(
+        &self,
+        alias: DefId,
+        declaration_type: DefId,
+    ) -> Option<DefId> {
+        self.by_alias_def_id
+            .get(&alias)
+            .and_then(|overrides| overrides.get(&declaration_type))
             .copied()
     }
 }
@@ -88,11 +107,22 @@ pub(crate) fn build_call_type_overrides(
             (!overrides.is_empty()).then_some((alias, overrides))
         })
         .collect();
+    let by_alias_def_id = instance_overrides
+        .into_iter()
+        .flat_map(|overrides| overrides.iter())
+        .map(|(alias_def_id, class_override)| {
+            (
+                *alias_def_id,
+                nested_type_specializations(tree, class_override.target_def_id),
+            )
+        })
+        .collect();
     let unqualified = enclosing_package_def_id(tree, class_def_id)
         .map(|package_def_id| nested_type_specializations(tree, package_def_id))
         .unwrap_or_default();
     CallTypeOverrides {
         by_alias,
+        by_alias_def_id,
         unqualified,
     }
 }

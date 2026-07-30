@@ -243,7 +243,7 @@ impl<'dae> IncidenceBuilder<'_, 'dae> {
         )
         .map_err(|source| StructuralError::Projection {
             reason: source.to_string(),
-            span: source_span(&source, owner.span()),
+            span: projection_span(&source),
         })?;
         self.rows.push_occurrences(&occurrences);
         self.equation_refs
@@ -408,19 +408,14 @@ fn checked_scalar_ordinal(scalar: usize, span: rumoca_core::Span) -> Result<u32,
     })
 }
 
-fn source_span(
-    error: &rumoca_eval_dae::ProjectionError,
-    fallback: rumoca_core::Span,
-) -> rumoca_core::Span {
+fn projection_span(error: &rumoca_eval_dae::ProjectionError) -> rumoca_core::Span {
     match error {
         rumoca_eval_dae::ProjectionError::ScalarOutOfBounds { span, .. }
         | rumoca_eval_dae::ProjectionError::DynamicSubscript { span }
         | rumoca_eval_dae::ProjectionError::IndexOutOfBounds { span, .. }
         | rumoca_eval_dae::ProjectionError::IntegerOverflow { span }
         | rumoca_eval_dae::ProjectionError::FunctionRecursion { span }
-        | rumoca_eval_dae::ProjectionError::UnsupportedRecordOperation { span } => {
-            if span.is_dummy() { fallback } else { *span }
-        }
+        | rumoca_eval_dae::ProjectionError::UnsupportedRecordOperation { span } => *span,
     }
 }
 

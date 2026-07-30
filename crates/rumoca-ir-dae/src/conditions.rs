@@ -156,6 +156,7 @@ impl<'dae> Conditions<'_, 'dae> {
             node: None,
             provenance,
         });
+        self.storage.condition_owner_clocks.push(None);
         self.storage.unfilled_conditions += 1;
         Ok(ConditionId::from_raw(raw))
     }
@@ -168,6 +169,7 @@ impl<'dae> Conditions<'_, 'dae> {
     ) -> Result<(), DaeConstructionError> {
         check_provenance(self.source_map, provenance)?;
         let node = self.checked_node(input, provenance)?;
+        let owner_clock = owner_clock_for_node(self.storage, node, provenance)?;
         let Some(entry) = self.storage.conditions.get_mut(condition.index() as usize) else {
             return Err(unknown("condition", condition.index(), provenance));
         };
@@ -175,6 +177,7 @@ impl<'dae> Conditions<'_, 'dae> {
             return Err(duplicate("condition", condition.index(), provenance));
         }
         entry.node = Some(node);
+        self.storage.condition_owner_clocks[condition.index() as usize] = owner_clock;
         self.storage.unfilled_conditions -= 1;
         Ok(())
     }
@@ -285,5 +288,59 @@ impl<'dae> Conditions<'_, 'dae> {
             });
         }
         Ok(())
+    }
+}
+
+pub(crate) fn condition_owner_clock(
+    storage: &Storage,
+    condition: u32,
+    provenance: DaeProvenance,
+) -> Result<Option<u32>, DaeConstructionError> {
+    let entry = storage
+        .conditions
+        .get(condition as usize)
+        .ok_or_else(|| unknown("condition", condition, provenance))?;
+    if entry.node.is_none() {
+        return Err(DaeConstructionError::IncompleteDefinition {
+            kind: "condition owner clock",
+            index: condition,
+            span: provenance.span(),
+        });
+    }
+    Ok(*storage
+        .condition_owner_clocks
+        .get(condition as usize)
+        .expect("condition owner-clock cache stays aligned with condition arena"))
+}
+
+fn owner_clock_for_node(
+    storage: &Storage,
+    node: ConditionNode,
+    provenance: DaeProvenance,
+) -> Result<Option<u32>, DaeConstructionError> {
+    match node {
+        ConditionNode::Clock(clock) => Ok(Some(clock)),
+        ConditionNode::And { lhs, rhs } => Ok(merge_owner_clocks(
+            condition_owner_clock(storage, lhs, provenance)?,
+            condition_owner_clock(storage, rhs, provenance)?,
+            false,
+        )),
+        ConditionNode::Or { lhs, rhs } => Ok(merge_owner_clocks(
+            condition_owner_clock(storage, lhs, provenance)?,
+            condition_owner_clock(storage, rhs, provenance)?,
+            true,
+        )),
+        ConditionNode::Initial
+        | ConditionNode::Relation(_)
+        | ConditionNode::Discrete(_)
+        | ConditionNode::Not(_) => Ok(None),
+    }
+}
+
+fn merge_owner_clocks(lhs: Option<u32>, rhs: Option<u32>, disjunction: bool) -> Option<u32> {
+    match (lhs, rhs) {
+        (Some(lhs), Some(rhs)) if lhs == rhs => Some(lhs),
+        (Some(clock), None) | (None, Some(clock)) if !disjunction => Some(clock),
+        _ => None,
     }
 }

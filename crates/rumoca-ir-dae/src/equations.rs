@@ -2,6 +2,7 @@ use std::marker::PhantomData;
 
 use rumoca_core::{ComprehensionScalarView, StructuredIndexBinder, StructuredIndexDomain};
 
+use crate::conditions::condition_owner_clock;
 use crate::expression::{Coordinate, ExprNode, PackedSubscriptKind};
 use crate::model::{
     Storage, check_provenance, checked_u32, duplicate, insert_domain, invalid_arity,
@@ -553,7 +554,7 @@ fn expect_clock_owned_discrete_reals(
     residual: u32,
     owner: DaeProvenance,
 ) -> Result<(), DaeConstructionError> {
-    let Some(clock) = condition_owner_clock(storage, guard) else {
+    let Some(clock) = condition_owner_clock(storage, guard, owner)? else {
         return Ok(());
     };
     let mut pending = vec![residual];
@@ -564,10 +565,11 @@ fn expect_clock_owned_discrete_reals(
         }
         let node = &storage.expressions.nodes[expression as usize];
         if let ExprNode::Coordinate(Coordinate::DiscreteReal(variable)) = node
-            && !storage
-                .clock_ownerships
-                .iter()
-                .any(|ownership| ownership.variable == *variable && ownership.clock == clock)
+            && storage
+                .clock_ownership_by_variable
+                .get(variable)
+                .and_then(|&index| storage.clock_ownerships.get(index as usize))
+                .is_none_or(|ownership| ownership.clock != clock)
         {
             return Err(DaeConstructionError::MissingClockOwnership {
                 variable: *variable,
@@ -633,35 +635,6 @@ fn push_subscript_expressions(
             }
             PackedSubscriptKind::Whole => {}
         }
-    }
-}
-
-fn condition_owner_clock(storage: &Storage, condition: u32) -> Option<u32> {
-    let node = storage.conditions.get(condition as usize)?.node?;
-    match node {
-        crate::conditions::ConditionNode::Clock(clock) => Some(clock),
-        crate::conditions::ConditionNode::And { lhs, rhs } => merge_owner_clocks(
-            condition_owner_clock(storage, lhs),
-            condition_owner_clock(storage, rhs),
-            false,
-        ),
-        crate::conditions::ConditionNode::Or { lhs, rhs } => merge_owner_clocks(
-            condition_owner_clock(storage, lhs),
-            condition_owner_clock(storage, rhs),
-            true,
-        ),
-        crate::conditions::ConditionNode::Initial
-        | crate::conditions::ConditionNode::Relation(_)
-        | crate::conditions::ConditionNode::Discrete(_)
-        | crate::conditions::ConditionNode::Not(_) => None,
-    }
-}
-
-fn merge_owner_clocks(lhs: Option<u32>, rhs: Option<u32>, disjunction: bool) -> Option<u32> {
-    match (lhs, rhs) {
-        (Some(lhs), Some(rhs)) if lhs == rhs => Some(lhs),
-        (Some(clock), None) | (None, Some(clock)) if !disjunction => Some(clock),
-        _ => None,
     }
 }
 

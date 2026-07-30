@@ -41,6 +41,7 @@ impl<'a> OverlayScopeIndex<'a> {
 
 pub(crate) fn initialize_flat_metadata(flat: &mut flat::Model, overlay: &ast::InstanceOverlay) {
     // MLS §4.7: Propagate partial status and class type from overlay
+    flat.effective_types = overlay.effective_types.clone();
     flat.is_partial = overlay.is_partial;
     flat.class_type = overlay.class_type.clone();
     flat.model_description = overlay.root_description.clone();
@@ -774,6 +775,7 @@ pub(crate) fn process_component_instances_for_flatten(
         process_component_instance(ComponentInstanceProcess {
             flat,
             instance_data,
+            effective_type_id: instance_data.type_id,
             canonical_type_id: overlay
                 .type_roots
                 .get(&instance_data.type_id)

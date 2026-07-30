@@ -188,20 +188,21 @@ impl<'dae> Clocks<'_, 'dae> {
                 span: provenance.span(),
             });
         }
-        if let Some((index, entry)) = self
-            .storage
-            .clock_ownerships
-            .iter()
-            .enumerate()
-            .find(|(_, entry)| entry.variable == variable)
-        {
+        if let Some(&index) = self.storage.clock_ownership_by_variable.get(&variable) {
+            let entry = self
+                .storage
+                .clock_ownerships
+                .get(index as usize)
+                .expect("clock ownership index points into its dense arena");
             if entry.clock == clock.index() && entry.role == role {
-                return Ok(ClockOwnershipId::from_raw(index as u32));
+                return Ok(ClockOwnershipId::from_raw(index));
             }
-            return Err(DaeConstructionError::DuplicateKey {
-                kind: "clocked variable owner",
-                key: variable_entry.name.to_string(),
-                span: provenance.span(),
+            return Err(DaeConstructionError::ConflictingClockOwnership {
+                variable,
+                established_clock: entry.clock,
+                attempted_clock: clock.index(),
+                established: entry.provenance,
+                attempted: provenance,
             });
         }
         let raw = checked_u32(
@@ -215,6 +216,11 @@ impl<'dae> Clocks<'_, 'dae> {
             clock: clock.index(),
             provenance,
         });
+        let prior = self
+            .storage
+            .clock_ownership_by_variable
+            .insert(variable, raw);
+        debug_assert!(prior.is_none());
         Ok(ClockOwnershipId::from_raw(raw))
     }
 }

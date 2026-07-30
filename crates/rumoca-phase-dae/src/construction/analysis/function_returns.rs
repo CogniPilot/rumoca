@@ -16,11 +16,11 @@ pub(super) fn validate_guarded_function_return(
         span,
     } = first
     else {
-        return Err(unsupported_return_shape(function, first));
+        return unsupported_return_shape(function, first);
     };
     require_span(*span, "function return conditional")?;
     if cond_blocks.is_empty() || tail.is_empty() {
-        return Err(unsupported_return_shape(function, first));
+        return unsupported_return_shape(function, first);
     }
 
     let targets = function
@@ -33,7 +33,7 @@ pub(super) fn validate_guarded_function_return(
         validate_function_expression_with_roles(&block.cond, context.roles, context.flat)?;
         let Some((rumoca_core::Statement::Return { span }, statements)) = block.stmts.split_last()
         else {
-            return Err(unsupported_return_shape(function, first));
+            return unsupported_return_shape(function, first);
         };
         require_span(*span, "function return statement")?;
         let plans = validate_function_statements(statements, context)?;
@@ -70,15 +70,17 @@ fn validate_return_definitions(
 ) -> Result<(), ToDaeError> {
     let mut assigned = HashSet::new();
     for (statement, plan) in statements.iter().zip(plans) {
+        let statement_span =
+            required_statement_span(statement, "guarded function return definition")?;
         let (
             rumoca_core::Statement::Assignment { value, .. },
             FunctionStatementPlan::Assignment(assignment),
         ) = (statement, plan)
         else {
-            return Err(unsupported_return_shape(function, statement));
+            return unsupported_return_shape(function, statement);
         };
         if !assignment.is_whole() {
-            return Err(unsupported_return_shape(function, statement));
+            return unsupported_return_shape(function, statement);
         }
         let target = assignment.target();
         let mut references = Vec::new();
@@ -95,7 +97,7 @@ fn validate_return_definitions(
                     "`{}` requires independent whole-output definitions before return",
                     function.name
                 ),
-                statement.source_span().unwrap_or(span),
+                statement_span,
             ));
         }
     }
@@ -141,16 +143,17 @@ fn contains_return(statements: &[rumoca_core::Statement]) -> bool {
     })
 }
 
-fn unsupported_return_shape(
+fn unsupported_return_shape<T>(
     function: &rumoca_core::Function,
     statement: &rumoca_core::Statement,
-) -> ToDaeError {
-    ToDaeError::unsupported_flat(
+) -> Result<T, ToDaeError> {
+    let span = required_statement_span(statement, "unsupported guarded function return statement")?;
+    Err(ToDaeError::unsupported_flat(
         "function return",
         format!(
             "`{}` requires a leading guarded return with total output definitions",
             function.name
         ),
-        statement.source_span().unwrap_or(function.span),
-    )
+        span,
+    ))
 }

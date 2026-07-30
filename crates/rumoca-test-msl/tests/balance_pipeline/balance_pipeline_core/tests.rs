@@ -2,7 +2,7 @@ use super::*;
 use rumoca_compile::compile::{CompilationResult, CompilationSummary};
 use rumoca_ir_dae as dae;
 use rumoca_ir_flat as flat;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 struct FakeFocusedCompiler {
     uncached_called: Mutex<Vec<String>>,
@@ -41,7 +41,7 @@ fn empty_compilation_result() -> CompilationResult {
     let balance_detail = rumoca_phase_dae::balance::BalanceDetail::default();
     CompilationResult {
         flat: flat::Model::default(),
-        dae,
+        dae: Arc::new(dae),
         balance_detail,
         experiment_start_time: None,
         experiment_stop_time: None,

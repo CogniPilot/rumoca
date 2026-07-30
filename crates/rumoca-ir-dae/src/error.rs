@@ -5,7 +5,7 @@ use std::fmt;
 
 use rumoca_core::{ClockLatticeErrorKind, Span, StructuredIndexDomainError, TypeId, VarName};
 
-use crate::{DaeProvenanceOrigin, ScalarType};
+use crate::{DaeProvenanceOrigin, ScalarType, ValueType, VariableRole};
 
 /// Failure to construct or decode the DAE.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
@@ -21,6 +21,17 @@ pub enum DaeConstructionError {
     InvalidSourceRange { span: Span, source_len: usize },
     #[error("invalid effective Flat type identity {type_id}")]
     InvalidEffectiveTypeId { type_id: TypeId, span: Span },
+    #[error(
+        "effective Flat type identity {type_id} has conflicting DAE layouts: \
+         established {established_type:?}, attempted {attempted_type:?}"
+    )]
+    ConflictingEffectiveType {
+        type_id: TypeId,
+        established_type: Box<ValueType>,
+        attempted_type: Box<ValueType>,
+        established: crate::DaeProvenance,
+        attempted: crate::DaeProvenance,
+    },
     #[error("invalid structured DAE domain: {source}")]
     InvalidDomain {
         #[source]
@@ -123,6 +134,13 @@ pub enum DaeConstructionError {
     InvalidRecursiveFunctionGroup { span: Span },
     #[error("variable `{name}` has the wrong DAE coordinate role")]
     InvalidVariableRole { name: VarName, span: Span },
+    #[error("variable `{name}` of type {found:?} cannot be a {role:?} DAE coordinate")]
+    InvalidVariableType {
+        name: VarName,
+        role: VariableRole,
+        found: ScalarType,
+        span: Span,
+    },
     #[error("duplicate {kind} definition for identity {index}")]
     DuplicateDefinition {
         kind: &'static str,
@@ -145,6 +163,17 @@ pub enum DaeConstructionError {
         variable: u32,
         clock: u32,
         span: Span,
+    },
+    #[error(
+        "variable identity {variable} is already owned by clock identity {established_clock}, \
+         not clock identity {attempted_clock}"
+    )]
+    ConflictingClockOwnership {
+        variable: u32,
+        established_clock: u32,
+        attempted_clock: u32,
+        established: crate::DaeProvenance,
+        attempted: crate::DaeProvenance,
     },
     #[error("invalid B.1c topology plan at discrete-value target identity {target}")]
     InvalidDiscreteTopologyPlan { target: u32, span: Span },
@@ -221,7 +250,7 @@ impl DaeConstructionError {
     /// Schema-version and malformed-column failures are wire-container errors.
     /// Reusing an already-consumed empty topology capability is also source-free:
     /// there is no semantic owner from which an honest span could be obtained.
-    pub const fn source_span(&self) -> Option<Span> {
+    pub fn source_span(&self) -> Option<Span> {
         match self {
             Self::MissingProvenance { attempted_span, .. } => *attempted_span,
             Self::UnknownSource { span }
@@ -254,6 +283,7 @@ impl DaeConstructionError {
             | Self::InvalidFunctionDependency { span, .. }
             | Self::InvalidRecursiveFunctionGroup { span }
             | Self::InvalidVariableRole { span, .. }
+            | Self::InvalidVariableType { span, .. }
             | Self::DuplicateDefinition { span, .. }
             | Self::DuplicateKey { span, .. }
             | Self::MissingClockOwnership { span, .. }
@@ -263,6 +293,8 @@ impl DaeConstructionError {
             | Self::InvalidDiscreteBranchSet { span }
             | Self::UnissuedDiscreteDependency { span, .. }
             | Self::IncompleteDefinition { span, .. } => Some(*span),
+            Self::ConflictingClockOwnership { attempted, .. } => Some(attempted.span()),
+            Self::ConflictingEffectiveType { attempted, .. } => Some(attempted.span()),
             Self::DuplicateTopology { span, .. } => *span,
             Self::InvalidSchemaVersion { .. } | Self::MalformedWire { .. } => None,
         }

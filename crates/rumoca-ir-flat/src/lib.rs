@@ -28,9 +28,9 @@ use convert_from_ast::{
 use indexmap::{IndexMap, IndexSet};
 use rumoca_core::{
     BuiltinFunction, Causality, ClassType, ComponentReference, ComprehensionTemplate, DefId,
-    Expression, ForIndex, Function, FunctionInstanceId, FunctionShapeContractError, Reference,
-    RegularForFamily, Span, StateSelect, Statement, StatementBlock, StructuredIndexDomain,
-    Subscript, SymbolAncestry, TypeId, VarName, Variability,
+    EffectiveType, Expression, ForIndex, Function, FunctionInstanceId, FunctionShapeContractError,
+    Reference, RegularForFamily, Span, StateSelect, Statement, StatementBlock,
+    StructuredIndexDomain, Subscript, SymbolAncestry, TypeId, VarName, Variability,
 };
 #[cfg(test)]
 use rumoca_core::{ComprehensionIndex, Literal};
@@ -73,6 +73,9 @@ pub use when_equations::{WhenBranch, WhenChain, WhenEquation};
 /// with globally unique names and all equations ready for analysis.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Model {
+    /// Resolved effective type descriptors keyed by the exact `TypeId` stored
+    /// on each concrete variable or aggregate instance.
+    pub effective_types: IndexMap<TypeId, EffectiveType, rustc_hash::FxBuildHasher>,
     /// All variables with globally unique names.
     pub variables: VarNameIndexMap<Variable>,
     /// Resolved record containers retained for record-equation lowering.
@@ -186,7 +189,7 @@ pub struct Model {
 pub struct RecordInstance {
     pub component_ref: ComponentReference,
     pub source_span: Span,
-    pub canonical_type_id: TypeId,
+    pub effective_type_id: TypeId,
     pub type_name: String,
     pub type_def_id: DefId,
     pub dims: Vec<i64>,

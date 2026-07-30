@@ -40,7 +40,7 @@ mod semantic_scope;
 mod typechecker;
 pub mod unit_syntax;
 
-use rumoca_core::{ComponentPath, DefId, ScopeId, SourceId, Span, TypeId};
+use rumoca_core::{ComponentPath, DefId, EffectiveType, ScopeId, SourceId, Span, TypeId};
 use rumoca_core::{
     Diagnostic as CommonDiagnostic, Diagnostics, PhaseError, PrimaryLabel, SourceMap,
 };
@@ -957,11 +957,15 @@ impl TypeChecker {
     /// This is used for the instanced pipeline where flatten consumes overlay type_ids.
     fn resolve_overlay_component_types(
         &mut self,
+        tree: &ClassTree,
         overlay: &mut InstanceOverlay,
         type_table: &TypeTable,
     ) {
+        let specializations = instanced::overlay_component_type_specializations(tree, overlay);
         for (_instance_id, data) in overlay.components.iter_mut() {
-            let resolved = self.resolve_type_name(&data.type_name, data.type_def_id, type_table);
+            let type_def_id = instanced::specialized_instance_type_def_id(data, &specializations)
+                .or(data.type_def_id);
+            let resolved = self.resolve_type_name(&data.type_name, type_def_id, type_table);
             if let Some((missing, span)) = self.deferred_alias_errors.get(&resolved) {
                 let error = TypeCheckError::undefined_type(missing.clone(), *span);
                 self.emit_typecheck_error(error);

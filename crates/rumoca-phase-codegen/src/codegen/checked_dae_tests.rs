@@ -272,6 +272,267 @@ fn dae_modelica_target_fails_closed_on_unowned_array_update() {
 }
 
 #[test]
+fn dae_modelica_target_rejects_nonprimary_function_output() {
+    let source = "function pair output Real a; output Real b; algorithm a := 1.0; b := 2.0; end pair; parameter Real p = pair();";
+    let mut source_map = SourceMap::new();
+    let source_id = source_map.add("multi_output.mo", source);
+    let at = |snippet: &str| {
+        let start = source.find(snippet).expect("fixture snippet exists");
+        dae::DaeProvenance::source(Span::from_offsets(source_id, start, start + snippet.len()))
+            .expect("fixture provenance is exact")
+    };
+    let dae = dae::Dae::construct(source_map, |dae| {
+        let real = dae.types(|types| {
+            types.derived(
+                dae::ValueType::scalar(dae::ScalarType::Real),
+                at("function pair"),
+            )
+        })?;
+        let signature = dae::FunctionSignature::new(
+            VarName::new("pair"),
+            [],
+            [real, real],
+            at("function pair"),
+        );
+        let function = dae
+            .function(signature, |dae, reservation| {
+                let first = dae.functions(|functions| {
+                    functions.output(&reservation, VarName::new("a"), 0, at("output Real a"))
+                })?;
+                let second = dae.functions(|functions| {
+                    functions.output(&reservation, VarName::new("b"), 1, at("output Real b"))
+                })?;
+                let mut body =
+                    dae.functions(|functions| functions.begin(reservation, at("function pair")))?;
+                let one = dae.expressions(|expressions| {
+                    expressions
+                        .at(at("1.0"))
+                        .literal(dae::DaeLiteral::Real(1.0))
+                })?;
+                let two = dae.expressions(|expressions| {
+                    expressions
+                        .at(at("2.0"))
+                        .literal(dae::DaeLiteral::Real(2.0))
+                })?;
+                dae.functions(|functions| {
+                    functions.assign(&mut body, first, one, at("a := 1.0"))?;
+                    functions.assign(&mut body, second, two, at("b := 2.0"))?;
+                    functions.define(body, at("function pair"))
+                })
+            })?
+            .0;
+        let selected_second =
+            dae.expressions(|expressions| expressions.at(at("pair()")).call(function, 1, []))?;
+        dae.variables(|variables| {
+            variables.parameter(
+                VarName::new("p"),
+                real,
+                at("parameter Real p"),
+                dae::VariableAttributes {
+                    binding: Some(selected_second),
+                    ..dae::VariableAttributes::default()
+                },
+            )
+        })?;
+        Ok(())
+    })
+    .expect("checked DAE preserves the selected function output");
+    let template =
+        crate::templates::builtin_template_source("dae-modelica", "dae_modelica.mo.jinja").unwrap();
+
+    let error = render_template_with_name(&dae, template, "M")
+        .expect_err("the Modelica target must not substitute output zero")
+        .to_string();
+
+    assert!(error.contains("unsupported-feature:dae-modelica-call-output:1"));
+}
+
+#[test]
+fn dae_modelica_target_rejects_mismatched_array_update_base() {
+    let template =
+        crate::templates::builtin_template_source("dae-modelica", "dae_modelica.mo.jinja").unwrap();
+    let dae = checked_array_update_owner_fixture(false)
+        .expect("a current definition of another target is constructible");
+    let error = render_template_with_name(&dae, template, "M")
+        .expect_err("the Modelica target must reject an unproved update base")
+        .to_string();
+    assert!(error.contains("unsupported-feature:dae-modelica-array-update-owner"));
+
+    let stale = checked_array_update_owner_fixture(true)
+        .expect_err("checked function ownership rejects a stale same-target definition");
+    assert!(matches!(
+        stale,
+        dae::DaeConstructionError::InvalidFunctionValueRead { .. }
+    ));
+}
+
+fn checked_array_update_owner_fixture(
+    stale_same_target: bool,
+) -> Result<dae::Dae, dae::DaeConstructionError> {
+    let source = "function f output Real a[2]; output Real b[2]; algorithm a := {1.0, 2.0}; b := {3.0, 4.0}; b := b; b := a; b[1] := 5.0; end f;";
+    let mut source_map = SourceMap::new();
+    let source_id = source_map.add("array_update_owner.mo", source);
+    let at = |snippet: &str| {
+        let start = source.find(snippet).expect("fixture snippet exists");
+        dae::DaeProvenance::source(Span::from_offsets(source_id, start, start + snippet.len()))
+            .expect("fixture provenance is exact")
+    };
+    let rhs_at = |statement: &str| {
+        let start = source.find(statement).unwrap() + "b := ".len();
+        dae::DaeProvenance::source(Span::from_offsets(source_id, start, start + 1)).unwrap()
+    };
+    let index_start = source.find("b[1]").unwrap() + "b[".len();
+    let index_at =
+        dae::DaeProvenance::source(Span::from_offsets(source_id, index_start, index_start + 1))
+            .unwrap();
+    dae::Dae::construct(source_map, |dae| {
+        let reals = dae.types(|types| {
+            types.derived(
+                dae::ValueType::array(dae::ScalarType::Real, [2]),
+                at("function f"),
+            )
+        })?;
+        let signature =
+            dae::FunctionSignature::new(VarName::new("f"), [], [reals, reals], at("function f"));
+        dae.function(signature, |dae, reservation| {
+            let first = dae.functions(|functions| {
+                functions.output(&reservation, VarName::new("a"), 0, at("output Real a[2]"))
+            })?;
+            let second = dae.functions(|functions| {
+                functions.output(&reservation, VarName::new("b"), 1, at("output Real b[2]"))
+            })?;
+            let mut body =
+                dae.functions(|functions| functions.begin(reservation, at("function f")))?;
+            let first_value = dae.expressions(|expressions| {
+                let one = expressions
+                    .at(at("1.0"))
+                    .literal(dae::DaeLiteral::Real(1.0))?;
+                let two = expressions
+                    .at(at("2.0"))
+                    .literal(dae::DaeLiteral::Real(2.0))?;
+                expressions.at(at("{1.0, 2.0}")).array([one, two])
+            })?;
+            let second_value = dae.expressions(|expressions| {
+                let three = expressions
+                    .at(at("3.0"))
+                    .literal(dae::DaeLiteral::Real(3.0))?;
+                let four = expressions
+                    .at(at("4.0"))
+                    .literal(dae::DaeLiteral::Real(4.0))?;
+                expressions.at(at("{3.0, 4.0}")).array([three, four])
+            })?;
+            dae.functions(|functions| {
+                functions.assign(&mut body, first, first_value, at("a := {1.0, 2.0}"))?;
+                functions.assign(&mut body, second, second_value, at("b := {3.0, 4.0}"))
+            })?;
+            let stale_base =
+                dae.functions(|functions| functions.read(&body, second, rhs_at("b := b")))?;
+            dae.functions(|functions| {
+                functions.assign(&mut body, second, stale_base, at("b := b"))
+            })?;
+            let different_base =
+                dae.functions(|functions| functions.read(&body, first, rhs_at("b := a")))?;
+            dae.functions(|functions| {
+                functions.assign(&mut body, second, different_base, at("b := a"))
+            })?;
+            let base = if stale_same_target {
+                stale_base
+            } else {
+                different_base
+            };
+            let update = dae.expressions(|expressions| {
+                let index = expressions
+                    .at(index_at)
+                    .literal(dae::DaeLiteral::Integer(1))?;
+                let value = expressions
+                    .at(at("5.0"))
+                    .literal(dae::DaeLiteral::Real(5.0))?;
+                expressions.at(at("b[1] := 5.0")).array_update(
+                    base,
+                    value,
+                    [dae::Subscript::Index {
+                        expression: index,
+                        provenance: index_at,
+                    }],
+                )
+            })?;
+            dae.functions(|functions| {
+                functions.assign(&mut body, second, update, at("b[1] := 5.0"))?;
+                functions.define(body, at("function f"))
+            })
+        })?;
+        Ok(())
+    })
+}
+
+#[test]
+fn dae_modelica_target_rejects_undeclared_record_variable_type() {
+    let source = "record Pair Real left; Real right; end Pair; parameter Pair p = Pair(1.0, 2.0);";
+    let mut source_map = SourceMap::new();
+    let source_id = source_map.add("record_variable.mo", source);
+    let at = |snippet: &str| {
+        let start = source.find(snippet).expect("fixture snippet exists");
+        dae::DaeProvenance::source(Span::from_offsets(source_id, start, start + snippet.len()))
+            .expect("fixture provenance is exact")
+    };
+    let dae = dae::Dae::construct(source_map, |dae| {
+        let real = dae.types(|types| {
+            types.derived(
+                dae::ValueType::scalar(dae::ScalarType::Real),
+                at("Real left"),
+            )
+        })?;
+        let pair = dae.types(|types| {
+            types.record(
+                VarName::new("Pair"),
+                [(VarName::new("left"), real), (VarName::new("right"), real)],
+                at("record Pair"),
+            )
+        })?;
+        let binding = dae.expressions(|expressions| {
+            let one = expressions
+                .at(at("1.0"))
+                .literal(dae::DaeLiteral::Real(1.0))?;
+            let two = expressions
+                .at(at("2.0"))
+                .literal(dae::DaeLiteral::Real(2.0))?;
+            expressions
+                .at(at("Pair(1.0, 2.0)"))
+                .record(pair, [one, two])
+        })?;
+        dae.variables(|variables| {
+            variables.parameter(
+                VarName::new("p"),
+                pair,
+                at("parameter Pair p"),
+                dae::VariableAttributes {
+                    binding: Some(binding),
+                    ..dae::VariableAttributes::default()
+                },
+            )
+        })?;
+        Ok(())
+    })
+    .expect("checked DAE preserves the record declaration identity");
+    let template =
+        crate::templates::builtin_template_source("dae-modelica", "dae_modelica.mo.jinja").unwrap();
+
+    let error = render_template_with_name(&dae, template, "M")
+        .expect_err("the Modelica target must not reference an undeclared record");
+    let expected_start = source.find("parameter Pair p").unwrap();
+    match error {
+        CodegenError::TemplateRenderError { message, src, span } => {
+            assert!(message.contains("unsupported-feature:dae-modelica-variable-record"));
+            assert_eq!(src.name(), "record_variable.mo");
+            assert_eq!(src.inner(), source);
+            assert_eq!(span.offset(), expected_start);
+            assert_eq!(span.len(), "parameter Pair p".len());
+        }
+        other => panic!("expected model-source diagnostic, got {other:?}"),
+    }
+}
+
+#[test]
 fn dae_modelica_target_renders_checked_function_values_and_statements() {
     let source = "function f input Real u; output Real y; protected Real z; algorithm z := u + 1.0; y := z; end f;";
     let mut source_map = SourceMap::new();
@@ -405,6 +666,8 @@ fn dae_template_preserves_distinct_definitions_with_one_rhs() {
     assert_eq!(definitions[1]["ordinal"], 1);
     assert_eq!(definitions[0]["target"], definitions[1]["target"]);
     assert_eq!(definitions[0]["rhs"], definitions[1]["rhs"]);
+    assert!(definitions[0]["previous_target_definition"].is_null());
+    assert_eq!(definitions[1]["previous_target_definition"], 0);
     assert_ne!(definitions[0]["ordinal"], definitions[1]["ordinal"]);
     assert_ne!(definitions[0]["provenance"], definitions[1]["provenance"]);
     assert_eq!(function["statements"][0]["definition"], 0);
@@ -630,7 +893,7 @@ fn symbolic_solve_targets_use_checked_declarations_and_solve_programs() {
     ] {
         let template = crate::templates::builtin_template_source(target, template_name)
             .expect("checked Solve template exists");
-        let rendered = SolveTemplateRenderer::new_with_dae(&problem, &artifacts, dae.clone())
+        let rendered = SolveTemplateRenderer::new_with_dae(&problem, &artifacts, &dae)
             .expect("checked Solve context constructs")
             .render(template)
             .expect("checked Solve target renders");

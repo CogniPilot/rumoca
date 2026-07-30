@@ -1,22 +1,22 @@
-{% macro scalar_name(scalar) -%}
+{% macro scalar_name(scalar, provenance) -%}
 {%- if scalar == "real" -%}Real
 {%- elif scalar == "integer" -%}Integer
 {%- elif scalar == "boolean" -%}Boolean
 {%- elif scalar == "string" -%}String
 {%- elif scalar == "record" -%}record
-{%- else -%}{{ fail("unsupported-feature:dae-modelica-scalar:" ~ scalar) }}
+{%- else -%}{{ fail_at("unsupported-feature:dae-modelica-scalar:" ~ scalar, provenance) }}
 {%- endif -%}
 {%- endmacro %}
 
 {% macro type_decl(name, type_id) -%}
 {%- set ty = dae.value_types[type_id].value_type -%}
-{{ ty.record_name if ty.record_name is not none else scalar_name(ty.scalar) }} {{ name }}
+{{ ty.record_name if ty.record_name is not none else scalar_name(ty.scalar, dae.value_types[type_id].provenance) }} {{ name }}
 {%- if ty.dimensions | length > 0 -%}
 [{% for extent in ty.dimensions %}{{ extent }}{% if not loop.last %}, {% endif %}{% endfor %}]
 {%- endif -%}
 {%- endmacro %}
 
-{% macro binary_operator(operator) -%}
+{% macro binary_operator(operator, provenance) -%}
 {%- if operator in ["add", "elementwise_add"] -%}+
 {%- elif operator in ["subtract", "elementwise_subtract"] -%}-
 {%- elif operator == "multiply" -%}*
@@ -33,11 +33,11 @@
 {%- elif operator == "greater_equal" -%}>=
 {%- elif operator == "and" -%}and
 {%- elif operator == "or" -%}or
-{%- else -%}{{ fail("unsupported-feature:dae-modelica-binary-operator:" ~ operator) }}
+{%- else -%}{{ fail_at("unsupported-feature:dae-modelica-binary-operator:" ~ operator, provenance) }}
 {%- endif -%}
 {%- endmacro %}
 
-{% macro coordinate(c) -%}
+{% macro coordinate(c, provenance) -%}
 {%- if c.kind in ["parameter", "input", "state", "algebraic", "discrete_real", "discrete_value"] -%}
 {{ dae.variables[c.id].name }}
 {%- elif c.kind == "derivative" -%}der({{ dae.variables[c.id].name }})
@@ -49,14 +49,14 @@
 {%- elif c.kind == "terminal" -%}$terminal{{ c.id }}
 {%- elif c.kind == "binder" -%}{{ dae.domains[c.domain].domain.binders[c.ordinal].display_name }}
 {%- elif c.kind == "function_parameter" -%}{{ dae.functions[c.function].parameters[c.ordinal].name }}
-{%- else -%}{{ fail("unsupported-feature:dae-modelica-coordinate:" ~ c.kind) }}
+{%- else -%}{{ fail_at("unsupported-feature:dae-modelica-coordinate:" ~ c.kind, provenance) }}
 {%- endif -%}
 {%- endmacro %}
 
 {% macro subscript(s) -%}
 {%- if s.kind == "whole" -%}:
 {%- elif s.kind in ["index", "slice"] -%}{{ expr(s.expression) }}
-{%- else -%}{{ fail("unsupported-feature:dae-modelica-subscript:" ~ s.kind) }}
+{%- else -%}{{ fail_at("unsupported-feature:dae-modelica-subscript:" ~ s.kind, s.provenance) }}
 {%- endif -%}
 {%- endmacro %}
 
@@ -73,17 +73,17 @@
   {%- elif op.value.enumeration is defined -%}{{ op.value.enumeration }}
   {%- elif op.value.boolean is defined -%}{{ op.value.boolean }}
   {%- elif op.value.string is defined -%}{{ op.value.string | tojson }}
-  {%- else -%}{{ fail("unsupported-feature:dae-modelica-literal") }}
+  {%- else -%}{{ fail_at("unsupported-feature:dae-modelica-literal", e.provenance) }}
   {%- endif -%}
-{%- elif op.kind == "coordinate" -%}{{ coordinate(op.coordinate) }}
+{%- elif op.kind == "coordinate" -%}{{ coordinate(op.coordinate, e.provenance) }}
 {%- elif op.kind == "unary" -%}(
   {%- if op.operator == "plus" -%}+
   {%- elif op.operator == "negate" -%}-
   {%- elif op.operator == "not" -%}not{{ " " }}
-  {%- else -%}{{ fail("unsupported-feature:dae-modelica-unary-operator:" ~ op.operator) }}
+  {%- else -%}{{ fail_at("unsupported-feature:dae-modelica-unary-operator:" ~ op.operator, e.provenance) }}
   {%- endif -%}
   {{- expr(op.operand) }})
-{%- elif op.kind == "binary" -%}({{ expr(op.lhs) }} {{ binary_operator(op.operator) }} {{ expr(op.rhs) }})
+{%- elif op.kind == "binary" -%}({{ expr(op.lhs) }} {{ binary_operator(op.operator, e.provenance) }} {{ expr(op.rhs) }})
 {%- elif op.kind == "conditional" -%}
   {%- for ordinal in range(0, op.operands | length - 1, 2) -%}
     {{ "if" if loop.first else "elseif" }} {{ expr(op.operands[ordinal]) }} then {{ expr(op.operands[ordinal + 1]) }}
@@ -99,19 +99,22 @@
 {%- elif op.kind == "index" -%}
 {{ expr(op.base) }}[{% for item in op.subscripts %}{{ subscript(item) }}{% if not loop.last %}, {% endif %}{% endfor %}]
 {%- elif op.kind == "array_update" -%}
-{{ fail("unsupported-feature:dae-modelica-expression:array_update") }}
+{{ fail_at("unsupported-feature:dae-modelica-expression:array_update", e.provenance) }}
 {%- elif op.kind == "builtin" -%}
   {%- if op.builtin == "no_event" -%}noEvent
   {%- elif op.builtin in ["abs", "sign", "sqrt", "div", "mod", "rem", "floor", "ceil", "integer", "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "sinh", "cosh", "tanh", "exp", "log", "log10", "smooth", "homotopy", "min", "max", "sum", "product", "size", "zeros", "ones", "fill", "linspace", "cross"] -%}{{ op.builtin }}
-  {%- else -%}{{ fail("unsupported-feature:dae-modelica-builtin:" ~ op.builtin) }}
+  {%- else -%}{{ fail_at("unsupported-feature:dae-modelica-builtin:" ~ op.builtin, e.provenance) }}
   {%- endif -%}
 ({{ expression_list(op.arguments) }})
-{%- elif op.kind == "call" -%}{{ dae.functions[op.function].name }}({{ expression_list(op.arguments) }})
+{%- elif op.kind == "call" -%}
+  {%- if op.output != 0 -%}{{ fail_at("unsupported-feature:dae-modelica-call-output:" ~ op.output, e.provenance) }}
+  {%- else -%}{{ dae.functions[op.function].name }}({{ expression_list(op.arguments) }})
+  {%- endif -%}
 {%- elif op.kind == "function_value" -%}{{ dae.functions[op.function].values[op.value].name }}
 {%- elif op.kind in ["function_fold_parameter", "function_fold_output"] -%}
 {{ dae.functions[op.function].values[dae.functions[op.function].folds[op.fold].targets[op.carried]].name }}
 {%- else -%}
-{{ fail("unsupported-feature:dae-modelica-expression:" ~ op.kind) }}
+{{ fail_at("unsupported-feature:dae-modelica-expression:" ~ op.kind, e.provenance) }}
 {%- endif -%}
 {%- endmacro %}
 
@@ -124,7 +127,12 @@
   {%- set definition = function.definitions[statement.definition] -%}
   {%- set rhs = dae.expressions[definition.rhs].operation -%}
 {{ "  " * depth }}{{ function.values[definition.target].name }}{% if rhs.kind == "array_update" -%}
+  {%- set base = dae.expressions[rhs.base].operation -%}
+  {%- if base.kind != "function_value" or base.function != function.id or base.value != definition.target or base.definition != definition.previous_target_definition -%}
+{{ fail_at("unsupported-feature:dae-modelica-array-update-owner", definition.provenance) }}
+  {%- else -%}
 [{% for item in rhs.subscripts %}{{ subscript(item) }}{% if not loop.last %}, {% endif %}{% endfor %}] := {{ expr(rhs.value) }};
+  {%- endif -%}
   {%- else %} := {{ expr(definition.rhs) }};
   {%- endif -%}
   {%- elif statement.kind == "for" -%}
@@ -161,13 +169,17 @@ end {{ function.name }};
 {%- endmacro %}
 
 {% macro variable_decl(variable) -%}
+{%- set ty = dae.value_types[variable.value_type_id].value_type -%}
+{%- if ty.scalar == "record" -%}
+{{ fail_at("unsupported-feature:dae-modelica-variable-record", variable.declaration) }}
+{%- endif -%}
 {%- if variable.role == "parameter" -%}parameter{{ " " }}
 {%- elif variable.role == "constant" -%}constant{{ " " }}
 {%- elif variable.role == "input" -%}input{{ " " }}
 {%- elif variable.role == "output" -%}output{{ " " }}
 {%- elif variable.role in ["discrete_real", "discrete_value"] -%}discrete{{ " " }}
 {%- elif variable.role in ["state", "algebraic"] -%}
-{%- else -%}{{ fail("unsupported-feature:dae-modelica-variable-role:" ~ variable.role) }}
+{%- else -%}{{ fail_at("unsupported-feature:dae-modelica-variable-role:" ~ variable.role, variable.declaration) }}
 {%- endif -%}
 {{ type_decl(variable.name, variable.value_type_id) }}
 {%- set a = variable.attributes -%}
@@ -203,7 +215,7 @@ for {% for binder in dae.domains[owner.domain].domain.binders %}{{ binder_clause
   {%- endfor %}
 end for;
 {%- else -%}
-{{ fail("unsupported-feature:dae-modelica-equation-owner:" ~ owner.kind) }}
+{{ fail_at("unsupported-feature:dae-modelica-equation-owner:" ~ owner.kind, owner.provenance) }}
 {%- endif -%}
 {%- endmacro %}
 

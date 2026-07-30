@@ -267,22 +267,29 @@ impl<'dae> Temporal<'_, 'dae> {
             .clocks
             .get(clock.index() as usize)
             .ok_or_else(|| unknown("clock", clock.index(), provenance))?;
-        let ownership_exists = self.storage.clock_ownerships.iter().any(|ownership| {
-            ownership.variable == variable
-                && ownership.clock == clock.index()
-                && ownership.role == role
-        });
-        if !ownership_exists {
+        let ownership = self
+            .storage
+            .clock_ownership_by_variable
+            .get(&variable)
+            .and_then(|&index| self.storage.clock_ownerships.get(index as usize));
+        if !ownership
+            .is_some_and(|ownership| ownership.clock == clock.index() && ownership.role == role)
+        {
             return Err(DaeConstructionError::MissingClockOwnership {
                 variable,
                 clock: clock.index(),
                 span: provenance.span(),
             });
         }
-        if let Some(index) = self.storage.previous_values.iter().position(|entry| {
-            entry.variable == variable && entry.clock == clock.index() && entry.role == role
-        }) {
-            return Ok(PreviousId::from_raw(index as u32));
+        if let Some(&index) = self.storage.previous_by_variable.get(&variable) {
+            let entry = self
+                .storage
+                .previous_values
+                .get(index as usize)
+                .expect("previous-value index points into its dense arena");
+            debug_assert_eq!(entry.clock, clock.index());
+            debug_assert_eq!(entry.role, role);
+            return Ok(PreviousId::from_raw(index));
         }
         let value_type = self.storage.variable(variable, provenance)?.value_type;
         let raw = checked_u32(
@@ -297,6 +304,8 @@ impl<'dae> Temporal<'_, 'dae> {
             value_type,
             provenance,
         });
+        let prior = self.storage.previous_by_variable.insert(variable, raw);
+        debug_assert!(prior.is_none());
         Ok(PreviousId::from_raw(raw))
     }
 }

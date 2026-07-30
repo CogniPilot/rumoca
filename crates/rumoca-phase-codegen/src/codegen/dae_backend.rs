@@ -7,7 +7,7 @@
 use rumoca_ir_dae as dae;
 use serde_json::{Value, json};
 
-pub(super) const TEMPLATE_SCHEMA_VERSION: u16 = 4;
+pub(super) const TEMPLATE_SCHEMA_VERSION: u16 = 5;
 
 #[derive(Debug, thiserror::Error)]
 pub(super) enum DaeBackendError {
@@ -86,6 +86,7 @@ fn project_variables(view: dae::DaeView<'_>) -> Result<Vec<Value>, DaeBackendErr
     let mut evaluator = rumoca_eval_dae::NumericEvaluator::new(view);
     let mut projected = Vec::with_capacity(view.variable_count());
     for (id, variable) in view.variables() {
+        let scalar_count = variable.value_type().scalar_count();
         let static_binding = matches!(
             variable.role(),
             dae::VariableRole::Parameter | dae::VariableRole::Constant
@@ -110,8 +111,10 @@ fn project_variables(view: dae::DaeView<'_>) -> Result<Vec<Value>, DaeBackendErr
                 "dimensions": variable.value_type().dimensions(),
             },
             "value_type_id": variable.value_type_id().index(),
-            "scalar_count": variable.scalar_count(),
-            "scalar_names": (0..variable.scalar_count())
+            "scalar_count": scalar_count,
+            "scalar_names": scalar_count
+                .into_iter()
+                .flat_map(|count| 0..count)
                 .filter_map(|scalar| variable.scalar_name(scalar))
                 .collect::<Vec<_>>(),
             "declaration": variable.declaration(),
@@ -211,22 +214,7 @@ fn project_functions(view: dae::DaeView<'_>) -> Vec<Value> {
                         "declaration": value.declaration(),
                     }))
                     .collect::<Vec<_>>(),
-                "definitions": (0..function.definition_count())
-                    .map(|ordinal| {
-                        let id = function
-                            .definition_id(ordinal)
-                            .expect("dense checked function definition identity resolves");
-                        let definition = view
-                            .function_definition(id)
-                            .expect("checked function definition resolves");
-                        json!({
-                            "ordinal": definition.id().ordinal(),
-                            "target": definition.target().ordinal(),
-                            "rhs": definition.rhs().index(),
-                            "provenance": definition.provenance(),
-                        })
-                    })
-                    .collect::<Vec<_>>(),
+                "definitions": project_function_definitions(view, function),
                 "statements": function
                     .statements()
                     .map(project_function_statement)
@@ -254,6 +242,33 @@ fn project_functions(view: dae::DaeView<'_>) -> Vec<Value> {
                     .map(|definition| definition.id().ordinal())
                     .collect::<Vec<_>>(),
                 "declaration": function.declaration(),
+            })
+        })
+        .collect()
+}
+
+fn project_function_definitions<'dae>(
+    view: dae::DaeView<'dae>,
+    function: dae::FunctionView<'dae>,
+) -> Vec<Value> {
+    let mut current = vec![None; function.values().count()];
+    (0..function.definition_count())
+        .map(|ordinal| {
+            let id = function
+                .definition_id(ordinal)
+                .expect("dense checked function definition identity resolves");
+            let definition = view
+                .function_definition(id)
+                .expect("checked function definition resolves");
+            let target = definition.target().ordinal() as usize;
+            let previous_target_definition = current[target];
+            current[target] = Some(definition.id().ordinal());
+            json!({
+                "ordinal": definition.id().ordinal(),
+                "target": target,
+                "rhs": definition.rhs().index(),
+                "previous_target_definition": previous_target_definition,
+                "provenance": definition.provenance(),
             })
         })
         .collect()

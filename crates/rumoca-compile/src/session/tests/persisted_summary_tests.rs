@@ -27,6 +27,22 @@ fn write_dependency_source_root(root: &std::path::Path) {
     );
 }
 
+fn write_ancestor_dependency_source_root(root: &std::path::Path) {
+    write_source_root_file(&root.join("package.mo"), "package Lib\nend Lib;\n");
+    write_source_root_file(
+        &root.join("Icons.mo"),
+        "within Lib;\npackage Icons\n  partial package ExamplesPackage\n  end ExamplesPackage;\nend Icons;\n",
+    );
+    write_source_root_file(
+        &root.join("Targets.mo"),
+        "within Lib;\npackage Targets\n  extends Lib.Icons.ExamplesPackage;\n  package Sub\n    model M\n      Real x;\n    end M;\n  end Sub;\nend Targets;\n",
+    );
+    write_source_root_file(
+        &root.join("Broken.mo"),
+        "within Lib;\nmodel Broken\n  MissingType value;\nend Broken;\n",
+    );
+}
+
 fn index_source_root_with_cache(
     session: &mut Session,
     cache_dir: &std::path::Path,
@@ -352,6 +368,63 @@ fn warm_source_root_restore_hydrates_resolved_aggregate_inputs_from_persisted_su
         strict_cache.model_fingerprint("Lib.Derived"),
         expected_fingerprint,
         "warm restore should hydrate strict compile dependency inputs from the same persisted source-root aggregate"
+    );
+}
+
+#[test]
+fn warm_source_root_restore_preserves_effective_ancestor_dependencies() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let source_root_dir = temp.path().join("Lib");
+    let cache_dir = temp.path().join("cache");
+    write_ancestor_dependency_source_root(&source_root_dir);
+
+    let mut first = Session::default();
+    let first_report = index_source_root_with_cache(&mut first, &cache_dir, &source_root_dir);
+    assert_eq!(
+        first_report.inserted_file_count, 4,
+        "initial load should persist every ancestor-dependency source file"
+    );
+
+    let mut second = Session::default();
+    let second_report = index_source_root_with_cache(&mut second, &cache_dir, &source_root_dir);
+    assert_eq!(
+        second_report.cache_status,
+        Some(crate::source_roots::SourceRootCacheStatus::Hit),
+        "warm reopen should reuse the parsed source-root cache"
+    );
+
+    let strict_cache = second
+        .query_state
+        .resolved
+        .dependency_fingerprints
+        .strict_compile_recovery
+        .as_ref()
+        .expect("warm restore should hydrate strict dependency fingerprints");
+    let dependencies = strict_cache.class_dependencies();
+    for class in ["Lib.Targets", "Lib.Targets.Sub", "Lib.Targets.Sub.M"] {
+        assert!(
+            dependencies
+                .get(class)
+                .is_some_and(|deps| deps.contains("Lib.Icons.ExamplesPackage")),
+            "warm effective dependency graph must propagate the ancestor-declared base to `{class}`"
+        );
+    }
+
+    let target = second
+        .resolve_strict_target("Lib.Targets.Sub.M")
+        .unwrap_or_else(|failure| {
+            panic!(
+                "warm strict resolution must complete the exact ancestor closure: {:?}",
+                failure.failures
+            )
+        });
+    assert!(
+        target
+            .resolved
+            .inner()
+            .get_class_by_qualified_name("Lib.Icons.ExamplesPackage")
+            .is_some(),
+        "the warm completed proof must retain the ancestor package's base"
     );
 }
 

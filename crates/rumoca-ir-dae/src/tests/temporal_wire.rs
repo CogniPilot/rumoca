@@ -10,16 +10,20 @@ fn exact_clocks_own_each_clocked_variable_once() {
 fn exact_clock_fixture() -> Dae {
     let source = TestSource::new(
         "discrete Real z; discrete Boolean m; when trigger then z = 1; m = true; end when; \
-         previous(z); terminal();",
+         when trigger then z = 1; end when; when other then z = 2; end when; \
+         previous(z); previous(z); terminal();",
     );
     let z_at = source.source("discrete Real z", 0);
     let m_at = source.source("discrete Boolean m", 0);
     let trigger_at = source.source("trigger", 0);
     let owner = source.source("when trigger then z = 1; m = true; end when", 0);
-    let previous_at = source.source("previous(z)", 0);
+    let repeated_owner = source.source("when trigger then z = 1; end when", 0);
+    let conflicting_owner = source.source("when other then z = 2; end when", 0);
+    let first_previous = source.source("previous(z)", 0);
+    let repeated_previous = source.source("previous(z)", 1);
     let terminal_at = source.source("terminal()", 0);
 
-    Dae::construct(source.map, |dae| {
+    let dae = Dae::construct(source.map, |dae| {
         let real = dae.types(|types| {
             types.intern(TypeId::new(0), ValueType::scalar(ScalarType::Real), z_at)
         })?;
@@ -60,17 +64,17 @@ fn exact_clock_fixture() -> Dae {
             let periodic = clocks.periodic(lattice, owner)?;
             let triggered = clocks.triggered(condition, trigger_at)?;
             let first_owner = clocks.own_discrete_real(periodic, z, owner)?;
-            let repeated_owner = clocks.own_discrete_real(periodic, z, owner)?;
-            assert_eq!(first_owner, repeated_owner);
+            let repeated_owner_id = clocks.own_discrete_real(periodic, z, repeated_owner)?;
+            assert_eq!(first_owner, repeated_owner_id);
             clocks.own_discrete_value(triggered, m, owner)?;
-            let duplicate = clocks.own_discrete_real(triggered, z, owner);
-            assert!(matches!(
-                duplicate,
-                Err(DaeConstructionError::DuplicateKey {
-                    kind: "clocked variable owner",
-                    ..
-                })
-            ));
+            let conflict = clocks
+                .own_discrete_real(triggered, z, conflicting_owner)
+                .expect_err("one variable cannot belong to two clocks");
+            assert_clock_conflict(
+                conflict,
+                (z.index(), periodic.index(), triggered.index()),
+                (owner, conflicting_owner),
+            );
             Ok(periodic)
         })?;
         dae.b1c([m], |topology| {
@@ -80,14 +84,14 @@ fn exact_clock_fixture() -> Dae {
             Ok(())
         })?;
         let (previous, terminal) = dae.temporal(|temporal| {
-            Ok((
-                temporal.previous_discrete_real(periodic, z, previous_at)?,
-                temporal.terminal(terminal_at)?,
-            ))
+            let first = temporal.previous_discrete_real(periodic, z, first_previous)?;
+            let repeated = temporal.previous_discrete_real(periodic, z, repeated_previous)?;
+            assert_eq!(first, repeated);
+            Ok((first, temporal.terminal(terminal_at)?))
         })?;
         dae.expressions(|expressions| {
             expressions
-                .at(previous_at)
+                .at(first_previous)
                 .coordinate(CoordinateInput::Previous(previous))?;
             expressions
                 .at(terminal_at)
@@ -95,7 +99,39 @@ fn exact_clock_fixture() -> Dae {
             Ok(())
         })
     })
-    .unwrap()
+    .unwrap();
+    assert_first_clock_provenance(&dae, owner, first_previous);
+    dae
+}
+
+fn assert_clock_conflict(
+    conflict: DaeConstructionError,
+    expected_ids: (u32, u32, u32),
+    expected_provenance: (DaeProvenance, DaeProvenance),
+) {
+    let DaeConstructionError::ConflictingClockOwnership {
+        variable,
+        established_clock,
+        attempted_clock,
+        established,
+        attempted,
+    } = conflict
+    else {
+        panic!("clock conflict has a typed construction error");
+    };
+    assert_eq!((variable, established_clock, attempted_clock), expected_ids);
+    assert_eq!((established, attempted), expected_provenance);
+}
+
+fn assert_first_clock_provenance(dae: &Dae, owner: DaeProvenance, first_previous: DaeProvenance) {
+    dae.inspect(|view| {
+        let ownership = view
+            .clock_ownership(view.clock_ownership_id(0).unwrap())
+            .unwrap();
+        assert_eq!(ownership.provenance(), owner);
+        let previous = view.previous(view.previous_id(0).unwrap()).unwrap();
+        assert_eq!(previous.provenance(), first_previous);
+    });
 }
 
 fn assert_clock_wire_round_trip(dae: &Dae) {
@@ -118,11 +154,29 @@ fn assert_clock_wire_round_trip(dae: &Dae) {
 
 #[test]
 fn clock_guarded_b1b_equation_requires_matching_clock_ownership() {
+    let error = clock_guarded_b1b_fixture(false).unwrap_err();
+    assert!(matches!(
+        error,
+        DaeConstructionError::MissingClockOwnership { .. }
+    ));
+}
+
+#[test]
+fn clock_guarded_b1b_equation_accepts_matching_clock_ownership() {
+    let dae =
+        clock_guarded_b1b_fixture(true).expect("matching owner proves the equation is clocked");
+    dae.inspect(|view| {
+        assert_eq!(view.clock_ownership_count(), 1);
+        assert_eq!(view.discrete_real_equation_count(), 1);
+    });
+}
+
+fn clock_guarded_b1b_fixture(with_ownership: bool) -> Result<Dae, DaeConstructionError> {
     let source = TestSource::new("discrete Real z; when sample(0, 1) then z = 1; end when;");
     let z_at = source.source("discrete Real z", 0);
     let sample_at = source.source("sample(0, 1)", 0);
     let assignment_at = source.source("z = 1", 0);
-    let error = Dae::construct(source.map, |dae| {
+    Dae::construct(source.map, |dae| {
         let real = dae.types(|types| {
             types.intern(TypeId::new(0), ValueType::scalar(ScalarType::Real), z_at)
         })?;
@@ -135,6 +189,13 @@ fn clock_guarded_b1b_equation_requires_matching_clock_ownership() {
                 sample_at,
             )
         })?;
+        if with_ownership {
+            dae.clocks(|clocks| {
+                clocks
+                    .own_discrete_real(clock, z, assignment_at)
+                    .map(|_| ())
+            })?;
+        }
         let guard = dae.conditions(|conditions| conditions.reserve(sample_at))?;
         dae.conditions(|conditions| {
             conditions.define(guard, ConditionInput::Clock(clock), sample_at)
@@ -151,11 +212,67 @@ fn clock_guarded_b1b_equation_requires_matching_clock_ownership() {
         })?;
         Ok(())
     })
-    .unwrap_err();
-    assert!(matches!(
-        error,
-        DaeConstructionError::MissingClockOwnership { .. }
-    ));
+}
+
+#[test]
+fn condition_owner_clock_cache_preserves_selection_policy() {
+    let source = TestSource::new("Clock c; Boolean b; c and b; c or b; not c; c or c;");
+    let clock_at = source.source("Clock c", 0);
+    let discrete_at = source.source("Boolean b", 0);
+    let and_at = source.source("c and b", 0);
+    let or_at = source.source("c or b", 0);
+    let not_at = source.source("not c", 0);
+    let shared_or_at = source.source("c or c", 0);
+    Dae::construct(source.map, |dae| {
+        let clock = dae.clocks(|clocks| {
+            clocks.periodic(
+                ClockLattice::new(ClockRational::ONE, ClockRational::ZERO).unwrap(),
+                clock_at,
+            )
+        })?;
+        let discrete = dae.expressions(|expressions| {
+            expressions
+                .at(discrete_at)
+                .literal(DaeLiteral::Boolean(true))
+        })?;
+        dae.conditions(|conditions| {
+            let clock_guard = conditions.reserve(clock_at)?;
+            conditions.define(clock_guard, ConditionInput::Clock(clock), clock_at)?;
+            let discrete_guard = conditions.reserve(discrete_at)?;
+            conditions.define(
+                discrete_guard,
+                ConditionInput::Discrete(discrete),
+                discrete_at,
+            )?;
+            for (input, at, expected) in [
+                (
+                    ConditionInput::And(clock_guard, discrete_guard),
+                    and_at,
+                    Some(clock.index()),
+                ),
+                (ConditionInput::Or(clock_guard, discrete_guard), or_at, None),
+                (ConditionInput::Not(clock_guard), not_at, None),
+                (
+                    ConditionInput::Or(clock_guard, clock_guard),
+                    shared_or_at,
+                    Some(clock.index()),
+                ),
+            ] {
+                let condition = conditions.reserve(at)?;
+                conditions.define(condition, input, at)?;
+                assert_eq!(
+                    crate::conditions::condition_owner_clock(
+                        conditions.storage,
+                        condition.index(),
+                        at
+                    )?,
+                    expected
+                );
+            }
+            Ok(())
+        })
+    })
+    .expect("condition clock policy is cached during checked construction");
 }
 
 fn assert_clock_views(view: DaeView<'_>) {

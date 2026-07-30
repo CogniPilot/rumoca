@@ -454,7 +454,7 @@ mod tests {
                 flat::RecordInstance {
                     component_ref,
                     source_span: test_span(),
-                    canonical_type_id: rumoca_core::TypeId::new(9),
+                    effective_type_id: rumoca_core::TypeId::new(9),
                     type_name: "R".to_string(),
                     type_def_id: record_type_def_id,
                     dims: Vec::new(),

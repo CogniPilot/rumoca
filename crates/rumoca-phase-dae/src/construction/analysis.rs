@@ -177,6 +177,30 @@ pub(super) enum FunctionLoopLowering {
     TotalArrayDefinition,
 }
 
+pub(super) fn required_statement_span(
+    statement: &rumoca_core::Statement,
+    owner: impl Into<String>,
+) -> Result<Span, ToDaeError> {
+    let kind = match statement {
+        rumoca_core::Statement::Empty { .. } => "empty",
+        rumoca_core::Statement::Assignment { .. } => "assignment",
+        rumoca_core::Statement::Return { .. } => "return",
+        rumoca_core::Statement::Break { .. } => "break",
+        rumoca_core::Statement::For { .. } => "for",
+        rumoca_core::Statement::While { .. } => "while",
+        rumoca_core::Statement::If { .. } => "if",
+        rumoca_core::Statement::When { .. } => "when",
+        rumoca_core::Statement::FunctionCall { .. } => "function-call",
+        rumoca_core::Statement::Reinit { .. } => "reinit",
+        rumoca_core::Statement::Assert { .. } => "assert",
+    };
+    statement
+        .source_span()
+        .ok_or_else(|| ToDaeError::MissingProvenance {
+            owner: format!("{} ({kind} statement occurrence)", owner.into()),
+        })
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(super) enum PlannedRole {
     Parameter,
@@ -562,7 +586,6 @@ fn validate_model_algorithm(
         states,
         constants,
         sample_lattices,
-        algorithm.span,
     )
 }
 
@@ -575,7 +598,6 @@ fn validate_algorithm_statements(
     states: &HashSet<VarName>,
     constants: &EvalContext,
     sample_lattices: &mut Vec<(Span, ClockLattice)>,
-    owner_span: Span,
 ) -> Result<(), ToDaeError> {
     for statement in statements {
         match statement {
@@ -636,7 +658,6 @@ fn validate_algorithm_statements(
                         states,
                         constants,
                         sample_lattices,
-                        owner_span,
                     )?;
                 }
                 if let Some(statements) = else_block {
@@ -646,7 +667,6 @@ fn validate_algorithm_statements(
                         states,
                         constants,
                         sample_lattices,
-                        owner_span,
                     )?;
                 }
             }
@@ -674,7 +694,6 @@ fn validate_algorithm_statements(
                     states,
                     constants,
                     sample_lattices,
-                    owner_span,
                 )?;
             }
             rumoca_core::Statement::When { blocks, span } => {
@@ -700,7 +719,6 @@ fn validate_algorithm_statements(
                         states,
                         constants,
                         sample_lattices,
-                        owner_span,
                     )?;
                 }
             }
@@ -733,11 +751,13 @@ fn validate_algorithm_statements(
                 }
             }
             _ => {
+                let span =
+                    required_statement_span(statement, "unsupported model algorithm statement")?;
                 return Err(ToDaeError::unsupported_algorithm(
                     "model",
                     "statement must be an assignment, function-call assignment, or conditional \
                      discrete update",
-                    statement.source_span().unwrap_or(owner_span),
+                    span,
                 ));
             }
         }
@@ -978,13 +998,15 @@ fn validate_function_statements(
                 context,
             )?),
             _ => {
+                let span =
+                    required_statement_span(statement, "unsupported function body statement")?;
                 return Err(ToDaeError::unsupported_flat(
                     "function statement",
                     format!(
                         "`{}` contains a statement without a checked DAE owner",
                         context.function.name
                     ),
-                    statement.source_span().unwrap_or(context.function.span),
+                    span,
                 ));
             }
         }

@@ -46,25 +46,32 @@ impl Storage {
         ty: ValueType,
         at: DaeProvenance,
     ) -> Result<ValueTypeId<'dae>, DaeConstructionError> {
-        check_type_capacity(&ty, at)?;
         if flat_type.is_unknown() {
             return Err(DaeConstructionError::InvalidEffectiveTypeId {
                 type_id: flat_type,
                 span: at.span(),
             });
         }
-        if let Some(index) = self
-            .flat_type_ids
-            .iter()
-            .zip(&self.value_types)
-            .position(|(candidate, value_type)| *candidate == Some(flat_type) && value_type == &ty)
-        {
-            return Ok(ValueTypeId::from_raw(index as u32));
+        if let Some(&raw) = self.flat_type_lookup.get(&flat_type) {
+            let established_type = &self.value_types[raw as usize];
+            if established_type == &ty {
+                return Ok(ValueTypeId::from_raw(raw));
+            }
+            return Err(DaeConstructionError::ConflictingEffectiveType {
+                type_id: flat_type,
+                established_type: Box::new(established_type.clone()),
+                attempted_type: Box::new(ty),
+                established: self.value_type_provenance[raw as usize],
+                attempted: at,
+            });
         }
+        check_type_capacity(&ty, at)?;
         let raw = checked_u32(self.value_types.len(), "value type arena", at)?;
+        self.structural_type_lookup.entry(ty.clone()).or_insert(raw);
         self.value_types.push(ty);
         self.flat_type_ids.push(Some(flat_type));
         self.value_type_provenance.push(at);
+        self.flat_type_lookup.insert(flat_type, raw);
         Ok(ValueTypeId::from_raw(raw))
     }
 
@@ -73,15 +80,12 @@ impl Storage {
         ty: ValueType,
         at: DaeProvenance,
     ) -> Result<ValueTypeId<'dae>, DaeConstructionError> {
-        check_type_capacity(&ty, at)?;
-        if let Some(index) = self
-            .value_types
-            .iter()
-            .position(|candidate| candidate == &ty)
-        {
-            return Ok(ValueTypeId::from_raw(index as u32));
+        if let Some(&raw) = self.structural_type_lookup.get(&ty) {
+            return Ok(ValueTypeId::from_raw(raw));
         }
+        check_type_capacity(&ty, at)?;
         let raw = checked_u32(self.value_types.len(), "value type arena", at)?;
+        self.structural_type_lookup.insert(ty.clone(), raw);
         self.value_types.push(ty);
         self.flat_type_ids.push(None);
         self.value_type_provenance.push(at);

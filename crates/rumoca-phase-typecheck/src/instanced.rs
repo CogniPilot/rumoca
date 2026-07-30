@@ -15,7 +15,7 @@ impl TypeChecker {
             return;
         };
         self.populate_overlay_type_roots(tree, overlay, &type_table);
-        self.resolve_overlay_component_types(overlay, &type_table);
+        self.resolve_overlay_component_types(tree, overlay, &type_table);
         if !self.initialize_instanced_modifier_member_types(tree, overlay, model_name, &type_table)
         {
             return;
@@ -32,7 +32,82 @@ impl TypeChecker {
         self.evaluate_all_dimensions_multi_pass(tree, overlay, &record_aliases);
         self.validate_dimensions(overlay);
         self.check_instanced_equations(tree, overlay, model_name, &type_table);
+        if !self.has_errors() {
+            self.finalize_effective_types(overlay, &type_table);
+        }
         self.flush_eval_warnings();
+    }
+
+    /// Mint one deterministic identity for each resolved nominal-type/shape pair.
+    ///
+    /// This is deliberately the final typecheck transition: equation checking
+    /// still addresses the nominal `TypeTable`, while successful consumers see
+    /// only concrete effective identities.
+    fn finalize_effective_types(&mut self, overlay: &mut InstanceOverlay, type_table: &TypeTable) {
+        overlay.effective_types.clear();
+        let mut interned = HashMap::<EffectiveType, TypeId>::new();
+        let mut catalog = rumoca_ir_ast::AstIndexMap::<TypeId, EffectiveType>::default();
+        let mut assignments = Vec::with_capacity(overlay.components.len());
+        let nominal_type_count = type_table.len();
+
+        for (instance_id, data) in &overlay.components {
+            let canonical_type = overlay
+                .type_roots
+                .get(&data.type_id)
+                .copied()
+                .unwrap_or(data.type_id);
+            let effective =
+                match EffectiveType::new(data.type_id, canonical_type, data.dims.clone()) {
+                    Ok(effective) => effective,
+                    Err(error) => {
+                        self.emit_effective_type_error(data, error.to_string());
+                        return;
+                    }
+                };
+            let Some(effective_id) =
+                intern_effective_type(effective, nominal_type_count, &mut interned, &mut catalog)
+            else {
+                self.emit_effective_type_error(
+                    data,
+                    "the effective type identity arena exceeded the u32 domain",
+                );
+                return;
+            };
+            assignments.push((*instance_id, effective_id));
+        }
+
+        for (instance_id, effective_id) in assignments {
+            let data = overlay
+                .components
+                .get_mut(&instance_id)
+                .expect("effective type input came from this overlay");
+            data.type_id = effective_id;
+            let canonical_type = catalog[&effective_id].canonical_type();
+            overlay.type_roots.insert(effective_id, canonical_type);
+        }
+        overlay.effective_types = catalog;
+    }
+
+    fn emit_effective_type_error(
+        &mut self,
+        data: &rumoca_ir_ast::InstanceData,
+        reason: impl Into<String>,
+    ) {
+        let Some(span) =
+            self.diagnostic_location_span(&data.source_location, "effective type identity")
+        else {
+            return;
+        };
+        self.emit_typecheck_error(TypeCheckError::phase_diagnostic(
+            "ET000",
+            format!(
+                "cannot construct the effective type of `{}`: {}",
+                data.qualified_name.to_flat_string(),
+                reason.into()
+            ),
+            "concrete component type declared here",
+            span,
+        ));
     }
 
     fn initialize_instanced_context(&mut self, tree: &ClassTree) -> Option<TypeTable> {
@@ -578,6 +653,66 @@ impl TypeChecker {
             self.current_call_type_overrides = previous_call_type_overrides;
         }
     }
+}
+
+fn allocate_effective_type_id(nominal_type_count: usize, effective_count: usize) -> Option<TypeId> {
+    let index = nominal_type_count.checked_add(effective_count)?;
+    let index = u32::try_from(index).ok()?;
+    (index != TypeId::UNKNOWN.index()).then(|| TypeId::new(index))
+}
+
+fn intern_effective_type(
+    effective: EffectiveType,
+    nominal_type_count: usize,
+    interned: &mut HashMap<EffectiveType, TypeId>,
+    catalog: &mut rumoca_ir_ast::AstIndexMap<TypeId, EffectiveType>,
+) -> Option<TypeId> {
+    if let Some(id) = interned.get(&effective) {
+        return Some(*id);
+    }
+    let id = allocate_effective_type_id(nominal_type_count, catalog.len())?;
+    interned.insert(effective.clone(), id);
+    catalog.insert(id, effective);
+    Some(id)
+}
+
+pub(super) fn overlay_component_type_specializations(
+    tree: &ClassTree,
+    overlay: &InstanceOverlay,
+) -> HashMap<ComponentPath, function_signatures::CallTypeOverrides> {
+    overlay
+        .classes
+        .values()
+        .filter(|class_data| !class_data.class_overrides.is_empty())
+        .filter_map(|class_data| {
+            let class_def_id = class_data.class_def_id?;
+            let overrides = function_signatures::build_call_type_overrides(
+                tree,
+                class_def_id,
+                Some(&class_data.class_overrides),
+            );
+            Some((class_data.qualified_name.to_component_path(), overrides))
+        })
+        .collect()
+}
+
+pub(super) fn specialized_instance_type_def_id(
+    data: &rumoca_ir_ast::InstanceData,
+    specializations: &HashMap<ComponentPath, function_signatures::CallTypeOverrides>,
+) -> Option<DefId> {
+    let declaration_type = data.type_def_id?;
+    let alias = data.type_reference_root_def_id?;
+    let mut scope = data.qualified_name.to_component_path().parent();
+    while let Some(current) = scope {
+        if let Some(overrides) = specializations.get(&current)
+            && let Some(effective) =
+                overrides.specialized_declared_type_by_alias_def_id(alias, declaration_type)
+        {
+            return Some(effective);
+        }
+        scope = current.parent();
+    }
+    None
 }
 
 fn call_type_overrides_for_instance_scope(

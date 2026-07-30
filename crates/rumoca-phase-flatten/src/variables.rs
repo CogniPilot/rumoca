@@ -184,7 +184,7 @@ pub(crate) fn flat_output_type_name(
 /// ensuring that imported functions are correctly looked up by name.
 pub(crate) fn create_flat_variable(
     instance: &ast::InstanceData,
-    canonical_type_id: TypeId,
+    effective_type_id: TypeId,
     tree: &ast::ClassTree,
     class_index: &ast::ClassDefIndex<'_>,
     imports: &VariableImportContext,
@@ -243,7 +243,7 @@ pub(crate) fn create_flat_variable(
         name,
         component_ref,
         source_span,
-        type_id: canonical_type_id,
+        type_id: effective_type_id,
         // Type prefixes from component declaration (MLS §4.4.2)
         variability: instance.variability.clone(),
         causality: instance.causality.clone(),
@@ -278,7 +278,7 @@ pub(crate) fn create_record_instance(
     instance: &ast::InstanceData,
     tree: &ast::ClassTree,
     class_index: &ast::ClassDefIndex<'_>,
-    canonical_type_id: TypeId,
+    effective_type_id: TypeId,
 ) -> Result<Option<flat::RecordInstance>, FlattenError> {
     let Some(type_def_id) = instance.type_def_id else {
         return Ok(None);
@@ -299,7 +299,7 @@ pub(crate) fn create_record_instance(
     Ok(Some(flat::RecordInstance {
         component_ref,
         source_span,
-        canonical_type_id,
+        effective_type_id,
         type_name: instance.type_name.clone(),
         type_def_id,
         dims: instance.dims.clone(),

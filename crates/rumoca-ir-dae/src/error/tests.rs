@@ -3,7 +3,7 @@ use std::error::Error as _;
 use rumoca_core::{SourceId, Span};
 
 use super::*;
-use crate::DaeGeneration;
+use crate::{DaeGeneration, DaeProvenance};
 
 struct Case {
     error: DaeConstructionError,
@@ -295,7 +295,33 @@ fn ownership_messages_are_exact() {
             message: "variable identity 3 is not owned by clock identity 9",
             span: Some(at),
         },
+        Case {
+            error: DaeConstructionError::ConflictingClockOwnership {
+                variable: 3,
+                established_clock: 4,
+                attempted_clock: 9,
+                established: DaeProvenance::source(at).unwrap(),
+                attempted: DaeProvenance::source(at).unwrap(),
+            },
+            message: "variable identity 3 is already owned by clock identity 4, not clock identity 9",
+            span: Some(at),
+        },
     ]);
+}
+
+#[test]
+fn variable_type_message_is_exact() {
+    let at = span();
+    assert_cases([Case {
+        error: DaeConstructionError::InvalidVariableType {
+            name: VarName::new("plant.enabled"),
+            role: VariableRole::State,
+            found: ScalarType::Boolean,
+            span: at,
+        },
+        message: "variable `plant.enabled` of type Boolean cannot be a State DAE coordinate",
+        span: Some(at),
+    }]);
 }
 
 #[test]

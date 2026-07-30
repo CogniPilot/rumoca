@@ -370,7 +370,7 @@ fn rebuild_holonomic_constraint(
     });
     rebuilt
         .map(|dae| (dae, manifold))
-        .map_err(|error| construction_failure(model, error))
+        .map_err(construction_failure)
 }
 
 fn rebuild_with_state_demotion(
@@ -441,7 +441,7 @@ fn rebuild_with_state_demotion(
             )
         })
     });
-    rebuilt.map_err(|error| construction_failure(model, error))
+    rebuilt.map_err(construction_failure)
 }
 
 fn explicit_derivative_definitions(view: dae::DaeView<'_>) -> Vec<Option<u32>> {
@@ -483,11 +483,8 @@ fn explicit_derivative_definitions(view: dae::DaeView<'_>) -> Vec<Option<u32>> {
     definitions
 }
 
-fn construction_failure(model: &dae::Dae, error: dae::DaeConstructionError) -> StructuralError {
-    let span = error
-        .source_span()
-        .or_else(|| model.inspect(|view| view.responsible_span()));
-    match span {
+fn construction_failure(error: dae::DaeConstructionError) -> StructuralError {
+    match error.source_span() {
         Some(span) => StructuralError::ContractViolation {
             reason: format!("checked index-reduction reconstruction failed: {error}"),
             span,

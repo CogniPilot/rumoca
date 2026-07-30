@@ -1541,3 +1541,40 @@ fn unsupported_symbolic_derivative_preserves_the_original_singular_error() {
     };
     assert!(matches!(error, StructuralError::Singular { .. }));
 }
+
+#[test]
+fn source_free_reconstruction_failure_has_no_diagnostic_label() {
+    use rumoca_core::PhaseError;
+
+    let error = construction_failure(dae::DaeConstructionError::DuplicateTopology {
+        kind: "clock ownership",
+        span: None,
+    });
+    assert!(matches!(
+        error,
+        StructuralError::UnspannedContractViolation { .. }
+    ));
+    let diagnostic = error.to_diagnostic();
+    assert_eq!(
+        diagnostic.code.as_deref(),
+        Some(crate::diagnostic_codes::ES014_CONTRACT_VIOLATION)
+    );
+    assert!(diagnostic.labels.is_empty());
+}
+
+#[test]
+fn source_bearing_reconstruction_failure_retains_its_exact_span() {
+    let span = Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("reconstruction_failure.mo"),
+        17,
+        24,
+    );
+    let error = construction_failure(dae::DaeConstructionError::ShapeMismatch { span });
+    assert!(matches!(
+        error,
+        StructuralError::ContractViolation {
+            span: retained,
+            ..
+        } if retained == span
+    ));
+}

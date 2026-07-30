@@ -193,7 +193,7 @@ fn casadi_simulate(
         rumoca_sim::lower_solve_problem(dae).map_err(|error| format!("lower solve: {error}"))?;
     let artifacts = rumoca_sim::lower_solve_artifacts(&problem)
         .map_err(|error| format!("lower solve artifacts: {error}"))?;
-    let renderer = SolveTemplateRenderer::new_with_dae(&problem, &artifacts, dae.clone())
+    let renderer = SolveTemplateRenderer::new_with_dae(&problem, &artifacts, dae)
         .map_err(|error| format!("render context: {error}"))?;
     let template = templates::builtin_template_source("casadi-solve", "casadi_solve.py.jinja")
         .ok_or_else(|| "checked casadi-solve template is missing".to_string())?;

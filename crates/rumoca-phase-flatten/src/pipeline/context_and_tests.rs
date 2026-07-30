@@ -1697,6 +1697,7 @@ use super::function_overrides_and_dims::*;
 pub(crate) struct ComponentInstanceProcess<'a, 'tree> {
     pub(crate) flat: &'a mut Model,
     pub(crate) instance_data: &'a rumoca_ir_ast::InstanceData,
+    pub(crate) effective_type_id: rumoca_core::TypeId,
     pub(crate) canonical_type_id: rumoca_core::TypeId,
     pub(crate) component_override_map: &'a ComponentOverrideMap,
     pub(crate) tree: &'a rumoca_ir_ast::ClassTree,
@@ -1723,7 +1724,7 @@ pub(crate) fn process_component_instance(
             request.instance_data,
             request.tree,
             request.class_index,
-            request.canonical_type_id,
+            request.effective_type_id,
         )? {
             if !request.flat.record_types.contains_key(&record.type_def_id) {
                 let record_type = variables::create_record_type(
@@ -1751,7 +1752,7 @@ pub(crate) fn process_component_instance(
     )?;
     let mut flat_var = variables::create_flat_variable(
         request.instance_data,
-        request.canonical_type_id,
+        request.effective_type_id,
         request.tree,
         request.class_index,
         &import_context,

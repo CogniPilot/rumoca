@@ -52,6 +52,8 @@ fn total_conditional_targets(
     let mut targets = Vec::with_capacity(plans.len());
     let mut assigned = HashSet::new();
     for (statement, plan) in statements.iter().zip(plans) {
+        let statement_span =
+            required_statement_span(statement, "function conditional branch statement")?;
         let (
             rumoca_core::Statement::Assignment { value, .. },
             FunctionStatementPlan::Assignment(assignment),
@@ -63,7 +65,7 @@ fn total_conditional_targets(
                     "`{}` requires direct whole-value assignments in every checked branch",
                     context.function.name
                 ),
-                statement.source_span().unwrap_or(span),
+                statement_span,
             ));
         };
         let target = assignment.target();
@@ -79,7 +81,7 @@ fn total_conditional_targets(
                     "`{}` branch assignment reads earlier branch-local value `{dependency}`",
                     context.function.name
                 ),
-                statement.source_span().unwrap_or(span),
+                statement_span,
             ));
         }
         if !assigned.insert(target.clone()) {
@@ -89,7 +91,7 @@ fn total_conditional_targets(
                     "`{}` assigns `{target}` more than once in one conditional branch",
                     context.function.name
                 ),
-                statement.source_span().unwrap_or(span),
+                statement_span,
             ));
         }
         targets.push(target.clone());

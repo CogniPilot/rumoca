@@ -1218,15 +1218,20 @@ host_callbacks = false
             if !family_aware {
                 continue;
             }
-            assert!(
-                target
-                    .templates
-                    .iter()
-                    .any(|template| template.source.contains("dae.modelica.equations")),
-                "built-in target '{}' declares structured family ownership but no template \
-                 consumes the checked owner projection",
-                target.name
-            );
+            for owner_path in [
+                "dae.systems.continuous.owners",
+                "dae.systems.initialization.owners",
+            ] {
+                assert!(
+                    target
+                        .templates
+                        .iter()
+                        .any(|template| template.source.contains(owner_path)),
+                    "built-in target '{}' declares structured family ownership but no template \
+                     consumes checked owner projection `{owner_path}`",
+                    target.name
+                );
+            }
             assert!(
                 target
                     .templates

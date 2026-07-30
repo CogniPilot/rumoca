@@ -94,3 +94,32 @@ fn dae_model_query_cache_is_reused_by_compile_and_diagnostics() {
     let rebuilt_diagnostics = session.compile_model_diagnostics("Target");
     assert_diagnostics_lack_code(&rebuilt_diagnostics, "ED003");
 }
+
+#[test]
+fn compile_cache_shares_one_checked_dae_root() {
+    let mut session = Session::default();
+    session
+        .add_document(
+            "target.mo",
+            "model Target\n  Real x(start = 1.0);\nequation\n  der(x) = -x;\nend Target;\n",
+        )
+        .expect("target should parse");
+
+    let first = session
+        .compile_model_phases("Target")
+        .expect("first compile should return a phase result");
+    let second = session
+        .compile_model_phases("Target")
+        .expect("cached compile should return a phase result");
+
+    let PhaseResult::Success(first) = first else {
+        panic!("first compile should succeed");
+    };
+    let PhaseResult::Success(second) = second else {
+        panic!("cached compile should succeed");
+    };
+    assert!(
+        Arc::ptr_eq(&first.dae, &second.dae),
+        "cache hits must share the canonical checked DAE instead of copying its arenas"
+    );
+}

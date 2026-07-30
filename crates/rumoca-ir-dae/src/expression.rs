@@ -28,6 +28,19 @@ pub enum ScalarType {
     Record,
 }
 
+impl std::hash::Hash for ScalarType {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        let tag = match self {
+            Self::Real => 0,
+            Self::Integer => 1,
+            Self::Boolean => 2,
+            Self::String => 3,
+            Self::Record => 4,
+        };
+        state.write_u8(tag);
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExpressionVariability {
@@ -43,7 +56,7 @@ impl ScalarType {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ValueType {
     scalar: ScalarType,
@@ -52,7 +65,7 @@ pub struct ValueType {
     record_fields: Box<[RecordFieldType]>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RecordFieldType {
     name: rumoca_core::VarName,

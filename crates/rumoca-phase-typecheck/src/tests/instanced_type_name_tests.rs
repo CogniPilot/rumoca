@@ -243,7 +243,7 @@ fn test_typecheck_instanced_uses_effective_projected_field_type() {
         end Holder;
         model Test
             Holder holder;
-            ExtendedPayload projected;
+            ExtendedPayload projected = holder.payload;
         end Test;
     "#;
     let parsed = parse(source);
@@ -252,6 +252,9 @@ fn test_typecheck_instanced_uses_effective_projected_field_type() {
     let test = tree
         .get_class_by_qualified_name("Test")
         .expect("Test class");
+    let holder = tree
+        .get_class_by_qualified_name("Holder")
+        .expect("holder record");
     let extended = tree
         .get_class_by_qualified_name("ExtendedPayload")
         .expect("extended record");
@@ -268,6 +271,12 @@ fn test_typecheck_instanced_uses_effective_projected_field_type() {
     overlay.add_component(InstanceData {
         instance_id: payload_id,
         qualified_name: QualifiedName::from_dotted("holder.payload"),
+        source_location: holder
+            .components
+            .get("payload")
+            .expect("payload field")
+            .location
+            .clone(),
         type_name: "ExtendedPayload".to_string(),
         type_def_id: extended.def_id,
         is_primitive: false,
@@ -286,11 +295,7 @@ fn test_typecheck_instanced_uses_effective_projected_field_type() {
         source_location: projected.location.clone(),
         type_name: projected.type_name.to_string(),
         type_def_id: projected.type_def_id,
-        binding: Some(Expression::FieldAccess {
-            base: Arc::new(Expression::ComponentReference(make_comp_ref("holder"))),
-            field: "payload".to_string(),
-            span: rumoca_core::Span::DUMMY,
-        }),
+        binding: projected.binding.clone(),
         is_primitive: false,
         ..Default::default()
     });

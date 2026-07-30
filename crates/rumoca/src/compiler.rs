@@ -37,6 +37,7 @@
 use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
+use std::sync::Arc;
 
 use rumoca_compile::analysis as dae_analysis;
 use rumoca_compile::codegen::{
@@ -62,7 +63,7 @@ use crate::error::CompilerError;
 #[derive(Debug)]
 pub struct CompilationResult {
     /// The DAE representation.
-    pub dae: Dae,
+    pub dae: Arc<Dae>,
     /// Detailed continuous balance inputs validated during DAE construction.
     pub balance_detail: dae_analysis::BalanceDetail,
     /// The flat model (intermediate).
@@ -132,7 +133,7 @@ fn build_solve_template_renderer(dae_model: &Dae) -> Result<SolveTemplateRendere
         .map_err(|err| CompilerError::TemplateError(CodegenError::template(err.to_string())))?;
     let artifacts = lower_solve_artifacts(&problem)
         .map_err(|err| CompilerError::TemplateError(CodegenError::template(err.to_string())))?;
-    SolveTemplateRenderer::new_owned_with_dae(problem, artifacts, dae_model.clone())
+    SolveTemplateRenderer::new_owned_with_dae(problem, artifacts, dae_model)
         .map_err(CompilerError::TemplateError)
 }
 
@@ -147,7 +148,7 @@ fn build_solve_template_renderer_without_dae(
 
 impl CompilationResult {
     pub fn new(
-        dae: Dae,
+        dae: Arc<Dae>,
         balance_detail: dae_analysis::BalanceDetail,
         flat: FlatModel,
         resolved: ResolvedTree,

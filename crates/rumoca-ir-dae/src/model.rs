@@ -3,6 +3,7 @@ mod function_checks;
 mod function_reads;
 mod storage;
 mod value_types;
+mod variable_types;
 mod view;
 mod wire;
 
@@ -60,6 +61,7 @@ pub(crate) use function_reads::{
     FunctionReadFact, FunctionReadMergeError, FunctionReadSet, FunctionReadSets,
 };
 pub use value_types::ValueTypes;
+use variable_types::VariableTypeCapability;
 
 pub use view::{
     ContinuousOwnerView, CoordinateView, DaeView, DomainView, ExpressionKind, ExpressionOperands,
@@ -292,11 +294,13 @@ struct DomainEntry {
     provenance: DaeProvenance,
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Default)]
 pub(crate) struct Storage {
     pub(crate) value_types: Vec<ValueType>,
     flat_type_ids: Vec<Option<TypeId>>,
     value_type_provenance: Vec<DaeProvenance>,
+    flat_type_lookup: rustc_hash::FxHashMap<TypeId, u32>,
+    structural_type_lookup: rustc_hash::FxHashMap<ValueType, u32>,
     pub(crate) variables: Vec<VariableEntry>,
     pub(crate) functions: Vec<FunctionEntry>,
     pub(crate) function_folds: Vec<FunctionFoldEntry>,
@@ -317,12 +321,15 @@ pub(crate) struct Storage {
     pub(crate) equation_family_bodies: Vec<u32>,
     pub(crate) relations: Vec<RelationEntry>,
     pub(crate) conditions: Vec<ConditionEntry>,
+    pub(crate) condition_owner_clocks: Vec<Option<u32>>,
     pub(crate) roots: Vec<RootEntry>,
     pub(crate) time_events: Vec<TimeEventEntry>,
     pub(crate) event_actions: Vec<EventActionEntry>,
     pub(crate) clocks: Vec<ClockEntry>,
     pub(crate) clock_ownerships: Vec<ClockOwnershipEntry>,
+    pub(crate) clock_ownership_by_variable: rustc_hash::FxHashMap<u32, u32>,
     pub(crate) previous_values: Vec<PreviousEntry>,
+    pub(crate) previous_by_variable: rustc_hash::FxHashMap<u32, u32>,
     pub(crate) terminals: Vec<TerminalEntry>,
     pub(crate) delays: Vec<DelayEntry>,
     pub(crate) function_read_sets: FunctionReadSets,
@@ -335,7 +342,7 @@ pub(crate) struct Storage {
     pub(crate) discrete_value_topology_complete: bool,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, PartialEq)]
 struct FrozenStorage {
     value_types: Box<[ValueType]>,
     flat_type_ids: Box<[Option<TypeId>]>,
@@ -371,7 +378,7 @@ struct FrozenStorage {
 }
 
 /// Immutable, valid-by-construction schema-v11 DAE.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Serialize)]
 pub struct Dae {
     schema_version: u16,
     source_map: SourceMap,
@@ -705,8 +712,22 @@ impl<'dae> Variables<'_, 'dae> {
         declaration: DaeProvenance,
     ) -> Result<VariableId<'dae>, DaeConstructionError> {
         check_provenance(self.source_map, declaration)?;
-        self.storage
-            .value_type_at(value_type.index(), declaration)?;
+        let capability = self.storage.variable_type_capability(
+            &name,
+            role,
+            variability,
+            value_type,
+            declaration,
+        )?;
+        self.insert_reservation(name, capability, declaration)
+    }
+
+    fn insert_reservation(
+        &mut self,
+        name: VarName,
+        capability: VariableTypeCapability<'dae>,
+        declaration: DaeProvenance,
+    ) -> Result<VariableId<'dae>, DaeConstructionError> {
         if self
             .storage
             .variables
@@ -722,9 +743,9 @@ impl<'dae> Variables<'_, 'dae> {
         let raw = checked_u32(self.storage.variables.len(), "variable arena", declaration)?;
         self.storage.variables.push(VariableEntry {
             name,
-            role,
-            variability,
-            value_type: value_type.index(),
+            role: capability.role(),
+            variability: capability.variability(),
+            value_type: capability.value_type().index(),
             declaration,
             attributes: None,
         });

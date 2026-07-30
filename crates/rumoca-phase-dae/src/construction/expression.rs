@@ -272,10 +272,12 @@ fn lower_call_expression<'dae>(
     else {
         unreachable!("call lowering is selected from a function call")
     };
-    match name.as_str() {
-        "previous" => lower_previous(construction, symbols, binders, args, provenance),
-        "hold" => lower_hold(construction, symbols, binders, args, provenance),
-        _ => lower_function_call(
+    match classify_function_call(name, *is_constructor) {
+        FunctionCallLowering::Previous => {
+            lower_previous(construction, symbols, binders, args, provenance)
+        }
+        FunctionCallLowering::Hold => lower_hold(construction, symbols, binders, args, provenance),
+        FunctionCallLowering::Constructor | FunctionCallLowering::Registry => lower_function_call(
             construction,
             symbols,
             binders,
@@ -284,6 +286,29 @@ fn lower_call_expression<'dae>(
             *is_constructor,
             provenance,
         ),
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum FunctionCallLowering {
+    Previous,
+    Hold,
+    Constructor,
+    Registry,
+}
+
+pub(super) fn classify_function_call(
+    name: &rumoca_core::Reference,
+    is_constructor: bool,
+) -> FunctionCallLowering {
+    if is_constructor {
+        FunctionCallLowering::Constructor
+    } else {
+        match name.as_str() {
+            "previous" => FunctionCallLowering::Previous,
+            "hold" => FunctionCallLowering::Hold,
+            _ => FunctionCallLowering::Registry,
+        }
     }
 }
 

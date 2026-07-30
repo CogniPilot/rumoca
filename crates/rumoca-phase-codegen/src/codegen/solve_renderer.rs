@@ -34,10 +34,9 @@ impl SolveTemplateRenderer {
     pub fn new_with_dae(
         problem: &solve::SolveProblem,
         artifacts: &solve::SolveArtifacts,
-        dae_model: dae::Dae,
+        dae_model: &dae::Dae,
     ) -> Result<Self, CodegenError> {
-        let dae_model = std::sync::Arc::new(dae_model);
-        let dae_entry = checked_dae_template_value(&dae_model)?;
+        let dae_entry = checked_dae_template_value(dae_model)?;
         Ok(Self {
             context: solve_render_context_value_with_dae(problem, artifacts, None, dae_entry)?,
         })
@@ -49,17 +48,9 @@ impl SolveTemplateRenderer {
     pub fn new_owned_with_dae(
         problem: solve::SolveProblem,
         artifacts: solve::SolveArtifacts,
-        dae_model: dae::Dae,
+        dae_model: &dae::Dae,
     ) -> Result<Self, CodegenError> {
-        Self::new_owned_with_shared_dae(problem, artifacts, std::sync::Arc::new(dae_model))
-    }
-
-    pub fn new_owned_with_shared_dae(
-        problem: solve::SolveProblem,
-        artifacts: solve::SolveArtifacts,
-        dae_model: std::sync::Arc<dae::Dae>,
-    ) -> Result<Self, CodegenError> {
-        let dae_entry = checked_dae_template_value(&dae_model)?;
+        let dae_entry = checked_dae_template_value(dae_model)?;
         Ok(Self {
             context: solve_render_context_value_with_arcs(
                 std::sync::Arc::new(problem),
