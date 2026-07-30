@@ -44,6 +44,8 @@ pub enum DaeConstructionError {
         source: ClockLatticeErrorKind,
         span: Span,
     },
+    #[error("`previous` expression has no exact owning clock")]
+    MissingPreviousClockOwner { span: Span },
     #[error("{arena} exceeded its u32 identity capacity at {attempted_index}")]
     CapacityExceeded {
         arena: &'static str,
@@ -258,6 +260,7 @@ impl DaeConstructionError {
             | Self::InvalidEffectiveTypeId { span, .. }
             | Self::InvalidDomain { span, .. }
             | Self::InvalidClockLattice { span, .. }
+            | Self::MissingPreviousClockOwner { span }
             | Self::CapacityExceeded { span, .. }
             | Self::UnknownId { span, .. }
             | Self::TypeMismatch { span, .. }

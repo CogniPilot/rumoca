@@ -88,6 +88,11 @@ fn provenance_and_foundation_messages_are_exact() {
             span: Some(at),
         },
         Case {
+            error: DaeConstructionError::MissingPreviousClockOwner { span: at },
+            message: "`previous` expression has no exact owning clock",
+            span: Some(at),
+        },
+        Case {
             error: DaeConstructionError::CapacityExceeded {
                 arena: "expression arena",
                 attempted_index: 4_294_967_296,

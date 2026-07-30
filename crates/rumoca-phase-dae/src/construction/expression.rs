@@ -430,9 +430,12 @@ fn lower_previous<'dae>(
     };
     let (name, subscripts) =
         derivative_reference(value).expect("clock analysis proves a coordinate previous operand");
-    let clock = symbols
-        .owner_clock
-        .expect("clock analysis supplies the owning previous clock");
+    let clock =
+        symbols
+            .owner_clock
+            .ok_or(dae::DaeConstructionError::MissingPreviousClockOwner {
+                span: provenance.span(),
+            })?;
     let previous =
         construction.temporal(|temporal| match symbols.coordinates[name.var_name()] {
             Coordinate::DiscreteReal(variable) => {
