@@ -30,6 +30,24 @@ impl TestSource {
     }
 }
 
+fn assert_ed007_without_borrowed_span(error: &ToDaeError, expected_context: &str) {
+    let diagnostic = rumoca_core::PhaseError::to_diagnostic(error);
+    assert_eq!(
+        diagnostic.code.as_deref(),
+        Some("ED007"),
+        "unexpected error: {error:?}"
+    );
+    assert!(
+        diagnostic.labels.is_empty(),
+        "missing occurrence provenance must not borrow an enclosing source label"
+    );
+    assert_eq!(error.source_span(), None);
+    assert!(matches!(
+        error,
+        ToDaeError::MissingProvenance { owner } if owner.contains(expected_context)
+    ));
+}
+
 fn scalar_real_model(source: &TestSource) -> flat::Model {
     let declaration = source.span("Real x", 0);
     let use_span = source.span("x", 1);
@@ -60,6 +78,54 @@ fn scalar_real_model(source: &TestSource) -> flat::Model {
             span: equation_span,
         },
         equation_span,
+        flat::EquationOrigin::ComponentEquation {
+            component: String::new(),
+        },
+    ));
+    model
+}
+
+fn nested_assert_function_model(source: &TestSource, assertion_span: Span) -> flat::Model {
+    let function_span = source.span("function f", 0);
+    let output_span = source.span("output Real y", 0);
+    let conditional_span = source.span("if true then assert(true, \"bad\"); end if", 0);
+    let mut function = rumoca_core::Function::new("f", function_span);
+    function.add_output(rumoca_core::FunctionParam::new("y", "Real", output_span));
+    function.body = vec![rumoca_core::Statement::If {
+        cond_blocks: vec![rumoca_core::StatementBlock {
+            cond: Expression::Literal {
+                value: Literal::Boolean(true),
+                span: source.span("true", 0),
+            },
+            stmts: vec![rumoca_core::Statement::Assert {
+                condition: Expression::Literal {
+                    value: Literal::Boolean(true),
+                    span: source.span("true", 1),
+                },
+                message: Box::new(Expression::Literal {
+                    value: Literal::String("bad".to_string()),
+                    span: source.span("\"bad\"", 0),
+                }),
+                level: None,
+                span: assertion_span,
+            }],
+        }],
+        else_block: None,
+        span: conditional_span,
+    }];
+
+    let mut model = flat::Model::new();
+    model.add_function(function);
+    model.is_partial = true;
+    let call_span = source.span("f()", 0);
+    model.add_equation(flat::Equation::new(
+        Expression::FunctionCall {
+            name: Reference::new("f"),
+            args: Vec::new(),
+            is_constructor: false,
+            span: call_span,
+        },
+        call_span,
         flat::EquationOrigin::ComponentEquation {
             component: String::new(),
         },
@@ -1040,6 +1106,74 @@ fn production_lowering_constructs_delay_with_exact_timing_evidence() {
             Some("delay(x, dt)")
         );
     });
+}
+
+#[test]
+fn nested_algorithm_statement_without_span_fails_ed007() {
+    let source = TestSource::new("model M algorithm if true then break; end if; end M;");
+    let conditional_span = source.span("if true then break; end if", 0);
+    let mut model = flat::Model::new();
+    model.algorithms.push(flat::Algorithm::new(
+        vec![rumoca_core::Statement::If {
+            cond_blocks: vec![rumoca_core::StatementBlock {
+                cond: Expression::Literal {
+                    value: Literal::Boolean(true),
+                    span: source.span("true", 0),
+                },
+                stmts: vec![rumoca_core::Statement::Break { span: Span::DUMMY }],
+            }],
+            else_block: None,
+            span: conditional_span,
+        }],
+        source.span("algorithm if true then break; end if", 0),
+        "algorithm section",
+    ));
+    model.is_partial = true;
+
+    let error = construct(&model, source.map).expect_err("the nested break has no exact span");
+    assert_ed007_without_borrowed_span(&error, "model algorithm");
+}
+
+#[test]
+fn nested_unsupported_algorithm_statement_uses_its_exact_span() {
+    let source = TestSource::new("model M algorithm if true then break; end if; end M;");
+    let conditional_span = source.span("if true then break; end if", 0);
+    let break_span = source.span("break", 0);
+    let mut model = flat::Model::new();
+    model.algorithms.push(flat::Algorithm::new(
+        vec![rumoca_core::Statement::If {
+            cond_blocks: vec![rumoca_core::StatementBlock {
+                cond: Expression::Literal {
+                    value: Literal::Boolean(true),
+                    span: source.span("true", 0),
+                },
+                stmts: vec![rumoca_core::Statement::Break { span: break_span }],
+            }],
+            else_block: None,
+            span: conditional_span,
+        }],
+        source.span("algorithm if true then break; end if", 0),
+        "algorithm section",
+    ));
+    model.is_partial = true;
+
+    let error = construct(&model, source.map).expect_err("break is not a checked DAE owner");
+    assert!(matches!(
+        error,
+        ToDaeError::UnsupportedAlgorithm { span, .. } if span == break_span
+    ));
+}
+
+#[test]
+fn nested_function_statement_without_span_fails_ed007() {
+    let source = TestSource::new(
+        "function f output Real y; algorithm if true then assert(true, \"bad\"); end if; end f; f();",
+    );
+    let model = nested_assert_function_model(&source, Span::DUMMY);
+
+    let error =
+        construct(&model, source.map).expect_err("the nested function assertion has no exact span");
+    assert_ed007_without_borrowed_span(&error, "function body");
 }
 
 #[test]

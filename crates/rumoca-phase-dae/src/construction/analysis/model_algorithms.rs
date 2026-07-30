@@ -64,8 +64,7 @@ pub(super) fn analyze_model_algorithm(
             algorithm.span,
         ));
     }
-    let assigned =
-        validate_declarative_sequence(&algorithm.statements, target, false, algorithm.span)?;
+    let assigned = validate_declarative_sequence(&algorithm.statements, target, false)?;
     if !assigned {
         return Err(ToDaeError::unsupported_algorithm(
             "model",
@@ -412,7 +411,6 @@ fn validate_declarative_sequence(
     statements: &[rumoca_core::Statement],
     target: &VarName,
     mut assigned: bool,
-    owner_span: Span,
 ) -> Result<bool, ToDaeError> {
     for statement in statements {
         match statement {
@@ -440,22 +438,23 @@ fn validate_declarative_sequence(
                         &block.stmts,
                         target,
                         assigned,
-                        owner_span,
                     )?);
                 }
                 exits.push(match else_block {
-                    Some(fallback) => {
-                        validate_declarative_sequence(fallback, target, assigned, owner_span)?
-                    }
+                    Some(fallback) => validate_declarative_sequence(fallback, target, assigned)?,
                     None => assigned,
                 });
                 assigned = exits.into_iter().all(std::convert::identity);
             }
             _ => {
+                let span = required_statement_span(
+                    statement,
+                    "unsupported declarative model algorithm statement",
+                )?;
                 return Err(ToDaeError::unsupported_algorithm(
                     "model",
                     "declarative algorithm requires scalar assignments and conditionals",
-                    statement.source_span().unwrap_or(owner_span),
+                    span,
                 ));
             }
         }
