@@ -47,7 +47,7 @@ fn simulate_no_state_solve_ir_stops_for_root_event_updates() {
     model.problem.solve_layout.compiled_parameter_len = 1;
     model.problem.solve_layout.discrete_valued_scalar_names = vec!["m".to_string()];
     model.problem.discrete.update_targets = vec![solve::scalar_slot_p(0)];
-    model.problem.events.root_conditions = scalar_program_block(
+    model.problem.events.root_conditions = scalar_program_block!(
         vec![vec![
             solve::LinearOp::LoadTime { dst: 0 },
             solve::LinearOp::Const {
@@ -64,7 +64,7 @@ fn simulate_no_state_solve_ir_stops_for_root_event_updates() {
         ]],
         fixture_span!(),
     );
-    model.problem.discrete.rhs = scalar_program_block(
+    model.problem.discrete.rhs = scalar_program_block!(
         vec![vec![
             solve::LinearOp::LoadTime { dst: 0 },
             solve::LinearOp::Const {
@@ -124,7 +124,7 @@ fn no_state_root_search_refreshes_algebraic_root_dependencies() {
     model.problem.solve_layout.solver_maps.base_to_indices =
         indexmap::IndexMap::from([("u".to_string(), vec![0])]);
     model.problem.continuous.implicit_rhs =
-        solve::ComputeBlock::from_scalar_program_block(scalar_program_block(
+        solve::ComputeBlock::from_scalar_program_block(scalar_program_block!(
             vec![vec![
                 solve::LinearOp::LoadY { dst: 0, index: 0 },
                 solve::LinearOp::LoadTime { dst: 1 },
@@ -140,7 +140,7 @@ fn no_state_root_search_refreshes_algebraic_root_dependencies() {
         ));
     model.problem.continuous.implicit_row_targets = vec![Some(solve::scalar_slot_y(0))];
     model.artifacts.continuous.implicit_jacobian_v =
-        solve::ComputeBlock::from_scalar_program_block(scalar_program_block(
+        solve::ComputeBlock::from_scalar_program_block(scalar_program_block!(
             vec![vec![
                 solve::LinearOp::LoadSeed { dst: 0, index: 0 },
                 solve::LinearOp::StoreOutput { src: 0 },
@@ -148,7 +148,7 @@ fn no_state_root_search_refreshes_algebraic_root_dependencies() {
             fixture_span!(),
         ));
     install_dense_algebraic_projection_plan(&mut model);
-    model.problem.events.root_conditions = scalar_program_block(
+    model.problem.events.root_conditions = scalar_program_block!(
         vec![vec![
             solve::LinearOp::LoadY { dst: 0, index: 0 },
             solve::LinearOp::Const {
@@ -166,7 +166,7 @@ fn no_state_root_search_refreshes_algebraic_root_dependencies() {
         fixture_span!(),
     );
     model.problem.discrete.update_targets = vec![solve::scalar_slot_p(0)];
-    model.problem.discrete.rhs = scalar_program_block(
+    model.problem.discrete.rhs = scalar_program_block!(
         vec![vec![
             solve::LinearOp::LoadY { dst: 0, index: 0 },
             solve::LinearOp::Const {
@@ -328,7 +328,7 @@ fn root_event_update_model(root_time: f64) -> solve::SolveModel {
     model.problem.solve_layout.compiled_parameter_len = 1;
     model.problem.solve_layout.discrete_valued_scalar_names = vec!["m".to_string()];
     model.problem.discrete.update_targets = vec![solve::scalar_slot_p(0)];
-    model.problem.events.root_conditions = scalar_program_block(
+    model.problem.events.root_conditions = scalar_program_block!(
         vec![vec![
             solve::LinearOp::LoadTime { dst: 0 },
             solve::LinearOp::Const {
@@ -345,7 +345,7 @@ fn root_event_update_model(root_time: f64) -> solve::SolveModel {
         ]],
         fixture_span!(),
     );
-    model.problem.discrete.rhs = scalar_program_block(
+    model.problem.discrete.rhs = scalar_program_block!(
         vec![vec![
             solve::LinearOp::LoadTime { dst: 0 },
             solve::LinearOp::Const {
@@ -382,7 +382,7 @@ fn oscillatory_root_event_model() -> solve::SolveModel {
     model.problem.solve_layout.compiled_parameter_len = 1;
     model.problem.solve_layout.discrete_valued_scalar_names = vec!["m".to_string()];
     model.problem.discrete.update_targets = vec![solve::scalar_slot_p(0)];
-    model.problem.events.root_conditions = scalar_program_block(
+    model.problem.events.root_conditions = scalar_program_block!(
         vec![vec![
             solve::LinearOp::LoadTime { dst: 0 },
             solve::LinearOp::Const {
@@ -415,7 +415,7 @@ fn oscillatory_root_event_model() -> solve::SolveModel {
         ]],
         fixture_span!(),
     );
-    model.problem.discrete.rhs = scalar_program_block(
+    model.problem.discrete.rhs = scalar_program_block!(
         vec![vec![
             solve::LinearOp::LoadTime { dst: 0 },
             solve::LinearOp::Const {
@@ -530,10 +530,10 @@ fn project_algebraics_recovers_from_misordered_singular_direct_chain_guess() {
         ],
     ];
     model.problem.continuous.implicit_rhs = solve::ComputeBlock::from_scalar_program_block(
-        scalar_program_block(rhs_rows.clone(), fixture_span!()),
+        scalar_program_block!(rhs_rows.clone(), fixture_span!()),
     );
     model.artifacts.continuous.implicit_jacobian_v = solve::ComputeBlock::from_scalar_program_block(
-        scalar_program_block(jvp_rows.clone(), fixture_span!()),
+        scalar_program_block!(jvp_rows.clone(), fixture_span!()),
     );
     model.problem.solve_layout.algebraic_scalar_count = 2;
     install_dense_algebraic_projection_plan(&mut model);
@@ -552,7 +552,7 @@ fn project_algebraics_recovers_from_misordered_singular_direct_chain_guess() {
 fn project_algebraics_sanitizes_nonfinite_algebraic_guess() {
     let mut model = solve::SolveModel::default();
     model.problem.continuous.implicit_rhs =
-        solve::ComputeBlock::from_scalar_program_block(scalar_program_block(
+        solve::ComputeBlock::from_scalar_program_block(scalar_program_block!(
             vec![vec![
                 solve::LinearOp::LoadY { dst: 0, index: 0 },
                 solve::LinearOp::Const { dst: 1, value: 2.0 },
@@ -567,7 +567,7 @@ fn project_algebraics_sanitizes_nonfinite_algebraic_guess() {
             fixture_span!(),
         ));
     model.artifacts.continuous.implicit_jacobian_v =
-        solve::ComputeBlock::from_scalar_program_block(scalar_program_block(
+        solve::ComputeBlock::from_scalar_program_block(scalar_program_block!(
             vec![vec![
                 solve::LinearOp::LoadSeed { dst: 0, index: 0 },
                 solve::LinearOp::StoreOutput { src: 0 },
@@ -651,10 +651,10 @@ fn project_algebraics_uses_solve_ir_row_targets_before_large_pivots() {
         ],
     ];
     model.problem.continuous.implicit_rhs = solve::ComputeBlock::from_scalar_program_block(
-        scalar_program_block(rhs_rows.clone(), fixture_span!()),
+        scalar_program_block!(rhs_rows.clone(), fixture_span!()),
     );
     model.artifacts.continuous.implicit_jacobian_v = solve::ComputeBlock::from_scalar_program_block(
-        scalar_program_block(jvp_rows.clone(), fixture_span!()),
+        scalar_program_block!(jvp_rows.clone(), fixture_span!()),
     );
     model.problem.continuous.implicit_row_targets =
         vec![Some(solve::scalar_slot_y(1)), Some(solve::scalar_slot_y(0))];
@@ -697,10 +697,10 @@ fn project_algebraics_preserves_state_values_for_consistency_residuals() {
         ],
     ];
     model.problem.continuous.implicit_rhs = solve::ComputeBlock::from_scalar_program_block(
-        scalar_program_block(rhs_rows.clone(), fixture_span!()),
+        scalar_program_block!(rhs_rows.clone(), fixture_span!()),
     );
     model.artifacts.continuous.implicit_jacobian_v = solve::ComputeBlock::from_scalar_program_block(
-        scalar_program_block(jvp_rows.clone(), fixture_span!()),
+        scalar_program_block!(jvp_rows.clone(), fixture_span!()),
     );
     model.problem.continuous.implicit_row_targets =
         vec![Some(solve::scalar_slot_y(0)), Some(solve::scalar_slot_y(0))];
@@ -729,10 +729,10 @@ fn simulate_seeds_algebraics_from_initial_residual_before_runtime_projection() {
     model.problem.solve_layout.state_scalar_count = 1;
     model.problem.solve_layout.algebraic_scalar_count = 1;
     model.problem.continuous.implicit_rhs = solve::ComputeBlock::from_scalar_program_block(
-        scalar_program_block(vec![zero_row(), quadratic_algebraic_row()], fixture_span!()),
+        scalar_program_block!(vec![zero_row(), quadratic_algebraic_row()], fixture_span!()),
     );
     model.artifacts.continuous.implicit_jacobian_v =
-        solve::ComputeBlock::from_scalar_program_block(scalar_program_block(
+        solve::ComputeBlock::from_scalar_program_block(scalar_program_block!(
             vec![zero_row(), quadratic_algebraic_jvp_row()],
             fixture_span!(),
         ));
@@ -740,7 +740,7 @@ fn simulate_seeds_algebraics_from_initial_residual_before_runtime_projection() {
         vec![Some(solve::scalar_slot_y(0)), Some(solve::scalar_slot_y(1))];
     install_dense_algebraic_projection_plan(&mut model);
     model.problem.initialization.residual = solve::ComputeBlock::from_scalar_program_block(
-        scalar_program_block(vec![zero_row(), z_minus_one()], fixture_span!()),
+        scalar_program_block!(vec![zero_row(), z_minus_one()], fixture_span!()),
     );
     set_initialization_jvp(&mut model, vec![zero_row(), algebraic_identity_jvp_row()]);
     install_scalar_initial_projection_plan(&mut model, 1, 1);
@@ -769,15 +769,15 @@ fn initialization_projects_demoted_state_layout_slots() {
         indexmap::IndexMap::from([("x".to_string(), 0), ("d".to_string(), 1)]);
     model.problem.solve_layout.state_scalar_count = 2;
     model.problem.continuous.implicit_rhs = solve::ComputeBlock::from_scalar_program_block(
-        scalar_program_block(vec![zero_row(), zero_row()], fixture_span!()),
+        scalar_program_block!(vec![zero_row(), zero_row()], fixture_span!()),
     );
     model.artifacts.continuous.implicit_jacobian_v = solve::ComputeBlock::from_scalar_program_block(
-        scalar_program_block(vec![zero_row(), zero_row()], fixture_span!()),
+        scalar_program_block!(vec![zero_row(), zero_row()], fixture_span!()),
     );
     model.problem.continuous.implicit_row_targets =
         vec![Some(solve::scalar_slot_y(0)), Some(solve::scalar_slot_y(1))];
     model.problem.initialization.residual = solve::ComputeBlock::from_scalar_program_block(
-        scalar_program_block(vec![z_minus_one()], fixture_span!()),
+        scalar_program_block!(vec![z_minus_one()], fixture_span!()),
     );
     set_initialization_jvp(&mut model, vec![algebraic_identity_jvp_row()]);
     model.problem.initialization.row_targets = vec![Some(solve::scalar_slot_y(1))];
@@ -897,10 +897,10 @@ fn simulate_records_algebraically_consistent_initial_sample() {
     model.problem.solve_layout.state_scalar_count = 1;
     model.problem.solve_layout.algebraic_scalar_count = 1;
     model.problem.continuous.implicit_rhs = solve::ComputeBlock::from_scalar_program_block(
-        scalar_program_block(vec![zero_row(), z_zero_row()], fixture_span!()),
+        scalar_program_block!(vec![zero_row(), z_zero_row()], fixture_span!()),
     );
     model.artifacts.continuous.implicit_jacobian_v =
-        solve::ComputeBlock::from_scalar_program_block(scalar_program_block(
+        solve::ComputeBlock::from_scalar_program_block(scalar_program_block!(
             vec![zero_row(), algebraic_identity_jvp_row()],
             fixture_span!(),
         ));
@@ -908,7 +908,7 @@ fn simulate_records_algebraically_consistent_initial_sample() {
         vec![Some(solve::scalar_slot_y(0)), Some(solve::scalar_slot_y(1))];
     install_dense_algebraic_projection_plan(&mut model);
     model.problem.initialization.residual = solve::ComputeBlock::from_scalar_program_block(
-        scalar_program_block(vec![zero_row(), z_plus_one()], fixture_span!()),
+        scalar_program_block!(vec![zero_row(), z_plus_one()], fixture_span!()),
     );
     set_initialization_jvp(&mut model, vec![zero_row(), algebraic_identity_jvp_row()]);
     install_scalar_initial_projection_plan(&mut model, 1, 1);
@@ -942,10 +942,10 @@ fn simulate_runs_solve_ir_initial_updates_after_initial_projection() {
     model.problem.layout = solve::VarLayout::from_parts(Default::default(), 2, 1);
     model.problem.solve_layout.discrete_valued_scalar_names = vec!["c[1]".to_string()];
     model.problem.continuous.implicit_rhs = solve::ComputeBlock::from_scalar_program_block(
-        scalar_program_block(vec![zero_row(), z_zero_row()], fixture_span!()),
+        scalar_program_block!(vec![zero_row(), z_zero_row()], fixture_span!()),
     );
     model.artifacts.continuous.implicit_jacobian_v =
-        solve::ComputeBlock::from_scalar_program_block(scalar_program_block(
+        solve::ComputeBlock::from_scalar_program_block(scalar_program_block!(
             vec![zero_row(), algebraic_identity_jvp_row()],
             fixture_span!(),
         ));
@@ -953,18 +953,18 @@ fn simulate_runs_solve_ir_initial_updates_after_initial_projection() {
         vec![Some(solve::scalar_slot_y(0)), Some(solve::scalar_slot_y(1))];
     install_dense_algebraic_projection_plan(&mut model);
     model.problem.initialization.residual = solve::ComputeBlock::from_scalar_program_block(
-        scalar_program_block(vec![zero_row(), z_minus_two()], fixture_span!()),
+        scalar_program_block!(vec![zero_row(), z_minus_two()], fixture_span!()),
     );
     set_initialization_jvp(&mut model, vec![zero_row(), algebraic_identity_jvp_row()]);
     install_scalar_initial_projection_plan(&mut model, 1, 1);
     model.problem.initialization.update_rhs =
-        scalar_program_block(vec![z_greater_one_condition_row()], fixture_span!());
+        scalar_program_block!(vec![z_greater_one_condition_row()], fixture_span!());
     model.problem.initialization.update_targets = vec![solve::scalar_slot_p(0)];
     model.initial_y = vec![0.0, 0.0];
     model.parameters = vec![0.0];
     model.visible_names = vec!["branch".to_string()];
     model.visible_value_rows =
-        scalar_program_block(vec![relation_branch_value_row()], fixture_span!());
+        scalar_program_block!(vec![relation_branch_value_row()], fixture_span!());
 
     let result = simulate(
         &model,
@@ -992,21 +992,21 @@ fn simulate_seeds_initial_discrete_conditions_before_initial_residual() {
     model.problem.solve_layout.compiled_parameter_len = 1;
     model.problem.layout = solve::VarLayout::from_parts(Default::default(), 2, 1);
     model.problem.continuous.implicit_rhs = solve::ComputeBlock::from_scalar_program_block(
-        scalar_program_block(vec![zero_row(), z_plus_one()], fixture_span!()),
+        scalar_program_block!(vec![zero_row(), z_plus_one()], fixture_span!()),
     );
     model.artifacts.continuous.implicit_jacobian_v =
-        solve::ComputeBlock::from_scalar_program_block(scalar_program_block(
+        solve::ComputeBlock::from_scalar_program_block(scalar_program_block!(
             vec![zero_row(), algebraic_identity_jvp_row()],
             fixture_span!(),
         ));
     model.problem.continuous.implicit_row_targets =
         vec![Some(solve::scalar_slot_y(0)), Some(solve::scalar_slot_y(1))];
     install_dense_algebraic_projection_plan(&mut model);
-    model.problem.discrete.rhs = scalar_program_block(vec![const_one_row()], fixture_span!());
+    model.problem.discrete.rhs = scalar_program_block!(vec![const_one_row()], fixture_span!());
     model.problem.discrete.update_targets = vec![solve::scalar_slot_p(0)];
     ordinary_equation_row_metadata(&mut model);
     model.problem.initialization.residual =
-        solve::ComputeBlock::from_scalar_program_block(scalar_program_block(
+        solve::ComputeBlock::from_scalar_program_block(scalar_program_block!(
             vec![zero_row(), z_minus_selected_condition()],
             fixture_span!(),
         ));
@@ -1241,7 +1241,7 @@ fn validation_accepts_a_complete_explicit_derivative_system() {
     model.problem.solve_layout.state_scalar_count = 1;
     model.initial_y = vec![0.0];
     model.problem.continuous.derivative_rhs =
-        solve::ComputeBlock::from_scalar_program_block(scalar_program_block(
+        solve::ComputeBlock::from_scalar_program_block(scalar_program_block!(
             vec![vec![
                 solve::LinearOp::Const { dst: 0, value: 0.0 },
                 solve::LinearOp::StoreOutput { src: 0 },
