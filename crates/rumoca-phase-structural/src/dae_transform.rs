@@ -1010,6 +1010,7 @@ fn rebuild_semantic_owners<'target>(
         &relations,
         identities.clocks,
     )?;
+    rebuild_discrete_equations(source, target, expressions, identities.conditions)?;
     rebuild_roots(source, target, identities.conditions, &relations)?;
     rebuild_events(
         source,
@@ -1180,19 +1181,6 @@ fn rebuild_event_action<'target>(
                 action.provenance(),
             )
         }
-        dae::EventActionOperation::AssignDiscreteReal { target, value } => {
-            let TargetVariable::DiscreteReal(target) = variables[target.index() as usize].identity
-            else {
-                unreachable!("event assignment retains its discrete-real role")
-            };
-            events.assign_discrete_real(
-                trigger,
-                guard,
-                target,
-                expressions[value.index() as usize],
-                action.provenance(),
-            )
-        }
     })?;
     Ok(())
 }
@@ -1238,23 +1226,36 @@ fn rebuild_equations<'target>(
             }
         }
         Ok(())
-    })?;
-    rebuild_discrete_equations(source, target, expressions)
+    })
 }
 
 fn rebuild_discrete_equations<'target>(
     source: dae::DaeView<'_>,
     target: &mut dae::DaeConstruction<'target>,
     expressions: &[dae::ExprId<'target>],
+    conditions: &[dae::ConditionId<'target>],
 ) -> Result<(), dae::DaeConstructionError> {
     target.discrete(|target| {
         for index in 0..source.discrete_real_equation_count() {
             let equation = source
                 .discrete_real_equation(index)
                 .expect("finalized discrete-real equation resolves");
-            target.real_equation(equation.provenance(), |target| {
+            let build = |target: &mut dae::ResidualEquation<'_, 'target>| {
                 target.residual(expressions[equation.residual().index() as usize])
-            })?;
+            };
+            match equation.activation() {
+                dae::DiscreteRealActivation::Always => {
+                    target.real_equation(equation.provenance(), build)?;
+                }
+                dae::DiscreteRealActivation::When { trigger, guard } => {
+                    target.when_real_equation(
+                        conditions[trigger.index() as usize],
+                        conditions[guard.index() as usize],
+                        equation.provenance(),
+                        build,
+                    )?;
+                }
+            }
         }
         Ok(())
     })

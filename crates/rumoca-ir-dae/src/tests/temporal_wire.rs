@@ -117,7 +117,7 @@ fn assert_clock_wire_round_trip(dae: &Dae) {
 }
 
 #[test]
-fn clock_guarded_assignment_requires_matching_clock_ownership() {
+fn clock_guarded_b1b_equation_requires_matching_clock_ownership() {
     let source = TestSource::new("discrete Real z; when sample(0, 1) then z = 1; end when;");
     let z_at = source.source("discrete Real z", 0);
     let sample_at = source.source("sample(0, 1)", 0);
@@ -139,10 +139,16 @@ fn clock_guarded_assignment_requires_matching_clock_ownership() {
         dae.conditions(|conditions| {
             conditions.define(guard, ConditionInput::Clock(clock), sample_at)
         })?;
-        let value = dae.expressions(|expressions| {
-            expressions.at(assignment_at).literal(DaeLiteral::Real(1.0))
+        let residual = dae.expressions(|expressions| {
+            expressions
+                .at(assignment_at)
+                .coordinate(CoordinateInput::DiscreteReal(z))
         })?;
-        dae.events(|events| events.assign_discrete_real(guard, guard, z, value, assignment_at))?;
+        dae.discrete(|discrete| {
+            discrete.when_real_equation(guard, guard, assignment_at, |equation| {
+                equation.residual(residual)
+            })
+        })?;
         Ok(())
     })
     .unwrap_err();

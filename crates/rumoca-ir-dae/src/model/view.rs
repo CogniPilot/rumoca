@@ -377,10 +377,22 @@ impl<'dae> DaeView<'dae> {
         })
     }
 
-    pub fn discrete_real_equation(self, index: usize) -> Option<ResidualEquationView<'dae>> {
-        Some(residual_equation_view(
-            self.dae.storage.discrete_real_equations.get(index)?,
-        ))
+    pub fn discrete_real_equation(self, index: usize) -> Option<DiscreteRealEquationView<'dae>> {
+        let entry = self.dae.storage.discrete_real_equations.get(index)?;
+        let activation = match entry.activation {
+            crate::equations::DiscreteRealActivationEntry::Always => DiscreteRealActivation::Always,
+            crate::equations::DiscreteRealActivationEntry::When { trigger, guard } => {
+                DiscreteRealActivation::When {
+                    trigger: ConditionId::from_raw(trigger),
+                    guard: ConditionId::from_raw(guard),
+                }
+            }
+        };
+        Some(DiscreteRealEquationView {
+            residual: ExprId::from_raw(entry.residual),
+            activation,
+            provenance: entry.provenance,
+        })
     }
 
     pub fn discrete_value_owner(
@@ -496,12 +508,6 @@ impl<'dae> DaeView<'dae> {
                 state: StateId::from_raw(state),
                 value: ExprId::from_raw(value),
             },
-            EventActionKind::AssignDiscreteReal { target, value } => {
-                EventActionOperation::AssignDiscreteReal {
-                    target: DiscreteRealId::from_raw(target),
-                    value: ExprId::from_raw(value),
-                }
-            }
         };
         Some(EventActionView {
             trigger: ConditionId::from_raw(entry.trigger),

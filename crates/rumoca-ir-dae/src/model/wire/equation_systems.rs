@@ -143,9 +143,23 @@ pub(super) fn reconstruct_equation_systems<'dae>(
         reconstruct_initialization_operation(operation, dae, ids)?;
     }
     for equation in &wire.discrete_real_equations {
-        let residual = mapped_residual(ids, equation)?;
-        dae.discrete(|discrete| {
-            discrete.real_equation(equation.provenance, |owner| owner.residual(residual))
+        let residual = mapped(
+            &ids.expressions,
+            equation.residual,
+            "expression",
+            equation.provenance,
+        )?;
+        dae.discrete(|discrete| match equation.activation {
+            DiscreteRealActivationWire::Always => {
+                discrete.real_equation(equation.provenance, |owner| owner.residual(residual))
+            }
+            DiscreteRealActivationWire::When { trigger, guard } => {
+                let trigger = mapped(&ids.conditions, trigger, "condition", equation.provenance)?;
+                let guard = mapped(&ids.conditions, guard, "condition", equation.provenance)?;
+                discrete.when_real_equation(trigger, guard, equation.provenance, |owner| {
+                    owner.residual(residual)
+                })
+            }
         })?;
     }
     Ok(())
@@ -225,16 +239,4 @@ fn attach_family_bodies<'dae>(
         residuals.body(*body)?;
     }
     Ok(())
-}
-
-fn mapped_residual<'dae>(
-    ids: &WireIds<'dae>,
-    equation: &ResidualEquationWire,
-) -> Result<ExprId<'dae>, DaeConstructionError> {
-    mapped(
-        &ids.expressions,
-        equation.residual,
-        "expression",
-        equation.provenance,
-    )
 }
