@@ -11,7 +11,6 @@ impl SolveRowsValue {
             rows: Arc::new(rows),
         }
     }
-
 }
 
 impl Object for SolveRowsValue {

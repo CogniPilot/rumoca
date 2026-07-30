@@ -126,10 +126,8 @@ fn clock_ordinal(block: &crate::Block, name: &str) -> Option<usize> {
         }))
         .enumerate()
         .find_map(|(index, (declaration, constant))| {
-            let scalar_real = matches!(
-                declaration.ty,
-                TypeRef::Primitive(ScalarType::Real)
-            ) && declaration.dimensions.is_empty();
+            let scalar_real = matches!(declaration.ty, TypeRef::Primitive(ScalarType::Real))
+                && declaration.dimensions.is_empty();
             (constant && scalar_real && declaration.name.lexeme() == name).then_some(index + 1)
         })
 }

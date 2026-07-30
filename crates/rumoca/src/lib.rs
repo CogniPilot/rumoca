@@ -65,9 +65,8 @@ pub use target_manifest::render_target_files;
 // The generic declarative checksum/packaging build step (contract §4). Exposed
 // like `render_target_files` so CI can drive the exact build step the CLI uses
 // for the `galec`/`galec-production` eFMU targets (contract §9 WI-5).
+pub use packaging::{
+    ArtifactRenderContext, ArtifactSession, render_web, render_web_files, sha1_hex, topo_sort,
+};
 #[cfg(feature = "scheduled-sim")]
 pub use packaging::{PackageSpec, ZipPackage, render_and_package};
-pub use packaging::{
-    ArtifactRenderContext, ArtifactSession, render_web, render_web_files, topo_sort,
-    sha1_hex,
-};

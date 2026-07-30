@@ -422,8 +422,7 @@ fn compile_packaged_target(
         .archive
         .as_ref()
         .map(|archive| {
-            if archive.format != TargetArchiveFormat::Zip
-                || archive.root != TargetArchiveRoot::Flat
+            if archive.format != TargetArchiveFormat::Zip || archive.root != TargetArchiveRoot::Flat
             {
                 bail!("Only flat zip archives are currently supported");
             }

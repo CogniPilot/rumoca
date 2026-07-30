@@ -623,10 +623,7 @@ fn render_algorithm_code_source_files(
             continue;
         }
         let path = rumoca_phase_codegen::render_algorithm_code_template_with_artifact(
-            &package,
-            &artifact,
-            &file.path,
-            &model_id,
+            &package, &artifact, &file.path, &model_id,
         )?;
         let source = bundle.template_source(&file.template)?;
         let content = rumoca_phase_codegen::render_algorithm_code_template_with_artifact(

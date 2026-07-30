@@ -150,22 +150,20 @@ fn render_galec_c_from_alg_impl(
     let source = bundle
         .template_source("model.c.jinja")
         .map_err(|error| error.to_string())?;
-    let c_header =
-        rumoca_phase_codegen::render_checked_algorithm_block_template_with_artifact(
-            &checked,
-            &artifact,
-            header.as_ref(),
-            &model_id,
-        )
-        .map_err(|error| error.to_string())?;
-    let c_source =
-        rumoca_phase_codegen::render_checked_algorithm_block_template_with_artifact(
-            &checked,
-            &artifact,
-            source.as_ref(),
-            &model_id,
-        )
-        .map_err(|error| error.to_string())?;
+    let c_header = rumoca_phase_codegen::render_checked_algorithm_block_template_with_artifact(
+        &checked,
+        &artifact,
+        header.as_ref(),
+        &model_id,
+    )
+    .map_err(|error| error.to_string())?;
+    let c_source = rumoca_phase_codegen::render_checked_algorithm_block_template_with_artifact(
+        &checked,
+        &artifact,
+        source.as_ref(),
+        &model_id,
+    )
+    .map_err(|error| error.to_string())?;
     Ok(json!({
         "ok": true,
         "target": target,
@@ -245,8 +243,8 @@ fn render_checked_sources(
     ) {
         return Err(format!("unknown GALEC target `{target}`"));
     }
-    let bundle =
-        TargetBundle::builtin(target).ok_or_else(|| format!("missing built-in target `{target}`"))?;
+    let bundle = TargetBundle::builtin(target)
+        .ok_or_else(|| format!("missing built-in target `{target}`"))?;
     let manifest = bundle.parse_manifest().map_err(|error| error.to_string())?;
     let package = rumoca_phase_galec::lower_to_algorithm_code(
         &rumoca_phase_galec::GalecInput::new(dae, model_id),
@@ -300,8 +298,7 @@ fn render_checked_sources(
 #[cfg(test)]
 mod tests {
     use super::*;
-    const EMBEDDED_C_GALEC_CONFORMANCE_LINES: &[&str] =
-        &["GALEC-derived embedded C export"];
+    const EMBEDDED_C_GALEC_CONFORMANCE_LINES: &[&str] = &["GALEC-derived embedded C export"];
     const PRODUCTION_CONFORMANCE_LINES: &[&str] = &["eFMI Production Code export"];
     const PRODUCTION_CONFORMANCE_SUMMARY: &str = "eFMI Production Code export";
 

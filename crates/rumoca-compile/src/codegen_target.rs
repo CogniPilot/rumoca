@@ -324,7 +324,10 @@ pub struct TargetAssetFile {
 
 fn collect_target_assets(root: &Path) -> Result<Vec<TargetAssetFile>> {
     if !root.is_dir() {
-        bail!("Target asset source '{}' is not a directory", root.display());
+        bail!(
+            "Target asset source '{}' is not a directory",
+            root.display()
+        );
     }
     let mut paths = Vec::new();
     collect_target_asset_paths(root, root, &mut paths)?;
@@ -349,8 +352,8 @@ fn collect_target_asset_paths(
     for entry in std::fs::read_dir(dir)
         .with_context(|| format!("Read target asset directory '{}'", dir.display()))?
     {
-        let entry = entry
-            .with_context(|| format!("Read target asset entry in '{}'", dir.display()))?;
+        let entry =
+            entry.with_context(|| format!("Read target asset entry in '{}'", dir.display()))?;
         let file_type = entry
             .file_type()
             .with_context(|| format!("Stat target asset '{}'", entry.path().display()))?;
@@ -524,9 +527,7 @@ fn scalar_program_support(ir: TargetTemplateIr) -> TargetFeatureSupport {
         TargetTemplateIr::Dae
         | TargetTemplateIr::Flat
         | TargetTemplateIr::Ast
-        | TargetTemplateIr::AlgorithmCode => {
-            TargetFeatureSupport::Unsupported
-        }
+        | TargetTemplateIr::AlgorithmCode => TargetFeatureSupport::Unsupported,
     }
 }
 
@@ -1273,9 +1274,7 @@ host_callbacks = false
             });
             if !matches!(
                 manifest.ir,
-                TargetTemplateIr::Dae
-                    | TargetTemplateIr::Solve
-                    | TargetTemplateIr::AlgorithmCode
+                TargetTemplateIr::Dae | TargetTemplateIr::Solve | TargetTemplateIr::AlgorithmCode
             ) {
                 continue;
             }

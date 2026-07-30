@@ -1133,9 +1133,7 @@ pub fn render_target(
             .parse_manifest()
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
         match manifest.ir {
-            TargetTemplateIr::Dae => {
-                render_dae_target_files(&bundle, &manifest, &dae, model_name)
-            }
+            TargetTemplateIr::Dae => render_dae_target_files(&bundle, &manifest, &dae, model_name),
             TargetTemplateIr::AlgorithmCode => {
                 render_algorithm_code_source_files(&bundle, &manifest, &dae, model_name)
             }
@@ -1151,12 +1149,9 @@ pub fn render_target(
             TargetTemplateIr::Dae => {
                 render_dae_target_files(&custom_templates, &manifest, &dae, model_name)
             }
-            TargetTemplateIr::AlgorithmCode => render_algorithm_code_source_files(
-                &custom_templates,
-                &manifest,
-                &dae,
-                model_name,
-            ),
+            TargetTemplateIr::AlgorithmCode => {
+                render_algorithm_code_source_files(&custom_templates, &manifest, &dae, model_name)
+            }
             _ => Err(anyhow::anyhow!(
                 "WASM target rendering supports dae and algorithm-code IR targets"
             )),
