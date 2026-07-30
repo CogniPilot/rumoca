@@ -290,18 +290,16 @@ pub(super) fn collect_target_source_files(
     tree: &ast::ClassTree,
     targets: &[String],
 ) -> IndexSet<String> {
+    let class_index = ast::ClassDefIndex::from_tree(tree);
     let mut files = IndexSet::new();
     for target in targets {
-        let mut end = target.len();
-        loop {
-            let class_name = &target[..end];
-            if let Some(class) = tree.get_class_by_qualified_name(class_name) {
+        let Some(def_id) = class_index.def_id_by_qualified_name(target) else {
+            continue;
+        };
+        for ancestor in class_index.def_ancestry(def_id) {
+            if let Some(class) = class_index.get(ancestor) {
                 files.extend(source_file_key(&tree.source_map, class.location.source));
             }
-            let Some(separator) = class_name.rfind('.') else {
-                break;
-            };
-            end = separator;
         }
     }
     files

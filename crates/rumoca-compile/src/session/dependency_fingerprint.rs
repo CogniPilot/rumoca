@@ -41,6 +41,8 @@ impl DependencyFingerprintCache {
     pub(crate) fn from_tree(tree: &ast::ClassTree) -> Self {
         let mut cache = Self::default();
         let mut file_bytes_cache: HashMap<String, Option<Vec<u8>>> = HashMap::new();
+        let class_index = ast::ClassDefIndex::from_tree(tree);
+        let mut direct_dependencies = HashMap::new();
 
         for (qualified_name, &def_id) in &tree.name_map {
             let Some(class) = tree.get_class_by_def_id(def_id) else {
@@ -51,10 +53,27 @@ impl DependencyFingerprintCache {
                 qualified_name.clone(),
                 class_source_fingerprint(tree, class, qualified_name, &mut file_bytes_cache),
             );
-            cache.class_deps.insert(
-                qualified_name.clone(),
-                collect_class_dependencies(tree, class, qualified_name),
-            );
+            direct_dependencies
+                .entry(def_id)
+                .or_insert_with(|| collect_class_dependencies(tree, class, qualified_name));
+        }
+
+        for (qualified_name, &def_id) in &tree.name_map {
+            // A nested class's completed Resolve proof and fingerprint depend
+            // on every dependency declared by its lexical ancestors (MLS
+            // §5.3). Exact DefId ancestry gives both reachability and cache
+            // invalidation one effective-dependency definition without
+            // treating unrelated sibling bodies as dependencies.
+            let mut dependencies = class_index
+                .def_ancestry(def_id)
+                .into_iter()
+                .filter_map(|ancestor| direct_dependencies.get(&ancestor))
+                .flat_map(|ancestor_dependencies| ancestor_dependencies.iter().cloned())
+                .collect::<IndexSet<_>>();
+            dependencies.shift_remove(qualified_name);
+            cache
+                .class_deps
+                .insert(qualified_name.clone(), dependencies);
         }
 
         cache
@@ -342,6 +361,33 @@ mod tests {
     }
 
     #[test]
+    fn from_tree_includes_dependencies_declared_by_lexical_ancestors() {
+        let source = r#"
+            package Icons
+              partial package ExamplesPackage
+              end ExamplesPackage;
+            end Icons;
+            package P
+              extends Icons.ExamplesPackage;
+              package Sub
+                model M
+                  Real x;
+                end M;
+              end Sub;
+            end P;
+        "#;
+
+        let tree = resolved_tree_for("nested.mo", source);
+        let cache = DependencyFingerprintCache::from_tree(&tree);
+
+        assert_eq!(
+            cache.class_dependencies().get("P.Sub.M"),
+            Some(&IndexSet::from(["Icons.ExamplesPackage".to_string()])),
+            "a nested target must inherit dependencies declared by its exact DefId ancestors"
+        );
+    }
+
+    #[test]
     fn merge_from_keeps_unaffected_model_fingerprint_cache_entries() {
         let mut cache = cache_with_classes(&[
             ("P.Root", 1, &["P.Dep"]),
@@ -469,6 +515,37 @@ mod tests {
         assert_eq!(
             fingerprint_v1, fingerprint_v2,
             "reachable model fingerprint should not change when an unreachable class changes"
+        );
+    }
+
+    #[test]
+    fn nested_model_fingerprint_includes_ancestor_dependencies() {
+        let source_v1 = r#"
+            package Icons
+              partial package ExamplesPackage
+                constant Integer version = 1;
+              end ExamplesPackage;
+            end Icons;
+            package P
+              extends Icons.ExamplesPackage;
+              package Sub
+                model M
+                  Real x;
+                end M;
+              end Sub;
+            end P;
+        "#;
+        let source_v2 = source_v1.replace("version = 1", "version = 2");
+
+        let tree_v1 = resolved_tree_for("ancestor-v1.mo", source_v1);
+        let tree_v2 = resolved_tree_for("ancestor-v2.mo", &source_v2);
+        let mut cache_v1 = DependencyFingerprintCache::from_tree(&tree_v1);
+        let mut cache_v2 = DependencyFingerprintCache::from_tree(&tree_v2);
+
+        assert_ne!(
+            cache_v1.model_fingerprint("P.Sub.M"),
+            cache_v2.model_fingerprint("P.Sub.M"),
+            "a dependency reached through a lexical ancestor must invalidate the nested target"
         );
     }
 

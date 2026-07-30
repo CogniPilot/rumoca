@@ -673,6 +673,68 @@ fn strict_compilation_carries_exact_target_resolve_proof() {
 }
 
 #[test]
+fn strict_target_resolution_keeps_dependencies_declared_by_lexical_ancestors() {
+    let mut session = Session::default();
+    session
+        .add_document(
+            "models.mo",
+            r#"
+            package Icons
+              partial package ExamplesPackage
+              end ExamplesPackage;
+            end Icons;
+
+            package P
+              extends Icons.ExamplesPackage;
+
+              package Sub
+                model M
+                  Real x;
+                equation
+                  x = 1;
+                end M;
+              end Sub;
+
+              model Broken
+                MissingType value;
+              end Broken;
+            end P;
+            "#,
+        )
+        .expect("source should parse");
+
+    let cached_plan_target = session
+        .resolve_strict_target("P.Sub.M")
+        .unwrap_or_else(|failure| {
+            panic!(
+                "the retained ancestor chain must keep its extends dependencies: {:?}",
+                failure.failures
+            )
+        });
+    let fresh_plan_target = session
+        .resolve_strict_target_from_fresh_plan("P.Sub.M")
+        .unwrap_or_else(|failure| {
+            panic!(
+                "an uncached planning tree must keep ancestor dependencies: {:?}",
+                failure.failures
+            )
+        });
+    for target in [cached_plan_target, fresh_plan_target] {
+        let resolved = target.resolved.inner();
+        assert!(
+            resolved
+                .get_class_by_qualified_name("Icons.ExamplesPackage")
+                .is_some(),
+            "the completed Resolve proof must retain the ancestor package's base"
+        );
+        assert!(
+            resolved.get_class_by_qualified_name("P.Broken").is_none(),
+            "unreachable invalid siblings must remain outside the strict target proof"
+        );
+    }
+}
+
+#[test]
 fn test_strict_reachable_ignores_broken_sibling_in_the_same_document() {
     let source = r#"
         package Types
