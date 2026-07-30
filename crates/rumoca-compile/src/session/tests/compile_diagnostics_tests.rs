@@ -1729,6 +1729,98 @@ fn strict_dae_recovery_detailed_reports_none_phase_for_resolve_failure() {
     );
 }
 
+#[test]
+fn warning_only_resolve_diagnostics_do_not_fail_model_compilation() {
+    let mut session = Session::default();
+    session
+        .add_document(
+            "WarningOnly.mo",
+            r#"
+                model WarningOnly
+                  parameter Real q(start=1) annotation(Evaluate=true);
+                  Real x;
+                equation
+                  x = 1;
+                end WarningOnly;
+                "#,
+        )
+        .unwrap();
+
+    session
+        .compile_model("WarningOnly")
+        .expect("warning-only Resolve diagnostics must not fail compilation");
+    let diagnostics = session.compile_model_diagnostics("WarningOnly");
+    assert!(
+        diagnostics
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code.as_deref() == Some("WR005")
+                && !diagnostic.is_error()),
+        "the warning must remain observable: {diagnostics:?}"
+    );
+    assert!(
+        diagnostics
+            .diagnostics
+            .iter()
+            .all(|diagnostic| !diagnostic.is_error()),
+        "warning-only source must not acquire an error: {diagnostics:?}"
+    );
+}
+
+#[test]
+fn strict_resolve_failure_is_constructed_only_from_error_diagnostics() {
+    let mut session = Session::default();
+    session
+        .add_document(
+            "MixedSeverity.mo",
+            r#"
+                model MixedSeverity
+                  parameter Real q(start=1) annotation(Evaluate=true);
+                  Real x;
+                equation
+                  x = missing;
+                end MixedSeverity;
+                "#,
+        )
+        .unwrap();
+
+    let failure = session
+        .compile_model_dae_strict_reachable_uncached_with_recovery_detailed("MixedSeverity")
+        .expect_err("the unresolved reference must fail Resolve");
+    assert_eq!(failure.phase, None);
+    assert_eq!(failure.error_code.as_deref(), Some("ER002"));
+    assert!(
+        failure
+            .failures
+            .iter()
+            .all(|failure| failure.error_code.as_deref() != Some("WR005")),
+        "advisories cannot construct ModelFailureDiagnostic: {failure:?}"
+    );
+    assert!(
+        failure.summary.contains("unresolved component reference")
+            && !failure.summary.contains("Evaluate=true"),
+        "the fatal summary must be derived from the error: {}",
+        failure.summary
+    );
+
+    let diagnostics = session.compile_model_diagnostics("MixedSeverity");
+    assert!(
+        diagnostics
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code.as_deref() == Some("WR005")
+                && !diagnostic.is_error()),
+        "the advisory remains independently observable: {diagnostics:?}"
+    );
+    assert!(
+        diagnostics
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code.as_deref() == Some("ER002") && diagnostic.is_error()),
+        "the fatal diagnostic remains independently observable: {diagnostics:?}"
+    );
+}
+
 /// The string API must keep returning exactly the detailed summary so
 /// its six existing callers do not change behavior.
 #[test]

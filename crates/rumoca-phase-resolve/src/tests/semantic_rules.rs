@@ -5,6 +5,75 @@
 use super::*;
 
 #[test]
+fn warning_only_semantics_construct_a_resolved_tree_with_advisories() {
+    let source = r#"
+function BareExternal
+  input Real u;
+  output Real y;
+external "C" y = bare_external(u);
+end BareExternal;
+
+model WarningOnly
+  parameter Real q(start=1) annotation(Evaluate=true);
+  Real x;
+equation
+  x = 1;
+end WarningOnly;
+"#;
+
+    let success = match resolve_with_diagnostics(parsed_tree_from_source(source)) {
+        Ok(success) => success,
+        Err(failure) => panic!(
+            "warning-only source must receive a ResolvedTree proof: {:?}",
+            failure.diagnostics()
+        ),
+    };
+    let (_, diagnostics) = success.into_parts();
+    assert!(!diagnostics.has_errors());
+    for code in ["WR001", "WR005"] {
+        let diagnostic = diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.code.as_deref() == Some(code))
+            .unwrap_or_else(|| panic!("expected advisory {code}, got {diagnostics:?}"));
+        assert!(
+            !diagnostic.is_error(),
+            "{code} must remain advisory: {diagnostic:?}"
+        );
+    }
+}
+
+#[test]
+fn mixed_warning_and_error_semantics_cannot_construct_a_resolved_tree() {
+    let source = r#"
+model MixedSeverity
+  parameter Real q(start=1) annotation(Evaluate=true);
+  Real x;
+equation
+  x = missing;
+end MixedSeverity;
+"#;
+
+    let failure = match resolve_with_diagnostics(parsed_tree_from_source(source)) {
+        Ok(_) => panic!("an unresolved reference must prevent a ResolvedTree proof"),
+        Err(failure) => failure,
+    };
+    let diagnostics = failure.diagnostics();
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code.as_deref() == Some("WR005")
+                && !diagnostic.is_error()),
+        "expected the advisory to remain visible: {diagnostics:?}"
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code.as_deref() == Some("ER002") && diagnostic.is_error()),
+        "expected the exact unresolved-reference error: {diagnostics:?}"
+    );
+}
+
+#[test]
 fn test_cardinality_allows_indexed_connector_array_element() {
     let source = r#"
 connector Port
