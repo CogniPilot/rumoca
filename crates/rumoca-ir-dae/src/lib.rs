@@ -34,6 +34,25 @@
 //! # });
 //! ```
 //!
+//! Delay timing evidence is consumed by the one provenance-selected
+//! coordinate occurrence and cannot be reused:
+//!
+//! ```compile_fail
+//! # use rumoca_ir_dae::{
+//! #     DaeConstruction, DaeConstructionError, DaeProvenance, ExprId, PositiveParameter,
+//! # };
+//! # fn duplicate_delay<'dae>(
+//! #     dae: &mut DaeConstruction<'dae>,
+//! #     source: ExprId<'dae>,
+//! #     timing: PositiveParameter<'dae>,
+//! #     owner: DaeProvenance,
+//! # ) -> Result<(), DaeConstructionError> {
+//! dae.expressions(|expr| expr.at(owner).delay(source, timing, owner))?;
+//! dae.expressions(|expr| expr.at(owner).delay(source, timing, owner))?;
+//! # Ok(())
+//! # }
+//! ```
+//!
 //! A function-construction capability cannot escape its lexical owner:
 //!
 //! ```compile_fail

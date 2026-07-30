@@ -800,39 +800,12 @@ fn rebuild_delay_coordinates<'target>(
                 }),
             }
         })?;
-        let coordinate = target.temporal(|temporal| match rebuilt_delay {
-            RebuiltDelay::Parameter {
-                source,
-                delay_time,
-                evidence,
-            } => {
-                let positive = temporal.positive_parameter(
-                    delay_time,
-                    evidence.value(),
-                    evidence.provenance(),
-                )?;
-                temporal.delay(source, positive, delay.provenance(), coordinate_provenance)
-            }
-            RebuiltDelay::Bounded {
-                source,
-                delay_time,
-                delay_max,
-                evidence,
-            } => {
-                let positive = temporal.positive_parameter(
-                    delay_max,
-                    evidence.value(),
-                    evidence.provenance(),
-                )?;
-                temporal.bounded_delay(
-                    source,
-                    delay_time,
-                    positive,
-                    delay.provenance(),
-                    coordinate_provenance,
-                )
-            }
-        })?;
+        let coordinate = construct_rebuilt_delay_coordinate(
+            target,
+            rebuilt_delay,
+            delay.provenance(),
+            coordinate_provenance,
+        )?;
         if coordinate.id().index() as usize != index {
             return Err(dae::DaeConstructionError::ShapeMismatch {
                 span: delay.provenance().span(),
@@ -841,6 +814,45 @@ fn rebuild_delay_coordinates<'target>(
         rebuilt[coordinate_index] = Some(coordinate.expression());
     }
     Ok(())
+}
+
+fn construct_rebuilt_delay_coordinate<'target>(
+    target: &mut dae::DaeConstruction<'target>,
+    delay: RebuiltDelay<'_, 'target>,
+    owner: dae::DaeProvenance,
+    coordinate_provenance: dae::DaeProvenance,
+) -> Result<dae::DelayCoordinate<'target>, dae::DaeConstructionError> {
+    match delay {
+        RebuiltDelay::Parameter {
+            source,
+            delay_time,
+            evidence,
+        } => {
+            let positive = target.temporal(|temporal| {
+                temporal.positive_parameter(delay_time, evidence.value(), evidence.provenance())
+            })?;
+            target.expressions(|expressions| {
+                expressions
+                    .at(coordinate_provenance)
+                    .delay(source, positive, owner)
+            })
+        }
+        RebuiltDelay::Bounded {
+            source,
+            delay_time,
+            delay_max,
+            evidence,
+        } => {
+            let maximum = target.temporal(|temporal| {
+                temporal.positive_parameter(delay_max, evidence.value(), evidence.provenance())
+            })?;
+            target.expressions(|expressions| {
+                expressions
+                    .at(coordinate_provenance)
+                    .bounded_delay(source, delay_time, maximum, owner)
+            })
+        }
+    }
 }
 
 enum TargetVariable<'dae> {

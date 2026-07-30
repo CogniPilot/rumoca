@@ -602,15 +602,24 @@ fn insert_fixture_delay<'dae>(
                 .transpose()?,
         ))
     })?;
-    model.temporal(|temporal| {
+    let positive = model.temporal(|temporal| {
         if let (Some(maximum), Some(maximum_at)) = (maximum, maximum_at) {
-            let positive = temporal.positive_parameter(maximum, 1.0, maximum_at)?;
-            temporal
-                .bounded_delay(delayed, timing, positive, owner, owner)
+            temporal.positive_parameter(maximum, 1.0, maximum_at)
+        } else {
+            temporal.positive_parameter(timing, 0.5, timing_at)
+        }
+    })?;
+    model.expressions(|expressions| {
+        if maximum.is_some() {
+            expressions
+                .at(owner)
+                .bounded_delay(delayed, timing, positive, owner)
                 .map(|_| ())
         } else {
-            let positive = temporal.positive_parameter(timing, 0.5, timing_at)?;
-            temporal.delay(delayed, positive, owner, owner).map(|_| ())
+            expressions
+                .at(owner)
+                .delay(delayed, positive, owner)
+                .map(|_| ())
         }
     })
 }

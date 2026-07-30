@@ -298,20 +298,28 @@ fn lower_delay<'dae>(
     let source = lower_expression_scoped(construction, symbols, binders, &arguments[0], None)?;
     let delay_time = lower_expression_scoped(construction, symbols, binders, &arguments[1], None)?;
     match plan {
-        DelayPlan::Fixed(timing) => construction.temporal(|temporal| {
+        DelayPlan::Fixed(timing) => {
             let timing_provenance = expression_provenance(timing.provenance(), None)?;
-            let positive =
-                temporal.positive_parameter(delay_time, timing.value(), timing_provenance)?;
-            temporal.delay(source, positive, provenance, provenance)
-        }),
+            let positive = construction.temporal(|temporal| {
+                temporal.positive_parameter(delay_time, timing.value(), timing_provenance)
+            })?;
+            construction.expressions(|expressions| {
+                expressions
+                    .at(provenance)
+                    .delay(source, positive, provenance)
+            })
+        }
         DelayPlan::Bounded(maximum) => {
             let delay_max =
                 lower_expression_scoped(construction, symbols, binders, &arguments[2], None)?;
             let maximum_provenance = expression_provenance(maximum.provenance(), None)?;
-            construction.temporal(|temporal| {
-                let maximum =
-                    temporal.positive_parameter(delay_max, maximum.value(), maximum_provenance)?;
-                temporal.bounded_delay(source, delay_time, maximum, provenance, provenance)
+            let maximum = construction.temporal(|temporal| {
+                temporal.positive_parameter(delay_max, maximum.value(), maximum_provenance)
+            })?;
+            construction.expressions(|expressions| {
+                expressions
+                    .at(provenance)
+                    .bounded_delay(source, delay_time, maximum, provenance)
             })
         }
     }

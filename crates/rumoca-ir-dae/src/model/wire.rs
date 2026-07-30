@@ -989,10 +989,13 @@ fn reconstruct_delay_coordinate<'dae>(
                 "expression",
                 evidence.provenance,
             )?;
-            dae.temporal(|temporal| {
-                let positive =
-                    temporal.positive_parameter(expression, evidence.value, evidence.provenance)?;
-                temporal.delay(source, positive, delay.provenance, coordinate_provenance)
+            let positive = dae.temporal(|temporal| {
+                temporal.positive_parameter(expression, evidence.value, evidence.provenance)
+            })?;
+            dae.expressions(|expressions| {
+                expressions
+                    .at(coordinate_provenance)
+                    .delay(source, positive, delay.provenance)
             })?
         }
         DelayKindWire::BoundedDelay {
@@ -1011,18 +1014,15 @@ fn reconstruct_delay_coordinate<'dae>(
                 "expression",
                 maximum.provenance,
             )?;
-            dae.temporal(|temporal| {
-                let maximum = temporal.positive_parameter(
-                    maximum_expression,
-                    maximum.value,
-                    maximum.provenance,
-                )?;
-                temporal.bounded_delay(
+            let maximum = dae.temporal(|temporal| {
+                temporal.positive_parameter(maximum_expression, maximum.value, maximum.provenance)
+            })?;
+            dae.expressions(|expressions| {
+                expressions.at(coordinate_provenance).bounded_delay(
                     source,
                     delay_time,
                     maximum,
                     delay.provenance,
-                    coordinate_provenance,
                 )
             })?
         }
