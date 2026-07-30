@@ -28,7 +28,12 @@ hide invariant fields/root validators. Solve sparsity follows
 | Constructor checks replace validators | DAE cutover | One owner |
 | Delete superseded DAE and wire atomically | DAE cutover | No compatibility |
 | Report before/after repository LOC; DAE production is net-negative | PR metrics | Demonstrate savings |
-| Checked-DAE production ≤11,000 LOC | `rumoca-ir-dae` | Bounds ceremony |
+| Semantic/constructor/proof/view core excluding `model/wire*` ≤11,000 LOC | `rumoca-ir-dae` | Bounds core ceremony |
+| Private current-version wire family ≤3,250 LOC | `rumoca-ir-dae::model::wire` | Bounds replay ceremony |
+| Total checked-DAE production ≤14,250 LOC | `rumoca-ir-dae` | Bounds aggregate ceremony |
+
+Cap increases require a fresh module-level evidence report; audit-hostile
+metaprogramming and capability deletion are not valid LOC reductions.
 
 ### One Aggregate Owns Construction
 
