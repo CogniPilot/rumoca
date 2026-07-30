@@ -206,14 +206,7 @@ end ExactClockIdentity;
         synchronous.visit_expression(&equation.residual);
     }
     for chain in &flat.when_chains {
-        for branch in chain.branches() {
-            synchronous.visit_expression(&branch.condition);
-            for equation in &branch.equations {
-                if let rumoca_ir_flat::WhenEquation::Assign { value, .. } = equation {
-                    synchronous.visit_expression(value);
-                }
-            }
-        }
+        collect_when_chain_builtins(&mut synchronous, chain);
     }
     for expected in [
         BuiltinFunction::Hold,
@@ -521,6 +514,20 @@ impl ExpressionVisitor for SynchronousBuiltinCollector {
     fn visit_builtin_call(&mut self, function: &BuiltinFunction, args: &[Expression]) {
         self.functions.push(*function);
         self.walk_builtin_call(function, args);
+    }
+}
+
+fn collect_when_chain_builtins(
+    synchronous: &mut SynchronousBuiltinCollector,
+    chain: &rumoca_ir_flat::WhenChain,
+) {
+    for branch in chain.branches() {
+        synchronous.visit_expression(&branch.condition);
+        for equation in &branch.equations {
+            if let rumoca_ir_flat::WhenEquation::Assign { value, .. } = equation {
+                synchronous.visit_expression(value);
+            }
+        }
     }
 }
 
