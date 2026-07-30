@@ -1642,9 +1642,13 @@ fn validate_variable_role(
 }
 
 pub(super) fn equation_partition<'flat>(
+    flat: &'flat flat::Model,
     equation: &'flat flat::Equation,
     roles: &HashMap<VarName, PlannedRole>,
 ) -> Result<EquationPartition<'flat>, ToDaeError> {
+    if let Some(plan) = discrete_connection_assignment(flat, equation, roles) {
+        return Ok(EquationPartition::DiscreteValue(plan));
+    }
     if let Some(plan) = discrete_value_assignment(&equation.residual, roles, equation.span)? {
         return Ok(EquationPartition::DiscreteValue(plan));
     }
@@ -1695,6 +1699,57 @@ pub(super) fn equation_partition<'flat>(
             unreachable!("the target was selected as a discrete coordinate")
         }
     }
+}
+
+fn discrete_connection_assignment<'flat>(
+    flat: &'flat flat::Model,
+    equation: &'flat flat::Equation,
+    roles: &HashMap<VarName, PlannedRole>,
+) -> Option<DiscreteValueAssignmentPlan<'flat>> {
+    if !matches!(equation.origin, flat::EquationOrigin::Connection { .. }) {
+        return None;
+    }
+    let Expression::Binary {
+        op: OpBinary::Sub,
+        lhs,
+        rhs,
+        ..
+    } = &equation.residual
+    else {
+        return None;
+    };
+    let lhs_name = scalar_discrete_value_reference(lhs, roles)?;
+    let rhs_name = scalar_discrete_value_reference(rhs, roles)?;
+    let lhs_causality = &flat.variables.get(lhs_name)?.causality;
+    let rhs_causality = &flat.variables.get(rhs_name)?.causality;
+    match (lhs_causality, rhs_causality) {
+        (Causality::Output(_), Causality::Input(_)) => Some(DiscreteValueAssignmentPlan {
+            target: rhs_name,
+            value: Cow::Borrowed(lhs),
+            generated: false,
+        }),
+        (Causality::Input(_), Causality::Output(_)) => Some(DiscreteValueAssignmentPlan {
+            target: lhs_name,
+            value: Cow::Borrowed(rhs),
+            generated: false,
+        }),
+        _ => None,
+    }
+}
+
+fn scalar_discrete_value_reference<'flat>(
+    expression: &'flat Expression,
+    roles: &HashMap<VarName, PlannedRole>,
+) -> Option<&'flat VarName> {
+    let Expression::VarRef {
+        name, subscripts, ..
+    } = expression
+    else {
+        return None;
+    };
+    let name = name.var_name();
+    (subscripts.is_empty() && matches!(roles.get(name), Some(PlannedRole::DiscreteValue)))
+        .then_some(name)
 }
 
 fn discrete_value_assignment<'flat>(
@@ -1852,7 +1907,7 @@ fn defined_discrete_targets(
         )
     }));
     for equation in &flat.equations {
-        match equation_partition(equation, roles)? {
+        match equation_partition(flat, equation, roles)? {
             EquationPartition::Continuous => {}
             EquationPartition::DiscreteReal { target } => {
                 targets.insert(target.clone());

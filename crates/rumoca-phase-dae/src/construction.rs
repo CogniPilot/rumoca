@@ -1715,6 +1715,7 @@ pub(super) fn pack_row_major_body<'dae>(
 }
 
 struct EquationRows<'scope> {
+    flat: &'scope flat::Model,
     equations: &'scope [flat::Equation],
     excluded: &'scope HashSet<usize>,
     records: &'scope HashMap<usize, RecordEquationPlan>,
@@ -1759,7 +1760,7 @@ fn lower_equations<'dae>(
             construction.initialization(|system| system.value_equation(owner, residual))?;
             continue;
         }
-        match equation_partition(equation, input.roles)
+        match equation_partition(input.flat, equation, input.roles)
             .expect("analysis already validates equation ownership")
         {
             EquationPartition::Continuous => {

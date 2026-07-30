@@ -32,7 +32,7 @@ pub(super) fn source_balance(
         if clock_equation_rows.contains(&row) {
             continue;
         }
-        match equation_partition(equation, roles)? {
+        match equation_partition(flat, equation, roles)? {
             EquationPartition::Continuous => {
                 detail.continuous_equations += if let Some(plan) = record_equations.get(&row) {
                     record_equation_scalar_count(flat, equation, plan)?

@@ -1,4 +1,4 @@
-use rumoca_core::{Reference, SourceId, TypeId};
+use rumoca_core::{ComponentReference, Reference, SourceId, TypeId};
 
 use super::*;
 
@@ -635,6 +635,109 @@ fn b1c_topology_orders_producers_before_declaration_order_consumers() {
             .unwrap();
         assert_eq!(producer.targets().get(0).unwrap().index(), 1);
         assert_eq!(consumer.targets().get(0).unwrap().index(), 0);
+    });
+}
+
+#[test]
+fn b1c_connection_assigns_the_exact_input_from_its_output_owner() {
+    let source = TestSource::new(
+        "model M output Boolean source; input Boolean sink; equation \
+         source = true; connect(source, sink); end M;",
+    );
+    let mut model = flat::Model::new();
+    add_primitive_variable(
+        &mut model,
+        &source,
+        "source",
+        "output Boolean source",
+        8,
+        Vec::new(),
+        true,
+    );
+    add_primitive_variable(
+        &mut model,
+        &source,
+        "sink",
+        "input Boolean sink",
+        9,
+        Vec::new(),
+        true,
+    );
+    model
+        .variables
+        .get_mut(&VarName::new("source"))
+        .unwrap()
+        .causality = Causality::Output(Default::default());
+    model
+        .variables
+        .get_mut(&VarName::new("sink"))
+        .unwrap()
+        .causality = Causality::Input(Default::default());
+    model
+        .variables
+        .get_mut(&VarName::new("sink"))
+        .unwrap()
+        .component_ref = Some(ComponentReference::from_flat_segments(
+        "sink",
+        source.span("input Boolean sink", 0),
+        None,
+    ));
+
+    let definition_span = source.span("source = true", 0);
+    model.add_equation(flat::Equation::new(
+        Expression::Binary {
+            op: OpBinary::Sub,
+            lhs: Box::new(Expression::VarRef {
+                name: Reference::new("source"),
+                subscripts: Vec::new(),
+                span: source.span("source", 1),
+            }),
+            rhs: Box::new(Expression::Literal {
+                value: Literal::Boolean(true),
+                span: source.span("true", 0),
+            }),
+            span: definition_span,
+        },
+        definition_span,
+        flat::EquationOrigin::ComponentEquation {
+            component: String::new(),
+        },
+    ));
+    let connection_span = source.span("connect(source, sink)", 0);
+    model.add_equation(flat::Equation::new(
+        Expression::Binary {
+            op: OpBinary::Sub,
+            lhs: Box::new(Expression::VarRef {
+                name: Reference::new("source"),
+                subscripts: Vec::new(),
+                span: source.span("source", 2),
+            }),
+            rhs: Box::new(Expression::VarRef {
+                name: Reference::new("sink"),
+                subscripts: Vec::new(),
+                span: source.span("sink", 1),
+            }),
+            span: connection_span,
+        },
+        connection_span,
+        flat::EquationOrigin::Connection {
+            lhs: "source".to_string(),
+            rhs: "sink".to_string(),
+        },
+    ));
+
+    let dae = construct(&model, source.map).unwrap();
+    dae.inspect(|view| {
+        assert_eq!(view.discrete_value_owner_count(), 2);
+        let source_owner = view
+            .discrete_value_owner(view.discrete_value_owner_id(0).unwrap())
+            .unwrap();
+        let sink_owner = view
+            .discrete_value_owner(view.discrete_value_owner_id(1).unwrap())
+            .unwrap();
+        assert_eq!(source_owner.targets().get(0).unwrap().index(), 0);
+        assert_eq!(sink_owner.targets().get(0).unwrap().index(), 1);
+        assert_eq!(sink_owner.provenance().span(), connection_span);
     });
 }
 

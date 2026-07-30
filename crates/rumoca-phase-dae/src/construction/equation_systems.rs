@@ -17,6 +17,7 @@ pub(super) fn lower_equation_systems<'dae>(
         coordinates,
         functions,
         EquationRows {
+            flat,
             equations: &flat.equations,
             excluded: &excluded_equation_rows,
             records: &analysis.record_equations,
@@ -40,6 +41,7 @@ pub(super) fn lower_equation_systems<'dae>(
         coordinates,
         functions,
         EquationRows {
+            flat,
             equations: &flat.initial_equations,
             excluded: &analysis.initialization_family_rows,
             records: &analysis.initial_record_equations,

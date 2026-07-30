@@ -108,7 +108,8 @@ fn collect_equation_owners(
     owners: &mut Vec<SourceOwner>,
 ) -> Result<(), ToDaeError> {
     for equation in &flat.equations {
-        let EquationPartition::DiscreteValue(plan) = equation_partition(equation, roles)? else {
+        let EquationPartition::DiscreteValue(plan) = equation_partition(flat, equation, roles)?
+        else {
             continue;
         };
         owners.push(SourceOwner {
