@@ -45,11 +45,12 @@ use clocks::{LoweredClocks, lower_clocks, lower_sampled_value_clocks};
 use discrete_values::{DiscreteValueOwnerHandle, DiscreteValueStaging};
 use equation_systems::lower_equation_systems;
 use expression::{
-    FunctionArrayUpdate, LoweringSymbols, all_model_expressions, derivative_reference,
-    expression_children, expression_span, lower_clocked_expression, lower_coordinate_reference,
-    lower_expression, lower_expression_scoped, lower_function_array_update,
-    lower_function_expression, lower_function_expression_scoped, lower_model_algorithm_expression,
-    planned_input_variability, require_span, variable_attribute_expressions,
+    FunctionArrayUpdate, FunctionCallLowering, LoweringSymbols, all_model_expressions,
+    classify_function_call, derivative_reference, expression_children, expression_span,
+    lower_clocked_expression, lower_coordinate_reference, lower_expression,
+    lower_expression_scoped, lower_function_array_update, lower_function_expression,
+    lower_function_expression_scoped, lower_model_algorithm_expression, planned_input_variability,
+    require_span, variable_attribute_expressions,
 };
 use function_array_assembly::lower_function_array_assembly;
 use function_body::{
@@ -72,7 +73,10 @@ use model_algorithm::{
 use model_events::{WhenChainsRequest, always_condition, lower_when_assignment, lower_when_chains};
 use record_equation::lower_record_equation;
 use structured_body::lower_structured_body;
-use variable_construction::{define_variables, reserve_variables};
+use variable_construction::{
+    VariableConstructionPlan, define_reserved_variables, insert_variable_identities,
+    plan_variable_construction,
+};
 
 #[derive(Clone, Copy)]
 enum Coordinate<'dae> {
@@ -141,7 +145,7 @@ struct ReservedVariable<'flat, 'dae> {
     flat: &'flat flat::Variable,
     role: PlannedRole,
     scalar_type: dae::ScalarType,
-    coordinate: Coordinate<'dae>,
+    value_type: dae::ValueTypeId<'dae>,
     definition: dae::VariableReservation<'dae>,
 }
 
@@ -150,9 +154,10 @@ pub(crate) fn construct(flat: &flat::Model, source_map: SourceMap) -> Result<dae
     if !flat.is_partial && !analysis.balance.is_balanced() {
         return Err(ToDaeError::unbalanced_from_detail(analysis.balance));
     }
+    let variable_plan = plan_variable_construction(flat, &analysis)?;
 
     dae::Dae::construct(source_map, |construction| {
-        build_checked(flat, &analysis, construction)
+        build_checked(flat, &analysis, &variable_plan, construction)
     })
     .map_err(ToDaeError::from)
 }
@@ -164,10 +169,30 @@ pub(crate) fn balance_detail(flat: &flat::Model) -> Result<BalanceDetail, ToDaeE
 fn build_checked<'dae>(
     flat: &flat::Model,
     analysis: &Analysis,
+    variable_plan: &VariableConstructionPlan,
     construction: &mut dae::DaeConstruction<'dae>,
 ) -> Result<(), dae::DaeConstructionError> {
     let value_types = reserve_value_types(flat, analysis, construction)?;
-    let (coordinates, reserved) = reserve_variables(flat, analysis, construction, &value_types)?;
+    let no_function_ids = HashMap::new();
+    let analysis_functions = FunctionRegistry {
+        flat,
+        shapes: &analysis.function_shapes,
+        ids: &no_function_ids,
+        comprehension_plans: &analysis.comprehension_plans,
+        record_array_fields: &analysis.record_array_fields,
+        constants: &analysis.constants,
+        delay_plans: &analysis.delay_plans,
+        reinit_state_pre: &analysis.reinit_state_pre,
+    };
+    let variable_identities = insert_variable_identities(
+        flat,
+        analysis,
+        construction,
+        &value_types,
+        &analysis_functions,
+        variable_plan,
+    )?;
+    let coordinates = variable_identities.coordinates;
     let function_ids = construct_functions(
         flat,
         &analysis.function_shapes,
@@ -193,13 +218,14 @@ fn build_checked<'dae>(
         delay_plans: &analysis.delay_plans,
         reinit_state_pre: &analysis.reinit_state_pre,
     };
-    define_variables(
+    define_reserved_variables(
         construction,
         &coordinates,
         &functions,
         &analysis.assigned_discrete_targets,
         &analysis.derived_parameters,
-        reserved,
+        variable_plan,
+        variable_identities.reserved,
     )?;
     let clocks = lower_clocks(construction, flat, &analysis.clock_plans)?;
     lower_sampled_value_clocks(

@@ -1617,6 +1617,163 @@ fn primitive_arrays_parameters_and_discrete_values_keep_checked_owners() {
     });
 }
 
+#[test]
+fn variable_identity_pass_preserves_order_forward_and_function_attributes() {
+    let source = TestSource::new(
+        "parameter Real P=1; parameter Real A=B; parameter Real B=2; \
+         parameter Real C=f(); function f output Real y; algorithm y := 4; end f;",
+    );
+    let mut model = flat::Model::new();
+    for (name, declaration, type_id, binding) in [
+        (
+            "P",
+            "parameter Real P=1",
+            20,
+            Expression::Literal {
+                value: Literal::Real(1.0),
+                span: source.span("1", 0),
+            },
+        ),
+        (
+            "A",
+            "parameter Real A=B",
+            21,
+            variable_reference(&source, "B", "B", 0, Vec::new()),
+        ),
+        (
+            "B",
+            "parameter Real B=2",
+            22,
+            Expression::Literal {
+                value: Literal::Real(2.0),
+                span: source.span("2", 0),
+            },
+        ),
+        (
+            "C",
+            "parameter Real C=f()",
+            23,
+            Expression::FunctionCall {
+                name: Reference::new("f"),
+                args: Vec::new(),
+                is_constructor: false,
+                span: source.span("f()", 0),
+            },
+        ),
+    ] {
+        add_primitive_variable(
+            &mut model,
+            &source,
+            name,
+            declaration,
+            type_id,
+            Vec::new(),
+            false,
+        );
+        let variable = model.variables.get_mut(&VarName::new(name)).unwrap();
+        variable.variability = Variability::Parameter(Default::default());
+        variable.binding = Some(binding);
+    }
+
+    let function_span = source.span("function f", 0);
+    let output_span = source.span("output Real y", 0);
+    let assignment_span = source.span("y := 4", 0);
+    let mut function = rumoca_core::Function::new("f", function_span);
+    function.add_output(rumoca_core::FunctionParam::new("y", "Real", output_span));
+    function.body = vec![rumoca_core::Statement::Assignment {
+        comp: rumoca_core::ComponentReference::from_flat_segments("y", assignment_span, None),
+        value: Expression::Literal {
+            value: Literal::Real(4.0),
+            span: source.span("4", 0),
+        },
+        span: assignment_span,
+    }];
+    model.add_function(function);
+    model.is_partial = true;
+
+    let forward_use = source.span("B", 0);
+    let function_call = source.span("f()", 0);
+    let dae = construct(&model, source.map).unwrap();
+    dae.inspect(|view| {
+        let names = view
+            .variables()
+            .map(|(_, variable)| variable.name().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["P", "A", "B", "C"]);
+
+        let forward = view.variable(view.variable_id(1).unwrap()).unwrap();
+        let forward_binding = view.expression(forward.binding().unwrap()).unwrap();
+        assert_eq!(forward_binding.provenance().span(), forward_use);
+        assert!(matches!(
+            forward_binding.operation(),
+            dae::ExpressionOperation::Coordinate(dae::CoordinateView::Parameter(id))
+                if id.index() == 2
+        ));
+
+        let function_dependent = view.variable(view.variable_id(3).unwrap()).unwrap();
+        let call = view
+            .expression(function_dependent.binding().unwrap())
+            .unwrap();
+        assert_eq!(call.provenance().span(), function_call);
+        assert!(matches!(
+            call.operation(),
+            dae::ExpressionOperation::Call { .. }
+        ));
+    });
+}
+
+#[test]
+fn ordinary_forward_attribute_cycle_retains_both_use_occurrences() {
+    let source = TestSource::new("parameter Real A(start=B); parameter Real B(start=A);");
+    let mut model = flat::Model::new();
+    for (name, declaration, type_id, dependency, occurrence) in [
+        ("A", "parameter Real A(start=B)", 24, "B", 0),
+        ("B", "parameter Real B(start=A)", 25, "A", 1),
+    ] {
+        add_primitive_variable(
+            &mut model,
+            &source,
+            name,
+            declaration,
+            type_id,
+            Vec::new(),
+            false,
+        );
+        let variable = model.variables.get_mut(&VarName::new(name)).unwrap();
+        variable.variability = Variability::Parameter(Default::default());
+        variable.start = Some(variable_reference(
+            &source,
+            dependency,
+            dependency,
+            occurrence,
+            Vec::new(),
+        ));
+    }
+    model.is_partial = true;
+
+    let a_start = source.span("B", 0);
+    let b_start = source.span("A", 1);
+    let dae = construct(&model, source.map).unwrap();
+    dae.inspect(|view| {
+        let a = view.variable(view.variable_id(0).unwrap()).unwrap();
+        let b = view.variable(view.variable_id(1).unwrap()).unwrap();
+        assert_eq!(
+            view.expression(a.start().unwrap())
+                .unwrap()
+                .provenance()
+                .span(),
+            a_start
+        );
+        assert_eq!(
+            view.expression(b.start().unwrap())
+                .unwrap()
+                .provenance()
+                .span(),
+            b_start
+        );
+    });
+}
+
 fn array_and_discrete_model(source: &TestSource) -> flat::Model {
     let mut model = flat::Model::new();
     add_primitive_variable(&mut model, source, "x", "Real x[2]", 10, vec![2], false);
@@ -1808,6 +1965,8 @@ fn binding_lowering_does_not_fallback_to_declaration_provenance() {
     model.is_partial = true;
 
     let analysis = analyze(&model).expect("valid binding must be accepted during analysis");
+    let variable_plan =
+        plan_variable_construction(&model, &analysis).expect("valid attributes must be planned");
     let Some(Expression::Literal { span, .. }) = model
         .variables
         .get_mut(&VarName::new("x"))
@@ -1818,7 +1977,7 @@ fn binding_lowering_does_not_fallback_to_declaration_provenance() {
     *span = Span::DUMMY;
 
     let error = dae::Dae::construct(source.map, |construction| {
-        build_checked(&model, &analysis, construction)
+        build_checked(&model, &analysis, &variable_plan, construction)
     })
     .expect_err("lowering must recheck exact binding provenance");
     assert!(matches!(
