@@ -283,7 +283,7 @@ pub(super) fn defined_discrete_targets(
     }));
     for equation in &flat.equations {
         match equation_partition(flat, equation, roles)? {
-            EquationPartition::Continuous => {}
+            EquationPartition::Continuous => continue,
             EquationPartition::DiscreteReal { target } => {
                 targets.insert(target.clone());
             }
@@ -291,6 +291,27 @@ pub(super) fn defined_discrete_targets(
                 targets.insert(plan.target.clone());
             }
         }
+        // Every discrete coordinate the equation touches is an unknown of the
+        // discrete system it belongs to, not a held value. The classified
+        // target is only the side the solved form assigns; a connection row
+        // (`a - b`) defines the other side just as much, and dropping it would
+        // count the equation without counting its unknown.
+        targets.extend(discrete_references(&equation.residual, roles));
     }
     Ok(targets)
+}
+
+fn discrete_references(
+    expression: &Expression,
+    roles: &HashMap<VarName, PlannedRole>,
+) -> Vec<VarName> {
+    let mut references = Vec::new();
+    expression.collect_var_refs(&mut references);
+    references.retain(|name| {
+        matches!(
+            roles.get(name),
+            Some(PlannedRole::DiscreteReal | PlannedRole::DiscreteValue)
+        )
+    });
+    references
 }

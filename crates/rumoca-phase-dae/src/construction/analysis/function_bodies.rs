@@ -8,10 +8,22 @@ pub(super) fn validate_functions(
     for certificate in shapes.certificates() {
         let function = &flat.functions[&certificate.key.function];
         require_span(function.span, "function declaration")?;
-        if function.external.is_some() || !function.pure || function.is_constructor {
+        if function.is_constructor {
             return Err(ToDaeError::unsupported_flat(
                 "function lifecycle",
                 format!("`{}` is not a pure Modelica function body", function.name),
+                function.span,
+            ));
+        }
+        // MLS §12.3: a Modelica body is pure. Only an MLS §12.9 external body
+        // may be impure, and it reaches the DAE through its checked interface.
+        if function.external.is_none() && !function.pure {
+            return Err(ToDaeError::unsupported_flat(
+                "function lifecycle",
+                format!(
+                    "`{}` declares an impure Modelica body, which MLS §12.3 does not permit",
+                    function.name
+                ),
                 function.span,
             ));
         }
@@ -37,7 +49,19 @@ pub(super) fn validate_functions(
             shapes: &certificate.values,
             shape_analysis: shapes,
         };
-        let plan = if let Some(plan) = validate_guarded_function_return(function, context)? {
+        let plan = if function.external.is_some() {
+            if !function.body.is_empty() {
+                return Err(ToDaeError::unsupported_flat(
+                    "function lifecycle",
+                    format!(
+                        "`{}` declares both an algorithm body and an external interface",
+                        function.name
+                    ),
+                    function.span,
+                ));
+            }
+            FunctionPlan::External(validate_external_function(function, context)?)
+        } else if let Some(plan) = validate_guarded_function_return(function, context)? {
             plan
         } else if let Some(plan) = validate_integer_reduction(function, context)? {
             plan

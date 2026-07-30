@@ -298,6 +298,10 @@ fn executable_external_object_constructor_reaches_lifecycle_boundary() {
         },
     ));
 
+    // MLS §12.9 external interfaces are now constructible, so the rejection
+    // moves to the exact boundary the ExternalObject actually lacks: `Handle`
+    // has no checked DAE lifecycle value type. The declaration span is the
+    // output that names it, not the enclosing function.
     let error = construct(&model, source.map).unwrap_err();
     assert!(matches!(
         error,
@@ -305,9 +309,9 @@ fn executable_external_object_constructor_reaches_lifecycle_boundary() {
             feature,
             detail,
             span,
-        } if feature == "function lifecycle"
-            && detail == "`Handle` is not a pure Modelica function body"
-            && span == function_span
+        } if feature == "function value type"
+            && detail == "`Handle.handle` has unsupported type `Handle`"
+            && span == output_span
     ));
 }
 
@@ -792,5 +796,298 @@ fn reachable_function_loop_with_runtime_bound_fails_at_domain_owner() {
             span,
             ..
         } if feature == "function loop domain" && span == range_span
+    ));
+}
+
+fn external_random_model(
+    source: &TestSource,
+    pure: bool,
+    annotations: Vec<rumoca_core::ExternalFunctionAnnotation>,
+) -> flat::Model {
+    let function_span = source.span("function f", 0);
+    let input_span = source.span("input Real p0", 0);
+    let output_span = source.span("output Real y0", 0);
+    let state_span = source.span("output Real q0", 0);
+    let mut function = rumoca_core::Function::new("f", function_span);
+    function.pure = pure;
+    function.add_input(real_function_param("p0", Vec::new(), input_span));
+    function.add_output(real_function_param("y0", Vec::new(), output_span));
+    function.add_output(real_function_param("q0", Vec::new(), state_span));
+    function.external = Some(rumoca_core::ExternalFunction {
+        language: "C".to_string(),
+        function_name: Some("my_random".to_string()),
+        output_name: Some("y0".to_string()),
+        args: vec![
+            Expression::VarRef {
+                name: Reference::new("p0"),
+                subscripts: Vec::new(),
+                span: source.span("p0", 1),
+            },
+            Expression::VarRef {
+                name: Reference::new("q0"),
+                subscripts: Vec::new(),
+                span: source.span("q0", 1),
+            },
+        ],
+        annotations,
+    });
+
+    let mut model = test_model();
+    model.add_function(function);
+    model.is_partial = true;
+    let call_span = source.span("f(2.5)", 0);
+    model.add_equation(flat::Equation::new(
+        Expression::FunctionCall {
+            name: Reference::new("f"),
+            args: vec![Expression::Literal {
+                value: Literal::Real(2.5),
+                span: source.span("2.5", 0),
+            }],
+            is_constructor: false,
+            span: call_span,
+        },
+        call_span,
+        flat::EquationOrigin::ComponentEquation {
+            component: String::new(),
+        },
+    ));
+    model
+}
+
+const EXTERNAL_SOURCE_TEXT: &str = "function f\n  input Real p0;\n  output Real y0;\n  output Real q0;\n  external \"C\" y0 = my_random(p0, q0);\nend f;\nf(2.5);";
+
+#[test]
+fn pure_external_function_lowers_as_a_purity_bearing_callable() {
+    let source = TestSource::new(EXTERNAL_SOURCE_TEXT);
+    let annotation_span = source.span("my_random", 0);
+    let model = external_random_model(
+        &source,
+        true,
+        vec![rumoca_core::ExternalFunctionAnnotation {
+            name: vec!["Library".to_string()],
+            value: Expression::Literal {
+                value: Literal::String("ModelicaExternalC".to_string()),
+                span: annotation_span,
+            },
+            span: annotation_span,
+        }],
+    );
+
+    let dae = construct(&model, source.map).unwrap();
+    dae.inspect(|view| {
+        let function = view.function(view.function_id(0).unwrap()).unwrap();
+        assert!(function.is_external());
+        assert_eq!(function.statements().count(), 0);
+        let external = function.external().expect("the body is external");
+        assert_eq!(external.purity(), dae::FunctionPurity::Pure);
+        assert_eq!(external.language(), dae::ExternalLanguage::C);
+        assert_eq!(external.symbol().as_str(), "my_random");
+        assert_eq!(external.linkage().libraries(), ["ModelicaExternalC"]);
+        let arguments = external.arguments().collect::<Vec<_>>();
+        let dae::ExternalArgumentView::Input(argument) = arguments[0] else {
+            panic!("the first ABI position reads the declared formal");
+        };
+        let lowered = view.expression(argument).unwrap();
+        assert_eq!(view.source_text(lowered.provenance()), Some("p0"));
+        assert!(matches!(arguments[1], dae::ExternalArgumentView::Output(_)));
+        assert!(external.result().is_some());
+    });
+}
+
+#[test]
+fn external_function_with_an_unproduced_output_is_rejected() {
+    let source = TestSource::new(EXTERNAL_SOURCE_TEXT);
+    let state_span = source.span("output Real q0", 0);
+    let mut model = external_random_model(&source, true, Vec::new());
+    model
+        .functions
+        .get_mut(&VarName::new("f"))
+        .unwrap()
+        .external
+        .as_mut()
+        .unwrap()
+        .args
+        .truncate(1);
+
+    let error = construct(&model, source.map).unwrap_err();
+    assert!(matches!(
+        error,
+        ToDaeError::UnsupportedFlatSemantics {
+            feature,
+            detail,
+            span,
+        } if feature == "external function interface"
+            && detail.contains("output `q0` that its external body never produces")
+            && span == state_span
+    ));
+}
+
+#[test]
+fn external_function_with_an_undefined_language_is_rejected() {
+    let source = TestSource::new(EXTERNAL_SOURCE_TEXT);
+    let function_span = source.span("function f", 0);
+    let mut model = external_random_model(&source, true, Vec::new());
+    model
+        .functions
+        .get_mut(&VarName::new("f"))
+        .unwrap()
+        .external
+        .as_mut()
+        .unwrap()
+        .language = "Rust".to_string();
+
+    let error = construct(&model, source.map).unwrap_err();
+    assert!(matches!(
+        error,
+        ToDaeError::UnsupportedFlatSemantics {
+            feature,
+            span,
+            ..
+        } if feature == "external function language" && span == function_span
+    ));
+}
+
+#[test]
+fn external_function_link_facts_must_be_string_literals() {
+    let source = TestSource::new(EXTERNAL_SOURCE_TEXT);
+    let annotation_span = source.span("my_random", 0);
+    let model = external_random_model(
+        &source,
+        true,
+        vec![rumoca_core::ExternalFunctionAnnotation {
+            name: vec!["Library".to_string()],
+            value: Expression::Literal {
+                value: Literal::Real(1.0),
+                span: annotation_span,
+            },
+            span: annotation_span,
+        }],
+    );
+
+    let error = construct(&model, source.map).unwrap_err();
+    assert!(matches!(
+        error,
+        ToDaeError::UnsupportedFlatSemantics {
+            feature,
+            span,
+            ..
+        } if feature == "external function link facts" && span == annotation_span
+    ));
+}
+
+#[test]
+fn external_function_with_both_bodies_is_rejected() {
+    let source = TestSource::new(EXTERNAL_SOURCE_TEXT);
+    let function_span = source.span("function f", 0);
+    let assignment_span = source.span("y0 = my_random", 0);
+    let mut model = external_random_model(&source, true, Vec::new());
+    model
+        .functions
+        .get_mut(&VarName::new("f"))
+        .unwrap()
+        .body
+        .push(rumoca_core::Statement::Assignment {
+            comp: test_component_reference("y0", assignment_span),
+            value: Expression::VarRef {
+                name: Reference::new("p0"),
+                subscripts: Vec::new(),
+                span: source.span("p0", 1),
+            },
+            span: assignment_span,
+        });
+
+    let error = construct(&model, source.map).unwrap_err();
+    assert!(matches!(
+        error,
+        ToDaeError::UnsupportedFlatSemantics {
+            feature,
+            detail,
+            span,
+        } if feature == "function lifecycle"
+            && detail.contains("both an algorithm body and an external interface")
+            && span == function_span
+    ));
+}
+
+#[test]
+fn impure_call_from_a_continuous_equation_is_rejected() {
+    let source = TestSource::new(EXTERNAL_SOURCE_TEXT);
+    let call_span = source.span("f(2.5)", 0);
+    let model = external_random_model(&source, false, Vec::new());
+
+    let error = construct(&model, source.map).unwrap_err();
+    assert!(matches!(
+        error,
+        ToDaeError::UnsupportedFlatSemantics {
+            feature,
+            detail,
+            span,
+        } if feature == "impure call context"
+            && detail.contains("called from a continuous-time equation")
+            && span == call_span
+    ));
+}
+
+/// MLS §12.3 permits an impure call in an initial equation. The interface
+/// keeps its declared impurity there instead of being silently promoted.
+#[test]
+fn impure_external_function_keeps_its_declared_purity_in_an_initial_equation() {
+    let source = TestSource::new(EXTERNAL_SOURCE_TEXT);
+    let call_span = source.span("f(2.5)", 0);
+    let mut model = external_random_model(&source, false, Vec::new());
+    model.equations.clear();
+    model.initial_equations.push(flat::Equation::new(
+        Expression::FunctionCall {
+            name: Reference::new("f"),
+            args: vec![Expression::Literal {
+                value: Literal::Real(2.5),
+                span: source.span("2.5", 0),
+            }],
+            is_constructor: false,
+            span: call_span,
+        },
+        call_span,
+        flat::EquationOrigin::ComponentEquation {
+            component: String::new(),
+        },
+    ));
+
+    let dae = construct(&model, source.map).unwrap();
+    dae.inspect(|view| {
+        let external = view
+            .function(view.function_id(0).unwrap())
+            .unwrap()
+            .external()
+            .expect("the body is external");
+        assert_eq!(external.purity(), dae::FunctionPurity::Impure);
+        assert!(external.linkage().libraries().is_empty());
+    });
+}
+
+/// MLS §12.9 defaults an omitted entry point to the function's simple name.
+/// Flat keeps only the flattened path, so the omitted form is rejected with
+/// exact provenance rather than recovered from rendered text.
+#[test]
+fn external_function_without_a_declared_entry_point_is_rejected() {
+    let source = TestSource::new(EXTERNAL_SOURCE_TEXT);
+    let function_span = source.span("function f", 0);
+    let mut model = external_random_model(&source, true, Vec::new());
+    model
+        .functions
+        .get_mut(&VarName::new("f"))
+        .unwrap()
+        .external
+        .as_mut()
+        .unwrap()
+        .function_name = None;
+
+    let error = construct(&model, source.map).unwrap_err();
+    assert!(matches!(
+        error,
+        ToDaeError::UnsupportedFlatSemantics {
+            feature,
+            span,
+            ..
+        } if feature == "external function entry point" && span == function_span
     ));
 }

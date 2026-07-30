@@ -304,6 +304,18 @@ fn define_function<'dae>(
         coordinates.insert(VarName::new(&local.name), Coordinate::FunctionValue(value));
         mutable_values.push((value, local));
     }
+    let plan = &plans[&certificate.key];
+    if let FunctionPlan::External(external) = plan {
+        return define_external_function(
+            construction,
+            &coordinates,
+            &functions,
+            &certificate.values,
+            reservation,
+            function,
+            external,
+        );
+    }
     let provenance = dae::DaeProvenance::source(function.span)?;
     let mut body = construction.functions(|functions| functions.begin(reservation, provenance))?;
     for (value, declaration) in mutable_values {
@@ -322,7 +334,6 @@ fn define_function<'dae>(
         construction
             .functions(|functions| functions.assign(&mut body, value, expression, assignment))?;
     }
-    let plan = &plans[&certificate.key];
     let symbols = FunctionSymbols {
         coordinates: &coordinates,
         functions: &functions,
@@ -341,6 +352,7 @@ fn lower_function_plan<'dae>(
     plan: &FunctionPlan,
 ) -> Result<dae::FunctionBody<'dae>, dae::DaeConstructionError> {
     match plan {
+        FunctionPlan::External(_) => unreachable!("external bodies define through their interface"),
         FunctionPlan::Statements { statements } => {
             lower_function_statements(construction, symbols, body, &function.body, statements)
         }

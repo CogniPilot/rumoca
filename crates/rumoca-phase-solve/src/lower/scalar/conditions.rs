@@ -15,6 +15,21 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         Ok(self.ops)
     }
 
+    /// Compile a condition that lives inside `clock`'s partition.
+    ///
+    /// A clocked relation reads `previous(...)` and clock-owned declarations, which only
+    /// resolve while their owning schedule is the active one (MLS §16.5).
+    pub(in crate::lower) fn clocked_condition_program(
+        mut self,
+        clock: dae::ClockId<'dae>,
+        condition: dae::ConditionId<'dae>,
+    ) -> Result<Vec<solve::LinearOp>, LowerError> {
+        self.active_clock = Some(clock);
+        let output = self.condition(condition)?;
+        self.ops.push(solve::LinearOp::StoreOutput { src: output });
+        Ok(self.ops)
+    }
+
     pub(in crate::lower) fn edge_condition_program(
         mut self,
         trigger: dae::ConditionId<'dae>,

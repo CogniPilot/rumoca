@@ -12,6 +12,8 @@ mod expression_validation;
 mod function_array_assemblies;
 mod function_bodies;
 mod function_conditionals;
+mod function_externals;
+mod function_impurity;
 mod function_loops;
 mod function_ranges;
 mod function_record_assemblies;
@@ -26,8 +28,11 @@ mod record_equations;
 mod source_balance;
 mod structured_families;
 mod when_chains;
+use clocks::SampledTarget;
 use clocks::analyze_clocks;
-pub(super) use clocks::{ClockPlan, ClockedValuePlan, is_whole_clock_coordinate};
+pub(super) use clocks::{
+    ClockPlan, ClockedValuePlan, is_inferred_clock_condition, is_whole_clock_coordinate,
+};
 use comprehensions::analyze_comprehensions;
 pub(super) use comprehensions::{ComprehensionKey, ComprehensionPlan};
 pub(super) use delays::DelayPlan;
@@ -54,6 +59,9 @@ use function_bodies::{
     validate_function_subscripts, validate_functions,
 };
 use function_conditionals::validate_function_conditional;
+use function_externals::validate_external_function;
+pub(super) use function_externals::{ExternalArgumentPlan, ExternalFunctionPlan};
+use function_impurity::validate_impure_call_contexts;
 use function_loops::{subscript_is_binder, validate_function_loop};
 use function_ranges::{
     immutable_integer_defaults, static_function_range, validate_function_range_expression,
@@ -91,6 +99,10 @@ pub(super) struct Analysis {
     pub(super) clock_equation_rows: HashSet<usize>,
     pub(super) clocked_equation_owners: HashMap<usize, ClockPlan>,
     pub(super) clocked_value_owners: HashMap<InstanceId, ClockedValuePlan>,
+    /// Owning clock of every `when Clock()` branch, keyed by the branch span.
+    pub(super) clocked_when_owners: HashMap<Span, ClockPlan>,
+    /// Owning clock of every runtime coordinate in a clocked partition.
+    pub(super) clocked_coordinate_owners: HashMap<InstanceId, ClockPlan>,
     pub(super) model_algorithm_plans: Vec<ModelAlgorithmPlan>,
     pub(super) function_plans: HashMap<FunctionSpecializationKey, FunctionPlan>,
     pub(super) function_shapes: FunctionShapeAnalysis,
@@ -124,6 +136,8 @@ pub(super) enum FunctionPlan {
         result: VarName,
         reduction: FunctionIntegerReduction,
     },
+    /// MLS §12.9 external interface; the function has no Modelica body.
+    External(ExternalFunctionPlan),
 }
 
 pub(super) enum FunctionIntegerReduction {
@@ -259,6 +273,12 @@ pub(super) struct RecordEquationFieldPlan {
 
 pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
     validate_flat_shape(flat)?;
+    // An initial algorithm has no canonical DAE owner yet, so it is rejected
+    // before anything analyzes its statements. Analyzing them first reports a
+    // consequence of the missing owner — a statement-form `assert` read as an
+    // unresolved callee, for one — instead of the capability that is absent.
+    reject_initial_algorithm(flat)?;
+    validate_impure_call_contexts(flat)?;
     let function_shapes = FunctionShapeAnalysis::analyze(flat)?;
     let function_plans = validate_functions(flat, &function_shapes)?;
     let record_equations = analyze_record_equations(flat, &flat.equations)?;
@@ -306,22 +326,15 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
         &constants,
         &mut sample_lattices,
     )?;
-    let model_algorithm_plans = flat
-        .algorithms
-        .iter()
-        .map(|algorithm| {
-            validate_model_algorithm(
-                algorithm,
-                &expression_roles,
-                &states,
-                &constants,
-                &mut sample_lattices,
-            )?;
-            analyze_model_algorithm(flat, algorithm, &roles)
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let model_algorithm_plans = analyze_model_algorithms(
+        flat,
+        &roles,
+        &expression_roles,
+        &states,
+        &constants,
+        &mut sample_lattices,
+    )?;
     let discrete_value_topology = analyze_discrete_value_topology(flat, &roles)?;
-    reject_initial_algorithm(flat)?;
     validate_assertions(flat, &roles, &states, &constants, &mut sample_lattices)?;
     let balance = analyze_source_balance(
         flat,
@@ -345,6 +358,8 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
         clock_equation_rows: clocks.equation_rows,
         clocked_equation_owners: clock_domains.equation_owners,
         clocked_value_owners: clock_domains.value_owners,
+        clocked_when_owners: clock_domains.when_owners,
+        clocked_coordinate_owners: clock_domains.coordinate_owners,
         model_algorithm_plans,
         function_plans,
         function_shapes,
@@ -358,6 +373,29 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
         discrete_value_topology,
         assigned_discrete_targets: balance.assigned_discrete_targets,
     })
+}
+
+fn analyze_model_algorithms(
+    flat: &flat::Model,
+    roles: &HashMap<VarName, PlannedRole>,
+    expression_roles: &HashMap<VarName, PlannedRole>,
+    states: &HashSet<VarName>,
+    constants: &EvalContext,
+    sample_lattices: &mut Vec<(Span, ClockLattice)>,
+) -> Result<Vec<ModelAlgorithmPlan>, ToDaeError> {
+    flat.algorithms
+        .iter()
+        .map(|algorithm| {
+            validate_model_algorithm(
+                algorithm,
+                expression_roles,
+                states,
+                constants,
+                sample_lattices,
+            )?;
+            analyze_model_algorithm(flat, algorithm, roles)
+        })
+        .collect()
 }
 
 fn validate_runtime_coordinate_instances(
@@ -564,6 +602,14 @@ fn constant_context(flat: &flat::Model) -> EvalContext {
     }
     for (name, variable) in &flat.variables {
         context.add_array_dimensions(name.to_string(), variable.dims.clone());
+    }
+    // MLS §4.8.5.2: an enumeration literal's semantic identity is its ordinal,
+    // and both `Integer(...)` and the relational operators are defined on that
+    // ordinal. Seeding the constant table with the model's exact ordinals is
+    // what lets a parameter expression over an enumeration — such as the
+    // `resolution < Resolution.s` guard of a periodic clock — evaluate.
+    for (literal, ordinal) in &flat.enum_literal_ordinals {
+        context.add_parameter(literal.clone(), EvalValue::Integer(*ordinal));
     }
     for _ in 0..flat.variables.len() {
         let mut progress = false;

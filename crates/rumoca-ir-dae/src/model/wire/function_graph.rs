@@ -161,6 +161,15 @@ fn function_dependencies(
 ) -> Result<(Vec<usize>, usize), DaeConstructionError> {
     let mut pending = Vec::new();
     push_statement_roots(&function.statements, &mut pending);
+    // An external interface roots its own argument expressions, so they are
+    // replayed inside the owning component exactly like body assignments.
+    if let Some(external) = &function.external {
+        for argument in &external.arguments {
+            if let ExternalArgumentEntry::Input(expression) = argument {
+                pending.push(*expression);
+            }
+        }
+    }
     let mut seen = vec![false; wire.expressions.nodes.len()];
     let mut dependencies = Vec::new();
     let mut expression_end = 0;

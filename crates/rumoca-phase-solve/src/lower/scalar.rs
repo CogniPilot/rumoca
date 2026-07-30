@@ -279,13 +279,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                         span,
                     ));
                 }
-                let result = self
-                    .view
-                    .function(function)
-                    .and_then(|definition| definition.result_values().rhs(output as usize))
-                    .ok_or_else(|| {
-                        LowerError::contract("function result ordinal is out of range", span)
-                    })?;
+                let result = self.function_result(function, output, span)?;
                 self.function_arguments
                     .push((function, arguments.iter().collect()));
                 let lowered = self.record_field(result, field, scalar, span);
@@ -675,19 +669,44 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 span,
             ));
         }
-        let definition = self
-            .view
-            .function(function)
-            .ok_or_else(|| LowerError::contract("function identity does not resolve", span))?;
-        let result = definition
-            .result_values()
-            .rhs(output as usize)
-            .ok_or_else(|| LowerError::contract("function result ordinal is out of range", span))?;
+        let result = self.function_result(function, output, span)?;
         self.function_arguments
             .push((function, arguments.iter().collect()));
         let lowered = self.expression(result, scalar);
         self.function_arguments.pop();
         lowered
+    }
+
+    /// Resolve the checked result definition one call lowers through.
+    ///
+    /// Solve executes only programs it owns. An MLS §12.9 external body is
+    /// foreign code with no Solve op, so lowering fails with the call's exact
+    /// provenance rather than emitting a substitute value.
+    fn function_result(
+        &self,
+        function: dae::FunctionId<'dae>,
+        output: u32,
+        span: Span,
+    ) -> Result<dae::ExprId<'dae>, LowerError> {
+        let definition = self
+            .view
+            .function(function)
+            .ok_or_else(|| LowerError::contract("function identity does not resolve", span))?;
+        if let Some(external) = definition.external() {
+            return Err(LowerError::non_computable(
+                format!(
+                    "external {} function `{}` calls `{}`, which the Solve runtime cannot execute",
+                    external.language().as_str(),
+                    definition.name(),
+                    external.symbol()
+                ),
+                span,
+            ));
+        }
+        definition
+            .result_values()
+            .rhs(output as usize)
+            .ok_or_else(|| LowerError::contract("function result ordinal is out of range", span))
     }
 
     fn unary(

@@ -397,7 +397,7 @@ pub(super) fn validate_function_value_reads(
     })
 }
 
-fn reject_model_coordinate(
+pub(super) fn reject_model_coordinate(
     node: &ExprNode,
     provenance: DaeProvenance,
 ) -> Result<(), DaeConstructionError> {

@@ -61,6 +61,96 @@ pub(super) fn enumeration_conversion(
     Ok(Some(EnumerationConversion { ordinal: *ordinal }))
 }
 
+/// The enumeration type declaration that owns both bounds of a compact range
+/// (MLS §10.4.1: `e1:e2` over one enumeration type yields the values from `e1`
+/// to `e2`).
+///
+/// Recognition is identity-only, so the two owners that must agree reach the
+/// same answer from the same exact identities: the model validator decides
+/// "is an enumeration literal" from its planned roles, and expression lowering
+/// decides it from the Flat literal catalog. `None` means the range is not an
+/// enumeration range and belongs to the Integer compact-range owner.
+///
+/// MLS §10.4.1 gives an enumeration range no step, so an explicit step is never
+/// an enumeration range.
+pub(super) fn enumeration_range_type(
+    start: &Expression,
+    step: Option<&Expression>,
+    end: &Expression,
+    is_enumeration_literal: &dyn Fn(&rumoca_core::Reference) -> bool,
+) -> Option<rumoca_core::DefId> {
+    if step.is_some() {
+        return None;
+    }
+    let start = enumeration_bound_type(start, is_enumeration_literal)?;
+    let end = enumeration_bound_type(end, is_enumeration_literal)?;
+    (start == end).then_some(start)
+}
+
+/// Whether either compact-range bound is an enumeration literal.
+///
+/// A range that mixes an enumeration literal with any other bound has no
+/// checked DAE owner, and its rejection must name that cause instead of the
+/// Integer compact-range requirement.
+pub(super) fn has_enumeration_range_bound(
+    start: &Expression,
+    end: &Expression,
+    is_enumeration_literal: &dyn Fn(&rumoca_core::Reference) -> bool,
+) -> bool {
+    enumeration_bound_type(start, is_enumeration_literal).is_some()
+        || enumeration_bound_type(end, is_enumeration_literal).is_some()
+}
+
+/// The declaration identity of one enumeration-literal compact-range bound.
+fn enumeration_bound_type(
+    expression: &Expression,
+    is_enumeration_literal: &dyn Fn(&rumoca_core::Reference) -> bool,
+) -> Option<rumoca_core::DefId> {
+    let Expression::VarRef {
+        name, subscripts, ..
+    } = expression
+    else {
+        return None;
+    };
+    if !subscripts.is_empty() || !is_enumeration_literal(name) {
+        return None;
+    }
+    name.target_def_id()
+}
+
+/// Whether `name` is an enumeration literal declared by an enumeration type.
+///
+/// Flat's literal catalog answers "is a literal" and the declaration-identity
+/// tables answer "declared by an enumeration type"; both must hold, so a model
+/// coordinate that happens to share a leaf spelling is never accepted.
+pub(super) fn is_flat_enumeration_literal(
+    flat: &flat::Model,
+    name: &rumoca_core::Reference,
+) -> bool {
+    flat.enum_literal_ordinals.contains_key(name.as_str()) && names_enumeration_type(flat, name)
+}
+
+/// The inclusive ordinal bounds of a recognized enumeration compact range.
+///
+/// `None` means at least one bound has no ordinal in the Flat literal catalog,
+/// which its caller rejects at the range's own provenance.
+pub(super) fn enumeration_range_ordinals(
+    flat: &flat::Model,
+    start: &Expression,
+    end: &Expression,
+) -> Option<(i64, i64)> {
+    let start = enumeration_bound_ordinal(flat, start)?;
+    let end = enumeration_bound_ordinal(flat, end)?;
+    Some((start, end))
+}
+
+fn enumeration_bound_ordinal(flat: &flat::Model, expression: &Expression) -> Option<i64> {
+    let Expression::VarRef { name, .. } = expression else {
+        return None;
+    };
+    flat.enum_literal_ordinals.get(name.as_str()).copied()
+}
+
 /// Whether `name` denotes an enumeration type declaration.
 fn names_enumeration_type(flat: &flat::Model, name: &rumoca_core::Reference) -> bool {
     // A resolved callable always wins: a user function may legally share a

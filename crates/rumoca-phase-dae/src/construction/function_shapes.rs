@@ -801,6 +801,23 @@ pub(super) fn evaluate_shape_integer(
             let rhs = evaluate_shape_integer(rhs, values)?;
             checked_shape_arithmetic(op.clone(), lhs, rhs, span)
         }
+        // A scalar coordinate proven by this environment carries a shape but no
+        // value, and an extent written over it needs the value. Naming that
+        // cause keeps the rejection honest: the missing owner is a
+        // value-proven specialization, not a malformed extent expression.
+        Expression::VarRef {
+            name, subscripts, ..
+        } if subscripts.is_empty() && values.get(name.var_name()).is_some_and(Vec::is_empty) => {
+            Err(ToDaeError::unsupported_flat(
+                "function shape proof",
+                format!(
+                    "extent depends on the value of scalar `{}`, which requires a \
+                     value-proven function specialization",
+                    name.as_str()
+                ),
+                span,
+            ))
+        }
         _ => Err(ToDaeError::unsupported_flat(
             "function shape proof",
             "dependent extent is not an exact Integer expression over proven shape axes",

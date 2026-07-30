@@ -30,6 +30,7 @@ pub(super) struct WhenChainsRequest<'input, 'shape, 'dae> {
     clocks: &'input LoweredClocks<'dae>,
     chains: &'input [flat::WhenChain],
     topology: &'input DiscreteValueTopologyPlan,
+    when_owners: &'input HashMap<Span, ClockPlan>,
 }
 
 impl<'input, 'shape, 'dae> WhenChainsRequest<'input, 'shape, 'dae> {
@@ -40,6 +41,7 @@ impl<'input, 'shape, 'dae> WhenChainsRequest<'input, 'shape, 'dae> {
         clocks: &'input LoweredClocks<'dae>,
         chains: &'input [flat::WhenChain],
         topology: &'input DiscreteValueTopologyPlan,
+        when_owners: &'input HashMap<Span, ClockPlan>,
     ) -> Self {
         Self {
             coordinates,
@@ -48,6 +50,7 @@ impl<'input, 'shape, 'dae> WhenChainsRequest<'input, 'shape, 'dae> {
             clocks,
             chains,
             topology,
+            when_owners,
         }
     }
 }
@@ -236,7 +239,7 @@ impl<'shape, 'dae> WhenLowering<'_, '_, 'shape, 'dae> {
         let mut guards = Vec::with_capacity(chain.branch_count());
         let mut previous = None;
         for (index, branch) in chain.branches().enumerate() {
-            let (condition, owner_clock) = self.lower_condition(&branch.condition)?;
+            let (condition, owner_clock) = self.lower_condition(branch)?;
             let action_condition = match previous {
                 Some(previous) => {
                     let no_previous = negate_condition(self.construction, previous, branch.span)?;
@@ -341,17 +344,13 @@ fn own_clocked_targets<'dae>(
 impl<'shape, 'dae> WhenLowering<'_, '_, 'shape, 'dae> {
     fn lower_condition(
         &mut self,
-        expression: &Expression,
+        branch: &flat::WhenBranch,
     ) -> Result<
         (dae::ConditionId<'dae>, Option<dae::PeriodicClockId<'dae>>),
         dae::DaeConstructionError,
     > {
-        let Expression::VarRef {
-            name,
-            subscripts,
-            span,
-        } = expression
-        else {
+        let expression = &branch.condition;
+        let Some((clock, span)) = self.branch_clock(branch)? else {
             return lower_condition(
                 self.construction,
                 self.request.coordinates,
@@ -360,26 +359,7 @@ impl<'shape, 'dae> WhenLowering<'_, '_, 'shape, 'dae> {
                 expression,
             );
         };
-        let clock = subscripts
-            .is_empty()
-            .then(|| {
-                self.request
-                    .clocks
-                    .by_coordinate
-                    .get(name.var_name())
-                    .copied()
-            })
-            .flatten();
-        let Some(clock) = clock else {
-            return lower_condition(
-                self.construction,
-                self.request.coordinates,
-                self.request.functions,
-                self.request.sample_lattices,
-                expression,
-            );
-        };
-        let provenance = dae::DaeProvenance::source(*span)?;
+        let provenance = dae::DaeProvenance::source(span)?;
         let condition = self
             .construction
             .conditions(|conditions| conditions.reserve(provenance))?;
@@ -391,6 +371,45 @@ impl<'shape, 'dae> WhenLowering<'_, '_, 'shape, 'dae> {
             )
         })?;
         Ok((condition, Some(clock)))
+    }
+
+    /// The periodic clock this `when` branch is triggered by, if it has one.
+    ///
+    /// A branch either names its clock coordinate directly or uses the MLS
+    /// §16.5.1 inferred-clock form `when Clock()`, whose owner the clock-domain
+    /// analysis already proved for the branch occurrence.
+    fn branch_clock(
+        &self,
+        branch: &flat::WhenBranch,
+    ) -> Result<Option<(dae::PeriodicClockId<'dae>, Span)>, dae::DaeConstructionError> {
+        if let Expression::VarRef {
+            name,
+            subscripts,
+            span,
+        } = &branch.condition
+        {
+            let clock = subscripts
+                .is_empty()
+                .then(|| {
+                    self.request
+                        .clocks
+                        .by_coordinate
+                        .get(name.var_name())
+                        .copied()
+                })
+                .flatten();
+            return Ok(clock.map(|clock| (clock, *span)));
+        }
+        if !is_inferred_clock_condition(&branch.condition) {
+            return Ok(None);
+        }
+        let plan = self
+            .request
+            .when_owners
+            .get(&branch.span)
+            .ok_or(dae::DaeConstructionError::MissingClockDomainOwner { span: branch.span })?;
+        let clock = self.request.clocks.id(plan, branch.span)?;
+        Ok(Some((clock, branch.span)))
     }
 }
 

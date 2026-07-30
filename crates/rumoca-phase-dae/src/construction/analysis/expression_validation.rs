@@ -91,14 +91,7 @@ impl<'a> ExpressionValidator<'a> {
             Expression::Array { elements, .. } => self.validate_array(elements, span),
             Expression::Range {
                 start, step, end, ..
-            } => {
-                require_integer_literal(start, "range start")?;
-                if let Some(step) = step {
-                    require_integer_literal(step, "range step")?;
-                }
-                require_integer_literal(end, "range end")?;
-                Ok(())
-            }
+            } => self.validate_range(start, step.as_deref(), end, span),
             Expression::Index {
                 base, subscripts, ..
             } => {
@@ -145,6 +138,43 @@ impl<'a> ExpressionValidator<'a> {
             ));
         }
         self.validate_subscripts(subscripts)
+    }
+
+    /// MLS §10.4.1: a compact range is either an Integer range with literal
+    /// bounds or an enumeration range whose two bounds are literals of one
+    /// enumeration type. Planned roles carry "is an enumeration literal" and
+    /// the reference identities carry "declared by the same enumeration type",
+    /// so neither answer comes from a rendered name.
+    fn validate_range(
+        self,
+        start: &Expression,
+        step: Option<&Expression>,
+        end: &Expression,
+        span: Span,
+    ) -> Result<(), ToDaeError> {
+        let is_enumeration_literal = |name: &rumoca_core::Reference| {
+            matches!(
+                self.roles.get(name.var_name()),
+                Some(PlannedRole::EnumerationLiteral)
+            )
+        };
+        if enumeration_range_type(start, step, end, &is_enumeration_literal).is_some() {
+            return Ok(());
+        }
+        if has_enumeration_range_bound(start, end, &is_enumeration_literal) {
+            return Err(ToDaeError::unsupported_flat(
+                "enumeration range",
+                "an enumeration compact range requires both bounds to be literals of the same \
+                 enumeration type and no step",
+                span,
+            ));
+        }
+        require_integer_literal(start, "range start")?;
+        if let Some(step) = step {
+            require_integer_literal(step, "range step")?;
+        }
+        require_integer_literal(end, "range end")?;
+        Ok(())
     }
 
     fn validate_field_access(self, expression: &Expression, span: Span) -> Result<(), ToDaeError> {

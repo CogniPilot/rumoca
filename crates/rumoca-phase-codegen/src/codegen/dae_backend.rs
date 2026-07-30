@@ -241,10 +241,42 @@ fn project_functions(view: dae::DaeView<'_>) -> Vec<Value> {
                     .iter()
                     .map(|definition| definition.id().ordinal())
                     .collect::<Vec<_>>(),
+                "external": function.external().map(project_external_interface),
                 "declaration": function.declaration(),
             })
         })
         .collect()
+}
+
+/// Project one MLS §12.9 external interface.
+///
+/// An external body owns no statements or result definitions, so the emitted
+/// record names its exact interface rather than showing an empty body.
+fn project_external_interface(external: dae::ExternalFunctionView<'_>) -> Value {
+    json!({
+        "purity": match external.purity() {
+            dae::FunctionPurity::Pure => "pure",
+            dae::FunctionPurity::Impure => "impure",
+        },
+        "language": external.language().as_str(),
+        "symbol": external.symbol().as_str(),
+        "arguments": external
+            .arguments()
+            .map(|argument| match argument {
+                dae::ExternalArgumentView::Input(expression) => {
+                    json!({ "input": expression.index() })
+                }
+                dae::ExternalArgumentView::Output(value) => {
+                    json!({ "output": value.ordinal() })
+                }
+            })
+            .collect::<Vec<_>>(),
+        "result": external.result().map(|value| value.ordinal()),
+        "libraries": external.linkage().libraries(),
+        "include": external.linkage().include(),
+        "include_directory": external.linkage().include_directory(),
+        "library_directory": external.linkage().library_directory(),
+    })
 }
 
 fn project_function_definitions<'dae>(

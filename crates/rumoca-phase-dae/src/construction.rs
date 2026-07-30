@@ -5,7 +5,7 @@ use rumoca_core::{
     OpBinary, OpUnary, SourceMap, Span, StructuredIndexBinder, StructuredIndexDomain, Subscript,
     VarName, Variability,
 };
-use rumoca_eval_flat::constant::{EvalContext, eval_expr};
+use rumoca_eval_flat::constant::{EvalContext, Value as EvalValue, eval_expr};
 use rumoca_ir_dae as dae;
 use rumoca_ir_flat as flat;
 
@@ -22,6 +22,7 @@ mod expression;
 mod function_array_assembly;
 mod function_body;
 mod function_construction;
+mod function_external;
 mod function_record_assembly;
 mod function_shapes;
 mod model_algorithm;
@@ -36,16 +37,20 @@ use algorithm::{
 use analysis::{
     Analysis, ClockPlan, ComprehensionKey, ComprehensionPlan, DelayPlan, DerivedParameterPlan,
     DiscreteValueTopologyPlan, EquationPartition, ExpressionEventPlan, ExpressionEventPlans,
-    FunctionArrayAssemblyPlan, FunctionAssignmentPlan, FunctionIntegerReduction,
-    FunctionLoopLowering, FunctionPlan, FunctionRecordAssemblyPlan, FunctionStatementPlan,
-    ModelAlgorithmPlan, PlannedRole, RecordArrayFieldPlan, RecordArrayFieldPlans,
-    RecordEquationPlan, analyze, effective_function_scalar_type, effective_variable_scalar_type,
-    empty_array_bound_to_declaration, equation_partition, is_whole_clock_coordinate,
-    model_algorithm_targets, record_field_projections, structured_assignment_names,
+    ExternalArgumentPlan, ExternalFunctionPlan, FunctionArrayAssemblyPlan, FunctionAssignmentPlan,
+    FunctionIntegerReduction, FunctionLoopLowering, FunctionPlan, FunctionRecordAssemblyPlan,
+    FunctionStatementPlan, ModelAlgorithmPlan, PlannedRole, RecordArrayFieldPlan,
+    RecordArrayFieldPlans, RecordEquationPlan, analyze, effective_function_scalar_type,
+    effective_variable_scalar_type, empty_array_bound_to_declaration, equation_partition,
+    is_inferred_clock_condition, is_whole_clock_coordinate, model_algorithm_targets,
+    record_field_projections, structured_assignment_names,
 };
 use clocks::{LoweredClocks, lower_clocked_value_owners, lower_clocks};
 use discrete_values::{DiscreteValueOwnerHandle, DiscreteValueStaging};
-use enumeration_conversion::enumeration_conversion;
+use enumeration_conversion::{
+    enumeration_conversion, enumeration_range_ordinals, enumeration_range_type,
+    has_enumeration_range_bound, is_flat_enumeration_literal,
+};
 use equation_systems::{lower_equation_expression, lower_equation_systems};
 use expression::{
     FunctionArrayUpdate, FunctionCallLowering, LoweringSymbols, all_model_expressions,
@@ -64,6 +69,7 @@ use function_body::{
 use function_construction::{
     FunctionRegistry, FunctionRegistryInput, construct_functions, function_value_type,
 };
+use function_external::define_external_function;
 use function_record_assembly::lower_function_record_assembly;
 use function_shapes::{
     FunctionShapeAnalysis, FunctionSpecializationKey, ShapeEnvironment, ValueShape,
@@ -289,9 +295,13 @@ fn build_checked<'dae>(
         &mut discrete_values,
         &coordinates,
         &functions,
-        &analysis.roles,
-        &analysis.discrete_value_topology,
-        flat,
+        BindingsRequest {
+            roles: &analysis.roles,
+            topology: &analysis.discrete_value_topology,
+            flat,
+            coordinate_owners: &analysis.clocked_coordinate_owners,
+            clocks: &clocks,
+        },
     )?;
     lower_model_owners(
         construction,
@@ -374,6 +384,7 @@ fn lower_model_owners<'dae>(
             clocks,
             &flat.when_chains,
             &analysis.discrete_value_topology,
+            &analysis.clocked_when_owners,
         ),
     )?;
     discrete_values.add_holds(construction, coordinates, &analysis.discrete_value_topology)?;
@@ -714,15 +725,31 @@ fn lower_attribute_expression<'dae>(
     )
 }
 
+struct BindingsRequest<'input, 'dae> {
+    roles: &'input HashMap<VarName, PlannedRole>,
+    topology: &'input DiscreteValueTopologyPlan,
+    flat: &'input flat::Model,
+    /// Clock owner of each coordinate in a clocked partition, so a declaration
+    /// binding inside such a partition lowers `interval()`/`previous()` against
+    /// the same clock its equations use (MLS §16.5.1).
+    coordinate_owners: &'input HashMap<InstanceId, ClockPlan>,
+    clocks: &'input LoweredClocks<'dae>,
+}
+
 fn lower_bindings<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     discrete_values: &mut DiscreteValueStaging<'dae>,
     coordinates: &HashMap<VarName, Coordinate<'dae>>,
     functions: &FunctionRegistry<'_, 'dae>,
-    roles: &HashMap<VarName, PlannedRole>,
-    topology: &DiscreteValueTopologyPlan,
-    flat: &flat::Model,
+    request: BindingsRequest<'_, 'dae>,
 ) -> Result<(), dae::DaeConstructionError> {
+    let BindingsRequest {
+        roles,
+        topology,
+        flat,
+        coordinate_owners,
+        clocks,
+    } = request;
     for (name, variable) in &flat.variables {
         let Some(binding) = &variable.binding else {
             continue;
@@ -743,7 +770,18 @@ fn lower_bindings<'dae>(
         let binding_source = dae::DaeProvenance::source(binding_span)?;
         let owner_span = binding_source.span();
         let owner = dae::DaeProvenance::generated(dae::DaeGeneration::BindingEquation, owner_span)?;
-        let rhs = lower_expression(construction, coordinates, functions, binding, None)?;
+        let owner_clock = coordinate_owners
+            .get(&variable.instance_id)
+            .map(|plan| clocks.id(plan, binding_span))
+            .transpose()?;
+        let rhs = lower_equation_expression(
+            construction,
+            coordinates,
+            functions,
+            owner_clock,
+            binding,
+            None,
+        )?;
         match coordinate {
             Coordinate::DiscreteValue(target) => {
                 let semantic_owner = discrete_values

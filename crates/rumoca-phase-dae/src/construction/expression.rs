@@ -536,6 +536,13 @@ fn lower_range<'dae>(
     else {
         unreachable!("range lowering is selected from a range expression")
     };
+    if enumeration_range_type(start, step.as_deref(), end, &|name| {
+        is_flat_enumeration_literal(symbols.functions.flat, name)
+    })
+    .is_some()
+    {
+        return lower_enumeration_range(construction, symbols, start, end, input.provenance);
+    }
     let start =
         lower_expression_scoped(construction, symbols, binders, start, input.generated_root)?;
     let explicit_step = step
@@ -550,6 +557,36 @@ fn lower_range<'dae>(
             .at(input.provenance)
             .range(start, explicit_step, end)
     })
+}
+
+/// Lower `E.first : E.last` to the array of enumeration values it denotes.
+///
+/// MLS §10.4.1 gives an enumeration range the values from the first bound to
+/// the second, so the canonical DAE owner is the enumeration-valued array whose
+/// elements are exactly those ordinals. The compact `Range` node stays Integer:
+/// its bounds are Integer literals by construction, and an enumeration range
+/// carries no step to lower into one.
+fn lower_enumeration_range<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    symbols: LoweringSymbols<'_, 'dae>,
+    start: &Expression,
+    end: &Expression,
+    provenance: dae::DaeProvenance,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    let (first, last) = enumeration_range_ordinals(symbols.functions.flat, start, end).ok_or(
+        dae::DaeConstructionError::InvalidRangeBound {
+            span: provenance.span(),
+        },
+    )?;
+    let mut elements = Vec::new();
+    for ordinal in first..=last {
+        elements.push(
+            construction.expressions(|expressions| {
+                expressions.at(provenance).enumeration_literal(ordinal)
+            })?,
+        );
+    }
+    construction.expressions(|expressions| expressions.at(provenance).array(elements))
 }
 
 fn lower_delay<'dae>(
