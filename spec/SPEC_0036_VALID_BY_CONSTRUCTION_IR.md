@@ -17,28 +17,15 @@ This stays `DRAFT` until AST proofs, `flat::Model`, `Dae`, and `SolveProblem`
 hide invariant fields/root validators. Solve sparsity follows
 [SPEC_0039](SPEC_0039_PROOF_CARRYING_SPARSITY.md).
 
+Milestone acceptance rows, reservation owners, canonical arenas, equation
+contracts, and enforcement evidence are catalogued in
+[SPEC_0043](SPEC_0043_CONSTRUCTION_CATALOG.md). Every row there is normative by
+reference from the section that links it.
+
 ### DAE Milestone Acceptance
 
-| Rule | Owner/Where | Brief Justification |
-|---|---|---|
-| Adds fail with typed errors/provenance | ToDAE/wire decode | Earliest boundary |
-| Consume each source-semantic owner once | ToDAE construction | Prevent omission |
-| Unsupported/missing semantics fail with typed provenance, never default | First owner | Prevent wrong output |
-| Delete impossible-state checks/fallbacks | All consumers | Trust constructors |
-| Constructor checks replace validators | DAE cutover | One owner |
-| Delete superseded DAE and wire atomically | DAE cutover | No compatibility |
-| Report before/after repository LOC; DAE production is net-negative | PR metrics | Demonstrate savings |
-| Core above 11,000 LOC requires a module review | `rumoca-ir-dae`, excluding `model/wire*` | Bounds core ceremony |
-| Wire above 3,250 LOC requires a module review | `rumoca-ir-dae::model::wire` | Bounds replay ceremony |
-| Total above 14,250 LOC requires a module review | `rumoca-ir-dae` | Bounds aggregate ceremony |
-
-These thresholds are review triggers, not acceptance ceilings. A fresh
-module-level report must inventory code above a threshold, remove demonstrated
-duplication and obsolete ceremony, and explain the semantics, construction
-evidence, or readability carried by the remainder. Necessary explicit code may
-remain above a threshold when that report finds no bloat. Audit-hostile
-metaprogramming, code golfing, test deletion, and capability deletion are not
-valid LOC reductions.
+Acceptance rows and the `rumoca-ir-dae` LOC review triggers are
+[SPEC_0043 §1](SPEC_0043_CONSTRUCTION_CATALOG.md#1-dae-milestone-acceptance-and-review-triggers).
 
 ### One Aggregate Owns Construction
 
@@ -56,41 +43,18 @@ supplied proofs and local integrity.
 
 ### Solve Aggregate and Discrete Definitions
 
-| Rule | Owner/Where | Brief Justification |
-|---|---|---|
-| `SolveProblem::construct` lends branded scopes over private invariant fields | `rumoca-ir-solve` | One construction authority |
-| `initial()` creates a typed activation, never a generic P load | Activation arena | Phase state cannot become a value |
-| A B.1c definition owns a target and either `Always` or ordered activated branches | Discrete system | Preserve source priority |
-| No active branch holds the current target | Discrete system | Hold cannot be omitted |
-| Each typed owner derives pre, observation, and clock policy | Solve construction | Parallel metadata cannot disagree |
-| B.1b residuals, B.1c definitions, reinit, and condition memory are distinct owners | Solve construction | Tags cannot conflate semantics |
-| Definitions, branches, generated edges, and holds retain exact typed provenance | Construction scopes | No dummy source claims |
-| Dense vectors, packed branches, and `u32` IDs freeze without rescanning | Solve aggregate | Linear construction |
-| Wire decode replays the same owner operations | Solve serialization | Bytes cannot forge definitions |
-| Old schemas, raw insertion, validators, defaults, and adapters are absent | Solve boundary | No weaker path survives |
-| Tests use production construction and cannot bypass provenance or activation | Solve tests | Evidence exercises the boundary |
+`SolveProblem::construct` is the one Solve construction authority; its per-owner
+rules are
+[SPEC_0043 §6](SPEC_0043_CONSTRUCTION_CATALOG.md#6-solve-aggregate-and-discrete-definition-catalog-spec_0036-solve-aggregate).
 
 For target `x`, the first true `(a_k, v_k)` gives `x' = v_k`; otherwise
 `x' = x`. Activations are shared per iteration; inactive values are skipped.
 
 ### Flat Aggregate Construction
 
-| Rule | Owner/Where | Brief Justification |
-|---|---|---|
-| `flat::Model` owns private class-free grammar and equation families | `rumoca-ir-flat` | No classes/duplicate owners |
-| Sequential scopes freeze the aggregate | `flat::Model::construct` | Checked ownership |
-| Core expression shape is generic over its stage-owned reference payload | `rumoca-core` | One structural grammar |
-| Generic expression shape has no default or untyped Flat payload | Core/Flat boundary | No unresolved mode |
-| Flat owns total value, function, function-value, binder, enum, intrinsic, and generated targets | `FlatReferenceTarget` | Exhaustive reference kinds |
-| Target views and nested function/domain IDs are branded | `flat::Model::construct` | No cross-owner IDs |
-| Every reference occurrence carries its exact use span | Flat expression grammar | Exact diagnostics |
-| Source `DefId` identifies declaration provenance only | Flat target entries | Instances need distinct identity |
-| Names and source paths are display/protocol data only | Flat root views | No textual lookup |
-| Flat wire decode replays root construction operations | Flat root wire | Constructor-enforced invariants |
-| Flat display/serialization resolves targets through root-owned projections | Flat root views | IDs never leak |
-| Synthetic instance `DefId` allocation and late reference repair are absent | Flatten/Flat boundary | No identity adapters |
-| SPEC 0029 helper ownership changes with the implementing cutover | Same atomic change | Specs remain consistent |
-| Every node requires source/generated provenance | `flat::Model::construct` | No dummy provenance |
+`flat::Model::construct` is the one Flat construction authority; its per-owner
+rules are
+[SPEC_0043 §7](SPEC_0043_CONSTRUCTION_CATALOG.md#7-flat-aggregate-construction-catalog-spec_0036-flat-aggregate).
 
 Declarations retain exact spans. Per SPEC_0032,
 `InstanceOverlay::component_families` remains a non-authoritative descriptor;
@@ -101,21 +65,10 @@ finalized mutation, and alternate constructors are prohibited.
 
 ### Storage and Forward References
 
-| Rule | Owner/Where | Brief Justification |
-|---|---|---|
-| Dense arenas use `Vec`/`u32` IDs and freeze to boxed slices | DAE aggregate | Compact indexing |
-| `IndexMap` owns non-dense keys/order; secondary indexes derive | DAE aggregate | Unforgeable lookup |
-| Producers order semantics | Producing phase | Explicit order |
-| DAE call-header reservation | `FunctionArena` | Proven recursive SCC only |
-| DAE loops may reserve transition slots | `FunctionArena` | Checked finite iteration |
-| Variables may reserve header slots | `VariableArena` | Forward attributes |
-| Conditions may reserve identity slots | `ConditionSystem` | Condition/runtime cycle |
-| B.1c keeps an incremental topology capability | Discrete system | Ordered assignment |
-| Flat functions may reserve call headers | `flat::Model::construct` | Proven recursive SCC only |
-| Flat variables may reserve headers | `flat::Model::construct` | Forward attributes/bindings/references only |
-| Other objects insert complete values | Owning arena/system | Ordered dependencies |
+Storage shape and the entries permitted to reserve are
+[SPEC_0043 §2](SPEC_0043_CONSTRUCTION_CATALOG.md#2-reservation-owner-catalog-spec_0036-storage-and-forward-references).
 
-Only listed entries reserve. Private linear authority and an O(1) unfilled
+Only catalogued entries reserve. Private linear authority and an O(1) unfilled
 counter reach zero before success; all else inserts complete values in proven
 order. Local checks/counters are required. Global trackers, parallel identity
 maps, persistent seals, root validation/repair, and unchecked paths are
@@ -128,18 +81,9 @@ transitions do not deep-clone IR.
 
 ### Canonical Arenas, Systems, and Environments
 
-| Name | Responsibility | Required storage |
-|---|---|---|
-| `TypeArena` | Effective types | Dense entries + `TypeId` lookup |
-| `FunctionArena` | Functions | Dense entries |
-| `VariableArena` | Variables/role views | Dense entries |
-| `ExpressionArena` | Immutable expressions | Parallel node/provenance/type vectors |
-| `RelationArena` | Primitive relations | Dense entries |
-| `RootArena` | Monitored surfaces | Dense entries |
-| `ConditionSystem` | Relations/conditions/activation | Arenas + indexes |
-| `EventSystem` | Events/schedules/actions | Arenas + indexes |
-| `ClockSystem` | Clocks/lattice/ownership | Arenas + indexes |
-| `TemporalSystem` | History/terminal/delays | Arenas + indexes |
+The aggregate owns exactly the arenas, systems, and environments listed in
+[SPEC_0043 §3](SPEC_0043_CONSTRUCTION_CATALOG.md#3-canonical-arenas-systems-and-environments),
+each with its required storage.
 
 ### Type and Variable Identity
 
@@ -182,18 +126,8 @@ Partition ordinals are layout, never semantic identity.
 | Equations accept role-specific IDs | Equation systems | No generic forgery |
 | Optional-lhs equations are prohibited | Final DAE | Role-defined form |
 
-| Equation contract | Owner/Where | Brief Justification |
-|---|---|---|
-| Continuous equations own checked residual IDs | Continuous system | B.1a has one form |
-| Initialization uses initialization-specific IDs | Initialization system | Runtime rules differ |
-| Discrete Real equations own activated Real residual IDs | Discrete system | B.1b may be coupled; trigger/guard ownership is explicit |
-| B.1c updates own typed `m` targets and values | Discrete system | Assignment shape is explicit |
-| Every non-input B.1c target has one definition | Discrete system | Missing or duplicate is impossible |
-| Input `m` capabilities are read-only | Variable/discrete systems | Inputs cannot be assigned |
-| B.1c dependencies use issued-order capabilities | Discrete system | Topology is incremental |
-| Reinitialization owns typed state/value updates | Event system | State resets are explicit |
-| Reinit branches preserve ordering and exclusivity | Event system | Multiple legal branches remain expressible |
-| Caller-supplied scalar counts are prohibited | Equation domains | Counts are derived |
+Per-system equation contracts are
+[SPEC_0043 §4](SPEC_0043_CONSTRUCTION_CATALOG.md#4-equation-contract-catalog-spec_0036-expressions-and-equations).
 
 Each non-input `m` has exactly one B.1c definition owner. A source
 `when`/`elsewhen` chain becomes one atomic, source-priority-ordered conditional
@@ -314,16 +248,8 @@ differential, and refinement tests exercise each relation.
 
 ### Enforcement
 
-| Rule | Owner/Where | Brief Justification |
-|---|---|---|
-| Compile-fail tests cover private construction | IR API tests | No invalid assembly |
-| Negative wire fixtures cover invariants | DAE serde tests | No forged DAE |
-| Property tests compare private audits | IR tests | Constructor defects |
-| Shared/compound relations are tested | DAE/Solve tests | B.1 cardinality |
-| Transform tests preserve families | DAE/structural tests | Consistent views |
-| Consumers have no malformed-DAE branches | Repository review | Guarantees replace checks |
-| LOC thresholds trigger documented review | DAE cutover | Bounded complexity |
-
+The evidence each guarantee requires is
+[SPEC_0043 §5](SPEC_0043_CONSTRUCTION_CATALOG.md#5-enforcement-evidence-catalog).
 Tests may privately audit the complete aggregate. Production audits, public
 validation, superseded fallbacks, and compatibility are prohibited.
 
@@ -346,6 +272,7 @@ defaults, old-shape adapters, or compatibility readers.
 - [SPEC_0029](SPEC_0029_CRATE_BOUNDARIES.md) — crate and rewrite ownership
 - [SPEC_0032](SPEC_0032_RANGE_PRESERVING_TENSORS.md) — structured families
 - [SPEC_0039](SPEC_0039_PROOF_CARRYING_SPARSITY.md) — sound dependency patterns
+- [SPEC_0043](SPEC_0043_CONSTRUCTION_CATALOG.md) — construction catalogs
 - [SPEC_0037](archive/deferred/SPEC_0037_FORMALLY_VERIFIED_COMPILER.md) —
   deferred formal-verification architecture
 - [MLS Appendix B](https://specification.modelica.org/maint/3.6/modelica-dae-representation.html)
