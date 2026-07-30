@@ -292,11 +292,13 @@ struct DomainEntry {
     provenance: DaeProvenance,
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Default)]
 pub(crate) struct Storage {
     pub(crate) value_types: Vec<ValueType>,
     flat_type_ids: Vec<Option<TypeId>>,
     value_type_provenance: Vec<DaeProvenance>,
+    flat_type_lookup: rustc_hash::FxHashMap<TypeId, u32>,
+    structural_type_lookup: rustc_hash::FxHashMap<ValueType, u32>,
     pub(crate) variables: Vec<VariableEntry>,
     pub(crate) functions: Vec<FunctionEntry>,
     pub(crate) function_folds: Vec<FunctionFoldEntry>,

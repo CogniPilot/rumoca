@@ -5,7 +5,7 @@ use std::fmt;
 
 use rumoca_core::{ClockLatticeErrorKind, Span, StructuredIndexDomainError, TypeId, VarName};
 
-use crate::{DaeProvenanceOrigin, ScalarType};
+use crate::{DaeProvenanceOrigin, ScalarType, ValueType};
 
 /// Failure to construct or decode the DAE.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
@@ -21,6 +21,17 @@ pub enum DaeConstructionError {
     InvalidSourceRange { span: Span, source_len: usize },
     #[error("invalid effective Flat type identity {type_id}")]
     InvalidEffectiveTypeId { type_id: TypeId, span: Span },
+    #[error(
+        "effective Flat type identity {type_id} has conflicting DAE layouts: \
+         established {established_type:?}, attempted {attempted_type:?}"
+    )]
+    ConflictingEffectiveType {
+        type_id: TypeId,
+        established_type: Box<ValueType>,
+        attempted_type: Box<ValueType>,
+        established: crate::DaeProvenance,
+        attempted: crate::DaeProvenance,
+    },
     #[error("invalid structured DAE domain: {source}")]
     InvalidDomain {
         #[source]
@@ -275,6 +286,7 @@ impl DaeConstructionError {
             | Self::UnissuedDiscreteDependency { span, .. }
             | Self::IncompleteDefinition { span, .. } => Some(*span),
             Self::ConflictingClockOwnership { attempted, .. } => Some(attempted.span()),
+            Self::ConflictingEffectiveType { attempted, .. } => Some(attempted.span()),
             Self::DuplicateTopology { span, .. } => *span,
             Self::InvalidSchemaVersion { .. } | Self::MalformedWire { .. } => None,
         }

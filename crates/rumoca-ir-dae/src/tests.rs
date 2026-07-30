@@ -5,6 +5,7 @@ mod provenance;
 mod range_wire;
 mod runtime_owners;
 mod temporal_wire;
+mod type_arena;
 mod wire_buffers;
 
 use rumoca_core::{
@@ -1212,51 +1213,6 @@ fn every_variable_role_can_reserve_a_header_for_forward_attributes() {
         let x = view.variable(view.variable_id(0).unwrap()).unwrap();
         assert_eq!(x.binding(), view.expression_id(0));
     });
-}
-
-#[test]
-fn effective_flat_type_identity_is_not_structurally_merged() {
-    let source = TestSource::new("type A = Real; type B = Real;");
-    let a_at = source.source("type A = Real", 0);
-    let b_at = source.source("type B = Real", 0);
-    let dae = Dae::construct(source.map, |dae| {
-        dae.types(|types| {
-            let a = types.intern(TypeId::new(10), ValueType::scalar(ScalarType::Real), a_at)?;
-            let a_again =
-                types.intern(TypeId::new(10), ValueType::scalar(ScalarType::Real), a_at)?;
-            let b = types.intern(TypeId::new(11), ValueType::scalar(ScalarType::Real), b_at)?;
-            assert_eq!(a.index(), a_again.index());
-            assert_ne!(a.index(), b.index());
-            Ok(())
-        })
-    })
-    .unwrap();
-
-    dae.inspect(|view| {
-        assert_eq!(view.value_type_count(), 2);
-        assert_eq!(
-            view.effective_flat_type(view.value_type_id(0).unwrap()),
-            Some(TypeId::new(10))
-        );
-        assert_eq!(
-            view.effective_flat_type(view.value_type_id(1).unwrap()),
-            Some(TypeId::new(11))
-        );
-    });
-
-    let source = TestSource::new("Real");
-    let at = source.source("Real", 0);
-    let error = Dae::construct(source.map, |dae| {
-        dae.types(|types| {
-            types.intern(TypeId::UNKNOWN, ValueType::scalar(ScalarType::Real), at)?;
-            Ok(())
-        })
-    })
-    .unwrap_err();
-    assert!(matches!(
-        error,
-        DaeConstructionError::InvalidEffectiveTypeId { .. }
-    ));
 }
 
 #[test]
