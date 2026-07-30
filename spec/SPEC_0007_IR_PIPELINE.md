@@ -238,6 +238,12 @@ scalar-program blocks) live in `SolveArtifacts`, materialized by
 | No source temporal operators (`pre`, `edge`, `change`, `sample`, `previous`) in Solve-IR | Eliminated or represented as explicit DAE metadata before Solve lowering; surviving source temporal operators are upstream bugs |
 | No flow-action calls (`assert`, `terminate`, `reinit`) in Solve-IR scalar programs | `reinit` is already a guarded discrete update; `assert` and `terminate` lower from DAE `events.event_actions` into action metadata plus pure action-condition scalar programs |
 | Solve slots projected from typed DAE pre/previous coordinates hold history values | Runtime writes event-owned pre slots at event entry and clock-owned history slots only when their `ClockId` ticks; generated display names do not define ownership |
+| `initial()` is a typed activation node, never a generic P load in value programs | Runtime phase inputs cannot become ordinary values |
+| A B.1c discrete-valued definition owns source-priority activation/value branches | Preserve assignment priority |
+| No active branch means hold the current target | Inactive assignment semantics cannot be omitted or replaced |
+| B.1b residuals, B.1c definitions, reinit, and condition memory are distinct typed owners | Row-role tags cannot conflate semantics |
+| Pre policy, observation policy, and clock owner derive from each typed owner | Parallel metadata cannot disagree |
+| A B.1c definition computes its first active value or leaves its target unchanged | Gives one local refinement obligation |
 | Event timing is partitioned into root conditions, static arbitrary time instants, dynamic time-event rows, and periodic clock schedules | `events` owns zero-crossing and one-shot/dynamic time events; `clocks` owns periodic schedules derived from `sample`/clock metadata |
 | Terminal-event and transport-delay inputs use explicit runtime-managed P-slots | Solve metadata names and computes these inputs; numeric runtimes activate the terminal slot at the stop-time event and refresh delay slots from accepted-solution history |
 | Valid `ComputeBlock`s scalarize via fallible `rumoca-eval-solve::to_scalar_program_block(&block)` | Tensor-agnostic adapters call it and propagate span-bearing metadata errors |
