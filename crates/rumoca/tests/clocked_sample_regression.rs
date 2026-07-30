@@ -463,6 +463,288 @@ end SampledAlgorithmCounter;
     assert_eq!(trace_values(&result, "x"), &[1.0, 2.0, 3.0]);
 }
 
+/// MLS §16.3 `Clock(intervalCounter, resolution)`: the rational constructor is
+/// the only form that keeps a sub-millisecond period free of binary rounding,
+/// and `Modelica.Clocked.ClockSignals.Clocks.PeriodicExactClock` uses it.
+#[test]
+fn rational_clock_constructor_keeps_its_exact_interval_counter_period() {
+    let source = r#"
+model ExactRationalClock
+  Clock c = Clock(20, 1000);
+  Real x(start = 0);
+equation
+  when c then
+    x = previous(x) + 1;
+  end when;
+end ExactRationalClock;
+"#;
+    let compiled = rumoca::Compiler::new()
+        .model("ExactRationalClock")
+        .compile_str(source, "exact_rational_clock.mo")
+        .expect("Clock(intervalCounter, resolution) must resolve to a static schedule");
+    assert_periodic_clock_period(&compiled.dae, 1, 50);
+}
+
+/// MLS §16.7: clock partitioning is static, so a `Clock` coordinate defined by
+/// an `if`-equation over parameter values resolves to the selected branch —
+/// exactly the shape `PeriodicExactClock` uses to switch between `subSample`
+/// and the rational constructor.
+#[test]
+fn parameter_if_equation_selects_the_clock_branch_it_defines() {
+    let source = r#"
+model ParameterSelectedClock
+  parameter Integer factor = 20;
+  parameter Integer resolutionFactor = 1000;
+  parameter Boolean subSampled = true;
+  Clock c;
+  Real x(start = 0);
+equation
+  if subSampled then
+    c = subSample(Clock(factor), resolutionFactor);
+  else
+    c = Clock(factor, resolutionFactor);
+  end if;
+  when c then
+    x = previous(x) + 1;
+  end when;
+end ParameterSelectedClock;
+"#;
+    let compiled = rumoca::Compiler::new()
+        .model("ParameterSelectedClock")
+        .compile_str(source, "parameter_selected_clock.mo")
+        .expect("a parameter `if` equation must resolve its clock coordinate");
+    assert_periodic_clock_period(&compiled.dae, 20000, 1);
+}
+
+/// MLS §16.3 `sample(u, c)`: the named clock proves the partition owner instead
+/// of leaving it to §16.5.1 inference, which is what makes a model with several
+/// independent clock constructors (a `SampleClocked` block) resolvable.
+#[test]
+fn named_sample_clock_owns_its_partition_without_inference() {
+    let source = r#"
+model NamedSampleOwner
+  Clock fast = Clock(0.05);
+  Clock slow = Clock(0.2);
+  Real u;
+  Real sampled;
+  Real held;
+equation
+  u = time;
+  sampled = sample(u, slow);
+  held = hold(sampled);
+  when fast then
+    // keeps the second constructor reachable so inference stays ambiguous
+  end when;
+end NamedSampleOwner;
+"#;
+    let compiled = rumoca::Compiler::new()
+        .model("NamedSampleOwner")
+        .compile_str(source, "named_sample_owner.mo")
+        .expect("sample(u, c) must own its partition through the named clock");
+    compiled.dae.inspect(|view| {
+        let ownership = view
+            .clock_ownership(
+                view.clock_ownership_id(0)
+                    .expect("the sampled coordinate is clock owned"),
+            )
+            .expect("clock-ownership identity resolves");
+        let clock = view
+            .clock(ownership.clock())
+            .expect("the ownership names a constructed clock");
+        let rumoca_ir_dae::ClockOperation::Periodic(lattice) = clock.operation() else {
+            panic!("a named sample clock must be periodic");
+        };
+        assert_eq!(
+            lattice.period().numerator(),
+            1,
+            "sample(u, slow) must adopt the named 0.2 s clock, not the 0.05 s one"
+        );
+        assert_eq!(lattice.period().denominator(), 5);
+    });
+}
+
+/// MLS §16.5.1 `when Clock() then`: the inferred-clock form takes its owner
+/// from the clocked partition it is connected to. This is the shape
+/// `Modelica.Clocked.RealSignals.NonPeriodic.PI` uses.
+#[test]
+fn inferred_clock_when_branch_adopts_its_connected_partition_owner() {
+    let source = r#"
+model InferredWhenClock
+  Clock c = Clock(0.1);
+  Real u;
+  Real sampled;
+  Real x(start = 0);
+  Real held;
+equation
+  u = time;
+  sampled = sample(u, c);
+  when Clock() then
+    x = previous(x) + sampled;
+  end when;
+  held = hold(x);
+end InferredWhenClock;
+"#;
+    let compiled = rumoca::Compiler::new()
+        .model("InferredWhenClock")
+        .compile_str(source, "inferred_when_clock.mo")
+        .expect("when Clock() must infer its owner from the connected partition");
+    assert_periodic_clock_period(&compiled.dae, 1, 10);
+    compiled.dae.inspect(|view| {
+        assert_eq!(
+            view.clock_count(),
+            1,
+            "the inferred branch must reuse the partition's single clock identity"
+        );
+    });
+}
+
+/// MLS §16.5 Operator 16.5: `previous(u)` names a clocked discrete-time
+/// variable, so a clocked partition written without a `when` clause — the shape
+/// `Modelica.Clocked.BooleanSignals.TimeBasedSources.Pulse` uses — classifies
+/// its undeclared state as discrete rather than continuous.
+#[test]
+fn previous_operand_in_a_bare_clocked_partition_is_a_discrete_coordinate() {
+    let source = r#"
+model BareClockedPartition
+  Clock c = Clock(0.1);
+  Real simTime;
+  Real next(start = 0.1, fixed = true);
+  Real held;
+equation
+  simTime = sample(time);
+  next = if simTime >= previous(next) then previous(next) + 0.4 else previous(next);
+  held = hold(next);
+end BareClockedPartition;
+"#;
+    let compiled = rumoca::Compiler::new()
+        .model("BareClockedPartition")
+        .compile_str(source, "bare_clocked_partition.mo")
+        .expect("previous(...) outside a when clause must classify its operand as clocked");
+    compiled.dae.inspect(|view| {
+        assert_eq!(
+            view.previous_value_count(),
+            1,
+            "the three `previous(next)` occurrences share one history identity"
+        );
+        let previous = view
+            .previous(view.previous_id(0).expect("one previous identity"))
+            .expect("previous identity resolves");
+        assert!(
+            matches!(
+                view.clock(previous.clock())
+                    .expect("previous retains its owning clock")
+                    .operation(),
+                rumoca_ir_dae::ClockOperation::Periodic(_)
+            ),
+            "an inferred clocked partition must own its history through a periodic clock"
+        );
+    });
+}
+
+/// MLS §16.5.2: the clock-conversion operators also have a *value* form that
+/// moves the value to a derived clock. The canonical DAE owns one clock per
+/// discrete coordinate, so that form is rejected at its own occurrence with the
+/// section it comes from rather than as an opaque lowering failure.
+#[test]
+fn value_clock_conversion_is_rejected_at_its_own_occurrence() {
+    let source = r#"
+model ValueShiftSample
+  Clock c = Clock(0.1);
+  Real u;
+  Real y;
+  Real held;
+equation
+  u = sample(time, c);
+  y = shiftSample(u, 1, 2);
+  held = hold(y);
+end ValueShiftSample;
+"#;
+    let error = rumoca::Compiler::new()
+        .model("ValueShiftSample")
+        .compile_str(source, "value_shift_sample.mo")
+        .expect_err("a value-level shiftSample has no checked canonical owner");
+    let message = error.to_string();
+    assert!(
+        message.contains("16.5.2") && message.contains("shiftSample"),
+        "the rejection must name the operator and its MLS section: {message}"
+    );
+}
+
+/// A connection row between two clocked coordinates defines *both* of them.
+///
+/// The solved form names only the side it assigns, so counting the row without
+/// counting the coordinate on its other side leaves the model one equation
+/// heavy — the shape `Modelica.Clocked.RealSignals.NonPeriodic.UnitDelay`
+/// produces when its input is fed by a clocked block.
+#[test]
+fn clocked_connection_row_counts_the_coordinate_it_defines() {
+    let source = r#"
+model ClockedRelayBalance
+  connector ClockInput = input Clock;
+  connector ClockOutput = output Clock;
+  connector RealInput = input Real;
+  connector RealOutput = output Real;
+
+  block PeriodicClock
+    ClockOutput y;
+  equation
+    y = Clock(0.1);
+  end PeriodicClock;
+
+  block Source
+    RealOutput y;
+  equation
+    y = sample(time);
+  end Source;
+
+  block AssignClock
+    RealInput u;
+    RealOutput y;
+    ClockInput clock;
+  equation
+    when clock then
+      y = u;
+    end when;
+  end AssignClock;
+
+  block UnitDelay
+    RealInput u;
+    RealOutput y;
+  equation
+    y = previous(u);
+  end UnitDelay;
+
+  PeriodicClock periodicClock;
+  Source src;
+  AssignClock assignClock;
+  UnitDelay unitDelay;
+  Real held;
+equation
+  connect(periodicClock.y, assignClock.clock);
+  connect(src.y, assignClock.u);
+  connect(assignClock.y, unitDelay.u);
+  held = hold(unitDelay.y);
+end ClockedRelayBalance;
+"#;
+    rumoca::Compiler::new()
+        .model("ClockedRelayBalance")
+        .compile_str(source, "clocked_relay_balance.mo")
+        .expect("a clocked connection row must count the coordinate it defines");
+}
+
+fn assert_periodic_clock_period(model: &rumoca_ir_dae::Dae, numerator: i128, denominator: i128) {
+    model.inspect(|view| {
+        let clock = view
+            .clock(view.clock_id(0).expect("one branded clock identity"))
+            .expect("clock identity resolves");
+        let rumoca_ir_dae::ClockOperation::Periodic(lattice) = clock.operation() else {
+            panic!("the model's clock must be periodic");
+        };
+        assert_eq!(lattice.period().numerator(), numerator);
+        assert_eq!(lattice.period().denominator(), denominator);
+    });
+}
+
 fn assert_canonical_clock_ownership(model: &rumoca_ir_dae::Dae) {
     model.inspect(|view| {
         assert_eq!(

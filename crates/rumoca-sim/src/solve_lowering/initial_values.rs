@@ -64,6 +64,9 @@ where
                 .view
                 .variable(id)
                 .expect("finalized variable identity resolves");
+            if is_non_numeric(variable) {
+                continue;
+            }
             let values = self.evaluator.initial_value(id).map_err(evaluation_error)?;
             let nominals = self.variable_nominals(variable)?;
             self.write_variable(variable, &values, &nominals, &mut columns)?;
@@ -96,7 +99,7 @@ where
         for (id, variable) in self
             .view
             .variables()
-            .filter(|(_, variable)| is_visible_role(variable.role()))
+            .filter(|(_, variable)| is_visible_role(variable.role()) && !is_non_numeric(*variable))
         {
             for scalar in 0..variable.scalar_count() {
                 let name = scalar_name(variable, scalar)?;
@@ -229,6 +232,18 @@ struct RuntimeColumns {
     initial_y: Vec<f64>,
     solver_nominals: Vec<f64>,
     parameters: Vec<f64>,
+}
+
+/// True when a checked declaration carries no numeric value at all.
+///
+/// The runtime vectors are `f64` columns; MLS §3.8.4 gives `String` no numeric value, so
+/// a `String` declaration (for example `Modelica.Clocked.Types.SolverMethod solverMethod`
+/// on every clocked partition) has nothing to initialize and nothing to trace. Skipping
+/// it substitutes no stand-in value: the checked DAE rejects a `String` operand in any
+/// numeric expression or residual at construction, so no lowered program can read the
+/// storage column the layout reserves for it.
+fn is_non_numeric(variable: dae::VariableView<'_>) -> bool {
+    variable.value_type().scalar_type() == dae::ScalarType::String
 }
 
 fn is_visible_role(role: dae::VariableRole) -> bool {

@@ -335,6 +335,15 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
     ) -> Result<(), dae::DaeConstructionError> {
         let function = self.source_function(index);
         let rebuilt_function = self.functions[index].clone();
+        if let Some(external) = function.external() {
+            return self.rebuild_external_body(
+                target,
+                function,
+                &rebuilt_function,
+                reservation,
+                external,
+            );
+        }
         let body =
             target.functions(|functions| functions.begin(reservation, function.declaration()))?;
         let body =
@@ -342,6 +351,66 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
         self.seed_results(target, function, &rebuilt_function, &body)?;
         self.rebuild_orphaned_scoped_expressions(target, index, &body)?;
         target.functions(|functions| functions.define(body, function.declaration()))
+    }
+
+    /// Reconstruct one MLS §12.9 external interface through the same checked
+    /// construction operation production lowering uses.
+    ///
+    /// Argument expressions rebuild without a body capability: a checked
+    /// external argument provably reads no function value, so there is no
+    /// definition for a body to supply.
+    fn rebuild_external_body(
+        &mut self,
+        target: &mut dae::DaeConstruction<'target>,
+        function: dae::FunctionView<'source>,
+        rebuilt_function: &RebuiltFunction<'target>,
+        reservation: dae::FunctionReservation<'_, 'target>,
+        external: dae::ExternalFunctionView<'source>,
+    ) -> Result<(), dae::DaeConstructionError> {
+        let source_arguments = external.arguments().collect::<Vec<_>>();
+        let mut arguments = Vec::with_capacity(source_arguments.len());
+        for argument in source_arguments {
+            arguments.push(match argument {
+                dae::ExternalArgumentView::Input(expression) => {
+                    dae::ExternalArgument::Input(self.rebuild_postorder(target, expression, None)?)
+                }
+                dae::ExternalArgumentView::Output(value) => dae::ExternalArgument::Output(
+                    self.rebuilt_value(rebuilt_function, value, function.declaration())?,
+                ),
+            });
+        }
+        let result = match external.result() {
+            Some(value) => {
+                Some(self.rebuilt_value(rebuilt_function, value, function.declaration())?)
+            }
+            None => None,
+        };
+        let body = dae::ExternalFunctionBody::new(
+            external.purity(),
+            external.language(),
+            external.symbol().clone(),
+            arguments,
+            result,
+            external.linkage().clone(),
+        );
+        target.functions(|functions| {
+            functions.define_external(reservation, body, function.declaration())
+        })
+    }
+
+    fn rebuilt_value(
+        &self,
+        function: &RebuiltFunction<'target>,
+        value: dae::FunctionValueId<'source>,
+        provenance: dae::DaeProvenance,
+    ) -> Result<dae::FunctionValueId<'target>, dae::DaeConstructionError> {
+        function
+            .values
+            .get(value.ordinal() as usize)
+            .copied()
+            .ok_or(dae::DaeConstructionError::ShapeMismatch {
+                span: provenance.span(),
+            })
     }
 
     fn source_function(&self, index: usize) -> dae::FunctionView<'source> {
