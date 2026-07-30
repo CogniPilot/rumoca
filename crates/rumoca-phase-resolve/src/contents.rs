@@ -281,19 +281,20 @@ impl Resolver {
     /// first), so only the values are resolved here, in the enclosing class
     /// scope where they are written (MLS §7.2.5).
     fn resolve_source_modification(&mut self, expr: &mut Expression, class_scope: ScopeId) {
-        match expr {
-            Expression::Modification { value, .. } => {
-                self.resolve_source_modification(std::sync::Arc::make_mut(value), class_scope)
-            }
-            Expression::ClassModification { modifications, .. } => {
-                for modification in modifications.iter_mut() {
-                    self.resolve_source_modification(modification, class_scope);
+        let mut pending = vec![expr];
+        while let Some(current) = pending.pop() {
+            match current {
+                Expression::Modification { value, .. } => {
+                    pending.push(std::sync::Arc::make_mut(value));
                 }
+                Expression::ClassModification { modifications, .. } => {
+                    pending.extend(modifications.iter_mut());
+                }
+                Expression::NamedArgument { value, .. } => {
+                    self.resolve_expression(std::sync::Arc::make_mut(value), class_scope);
+                }
+                other => self.resolve_expression(other, class_scope),
             }
-            Expression::NamedArgument { value, .. } => {
-                self.resolve_expression(std::sync::Arc::make_mut(value), class_scope)
-            }
-            other => self.resolve_expression(other, class_scope),
         }
     }
 
