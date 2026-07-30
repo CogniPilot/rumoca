@@ -129,10 +129,17 @@ fn drone_solve() -> SolveProblem {
     // Row 5: der(omega) = 0
     let row5 = vec![Const { dst: 0, value: 0.0 }, StoreOutput { src: 0 }];
 
-    SolveProblem::with_derivative_rhs(ComputeBlock::from_scalar_program_block(spb(
-        vec![row0, row1, row2, row3, row4, row5],
-        "drone_monte_carlo_derivative.mo",
-    )))
+    SolveProblem::with_derivative_rhs(
+        ComputeBlock::from_scalar_program_block(spb(
+            vec![row0, row1, row2, row3, row4, row5],
+            "drone_monte_carlo_derivative.mo",
+        )),
+        // Six states (x, y, theta, vx, vy, omega) and four parameters
+        // (m, J, F, g): the derivative seed space is state columns followed by
+        // parameter columns, so both extents belong to the fixture.
+        rumoca_ir_solve::VarLayout::from_parts(Default::default(), 6, 4),
+    )
+    .expect("fixture derivative problem is valid by construction")
 }
 
 fn drone_prepared_model(m: f64, j: f64, f: f64, g: f64) -> rumoca_ir_solve::SolveModel {

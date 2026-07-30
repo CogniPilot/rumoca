@@ -142,14 +142,16 @@ fn scalar_block() -> ComputeBlock {
 }
 
 fn solve_problem_for(derivative_rhs: ComputeBlock) -> SolveProblem {
+    // Every fixture here is `xdot = A * x` over as many states as it has
+    // outputs, with no parameters.
     let state_scalar_count = derivative_rhs
         .len()
         .expect("fixture derivative output shape is computable");
-    let mut problem = SolveProblem::with_derivative_rhs(derivative_rhs);
-    problem.solve_layout.state_scalar_count = state_scalar_count;
-    problem.layout =
-        rumoca_ir_solve::VarLayout::from_parts(indexmap::IndexMap::new(), state_scalar_count, 0);
-    problem
+    SolveProblem::with_derivative_rhs(
+        derivative_rhs,
+        rumoca_ir_solve::VarLayout::from_parts(indexmap::IndexMap::new(), state_scalar_count, 0),
+    )
+    .expect("fixture derivative problem is valid by construction")
 }
 
 fn compile_derivative_rhs(

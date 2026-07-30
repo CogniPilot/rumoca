@@ -291,9 +291,47 @@ fn compatible_discrete_definition<'dae>(
 ) -> Option<(dae::DiscreteRealId<'dae>, dae::ExprId<'dae>)> {
     let variable = view.variable(dae::VariableId::from(target))?;
     let expression = view.expression(value)?;
-    (variable.value_type() == expression.value_type()
-        && !dae::expr_contains_var(view, value, dae::VariableId::from(target)))
+    (defines_discrete_real(variable.value_type(), expression.value_type())
+        && !reads_current_discrete_real(view, value, target))
     .then_some((target, value))
+}
+
+/// True when a value of type `value` can define a discrete `Real` target of type `target`.
+///
+/// The checked DAE preserves each expression's own source type, so the Integer literal in
+/// `x = 1` keeps `ScalarType::Integer` even when `x` is `Real`. MLS §6.7 admits that
+/// implicit Integer-to-Real conversion, so requiring identical value types would reject
+/// a legal explicit definition. Shape must still agree exactly.
+fn defines_discrete_real(target: &dae::ValueType, value: &dae::ValueType) -> bool {
+    target.dimensions() == value.dimensions()
+        && target.scalar_type() == dae::ScalarType::Real
+        && matches!(
+            value.scalar_type(),
+            dae::ScalarType::Real | dae::ScalarType::Integer
+        )
+}
+
+/// True when `value` reads the *current* coordinate of `target`.
+///
+/// Only a current-value occurrence couples a discrete Real definition to itself. MLS
+/// §3.7.5 defines `pre(x)` as the left limit of `x`, which is already settled when the
+/// event fires, so `x = a * pre(x) + b * u` is an explicit computable definition of `x`.
+/// The generic [`dae::expr_contains_var`] query deliberately treats `pre` and current
+/// coordinates as the same declaration, so it cannot be used to decide computability.
+fn reads_current_discrete_real<'dae>(
+    view: dae::DaeView<'dae>,
+    value: dae::ExprId<'dae>,
+    target: dae::DiscreteRealId<'dae>,
+) -> bool {
+    let mut found = false;
+    dae::for_each_expression(view, value, |_, expression| {
+        found |= matches!(
+            expression.operation(),
+            dae::ExpressionOperation::Coordinate(dae::CoordinateView::DiscreteReal(candidate))
+                if candidate == target
+        );
+    });
+    found
 }
 
 fn whole_discrete_real<'dae>(

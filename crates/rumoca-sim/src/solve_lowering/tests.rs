@@ -14,6 +14,52 @@ fn compile(source: &str, model: &str) -> std::sync::Arc<rumoca_ir_dae::Dae> {
         .dae
 }
 
+/// Source-ordered plan of the checked B.1c discrete-value owners: each entry pairs an
+/// owner's target names with the number of `when` branches it retains.
+///
+/// Discrete assignments used to be flattened into the event-action arena, so the
+/// when/elsewhen retention tests below counted `event_action_count()`. The checked DAE now
+/// models them as discrete-value owners carrying an ordered branch list, and the event
+/// action arena holds only `assert`/`terminate`/`reinit`. Counting retained `when` branches
+/// per owner asserts the same property more precisely: it proves both that no chain branch
+/// was dropped and that the branches stayed attached to their own target.
+fn when_branch_plan(dae: &rumoca_ir_dae::Dae) -> Vec<(Vec<String>, usize)> {
+    dae.inspect(|view| {
+        (0..view.discrete_value_owner_count())
+            .map(|index| {
+                let id = view
+                    .discrete_value_owner_id(index)
+                    .expect("dense discrete-value owner identity resolves");
+                let owner = view
+                    .discrete_value_owner(id)
+                    .expect("checked discrete-value owner resolves");
+                let targets = owner
+                    .targets()
+                    .iter()
+                    .map(|target| {
+                        view.variable(rumoca_ir_dae::VariableId::from(target))
+                            .expect("checked discrete-value target resolves")
+                            .name()
+                            .as_str()
+                            .to_string()
+                    })
+                    .collect::<Vec<_>>();
+                let when_branches = owner
+                    .branches()
+                    .iter()
+                    .filter(|branch| {
+                        matches!(
+                            branch.activation(),
+                            rumoca_ir_dae::DiscreteBranchActivation::When { .. }
+                        )
+                    })
+                    .count();
+                (targets, when_branches)
+            })
+            .collect()
+    })
+}
+
 #[test]
 fn simulation_lowering_consumes_checked_todae_output_end_to_end() {
     let dae = compile(
@@ -382,13 +428,14 @@ fn checked_when_elsewhen_priority_blocks_later_rise_while_first_is_true() {
         ),
         "PersistentFirstPriority",
     );
-    dae.inspect(|view| {
-        assert_eq!(
-            view.event_action_count(),
-            3,
-            "the checked DAE must retain both chain branches and the independent witness"
-        );
-    });
+    assert_eq!(
+        when_branch_plan(&dae),
+        vec![
+            (vec!["selected".to_string()], 2),
+            (vec!["secondSeen".to_string()], 1),
+        ],
+        "the checked DAE must retain both chain branches and the independent witness"
+    );
     let options = SimOptions {
         t_end: 1.0,
         dt: Some(0.05),
@@ -441,13 +488,11 @@ fn checked_when_elsewhen_priority_selects_first_on_simultaneous_rise() {
         ),
         "SimultaneousPriority",
     );
-    dae.inspect(|view| {
-        assert_eq!(
-            view.event_action_count(),
-            2,
-            "the checked DAE must retain both simultaneous source branches"
-        );
-    });
+    assert_eq!(
+        when_branch_plan(&dae),
+        vec![(vec!["selected".to_string()], 2)],
+        "the checked DAE must retain both simultaneous source branches"
+    );
     let options = SimOptions {
         t_end: 1.0,
         dt: Some(0.05),
@@ -490,13 +535,11 @@ fn checked_when_elsewhen_later_branch_executes_after_first_becomes_false() {
         ),
         "SequentialPriority",
     );
-    dae.inspect(|view| {
-        assert_eq!(
-            view.event_action_count(),
-            2,
-            "the checked DAE must retain both sequential source branches"
-        );
-    });
+    assert_eq!(
+        when_branch_plan(&dae),
+        vec![(vec!["selected".to_string()], 2)],
+        "the checked DAE must retain both sequential source branches"
+    );
     let options = SimOptions {
         t_end: 0.8,
         dt: Some(0.05),
@@ -533,6 +576,12 @@ fn unprovided_input_is_rejected_instead_of_receiving_a_default_value() {
     let error = lower_dae_for_simulation(&dae, &SimOptions::default())
         .expect_err("an input without a provider must fail before simulation");
 
-    assert!(error.to_string().contains("input"));
-    assert!(error.to_string().contains("provider"));
+    // Checked inputs may now carry a declaration default, so the rejection names the two
+    // sources it looked for instead of only the missing runtime provider.
+    assert!(
+        error
+            .to_string()
+            .contains("input `u` has neither a checked default nor a runtime value"),
+        "{error}"
+    );
 }

@@ -145,6 +145,14 @@ pub enum SolveProblemShapeContractError {
         upper_bound: usize,
         span: Option<Span>,
     },
+    /// A program addresses `Y`/`P` storage the variable layout does not own.
+    VariableIndexOutOfBounds {
+        context: &'static str,
+        storage: &'static str,
+        index: usize,
+        extent: usize,
+        span: Option<Span>,
+    },
     DuplicateIndex {
         context: &'static str,
         index: usize,
@@ -187,6 +195,7 @@ impl SolveProblemShapeContractError {
             | Self::ScalarProgramCountMismatch { span, .. }
             | Self::OutputIndexOverflow { span, .. }
             | Self::SolverIndexOutOfBounds { span, .. }
+            | Self::VariableIndexOutOfBounds { span, .. }
             | Self::DuplicateIndex { span, .. }
             | Self::ProjectionBlockShapeMismatch { span, .. }
             | Self::DuplicateProjectionUnknown { span, .. }
@@ -434,6 +443,17 @@ fn fmt_index_shape_contract_error(
         } => write!(
             f,
             "{context} references solver index {index}, but upper bound is {upper_bound}"
+        ),
+        Error::VariableIndexOutOfBounds {
+            context,
+            storage,
+            index,
+            extent,
+            ..
+        } => write!(
+            f,
+            "{context} loads {storage}[{index}], but the variable layout owns \
+             {extent} {storage} scalars"
         ),
         Error::DuplicateIndex { context, index, .. } => {
             write!(f, "{context} contains duplicate index {index}")

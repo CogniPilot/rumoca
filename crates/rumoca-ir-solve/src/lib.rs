@@ -11,6 +11,7 @@ mod linear_op;
 #[cfg(test)]
 mod scalar_program_tests;
 mod shape_error;
+mod variable_bounds;
 pub mod visitor;
 
 use indexmap::IndexMap;
@@ -613,14 +614,34 @@ impl<'de> Deserialize<'de> for SolveProblem {
 }
 
 impl SolveProblem {
-    pub fn with_derivative_rhs(derivative_rhs: ComputeBlock) -> Self {
-        Self {
+    /// Build a continuous-only problem from one checked derivative program and
+    /// the variable layout that program addresses.
+    ///
+    /// The layout is a required input rather than a default: the derivative
+    /// seed space is `y_scalars + p_scalars` wide and parameter seeds start at
+    /// `y_scalars`, so a layout that does not own the program's own `Y`/`P`
+    /// loads silently aliases derivative columns. The state extent is taken
+    /// from the program's checked output count, and the finished problem is
+    /// validated before it is returned.
+    pub fn with_derivative_rhs(
+        derivative_rhs: ComputeBlock,
+        layout: VarLayout,
+    ) -> Result<Self, SolveProblemShapeContractError> {
+        let state_scalar_count = derivative_rhs.output_count("continuous.derivative_rhs")?;
+        let problem = Self {
+            layout,
+            solve_layout: SolveLayout {
+                state_scalar_count,
+                ..SolveLayout::default()
+            },
             continuous: ContinuousSolveSystem {
                 derivative_rhs,
                 ..ContinuousSolveSystem::default()
             },
             ..Self::default()
-        }
+        };
+        problem.validate()?;
+        Ok(problem)
     }
 
     pub fn compute_node_counts(&self) -> ComputeNodeCounts {
@@ -680,6 +701,14 @@ fn validate_continuous_system_shape(
     system
         .derivative_rhs
         .validate_shape_contract("continuous.derivative_rhs")?;
+    for (context, block) in [
+        ("continuous.implicit_rhs", &system.implicit_rhs),
+        ("continuous.residual", &system.residual),
+        ("continuous.manifold_residual", &system.manifold_residual),
+        ("continuous.derivative_rhs", &system.derivative_rhs),
+    ] {
+        variable_bounds::validate_compute_block_variable_bounds(block, context, &problem.layout)?;
+    }
     let implicit_count = system
         .implicit_rhs
         .output_count("continuous.implicit_rhs")?;

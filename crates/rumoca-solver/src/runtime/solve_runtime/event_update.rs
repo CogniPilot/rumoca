@@ -5,15 +5,22 @@ use rumoca_ir_solve as solve;
 pub enum EventUpdateRowFilter {
     All,
     FollowCurrentOnly,
+    /// No discrete row is re-evaluated; only the continuous projection moves.
+    ///
+    /// MLS Appendix B changes discrete values, conditions, and relation memory
+    /// only at event instants. A projection evaluated strictly after an event
+    /// instant — the synthetic right limit of the initial event — is therefore
+    /// not allowed to redefine any of them.
+    Hold,
 }
 
 impl EventUpdateRowFilter {
     pub(super) fn accepts(self, mode: EventPreMode) -> bool {
-        matches!(self, Self::All)
-            || matches!(
-                (self, mode),
-                (Self::FollowCurrentOnly, EventPreMode::FollowCurrent)
-            )
+        match self {
+            Self::All => true,
+            Self::FollowCurrentOnly => mode == EventPreMode::FollowCurrent,
+            Self::Hold => false,
+        }
     }
 }
 

@@ -172,7 +172,9 @@ fn scalar_program_block_value(block: Arc<solve::ScalarProgramBlock>) -> Value {
     )
 }
 
-fn compute_node_value(node: Arc<solve::ComputeNode>) -> Result<Value, CodegenError> {
+pub(in crate::codegen) fn compute_node_value(
+    node: Arc<solve::ComputeNode>,
+) -> Result<Value, CodegenError> {
     // Serialized as a tagged enum: { "MatMul": {...} } / { "ScalarPrograms": ... }
     // / { "LinSolve": {...} }. Only the active variant key is present.
     Ok(match node.as_ref() {

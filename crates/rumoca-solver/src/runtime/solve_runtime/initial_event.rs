@@ -20,6 +20,16 @@ pub struct ProjectedInitialEventInput<'a> {
     pub apply_without_initial_event: bool,
 }
 
+/// The projection that follows a settled initial event.
+pub struct ProjectedPostInitialEventInput<'a> {
+    pub y: &'a mut [f64],
+    pub p: &'a mut [f64],
+    pub t: f64,
+    pub tol: f64,
+    pub max_iters: usize,
+    pub row_filter: EventUpdateRowFilter,
+}
+
 pub struct ProjectedInitialEventOutcome {
     pub final_t: f64,
     pub observations: Vec<InitialEventObservation>,
@@ -107,16 +117,20 @@ impl SolveRuntime {
 
     pub fn apply_projected_post_initial_event_update<P>(
         &self,
-        y: &mut [f64],
-        p: &mut [f64],
-        t: f64,
-        tol: f64,
-        max_iters: usize,
+        input: ProjectedPostInitialEventInput<'_>,
         project_algebraics: P,
     ) -> Result<EventActionOutcome, RuntimeSolveError>
     where
         P: FnMut(&mut [f64], &mut [f64]) -> Result<bool, RuntimeSolveError>,
     {
+        let ProjectedPostInitialEventInput {
+            y,
+            p,
+            t,
+            tol,
+            max_iters,
+            row_filter,
+        } = input;
         let event_pre_y = copy_runtime_values(y, "post-initial event pre y snapshot")?;
         let event_pre_p = copy_runtime_values(p, "post-initial event pre p snapshot")?;
         self.apply_projected_event_update(
@@ -128,7 +142,7 @@ impl SolveRuntime {
                 event_pre_y: &event_pre_y,
                 event_pre_p: &event_pre_p,
                 max_iters,
-                row_filter: EventUpdateRowFilter::FollowCurrentOnly,
+                row_filter,
                 root_relation_overrides: &[],
             },
             project_algebraics,
@@ -210,12 +224,26 @@ impl SolveRuntime {
         // transition here makes the ordering identical for every backend.
         commit_pre_params_after_event(&self.model, y, p, tol);
         let post_t = right_t.unwrap_or(t_start);
+        // The initial event settles at `t_start`. When `post_t` is still that
+        // instant the projection is part of the same event, so rows that follow
+        // current values are refreshed against the cleared `initial()` flag.
+        // A synthetic right limit is a strictly later time and therefore not an
+        // event instant: MLS Appendix B holds every discrete value there, and
+        // only the continuous projection may move.
+        let post_row_filter = if right_t.is_some() {
+            EventUpdateRowFilter::Hold
+        } else {
+            EventUpdateRowFilter::FollowCurrentOnly
+        };
         let post_action = self.apply_projected_post_initial_event_update(
-            y,
-            p,
-            post_t,
-            tol,
-            max_iters,
+            ProjectedPostInitialEventInput {
+                y,
+                p,
+                t: post_t,
+                tol,
+                max_iters,
+                row_filter: post_row_filter,
+            },
             |y, p| project_algebraics(y, p, post_t),
         )?;
         if let Some(right_t) = right_t {

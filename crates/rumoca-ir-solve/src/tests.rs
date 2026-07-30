@@ -942,6 +942,69 @@ fn solve_problem_shape_contract_rejects_bad_schema_version() {
     );
 }
 
+/// A state load outside the layout is a construction defect, not a runtime
+/// surprise: forward-mode AD offsets the parameter seeds by `y_scalars`, so an
+/// unowned `Y` index aliases derivative columns instead of adding one.
+#[test]
+fn solve_problem_shape_contract_rejects_state_load_outside_layout() {
+    let mut problem = representative_solve_problem_fixture();
+    problem.continuous.residual = ComputeBlock::from_scalar_program_block(
+        ScalarProgramBlock::with_source_span(
+            vec![vec![
+                LinearOp::LoadY { dst: 0, index: 9 },
+                LinearOp::StoreOutput { src: 0 },
+            ]],
+            fixture_provenance(),
+        )
+        .expect("unowned state load fixture is computable"),
+    );
+
+    assert_eq!(
+        problem.validate_shape_contract(),
+        Err(SolveProblemShapeContractError::VariableIndexOutOfBounds {
+            context: "continuous.residual",
+            storage: "Y",
+            index: 9,
+            extent: 3,
+            span: Some(fixture_span()),
+        })
+    );
+}
+
+/// A runtime-indexed parameter load is clamped into its complete run, so the
+/// whole run — not just its base — must be addressable.
+#[test]
+fn solve_problem_shape_contract_rejects_parameter_run_outside_layout() {
+    let mut problem = representative_solve_problem_fixture();
+    problem.continuous.residual = ComputeBlock::from_scalar_program_block(
+        ScalarProgramBlock::with_source_span(
+            vec![vec![
+                LinearOp::Const { dst: 0, value: 0.0 },
+                LinearOp::LoadIndexedP {
+                    dst: 1,
+                    base: 1,
+                    count: 4,
+                    index: 0,
+                },
+                LinearOp::StoreOutput { src: 1 },
+            ]],
+            fixture_provenance(),
+        )
+        .expect("unowned parameter run fixture is computable"),
+    );
+
+    assert_eq!(
+        problem.validate_shape_contract(),
+        Err(SolveProblemShapeContractError::VariableIndexOutOfBounds {
+            context: "continuous.residual",
+            storage: "P",
+            index: 4,
+            extent: 2,
+            span: Some(fixture_span()),
+        })
+    );
+}
+
 #[test]
 fn solve_problem_shape_contract_rejects_rectangular_projection_block() {
     let mut problem = representative_solve_problem_fixture();

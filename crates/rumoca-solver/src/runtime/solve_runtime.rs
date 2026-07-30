@@ -41,6 +41,7 @@ use event_update::{DiscretePreSnapshot, DiscreteRowsSettleInput};
 pub use event_update::{EventUpdateRowFilter, ProjectedEventUpdateInput};
 pub use initial_event::{
     InitialEventObservation, ProjectedInitialEventInput, ProjectedInitialEventOutcome,
+    ProjectedPostInitialEventInput,
 };
 use plans::{
     RootConditionPlan, RootConditionPlanEntry, VisibleValuePlan, VisibleValuePlanEntry,

@@ -370,7 +370,7 @@ fn solve_template_compute_block_json(block: &solve::ComputeBlock) -> Result<Valu
     ));
     let native_dense_nodes = Value::from_object(render_solve::SolveNativeDenseNodesValue::new(
         partition.native_dense_nodes,
-    ));
+    )?);
     Ok(minijinja::context! {
         nodes => nodes,
         scalar_plan => scalar_plan,
