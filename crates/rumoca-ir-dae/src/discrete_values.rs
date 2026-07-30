@@ -199,18 +199,11 @@ impl<'dae> DiscreteValueBranchValues<'dae> {
     }
 }
 
-struct StagedBranch {
-    activation: DiscreteBranchActivationEntry,
-    values: Vec<(u32, DaeProvenance)>,
-    provenance: DaeProvenance,
-}
-
 pub struct DiscreteValueOwner<'storage, 'dae> {
     source_map: &'storage rumoca_core::SourceMap,
-    storage: &'storage Storage,
+    storage: &'storage mut Storage,
     target_count: usize,
-    branches: Vec<StagedBranch>,
-    owner: DaeProvenance,
+    branch_start: usize,
     marker: PhantomData<&'dae mut &'dae ()>,
 }
 
@@ -274,9 +267,9 @@ impl<'dae> DiscreteValueOwner<'_, 'dae> {
                 span: provenance.span(),
             });
         }
-        if matches!(activation, DiscreteBranchActivationEntry::Always) && !self.branches.is_empty()
-            || self
-                .branches
+        let branches = &self.storage.discrete_value_branches[self.branch_start..];
+        if matches!(activation, DiscreteBranchActivationEntry::Always) && !branches.is_empty()
+            || branches
                 .iter()
                 .any(|branch| matches!(branch.activation, DiscreteBranchActivationEntry::Always))
         {
@@ -284,11 +277,34 @@ impl<'dae> DiscreteValueOwner<'_, 'dae> {
                 span: provenance.span(),
             });
         }
-        self.branches.push(StagedBranch {
-            activation,
-            values,
+        let value_start = checked_u32(
+            self.storage.discrete_value_branch_values.len(),
+            "B.1c value buffer",
             provenance,
-        });
+        )?;
+        let value_len = checked_u32(values.len(), "B.1c value buffer", provenance)?;
+        expect_packed_capacity(value_start, value_len, "B.1c value buffer", provenance)?;
+        checked_u32(
+            self.storage.discrete_value_branches.len(),
+            "B.1c branch arena",
+            provenance,
+        )?;
+        for (value, value_provenance) in values {
+            self.storage.discrete_value_branch_values.push(value);
+            self.storage
+                .discrete_value_branch_value_provenance
+                .push(value_provenance);
+        }
+        self.storage
+            .discrete_value_branches
+            .push(DiscreteValueBranchEntry {
+                activation,
+                values: PackedRange {
+                    start: value_start,
+                    len: value_len,
+                },
+                provenance,
+            });
         Ok(())
     }
 }
@@ -369,23 +385,60 @@ impl<'dae> DiscreteValueTopology<'_, 'dae> {
                 .expect_discrete_value_target_id(target, provenance)?;
         }
 
-        let mut staged = DiscreteValueOwner {
+        let owner = checked_u32(
+            self.storage.discrete_value_owners.len(),
+            "B.1c owner arena",
+            provenance,
+        )?;
+        let target_start = checked_u32(
+            self.storage.discrete_value_targets.len(),
+            "B.1c target buffer",
+            provenance,
+        )?;
+        let target_len = checked_u32(targets.len(), "B.1c target buffer", provenance)?;
+        expect_packed_capacity(target_start, target_len, "B.1c target buffer", provenance)?;
+        let branch_start = self.storage.discrete_value_branches.len();
+        let checkpoint = DiscreteValueTopologyCheckpoint::capture(self.storage);
+        self.storage
+            .discrete_value_targets
+            .extend_from_slice(&targets);
+        let result = build(&mut DiscreteValueOwner {
             source_map: self.source_map,
             storage: self.storage,
             target_count: targets.len(),
-            branches: Vec::new(),
-            owner: provenance,
+            branch_start,
             marker: PhantomData,
-        };
-        build(&mut staged)?;
-        if staged.branches.is_empty() {
-            return Err(DaeConstructionError::EmptyDiscreteValueOwner {
-                span: provenance.span(),
-            });
+        })
+        .and_then(|()| {
+            let branch_len = self.storage.discrete_value_branches.len() - branch_start;
+            if branch_len == 0 {
+                return Err(DaeConstructionError::EmptyDiscreteValueOwner {
+                    span: provenance.span(),
+                });
+            }
+            self.validate_owner(&targets, branch_start)?;
+            let branch_start = checked_u32(branch_start, "B.1c branch arena", provenance)?;
+            let branch_len = checked_u32(branch_len, "B.1c branch arena", provenance)?;
+            expect_packed_capacity(branch_start, branch_len, "B.1c branch arena", provenance)?;
+            self.storage
+                .discrete_value_owners
+                .push(DiscreteValueOwnerEntry {
+                    targets: PackedRange {
+                        start: target_start,
+                        len: target_len,
+                    },
+                    branches: PackedRange {
+                        start: branch_start,
+                        len: branch_len,
+                    },
+                    provenance,
+                });
+            Ok(())
+        });
+        if let Err(error) = result {
+            checkpoint.rollback(self.storage);
+            return Err(error);
         }
-        validate_branch_form(&staged)?;
-        self.validate_owner(&targets, &staged)?;
-        let owner = self.append_owner(provenance, &targets, staged.branches)?;
         for &target in &targets {
             self.issued.insert(target);
         }
@@ -396,17 +449,20 @@ impl<'dae> DiscreteValueTopology<'_, 'dae> {
     fn validate_owner(
         &self,
         targets: &[u32],
-        staged: &DiscreteValueOwner<'_, 'dae>,
+        branch_start: usize,
     ) -> Result<(), DaeConstructionError> {
-        for branch in &staged.branches {
+        let branches = &self.storage.discrete_value_branches[branch_start..];
+        for branch in branches {
             self.validate_branch_activation(targets, branch)?;
         }
 
         let mut issued_prefix = FxHashSet::default();
         issued_prefix.reserve(targets.len());
         for (ordinal, &target) in targets.iter().enumerate() {
-            for branch in &staged.branches {
-                let (value, provenance) = branch.values[ordinal];
+            for branch in branches {
+                let value_index = branch.values.start as usize + ordinal;
+                let value = self.storage.discrete_value_branch_values[value_index];
+                let provenance = self.storage.discrete_value_branch_value_provenance[value_index];
                 self.storage
                     .expect_discrete_value_raw(target, value, provenance)?;
                 self.expect_expression_dependencies_issued(
@@ -424,7 +480,7 @@ impl<'dae> DiscreteValueTopology<'_, 'dae> {
     fn validate_branch_activation(
         &self,
         targets: &[u32],
-        branch: &StagedBranch,
+        branch: &DiscreteValueBranchEntry,
     ) -> Result<(), DaeConstructionError> {
         let DiscreteBranchActivationEntry::When { trigger, guard } = branch.activation else {
             return Ok(());
@@ -604,94 +660,6 @@ impl<'dae> DiscreteValueTopology<'_, 'dae> {
         })
     }
 
-    fn append_owner(
-        &mut self,
-        provenance: DaeProvenance,
-        targets: &[u32],
-        branches: Vec<StagedBranch>,
-    ) -> Result<u32, DaeConstructionError> {
-        let target_start = checked_u32(
-            self.storage.discrete_value_targets.len(),
-            "B.1c target buffer",
-            provenance,
-        )?;
-        let branch_start = checked_u32(
-            self.storage.discrete_value_branches.len(),
-            "B.1c branch arena",
-            provenance,
-        )?;
-        let owner = checked_u32(
-            self.storage.discrete_value_owners.len(),
-            "B.1c owner arena",
-            provenance,
-        )?;
-        let target_len = checked_u32(targets.len(), "B.1c target buffer", provenance)?;
-        let branch_len = checked_u32(branches.len(), "B.1c branch arena", provenance)?;
-        expect_packed_capacity(target_start, target_len, "B.1c target buffer", provenance)?;
-        expect_packed_capacity(branch_start, branch_len, "B.1c branch arena", provenance)?;
-        let mut next_value = self.storage.discrete_value_branch_values.len();
-        let mut branch_entries = Vec::with_capacity(branches.len());
-        for branch in &branches {
-            let value_start = checked_u32(next_value, "B.1c value buffer", branch.provenance)?;
-            let value_len =
-                checked_u32(branch.values.len(), "B.1c value buffer", branch.provenance)?;
-            expect_packed_capacity(
-                value_start,
-                value_len,
-                "B.1c value buffer",
-                branch.provenance,
-            )?;
-            next_value = next_value.checked_add(branch.values.len()).ok_or(
-                DaeConstructionError::CapacityExceeded {
-                    arena: "B.1c value buffer",
-                    attempted_index: usize::MAX,
-                    span: branch.provenance.span(),
-                },
-            )?;
-            if next_value > u32::MAX as usize {
-                return Err(DaeConstructionError::CapacityExceeded {
-                    arena: "B.1c value buffer",
-                    attempted_index: next_value,
-                    span: branch.provenance.span(),
-                });
-            }
-            branch_entries.push(DiscreteValueBranchEntry {
-                activation: branch.activation,
-                values: PackedRange {
-                    start: value_start,
-                    len: value_len,
-                },
-                provenance: branch.provenance,
-            });
-        }
-        for branch in branches {
-            for (value, value_provenance) in branch.values {
-                self.storage.discrete_value_branch_values.push(value);
-                self.storage
-                    .discrete_value_branch_value_provenance
-                    .push(value_provenance);
-            }
-        }
-        self.storage.discrete_value_branches.extend(branch_entries);
-        self.storage
-            .discrete_value_targets
-            .extend_from_slice(targets);
-        self.storage
-            .discrete_value_owners
-            .push(DiscreteValueOwnerEntry {
-                targets: PackedRange {
-                    start: target_start,
-                    len: target_len,
-                },
-                branches: PackedRange {
-                    start: branch_start,
-                    len: branch_len,
-                },
-                provenance,
-            });
-        Ok(owner)
-    }
-
     fn complete(self) -> Result<(), DaeConstructionError> {
         if self.cursor != self.plan.len() {
             let target = self.plan[self.cursor];
@@ -813,20 +781,6 @@ fn checked_plan<'dae>(
         }
     }
     Ok(plan)
-}
-
-fn validate_branch_form(owner: &DiscreteValueOwner<'_, '_>) -> Result<(), DaeConstructionError> {
-    let always_count = owner
-        .branches
-        .iter()
-        .filter(|branch| matches!(branch.activation, DiscreteBranchActivationEntry::Always))
-        .count();
-    if (always_count == 1 && owner.branches.len() == 1) || always_count == 0 {
-        return Ok(());
-    }
-    Err(DaeConstructionError::InvalidDiscreteBranchSet {
-        span: owner.owner.span(),
-    })
 }
 
 fn expect_complete_condition(
