@@ -1,3 +1,5 @@
+#![feature(if_let_guard)]
+
 //! Lower DAE data into solver-facing IR.
 //!
 //! Lowering passes (`layout`, `lower`, `ad`) take a `dae::Dae` and produce
