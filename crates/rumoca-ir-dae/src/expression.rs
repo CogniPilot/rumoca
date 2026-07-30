@@ -18,7 +18,7 @@ use type_rules::{
     validate_static_quotient, validate_subscript,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ScalarType {
     Real,
@@ -26,6 +26,19 @@ pub enum ScalarType {
     Boolean,
     String,
     Record,
+}
+
+impl std::hash::Hash for ScalarType {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        let tag = match self {
+            Self::Real => 0,
+            Self::Integer => 1,
+            Self::Boolean => 2,
+            Self::String => 3,
+            Self::Record => 4,
+        };
+        state.write_u8(tag);
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
