@@ -11,8 +11,8 @@ use crate::AstIndexMap as IndexMap;
 use indexmap::IndexSet;
 use rumoca_core::{
     ComponentPath, ComponentRefPart as CoreComponentRefPart,
-    ComponentReference as CoreComponentReference, DefId, ProvenanceSpan, ScopeId, Span,
-    Subscript as CoreSubscript, TypeId,
+    ComponentReference as CoreComponentReference, DefId, EffectiveType, ProvenanceSpan, ScopeId,
+    Span, Subscript as CoreSubscript, TypeId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -604,6 +604,11 @@ pub struct InstanceData {
     /// DefId of the declared component type when available from resolve phase.
     /// Builtin types typically do not have a DefId.
     pub type_def_id: Option<DefId>,
+    /// Resolved first-segment declaration of a qualified type reference.
+    ///
+    /// For `Medium.State`, this identifies the `Medium` class/package slot
+    /// without recovering semantic structure from the rendered type name.
+    pub type_reference_root_def_id: Option<DefId>,
     /// Lexical scope where this component declaration was written.
     #[serde(default)]
     pub declaration_source_scope: Option<QualifiedName>,
@@ -728,6 +733,7 @@ impl Default for InstanceData {
             type_id: TypeId::default(),
             type_name: String::new(),
             type_def_id: None,
+            type_reference_root_def_id: None,
             declaration_source_scope: None,
             class_overrides: IndexMap::default(),
             has_forwarding_class_redeclare: false,
@@ -999,6 +1005,11 @@ pub struct InstanceOverlay {
     /// Keys are resolved type identities and values are canonical root type identities.
     /// Populated by typecheck_instanced for flatten-time type compatibility.
     pub type_roots: IndexMap<TypeId, TypeId>,
+    /// Concrete effective types produced after instance dimensions are resolved.
+    ///
+    /// Each component `type_id` names exactly one descriptor in this catalog
+    /// after successful post-instantiation type checking.
+    pub effective_types: FastIndexMap<TypeId, EffectiveType>,
     /// Next available instance ID.
     next_id: u32,
 }

@@ -1134,6 +1134,7 @@ struct InstanceDataBuild<'a> {
     dims_expr: Vec<rumoca_ir_ast::Subscript>,
     type_name: String,
     type_def_id: Option<DefId>,
+    type_reference_root_def_id: Option<DefId>,
     declaration_source_scope: Option<ast::QualifiedName>,
     class_overrides: ast::ClassOverrideMap,
     has_forwarding_class_redeclare: bool,
@@ -1183,6 +1184,7 @@ fn build_instance_data(
         // `Medium.AbsolutePressure`) so instanced typecheck can resolve dotted
         // type names using lexical package anchors.
         type_def_id: args.type_def_id.or(args.comp.type_name.def_id),
+        type_reference_root_def_id: args.type_reference_root_def_id,
         declaration_source_scope: args.declaration_source_scope,
         class_overrides: args.class_overrides,
         has_forwarding_class_redeclare: args.has_forwarding_class_redeclare,
@@ -1374,6 +1376,10 @@ fn instantiate_component(
         dims_expr,
         type_name: type_name.clone(),
         type_def_id: comp.type_def_id,
+        type_reference_root_def_id: (comp.type_name.name.len() > 1)
+            .then_some(comp.type_name.def_id)
+            .flatten()
+            .filter(|root_def_id| Some(*root_def_id) != comp.type_def_id),
         declaration_source_scope: declaration_source_scope.clone(),
         class_overrides: class_overrides.clone(),
         has_forwarding_class_redeclare,

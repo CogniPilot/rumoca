@@ -4674,6 +4674,7 @@ dependencies = [
  "rumoca-phase-instantiate",
  "rumoca-phase-parse",
  "rumoca-phase-resolve",
+ "rumoca-phase-typecheck",
  "rustc-hash",
  "thiserror 2.0.18",
  "tracing",

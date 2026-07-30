@@ -38,6 +38,7 @@ use std::path::PathBuf;
 // Previously lived in `rumoca-ir-core`; merged here per SPEC_0029 §3a.
 mod clock_lattice;
 pub mod dependency_graph;
+mod effective_type;
 mod expression_rewriter;
 mod expression_visitor;
 mod ir_primitives;
@@ -49,6 +50,7 @@ mod subscript;
 pub mod text_position;
 pub use clock_lattice::{ClockLattice, ClockLatticeError, ClockLatticeErrorKind, ClockRational};
 pub use dependency_graph::{DependencyGraphError, DependencyScc, dependency_first_sccs};
+pub use effective_type::{EffectiveType, EffectiveTypeError};
 pub use expression_rewriter::{ExpressionRewriter, FallibleExpressionRewriter};
 pub use expression_visitor::{ExpressionScope, ExpressionVisitor, FallibleExpressionVisitor};
 pub use ir_primitives::*;
