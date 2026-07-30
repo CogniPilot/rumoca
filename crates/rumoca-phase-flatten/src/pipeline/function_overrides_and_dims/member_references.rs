@@ -120,29 +120,32 @@ fn resolve_override_member_projection_name(
     None
 }
 
-fn reference_component_ref_is_instance_path(
+/// Whether the reference walks an instantiated component path rather than a
+/// class/package member path.
+///
+/// The declaration segments of an occurrence are relative to the class that
+/// declares them, while the reference's flat name carries the instance prefix
+/// the enclosing instantiation contributed. A disagreement between the two is
+/// therefore evidence of an instance path, as is a path the enclosing
+/// component-member scope already knows. Either way the occurrence belongs to
+/// a component, so a replaceable package must not capture it.
+pub(super) fn reference_component_ref_is_instance_path(
     reference: &rumoca_core::Reference,
     ctx: &FunctionOverrideRewriteContext<'_>,
 ) -> bool {
-    canonical_instance_reference_name(reference, ctx).is_some()
-}
-
-pub(super) fn canonical_instance_reference_name(
-    reference: &rumoca_core::Reference,
-    ctx: &FunctionOverrideRewriteContext<'_>,
-) -> Option<rumoca_core::Reference> {
-    let component_ref = reference.component_ref()?;
+    let Some(component_ref) = reference.component_ref() else {
+        return false;
+    };
     let component_path = ComponentPath::from_component_reference(component_ref);
     let component_name = component_path.to_flat_string();
     let is_known_instance_path = ctx
         .component_members
         .is_some_and(|scope| scope.contains_component_path(&component_path));
-    ((is_known_instance_path || component_name != reference.as_str())
+    (is_known_instance_path || component_name != reference.as_str())
         && ctx
             .class_index
             .get_by_qualified_name(&component_name)
             .is_none()
         && enclosing_scope(&component_name)
-            .is_none_or(|scope| ctx.class_index.get_by_qualified_name(scope).is_none()))
-    .then(|| reference.with_var_name(rumoca_core::VarName::new(component_name)))
+            .is_none_or(|scope| ctx.class_index.get_by_qualified_name(scope).is_none())
 }

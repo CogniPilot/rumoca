@@ -600,6 +600,11 @@ fn func_013_partial_function_call_rejected() {
     // flatten-time diagnostic is not possible because flatten legitimately
     // converts partial base functions that redeclares later make concrete
     // (the MSL Media pattern).
+    //
+    // `ED005` (`UnresolvedFunctionCall`) was retired when DAE construction
+    // became valid-by-construction. SPEC_0008 requires retiring rather than
+    // reusing a code, so the surviving DAE-boundary code for a call whose
+    // callee has no resolved owner is `ED008` (`UnresolvedReference`).
     expect_failure_in_phase_with_code(
         r#"
         model M
@@ -612,7 +617,7 @@ fn func_013_partial_function_call_rejected() {
     "#,
         "M",
         FailedPhase::ToDae,
-        "ED005",
+        "ED008",
     );
 }
 

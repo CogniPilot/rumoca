@@ -172,9 +172,7 @@ impl FallibleExpressionRewriter for FunctionShapeConstantMaterializer<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rumoca_core::{
-        BytePos, ComponentRefPart, ComponentReference, Function, Literal, SourceId,
-    };
+    use rumoca_core::{BytePos, ComponentRefPart, ComponentReference, Function, Literal, SourceId};
 
     const SOURCE_NAME: &str = "<exact_function_shape_constants>";
     const SOURCE: &str = "Left.nState Right.nState";

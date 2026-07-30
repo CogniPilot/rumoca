@@ -620,7 +620,7 @@ fn decide_boolean_modifier(
     if !crate::dims::expr_mentions_import_alias(expr, scope.imports) {
         return None;
     }
-    let qualified = crate::dims::qualify_shape_expr_imports(expr, scope.imports);
+    let qualified = crate::dims::qualify_shape_expr_imports(scope.tree, expr, scope.imports);
     evaluate_component_condition(eval_ctx, &qualified)
 }
 

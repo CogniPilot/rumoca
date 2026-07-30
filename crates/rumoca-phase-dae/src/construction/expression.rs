@@ -171,6 +171,69 @@ pub(super) fn lower_expression_scoped<'dae>(
     let span = expression
         .span()
         .expect("analysis proves expression provenance");
+    let lowered =
+        lower_expression_node(construction, symbols, binders, expression, generated_root)?;
+    lower_expression_event(construction, symbols, binders, expression, span, lowered)?;
+    Ok(lowered)
+}
+
+/// Build the MLS §8.5 state-event owner of a relation that analysis proved
+/// event-generating.
+///
+/// The relation keeps its own expression identity in `f(x)`; the checked DAE
+/// additionally owns it as a `relation` with a root activation, which is the
+/// Appendix B surface the solver locates crossings on. Function bodies are
+/// pure and array comprehensions carry domain binders, so neither can own a
+/// model event: analysis never keys a plan on their spans, and the binder
+/// guard keeps a comprehension body from closing over one by accident.
+fn lower_expression_event<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    symbols: LoweringSymbols<'_, 'dae>,
+    binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
+    expression: &Expression,
+    span: Span,
+    lowered: dae::ExprId<'dae>,
+) -> Result<(), dae::DaeConstructionError> {
+    if symbols.function_body.is_some() || !binders.is_empty() {
+        return Ok(());
+    }
+    // Expansions such as MLS §15.3 `actualStream` build several nodes from one
+    // source span, so the span alone does not name the planned owner. Only the
+    // relation node itself may claim the plan.
+    if !matches!(expression, Expression::Binary { op, .. } if op.is_relational()) {
+        return Ok(());
+    }
+    if !matches!(
+        symbols.functions.expression_events.plan(span),
+        Some(ExpressionEventPlan::StateRelation)
+    ) {
+        return Ok(());
+    }
+    let provenance = dae::DaeProvenance::source(span)?;
+    let relation =
+        construction.conditions(|conditions| conditions.relation(lowered, provenance))?;
+    let condition = construction.conditions(|conditions| conditions.reserve(provenance))?;
+    construction.conditions(|conditions| {
+        conditions.define(
+            condition,
+            dae::ConditionInput::Relation(relation),
+            provenance,
+        )
+    })?;
+    construction.conditions(|conditions| conditions.root(relation, condition, provenance))?;
+    Ok(())
+}
+
+fn lower_expression_node<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    symbols: LoweringSymbols<'_, 'dae>,
+    binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
+    expression: &Expression,
+    generated_root: Option<dae::DaeGeneration>,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    let span = expression
+        .span()
+        .expect("analysis proves expression provenance");
     let provenance = expression_provenance(span, generated_root)?;
     match expression {
         Expression::Binary { op, lhs, rhs, .. } => {
@@ -260,12 +323,8 @@ fn lower_builtin_expression<'dae>(
             lower_pre(construction, symbols, binders, arguments, provenance, span)
         }
         BuiltinFunction::Sample => {
-            let [value] = arguments else {
-                return Err(dae::DaeConstructionError::InvalidArity {
-                    expected: 1,
-                    found: arguments.len(),
-                    span,
-                });
+            let Some(value) = clocked_value_sample(symbols.functions.flat, arguments) else {
+                return lower_sample_event_operator(construction, symbols, provenance);
             };
             lower_temporal_identity(construction, symbols, binders, value, provenance)
         }
@@ -403,11 +462,21 @@ fn lower_call_expression<'dae>(
         name,
         args,
         is_constructor,
-        ..
+        span,
     } = expression
     else {
         unreachable!("call lowering is selected from a function call")
     };
+    if !*is_constructor
+        && let Some(conversion) = enumeration_conversion(symbols.functions.flat, name, args, *span)
+            .expect("analysis accepts every enumeration conversion it lowers")
+    {
+        return construction.expressions(|expressions| {
+            expressions
+                .at(provenance)
+                .enumeration_literal(conversion.ordinal)
+        });
+    }
     match classify_function_call(*is_constructor) {
         FunctionCallLowering::Constructor | FunctionCallLowering::Registry => lower_function_call(
             construction,
@@ -600,6 +669,58 @@ fn lower_previous<'dae>(
     )
 }
 
+/// The sampled value of a clocked value sample, MLS §16.3.
+///
+/// `sample(u)` infers its clock from the partition; `sample(u, c)` names it.
+/// Clock analysis proves that a named clock is the partition owner, so both
+/// forms lower to the temporal identity of `u`. The two-argument Boolean event
+/// operator `sample(start, interval)` never names a `Clock` coordinate and so
+/// is not a value sample.
+fn clocked_value_sample<'expression>(
+    flat: &flat::Model,
+    arguments: &'expression [Expression],
+) -> Option<&'expression Expression> {
+    match arguments {
+        [value] => Some(value),
+        [value, clock] if is_whole_clock_coordinate(flat, clock) => Some(value),
+        _ => None,
+    }
+}
+
+/// The MLS §3.7.5 Boolean event operator `sample(start, interval)`.
+///
+/// Its ticks are a periodic schedule, not a zero crossing, so the checked DAE
+/// owns them as a periodic clock and the expression reads the activation of
+/// that clock's condition. Analysis proved the exact lattice, so a plan is
+/// missing only when the call is neither a clocked value sample nor a
+/// two-argument event operator.
+fn lower_sample_event_operator<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    symbols: LoweringSymbols<'_, 'dae>,
+    provenance: dae::DaeProvenance,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    let span = provenance.span();
+    let Some(ExpressionEventPlan::SampleClock(lattice)) =
+        symbols.functions.expression_events.plan(span)
+    else {
+        return Err(dae::DaeConstructionError::InvalidExpressionForm { span });
+    };
+    let clock = construction.clocks(|clocks| clocks.periodic(lattice, provenance))?;
+    let condition = construction.conditions(|conditions| conditions.reserve(provenance))?;
+    construction.conditions(|conditions| {
+        conditions.define(
+            condition,
+            dae::ConditionInput::Clock(clock.into()),
+            provenance,
+        )
+    })?;
+    construction.expressions(|expressions| {
+        expressions
+            .at(provenance)
+            .coordinate(dae::CoordinateInput::Condition(condition))
+    })
+}
+
 fn lower_temporal_identity<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     symbols: LoweringSymbols<'_, 'dae>,
@@ -723,6 +844,19 @@ fn lower_variable_reference<'dae>(
         return construction
             .expressions(|expressions| expressions.at(provenance).enumeration_literal(*ordinal));
     }
+    if symbols.function_body.is_some()
+        && let Some(projected) =
+            lower_function_record_projection(construction, symbols, name, provenance)?
+    {
+        return lower_index(
+            construction,
+            symbols,
+            binders,
+            projected,
+            subscripts,
+            provenance,
+        );
+    }
     let coordinate = symbols
         .coordinates
         .get(name.var_name())
@@ -749,6 +883,66 @@ fn lower_variable_reference<'dae>(
             provenance,
         ),
     }
+}
+
+/// Read `value.field...` inside a function body as a checked record projection.
+///
+/// Flat renders a record field read as one reference whose joined `VarName` is
+/// not a declared function value, but whose component reference keeps the exact
+/// structure: a root declaration followed by declared field parts. The DAE
+/// interns the record layout in the record constructor's declared field order
+/// (`function_value_type`), which is also the order analysis proves the
+/// projection names from, so the field name locates its ordinal exactly.
+///
+/// Returns `None` when the reference is not a projection of a record-typed
+/// function value, leaving the caller's own unresolved-reference surface intact.
+fn lower_function_record_projection<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    symbols: LoweringSymbols<'_, 'dae>,
+    name: &rumoca_core::Reference,
+    provenance: dae::DaeProvenance,
+) -> Result<Option<dae::ExprId<'dae>>, dae::DaeConstructionError> {
+    let Some(reference) = name.component_ref() else {
+        return Ok(None);
+    };
+    let parts = reference.parts();
+    let [root, fields @ ..] = parts else {
+        return Ok(None);
+    };
+    if fields.is_empty() || parts.iter().any(|part| !part.subs.is_empty()) {
+        return Ok(None);
+    }
+    let Some(coordinate) = symbols.coordinates.get(&VarName::new(&root.ident)).copied() else {
+        return Ok(None);
+    };
+    let mut base = match coordinate {
+        Coordinate::FunctionValue(value) => {
+            let body = symbols
+                .function_body
+                .expect("record projection lowering runs inside a function body");
+            construction.functions(|functions| functions.read(body, value, provenance))?
+        }
+        Coordinate::FunctionParameter(_) => construction.expressions(|expressions| {
+            expressions.at(provenance).coordinate(coordinate.current())
+        })?,
+        // Model coordinates are scalar: Flat expands a model record container
+        // into its field variables, so no model reference roots a projection.
+        _ => return Ok(None),
+    };
+    for field in fields {
+        let ordinal = construction.expressions(|expressions| {
+            expressions.record_field_ordinal(base, &VarName::new(&field.ident), provenance)
+        })?;
+        let Some(ordinal) = ordinal else {
+            return Err(dae::DaeConstructionError::InvalidVariableRole {
+                name: name.var_name().clone(),
+                span: provenance.span(),
+            });
+        };
+        base = construction
+            .expressions(|expressions| expressions.at(provenance).field(base, ordinal))?;
+    }
+    Ok(Some(base))
 }
 
 fn expression_provenance(

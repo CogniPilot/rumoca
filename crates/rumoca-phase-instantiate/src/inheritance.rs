@@ -888,24 +888,24 @@ pub(crate) fn is_effectively_primitive_transitive(
     false
 }
 
-/// Check if a type is Integer or Boolean (discrete by default per MLS §4.5).
+/// Check if a type is discrete-valued by its base type (MLS §3.8.3).
 ///
-/// This function resolves type alias chains to determine if the base type
-/// is Integer or Boolean, which are discrete by default even without an
-/// explicit `discrete` variability prefix.
+/// This function resolves type alias chains to determine if the base type is
+/// Integer, Boolean, String, or an enumeration, all of which are discrete-time
+/// even without an explicit `discrete` variability prefix.
 ///
-/// MLS §4.5: "A discrete-time variable is a variable that is discrete-valued
-/// (that is, not of Real type) or assigned in when-clauses."
-/// Integer and Boolean variables are discrete by definition.
+/// MLS §3.8.3: a variable is discrete-time when it is discrete-valued, that is
+/// when its base type is not `Real`. Only `Real` (and `Clock`, which carries
+/// its own clocked semantics) is excluded here.
 pub(crate) fn is_discrete_by_type(
     tree: &ast::ClassTree,
     type_name: &str,
     class_def: Option<&ast::ClassDef>,
 ) -> bool {
-    // Helper to check if a name is Integer or Boolean
+    // Helper to check if a name is a discrete-valued predefined type
     fn is_discrete_builtin(name: &str) -> bool {
         let simple_name = path_utils::class_name_leaf(name);
-        simple_name == "Integer" || simple_name == "Boolean"
+        matches!(simple_name, "Integer" | "Boolean" | "String")
     }
 
     // Direct check on the type name

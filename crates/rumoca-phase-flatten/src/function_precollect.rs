@@ -76,8 +76,7 @@ pub(crate) fn pre_collect_functions(
         if !visited.insert_if_new(func_request.clone()) {
             continue;
         }
-        let Some(func) =
-            add_function_to_context(&func_request, ctx, overlay, tree, class_index)?
+        let Some(func) = add_function_to_context(&func_request, ctx, overlay, tree, class_index)?
         else {
             continue;
         };
@@ -97,13 +96,12 @@ fn add_function_to_context(
     tree: &ast::ClassTree,
     class_index: &ast::ClassDefIndex<'_>,
 ) -> Result<Option<rumoca_core::Function>, FlattenError> {
-    let Some((resolved_name, func)) =
-        functions::lookup_function_request(
-            tree,
-            class_index,
-            request,
-            functions::FunctionTypeCatalog::new(overlay),
-        )?
+    let Some((resolved_name, func)) = functions::lookup_function_request(
+        tree,
+        class_index,
+        request,
+        functions::FunctionTypeCatalog::new(overlay),
+    )?
     else {
         return Ok(None);
     };

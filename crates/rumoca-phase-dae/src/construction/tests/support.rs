@@ -63,14 +63,7 @@ pub(super) fn real_alias_function_param(
     dimensions: Vec<i64>,
     span: Span,
 ) -> rumoca_core::FunctionParam {
-    function_param(
-        name,
-        type_name,
-        nominal,
-        TEST_REAL_TYPE,
-        dimensions,
-        span,
-    )
+    function_param(name, type_name, nominal, TEST_REAL_TYPE, dimensions, span)
 }
 
 pub(super) fn enumeration_function_param(

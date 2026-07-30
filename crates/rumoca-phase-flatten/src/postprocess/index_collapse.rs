@@ -143,38 +143,55 @@ fn collapse_index_expr(expr: &mut rumoca_core::Expression, known_flat_vars: &Kno
     *expr = CollapseIndexRewriter { known_flat_vars }.rewrite_expression(expr);
 }
 
-/// Flat variable lookup for the collapse pass: exact names plus enough
-/// structure to recover a scalarized record base (`comp[1].port_p.Phi` whose
-/// only flat variables are the `.re`/`.im` leaves).
+/// Flat variable lookup for the collapse pass.
+///
+/// The primary route is exact: the occurrence graph resolves a reference path
+/// to the occurrence it names, and the occurrence-keyed tables say which flat
+/// variable (or scalarized record container) materialized it. The name-keyed
+/// tables remain for references that carry no occurrence identity, such as the
+/// flat-named variables connection generation writes.
 struct KnownFlatVars {
     names: rustc_hash::FxHashMap<rumoca_core::VarNameId, rumoca_core::Reference>,
     record_instances: rustc_hash::FxHashMap<rumoca_core::VarNameId, rumoca_core::Reference>,
+    /// Flat variables keyed by the exact occurrence they materialize.
+    by_occurrence: rustc_hash::FxHashMap<rumoca_core::InstanceId, rumoca_core::Reference>,
+    /// Scalarized record containers keyed by the exact occurrence they hold.
+    records_by_occurrence: rustc_hash::FxHashMap<rumoca_core::InstanceId, rumoca_core::Reference>,
+    /// Exact containment graph the reference paths are resolved against.
+    occurrences: occurrence_graph::OccurrenceGraph,
     /// Compile-time integer values of `constant`/`parameter` variables, used to
     /// fold subscripts that are written as a symbolic reference (MLS §4.5
     /// requires array subscripts to be evaluable at compile time).
     integer_values: rustc_hash::FxHashMap<String, i64>,
+    /// The same compile-time values keyed by exact occurrence, so a subscript
+    /// reference folds without depending on how its name is spelled.
+    integer_values_by_occurrence: rustc_hash::FxHashMap<rumoca_core::InstanceId, i64>,
 }
 
 impl KnownFlatVars {
     fn build(flat: &flat::Model) -> Self {
-        let names = flat
-            .variables
-            .iter()
-            .filter_map(|(name, var)| {
+        let variable_references = || {
+            flat.variables.iter().filter_map(|(name, var)| {
                 let component_ref = var.component_ref.clone()?;
                 Some((
-                    name.id(),
+                    name,
+                    var.instance_id,
                     rumoca_core::Reference::with_component_reference(name.as_str(), component_ref)
                         .with_instance_id(var.instance_id),
                 ))
             })
+        };
+        let names = variable_references()
+            .map(|(name, _, reference)| (name.id(), reference))
             .collect();
-        let record_instances = flat
-            .record_instances
-            .iter()
-            .map(|(name, record)| {
+        let by_occurrence = variable_references()
+            .map(|(_, instance_id, reference)| (instance_id, reference))
+            .collect();
+        let record_references = || {
+            flat.record_instances.iter().map(|(name, record)| {
                 (
-                    name.id(),
+                    name,
+                    record.instance_id,
                     rumoca_core::Reference::with_component_reference(
                         name.as_str(),
                         record.component_ref.clone(),
@@ -182,19 +199,33 @@ impl KnownFlatVars {
                     .with_instance_id(record.instance_id),
                 )
             })
+        };
+        let record_instances = record_references()
+            .map(|(name, _, reference)| (name.id(), reference))
             .collect();
-        let integer_values = flat
-            .variables
-            .iter()
-            .filter_map(|(name, var)| {
+        let records_by_occurrence = record_references()
+            .map(|(_, instance_id, reference)| (instance_id, reference))
+            .collect();
+        let structural_values = || {
+            flat.variables.iter().filter_map(|(name, var)| {
                 rumoca_eval_flat::flat_int::structural_integer_value(var, flat)
-                    .map(|value| (name.as_str().to_string(), value))
+                    .map(|value| (name, var.instance_id, value))
             })
+        };
+        let integer_values = structural_values()
+            .map(|(name, _, value)| (name.as_str().to_string(), value))
+            .collect();
+        let integer_values_by_occurrence = structural_values()
+            .map(|(_, instance_id, value)| (instance_id, value))
             .collect();
         Self {
             names,
             record_instances,
+            by_occurrence,
+            records_by_occurrence,
+            occurrences: occurrence_graph::OccurrenceGraph::build(flat),
             integer_values,
+            integer_values_by_occurrence,
         }
     }
 
@@ -227,6 +258,125 @@ impl KnownFlatVars {
             span,
         })
     }
+
+    /// Walk a reference expression over the occurrence graph.
+    ///
+    /// The walk starts at the class occurrence the reference was written in
+    /// (`Reference::instance_id`) and selects one member per path part, so it
+    /// is independent of how the reference's name happens to be rendered.
+    fn path_cursor(&self, expr: &rumoca_core::Expression) -> Option<occurrence_graph::PathCursor> {
+        match expr {
+            rumoca_core::Expression::VarRef {
+                name, subscripts, ..
+            } => {
+                let scope = name.instance_id()?;
+                // Only a class-body occurrence scopes a written path. A
+                // reference this pass already collapsed carries the occurrence
+                // it names instead, and its parts spell the whole flat path
+                // rather than a path relative to that occurrence.
+                if self.occurrences.kind(scope)? != flat::InstanceKind::Class {
+                    return None;
+                }
+                let mut cursor = occurrence_graph::PathCursor::At(scope);
+                for part in name.component_ref()?.parts() {
+                    let indices = fold_indices(&part.subs, self)?;
+                    cursor = self
+                        .occurrences
+                        .select_member(cursor, part.def_id, &indices)?;
+                }
+                self.occurrences
+                    .apply_indices(cursor, &fold_indices(subscripts, self)?)
+            }
+            rumoca_core::Expression::Index {
+                base, subscripts, ..
+            } => {
+                let cursor = self.path_cursor(base)?;
+                self.occurrences
+                    .apply_indices(cursor, &fold_indices(subscripts, self)?)
+            }
+            rumoca_core::Expression::FieldAccess {
+                base, field_def_id, ..
+            } => {
+                let cursor = self.path_cursor(base)?;
+                self.occurrences.select_member(cursor, *field_def_id, &[])
+            }
+            _ => None,
+        }
+    }
+
+    /// Flat reference for whatever `cursor` names, if the model materialized it
+    /// as a variable or retained it as a scalarized record container.
+    fn cursor_expression(
+        &self,
+        cursor: occurrence_graph::PathCursor,
+        span: rumoca_core::Span,
+    ) -> Option<rumoca_core::Expression> {
+        let occurrence_graph::PathCursor::At(instance_id) = cursor else {
+            return None;
+        };
+        let reference = self
+            .by_occurrence
+            .get(&instance_id)
+            .or_else(|| self.records_by_occurrence.get(&instance_id))?;
+        Some(rumoca_core::Expression::VarRef {
+            name: reference.clone(),
+            subscripts: Vec::new(),
+            span,
+        })
+    }
+
+    /// Collapse `<base>.<field>` through the occurrence graph.
+    fn field_occurrence_expression(
+        &self,
+        base: &rumoca_core::Expression,
+        field_def_id: rumoca_core::DefId,
+        span: rumoca_core::Span,
+    ) -> Option<rumoca_core::Expression> {
+        let cursor = self.path_cursor(base)?;
+        let cursor = self.occurrences.select_member(cursor, field_def_id, &[])?;
+        self.cursor_expression(cursor, span)
+    }
+
+    /// Collapse `<base>[i...]` through the occurrence graph.
+    ///
+    /// The subscripts select a separate element occurrence when the base is an
+    /// array component (each element is its own occurrence). When the base is a
+    /// materialized array variable there is one occurrence for the whole array,
+    /// so the subscripts stay on the resolved reference.
+    fn indexed_occurrence_expression(
+        &self,
+        base: &rumoca_core::Expression,
+        subscripts: &[rumoca_core::Subscript],
+        span: rumoca_core::Span,
+    ) -> Option<rumoca_core::Expression> {
+        let cursor = self.path_cursor(base)?;
+        if let Some(indices) = fold_indices(subscripts, self)
+            && let Some(element) = self.occurrences.apply_indices(cursor, &indices)
+            && let Some(expression) = self.cursor_expression(element, span)
+        {
+            return Some(expression);
+        }
+        let occurrence_graph::PathCursor::At(instance_id) = cursor else {
+            return None;
+        };
+        let reference = self.by_occurrence.get(&instance_id)?;
+        Some(rumoca_core::Expression::VarRef {
+            name: reference.clone(),
+            subscripts: subscripts.to_vec(),
+            span,
+        })
+    }
+
+    /// Compile-time integer value of whatever occurrence `expr` names.
+    fn occurrence_integer_value(&self, expr: &rumoca_core::Expression) -> Option<i64> {
+        if self.occurrences.is_empty() {
+            return None;
+        }
+        let occurrence_graph::PathCursor::At(instance_id) = self.path_cursor(expr)? else {
+            return None;
+        };
+        self.integer_values_by_occurrence.get(&instance_id).copied()
+    }
 }
 
 struct CollapseIndexRewriter<'a> {
@@ -243,6 +393,12 @@ impl ExpressionRewriter for CollapseIndexRewriter<'_> {
         } = expr
         {
             let base = self.rewrite_expression(base);
+            if let Some(collapsed) =
+                self.known_flat_vars
+                    .field_occurrence_expression(&base, *field_def_id, *span)
+            {
+                return collapsed;
+            }
             if let Some(collapsed) =
                 collapse_field_access_to_known_var(&base, field, *span, self.known_flat_vars)
             {
@@ -263,6 +419,12 @@ impl ExpressionRewriter for CollapseIndexRewriter<'_> {
         {
             let base = self.rewrite_expression(base);
             let subscripts = self.rewrite_subscripts(subscripts);
+            if let Some(collapsed) =
+                self.known_flat_vars
+                    .indexed_occurrence_expression(&base, &subscripts, *span)
+            {
+                return collapsed;
+            }
             if let Some(collapsed) =
                 collapse_indexed_expression(&base, &subscripts, *span, self.known_flat_vars)
             {
@@ -433,26 +595,36 @@ fn collapse_var_field_access(
     None
 }
 
-fn subscript_suffix(
+/// Compile-time element indices a subscript list selects (MLS §4.5).
+///
+/// An empty list yields an empty selection; a subscript that is not evaluable
+/// at compile time yields `None` so the reference is left untouched.
+fn fold_indices(
     subscripts: &[rumoca_core::Subscript],
     known_flat_vars: &KnownFlatVars,
-) -> Option<String> {
-    if subscripts.is_empty() {
-        return Some(String::new());
-    }
-    let mut values = Vec::with_capacity(subscripts.len());
+) -> Option<Vec<i64>> {
+    let mut indices = Vec::with_capacity(subscripts.len());
     for subscript in subscripts {
         match subscript {
-            rumoca_core::Subscript::Index { value, .. } => {
-                values.push(value.to_string());
-            }
+            rumoca_core::Subscript::Index { value, .. } => indices.push(*value),
             rumoca_core::Subscript::Expr { expr, .. } => {
-                let value = fold_subscript_expr(expr, known_flat_vars, 0)?;
-                values.push(value.to_string());
+                indices.push(fold_subscript_expr(expr, known_flat_vars, 0)?);
             }
             rumoca_core::Subscript::Colon { .. } => return None,
         }
     }
+    Some(indices)
+}
+
+fn subscript_suffix(
+    subscripts: &[rumoca_core::Subscript],
+    known_flat_vars: &KnownFlatVars,
+) -> Option<String> {
+    let indices = fold_indices(subscripts, known_flat_vars)?;
+    if indices.is_empty() {
+        return Some(String::new());
+    }
+    let values: Vec<String> = indices.iter().map(i64::to_string).collect();
     Some(format!("[{}]", values.join(",")))
 }
 
@@ -481,7 +653,9 @@ fn fold_subscript_expr(
         } => Some(*value),
         rumoca_core::Expression::VarRef {
             name, subscripts, ..
-        } if subscripts.is_empty() => known_flat_vars.integer_value(name.as_str()),
+        } if subscripts.is_empty() => known_flat_vars
+            .occurrence_integer_value(expr)
+            .or_else(|| known_flat_vars.integer_value(name.as_str())),
         rumoca_core::Expression::Binary { op, lhs, rhs, .. } => {
             let lhs = fold_subscript_expr(lhs, known_flat_vars, depth + 1)?;
             let rhs = fold_subscript_expr(rhs, known_flat_vars, depth + 1)?;

@@ -51,6 +51,23 @@ pub struct Expressions<'storage, 'dae> {
 }
 
 impl<'storage, 'dae> Expressions<'storage, 'dae> {
+    /// Ordinal of the field `field` declares in the record layout of `base`.
+    ///
+    /// The record layout is the authority on which fields a value declares and
+    /// in what order, so callers project a named field without re-deriving the
+    /// layout from their own source metadata. `None` means the value type is
+    /// not a record or declares no such field; the caller owns that diagnostic.
+    pub fn record_field_ordinal(
+        &self,
+        base: ExprId<'dae>,
+        field: &rumoca_core::VarName,
+        provenance: DaeProvenance,
+    ) -> Result<Option<usize>, DaeConstructionError> {
+        let record = self.storage.expr_type(base, provenance)?;
+        Ok((0..record.record_field_count())
+            .find(|ordinal| record.record_field_name(*ordinal) == Some(field)))
+    }
+
     /// Select the exact provenance for the single node inserted next.
     pub fn at<'scope>(&'scope mut self, provenance: DaeProvenance) -> ExpressionAt<'scope, 'dae> {
         ExpressionAt {

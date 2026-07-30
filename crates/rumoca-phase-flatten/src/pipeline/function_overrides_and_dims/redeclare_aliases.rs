@@ -105,7 +105,11 @@ fn redeclare_value_type_ref<'a>(
         rumoca_ir_ast::Expression::ClassModification { target, .. } => target,
         _ => return None,
     };
-    if let Some(def_id) = cref.root_def_id() {
+    // The redeclare value names a class, so the class is the reference's exact
+    // *target* segment. `root_def_id` is the first segment, which for a dotted
+    // class reference such as `Modelica.Blocks.Sources.Step` identifies the
+    // enclosing package `Modelica`, not the redeclared class (MLS §5.3, §7.3).
+    if let Some(def_id) = cref.target_def_id() {
         return Some(ResolvedClassRef {
             name: tree.def_map.get(&def_id)?.clone(),
             def_id,

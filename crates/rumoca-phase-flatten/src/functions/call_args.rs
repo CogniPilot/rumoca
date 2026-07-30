@@ -789,7 +789,8 @@ mod tests {
         let mut function = rumoca_core::Function::new("Pkg.f", span());
         function.def_id = Some(FUNCTION_DEF_ID);
         function.inputs.push(
-            crate::test_support::real_param("a", Vec::new(), span()).with_def_id(FIRST_INPUT_DEF_ID),
+            crate::test_support::real_param("a", Vec::new(), span())
+                .with_def_id(FIRST_INPUT_DEF_ID),
         );
         function.inputs.push(
             crate::test_support::real_param("b", Vec::new(), span())
@@ -801,9 +802,9 @@ mod tests {
                     span: span(),
                 }),
         );
-        function
-            .outputs
-            .push(crate::test_support::real_param("y", Vec::new(), span()).with_def_id(OUTPUT_DEF_ID));
+        function.outputs.push(
+            crate::test_support::real_param("y", Vec::new(), span()).with_def_id(OUTPUT_DEF_ID),
+        );
         function.body.push(rumoca_core::Statement::Assignment {
             comp: component_reference(&[("y", OUTPUT_DEF_ID)]),
             value: parameter_ref(FIRST_INPUT_DEF_ID, "a"),
@@ -884,7 +885,8 @@ mod tests {
                 .with_type_class(rumoca_core::ClassType::Function),
         );
         apply.outputs.push(
-            crate::test_support::real_param("y", Vec::new(), span()).with_def_id(APPLY_OUTPUT_DEF_ID),
+            crate::test_support::real_param("y", Vec::new(), span())
+                .with_def_id(APPLY_OUTPUT_DEF_ID),
         );
         apply.body.push(rumoca_core::Statement::Assignment {
             comp: component_reference(&[("y", APPLY_OUTPUT_DEF_ID)]),

@@ -477,7 +477,9 @@ mod seed_function_tests {
         ));
 
         seed_flat_functions_from_context(&ctx, &mut flat);
-        functions::canonicalize_collected_function_calls(&mut flat)
+        let tree = ast::ClassTree::new();
+        let class_index = ast::ClassDefIndex::from_tree(&tree);
+        functions::canonicalize_collected_function_calls(&mut flat, &class_index)
             .expect("precollected function identity should canonicalize");
 
         let instance_id = flat.functions[&rumoca_core::VarName::new("Pkg.f")]

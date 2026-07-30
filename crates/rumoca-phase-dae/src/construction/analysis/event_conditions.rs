@@ -126,7 +126,7 @@ pub(super) fn validate_algorithm_condition(
     }
 }
 
-fn evaluate_sample_lattice(
+pub(super) fn evaluate_sample_lattice(
     arguments: &[Expression],
     constants: &EvalContext,
     span: Span,

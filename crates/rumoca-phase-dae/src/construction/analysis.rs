@@ -7,6 +7,7 @@ mod derived_parameters;
 mod discrete_values;
 mod equation_partitions;
 mod event_conditions;
+mod expression_events;
 mod expression_validation;
 mod function_array_assemblies;
 mod function_bodies;
@@ -26,7 +27,7 @@ mod source_balance;
 mod structured_families;
 mod when_chains;
 use clocks::analyze_clocks;
-pub(super) use clocks::{ClockPlan, ClockedValuePlan};
+pub(super) use clocks::{ClockPlan, ClockedValuePlan, is_whole_clock_coordinate};
 use comprehensions::analyze_comprehensions;
 pub(super) use comprehensions::{ComprehensionKey, ComprehensionPlan};
 pub(super) use delays::DelayPlan;
@@ -38,8 +39,11 @@ use discrete_values::analyze_discrete_value_topology;
 use equation_partitions::defined_discrete_targets;
 pub(super) use equation_partitions::{EquationPartition, equation_partition};
 use event_conditions::{
-    evaluate_clock_seconds, validate_algorithm_condition, validate_condition_expression,
+    evaluate_clock_seconds, evaluate_sample_lattice, validate_algorithm_condition,
+    validate_condition_expression,
 };
+use expression_events::analyze_expression_events;
+pub(super) use expression_events::{ExpressionEventPlan, ExpressionEventPlans};
 use expression_validation::{
     validate_expression, validate_expression_scoped_with_record_array_fields,
     validate_expression_with_record_array_fields, validate_subscripts_scoped,
@@ -57,6 +61,7 @@ use function_ranges::{
 use function_record_assemblies::validate_record_output_assembly;
 use function_reductions::validate_integer_reduction;
 use function_returns::validate_guarded_function_return;
+pub(super) use function_value_types::record_field_projections;
 use function_value_types::validate_function_value_type;
 use model_algorithm_statements::validate_model_algorithm;
 pub(super) use model_algorithms::ModelAlgorithmPlan;
@@ -80,6 +85,7 @@ pub(super) struct Analysis {
     pub(super) continuous_family_rows: HashSet<usize>,
     pub(super) initialization_family_rows: HashSet<usize>,
     pub(super) sample_lattices: Vec<(Span, ClockLattice)>,
+    pub(super) expression_events: ExpressionEventPlans,
     pub(super) reinit_state_pre: HashSet<Span>,
     pub(super) clock_plans: HashMap<InstanceId, ClockPlan>,
     pub(super) clock_equation_rows: HashSet<usize>,
@@ -324,6 +330,7 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
         &derived_parameters.rows,
         &record_equations,
     )?;
+    let expression_events = analyze_expression_events(flat, &roles, &constants)?;
     Ok(Analysis {
         constants,
         delay_plans,
@@ -332,6 +339,7 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
         continuous_family_rows,
         initialization_family_rows,
         sample_lattices,
+        expression_events,
         reinit_state_pre,
         clock_plans: clocks.plans,
         clock_equation_rows: clocks.equation_rows,
@@ -404,7 +412,29 @@ fn validate_model_expressions(
     states: &HashSet<VarName>,
     record_array_fields: &RecordArrayFieldPlans,
 ) -> Result<(), ToDaeError> {
-    for expression in all_model_expressions(flat) {
+    for variable in flat.variables.values() {
+        for expression in variable_attribute_expressions(variable) {
+            if let Some(span) = empty_array_bound_to_declaration(variable, expression) {
+                // The owning declaration proves the element type and extent, so
+                // the literal carries no operand that needs validating.
+                require_span(span, "empty array attribute")?;
+            } else {
+                validate_expression_with_record_array_fields(
+                    expression,
+                    roles,
+                    states,
+                    record_array_fields,
+                )?;
+            }
+            validate_known_function_calls(expression, flat)?;
+        }
+    }
+    for expression in flat
+        .equations
+        .iter()
+        .chain(flat.initial_equations.iter())
+        .map(|equation| &equation.residual)
+    {
         validate_expression_with_record_array_fields(
             expression,
             roles,
@@ -414,6 +444,20 @@ fn validate_model_expressions(
         validate_known_function_calls(expression, flat)?;
     }
     Ok(())
+}
+
+/// MLS §10.4: an empty array literal has no element from which to derive a
+/// type, so its element type and trailing extents come from the declaration it
+/// is bound to. A variable attribute may be an empty array exactly when its
+/// own declaration proves a zero outer extent.
+pub(super) fn empty_array_bound_to_declaration(
+    variable: &flat::Variable,
+    expression: &Expression,
+) -> Option<Span> {
+    let Expression::Array { elements, span, .. } = expression else {
+        return None;
+    };
+    (elements.is_empty() && variable.dims.first() == Some(&0)).then_some(*span)
 }
 
 fn validate_flat_shape(flat: &flat::Model) -> Result<(), ToDaeError> {
@@ -567,7 +611,7 @@ fn validate_known_function_calls(
                     *span,
                 ));
             }
-        } else {
+        } else if enumeration_conversion(flat, name, args, *span)?.is_none() {
             let function = flat
                 .functions
                 .get(name.var_name())

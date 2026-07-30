@@ -21,6 +21,7 @@ mod override_map;
 mod override_scope;
 mod override_target;
 mod package_chain;
+mod predefined_callables;
 mod redeclare_aliases;
 mod replaceable_modifiers;
 mod rewrite_context;
@@ -47,10 +48,7 @@ use function_selection::{
     resolve_exact_function_rewrite,
 };
 pub(crate) use member_calls::*;
-use member_references::{
-    canonical_instance_reference_name, reference_source_package_def_id_from_index,
-    resolve_override_member_name,
-};
+use member_references::{reference_source_package_def_id_from_index, resolve_override_member_name};
 use named_args::{named_function_arg, named_function_arg_names};
 pub(crate) use override_map::build_component_override_map;
 #[cfg(test)]
@@ -73,6 +71,7 @@ pub(crate) use package_chain::{
     resolve_function_in_package_chain_exposed,
 };
 use package_chain::{package_chain_contains_def_id, resolve_member_in_package_chain_exposed};
+use predefined_callables::PredefinedCallableIds;
 use redeclare_aliases::collect_extends_redeclare_aliases_for_class;
 pub(crate) use redeclare_aliases::extends_class_redeclare_target;
 use replaceable_modifiers::{append_replaceable_function_modifier_args, single_component_ref_name};

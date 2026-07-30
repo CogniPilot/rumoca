@@ -113,14 +113,19 @@ impl<'a> FunctionOverrideExpressionRewriter<'a> {
             return None;
         };
         let subscripts = self.rewrite_subscripts(subscripts);
+        // Only an override projection renames a value reference. Every other
+        // occurrence keeps the flat name its instantiation produced: the
+        // declaration segments are relative to their declaring class, so
+        // rebuilding a name from them would drop the instance prefix.
         let name = if self.reference_is_active_comprehension_binder(name)
             || reference_targets_function_local_def(name, self.ctx)
         {
             name.clone()
-        } else if let Some(resolved_name) = resolve_override_member_name(name, self.ctx) {
-            rewritten_value_reference(name, resolved_name)
         } else {
-            canonical_instance_reference_name(name, self.ctx).unwrap_or_else(|| name.clone())
+            resolve_override_member_name(name, self.ctx).map_or_else(
+                || name.clone(),
+                |resolved| rewritten_value_reference(name, resolved),
+            )
         };
         Some(Expression::VarRef {
             name,

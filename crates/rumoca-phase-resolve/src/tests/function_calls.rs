@@ -375,3 +375,51 @@ end UsesTableBasedState;
     assert_eq!(resolved, "TableBased.setState_pTX");
     assert_eq!(target.to_string(), "Medium.setState_pTX");
 }
+
+/// MLS §12.4.1 admits only a class or a component of a function type in call
+/// position (functional input argument, MLS §12.4.2), so a component of any
+/// other type does not shadow a predefined operator of the same spelling
+/// (MLS §3.7). SPEC_0008 makes Resolve the first owner of that binding, so the
+/// call must leave Resolve carrying the predefined operator's exact identity.
+#[test]
+fn non_callable_component_does_not_capture_a_predefined_operator_callee() {
+    let source = r#"
+model Test
+  constant Real dt = 0.02;
+  input Real sample[3];
+  discrete output Real y(start = 0.0);
+equation
+  when sample(0.0, dt) then
+    y = sample[1];
+  end when;
+end Test;
+"#;
+    let tree = resolve_tree_source(source).into_inner();
+    let model = tree.definitions.classes.get("Test").expect("model Test");
+    let component = model
+        .components
+        .get("sample")
+        .expect("the fixture declares a component named `sample`")
+        .def_id
+        .expect("a declared component has an identity");
+    let predefined = tree
+        .scope_tree
+        .predefined_member(&rumoca_core::ComponentPath::from_flat_path("sample"))
+        .expect("`sample` is a predefined operator");
+
+    let rumoca_ir_ast::Equation::When(blocks) = &model.equations[0] else {
+        panic!("fixture equation must be a when-equation");
+    };
+    let rumoca_ir_ast::Expression::FunctionCall { comp, .. } = &blocks[0].cond else {
+        panic!("when condition must be a call");
+    };
+    let callee = comp
+        .target_def_id()
+        .expect("call position must resolve to an exact declaration");
+
+    assert_eq!(
+        callee, predefined,
+        "the call names the predefined operator, not the Real[3] component"
+    );
+    assert_ne!(callee, component);
+}

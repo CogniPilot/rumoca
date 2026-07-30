@@ -921,6 +921,15 @@ fn expr_038_smooth_expression_accepted() {
 // EXPR-010/011/030/031: spatialDistribution restrictions. The operator is not
 // supported yet; every use (and therefore every violation) is rejected at the
 // DAE boundary as an unresolved function call.
+//
+// The DAE boundary is the first owner (SPEC_0008) that can prove the call has
+// no checked owner: `spatialDistribution` is a legal MLS name that Resolve
+// registers as a predefined member, and Flatten legitimately forwards any
+// non-intrinsic call as a user-function call, so neither earlier phase holds
+// the proof. `ED005` (`UnresolvedFunctionCall`) was retired when DAE
+// construction became valid-by-construction; SPEC_0008 requires retiring rather
+// than reusing a code, so the surviving DAE-boundary code for a call with no
+// resolved owner is `ED008` (`UnresolvedReference`).
 // =============================================================================
 
 #[test]
@@ -936,7 +945,7 @@ fn expr_010_spatial_distribution_rejected_as_unsupported() {
     "#,
         "M",
         FailedPhase::ToDae,
-        "ED005",
+        "ED008",
     );
 }
 
@@ -953,7 +962,7 @@ fn expr_011_spatial_distribution_unsorted_points_rejected_as_unsupported() {
     "#,
         "M",
         FailedPhase::ToDae,
-        "ED005",
+        "ED008",
     );
 }
 
@@ -970,7 +979,7 @@ fn expr_030_spatial_distribution_size_mismatch_rejected_as_unsupported() {
     "#,
         "M",
         FailedPhase::ToDae,
-        "ED005",
+        "ED008",
     );
 }
 
@@ -987,6 +996,6 @@ fn expr_031_spatial_distribution_vectorized_rejected_as_unsupported() {
     "#,
         "M",
         FailedPhase::ToDae,
-        "ED005",
+        "ED008",
     );
 }

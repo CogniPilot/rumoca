@@ -29,7 +29,7 @@ use crate::discrete_values::{
 use crate::equations::{
     ContinuousEquations, DiscreteEquations, DiscreteRealActivation, DiscreteRealEquationEntry,
     DiscreteRealEquationView, EquationOwnerEntry, InitializationEquations, ResidualEquationEntry,
-    StructuredFamilyEntry,
+    ResidualShape, StructuredFamilyEntry,
 };
 use crate::events::{
     EventActionEntry, EventActionKind, EventActionOperation, EventActionView, Events,

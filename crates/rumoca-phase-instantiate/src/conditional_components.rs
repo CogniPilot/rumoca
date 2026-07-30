@@ -211,6 +211,6 @@ fn decide_condition(
     if !crate::dims::expr_mentions_import_alias(cond, scope.imports) {
         return None;
     }
-    let qualified = crate::dims::qualify_shape_expr_imports(cond, scope.imports);
+    let qualified = crate::dims::qualify_shape_expr_imports(scope.tree, cond, scope.imports);
     evaluate_component_condition_with_outer_values(eval_ctx, &qualified, outer_values)
 }

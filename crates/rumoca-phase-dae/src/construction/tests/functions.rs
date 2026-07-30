@@ -42,11 +42,7 @@ fn identity_function(
     function
 }
 
-fn add_function_call(
-    model: &mut flat::Model,
-    source: &TestSource,
-    argument: Expression,
-) {
+fn add_function_call(model: &mut flat::Model, source: &TestSource, argument: Expression) {
     let call_span = source.span("f(", 0);
     model.add_equation(flat::Equation::new(
         Expression::FunctionCall {
@@ -209,19 +205,11 @@ fn enumeration_function_values_use_registered_canonical_identity() {
 
 #[test]
 fn user_class_named_real_is_not_a_predefined_scalar() {
-    let source = TestSource::new(
-        "function f input Real u; output Real y; algorithm y := u; end f; f(1.0);",
-    );
+    let source =
+        TestSource::new("function f input Real u; output Real y; algorithm y := u; end f; f(1.0);");
     let user_real = TypeId::new(903);
     let input_span = source.span("input Real u", 0);
-    let input = function_param(
-        "u",
-        "Real",
-        user_real,
-        user_real,
-        Vec::new(),
-        input_span,
-    );
+    let input = function_param("u", "Real", user_real, user_real, Vec::new(), input_span);
     let output = function_param(
         "y",
         "Real",
@@ -593,12 +581,10 @@ fn production_lowering_constructs_a_compact_checked_function_loop() {
     let mut function = rumoca_core::Function::new("sum3", function_span);
     function.add_output(integer_function_param("y", Vec::new(), output_span));
     function.add_local(
-        integer_function_param("n", Vec::new(), local_span).with_default(
-            Expression::Literal {
-                value: Literal::Integer(3),
-                span: source.span("3", 1),
-            },
-        ),
+        integer_function_param("n", Vec::new(), local_span).with_default(Expression::Literal {
+            value: Literal::Integer(3),
+            span: source.span("3", 1),
+        }),
     );
     function.body = vec![
         rumoca_core::Statement::Assignment {

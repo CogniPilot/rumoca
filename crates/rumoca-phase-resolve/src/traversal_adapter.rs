@@ -15,6 +15,17 @@ pub(crate) trait ResolveTraversalCallbacks {
     fn bind_loop_index_name(&mut self, loop_scope: ScopeId, index_name: &str);
     fn on_component_reference(&mut self, comp: &mut ComponentReference, scope: ScopeId);
     fn on_function_reference(&mut self, comp: &mut ComponentReference, scope: ScopeId);
+    /// Prove the projected member identity of `base.field` (MLS §3.7.3).
+    ///
+    /// Called after the base expression has been walked, so a base that is a
+    /// component reference already carries its resolved declaration identity.
+    fn on_field_access(
+        &mut self,
+        base: &Expression,
+        field: &str,
+        field_def_id: &mut Option<rumoca_core::DefId>,
+        scope: ScopeId,
+    );
 }
 
 pub(crate) fn walk_equations<C: ResolveTraversalCallbacks>(
@@ -253,8 +264,14 @@ pub(crate) fn walk_expression<C: ResolveTraversalCallbacks>(
             walk_expression(callbacks, Arc::make_mut(base), scope);
             walk_subscripts(callbacks, subscripts, scope);
         }
-        Expression::FieldAccess { base, .. } => {
+        Expression::FieldAccess {
+            base,
+            field,
+            field_def_id,
+            ..
+        } => {
             walk_expression(callbacks, Arc::make_mut(base), scope);
+            callbacks.on_field_access(base, field, field_def_id, scope);
         }
         Expression::Terminal { .. } | Expression::Empty { .. } => {}
     }

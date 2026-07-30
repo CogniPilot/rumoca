@@ -226,6 +226,28 @@ pub(super) fn generate_equality_equations(
     Ok(())
 }
 
+/// One whole-record argument of a generated `equalityConstraint` call.
+///
+/// The Flat record instance carries the exact `ComponentReference` proven when
+/// the instance was recorded; keeping it on the argument lets later record
+/// lowering project fields by identity instead of re-deriving them from the
+/// rendered name.
+fn record_instance_expr(
+    rendered: &str,
+    instance: &flat::RecordInstance,
+    span: ProvenanceSpan,
+) -> rumoca_core::Expression {
+    rumoca_core::Expression::VarRef {
+        name: rumoca_core::Reference::with_component_reference(
+            rendered,
+            instance.component_ref.clone(),
+        )
+        .with_instance_id(instance.instance_id),
+        subscripts: Vec::new(),
+        span: span.span(),
+    }
+}
+
 fn generate_equality_constraint_equation(
     flat: &mut flat::Model,
     lhs_record: &str,
@@ -260,12 +282,16 @@ fn generate_equality_constraint_equation(
             ))
         })?;
     let function_name = format!("{}.equalityConstraint", record_type.name);
+    // MLS §9.3.1: both arguments are the whole overdetermined record instances.
+    // Record-parameter lowering projects each declared field off them, which
+    // requires the exact structured identity of the instance rather than its
+    // rendered flat name, so the argument references are built from the Flat
+    // record metadata that already proved that identity.
+    let lhs_arg = record_instance_expr(lhs_record, lhs_instance, provenance);
+    let rhs_arg = record_instance_expr(rhs_record, rhs_instance, provenance);
     let residual = rumoca_core::Expression::FunctionCall {
         name: rumoca_core::Reference::generated(function_name.clone()),
-        args: vec![
-            var_to_expr(&lhs_name, provenance),
-            var_to_expr(&rhs_name, provenance),
-        ],
+        args: vec![lhs_arg, rhs_arg],
         is_constructor: false,
         span: provenance.span(),
     };

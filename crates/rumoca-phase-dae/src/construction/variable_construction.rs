@@ -279,12 +279,12 @@ fn lower_variable_attributes<'dae>(
     context: VariableDefinitionContext<'_, 'dae>,
     variable: VariableSpec<'_, 'dae>,
 ) -> Result<dae::VariableAttributes<'dae>, dae::DaeConstructionError> {
-    let binding = lower_variable_binding(construction, context, variable.flat, variable.role)?;
+    let binding = lower_variable_binding(construction, context, variable)?;
     let start = match variable.flat.start.as_ref() {
-        Some(start) => Some(lower_attribute_expression(
+        Some(start) => Some(lower_variable_attribute_expression(
             construction,
-            context.coordinates,
-            context.functions,
+            context,
+            variable,
             start,
         )?),
         None if matches!(
@@ -304,22 +304,22 @@ fn lower_variable_attributes<'dae>(
         }
         None => None,
     };
-    let min = lower_optional_attribute_expression(
+    let min = lower_optional_variable_attribute(
         construction,
-        context.coordinates,
-        context.functions,
+        context,
+        variable,
         variable.flat.min.as_ref(),
     )?;
-    let max = lower_optional_attribute_expression(
+    let max = lower_optional_variable_attribute(
         construction,
-        context.coordinates,
-        context.functions,
+        context,
+        variable,
         variable.flat.max.as_ref(),
     )?;
-    let nominal = lower_optional_attribute_expression(
+    let nominal = lower_optional_variable_attribute(
         construction,
-        context.coordinates,
-        context.functions,
+        context,
+        variable,
         variable.flat.nominal.as_ref(),
     )?;
     let derived_parameter = context.derived_parameters.contains_key(&variable.flat.name);
@@ -357,10 +357,9 @@ fn lower_variable_attributes<'dae>(
 fn lower_variable_binding<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     context: VariableDefinitionContext<'_, 'dae>,
-    variable: &flat::Variable,
-    role: PlannedRole,
+    variable: VariableSpec<'_, 'dae>,
 ) -> Result<Option<dae::ExprId<'dae>>, dae::DaeConstructionError> {
-    if let Some(plan) = context.derived_parameters.get(&variable.name) {
+    if let Some(plan) = context.derived_parameters.get(&variable.flat.name) {
         return lower_derived_parameter_binding(
             construction,
             context.coordinates,
@@ -370,16 +369,54 @@ fn lower_variable_binding<'dae>(
         .map(Some);
     }
     if !matches!(
-        role,
+        variable.role,
         PlannedRole::Parameter | PlannedRole::Constant | PlannedRole::Input
     ) {
         return Ok(None);
     }
-    lower_optional_attribute_expression(
+    lower_optional_variable_attribute(
+        construction,
+        context,
+        variable,
+        variable.flat.binding.as_ref(),
+    )
+}
+
+fn lower_optional_variable_attribute<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    context: VariableDefinitionContext<'_, 'dae>,
+    variable: VariableSpec<'_, 'dae>,
+    expression: Option<&Expression>,
+) -> Result<Option<dae::ExprId<'dae>>, dae::DaeConstructionError> {
+    expression
+        .map(|expression| {
+            lower_variable_attribute_expression(construction, context, variable, expression)
+        })
+        .transpose()
+}
+
+/// Lower one declared attribute of `variable`.
+///
+/// An empty array literal owns no element expression, so its checked value type
+/// comes from the declaration it is bound to (MLS §10.4); every other attribute
+/// expression derives its own type from its operands.
+fn lower_variable_attribute_expression<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    context: VariableDefinitionContext<'_, 'dae>,
+    variable: VariableSpec<'_, 'dae>,
+    expression: &Expression,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    if let Some(span) = empty_array_bound_to_declaration(variable.flat, expression) {
+        let provenance = dae::DaeProvenance::source(span)?;
+        return construction.expressions(|expressions| {
+            expressions.at(provenance).empty_array(variable.value_type)
+        });
+    }
+    lower_attribute_expression(
         construction,
         context.coordinates,
         context.functions,
-        variable.binding.as_ref(),
+        expression,
     )
 }
 

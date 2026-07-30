@@ -29,6 +29,9 @@ impl Resolver {
             if class.is_replaceable || class.is_redeclare {
                 self.dynamic_member_root_ids.insert(def_id);
             }
+            if class.expandable {
+                self.expandable_connector_ids.insert(def_id);
+            }
         }
 
         // Recursively register nested classes
@@ -88,6 +91,9 @@ impl Resolver {
             }
             if nested.is_replaceable || nested.is_redeclare {
                 self.dynamic_member_root_ids.insert(def_id);
+            }
+            if nested.expandable {
+                self.expandable_connector_ids.insert(def_id);
             }
         }
 

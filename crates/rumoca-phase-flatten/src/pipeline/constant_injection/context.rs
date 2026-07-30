@@ -8,10 +8,7 @@ pub(crate) struct ConstantOccurrenceId {
 
 impl ConstantOccurrenceId {
     pub(crate) fn new(owner: rumoca_core::InstanceId, declaration: rumoca_core::DefId) -> Self {
-        Self {
-            owner,
-            declaration,
-        }
+        Self { owner, declaration }
     }
 }
 
@@ -38,6 +35,11 @@ pub(crate) struct Context {
     /// Owning component occurrence for each instantiated class occurrence.
     pub(crate) class_owner_components:
         rustc_hash::FxHashMap<rumoca_core::InstanceId, rumoca_core::InstanceId>,
+    /// Instance path of each instantiated component occurrence, as the exact
+    /// reference Instantiate proved for it (one part per enclosing component,
+    /// each carrying its Resolve declaration identity).
+    pub(crate) component_instance_references:
+        rustc_hash::FxHashMap<rumoca_core::InstanceId, rumoca_core::ComponentReference>,
     /// Root class occurrence, which is its own semantic owner because it has no
     /// containing component occurrence.
     pub(crate) root_class_instance: Option<rumoca_core::InstanceId>,

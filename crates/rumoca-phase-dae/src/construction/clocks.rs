@@ -9,7 +9,10 @@ use super::analysis::{ClockPlan, ClockedValuePlan};
 
 pub(super) struct LoweredClocks<'dae> {
     pub(super) by_plan: HashMap<ClockPlan, dae::PeriodicClockId<'dae>>,
-    pub(super) by_variable: HashMap<InstanceId, dae::PeriodicClockId<'dae>>,
+    /// Clock coordinates keyed by their Flat catalog name, the identity every
+    /// Flat expression occurrence names. `Reference::instance_id` carries the
+    /// enclosing class occurrence, so it cannot select a referenced coordinate.
+    pub(super) by_coordinate: HashMap<VarName, dae::PeriodicClockId<'dae>>,
 }
 
 impl<'dae> LoweredClocks<'dae> {
@@ -31,8 +34,8 @@ pub(super) fn lower_clocks<'dae>(
     plans: &HashMap<InstanceId, ClockPlan>,
 ) -> Result<LoweredClocks<'dae>, dae::DaeConstructionError> {
     let mut plan_ids = HashMap::new();
-    let mut variable_ids = HashMap::new();
-    for variable in flat.variables.values() {
+    let mut coordinate_ids = HashMap::new();
+    for (name, variable) in &flat.variables {
         let Some(plan) = plans.get(&variable.instance_id).copied() else {
             continue;
         };
@@ -44,11 +47,11 @@ pub(super) fn lower_clocks<'dae>(
             plan_ids.insert(plan, clock);
             clock
         };
-        variable_ids.insert(variable.instance_id, clock);
+        coordinate_ids.insert(name.clone(), clock);
     }
     Ok(LoweredClocks {
         by_plan: plan_ids,
-        by_variable: variable_ids,
+        by_coordinate: coordinate_ids,
     })
 }
 

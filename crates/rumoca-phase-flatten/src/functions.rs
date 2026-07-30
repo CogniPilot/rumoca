@@ -11,7 +11,9 @@
 //! - An algorithm section (the function body)
 //!
 mod call_args;
+mod callable_scope_identity;
 mod constructor_signature;
+mod deferred_members;
 mod function_metadata;
 mod function_output_validation;
 mod function_param_alias;
@@ -34,8 +36,8 @@ use constructor_signature::{
     convert_constructor_signature, inherit_operator_constructor_defaults,
     normalize_function_local_references,
 };
-use function_metadata::*;
 pub(crate) use function_metadata::FunctionTypeCatalog;
+use function_metadata::*;
 pub(crate) use function_metadata::{
     lower_record_function_params, specialize_static_function_params,
 };
@@ -493,6 +495,7 @@ pub(crate) fn validate_flat_function_bindings(flat: &flat::Model) -> Result<(), 
 
 pub(crate) fn canonicalize_collected_function_calls(
     flat: &mut flat::Model,
+    class_index: &ast::ClassDefIndex<'_>,
 ) -> Result<(), FlattenError> {
     let canonical_functions = flat
         .functions
@@ -512,6 +515,7 @@ pub(crate) fn canonicalize_collected_function_calls(
     }
     let mut rewriter = CollectedFunctionCallCanonicalizer {
         canonical_functions,
+        class_index,
         error: None,
     };
 
@@ -669,12 +673,13 @@ struct CanonicalFunction {
     instance_id: rumoca_core::FunctionInstanceId,
 }
 
-struct CollectedFunctionCallCanonicalizer {
+struct CollectedFunctionCallCanonicalizer<'a> {
     canonical_functions: Vec<CanonicalFunction>,
+    class_index: &'a ast::ClassDefIndex<'a>,
     error: Option<FlattenError>,
 }
 
-impl CollectedFunctionCallCanonicalizer {
+impl CollectedFunctionCallCanonicalizer<'_> {
     fn canonical_function_for_reference(
         &self,
         reference: &rumoca_core::Reference,
@@ -705,7 +710,7 @@ impl CollectedFunctionCallCanonicalizer {
     }
 }
 
-impl ExpressionRewriter for CollectedFunctionCallCanonicalizer {
+impl ExpressionRewriter for CollectedFunctionCallCanonicalizer<'_> {
     fn rewrite_expression(&mut self, expr: &rumoca_core::Expression) -> rumoca_core::Expression {
         let rumoca_core::Expression::FunctionCall {
             name,
@@ -716,6 +721,8 @@ impl ExpressionRewriter for CollectedFunctionCallCanonicalizer {
         else {
             return self.walk_expression(expr);
         };
+        let reconciled = callable_scope_identity::scope_qualified_reference(self.class_index, name);
+        let name = reconciled.as_ref().unwrap_or(name);
         if name.resolved_function().is_none()
             && let Some(component_ref) = name.component_ref()
             && component_ref.to_var_name() != *name.var_name()
@@ -756,7 +763,7 @@ impl ExpressionRewriter for CollectedFunctionCallCanonicalizer {
     }
 }
 
-impl StatementRewriter for CollectedFunctionCallCanonicalizer {}
+impl StatementRewriter for CollectedFunctionCallCanonicalizer<'_> {}
 
 pub(crate) fn is_executable_flat_function(function: &rumoca_core::Function) -> bool {
     function.is_constructor
@@ -1679,7 +1686,15 @@ fn convert_function<'tree>(
     let span = required_location_span(source_map, &class_def.location, "function definition")?;
     let mut func = rumoca_core::Function::new(qualified_name, span);
     func.def_id = class_def.def_id;
-    let context = collect_function_context(tree, class_index, class_def, member_cache);
+    let mut context = collect_function_context(tree, class_index, class_def, member_cache);
+    // MLS §7.3: a function body is converted from the class tree rather than
+    // instantiated, so the member tails Resolve deferred across replaceable
+    // class edges are proved here before lowering demands exact identity.
+    deferred_members::prove_deferred_members_in_algorithms(
+        class_index,
+        &context.components,
+        &mut context.algorithms,
+    );
     let effective_components = context.components;
     let mut import_map =
         function_initial_import_map(tree, class_index, class_def, qualified_name, member_cache);

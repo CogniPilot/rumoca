@@ -76,6 +76,20 @@ fn function_expression_roles(
             .chain(&function.locals)
             .map(|value| (VarName::new(&value.name), PlannedRole::Parameter)),
     );
+    // MLS §12.2: a record-typed formal, result, or local also names each of its
+    // declared fields, which Flat renders as one joined reference identity.
+    for value in function
+        .inputs
+        .iter()
+        .chain(&function.outputs)
+        .chain(&function.locals)
+    {
+        roles.extend(
+            record_field_projections(value, flat)
+                .into_iter()
+                .map(|(path, _)| (path, PlannedRole::Parameter)),
+        );
+    }
     for literal in flat.enum_literal_ordinals.keys() {
         roles.insert(VarName::new(literal), PlannedRole::EnumerationLiteral);
     }

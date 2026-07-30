@@ -995,7 +995,7 @@ pub(crate) fn finalize_flat_model(
         collapse_index_refs_to_known_varrefs(flat);
     }
     canonicalize_varrefs_via_instantiated_def_ids(flat);
-    functions::canonicalize_collected_function_calls(flat)?;
+    functions::canonicalize_collected_function_calls(flat, class_index)?;
     functions::materialize_flat_function_call_args(flat)?;
     // Late collection, DefId canonicalization, and default-argument
     // materialization can each make a qualified constant newly reachable.

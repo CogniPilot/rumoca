@@ -349,6 +349,57 @@ fn test_lookup_type_info_accepts_predefined_state_select() {
     assert!(info.is_discrete);
 }
 
+/// MLS §3.8.3: `String` is discrete-valued by type, so a `String` component is
+/// discrete-time with no `discrete` prefix. Classifying it continuous makes the
+/// DAE boundary reject it as a continuous non-Real coordinate.
+#[test]
+fn test_lookup_type_info_classifies_string_as_discrete() {
+    let tree = ast::ClassTree::new();
+    let comp = make_component("s", "String", None);
+
+    let info = lookup_type_info(&tree, &comp, "String")
+        .expect("predefined String type should resolve through the type table");
+
+    assert!(info.is_primitive);
+    assert!(info.is_discrete);
+}
+
+/// A `String` type alias must inherit the discrete-by-type classification
+/// through its extends chain (MLS §3.8.3).
+#[test]
+fn test_lookup_type_info_classifies_string_alias_as_discrete() {
+    let string_def = DefId::new(1);
+    let label_def = DefId::new(2);
+
+    let string_class = ast::ClassDef {
+        name: make_token("String"),
+        def_id: Some(string_def),
+        ..Default::default()
+    };
+    let label = ast::ClassDef {
+        name: make_token("Label"),
+        def_id: Some(label_def),
+        extends: vec![ast::Extend {
+            base_name: make_name("String"),
+            base_def_id: Some(string_def),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let mut tree = ast::ClassTree::new();
+    tree.definitions
+        .classes
+        .insert("String".to_string(), string_class);
+    tree.definitions.classes.insert("Label".to_string(), label);
+
+    let comp = make_component("s", "Label", Some(label_def));
+    let info = lookup_type_info(&tree, &comp, "Label")
+        .expect("String alias should resolve through the class tree");
+
+    assert!(info.is_discrete);
+}
+
 #[test]
 fn test_extract_attributes_rejects_invalid_state_select() {
     let mut comp = make_component("x", "Real", None);

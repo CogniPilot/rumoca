@@ -360,18 +360,17 @@ impl<'shape, 'dae> WhenLowering<'_, '_, 'shape, 'dae> {
                 expression,
             );
         };
-        let Some(clock) = self
-            .request
-            .clocks
-            .by_variable
-            .get(&name.instance_id().ok_or_else(|| {
-                dae::DaeConstructionError::InvalidVariableRole {
-                    name: name.var_name().clone(),
-                    span: *span,
-                }
-            })?)
-            .copied()
-        else {
+        let clock = subscripts
+            .is_empty()
+            .then(|| {
+                self.request
+                    .clocks
+                    .by_coordinate
+                    .get(name.var_name())
+                    .copied()
+            })
+            .flatten();
+        let Some(clock) = clock else {
             return lower_condition(
                 self.construction,
                 self.request.coordinates,
@@ -380,10 +379,6 @@ impl<'shape, 'dae> WhenLowering<'_, '_, 'shape, 'dae> {
                 expression,
             );
         };
-        debug_assert!(
-            subscripts.is_empty(),
-            "clock analysis accepts scalar aliases"
-        );
         let provenance = dae::DaeProvenance::source(*span)?;
         let condition = self
             .construction

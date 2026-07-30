@@ -16,6 +16,7 @@ mod algorithm;
 mod analysis;
 mod clocks;
 mod discrete_values;
+mod enumeration_conversion;
 mod equation_systems;
 mod expression;
 mod function_array_assembly;
@@ -34,15 +35,17 @@ use algorithm::{
 };
 use analysis::{
     Analysis, ClockPlan, ComprehensionKey, ComprehensionPlan, DelayPlan, DerivedParameterPlan,
-    DiscreteValueTopologyPlan, EquationPartition, FunctionArrayAssemblyPlan,
-    FunctionAssignmentPlan, FunctionIntegerReduction, FunctionLoopLowering, FunctionPlan,
-    FunctionRecordAssemblyPlan, FunctionStatementPlan, ModelAlgorithmPlan, PlannedRole,
-    RecordArrayFieldPlan, RecordArrayFieldPlans, RecordEquationPlan, analyze,
-    effective_function_scalar_type, effective_variable_scalar_type, equation_partition,
-    model_algorithm_targets, structured_assignment_names,
+    DiscreteValueTopologyPlan, EquationPartition, ExpressionEventPlan, ExpressionEventPlans,
+    FunctionArrayAssemblyPlan, FunctionAssignmentPlan, FunctionIntegerReduction,
+    FunctionLoopLowering, FunctionPlan, FunctionRecordAssemblyPlan, FunctionStatementPlan,
+    ModelAlgorithmPlan, PlannedRole, RecordArrayFieldPlan, RecordArrayFieldPlans,
+    RecordEquationPlan, analyze, effective_function_scalar_type, effective_variable_scalar_type,
+    empty_array_bound_to_declaration, equation_partition, is_whole_clock_coordinate,
+    model_algorithm_targets, record_field_projections, structured_assignment_names,
 };
 use clocks::{LoweredClocks, lower_clocked_value_owners, lower_clocks};
 use discrete_values::{DiscreteValueOwnerHandle, DiscreteValueStaging};
+use enumeration_conversion::enumeration_conversion;
 use equation_systems::{lower_equation_expression, lower_equation_systems};
 use expression::{
     FunctionArrayUpdate, FunctionCallLowering, LoweringSymbols, all_model_expressions,
@@ -223,6 +226,7 @@ fn build_checked<'dae>(
         delay_plans: &analysis.delay_plans,
         reinit_state_pre: &analysis.reinit_state_pre,
         coordinate_instances: &no_coordinate_instances,
+        expression_events: &analysis.expression_events,
     };
     let variable_identities = insert_variable_identities(
         flat,
@@ -246,6 +250,7 @@ fn build_checked<'dae>(
             delay_plans: &analysis.delay_plans,
             reinit_state_pre: &analysis.reinit_state_pre,
             coordinate_instances: coordinates.by_instance(),
+            expression_events: &analysis.expression_events,
         },
         &analysis.function_plans,
     )?;
@@ -259,6 +264,7 @@ fn build_checked<'dae>(
         delay_plans: &analysis.delay_plans,
         reinit_state_pre: &analysis.reinit_state_pre,
         coordinate_instances: coordinates.by_instance(),
+        expression_events: &analysis.expression_events,
     };
     define_reserved_variables(
         construction,
@@ -295,7 +301,26 @@ fn build_checked<'dae>(
         &functions,
         &clocks,
         discrete_values,
-    )
+    )?;
+    lower_scheduled_time_events(construction, &analysis.expression_events)
+}
+
+/// Build the MLS §8.5 time events proven by expression analysis.
+///
+/// A relation over `time` alone has an exactly known crossing instant, so it
+/// is scheduled rather than searched for by a root function.
+fn lower_scheduled_time_events<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    events: &ExpressionEventPlans,
+) -> Result<(), dae::DaeConstructionError> {
+    for (span, plan) in events.ordered() {
+        let ExpressionEventPlan::TimeEvent(instant) = plan else {
+            continue;
+        };
+        let provenance = dae::DaeProvenance::source(span)?;
+        construction.events(|owners| owners.time_event(instant, provenance))?;
+    }
+    Ok(())
 }
 
 fn lower_model_owners<'dae>(
@@ -664,19 +689,6 @@ fn lower_optional_expression<'dae>(
 ) -> Result<Option<dae::ExprId<'dae>>, dae::DaeConstructionError> {
     expression
         .map(|expression| lower_expression(construction, coordinates, functions, expression, None))
-        .transpose()
-}
-
-fn lower_optional_attribute_expression<'dae>(
-    construction: &mut dae::DaeConstruction<'dae>,
-    coordinates: &HashMap<VarName, Coordinate<'dae>>,
-    functions: &FunctionRegistry<'_, 'dae>,
-    expression: Option<&Expression>,
-) -> Result<Option<dae::ExprId<'dae>>, dae::DaeConstructionError> {
-    expression
-        .map(|expression| {
-            lower_attribute_expression(construction, coordinates, functions, expression)
-        })
         .transpose()
 }
 

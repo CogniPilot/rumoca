@@ -1,5 +1,7 @@
 use rumoca::Compiler;
-use rumoca_ir_dae::{ContinuousOwnerView, DaeGeneration, DaeProvenanceOrigin, VariableRole};
+use rumoca_ir_dae::{
+    ContinuousOwnerView, DaeGeneration, DaeProvenanceOrigin, DiscreteRealActivation, VariableRole,
+};
 use rumoca_sim::{SimOptions, simulate_dae};
 
 const CONTINUOUS_ALGORITHM: &str = r#"
@@ -107,10 +109,19 @@ fn event_guarded_model_algorithm_constructs_one_checked_discrete_action() {
             .map(|(_, variable)| variable)
             .expect("algorithm target f remains in the checked catalog");
         assert_eq!(f.role(), VariableRole::DiscreteReal);
-        assert_eq!(view.event_action_count(), 1);
+        // A guarded discrete assignment is a condition-activated discrete Real
+        // equation, not an assert/terminate/reinitialize event action: the
+        // checked DAE models `f := map[a, b]` under `change(a) or change(b)`
+        // as one `When`-activated row that owns the source occurrence.
+        assert_eq!(view.event_action_count(), 0);
+        assert_eq!(view.discrete_real_equation_count(), 1);
         let action = view
-            .event_action(view.event_action_id(0).expect("one checked event action"))
-            .expect("event action id resolves within this DAE");
+            .discrete_real_equation(0)
+            .expect("one checked discrete action resolves within this DAE");
+        assert!(matches!(
+            action.activation(),
+            DiscreteRealActivation::When { .. }
+        ));
         assert_eq!(action.provenance().origin(), DaeProvenanceOrigin::Source);
         assert_eq!(view.source_text(action.provenance()), Some("f"));
     });
@@ -119,7 +130,15 @@ fn event_guarded_model_algorithm_constructs_one_checked_discrete_action() {
         serde_json::to_string(&compiled.dae).expect("event-guarded algorithm should serialize");
     let decoded: rumoca_compile::compile::Dae =
         serde_json::from_str(&wire).expect("wire-v11 should reconstruct the checked event owner");
-    decoded.inspect(|view| assert_eq!(view.event_action_count(), 1));
+    decoded.inspect(|view| {
+        assert_eq!(view.discrete_real_equation_count(), 1);
+        assert!(matches!(
+            view.discrete_real_equation(0)
+                .expect("decoded discrete action resolves")
+                .activation(),
+            DiscreteRealActivation::When { .. }
+        ));
+    });
 }
 
 #[test]

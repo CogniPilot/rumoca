@@ -277,11 +277,7 @@ fn is_integer_input_reference(
         })
 }
 
-fn is_output_integer(
-    function: &rumoca_core::Function,
-    flat: &flat::Model,
-    name: &VarName,
-) -> bool {
+fn is_output_integer(function: &rumoca_core::Function, flat: &flat::Model, name: &VarName) -> bool {
     function.outputs.iter().any(|output| {
         output.name == name.as_str()
             && effective_function_scalar_type(flat, output) == Some(dae::ScalarType::Integer)
@@ -289,11 +285,7 @@ fn is_output_integer(
     })
 }
 
-fn is_local_integer(
-    function: &rumoca_core::Function,
-    flat: &flat::Model,
-    name: &VarName,
-) -> bool {
+fn is_local_integer(function: &rumoca_core::Function, flat: &flat::Model, name: &VarName) -> bool {
     function.locals.iter().any(|local| {
         local.name == name.as_str()
             && effective_function_scalar_type(flat, local) == Some(dae::ScalarType::Integer)

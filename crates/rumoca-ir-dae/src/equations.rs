@@ -20,6 +20,20 @@ pub(crate) struct ResidualEquationEntry {
     pub(crate) provenance: DaeProvenance,
 }
 
+/// Which residual shapes one equation partition admits.
+///
+/// Continuous and initialization rows are scalar: an array equation reaches
+/// those partitions only through [`build_value_equation`], which projects it
+/// onto a structured family and keeps every row scalar. The discrete Real
+/// partition owns no family arena because an MLS §8.5 event assignment defines
+/// the whole array at one event instant, so its residual keeps the target's
+/// shape and Solve scalarizes the row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ResidualShape {
+    Scalar,
+    TargetShaped,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum DiscreteRealActivationEntry {
@@ -264,7 +278,13 @@ impl<'dae> DiscreteEquations<'_, 'dae> {
         owner: DaeProvenance,
         build: impl FnOnce(&mut ResidualEquation<'_, 'dae>) -> Result<(), DaeConstructionError>,
     ) -> Result<DiscreteRealEquationId<'dae>, DaeConstructionError> {
-        let residual = build_residual_entry(self.source_map, self.storage, owner, build)?;
+        let residual = build_residual_entry(
+            self.source_map,
+            self.storage,
+            owner,
+            ResidualShape::TargetShaped,
+            build,
+        )?;
         if let DiscreteRealActivationEntry::When { guard, .. } = activation {
             expect_clock_owned_discrete_reals(self.storage, guard, residual.residual, owner)?;
         }
@@ -287,6 +307,7 @@ pub struct ResidualEquation<'storage, 'dae> {
     source_map: &'storage rumoca_core::SourceMap,
     storage: &'storage mut Storage,
     owner: DaeProvenance,
+    shape: ResidualShape,
     residual: Option<u32>,
     marker: PhantomData<&'dae mut &'dae ()>,
 }
@@ -308,7 +329,8 @@ impl<'dae> ResidualEquation<'_, 'dae> {
                 self.owner,
             ));
         }
-        self.storage.expect_real_residual(residual, self.owner)?;
+        self.storage
+            .expect_real_residual(residual, self.shape, self.owner)?;
         self.residual = Some(residual.index());
         Ok(())
     }
@@ -497,7 +519,7 @@ fn build_residual<'dae, P: ResidualPartition>(
     owner: DaeProvenance,
     build: impl FnOnce(&mut ResidualEquation<'_, 'dae>) -> Result<(), DaeConstructionError>,
 ) -> Result<u32, DaeConstructionError> {
-    let entry = build_residual_entry(source_map, storage, owner, build)?;
+    let entry = build_residual_entry(source_map, storage, owner, ResidualShape::Scalar, build)?;
     P::insert(storage, entry, owner)
 }
 
@@ -505,6 +527,7 @@ fn build_residual_entry<'dae>(
     source_map: &rumoca_core::SourceMap,
     storage: &mut Storage,
     owner: DaeProvenance,
+    shape: ResidualShape,
     build: impl FnOnce(&mut ResidualEquation<'_, 'dae>) -> Result<(), DaeConstructionError>,
 ) -> Result<ResidualEquationEntry, DaeConstructionError> {
     check_provenance(source_map, owner)?;
@@ -512,6 +535,7 @@ fn build_residual_entry<'dae>(
         source_map,
         storage,
         owner,
+        shape,
         residual: None,
         marker: PhantomData,
     };
