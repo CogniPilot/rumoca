@@ -1,9 +1,9 @@
 //! Builders for the expression precedence cascade (WI-3).
 //!
 //! The whole cascade collapses to one AST type ([`rumoca_ir_galec::ast::Expression`]): the
-//! left-associative classes fold left, `power_expr` folds right, and the printer
-//! re-parenthesizes cross-class mixes (trap T6), so a permissive cascade is safe
-//! (§3.3). Every builder is `TryFrom<&Generated> for AstType` with
+//! left-associative classes fold left, `power_expr` folds right, and the target
+//! template re-parenthesizes cross-class mixes (trap T6), so a permissive
+//! cascade is safe (§3.3). Every builder is `TryFrom<&Generated> for AstType` with
 //! `type Error = anyhow::Error` (see [`crate::parse::refs`] for the rationale);
 //! typed rejections are bridged with `GalecSyntaxError::into_anyhow()`.
 

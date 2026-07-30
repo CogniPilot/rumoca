@@ -5,7 +5,7 @@
 //! independently — no standard text reproduced (GAL-023).
 //!
 //! The golden PID / array fixtures also pass `validate` — asserted next to
-//! their definitions in `tests/block_print.rs`.
+//! their definitions in the checked template golden fixtures.
 
 use rumoca_core::Span;
 use rumoca_ir_galec::ast::{
@@ -317,6 +317,70 @@ fn minimal_block_is_valid() {
 #[test]
 fn full_featured_block_is_valid() {
     expect_valid(&estimator());
+}
+
+#[test]
+fn malformed_structural_shapes_fail_at_checked_construction_boundary() {
+    let expect_statement = |statement, code| {
+        let mut block = minimal();
+        block.do_step.statements = vec![Spanned::dummy(statement)];
+        expect_codes(&block, &[code]);
+    };
+    expect_statement(Statement::Signal(vec![]), "EG004");
+    expect_statement(Statement::Limit(vec![]), "EG005");
+    expect_statement(
+        Statement::If(IfStatement {
+            branches: vec![],
+            else_body: None,
+        }),
+        "EG006",
+    );
+    expect_statement(
+        Statement::If(IfStatement {
+            branches: vec![IfBranch {
+                condition: Condition::SignalCheck(SignalCheck {
+                    closure: None,
+                    test: Some(SignalTest {
+                        negated: false,
+                        signals: vec![],
+                    }),
+                    fallback: None,
+                }),
+                body: vec![],
+                span: Span::DUMMY,
+            }],
+            else_body: None,
+        }),
+        "EG008",
+    );
+
+    for (expression, code) in [
+        (Expression::Array(vec![]), "EG007"),
+        (
+            Expression::If(IfExpression {
+                branches: vec![],
+                else_value: Box::new(r(0.0)),
+            }),
+            "EG009",
+        ),
+    ] {
+        expect_statement(
+            Statement::Assignment {
+                target: state("y"),
+                value: expression,
+            },
+            code,
+        );
+    }
+}
+
+#[test]
+fn non_finite_reals_fail_with_stable_code_before_rendering() {
+    for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        let mut block = minimal();
+        block.do_step.statements = vec![assign(state("y"), r(value))];
+        expect_codes(&block, &["EG001"]);
+    }
 }
 
 // ---------------------------------------------------------------------------

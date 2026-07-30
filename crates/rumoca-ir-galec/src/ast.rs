@@ -91,10 +91,9 @@ impl Identifier {
 /// A GALEC name: a plain identifier or a quoted identifier such as
 /// `'a.b[2].c'` or `'previous(x)'` (traceability device, trap T13).
 ///
-/// The quoted variant stores the content *between* the quotes; the printer
-/// adds the surrounding `'` characters. Well-formedness of the quoted content
-/// (scalarized-reference structure, no whitespace) is a validator concern;
-/// the printer only rejects content that cannot be a single lexeme at all.
+/// The quoted variant stores the content *between* the quotes; target templates
+/// add the surrounding `'` characters. Whole-block construction checks the
+/// quoted content (scalarized-reference structure and no whitespace).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum Name {
@@ -632,7 +631,7 @@ impl PrecedenceClass {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct IfExpression {
     /// `(condition, value)` pairs: the `if` branch followed by any `elseif`
-    /// branches; must be non-empty (checked by the printer).
+    /// branches; must be non-empty (checked at whole-block construction).
     pub branches: Vec<(Expression, Expression)>,
     /// Mandatory `else` value — unrepresentable without one.
     pub else_value: Box<Expression>,
@@ -653,8 +652,8 @@ pub enum Expression {
     Bool(bool),
     /// Integer literal.
     Integer(i64),
-    /// Real literal; printed with mandatory decimal places and signed
-    /// exponent (trap T7). Must be finite (printer rejects NaN/±inf).
+    /// Real literal; templates emit mandatory decimal places and a signed
+    /// exponent (trap T7). Whole-block construction rejects NaN/±inf.
     Real(f64),
     /// Local or state reference.
     Ref(Reference),
@@ -670,11 +669,11 @@ pub enum Expression {
     /// If-expression.
     If(IfExpression),
     /// Multi-dimension constructor `{…}`; nested constructors for matrices,
-    /// row-major. Must be non-empty (checked by the printer).
+    /// row-major. Must be non-empty (checked at whole-block construction).
     Array(Vec<Expression>),
     /// Unary minus — grammar-limited to references (trap T4).
     Neg(Reference),
-    /// `not (…)`; the printer always parenthesizes the argument (trap T12).
+    /// `not (…)`; target templates always parenthesize the argument (trap T12).
     Not(Box<Expression>),
     /// Binary operation; the AST shape is the normative evaluation order
     /// (no re-association, trap T6).
@@ -742,7 +741,7 @@ pub enum Condition {
 pub struct SignalTest {
     /// `not in …` — test the in-reachable set MINUS the listed signals.
     pub negated: bool,
-    /// Listed signal names; must be non-empty (checked by the printer).
+    /// Listed signal names; must be non-empty (checked at construction).
     pub signals: Vec<Identifier>,
 }
 
@@ -773,7 +772,7 @@ pub struct IfBranch {
 /// `if … then … [elseif … then …]* [else …] end if;`.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct IfStatement {
-    /// `if` branch plus `elseif` branches; must be non-empty (printer).
+    /// `if` branch plus `elseif` branches; must be non-empty (construction).
     pub branches: Vec<IfBranch>,
     /// Optional `else` branch (statements may be empty).
     pub else_body: Option<Vec<Spanned<Statement>>>,
@@ -824,10 +823,11 @@ pub enum Statement {
     If(IfStatement),
     /// Bounded for loop.
     For(ForLoop),
-    /// `limit t1, t2, …;` — saturate ranged entities (trap T3). Must list at
-    /// least one target (checked by the printer).
+    /// `limit t1, t2, …;` — saturate ranged entities (trap T3). Whole-block
+    /// construction requires at least one target.
     Limit(Vec<LimitTarget>),
     /// Error-signal statement `signal s1, s2, …;` — sets signals and/or
-    /// re-raises closures. Must list at least one identifier (printer).
+    /// re-raises closures. Whole-block construction requires at least one
+    /// identifier.
     Signal(Vec<Identifier>),
 }

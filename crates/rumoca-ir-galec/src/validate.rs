@@ -1,9 +1,10 @@
-//! The GALEC validator: six static analyses per SPEC_0034 "Validator Scope"
-//! (§3.2.2) and GAL-018, run over a [`Block`] with ALL findings collected
-//! (never fail-fast).
+//! The GALEC checked-construction boundary: structural closure followed by six
+//! static analyses per SPEC_0034 "Validator Scope" (§3.2.2) and GAL-018, run
+//! over a [`Block`] with ALL findings collected (never fail-fast).
 //!
 //! | Analysis | Module | Codes |
 //! |----------|--------|-------|
+//! | Structural closure | `structure` | EG001, EG004–EG009 |
 //! | Name | `names` | EG002/EG003, EG010–EG013 |
 //! | Type | `types` | EG014–EG021 |
 //! | Dimensionality | `dims` | EG022–EG025, EG040 |
@@ -37,6 +38,7 @@ mod names;
 mod navigate;
 mod signals;
 mod spans;
+mod structure;
 mod termination;
 mod types;
 
@@ -51,11 +53,12 @@ pub use navigate::{SymbolInfo, symbol_at};
 ///
 /// # Errors
 ///
-/// Returns the non-empty list of [`GalecError`] findings (codes
-/// EG002–EG040) when the block violates any analysis.
+/// Returns the non-empty list of [`GalecError`] findings (codes EG001–EG040)
+/// when the block violates structural closure or any semantic analysis.
 pub fn validate(block: &Block) -> Result<(), Vec<GalecError>> {
     let ctx = context::BlockContext::new(block);
     let mut diags = Vec::new();
+    structure::check(&ctx, &mut diags);
     names::check(&ctx, &mut diags);
     types::check(&ctx, &mut diags);
     dims::check(&ctx, &mut diags);
