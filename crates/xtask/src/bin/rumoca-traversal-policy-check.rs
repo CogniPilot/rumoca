@@ -16,7 +16,6 @@ const COVERED_FILES: &[&str] = &[
     "crates/rumoca-compile/src/session/dependency_fingerprint.rs",
     "crates/rumoca-tool-lsp/src/handlers/semantic_tokens.rs",
     "crates/rumoca-tool-lsp/src/handlers/inlay_hints.rs",
-    "crates/rumoca-phase-dae/src/scalar_inference/parts.rs",
 ];
 
 #[allow(dead_code)]
@@ -127,10 +126,6 @@ fn allowed_recursive_functions(file: &str) -> BTreeSet<&'static str> {
         }
         "crates/rumoca-phase-typecheck/src/typechecker/late_methods.rs" => {
             BTreeSet::from(["check_class", "infer_expression_type"])
-        }
-        // This recursion decomposes nested array literals for scalar sizing.
-        "crates/rumoca-phase-dae/src/scalar_inference/parts.rs" => {
-            BTreeSet::from(["count_array_lhs_scalar_elements"])
         }
         _ => BTreeSet::new(),
     }
