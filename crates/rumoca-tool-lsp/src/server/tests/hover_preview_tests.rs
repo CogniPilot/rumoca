@@ -99,6 +99,48 @@ end PreviewWhen;
 }
 
 #[test]
+fn hover_flat_preview_retains_conditional_discrete_real_activation() {
+    let temp = new_temp_dir("hover-preview-b1b");
+    run_async_test(async {
+        let service = new_test_service();
+        let server = service.inner();
+        let key = seed_preview_source(
+            server,
+            &temp,
+            r#"
+model PreviewDiscreteReal
+  Real x(start = 0);
+  discrete Real held(start = 0);
+equation
+  der(x) = 1;
+  when x >= 0.5 then
+    held = x;
+  end when;
+end PreviewDiscreteReal;
+"#,
+        )
+        .await;
+
+        let token = server.begin_analysis_request().await;
+        let preview = server
+            .hover_flat_preview("PreviewDiscreteReal", &key, token)
+            .await
+            .expect("checked conditional discrete Real model should render a preview");
+        for expected in [
+            "f_z (1):",
+            "when trigger=`x >= 0.5` guard=`x >= 0.5`",
+            "owner source DAE object at `held`",
+        ] {
+            assert!(
+                preview.contains(expected),
+                "preview should retain {expected:?}, got:\n{preview}"
+            );
+        }
+    });
+    let _ = std::fs::remove_dir_all(&temp);
+}
+
+#[test]
 fn hover_flat_preview_memoizes_models_that_do_not_compile() {
     let temp = new_temp_dir("hover-preview-negative");
     run_async_test(async {

@@ -190,8 +190,9 @@ pub mod compile {
     };
     pub use rumoca_ir_dae::{
         ClockOperation, ConditionId, ContinuousOwnerView, CoordinateView, Dae, DaeProvenance,
-        DaeView, DiscreteBranchActivation, ExprId, ExpressionOperation, ResidualEquationView,
-        VariableId, VariableRole, VariableView, for_each_expression,
+        DaeView, DiscreteBranchActivation, DiscreteRealActivation, DiscreteRealEquationView,
+        ExprId, ExpressionOperation, ResidualEquationView, VariableId, VariableRole, VariableView,
+        for_each_expression,
     };
     pub use rumoca_ir_flat::Model as FlatModel;
 
