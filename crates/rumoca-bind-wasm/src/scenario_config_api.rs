@@ -17,24 +17,27 @@ use rumoca_compile::scenario::{
     source_roots_to_json, visualization_views_to_json,
 };
 use serde_json::{Value, json};
-use wasm_bindgen::JsValue;
+
+use crate::WasmError;
 
 // Editor paths are workspace-relative, so an empty workspace root keeps
 // any newly created `rumoca-scenario.<model>.toml` write path relative too.
-fn scenario_config_from_sources(workspace_sources_json: &str) -> Result<ScenarioConfig, JsValue> {
+fn scenario_config_from_sources(workspace_sources_json: &str) -> Result<ScenarioConfig, WasmError> {
     Ok(ScenarioConfig::from_files(
         Path::new(""),
         parse_workspace_files(workspace_sources_json)?,
     ))
 }
 
-fn parse_workspace_files(workspace_sources_json: &str) -> Result<Vec<(PathBuf, String)>, JsValue> {
+fn parse_workspace_files(
+    workspace_sources_json: &str,
+) -> Result<Vec<(PathBuf, String)>, WasmError> {
     let trimmed = workspace_sources_json.trim();
     if trimmed.is_empty() {
         return Ok(Vec::new());
     }
     let map: IndexMap<String, String> = serde_json::from_str(trimmed)
-        .map_err(|e| JsValue::from_str(&format!("Invalid workspace sources JSON: {e}")))?;
+        .map_err(|e| WasmError::new(format!("Invalid workspace sources JSON: {e}")))?;
     Ok(map
         .into_iter()
         .map(|(path, content)| (PathBuf::from(path), content))
@@ -49,13 +52,13 @@ fn parse_optional_json(raw: &str) -> Option<Value> {
     serde_json::from_str(trimmed).ok()
 }
 
-fn to_json_string(value: &Value) -> Result<String, JsValue> {
-    serde_json::to_string(value).map_err(|e| JsValue::from_str(&format!("JSON error: {e}")))
+fn to_json_string(value: &Value) -> Result<String, WasmError> {
+    serde_json::to_string(value).map_err(|e| WasmError::new(format!("JSON error: {e}")))
 }
 
 /// Build a `{ writes: [{path, content}], result: { ok: true } }` response for a
 /// single model's config file, applied by the editor to its workspace store.
-fn writes_response(config: &ScenarioConfig, model: &str) -> Result<String, JsValue> {
+fn writes_response(config: &ScenarioConfig, model: &str) -> Result<String, WasmError> {
     writes_response_for_task(config, model, ScenarioTask::Simulate)
 }
 
@@ -63,11 +66,11 @@ fn writes_response_for_task(
     config: &ScenarioConfig,
     model: &str,
     task: ScenarioTask,
-) -> Result<String, JsValue> {
+) -> Result<String, WasmError> {
     let mut writes = Vec::new();
     if let Some(result) = config.compute_write_for_model_task(model, task) {
         let (path, content) =
-            result.map_err(|e| JsValue::from_str(&format!("render config error: {e}")))?;
+            result.map_err(|e| WasmError::new(format!("render config error: {e}")))?;
         writes.push(json!({ "path": path.to_string_lossy(), "content": content }));
     }
     to_json_string(&json!({ "writes": writes, "result": { "ok": true } }))
@@ -77,7 +80,7 @@ pub(crate) fn get_simulation_config_impl(
     workspace_sources_json: &str,
     model: &str,
     fallback_json: &str,
-) -> Result<String, JsValue> {
+) -> Result<String, WasmError> {
     let config = scenario_config_from_sources(workspace_sources_json)?;
     let fallback = parse_optional_json(fallback_json)
         .as_ref()
@@ -97,12 +100,12 @@ pub(crate) fn set_simulation_preset_impl(
     workspace_sources_json: &str,
     model: &str,
     preset_json: &str,
-) -> Result<String, JsValue> {
+) -> Result<String, WasmError> {
     let mut config = scenario_config_from_sources(workspace_sources_json)?;
     let model_override = parse_optional_json(preset_json)
         .as_ref()
         .and_then(simulation_override_from_json)
-        .ok_or_else(|| JsValue::from_str("invalid simulation preset payload"))?;
+        .ok_or_else(|| WasmError::new("invalid simulation preset payload"))?;
     config.set_model_simulation_preset(model, model_override);
     writes_response(&config, model)
 }
@@ -110,7 +113,7 @@ pub(crate) fn set_simulation_preset_impl(
 pub(crate) fn reset_simulation_preset_impl(
     workspace_sources_json: &str,
     model: &str,
-) -> Result<String, JsValue> {
+) -> Result<String, WasmError> {
     let mut config = scenario_config_from_sources(workspace_sources_json)?;
     config.remove_model_override(model);
     writes_response(&config, model)
@@ -119,7 +122,7 @@ pub(crate) fn reset_simulation_preset_impl(
 pub(crate) fn get_visualization_config_impl(
     workspace_sources_json: &str,
     model: &str,
-) -> Result<String, JsValue> {
+) -> Result<String, WasmError> {
     let config = scenario_config_from_sources(workspace_sources_json)?;
     to_json_string(&visualization_views_to_json(
         config.plot_views_for_model(model),
@@ -130,12 +133,12 @@ pub(crate) fn set_visualization_config_impl(
     workspace_sources_json: &str,
     model: &str,
     views_json: &str,
-) -> Result<String, JsValue> {
+) -> Result<String, WasmError> {
     let mut config = scenario_config_from_sources(workspace_sources_json)?;
     let views = parse_optional_json(views_json)
         .as_ref()
         .and_then(parse_views_payload)
-        .ok_or_else(|| JsValue::from_str("invalid visualization views payload"))?;
+        .ok_or_else(|| WasmError::new("invalid visualization views payload"))?;
     config.set_plot_views(model, views);
     writes_response(&config, model)
 }
@@ -143,7 +146,7 @@ pub(crate) fn set_visualization_config_impl(
 pub(crate) fn get_codegen_config_impl(
     workspace_sources_json: &str,
     model: &str,
-) -> Result<String, JsValue> {
+) -> Result<String, WasmError> {
     let config = scenario_config_from_sources(workspace_sources_json)?;
     to_json_string(&codegen_config_to_json(
         &config.codegen_config_for_model(model),
@@ -154,12 +157,12 @@ pub(crate) fn set_codegen_config_impl(
     workspace_sources_json: &str,
     model: &str,
     codegen_json: &str,
-) -> Result<String, JsValue> {
+) -> Result<String, WasmError> {
     let mut config = scenario_config_from_sources(workspace_sources_json)?;
     let codegen = parse_optional_json(codegen_json)
         .as_ref()
         .and_then(codegen_config_from_json)
-        .ok_or_else(|| JsValue::from_str("invalid codegen config payload"))?;
+        .ok_or_else(|| WasmError::new("invalid codegen config payload"))?;
     config.set_codegen_config(model, codegen);
     writes_response_for_task(&config, model, ScenarioTask::Codegen)
 }
@@ -168,7 +171,7 @@ pub(crate) fn get_source_roots_impl(
     workspace_sources_json: &str,
     model: &str,
     task: &str,
-) -> Result<String, JsValue> {
+) -> Result<String, WasmError> {
     let config = scenario_config_from_sources(workspace_sources_json)?;
     let task = scenario_task_from_str(task).unwrap_or_default();
     to_json_string(&source_roots_to_json(
@@ -180,7 +183,7 @@ pub(crate) fn set_source_roots_impl(
     workspace_sources_json: &str,
     model: &str,
     source_roots_json: &str,
-) -> Result<String, JsValue> {
+) -> Result<String, WasmError> {
     let mut config = scenario_config_from_sources(workspace_sources_json)?;
     let payload = parse_optional_json(source_roots_json);
     let task = payload
@@ -190,7 +193,7 @@ pub(crate) fn set_source_roots_impl(
     let source_roots = payload
         .as_ref()
         .and_then(source_roots_from_json)
-        .ok_or_else(|| JsValue::from_str("invalid source roots payload"))?;
+        .ok_or_else(|| WasmError::new("invalid source roots payload"))?;
     config.set_source_roots_for_task(model, task, source_roots);
     writes_response_for_task(&config, model, task)
 }
@@ -210,7 +213,7 @@ fn scenario_task_from_str(value: &str) -> Option<ScenarioTask> {
 pub(crate) fn get_scenario_config_impl(
     workspace_sources_json: &str,
     path: &str,
-) -> Result<String, JsValue> {
+) -> Result<String, WasmError> {
     let files = parse_workspace_files(workspace_sources_json)?;
     match find_workspace_file(&files, path.trim()) {
         Some(content) => to_json_string(&scenario_config_response(content)),
@@ -234,7 +237,7 @@ fn find_workspace_file<'a>(files: &'a [(PathBuf, String)], needle: &str) -> Opti
 pub(crate) fn get_scenario_config_full_impl(
     workspace_sources_json: &str,
     path: &str,
-) -> Result<String, JsValue> {
+) -> Result<String, WasmError> {
     let files = parse_workspace_files(workspace_sources_json)?;
     match find_workspace_file(&files, path.trim()) {
         Some(content) => to_json_string(&scenario_config_full_to_json(content)),
@@ -245,10 +248,10 @@ pub(crate) fn get_scenario_config_full_impl(
     }
 }
 
-pub(crate) fn set_scenario_config_impl(path: &str, config_json: &str) -> Result<String, JsValue> {
+pub(crate) fn set_scenario_config_impl(path: &str, config_json: &str) -> Result<String, WasmError> {
     let config: Value = serde_json::from_str(config_json.trim())
-        .map_err(|e| JsValue::from_str(&format!("Invalid scenario config JSON: {e}")))?;
-    let content = scenario_config_text_from_json(&config).map_err(|e| JsValue::from_str(&e))?;
+        .map_err(|e| WasmError::new(format!("Invalid scenario config JSON: {e}")))?;
+    let content = scenario_config_text_from_json(&config).map_err(WasmError::new)?;
     to_json_string(&json!({
         "writes": [{ "path": path, "content": content }],
         "result": { "ok": true },
@@ -259,12 +262,12 @@ pub(crate) fn default_scenario_config_impl(
     workspace_sources_json: &str,
     model: &str,
     task: &str,
-) -> Result<String, JsValue> {
+) -> Result<String, WasmError> {
     let config = scenario_config_from_sources(workspace_sources_json)?;
     let task = scenario_task_from_str(task).unwrap_or_default();
     let (path, content) = config
         .default_scenario_config_for_task(model, task)
-        .map_err(|e| JsValue::from_str(&format!("default scenario config error: {e}")))?;
+        .map_err(|e| WasmError::new(format!("default scenario config error: {e}")))?;
     to_json_string(&json!({
         "ok": true,
         "path": path.to_string_lossy(),
