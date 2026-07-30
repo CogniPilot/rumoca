@@ -611,6 +611,16 @@ fn referenced_pre_variables<'dae>(
 ) -> Result<Vec<dae::VariableId<'dae>>, Vec<GalecTargetError>> {
     let mut ids = Vec::new();
     let mut seen = HashSet::new();
+    for index in 0..view.discrete_real_equation_count() {
+        let equation = view
+            .discrete_real_equation(index)
+            .expect("dense checked discrete Real equation resolves");
+        collect_pre(view, equation.residual(), &mut seen, &mut ids)?;
+        if let dae::DiscreteRealActivation::When { trigger, guard } = equation.activation() {
+            collect_condition_pre(view, trigger, &mut seen, &mut ids)?;
+            collect_condition_pre(view, guard, &mut seen, &mut ids)?;
+        }
+    }
     for index in 0..view.event_action_count() {
         let action = view
             .event_action(
@@ -621,8 +631,7 @@ fn referenced_pre_variables<'dae>(
         collect_condition_pre(view, action.trigger(), &mut seen, &mut ids)?;
         collect_condition_pre(view, action.guard(), &mut seen, &mut ids)?;
         let value = match action.operation() {
-            dae::EventActionOperation::AssignDiscreteReal { value, .. }
-            | dae::EventActionOperation::Reinitialize { value, .. } => Some(value),
+            dae::EventActionOperation::Reinitialize { value, .. } => Some(value),
             dae::EventActionOperation::Assert { message, level } => {
                 collect_pre(view, message, &mut seen, &mut ids)?;
                 level
@@ -1756,6 +1765,5 @@ const fn event_name(operation: dae::EventActionOperation<'_>) -> &'static str {
         dae::EventActionOperation::Assert { .. } => "assert",
         dae::EventActionOperation::Terminate { .. } => "terminate",
         dae::EventActionOperation::Reinitialize { .. } => "reinitialize",
-        dae::EventActionOperation::AssignDiscreteReal { .. } => "assign discrete Real",
     }
 }
