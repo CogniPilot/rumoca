@@ -311,12 +311,7 @@ fn lower_model_owners<'dae>(
             &analysis.discrete_value_topology,
         ),
     )?;
-    discrete_values.add_holds(
-        construction,
-        flat,
-        coordinates,
-        &analysis.discrete_value_topology,
-    )?;
+    discrete_values.add_holds(construction, coordinates, &analysis.discrete_value_topology)?;
     discrete_values.finish(construction, &analysis.discrete_value_topology)
 }
 

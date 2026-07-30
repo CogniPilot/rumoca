@@ -5,12 +5,19 @@ use std::collections::BTreeSet;
 pub(in crate::construction) struct DiscreteValueTopologyPlan {
     ordered_owners: Vec<Vec<VarName>>,
     order_by_target: HashMap<VarName, TargetOrder>,
+    held_targets: Vec<HeldTargetPlan>,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub(in crate::construction) struct TargetOrder {
     pub(in crate::construction) owner: usize,
     pub(in crate::construction) target: usize,
+}
+
+#[derive(Debug)]
+pub(in crate::construction) struct HeldTargetPlan {
+    pub(in crate::construction) name: VarName,
+    pub(in crate::construction) declaration_span: Span,
 }
 
 impl DiscreteValueTopologyPlan {
@@ -20,6 +27,10 @@ impl DiscreteValueTopologyPlan {
 
     pub(in crate::construction) fn target_order(&self, target: &VarName) -> Option<TargetOrder> {
         self.order_by_target.get(target).copied()
+    }
+
+    pub(in crate::construction) fn held_targets(&self) -> &[HeldTargetPlan] {
+        &self.held_targets
     }
 
     pub(in crate::construction) fn matches_owner_targets(
@@ -74,8 +85,8 @@ pub(super) fn analyze_discrete_value_topology(
     collect_equation_owners(flat, roles, &mut owners)?;
     collect_algorithm_owners(flat, roles, &mut owners)?;
     collect_when_owners(flat, roles, &mut owners)?;
-    add_held_owners(flat, roles, &mut owners);
-    order_owners(owners)
+    let held_targets = add_held_owners(flat, roles, &mut owners);
+    order_owners(owners, held_targets)
 }
 
 fn collect_binding_owners(
@@ -211,13 +222,18 @@ fn add_held_owners(
     flat: &flat::Model,
     roles: &HashMap<VarName, PlannedRole>,
     owners: &mut Vec<SourceOwner>,
-) {
+) -> Vec<HeldTargetPlan> {
     let defined = owners
         .iter()
         .flat_map(|owner| owner.targets.iter().map(|target| target.name.clone()))
         .collect::<HashSet<_>>();
+    let mut held_targets = Vec::new();
     for (name, variable) in &flat.variables {
         if matches!(roles[name], PlannedRole::DiscreteValue) && !defined.contains(name) {
+            held_targets.push(HeldTargetPlan {
+                name: name.clone(),
+                declaration_span: variable.source_span,
+            });
             owners.push(SourceOwner {
                 targets: vec![SourceTarget {
                     name: name.clone(),
@@ -228,9 +244,13 @@ fn add_held_owners(
             });
         }
     }
+    held_targets
 }
 
-fn order_owners(mut owners: Vec<SourceOwner>) -> Result<DiscreteValueTopologyPlan, ToDaeError> {
+fn order_owners(
+    mut owners: Vec<SourceOwner>,
+    held_targets: Vec<HeldTargetPlan>,
+) -> Result<DiscreteValueTopologyPlan, ToDaeError> {
     let mut owner_by_target = HashMap::new();
     for (owner_index, owner) in owners.iter().enumerate() {
         for target in &owner.targets {
@@ -312,6 +332,7 @@ fn order_owners(mut owners: Vec<SourceOwner>) -> Result<DiscreteValueTopologyPla
     Ok(DiscreteValueTopologyPlan {
         ordered_owners,
         order_by_target,
+        held_targets,
     })
 }
 

@@ -917,6 +917,50 @@ fn unassigned_discrete_value_has_explicit_generated_hold_owner() {
 }
 
 #[test]
+fn clock_declaration_is_not_conflated_with_a_missing_discrete_hold_coordinate() {
+    let source = TestSource::new("model M Clock c = Clock(0.1); discrete Boolean m; end M;");
+    let mut model = flat::Model::new();
+    let mut clock = flat::Variable::empty_with_span(source.span("Clock c = Clock(0.1)", 0));
+    clock.name = VarName::new("c");
+    clock.type_id = TypeId::new(7);
+    clock.binding = Some(Expression::FunctionCall {
+        name: Reference::new("Clock"),
+        args: vec![Expression::Literal {
+            value: Literal::Real(0.1),
+            span: source.span("0.1", 0),
+        }],
+        is_constructor: false,
+        span: source.span("Clock(0.1)", 0),
+    });
+    model.add_variable(clock.name.clone(), clock);
+    model
+        .variable_type_names
+        .insert(VarName::new("c"), "Clock".to_string());
+    add_primitive_variable(
+        &mut model,
+        &source,
+        "m",
+        "discrete Boolean m",
+        8,
+        Vec::new(),
+        true,
+    );
+
+    let dae = construct(&model, source.map).unwrap();
+    dae.inspect(|view| {
+        assert_eq!(view.clock_count(), 1);
+        assert_eq!(view.discrete_value_owner_count(), 1);
+        let owner = view
+            .discrete_value_owner(view.discrete_value_owner_id(0).unwrap())
+            .unwrap();
+        assert_eq!(
+            view.source_text(owner.provenance()),
+            Some("discrete Boolean m")
+        );
+    });
+}
+
+#[test]
 fn malformed_flat_when_branch_rejects_direct_duplicate_at_second_definition() {
     let source = TestSource::new(
         "model M discrete Boolean m; equation \
