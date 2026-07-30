@@ -281,7 +281,7 @@ fn indexed_python_targets_keep_indexing_inside_symbolic_array_dialects() {
     let artifacts = solve::SolveArtifacts::default();
     let dae = dae::Dae::construct(rumoca_core::SourceMap::new(), |_| Ok(()))
         .expect("empty checked DAE is valid");
-    let renderer = SolveTemplateRenderer::new_with_dae(&problem, &artifacts, dae)
+    let renderer = SolveTemplateRenderer::new_with_dae(&problem, &artifacts, &dae)
         .expect("checked Solve context constructs");
     let jax = renderer
         .render(builtin_template("jax-solve", "jax_solve.py.jinja"))

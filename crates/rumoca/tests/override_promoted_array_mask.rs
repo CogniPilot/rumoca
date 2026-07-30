@@ -11,6 +11,7 @@ use rumoca_sim::{
     SimOptions, build_simulation, lower_dae_for_simulation, lower_for_simulation_with_overrides,
     refresh_prepared_vectors,
 };
+use std::sync::Arc;
 
 // Mirrors the airfoil's structure: a parameter-derived array mask `m` computed in
 // its own loop, then read by the state-derivative loop. That makes `m` a
@@ -32,7 +33,7 @@ equation
 end PromotedMask;
 "#;
 
-fn compile_mask_dae() -> rumoca_ir_dae::Dae {
+fn compile_mask_dae() -> Arc<rumoca_ir_dae::Dae> {
     Compiler::new()
         .model("PromotedMask")
         .compile_str(SOURCE, "promoted_mask.mo")

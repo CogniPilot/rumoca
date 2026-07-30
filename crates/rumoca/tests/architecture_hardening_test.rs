@@ -3,6 +3,9 @@ use std::fs;
 use std::path::Path;
 
 mod architecture_hardening_support;
+#[path = "architecture_hardening/dae_ownership.rs"]
+mod dae_ownership;
+
 use architecture_hardening_support::*;
 
 const ALLOWED_CROSS_CRATE_PUBLIC_EXPORTS: &[(&str, &str)] = &[];

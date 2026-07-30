@@ -332,7 +332,7 @@ fn c_solve_simulate(
         rumoca_sim::lower_solve_problem(dae).map_err(|error| format!("lower solve: {error}"))?;
     let artifacts = rumoca_sim::lower_solve_artifacts(&problem)
         .map_err(|error| format!("lower solve artifacts: {error}"))?;
-    let renderer = SolveTemplateRenderer::new_with_dae(&problem, &artifacts, dae.clone())
+    let renderer = SolveTemplateRenderer::new_with_dae(&problem, &artifacts, dae)
         .map_err(|error| format!("render context: {error}"))?;
     let header_template = templates::builtin_template_source("c-solve", "model_solve.h.jinja")
         .ok_or_else(|| "checked C Solve header template is missing".to_string())?;

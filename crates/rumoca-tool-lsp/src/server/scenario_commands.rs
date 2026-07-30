@@ -278,7 +278,7 @@ impl ModelicaLanguageServer {
                 render_dae_target_files(&bundle, &manifest, compiled.dae.as_ref(), &model)
             }
             TargetTemplateIr::Solve => {
-                render_solve_target_files(&bundle, &manifest, compiled.dae.clone(), &model)
+                render_solve_target_files(&bundle, &manifest, compiled.dae.as_ref(), &model)
             }
             TargetTemplateIr::AlgorithmCode => {
                 render_algorithm_code_source_files(&bundle, &manifest, &compiled, &model)
@@ -509,7 +509,7 @@ impl ModelicaLanguageServer {
 fn render_solve_target_files(
     source: &impl TargetTemplateSource,
     manifest: &TargetManifest,
-    dae: Arc<rumoca_compile::compile::Dae>,
+    dae: &rumoca_compile::compile::Dae,
     model_name: &str,
 ) -> anyhow::Result<Vec<RenderedTargetFile>> {
     ensure_target_has_rendered_files(manifest)?;
@@ -517,11 +517,11 @@ fn render_solve_target_files(
         .capabilities
         .as_ref()
         .context("Solve target manifest must declare a [capabilities] table")?;
-    let problem = rumoca_sim::lower_solve_problem(&dae).context("Lower checked DAE to Solve IR")?;
+    let problem = rumoca_sim::lower_solve_problem(dae).context("Lower checked DAE to Solve IR")?;
     validate_solve_target_capabilities(&problem, manifest, capabilities)?;
     let artifacts =
         rumoca_sim::lower_solve_artifacts(&problem).context("Lower checked Solve artifacts")?;
-    let renderer = SolveTemplateRenderer::new_owned_with_shared_dae(problem, artifacts, dae)?;
+    let renderer = SolveTemplateRenderer::new_owned_with_dae(problem, artifacts, dae)?;
 
     manifest
         .files

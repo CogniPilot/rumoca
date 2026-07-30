@@ -1636,7 +1636,7 @@ pub struct CompilationResult {
     /// The flattened representation.
     pub flat: flat::Model,
     /// The final DAE representation.
-    pub dae: dae::Dae,
+    pub dae: Arc<dae::Dae>,
     /// Detailed continuous balance inputs validated during DAE construction.
     pub balance_detail: rumoca_phase_dae::balance::BalanceDetail,
     /// Optional simulation start time from `annotation(experiment(StartTime=...))`

@@ -340,7 +340,7 @@ pub(crate) struct Storage {
     pub(crate) discrete_value_topology_complete: bool,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, PartialEq)]
 struct FrozenStorage {
     value_types: Box<[ValueType]>,
     flat_type_ids: Box<[Option<TypeId>]>,
@@ -376,7 +376,7 @@ struct FrozenStorage {
 }
 
 /// Immutable, valid-by-construction schema-v11 DAE.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Serialize)]
 pub struct Dae {
     schema_version: u16,
     source_map: SourceMap,

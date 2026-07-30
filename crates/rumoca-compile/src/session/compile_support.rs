@@ -358,7 +358,7 @@ pub(super) fn dae_model_outcome_from_flat(
     }
 }
 
-fn unwrap_or_clone_arc<T: Clone>(value: Arc<T>) -> T {
+fn take_or_clone_flat(value: Arc<flat::Model>) -> flat::Model {
     Arc::unwrap_or_clone(value)
 }
 
@@ -564,8 +564,8 @@ pub(super) fn compile_phase_result_from_dae(
     };
 
     PhaseResult::Success(Box::new(CompilationResult {
-        flat: unwrap_or_clone_arc(artifact.flat),
-        dae: unwrap_or_clone_arc(artifact.dae),
+        flat: take_or_clone_flat(artifact.flat),
+        dae: artifact.dae,
         balance_detail: artifact.balance_detail,
         experiment_start_time: experiment_settings.start_time,
         experiment_stop_time: experiment_settings.stop_time,

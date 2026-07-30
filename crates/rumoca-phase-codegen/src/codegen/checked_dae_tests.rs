@@ -893,7 +893,7 @@ fn symbolic_solve_targets_use_checked_declarations_and_solve_programs() {
     ] {
         let template = crate::templates::builtin_template_source(target, template_name)
             .expect("checked Solve template exists");
-        let rendered = SolveTemplateRenderer::new_with_dae(&problem, &artifacts, dae.clone())
+        let rendered = SolveTemplateRenderer::new_with_dae(&problem, &artifacts, &dae)
             .expect("checked Solve context constructs")
             .render(template)
             .expect("checked Solve target renders");
