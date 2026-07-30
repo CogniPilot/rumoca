@@ -1845,9 +1845,11 @@ fn test_scalarize_record_array_field_uses_field_lane_before_record_lane() {
             project_scalarized_rhs_expr_at(
                 &expr,
                 k,
+                &HashSet::new(),
                 &array_dims,
                 &record_array_fields,
                 &IndexMap::new(),
+                ExpressionForm::Other,
             )
             .unwrap()
         })
@@ -1876,9 +1878,11 @@ fn test_scalarize_record_array_field_uses_field_lane_before_record_lane() {
             project_scalarized_rhs_expr_at(
                 &lhs,
                 k,
+                &HashSet::new(),
                 &array_dims,
                 &record_array_fields,
                 &IndexMap::new(),
+                ExpressionForm::Other,
             )
             .unwrap()
         })

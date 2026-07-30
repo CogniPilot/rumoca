@@ -9,6 +9,10 @@
 //! scalarization that operate on the DAE IR before code generation.
 
 use crate::ToDaeError;
+use crate::scalar_inference::{
+    ExpressionForm, apply_subscripts_to_dims, combine_elementwise_forms, combine_mul_forms,
+    expression_form_from_dims,
+};
 use crate::scalar_size::compute_var_size;
 use indexmap::{IndexMap, IndexSet};
 use rumoca_core::{ExpressionRewriter, ExpressionVisitor, StatementRewriter};
@@ -1114,6 +1118,7 @@ pub fn scalarize_phantom_vector_equations(dae: &mut Dae) -> Result<(), ToDaeErro
     let continuous_spans = scalarize_equation_list(
         &mut dae.continuous.equations,
         &phantom_map,
+        &known_names,
         &array_dims,
         &record_array_fields,
         &dae.symbols.functions,
@@ -1126,6 +1131,7 @@ pub fn scalarize_phantom_vector_equations(dae: &mut Dae) -> Result<(), ToDaeErro
     let initialization_spans = scalarize_equation_list(
         &mut dae.initialization.equations,
         &phantom_map,
+        &known_names,
         &array_dims,
         &record_array_fields,
         &dae.symbols.functions,
@@ -1139,6 +1145,7 @@ pub fn scalarize_phantom_vector_equations(dae: &mut Dae) -> Result<(), ToDaeErro
     scalarize_equation_list(
         &mut dae.discrete.real_updates,
         &phantom_map,
+        &known_names,
         &array_dims,
         &record_array_fields,
         &dae.symbols.functions,
@@ -1147,6 +1154,7 @@ pub fn scalarize_phantom_vector_equations(dae: &mut Dae) -> Result<(), ToDaeErro
     scalarize_equation_list(
         &mut dae.discrete.valued_updates,
         &phantom_map,
+        &known_names,
         &array_dims,
         &record_array_fields,
         &dae.symbols.functions,
@@ -1155,6 +1163,7 @@ pub fn scalarize_phantom_vector_equations(dae: &mut Dae) -> Result<(), ToDaeErro
     scalarize_equation_list(
         &mut dae.conditions.equations,
         &phantom_map,
+        &known_names,
         &array_dims,
         &record_array_fields,
         &dae.symbols.functions,
@@ -2384,16 +2393,20 @@ fn scalarize_expr_at(
     expr: &rumoca_core::Expression,
     k: usize,
     phantom_map: &HashMap<String, Vec<rumoca_core::Reference>>,
+    known_names: &HashSet<String>,
     array_dims: &HashMap<String, Vec<i64>>,
     record_array_fields: &RecordArrayFieldMap,
     functions: &IndexMap<rumoca_core::VarName, rumoca_core::Function>,
+    target_form: ExpressionForm,
 ) -> Result<rumoca_core::Expression, ToDaeError> {
     let ctx = ScalarizeExprContext {
         k,
         phantom_map,
+        known_names,
         array_dims,
         record_array_fields,
         functions,
+        target_form,
     };
     scalarize_expr_with_context(expr, &ctx)
 }
@@ -2401,9 +2414,11 @@ fn scalarize_expr_at(
 struct ScalarizeExprContext<'a> {
     k: usize,
     phantom_map: &'a HashMap<String, Vec<rumoca_core::Reference>>,
+    known_names: &'a HashSet<String>,
     array_dims: &'a HashMap<String, Vec<i64>>,
     record_array_fields: &'a RecordArrayFieldMap,
     functions: &'a IndexMap<rumoca_core::VarName, rumoca_core::Function>,
+    target_form: ExpressionForm,
 }
 
 fn scalarize_expr_with_context(
@@ -2426,6 +2441,18 @@ fn scalarize_expr_with_context(
         )
         .and_then(|projected| projected.map_or_else(|| Ok(expr.clone()), Ok)),
         rumoca_core::Expression::Binary { op, lhs, rhs, span } => {
+            let projection_ctx = RhsProjectionCtx {
+                k: ctx.k,
+                known_names: ctx.known_names,
+                array_dims: ctx.array_dims,
+                record_array_fields: ctx.record_array_fields,
+                functions: ctx.functions,
+                target_form: ctx.target_form,
+            };
+            if let Some(projected) = try_project_product_lane(op, lhs, rhs, *span, &projection_ctx)?
+            {
+                return Ok(projected);
+            }
             Ok(rumoca_core::Expression::Binary {
                 op: op.clone(),
                 lhs: Box::new(scalarize_expr_with_context(lhs, ctx)?),
@@ -2484,10 +2511,7 @@ fn scalarize_expr_with_context(
             {
                 let element_ctx = ScalarizeExprContext {
                     k: element_lane,
-                    phantom_map: ctx.phantom_map,
-                    array_dims: ctx.array_dims,
-                    record_array_fields: ctx.record_array_fields,
-                    functions: ctx.functions,
+                    ..*ctx
                 };
                 scalarize_expr_with_context(&elements[element_index], &element_ctx)
             } else {
@@ -2565,6 +2589,16 @@ fn scalarize_index_expr_at(
     } = base
         && base_subscripts.is_empty()
     {
+        if let Some(dims) = ctx.array_dims.get(name.as_str())
+            && let Some(projected_subscripts) =
+                project_slice_subscripts_for_lane(dims, subscripts, ctx.k, span)?
+        {
+            return Ok(rumoca_core::Expression::VarRef {
+                name: name.clone(),
+                subscripts: projected_subscripts,
+                span,
+            });
+        }
         if subscripts
             .iter()
             .all(|subscript| matches!(subscript, rumoca_core::Subscript::Colon { .. }))
@@ -2579,16 +2613,6 @@ fn scalarize_index_expr_at(
             )?
         {
             return Ok(expr);
-        }
-        if let Some(dims) = ctx.array_dims.get(name.as_str())
-            && let Some(projected_subscripts) =
-                project_slice_subscripts_for_lane(dims, subscripts, ctx.k, span)?
-        {
-            return Ok(rumoca_core::Expression::VarRef {
-                name: name.clone(),
-                subscripts: projected_subscripts,
-                span,
-            });
         }
     }
     Ok(rumoca_core::Expression::Index {
@@ -3340,13 +3364,12 @@ fn scalarize_builtin_array_constructor_at(
                 ctx.array_dims,
                 ctx.record_array_fields,
             );
-            scalarize_expr_at(
+            scalarize_expr_with_context(
                 value,
-                value_lane,
-                ctx.phantom_map,
-                ctx.array_dims,
-                ctx.record_array_fields,
-                ctx.functions,
+                &ScalarizeExprContext {
+                    k: value_lane,
+                    ..*ctx
+                },
             )
             .map(Some)
         }
@@ -3618,6 +3641,7 @@ fn array_from_binary_elements(
 fn scalarize_equation_list(
     equations: &mut Vec<dae::Equation>,
     phantom_map: &HashMap<String, Vec<rumoca_core::Reference>>,
+    known_names: &HashSet<String>,
     array_dims: &HashMap<String, Vec<i64>>,
     record_array_fields: &RecordArrayFieldMap,
     functions: &IndexMap<rumoca_core::VarName, rumoca_core::Function>,
@@ -3627,6 +3651,14 @@ fn scalarize_equation_list(
     let mut spans = Vec::with_capacity(equations.len());
     for eq in equations.drain(..) {
         let new_start = new_equations.len();
+        let target_form = match &eq.rhs {
+            rumoca_core::Expression::Binary {
+                op: rumoca_core::OpBinary::Sub,
+                lhs,
+                ..
+            } => infer_projectable_form(lhs, known_names, array_dims, functions),
+            _ => ExpressionForm::Other,
+        };
         let phantom_width = expr_phantom_ref_width(&eq.rhs, phantom_map);
         let effective_scalar_count = if eq.scalar_count > 1 {
             eq.scalar_count
@@ -3646,9 +3678,11 @@ fn scalarize_equation_list(
                     &eq.rhs,
                     k,
                     phantom_map,
+                    known_names,
                     array_dims,
                     record_array_fields,
                     functions,
+                    target_form,
                 )?;
                 let origin = format!("{} [scalarized {}]", eq.origin, k + 1);
                 new_equations.push(scalarized_equation_at(
@@ -3666,9 +3700,11 @@ fn scalarize_equation_list(
                 &eq.rhs,
                 0,
                 phantom_map,
+                known_names,
                 array_dims,
                 record_array_fields,
                 functions,
+                target_form,
             )?;
             new_equations.push(dae::Equation {
                 rhs: scalar_rhs,
@@ -3681,6 +3717,7 @@ fn scalarize_equation_list(
             new_equations.push(project_scalarized_residual_rhs(
                 eq,
                 phantom_map,
+                known_names,
                 array_dims,
                 record_array_fields,
                 functions,
@@ -3695,6 +3732,7 @@ fn scalarize_equation_list(
 fn project_scalarized_residual_rhs(
     eq: dae::Equation,
     phantom_map: &HashMap<String, Vec<rumoca_core::Reference>>,
+    known_names: &HashSet<String>,
     array_dims: &HashMap<String, Vec<i64>>,
     record_array_fields: &RecordArrayFieldMap,
     functions: &IndexMap<rumoca_core::VarName, rumoca_core::Function>,
@@ -3719,15 +3757,37 @@ fn project_scalarized_residual_rhs(
         let rhs = lower_colon_slice_dot_products(&eq.rhs, array_dims)?;
         return Ok(dae::Equation { rhs, ..eq });
     };
-    let Some(k) = scalarized_lhs_zero_based_index_or_singleton(name, subscripts, array_dims) else {
+    let k =
+        scalarized_lhs_zero_based_index_or_singleton(name, subscripts, array_dims).or_else(|| {
+            (subscripts.is_empty()
+                && known_names.contains(name.as_str())
+                && !array_dims.contains_key(name.as_str()))
+            .then_some(0)
+        });
+    let Some(k) = k else {
         let rhs = lower_colon_slice_dot_products(&eq.rhs, array_dims)?;
         return Ok(dae::Equation { rhs, ..eq });
     };
     let _ = phantom_map;
-    let scalar_lhs =
-        project_scalarized_rhs_expr_at(lhs, k, array_dims, record_array_fields, functions)?;
-    let scalar_rhs =
-        project_scalarized_rhs_expr_at(rhs, k, array_dims, record_array_fields, functions)?;
+    let target_form = infer_projectable_form(lhs, known_names, array_dims, functions);
+    let scalar_lhs = project_scalarized_rhs_expr_at(
+        lhs,
+        k,
+        known_names,
+        array_dims,
+        record_array_fields,
+        functions,
+        target_form,
+    )?;
+    let scalar_rhs = project_scalarized_rhs_expr_at(
+        rhs,
+        k,
+        known_names,
+        array_dims,
+        record_array_fields,
+        functions,
+        target_form,
+    )?;
     let scalar_lhs = lower_colon_slice_dot_products(&scalar_lhs, array_dims)?;
     let scalar_rhs = lower_colon_slice_dot_products(&scalar_rhs, array_dims)?;
     Ok(dae::Equation {
@@ -3744,15 +3804,19 @@ fn project_scalarized_residual_rhs(
 fn project_scalarized_rhs_expr_at(
     expr: &rumoca_core::Expression,
     k: usize,
+    known_names: &HashSet<String>,
     array_dims: &HashMap<String, Vec<i64>>,
     record_array_fields: &RecordArrayFieldMap,
     functions: &IndexMap<rumoca_core::VarName, rumoca_core::Function>,
+    target_form: ExpressionForm,
 ) -> Result<rumoca_core::Expression, ToDaeError> {
     RhsProjectionCtx {
         k,
+        known_names,
         array_dims,
         record_array_fields,
         functions,
+        target_form,
     }
     .project(expr)
 }
@@ -4084,14 +4148,207 @@ fn lane_indices_for_dims(k: usize, dims: &[i64]) -> Option<Vec<i64>> {
     (remaining == 0).then_some(indices)
 }
 
+fn infer_projectable_form(
+    expr: &rumoca_core::Expression,
+    known_names: &HashSet<String>,
+    array_dims: &HashMap<String, Vec<i64>>,
+    functions: &IndexMap<rumoca_core::VarName, rumoca_core::Function>,
+) -> ExpressionForm {
+    use rumoca_core::{BuiltinFunction, Expression, OpBinary, Subscript};
+
+    let infer = |expr| infer_projectable_form(expr, known_names, array_dims, functions);
+    let selected_form = |name: &rumoca_core::Reference, subscripts: &[Subscript]| {
+        let Some(dims) = array_dims.get(name.as_str()) else {
+            return (known_names.contains(name.as_str()) && subscripts.is_empty())
+                .then_some(ExpressionForm::Scalar)
+                .unwrap_or(ExpressionForm::Other);
+        };
+        if subscripts.len() > dims.len()
+            || subscripts.iter().any(|subscript| {
+                matches!(subscript, Subscript::Expr { expr, .. }
+                    if subscript_expr_selects_vector(expr) != Some(false))
+            })
+        {
+            return ExpressionForm::Other;
+        }
+        expression_form_from_dims(&apply_subscripts_to_dims(dims, subscripts))
+    };
+    match expr {
+        Expression::Literal { .. } => ExpressionForm::Scalar,
+        Expression::VarRef {
+            name, subscripts, ..
+        } => selected_form(name, subscripts),
+        Expression::Index {
+            base, subscripts, ..
+        } => match base.as_ref() {
+            Expression::VarRef {
+                name,
+                subscripts: base_subscripts,
+                ..
+            } if base_subscripts.is_empty() => selected_form(name, subscripts),
+            _ => ExpressionForm::Other,
+        },
+        Expression::Binary { op, lhs, rhs, .. } => {
+            let forms = (infer(lhs), infer(rhs));
+            match op {
+                OpBinary::Add | OpBinary::Sub
+                    if forms == (ExpressionForm::Scalar, ExpressionForm::Scalar) =>
+                {
+                    ExpressionForm::Scalar
+                }
+                OpBinary::Mul => combine_mul_forms(forms.0, forms.1),
+                OpBinary::MulElem => combine_elementwise_forms(forms.0, forms.1),
+                _ => ExpressionForm::Other,
+            }
+        }
+        Expression::BuiltinCall {
+            function: BuiltinFunction::Transpose,
+            args,
+            ..
+        } => match args.as_slice() {
+            [arg] => match infer(arg) {
+                ExpressionForm::Matrix(rows, columns) => ExpressionForm::Matrix(columns, rows),
+                _ => ExpressionForm::Other,
+            },
+            _ => ExpressionForm::Other,
+        },
+        Expression::FunctionCall { name, .. } => functions
+            .get(name.var_name())
+            .and_then(|function| function.outputs.first())
+            .filter(|output| output.dims.is_empty())
+            .map_or(ExpressionForm::Other, |_| ExpressionForm::Scalar),
+        Expression::If {
+            branches,
+            else_branch,
+            ..
+        } => (infer(else_branch) == ExpressionForm::Scalar
+            && branches
+                .iter()
+                .all(|(_, value)| infer(value) == ExpressionForm::Scalar))
+        .then_some(ExpressionForm::Scalar)
+        .unwrap_or(ExpressionForm::Other),
+        _ => ExpressionForm::Other,
+    }
+}
+
+fn try_project_product_lane(
+    op: &rumoca_core::OpBinary,
+    lhs: &rumoca_core::Expression,
+    rhs: &rumoca_core::Expression,
+    span: rumoca_core::Span,
+    ctx: &RhsProjectionCtx<'_>,
+) -> Result<Option<rumoca_core::Expression>, ToDaeError> {
+    if !matches!(
+        op,
+        rumoca_core::OpBinary::Mul | rumoca_core::OpBinary::MulElem
+    ) {
+        return Ok(None);
+    }
+    let (lhs_form, rhs_form) = (ctx.form(lhs), ctx.form(rhs));
+    if lhs_form == ExpressionForm::Scalar && rhs_form == ExpressionForm::Scalar {
+        return Ok(None);
+    }
+    for (expr, form) in [(lhs, lhs_form), (rhs, rhs_form)] {
+        if form == ExpressionForm::Other {
+            let detail = match expr {
+                rumoca_core::Expression::VarRef { name, .. }
+                    if ctx.array_dims.get(name.as_str()).is_some_and(|dims| dims.len() > 2) =>
+                    "matrix-product operand has unsupported rank",
+                _ => "matrix-product operand has unknown operand shape",
+            };
+            return Err(ctx.error(span, detail));
+        }
+    }
+    let elementwise = matches!(op, rumoca_core::OpBinary::MulElem);
+    let result = if elementwise {
+        combine_elementwise_forms(lhs_form, rhs_form)
+    } else {
+        combine_mul_forms(lhs_form, rhs_form)
+    };
+    if result == ExpressionForm::Other {
+        return Err(ctx.error(
+            span,
+            if elementwise {
+                "elementwise shape mismatch"
+            } else {
+                "matrix-product inner dimension mismatch"
+            },
+        ));
+    }
+    if ctx.target_form == ExpressionForm::Scalar && result != ctx.target_form {
+        return Err(ctx.error(span, "non-scalar result in scalar context"));
+    }
+    if ctx.target_form != result {
+        return Err(ctx.error(span, "matrix-product result shape does not match target"));
+    }
+    if elementwise || lhs_form == ExpressionForm::Scalar || rhs_form == ExpressionForm::Scalar {
+        return Ok(Some(rumoca_core::Expression::Binary {
+            op: op.clone(),
+            lhs: Box::new(ctx.project_at(lhs, ctx.k)?),
+            rhs: Box::new(ctx.project_at(rhs, ctx.k)?),
+            span,
+        }));
+    }
+    let inner = match lhs_form {
+        ExpressionForm::Vector(inner) | ExpressionForm::Matrix(_, inner) => inner,
+        _ => 0,
+    };
+    if inner == 0 {
+        return Err(ctx.error(span, "matrix-product inner dimension must be positive"));
+    }
+    let mut values = (Vec::with_capacity(inner), Vec::with_capacity(inner));
+    for index in 0..inner {
+        let lanes = match (lhs_form, rhs_form) {
+            (ExpressionForm::Vector(_), ExpressionForm::Vector(_)) => (index, index),
+            (ExpressionForm::Matrix(_, n), ExpressionForm::Vector(_)) => (ctx.k * n + index, index),
+            (ExpressionForm::Vector(_), ExpressionForm::Matrix(_, columns)) => {
+                (index, index * columns + ctx.k)
+            }
+            (ExpressionForm::Matrix(_, n), ExpressionForm::Matrix(_, columns)) => (
+                (ctx.k / columns) * n + index,
+                index * columns + ctx.k % columns,
+            ),
+            _ => return Err(ctx.error(span, "matrix-product lane mapping failed")),
+        };
+        values.0.push(ctx.project_at(lhs, lanes.0)?);
+        values.1.push(ctx.project_at(rhs, lanes.1)?);
+    }
+    dot_product_expr(&values.0, &values.1, span)
+        .map(Some)
+        .ok_or_else(|| ctx.error(span, "matrix-product inner dimension must be positive"))
+}
+
 struct RhsProjectionCtx<'a> {
     k: usize,
+    known_names: &'a HashSet<String>,
     array_dims: &'a HashMap<String, Vec<i64>>,
     record_array_fields: &'a RecordArrayFieldMap,
     functions: &'a IndexMap<rumoca_core::VarName, rumoca_core::Function>,
+    target_form: ExpressionForm,
 }
 
 impl RhsProjectionCtx<'_> {
+    fn form(&self, expr: &rumoca_core::Expression) -> ExpressionForm {
+        infer_projectable_form(expr, self.known_names, self.array_dims, self.functions)
+    }
+
+    fn error(&self, span: rumoca_core::Span, detail: impl Into<String>) -> ToDaeError {
+        ToDaeError::runtime_contract_violation_at(detail.into(), span)
+    }
+
+    fn project_at(
+        &self,
+        expr: &rumoca_core::Expression,
+        k: usize,
+    ) -> Result<rumoca_core::Expression, ToDaeError> {
+        RhsProjectionCtx {
+            k,
+            target_form: self.form(expr),
+            ..*self
+        }
+        .project(expr)
+    }
+
     fn project(
         &self,
         expr: &rumoca_core::Expression,
@@ -4116,6 +4373,20 @@ impl RhsProjectionCtx<'_> {
                 is_constructor,
                 span,
             } => self.project_function_call(name, args, *is_constructor, *span),
+            rumoca_core::Expression::BuiltinCall {
+                function: rumoca_core::BuiltinFunction::Transpose,
+                args,
+                span,
+            } => {
+                let [arg] = args.as_slice() else {
+                    return Err(self.error(*span, "transpose requires one matrix operand"));
+                };
+                let ExpressionForm::Matrix(rows, columns) = self.form(arg) else {
+                    return Err(self.error(*span, "transpose operand is not a proven matrix"));
+                };
+                let lane = (self.k % rows) * columns + self.k / rows;
+                self.project_at(arg, lane)
+            }
             rumoca_core::Expression::FieldAccess { base, field, span } => {
                 self.project_field_access(base, field, *span)
             }
@@ -4144,15 +4415,13 @@ impl RhsProjectionCtx<'_> {
         else {
             return Ok(expr.clone());
         };
-        if subscripts.is_empty() && self.array_dims.contains_key(name.as_str()) {
-            let index = one_based_scalar_index(self.k, *span, "DAE scalar lhs RHS projection")?;
+        if let Some(dims) = self.array_dims.get(name.as_str())
+            && let Some(subscripts) =
+                project_slice_subscripts_for_lane(dims, subscripts, self.k, *span)?
+        {
             return Ok(rumoca_core::Expression::VarRef {
                 name: name.clone(),
-                subscripts: vec![generated_index_subscript(
-                    index,
-                    *span,
-                    "DAE scalar lhs RHS projection",
-                )?],
+                subscripts,
                 span: *span,
             });
         }
@@ -4339,6 +4608,9 @@ impl RhsProjectionCtx<'_> {
         rhs: &rumoca_core::Expression,
         span: rumoca_core::Span,
     ) -> Result<rumoca_core::Expression, ToDaeError> {
+        if let Some(projected) = try_project_product_lane(op, lhs, rhs, span, self)? {
+            return Ok(projected);
+        }
         Ok(rumoca_core::Expression::Binary {
             op: op.clone(),
             lhs: Box::new(self.project(lhs)?),
@@ -4505,7 +4777,7 @@ fn project_scalarized_function_arg_at(
         span,
     } = arg
     else {
-        return project_scalarized_rhs_expr_at(arg, k, array_dims, record_array_fields, functions);
+        return Ok(arg.clone());
     };
     if !subscripts.is_empty() {
         return Ok(arg.clone());
@@ -4522,7 +4794,7 @@ fn project_scalarized_function_arg_at(
         return Ok(arg.clone());
     }
     if dims.len() != formal_rank + 1 {
-        return project_scalarized_rhs_expr_at(arg, k, array_dims, record_array_fields, functions);
+        return Ok(arg.clone());
     }
     let index = one_based_scalar_index(k, *span, "DAE scalarized function argument projection")?;
     let index_subscript =
