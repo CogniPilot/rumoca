@@ -640,8 +640,15 @@ const TEMPLATE_RUNTIME_GROUPS: &[TemplateRuntimeTestGroup] = &[
     },
     TemplateRuntimeTestGroup {
         backend: TemplateRuntimeBackend::Render,
-        test: "standalone_template_regression",
+        test: "codegen_example_regression",
         filters: &[],
+    },
+    // The projected template schema pin lives in the backend runtime test but
+    // needs no external toolchain, so the render group runs it directly.
+    TemplateRuntimeTestGroup {
+        backend: TemplateRuntimeBackend::Render,
+        test: "backend_template_runtime_regression",
+        filters: &["dae_template_context_"],
     },
     TemplateRuntimeTestGroup {
         backend: TemplateRuntimeBackend::C,
@@ -664,6 +671,18 @@ impl TemplateRuntimeTestGroup {
     fn matches(self, backend: TemplateRuntimeBackend) -> bool {
         backend == TemplateRuntimeBackend::All || self.backend == backend
     }
+}
+
+/// Cargo test-target names the template runtime gate drives, derived from the
+/// group table so the artifact trimmer can never pin a stale target name.
+fn template_runtime_test_stems() -> Vec<&'static str> {
+    let mut stems: Vec<&'static str> = Vec::new();
+    for group in TEMPLATE_RUNTIME_GROUPS {
+        if !stems.contains(&group.test) {
+            stems.push(group.test);
+        }
+    }
+    stems
 }
 
 fn run_template_runtime_checks(root: &Path, args: VerifyTemplateRuntimeArgs) -> Result<()> {
@@ -717,11 +736,7 @@ fn trim_template_runtime_artifacts(root: &Path) -> Result<()> {
         return Ok(());
     }
 
-    let test_stems = [
-        "template_target_ci",
-        "standalone_template_regression",
-        "backend_template_runtime_regression",
-    ];
+    let test_stems = template_runtime_test_stems();
     for entry in fs::read_dir(&deps_dir)
         .with_context(|| format!("read Cargo deps directory {}", deps_dir.display()))?
     {
@@ -1587,6 +1602,10 @@ where
         eprintln!("  {line}");
     }
 }
+
+#[cfg(test)]
+#[path = "verify_cmd/template_runtime_tests.rs"]
+mod template_runtime_tests;
 
 #[cfg(test)]
 mod tests {

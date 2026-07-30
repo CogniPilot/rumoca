@@ -303,7 +303,7 @@ fn variable_slot(
     })
 }
 
-fn evaluation_error(error: NumericEvaluationError) -> SimulationDiagnosticError {
+pub(super) fn evaluation_error(error: NumericEvaluationError) -> SimulationDiagnosticError {
     if error.kind() == NumericEvaluationErrorKind::InvalidOverride {
         SimulationDiagnosticError::InvalidOverride {
             message: error.to_string(),

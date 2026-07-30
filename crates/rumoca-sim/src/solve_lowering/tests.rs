@@ -586,6 +586,55 @@ fn unprovided_input_is_rejected_instead_of_receiving_a_default_value() {
     );
 }
 
+/// GPU preparation hands the browser each input's `P` slot and the browser writes it
+/// before every dispatch, so the prepared vectors only have to state the value that slot
+/// holds until the first write: the declared `start` (MLS §4.4.2.1). Reading only the
+/// binding rejected every shipped interactive model — `input Real throttle(start = 0)` in
+/// `examples/interactive/rover` — and aborted `prepare_gpu_simulation` before any shader
+/// was rendered.
+#[test]
+fn gpu_preparation_seeds_host_driven_inputs_from_their_declared_start() {
+    let dae = compile(
+        concat!(
+            "model HostDrivenInput\n",
+            "  parameter Real u0 = 2.0;\n",
+            "  input Real u_cmd(start = u0);\n",
+            "  Real x(start = u0, fixed = true);\n",
+            "equation\n",
+            "  der(x) = u_cmd - x;\n",
+            "end HostDrivenInput;\n",
+        ),
+        "HostDrivenInput",
+    );
+
+    let prepared = super::entry::lower_dae_for_gpu_preparation(&dae, &SimOptions::default())
+        .expect("a host-driven input carries its declared start into the prepared vectors");
+    let slot = prepared
+        .problem
+        .layout
+        .binding("u_cmd")
+        .expect("the input keeps a storage slot the host can write");
+    let rumoca_ir_solve::ScalarSlot::P { index, .. } = slot else {
+        panic!("a host-driven input belongs in parameter storage, got {slot:?}");
+    };
+    assert_eq!(
+        prepared.parameters.get(index).copied(),
+        Some(2.0),
+        "the seeded slot must hold the declared start, not a stand-in"
+    );
+
+    // The strict rule for headless simulation is untouched: the same model still has no
+    // provider when nothing drives it.
+    let error = lower_dae_for_simulation(&dae, &SimOptions::default())
+        .expect_err("plain simulation still refuses an undriven input");
+    assert!(
+        error
+            .to_string()
+            .contains("input `u_cmd` has neither a checked default nor a runtime value"),
+        "{error}"
+    );
+}
+
 /// A `String` declaration carries no numeric value (MLS §3.8.4), so it must not be asked
 /// for one while the runtime vectors are built. Every clocked partition in the MSL
 /// declares `Modelica.Clocked.Types.SolverMethod solverMethod`, which made this the

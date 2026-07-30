@@ -111,13 +111,25 @@ pub fn prepare_gpu_simulation(source: &str, model_name: &str) -> Result<String, 
             .filter(|value| value.is_finite() && *value > 0.0)
             .unwrap_or(dt);
 
+        // The lowered vectors hold declared start values; the browser starts
+        // integrating from `y0` immediately and never runs an initialization
+        // solve of its own, so the payload has to carry the *settled* state.
+        // This is the same settle sequence `update_gpu_parameters` runs (and
+        // the same the native runtime performs at simulation start): apply the
+        // initialization updates, refresh relation memory, then the algebraic
+        // and output slots. Without it a model whose profile comes from an
+        // `initial equation` (every PDE demo: `u[i, j] = exp(...)`) would be
+        // dispatched from an all-zero field.
+        let (y0, p0) = rumoca_sim::refresh_prepared_vectors(&solve_model, opts.t_start, &[])
+            .map_err(|e| JsValue::from_str(&format!("GPU preparation settle failed: {e}")))?;
+
         let response = serde_json::json!({
             "wgsl": wgsl,
             "layout": layout,
             "var_layout": solve_model.problem.layout,
             "input_names": solve_model.problem.solve_layout.input_scalar_names(),
-            "y0": solve_model.initial_y,
-            "p0": solve_model.parameters,
+            "y0": y0,
+            "p0": p0,
             "n_states": state_count,
             "state_names": state_names,
             "t_start": opts.t_start,

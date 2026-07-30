@@ -73,6 +73,13 @@ struct HolonomicConstraint {
 /// scalar expressions, direct state definitions, and unstructured continuous
 /// and initialization residuals. A model outside that subset retains its
 /// original structural error instead of receiving a guessed transformation.
+///
+/// State demotions accumulate to a fixed point. A candidate that matches the
+/// whole system wins outright; otherwise the first candidate that strictly
+/// shrinks the unmatched residue is applied and the remaining candidates are
+/// re-tested against that updated system. A singularity that only several
+/// simultaneous demotions resolve therefore reduces, while a model that no
+/// demotion improves still reports its original singularity.
 pub fn prepare_for_solve(model: &dae::Dae) -> Result<PreparedDae<'_>, StructuralError> {
     let singular = match model.inspect(|view| sort(view).map(|_| ())) {
         Ok(_) => return Ok(PreparedDae::Borrowed(model)),
@@ -80,26 +87,105 @@ pub fn prepare_for_solve(model: &dae::Dae) -> Result<PreparedDae<'_>, Structural
         Err(StructuralError::EmptySystem) => return Ok(PreparedDae::Borrowed(model)),
         Err(error) => return Err(error),
     };
-    let candidates = model.inspect(direct_state_constraints);
-    for candidate in candidates {
-        let rebuilt = rebuild_with_state_demotion(model, candidate)?;
-        if rebuilt.inspect(|view| sort(view).map(|_| ())).is_ok() {
-            return Ok(PreparedDae::Transformed {
-                dae: Box::new(rebuilt),
-                manifold: Box::new([]),
-            });
+    let mut residue =
+        unmatched_residue(&singular).expect("singular system reports its unmatched residue");
+    let mut demoted: Option<dae::Dae> = None;
+    loop {
+        let step = demote_direct_state(demoted.as_ref().unwrap_or(model), residue)?;
+        match step {
+            None => break,
+            Some(DemotionStep::Sorted(dae)) => {
+                return Ok(PreparedDae::Transformed {
+                    dae: Box::new(dae),
+                    manifold: Box::new([]),
+                });
+            }
+            Some(DemotionStep::Reduced { dae, residue: next }) => {
+                residue = next;
+                demoted = Some(dae);
+            }
         }
     }
+    let mut holonomic = reduce_holonomic_constraint(demoted.as_ref().unwrap_or(model))?;
+    if holonomic.is_none() && demoted.is_some() {
+        holonomic = reduce_holonomic_constraint(model)?;
+    }
+    match holonomic {
+        Some((dae, manifold)) => Ok(PreparedDae::Transformed {
+            dae: Box::new(dae),
+            manifold: manifold.into_boxed_slice(),
+        }),
+        None => Err(singular),
+    }
+}
+
+/// One accepted state demotion: either a fully matched replacement or a strict
+/// reduction of the unmatched residue that the next round keeps working on.
+enum DemotionStep {
+    Sorted(dae::Dae),
+    Reduced { dae: dae::Dae, residue: usize },
+}
+
+/// Demote one directly defined state of `model`.
+///
+/// Every candidate is tested against `model` itself, so an accumulated
+/// demotion is re-tested against the system it produced rather than against a
+/// stale pristine one. `residue` is the unmatched residue of `model`; only a
+/// strict reduction of it is accepted as progress, which bounds the number of
+/// accumulation rounds by the residue of the original singular system.
+fn demote_direct_state(
+    model: &dae::Dae,
+    residue: usize,
+) -> Result<Option<DemotionStep>, StructuralError> {
+    let mut reduced = None;
+    for candidate in model.inspect(direct_state_constraints) {
+        let rebuilt = rebuild_with_state_demotion(model, candidate)?;
+        match rebuilt.inspect(|view| sort(view).map(|_| ())) {
+            Ok(()) => return Ok(Some(DemotionStep::Sorted(rebuilt))),
+            Err(error) => {
+                if reduced.is_none()
+                    && let Some(next) = unmatched_residue(&error)
+                    && next < residue
+                {
+                    reduced = Some(DemotionStep::Reduced {
+                        dae: rebuilt,
+                        residue: next,
+                    });
+                }
+            }
+        }
+    }
+    Ok(reduced)
+}
+
+/// Reduce one holonomic constraint of `model`, reporting the replacement DAE
+/// and its manifold expressions once the differentiated system matches.
+fn reduce_holonomic_constraint(
+    model: &dae::Dae,
+) -> Result<Option<(dae::Dae, Vec<u32>)>, StructuralError> {
     for constraint in model.inspect(holonomic_constraints) {
         let (rebuilt, manifold) = rebuild_holonomic_constraint(model, constraint)?;
         if rebuilt.inspect(|view| sort(view).map(|_| ())).is_ok() {
-            return Ok(PreparedDae::Transformed {
-                dae: Box::new(rebuilt),
-                manifold: manifold.into_boxed_slice(),
-            });
+            return Ok(Some((rebuilt, manifold)));
         }
     }
-    Err(singular)
+    Ok(None)
+}
+
+/// Equations and unknowns that a maximum matching leaves unpaired, which is
+/// zero exactly when the matching is perfect. Reported only for a singular
+/// system; any other structural failure has no comparable residue.
+fn unmatched_residue(error: &StructuralError) -> Option<usize> {
+    let StructuralError::Singular {
+        n_equations,
+        n_unknowns,
+        n_matched,
+        ..
+    } = error
+    else {
+        return None;
+    };
+    Some((n_equations - n_matched) + (n_unknowns - n_matched))
 }
 
 fn direct_state_constraints(view: dae::DaeView<'_>) -> Vec<DirectStateConstraint> {
