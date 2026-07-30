@@ -5,7 +5,7 @@ use std::fmt;
 
 use rumoca_core::{ClockLatticeErrorKind, Span, StructuredIndexDomainError, TypeId, VarName};
 
-use crate::{DaeProvenanceOrigin, ScalarType, ValueType};
+use crate::{DaeProvenanceOrigin, ScalarType, ValueType, VariableRole};
 
 /// Failure to construct or decode the DAE.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
@@ -134,6 +134,13 @@ pub enum DaeConstructionError {
     InvalidRecursiveFunctionGroup { span: Span },
     #[error("variable `{name}` has the wrong DAE coordinate role")]
     InvalidVariableRole { name: VarName, span: Span },
+    #[error("variable `{name}` of type {found:?} cannot be a {role:?} DAE coordinate")]
+    InvalidVariableType {
+        name: VarName,
+        role: VariableRole,
+        found: ScalarType,
+        span: Span,
+    },
     #[error("duplicate {kind} definition for identity {index}")]
     DuplicateDefinition {
         kind: &'static str,
@@ -276,6 +283,7 @@ impl DaeConstructionError {
             | Self::InvalidFunctionDependency { span, .. }
             | Self::InvalidRecursiveFunctionGroup { span }
             | Self::InvalidVariableRole { span, .. }
+            | Self::InvalidVariableType { span, .. }
             | Self::DuplicateDefinition { span, .. }
             | Self::DuplicateKey { span, .. }
             | Self::MissingClockOwnership { span, .. }

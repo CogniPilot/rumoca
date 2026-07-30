@@ -45,15 +45,12 @@ impl TestSource {
 
 #[test]
 fn record_layout_values_and_field_uses_round_trip_through_checked_wire() {
-    let source = TestSource::new(
-        "record Pair Real left; Real right; end Pair; parameter Pair companion = Pair(1, 2); companion.left",
-    );
+    let source =
+        TestSource::new("record Pair Real left; Real right; end Pair; Pair(1, 2); Pair(3, 4).left");
     let real_at = source.source("Real left", 0);
     let record_at = source.source("record Pair Real left; Real right; end Pair", 0);
-    let variable_at = source.source("parameter Pair companion = Pair(1, 2)", 0);
     let constructor_at = source.source("Pair(1, 2)", 0);
-    let use_at = source.source("companion", 1);
-    let projection_at = source.source("companion.left", 0);
+    let projection_at = source.source("Pair(3, 4).left", 0);
     let dae = Dae::construct(source.map, |dae| {
         let real =
             dae.types(|types| types.derived(ValueType::scalar(ScalarType::Real), real_at))?;
@@ -64,10 +61,7 @@ fn record_layout_values_and_field_uses_round_trip_through_checked_wire() {
                 record_at,
             )
         })?;
-        let (companion, reservation) = dae.variables(|variables| {
-            variables.reserve_parameter(VarName::new("companion"), record, variable_at)
-        })?;
-        let binding = dae.expressions(|expressions| {
+        dae.expressions(|expressions| {
             let one = expressions
                 .at(constructor_at)
                 .literal(DaeLiteral::Integer(1))?;
@@ -76,20 +70,16 @@ fn record_layout_values_and_field_uses_round_trip_through_checked_wire() {
                 .literal(DaeLiteral::Integer(2))?;
             expressions.at(constructor_at).record(record, [one, two])
         })?;
-        dae.variables(|variables| {
-            variables.define(
-                reservation,
-                VariableAttributes {
-                    binding: Some(binding),
-                    ..VariableAttributes::default()
-                },
-                variable_at,
-            )
-        })?;
         dae.expressions(|expressions| {
+            let three = expressions
+                .at(projection_at)
+                .literal(DaeLiteral::Integer(3))?;
+            let four = expressions
+                .at(projection_at)
+                .literal(DaeLiteral::Integer(4))?;
             let base = expressions
-                .at(use_at)
-                .coordinate(CoordinateInput::Parameter(companion))?;
+                .at(projection_at)
+                .record(record, [three, four])?;
             expressions.at(projection_at).field(base, 0).map(|_| ())
         })
     })
@@ -115,13 +105,14 @@ fn assert_record_round_trip(view: DaeView<'_>) {
     assert_eq!(record.record_name().unwrap().as_str(), "Pair");
     assert_eq!(view.record_field(record_id, 0).unwrap().0.as_str(), "left");
     assert_eq!(view.record_field(record_id, 1).unwrap().0.as_str(), "right");
-    let (_, companion) = view
-        .variables()
-        .find(|(_, variable)| variable.name().as_str() == "companion")
-        .expect("record variable survives");
-    let binding = view
-        .expression(companion.binding().expect("record binding survives"))
-        .expect("record binding resolves");
+    let binding = (0..view.expression_count())
+        .filter_map(|index| view.expression_id(index))
+        .filter_map(|id| view.expression(id))
+        .find(|expression| {
+            view.source_text(expression.provenance()) == Some("Pair(1, 2)")
+                && matches!(expression.operation(), ExpressionOperation::Record(_))
+        })
+        .expect("record value survives");
     assert!(matches!(
         binding.operation(),
         ExpressionOperation::Record(_)
@@ -130,7 +121,13 @@ fn assert_record_round_trip(view: DaeView<'_>) {
     let projection = (0..view.expression_count())
         .filter_map(|index| view.expression_id(index))
         .filter_map(|id| view.expression(id))
-        .find(|expression| view.source_text(expression.provenance()) == Some("companion.left"))
+        .find(|expression| {
+            view.source_text(expression.provenance()) == Some("Pair(3, 4).left")
+                && matches!(
+                    expression.operation(),
+                    ExpressionOperation::Field { field: 0, .. }
+                )
+        })
         .expect("field use survives");
     assert!(matches!(
         projection.operation(),

@@ -3,6 +3,7 @@ mod function_checks;
 mod function_reads;
 mod storage;
 mod value_types;
+mod variable_types;
 mod view;
 mod wire;
 
@@ -60,6 +61,7 @@ pub(crate) use function_reads::{
     FunctionReadFact, FunctionReadMergeError, FunctionReadSet, FunctionReadSets,
 };
 pub use value_types::ValueTypes;
+use variable_types::VariableTypeCapability;
 
 pub use view::{
     ContinuousOwnerView, CoordinateView, DaeView, DomainView, ExpressionKind, ExpressionOperands,
@@ -710,8 +712,22 @@ impl<'dae> Variables<'_, 'dae> {
         declaration: DaeProvenance,
     ) -> Result<VariableId<'dae>, DaeConstructionError> {
         check_provenance(self.source_map, declaration)?;
-        self.storage
-            .value_type_at(value_type.index(), declaration)?;
+        let capability = self.storage.variable_type_capability(
+            &name,
+            role,
+            variability,
+            value_type,
+            declaration,
+        )?;
+        self.insert_reservation(name, capability, declaration)
+    }
+
+    fn insert_reservation(
+        &mut self,
+        name: VarName,
+        capability: VariableTypeCapability<'dae>,
+        declaration: DaeProvenance,
+    ) -> Result<VariableId<'dae>, DaeConstructionError> {
         if self
             .storage
             .variables
@@ -727,9 +743,9 @@ impl<'dae> Variables<'_, 'dae> {
         let raw = checked_u32(self.storage.variables.len(), "variable arena", declaration)?;
         self.storage.variables.push(VariableEntry {
             name,
-            role,
-            variability,
-            value_type: value_type.index(),
+            role: capability.role(),
+            variability: capability.variability(),
+            value_type: capability.value_type().index(),
             declaration,
             attributes: None,
         });

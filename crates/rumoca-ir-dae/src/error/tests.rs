@@ -310,6 +310,21 @@ fn ownership_messages_are_exact() {
 }
 
 #[test]
+fn variable_type_message_is_exact() {
+    let at = span();
+    assert_cases([Case {
+        error: DaeConstructionError::InvalidVariableType {
+            name: VarName::new("plant.enabled"),
+            role: VariableRole::State,
+            found: ScalarType::Boolean,
+            span: at,
+        },
+        message: "variable `plant.enabled` of type Boolean cannot be a State DAE coordinate",
+        span: Some(at),
+    }]);
+}
+
+#[test]
 fn definition_messages_are_exact() {
     let at = span();
     assert_cases([

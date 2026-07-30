@@ -192,6 +192,21 @@ fn wire_rejects_malformed_type_anchors() {
     assert!(serde_json::from_value::<Dae>(extraneous).is_err());
 }
 
+#[test]
+fn wire_replays_variable_role_type_checks() {
+    let dae = derived_wire_fixture();
+    let mut forged = serde_json::to_value(&dae).unwrap();
+    forged["storage"]["value_types"][0]["scalar"] = serde_json::json!("boolean");
+
+    let error = serde_json::from_value::<Dae>(forged)
+        .expect_err("wire cannot forge a Boolean discrete-Real coordinate")
+        .to_string();
+    assert!(
+        error.contains("variable `z` of type Boolean cannot be a DiscreteReal DAE coordinate"),
+        "unexpected checked-wire failure: {error}"
+    );
+}
+
 fn object_at_mut<'value>(
     value: &'value mut serde_json::Value,
     path: &[&str],
