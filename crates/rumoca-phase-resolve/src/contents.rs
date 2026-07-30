@@ -683,11 +683,14 @@ impl Resolver {
 /// primary denotes (MLS §3.7.3), so both are traversed. Every other expression
 /// form denotes a value with no declaration of its own.
 fn base_declaration_identity(base: &Expression) -> Option<DefId> {
-    match base {
-        Expression::Parenthesized { inner, .. } => base_declaration_identity(inner),
-        Expression::ArrayIndex { base, .. } => base_declaration_identity(base),
-        Expression::ComponentReference(reference) => reference.target_def_id(),
-        Expression::FieldAccess { field_def_id, .. } => *field_def_id,
-        _ => None,
+    let mut current = base;
+    loop {
+        match current {
+            Expression::Parenthesized { inner, .. } => current = inner,
+            Expression::ArrayIndex { base, .. } => current = base,
+            Expression::ComponentReference(reference) => return reference.target_def_id(),
+            Expression::FieldAccess { field_def_id, .. } => return *field_def_id,
+            _ => return None,
+        }
     }
 }
