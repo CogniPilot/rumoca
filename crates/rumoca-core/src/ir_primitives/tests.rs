@@ -4,9 +4,10 @@ use super::{
     FunctionParamShapeContractError, FunctionShapeContractError, InstanceId, Literal, OpBinary,
     PRE_SLOT_NAMESPACE, Reference, ResolvedFunctionReference, SourceId, Span, Subscript, TypeId,
     VarName, component_path_base_name, component_path_trailing_index,
-    expression_semantic_fingerprint, expressions_semantically_equal, flat_expression_component_path,
-    is_pre_slot, parse_scalar_name, pre_slot_base, pre_slot_name, scoped_component_path_candidates,
-    split_trailing_subscript_suffix, strip_trailing_subscript_suffix,
+    expression_semantic_fingerprint, expressions_semantically_equal,
+    flat_expression_component_path, is_pre_slot, parse_scalar_name, pre_slot_base, pre_slot_name,
+    scoped_component_path_candidates, split_trailing_subscript_suffix,
+    strip_trailing_subscript_suffix,
 };
 use crate::{EffectiveType, EffectiveTypeError};
 use std::collections::HashMap;
