@@ -13,7 +13,6 @@ required-features = ["server"]
 
 [dependencies]
 rumoca-compile = { workspace = true }
-rumoca-core = { workspace = true }
 rumoca-phase-dae = { workspace = true }
 rumoca-phase-codegen = { workspace = true }
 rumoca-phase-galec = { workspace = true }
