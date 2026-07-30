@@ -116,6 +116,21 @@ impl CodegenError {
         }
     }
 
+    /// Create a template diagnostic anchored to model source.
+    pub(crate) fn template_render_at(
+        message: impl Into<String>,
+        source_name: impl Into<String>,
+        source: impl Into<String>,
+        span: rumoca_core::Span,
+    ) -> Self {
+        let source_name = source_name.into();
+        Self::TemplateRenderError {
+            message: message.into(),
+            src: NamedSource::new(source_name, source.into()),
+            span: SourceSpan::new(span.start.0.into(), span.end.0.saturating_sub(span.start.0)),
+        }
+    }
+
     /// Create a stable simulation-codegen diagnostic for unsupported external calls.
     pub fn external_function_not_callable(function: impl Into<String>) -> Self {
         let function = function.into();

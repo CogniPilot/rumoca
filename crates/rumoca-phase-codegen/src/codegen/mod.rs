@@ -11,10 +11,13 @@ use serde::Serialize;
 use std::path::Path;
 
 #[cfg(test)]
+mod checked_dae_diagnostic_tests;
+#[cfg(test)]
 mod checked_dae_tests;
 #[cfg(test)]
 mod codegen_test_support;
 mod dae_backend;
+mod dae_diagnostics;
 mod expr_config;
 #[cfg(test)]
 mod galec_golden_tests;
@@ -169,19 +172,20 @@ fn render_dae_context(
     model_name: Option<&str>,
 ) -> Result<String, CodegenError> {
     let dae_value = dae_template_value(dae_model)?;
-    match model_name {
-        Some(name) => Ok(tmpl.render(minijinja::context! {
+    let rendered = match model_name {
+        Some(name) => tmpl.render(minijinja::context! {
             dae => dae_value.clone(),
             ir => dae_value,
             ir_kind => "dae",
             model_name => name,
-        })?),
-        None => Ok(tmpl.render(minijinja::context! {
+        }),
+        None => tmpl.render(minijinja::context! {
             dae => dae_value.clone(),
             ir => dae_value,
             ir_kind => "dae",
-        })?),
-    }
+        }),
+    };
+    rendered.map_err(|error| dae_diagnostics::render_error(dae_model, error))
 }
 
 fn render_solve_context(
@@ -632,6 +636,9 @@ pub fn render_ast_template_with_name(
 /// Create a minijinja environment with all custom filters and functions.
 fn create_environment() -> Environment<'static> {
     let mut env = Environment::new();
+    // Preserve template source on ordinary render failures in release builds.
+    // MiniJinja clones this debug context only when constructing an error.
+    env.set_debug(true);
     // Fail fast on missing fields/variables in templates.
     env.set_undefined_behavior(UndefinedBehavior::Strict);
     env.add_template(
@@ -722,6 +729,7 @@ fn create_environment() -> Environment<'static> {
     // Custom function for detecting self-referential (builtin alias) functions
     env.add_function("is_self_call", is_self_call_function);
     env.add_function("fail", fail_function);
+    dae_diagnostics::register(&mut env);
 
     env
 }
@@ -988,11 +996,7 @@ fn source_ref_function(name: Value, dims: Value, flat_index: Value) -> RenderRes
 /// Templates use this to declare target-specific capability constraints
 /// without pushing those policies into Rust-side backend branching.
 fn fail_function(message: Value) -> RenderResult {
-    let msg = message
-        .as_str()
-        .map(str::to_owned)
-        .unwrap_or_else(|| message.to_string());
-    Err(render_err(msg))
+    Err(render_err(dae_diagnostics::template_message(message)))
 }
 
 /// Detect whether a function is a trivial self-call (builtin alias).

@@ -518,10 +518,18 @@ fn dae_modelica_target_rejects_undeclared_record_variable_type() {
         crate::templates::builtin_template_source("dae-modelica", "dae_modelica.mo.jinja").unwrap();
 
     let error = render_template_with_name(&dae, template, "M")
-        .expect_err("the Modelica target must not reference an undeclared record")
-        .to_string();
-
-    assert!(error.contains("unsupported-feature:dae-modelica-variable-record"));
+        .expect_err("the Modelica target must not reference an undeclared record");
+    let expected_start = source.find("parameter Pair p").unwrap();
+    match error {
+        CodegenError::TemplateRenderError { message, src, span } => {
+            assert!(message.contains("unsupported-feature:dae-modelica-variable-record"));
+            assert_eq!(src.name(), "record_variable.mo");
+            assert_eq!(src.inner(), source);
+            assert_eq!(span.offset(), expected_start);
+            assert_eq!(span.len(), "parameter Pair p".len());
+        }
+        other => panic!("expected model-source diagnostic, got {other:?}"),
+    }
 }
 
 #[test]
