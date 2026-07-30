@@ -123,7 +123,8 @@ pub(crate) struct MslParityConfig {
     pub sim_timeout_secs: Option<f64>,
     /// Per-model Solve-IR lowering wall budget in seconds. Raise-only, as above.
     pub ir_solve_timeout_secs: Option<f64>,
-    /// Per-model, per-phase wall budget in seconds. Raise-only, as above.
+    /// Per-model, per-phase wall budget in seconds. Defaults to 10 seconds and
+    /// is raise-only. Each model receives exactly one attempt.
     pub model_attempt_timeout_secs: Option<f64>,
     /// Build the OMC reference for every simulation target instead of only the
     /// models rumoca already simulates. Needed by the long-budget event-cohort

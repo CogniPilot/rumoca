@@ -152,14 +152,11 @@ pub(super) fn checked_dae_has_input_scalars(dae: &Dae) -> bool {
 }
 
 pub(super) const STAGE_WATCHDOG_LOG_INTERVAL_SECS: u64 = 15;
-/// Per-model, per-phase wall budget. Heavy MSL models (MultiBody, Machines, FFT
-/// rectifiers) take 10-19s to *lower* to Solve-IR on a shared 4-core CI runner,
-/// so a 10s budget timed them out non-deterministically and made the IR-Solve
-/// pass count flaky right at the quality-gate threshold. The budget only bounds
-/// genuinely stuck models; correct-but-slow lowering must be allowed to finish,
-/// so it is sized above the observed worst case with margin (local fast runners
-/// never approach it).
-pub(super) const MODEL_ATTEMPT_TIMEOUT_SECS: f64 = 45.0;
+/// Default wall budget for each phase of one model attempt.
+///
+/// A model gets exactly one attempt. Exceeding this budget is a stable harness
+/// failure, not a reason to re-run the compiler with different limits.
+pub(super) const MODEL_ATTEMPT_TIMEOUT_SECS: f64 = 10.0;
 
 pub(super) fn model_attempt_timeout_secs() -> f64 {
     // Raise-only: a config may extend the budget for a long-running diagnostic
@@ -277,6 +274,7 @@ impl Drop for StageAbortWatchdog {
 
 /// Summary of MSL test results (compilation, balance, and simulation).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct MslSummary {
     /// Git commit used to generate this result file.
     #[serde(default)]
@@ -361,18 +359,9 @@ struct MslSummary {
     /// Number of models where the solver failed.
     #[serde(default)]
     sim_solver_fail: usize,
-    /// Number of models reported as out of wall-clock time.
-    ///
-    /// Read this together with [`MslSummary::timeout_recheck`]: models the
-    /// phase monitor killed while a compiler phase was still working towards a
-    /// diagnostic are re-run once under a larger budget, and the ones that
-    /// reach that diagnostic are counted under their real failure instead of
-    /// here.
+    /// Number of models whose single attempt exceeded a wall-clock budget.
     #[serde(default)]
     sim_timeout: usize,
-    /// Tally of the larger-budget re-runs of phase-monitor kills.
-    #[serde(default)]
-    timeout_recheck: MslTimeoutRecheckStats,
     /// Number of models with balance/dimension issues preventing simulation.
     #[serde(default)]
     sim_balance_fail: usize,
@@ -471,7 +460,6 @@ struct ResultCounters {
     sim_timeout: usize,
     sim_balance_fail: usize,
     sim_attempted: usize,
-    timeout_recheck: MslTimeoutRecheckStats,
     ic_attempted: usize,
     ic_ok: usize,
     ic_solver_fail: usize,
@@ -763,7 +751,6 @@ fn empty_summary(total_mo_files: usize, parse_errors: usize) -> MslSummary {
         sim_nan: 0,
         sim_solver_fail: 0,
         sim_timeout: 0,
-        timeout_recheck: MslTimeoutRecheckStats::default(),
         sim_balance_fail: 0,
         sim_attempted: 0,
         ic_attempted: 0,
@@ -848,7 +835,6 @@ pub(crate) fn phase_error_result(
         ir_solve_error_code: None,
         timeout_phase: None,
         timeout_seconds: None,
-        timeout_recheck: None,
         balance_detail: None,
     }
 }
@@ -1003,7 +989,6 @@ fn summarize_dae_success_fields(
         ir_solve_error_code: None,
         timeout_phase: None,
         timeout_seconds: None,
-        timeout_recheck: None,
         balance_detail: None,
     }
 }

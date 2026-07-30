@@ -1264,7 +1264,6 @@ fn current_msl_quality_snapshot_json(
             "sim_nan": summary.sim_nan,
             "sim_solver_fail": summary.sim_solver_fail,
             "sim_timeout": summary.sim_timeout,
-            "timeout_recheck": &summary.timeout_recheck,
             "tensor_preservation": baseline.tensor_preservation,
             "error_code_counts": &summary.error_code_counts,
             "unsupported_feature_counts": &summary.unsupported_feature_counts,
@@ -1318,28 +1317,7 @@ pub(super) fn write_current_msl_quality_snapshot(summary: &MslSummary) -> io::Re
         baseline_path.display(),
         msl_quality_baseline_path().display()
     );
-    print_timeout_recheck_promotion_warning(summary);
     Ok(())
-}
-
-/// Warn that a snapshot containing reclassified phase kills is not comparable
-/// to a baseline promoted before the re-check existed.
-///
-/// A killed attempt is recorded from whatever the worker had already written,
-/// so it carries neither the phase timings nor the reached phase the run would
-/// have produced: a Solve kill has no `ir_solve_seconds` and is therefore
-/// absent from `solve_models`. The larger-budget re-run reaches the real
-/// diagnostic and records both, which can lift the stage counters with no
-/// compiler change behind it. That is a measurement change, not progress, and
-/// promoting it unannounced would bake the difference into the ratchet.
-fn print_timeout_recheck_promotion_warning(summary: &MslSummary) {
-    let reclassified = summary.timeout_recheck.diagnostic;
-    if reclassified == 0 {
-        return;
-    }
-    println!(
-        "WARNING: {reclassified} phase-kill(s) were reclassified from sim_timeout to their real diagnostic by the larger-budget re-check. Counters derived from the reached phase and its timings (flatten_models, dae_models, compiled_models, solve_models, and ic_attempted/ic_solver_fail for an IC-stage diagnostic) can move purely from this reclassification. Do not promote this snapshot as a baseline without confirming each moved counter against the previous baseline."
-    );
 }
 
 pub(super) fn sim_rate_gate_override_enabled() -> bool {

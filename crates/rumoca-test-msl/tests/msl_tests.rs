@@ -540,80 +540,8 @@ fn extract_undefined_var(error: &str) -> Option<String> {
     None
 }
 
-/// Verdict of the larger-budget re-run performed after the per-phase monitor
-/// killed a model attempt.
-///
-/// The primary per-phase budget bounds *scheduling*, not *truth*: a model that
-/// needs longer than the budget to reach a hard compiler diagnostic used to be
-/// filed as `sim_timeout`, hiding a structural-failure cohort inside what read
-/// as a performance pool. The re-run records which of the two it is. It never
-/// upgrades a result: a re-run that finally succeeds is still reported as the
-/// timeout it was at the measured budget (see [`MSL_TIMEOUT_RECHECK_COMPLETED`]).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-struct MslTimeoutRecheck {
-    /// One of the `MSL_TIMEOUT_RECHECK_*` outcomes.
-    outcome: String,
-    /// Phase the primary attempt was killed in.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    killed_phase: Option<rumoca_worker::WorkerProgressPhase>,
-    /// Per-phase budget the primary attempt was killed at.
-    primary_budget_seconds: f64,
-    /// Wall seconds the primary attempt had run when it was killed.
-    primary_elapsed_seconds: f64,
-    /// Per-phase budget granted to the re-run.
-    recheck_budget_seconds: f64,
-    /// Wall seconds the re-run took.
-    recheck_elapsed_seconds: f64,
-    /// Stable diagnostic code the re-run reached, when it reached one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    diagnostic_code: Option<String>,
-    /// Pipeline stage the re-run's diagnostic came from.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    diagnostic_phase: Option<String>,
-    /// Why the re-run could not decide, for [`MSL_TIMEOUT_RECHECK_UNAVAILABLE`].
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    detail: Option<String>,
-}
-
-/// The re-run reached a real failure: the model *failed slowly*, and the
-/// recorded result is that failure rather than `sim_timeout`.
-const MSL_TIMEOUT_RECHECK_DIAGNOSTIC: &str = "diagnostic";
-/// The re-run hit the larger budget too (or timed out inside the solver): the
-/// model is *too slow*, and stays `sim_timeout`.
-const MSL_TIMEOUT_RECHECK_TIMEOUT: &str = "timeout";
-/// The re-run finished without a failure inside the larger budget. The model
-/// still exceeded the measured budget, so it stays `sim_timeout`; adopting the
-/// pass would be reporting a result the budget never bought.
-const MSL_TIMEOUT_RECHECK_COMPLETED: &str = "completed";
-/// The re-run could not be carried out (worker spawn/transport/memory kill).
-const MSL_TIMEOUT_RECHECK_UNAVAILABLE: &str = "unavailable";
-
-/// Run-level tally of the phase-kill re-checks.
-///
-/// `diagnostic` is the number of models that used to be counted as
-/// `sim_timeout` and are now reported with the error they actually produce, so
-/// the split between a performance pool and a failure cohort is readable
-/// without walking `model_results`.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-struct MslTimeoutRecheckStats {
-    /// Models killed inside a compiler phase and re-run once.
-    #[serde(default)]
-    rechecked: usize,
-    /// Re-runs that reached a real failure ("failed slowly").
-    #[serde(default)]
-    diagnostic: usize,
-    /// Re-runs that ran out of time again ("too slow").
-    #[serde(default)]
-    timeout: usize,
-    /// Re-runs that finished cleanly above the measured budget.
-    #[serde(default)]
-    completed: usize,
-    /// Re-runs that could not be carried out.
-    #[serde(default)]
-    unavailable: usize,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct MslModelResult {
     model_name: String,
     phase_reached: String,
@@ -719,11 +647,6 @@ struct MslModelResult {
     timeout_phase: Option<rumoca_worker::WorkerProgressPhase>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     timeout_seconds: Option<f64>,
-    /// Verdict of the larger-budget re-run of a phase-monitor kill. Present
-    /// only for models the monitor killed inside a compiler phase; it is what
-    /// separates "too slow" from "failed slowly".
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    timeout_recheck: Option<MslTimeoutRecheck>,
     /// Component breakdown for an unbalanced (ED001) ToDae failure. Present
     /// only for balance failures; this is what makes the balance cohort
     /// distinguishable from every other ToDae failure.

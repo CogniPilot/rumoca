@@ -52,7 +52,6 @@ pub(super) fn summarize_msl_results(results: &[MslModelResult]) -> ResultCounter
                 _ => {}
             }
         }
-        count_timeout_recheck(result, &mut counters.timeout_recheck);
         if let Some(ref status) = result.ic_status {
             counters.ic_attempted += 1;
             match status.as_str() {
@@ -63,24 +62,6 @@ pub(super) fn summarize_msl_results(results: &[MslModelResult]) -> ResultCounter
         }
     }
     counters
-}
-
-/// Tally one model's phase-kill re-check.
-///
-/// An unrecognised outcome is counted as `unavailable` rather than dropped: a
-/// re-check whose verdict this build cannot name is a re-check whose verdict is
-/// unknown, and silently forgetting it would understate the killed cohort.
-fn count_timeout_recheck(result: &MslModelResult, stats: &mut MslTimeoutRecheckStats) {
-    let Some(recheck) = result.timeout_recheck.as_ref() else {
-        return;
-    };
-    stats.rechecked += 1;
-    match recheck.outcome.as_str() {
-        MSL_TIMEOUT_RECHECK_DIAGNOSTIC => stats.diagnostic += 1,
-        MSL_TIMEOUT_RECHECK_TIMEOUT => stats.timeout += 1,
-        MSL_TIMEOUT_RECHECK_COMPLETED => stats.completed += 1,
-        _ => stats.unavailable += 1,
-    }
 }
 
 pub(super) fn finalize_msl_summary_from_results(
@@ -179,7 +160,6 @@ fn build_summary_from_counters(
         sim_nan: counters.sim_nan,
         sim_solver_fail: counters.sim_solver_fail,
         sim_timeout: counters.sim_timeout,
-        timeout_recheck: counters.timeout_recheck,
         sim_balance_fail: counters.sim_balance_fail,
         sim_attempted: counters.sim_attempted,
         ic_attempted: counters.ic_attempted,

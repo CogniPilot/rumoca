@@ -6,14 +6,6 @@ use rumoca_sim::sim_trace_compare::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
-mod timeout_classification;
-
-use timeout_classification::{
-    MslTimeoutClassificationRow, build_timeout_classification_rows,
-    format_timeout_classification_markdown, format_timeout_classification_text,
-    slow_failure_counts_by_package,
-};
-
 // =============================================================================
 // Result JSON write + balance summary printing
 // =============================================================================
@@ -68,12 +60,8 @@ struct MslPackagePassRateRow {
     solve_avg_seconds: Option<f64>,
     ic_avg_seconds: Option<f64>,
     sim_avg_seconds: Option<f64>,
-    /// Models still reported as `sim_timeout` — genuinely out of time.
+    /// Models whose single attempt exceeded a phase budget.
     too_slow: usize,
-    /// Models the phase monitor killed whose larger-budget re-check reached a
-    /// real diagnostic. They are reported under that failure, not as timeouts,
-    /// and this is what keeps the two readable apart per package.
-    failed_slowly: usize,
 }
 
 #[derive(Serialize)]
@@ -85,10 +73,6 @@ struct MslPackagePassRateReport {
     model_count: usize,
     rows: Vec<MslPackagePassRateRow>,
     overall: MslPackagePassRateRow,
-    /// Every model the per-phase monitor killed, with what a larger budget then
-    /// established. Empty when no model was killed.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    timeout_classification: Vec<MslTimeoutClassificationRow>,
 }
 
 #[derive(Default)]
@@ -533,11 +517,9 @@ fn pass_rate_row(
     package: String,
     counts: MslPackagePassRateCounts,
     parse_avg_seconds: Option<f64>,
-    failed_slowly: usize,
 ) -> MslPackagePassRateRow {
     MslPackagePassRateRow {
         too_slow: counts.too_slow,
-        failed_slowly,
         package,
         n: counts.n,
         parse_passed: counts.parse_passed,
@@ -592,28 +574,13 @@ fn build_msl_package_pass_rate_report_with_parity(
     }
 
     let parse_avg_seconds = avg_seconds(summary.timings.parse_seconds, overall_counts.n);
-    let timeout_classification = build_timeout_classification_rows(summary);
-    let slow_failures = slow_failure_counts_by_package(&timeout_classification);
-    let overall_slow_failures = slow_failures.values().sum();
-
     let rows = by_package
         .into_iter()
-        .map(|(package, counts)| {
-            // A package with no entry has no slow failures, by construction of
-            // the map: absence here is a measured zero, not a fallback.
-            let failed_slowly = slow_failures.get(package.as_str()).copied().unwrap_or(0);
-            pass_rate_row(package, counts, parse_avg_seconds, failed_slowly)
-        })
+        .map(|(package, counts)| pass_rate_row(package, counts, parse_avg_seconds))
         .collect::<Vec<_>>();
-    let overall = pass_rate_row(
-        "Overall".to_string(),
-        overall_counts,
-        parse_avg_seconds,
-        overall_slow_failures,
-    );
+    let overall = pass_rate_row("Overall".to_string(), overall_counts, parse_avg_seconds);
 
     MslPackagePassRateReport {
-        timeout_classification,
         git_commit: summary.git_commit.clone(),
         msl_version: summary.msl_version.clone(),
         selection_kind: msl_target_scope().as_str().to_string(),
@@ -808,15 +775,11 @@ fn write_msl_package_pass_rate_report(
     let mut json_file = File::create(results_dir.join("msl_package_pass_rates.json"))?;
     json_file.write_all(json.as_bytes())?;
 
-    let classification_markdown =
-        format_timeout_classification_markdown(&report.timeout_classification);
-    let classification_text = format_timeout_classification_text(&report.timeout_classification);
-
-    let markdown = format_msl_package_pass_rate_markdown(report) + &classification_markdown;
+    let markdown = format_msl_package_pass_rate_markdown(report);
     let mut markdown_file = File::create(results_dir.join("msl_package_pass_rates.md"))?;
     markdown_file.write_all(markdown.as_bytes())?;
 
-    let terminal_table = format_msl_package_pass_rate_terminal_table(report) + &classification_text;
+    let terminal_table = format_msl_package_pass_rate_terminal_table(report);
     let mut text_file = File::create(results_dir.join("msl_package_pass_rates.txt"))?;
     text_file.write_all(terminal_table.as_bytes())?;
 

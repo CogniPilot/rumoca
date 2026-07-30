@@ -22,7 +22,7 @@ This directory contains helper includes for `tests/msl_tests.rs`.
 | Subset filter / cap | `--sim-match PAT`, `--sim-limit N` | `sim_match`, `sim_limit` |
 | Solver wall budget | `--sim-timeout-secs SECS` | `sim_timeout_secs` |
 | Solve-IR lowering budget | `--ir-solve-timeout-secs SECS` | `ir_solve_timeout_secs` |
-| Per-phase attempt budget | `--model-attempt-timeout-secs SECS` | `model_attempt_timeout_secs` |
+| Per-phase attempt budget (10s default) | `--model-attempt-timeout-secs SECS` | `model_attempt_timeout_secs` |
 | OMC baseline for every target | `--all-omc-targets` | `all_omc_targets` |
 
 The three timeout knobs are **raise-only**: the harness clamps each to at least
@@ -30,6 +30,10 @@ its built-in default, because the committed quality baseline was measured with
 those defaults and shortening a budget would silently turn real failures into
 timeouts. The OMC reference budget scales with `--sim-timeout-secs` so the two
 tools keep a comparable amount of time (`omc_sim_reference_timeout_secs`).
+
+Each model has one attempt. If any phase exceeds the attempt budget, the
+harness kills that model's worker and records `EMSL_TIMEOUT_MODEL_ATTEMPT`.
+There is no diagnostic retry or alternate-budget result.
 
 `--all-omc-targets` exists for the long-budget diagnostic lanes: the canonical
 gate restricts the OMC baseline to models rumoca already simulates, which is
