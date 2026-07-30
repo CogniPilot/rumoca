@@ -669,6 +669,7 @@ pub fn is_type_subtype_cached(
         };
         accepted
             && crate::plug_compat::class_flags_compatible(
+                tree,
                 subtype_class,
                 find_class_in_tree(tree, supertype),
             )

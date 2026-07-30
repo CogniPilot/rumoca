@@ -5,7 +5,9 @@
 //! member-wise and class-flag comparisons used by `is_type_subtype_cached`.
 
 use crate::inheritance::find_class_in_tree;
+use rumoca_core::{ComponentPath, DefId};
 use rumoca_ir_ast as ast;
+use rustc_hash::FxHashSet;
 
 /// Class-level interface flags that must match for a redeclaration regardless
 /// of how subtype acceptance was established (MLS §6.4):
@@ -17,6 +19,7 @@ use rumoca_ir_ast as ast;
 /// - transitively non-replaceable constraints require a transitively
 ///   non-replaceable replacement (TYPE-022)
 pub(crate) fn class_flags_compatible(
+    tree: &ast::ClassTree,
     subtype: &ast::ClassDef,
     supertype: Option<&ast::ClassDef>,
 ) -> bool {
@@ -31,12 +34,7 @@ pub(crate) fn class_flags_compatible(
     }
     // MLS §6.4 / TYPE-007: ExternalObject-derived classes are only
     // compatible with the identical class.
-    let sub_external = derives_external_object(subtype);
-    let super_external = derives_external_object(supertype);
-    if sub_external != super_external {
-        return false;
-    }
-    if sub_external && subtype.def_id != supertype.def_id {
+    if !external_object_flags_compatible(tree, subtype, supertype) {
         return false;
     }
     if subtype.expandable != supertype.expandable {
@@ -267,13 +265,92 @@ fn primitive_base_from_type(
     )
 }
 
-/// True when the class (or its single-extends chain) derives from the
-/// builtin ExternalObject.
-fn derives_external_object(class: &ast::ClassDef) -> bool {
-    class
-        .extends
-        .iter()
-        .any(|ext| ext.base_name.to_string() == "ExternalObject")
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExternalObjectAncestry {
+    Ordinary,
+    Direct(DefId),
+    Invalid,
+}
+
+fn external_object_flags_compatible(
+    tree: &ast::ClassTree,
+    subtype: &ast::ClassDef,
+    supertype: &ast::ClassDef,
+) -> bool {
+    let subtype = external_object_ancestry(tree, subtype);
+    let supertype = external_object_ancestry(tree, supertype);
+    match (subtype, supertype) {
+        (ExternalObjectAncestry::Ordinary, ExternalObjectAncestry::Ordinary) => true,
+        (
+            ExternalObjectAncestry::Direct(subtype_def_id),
+            ExternalObjectAncestry::Direct(supertype_def_id),
+        ) => subtype_def_id == supertype_def_id,
+        _ => false,
+    }
+}
+
+fn external_object_ancestry(
+    tree: &ast::ClassTree,
+    class: &ast::ClassDef,
+) -> ExternalObjectAncestry {
+    let external_object = tree
+        .scope_tree
+        .predefined_member(&ComponentPath::from_flat_path("ExternalObject"));
+    let Some(external_object) = external_object else {
+        return ExternalObjectAncestry::Invalid;
+    };
+    external_object_ancestry_inner(tree, class, external_object, &mut FxHashSet::default())
+}
+
+fn external_object_ancestry_inner(
+    tree: &ast::ClassTree,
+    class: &ast::ClassDef,
+    external_object: DefId,
+    visiting: &mut FxHashSet<DefId>,
+) -> ExternalObjectAncestry {
+    let Some(class_def_id) = class.def_id else {
+        return ExternalObjectAncestry::Invalid;
+    };
+    if !visiting.insert(class_def_id) {
+        return ExternalObjectAncestry::Invalid;
+    }
+
+    let mut direct = false;
+    let mut inherited = false;
+    for extend in &class.extends {
+        let Some(base_def_id) = extend.base_def_id.or(extend.base_name.def_id) else {
+            visiting.remove(&class_def_id);
+            return ExternalObjectAncestry::Invalid;
+        };
+        if base_def_id == external_object {
+            direct = true;
+            continue;
+        }
+        let Some(base_class) = tree.get_class_by_def_id(base_def_id) else {
+            continue;
+        };
+        match external_object_ancestry_inner(tree, base_class, external_object, visiting) {
+            ExternalObjectAncestry::Ordinary => {}
+            ExternalObjectAncestry::Direct(_) => inherited = true,
+            ExternalObjectAncestry::Invalid => {
+                visiting.remove(&class_def_id);
+                return ExternalObjectAncestry::Invalid;
+            }
+        }
+    }
+    visiting.remove(&class_def_id);
+
+    if direct {
+        if class.extends.len() == 1 && !inherited {
+            ExternalObjectAncestry::Direct(class_def_id)
+        } else {
+            ExternalObjectAncestry::Invalid
+        }
+    } else if inherited {
+        ExternalObjectAncestry::Invalid
+    } else {
+        ExternalObjectAncestry::Ordinary
+    }
 }
 
 /// MLS §6.6 / TYPE-018..020: constrained inputs and outputs must be leading
@@ -422,6 +499,20 @@ mod tests {
                 .into_iter()
                 .map(|member| (member.name.clone(), member))
                 .collect(),
+            ..Default::default()
+        }
+    }
+
+    fn class_extending(name: &str, def_id: DefId, base_def_id: DefId) -> ast::ClassDef {
+        ast::ClassDef {
+            name: token(name),
+            def_id: Some(def_id),
+            class_type: rumoca_core::ClassType::Model,
+            extends: vec![ast::Extend {
+                base_name: ast::Name::from_string("display-name-is-not-identity"),
+                base_def_id: Some(base_def_id),
+                ..Default::default()
+            }],
             ..Default::default()
         }
     }
@@ -710,10 +801,85 @@ mod tests {
     }
 
     #[test]
+    fn user_shadowed_external_object_is_not_the_predefined_type() {
+        let source = r#"
+package P
+  model ExternalObject
+  end ExternalObject;
+
+  model A
+    extends ExternalObject;
+  end A;
+
+  model B
+    extends ExternalObject;
+  end B;
+end P;
+"#;
+        let parsed = rumoca_phase_parse::parse_to_ast(source, "shadowed_external_object.mo")
+            .expect("source parses");
+        let mut tree = ast::ClassTree::from_parsed(parsed);
+        tree.source_map.add("shadowed_external_object.mo", source);
+        let tree = rumoca_phase_resolve::resolve(ast::ParsedTree::new(tree))
+            .expect("source resolves")
+            .into_inner();
+
+        assert!(
+            crate::inheritance::is_type_subtype(&tree, "P.B", "P.A"),
+            "classes extending a user declaration named ExternalObject remain ordinary siblings"
+        );
+    }
+
+    #[test]
+    fn indirect_external_object_ancestry_is_never_plug_compatible() {
+        const EXTERNAL_OBJECT: DefId = DefId(100);
+        const DIRECT_OWNER: DefId = DefId(101);
+        const INDIRECT_A: DefId = DefId(102);
+        const INDIRECT_B: DefId = DefId(103);
+
+        let mut tree = ast::ClassTree::new();
+        tree.scope_tree.add_predefined_member(
+            ComponentPath::from_flat_path("ExternalObject"),
+            EXTERNAL_OBJECT,
+        );
+        for (name, class) in [
+            (
+                "DirectOwner",
+                class_extending("DirectOwner", DIRECT_OWNER, EXTERNAL_OBJECT),
+            ),
+            (
+                "IndirectA",
+                class_extending("IndirectA", INDIRECT_A, DIRECT_OWNER),
+            ),
+            (
+                "IndirectB",
+                class_extending("IndirectB", INDIRECT_B, DIRECT_OWNER),
+            ),
+        ] {
+            let def_id = class.def_id.expect("test class has identity");
+            tree.name_map.insert(name.to_string(), def_id);
+            tree.def_map.insert(def_id, name.to_string());
+            tree.definitions.classes.insert(name.to_string(), class);
+        }
+
+        let indirect_a = tree
+            .get_class_by_def_id(INDIRECT_A)
+            .expect("first indirect class exists");
+        let indirect_b = tree
+            .get_class_by_def_id(INDIRECT_B)
+            .expect("second indirect class exists");
+        assert!(
+            !class_flags_compatible(&tree, indirect_a, Some(indirect_b)),
+            "two invalid indirect owners must not be accepted as ordinary siblings"
+        );
+    }
+
+    #[test]
     fn specialized_class_kinds_must_match() {
+        let tree = ast::ClassTree::new();
         let package = class(rumoca_core::ClassType::Package, Vec::new());
         let function = class(rumoca_core::ClassType::Function, Vec::new());
 
-        assert!(!class_flags_compatible(&function, Some(&package)));
+        assert!(!class_flags_compatible(&tree, &function, Some(&package)));
     }
 }

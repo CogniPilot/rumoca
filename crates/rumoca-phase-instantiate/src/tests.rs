@@ -1009,18 +1009,30 @@ fn test_type_compatible_class_inheritance() {
     // Test that a derived class is compatible with its base
     // Create a simple class hierarchy: DerivedConnector extends BaseConnector
     let mut tree = ast::ClassTree::default();
+    let base_def_id = rumoca_core::DefId::new(300);
+    let derived_def_id = rumoca_core::DefId::new(301);
+    tree.scope_tree.add_predefined_member(
+        rumoca_core::ComponentPath::from_flat_path("ExternalObject"),
+        rumoca_core::DefId::new(u32::MAX),
+    );
 
     // Base class
     let base = ast::ClassDef {
         name: make_token("BaseConnector"),
+        def_id: Some(base_def_id),
         ..Default::default()
     };
 
     // Derived class that extends Base
     let derived = ast::ClassDef {
         name: make_token("DerivedConnector"),
+        def_id: Some(derived_def_id),
         extends: vec![ast::Extend {
-            base_name: make_name("BaseConnector"),
+            base_name: ast::Name {
+                name: vec![make_token("BaseConnector")],
+                def_id: Some(base_def_id),
+            },
+            base_def_id: Some(base_def_id),
             ..Default::default()
         }],
         ..Default::default()
@@ -1032,6 +1044,13 @@ fn test_type_compatible_class_inheritance() {
     tree.definitions
         .classes
         .insert("DerivedConnector".to_string(), derived);
+    for (name, def_id) in [
+        ("BaseConnector", base_def_id),
+        ("DerivedConnector", derived_def_id),
+    ] {
+        tree.name_map.insert(name.to_string(), def_id);
+        tree.def_map.insert(def_id, name.to_string());
+    }
 
     // DerivedConnector should be compatible with BaseConnector (subtype)
     assert!(is_type_compatible(

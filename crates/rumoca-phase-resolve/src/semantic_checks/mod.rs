@@ -17,6 +17,7 @@ mod builtin_calls;
 mod clocks;
 mod enclosing_references;
 mod expr;
+mod external_objects;
 mod functions;
 mod lookup;
 mod operators;
@@ -29,6 +30,7 @@ use builtin_calls::*;
 use clocks::*;
 use enclosing_references::*;
 use expr::*;
+use external_objects::*;
 use functions::*;
 use lookup::*;
 use operators::*;
@@ -229,7 +231,9 @@ pub fn check_all_semantics(def: &StoredDefinition, _source_map: &SourceMap) -> V
 
 /// Run checks that require the resolved scope tree and declaration identities.
 pub fn check_resolved_semantics(tree: &ast::ClassTree) -> Vec<Diagnostic> {
-    run_enclosing_reference_checks(tree)
+    let mut diagnostics = run_external_object_checks(tree);
+    diagnostics.extend(run_enclosing_reference_checks(tree));
+    diagnostics
 }
 
 fn run_semantic_checks(def: &StoredDefinition) -> Vec<Diagnostic> {

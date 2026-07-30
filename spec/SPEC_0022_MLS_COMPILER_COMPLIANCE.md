@@ -625,6 +625,9 @@ Defines state-to-state transitions with priority and timing control.
 | FUNC-033 | Functional param type | §12.4.2 | "Function type parameter cannot be type-specifier of record or enumeration" |
 | FUNC-034 | Input default independence | §12.4.1 | "Default values for inputs shall not depend on non-input variables in the function" |
 | FUNC-035 | Derivative ordering | §12.7.1 | "Most restrictive derivative annotations should be written first"
+| FUNC-036 | ExternalObject lifecycle shape | §12.9.7 | "ExternalObject owner uses the specialized class `class`, directly extends ExternalObject, owns exactly non-replaceable constructor and destructor functions, and owns no other elements" |
+| FUNC-037 | ExternalObject lifecycle signatures | §12.9.7 | "Constructor has exactly one output of the owning ExternalObject type; destructor has exactly one input of that type and no outputs" |
+| FUNC-038 | ExternalObject lifecycle calls | §12.9.7 | "Constructor and destructor cannot be called explicitly; each constructed object is constructed and destroyed exactly once" |
 
 ### 4.9 Type/Interface Contracts (TYPE)
 

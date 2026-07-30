@@ -9,6 +9,7 @@ use rumoca_phase_parse::parse_to_ast;
 mod component_lookup;
 mod encapsulation;
 mod extends_resolution;
+mod external_objects;
 mod function_calls;
 mod imports;
 mod inherited_lookup;
