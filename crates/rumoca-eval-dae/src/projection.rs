@@ -20,6 +20,33 @@ pub enum ProjectionError {
     FunctionRecursion { span: Span },
     #[error("record field projection has no checked aggregate definition")]
     UnsupportedRecordOperation { span: Span },
+    #[error(
+        "external {language} function `{name}` calls `{symbol}`, which this runtime cannot execute"
+    )]
+    ExternalFunction {
+        name: String,
+        language: &'static str,
+        symbol: String,
+        span: Span,
+    },
+}
+
+/// Report an MLS §12.9 external body that projection cannot look through.
+///
+/// Projection resolves a call by continuing into the callee's result
+/// definition. An external body has none, so the exact interface is reported
+/// instead of a silently empty incidence set.
+fn external_projection_error(
+    definition: dae::FunctionView<'_>,
+    external: dae::ExternalFunctionView<'_>,
+    span: Span,
+) -> ProjectionError {
+    ProjectionError::ExternalFunction {
+        name: definition.name().to_string(),
+        language: external.language().as_str(),
+        symbol: external.symbol().to_string(),
+        span,
+    }
 }
 
 /// Visit every coordinate on which one scalar result depends.
@@ -244,11 +271,7 @@ where
         if self.function_arguments.len() >= 256 {
             return Err(ProjectionError::FunctionRecursion { span });
         }
-        let result = self
-            .view
-            .function(function)
-            .and_then(|definition| definition.result_values().rhs(output as usize))
-            .ok_or(ProjectionError::FunctionRecursion { span })?;
+        let result = self.function_result(function, output, span)?;
         self.function_arguments
             .push((function, arguments.iter().collect()));
         let projected = self.expression(result, scalar_index);
@@ -280,13 +303,7 @@ where
                         span: node.provenance().span(),
                     });
                 }
-                let result = self
-                    .view
-                    .function(function)
-                    .and_then(|definition| definition.result_values().rhs(output as usize))
-                    .ok_or(ProjectionError::FunctionRecursion {
-                        span: node.provenance().span(),
-                    })?;
+                let result = self.function_result(function, output, node.provenance().span())?;
                 self.function_arguments
                     .push((function, arguments.iter().collect()));
                 let projected = self.record_field(result, field, scalar_index);
@@ -731,16 +748,32 @@ where
         if self.function_arguments.len() >= 256 {
             return Err(ProjectionError::FunctionRecursion { span });
         }
-        let result = self
-            .view
-            .function(function)
-            .and_then(|definition| definition.result_values().rhs(output as usize))
-            .ok_or(ProjectionError::FunctionRecursion { span })?;
+        let result = self.function_result(function, output, span)?;
         self.function_arguments
             .push((function, arguments.iter().collect()));
         let value = self.integer(result, scalar_index);
         self.function_arguments.pop();
         value
+    }
+
+    /// Resolve the checked result definition a call continues into.
+    fn function_result(
+        &self,
+        function: dae::FunctionId<'dae>,
+        output: u32,
+        span: Span,
+    ) -> Result<dae::ExprId<'dae>, ProjectionError> {
+        let definition = self
+            .view
+            .function(function)
+            .ok_or(ProjectionError::FunctionRecursion { span })?;
+        if let Some(external) = definition.external() {
+            return Err(external_projection_error(definition, external, span));
+        }
+        definition
+            .result_values()
+            .rhs(output as usize)
+            .ok_or(ProjectionError::FunctionRecursion { span })
     }
 
     fn node(&self, expression: dae::ExprId<'dae>) -> dae::ExpressionView<'dae> {

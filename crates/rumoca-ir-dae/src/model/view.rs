@@ -776,6 +776,12 @@ impl<'dae> FunctionView<'dae> {
             })
     }
 
+    /// Result definitions of a Modelica body.
+    ///
+    /// An MLS §12.9 external body defines its outputs through its foreign
+    /// interface rather than through DAE definitions, so this view is empty
+    /// there and consumers must reach [`FunctionView::external`] instead of
+    /// treating a missing definition as a value.
     pub fn result_values(self) -> FunctionDefinitionValues<'dae> {
         let definition = self
             .entry
@@ -785,8 +791,26 @@ impl<'dae> FunctionView<'dae> {
         FunctionDefinitionValues {
             dae: self.dae,
             function: self.id,
-            raw: &definition.results,
+            raw: definition.modelica().map_or(&[][..], |body| &body.results),
         }
+    }
+
+    /// The checked MLS §12.9 external interface, when this function has one.
+    pub fn external(self) -> Option<ExternalFunctionView<'dae>> {
+        self.entry
+            .definition
+            .as_ref()
+            .expect("final DAE cannot contain an undefined function")
+            .external()
+            .map(|entry| ExternalFunctionView {
+                function: self.id,
+                entry,
+            })
+    }
+
+    /// Whether this function is defined by a foreign body rather than Modelica.
+    pub fn is_external(self) -> bool {
+        self.external().is_some()
     }
 
     pub fn definition_id(self, index: usize) -> Option<FunctionDefinitionId<'dae>> {
@@ -817,6 +841,7 @@ impl<'dae> FunctionView<'dae> {
             })
     }
 
+    /// Ordered Modelica body statements; empty for an external interface.
     pub fn statements(self) -> FunctionStatements<'dae> {
         let definition = self
             .entry
@@ -826,10 +851,59 @@ impl<'dae> FunctionView<'dae> {
         FunctionStatements {
             dae: self.dae,
             function: self.id,
-            statements: &definition.statements,
+            statements: definition
+                .modelica()
+                .map_or(&[][..], |body| &body.statements),
             next: 0,
         }
     }
+}
+
+/// Read-only view of one checked MLS §12.9 external function interface.
+#[derive(Clone, Copy)]
+pub struct ExternalFunctionView<'dae> {
+    function: FunctionId<'dae>,
+    entry: &'dae ExternalBodyEntry,
+}
+
+impl<'dae> ExternalFunctionView<'dae> {
+    view_getters! {
+        const fn purity -> FunctionPurity = |view| view.entry.purity;
+        const fn language -> ExternalLanguage = |view| view.entry.language;
+        fn symbol -> &'dae VarName = |view| &view.entry.symbol;
+        fn linkage -> &'dae ExternalLinkage = |view| &view.entry.linkage;
+        fn argument_count -> usize = |view| view.entry.arguments.len();
+    }
+
+    /// Output bound by the MLS §12.9 `output = symbol(...)` return form.
+    pub fn result(self) -> Option<FunctionValueId<'dae>> {
+        self.entry
+            .result
+            .map(|value| FunctionValueId::from_raw(self.function.index(), value))
+    }
+
+    /// Ordered ABI arguments in declaration order.
+    pub fn arguments(self) -> impl ExactSizeIterator<Item = ExternalArgumentView<'dae>> {
+        let function = self.function;
+        self.entry
+            .arguments
+            .iter()
+            .map(move |argument| match argument {
+                ExternalArgumentEntry::Input(expression) => {
+                    ExternalArgumentView::Input(ExprId::from_raw(*expression))
+                }
+                ExternalArgumentEntry::Output(value) => ExternalArgumentView::Output(
+                    FunctionValueId::from_raw(function.index(), *value),
+                ),
+            })
+    }
+}
+
+/// One ordered ABI argument position of an external interface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExternalArgumentView<'dae> {
+    Input(ExprId<'dae>),
+    Output(FunctionValueId<'dae>),
 }
 
 #[derive(Clone, Copy)]

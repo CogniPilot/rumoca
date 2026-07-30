@@ -46,6 +46,16 @@ impl ResolveTraversalCallbacks for Resolver {
     fn on_function_reference(&mut self, comp: &mut ComponentReference, scope: ScopeId) {
         self.resolve_function_reference(comp, scope);
     }
+
+    fn on_field_access(
+        &mut self,
+        base: &Expression,
+        field: &str,
+        field_def_id: &mut Option<DefId>,
+        _scope: ScopeId,
+    ) {
+        *field_def_id = self.resolve_field_access_member(base, field);
+    }
 }
 
 impl Resolver {
@@ -155,6 +165,9 @@ impl Resolver {
             for mod_expr in comp.modifications.values_mut() {
                 self.resolve_expression(mod_expr, class_scope);
             }
+            for source_modification in comp.source_modifications.iter_mut() {
+                self.resolve_source_modification(source_modification, class_scope);
+            }
             self.resolve_subscripts(&mut comp.shape_expr, class_scope);
             if let Some(ref mut cond) = comp.condition {
                 self.resolve_expression(cond, class_scope);
@@ -250,6 +263,38 @@ impl Resolver {
                 self.resolve_expression(std::sync::Arc::make_mut(value), value_scope);
             }
             other => self.resolve_expression(other, target_scope),
+        }
+    }
+
+    /// Resolve the value expressions of one source-ordered component modifier.
+    ///
+    /// `Component::source_modifications` keeps the modifier list exactly as
+    /// written (order, `each`/`final`/`redeclare` prefixes) alongside the
+    /// keyed `Component::modifications`. The read-only AST walkers prefer the
+    /// source-ordered list whenever it is present, so every later consumer that
+    /// needs exact identities — strict-reachability dependency collection, the
+    /// formatter, redeclare validation — reads *this* copy. Leaving it
+    /// unresolved would hide the references it contains from those consumers.
+    ///
+    /// Modifier *targets* name members of the modified component's declared
+    /// type, which Resolve does not own (instantiation applies redeclares
+    /// first), so only the values are resolved here, in the enclosing class
+    /// scope where they are written (MLS §7.2.5).
+    fn resolve_source_modification(&mut self, expr: &mut Expression, class_scope: ScopeId) {
+        let mut pending = vec![expr];
+        while let Some(current) = pending.pop() {
+            match current {
+                Expression::Modification { value, .. } => {
+                    pending.push(std::sync::Arc::make_mut(value));
+                }
+                Expression::ClassModification { modifications, .. } => {
+                    pending.extend(modifications.iter_mut());
+                }
+                Expression::NamedArgument { value, .. } => {
+                    self.resolve_expression(std::sync::Arc::make_mut(value), class_scope);
+                }
+                other => self.resolve_expression(other, class_scope),
+            }
         }
     }
 
@@ -380,6 +425,35 @@ impl Resolver {
         }
     }
 
+    /// Prove the declaration identity of the member projected by `base.field`.
+    ///
+    /// MLS §3.7.3 writes a projection of a parenthesized primary (`(r).re`,
+    /// `(if c then a else b).re`) as a postfix `.ident`, which the AST keeps as
+    /// `Expression::FieldAccess` rather than folding into the base component
+    /// reference. The projected member is a declaration exactly like the tail of
+    /// `r.re`, so it is proved the same way: against the scope of the base's
+    /// declared type. Only a base whose own identity Resolve holds is answered;
+    /// a base whose type is instance-dependent (replaceable edge, expandable
+    /// connector) or which no declaration owns (a function result) keeps its
+    /// absent identity for the phase that can prove it, and reaches the Flat
+    /// boundary as EF024 if nothing does.
+    fn resolve_field_access_member(&self, base: &Expression, field: &str) -> Option<DefId> {
+        let base_def_id = base_declaration_identity(base)?;
+        let container = self
+            .component_type_def_ids
+            .get(&base_def_id)
+            .copied()
+            .unwrap_or(base_def_id);
+        if self.dynamic_member_root_ids.contains(&base_def_id)
+            || self.dynamic_member_root_ids.contains(&container)
+        {
+            return None;
+        }
+        let container_scope = self.class_def_scopes.get(&container).copied()?;
+        self.scope_tree
+            .lookup_member(container_scope, &ComponentPath::from_flat_path(field))
+    }
+
     /// Resolve a function reference to its callable DefId while preserving the
     /// source component-reference parts for later scope-sensitive phases.
     ///
@@ -388,10 +462,77 @@ impl Resolver {
     /// later phases do exact function lookup without name heuristics.
     fn resolve_function_reference(&mut self, comp: &mut ComponentReference, scope: ScopeId) {
         self.resolve_component_reference(comp, scope);
+        self.reject_non_callable_callee_capture(comp);
 
         // A root identity is not proof that the called member exists. Static
         // calls carry an identity on every part; dynamic tails remain absent
         // until instantiation proves them.
+    }
+
+    /// Undo a callee capture by a declaration that cannot be called.
+    ///
+    /// MLS §12.4.1 admits exactly two spellings in call position: a class
+    /// (function; also a record constructor per §12.6 and a `type` conversion
+    /// per §4.8.5.2) and a component of a *function* type — a functional input
+    /// argument (MLS §12.4.2). A component of any other type is not callable,
+    /// so it does not participate in call-position lookup and therefore cannot
+    /// shadow a predefined operator of the same spelling (MLS §3.7); the
+    /// component and the operator are distinguished by the syntactic position,
+    /// not by declaration order. `model M input Real sample[3]; ... when
+    /// sample(0.0, dt)` is the canonical case: the reads name the component,
+    /// the call names the operator.
+    ///
+    /// Ordinary lookup (MLS §5.3) cannot make that distinction because it is
+    /// position-blind, so this is the call-position refinement of its result.
+    /// SPEC_0008 makes Resolve the first owner of name binding, so the
+    /// correction belongs here rather than in a later phase re-deriving the
+    /// callee from its spelling: the reference leaves Resolve carrying the
+    /// exact predefined `DefId`, which is what the typed predefined-operator
+    /// lowering matches on.
+    fn reject_non_callable_callee_capture(&mut self, comp: &mut ComponentReference) {
+        // Predefined operators are simple names (MLS §3.7); a composite callee
+        // never denotes one, so its capture is not a shadowing question.
+        if comp.parts.len() != 1 {
+            return;
+        }
+        let Some(captured) = comp.parts[0].def_id else {
+            return;
+        };
+        if self.declaration_is_callable(captured) {
+            return;
+        }
+        let root_path = ComponentPath::from_parts([comp.parts[0].ident.text.as_ref()]);
+        if let Some(predefined) = self.scope_tree.predefined_member(&root_path) {
+            comp.parts[0].def_id = Some(predefined);
+        }
+    }
+
+    /// True when `declaration` may stand in call position (MLS §12.4.1).
+    ///
+    /// A predefined declaration always may — that is the operator itself. A
+    /// class always may: a function is called, a record builds its constructor
+    /// (MLS §12.6) and a `type` converts (MLS §4.8.5.2). A component may only
+    /// when its declared type is a function class, which is the functional
+    /// input argument of MLS §12.4.2.
+    ///
+    /// A declaration whose declared type Resolve has not proved yet keeps its
+    /// binding: absence of a proof is not proof of a non-callable capture, and
+    /// Instantiate owns the deferred type edges.
+    fn declaration_is_callable(&self, declaration: DefId) -> bool {
+        if self.is_builtin(declaration) || self.class_types.contains_key(&declaration) {
+            return true;
+        }
+        let Some(declared_type) = self.component_type_def_ids.get(&declaration) else {
+            return true;
+        };
+        match self.class_types.get(declared_type) {
+            Some(rumoca_core::ClassType::Function) => true,
+            Some(_) => false,
+            // A builtin declared type (`Real`, `Integer`, …) is proved by its
+            // reserved identity rather than by a class-type entry, and it is
+            // never a function type.
+            None => !self.is_builtin(*declared_type),
+        }
     }
 
     fn resolve_function_first_part(&self, first_part: &str, scope: ScopeId) -> Option<DefId> {
@@ -445,13 +586,27 @@ impl Resolver {
                 container_scope,
                 &ComponentPath::from_flat_path(&part.ident.text),
             ) else {
-                return FullPathResolution::MissingStaticTail;
+                return self.absent_member_resolution(container);
             };
             comp.parts[index].def_id = Some(member);
             current_def_id = member;
         }
 
         FullPathResolution::Exact(current_def_id)
+    }
+
+    /// Classify a qualified tail whose member is absent from `container`.
+    ///
+    /// MLS §9.1.3: an expandable connector acquires members from the `connect`
+    /// equations that name them, so an absent member is instance-dependent
+    /// rather than statically missing. Flatten proves whether the member is
+    /// ever supplied (EF020). Every other container has a closed member set,
+    /// so the tail is rejected here.
+    fn absent_member_resolution(&self, container: DefId) -> FullPathResolution {
+        if self.expandable_connector_ids.contains(&container) {
+            return FullPathResolution::DeferredDynamic;
+        }
+        FullPathResolution::MissingStaticTail
     }
 
     fn resolve_predefined_reference_tail(
@@ -520,5 +675,23 @@ impl Resolver {
     /// Resolve references in a list of subscripts.
     fn resolve_subscripts(&mut self, subs: &mut [rumoca_ir_ast::Subscript], scope: ScopeId) {
         walk_subscripts(self, subs, scope);
+    }
+}
+
+/// The declaration identity a projection base denotes, when Resolve holds one.
+///
+/// Parentheses and array indexing do not change which declaration a path-shaped
+/// primary denotes (MLS §3.7.3), so both are traversed. Every other expression
+/// form denotes a value with no declaration of its own.
+fn base_declaration_identity(base: &Expression) -> Option<DefId> {
+    let mut current = base;
+    loop {
+        match current {
+            Expression::Parenthesized { inner, .. } => current = inner,
+            Expression::ArrayIndex { base, .. } => current = base,
+            Expression::ComponentReference(reference) => return reference.target_def_id(),
+            Expression::FieldAccess { field_def_id, .. } => return *field_def_id,
+            _ => return None,
+        }
     }
 }

@@ -77,3 +77,51 @@ fn unsupported_type(
         value.span,
     )
 }
+
+/// Leaf field projections of one record-typed function value.
+///
+/// MLS §12.2 lets a function body read a declared field of a record value
+/// (`r.x`). Flat renders that read as one reference whose `VarName` joins the
+/// declared value name with the field path, so the DAE symbol tables — planned
+/// roles and the shape environment — need the same joined identities the read
+/// carries. The paths are derived from the record constructor's declared field
+/// order, which is the same order `function_value_type` interns into the DAE
+/// record layout, so a projection name and its DAE field ordinal always agree.
+///
+/// A value that is not a record contributes nothing. Recursion is bounded by
+/// `validate_function_value_type`, which rejects recursive value records before
+/// any caller reaches this function.
+pub(in crate::construction) fn record_field_projections<'flat>(
+    value: &rumoca_core::FunctionParam,
+    flat: &'flat flat::Model,
+) -> Vec<(VarName, &'flat rumoca_core::FunctionParam)> {
+    let mut projections = Vec::new();
+    collect_record_field_projections(value, value.name.as_str(), flat, &mut projections);
+    projections
+}
+
+fn collect_record_field_projections<'flat>(
+    value: &rumoca_core::FunctionParam,
+    path: &str,
+    flat: &'flat flat::Model,
+    projections: &mut Vec<(VarName, &'flat rumoca_core::FunctionParam)>,
+) {
+    if value.type_class != Some(rumoca_core::ClassType::Record) {
+        return;
+    }
+    let Some(type_def_id) = value.type_def_id else {
+        return;
+    };
+    let Ok(constructor) = rumoca_core::resolve_record_constructor(
+        flat.functions.values(),
+        &value.type_name,
+        type_def_id,
+    ) else {
+        return;
+    };
+    for field in &constructor.inputs {
+        let field_path = format!("{path}.{}", field.name);
+        projections.push((VarName::new(&field_path), field));
+        collect_record_field_projections(field, &field_path, flat, projections);
+    }
+}

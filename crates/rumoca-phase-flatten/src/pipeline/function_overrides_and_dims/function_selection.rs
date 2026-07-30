@@ -22,6 +22,23 @@ pub(super) struct ResolvedFunctionRewrite {
     pub(super) occurrence_identity: CallOccurrenceIdentity,
 }
 
+/// True when the callable is a class kind that never selects a function
+/// implementation, so exact function-selection identity is not defined for it.
+///
+/// * `record` — record constructor (MLS §12.6); the constructor is derived
+///   from the record declaration itself.
+/// * `type` — conversion to an enumeration or derived predefined type
+///   (MLS §4.8.5.2); a `type` can never declare a function body.
+///
+/// Both keep their original reference and are lowered by their own typed
+/// paths later in flatten.
+fn callable_selects_no_function_implementation(class_def: &rumoca_ir_ast::ClassDef) -> bool {
+    matches!(
+        class_def.class_type,
+        rumoca_core::ClassType::Record | rumoca_core::ClassType::Type
+    )
+}
+
 fn resolve_exact_constructor_rewrite(
     reference: &rumoca_core::Reference,
     target: rumoca_core::DefId,
@@ -296,10 +313,17 @@ pub(super) fn resolve_exact_function_rewrite(
         ));
     };
     let current_target = component_ref.target_def_id();
+    // Predefined operators (MLS §3.7) — `inStream`, `actualStream`, `der`,
+    // `sample`, ... — are Resolve scope members, not classes, and take their
+    // own typed lowering path (stream-operator expansion, builtin-call
+    // lowering). No replaceable-function selection is defined for them.
+    if ctx.targets_predefined_callable(current_target) {
+        return Ok(None);
+    }
     if ctx
         .class_index
         .get(current_target)
-        .is_some_and(|class| class.class_type == rumoca_core::ClassType::Record)
+        .is_some_and(callable_selects_no_function_implementation)
     {
         return Ok(None);
     }

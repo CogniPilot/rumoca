@@ -219,6 +219,120 @@ pub(crate) fn extract_outputs(
 }
 
 // =============================================================================
+// Write targets: owning instance path materialization
+// =============================================================================
+
+/// Materialize the owning component instance path into an algorithm section's
+/// write targets.
+///
+/// MLS §11.2.1.1 (assignment), §11.2.1.2 (multiple-output call) and §8.3.6
+/// (`reinit`) make every write target a component reference looked up in the
+/// enclosing class scope, so inside the algorithm section of component
+/// occurrence `alg` the target `y` denotes `alg.y`.
+///
+/// Expression references reach Flat as a `Reference`, which carries the flat
+/// coordinate name beside the exact source occurrence. A write target reaches
+/// Flat as a bare `ComponentReference`, whose identity *is* its part chain
+/// (`ComponentReference::to_var_name`), so there is no name slot to carry the
+/// prefix: the owning instance path has to become part of the chain. `owner`
+/// is the reference Instantiate proved for the owning component occurrence, so
+/// each materialized part carries its own Resolve declaration identity and no
+/// name is recovered from rendered text.
+///
+/// The root class occurrence has no owning component and passes an empty
+/// `owner`, which leaves every target untouched — as does a target rooted in a
+/// loop index or another algorithm-local name (MLS §11.2.2.2), which is never a
+/// class member.
+pub(crate) fn qualify_write_targets_with_owner_path(
+    algorithm: &mut flat::Algorithm,
+    owner: &[rumoca_core::ComponentRefPart],
+) -> Result<(), FlattenError> {
+    if owner.is_empty() {
+        return Ok(());
+    }
+    // A class algorithm section opens with no algorithm-local names; the only
+    // ones it can introduce are its own loop indices (MLS §11.2.2.2).
+    qualify_statement_write_targets(&mut algorithm.statements, owner, &HashSet::new())?;
+    algorithm.outputs = extract_outputs(&algorithm.statements);
+    Ok(())
+}
+
+fn qualify_statement_write_targets(
+    statements: &mut [rumoca_core::Statement],
+    owner: &[rumoca_core::ComponentRefPart],
+    locals: &HashSet<String>,
+) -> Result<(), FlattenError> {
+    for statement in statements {
+        match statement {
+            rumoca_core::Statement::Assignment { comp, .. } => {
+                prepend_owner_path(comp, owner, locals)?;
+            }
+            rumoca_core::Statement::Reinit { variable, .. } => {
+                prepend_owner_path(variable, owner, locals)?;
+            }
+            rumoca_core::Statement::FunctionCall { outputs, .. } => {
+                for output in outputs.iter_mut().flatten() {
+                    prepend_owner_path(output, owner, locals)?;
+                }
+            }
+            rumoca_core::Statement::For {
+                indices, equations, ..
+            } => {
+                // MLS §11.2.2.2: a loop index is local to its body and shadows
+                // any class member of the same name for the statements inside.
+                let mut body_locals = locals.clone();
+                body_locals.extend(indices.iter().map(|index| index.ident.clone()));
+                qualify_statement_write_targets(equations, owner, &body_locals)?;
+            }
+            rumoca_core::Statement::While { block, .. } => {
+                qualify_statement_write_targets(&mut block.stmts, owner, locals)?;
+            }
+            rumoca_core::Statement::If {
+                cond_blocks,
+                else_block,
+                ..
+            } => {
+                for block in cond_blocks {
+                    qualify_statement_write_targets(&mut block.stmts, owner, locals)?;
+                }
+                if let Some(statements) = else_block {
+                    qualify_statement_write_targets(statements, owner, locals)?;
+                }
+            }
+            rumoca_core::Statement::When { blocks, .. } => {
+                for block in blocks {
+                    qualify_statement_write_targets(&mut block.stmts, owner, locals)?;
+                }
+            }
+            rumoca_core::Statement::Empty { .. }
+            | rumoca_core::Statement::Return { .. }
+            | rumoca_core::Statement::Break { .. }
+            | rumoca_core::Statement::Assert { .. } => {}
+        }
+    }
+    Ok(())
+}
+
+fn prepend_owner_path(
+    target: &mut rumoca_core::ComponentReference,
+    owner: &[rumoca_core::ComponentRefPart],
+    locals: &HashSet<String>,
+) -> Result<(), FlattenError> {
+    // `ComponentReference::construct` refuses an empty part chain, so a
+    // reference that exists always has a root part.
+    let root = &target.parts()[0];
+    if locals.contains(root.ident.as_str()) {
+        return Ok(());
+    }
+    let mut parts = owner.to_vec();
+    parts.extend(target.parts().iter().cloned());
+    *target = target.with_replaced_parts(parts).map_err(|error| {
+        FlattenError::missing_flat_variable_identity(error.to_string(), target.span())
+    })?;
+    Ok(())
+}
+
+// =============================================================================
 // Main Entry Point
 // =============================================================================
 
@@ -653,5 +767,92 @@ mod tests {
         assert_eq!(&*cr.parts[0].ident.text, "g");
         assert_eq!(&*cr.parts[1].ident.text, "tau");
         assert_eq!(cr.root_def_id(), Some(fixture_def_id("g")));
+    }
+
+    fn core_part(name: &str) -> rumoca_core::ComponentRefPart {
+        rumoca_core::ComponentRefPart {
+            ident: name.to_string(),
+            span: test_span(),
+            subs: Vec::new(),
+            def_id: fixture_def_id(name),
+        }
+    }
+
+    fn algorithm_of(statements: Vec<rumoca_core::Statement>) -> flat::Algorithm {
+        let outputs = extract_outputs(&statements);
+        flat::Algorithm {
+            statements,
+            outputs,
+            span: test_span(),
+            origin: "algorithm from alg".to_string(),
+        }
+    }
+
+    /// MLS §11.2.1.1: the target of an assignment inside the algorithm section
+    /// of component occurrence `alg` names a member of `alg`, and a Flat write
+    /// target's identity is its part chain.
+    #[test]
+    fn component_algorithm_write_target_carries_the_owner_instance_path() {
+        let target =
+            rumoca_core::ComponentReference::construct(false, test_span(), vec![core_part("y")])
+                .expect("fixture target");
+        let mut algorithm = algorithm_of(vec![rumoca_core::Statement::Assignment {
+            comp: target,
+            value: rumoca_core::Expression::Literal {
+                value: rumoca_core::Literal::Real(1.0),
+                span: test_span(),
+            },
+            span: test_span(),
+        }]);
+
+        qualify_write_targets_with_owner_path(&mut algorithm, &[core_part("alg")])
+            .expect("owner path materialization");
+
+        let rumoca_core::Statement::Assignment { comp, .. } = &algorithm.statements[0] else {
+            panic!("expected assignment");
+        };
+        assert_eq!(comp.to_var_name().as_str(), "alg.y");
+        assert_eq!(comp.root_def_id(), fixture_def_id("alg"));
+        assert_eq!(comp.target_def_id(), fixture_def_id("y"));
+        assert_eq!(algorithm.outputs.len(), 1);
+        assert_eq!(algorithm.outputs[0].as_str(), "alg.y");
+    }
+
+    /// MLS §11.2.2.2: a loop index is local to its body, so it is never a
+    /// member of the owning component occurrence.
+    #[test]
+    fn loop_index_target_is_left_out_of_the_owner_instance_path() {
+        let indexed =
+            rumoca_core::ComponentReference::construct(false, test_span(), vec![core_part("i")])
+                .expect("fixture target");
+        let mut algorithm = algorithm_of(vec![rumoca_core::Statement::For {
+            indices: vec![rumoca_core::ForIndex {
+                ident: "i".to_string(),
+                range: rumoca_core::Expression::Literal {
+                    value: rumoca_core::Literal::Integer(1),
+                    span: test_span(),
+                },
+            }],
+            equations: vec![rumoca_core::Statement::Assignment {
+                comp: indexed,
+                value: rumoca_core::Expression::Literal {
+                    value: rumoca_core::Literal::Real(1.0),
+                    span: test_span(),
+                },
+                span: test_span(),
+            }],
+            span: test_span(),
+        }]);
+
+        qualify_write_targets_with_owner_path(&mut algorithm, &[core_part("alg")])
+            .expect("owner path materialization");
+
+        let rumoca_core::Statement::For { equations, .. } = &algorithm.statements[0] else {
+            panic!("expected for statement");
+        };
+        let rumoca_core::Statement::Assignment { comp, .. } = &equations[0] else {
+            panic!("expected assignment");
+        };
+        assert_eq!(comp.to_var_name().as_str(), "i");
     }
 }

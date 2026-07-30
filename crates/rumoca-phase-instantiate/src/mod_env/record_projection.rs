@@ -420,7 +420,11 @@ fn constructor_class_for_call<'a>(
     comp: &ast::ComponentReference,
     binding_source_scope: Option<&ast::QualifiedName>,
 ) -> Option<&'a ast::ClassDef> {
-    comp.root_def_id()
+    // A record constructor call names a class, so the class is the reference's
+    // exact *target* segment. `root_def_id` is the first segment, which for a
+    // dotted constructor such as `P.Concrete.Element(...)` identifies the
+    // enclosing package rather than the record (MLS §5.3, §12.6).
+    comp.target_def_id()
         .and_then(|def_id| tree.get_class_by_def_id(def_id))
         .or_else(|| find_class_in_tree(tree, &comp.to_string()))
         .or_else(|| resolve_scoped_constructor_class(tree, comp, binding_source_scope))

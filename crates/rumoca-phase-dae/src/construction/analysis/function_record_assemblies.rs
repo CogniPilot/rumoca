@@ -49,10 +49,18 @@ fn record_assignment_target<'scope>(
     let [root, field] = comp.parts() else {
         return None;
     };
-    let output = function.outputs.iter().find(|output| {
-        output.name == root.ident && output.type_class == Some(rumoca_core::ClassType::Record)
-    })?;
-    Some((output, field))
+    // MLS §12.2 gives protected locals the same declaration status as results,
+    // so a record local is assembled from its field assignments exactly like a
+    // record result: neither can be updated field-by-field in the checked DAE,
+    // because a partial update would have to read the value's undefined fields.
+    let value = function
+        .outputs
+        .iter()
+        .chain(&function.locals)
+        .find(|value| {
+            value.name == root.ident && value.type_class == Some(rumoca_core::ClassType::Record)
+        })?;
+    Some((value, field))
 }
 
 fn record_constructor<'scope>(

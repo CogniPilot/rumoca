@@ -26,8 +26,8 @@ pub(super) fn lower_discrete_and_events<'dae>(
         &mut event_actions,
         &mut action_conditions,
     )?;
-    lower_condition_memory(view, layout, &mut discrete)?;
-    let roots = lower_roots(view, layout)?;
+    lower_condition_memory(view, layout, clocks, &mut discrete)?;
+    let roots = lower_roots(view, layout, clocks)?;
     let scheduled_time_events = lower_time_events(view);
     let delays = lower_delays(view, layout)?;
     let discrete = discrete.finish()?;
@@ -365,7 +365,7 @@ fn lower_discrete_value_owners<'dae>(
             .expect("checked B.1c owner has a nonempty branch set");
         match first.activation() {
             dae::DiscreteBranchActivation::Always => {
-                lower_unconditional_discrete_value_owner(view, layout, rows, owner)?;
+                lower_unconditional_discrete_value_owner(view, layout, clocks, rows, owner)?;
             }
             dae::DiscreteBranchActivation::When { .. } => {
                 lower_conditional_discrete_value_owner(view, layout, clocks, rows, owner)?;
@@ -375,9 +375,19 @@ fn lower_discrete_value_owners<'dae>(
     Ok(())
 }
 
+/// Lowers an always-active B.1c owner (`Integer`/`Boolean`/enumeration discretes).
+///
+/// A clocked partition can own such a target without any `when`: MLS §16.5 makes every
+/// equation of a clocked partition active exactly on its partition's clock ticks, so
+/// `counter = previous(counter) + 1` is an unconditional equation whose target carries a
+/// clock ownership. The row therefore has to be compiled *under* that clock — the same
+/// treatment [`lower_unconditional_discrete_real`] gives a clocked discrete `Real` — so
+/// that `previous(...)` resolves against its owning schedule and the row is scheduled on
+/// its clock's ticks instead of on every event.
 fn lower_unconditional_discrete_value_owner<'dae>(
     view: dae::DaeView<'dae>,
     layout: &LoweredLayout<'dae>,
+    clocks: &LoweredClocks<'dae>,
     rows: &mut DiscreteRows,
     owner: dae::DiscreteValueOwnerView<'dae>,
 ) -> Result<(), LowerError> {
@@ -391,12 +401,18 @@ fn lower_unconditional_discrete_value_owner<'dae>(
             .expression(value)
             .expect("checked B.1c value expression resolves");
         let span = provenance.span();
+        let clock = clocks.variable_owner(dae::VariableId::from(target));
         for scalar in 0..expression
             .value_type()
             .scalar_count()
             .expect("checked B.1c value scalar capacity")
         {
-            let program = ScalarCompiler::new(view, layout, None).program(value, scalar)?;
+            let program = match clock {
+                Some((clock, _)) => {
+                    ScalarCompiler::new(view, layout, None).clocked_program(clock, value, scalar)?
+                }
+                None => ScalarCompiler::new(view, layout, None).program(value, scalar)?,
+            };
             let target = variable_scalar_slot(layout, target.index(), scalar, span)?;
             rows.push(
                 program,
@@ -404,7 +420,7 @@ fn lower_unconditional_discrete_value_owner<'dae>(
                 target,
                 solve::DiscreteRowRole::Equation,
                 expression_pre_mode(view, value),
-                None,
+                clock.map(|(_, solve)| solve),
             );
         }
     }
@@ -857,6 +873,7 @@ fn event_update_pre_mode(has_pre: bool) -> solve::DiscreteEventPreMode {
 fn lower_condition_memory<'dae>(
     view: dae::DaeView<'dae>,
     layout: &LoweredLayout<'dae>,
+    clocks: &LoweredClocks<'dae>,
     rows: &mut DiscreteRows,
 ) -> Result<(), LowerError> {
     for index in 0..view.condition_count() {
@@ -872,17 +889,79 @@ fn lower_condition_memory<'dae>(
         let span = condition_view.provenance().span();
         let memory = condition_memory(layout, condition, span)?;
         let target = solve::scalar_slot_p(memory);
-        let program = ScalarCompiler::new(view, layout, None).condition_program(condition)?;
+        // A condition built from clocked relations is only meaningful on its clock's
+        // ticks, and its operands only resolve while that schedule is active.
+        let clock = condition_operand_clock(view, clocks, condition, span)?;
+        let program = match clock {
+            Some((clock, _)) => ScalarCompiler::new(view, layout, None)
+                .clocked_condition_program(clock, condition)?,
+            None => ScalarCompiler::new(view, layout, None).condition_program(condition)?,
+        };
         rows.push(
             program,
             span,
             target,
             solve::DiscreteRowRole::ConditionMemory,
             solve::DiscreteEventPreMode::FollowCurrent,
-            None,
+            clock.map(|(_, solve)| solve),
         );
     }
     Ok(())
+}
+
+/// The clock whose partition owns every relation reachable from `condition`.
+///
+/// Returns `None` for a continuous-time condition. Two different owning clocks would
+/// make the condition unschedulable, so that is rejected rather than resolved by
+/// picking one.
+fn condition_operand_clock<'dae>(
+    view: dae::DaeView<'dae>,
+    clocks: &LoweredClocks<'dae>,
+    condition: dae::ConditionId<'dae>,
+    span: Span,
+) -> Result<Option<(dae::ClockId<'dae>, solve::PeriodicClockId)>, LowerError> {
+    let mut owner: Option<(dae::ClockId<'dae>, solve::PeriodicClockId)> = None;
+    let mut conflict = false;
+    let mut visit = |found: (dae::ClockId<'dae>, solve::PeriodicClockId)| match owner {
+        Some((clock, _)) if clock != found.0 => conflict = true,
+        Some(_) => {}
+        None => owner = Some(found),
+    };
+    let mut pending = vec![condition];
+    while let Some(current) = pending.pop() {
+        let node = view
+            .condition(current)
+            .expect("checked condition identity resolves");
+        match node.operation() {
+            dae::ConditionOperation::Relation(relation) => {
+                let expression = view
+                    .relation(relation)
+                    .expect("checked condition relation resolves")
+                    .expression();
+                if let Some(found) = expression_clock_owner(view, clocks, expression) {
+                    visit(found);
+                }
+            }
+            dae::ConditionOperation::Discrete(expression) => {
+                if let Some(found) = expression_clock_owner(view, clocks, expression) {
+                    visit(found);
+                }
+            }
+            dae::ConditionOperation::Not(operand) => pending.push(operand),
+            dae::ConditionOperation::And(lhs, rhs) | dae::ConditionOperation::Or(lhs, rhs) => {
+                pending.push(lhs);
+                pending.push(rhs);
+            }
+            dae::ConditionOperation::Initial | dae::ConditionOperation::Clock(_) => {}
+        }
+    }
+    if conflict {
+        return Err(LowerError::non_computable(
+            "condition mixes relations from different clock partitions",
+            span,
+        ));
+    }
+    Ok(owner)
 }
 
 fn condition_clock_owner<'dae>(
@@ -969,27 +1048,75 @@ struct LoweredRoots {
 fn lower_roots<'dae>(
     view: dae::DaeView<'dae>,
     layout: &LoweredLayout<'dae>,
+    clocks: &LoweredClocks<'dae>,
 ) -> Result<LoweredRoots, LowerError> {
     let mut rows = ScalarRows::default();
     let mut zero_domains = Vec::with_capacity(view.root_count());
+    let mut count = 0;
     for index in 0..view.root_count() {
         let id = view.root_id(index).expect("dense root identity resolves");
         let root = view.root(id).expect("checked root identity resolves");
         let relation = view
             .relation(root.relation())
             .expect("checked root relation resolves");
+        if expression_clock_owner(view, clocks, relation.expression()).is_some() {
+            continue;
+        }
         rows.push(
             ScalarCompiler::new(view, layout, None).root_program(root.relation())?,
             root.provenance().span(),
-            index,
+            count,
         );
         zero_domains.push(root_zero_domain(view, relation.expression()));
+        count += 1;
     }
     Ok(LoweredRoots {
         programs: rows.into_scalar_block()?,
         zero_domains,
-        count: view.root_count(),
+        count,
     })
+}
+
+/// The clock whose partition an expression's operands belong to, if any.
+///
+/// MLS §16.5 confines `previous(x)` and every clock-owned declaration to their owning
+/// partition, so an operand that names one is decisive: the expression is evaluated on
+/// that clock's ticks and nowhere else. That is what keeps a clocked relation out of the
+/// continuous root set (MLS §16.8.1 raises no state event for it — the tick already is
+/// the event) and what tells the condition-memory row which schedule to compile under.
+///
+/// The first owner found wins; a clocked partition cannot mix clocks, and the callers
+/// that must reject a mix check for it explicitly.
+fn expression_clock_owner<'dae>(
+    view: dae::DaeView<'dae>,
+    clocks: &LoweredClocks<'dae>,
+    expression: dae::ExprId<'dae>,
+) -> Option<(dae::ClockId<'dae>, solve::PeriodicClockId)> {
+    let mut owner = None;
+    dae::for_each_expression(view, expression, |_, node| {
+        if owner.is_some() {
+            return;
+        }
+        let dae::ExpressionOperation::Coordinate(coordinate) = node.operation() else {
+            return;
+        };
+        if let dae::CoordinateView::Previous(previous) = coordinate {
+            let clock = view
+                .previous(previous)
+                .expect("checked previous identity resolves")
+                .clock();
+            let solve = clocks
+                .clock(clock)
+                .expect("checked previous history names a lowered clock");
+            owner = Some((clock, solve));
+            return;
+        }
+        owner = super::coordinate_variable(coordinate)
+            .or_else(|| super::pre_coordinate_variable(coordinate))
+            .and_then(|index| view.variable_id(index as usize))
+            .and_then(|id| clocks.variable_owner(id));
+    });
+    owner
 }
 
 fn root_zero_domain<'dae>(

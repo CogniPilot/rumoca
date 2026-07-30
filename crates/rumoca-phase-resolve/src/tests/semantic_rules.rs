@@ -155,8 +155,14 @@ end EvaluateScopeWarning;
     );
 }
 
+/// MLS §18.6: `Evaluate` "only has effect for a component declared with the
+/// prefix parameter". A function has no parameter-variability locals, so the
+/// annotation is without effect there rather than illegal — the shape MSL
+/// 4.1.0 relies on in
+/// `Modelica.Electrical.Machines.SpacePhasors.Functions.ToSpacePhasor`. The
+/// declaration must still resolve, and the advisory must stay advisory.
 #[test]
-fn test_evaluate_on_function_local_component_is_an_error() {
+fn test_evaluate_on_function_local_component_is_an_ignored_advisory() {
     let source = r#"
 function F
   input Real x[:];
@@ -167,13 +173,46 @@ algorithm
   y := m;
 end F;
 "#;
+    let success = match resolve_with_diagnostics(parsed_tree_from_source(source)) {
+        Ok(success) => success,
+        Err(failure) => panic!(
+            "a function-local Evaluate annotation must not block resolution: {:?}",
+            failure.diagnostics()
+        ),
+    };
+    let (_, diagnostics) = success.into_parts();
+    assert!(
+        !diagnostics.has_errors(),
+        "function-local Evaluate must not be an error: {diagnostics:?}"
+    );
+    let advisory = diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code.as_deref() == Some("WR006"))
+        .unwrap_or_else(|| panic!("expected the WR006 no-effect advisory, got: {diagnostics:?}"));
+    assert!(
+        !advisory.is_error(),
+        "WR006 must remain advisory: {advisory:?}"
+    );
+}
+
+/// The same annotation outside a function keeps the ANN-008 hard rejection:
+/// there the modeler can declare the component `parameter` or `constant`.
+#[test]
+fn test_evaluate_on_model_local_component_is_an_error() {
+    let source = r#"
+model M
+  Integer m annotation(Evaluate=true);
+equation
+  m = 1;
+end M;
+"#;
     let diagnostics =
-        resolve_test_source(source).expect_err("function locals are not exempt from ANN-008");
+        resolve_test_source(source).expect_err("model components are not exempt from ANN-008");
     assert!(
         diagnostics
             .iter()
             .any(|diagnostic| diagnostic.code.as_deref() == Some("ER070")),
-        "expected ER070 for invalid function-local Evaluate annotation, got: {diagnostics:?}"
+        "expected ER070 for invalid model-local Evaluate annotation, got: {diagnostics:?}"
     );
 }
 

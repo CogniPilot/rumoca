@@ -732,9 +732,7 @@ fn eval_param_shape_subscript(
     match subscript {
         rumoca_core::Subscript::Index { value, .. } => Some(*value),
         rumoca_core::Subscript::Expr { expr, .. } => try_eval_integer_with_context(expr, ctx),
-        rumoca_core::Subscript::Colon { .. } => {
-            param.dimensions().get(index).copied()
-        }
+        rumoca_core::Subscript::Colon { .. } => param.dimensions().get(index).copied(),
     }
 }
 

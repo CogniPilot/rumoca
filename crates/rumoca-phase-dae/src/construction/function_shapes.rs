@@ -220,6 +220,15 @@ impl ShapeAnalyzer<'_> {
         {
             return self.discover_constructor(name, args, *span, values);
         }
+        if let Expression::FunctionCall {
+            name, args, span, ..
+        } = expression
+            && enumeration_conversion(self.flat, name, args, *span)?.is_some()
+        {
+            // MLS §4.9.5.2: the conversion yields one enumeration value, and its
+            // Integer ordinal is already proven constant by the recognizer.
+            return Ok(Vec::new());
+        }
         let mut resolve = |name: &rumoca_core::Reference, arguments: &[Expression], span: Span| {
             let inputs = arguments
                 .iter()
@@ -317,6 +326,7 @@ impl ShapeAnalyzer<'_> {
                 ToDaeError::unresolved_reference(key.function.as_str(), call_span)
             })?;
         let certificate = resolve_certificate(
+            self.flat,
             function,
             key.clone(),
             call_span,
@@ -571,6 +581,7 @@ fn concrete_dimensions(
 }
 
 fn resolve_certificate(
+    flat: &flat::Model,
     function: &rumoca_core::Function,
     key: FunctionSpecializationKey,
     call_span: Span,
@@ -605,6 +616,20 @@ fn resolve_certificate(
     for local in &function.locals {
         let shape = resolve_declared_shape(local, None, &values)?;
         values.insert(VarName::new(&local.name), shape);
+    }
+    // MLS §12.2: a record value's declared fields are readable through the
+    // joined reference identity Flat renders, so each field carries its own
+    // proven shape in the same environment as the value that declares it.
+    for value in function
+        .inputs
+        .iter()
+        .chain(&function.outputs)
+        .chain(&function.locals)
+    {
+        for (path, field) in record_field_projections(value, flat) {
+            let shape = resolve_declared_shape(field, None, &values)?;
+            values.insert(path, shape);
+        }
     }
     Ok(FunctionShapeCertificate {
         key,
@@ -775,6 +800,23 @@ pub(super) fn evaluate_shape_integer(
             let lhs = evaluate_shape_integer(lhs, values)?;
             let rhs = evaluate_shape_integer(rhs, values)?;
             checked_shape_arithmetic(op.clone(), lhs, rhs, span)
+        }
+        // A scalar coordinate proven by this environment carries a shape but no
+        // value, and an extent written over it needs the value. Naming that
+        // cause keeps the rejection honest: the missing owner is a
+        // value-proven specialization, not a malformed extent expression.
+        Expression::VarRef {
+            name, subscripts, ..
+        } if subscripts.is_empty() && values.get(name.var_name()).is_some_and(Vec::is_empty) => {
+            Err(ToDaeError::unsupported_flat(
+                "function shape proof",
+                format!(
+                    "extent depends on the value of scalar `{}`, which requires a \
+                     value-proven function specialization",
+                    name.as_str()
+                ),
+                span,
+            ))
         }
         _ => Err(ToDaeError::unsupported_flat(
             "function shape proof",

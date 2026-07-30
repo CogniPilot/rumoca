@@ -159,12 +159,9 @@ fn constructor_inputs_match(
     inputs: &[rumoca_core::FunctionParam],
 ) -> bool {
     fields.len() == inputs.len()
-        && fields
-            .iter()
-            .zip(inputs)
-            .all(|(field, input)| {
-                field.name == input.name && field.dimensions() == input.dimensions()
-            })
+        && fields.iter().zip(inputs).all(|(field, input)| {
+            field.name == input.name && field.dimensions() == input.dimensions()
+        })
 }
 
 fn collect_constructor_params(

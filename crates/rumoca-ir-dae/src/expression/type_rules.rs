@@ -317,6 +317,9 @@ pub(super) fn builtin_result<'dae>(
     if builtin == PureBuiltin::Size {
         return size_result(storage, arguments, first, at);
     }
+    if builtin == PureBuiltin::Integer {
+        return integer_result(arguments, &first, at);
+    }
     expect_numeric(first.scalar_type(), at)?;
     match builtin {
         PureBuiltin::Abs
@@ -340,11 +343,7 @@ pub(super) fn builtin_result<'dae>(
             Ok(first)
         }
         PureBuiltin::Integer => {
-            expect_arity(arguments, 1, at)?;
-            if !first.is_scalar() {
-                return Err(DaeConstructionError::ShapeMismatch { span: at.span() });
-            }
-            Ok(ValueType::scalar(ScalarType::Integer))
+            unreachable!("the Integer conversion returns before numeric builtin checks")
         }
         PureBuiltin::Atan2 | PureBuiltin::Div | PureBuiltin::Mod | PureBuiltin::Rem => {
             expect_arity(arguments, 2, at)?;
@@ -385,6 +384,28 @@ pub(super) fn builtin_result<'dae>(
             unreachable!("type-preserving noEvent returns before numeric builtin checks")
         }
     }
+}
+
+/// MLS §4.9.5.2: `Integer(e)` is the Integer ordinal of an enumeration value,
+/// and `integer(x)` is the Integer conversion of a numeric value. Both are
+/// scalar and both produce Integer, so the enumeration operand is admitted here
+/// instead of at the shared numeric gate, which every other builtin still uses.
+fn integer_result(
+    arguments: &[ExprId<'_>],
+    actual: &ValueType,
+    at: DaeProvenance,
+) -> Result<ValueType, DaeConstructionError> {
+    expect_arity(arguments, 1, at)?;
+    if !actual.is_scalar() {
+        return Err(DaeConstructionError::ShapeMismatch { span: at.span() });
+    }
+    if !actual.scalar_type().is_numeric() && actual.scalar_type() != ScalarType::Enumeration {
+        return Err(DaeConstructionError::ExpectedNumeric {
+            found: actual.scalar_type(),
+            span: at.span(),
+        });
+    }
+    Ok(ValueType::scalar(ScalarType::Integer))
 }
 
 fn homotopy_result(

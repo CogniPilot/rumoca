@@ -1,4 +1,5 @@
 mod domains;
+mod external_functions;
 mod function_checks;
 mod function_reads;
 mod storage;
@@ -29,7 +30,7 @@ use crate::discrete_values::{
 use crate::equations::{
     ContinuousEquations, DiscreteEquations, DiscreteRealActivation, DiscreteRealEquationEntry,
     DiscreteRealEquationView, EquationOwnerEntry, InitializationEquations, ResidualEquationEntry,
-    StructuredFamilyEntry,
+    ResidualShape, StructuredFamilyEntry,
 };
 use crate::events::{
     EventActionEntry, EventActionKind, EventActionOperation, EventActionView, Events,
@@ -62,6 +63,11 @@ pub const DAE_SCHEMA_VERSION: u16 = 12;
 
 pub use domains::Domains;
 pub(crate) use domains::insert_domain;
+use external_functions::build_external_body;
+pub use external_functions::{
+    ExternalArgument, ExternalFunctionBody, ExternalLanguage, ExternalLinkage, FunctionPurity,
+};
+pub(crate) use external_functions::{ExternalArgumentEntry, ExternalBodyEntry};
 use function_checks::*;
 pub(crate) use function_reads::{
     FunctionReadFact, FunctionReadMergeError, FunctionReadSet, FunctionReadSets,
@@ -71,11 +77,12 @@ use variable_types::VariableTypeCapability;
 
 pub use view::{
     ContinuousOwnerView, CoordinateView, DaeView, DomainView, ExpressionKind, ExpressionOperands,
-    ExpressionOperation, ExpressionView, FunctionDefinitionValues, FunctionDefinitionView,
-    FunctionFoldView, FunctionParameterView, FunctionStatementView, FunctionStatements,
-    FunctionValueView, FunctionView, InitializationOwnerView, RangeBoundView, RangeView,
-    ResidualEquationView, StringConversionFormatView, StructuredFamilyView, SubscriptView,
-    SubscriptsView, ValueTypeOperands, VariableIdentity, VariableView,
+    ExpressionOperation, ExpressionView, ExternalArgumentView, ExternalFunctionView,
+    FunctionDefinitionValues, FunctionDefinitionView, FunctionFoldView, FunctionParameterView,
+    FunctionStatementView, FunctionStatements, FunctionValueView, FunctionView,
+    InitializationOwnerView, RangeBoundView, RangeView, ResidualEquationView,
+    StringConversionFormatView, StructuredFamilyView, SubscriptView, SubscriptsView,
+    ValueTypeOperands, VariableIdentity, VariableView,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -216,8 +223,35 @@ pub(crate) struct FunctionEntry {
     pub(crate) definitions: Vec<FunctionDefinitionEntry>,
     pub(crate) folds: Vec<u32>,
     declaration: DaeProvenance,
-    definition: Option<FunctionDefinitionWire>,
+    definition: Option<FunctionBodyEntry>,
     build: Option<FunctionBuildState>,
+}
+
+/// The one checked body a finalized function owns.
+///
+/// A function is either a Modelica algorithm body proven by assignment and
+/// fold transitions, or an MLS §12.9 external interface. There is no third,
+/// bodyless state a finalized `Dae` can hold.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum FunctionBodyEntry {
+    Modelica(FunctionDefinitionWire),
+    External(ExternalBodyEntry),
+}
+
+impl FunctionBodyEntry {
+    fn modelica(&self) -> Option<&FunctionDefinitionWire> {
+        match self {
+            Self::Modelica(definition) => Some(definition),
+            Self::External(_) => None,
+        }
+    }
+
+    pub(crate) fn external(&self) -> Option<&ExternalBodyEntry> {
+        match self {
+            Self::Modelica(_) => None,
+            Self::External(external) => Some(external),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -270,7 +304,7 @@ enum FunctionStatementWire {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-struct FunctionDefinitionWire {
+pub(crate) struct FunctionDefinitionWire {
     statements: Vec<FunctionStatementWire>,
     results: Vec<u32>,
 }
@@ -1485,10 +1519,39 @@ impl<'dae> Functions<'_, 'dae> {
             .build
             .take()
             .expect("checked function body remains aggregate-owned until definition");
-        entry.definition = Some(FunctionDefinitionWire {
+        entry.definition = Some(FunctionBodyEntry::Modelica(FunctionDefinitionWire {
             statements: build.statements,
             results,
-        });
+        }));
+        self.storage.unfilled_functions -= 1;
+        Ok(())
+    }
+
+    /// Define one reserved function through its MLS §12.9 external interface.
+    ///
+    /// The reservation is consumed exactly like a Modelica body definition, so
+    /// a function receives one body and never both. Purity, language, symbol,
+    /// ordered ABI arguments, produced outputs, and link facts are all checked
+    /// here; nothing about the interface is inferred from a rendered name.
+    pub fn define_external(
+        &mut self,
+        reservation: FunctionReservation<'_, 'dae>,
+        external: ExternalFunctionBody<'dae>,
+        provenance: DaeProvenance,
+    ) -> Result<(), DaeConstructionError> {
+        check_provenance(self.source_map, provenance)?;
+        let function = reservation.function;
+        let entry = build_external_body(
+            self.storage,
+            function,
+            reservation.construction,
+            external,
+            provenance,
+        )?;
+        let Some(stored) = self.storage.functions.get_mut(function.index() as usize) else {
+            return Err(unknown("function", function.index(), provenance));
+        };
+        stored.definition = Some(FunctionBodyEntry::External(entry));
         self.storage.unfilled_functions -= 1;
         Ok(())
     }

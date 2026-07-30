@@ -8,8 +8,9 @@ fn missing_call_provenance_cannot_mint_a_shape_certificate() {
         inputs: Vec::new(),
     };
 
+    let flat = flat::Model::default();
     assert!(matches!(
-        resolve_certificate(&function, key, Span::DUMMY, &ShapeEnvironment::new()),
+        resolve_certificate(&flat, &function, key, Span::DUMMY, &ShapeEnvironment::new()),
         Err(ToDaeError::MissingProvenance { owner })
             if owner == "function specialization call"
     ));

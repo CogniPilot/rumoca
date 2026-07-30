@@ -223,6 +223,15 @@ pub enum DaeConstructionError {
         dependency: u32,
         span: Span,
     },
+    #[error("`{symbol}` is not a legal external function entry point")]
+    InvalidExternalSymbol { symbol: VarName, span: Span },
+    #[error("external function link facts must name a nonempty library, include, or directory")]
+    InvalidExternalLinkage { span: Span },
+    #[error(
+        "impure external function `{name}` is only callable from an initial equation/algorithm, \
+         a `when` body, or another impure function"
+    )]
+    IllegalImpureCallContext { name: VarName, span: Span },
     #[error("missing {kind} definition for identity {index}")]
     IncompleteDefinition {
         kind: &'static str,
@@ -329,6 +338,9 @@ impl DaeConstructionError {
             | Self::EmptyDiscreteValueOwner { span }
             | Self::InvalidDiscreteBranchSet { span }
             | Self::UnissuedDiscreteDependency { span, .. }
+            | Self::InvalidExternalSymbol { span, .. }
+            | Self::InvalidExternalLinkage { span }
+            | Self::IllegalImpureCallContext { span, .. }
             | Self::IncompleteDefinition { span, .. } => Some(*span),
             Self::ConflictingClockOwnership { attempted, .. } => Some(attempted.span()),
             Self::ConflictingEffectiveType { attempted, .. } => Some(attempted.span()),

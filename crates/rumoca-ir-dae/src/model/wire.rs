@@ -223,8 +223,21 @@ struct FunctionEntryWire<Name = rumoca_core::VarName> {
     outputs: Vec<FunctionNamedValueWire<Name>>,
     locals: Vec<FunctionNamedValueWire<Name>>,
     statements: Vec<FunctionStatementInput>,
+    /// MLS §12.9 external interface; mutually exclusive with `statements`.
+    external: Option<ExternalBodyInput<Name>>,
     #[serde(deserialize_with = "deserialize_provenance")]
     declaration: DaeProvenance,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExternalBodyInput<Name = rumoca_core::VarName> {
+    purity: FunctionPurity,
+    language: ExternalLanguage,
+    symbol: Name,
+    arguments: Vec<ExternalArgumentEntry>,
+    result: Option<u32>,
+    linkage: ExternalLinkage,
 }
 
 #[derive(Serialize, Deserialize)]

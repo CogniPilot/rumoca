@@ -22,7 +22,8 @@ use crate::types::StructuralError;
 
 /// Scalar incidence stored as compressed sparse rows.
 ///
-/// Invariants (established by [`IncidenceRowsBuilder`] and every constructor):
+/// Invariants (established by the crate-internal `IncidenceRowsBuilder` and
+/// every constructor):
 /// - `offsets.len() == rows + 1`, `offsets` is non-decreasing and starts at 0;
 /// - each run `columns[offsets[r]..offsets[r + 1]]` is sorted ascending and
 ///   contains no duplicates.

@@ -21,6 +21,16 @@ fn class(
     }
 }
 
+/// Canonicalize with no declared class scopes, so callable references keep the
+/// exact structured path the fixture gives them.
+fn canonicalize_collected_function_calls_without_scopes(
+    flat: &mut flat::Model,
+) -> Result<(), FlattenError> {
+    let tree = ast::ClassTree::new();
+    let class_index = ast::ClassDefIndex::from_tree(&tree);
+    canonicalize_collected_function_calls(flat, &class_index)
+}
+
 fn test_source_map() -> rumoca_core::SourceMap {
     let mut source_map = rumoca_core::SourceMap::new();
     source_map.add(
@@ -136,7 +146,8 @@ fn canonicalize_collected_function_calls_does_not_recover_hierarchy_from_suffix(
         },
     ));
 
-    canonicalize_collected_function_calls(&mut flat).expect("canonicalize function calls");
+    canonicalize_collected_function_calls_without_scopes(&mut flat)
+        .expect("canonicalize function calls");
 
     let rumoca_core::Expression::FunctionCall { name, .. } = &flat.equations[0].residual else {
         panic!("expected function call residual");
@@ -155,7 +166,11 @@ fn canonicalize_collected_function_calls_uses_def_id_for_record_constructors() {
     );
     constructor.def_id = Some(constructor_def_id);
     constructor.is_constructor = true;
-    constructor.add_input(crate::test_support::real_param("PRef", Vec::new(), test_span()));
+    constructor.add_input(crate::test_support::real_param(
+        "PRef",
+        Vec::new(),
+        test_span(),
+    ));
     flat.add_function(constructor);
     let component_ref = core_comp_ref(
         &["Utilities", "ParameterRecords", "SM_PermanentMagnetData"],
@@ -179,7 +194,8 @@ fn canonicalize_collected_function_calls_uses_def_id_for_record_constructors() {
         },
     );
 
-    canonicalize_collected_function_calls(&mut flat).expect("canonicalize function calls");
+    canonicalize_collected_function_calls_without_scopes(&mut flat)
+        .expect("canonicalize function calls");
 
     let Some(rumoca_core::Expression::FunctionCall { name, .. }) = flat
         .variables
@@ -253,7 +269,7 @@ fn canonicalize_collected_function_calls_rejects_disagreeing_name_and_resolved_i
         },
     ));
 
-    let error = canonicalize_collected_function_calls(&mut flat)
+    let error = canonicalize_collected_function_calls_without_scopes(&mut flat)
         .expect_err("conflicting function identities must fail at the Flat boundary");
 
     assert!(matches!(
@@ -262,6 +278,87 @@ fn canonicalize_collected_function_calls_rejects_disagreeing_name_and_resolved_i
             if rendered == "Modelica.Media.Interfaces.PartialMedium.setState_pTX"
                 && structured == "Modelica.Media.Air.ReferenceMoistAir.setState_pTX"
     ));
+}
+
+/// MLS §5.3: a callable written `Concrete.Element` inside `package P` looks up
+/// to `P.Concrete.Element`, so Resolve keeps the use-site path in the
+/// structured reference and the lookup-qualified path in the rendered name.
+/// Canonicalization must restate the structured path from exact
+/// enclosing-scope identities rather than reject the pair.
+#[test]
+fn canonicalize_collected_function_calls_restates_enclosing_scope_identity() {
+    let package_def = rumoca_core::DefId::new(1);
+    let inner_def = rumoca_core::DefId::new(2);
+    let record_def = rumoca_core::DefId::new(3);
+
+    let mut inner = class("Concrete", rumoca_core::ClassType::Package, inner_def);
+    inner.classes.insert(
+        "Element".to_string(),
+        class("Element", rumoca_core::ClassType::Record, record_def),
+    );
+    let mut outer = class("P", rumoca_core::ClassType::Package, package_def);
+    outer.classes.insert("Concrete".to_string(), inner);
+    let mut tree = ast::ClassTree::new();
+    tree.definitions.classes.insert("P".to_string(), outer);
+    let class_index = ast::ClassDefIndex::from_tree(&tree);
+
+    let mut flat = flat::Model::new();
+    let mut constructor = rumoca_core::Function::new("P.Concrete.Element", test_span());
+    constructor.def_id = Some(record_def);
+    constructor.is_constructor = true;
+    constructor.add_input(crate::test_support::real_param(
+        "position",
+        Vec::new(),
+        test_span(),
+    ));
+    flat.add_function(constructor);
+
+    let variable_name = rumoca_core::VarName::new("left");
+    flat.add_variable(
+        variable_name.clone(),
+        flat::Variable {
+            name: variable_name.clone(),
+            binding: Some(rumoca_core::Expression::FunctionCall {
+                name: rumoca_core::Reference::with_component_reference(
+                    "P.Concrete.Element",
+                    core_structured_comp_ref(&[("Concrete", inner_def), ("Element", record_def)]),
+                ),
+                args: vec![],
+                is_constructor: true,
+                span: test_span(),
+            }),
+            ..flat::Variable::empty_with_span(test_span())
+        },
+    );
+
+    canonicalize_collected_function_calls(&mut flat, &class_index)
+        .expect("scope-qualified callable identity should reconcile");
+
+    let Some(rumoca_core::Expression::FunctionCall { name, .. }) = flat
+        .variables
+        .get(&variable_name)
+        .and_then(|var| var.binding.as_ref())
+    else {
+        panic!("expected constructor binding");
+    };
+    assert_eq!(name.as_str(), "P.Concrete.Element");
+    let reference = name.component_ref().expect("structured callable reference");
+    assert_eq!(
+        reference
+            .parts()
+            .iter()
+            .map(|part| (part.ident.as_str(), part.def_id))
+            .collect::<Vec<_>>(),
+        vec![
+            ("P", package_def),
+            ("Concrete", inner_def),
+            ("Element", record_def),
+        ]
+    );
+    assert!(
+        name.resolved_function().is_some(),
+        "reconciled callable must carry its Flat instance identity"
+    );
 }
 
 #[test]
@@ -319,7 +416,8 @@ fn canonicalize_collected_function_calls_visits_when_chains() {
     let chain = flat::WhenChain::new(branch, test_span());
     flat.when_chains.push(chain);
 
-    canonicalize_collected_function_calls(&mut flat).expect("canonicalize function calls");
+    canonicalize_collected_function_calls_without_scopes(&mut flat)
+        .expect("canonicalize function calls");
 
     assert_function_call_name(&flat.when_chains[0].first().condition, "Pkg.Events.trip");
     let flat::WhenEquation::Conditional {
@@ -378,7 +476,8 @@ fn canonicalize_collected_function_calls_leaves_ambiguous_suffix() {
         },
     ));
 
-    canonicalize_collected_function_calls(&mut flat).expect("canonicalize function calls");
+    canonicalize_collected_function_calls_without_scopes(&mut flat)
+        .expect("canonicalize function calls");
 
     let rumoca_core::Expression::FunctionCall { name, .. } = &flat.equations[0].residual else {
         panic!("expected function call residual");
@@ -419,7 +518,8 @@ fn canonicalize_collected_function_calls_distinguishes_duplicate_inherited_def_i
         },
     ));
 
-    canonicalize_collected_function_calls(&mut flat).expect("canonicalize function calls");
+    canonicalize_collected_function_calls_without_scopes(&mut flat)
+        .expect("canonicalize function calls");
 
     let expected_instance = flat.functions[&rumoca_core::VarName::new("Pkg.B.f")]
         .instance_id
@@ -467,7 +567,8 @@ fn canonicalize_collected_function_calls_prefers_exact_name_over_stale_def_id() 
         },
     ));
 
-    canonicalize_collected_function_calls(&mut flat).expect("canonicalize function calls");
+    canonicalize_collected_function_calls_without_scopes(&mut flat)
+        .expect("canonicalize function calls");
 
     let expected_instance = flat.functions[&rumoca_core::VarName::new("Pkg.Medium.density")]
         .instance_id
@@ -692,8 +793,8 @@ fn target_def_id_request_keeps_concrete_exposed_package() {
         &request,
         FunctionTypeCatalog::new(&type_overlay),
     )
-        .expect("lookup should not error")
-        .expect("inherited function should resolve through concrete package");
+    .expect("lookup should not error")
+    .expect("inherited function should resolve through concrete package");
 
     assert_eq!(resolved_name, "ReferenceMoistAir.specificEnthalpy_pTX");
     assert_eq!(
@@ -988,9 +1089,14 @@ fn contextualized_record_parameter_uses_resolved_identity_for_lexical_alias() {
     let class_index = ast::ClassDefIndex::from_tree(&tree);
     let mut function = rumoca_core::Function::new("Pkg.f", test_span());
     function.add_input(
-        crate::test_support::aggregate_param("voltage", "SI.ComplexVoltage", Vec::new(), test_span())
-            .with_type_class(rumoca_core::ClassType::Record)
-            .with_type_def_id(record_def),
+        crate::test_support::aggregate_param(
+            "voltage",
+            "SI.ComplexVoltage",
+            Vec::new(),
+            test_span(),
+        )
+        .with_type_class(rumoca_core::ClassType::Record)
+        .with_type_def_id(record_def),
     );
 
     contextualize_record_param_type_names(&tree, &class_index, "Pkg.f", &mut function).unwrap();

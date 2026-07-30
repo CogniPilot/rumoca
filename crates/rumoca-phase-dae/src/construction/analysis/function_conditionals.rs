@@ -1,6 +1,7 @@
 use super::*;
 
-pub(super) fn validate_function_conditional(
+/// Prove the checked owner shape of one MLS §11.5 function conditional.
+pub(super) fn plan_function_conditional(
     blocks: &[rumoca_core::StatementBlock],
     fallback: Option<&[rumoca_core::Statement]>,
     span: Span,
@@ -14,89 +15,58 @@ pub(super) fn validate_function_conditional(
             span,
         ));
     }
-    let mut branch_plans = Vec::with_capacity(blocks.len());
-    let mut expected_targets = None;
+    let mut branches = Vec::with_capacity(blocks.len());
     for block in blocks {
         validate_function_expression_with_roles(&block.cond, context.roles, context.flat)?;
-        let plans = validate_function_statements(&block.stmts, context)?;
-        let targets = total_conditional_targets(&block.stmts, &plans, context, span)?;
-        require_same_conditional_targets(&mut expected_targets, &targets, context, span)?;
-        branch_plans.push(plans);
+        branches.push(plan_function_statements(&block.stmts, context)?);
     }
-    let fallback_plans = fallback
-        .map(|fallback| {
-            let plans = validate_function_statements(fallback, context)?;
-            let fallback_targets = total_conditional_targets(fallback, &plans, context, span)?;
-            require_same_conditional_targets(
-                &mut expected_targets,
-                &fallback_targets,
-                context,
-                span,
-            )?;
-            Ok::<_, ToDaeError>(plans)
-        })
+    let fallback = fallback
+        .map(|statements| plan_function_statements(statements, context))
         .transpose()?;
     Ok(FunctionStatementPlan::If {
-        branches: branch_plans,
-        fallback: fallback_plans,
-        targets: expected_targets.expect("nonempty condition branches establish targets"),
+        branches,
+        fallback,
+        targets: Vec::new(),
     })
 }
 
-fn total_conditional_targets(
-    statements: &[rumoca_core::Statement],
-    plans: &[FunctionStatementPlan],
-    context: FunctionValidationContext<'_>,
+/// Prove which values one function conditional defines on all of its paths.
+///
+/// Each branch is an ordinary MLS §11 algorithm section: its statements run in
+/// order and the last write to a value wins, so a branch may assign the same
+/// value repeatedly and may read what it already assigned. The branch keeps its
+/// own definedness certificate, and the join keeps exactly the values the
+/// conditional owns once it finishes.
+pub(super) fn resolve_function_conditional(
+    blocks: &[rumoca_core::StatementBlock],
+    fallback_statements: Option<&[rumoca_core::Statement]>,
+    branches: &mut [Vec<FunctionStatementPlan>],
+    fallback_plans: Option<&mut Vec<FunctionStatementPlan>>,
     span: Span,
+    context: FunctionValidationContext<'_>,
+    definitions: &mut FunctionDefinitions,
 ) -> Result<Vec<VarName>, ToDaeError> {
-    let mut targets = Vec::with_capacity(plans.len());
-    let mut assigned = HashSet::new();
-    for (statement, plan) in statements.iter().zip(plans) {
-        let statement_span =
-            required_statement_span(statement, "function conditional branch statement")?;
-        let (
-            rumoca_core::Statement::Assignment { value, .. },
-            FunctionStatementPlan::Assignment(assignment),
-        ) = (statement, plan)
-        else {
-            return Err(ToDaeError::unsupported_flat(
-                "function conditional",
-                format!(
-                    "`{}` requires direct whole-value assignments in every checked branch",
-                    context.function.name
-                ),
-                statement_span,
-            ));
-        };
-        let target = assignment.target();
-        let mut references = Vec::new();
-        value.collect_var_refs(&mut references);
-        if let Some(dependency) = references
-            .iter()
-            .find(|reference| assigned.contains(*reference))
-        {
-            return Err(ToDaeError::unsupported_flat(
-                "function conditional",
-                format!(
-                    "`{}` branch assignment reads earlier branch-local value `{dependency}`",
-                    context.function.name
-                ),
-                statement_span,
-            ));
-        }
-        if !assigned.insert(target.clone()) {
-            return Err(ToDaeError::unsupported_flat(
-                "function conditional",
-                format!(
-                    "`{}` assigns `{target}` more than once in one conditional branch",
-                    context.function.name
-                ),
-                statement_span,
-            ));
-        }
-        targets.push(target.clone());
+    let mut branch_states = Vec::with_capacity(branches.len() + 1);
+    let mut ordered = Vec::new();
+    for (block, plans) in blocks.iter().zip(branches.iter_mut()) {
+        definitions.require_readable(&block.cond, context, span)?;
+        let mut state = definitions.clone();
+        resolve_conditional_branch(&block.stmts, plans, context, &mut state)?;
+        collect_branch_targets(plans, &mut ordered);
+        branch_states.push(state);
     }
-    if targets.is_empty() {
+    let exhaustive = match (fallback_statements, fallback_plans) {
+        (Some(statements), Some(plans)) => {
+            let mut state = definitions.clone();
+            resolve_conditional_branch(statements, plans, context, &mut state)?;
+            collect_branch_targets(plans, &mut ordered);
+            branch_states.push(state);
+            true
+        }
+        (None, None) => false,
+        _ => unreachable!("a planned function conditional keeps its source fallback shape"),
+    };
+    if ordered.is_empty() {
         return Err(ToDaeError::unsupported_flat(
             "function conditional",
             format!(
@@ -106,30 +76,42 @@ fn total_conditional_targets(
             span,
         ));
     }
-    Ok(targets)
+    definitions.join_branches(&branch_states, exhaustive, &ordered, context, span)
 }
 
-fn require_same_conditional_targets(
-    expected: &mut Option<Vec<VarName>>,
-    found: &[VarName],
+/// A branch value has no owner outside the conditional expression that selects
+/// it, so a branch may only contain direct assignments: a nested loop or
+/// conditional would need its own unconditional owner in the function body.
+fn resolve_conditional_branch(
+    statements: &[rumoca_core::Statement],
+    plans: &mut [FunctionStatementPlan],
     context: FunctionValidationContext<'_>,
-    span: Span,
+    definitions: &mut FunctionDefinitions,
 ) -> Result<(), ToDaeError> {
-    let found_set = found.iter().cloned().collect::<HashSet<_>>();
-    if let Some(expected) = expected {
-        let expected_set = expected.iter().cloned().collect::<HashSet<_>>();
-        if expected_set != found_set {
-            return Err(ToDaeError::unsupported_flat(
-                "function conditional",
-                format!(
-                    "`{}` must define the same function values in every branch",
-                    context.function.name
-                ),
-                span,
-            ));
+    for (statement, plan) in statements.iter().zip(plans.iter()) {
+        if matches!(plan, FunctionStatementPlan::Assignment(_)) {
+            continue;
         }
-    } else {
-        *expected = Some(found.to_vec());
+        let span = required_statement_span(statement, "function conditional branch statement")?;
+        return Err(ToDaeError::unsupported_flat(
+            "function conditional",
+            format!(
+                "`{}` requires direct value assignments in every checked branch",
+                context.function.name
+            ),
+            span,
+        ));
     }
-    Ok(())
+    resolve_function_definitions(statements, plans, context, definitions)
+}
+
+fn collect_branch_targets(plans: &[FunctionStatementPlan], ordered: &mut Vec<VarName>) {
+    for plan in plans {
+        let FunctionStatementPlan::Assignment(assignment) = plan else {
+            continue;
+        };
+        if !ordered.contains(assignment.target()) {
+            ordered.push(assignment.target().clone());
+        }
+    }
 }

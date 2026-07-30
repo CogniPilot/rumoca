@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use super::PhaseResult;
-use crate::traversal_adapter::collect_class_dependencies;
+use crate::traversal_adapter::{RedeclareSubstitutions, collect_class_dependencies};
 
 pub(crate) type Fingerprint = [u8; 32];
 
@@ -82,6 +82,7 @@ impl DependencyFingerprintCache {
         let mut cache = Self::default();
         let mut file_bytes_cache: HashMap<String, Option<Vec<u8>>> = HashMap::new();
         let class_index = ast::ClassDefIndex::from_tree(tree);
+        let substitutions = RedeclareSubstitutions::from_index(&class_index);
         let mut direct_dependencies = HashMap::new();
 
         for (qualified_name, &def_id) in &tree.name_map {
@@ -94,7 +95,13 @@ impl DependencyFingerprintCache {
                 class_source_fingerprint(tree, class, qualified_name, &mut file_bytes_cache),
             );
             let dependencies = direct_dependencies.entry(def_id).or_insert_with(|| {
-                collect_class_dependencies(tree, &class_index, class, qualified_name)
+                collect_class_dependencies(
+                    tree,
+                    &class_index,
+                    &substitutions,
+                    class,
+                    qualified_name,
+                )
             });
             match lifecycle_dependency(&class_index, def_id, class) {
                 LifecycleDependency::Complete {

@@ -15,6 +15,7 @@ mod constructor_calls;
 mod function_shape_constants;
 mod index_collapse;
 mod indexed_dimension_recovery;
+mod occurrence_graph;
 
 #[path = "postprocess_def_id.rs"]
 mod def_id;

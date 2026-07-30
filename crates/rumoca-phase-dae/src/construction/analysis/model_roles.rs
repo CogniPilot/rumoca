@@ -8,7 +8,7 @@ pub(super) struct ModelRoles {
 
 pub(super) fn analyze_model_roles(
     flat: &flat::Model,
-    sampled_values: &HashMap<InstanceId, Span>,
+    sampled_values: &HashMap<InstanceId, SampledTarget>,
 ) -> Result<ModelRoles, ToDaeError> {
     let mut states = HashSet::new();
     for equation in flat.equations.iter().chain(&flat.initial_equations) {
@@ -28,6 +28,7 @@ pub(super) fn analyze_model_roles(
             .filter(|(_, variable)| sampled_values.contains_key(&variable.instance_id))
             .map(|(name, _)| name.clone()),
     );
+    collect_previous_operands(flat, &mut assigned_discrete);
     let roles = flat
         .variables
         .iter()
@@ -53,6 +54,87 @@ pub(super) fn analyze_model_roles(
         variables: roles,
         expressions: expression_roles,
     })
+}
+
+/// MLS §16.5 Operator 16.5 `previous(u)`: `u` is a clocked discrete-time
+/// variable.
+///
+/// A clocked partition written without a `when` clause (MLS §16.5.1 clock
+/// inference) declares its state coordinates with no `discrete` prefix, so the
+/// operator's own typing rule is the only exact evidence that they hold values
+/// between clock ticks. `states` still wins in [`classify_variable_role`], so a
+/// `der(...)` target passed to `previous(...)` keeps its continuous role and is
+/// rejected by the expression validator rather than silently reclassified.
+fn collect_previous_operands(flat: &flat::Model, discrete: &mut HashSet<VarName>) {
+    for expression in all_model_expressions(flat) {
+        collect_previous_operand_names(expression, discrete);
+    }
+    for chain in &flat.when_chains {
+        for branch in chain.branches() {
+            collect_previous_operand_names(&branch.condition, discrete);
+            collect_when_previous_operands(&branch.equations, discrete);
+        }
+    }
+}
+
+fn collect_when_previous_operands(
+    equations: &[flat::WhenEquation],
+    discrete: &mut HashSet<VarName>,
+) {
+    for equation in equations {
+        match equation {
+            flat::WhenEquation::Assign { value, .. } | flat::WhenEquation::Reinit { value, .. } => {
+                collect_previous_operand_names(value, discrete);
+            }
+            flat::WhenEquation::Assert {
+                condition,
+                message,
+                level,
+                ..
+            } => {
+                collect_previous_operand_names(condition, discrete);
+                collect_previous_operand_names(message, discrete);
+                if let Some(level) = level {
+                    collect_previous_operand_names(level, discrete);
+                }
+            }
+            flat::WhenEquation::Terminate { message, .. } => {
+                collect_previous_operand_names(message, discrete);
+            }
+            flat::WhenEquation::Conditional {
+                branches,
+                else_branch,
+                ..
+            } => {
+                for (condition, equations) in branches {
+                    collect_previous_operand_names(condition, discrete);
+                    collect_when_previous_operands(equations, discrete);
+                }
+                if let Some(equations) = else_branch {
+                    collect_when_previous_operands(equations, discrete);
+                }
+            }
+            flat::WhenEquation::FunctionCallOutputs { function, .. } => {
+                collect_previous_operand_names(function, discrete);
+            }
+        }
+    }
+}
+
+fn collect_previous_operand_names(expression: &Expression, discrete: &mut HashSet<VarName>) {
+    if let Expression::BuiltinCall {
+        function: BuiltinFunction::Previous,
+        args,
+        ..
+    } = expression
+        && let [argument] = args.as_slice()
+        && let Some((name, _)) = derivative_reference(argument)
+    {
+        discrete.insert(name.var_name().clone());
+    }
+    for child in expression_children(expression) {
+        collect_previous_operand_names(child, discrete);
+    }
 }
 
 fn collect_derivative_targets(

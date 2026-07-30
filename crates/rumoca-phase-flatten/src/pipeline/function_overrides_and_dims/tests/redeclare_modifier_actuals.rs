@@ -431,3 +431,113 @@ fn component_scope_inherits_type_extends_redeclare_function() {
     assert_eq!(target.modifier_args.len(), 1);
     assert_eq!(target.modifier_args[0].name, "V_flow_nominal");
 }
+
+/// MLS §7.3: `extends Base(redeclare C x = Pkg.Sub.Target)` redeclares `x` to
+/// the class named by the reference's *last* segment. The classic MSL shape is
+/// `extends Interfaces.VoltageSource(redeclare Modelica.Blocks.Sources.Step
+/// signalSource(...))`, where the first segment only names the root package.
+#[test]
+fn extends_redeclare_alias_resolves_dotted_value_to_its_target_class() {
+    let modelica_def = DefId::new(1);
+    let blocks_def = DefId::new(2);
+    let sources_def = DefId::new(3);
+    let step_def = DefId::new(4);
+    let interfaces_def = DefId::new(5);
+    let voltage_source_def = DefId::new(6);
+    let step_voltage_def = DefId::new(7);
+    let signal_source_def = DefId::new(8);
+
+    let mut step = class("Step", ClassType::Block);
+    step.def_id = Some(step_def);
+    let mut sources = class("Sources", ClassType::Package);
+    sources.def_id = Some(sources_def);
+    sources.classes.insert("Step".to_string(), step);
+    let mut blocks = class("Blocks", ClassType::Package);
+    blocks.def_id = Some(blocks_def);
+    blocks.classes.insert("Sources".to_string(), sources);
+    let mut modelica = class("Modelica", ClassType::Package);
+    modelica.def_id = Some(modelica_def);
+    modelica.classes.insert("Blocks".to_string(), blocks);
+
+    let mut voltage_source = class("VoltageSource", ClassType::Model);
+    voltage_source.def_id = Some(voltage_source_def);
+    let mut interfaces = class("Interfaces", ClassType::Package);
+    interfaces.def_id = Some(interfaces_def);
+    interfaces
+        .classes
+        .insert("VoltageSource".to_string(), voltage_source);
+
+    let mut step_voltage = class("StepVoltage", ClassType::Model);
+    step_voltage.def_id = Some(step_voltage_def);
+    step_voltage.extends.push(Extend {
+        base_name: Name {
+            def_id: Some(voltage_source_def),
+            ..Name::from_string("Interfaces.VoltageSource")
+        },
+        base_def_id: Some(voltage_source_def),
+        modifications: vec![rumoca_ir_ast::ExtendModification {
+            expr: rumoca_ir_ast::Expression::Binary {
+                op: rumoca_core::OpBinary::Assign,
+                lhs: Arc::new(rumoca_ir_ast::Expression::ComponentReference(
+                    resolved_comp_ref(&[("signalSource", signal_source_def)]),
+                )),
+                rhs: Arc::new(rumoca_ir_ast::Expression::ComponentReference(
+                    resolved_comp_ref(&[
+                        ("Modelica", modelica_def),
+                        ("Blocks", blocks_def),
+                        ("Sources", sources_def),
+                        ("Step", step_def),
+                    ]),
+                )),
+                span: test_span(),
+            },
+            each: false,
+            final_: false,
+            redeclare: true,
+        }],
+        ..Extend::default()
+    });
+
+    let mut tree = ClassTree::new();
+    tree.definitions
+        .classes
+        .insert("Modelica".to_string(), modelica);
+    tree.definitions
+        .classes
+        .insert("Interfaces".to_string(), interfaces);
+    tree.definitions
+        .classes
+        .insert("StepVoltage".to_string(), step_voltage);
+    for (def_id, name) in [
+        (modelica_def, "Modelica"),
+        (blocks_def, "Modelica.Blocks"),
+        (sources_def, "Modelica.Blocks.Sources"),
+        (step_def, "Modelica.Blocks.Sources.Step"),
+        (interfaces_def, "Interfaces"),
+        (voltage_source_def, "Interfaces.VoltageSource"),
+        (step_voltage_def, "StepVoltage"),
+    ] {
+        tree.def_map.insert(def_id, name.to_string());
+        tree.name_map.insert(name.to_string(), def_id);
+    }
+
+    let class_index = rumoca_ir_ast::ClassDefIndex::from_tree(&tree);
+    let mut overlay = InstanceOverlay::new();
+    let source_id = overlay.alloc_id();
+    overlay.add_component(rumoca_ir_ast::InstanceData {
+        instance_id: source_id,
+        qualified_name: QualifiedName::from_ident("source"),
+        type_def_id: Some(step_voltage_def),
+        ..rumoca_ir_ast::InstanceData::default()
+    });
+
+    let override_map = build_component_override_map(&overlay, &tree, &class_index, "StepVoltage")
+        .expect("component override map");
+    let (_, override_functions) = override_context_for_scope("source", &override_map);
+    let target = override_functions
+        .get("signalSource")
+        .expect("expected StepVoltage redeclare in source scope");
+    assert_eq!(target.name, "Modelica.Blocks.Sources.Step");
+    assert_eq!(target.def_id, step_def);
+    assert_eq!(target.class_type, ClassType::Block);
+}

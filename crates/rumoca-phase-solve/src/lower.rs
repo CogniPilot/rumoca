@@ -1074,25 +1074,236 @@ fn lower_initialization<'dae>(
     layout: &LoweredLayout<'dae>,
 ) -> Result<solve::InitializationSolveSystem, LowerError> {
     let mut rows = ScalarRows::default();
+    let mut row_residuals: Vec<Option<dae::ExprId<'dae>>> = Vec::new();
     for owner in view.initialization_owners() {
         match owner {
             dae::InitializationOwnerView::Residual { equation, .. } => {
-                for scalar in 0..scalar_count(view, equation.residual()) {
+                let count = scalar_count(view, equation.residual());
+                for scalar in 0..count {
                     let program = ScalarCompiler::new(view, layout, None)
                         .program(equation.residual(), scalar)?;
                     let output = rows.programs.len();
                     rows.push(program, equation.provenance().span(), output);
+                    // Only a one-scalar equation lets a whole-expression coordinate
+                    // walk stand in for exact per-scalar incidence.
+                    row_residuals.push((count == 1).then_some(equation.residual()));
                 }
             }
             dae::InitializationOwnerView::Structured { family, .. } => {
                 lower_initialization_family(view, layout, family, &mut rows)?;
+                row_residuals.resize(rows.programs.len(), None);
             }
         }
     }
+    let row_count = rows.programs.len();
+    let plan = plan_initial_parameter_projection(view, layout, &row_residuals)?;
     Ok(solve::InitializationSolveSystem {
         residual: rows.into_compute_block()?,
+        row_targets: vec![None; row_count],
+        projection_unknowns: plan.unknowns,
+        projection_plan: plan.plan,
         ..solve::InitializationSolveSystem::default()
     })
+}
+
+struct InitialParameterProjection {
+    unknowns: Vec<solve::ScalarSlot>,
+    plan: solve::InitializationProjectionPlan,
+}
+
+/// Plan the initialization unknowns that only the initialization system can determine.
+///
+/// MLS §8.6 gives a `parameter` declared `fixed = false` no value of its own: its `start`
+/// attribute is the iteration guess and the initialization equations are what actually
+/// determine it (`Modelica.Electrical.Analog.Basic.SaturatingInductor.Ipar` is the
+/// canonical case). Without a projection block the runtime can only *check* such a row,
+/// so the guess survives into the trajectory — a numerically plausible but wrong run, or
+/// the residual failure this planner removes.
+///
+/// Only rows whose sole unknowns are `fixed = false` parameters are planned here. A row
+/// that also reads a state, algebraic, or discrete coordinate belongs to the full
+/// initialization system, which has no checked plan yet; leaving it unplanned keeps its
+/// typed residual failure instead of inventing a block that cannot be square.
+fn plan_initial_parameter_projection<'dae>(
+    view: dae::DaeView<'dae>,
+    layout: &LoweredLayout<'dae>,
+    row_residuals: &[Option<dae::ExprId<'dae>>],
+) -> Result<InitialParameterProjection, LowerError> {
+    let unsolved = unsolved_parameter_slots(view, layout)?;
+    if unsolved.is_empty() {
+        return Ok(InitialParameterProjection {
+            unknowns: Vec::new(),
+            plan: solve::InitializationProjectionPlan::default(),
+        });
+    }
+    let mut incidence: Vec<(usize, BTreeSet<usize>)> = Vec::new();
+    for (row, residual) in row_residuals.iter().enumerate() {
+        let Some(residual) = *residual else {
+            continue;
+        };
+        let Some(unknowns) = row_parameter_unknowns(view, &unsolved, residual) else {
+            continue;
+        };
+        if unknowns.is_empty() {
+            continue;
+        }
+        incidence.push((row, unknowns));
+    }
+    let mut blocks = Vec::new();
+    let mut unknowns = Vec::new();
+    for component in connected_components(&incidence) {
+        let rows = component.rows;
+        let parameters = component.unknowns;
+        // A block the runtime can solve has one equation per unknown. A component that
+        // is not square is under- or over-determined by the rows this planner can see;
+        // it keeps the residual check rather than becoming a non-square Newton block.
+        if rows.len() != parameters.len() {
+            continue;
+        }
+        let slots = parameters
+            .iter()
+            .map(|index| solve::scalar_slot_p(*index))
+            .collect::<Vec<_>>();
+        unknowns.extend(slots.iter().copied());
+        blocks.push(solve::InitializationProjectionBlock {
+            rows,
+            unknowns: slots,
+        });
+    }
+    Ok(InitialParameterProjection {
+        unknowns,
+        plan: solve::InitializationProjectionPlan { blocks },
+    })
+}
+
+/// P-slot indices of every `fixed = false` parameter scalar.
+fn unsolved_parameter_slots<'dae>(
+    view: dae::DaeView<'dae>,
+    layout: &LoweredLayout<'dae>,
+) -> Result<HashMap<u32, Vec<usize>>, LowerError> {
+    let mut slots = HashMap::new();
+    for (id, variable) in view.variables() {
+        if variable.role() != dae::VariableRole::Parameter || variable.fixed() != Some(false) {
+            continue;
+        }
+        let span = variable.declaration().span();
+        let mut indices = Vec::with_capacity(variable.scalar_count());
+        for scalar in 0..variable.scalar_count() {
+            let solve::ScalarSlot::P { index, .. } =
+                variable_scalar_slot(layout, id.index(), scalar, span)?
+            else {
+                return Err(LowerError::contract(
+                    format!(
+                        "`fixed = false` parameter `{}` does not occupy parameter storage",
+                        variable.name()
+                    ),
+                    span,
+                ));
+            };
+            indices.push(index);
+        }
+        if !indices.is_empty() {
+            slots.insert(id.index(), indices);
+        }
+    }
+    Ok(slots)
+}
+
+/// The `fixed = false` parameter scalars a residual reads, or `None` when the residual
+/// also reads a coordinate the initialization projection cannot own.
+fn row_parameter_unknowns<'dae>(
+    view: dae::DaeView<'dae>,
+    unsolved: &HashMap<u32, Vec<usize>>,
+    residual: dae::ExprId<'dae>,
+) -> Option<BTreeSet<usize>> {
+    let mut unknowns = BTreeSet::new();
+    let mut owned = true;
+    dae::for_each_expression(view, residual, |_, expression| {
+        let dae::ExpressionOperation::Coordinate(coordinate) = expression.operation() else {
+            return;
+        };
+        match coordinate {
+            dae::CoordinateView::Parameter(parameter) => {
+                if let Some(indices) = unsolved.get(&parameter.index()) {
+                    unknowns.extend(indices.iter().copied());
+                }
+            }
+            // A domain binder and a clock interval are compile-time constants, and
+            // `time` is the known initialization instant.
+            dae::CoordinateView::Time
+            | dae::CoordinateView::ClockInterval(_)
+            | dae::CoordinateView::Binder(_) => {}
+            _ => owned = false,
+        }
+    });
+    owned.then_some(unknowns)
+}
+
+struct ProjectionComponent {
+    rows: Vec<usize>,
+    unknowns: Vec<usize>,
+}
+
+/// Group rows that share a `fixed = false` parameter into one solvable component.
+///
+/// Two rows that read the same unknown must be solved together, so the components of the
+/// row/unknown bipartite graph are the coarsest blocks that stay independent.
+fn connected_components(incidence: &[(usize, BTreeSet<usize>)]) -> Vec<ProjectionComponent> {
+    let mut sets = DisjointSets::new(incidence.len());
+    let mut owner: HashMap<usize, usize> = HashMap::new();
+    for (position, (_, unknowns)) in incidence.iter().enumerate() {
+        for unknown in unknowns {
+            let first = *owner.entry(*unknown).or_insert(position);
+            sets.union(first, position);
+        }
+    }
+    let mut grouped: Vec<ProjectionComponent> = Vec::new();
+    let mut group_of: HashMap<usize, usize> = HashMap::new();
+    for (position, (row, unknowns)) in incidence.iter().enumerate() {
+        let root = sets.find(position);
+        let group = *group_of.entry(root).or_insert_with(|| {
+            grouped.push(ProjectionComponent {
+                rows: Vec::new(),
+                unknowns: Vec::new(),
+            });
+            grouped.len() - 1
+        });
+        grouped[group].rows.push(*row);
+        grouped[group].unknowns.extend(unknowns.iter().copied());
+    }
+    for component in &mut grouped {
+        component.unknowns.sort_unstable();
+        component.unknowns.dedup();
+    }
+    grouped
+}
+
+/// Union-find over the rows of one initialization incidence.
+struct DisjointSets {
+    parent: Vec<usize>,
+}
+
+impl DisjointSets {
+    fn new(len: usize) -> Self {
+        Self {
+            parent: (0..len).collect(),
+        }
+    }
+
+    fn find(&mut self, mut node: usize) -> usize {
+        while self.parent[node] != node {
+            self.parent[node] = self.parent[self.parent[node]];
+            node = self.parent[node];
+        }
+        node
+    }
+
+    fn union(&mut self, left: usize, right: usize) {
+        let (left, right) = (self.find(left), self.find(right));
+        if left != right {
+            self.parent[right] = left;
+        }
+    }
 }
 
 fn lower_initialization_family<'dae>(

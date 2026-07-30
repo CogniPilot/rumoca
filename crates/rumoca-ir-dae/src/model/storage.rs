@@ -463,18 +463,22 @@ impl Storage {
     pub(crate) fn expect_real_residual(
         &self,
         residual: ExprId<'_>,
+        shape: ResidualShape,
         at: DaeProvenance,
     ) -> Result<(), DaeConstructionError> {
         self.expect_closed_expression(residual, at)?;
         let ty = self.expr_type(residual, at)?;
-        if ty.is_scalar() && ty.scalar_type() == ScalarType::Real {
-            return Ok(());
+        if ty.scalar_type() != ScalarType::Real {
+            return Err(DaeConstructionError::TypeMismatch {
+                expected: ScalarType::Real,
+                found: ty.scalar_type(),
+                span: at.span(),
+            });
         }
-        Err(DaeConstructionError::TypeMismatch {
-            expected: ScalarType::Real,
-            found: ty.scalar_type(),
-            span: at.span(),
-        })
+        if matches!(shape, ResidualShape::Scalar) && !ty.is_scalar() {
+            return Err(DaeConstructionError::ExpectedScalar { span: at.span() });
+        }
+        Ok(())
     }
 
     pub(crate) fn expect_primitive_relation(

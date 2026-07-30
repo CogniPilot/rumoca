@@ -1769,13 +1769,19 @@ fn initialize_advertises_editor_assist_capabilities() {
             capabilities.execute_command_provider.is_some(),
             "execute command should be advertised"
         );
-        assert!(
-            matches!(
-                capabilities.inlay_hint_provider,
-                Some(OneOf::Right(InlayHintServerCapabilities::Options(_)))
+        // The full-MSL editor gate validates this exact shape over the wire, so
+        // pin the advertised options here too: hints are computed eagerly and
+        // never resolved lazily.
+        let inlay_options = match &capabilities.inlay_hint_provider {
+            Some(OneOf::Right(InlayHintServerCapabilities::Options(options))) => options,
+            other => panic!(
+                "inlay hints are implemented and UTF-16-correct, so they are advertised as options: {other:?}"
             ),
-            "inlay hints are implemented and UTF-16-correct, so they are advertised: {:?}",
-            capabilities.inlay_hint_provider
+        };
+        assert_eq!(
+            inlay_options.resolve_provider,
+            Some(false),
+            "inlay hints carry their full label, so resolve support is advertised as false"
         );
     });
 }

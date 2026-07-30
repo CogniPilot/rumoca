@@ -140,8 +140,11 @@ end SympyDecay;
         .expect("compile checked report regression model");
     let report = render_checked_report(&result.dae, "SympyDecay");
 
+    // The first literal is pinned to `dae_backend::TEMPLATE_SCHEMA_VERSION`:
+    // the report template renders `dae.schema.version`, so every change to the
+    // projected template shape bumps that constant and this literal with it.
     for expected in [
-        "checked-dae-report 3",
+        "checked-dae-report 5",
         "model SympyDecay",
         "parameter k real",
         "state x real",

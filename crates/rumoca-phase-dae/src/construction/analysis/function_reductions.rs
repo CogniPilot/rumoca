@@ -33,7 +33,7 @@ fn validate_while_sum(
     else {
         return Err(unsupported_reduction(function));
     };
-    let initial = validate_function_statements(&function.body[..2], context)?;
+    let initial = plan_function_statements(&function.body[..2], context)?;
     let [
         FunctionStatementPlan::Assignment(result_assignment),
         FunctionStatementPlan::Assignment(index_assignment),
@@ -59,7 +59,7 @@ fn validate_while_sum(
     else {
         return Err(unsupported_reduction(function));
     };
-    let updates = validate_function_statements(&block.stmts, context)?;
+    let updates = plan_function_statements(&block.stmts, context)?;
     if !is_output_integer(function, context.flat, &result)
         || !is_local_integer(function, context.flat, &index)
         || !is_integer_zero(result_zero)
@@ -129,7 +129,7 @@ fn validate_capped_for_sum(
     let [rumoca_core::Statement::Break { span: break_span }] = block.stmts.as_slice() else {
         return Err(unsupported_reduction(function));
     };
-    let initial = validate_function_statements(&function.body[..1], context)?;
+    let initial = plan_function_statements(&function.body[..1], context)?;
     let [FunctionStatementPlan::Assignment(result_assignment)] = initial.as_slice() else {
         return Err(unsupported_reduction(function));
     };
@@ -145,7 +145,7 @@ fn validate_capped_for_sum(
         ..context
     };
     let update_plan =
-        validate_function_statements(std::slice::from_ref(update_statement), loop_context)?;
+        plan_function_statements(std::slice::from_ref(update_statement), loop_context)?;
     validate_function_range_expression(&index.range, context.roles, context.flat)?;
     validate_function_expression_with_roles(&block.cond, &loop_roles, context.flat)?;
     if !is_output_integer(function, context.flat, &result)
@@ -277,11 +277,7 @@ fn is_integer_input_reference(
         })
 }
 
-fn is_output_integer(
-    function: &rumoca_core::Function,
-    flat: &flat::Model,
-    name: &VarName,
-) -> bool {
+fn is_output_integer(function: &rumoca_core::Function, flat: &flat::Model, name: &VarName) -> bool {
     function.outputs.iter().any(|output| {
         output.name == name.as_str()
             && effective_function_scalar_type(flat, output) == Some(dae::ScalarType::Integer)
@@ -289,11 +285,7 @@ fn is_output_integer(
     })
 }
 
-fn is_local_integer(
-    function: &rumoca_core::Function,
-    flat: &flat::Model,
-    name: &VarName,
-) -> bool {
+fn is_local_integer(function: &rumoca_core::Function, flat: &flat::Model, name: &VarName) -> bool {
     function.locals.iter().any(|local| {
         local.name == name.as_str()
             && effective_function_scalar_type(flat, local) == Some(dae::ScalarType::Integer)

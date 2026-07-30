@@ -8,6 +8,8 @@ pub enum NumericEvaluationErrorKind {
     MissingValue,
     NonStaticCoordinate,
     UnsupportedOperation,
+    /// MLS §12.9 external body without a runtime implementation.
+    ExternalFunction,
     ShapeMismatch,
     InvalidValue,
     OutOfBounds,
@@ -382,6 +384,12 @@ where
                 span,
             )
         })?;
+        // MLS §12.9 external bodies are foreign code. Numeric evaluation owns
+        // no runtime that can execute one, so it fails with the call's exact
+        // provenance instead of substituting a plausible value.
+        if let Some(external) = definition.external() {
+            return Err(external_function_failure(definition.name(), external, span));
+        }
         let result = definition
             .result_values()
             .rhs(output as usize)
@@ -1111,6 +1119,23 @@ fn function_ordinal_error(span: Span) -> NumericEvaluationError {
     failure(
         NumericEvaluationErrorKind::OutOfBounds,
         "function parameter ordinal is out of range",
+        span,
+    )
+}
+
+pub(crate) fn external_function_failure(
+    name: &rumoca_core::VarName,
+    external: dae::ExternalFunctionView<'_>,
+    span: Span,
+) -> NumericEvaluationError {
+    failure(
+        NumericEvaluationErrorKind::ExternalFunction,
+        format!(
+            "external {} function `{}` calls `{}`, which this runtime cannot execute",
+            external.language().as_str(),
+            name,
+            external.symbol()
+        ),
         span,
     )
 }

@@ -6,7 +6,7 @@ use std::cell::RefCell;
 use wasm_bindgen::prelude::*;
 
 use crate::simulation_api::build_simulation_options;
-use crate::{compile_requested_model, qualify_input_model_name, with_singleton_session};
+use crate::{WasmError, compile_requested_model, qualify_input_model_name, with_singleton_session};
 use rumoca_compile::codegen::SolveTemplateRenderer;
 use rumoca_compile::codegen::targets::{TargetBundle, TargetTemplateSource};
 
@@ -52,7 +52,7 @@ thread_local! {
 /// memory - stay frozen at their prepared initial values. The layout's
 /// `runtime_event_roots` count lets hosts warn when that matters.
 #[wasm_bindgen]
-pub fn prepare_gpu_simulation(source: &str, model_name: &str) -> Result<String, JsValue> {
+pub fn prepare_gpu_simulation(source: &str, model_name: &str) -> Result<String, WasmError> {
     with_singleton_session(|session| {
         session.update_document("input.mo", source);
         let requested_model = qualify_input_model_name(session, model_name);
@@ -60,26 +60,26 @@ pub fn prepare_gpu_simulation(source: &str, model_name: &str) -> Result<String, 
 
         let (opts, _solver_label) = build_simulation_options(&result, 0.0, 0.0, "");
         let solve_model = rumoca_sim::lower_dae_for_gpu_preparation(&result.dae, &opts)
-            .map_err(|e| JsValue::from_str(&format!("Solve lowering failed: {e}")))?;
+            .map_err(|e| WasmError::new(format!("Solve lowering failed: {e}")))?;
 
         let bundle = TargetBundle::builtin("wgsl-solve")
-            .ok_or_else(|| JsValue::from_str("wgsl-solve builtin target is missing"))?;
+            .ok_or_else(|| WasmError::new("wgsl-solve builtin target is missing"))?;
         // One shared lazy context for the WGSL and layout templates.
         let renderer =
             SolveTemplateRenderer::new(&solve_model.problem, &solve_model.artifacts, model_name)
-                .map_err(|e| JsValue::from_str(&format!("wgsl-solve context failed: {e}")))?;
-        let render = |template_name: &str| -> Result<String, JsValue> {
+                .map_err(|e| WasmError::new(format!("wgsl-solve context failed: {e}")))?;
+        let render = |template_name: &str| -> Result<String, WasmError> {
             let template = bundle
                 .template_source(template_name)
-                .map_err(|e| JsValue::from_str(&format!("{e}")))?;
+                .map_err(|e| WasmError::new(format!("{e}")))?;
             renderer
                 .render(template.as_ref())
-                .map_err(|e| JsValue::from_str(&format!("wgsl-solve render failed: {e}")))
+                .map_err(|e| WasmError::new(format!("wgsl-solve render failed: {e}")))
         };
         let wgsl = render("model_solve.wgsl.jinja")?;
         let layout_text = render("model_layout.json.jinja")?;
         let layout: serde_json::Value = serde_json::from_str(&layout_text)
-            .map_err(|e| JsValue::from_str(&format!("wgsl-solve layout is not JSON: {e}")))?;
+            .map_err(|e| WasmError::new(format!("wgsl-solve layout is not JSON: {e}")))?;
         let state_count = solve_model.state_scalar_count();
         let state_names = solve_model
             .problem
@@ -88,9 +88,7 @@ pub fn prepare_gpu_simulation(source: &str, model_name: &str) -> Result<String, 
             .names
             .get(..state_count)
             .ok_or_else(|| {
-                JsValue::from_str(
-                    "wgsl-solve layout has fewer solver names than state scalar slots",
-                )
+                WasmError::new("wgsl-solve layout has fewer solver names than state scalar slots")
             })?
             .to_vec();
 
@@ -111,13 +109,25 @@ pub fn prepare_gpu_simulation(source: &str, model_name: &str) -> Result<String, 
             .filter(|value| value.is_finite() && *value > 0.0)
             .unwrap_or(dt);
 
+        // The lowered vectors hold declared start values; the browser starts
+        // integrating from `y0` immediately and never runs an initialization
+        // solve of its own, so the payload has to carry the *settled* state.
+        // This is the same settle sequence `update_gpu_parameters` runs (and
+        // the same the native runtime performs at simulation start): apply the
+        // initialization updates, refresh relation memory, then the algebraic
+        // and output slots. Without it a model whose profile comes from an
+        // `initial equation` (every PDE demo: `u[i, j] = exp(...)`) would be
+        // dispatched from an all-zero field.
+        let (y0, p0) = rumoca_sim::refresh_prepared_vectors(&solve_model, opts.t_start, &[])
+            .map_err(|e| WasmError::new(format!("GPU preparation settle failed: {e}")))?;
+
         let response = serde_json::json!({
             "wgsl": wgsl,
             "layout": layout,
             "var_layout": solve_model.problem.layout,
             "input_names": solve_model.problem.solve_layout.input_scalar_names(),
-            "y0": solve_model.initial_y,
-            "p0": solve_model.parameters,
+            "y0": y0,
+            "p0": p0,
             "n_states": state_count,
             "state_names": state_names,
             "t_start": opts.t_start,
@@ -126,7 +136,7 @@ pub fn prepare_gpu_simulation(source: &str, model_name: &str) -> Result<String, 
             "internal_dt": internal_dt,
         });
         let text = serde_json::to_string(&response)
-            .map_err(|e| JsValue::from_str(&format!("JSON error: {e}")))?;
+            .map_err(|e| WasmError::new(format!("JSON error: {e}")))?;
         GPU_PREP_CACHE.with(|cache| {
             *cache.borrow_mut() = Some(GpuPrepCache {
                 source: source.to_string(),
@@ -147,26 +157,26 @@ pub fn update_gpu_parameters(
     source: &str,
     model_name: &str,
     overrides_json: &str,
-) -> Result<String, JsValue> {
+) -> Result<String, WasmError> {
     let overrides: std::collections::BTreeMap<String, f64> =
         serde_json::from_str(overrides_json)
-            .map_err(|e| JsValue::from_str(&format!("overrides must be {{name: value}}: {e}")))?;
+            .map_err(|e| WasmError::new(format!("overrides must be {{name: value}}: {e}")))?;
     let mut staged_overrides = Vec::new();
     staged_overrides
         .try_reserve(overrides.len())
-        .map_err(|_| JsValue::from_str("parameter override allocation overflow"))?;
+        .map_err(|_| WasmError::new("parameter override allocation overflow"))?;
     for override_entry in overrides {
         staged_overrides.push(override_entry);
     }
     let t_start = GPU_PREP_CACHE.with(|cache| {
         let cache = cache.borrow();
         let Some(prep) = cache.as_ref() else {
-            return Err(JsValue::from_str(
+            return Err(WasmError::new(
                 "no prepared GPU model in this session; run prepare_gpu_simulation first",
             ));
         };
         if prep.source != source || prep.model_name != model_name {
-            return Err(JsValue::from_str(
+            return Err(WasmError::new(
                 "the prepared GPU model does not match this source; run prepare_gpu_simulation again",
             ));
         }
@@ -184,11 +194,11 @@ pub fn update_gpu_parameters(
         // mask would stay frozen at the declared `aoa` until a full recompile.
         opts.param_overrides = staged_overrides.clone();
         let solve_model = rumoca_sim::lower_for_simulation_with_overrides(&result.dae, &opts)
-            .map_err(|e| JsValue::from_str(&format!("Solve lowering failed: {e}")))?;
+            .map_err(|e| WasmError::new(format!("Solve lowering failed: {e}")))?;
         let (y0, p0) =
             rumoca_sim::refresh_prepared_vectors(&solve_model, t_start, &staged_overrides)
-                .map_err(|e| JsValue::from_str(&format!("parameter update failed: {e}")))?;
+                .map_err(|e| WasmError::new(format!("parameter update failed: {e}")))?;
         serde_json::to_string(&serde_json::json!({ "y0": y0, "p0": p0 }))
-            .map_err(|e| JsValue::from_str(&format!("JSON error: {e}")))
+            .map_err(|e| WasmError::new(format!("JSON error: {e}")))
     })
 }

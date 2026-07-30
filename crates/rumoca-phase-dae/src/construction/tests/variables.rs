@@ -153,6 +153,54 @@ fn input_ownership_requires_resolved_component_identity() {
 }
 
 #[test]
+fn zero_extent_parameter_binding_takes_its_element_type_from_the_declaration() {
+    let source = TestSource::new("Real x; parameter Real p[0] = {}; equation x - 1.0;");
+    let mut model = scalar_real_model(&source);
+    add_empty_array_parameter(&mut model, &source, vec![0]);
+    let dae = construct(&model, source.map).unwrap();
+
+    dae.inspect(|view| {
+        let parameter = view.variable(view.variable_id(1).unwrap()).unwrap();
+        assert_eq!(parameter.role(), dae::VariableRole::Parameter);
+        assert_eq!(parameter.scalar_count(), 0);
+        let binding = parameter.binding().expect("empty binding is retained");
+        let expression = view.expression(binding).expect("checked binding resolves");
+        assert_eq!(expression.value_type().dimensions(), [0]);
+        assert_eq!(
+            expression.value_type().scalar_type(),
+            dae::ScalarType::Real,
+            "the declaration proves the element type of the empty literal"
+        );
+    });
+}
+
+#[test]
+fn empty_array_binding_without_a_zero_extent_declaration_is_still_rejected() {
+    let source = TestSource::new("Real x; parameter Real p[2] = {}; equation x - 1.0;");
+    let literal = source.span("{}", 0);
+    let mut model = scalar_real_model(&source);
+    add_empty_array_parameter(&mut model, &source, vec![2]);
+
+    let error = construct(&model, source.map).unwrap_err();
+    assert!(matches!(
+        error,
+        ToDaeError::UnsupportedFlatSemantics { feature, span, .. }
+            if feature == "empty array" && span == literal
+    ));
+}
+
+fn add_empty_array_parameter(model: &mut flat::Model, source: &TestSource, dims: Vec<i64>) {
+    add_primitive_variable(model, source, "p", "parameter Real p", 14, dims, false);
+    let variable = model.variables.get_mut(&VarName::new("p")).unwrap();
+    variable.variability = Variability::Parameter(Default::default());
+    variable.binding = Some(Expression::Array {
+        elements: Vec::new(),
+        is_matrix: false,
+        span: source.span("{}", 0),
+    });
+}
+
+#[test]
 fn primitive_arrays_parameters_and_discrete_values_keep_checked_owners() {
     let source = TestSource::new(
         "Real x[2]; Real y; parameter Real p[2] = {1.0,2.0}; \

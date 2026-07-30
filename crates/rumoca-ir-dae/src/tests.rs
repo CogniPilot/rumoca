@@ -1,5 +1,6 @@
 mod derived_wire;
 mod expression_children;
+mod external_functions;
 mod function_owners;
 mod function_wire;
 mod provenance;

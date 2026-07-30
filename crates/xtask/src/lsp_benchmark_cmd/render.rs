@@ -882,7 +882,7 @@ mod tests {
                 kind: "req".to_string(),
                 ok: true,
                 client_ms: Some(5),
-                detail: "caps ok exec=8 inlay=off".to_string(),
+                detail: "caps ok exec=8 inlay=on".to_string(),
             },
             LspApiValidationEntry {
                 operation: "didOpen".to_string(),

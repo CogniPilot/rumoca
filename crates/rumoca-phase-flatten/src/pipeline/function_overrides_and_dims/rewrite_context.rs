@@ -11,6 +11,7 @@ pub(crate) struct FunctionOverrideRewriteContext<'a> {
     pub(super) active_scope: ComponentPath,
     pub(super) local_def_ids: FxHashSet<rumoca_core::DefId>,
     pub(super) lexical_package_def_id: Option<rumoca_core::DefId>,
+    predefined_callables: PredefinedCallableIds,
     package_chain_cache: std::cell::RefCell<
         rustc_hash::FxHashMap<rumoca_core::DefId, rustc_hash::FxHashSet<rumoca_core::DefId>>,
     >,
@@ -32,8 +33,15 @@ impl<'a> FunctionOverrideRewriteContext<'a> {
             active_scope: ComponentPath::root(),
             local_def_ids: FxHashSet::default(),
             lexical_package_def_id: None,
+            predefined_callables: PredefinedCallableIds::from_tree(tree),
             package_chain_cache: std::cell::RefCell::new(rustc_hash::FxHashMap::default()),
         }
+    }
+
+    /// True when the call target is one of the predefined operators Resolve
+    /// registered as a scope member (MLS §3.7), matched on its exact `DefId`.
+    pub(super) fn targets_predefined_callable(&self, def_id: rumoca_core::DefId) -> bool {
+        self.predefined_callables.contains(def_id)
     }
 
     pub(super) fn with_active_scope(mut self, active_scope: ComponentPath) -> Self {

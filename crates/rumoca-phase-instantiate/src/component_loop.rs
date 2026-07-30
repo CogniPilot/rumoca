@@ -78,7 +78,7 @@ pub(super) fn instantiate_effective_components(
         let type_name = comp.type_name.to_string();
 
         let qualified_shape_expr =
-            qualify_shape_subscripts_imports(&comp.shape_expr, imports.qualification);
+            qualify_shape_subscripts_imports(tree, &comp.shape_expr, imports.qualification);
         let dims = evaluate_array_dimensions(
             &comp.shape,
             &qualified_shape_expr,

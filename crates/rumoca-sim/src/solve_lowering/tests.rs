@@ -585,3 +585,156 @@ fn unprovided_input_is_rejected_instead_of_receiving_a_default_value() {
         "{error}"
     );
 }
+
+/// GPU preparation hands the browser each input's `P` slot and the browser writes it
+/// before every dispatch, so the prepared vectors only have to state the value that slot
+/// holds until the first write: the declared `start` (MLS §4.4.2.1). Reading only the
+/// binding rejected every shipped interactive model — `input Real throttle(start = 0)` in
+/// `examples/interactive/rover` — and aborted `prepare_gpu_simulation` before any shader
+/// was rendered.
+#[test]
+fn gpu_preparation_seeds_host_driven_inputs_from_their_declared_start() {
+    let dae = compile(
+        concat!(
+            "model HostDrivenInput\n",
+            "  parameter Real u0 = 2.0;\n",
+            "  input Real u_cmd(start = u0);\n",
+            "  Real x(start = u0, fixed = true);\n",
+            "equation\n",
+            "  der(x) = u_cmd - x;\n",
+            "end HostDrivenInput;\n",
+        ),
+        "HostDrivenInput",
+    );
+
+    let prepared = super::entry::lower_dae_for_gpu_preparation(&dae, &SimOptions::default())
+        .expect("a host-driven input carries its declared start into the prepared vectors");
+    let slot = prepared
+        .problem
+        .layout
+        .binding("u_cmd")
+        .expect("the input keeps a storage slot the host can write");
+    let rumoca_ir_solve::ScalarSlot::P { index, .. } = slot else {
+        panic!("a host-driven input belongs in parameter storage, got {slot:?}");
+    };
+    assert_eq!(
+        prepared.parameters.get(index).copied(),
+        Some(2.0),
+        "the seeded slot must hold the declared start, not a stand-in"
+    );
+
+    // The strict rule for headless simulation is untouched: the same model still has no
+    // provider when nothing drives it.
+    let error = lower_dae_for_simulation(&dae, &SimOptions::default())
+        .expect_err("plain simulation still refuses an undriven input");
+    assert!(
+        error
+            .to_string()
+            .contains("input `u_cmd` has neither a checked default nor a runtime value"),
+        "{error}"
+    );
+}
+
+/// A `String` declaration carries no numeric value (MLS §3.8.4), so it must not be asked
+/// for one while the runtime vectors are built. Every clocked partition in the MSL
+/// declares `Modelica.Clocked.Types.SolverMethod solverMethod`, which made this the
+/// failure mode of `Modelica.Clocked.Examples.Elementary.IntegerSignals.TimeBasedStep`.
+#[test]
+fn string_declaration_does_not_block_numeric_runtime_vectors() {
+    let dae = compile(
+        concat!(
+            "model StringParameter\n",
+            "  parameter String method = \"ExplicitEuler\";\n",
+            "  Real x(start=1);\n",
+            "equation\n",
+            "  der(x) = -x;\n",
+            "end StringParameter;\n",
+        ),
+        "StringParameter",
+    );
+
+    let solve = lower_dae_for_simulation(&dae, &SimOptions::default())
+        .expect("a String declaration must not be evaluated as a numeric runtime value");
+
+    assert!(
+        !solve.visible_names.iter().any(|name| name == "method"),
+        "a String declaration has no numeric trace column: {:?}",
+        solve.visible_names
+    );
+
+    let result = simulate_dae(&dae, &SimOptions::default())
+        .expect("a model carrying a String parameter must still simulate");
+    let x = result
+        .names
+        .iter()
+        .position(|name| name == "x")
+        .expect("state result column");
+    assert!(
+        result.data[x]
+            .last()
+            .is_some_and(|value| (value - (-1.0_f64).exp()).abs() <= 1.0e-6)
+    );
+}
+
+/// MLS §8.6 leaves a `parameter` declared `fixed = false` without a value of its own: the
+/// initialization equations determine it and `start` is only the iteration guess. This is
+/// `Modelica.Electrical.Analog.Basic.SaturatingInductor.Ipar`, and the whole reason
+/// `ShowSaturatingInductor` could not initialize.
+#[test]
+fn fixed_false_parameter_is_solved_from_its_initial_equation() {
+    let dae = compile(
+        concat!(
+            "model UnsolvedParameter\n",
+            "  parameter Real q(start=3, fixed=false);\n",
+            "  Real x(start=1);\n",
+            "initial equation\n",
+            "  q*q = 4;\n",
+            "equation\n",
+            "  der(x) = -q*x;\n",
+            "end UnsolvedParameter;\n",
+        ),
+        "UnsolvedParameter",
+    );
+
+    let solve = lower_dae_for_simulation(&dae, &SimOptions::default())
+        .expect("a `fixed = false` parameter is an initialization unknown, not a constant");
+    let [block] = solve
+        .problem
+        .initialization
+        .projection_plan
+        .blocks
+        .as_slice()
+    else {
+        panic!(
+            "one initialization projection block expected, got {:?}",
+            solve.problem.initialization.projection_plan.blocks
+        );
+    };
+    assert_eq!(block.rows.len(), 1);
+    assert_eq!(block.unknowns.len(), 1);
+    assert!(matches!(
+        block.unknowns[0],
+        rumoca_ir_solve::ScalarSlot::P { .. }
+    ));
+
+    let options = SimOptions {
+        t_end: 1.0,
+        dt: Some(0.5),
+        ..SimOptions::default()
+    };
+    let result = simulate_dae(&dae, &options)
+        .expect("the initialization system must solve the `fixed = false` parameter");
+    let x = result
+        .names
+        .iter()
+        .position(|name| name == "x")
+        .expect("state result column");
+    // q solves to 2 (the positive root nearest the start guess), so x(t) = exp(-2 t).
+    assert!(
+        result.data[x]
+            .last()
+            .is_some_and(|value| (value - (-2.0_f64).exp()).abs() <= 1.0e-5),
+        "x must decay at the solved parameter rate, got {:?}",
+        result.data[x].last()
+    );
+}

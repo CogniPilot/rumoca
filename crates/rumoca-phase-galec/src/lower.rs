@@ -1215,6 +1215,15 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             .view
             .function(function)
             .expect("checked function identity resolves");
+        // GAL-025: an MLS §12.9 external body is foreign code with no GALEC
+        // projection. Report the exact interface instead of inlining nothing.
+        if let Some(external) = function_view.external() {
+            return Err(GalecTargetError::ExternalFunction {
+                function: function_view.name().to_string(),
+                language: external.language().as_str().to_owned(),
+                span: function_view.declaration().span(),
+            });
+        }
         let result = function_view
             .result_values()
             .rhs(output as usize)

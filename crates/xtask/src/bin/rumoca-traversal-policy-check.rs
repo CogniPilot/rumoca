@@ -16,7 +16,6 @@ const COVERED_FILES: &[&str] = &[
     "crates/rumoca-compile/src/session/dependency_fingerprint.rs",
     "crates/rumoca-tool-lsp/src/handlers/semantic_tokens.rs",
     "crates/rumoca-tool-lsp/src/handlers/inlay_hints.rs",
-    "crates/rumoca-phase-dae/src/scalar_inference/parts.rs",
 ];
 
 #[allow(dead_code)]
@@ -117,7 +116,9 @@ fn insert_candidate_if_traversal(
 fn allowed_recursive_functions(file: &str) -> BTreeSet<&'static str> {
     match file {
         // Class-container recursion over nested classes remains intentional in these modules.
-        "crates/rumoca-phase-resolve/src/contents.rs" => BTreeSet::from(["resolve_contents_class"]),
+        "crates/rumoca-phase-resolve/src/contents.rs" => {
+            BTreeSet::from(["resolve_contents_class", "resolve_component_types_class"])
+        }
         "crates/rumoca-phase-resolve/src/validation.rs" => BTreeSet::from(["visit_class_def"]),
         "crates/rumoca-phase-resolve/src/semantic_checks/mod.rs" => {
             BTreeSet::from(["visit_class_def"])
@@ -127,10 +128,6 @@ fn allowed_recursive_functions(file: &str) -> BTreeSet<&'static str> {
         }
         "crates/rumoca-phase-typecheck/src/typechecker/late_methods.rs" => {
             BTreeSet::from(["check_class", "infer_expression_type"])
-        }
-        // This recursion decomposes nested array literals for scalar sizing.
-        "crates/rumoca-phase-dae/src/scalar_inference/parts.rs" => {
-            BTreeSet::from(["count_array_lhs_scalar_elements"])
         }
         _ => BTreeSet::new(),
     }

@@ -106,6 +106,20 @@ pub enum ToDaeError {
         span: Span,
     },
 
+    #[error("unresolved clock schedule for `{owner}`: {detail}")]
+    #[diagnostic(
+        code(rumoca::todae::ED009),
+        help(
+            "SPEC_0022 §4.16.1: a Clock coordinate must resolve to a static schedule through `Clock(period)`, `Clock(intervalCounter, resolution)`, an alias, or a sub/super/shift/back-sample composition of one"
+        )
+    )]
+    UnresolvedClockSchedule {
+        owner: String,
+        detail: String,
+        #[label("clock constructor without a static schedule")]
+        span: Span,
+    },
+
     #[error("unsupported Flat semantic owner `{feature}`: {detail}")]
     #[diagnostic(
         code(rumoca::todae::ED019),
@@ -214,6 +228,22 @@ impl ToDaeError {
         }
     }
 
+    /// SPEC_0022 §4.16.1 attributes every clock coordinate that reaches DAE
+    /// construction without a static schedule to its own code, `ED009`, so the
+    /// clock constructor stays the first owner of the failure instead of the
+    /// generic unsupported-semantics bucket.
+    pub fn unresolved_clock_schedule(
+        owner: impl Into<String>,
+        detail: impl Into<String>,
+        span: Span,
+    ) -> Self {
+        Self::UnresolvedClockSchedule {
+            owner: owner.into(),
+            detail: detail.into(),
+            span,
+        }
+    }
+
     pub fn source_span(&self) -> Option<Span> {
         self.diagnostic_source_spans().first().copied()
     }
@@ -225,6 +255,7 @@ impl ToDaeError {
             | Self::DiscreteSolvedFormViolation { span, .. }
             | Self::UnsupportedAlgorithm { span, .. }
             | Self::UnsupportedRuntimeOperator { span, .. }
+            | Self::UnresolvedClockSchedule { span, .. }
             | Self::UnsupportedFlatSemantics { span, .. }
             | Self::Construction { span, .. } => std::slice::from_ref(span),
             Self::Unbalanced { .. }

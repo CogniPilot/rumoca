@@ -6,6 +6,7 @@
 use super::*;
 
 pub(super) const ER070_EVALUATE_SCOPE: &str = "ER070";
+pub(super) const WR006_EVALUATE_WITHOUT_EFFECT: &str = "WR006";
 
 pub(super) fn check_annotation_restrictions(class: &ClassDef, diags: &mut Vec<Diagnostic>) {
     check_non_component_evaluate_annotations(
@@ -24,8 +25,9 @@ pub(super) fn check_annotation_restrictions(class: &ClassDef, diags: &mut Vec<Di
         );
     }
 
+    let in_function = class.class_type == ClassType::Function;
     for comp in class.components.values() {
-        check_component_evaluate_annotations(comp, diags);
+        check_component_evaluate_annotations(comp, in_function, diags);
     }
 }
 
@@ -53,7 +55,23 @@ fn check_non_component_evaluate_annotations(
     }
 }
 
-fn check_component_evaluate_annotations(comp: &ast::Component, diags: &mut Vec<Diagnostic>) {
+/// ANN-008 (MLS §18.6): `Evaluate` is a parameter/constant annotation.
+///
+/// Inside a `function` the MLS sentence that applies is "the annotation
+/// Evaluate only has effect for a component declared with the prefix
+/// parameter": a function has no parameter-variability locals at all, so the
+/// annotation is defined to be without effect rather than illegal there. MSL
+/// 4.1.0 relies on exactly that reading in
+/// `Modelica.Electrical.Machines.SpacePhasors.Functions.ToSpacePhasor`, whose
+/// protected `Integer m = size(x, 1)` carries `annotation(Evaluate=true)`.
+/// Function-local declarations therefore warn (WR006) and drop the annotation;
+/// every other class kind keeps the hard ER070 rejection, because there the
+/// modeler can express the intent with a `parameter`/`constant` prefix.
+fn check_component_evaluate_annotations(
+    comp: &ast::Component,
+    in_function: bool,
+    diags: &mut Vec<Diagnostic>,
+) {
     if matches!(
         comp.variability,
         Variability::Parameter(_) | Variability::Constant(_)
@@ -63,6 +81,23 @@ fn check_component_evaluate_annotations(comp: &ast::Component, diags: &mut Vec<D
 
     for expr in &comp.annotation {
         if !is_evaluate_annotation(expr) {
+            continue;
+        }
+        if in_function {
+            let label = label_from_expression(
+                expr,
+                "check_annotation_restrictions/function_local_evaluate",
+                format!("Evaluate has no effect on function local '{}'", comp.name),
+            )
+            .expect("annotation expression must carry a span");
+            diags.push(Diagnostic::warning(
+                WR006_EVALUATE_WITHOUT_EFFECT,
+                format!(
+                    "annotation Evaluate has no effect on function local '{}': only components declared with the parameter prefix are evaluated (MLS §18.6)",
+                    comp.name
+                ),
+                label,
+            ));
             continue;
         }
         let label = label_from_expression(

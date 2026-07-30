@@ -18,11 +18,14 @@ pub(super) fn validate_when_chains(
                 constants,
                 sample_lattices,
             )?;
+            // MLS §16.5.1: a branch is clocked when it names a `Clock`
+            // coordinate or uses the inferred-clock constructor `Clock()`; the
+            // clock-domain analysis proves the inferred branch's owner.
             let clocked = matches!(
                 &branch.condition,
                 Expression::VarRef { name, .. }
                     if matches!(roles.get(name.var_name()), Some(PlannedRole::Clock))
-            );
+            ) || is_inferred_clock_condition(&branch.condition);
             validate_when_equations(
                 &branch.equations,
                 roles,

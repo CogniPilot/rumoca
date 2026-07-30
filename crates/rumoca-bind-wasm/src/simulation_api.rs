@@ -1,16 +1,14 @@
+use crate::{
+    WasmError, compile_requested_model, qualify_input_model_name,
+    source_root_api::{load_source_root_sources_in_session, load_workspace_sources_for_simulation},
+    wasm_elapsed_ms, wasm_timing_start, with_singleton_session,
+};
 use rumoca_compile::{Session, compile::CompilationResult};
 use rumoca_sim::{
     SimOptions, SimResult, SimSolverMode, SimulationRequestSummary, SimulationRunMetrics,
     build_simulation_metrics_value, build_simulation_payload, build_tunable_parameter_meta,
     lower_dae_for_simulation, lower_for_simulation_with_overrides, refresh_prepared_vectors,
     simulate_dae_with_diagnostics, simulate_solve_model,
-};
-use wasm_bindgen::JsValue;
-
-use crate::{
-    compile_requested_model, qualify_input_model_name,
-    source_root_api::{load_source_root_sources_in_session, load_workspace_sources_for_simulation},
-    wasm_elapsed_ms, wasm_timing_start, with_singleton_session,
 };
 
 pub(crate) fn simulate_model_impl(
@@ -20,7 +18,7 @@ pub(crate) fn simulate_model_impl(
     dt: f64,
     solver: &str,
     parameter_overrides_json: &str,
-) -> Result<String, JsValue> {
+) -> Result<String, WasmError> {
     with_singleton_session(|session| {
         simulate_model_in_session(
             session,
@@ -47,7 +45,7 @@ pub(crate) fn lower_model_to_solve_json_impl(
     t_end: f64,
     dt: f64,
     parameter_overrides_json: &str,
-) -> Result<String, JsValue> {
+) -> Result<String, WasmError> {
     with_singleton_session(|session| {
         session.update_document("input.mo", source);
         let requested_model = qualify_input_model_name(session, model_name);
@@ -60,7 +58,7 @@ pub(crate) fn lower_model_to_solve_json_impl(
             "t_end": opts.t_end,
             "dt": opts.dt.unwrap_or(0.0),
         });
-        serde_json::to_string(&payload).map_err(|e| JsValue::from_str(&format!("JSON error: {e}")))
+        serde_json::to_string(&payload).map_err(|e| WasmError::new(format!("JSON error: {e}")))
     })
 }
 
@@ -72,7 +70,7 @@ pub(crate) fn simulate_model_with_workspace_sources_impl(
     dt: f64,
     solver: &str,
     parameter_overrides_json: &str,
-) -> Result<String, JsValue> {
+) -> Result<String, WasmError> {
     with_singleton_session(|session| {
         load_workspace_sources_for_simulation(session, workspace_sources_json)?;
         simulate_model_in_session(
@@ -95,7 +93,7 @@ pub(crate) fn simulate_model_with_source_roots_impl(
     dt: f64,
     solver: &str,
     parameter_overrides_json: &str,
-) -> Result<String, JsValue> {
+) -> Result<String, WasmError> {
     with_singleton_session(|session| {
         load_source_root_sources_in_session(session, source_roots_json)?;
         simulate_model_in_session(
@@ -113,7 +111,7 @@ pub(crate) fn simulate_model_with_source_roots_impl(
 pub(crate) fn model_parameter_metadata_impl(
     source: &str,
     model_name: &str,
-) -> Result<String, JsValue> {
+) -> Result<String, WasmError> {
     with_singleton_session(|session| {
         model_parameter_metadata_in_session(session, source, model_name)
     })
@@ -123,7 +121,7 @@ pub(crate) fn model_parameter_metadata_with_workspace_sources_impl(
     source: &str,
     model_name: &str,
     workspace_sources_json: &str,
-) -> Result<String, JsValue> {
+) -> Result<String, WasmError> {
     with_singleton_session(|session| {
         load_workspace_sources_for_simulation(session, workspace_sources_json)?;
         model_parameter_metadata_in_session(session, source, model_name)
@@ -134,7 +132,7 @@ pub(crate) fn model_parameter_metadata_with_source_roots_impl(
     source: &str,
     model_name: &str,
     source_roots_json: &str,
-) -> Result<String, JsValue> {
+) -> Result<String, WasmError> {
     with_singleton_session(|session| {
         load_source_root_sources_in_session(session, source_roots_json)?;
         model_parameter_metadata_in_session(session, source, model_name)
@@ -149,7 +147,7 @@ fn simulate_model_in_session(
     dt: f64,
     solver: &str,
     parameter_overrides_json: &str,
-) -> Result<String, JsValue> {
+) -> Result<String, WasmError> {
     session.update_document("input.mo", source);
     let requested_model = qualify_input_model_name(session, model_name);
     let result = compile_requested_model(session, &requested_model)?;
@@ -175,79 +173,77 @@ fn simulate_model_in_session(
         "payload": build_simulation_payload(&sim, &request, &metrics),
         "metrics": build_simulation_metrics_value(&sim, &metrics),
     });
-    serde_json::to_string(&output).map_err(|e| JsValue::from_str(&format!("JSON error: {}", e)))
+    serde_json::to_string(&output).map_err(|e| WasmError::new(format!("JSON error: {}", e)))
 }
 
 fn run_simulation(
     result: &CompilationResult,
     opts: &SimOptions,
     parameter_overrides: &[(String, f64)],
-) -> Result<SimResult, JsValue> {
+) -> Result<SimResult, WasmError> {
     if parameter_overrides.is_empty() {
         return simulate_dae_with_diagnostics(&result.dae, opts)
-            .map_err(|error| JsValue::from_str(&format!("Simulation error: {error}")));
+            .map_err(|error| WasmError::new(format!("Simulation error: {error}")));
     }
     let solve_model = lower_solve_model_with_overrides(result, opts, parameter_overrides)?;
     simulate_solve_model(&solve_model, opts)
-        .map_err(|error| JsValue::from_str(&format!("Simulation error: {error}")))
+        .map_err(|error| WasmError::new(format!("Simulation error: {error}")))
 }
 
 fn model_parameter_metadata_in_session(
     session: &mut Session,
     source: &str,
     model_name: &str,
-) -> Result<String, JsValue> {
+) -> Result<String, WasmError> {
     session.update_document("input.mo", source);
     let requested_model = qualify_input_model_name(session, model_name);
     let result = compile_requested_model(session, &requested_model)?;
     let (opts, _) = build_simulation_options(&result, 0.0, 0.0, "auto");
     let solve_model = lower_dae_for_simulation(&result.dae, &opts)
-        .map_err(|e| JsValue::from_str(&format!("solve lowering error: {e}")))?;
+        .map_err(|e| WasmError::new(format!("solve lowering error: {e}")))?;
     let metadata = build_tunable_parameter_meta(&result.dae, &solve_model)
-        .map_err(|error| JsValue::from_str(&format!("parameter metadata error: {error}")))?;
-    serde_json::to_string(&metadata).map_err(|e| JsValue::from_str(&format!("JSON error: {e}")))
+        .map_err(|error| WasmError::new(format!("parameter metadata error: {error}")))?;
+    serde_json::to_string(&metadata).map_err(|e| WasmError::new(format!("JSON error: {e}")))
 }
 
 fn lower_solve_model_with_overrides(
     result: &CompilationResult,
     opts: &SimOptions,
     parameter_overrides: &[(String, f64)],
-) -> Result<rumoca_ir_solve::SolveModel, JsValue> {
+) -> Result<rumoca_ir_solve::SolveModel, WasmError> {
     let mut override_opts = opts.clone();
     override_opts.param_overrides = parameter_overrides.to_vec();
     let mut solve_model = lower_for_simulation_with_overrides(&result.dae, &override_opts)
-        .map_err(|e| JsValue::from_str(&format!("solve lowering error: {e}")))?;
+        .map_err(|e| WasmError::new(format!("solve lowering error: {e}")))?;
     if !parameter_overrides.is_empty() {
         let (initial_y, parameters) =
             refresh_prepared_vectors(&solve_model, opts.t_start, parameter_overrides)
-                .map_err(|e| JsValue::from_str(&format!("parameter override error: {e}")))?;
+                .map_err(|e| WasmError::new(format!("parameter override error: {e}")))?;
         solve_model.initial_y = initial_y;
         solve_model.parameters = parameters;
     }
     Ok(solve_model)
 }
 
-fn parse_parameter_overrides(json: &str) -> Result<Vec<(String, f64)>, JsValue> {
+fn parse_parameter_overrides(json: &str) -> Result<Vec<(String, f64)>, WasmError> {
     let trimmed = json.trim();
     if trimmed.is_empty() || trimmed == "{}" || trimmed == "null" {
         return Ok(Vec::new());
     }
     let parsed: serde_json::Value = serde_json::from_str(trimmed)
-        .map_err(|e| JsValue::from_str(&format!("parameter override JSON error: {e}")))?;
+        .map_err(|e| WasmError::new(format!("parameter override JSON error: {e}")))?;
     let Some(object) = parsed.as_object() else {
-        return Err(JsValue::from_str(
-            "parameter overrides must be a JSON object",
-        ));
+        return Err(WasmError::new("parameter overrides must be a JSON object"));
     };
     let mut overrides = Vec::with_capacity(object.len());
     for (name, value) in object {
         let Some(value) = value.as_f64() else {
-            return Err(JsValue::from_str(&format!(
+            return Err(WasmError::new(format!(
                 "parameter override `{name}` must be numeric"
             )));
         };
         if !value.is_finite() {
-            return Err(JsValue::from_str(&format!(
+            return Err(WasmError::new(format!(
                 "parameter override `{name}` is not finite"
             )));
         }

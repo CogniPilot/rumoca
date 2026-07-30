@@ -634,7 +634,11 @@ fn substitutes_record_array_field_projection_from_flat_var_ref() {
 fn does_not_substitute_function_local_names() {
     let mut model = flat::Model::new();
     let mut function = rumoca_core::Function::new("Pkg.g", Span::DUMMY);
-    function.add_input(crate::test_support::real_param("k", Vec::new(), test_span()));
+    function.add_input(crate::test_support::real_param(
+        "k",
+        Vec::new(),
+        test_span(),
+    ));
     function
         .body
         .push(simple_assignment(rumoca_core::Expression::VarRef {
@@ -672,9 +676,11 @@ fn does_not_substitute_function_local_names() {
 fn does_not_substitute_indexed_function_local_names() {
     let mut model = flat::Model::new();
     let mut function = rumoca_core::Function::new("Pkg.g_indexed", Span::DUMMY);
-    function.add_input(
-        crate::test_support::real_param("table", vec![7, 2], test_span()),
-    );
+    function.add_input(crate::test_support::real_param(
+        "table",
+        vec![7, 2],
+        test_span(),
+    ));
     function
         .body
         .push(simple_assignment(rumoca_core::Expression::VarRef {
@@ -857,9 +863,11 @@ fn inline_indexed_name_uses_structured_scalar_name_parser() {
 fn does_not_substitute_inline_indexed_varref_when_base_is_local() {
     let mut model = flat::Model::new();
     let mut function = rumoca_core::Function::new("Pkg.inline_local", Span::DUMMY);
-    function.add_input(
-        crate::test_support::real_param("table", vec![7, 2], test_span()),
-    );
+    function.add_input(crate::test_support::real_param(
+        "table",
+        vec![7, 2],
+        test_span(),
+    ));
     function
         .body
         .push(simple_assignment(rumoca_core::Expression::VarRef {

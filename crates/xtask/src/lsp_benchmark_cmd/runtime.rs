@@ -647,6 +647,38 @@ fn validate_synthetic_outline_requests(
         "documentLink should expose URL and file targets"
     );
 
+    let (inlay_ms, inlay_response) = client.request_timed(
+        "textDocument/inlayHint",
+        json!({
+            "textDocument": { "uri": workspace.synthetic_uri },
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 20, "character": 0 }
+            }
+        }),
+        VALIDATION_TIMEOUT,
+    )?;
+    let inlay_hints = response_result(&inlay_response)
+        .as_array()
+        .cloned()
+        .context("inlayHint should return a hint array")?;
+    let inlay_labels = inlay_hints
+        .iter()
+        .filter_map(|hint| hint.get("label").and_then(Value::as_str))
+        .collect::<Vec<_>>();
+    // Both special-case hint families the server advertises must be live: the
+    // array-dimension hint for `Real arr[2, 3]` and the builtin parameter-name
+    // hint for `sin(helperInst.gain)`.
+    ensure!(
+        inlay_labels.iter().any(|label| label.contains("[2x3]")),
+        "inlayHint should expose the array-dimension hint: {inlay_labels:?}"
+    );
+    ensure!(
+        inlay_labels.contains(&"u:"),
+        "inlayHint should expose the builtin parameter-name hint: {inlay_labels:?}"
+    );
+    let inlay_count = inlay_hints.len();
+
     Ok(vec![
         ok_validation(
             "signatureHelp",
@@ -665,6 +697,12 @@ fn validate_synthetic_outline_requests(
             "req",
             Some(link_ms),
             format!("synthetic count={link_count}"),
+        ),
+        ok_validation(
+            "inlayHint",
+            "req",
+            Some(inlay_ms),
+            format!("synthetic count={inlay_count} dim+param"),
         ),
     ])
 }
@@ -1655,40 +1693,70 @@ pub(crate) fn run_lsp_api_validation(
     })
 }
 
-fn validate_initialize_response(
-    response: &Value,
-    startup_timing_path: Option<&Path>,
-) -> Result<String> {
-    let result = response_result(response);
-    let capabilities = result
-        .get("capabilities")
-        .context("initialize response missing capabilities")?;
-    for capability in [
-        "textDocumentSync",
-        "hoverProvider",
-        "completionProvider",
-        "documentSymbolProvider",
-        "semanticTokensProvider",
-        "definitionProvider",
-        "referencesProvider",
-        "renameProvider",
-        "workspaceSymbolProvider",
-        "signatureHelpProvider",
-        "foldingRangeProvider",
-        "documentFormattingProvider",
-        "codeLensProvider",
-        "codeActionProvider",
-        "documentLinkProvider",
-        "executeCommandProvider",
-    ] {
+/// Every capability the editor surfaces depend on. `inlayHintProvider` is part
+/// of the contract: the special-case hints (array dimensions and builtin
+/// parameter names) are implemented and UTF-16-correct, so the server
+/// advertises them.
+const REQUIRED_INITIALIZE_CAPABILITIES: &[&str] = &[
+    "textDocumentSync",
+    "hoverProvider",
+    "completionProvider",
+    "documentSymbolProvider",
+    "semanticTokensProvider",
+    "definitionProvider",
+    "referencesProvider",
+    "renameProvider",
+    "workspaceSymbolProvider",
+    "signatureHelpProvider",
+    "foldingRangeProvider",
+    "documentFormattingProvider",
+    "codeLensProvider",
+    "codeActionProvider",
+    "documentLinkProvider",
+    "executeCommandProvider",
+    "inlayHintProvider",
+];
+
+const EXPECTED_EXECUTE_COMMANDS: &[&str] = &[
+    "rumoca.scenario.getSimulationConfig",
+    "rumoca.scenario.setSimulationPreset",
+    "rumoca.scenario.resetSimulationPreset",
+    "rumoca.scenario.getVisualizationConfig",
+    "rumoca.scenario.setVisualizationConfig",
+    "rumoca.scenario.getCodegenConfig",
+    "rumoca.scenario.setCodegenConfig",
+    "rumoca.scenario.getSourceRoots",
+    "rumoca.scenario.setSourceRoots",
+    "rumoca.scenario.getScenarioConfig",
+    "rumoca.scenario.getScenarioConfigFull",
+    "rumoca.scenario.renderScenarioConfig",
+    "rumoca.scenario.setScenarioConfig",
+    "rumoca.scenario.simulate",
+    "rumoca.scenario.getSimulationModels",
+    "rumoca.scenario.setSelectedSimulationModel",
+    "rumoca.scenario.startSimulation",
+    "rumoca.scenario.prepareSimulationModels",
+    "rumoca.model.parameterMetadata",
+    "rumoca.workspace.getBuiltinTargets",
+    "rumoca.workspace.renderTarget",
+];
+
+fn validate_initialize_capabilities(capabilities: &Value) -> Result<()> {
+    for capability in REQUIRED_INITIALIZE_CAPABILITIES {
         ensure!(
             capabilities.get(capability).is_some(),
             "initialize must advertise {capability}"
         );
     }
+    // Inlay hints carry their full label, so lazy resolve must stay off.
     ensure!(
-        capabilities.get("inlayHintProvider").is_none(),
-        "initialize should keep inlay hints disabled until special-case hints are re-enabled"
+        capabilities
+            .get("inlayHintProvider")
+            .and_then(|provider| provider.get("resolveProvider"))
+            .and_then(Value::as_bool)
+            == Some(false),
+        "initialize must advertise inlay hints without lazy resolve: {:?}",
+        capabilities.get("inlayHintProvider")
     );
     let commands = capabilities
         .get("executeCommandProvider")
@@ -1698,35 +1766,24 @@ fn validate_initialize_response(
         .iter()
         .filter_map(Value::as_str)
         .collect::<Vec<_>>();
-    let expected_commands = [
-        "rumoca.scenario.getSimulationConfig",
-        "rumoca.scenario.setSimulationPreset",
-        "rumoca.scenario.resetSimulationPreset",
-        "rumoca.scenario.getVisualizationConfig",
-        "rumoca.scenario.setVisualizationConfig",
-        "rumoca.scenario.getCodegenConfig",
-        "rumoca.scenario.setCodegenConfig",
-        "rumoca.scenario.getSourceRoots",
-        "rumoca.scenario.setSourceRoots",
-        "rumoca.scenario.getScenarioConfig",
-        "rumoca.scenario.getScenarioConfigFull",
-        "rumoca.scenario.renderScenarioConfig",
-        "rumoca.scenario.setScenarioConfig",
-        "rumoca.scenario.simulate",
-        "rumoca.scenario.getSimulationModels",
-        "rumoca.scenario.setSelectedSimulationModel",
-        "rumoca.scenario.startSimulation",
-        "rumoca.scenario.prepareSimulationModels",
-        "rumoca.model.parameterMetadata",
-        "rumoca.workspace.getBuiltinTargets",
-        "rumoca.workspace.renderTarget",
-    ];
     ensure!(
-        commands == expected_commands,
+        commands == EXPECTED_EXECUTE_COMMANDS,
         "initialize executeCommandProvider drifted: {:?}",
         commands
     );
-    let base = format!("caps ok exec={} inlay=off", expected_commands.len());
+    Ok(())
+}
+
+fn validate_initialize_response(
+    response: &Value,
+    startup_timing_path: Option<&Path>,
+) -> Result<String> {
+    let result = response_result(response);
+    let capabilities = result
+        .get("capabilities")
+        .context("initialize response missing capabilities")?;
+    validate_initialize_capabilities(capabilities)?;
+    let base = format!("caps ok exec={} inlay=on", EXPECTED_EXECUTE_COMMANDS.len());
     let Some(path) = startup_timing_path else {
         return Ok(base);
     };
@@ -1785,6 +1842,7 @@ fn ensure_required_lsp_validation_entries(entries: &[LspApiValidationEntry]) -> 
         "signatureHelp",
         "foldingRange",
         "documentLink",
+        "inlayHint",
         "memberCompletion",
         "aliasHover",
         "formatting",

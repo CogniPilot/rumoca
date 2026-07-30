@@ -59,8 +59,13 @@ pub fn expressions_semantically_equal(lhs: &Expression, rhs: &Expression) -> boo
 /// that [`VarNameId`], never the rendered spelling (SPEC_0032 §3): the interner
 /// is a bijection between text and id, so bucketing is unchanged while the
 /// spelling no longer has to be walked byte by byte. Where the expression holds
-/// bare `&str` text instead, see [`hash_unowned_text_len`] for why the
-/// fingerprint summarises it rather than interning it.
+/// bare `&str` text instead — comprehension indices, field names, string
+/// literals — only its length enters the fingerprint. Interning that text to
+/// get an id would cost the whole string hash plus a global lock, a map probe
+/// and an allocation, and would grow the never-evicting interner without bound
+/// from a long-lived edit stream; length keeps the subset property instead, and
+/// equal-length distinct text is separated by the equality check callers must
+/// run anyway.
 ///
 /// The contract callers depend on is one-directional: whenever
 /// [`expressions_semantically_equal`] holds, this value must agree. Each arm

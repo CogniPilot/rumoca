@@ -67,6 +67,95 @@ fn generated_unstructured_builtin_does_not_require_callable_selection() {
 }
 
 #[test]
+fn predefined_operator_call_does_not_require_callable_selection() {
+    // MLS §3.7: `inStream` is a predefined operator Resolve registers as a
+    // scope member, not a class, so it never carries a function-selection
+    // identity. Flatten's stream-operator expansion consumes the call later,
+    // and the argument must reach it with the instance-qualified flat name its
+    // instantiation produced.
+    let stream_operator = DefId::new(210);
+    let connector_def = DefId::new(211);
+    let member_def = DefId::new(212);
+    let mut tree = ClassTree::new();
+    tree.scope_tree
+        .add_predefined_member(ComponentPath::from_flat_path("inStream"), stream_operator);
+    let class_index = rumoca_ir_ast::ClassDefIndex::from_tree(&tree);
+    let overrides = OverrideFunctionMap::default();
+    let ctx = FunctionOverrideRewriteContext::new(&tree, &class_index, &[], &overrides);
+    let mut expression = Expression::FunctionCall {
+        name: rumoca_core::Reference::with_component_reference(
+            "inStream",
+            core_comp_ref(&[("inStream", stream_operator)]),
+        ),
+        args: vec![Expression::VarRef {
+            name: rumoca_core::Reference::with_component_reference(
+                "v1.port.h",
+                core_comp_ref(&[("port", connector_def), ("h", member_def)]),
+            ),
+            subscripts: vec![],
+            span: test_span(),
+        }],
+        is_constructor: false,
+        span: test_span(),
+    };
+
+    rewrite_function_overrides_in_expression_with_ctx(&mut expression, &ctx)
+        .expect("a predefined operator is outside replaceable function selection");
+
+    let Expression::FunctionCall { name, args, .. } = &expression else {
+        panic!("expected the predefined operator call to survive");
+    };
+    assert_eq!(name.as_str(), "inStream");
+    let [Expression::VarRef { name: argument, .. }] = args.as_slice() else {
+        panic!("expected one stream-variable argument");
+    };
+    assert_eq!(
+        argument.as_str(),
+        "v1.port.h",
+        "the instance prefix must not be rebuilt from the relative declaration segments"
+    );
+}
+
+#[test]
+fn enumeration_conversion_call_does_not_require_callable_selection() {
+    // MLS §4.8.5.2: `E(i)` converts an Integer to the i-th literal of the
+    // enumeration type `E`. A `type` declares no function body, so no
+    // implementation is selected for it.
+    let enumeration_def = DefId::new(220);
+    let mut enumeration = class("E", ClassType::Type);
+    enumeration.def_id = Some(enumeration_def);
+    let mut tree = ClassTree::new();
+    tree.definitions
+        .classes
+        .insert("E".to_string(), enumeration);
+    tree.def_map.insert(enumeration_def, "E".to_string());
+    tree.name_map.insert("E".to_string(), enumeration_def);
+    let class_index = rumoca_ir_ast::ClassDefIndex::from_tree(&tree);
+    let overrides = OverrideFunctionMap::default();
+    let ctx = FunctionOverrideRewriteContext::new(&tree, &class_index, &[], &overrides);
+    let mut expression = Expression::FunctionCall {
+        name: rumoca_core::Reference::with_component_reference(
+            "E",
+            core_comp_ref(&[("E", enumeration_def)]),
+        ),
+        args: vec![Expression::Literal {
+            value: rumoca_core::Literal::Integer(2),
+            span: test_span(),
+        }],
+        is_constructor: false,
+        span: test_span(),
+    };
+
+    rewrite_function_overrides_in_expression_with_ctx(&mut expression, &ctx)
+        .expect("an enumeration conversion is outside replaceable function selection");
+
+    let Expression::FunctionCall { name, .. } = &expression else {
+        panic!("expected the enumeration conversion call to survive");
+    };
+    assert_eq!(name.as_str(), "E");
+}
+
+#[test]
 fn exact_package_function_selection_rejects_ambiguous_inherited_exposures() {
     let left_package_def = DefId::new(1);
     let left_function_def = DefId::new(2);

@@ -244,3 +244,93 @@ fn warm_source_root_restore_keeps_reachable_model_closure_warm_for_unchanged_tar
         "unchanged targets should keep the reachable-model closure warm after warm reopen"
     );
 }
+
+#[test]
+fn reachable_model_closure_follows_redeclared_package_members() {
+    // MLS §7.3: a lookup written against a replaceable package slot cannot be
+    // bound by Resolve, because the class occupying the slot is chosen by a
+    // redeclaration. Strict pruning must still keep every member such a lookup
+    // can select, otherwise the pruned tree loses the nested function and
+    // record the instantiated model needs.
+    let mut session = Session::default();
+    session
+        .add_document(
+            "redeclared_package.mo",
+            r#"
+package P
+  partial package PartialRotation
+    replaceable record Orientation
+      Real interfaceMarker[0];
+    end Orientation;
+
+    replaceable function first
+      input Orientation element;
+      output Real y;
+    end first;
+  end PartialRotation;
+
+  package Quaternion
+    extends PartialRotation;
+
+    redeclare record extends Orientation
+      Real q[4];
+    end Orientation;
+
+    redeclare function first
+      input Orientation element;
+      output Real y;
+    algorithm
+      y := element.q[1];
+    end first;
+  end Quaternion;
+
+  package Generic
+    replaceable package Rotation = Quaternion
+      constrainedby PartialRotation;
+
+    record Element
+      Real position[3];
+      Rotation.Orientation rotation;
+    end Element;
+
+    function product
+      input Element left;
+      output Real y;
+    algorithm
+      y := Rotation.first(left.rotation);
+    end product;
+  end Generic;
+
+  package Concrete
+    extends Generic(redeclare package Rotation = Quaternion);
+  end Concrete;
+
+  model Probe
+    parameter Concrete.Element left;
+    Real x(start = 0.0, fixed = true);
+  equation
+    der(x) = Concrete.product(left);
+  end Probe;
+end P;
+"#,
+        )
+        .expect("redeclared package fixture should parse");
+
+    let closure = strict_model_closure(&mut session, "P.Probe");
+
+    for expected in [
+        "P.Quaternion.first",
+        "P.PartialRotation.first",
+        "P.Quaternion.Orientation",
+        "P.PartialRotation.Orientation",
+    ] {
+        assert!(
+            closure
+                .reachable_classes
+                .iter()
+                .any(|name| name == expected),
+            "strict closure must retain `{expected}` reached through the redeclared package: {:?}",
+            closure.reachable_classes
+        );
+    }
+}

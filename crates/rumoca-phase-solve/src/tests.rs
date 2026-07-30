@@ -1530,3 +1530,222 @@ fn delay_lowers_to_runtime_history_programs_and_a_typed_value_slot() {
         |operation| matches!(operation, LinearOp::LoadP { index, .. } if *index == delay_slot)
     ));
 }
+
+/// An always-active B.1c owner inside a clocked partition.
+///
+/// MLS §16.5 activates every equation of a clocked partition on its clock's ticks, so
+/// `counter = previous(counter) + 1` needs no `when` — the target simply carries a clock
+/// ownership. Two properties follow, and both were lost for `Integer`/`Boolean` targets:
+/// the row must be compiled under its owning clock (or `previous(...)` cannot resolve),
+/// and its relation must not become a continuous root, because MLS §16.8.1 raises no
+/// state event for a clocked relation — the tick already is the event.
+///
+/// This is the shape of `Modelica.Clocked.RealSignals.TickBasedSources.Ramp.counter`.
+fn clocked_tick_counter_model(lattice: rumoca_core::ClockLattice) -> dae::Dae {
+    let source = TestSource::new(
+        "discrete Integer counter; Clock c=Clock(0.1); counter=previous(counter)+1;",
+    );
+    let declaration = source.at(0, 24);
+    let clock_at = source.at(34, 44);
+    let relation_at = source.at(54, 71);
+    let owner = source.at(46, 73);
+    dae::Dae::construct(source.map, |model| {
+        let integer = model.types(|types| {
+            types.intern(
+                TypeId::new(0),
+                dae::ValueType::scalar(dae::ScalarType::Integer),
+                declaration,
+            )
+        })?;
+        let counter = model.variables(|variables| {
+            variables.discrete_value(
+                VarName::new("counter"),
+                integer,
+                declaration,
+                dae::VariableAttributes::default(),
+            )
+        })?;
+        let clock = model.clocks(|clocks| clocks.periodic(lattice, clock_at))?;
+        model.clocks(|clocks| clocks.own_discrete_value(clock.into(), counter, owner))?;
+        let previous = model
+            .temporal(|temporal| temporal.previous_discrete_value(clock.into(), counter, owner))?;
+        // The saturation test `previous(counter) < 5` that the source block writes inside
+        // its `if`: a relation of the clocked partition, registered as a root by the
+        // checked DAE exactly as a continuous-time relation would be.
+        let guard = model.expressions(|expressions| {
+            let previous = expressions
+                .at(relation_at)
+                .coordinate(dae::CoordinateInput::Previous(previous))?;
+            let limit = expressions
+                .at(relation_at)
+                .literal(dae::DaeLiteral::Integer(5))?;
+            expressions
+                .at(relation_at)
+                .binary(dae::BinaryOperator::Less, previous, limit)
+        })?;
+        let relation = model.conditions(|conditions| conditions.relation(guard, relation_at))?;
+        let condition = model.conditions(|conditions| conditions.reserve(relation_at))?;
+        model.conditions(|conditions| {
+            conditions.define(
+                condition,
+                dae::ConditionInput::Relation(relation),
+                relation_at,
+            )
+        })?;
+        model.conditions(|conditions| conditions.root(relation, condition, relation_at))?;
+        let value = model.expressions(|expressions| {
+            let previous = expressions
+                .at(owner)
+                .coordinate(dae::CoordinateInput::Previous(previous))?;
+            let one = expressions.at(owner).literal(dae::DaeLiteral::Integer(1))?;
+            expressions
+                .at(owner)
+                .binary(dae::BinaryOperator::Add, previous, one)
+        })?;
+        model.b1c([counter], |topology| {
+            topology.owner(owner, [counter], |owner_scope| {
+                owner_scope.always(owner, [(value, owner)])
+            })?;
+            Ok(())
+        })?;
+        Ok(())
+    })
+    .unwrap()
+}
+
+#[test]
+fn clocked_unconditional_discrete_value_owner_reads_its_previous_history() {
+    let lattice = rumoca_core::ClockLattice::from_interval_counter(1, 10).unwrap();
+    let model = clocked_tick_counter_model(lattice);
+
+    let solve = lower_solve_problem(&model).unwrap();
+    solve
+        .validate()
+        .expect("the clocked B.1c owner satisfies the Solve shape contract");
+    let schedule = solve
+        .discrete
+        .clock_owners
+        .iter()
+        .zip(&solve.discrete.row_roles)
+        .find(|(_, role)| **role == rumoca_ir_solve::DiscreteRowRole::Equation)
+        .and_then(|(clock, _)| *clock)
+        .expect("the always-active clocked owner keeps its periodic row schedule");
+    assert_eq!(
+        solve
+            .clocks
+            .periodic_schedule(schedule)
+            .expect("typed clock owner resolves")
+            .lattice(),
+        lattice
+    );
+}
+
+/// MLS §16.8.1 raises no state event for a relation of a clocked partition — the clock's
+/// tick already is the event, and the relation's `previous(...)` operand only resolves
+/// while that schedule is active. So the relation must leave the continuous root set and
+/// its condition memory must be scheduled on the owning clock instead.
+#[test]
+fn clocked_relation_leaves_the_continuous_root_set() {
+    let lattice = rumoca_core::ClockLattice::from_interval_counter(1, 10).unwrap();
+    let model = clocked_tick_counter_model(lattice);
+
+    let solve = lower_solve_problem(&model).unwrap();
+    assert_eq!(
+        solve.events.root_conditions.len(),
+        0,
+        "a clocked relation is evaluated on its tick, not by continuous root finding"
+    );
+    assert_eq!(solve.events.root_zero_domains.len(), 0);
+    assert_eq!(solve.events.root_relation_memory_targets.len(), 0);
+    let memory = solve
+        .discrete
+        .row_roles
+        .iter()
+        .position(|role| *role == rumoca_ir_solve::DiscreteRowRole::ConditionMemory)
+        .expect("the clocked relation still keeps a condition-memory row");
+    assert!(
+        solve.discrete.clock_owners[memory].is_some(),
+        "the condition-memory row of a clocked relation runs on its clock's ticks"
+    );
+}
+
+/// MLS §8.6: a `parameter` declared `fixed = false` is determined by the initialization
+/// system, so it must appear there as an unknown with its own projection block. Without
+/// one the residual can only be checked, which is what stalled
+/// `Modelica.Electrical.Analog.Examples.ShowSaturatingInductor` on
+/// `SaturatingInductor.Ipar`.
+#[test]
+fn fixed_false_parameter_becomes_an_initialization_projection_unknown() {
+    let source = TestSource::new("parameter Real q(fixed=false); initial equation q*q=4;");
+    let declaration = source.at(0, 29);
+    let owner = source.at(48, 53);
+    let model = dae::Dae::construct(source.map, |model| {
+        let real = model.types(|types| {
+            types.intern(
+                TypeId::new(0),
+                dae::ValueType::scalar(dae::ScalarType::Real),
+                declaration,
+            )
+        })?;
+        let start = model.expressions(|expressions| {
+            expressions
+                .at(declaration)
+                .literal(dae::DaeLiteral::Real(3.0))
+        })?;
+        let unsolved = model.variables(|variables| {
+            variables.parameter(
+                VarName::new("q"),
+                real,
+                declaration,
+                dae::VariableAttributes {
+                    start: Some(start),
+                    fixed: Some(false),
+                    ..dae::VariableAttributes::default()
+                },
+            )
+        })?;
+        let residual = model.expressions(|expressions| {
+            let left = expressions
+                .at(owner)
+                .coordinate(dae::CoordinateInput::Parameter(unsolved))?;
+            let right = expressions
+                .at(owner)
+                .coordinate(dae::CoordinateInput::Parameter(unsolved))?;
+            let square =
+                expressions
+                    .at(owner)
+                    .binary(dae::BinaryOperator::Multiply, left, right)?;
+            let four = expressions.at(owner).literal(dae::DaeLiteral::Real(4.0))?;
+            expressions
+                .at(owner)
+                .binary(dae::BinaryOperator::Subtract, square, four)
+        })?;
+        model.initialization(|initialization| initialization.value_equation(owner, residual))?;
+        Ok(())
+    })
+    .unwrap();
+
+    let solve = lower_solve_problem(&model).unwrap();
+    solve
+        .validate()
+        .expect("the initialization projection satisfies the Solve shape contract");
+    let ScalarSlot::P { index, .. } = solve
+        .layout
+        .binding("q")
+        .expect("the unsolved parameter keeps its parameter storage")
+    else {
+        panic!("a parameter occupies P storage");
+    };
+    let [block] = solve.initialization.projection_plan.blocks.as_slice() else {
+        panic!(
+            "one initialization projection block expected, got {:?}",
+            solve.initialization.projection_plan.blocks
+        );
+    };
+    assert_eq!(block.rows, [0]);
+    assert_eq!(block.unknowns, [rumoca_ir_solve::scalar_slot_p(index)]);
+    assert_eq!(
+        solve.initialization.projection_unknowns,
+        [rumoca_ir_solve::scalar_slot_p(index)]
+    );
+}

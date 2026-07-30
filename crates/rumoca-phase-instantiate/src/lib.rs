@@ -117,7 +117,7 @@ use type_lookup::{
     TypeInfo, is_type_compatible_with_def_id, lookup_type_info, resolve_primitive_type_id,
 };
 use type_overrides::{
-    TypeOverrideMap, apply_type_override, build_type_override_map,
+    SelectedComponentTypes, TypeOverrideMap, apply_type_override, build_type_override_map,
     resolve_dynamic_equation_targets, resolve_dynamic_expression_targets,
     resolve_dynamic_statement_targets,
 };
@@ -1107,8 +1107,19 @@ fn instantiate_class(
             source_map,
         )?;
 
-        let sections =
-            class_instance_sections(tree, ctx, &template, &qualified_name, &type_overrides)?;
+        // MLS §7.3: a reference rooted in a replaceable component (`b.v`) has an
+        // instance-dependent member set, so Resolve deferred its tail. The
+        // component occurrences of this class instance were just materialized,
+        // so their selected types now prove those members exactly.
+        let selected_component_types = selected_component_types_of_class(overlay, instance_id);
+        let sections = class_instance_sections(
+            tree,
+            ctx,
+            &template,
+            &qualified_name,
+            &type_overrides,
+            &selected_component_types,
+        )?;
 
         let class_data = ast::ClassInstanceData {
             instance_id,
@@ -1144,6 +1155,27 @@ struct ClassSections {
     initial_algorithms: Vec<Vec<ast::InstanceStatement>>,
 }
 
+/// Selected class of every component occurrence directly owned by `class_id`,
+/// keyed by the component's declaration identity.
+///
+/// A replaceable component declaration keeps its own `DefId` across a
+/// redeclaration, so this maps the declaration Resolve recorded on a reference
+/// root onto the class instantiation actually selected for it (MLS §7.3).
+fn selected_component_types_of_class(
+    overlay: &ast::InstanceOverlay,
+    class_id: rumoca_core::InstanceId,
+) -> SelectedComponentTypes {
+    overlay
+        .components
+        .values()
+        .filter(|component| component.owner_class_id == Some(class_id))
+        .filter_map(|component| {
+            let declaration = component.component_ref.as_ref()?.target_def_id();
+            Some((declaration, component.type_def_id?))
+        })
+        .collect()
+}
+
 /// Convert a class template's equation and algorithm sections to instance form.
 fn class_instance_sections(
     tree: &ast::ClassTree,
@@ -1151,6 +1183,7 @@ fn class_instance_sections(
     template: &templates::ClassTemplate,
     qualified_name: &ast::QualifiedName,
     type_overrides: &TypeOverrideMap,
+    selected_component_types: &SelectedComponentTypes,
 ) -> InstantiateResult<ClassSections> {
     let source_map = &tree.source_map;
     let eval_ctx = InstantiateEvalCtx {
@@ -1183,13 +1216,19 @@ fn class_instance_sections(
             source_map,
         )?,
     };
-    resolve_dynamic_section_targets(tree, type_overrides, &mut sections)?;
+    resolve_dynamic_section_targets(
+        tree,
+        type_overrides,
+        selected_component_types,
+        &mut sections,
+    )?;
     Ok(sections)
 }
 
 fn resolve_dynamic_section_targets(
     tree: &ast::ClassTree,
     type_overrides: &TypeOverrideMap,
+    selected_component_types: &SelectedComponentTypes,
     sections: &mut ClassSections,
 ) -> InstantiateResult<()> {
     for equation in sections
@@ -1200,6 +1239,7 @@ fn resolve_dynamic_section_targets(
         equation.equation = resolve_dynamic_equation_targets(
             tree,
             type_overrides,
+            selected_component_types,
             std::mem::take(&mut equation.equation),
         )?;
     }
@@ -1212,6 +1252,7 @@ fn resolve_dynamic_section_targets(
         statement.statement = resolve_dynamic_statement_targets(
             tree,
             type_overrides,
+            selected_component_types,
             std::mem::take(&mut statement.statement),
         )?;
     }
@@ -1626,6 +1667,11 @@ fn prepare_component_binding_info(
         binding_from_modification,
         binding_is_each,
     } = extract_component_attrs_and_binding(comp, ctx.mod_env(), &eval_ctx, imports)?;
+    // Sibling component occurrences of this class are still being materialized,
+    // so only class-alias selections can be proved for declaration-side
+    // expressions here. A member that stays unproven keeps its absent identity
+    // and is reported at the Flat boundary rather than guessed.
+    let selected_component_types = SelectedComponentTypes::default();
     for expression in [
         &mut binding,
         &mut binding_source,
@@ -1638,6 +1684,7 @@ fn prepare_component_binding_info(
             *expression = Some(resolve_dynamic_expression_targets(
                 tree,
                 type_overrides,
+                &selected_component_types,
                 value,
             )?);
         }

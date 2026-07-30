@@ -8,8 +8,17 @@
 use super::override_map::TypeOverrideMap;
 use super::selected_class_members::resolve_member_reference_in_class;
 use crate::{InstantiateError, InstantiateResult};
+use rumoca_core::DefId;
 use rumoca_ir_ast as ast;
 use rumoca_ir_ast::visitor::ExpressionTransformer;
+use rustc_hash::FxHashMap;
+
+/// Selected class of each component declaration in one instantiation scope.
+///
+/// Keys are the component declaration identities Resolve records on a reference
+/// root; values are the classes instantiation actually selected for those
+/// occurrences.
+pub(crate) type SelectedComponentTypes = FxHashMap<DefId, DefId>;
 
 /// Resolve a reference deferred by Resolve across a replaceable class edge.
 ///
@@ -19,27 +28,23 @@ use rumoca_ir_ast::visitor::ExpressionTransformer;
 pub(crate) fn resolve_dynamic_expression_targets(
     tree: &ast::ClassTree,
     overrides: &TypeOverrideMap,
+    selected_component_types: &SelectedComponentTypes,
     expression: ast::Expression,
 ) -> InstantiateResult<ast::Expression> {
-    let mut resolver = DynamicExpressionTargetResolver {
-        tree,
-        overrides,
-        error: None,
-    };
+    let mut resolver =
+        DynamicExpressionTargetResolver::new(tree, overrides, selected_component_types);
     let expression = resolver.transform_expression(expression);
-    if let Some(error) = resolver.error {
-        Err(error)
-    } else {
-        Ok(expression)
-    }
+    resolver.finish(expression)
 }
 
 pub(crate) fn resolve_dynamic_equation_targets(
     tree: &ast::ClassTree,
     overrides: &TypeOverrideMap,
+    selected_component_types: &SelectedComponentTypes,
     equation: ast::Equation,
 ) -> InstantiateResult<ast::Equation> {
-    let mut resolver = DynamicExpressionTargetResolver::new(tree, overrides);
+    let mut resolver =
+        DynamicExpressionTargetResolver::new(tree, overrides, selected_component_types);
     let equation = resolver.transform_equation(equation);
     resolver.finish(equation)
 }
@@ -47,9 +52,11 @@ pub(crate) fn resolve_dynamic_equation_targets(
 pub(crate) fn resolve_dynamic_statement_targets(
     tree: &ast::ClassTree,
     overrides: &TypeOverrideMap,
+    selected_component_types: &SelectedComponentTypes,
     statement: ast::Statement,
 ) -> InstantiateResult<ast::Statement> {
-    let mut resolver = DynamicExpressionTargetResolver::new(tree, overrides);
+    let mut resolver =
+        DynamicExpressionTargetResolver::new(tree, overrides, selected_component_types);
     let statement = resolver.transform_statement(statement);
     resolver.finish(statement)
 }
@@ -57,6 +64,7 @@ pub(crate) fn resolve_dynamic_statement_targets(
 struct DynamicExpressionTargetResolver<'a> {
     tree: &'a ast::ClassTree,
     overrides: &'a TypeOverrideMap,
+    selected_component_types: &'a SelectedComponentTypes,
     error: Option<Box<InstantiateError>>,
 }
 
@@ -69,10 +77,16 @@ impl ExpressionTransformer for DynamicExpressionTargetResolver<'_> {
         if self.error.is_some() || reference.target_def_id().is_some() {
             return reference;
         }
-        let Some(alias_def_id) = reference.root_def_id() else {
+        let Some(root_def_id) = reference.root_def_id() else {
             return reference;
         };
-        let Some(target_class_def_id) = self.overrides.target_for_alias_def_id(alias_def_id) else {
+        // A replaceable class alias selects a class directly; a replaceable
+        // component selects one through the type of its instantiated occurrence.
+        let Some(target_class_def_id) = self
+            .overrides
+            .target_for_alias_def_id(root_def_id)
+            .or_else(|| self.selected_component_types.get(&root_def_id).copied())
+        else {
             return reference;
         };
         match resolve_member_reference_in_class(self.tree, target_class_def_id, &reference, 1) {
@@ -91,10 +105,12 @@ impl DynamicExpressionTargetResolver<'_> {
     fn new<'a>(
         tree: &'a ast::ClassTree,
         overrides: &'a TypeOverrideMap,
+        selected_component_types: &'a SelectedComponentTypes,
     ) -> DynamicExpressionTargetResolver<'a> {
         DynamicExpressionTargetResolver {
             tree,
             overrides,
+            selected_component_types,
             error: None,
         }
     }

@@ -914,7 +914,13 @@ fn expand_record_var_ref(
     let rumoca_core::Expression::VarRef { name, span, .. } = arg else {
         return Ok(false);
     };
-    let is_local = local_record_params.is_some_and(|params| params.contains(name.as_str()));
+    // A generated name is a record group this pass itself synthesized while
+    // decomposing an enclosing record parameter (`left.rotation` ->
+    // `left_rotation`). It names no source declaration, so it is projected by
+    // the same generated scheme that created it rather than through a
+    // structured declaration chain it never had.
+    let is_local = name.is_generated()
+        || local_record_params.is_some_and(|params| params.contains(name.as_str()));
     for field in fields {
         if let Some(empty) = empty_record_field_arg(field, *span) {
             out.push(empty);
@@ -1063,9 +1069,8 @@ fn record_field_reference(
     field_def_id: rumoca_core::DefId,
     span: rumoca_core::Span,
 ) -> Result<rumoca_core::Reference, FlattenError> {
-    let provenance =
-        rumoca_core::ProvenanceSpan::new(span, "record function field projection")
-            .map_err(|error| FlattenError::missing_source_context(error.to_string()))?;
+    let provenance = rumoca_core::ProvenanceSpan::new(span, "record function field projection")
+        .map_err(|error| FlattenError::missing_source_context(error.to_string()))?;
     base.with_appended_field(field, field_def_id, provenance)
         .map_err(|error| {
             FlattenError::missing_resolved_class_metadata(
@@ -1185,11 +1190,11 @@ mod tests {
         constructor.def_id = Some(RECORD_DEF_ID);
         constructor.is_constructor = true;
         constructor.add_input(
-            crate::test_support::real_param("a", Vec::new(), test_span()).with_def_id(FIELD_A_DEF_ID),
+            crate::test_support::real_param("a", Vec::new(), test_span())
+                .with_def_id(FIELD_A_DEF_ID),
         );
         constructor.add_input(
-            crate::test_support::real_param("b", vec![3], test_span())
-                .with_def_id(FIELD_B_DEF_ID),
+            crate::test_support::real_param("b", vec![3], test_span()).with_def_id(FIELD_B_DEF_ID),
         );
         constructor
     }
@@ -1203,7 +1208,8 @@ mod tests {
                 .with_type_def_id(RECORD_DEF_ID),
         );
         function.add_output(
-            crate::test_support::real_param("y", Vec::new(), test_span()).with_def_id(OUTPUT_DEF_ID),
+            crate::test_support::real_param("y", Vec::new(), test_span())
+                .with_def_id(OUTPUT_DEF_ID),
         );
         function.body.push(assignment_to(
             "y",
@@ -1306,7 +1312,11 @@ mod tests {
                 .with_type_class(ClassType::Record)
                 .with_type_def_id(RECORD_DEF_ID),
         );
-        function.add_output(crate::test_support::real_param("y", Vec::new(), test_span()));
+        function.add_output(crate::test_support::real_param(
+            "y",
+            Vec::new(),
+            test_span(),
+        ));
         flat.add_function(function);
 
         lower_record_function_params(&mut flat).expect("exposure-qualified lookup should pass");
@@ -1380,13 +1390,19 @@ mod tests {
 
         let mut function = rumoca_core::Function::new("Pkg.sumCoeffs", test_span());
         function.add_input(
-            crate::test_support::aggregate_param("r", "Pkg.FlexibleRecord", Vec::new(), test_span())
-                .with_def_id(RECORD_PARAM_DEF_ID)
-                .with_type_class(ClassType::Record)
-                .with_type_def_id(RECORD_DEF_ID),
+            crate::test_support::aggregate_param(
+                "r",
+                "Pkg.FlexibleRecord",
+                Vec::new(),
+                test_span(),
+            )
+            .with_def_id(RECORD_PARAM_DEF_ID)
+            .with_type_class(ClassType::Record)
+            .with_type_def_id(RECORD_DEF_ID),
         );
         function.add_output(
-            crate::test_support::real_param("y", Vec::new(), test_span()).with_def_id(OUTPUT_DEF_ID),
+            crate::test_support::real_param("y", Vec::new(), test_span())
+                .with_def_id(OUTPUT_DEF_ID),
         );
         function.body.push(assignment_to(
             "y",
@@ -1482,7 +1498,8 @@ mod tests {
                 .with_shape_expr(vec![rumoca_core::Subscript::colon(test_span())]),
         );
         function.add_output(
-            crate::test_support::real_param("y", Vec::new(), test_span()).with_def_id(OUTPUT_DEF_ID),
+            crate::test_support::real_param("y", Vec::new(), test_span())
+                .with_def_id(OUTPUT_DEF_ID),
         );
         function.body.push(assignment_to(
             "y",
@@ -1543,7 +1560,8 @@ mod tests {
                 .with_shape_expr(vec![rumoca_core::Subscript::colon(test_span())]),
         );
         function.add_output(
-            crate::test_support::real_param("y", Vec::new(), test_span()).with_def_id(OUTPUT_DEF_ID),
+            crate::test_support::real_param("y", Vec::new(), test_span())
+                .with_def_id(OUTPUT_DEF_ID),
         );
         function.locals.push(rumoca_core::FunctionParam {
             def_id: Some(LOCAL_N_DEF_ID),
@@ -1682,7 +1700,8 @@ mod tests {
                 .with_type_class(ClassType::Record),
         );
         function.add_output(
-            crate::test_support::real_param("y", Vec::new(), test_span()).with_def_id(OUTPUT_DEF_ID),
+            crate::test_support::real_param("y", Vec::new(), test_span())
+                .with_def_id(OUTPUT_DEF_ID),
         );
         function.body.push(assignment_to(
             "y",
@@ -1718,7 +1737,8 @@ mod tests {
                 .with_type_def_id(RECORD_DEF_ID),
         );
         callee.add_output(
-            crate::test_support::real_param("y", Vec::new(), test_span()).with_def_id(OUTPUT_DEF_ID),
+            crate::test_support::real_param("y", Vec::new(), test_span())
+                .with_def_id(OUTPUT_DEF_ID),
         );
         callee.body.push(assignment_to(
             "y",
@@ -1740,7 +1760,8 @@ mod tests {
                 .with_type_def_id(RECORD_DEF_ID),
         );
         caller.add_output(
-            crate::test_support::real_param("y", Vec::new(), test_span()).with_def_id(OUTPUT_DEF_ID),
+            crate::test_support::real_param("y", Vec::new(), test_span())
+                .with_def_id(OUTPUT_DEF_ID),
         );
         caller.body.push(assignment_to(
             "y",
@@ -1842,21 +1863,26 @@ mod tests {
             crate::test_support::real_param("interfaceMarker", vec![0], test_span())
                 .with_shape_expr(vec![rumoca_core::Subscript::index(0, test_span())]),
         );
-        rotation_constructor.add_input(
-            crate::test_support::real_param("q", vec![4], test_span()),
-        );
+        rotation_constructor.add_input(crate::test_support::real_param("q", vec![4], test_span()));
         flat.add_function(rotation_constructor);
 
         let mut element_constructor = rumoca_core::Function::new("Pkg.Element", test_span());
         element_constructor.def_id = Some(ELEMENT_DEF_ID);
         element_constructor.is_constructor = true;
+        element_constructor.add_input(crate::test_support::real_param(
+            "position",
+            vec![3],
+            test_span(),
+        ));
         element_constructor.add_input(
-            crate::test_support::real_param("position", vec![3], test_span()),
-        );
-        element_constructor.add_input(
-            crate::test_support::aggregate_param("rotation", "Pkg.Rotation", Vec::new(), test_span())
-                .with_type_class(ClassType::Record)
-                .with_type_def_id(ROTATION_DEF_ID),
+            crate::test_support::aggregate_param(
+                "rotation",
+                "Pkg.Rotation",
+                Vec::new(),
+                test_span(),
+            )
+            .with_type_class(ClassType::Record)
+            .with_type_def_id(ROTATION_DEF_ID),
         );
         flat.add_function(element_constructor);
 
@@ -1866,18 +1892,28 @@ mod tests {
                 .with_type_class(ClassType::Record)
                 .with_type_def_id(ELEMENT_DEF_ID),
         );
-        inverse.add_output(crate::test_support::real_param("y", Vec::new(), test_span()));
+        inverse.add_output(crate::test_support::real_param(
+            "y",
+            Vec::new(),
+            test_span(),
+        ));
         flat.add_function(inverse);
 
         let mut caller = rumoca_core::Function::new("Pkg.caller", test_span());
         caller.add_input(
-            crate::test_support::aggregate_param("reference", "Pkg.Element", Vec::new(), test_span())
-                .with_def_id(REFERENCE_DEF_ID)
-                .with_type_class(ClassType::Record)
-                .with_type_def_id(ELEMENT_DEF_ID),
+            crate::test_support::aggregate_param(
+                "reference",
+                "Pkg.Element",
+                Vec::new(),
+                test_span(),
+            )
+            .with_def_id(REFERENCE_DEF_ID)
+            .with_type_class(ClassType::Record)
+            .with_type_def_id(ELEMENT_DEF_ID),
         );
         caller.add_output(
-            crate::test_support::real_param("y", Vec::new(), test_span()).with_def_id(OUTPUT_DEF_ID),
+            crate::test_support::real_param("y", Vec::new(), test_span())
+                .with_def_id(OUTPUT_DEF_ID),
         );
         caller.body.push(assignment_to(
             "y",

@@ -40,6 +40,22 @@ fn function_output<'storage>(
         .definition
         .as_ref()
         .expect("finalized function has a body");
+    let (statements, external) = match definition {
+        FunctionBodyEntry::Modelica(body) => {
+            (project_statements(function, folds, &body.statements), None)
+        }
+        FunctionBodyEntry::External(body) => (
+            Vec::new(),
+            Some(ExternalBodyInput {
+                purity: body.purity,
+                language: body.language,
+                symbol: &body.symbol,
+                arguments: body.arguments.clone(),
+                result: body.result,
+                linkage: body.linkage.clone(),
+            }),
+        ),
+    };
     FunctionEntryWire {
         name: &function.name,
         parameters: function
@@ -53,7 +69,8 @@ fn function_output<'storage>(
             .collect(),
         outputs: named_values(outputs),
         locals: named_values(locals),
-        statements: project_statements(function, folds, &definition.statements),
+        statements,
+        external,
         declaration: function.declaration,
     }
 }
@@ -264,19 +281,22 @@ fn replay_component<'group, 'dae>(
     finish_functions(wire, dae, ids, functions)
 }
 
-struct FunctionReplay<'wire, 'dae> {
+struct FunctionReplay<'wire, 'group, 'dae> {
     function_index: usize,
     operations: Vec<ReplayOp<'wire>>,
     next_operation: usize,
-    capability: Option<ReplayCapability<'dae>>,
+    capability: Option<ReplayCapability<'group, 'dae>>,
 }
 
-enum ReplayCapability<'dae> {
+enum ReplayCapability<'group, 'dae> {
     Body(FunctionBody<'dae>),
     Fold {
         ordinal: u32,
         body: FunctionLoop<'dae>,
     },
+    /// An MLS §12.9 external body keeps its reservation until its checked
+    /// interface replays; it never opens a Modelica body build state.
+    External(FunctionReservation<'group, 'dae>),
 }
 
 #[derive(Clone, Copy)]
@@ -310,7 +330,7 @@ fn begin_functions<'wire, 'group, 'dae>(
     wire: &'wire StorageWire,
     dae: &mut DaeConstruction<'dae>,
     reservations: Vec<FunctionReservation<'group, 'dae>>,
-) -> Result<Vec<FunctionReplay<'wire, 'dae>>, DaeConstructionError> {
+) -> Result<Vec<FunctionReplay<'wire, 'group, 'dae>>, DaeConstructionError> {
     reservations
         .into_iter()
         .map(|reservation| {
@@ -320,6 +340,17 @@ fn begin_functions<'wire, 'group, 'dae>(
                 function_index,
                 function_declaration(wire, function_index),
             )?;
+            if function.external.is_some() {
+                if !function.statements.is_empty() {
+                    return Err(malformed("functions.external"));
+                }
+                return Ok(FunctionReplay {
+                    function_index,
+                    operations: Vec::new(),
+                    next_operation: 0,
+                    capability: Some(ReplayCapability::External(reservation)),
+                });
+            }
             let body =
                 dae.functions(|functions| functions.begin(reservation, function.declaration))?;
             Ok(FunctionReplay {
@@ -398,7 +429,7 @@ fn replay_read<'dae>(
     wire: &StorageWire,
     dae: &mut DaeConstruction<'dae>,
     ids: &mut WireIds<'dae>,
-    functions: &mut [FunctionReplay<'_, 'dae>],
+    functions: &mut [FunctionReplay<'_, '_, 'dae>],
     identity: (u32, u32, u32),
 ) -> Result<(), DaeConstructionError> {
     let (function_raw, value_raw, definition_ordinal) = identity;
@@ -425,7 +456,7 @@ fn advance_to_definition<'dae>(
     wire: &StorageWire,
     dae: &mut DaeConstruction<'dae>,
     ids: &WireIds<'dae>,
-    state: &mut FunctionReplay<'_, 'dae>,
+    state: &mut FunctionReplay<'_, '_, 'dae>,
     value: u32,
     definition: u32,
     provenance: DaeProvenance,
@@ -454,7 +485,7 @@ fn advance_to_definition<'dae>(
 
 fn current_definition_ordinal<'dae>(
     dae: &mut DaeConstruction<'dae>,
-    state: &FunctionReplay<'_, 'dae>,
+    state: &FunctionReplay<'_, '_, 'dae>,
     value: u32,
     provenance: DaeProvenance,
 ) -> Result<Option<u32>, DaeConstructionError> {
@@ -465,6 +496,7 @@ fn current_definition_ordinal<'dae>(
     {
         ReplayCapability::Body(body) => body,
         ReplayCapability::Fold { body, .. } => body.body(),
+        ReplayCapability::External(_) => return Err(malformed("functions.external")),
     };
     let value = FunctionValueId::from_raw(state.function_index as u32, value);
     match dae.functions(|functions| functions.current_definition_id(body, value, provenance)) {
@@ -482,7 +514,7 @@ fn apply_next_ready_assignment<'dae>(
     wire: &StorageWire,
     dae: &mut DaeConstruction<'dae>,
     ids: &WireIds<'dae>,
-    state: &mut FunctionReplay<'_, 'dae>,
+    state: &mut FunctionReplay<'_, '_, 'dae>,
 ) -> Result<bool, DaeConstructionError> {
     let Some(ReplayOp::Assign(assignment)) = state.operations.get(state.next_operation).copied()
     else {
@@ -500,7 +532,7 @@ fn apply_ready_assignments<'dae>(
     wire: &StorageWire,
     dae: &mut DaeConstruction<'dae>,
     ids: &WireIds<'dae>,
-    state: &mut FunctionReplay<'_, 'dae>,
+    state: &mut FunctionReplay<'_, '_, 'dae>,
 ) -> Result<(), DaeConstructionError> {
     while apply_next_ready_assignment(wire, dae, ids, state)? {}
     Ok(())
@@ -510,7 +542,7 @@ fn apply_assignment<'dae>(
     wire: &StorageWire,
     dae: &mut DaeConstruction<'dae>,
     ids: &WireIds<'dae>,
-    state: &mut FunctionReplay<'_, 'dae>,
+    state: &mut FunctionReplay<'_, '_, 'dae>,
     input: AssignmentInput,
 ) -> Result<(), DaeConstructionError> {
     let target = checked_assignment_target(wire, state.function_index, input)?;
@@ -527,12 +559,13 @@ fn apply_assignment<'dae>(
         ReplayCapability::Fold { body, .. } => {
             functions.assign_loop(body, target, rhs, input.provenance)
         }
+        ReplayCapability::External(_) => Err(malformed("functions.external")),
     })
 }
 
-fn body_for_definition<'state, 'wire, 'dae>(
+fn body_for_definition<'state, 'wire, 'group, 'dae>(
     dae: &mut DaeConstruction<'dae>,
-    state: &'state FunctionReplay<'wire, 'dae>,
+    state: &'state FunctionReplay<'wire, 'group, 'dae>,
     value: u32,
     definition: u32,
     provenance: DaeProvenance,
@@ -544,6 +577,7 @@ fn body_for_definition<'state, 'wire, 'dae>(
     {
         ReplayCapability::Body(body) => body,
         ReplayCapability::Fold { body, .. } => body.body(),
+        ReplayCapability::External(_) => return Err(malformed("functions.external")),
     };
     let value_id = FunctionValueId::from_raw(state.function_index as u32, value);
     let current =
@@ -564,7 +598,7 @@ fn replay_loop_entry<'dae>(
     wire: &StorageWire,
     dae: &mut DaeConstruction<'dae>,
     ids: &mut WireIds<'dae>,
-    functions: &mut [FunctionReplay<'_, 'dae>],
+    functions: &mut [FunctionReplay<'_, '_, 'dae>],
     function_raw: u32,
     fold_ordinal: u32,
 ) -> Result<(), DaeConstructionError> {
@@ -639,7 +673,7 @@ fn replay_loop_exit<'dae>(
     wire: &StorageWire,
     dae: &mut DaeConstruction<'dae>,
     ids: &mut WireIds<'dae>,
-    functions: &mut [FunctionReplay<'_, 'dae>],
+    functions: &mut [FunctionReplay<'_, '_, 'dae>],
     function_raw: u32,
     fold_ordinal: u32,
 ) -> Result<(), DaeConstructionError> {
@@ -693,7 +727,7 @@ fn finish_functions<'dae>(
     wire: &StorageWire,
     dae: &mut DaeConstruction<'dae>,
     ids: &WireIds<'dae>,
-    mut functions: Vec<FunctionReplay<'_, 'dae>>,
+    mut functions: Vec<FunctionReplay<'_, '_, 'dae>>,
 ) -> Result<(), DaeConstructionError> {
     for state in &mut functions {
         apply_ready_assignments(wire, dae, ids, state)?;
@@ -711,18 +745,74 @@ fn finish_functions<'dae>(
                 function_declaration(wire, state.function_index),
             )
         })?;
-        let ReplayCapability::Body(body) = capability else {
-            return Err(incomplete(
-                "function fold",
-                state.function_index,
-                function_declaration(wire, state.function_index),
-            ));
-        };
-        dae.functions(|functions| {
-            functions.define(body, function_declaration(wire, state.function_index))
-        })?;
+        match capability {
+            ReplayCapability::Body(body) => {
+                dae.functions(|functions| {
+                    functions.define(body, function_declaration(wire, state.function_index))
+                })?;
+            }
+            ReplayCapability::External(reservation) => {
+                replay_external_body(wire, dae, ids, state.function_index, reservation)?;
+            }
+            ReplayCapability::Fold { .. } => {
+                return Err(incomplete(
+                    "function fold",
+                    state.function_index,
+                    function_declaration(wire, state.function_index),
+                ));
+            }
+        }
     }
     Ok(())
+}
+
+/// Replay one MLS §12.9 external interface through its checked construction op.
+///
+/// Wire columns supply only raw ordinals; every argument, produced output, and
+/// link fact re-enters the IR through `define_external`, so a forged interface
+/// fails exactly where a forged production interface would.
+fn replay_external_body<'group, 'dae>(
+    wire: &StorageWire,
+    dae: &mut DaeConstruction<'dae>,
+    ids: &WireIds<'dae>,
+    function_index: usize,
+    reservation: FunctionReservation<'group, 'dae>,
+) -> Result<(), DaeConstructionError> {
+    let declaration = function_declaration(wire, function_index);
+    let function = function_wire(wire, function_index, declaration)?;
+    let external = function
+        .external
+        .as_ref()
+        .ok_or_else(|| malformed("functions.external"))?;
+    let function_raw = checked_u32(function_index, "function", declaration)?;
+    let mut arguments = Vec::with_capacity(external.arguments.len());
+    for argument in &external.arguments {
+        arguments.push(match argument {
+            ExternalArgumentEntry::Input(expression) => {
+                ExternalArgument::Input(mapped_expression(ids, *expression, declaration)?)
+            }
+            ExternalArgumentEntry::Output(value) => {
+                expect_function_value(wire, function_index, *value, declaration)?;
+                ExternalArgument::Output(FunctionValueId::from_raw(function_raw, *value))
+            }
+        });
+    }
+    let result = match external.result {
+        Some(value) => {
+            expect_function_value(wire, function_index, value, declaration)?;
+            Some(FunctionValueId::from_raw(function_raw, value))
+        }
+        None => None,
+    };
+    let body = ExternalFunctionBody::new(
+        external.purity,
+        external.language,
+        external.symbol.clone(),
+        arguments,
+        result,
+        external.linkage.clone(),
+    );
+    dae.functions(|functions| functions.define_external(reservation, body, declaration))
 }
 
 #[derive(Clone, Copy)]
@@ -899,11 +989,11 @@ fn expect_function_value(
     }
 }
 
-fn function_state_mut<'state, 'wire, 'dae>(
-    functions: &'state mut [FunctionReplay<'wire, 'dae>],
+fn function_state_mut<'state, 'wire, 'group, 'dae>(
+    functions: &'state mut [FunctionReplay<'wire, 'group, 'dae>],
     raw: u32,
     provenance: DaeProvenance,
-) -> Result<&'state mut FunctionReplay<'wire, 'dae>, DaeConstructionError> {
+) -> Result<&'state mut FunctionReplay<'wire, 'group, 'dae>, DaeConstructionError> {
     functions
         .iter_mut()
         .find(|state| state.function_index == raw as usize)

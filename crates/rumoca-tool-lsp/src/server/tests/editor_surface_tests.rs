@@ -84,6 +84,16 @@ pub(super) async fn assert_document_links_and_inlay_hints(
         )),
         "inlay hints should include the array-dimension hint"
     );
+    // Both special-case hint families must stay live: the array-dimension hint
+    // above and the builtin parameter-name hint for `sin(helperInst.gain)`.
+    // The full-MSL editor gate asserts the same two families over the wire.
+    assert!(
+        hints.iter().any(|hint| {
+            hint.kind == Some(InlayHintKind::PARAMETER)
+                && matches!(&hint.label, InlayHintLabel::String(label) if label == "u:")
+        }),
+        "inlay hints should include the builtin parameter-name hint: {hints:?}"
+    );
 }
 
 pub(super) async fn assert_code_actions_wrap_handler(

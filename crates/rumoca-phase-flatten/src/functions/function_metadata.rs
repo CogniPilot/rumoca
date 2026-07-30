@@ -25,10 +25,11 @@ impl<'types> FunctionTypeCatalog<'types> {
     fn effective_type(
         self,
         component: &ast::Component,
+        type_def_id: Option<rumoca_core::DefId>,
         dimensions: Vec<i64>,
         span: rumoca_core::Span,
     ) -> Result<rumoca_core::EffectiveType, FlattenError> {
-        let type_def_id = component.type_def_id.or(component.type_name.def_id).ok_or_else(|| {
+        let type_def_id = type_def_id.ok_or_else(|| {
             FlattenError::missing_resolved_class_metadata(
                 &component.name,
                 "function value type declaration identity",
@@ -53,15 +54,13 @@ impl<'types> FunctionTypeCatalog<'types> {
                 span,
             )
         })?;
-        rumoca_core::EffectiveType::new(nominal_type, canonical_type, dimensions).map_err(
-            |error| {
-                FlattenError::missing_resolved_class_metadata(
-                    &component.name,
-                    format!("checked function value type: {error}"),
-                    span,
-                )
-            },
-        )
+        rumoca_core::EffectiveType::new(nominal_type, canonical_type, dimensions).map_err(|error| {
+            FlattenError::missing_resolved_class_metadata(
+                &component.name,
+                format!("checked function value type: {error}"),
+                span,
+            )
+        })
     }
 }
 
@@ -97,6 +96,120 @@ pub(super) fn effective_function_param_class_type(
     }
 
     class_def.class_type.clone()
+}
+
+/// The class a component's declared type names, together with that class's
+/// declaration identity.
+///
+/// `class_def` is absent for the predefined types, which have a `DefId` but no
+/// source class declaration.
+#[derive(Clone, Copy)]
+pub(super) struct ComponentTypeIdentity<'tree> {
+    pub(super) def_id: Option<rumoca_core::DefId>,
+    pub(super) class_def: Option<&'tree ast::ClassDef>,
+}
+
+/// Resolve the exact class identity a component's declared type names.
+///
+/// [`ast::Name::def_id`] is allowed to hold a *partial* resolution: for a
+/// qualified type name whose first segment is a replaceable or aliased package,
+/// name resolution records that first segment's class and leaves the trailing
+/// segments for a later phase (MLS §7.3). Taking that partial identity as the
+/// component's type silently names the enclosing package instead of the
+/// declared class, so the trailing segments are completed here through the
+/// declared members and inherited scopes of the partially resolved class.
+pub(super) fn component_type_identity<'tree>(
+    class_index: &ast::ClassDefIndex<'tree>,
+    component: &ast::Component,
+) -> ComponentTypeIdentity<'tree> {
+    if let Some(def_id) = component.type_def_id {
+        return ComponentTypeIdentity {
+            def_id: Some(def_id),
+            class_def: class_index.get(def_id),
+        };
+    }
+    let Some(def_id) = component.type_name.def_id else {
+        let class_def = class_index.get_by_qualified_name(&component.type_name.to_string());
+        return ComponentTypeIdentity {
+            def_id: class_def.and_then(|class_def| class_def.def_id),
+            class_def,
+        };
+    };
+    let Some(class_def) = class_index.get(def_id) else {
+        return ComponentTypeIdentity {
+            def_id: Some(def_id),
+            class_def: None,
+        };
+    };
+    match complete_partial_type_resolution(class_index, component, def_id, class_def) {
+        Some(completed) => ComponentTypeIdentity {
+            def_id: completed.def_id,
+            class_def: Some(completed),
+        },
+        None => ComponentTypeIdentity {
+            def_id: Some(def_id),
+            class_def: Some(class_def),
+        },
+    }
+}
+
+/// Complete a qualified type name whose recorded identity covers only its first
+/// segment, returning `None` when the recorded identity is not such a prefix.
+fn complete_partial_type_resolution<'tree>(
+    class_index: &ast::ClassDefIndex<'tree>,
+    component: &ast::Component,
+    def_id: rumoca_core::DefId,
+    class_def: &'tree ast::ClassDef,
+) -> Option<&'tree ast::ClassDef> {
+    let segments = component
+        .type_name
+        .name
+        .iter()
+        .map(|token| token.text.as_ref())
+        .collect::<Vec<&str>>();
+    let (first, trailing) = segments.split_first()?;
+    if trailing.is_empty() || class_index.local_name(def_id)? != *first {
+        return None;
+    }
+    let written_name = component.type_name.to_string();
+    if class_index.qualified_name(def_id)?.ends_with(&written_name) {
+        // The recorded class already is the written path's leaf.
+        return None;
+    }
+    trailing.iter().try_fold(class_def, |scope, segment| {
+        nested_class_in_scope(class_index, scope, segment)
+    })
+}
+
+/// Look up `name` as a class declared by `scope` or by one of the classes it
+/// extends, including the short-class-definition alias chain that a package
+/// alias such as `package Rotation = Quaternion` records as its base class.
+fn nested_class_in_scope<'a>(
+    class_index: &ast::ClassDefIndex<'a>,
+    scope: &'a ast::ClassDef,
+    name: &str,
+) -> Option<&'a ast::ClassDef> {
+    let mut visited = HashSet::new();
+    nested_class_in_scope_inner(class_index, scope, name, &mut visited)
+}
+
+fn nested_class_in_scope_inner<'a>(
+    class_index: &ast::ClassDefIndex<'a>,
+    scope: &'a ast::ClassDef,
+    name: &str,
+    visited: &mut HashSet<usize>,
+) -> Option<&'a ast::ClassDef> {
+    if !visited.insert(scope as *const ast::ClassDef as usize) {
+        return None;
+    }
+    if let Some(class_def) = scope.classes.get(name) {
+        return Some(class_def);
+    }
+    scope.extends.iter().find_map(|ext| {
+        let base_name = ext.base_name.to_string();
+        let base = class_by_name_or_def_id(class_index, &base_name, ext.base_def_id)?;
+        nested_class_in_scope_inner(class_index, base, name, visited)
+    })
 }
 
 fn primitive_type_name(name: &str) -> Option<&'static str> {
@@ -586,10 +699,15 @@ pub(super) fn convert_component_to_param(
     if !type_alias_dims.is_empty() {
         param_dims.extend(type_alias_dims);
     }
-    let effective_type =
-        expressions
-            .type_catalog
-            .effective_type(component, param_dims, span)?;
+    // The declared type identity is resolved once, so the effective type, the
+    // recorded `type_def_id`, and the class type all name the same class.
+    let type_identity = component_type_identity(class_index, component);
+    let effective_type = expressions.type_catalog.effective_type(
+        component,
+        type_identity.def_id,
+        param_dims,
+        span,
+    )?;
     let mut param = rumoca_core::FunctionParam::new(name, type_name, effective_type, span);
     if let Some(shape_expr) = shape_expr {
         param = param.with_shape_expr(shape_expr);
@@ -597,6 +715,7 @@ pub(super) fn convert_component_to_param(
     finish_function_param(
         class_index,
         component,
+        type_identity,
         expressions,
         imports,
         locals,
@@ -607,6 +726,7 @@ pub(super) fn convert_component_to_param(
 fn finish_function_param(
     class_index: &ast::ClassDefIndex<'_>,
     component: &ast::Component,
+    type_identity: ComponentTypeIdentity<'_>,
     expressions: FunctionExpressionContext<'_>,
     imports: &qualify::ImportMap,
     locals: &HashSet<String>,
@@ -615,10 +735,13 @@ fn finish_function_param(
     if let Some(def_id) = component.def_id {
         param = param.with_def_id(def_id);
     }
-    if let Some(type_def_id) = component.type_def_id.or(component.type_name.def_id) {
+    if let Some(type_def_id) = type_identity.def_id {
         param = param.with_type_def_id(type_def_id);
     }
-    if let Some(type_class) = function_param_type_class(class_index, component) {
+    if let Some(type_class) = type_identity
+        .class_def
+        .map(|class_def| effective_function_param_class_type(class_index, class_def))
+    {
         param = param.with_type_class(type_class);
     }
     if let Some(type_name) =
@@ -806,23 +929,6 @@ pub(super) fn component_by_def_id<'a>(
         .components
         .get(local_name)
         .filter(|component| component.def_id == Some(def_id))
-}
-
-pub(super) fn function_param_type_class(
-    class_index: &ast::ClassDefIndex<'_>,
-    component: &ast::Component,
-) -> Option<rumoca_core::ClassType> {
-    component
-        .type_name
-        .def_id
-        .and_then(|def_id| class_index.get(def_id))
-        .map(|class_def| effective_function_param_class_type(class_index, class_def))
-        .or_else(|| {
-            let type_name = component.type_name.to_string();
-            class_index
-                .get_by_qualified_name(&type_name)
-                .map(|class_def| effective_function_param_class_type(class_index, class_def))
-        })
 }
 
 const FUNCTION_QUALIFY_OPTS: qualify::QualifyOptions = qualify::QualifyOptions { skip_local: true };

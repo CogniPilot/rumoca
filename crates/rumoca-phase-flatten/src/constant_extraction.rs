@@ -1244,10 +1244,8 @@ pub(super) fn extract_class_occurrence_modifiers(
                 resolve_context,
                 ctx,
             ) {
-                ctx.constant_values_by_occurrence.insert(
-                    ConstantOccurrenceId::new(owner, declaration),
-                    value,
-                );
+                ctx.constant_values_by_occurrence
+                    .insert(ConstantOccurrenceId::new(owner, declaration), value);
             }
         }
     }

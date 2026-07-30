@@ -49,6 +49,21 @@ type ParsedTree = ast::ParsedTree;
 type ScopeTree = ast::ScopeTree;
 type StoredDefinition = ast::StoredDefinition;
 
+/// The built-in namespace that owns the connection-graph operators.
+///
+/// `rumoca_core::BUILTIN_VARIABLES` declares the namespace itself; this crate
+/// owns the declaration of the members inside it.
+const CONNECTIONS_NAMESPACE: &str = "Connections";
+
+/// Operators declared by the built-in `Connections` namespace (MLS §9.4).
+///
+/// `branch`, `root` and `potentialRoot` build the virtual connection graph;
+/// `isRoot` and `rooted` query it. Each is a predefined member of
+/// `Connections`, so a call such as `Connections.branch(a, b)` names an exact
+/// predeclared operator rather than an absent user-declared member.
+const CONNECTION_GRAPH_OPERATORS: &[&str] =
+    &["branch", "root", "potentialRoot", "isRoot", "rooted"];
+
 /// A class tree that has completed name resolution without errors.
 ///
 /// Only this crate can construct the proof. Downstream phases may inspect the
@@ -276,6 +291,13 @@ pub struct Resolver {
     pub(crate) dynamic_member_root_ids: std::collections::HashSet<DefId>,
     /// DefIds that can legitimately anchor partial type resolution (replaceable roots).
     pub(crate) partial_type_root_ids: std::collections::HashSet<DefId>,
+    /// Classes declared with the `expandable` keyword (MLS §9.1.3).
+    ///
+    /// An expandable connector gains members from the `connect` equations that
+    /// reference them, so an absent member is not proof of a missing
+    /// declaration at Resolve. Flatten owns that proof (EF020) once every
+    /// connection in the instance is known.
+    pub(crate) expandable_connector_ids: std::collections::HashSet<DefId>,
     /// Exclusive upper bound for builtin DefIds. `DefId(0)` is root/global.
     builtin_count: u32,
     /// Statistics collected during resolution.
@@ -379,6 +401,7 @@ impl Resolver {
             component_type_def_ids: std::collections::HashMap::new(),
             dynamic_member_root_ids: std::collections::HashSet::new(),
             partial_type_root_ids: std::collections::HashSet::new(),
+            expandable_connector_ids: std::collections::HashSet::new(),
             builtin_count: 0,
             stats: ResolutionStats::default(),
             last_core_timing: ResolveCoreTiming::default(),
@@ -417,6 +440,18 @@ impl Resolver {
                     literal_id,
                 );
             }
+        }
+        // MLS §9.4: the built-in `Connections` namespace declares the
+        // overconstrained connection-graph operators. They are members of a
+        // predefined namespace, not of a user class, so their exact identity
+        // has to be predeclared here; otherwise `Connections.branch` would
+        // reach the qualified-name traversal as a missing static tail.
+        for &operator in CONNECTION_GRAPH_OPERATORS {
+            let operator_id = self.alloc_def_id(Some(CONNECTIONS_NAMESPACE), operator);
+            self.scope_tree.add_predefined_member(
+                ComponentPath::from_parts([CONNECTIONS_NAMESPACE, operator]),
+                operator_id,
+            );
         }
 
         // All DefIds allocated so far are builtins
