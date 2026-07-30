@@ -753,4 +753,71 @@ mod checked_tests {
             ));
         });
     }
+
+    #[test]
+    fn projection_failure_retains_the_exact_subscript_occurrence() {
+        use rumoca_core::PhaseError;
+
+        let text = "Real x[3]; equation x[4] = 0;";
+        let mut sources = SourceMap::new();
+        let source = sources.add("projection_occurrence.mo", text);
+        let span_of = |snippet: &str| {
+            let start = text.find(snippet).expect("fixture snippet exists");
+            at(source, start, start + snippet.len())
+        };
+        let declaration_at = span_of("Real x[3]");
+        let equation_at = span_of("x[4] = 0");
+        let index_at = span_of("x[4]");
+        let subscript_at = span_of("4");
+        let model = dae::Dae::construct(sources, |model| {
+            let array = model.types(|types| {
+                types.intern(
+                    TypeId::new(0),
+                    dae::ValueType::array(dae::ScalarType::Real, [3]),
+                    declaration_at,
+                )
+            })?;
+            let x = model.variables(|variables| {
+                variables.algebraic(
+                    VarName::new("x"),
+                    array,
+                    declaration_at,
+                    dae::VariableAttributes::default(),
+                )
+            })?;
+            let indexed = model.expressions(|expressions| {
+                let base = expressions
+                    .at(index_at)
+                    .coordinate(dae::CoordinateInput::Algebraic(x))?;
+                let index = expressions
+                    .at(subscript_at)
+                    .literal(dae::DaeLiteral::Integer(4))?;
+                expressions.at(index_at).index(
+                    base,
+                    [dae::Subscript::Index {
+                        expression: index,
+                        provenance: subscript_at,
+                    }],
+                )
+            })?;
+            model.continuous(|continuous| {
+                continuous.equation(equation_at, |equation| equation.residual(indexed))?;
+                Ok(())
+            })
+        })
+        .expect("out-of-bounds runtime indexes remain a projection concern");
+
+        model.inspect(|view| {
+            let error = sort(view).expect_err("constant index exceeds the checked array extent");
+            assert!(matches!(
+                &error,
+                StructuralError::Projection { span, .. } if *span == subscript_at.span()
+            ));
+            let diagnostic = error.to_diagnostic();
+            assert_eq!(diagnostic.labels.len(), 1);
+            assert_eq!(diagnostic.labels[0].span, subscript_at.span());
+            assert_eq!(view.source_text(subscript_at), Some("4"));
+            assert_ne!(subscript_at.span(), equation_at.span());
+        });
+    }
 }
