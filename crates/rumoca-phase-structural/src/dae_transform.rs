@@ -1358,9 +1358,7 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                 let base = self.rebuild(base)?;
                 self.target.at(provenance).field(base, field as usize)?
             }
-            dae::ExpressionOperation::Range { start, step, stop } => {
-                self.target.at(provenance).range(start, step, stop)?
-            }
+            dae::ExpressionOperation::Range(range) => self.rebuild_range(range, provenance)?,
             dae::ExpressionOperation::Comprehension { domain, body } => {
                 let body = self.rebuild(body)?;
                 self.target
@@ -1418,6 +1416,20 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             .iter()
             .map(|operand| self.rebuild(operand))
             .collect()
+    }
+
+    fn rebuild_range(
+        &mut self,
+        range: dae::RangeView<'source>,
+        provenance: dae::DaeProvenance,
+    ) -> Result<dae::ExprId<'target>, dae::DaeConstructionError> {
+        let start = self.rebuild(range.start().expression())?;
+        let explicit_step = range
+            .explicit_step()
+            .map(|step| self.rebuild(step.expression()))
+            .transpose()?;
+        let stop = self.rebuild(range.stop().expression())?;
+        self.target.at(provenance).range(start, explicit_step, stop)
     }
 
     fn rebuild_conditional(

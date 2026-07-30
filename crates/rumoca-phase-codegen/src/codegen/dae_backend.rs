@@ -362,11 +362,12 @@ fn project_expression_operation(operation: dae::ExpressionOperation<'_>) -> Valu
             "base": base.index(),
             "field": field,
         }),
-        dae::ExpressionOperation::Range { start, step, stop } => json!({
+        dae::ExpressionOperation::Range(range) => json!({
             "kind": "range",
-            "start": start,
-            "step": step,
-            "stop": stop,
+            "start": range.start().value(),
+            "step": range.effective_step(),
+            "explicit_step": range.explicit_step().map(|step| step.value()),
+            "stop": range.stop().value(),
         }),
         dae::ExpressionOperation::Comprehension { domain, body } => json!({
             "kind": "comprehension",

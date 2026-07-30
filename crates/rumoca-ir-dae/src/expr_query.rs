@@ -127,8 +127,14 @@ fn push_children<'dae>(
     match operation {
         ExpressionOperation::Literal(_)
         | ExpressionOperation::Coordinate(_)
-        | ExpressionOperation::Range { .. }
         | ExpressionOperation::FunctionFoldParameter { .. } => {}
+        ExpressionOperation::Range(range) => {
+            pending.push(range.stop().expression());
+            if let Some(step) = range.explicit_step() {
+                pending.push(step.expression());
+            }
+            pending.push(range.start().expression());
+        }
         ExpressionOperation::Unary { operand, .. } => pending.push(operand),
         ExpressionOperation::Binary { lhs, rhs, .. } => {
             pending.push(rhs);

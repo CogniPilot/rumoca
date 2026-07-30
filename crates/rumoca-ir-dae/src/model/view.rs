@@ -1147,11 +1147,16 @@ impl<'dae> ExpressionView<'dae> {
                 base: ExprId::from_raw(*base),
                 field: *field,
             },
-            ExprNode::Range { start, step, stop } => ExpressionOperation::Range {
+            ExprNode::Range {
+                start,
+                explicit_step,
+                stop,
+            } => ExpressionOperation::Range(RangeView {
+                dae: self.dae,
                 start: *start,
-                step: *step,
+                explicit_step: *explicit_step,
                 stop: *stop,
-            },
+            }),
             ExprNode::Comprehension { domain, body } => ExpressionOperation::Comprehension {
                 domain: DomainId::from_raw(*domain),
                 body: ExprId::from_raw(*body),
@@ -1354,6 +1359,67 @@ pub enum CoordinateView<'dae> {
 }
 
 #[derive(Clone, Copy)]
+pub struct RangeBoundView<'dae> {
+    id: ExprId<'dae>,
+    value: i64,
+    provenance: DaeProvenance,
+}
+
+impl<'dae> RangeBoundView<'dae> {
+    view_getters! {
+        const fn expression -> ExprId<'dae> = |view| view.id;
+        const fn value -> i64 = |view| view.value;
+        const fn provenance -> DaeProvenance = |view| view.provenance;
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct RangeView<'dae> {
+    dae: &'dae Dae,
+    start: u32,
+    explicit_step: Option<u32>,
+    stop: u32,
+}
+
+impl<'dae> RangeView<'dae> {
+    pub fn start(self) -> RangeBoundView<'dae> {
+        self.bound(self.start)
+    }
+
+    pub fn explicit_step(self) -> Option<RangeBoundView<'dae>> {
+        self.explicit_step.map(|step| self.bound(step))
+    }
+
+    pub fn stop(self) -> RangeBoundView<'dae> {
+        self.bound(self.stop)
+    }
+
+    pub fn effective_step(self) -> i64 {
+        self.explicit_step().map_or(1, |step| step.value())
+    }
+
+    fn bound(self, raw: u32) -> RangeBoundView<'dae> {
+        let id = ExprId::from_raw(raw);
+        let node = self
+            .dae
+            .storage
+            .expressions
+            .nodes
+            .get(raw as usize)
+            .expect("checked range bound resolves");
+        let ExprNode::Literal(DaeLiteral::Integer(value)) = node else {
+            unreachable!("checked range bounds are literal Integer expressions")
+        };
+        let provenance = self.dae.storage.expressions.provenance[raw as usize];
+        RangeBoundView {
+            id,
+            value: *value,
+            provenance,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
 pub enum ExpressionOperation<'dae> {
     Literal(&'dae DaeLiteral),
     Coordinate(CoordinateView<'dae>),
@@ -1373,11 +1439,7 @@ pub enum ExpressionOperation<'dae> {
         base: ExprId<'dae>,
         field: u32,
     },
-    Range {
-        start: i64,
-        step: i64,
-        stop: i64,
-    },
+    Range(RangeView<'dae>),
     Comprehension {
         domain: DomainId<'dae>,
         body: ExprId<'dae>,

@@ -171,6 +171,7 @@ pub(super) fn lower_expression_scoped<'dae>(
         .span()
         .expect("analysis proves expression provenance");
     let provenance = expression_provenance(span, generated_root)?;
+    let range_input = RangeInput::new(expression, provenance, generated_root);
     match expression {
         Expression::Binary { op, lhs, rhs, .. } => {
             lower_binary_expression(construction, symbols, binders, op, lhs, rhs, provenance)
@@ -232,9 +233,7 @@ pub(super) fn lower_expression_scoped<'dae>(
             filter: _,
             ..
         } => lower_array_comprehension(construction, symbols, binders, expr, indices, provenance),
-        Expression::Range {
-            start, step, end, ..
-        } => lower_range(construction, start, step.as_deref(), end, provenance),
+        Expression::Range { .. } => lower_range(construction, symbols, binders, range_input),
         Expression::Index {
             base, subscripts, ..
         } => {
@@ -268,17 +267,52 @@ pub(super) fn lower_expression_scoped<'dae>(
     }
 }
 
+struct RangeInput<'expression> {
+    expression: &'expression Expression,
+    provenance: dae::DaeProvenance,
+    generated_root: Option<dae::DaeGeneration>,
+}
+
+impl<'expression> RangeInput<'expression> {
+    const fn new(
+        expression: &'expression Expression,
+        provenance: dae::DaeProvenance,
+        generated_root: Option<dae::DaeGeneration>,
+    ) -> Self {
+        Self {
+            expression,
+            provenance,
+            generated_root,
+        }
+    }
+}
+
 fn lower_range<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
-    start: &Expression,
-    step: Option<&Expression>,
-    end: &Expression,
-    provenance: dae::DaeProvenance,
+    symbols: LoweringSymbols<'_, 'dae>,
+    binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
+    input: RangeInput<'_>,
 ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
-    let start = integer_literal(start);
-    let step = step.map(integer_literal).unwrap_or(1);
-    let end = integer_literal(end);
-    construction.expressions(|expressions| expressions.at(provenance).range(start, step, end))
+    let Expression::Range {
+        start, step, end, ..
+    } = input.expression
+    else {
+        unreachable!("range lowering is selected from a range expression")
+    };
+    let start =
+        lower_expression_scoped(construction, symbols, binders, start, input.generated_root)?;
+    let explicit_step = step
+        .as_deref()
+        .map(|step| {
+            lower_expression_scoped(construction, symbols, binders, step, input.generated_root)
+        })
+        .transpose()?;
+    let end = lower_expression_scoped(construction, symbols, binders, end, input.generated_root)?;
+    construction.expressions(|expressions| {
+        expressions
+            .at(input.provenance)
+            .range(start, explicit_step, end)
+    })
 }
 
 fn lower_delay<'dae>(
@@ -890,17 +924,6 @@ fn lower_subscript<'dae>(
             }
         }
     })
-}
-
-fn integer_literal(expression: &Expression) -> i64 {
-    let Expression::Literal {
-        value: Literal::Integer(value),
-        ..
-    } = expression
-    else {
-        unreachable!("analysis restricts compact range bounds")
-    };
-    *value
 }
 
 pub(super) fn planned_input_variability(variable: &flat::Variable) -> dae::InputVariability {

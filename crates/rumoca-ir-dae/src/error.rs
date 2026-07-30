@@ -69,6 +69,8 @@ pub enum DaeConstructionError {
     EmptyArray { span: Span },
     #[error("range step cannot be zero")]
     ZeroRangeStep { span: Span },
+    #[error("range bounds must be literal Integer expressions")]
+    InvalidRangeBound { span: Span },
     #[error("range extent exceeds the DAE u32 domain")]
     RangeExtentOverflow { span: Span },
     #[error("array extent must be a nonnegative literal Integer")]
@@ -237,6 +239,7 @@ impl DaeConstructionError {
             | Self::InvalidArity { span, .. }
             | Self::EmptyArray { span }
             | Self::ZeroRangeStep { span }
+            | Self::InvalidRangeBound { span }
             | Self::RangeExtentOverflow { span }
             | Self::InvalidArrayExtent { span }
             | Self::InvalidPositiveParameter { span }

@@ -170,9 +170,12 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             dae::ExpressionOperation::Field { base, field } => {
                 self.record_field(base, field as usize, scalar, node.provenance().span())
             }
-            dae::ExpressionOperation::Range { start, step, .. } => {
-                self.range(start, step, scalar, node.provenance().span())
-            }
+            dae::ExpressionOperation::Range(range) => self.range(
+                range.start().value(),
+                range.effective_step(),
+                scalar,
+                node.provenance().span(),
+            ),
             dae::ExpressionOperation::Comprehension { domain, body } => {
                 self.comprehension(domain, body, scalar)
             }
@@ -1657,12 +1660,16 @@ impl<'dae> ScalarSelector<'dae> {
             dae::ExpressionOperation::Literal(
                 dae::DaeLiteral::Integer(value) | dae::DaeLiteral::Enumeration(value),
             ) => Ok(*value),
-            dae::ExpressionOperation::Range { start, step, .. } => {
+            dae::ExpressionOperation::Range(range) => {
                 let offset = i64::try_from(scalar)
                     .map_err(|_| LowerError::contract("integer scalar overflow", span))?;
-                start
+                range
+                    .start()
+                    .value()
                     .checked_add(
-                        step.checked_mul(offset)
+                        range
+                            .effective_step()
+                            .checked_mul(offset)
                             .ok_or_else(|| LowerError::contract("integer overflow", span))?,
                     )
                     .ok_or_else(|| LowerError::contract("integer overflow", span))

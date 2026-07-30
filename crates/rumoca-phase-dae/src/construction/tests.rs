@@ -279,6 +279,123 @@ fn production_lowering_enters_only_through_construct() {
 }
 
 #[test]
+fn production_range_lowering_retains_each_bound_occurrence() {
+    let source = TestSource::new(
+        "model M parameter Integer a[3] = 1:3; \
+         parameter Integer b[3] = 4:1:6; end M;",
+    );
+    let omitted_at = source.span("1:3", 0);
+    let explicit_at = source.span("4:1:6", 0);
+    let omitted_bounds = (source.span("1", 0), source.span("3", 1));
+    let explicit_bounds = (
+        source.span("4", 0),
+        source.span("1", 1),
+        source.span("6", 0),
+    );
+    let mut model = flat::Model::new();
+    add_range_parameter(
+        &mut model,
+        "a",
+        TypeId::new(30),
+        source.span("parameter Integer a[3]", 0),
+        Expression::Range {
+            start: Box::new(Expression::Literal {
+                value: Literal::Integer(1),
+                span: omitted_bounds.0,
+            }),
+            step: None,
+            end: Box::new(Expression::Literal {
+                value: Literal::Integer(3),
+                span: omitted_bounds.1,
+            }),
+            span: omitted_at,
+        },
+    );
+    add_range_parameter(
+        &mut model,
+        "b",
+        TypeId::new(31),
+        source.span("parameter Integer b[3]", 0),
+        Expression::Range {
+            start: Box::new(Expression::Literal {
+                value: Literal::Integer(4),
+                span: explicit_bounds.0,
+            }),
+            step: Some(Box::new(Expression::Literal {
+                value: Literal::Integer(1),
+                span: explicit_bounds.1,
+            })),
+            end: Box::new(Expression::Literal {
+                value: Literal::Integer(6),
+                span: explicit_bounds.2,
+            }),
+            span: explicit_at,
+        },
+    );
+
+    let dae = construct(&model, source.map).unwrap();
+    dae.inspect(|view| {
+        let omitted = view
+            .expression(
+                view.variable(view.variable_id(0).unwrap())
+                    .unwrap()
+                    .binding()
+                    .unwrap(),
+            )
+            .unwrap();
+        let dae::ExpressionOperation::Range(omitted_range) = omitted.operation() else {
+            unreachable!("parameter binding is a checked range")
+        };
+        assert_eq!(omitted.provenance().span(), omitted_at);
+        assert_eq!(omitted_range.start().provenance().span(), omitted_bounds.0);
+        assert_eq!(omitted_range.stop().provenance().span(), omitted_bounds.1);
+        assert!(omitted_range.explicit_step().is_none());
+
+        let explicit = view
+            .expression(
+                view.variable(view.variable_id(1).unwrap())
+                    .unwrap()
+                    .binding()
+                    .unwrap(),
+            )
+            .unwrap();
+        let dae::ExpressionOperation::Range(explicit_range) = explicit.operation() else {
+            unreachable!("parameter binding is a checked range")
+        };
+        assert_eq!(explicit.provenance().span(), explicit_at);
+        assert_eq!(
+            explicit_range.start().provenance().span(),
+            explicit_bounds.0
+        );
+        assert_eq!(
+            explicit_range.explicit_step().unwrap().provenance().span(),
+            explicit_bounds.1
+        );
+        assert_eq!(explicit_range.stop().provenance().span(), explicit_bounds.2);
+    });
+}
+
+fn add_range_parameter(
+    model: &mut flat::Model,
+    name: &str,
+    type_id: TypeId,
+    declaration: Span,
+    binding: Expression,
+) {
+    let mut variable = flat::Variable::empty_with_span(declaration);
+    variable.name = VarName::new(name);
+    variable.type_id = type_id;
+    variable.dims = vec![3];
+    variable.variability = Variability::Parameter(Default::default());
+    variable.is_primitive = true;
+    variable.binding = Some(binding);
+    model.add_variable(variable.name.clone(), variable);
+    model
+        .variable_type_names
+        .insert(VarName::new(name), "Integer".to_string());
+}
+
+#[test]
 fn when_chain_lowers_source_priority_with_exact_branch_provenance() {
     let source = TestSource::new(
         "model M discrete Boolean m; equation \

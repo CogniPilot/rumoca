@@ -1080,7 +1080,22 @@ fn rebuild_node<'dae>(
             mapped(&ids.expressions, *base, "expression", provenance)?,
             *field as usize,
         ),
-        ExprNodeWire::Range { start, step, stop } => at.range(*start, *step, *stop),
+        ExprNodeWire::Range {
+            start_expression,
+            explicit_step_expression,
+            stop_expression,
+        } => at.range(
+            mapped(
+                &ids.expressions,
+                *start_expression,
+                "expression",
+                provenance,
+            )?,
+            explicit_step_expression
+                .map(|step| mapped(&ids.expressions, step, "expression", provenance))
+                .transpose()?,
+            mapped(&ids.expressions, *stop_expression, "expression", provenance)?,
+        ),
         ExprNodeWire::Comprehension { domain, body } => at.comprehension(
             mapped(&ids.domains, *domain, "domain", provenance)?,
             mapped(&ids.expressions, *body, "expression", provenance)?,

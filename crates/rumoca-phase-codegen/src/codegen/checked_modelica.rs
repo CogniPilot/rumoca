@@ -346,13 +346,19 @@ impl<'dae> Renderer<'dae> {
             dae::ExpressionOperation::Array(elements) => self.array_expression(elements),
             dae::ExpressionOperation::Record(fields) => self.record_expression(expression, fields),
             dae::ExpressionOperation::Field { base, field } => self.field_expression(base, field),
-            dae::ExpressionOperation::Range { start, step, stop } => {
-                if step == 1 {
-                    Ok(format!("{start}:{stop}"))
-                } else {
-                    Ok(format!("{start}:{step}:{stop}"))
-                }
-            }
+            dae::ExpressionOperation::Range(range) => match range.explicit_step() {
+                Some(step) => Ok(format!(
+                    "{}:{}:{}",
+                    range.start().value(),
+                    step.value(),
+                    range.stop().value()
+                )),
+                None => Ok(format!(
+                    "{}:{}",
+                    range.start().value(),
+                    range.stop().value()
+                )),
+            },
             dae::ExpressionOperation::Comprehension { domain, body } => {
                 self.comprehension(domain, body)
             }

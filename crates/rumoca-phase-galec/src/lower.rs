@@ -1075,11 +1075,11 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             dae::ExpressionOperation::Array(elements) => {
                 return self.lower_array_at(elements, indices, node.provenance().span());
             }
-            dae::ExpressionOperation::Range { start, step, stop } => {
+            dae::ExpressionOperation::Range(range) => {
                 return lower_range_at(
-                    start,
-                    step,
-                    stop,
+                    range.start().value(),
+                    range.effective_step(),
+                    range.stop().value(),
                     indices,
                     scalar_type,
                     node.provenance().span(),
@@ -1285,9 +1285,11 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             .view
             .expression(expression)
             .expect("checked slice expression");
-        if let dae::ExpressionOperation::Range { start, step, .. } = node.operation() {
-            return start
-                .checked_add((ordinal - 1).saturating_mul(step))
+        if let dae::ExpressionOperation::Range(range) = node.operation() {
+            return range
+                .start()
+                .value()
+                .checked_add((ordinal - 1).saturating_mul(range.effective_step()))
                 .map(gast::Expression::Integer)
                 .ok_or_else(|| {
                     unsupported(

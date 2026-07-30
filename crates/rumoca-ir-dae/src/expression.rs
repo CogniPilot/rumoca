@@ -4,7 +4,7 @@ mod type_rules;
 use rumoca_core::Span;
 use serde::{Deserialize, Serialize};
 
-use crate::model::{FunctionReadSet, Storage, invalid_arity};
+use crate::model::{FunctionReadSet, Storage, invalid_arity, unknown};
 use crate::temporal::{DelayEntry, DelayKind};
 use crate::{
     AlgebraicId, DaeConstructionError, DaeProvenance, DelayCoordinate, DelayId, DiscreteRealId,
@@ -386,9 +386,12 @@ pub(crate) enum ExprNode {
         field: u32,
     },
     Range {
-        start: i64,
-        step: i64,
-        stop: i64,
+        #[serde(rename = "start_expression")]
+        start: u32,
+        #[serde(rename = "explicit_step_expression")]
+        explicit_step: Option<u32>,
+        #[serde(rename = "stop_expression")]
+        stop: u32,
     },
     Comprehension {
         domain: u32,
@@ -973,22 +976,35 @@ impl<'dae> ExpressionAt<'_, 'dae> {
 
     pub fn range(
         self,
-        start: i64,
-        step: i64,
-        stop: i64,
+        start: ExprId<'dae>,
+        explicit_step: Option<ExprId<'dae>>,
+        stop: ExprId<'dae>,
     ) -> Result<ExprId<'dae>, DaeConstructionError> {
-        if step == 0 {
-            return Err(DaeConstructionError::ZeroRangeStep {
-                span: self.provenance.span(),
-            });
-        }
-        let extent = range_extent(start, step, stop, self.provenance)?;
+        let start_value = range_bound(self.storage, start, self.provenance)?;
+        let explicit_step_value = explicit_step
+            .map(|step| range_bound(self.storage, step, self.provenance))
+            .transpose()?;
+        let stop_value = range_bound(self.storage, stop, self.provenance)?;
+        let step_value = match explicit_step_value {
+            Some((0, provenance)) => {
+                return Err(DaeConstructionError::ZeroRangeStep {
+                    span: provenance.span(),
+                });
+            }
+            Some((value, _)) => value,
+            None => 1,
+        };
+        let extent = range_extent(start_value.0, step_value, stop_value.0, self.provenance)?;
         let ty = self.storage.intern_type(
             ValueType::array(ScalarType::Integer, [extent]),
             self.provenance,
         )?;
         self.insert(
-            ExprNode::Range { start, step, stop },
+            ExprNode::Range {
+                start: start.index(),
+                explicit_step: explicit_step.map(ExprId::index),
+                stop: stop.index(),
+            },
             ty,
             ExpressionVariability::Constant,
             None,
@@ -1333,6 +1349,22 @@ impl<'dae> ExpressionAt<'_, 'dae> {
                 .expressions
                 .push(id, node, facts, self.provenance),
         )
+    }
+}
+
+fn range_bound<'dae>(
+    storage: &Storage,
+    expression: ExprId<'dae>,
+    owner: DaeProvenance,
+) -> Result<(i64, DaeProvenance), DaeConstructionError> {
+    let provenance = storage.expr_provenance(expression, owner)?;
+    storage.expect_closed_expression(expression, provenance)?;
+    match storage.expressions.nodes.get(expression.index() as usize) {
+        Some(ExprNode::Literal(DaeLiteral::Integer(value))) => Ok((*value, provenance)),
+        Some(_) => Err(DaeConstructionError::InvalidRangeBound {
+            span: provenance.span(),
+        }),
+        None => Err(unknown("expression", expression.index(), owner)),
     }
 }
 

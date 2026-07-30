@@ -34,6 +34,22 @@
 //! # });
 //! ```
 //!
+//! Range construction accepts only branded literal-expression occurrences,
+//! never raw integer values:
+//!
+//! ```compile_fail
+//! # use rumoca_ir_dae::{
+//! #     DaeConstructionError, DaeProvenance, Expressions,
+//! # };
+//! # fn old_range<'dae>(
+//! #     expressions: &mut Expressions<'_, 'dae>,
+//! #     provenance: DaeProvenance,
+//! # ) -> Result<(), DaeConstructionError> {
+//! expressions.at(provenance).range(1, Some(1), 3)?;
+//! # Ok(())
+//! # }
+//! ```
+//!
 //! Delay timing evidence is consumed by the one provenance-selected
 //! coordinate occurrence and cannot be reused:
 //!
@@ -137,10 +153,10 @@ pub use model::{
     FunctionBody, FunctionDefinitionValues, FunctionDefinitionView, FunctionFoldView, FunctionLoop,
     FunctionParameterView, FunctionReservation, FunctionSignature, FunctionStatementView,
     FunctionStatements, FunctionValueRole, FunctionValueView, FunctionView, Functions,
-    InitializationOwnerView, InputVariability, ResidualEquationView, StructuredFamilyView,
-    SubscriptView, SubscriptsView, ValueTypeOperands, ValueTypes, VariableAttributes,
-    VariableCausality, VariableIdentity, VariableOrigin, VariableReservation, VariableRole,
-    VariableView, Variables,
+    InitializationOwnerView, InputVariability, RangeBoundView, RangeView, ResidualEquationView,
+    StructuredFamilyView, SubscriptView, SubscriptsView, ValueTypeOperands, ValueTypes,
+    VariableAttributes, VariableCausality, VariableIdentity, VariableOrigin, VariableReservation,
+    VariableRole, VariableView, Variables,
 };
 pub use provenance::{DaeGeneration, DaeProvenance, DaeProvenanceOrigin};
 pub use temporal::{

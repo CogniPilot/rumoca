@@ -723,10 +723,16 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
         match operation {
             dae::ExpressionOperation::Literal(_)
             | dae::ExpressionOperation::Coordinate(_)
-            | dae::ExpressionOperation::Range { .. }
             | dae::ExpressionOperation::FunctionFoldParameter { .. }
             | dae::ExpressionOperation::FunctionFoldOutput { .. }
             | dae::ExpressionOperation::FunctionValue { .. } => {}
+            dae::ExpressionOperation::Range(range) => {
+                push(range.stop().expression());
+                if let Some(step) = range.explicit_step() {
+                    push(step.expression());
+                }
+                push(range.start().expression());
+            }
             dae::ExpressionOperation::Unary { operand, .. } => push(operand),
             dae::ExpressionOperation::Binary { lhs, rhs, .. } => {
                 push(rhs);

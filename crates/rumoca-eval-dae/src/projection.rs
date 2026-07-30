@@ -70,7 +70,8 @@ where
         let node = self.node(expression);
         self.expect_scalar_index(node, scalar_index)?;
         match node.operation() {
-            dae::ExpressionOperation::Literal(_) | dae::ExpressionOperation::Range { .. } => Ok(()),
+            dae::ExpressionOperation::Literal(_) => Ok(()),
+            dae::ExpressionOperation::Range(range) => self.range_dependencies(range),
             dae::ExpressionOperation::Coordinate(coordinate) => {
                 if let dae::CoordinateView::FunctionParameter(parameter) = coordinate {
                     return self.function_parameter(
@@ -163,6 +164,14 @@ where
                 node.provenance().span(),
             ),
         }
+    }
+
+    fn range_dependencies(&mut self, range: dae::RangeView<'dae>) -> Result<(), ProjectionError> {
+        self.expression(range.start().expression(), 0)?;
+        if let Some(step) = range.explicit_step() {
+            self.expression(step.expression(), 0)?;
+        }
+        self.expression(range.stop().expression(), 0)
     }
 
     fn subscripts(&mut self, subscripts: dae::SubscriptsView<'dae>) -> Result<(), ProjectionError> {
@@ -578,12 +587,16 @@ where
             dae::ExpressionOperation::Literal(
                 dae::DaeLiteral::Integer(value) | dae::DaeLiteral::Enumeration(value),
             ) => Ok(*value),
-            dae::ExpressionOperation::Range { start, step, .. } => {
+            dae::ExpressionOperation::Range(range) => {
                 let offset = i64::try_from(scalar_index)
                     .map_err(|_| ProjectionError::IntegerOverflow { span })?;
-                start
+                range
+                    .start()
+                    .value()
                     .checked_add(
-                        step.checked_mul(offset)
+                        range
+                            .effective_step()
+                            .checked_mul(offset)
                             .ok_or(ProjectionError::IntegerOverflow { span })?,
                     )
                     .ok_or(ProjectionError::IntegerOverflow { span })
@@ -928,6 +941,102 @@ mod tests {
                 .unwrap();
             assert_eq!(selected, [2, 0]);
         });
+    }
+
+    #[test]
+    fn omitted_and_explicit_unit_ranges_project_identically() {
+        let mut sources = SourceMap::new();
+        let source = sources.add("range_projection.mo", "Real x[3]; x[1:3]; x[1:1:3];");
+        let declaration = provenance(source, 0, 10);
+        let omitted_at = provenance(source, 11, 17);
+        let explicit_at = provenance(source, 19, 27);
+        let model = dae::Dae::construct(sources, |model| {
+            let real_array = model.types(|types| {
+                types.intern(
+                    TypeId::new(0),
+                    dae::ValueType::array(dae::ScalarType::Real, [3]),
+                    declaration,
+                )
+            })?;
+            let x = model.variables(|variables| {
+                variables.algebraic(
+                    VarName::new("x"),
+                    real_array,
+                    declaration,
+                    dae::VariableAttributes::default(),
+                )
+            })?;
+            model.expressions(|expressions| {
+                let base = expressions
+                    .at(omitted_at)
+                    .coordinate(dae::CoordinateInput::Algebraic(x))?;
+                let start = expressions
+                    .at(omitted_at)
+                    .literal(dae::DaeLiteral::Integer(1))?;
+                let stop = expressions
+                    .at(omitted_at)
+                    .literal(dae::DaeLiteral::Integer(3))?;
+                let range = expressions.at(omitted_at).range(start, None, stop)?;
+                expressions.at(omitted_at).index(
+                    base,
+                    [dae::Subscript::Slice {
+                        expression: range,
+                        provenance: omitted_at,
+                    }],
+                )?;
+
+                let base = expressions
+                    .at(explicit_at)
+                    .coordinate(dae::CoordinateInput::Algebraic(x))?;
+                let start = expressions
+                    .at(explicit_at)
+                    .literal(dae::DaeLiteral::Integer(1))?;
+                let step = expressions
+                    .at(explicit_at)
+                    .literal(dae::DaeLiteral::Integer(1))?;
+                let stop = expressions
+                    .at(explicit_at)
+                    .literal(dae::DaeLiteral::Integer(3))?;
+                let range = expressions.at(explicit_at).range(start, Some(step), stop)?;
+                expressions.at(explicit_at).index(
+                    base,
+                    [dae::Subscript::Slice {
+                        expression: range,
+                        provenance: explicit_at,
+                    }],
+                )?;
+                Ok(())
+            })
+        })
+        .unwrap();
+
+        model.inspect(|view| {
+            let indices = (0..view.expression_count())
+                .filter_map(|index| view.expression_id(index))
+                .filter(|id| {
+                    view.expression(*id)
+                        .is_some_and(|expression| expression.kind() == dae::ExpressionKind::Index)
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(indices.len(), 2);
+            for expression in indices {
+                assert_eq!(projected_scalars(view, expression), [0, 1, 2]);
+            }
+        });
+    }
+
+    fn projected_scalars<'dae>(
+        view: dae::DaeView<'dae>,
+        expression: dae::ExprId<'dae>,
+    ) -> Vec<usize> {
+        let mut selected = Vec::new();
+        for scalar in 0..3 {
+            for_each_scalar_coordinate(view, expression, scalar, None, |_, selected_scalar| {
+                selected.push(selected_scalar);
+            })
+            .unwrap();
+        }
+        selected
     }
 
     #[test]

@@ -41,6 +41,84 @@ fn dae_render_context_accepts_only_a_finalized_checked_root() {
 }
 
 #[test]
+fn checked_modelica_distinguishes_omitted_and_explicit_unit_range_steps() {
+    let source = "parameter Integer a[3] = 1:3; parameter Integer b[3] = 4:1:6;";
+    let mut source_map = SourceMap::new();
+    let source_id = source_map.add("ranges.mo", source);
+    let at = |snippet: &str, occurrence: usize| {
+        let start = source
+            .match_indices(snippet)
+            .nth(occurrence)
+            .map(|(start, _)| start)
+            .unwrap();
+        dae::DaeProvenance::source(Span::from_offsets(source_id, start, start + snippet.len()))
+            .unwrap()
+    };
+    let dae = dae::Dae::construct(source_map, |model| {
+        let integers = model.types(|types| {
+            types.derived(
+                dae::ValueType::array(dae::ScalarType::Integer, [3]),
+                at("Integer a[3]", 0),
+            )
+        })?;
+        let omitted = model.expressions(|expressions| {
+            let start = expressions
+                .at(at("1", 0))
+                .literal(dae::DaeLiteral::Integer(1))?;
+            let stop = expressions
+                .at(at("3", 1))
+                .literal(dae::DaeLiteral::Integer(3))?;
+            expressions.at(at("1:3", 0)).range(start, None, stop)
+        })?;
+        let explicit = model.expressions(|expressions| {
+            let start = expressions
+                .at(at("4", 0))
+                .literal(dae::DaeLiteral::Integer(4))?;
+            let step = expressions
+                .at(at("1", 1))
+                .literal(dae::DaeLiteral::Integer(1))?;
+            let stop = expressions
+                .at(at("6", 0))
+                .literal(dae::DaeLiteral::Integer(6))?;
+            expressions
+                .at(at("4:1:6", 0))
+                .range(start, Some(step), stop)
+        })?;
+        model.variables(|variables| {
+            variables.parameter(
+                VarName::new("a"),
+                integers,
+                at("parameter Integer a[3]", 0),
+                dae::VariableAttributes {
+                    binding: Some(omitted),
+                    ..dae::VariableAttributes::default()
+                },
+            )?;
+            variables.parameter(
+                VarName::new("b"),
+                integers,
+                at("parameter Integer b[3]", 0),
+                dae::VariableAttributes {
+                    binding: Some(explicit),
+                    ..dae::VariableAttributes::default()
+                },
+            )?;
+            Ok(())
+        })
+    })
+    .unwrap();
+
+    let projected = dae.inspect(checked_modelica::project).unwrap();
+    assert_eq!(
+        projected["declarations"],
+        serde_json::json!([
+            "parameter Integer[3] a = 1:3;",
+            "parameter Integer[3] b = 4:1:6;",
+        ])
+    );
+}
+
+#[test]
 fn dae_modelica_target_walks_the_checked_expression_arena() {
     let source = "model M parameter Real p = 2; Real x; equation der(x) = p; end M;";
     let mut source_map = SourceMap::new();
