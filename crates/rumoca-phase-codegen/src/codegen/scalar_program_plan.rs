@@ -6,8 +6,8 @@
 
 use std::sync::Arc;
 
-use minijinja::value::{Enumerator, Object, ObjectRepr};
 use minijinja::Value;
+use minijinja::value::{Enumerator, Object, ObjectRepr};
 use rumoca_ir_solve as solve;
 
 use crate::errors::CodegenError;
@@ -257,7 +257,7 @@ fn take_output_target(
     output_count: &mut usize,
 ) -> Result<Option<usize>, CodegenError> {
     if !matches!(op, solve::LinearOp::StoreOutput { .. }) {
-        return Ok(None);
+        return no_output_target();
     }
     let target = output_indices
         .get(*output_ordinal)
@@ -275,6 +275,10 @@ fn take_output_target(
         .checked_add(1)
         .ok_or_else(|| CodegenError::template("scalar program output count exceeds host range"))?;
     Ok(Some(target))
+}
+
+fn no_output_target() -> Result<Option<usize>, CodegenError> {
+    Ok(Option::None)
 }
 
 fn validate_output_count(store_count: usize, mapping_count: usize) -> Result<(), CodegenError> {
