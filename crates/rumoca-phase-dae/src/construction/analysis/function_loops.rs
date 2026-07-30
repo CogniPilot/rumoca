@@ -174,7 +174,24 @@ fn validate_function_loop_body(
         roles: &validated.roles,
         ..context
     };
-    let statements = validate_function_statements(equations, body_context)?;
+    let statements = plan_function_statements(equations, body_context)?;
+    // A compact loop transition owns one assignment per carried value. A nested
+    // loop or conditional inside the body would need its own owner, which the
+    // fold has no place for, so reject it here instead of at lowering.
+    for (statement, plan) in equations.iter().zip(&statements) {
+        if matches!(plan, FunctionStatementPlan::Assignment(_)) {
+            continue;
+        }
+        let statement_span = required_statement_span(statement, "function loop body statement")?;
+        return Err(ToDaeError::unsupported_flat(
+            "function loop transition",
+            format!(
+                "`{}` requires direct value assignments in a loop body",
+                context.function.name
+            ),
+            statement_span,
+        ));
+    }
     let targets = function_loop_targets(&statements);
     if targets.is_empty() {
         return Err(ToDaeError::unsupported_flat(

@@ -36,11 +36,15 @@ pub(super) fn validate_guarded_function_return(
             return unsupported_return_shape(function, first);
         };
         require_span(*span, "function return statement")?;
-        let plans = validate_function_statements(statements, context)?;
+        // A returning branch runs from the entry state, so it proves its own
+        // definedness certificate independently of the non-returning path.
+        let mut branch_definitions = FunctionDefinitions::new(function);
+        let plans = validate_function_statements(statements, context, &mut branch_definitions)?;
         validate_return_definitions(function, statements, &plans, &targets, *span)?;
         branches.push(plans);
     }
-    let tail = validate_function_statements(tail, context)?;
+    let mut definitions = FunctionDefinitions::new(function);
+    let tail = validate_function_statements(tail, context, &mut definitions)?;
     if targets
         .iter()
         .any(|target| !sequence_defines_target(&tail, target))

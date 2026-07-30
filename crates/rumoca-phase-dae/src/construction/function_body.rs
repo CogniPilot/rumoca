@@ -306,6 +306,13 @@ pub(super) struct FunctionConditional<'scope, 'statement, 'dae> {
     pub(super) span: Span,
 }
 
+/// Lower one MLS §11.5 function conditional into its checked value owners.
+///
+/// A branch is an ordinary algorithm section: its assignments run in order, a
+/// later assignment reads what an earlier one wrote, and the last write to a
+/// value is the one the branch defines. Each branch therefore builds its own
+/// value environment first, and the join then owns one conditional expression
+/// per value the conditional defines on all of its paths.
 pub(super) fn lower_function_conditional<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     body: &mut dae::FunctionBody<'dae>,
@@ -325,38 +332,53 @@ pub(super) fn lower_function_conditional<'dae>(
             )
         })
         .collect::<Result<Vec<_>, _>>()?;
+    let mut branch_values = Vec::with_capacity(input.blocks.len());
+    for (block, plans) in input.blocks.iter().zip(input.branch_plans) {
+        branch_values.push(lower_conditional_branch(
+            construction,
+            body,
+            ConditionalBranch {
+                symbols: input.symbols,
+                statements: &block.stmts,
+                plans,
+                joined: input.targets,
+            },
+        )?);
+    }
+    let fallback_values = match (input.fallback, input.fallback_plans) {
+        (Some(statements), Some(plans)) => Some(lower_conditional_branch(
+            construction,
+            body,
+            ConditionalBranch {
+                symbols: input.symbols,
+                statements,
+                plans,
+                joined: input.targets,
+            },
+        )?),
+        (None, None) => None,
+        _ => unreachable!("function conditional fallback plan matches source shape"),
+    };
     let provenance =
         dae::DaeProvenance::generated(dae::DaeGeneration::FunctionConditionLowering, input.span)?;
     for target in input.targets {
-        let values = input
-            .blocks
-            .iter()
-            .zip(input.branch_plans)
-            .map(|(block, plans)| {
-                lower_conditional_branch_value(
-                    construction,
-                    body,
-                    input.symbols,
-                    &block.stmts,
-                    plans,
-                    target,
-                )
-            })
-            .collect::<Result<Vec<_>, _>>()?;
         let target_id = function_value_coordinate(input.symbols.coordinates, target);
-        let fallback = match (input.fallback, input.fallback_plans) {
-            (Some(statements), Some(plans)) => lower_conditional_branch_value(
-                construction,
-                body,
-                input.symbols,
-                statements,
-                plans,
-                target,
-            )?,
-            (None, None) => {
+        let mut values = Vec::with_capacity(branch_values.len());
+        for branch in &branch_values {
+            values.push(match branch.get(target) {
+                Some(value) => *value,
+                None => construction
+                    .functions(|functions| functions.read(body, target_id, provenance))?,
+            });
+        }
+        let fallback = match fallback_values
+            .as_ref()
+            .and_then(|values| values.get(target))
+        {
+            Some(value) => *value,
+            None => {
                 construction.functions(|functions| functions.read(body, target_id, provenance))?
             }
-            _ => unreachable!("function conditional fallback plan matches source shape"),
         };
         let branches = conditions.iter().copied().zip(values);
         let value = construction.expressions(|expressions| {
@@ -367,76 +389,142 @@ pub(super) fn lower_function_conditional<'dae>(
     Ok(())
 }
 
-fn lower_conditional_branch_value<'dae>(
-    construction: &mut dae::DaeConstruction<'dae>,
-    body: &mut dae::FunctionBody<'dae>,
-    symbols: FunctionSymbols<'_, 'dae>,
-    statements: &[rumoca_core::Statement],
-    plans: &[FunctionStatementPlan],
-    selected: &VarName,
-) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
-    let assignment = conditional_branch_assignment(statements, plans, selected);
-    let target = function_value_coordinate(symbols.coordinates, selected);
-    let mut value = lower_function_expression(
-        construction,
-        symbols.coordinates,
-        symbols.functions,
-        symbols.shapes,
-        body,
-        assignment.value,
-    )?;
-    let provenance = dae::DaeProvenance::source(assignment.span)?;
-    let subscripts = assignment.plan.subscripts();
-    if !subscripts.is_empty() {
-        let binders = HashMap::new();
-        value = lower_function_array_update(
-            construction,
-            FunctionArrayUpdate {
-                symbols: LoweringSymbols {
-                    coordinates: symbols.coordinates,
-                    functions: symbols.functions,
-                    shapes: symbols.shapes,
-                    function_body: Some(body),
-                    values: None,
-                    owner_clock: None,
-                },
-                binders: &binders,
-                target,
-                subscripts,
-                value,
-                provenance,
-            },
-        )?;
-    }
-    Ok(value)
-}
-
-struct ConditionalBranchAssignment<'statement> {
-    value: &'statement Expression,
-    span: Span,
-    plan: &'statement FunctionAssignmentPlan,
-}
-
-fn conditional_branch_assignment<'statement>(
+struct ConditionalBranch<'scope, 'statement, 'dae> {
+    symbols: FunctionSymbols<'scope, 'dae>,
     statements: &'statement [rumoca_core::Statement],
     plans: &'statement [FunctionStatementPlan],
-    selected: &VarName,
-) -> ConditionalBranchAssignment<'statement> {
-    statements
+    /// Values the conditional defines on all of its paths. Everything else a
+    /// branch writes is proven unread past the conditional.
+    joined: &'statement [VarName],
+}
+
+/// Build the value every assignment of one branch leaves behind.
+///
+/// The environment shadows the enclosing body for exactly the values the branch
+/// has already written, which is what keeps the source assignment order. A value
+/// the join does not own keeps a body definition instead of an inline
+/// expression: analysis proved nothing reads it past the conditional, and a
+/// named definition is what lets every consumer compute it once instead of once
+/// per reference.
+fn lower_conditional_branch<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    body: &mut dae::FunctionBody<'dae>,
+    input: ConditionalBranch<'_, '_, 'dae>,
+) -> Result<HashMap<VarName, dae::ExprId<'dae>>, dae::DaeConstructionError> {
+    let ConditionalBranch {
+        symbols,
+        statements,
+        plans,
+        joined,
+    } = input;
+    debug_assert_eq!(statements.len(), plans.len());
+    let mut values = HashMap::new();
+    let binders = HashMap::new();
+    for (statement, plan) in statements.iter().zip(plans) {
+        let (
+            rumoca_core::Statement::Assignment { value, span, .. },
+            FunctionStatementPlan::Assignment(assignment),
+        ) = (statement, plan)
+        else {
+            unreachable!("analysis accepts only direct assignments in a function branch")
+        };
+        let target = function_value_coordinate(symbols.coordinates, assignment.target());
+        let mut lowered = lower_expression_scoped(
+            construction,
+            LoweringSymbols {
+                coordinates: symbols.coordinates,
+                functions: symbols.functions,
+                shapes: symbols.shapes,
+                function_body: Some(body),
+                values: Some(&values),
+                owner_clock: None,
+            },
+            &binders,
+            value,
+            None,
+        )?;
+        let provenance = dae::DaeProvenance::source(*span)?;
+        let subscripts = assignment.subscripts();
+        if !subscripts.is_empty() {
+            if let Some(seed) = assignment.seed() {
+                let seeded = lower_function_value_seed(construction, seed, *span)?;
+                values.insert(assignment.target().clone(), seeded);
+            }
+            let base = values.get(assignment.target()).copied();
+            lowered = lower_function_array_update(
+                construction,
+                FunctionArrayUpdate {
+                    symbols: LoweringSymbols {
+                        coordinates: symbols.coordinates,
+                        functions: symbols.functions,
+                        shapes: symbols.shapes,
+                        function_body: Some(body),
+                        values: Some(&values),
+                        owner_clock: None,
+                    },
+                    binders: &binders,
+                    base,
+                    target,
+                    subscripts,
+                    value: lowered,
+                    provenance,
+                },
+            )?;
+        }
+        if joined.contains(assignment.target()) {
+            values.insert(assignment.target().clone(), lowered);
+        } else {
+            construction
+                .functions(|functions| functions.assign(body, target, lowered, provenance))?;
+            let definition =
+                construction.functions(|functions| functions.read(body, target, provenance))?;
+            values.insert(assignment.target().clone(), definition);
+        }
+    }
+    Ok(values)
+}
+
+/// Build the aggregate one element-wise function definition starts from.
+///
+/// MLS §12.4.4 gives an unwritten function value no initial value, so an
+/// element write needs an aggregate of the declared shape to update. Analysis
+/// only plans a seed once it has proven the algorithm writes every declared
+/// element before anything reads the value, which makes the seed a dead value
+/// rather than a default: the certificate, not the constant, carries the
+/// meaning.
+pub(super) fn lower_function_value_seed<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    seed: &FunctionValueSeed,
+    span: Span,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    let provenance =
+        dae::DaeProvenance::generated(dae::DaeGeneration::FunctionAggregateLowering, span)?;
+    let binders = seed
+        .dimensions
         .iter()
-        .zip(plans)
-        .find_map(|(statement, plan)| match (statement, plan) {
-            (
-                rumoca_core::Statement::Assignment { value, span, .. },
-                FunctionStatementPlan::Assignment(assignment),
-            ) if assignment.target() == selected => Some(ConditionalBranchAssignment {
-                value,
-                span: *span,
-                plan: assignment,
-            }),
-            _ => None,
+        .enumerate()
+        .map(|(ordinal, extent)| StructuredIndexBinder {
+            id: ordinal,
+            display_name: format!("seed{ordinal}"),
+            lower: 1,
+            upper: i64::from(*extent),
+            step: 1,
         })
-        .expect("analysis proves every function branch defines each selected value")
+        .collect::<Vec<_>>();
+    let domain = construction
+        .domains(|domains| domains.structured(StructuredIndexDomain { binders }, provenance))?;
+    let literal = match seed.scalar {
+        dae::ScalarType::Real => dae::DaeLiteral::Real(0.0),
+        dae::ScalarType::Integer => dae::DaeLiteral::Integer(0),
+        dae::ScalarType::Boolean => dae::DaeLiteral::Boolean(false),
+        dae::ScalarType::String | dae::ScalarType::Enumeration | dae::ScalarType::Record => {
+            unreachable!("analysis seeds only numeric and Boolean aggregates")
+        }
+    };
+    let element =
+        construction.expressions(|expressions| expressions.at(provenance).literal(literal))?;
+    construction
+        .expressions(|expressions| expressions.at(provenance).comprehension(domain, element))
 }
 
 pub(super) struct TotalArrayDefinition<'scope, 'statement, 'dae> {
@@ -558,6 +646,9 @@ fn lower_function_loop_statements<'dae>(
                         owner_clock: None,
                     },
                     binders,
+                    // Analysis proves a loop-carried value already owns every
+                    // element, so the transition updates its current value.
+                    base: None,
                     target,
                     subscripts,
                     value,

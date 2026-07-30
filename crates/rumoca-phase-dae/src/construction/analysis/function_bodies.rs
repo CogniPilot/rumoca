@@ -66,9 +66,11 @@ pub(super) fn validate_functions(
         } else if let Some(plan) = validate_integer_reduction(function, context)? {
             plan
         } else {
-            FunctionPlan::Statements {
-                statements: validate_function_statements(&function.body, context)?,
-            }
+            let mut definitions = FunctionDefinitions::new(function);
+            let statements =
+                validate_function_statements(&function.body, context, &mut definitions)?;
+            require_total_outputs(function, &definitions)?;
+            FunctionPlan::Statements { statements }
         };
         plans.insert(certificate.key.clone(), plan);
     }
@@ -129,7 +131,48 @@ pub(super) fn validate_function_expression_with_roles(
     validate_known_function_calls(expression, flat)
 }
 
+/// Prove every function output owns a definition of every declared element.
+///
+/// MLS §12.4.4 leaves an unwritten function value undefined, so a body that
+/// returns one has no checked DAE denotation. The definedness certificate also
+/// carries the totality proof that keeps a generated aggregate seed dead.
+fn require_total_outputs(
+    function: &rumoca_core::Function,
+    definitions: &FunctionDefinitions,
+) -> Result<(), ToDaeError> {
+    for output in &function.outputs {
+        let name = VarName::new(&output.name);
+        if !definitions.is_total(&name) {
+            return Err(ToDaeError::unsupported_flat(
+                "function output definition",
+                format!(
+                    "`{}` returns `{name}` without defining every declared element",
+                    function.name
+                ),
+                output.span,
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Plan one statement sequence and prove its definedness certificate.
 pub(super) fn validate_function_statements(
+    statements: &[rumoca_core::Statement],
+    context: FunctionValidationContext<'_>,
+    definitions: &mut FunctionDefinitions,
+) -> Result<Vec<FunctionStatementPlan>, ToDaeError> {
+    let mut plans = plan_function_statements(statements, context)?;
+    resolve_function_definitions(statements, &mut plans, context, definitions)?;
+    Ok(plans)
+}
+
+/// Prove the checked owner shape of one statement sequence.
+///
+/// Definedness is a separate pass because the array-assembly coalescing below
+/// rewrites whole runs of element writes into one aggregate owner, and only the
+/// coalesced plan says which value each statement actually defines.
+pub(super) fn plan_function_statements(
     statements: &[rumoca_core::Statement],
     context: FunctionValidationContext<'_>,
 ) -> Result<Vec<FunctionStatementPlan>, ToDaeError> {
@@ -162,7 +205,7 @@ pub(super) fn validate_function_statements(
                 cond_blocks,
                 else_block,
                 span,
-            } => plans.push(validate_function_conditional(
+            } => plans.push(plan_function_conditional(
                 cond_blocks,
                 else_block.as_deref(),
                 *span,
@@ -219,7 +262,142 @@ fn validate_function_assignment_target(
     Ok(FunctionAssignmentPlan {
         target: VarName::new(&target.ident),
         subscripts: target.subs.clone().into_boxed_slice(),
+        seed: None,
     })
+}
+
+/// Prove the MLS §12.4.4 definedness certificate of one planned sequence.
+///
+/// Every statement reads only values whose elements already have a definition,
+/// every element write names the aggregate seed it starts from, and every
+/// conditional joins exactly the values it can define on all of its paths.
+pub(super) fn resolve_function_definitions(
+    statements: &[rumoca_core::Statement],
+    plans: &mut [FunctionStatementPlan],
+    context: FunctionValidationContext<'_>,
+    definitions: &mut FunctionDefinitions,
+) -> Result<(), ToDaeError> {
+    debug_assert_eq!(statements.len(), plans.len());
+    for (statement, plan) in statements.iter().zip(plans.iter_mut()) {
+        match (statement, plan) {
+            (
+                rumoca_core::Statement::Assignment { value, span, .. },
+                FunctionStatementPlan::Assignment(assignment),
+            ) => resolve_function_assignment_definition(
+                value,
+                *span,
+                assignment,
+                context,
+                definitions,
+            )?,
+            (
+                rumoca_core::Statement::If {
+                    cond_blocks,
+                    else_block,
+                    span,
+                },
+                FunctionStatementPlan::If {
+                    branches,
+                    fallback,
+                    targets,
+                },
+            ) => {
+                *targets = resolve_function_conditional(
+                    cond_blocks,
+                    else_block.as_deref(),
+                    branches,
+                    fallback.as_mut(),
+                    *span,
+                    context,
+                    definitions,
+                )?;
+            }
+            (
+                rumoca_core::Statement::For { span, .. },
+                FunctionStatementPlan::For {
+                    lowering,
+                    statements: body,
+                    ..
+                },
+            ) => resolve_function_loop_definitions(lowering, body, context, definitions, *span)?,
+            (_, FunctionStatementPlan::ArrayAssembly(assembly)) => {
+                definitions.define_whole(&assembly.target);
+            }
+            (_, FunctionStatementPlan::RecordAssembly(assembly)) => {
+                definitions.define_whole(&assembly.target);
+            }
+            (_, FunctionStatementPlan::ArrayAssemblyMember)
+            | (_, FunctionStatementPlan::RecordAssemblyMember) => {}
+            _ => unreachable!("function planning aligns statement and plan shapes"),
+        }
+    }
+    Ok(())
+}
+
+/// Prove what one assignment reads and record what it defines.
+fn resolve_function_assignment_definition(
+    value: &Expression,
+    span: Span,
+    assignment: &mut FunctionAssignmentPlan,
+    context: FunctionValidationContext<'_>,
+    definitions: &mut FunctionDefinitions,
+) -> Result<(), ToDaeError> {
+    definitions.require_readable(value, context, span)?;
+    for expression in assignment
+        .subscripts
+        .iter()
+        .filter_map(subscript_expression)
+    {
+        definitions.require_readable(expression, context, span)?;
+    }
+    if assignment.is_whole() {
+        definitions.define_whole(&assignment.target);
+        return Ok(());
+    }
+    assignment.seed =
+        definitions.write_elements(&assignment.target, &assignment.subscripts, context, span)?;
+    Ok(())
+}
+
+fn subscript_expression(subscript: &Subscript) -> Option<&Expression> {
+    match subscript {
+        rumoca_core::Subscript::Expr { expr, .. } => Some(expr),
+        rumoca_core::Subscript::Index { .. } | rumoca_core::Subscript::Colon { .. } => None,
+    }
+}
+
+/// A loop transition may only carry values whose elements already have a
+/// definition, because MLS §12.4.4 gives the carried value no other owner.
+fn resolve_function_loop_definitions(
+    lowering: &FunctionLoopLowering,
+    body: &[FunctionStatementPlan],
+    context: FunctionValidationContext<'_>,
+    definitions: &mut FunctionDefinitions,
+    span: Span,
+) -> Result<(), ToDaeError> {
+    match lowering {
+        FunctionLoopLowering::TotalArrayDefinition => {
+            let [FunctionStatementPlan::Assignment(assignment)] = body else {
+                unreachable!("a total array definition owns one element assignment")
+            };
+            definitions.define_whole(&assignment.target);
+        }
+        FunctionLoopLowering::Fold { targets } => {
+            for target in targets {
+                if !definitions.is_total(target) {
+                    return Err(ToDaeError::unsupported_flat(
+                        "function loop transition",
+                        format!(
+                            "`{}` carries `{target}` through a loop before every element of `{target}` has a definition",
+                            context.function.name
+                        ),
+                        span,
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn validate_function_subscripts(

@@ -39,11 +39,12 @@ use analysis::{
     DiscreteValueTopologyPlan, EquationPartition, ExpressionEventPlan, ExpressionEventPlans,
     ExternalArgumentPlan, ExternalFunctionPlan, FunctionArrayAssemblyPlan, FunctionAssignmentPlan,
     FunctionIntegerReduction, FunctionLoopLowering, FunctionPlan, FunctionRecordAssemblyPlan,
-    FunctionStatementPlan, ModelAlgorithmPlan, PlannedRole, RecordArrayFieldPlan,
-    RecordArrayFieldPlans, RecordEquationPlan, analyze, effective_function_scalar_type,
-    effective_variable_scalar_type, empty_array_bound_to_declaration, equation_partition,
-    is_inferred_clock_condition, is_whole_clock_coordinate, model_algorithm_targets,
-    record_field_projections, structured_assignment_names,
+    FunctionStatementPlan, FunctionValueSeed, ModelAlgorithmPlan, PlannedRole,
+    RecordArrayFieldPlan, RecordArrayFieldPlans, RecordEquationPlan, analyze,
+    effective_function_scalar_type, effective_variable_scalar_type,
+    empty_array_bound_to_declaration, equation_partition, is_inferred_clock_condition,
+    is_whole_clock_coordinate, model_algorithm_targets, record_field_projections,
+    structured_assignment_names,
 };
 use clocks::{LoweredClocks, lower_clocked_value_owners, lower_clocks};
 use discrete_values::{DiscreteValueOwnerHandle, DiscreteValueStaging};
@@ -64,7 +65,8 @@ use function_array_assembly::lower_function_array_assembly;
 use function_body::{
     FunctionConditional, FunctionFold, TotalArrayDefinition, flattened_function_loop,
     function_value_coordinate, lower_function_conditional, lower_function_fold,
-    lower_guarded_function_return, lower_integer_reduction, lower_total_function_array_definition,
+    lower_function_value_seed, lower_guarded_function_return, lower_integer_reduction,
+    lower_total_function_array_definition,
 };
 use function_construction::{
     FunctionRegistry, FunctionRegistryInput, construct_functions, function_value_type,
@@ -589,6 +591,11 @@ fn lower_function_assignment<'dae>(
     let subscripts = assignment.plan.subscripts();
     if !subscripts.is_empty() {
         let binders = HashMap::new();
+        let mut base = None;
+        if let Some(seed) = assignment.plan.seed() {
+            let seeded = lower_function_value_seed(construction, seed, assignment.span)?;
+            base = Some(seeded);
+        }
         value = lower_function_array_update(
             construction,
             FunctionArrayUpdate {
@@ -601,6 +608,7 @@ fn lower_function_assignment<'dae>(
                     owner_clock: None,
                 },
                 binders: &binders,
+                base,
                 target,
                 subscripts,
                 value,

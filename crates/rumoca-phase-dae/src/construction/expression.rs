@@ -128,6 +128,9 @@ pub(super) fn lower_function_expression_scoped<'dae>(
 pub(super) struct FunctionArrayUpdate<'symbols, 'dae> {
     pub(super) symbols: LoweringSymbols<'symbols, 'dae>,
     pub(super) binders: &'symbols HashMap<VarName, dae::DomainBinderId<'dae>>,
+    /// Aggregate the update starts from. `None` reads the target's current
+    /// definition; a branch-local or freshly seeded aggregate names its own.
+    pub(super) base: Option<dae::ExprId<'dae>>,
     pub(super) target: dae::FunctionValueId<'dae>,
     pub(super) subscripts: &'symbols [Subscript],
     pub(super) value: dae::ExprId<'dae>,
@@ -141,6 +144,7 @@ pub(super) fn lower_function_array_update<'dae>(
     let FunctionArrayUpdate {
         symbols,
         binders,
+        base,
         target,
         subscripts,
         value,
@@ -149,7 +153,10 @@ pub(super) fn lower_function_array_update<'dae>(
     let body = symbols
         .function_body
         .expect("function array update has a semantic function owner");
-    let base = construction.functions(|functions| functions.read(body, target, provenance))?;
+    let base = match base {
+        Some(base) => base,
+        None => construction.functions(|functions| functions.read(body, target, provenance))?,
+    };
     let subscripts = subscripts
         .iter()
         .map(|subscript| lower_subscript(construction, symbols, binders, subscript))
@@ -949,10 +956,20 @@ fn lower_function_record_projection<'dae>(
     if fields.is_empty() || parts.iter().any(|part| !part.subs.is_empty()) {
         return Ok(None);
     }
-    let Some(coordinate) = symbols.coordinates.get(&VarName::new(&root.ident)).copied() else {
+    let root_name = VarName::new(&root.ident);
+    // A scoped value environment shadows the enclosing owner for exactly the
+    // values it has already defined, so the projection must root in it first.
+    if let Some(value) = symbols
+        .values
+        .and_then(|values| values.get(&root_name))
+        .copied()
+    {
+        return project_record_fields(construction, value, name, fields, provenance).map(Some);
+    }
+    let Some(coordinate) = symbols.coordinates.get(&root_name).copied() else {
         return Ok(None);
     };
-    let mut base = match coordinate {
+    let base = match coordinate {
         Coordinate::FunctionValue(value) => {
             let body = symbols
                 .function_body
@@ -966,6 +983,16 @@ fn lower_function_record_projection<'dae>(
         // into its field variables, so no model reference roots a projection.
         _ => return Ok(None),
     };
+    project_record_fields(construction, base, name, fields, provenance).map(Some)
+}
+
+fn project_record_fields<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    mut base: dae::ExprId<'dae>,
+    name: &rumoca_core::Reference,
+    fields: &[rumoca_core::ComponentRefPart],
+    provenance: dae::DaeProvenance,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
     for field in fields {
         let ordinal = construction.expressions(|expressions| {
             expressions.record_field_ordinal(base, &VarName::new(&field.ident), provenance)
@@ -979,7 +1006,7 @@ fn lower_function_record_projection<'dae>(
         base = construction
             .expressions(|expressions| expressions.at(provenance).field(base, ordinal))?;
     }
-    Ok(Some(base))
+    Ok(base)
 }
 
 fn expression_provenance(

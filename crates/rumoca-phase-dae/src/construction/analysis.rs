@@ -12,6 +12,7 @@ mod expression_validation;
 mod function_array_assemblies;
 mod function_bodies;
 mod function_conditionals;
+mod function_definitions;
 mod function_externals;
 mod function_impurity;
 mod function_loops;
@@ -55,10 +56,13 @@ use expression_validation::{
 };
 use function_array_assemblies::coalesce_function_array_assemblies;
 use function_bodies::{
+    plan_function_statements, resolve_function_definitions,
     validate_function_expression_with_roles, validate_function_statements,
     validate_function_subscripts, validate_functions,
 };
-use function_conditionals::validate_function_conditional;
+use function_conditionals::{plan_function_conditional, resolve_function_conditional};
+use function_definitions::FunctionDefinitions;
+pub(super) use function_definitions::FunctionValueSeed;
 use function_externals::validate_external_function;
 pub(super) use function_externals::{ExternalArgumentPlan, ExternalFunctionPlan};
 use function_impurity::validate_impure_call_contexts;
@@ -168,6 +172,9 @@ pub(super) enum FunctionStatementPlan {
 pub(super) struct FunctionAssignmentPlan {
     target: VarName,
     subscripts: Box<[Subscript]>,
+    /// Aggregate seed this element write starts from, proven dead by the
+    /// definedness certificate that every declared element is written.
+    seed: Option<FunctionValueSeed>,
 }
 
 impl FunctionAssignmentPlan {
@@ -181,6 +188,10 @@ impl FunctionAssignmentPlan {
 
     pub(super) fn is_whole(&self) -> bool {
         self.subscripts.is_empty()
+    }
+
+    pub(super) fn seed(&self) -> Option<&FunctionValueSeed> {
+        self.seed.as_ref()
     }
 }
 
