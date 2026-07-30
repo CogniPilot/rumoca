@@ -1136,9 +1136,11 @@ mod tests {
         );
         assert!(
             storage
-                .get("continuous_equation_owners")
+                .get("continuous_equation_operations")
                 .and_then(serde_json::Value::as_array)
-                .is_some_and(|owners| owners.len() == 1),
+                .is_some_and(|operations| {
+                    operations.len() == 1 && operations[0].get("residual").is_some()
+                }),
             "checked continuous ownership must survive the wire projection"
         );
         assert!(
@@ -1197,15 +1199,30 @@ mod tests {
         );
         assert!(
             storage
-                .get("event_actions")
+                .get("discrete_real_equations")
                 .and_then(serde_json::Value::as_array)
-                .is_some_and(|actions| actions.len() == 2)
+                .is_some_and(|equations| equations.len() == 1),
+            "the discrete Real when-assignment must remain in B.1b"
         );
         assert!(
             storage
-                .get("initialization_equation_owners")
+                .get("discrete_value_owners")
                 .and_then(serde_json::Value::as_array)
-                .is_some_and(|owners| !owners.is_empty())
+                .is_some_and(|owners| owners.len() == 1),
+            "the Integer when-assignment must remain in B.1c"
+        );
+        assert!(
+            storage
+                .get("event_actions")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(Vec::is_empty),
+            "ordinary when-assignments must not become flow event actions"
+        );
+        assert!(
+            storage
+                .get("initialization_equation_operations")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|operations| !operations.is_empty())
         );
     }
 

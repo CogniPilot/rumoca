@@ -345,6 +345,70 @@ fn when_chain_lowers_source_priority_with_exact_branch_provenance() {
 }
 
 #[test]
+fn when_discrete_real_lowers_to_condition_owned_b1b_residual() {
+    let source = TestSource::new(
+        "model M discrete Real z; equation \
+         when true then z = 1.0; end when; end M;",
+    );
+    let assignment_span = source.span("z = 1.0", 0);
+    let condition_span = source.span("true", 0);
+    let mut model = flat::Model::new();
+    add_primitive_variable(
+        &mut model,
+        &source,
+        "z",
+        "discrete Real z",
+        8,
+        Vec::new(),
+        false,
+    );
+    model
+        .variables
+        .get_mut(&VarName::new("z"))
+        .unwrap()
+        .variability = Variability::Discrete(Default::default());
+    let mut branch = flat::WhenBranch::new(
+        Expression::Literal {
+            value: Literal::Boolean(true),
+            span: condition_span,
+        },
+        condition_span,
+    );
+    branch.add_equation(flat::WhenEquation::assign(
+        VarName::new("z"),
+        Expression::Literal {
+            value: Literal::Real(1.0),
+            span: source.span("1.0", 0),
+        },
+        assignment_span,
+        "discrete Real assignment",
+    ));
+    model.when_chains.push(flat::WhenChain::new(
+        branch,
+        source.span("when true then z = 1.0; end when", 0),
+    ));
+
+    let dae = construct(&model, source.map).unwrap();
+    dae.inspect(|view| {
+        assert_eq!(view.event_action_count(), 0);
+        assert_eq!(view.discrete_real_equation_count(), 1);
+        let equation = view.discrete_real_equation(0).unwrap();
+        assert_eq!(equation.provenance().span(), assignment_span);
+        assert!(matches!(
+            equation.activation(),
+            dae::DiscreteRealActivation::When { .. }
+        ));
+        assert_eq!(
+            view.expression(equation.residual())
+                .unwrap()
+                .provenance()
+                .origin(),
+            dae::DaeProvenanceOrigin::Generated(dae::DaeGeneration::SyntheticResidual)
+        );
+    });
+}
+
+#[test]
 fn b1c_topology_orders_producers_before_declaration_order_consumers() {
     let source =
         TestSource::new("model M discrete Boolean a = z; discrete Boolean z = true; end M;");
