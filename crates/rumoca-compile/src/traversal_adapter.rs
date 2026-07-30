@@ -261,8 +261,16 @@ impl Visitor for ClassDependencyCollector<'_, '_, '_> {
     }
 
     fn visit_component_reference(&mut self, cr: &ast::ComponentReference) -> ControlFlow<()> {
-        if let Some(def_id) = cr.def_id {
-            self.add_class_dep_by_def_id(def_id);
+        // A resolved component reference carries two complementary semantic
+        // identities. The root declaration anchors the written lookup path,
+        // while the target declaration identifies the exact final member.
+        // Strict pruning must preserve both owners: inherited members can have
+        // a target owner outside the root's lexical subtree.
+        if let Some(root_def_id) = cr.def_id {
+            self.add_class_dep_by_def_id(root_def_id);
+        }
+        if let Some(target_def_id) = cr.target_def_id {
+            self.add_class_dep_by_def_id(target_def_id);
         }
         for part in &cr.parts {
             let Some(subscripts) = &part.subs else {

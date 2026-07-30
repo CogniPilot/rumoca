@@ -472,6 +472,114 @@ mod tests {
     }
 
     #[test]
+    fn strict_closure_keeps_distinct_same_leaf_package_targets() {
+        let source = r#"
+            package A
+              package Constants
+                constant Real eps = 0.125;
+              end Constants;
+            end A;
+
+            package B
+              package Constants
+                constant Real eps = 0.5;
+              end Constants;
+            end B;
+
+            model Root
+              Real x = A.Constants.eps;
+              Real y = B.Constants.eps;
+            end Root;
+        "#;
+
+        let mut session = Session::default();
+        session
+            .add_document("same_leaf_packages.mo", source)
+            .expect("document should parse");
+        session
+            .build_resolved()
+            .expect("resolved tree should be available");
+        let dependencies = {
+            let tree = session
+                .ensure_resolved()
+                .expect("resolved tree should be cached")
+                .inner();
+            DependencyFingerprintCache::from_tree(tree)
+                .class_dependencies()
+                .get("Root")
+                .cloned()
+                .unwrap_or_default()
+        };
+
+        assert!(
+            dependencies.contains("A.Constants"),
+            "the exact A.Constants owner must survive strict pruning"
+        );
+        assert!(
+            dependencies.contains("B.Constants"),
+            "the exact B.Constants owner must survive strict pruning"
+        );
+        assert!(
+            session.resolve_strict_target("Root").is_ok(),
+            "strict Resolve should retain both same-leaf package targets"
+        );
+    }
+
+    #[test]
+    fn strict_closure_keeps_root_anchor_and_inherited_function_target() {
+        let source = r#"
+            package BaseOperations
+              function evaluate
+                input Real u;
+                output Real y;
+              algorithm
+                y := u;
+              end evaluate;
+            end BaseOperations;
+
+            package DerivedOperations
+              extends BaseOperations;
+            end DerivedOperations;
+
+            model Root
+              Real y = DerivedOperations.evaluate(1.0);
+            end Root;
+        "#;
+
+        let mut session = Session::default();
+        session
+            .add_document("inherited_package_function.mo", source)
+            .expect("document should parse");
+        session
+            .build_resolved()
+            .expect("resolved tree should be available");
+        let dependencies = {
+            let tree = session
+                .ensure_resolved()
+                .expect("resolved tree should be cached")
+                .inner();
+            DependencyFingerprintCache::from_tree(tree)
+                .class_dependencies()
+                .get("Root")
+                .cloned()
+                .unwrap_or_default()
+        };
+
+        assert!(
+            dependencies.contains("DerivedOperations"),
+            "the written path anchor must survive strict pruning"
+        );
+        assert!(
+            dependencies.contains("BaseOperations.evaluate"),
+            "the exact inherited function target must survive strict pruning"
+        );
+        assert!(
+            session.resolve_strict_target("Root").is_ok(),
+            "strict Resolve should retain the inherited function target"
+        );
+    }
+
+    #[test]
     fn from_tree_includes_dependencies_declared_by_lexical_ancestors() {
         let source = r#"
             package Icons
