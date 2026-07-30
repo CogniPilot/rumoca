@@ -954,28 +954,61 @@ scalar_fallback = false
     }
 
     #[test]
-    fn cuda_c_builtin_target_generates_level_one_skeleton() {
-        let result = compile_tensor_target_demo();
+    fn cuda_c_builtin_target_generates_level_one_scalar_matmul_skeleton() {
+        let result = compile_matmul_derivative_target_demo();
         let bundle = TargetBundle::load("cuda-c").expect("load built-in cuda-c target");
         let manifest = bundle.parse_manifest().expect("parse cuda-c manifest");
         let out_dir = tempfile::tempdir().expect("temp output dir");
 
         compile_manifest_target(
             &result,
+            "MatMulDerivativeTargetDemo",
+            &bundle,
+            &manifest,
+            Some(out_dir.path().to_path_buf()),
+        )
+        .expect("cuda-c target should render its declared scalar MatMul fallback");
+
+        let generated =
+            std::fs::read_to_string(out_dir.path().join("MatMulDerivativeTargetDemo_solve.cu"))
+                .expect("read generated CUDA C source");
+        assert!(generated.contains("MatMulDerivativeTargetDemo_derivative_rhs_batch"));
+        assert!(generated.contains("Readiness level 1"));
+        assert!(
+            generated.contains("MatMul"),
+            "tensor inventory should be visible in generated source: {generated}"
+        );
+    }
+
+    #[test]
+    fn cuda_c_builtin_target_rejects_linsolve_before_writing_source() {
+        let result = compile_tensor_target_demo();
+        let bundle = TargetBundle::load("cuda-c").expect("load built-in cuda-c target");
+        let manifest = bundle.parse_manifest().expect("parse cuda-c manifest");
+        let out_dir = tempfile::tempdir().expect("temp output dir");
+        let source = out_dir.path().join("TensorTargetDemo_solve.cu");
+
+        let error = compile_manifest_target(
+            &result,
             "TensorTargetDemo",
             &bundle,
             &manifest,
             Some(out_dir.path().to_path_buf()),
         )
-        .expect("cuda-c target should render level-one sources");
-
-        let generated = std::fs::read_to_string(out_dir.path().join("TensorTargetDemo_solve.cu"))
-            .expect("read generated CUDA C source");
-        assert!(generated.contains("TensorTargetDemo_derivative_rhs_batch"));
-        assert!(generated.contains("Readiness level 1"));
+        .expect_err("cuda-c must reject LinSolve without a device linear-solve ABI");
+        let message = format!("{error:#}");
         assert!(
-            generated.contains("LinSolve"),
-            "tensor inventory should be visible in generated source: {generated}"
+            message.contains("unsupported-feature:tensor.linsolve"),
+            "{message}"
+        );
+        assert!(
+            message.contains("target declares tensor.linsolve unsupported"),
+            "{message}"
+        );
+        assert!(
+            !source.exists(),
+            "capability validation must reject LinSolve before writing {}",
+            source.display()
         );
     }
 
