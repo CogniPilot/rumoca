@@ -7,7 +7,7 @@ use rumoca_ir_galec::ast;
 use rumoca_ir_galec::package::{AlgorithmCodePackage, CheckedAlgorithmBlock};
 use serde::Serialize;
 
-use super::algorithm_code_symbols;
+use super::{algorithm_code_symbols, algorithm_code_typed};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct AlgorithmCodeView<'a> {
@@ -19,9 +19,9 @@ pub struct AlgorithmCodeView<'a> {
     methods: MethodsView,
 }
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct PackageRoot<'a> {
-    block: &'a ast::Block,
+    block: algorithm_code_typed::TypedBlockView<'a>,
     clock_variable_ordinal: usize,
 }
 
@@ -63,7 +63,7 @@ impl<'a> AlgorithmCodeView<'a> {
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Self {
             package: PackageRoot {
-                block,
+                block: algorithm_code_typed::block(block)?,
                 clock_variable_ordinal: package.clock_variable_ordinal(),
             },
             block_name,
@@ -197,9 +197,9 @@ pub struct CheckedAlgorithmBlockView<'a> {
     methods: MethodsView,
 }
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct CheckedBlockRoot<'a> {
-    block: &'a ast::Block,
+    block: algorithm_code_typed::TypedBlockView<'a>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -256,7 +256,9 @@ impl<'a> CheckedAlgorithmBlockView<'a> {
             })
             .collect::<Result<Vec<_>, String>>()?;
         Ok(Self {
-            package: CheckedBlockRoot { block },
+            package: CheckedBlockRoot {
+                block: algorithm_code_typed::block(block)?,
+            },
             block_name,
             block_name_quoted,
             symbol_names: algorithm_code_symbols::collect(block),

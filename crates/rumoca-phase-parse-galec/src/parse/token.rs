@@ -1,30 +1,21 @@
 //! Parser-local terminal token type used by the generated GALEC actions.
 //!
 //! Keeps the matched lexeme text plus its source [`Span`] (SPEC_0034 D11): the
-//! span is the single origin from which every AST node's span bubbles up (only
-//! `Ident`/literal terminals retain a token through parol's `%nt_type`
-//! conversion; every mid-level node's span is a union of its children's).
+//! span is the single origin from which every AST node's span bubbles up.
+//! Grammar productions retain each owner token needed to cover a node's exact
+//! source occurrence; mid-level spans are unions of those source-backed tokens.
 //! Numeric/boolean literals are parsed from the text in the `constant` action
 //! via [`ParserToken::as_f64`] / [`ParserToken::as_i64`].
 
 use rumoca_core::{SourceId, Span};
 
 /// A GALEC terminal: the matched lexeme text and its source span.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct ParserToken {
     /// The verbatim matched source text of the token.
     pub(crate) text: String,
     /// Source span of the matched lexeme.
-    pub(crate) span: Span,
-}
-
-impl Default for ParserToken {
-    fn default() -> Self {
-        Self {
-            text: String::new(),
-            span: Span::DUMMY,
-        }
-    }
+    pub(crate) span: Option<Span>,
 }
 
 impl ParserToken {
@@ -35,9 +26,9 @@ impl ParserToken {
     }
 
     /// The token's source span.
-    #[must_use]
-    pub(crate) fn span(&self) -> Span {
+    pub(crate) fn span(&self) -> anyhow::Result<Span> {
         self.span
+            .ok_or_else(|| anyhow::anyhow!("parser token has no source provenance"))
     }
 
     /// Parse the token text as an `f64` (GALEC `real` literal).
@@ -69,7 +60,7 @@ impl TryFrom<&parol_runtime::Token<'_>> for ParserToken {
         let source = SourceId::from_source_name(&location.file_name.to_string_lossy());
         Ok(Self {
             text: value.text().to_string(),
-            span: Span::from_offsets(source, location.start(), location.end()),
+            span: Some(Span::from_offsets(source, location.start(), location.end())),
         })
     }
 }

@@ -29,7 +29,7 @@ fn provenance_and_foundation_messages_are_exact() {
         Case {
             error: DaeConstructionError::MissingProvenance {
                 origin: DaeProvenanceOrigin::Source,
-                attempted_span: at,
+                attempted_span: Some(at),
             },
             message: "missing source provenance for source DAE object",
             span: Some(at),
@@ -37,10 +37,18 @@ fn provenance_and_foundation_messages_are_exact() {
         Case {
             error: DaeConstructionError::MissingProvenance {
                 origin: DaeProvenanceOrigin::Generated(DaeGeneration::ConnectionEquation),
-                attempted_span: at,
+                attempted_span: Some(at),
             },
             message: "missing source provenance for generated DAE object (connection equation)",
             span: Some(at),
+        },
+        Case {
+            error: DaeConstructionError::MissingProvenance {
+                origin: DaeProvenanceOrigin::Source,
+                attempted_span: None,
+            },
+            message: "missing source provenance for source DAE object",
+            span: None,
         },
         Case {
             error: DaeConstructionError::UnknownSource { span: at },

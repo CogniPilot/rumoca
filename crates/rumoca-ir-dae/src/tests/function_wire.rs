@@ -29,21 +29,27 @@ fn function_operations_are_canonical_and_replay_in_owner_order() {
     let dae = Dae::construct(source.map, |dae| {
         let real =
             dae.types(|types| types.derived(ValueType::scalar(ScalarType::Real), function_at))?;
-        let (_, reservation) = dae.functions(|functions| {
-            functions.reserve_recursive(VarName::new("f"), [], [real], function_at)
-        })?;
-        let output = dae.functions(|functions| {
-            functions.output(&reservation, VarName::new("x"), 0, output_at)
-        })?;
-        let mut body = dae.functions(|functions| functions.begin(reservation, function_at))?;
-        let zero =
-            dae.expressions(|expressions| expressions.at(zero_at).literal(DaeLiteral::Real(0.0)))?;
-        dae.functions(|functions| functions.assign(&mut body, output, zero, initial_at))?;
-        let later =
-            dae.expressions(|expressions| expressions.at(one_at).literal(DaeLiteral::Real(1.0)))?;
-        dae.functions(|functions| functions.read(&body, output, old_at))?;
-        dae.functions(|functions| functions.assign(&mut body, output, later, update_at))?;
-        dae.functions(|functions| functions.define(body, function_at))
+        dae.function(
+            FunctionSignature::new(VarName::new("f"), [], [real], function_at),
+            |dae, reservation| {
+                let output = dae.functions(|functions| {
+                    functions.output(&reservation, VarName::new("x"), 0, output_at)
+                })?;
+                let mut body =
+                    dae.functions(|functions| functions.begin(reservation, function_at))?;
+                let zero = dae.expressions(|expressions| {
+                    expressions.at(zero_at).literal(DaeLiteral::Real(0.0))
+                })?;
+                dae.functions(|functions| functions.assign(&mut body, output, zero, initial_at))?;
+                let later = dae.expressions(|expressions| {
+                    expressions.at(one_at).literal(DaeLiteral::Real(1.0))
+                })?;
+                dae.functions(|functions| functions.read(&body, output, old_at))?;
+                dae.functions(|functions| functions.assign(&mut body, output, later, update_at))?;
+                dae.functions(|functions| functions.define(body, function_at))
+            },
+        )
+        .map(|_| ())
     })
     .expect("a ready future RHS does not advance the semantic owner");
 
@@ -227,41 +233,55 @@ fn active_loop_fixture() -> (Dae, DaeProvenance) {
     let dae = Dae::construct(source.map, |dae| {
         let real =
             dae.types(|types| types.derived(ValueType::scalar(ScalarType::Real), function_at))?;
-        let (_, reservation) = dae.functions(|functions| {
-            functions.reserve_recursive(VarName::new("f"), [], [real, real], function_at)
-        })?;
-        let x =
-            dae.functions(|functions| functions.output(&reservation, VarName::new("x"), 0, x_at))?;
-        let y =
-            dae.functions(|functions| functions.output(&reservation, VarName::new("y"), 1, y_at))?;
-        let mut body = dae.functions(|functions| functions.begin(reservation, function_at))?;
-        let zero =
-            dae.expressions(|expressions| expressions.at(zero_at).literal(DaeLiteral::Real(0.0)))?;
-        dae.functions(|functions| functions.assign(&mut body, x, zero, x_initial_at))?;
-        dae.functions(|functions| functions.assign(&mut body, y, zero, y_initial_at))?;
-        let domain = dae.domains(|domains| {
-            domains.structured(
-                StructuredIndexDomain {
-                    binders: vec![StructuredIndexBinder {
-                        id: 0,
-                        display_name: "k".to_owned(),
-                        lower: 1,
-                        upper: 2,
-                        step: 1,
-                    }],
-                },
-                loop_at,
-            )
-        })?;
-        let mut loop_body =
-            dae.functions(|functions| functions.begin_loop(body, domain, [x, y], loop_at))?;
-        let one =
-            dae.expressions(|expressions| expressions.at(one_at).literal(DaeLiteral::Real(1.0)))?;
-        dae.functions(|functions| functions.assign_loop(&mut loop_body, x, one, x_update_at))?;
-        let x_value = dae.functions(|functions| functions.read(loop_body.body(), x, x_read_at))?;
-        dae.functions(|functions| functions.assign_loop(&mut loop_body, y, x_value, y_update_at))?;
-        let body = dae.functions(|functions| functions.finish_loop(loop_body, finish_at))?;
-        dae.functions(|functions| functions.define(body, function_at))
+        dae.function(
+            FunctionSignature::new(VarName::new("f"), [], [real, real], function_at),
+            |dae, reservation| {
+                let x = dae.functions(|functions| {
+                    functions.output(&reservation, VarName::new("x"), 0, x_at)
+                })?;
+                let y = dae.functions(|functions| {
+                    functions.output(&reservation, VarName::new("y"), 1, y_at)
+                })?;
+                let mut body =
+                    dae.functions(|functions| functions.begin(reservation, function_at))?;
+                let zero = dae.expressions(|expressions| {
+                    expressions.at(zero_at).literal(DaeLiteral::Real(0.0))
+                })?;
+                dae.functions(|functions| functions.assign(&mut body, x, zero, x_initial_at))?;
+                dae.functions(|functions| functions.assign(&mut body, y, zero, y_initial_at))?;
+                let domain = dae.domains(|domains| {
+                    domains.structured(
+                        StructuredIndexDomain {
+                            binders: vec![StructuredIndexBinder {
+                                id: 0,
+                                display_name: "k".to_owned(),
+                                lower: 1,
+                                upper: 2,
+                                step: 1,
+                            }],
+                        },
+                        loop_at,
+                    )
+                })?;
+                let mut loop_body =
+                    dae.functions(|functions| functions.begin_loop(body, domain, [x, y], loop_at))?;
+                let one = dae.expressions(|expressions| {
+                    expressions.at(one_at).literal(DaeLiteral::Real(1.0))
+                })?;
+                dae.functions(|functions| {
+                    functions.assign_loop(&mut loop_body, x, one, x_update_at)
+                })?;
+                let x_value =
+                    dae.functions(|functions| functions.read(loop_body.body(), x, x_read_at))?;
+                dae.functions(|functions| {
+                    functions.assign_loop(&mut loop_body, y, x_value, y_update_at)
+                })?;
+                let body =
+                    dae.functions(|functions| functions.finish_loop(loop_body, finish_at))?;
+                dae.functions(|functions| functions.define(body, function_at))
+            },
+        )
+        .map(|_| ())
     })
     .expect("domain-free loop updates remain owned by the loop transition");
     (dae, x_read_at)
@@ -334,27 +354,33 @@ fn function_read_fixture(stale_pair: bool) -> Dae {
     Dae::construct(source.map, |dae| {
         let real =
             dae.types(|types| types.derived(ValueType::scalar(ScalarType::Real), function_at))?;
-        let (_, reservation) = dae.functions(|functions| {
-            functions.reserve_recursive(VarName::new("f"), [], [real], function_at)
-        })?;
-        let output = dae.functions(|functions| {
-            functions.output(&reservation, VarName::new("x"), 0, output_at)
-        })?;
-        let mut body = dae.functions(|functions| functions.begin(reservation, function_at))?;
-        let zero =
-            dae.expressions(|expressions| expressions.at(zero_at).literal(DaeLiteral::Real(0.0)))?;
-        dae.functions(|functions| functions.assign(&mut body, output, zero, initial_at))?;
-        if !stale_pair {
-            dae.functions(|functions| functions.read(&body, output, old_at))?;
-        }
-        let one =
-            dae.expressions(|expressions| expressions.at(one_at).literal(DaeLiteral::Real(1.0)))?;
-        dae.functions(|functions| functions.assign(&mut body, output, one, update_at))?;
-        dae.functions(|functions| functions.read(&body, output, new_at))?;
-        if stale_pair {
-            dae.functions(|functions| functions.read(&body, output, again_at))?;
-        }
-        dae.functions(|functions| functions.define(body, function_at))
+        dae.function(
+            FunctionSignature::new(VarName::new("f"), [], [real], function_at),
+            |dae, reservation| {
+                let output = dae.functions(|functions| {
+                    functions.output(&reservation, VarName::new("x"), 0, output_at)
+                })?;
+                let mut body =
+                    dae.functions(|functions| functions.begin(reservation, function_at))?;
+                let zero = dae.expressions(|expressions| {
+                    expressions.at(zero_at).literal(DaeLiteral::Real(0.0))
+                })?;
+                dae.functions(|functions| functions.assign(&mut body, output, zero, initial_at))?;
+                if !stale_pair {
+                    dae.functions(|functions| functions.read(&body, output, old_at))?;
+                }
+                let one = dae.expressions(|expressions| {
+                    expressions.at(one_at).literal(DaeLiteral::Real(1.0))
+                })?;
+                dae.functions(|functions| functions.assign(&mut body, output, one, update_at))?;
+                dae.functions(|functions| functions.read(&body, output, new_at))?;
+                if stale_pair {
+                    dae.functions(|functions| functions.read(&body, output, again_at))?;
+                }
+                dae.functions(|functions| functions.define(body, function_at))
+            },
+        )
+        .map(|_| ())
     })
     .unwrap()
 }

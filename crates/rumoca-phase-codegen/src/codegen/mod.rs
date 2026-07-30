@@ -10,16 +10,35 @@ use rumoca_ir_solve as solve;
 use serde::Serialize;
 use std::path::Path;
 
+#[cfg(test)]
+mod checked_dae_tests;
 mod checked_modelica;
+#[cfg(test)]
+mod codegen_test_support;
 mod dae_backend;
 mod expr_config;
+#[cfg(test)]
+mod galec_golden_tests;
+#[cfg(test)]
+mod galec_manifest_template_tests;
 mod render_expr;
 mod render_solve;
 mod render_solve_ops;
 mod render_stmt;
+#[cfg(test)]
+mod scalar_plan_template_tests;
 mod scalar_program_plan;
 mod solve_lazy;
+mod solve_renderer;
+#[cfg(test)]
+mod solve_sparse_output_tests;
+#[cfg(test)]
+mod solve_template_context_tests;
+#[cfg(test)]
+mod stencil_codegen_tests;
 mod symbol_alloc;
+#[cfg(test)]
+mod wgsl_solve_tests;
 
 pub(crate) use expr_config::{ExprConfig, IfStyle, get_str_attr};
 use render_expr::{get_field, is_variant, render_expression};
@@ -785,19 +804,39 @@ fn xml_escape_filter(value: String) -> String {
     xml_escape_str(&value)
 }
 
-/// Render a finite `f64` as a valid `xs:double` lexical form (explicit
-/// decimal point, never exponent notation): `2` -> `2.0`, `1e300` stays a
-/// plain decimal. Used by templates that require an explicit decimal point.
-pub(crate) fn xs_double_str(value: f64) -> String {
-    let rendered = format!("{value}");
-    if rendered.contains('.') {
-        rendered
-    } else {
-        format!("{rendered}.0")
+/// Render a finite `f64` as a portable real literal with explicit decimal
+/// places and a signed lowercase exponent when scientific notation is needed.
+///
+/// The result is valid both as `xs:double` and as a GALEC Real token. Keeping
+/// this as a documented template filter avoids target-language rendering in
+/// semantic IR or lowering crates.
+pub(crate) fn xs_double_str(value: f64) -> Result<String, minijinja::Error> {
+    if !value.is_finite() {
+        return Err(render_err("non-finite value has no portable real literal"));
     }
+    let plain = format!("{value}");
+    if !plain.contains('e') && plain.len() <= 21 {
+        return Ok(ensure_real_decimal(plain));
+    }
+    let scientific = format!("{value:e}");
+    let (mantissa, exponent) = scientific
+        .split_once('e')
+        .expect("LowerExp for f64 contains an exponent");
+    let sign = if exponent.starts_with('-') { "" } else { "+" };
+    Ok(format!(
+        "{}e{sign}{exponent}",
+        ensure_real_decimal(mantissa.to_owned())
+    ))
 }
 
-fn xs_double_filter(value: f64) -> String {
+fn ensure_real_decimal(mut text: String) -> String {
+    if !text.contains('.') {
+        text.push_str(".0");
+    }
+    text
+}
+
+fn xs_double_filter(value: f64) -> Result<String, minijinja::Error> {
     xs_double_str(value)
 }
 
@@ -1126,23 +1165,5 @@ fn render_statements_function(stmts: Value, config: Value, indent: Value) -> Ren
     render_statements(&stmts, &cfg, indent_str)
 }
 
-mod solve_renderer;
 pub use solve_renderer::SolveTemplateRenderer;
 use solve_renderer::solve_render_context_value;
-
-#[cfg(test)]
-mod checked_dae_tests;
-#[cfg(test)]
-mod codegen_test_support;
-#[cfg(test)]
-mod galec_manifest_template_tests;
-#[cfg(test)]
-mod scalar_plan_template_tests;
-#[cfg(test)]
-mod solve_sparse_output_tests;
-#[cfg(test)]
-mod solve_template_context_tests;
-#[cfg(test)]
-mod stencil_codegen_tests;
-#[cfg(test)]
-mod wgsl_solve_tests;

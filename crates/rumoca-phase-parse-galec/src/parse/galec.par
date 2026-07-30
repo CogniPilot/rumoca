@@ -20,7 +20,7 @@
 %nt_type parenthesized_or_if  = rumoca_ir_galec::ast::Expression
 %nt_type if_expression        = rumoca_ir_galec::ast::IfExpression
 %nt_type function_call        = rumoca_ir_galec::ast::FunctionCall
-%nt_type statement            = rumoca_ir_galec::ast::Statement
+%nt_type statement            = crate::parse::stmt::ParsedStatement
 %nt_type condition            = rumoca_ir_galec::ast::Condition
 %nt_type error_signal_check   = rumoca_ir_galec::ast::SignalCheck
 %nt_type variable_declaration = rumoca_ir_galec::ast::VariableDeclaration
@@ -114,7 +114,7 @@ statement
       | if_statement
       | for_loop
       | limit_statement
-      | error_signal_statement ) ';'^
+      | error_signal_statement ) ';'
     ;
 
 name_headed_statement
@@ -126,12 +126,12 @@ state_assignment
     ;
 
 multi_assignment
-    : '('^ [ reference { ','^ reference } ] ')'^ ':='^ function_call
+    : '(' [ reference { ','^ reference } ] ')'^ ':='^ function_call
     ;
 
 if_statement
-    : 'if'^ condition 'then'^ { statement }
-      { 'elseif'^ condition 'then'^ { statement } }
+    : 'if' condition 'then'^ { statement }
+      { 'elseif' condition 'then'^ { statement } }
       [ 'else'^ { statement } ]
       'end'^ 'if'^
     ;
@@ -145,11 +145,11 @@ error_signal_check
     ;
 
 error_signal_statement
-    : 'signal'^ ident { ','^ ident }
+    : 'signal' ident { ','^ ident }
     ;
 
 for_loop
-    : 'for'^ bounded_iteration 'loop'^ { statement } 'end'^ 'for'^
+    : 'for' bounded_iteration 'loop'^ { statement } 'end'^ 'for'^
     ;
 
 bounded_iteration
@@ -157,7 +157,7 @@ bounded_iteration
     ;
 
 limit_statement
-    : 'limit'^ limit_target { ','^ limit_target }
+    : 'limit' limit_target { ','^ limit_target }
     ;
 
 limit_target
@@ -174,7 +174,7 @@ reference
     ;
 
 state_reference
-    : 'self'^ state_reference_tail
+    : 'self'@owner state_reference_tail
     ;
 
 state_reference_tail

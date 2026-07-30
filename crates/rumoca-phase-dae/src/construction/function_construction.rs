@@ -1,15 +1,9 @@
 use super::*;
 
-pub(super) struct ReservedFunction<'flat, 'dae> {
-    flat: &'flat rumoca_core::Function,
-    specialization: usize,
-    reservation: dae::FunctionReservation<'dae>,
-}
-
 pub(super) struct FunctionRegistry<'shape, 'dae> {
     pub(super) flat: &'shape flat::Model,
     pub(super) shapes: &'shape FunctionShapeAnalysis,
-    pub(super) ids: HashMap<FunctionSpecializationKey, dae::FunctionId<'dae>>,
+    pub(super) ids: &'shape HashMap<FunctionSpecializationKey, dae::FunctionId<'dae>>,
     pub(super) comprehension_plans: &'shape HashMap<ComprehensionKey, ComprehensionPlan>,
     pub(super) record_array_fields: &'shape HashMap<Span, RecordArrayFieldPlan>,
     pub(super) constants: &'shape EvalContext,
@@ -54,49 +48,147 @@ impl<'dae> FunctionRegistry<'_, 'dae> {
     }
 }
 
-pub(super) fn reserve_functions<'flat, 'dae>(
-    flat: &'flat flat::Model,
+pub(super) fn construct_functions<'dae>(
+    flat: &flat::Model,
     shapes: &FunctionShapeAnalysis,
     construction: &mut dae::DaeConstruction<'dae>,
-) -> Result<
-    (
-        HashMap<FunctionSpecializationKey, dae::FunctionId<'dae>>,
-        Vec<ReservedFunction<'flat, 'dae>>,
-    ),
-    dae::DaeConstructionError,
-> {
-    let mut functions = HashMap::with_capacity(shapes.certificates().len());
-    let mut reserved = Vec::with_capacity(shapes.certificates().len());
-    for (specialization, certificate) in shapes.certificates().iter().enumerate() {
-        let function = &flat.functions[&certificate.key.function];
-        let declaration = dae::DaeProvenance::source(function.span)?;
-        let parameters = function
-            .inputs
-            .iter()
-            .zip(&certificate.parameters)
-            .map(|(parameter, shape)| {
-                function_value_type(construction, flat, parameter, shape, &mut HashSet::new())
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let results = function
-            .outputs
-            .iter()
-            .zip(&certificate.results)
-            .map(|(result, shape)| {
-                function_value_type(construction, flat, result, shape, &mut HashSet::new())
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let (id, reservation) = construction.functions(|functions| {
-            functions.reserve_recursive(function.name.clone(), parameters, results, declaration)
-        })?;
-        functions.insert(certificate.key.clone(), id);
-        reserved.push(ReservedFunction {
-            flat: function,
-            specialization,
-            reservation,
-        });
+    coordinates: &HashMap<VarName, Coordinate<'dae>>,
+    registry: FunctionRegistryInput<'_>,
+    plans: &HashMap<FunctionSpecializationKey, FunctionPlan>,
+) -> Result<HashMap<FunctionSpecializationKey, dae::FunctionId<'dae>>, dae::DaeConstructionError> {
+    let mut ids = HashMap::with_capacity(shapes.certificates().len());
+    for component in shapes.construction_components() {
+        if component.recursive {
+            construct_recursive_component(
+                construction,
+                coordinates,
+                shapes,
+                &mut ids,
+                registry,
+                plans,
+                &component.members,
+            )?;
+        } else {
+            let specialization = component.members[0];
+            let signature = function_signature(construction, flat, shapes, specialization)?;
+            let (function, ()) =
+                construction.function(signature, |construction, reservation| {
+                    define_function(
+                        construction,
+                        coordinates,
+                        FunctionRegistry::new(registry, shapes, &ids),
+                        reservation,
+                        specialization,
+                        plans,
+                    )
+                })?;
+            ids.insert(shapes.certificates()[specialization].key.clone(), function);
+        }
     }
-    Ok((functions, reserved))
+    Ok(ids)
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct FunctionRegistryInput<'shape> {
+    pub(super) flat: &'shape flat::Model,
+    pub(super) comprehension_plans: &'shape HashMap<ComprehensionKey, ComprehensionPlan>,
+    pub(super) record_array_fields: &'shape HashMap<Span, RecordArrayFieldPlan>,
+    pub(super) constants: &'shape EvalContext,
+    pub(super) delay_plans: &'shape HashMap<Span, DelayPlan>,
+    pub(super) reinit_state_pre: &'shape HashSet<Span>,
+}
+
+impl<'shape, 'dae> FunctionRegistry<'shape, 'dae> {
+    fn new(
+        input: FunctionRegistryInput<'shape>,
+        shapes: &'shape FunctionShapeAnalysis,
+        ids: &'shape HashMap<FunctionSpecializationKey, dae::FunctionId<'dae>>,
+    ) -> Self {
+        Self {
+            flat: input.flat,
+            shapes,
+            ids,
+            comprehension_plans: input.comprehension_plans,
+            record_array_fields: input.record_array_fields,
+            constants: input.constants,
+            delay_plans: input.delay_plans,
+            reinit_state_pre: input.reinit_state_pre,
+        }
+    }
+}
+
+fn construct_recursive_component<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    coordinates: &HashMap<VarName, Coordinate<'dae>>,
+    shapes: &FunctionShapeAnalysis,
+    ids: &mut HashMap<FunctionSpecializationKey, dae::FunctionId<'dae>>,
+    registry: FunctionRegistryInput<'_>,
+    plans: &HashMap<FunctionSpecializationKey, FunctionPlan>,
+    specializations: &[usize],
+) -> Result<(), dae::DaeConstructionError> {
+    let mut signatures = specializations
+        .iter()
+        .map(|&specialization| {
+            function_signature(construction, registry.flat, shapes, specialization)
+        })
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter();
+    let first = signatures
+        .next()
+        .expect("recursive components are constructor-proven nonempty");
+    construction.recursive_functions(first, signatures, |construction, reservations| {
+        for (&specialization, reservation) in specializations.iter().zip(&reservations) {
+            ids.insert(
+                shapes.certificates()[specialization].key.clone(),
+                reservation.function(),
+            );
+        }
+        for (&specialization, reservation) in specializations.iter().zip(reservations) {
+            define_function(
+                construction,
+                coordinates,
+                FunctionRegistry::new(registry, shapes, ids),
+                reservation,
+                specialization,
+                plans,
+            )?;
+        }
+        Ok(())
+    })?;
+    Ok(())
+}
+
+fn function_signature<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    flat: &flat::Model,
+    shapes: &FunctionShapeAnalysis,
+    specialization: usize,
+) -> Result<dae::FunctionSignature<'dae>, dae::DaeConstructionError> {
+    let certificate = &shapes.certificates()[specialization];
+    let function = &flat.functions[&certificate.key.function];
+    let declaration = dae::DaeProvenance::source(function.span)?;
+    let parameters = function
+        .inputs
+        .iter()
+        .zip(&certificate.parameters)
+        .map(|(parameter, shape)| {
+            function_value_type(construction, flat, parameter, shape, &mut HashSet::new())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let results = function
+        .outputs
+        .iter()
+        .zip(&certificate.results)
+        .map(|(result, shape)| {
+            function_value_type(construction, flat, result, shape, &mut HashSet::new())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(dae::FunctionSignature::new(
+        function.name.clone(),
+        parameters,
+        results,
+        declaration,
+    ))
 }
 
 pub(super) fn function_value_type<'dae>(
@@ -142,92 +234,93 @@ pub(super) fn function_value_type<'dae>(
     construction.types(|types| types.record(constructor.name.clone(), fields, provenance))
 }
 
-pub(super) fn define_functions<'dae>(
+fn define_function<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
-    flat: &flat::Model,
     global_coordinates: &HashMap<VarName, Coordinate<'dae>>,
-    functions: &FunctionRegistry<'_, 'dae>,
-    reserved: Vec<ReservedFunction<'_, 'dae>>,
+    functions: FunctionRegistry<'_, 'dae>,
+    reservation: dae::FunctionReservation<'_, 'dae>,
+    specialization: usize,
     plans: &HashMap<FunctionSpecializationKey, FunctionPlan>,
 ) -> Result<(), dae::DaeConstructionError> {
-    for reserved in reserved {
-        let certificate = &functions.shapes.certificates()[reserved.specialization];
-        let mut coordinates = global_coordinates.clone();
-        for (ordinal, parameter) in reserved.flat.inputs.iter().enumerate() {
-            let provenance = dae::DaeProvenance::source(parameter.span)?;
-            let parameter_id = construction.functions(|owner| {
-                owner.parameter(
-                    &reserved.reservation,
-                    VarName::new(&parameter.name),
-                    ordinal,
-                    provenance,
-                )
-            })?;
-            coordinates.insert(
+    let certificate = &functions.shapes.certificates()[specialization];
+    let function = &functions.flat.functions[&certificate.key.function];
+    let mut coordinates = global_coordinates.clone();
+    for (ordinal, parameter) in function.inputs.iter().enumerate() {
+        let provenance = dae::DaeProvenance::source(parameter.span)?;
+        let parameter_id = construction.functions(|owner| {
+            owner.parameter(
+                &reservation,
                 VarName::new(&parameter.name),
-                Coordinate::FunctionParameter(parameter_id),
-            );
-        }
-        let mut mutable_values =
-            Vec::with_capacity(reserved.flat.outputs.len() + reserved.flat.locals.len());
-        for (ordinal, output) in reserved.flat.outputs.iter().enumerate() {
-            let provenance = dae::DaeProvenance::source(output.span)?;
-            let value = construction.functions(|functions| {
-                functions.output(
-                    &reserved.reservation,
-                    VarName::new(&output.name),
-                    ordinal,
-                    provenance,
-                )
-            })?;
-            coordinates.insert(VarName::new(&output.name), Coordinate::FunctionValue(value));
-            mutable_values.push((value, output));
-        }
-        for local in &reserved.flat.locals {
-            let provenance = dae::DaeProvenance::source(local.span)?;
-            let shape = &certificate.values[&VarName::new(&local.name)];
-            let value_type =
-                function_value_type(construction, flat, local, shape, &mut HashSet::new())?;
-            let value = construction.functions(|functions| {
-                functions.local(
-                    &reserved.reservation,
-                    VarName::new(&local.name),
-                    value_type,
-                    provenance,
-                )
-            })?;
-            coordinates.insert(VarName::new(&local.name), Coordinate::FunctionValue(value));
-            mutable_values.push((value, local));
-        }
-        let provenance = dae::DaeProvenance::source(reserved.flat.span)?;
-        let mut body = construction
-            .functions(|functions| functions.begin(reserved.reservation, provenance))?;
-        for (value, declaration) in mutable_values {
-            let Some(default) = &declaration.default else {
-                continue;
-            };
-            let expression = lower_function_expression(
-                construction,
-                &coordinates,
-                functions,
-                &certificate.values,
-                &body,
-                default,
-            )?;
-            let assignment = dae::DaeProvenance::source(declaration.span)?;
-            construction.functions(|functions| {
-                functions.assign(&mut body, value, expression, assignment)
-            })?;
-        }
-        let plan = &plans[&certificate.key];
-        let symbols = FunctionSymbols {
-            coordinates: &coordinates,
-            functions,
-            shapes: &certificate.values,
-        };
-        body = lower_function_plan(construction, symbols, body, reserved.flat, plan)?;
-        construction.functions(|functions| functions.define(body, provenance))?;
+                ordinal,
+                provenance,
+            )
+        })?;
+        coordinates.insert(
+            VarName::new(&parameter.name),
+            Coordinate::FunctionParameter(parameter_id),
+        );
     }
+    let mut mutable_values = Vec::with_capacity(function.outputs.len() + function.locals.len());
+    for (ordinal, output) in function.outputs.iter().enumerate() {
+        let provenance = dae::DaeProvenance::source(output.span)?;
+        let value = construction.functions(|functions| {
+            functions.output(
+                &reservation,
+                VarName::new(&output.name),
+                ordinal,
+                provenance,
+            )
+        })?;
+        coordinates.insert(VarName::new(&output.name), Coordinate::FunctionValue(value));
+        mutable_values.push((value, output));
+    }
+    for local in &function.locals {
+        let provenance = dae::DaeProvenance::source(local.span)?;
+        let shape = &certificate.values[&VarName::new(&local.name)];
+        let value_type = function_value_type(
+            construction,
+            functions.flat,
+            local,
+            shape,
+            &mut HashSet::new(),
+        )?;
+        let value = construction.functions(|functions| {
+            functions.local(
+                &reservation,
+                VarName::new(&local.name),
+                value_type,
+                provenance,
+            )
+        })?;
+        coordinates.insert(VarName::new(&local.name), Coordinate::FunctionValue(value));
+        mutable_values.push((value, local));
+    }
+    let provenance = dae::DaeProvenance::source(function.span)?;
+    let mut body = construction.functions(|functions| functions.begin(reservation, provenance))?;
+    for (value, declaration) in mutable_values {
+        let Some(default) = &declaration.default else {
+            continue;
+        };
+        let expression = lower_function_expression(
+            construction,
+            &coordinates,
+            &functions,
+            &certificate.values,
+            &body,
+            default,
+        )?;
+        let assignment = dae::DaeProvenance::source(declaration.span)?;
+        construction
+            .functions(|functions| functions.assign(&mut body, value, expression, assignment))?;
+    }
+    let plan = &plans[&certificate.key];
+    let symbols = FunctionSymbols {
+        coordinates: &coordinates,
+        functions: &functions,
+        shapes: &certificate.values,
+    };
+    body = lower_function_plan(construction, symbols, body, function, plan)?;
+    construction.functions(|owner| owner.define(body, provenance))?;
     Ok(())
 }
 

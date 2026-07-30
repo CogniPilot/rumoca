@@ -1480,3 +1480,37 @@ fn missing_expression_provenance_is_not_defaulted() {
         Err(ToDaeError::MissingProvenance { .. })
     ));
 }
+
+#[test]
+fn binding_lowering_does_not_fallback_to_declaration_provenance() {
+    let source = TestSource::new("model M Real x = 1.0; end M;");
+    let mut model = flat::Model::new();
+    add_primitive_variable(&mut model, &source, "x", "Real x", 7, Vec::new(), false);
+    model.variables.get_mut(&VarName::new("x")).unwrap().binding = Some(Expression::Literal {
+        value: Literal::Real(1.0),
+        span: source.span("1.0", 0),
+    });
+    model.is_partial = true;
+
+    let analysis = analyze(&model).expect("valid binding must be accepted during analysis");
+    let Some(Expression::Literal { span, .. }) = model
+        .variables
+        .get_mut(&VarName::new("x"))
+        .and_then(|variable| variable.binding.as_mut())
+    else {
+        panic!("fixture must retain its scalar binding");
+    };
+    *span = Span::DUMMY;
+
+    let error = dae::Dae::construct(source.map, |construction| {
+        build_checked(&model, &analysis, construction)
+    })
+    .expect_err("lowering must recheck exact binding provenance");
+    assert!(matches!(
+        error,
+        dae::DaeConstructionError::MissingProvenance {
+            origin: dae::DaeProvenanceOrigin::Source,
+            attempted_span: None,
+        }
+    ));
+}

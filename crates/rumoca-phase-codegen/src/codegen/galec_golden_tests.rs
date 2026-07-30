@@ -1,4 +1,4 @@
-//! Golden `.alg` printer tests: an independently authored fixed-sample
+//! Golden `.alg` template tests: an independently authored fixed-sample
 //! discrete PID-shaped block, a 2D-array/for-loop block proving
 //! array-nativeness (GAL-026), and a signal-machinery block (GAL-018).
 //! All fixtures are original constructions — no standard text reproduced.
@@ -11,7 +11,21 @@ use rumoca_ir_galec::ast::{
     ProtectedKind, RangeAttributes, RefPart, Reference, ScalarType, SignalCheck, SignalTest,
     Spanned, Statement, UserFunction, VariableDeclaration,
 };
-use rumoca_ir_galec::print_block;
+use rumoca_ir_galec::package::CheckedAlgorithmBlock;
+
+fn render_block(block: &Block) -> Result<String, String> {
+    let checked =
+        CheckedAlgorithmBlock::construct(block.clone()).map_err(|error| error.to_string())?;
+    let template = crate::templates::builtin_template_source("galec", "model.alg.jinja")
+        .ok_or_else(|| "missing built-in GALEC template".to_owned())?;
+    crate::render_checked_algorithm_block_template_with_artifact(
+        &checked,
+        &(),
+        template,
+        block.name.lexeme(),
+    )
+    .map_err(|error| error.to_string())
+}
 
 // ---------------------------------------------------------------------------
 // Builders
@@ -368,7 +382,7 @@ end RateController;
 
 #[test]
 fn golden_pid_shaped_block() {
-    let printed = print_block(&rate_controller()).expect("fixture must print");
+    let printed = render_block(&rate_controller()).expect("fixture must render");
     assert_eq!(printed, RATE_CONTROLLER_ALG);
 }
 
@@ -507,7 +521,7 @@ end MatrixAverager;
 
 #[test]
 fn golden_array_native_block() {
-    let printed = print_block(&matrix_averager()).expect("fixture must print");
+    let printed = render_block(&matrix_averager()).expect("fixture must render");
     assert_eq!(printed, MATRIX_AVERAGER_ALG);
 }
 
@@ -753,7 +767,7 @@ end SignalGuard;
 
 #[test]
 fn golden_signal_machinery_block() {
-    let printed = print_block(&signal_guard()).expect("fixture must print");
+    let printed = render_block(&signal_guard()).expect("fixture must render");
     assert_eq!(printed, SIGNAL_GUARD_ALG);
 }
 
@@ -774,14 +788,15 @@ fn minimal_block(statements: Vec<Spanned<Statement>>) -> Block {
 
 #[test]
 fn for_loop_with_step_prints_start_step_stop() {
-    let block = minimal_block(vec![Spanned::dummy(Statement::For(ForLoop {
+    let mut block = minimal_block(vec![Spanned::dummy(Statement::For(ForLoop {
         iterator: Some(n("k")),
         start: Expression::Integer(8),
         step: Some(Expression::Integer(-2)),
         stop: Expression::Integer(2),
         body: vec![assign(local("k2"), lref("k"))],
     }))]);
-    let printed = print_block(&block).expect("block must print");
+    block.do_step.locals = vec![VariableDeclaration::scalar(ScalarType::Integer, n("k2"))];
+    let printed = render_block(&block).expect("block must render");
     assert!(
         printed.contains("for k in 8:-2:2 loop"),
         "missing stepped loop head in:\n{printed}"
@@ -791,9 +806,9 @@ fn for_loop_with_step_prints_start_step_stop() {
 #[test]
 fn empty_limit_statement_is_a_stable_error() {
     let block = minimal_block(vec![Spanned::dummy(Statement::Limit(vec![]))]);
-    let error = print_block(&block).expect_err("empty limit must fail");
-    assert_eq!(error.code(), "EG005");
-    let message = error.to_string();
+    let error = render_block(&block).expect_err("empty limit must fail");
+    assert!(error.contains("[EG005]"), "{error}");
+    let message = error;
     assert!(
         message.contains("block Minimal / method DoStep / statement 0"),
         "location path missing in: {message}"
@@ -803,8 +818,8 @@ fn empty_limit_statement_is_a_stable_error() {
 #[test]
 fn empty_signal_statement_is_a_stable_error() {
     let block = minimal_block(vec![Spanned::dummy(Statement::Signal(vec![]))]);
-    let error = print_block(&block).expect_err("empty signal must fail");
-    assert_eq!(error.code(), "EG004");
+    let error = render_block(&block).expect_err("empty signal must fail");
+    assert!(error.contains("[EG004]"), "{error}");
 }
 
 #[test]
@@ -813,8 +828,8 @@ fn if_statement_without_branches_is_a_stable_error() {
         branches: vec![],
         else_body: None,
     }))]);
-    let error = print_block(&block).expect_err("branchless if must fail");
-    assert_eq!(error.code(), "EG006");
+    let error = render_block(&block).expect_err("branchless if must fail");
+    assert!(error.contains("[EG006]"), "{error}");
 }
 
 #[test]
@@ -834,8 +849,8 @@ fn empty_signal_test_list_is_a_stable_error() {
         }],
         else_body: None,
     }))]);
-    let error = print_block(&block).expect_err("empty signal test list must fail");
-    assert_eq!(error.code(), "EG008");
+    let error = render_block(&block).expect_err("empty signal test list must fail");
+    assert!(error.contains("[EG008]"), "{error}");
 }
 
 #[test]
@@ -854,7 +869,7 @@ fn compartment_entities_print_kind_prefixes() {
         ],
         span: Span::DUMMY,
     }];
-    let printed = print_block(&block).expect("block must print");
+    let printed = render_block(&block).expect("block must render");
     let expected = "    record Cfg\n        parameter Real k;\n        constant Real c;\n        Real s;\n    end Cfg;\n";
     assert!(
         printed.contains(expected),
@@ -865,7 +880,7 @@ fn compartment_entities_print_kind_prefixes() {
 #[test]
 fn empty_recalibrate_is_still_emitted() {
     let block = minimal_block(vec![]);
-    let printed = print_block(&block).expect("block must print");
+    let printed = render_block(&block).expect("block must render");
     assert!(
         printed.contains("method Recalibrate\n    algorithm\n    end Recalibrate;"),
         "empty Recalibrate missing in:\n{printed}"

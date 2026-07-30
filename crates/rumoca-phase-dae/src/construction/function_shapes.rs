@@ -25,6 +25,7 @@ pub(super) struct FunctionShapeAnalysis {
     model_values: ShapeEnvironment,
     certificates: Vec<FunctionShapeCertificate>,
     certificate_by_key: HashMap<FunctionSpecializationKey, usize>,
+    dependencies: Vec<Vec<usize>>,
     constructor_names: HashSet<VarName>,
     constructor_fields_by_key: HashMap<FunctionSpecializationKey, Vec<ValueShape>>,
 }
@@ -44,9 +45,11 @@ impl FunctionShapeAnalysis {
                 model_values,
                 certificates: Vec::new(),
                 certificate_by_key: HashMap::new(),
+                dependencies: Vec::new(),
                 constructor_names,
                 constructor_fields_by_key: HashMap::new(),
             },
+            active_specializations: Vec::new(),
         };
         analyzer.discover_model_calls()?;
         Ok(analyzer.analysis)
@@ -58,6 +61,11 @@ impl FunctionShapeAnalysis {
 
     pub(super) fn certificates(&self) -> &[FunctionShapeCertificate] {
         &self.certificates
+    }
+
+    pub(super) fn construction_components(&self) -> Vec<rumoca_core::DependencyScc> {
+        rumoca_core::dependency_first_sccs(&self.dependencies)
+            .expect("function shape dependencies reference known certificates")
     }
 
     pub(super) fn constructor_field_shapes(
@@ -144,6 +152,7 @@ impl FunctionShapeAnalysis {
 struct ShapeAnalyzer<'flat> {
     flat: &'flat flat::Model,
     analysis: FunctionShapeAnalysis,
+    active_specializations: Vec<usize>,
 }
 
 impl ShapeAnalyzer<'_> {
@@ -298,7 +307,9 @@ impl ShapeAnalyzer<'_> {
         key: FunctionSpecializationKey,
         call_span: Span,
     ) -> Result<usize, ToDaeError> {
+        let caller = self.active_specializations.last().copied();
         if let Some(index) = self.analysis.certificate_by_key.get(&key).copied() {
+            self.record_dependency(caller, index);
             return Ok(index);
         }
         let function =
@@ -314,20 +325,45 @@ impl ShapeAnalyzer<'_> {
         let index = self.analysis.certificates.len();
         self.analysis.certificate_by_key.insert(key, index);
         self.analysis.certificates.push(certificate);
+        self.analysis.dependencies.push(Vec::new());
+        self.record_dependency(caller, index);
 
         let values = self.analysis.certificates[index].values.clone();
-        for parameter in function
+        self.active_specializations.push(index);
+        let result = (|| {
+            self.discover_parameter_defaults(function, &values)?;
+            self.discover_statements(&function.body, &values)
+        })();
+        let completed = self.active_specializations.pop();
+        debug_assert_eq!(completed, Some(index));
+        result?;
+        Ok(index)
+    }
+
+    fn discover_parameter_defaults(
+        &mut self,
+        function: &rumoca_core::Function,
+        values: &ShapeEnvironment,
+    ) -> Result<(), ToDaeError> {
+        let parameters = function
             .inputs
             .iter()
             .chain(&function.outputs)
-            .chain(&function.locals)
-        {
-            if let Some(default) = &parameter.default {
-                self.discover_calls(default, &values)?;
-            }
+            .chain(&function.locals);
+        for default in parameters.filter_map(|parameter| parameter.default.as_ref()) {
+            self.discover_calls(default, values)?;
         }
-        self.discover_statements(&function.body, &values)?;
-        Ok(index)
+        Ok(())
+    }
+
+    fn record_dependency(&mut self, caller: Option<usize>, dependency: usize) {
+        let Some(caller) = caller else {
+            return;
+        };
+        let dependencies = &mut self.analysis.dependencies[caller];
+        if !dependencies.contains(&dependency) {
+            dependencies.push(dependency);
+        }
     }
 
     fn discover_statements(

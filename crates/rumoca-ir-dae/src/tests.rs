@@ -1824,6 +1824,59 @@ fn b1c_topology_error_rolls_back_earlier_owners_before_retry() {
 }
 
 #[test]
+fn b1c_owner_error_rolls_back_direct_aggregate_insertion_before_retry() {
+    let source = TestSource::new("discrete Boolean a; pre(a); owner;");
+    let declaration = source.source("discrete Boolean a", 0);
+    let value_at = source.source("pre(a)", 0);
+    let owner_at = source.source("owner", 0);
+    let dae = Dae::construct(source.map, |dae| {
+        let boolean = dae.types(|types| {
+            types.intern(
+                TypeId::new(0),
+                ValueType::scalar(ScalarType::Boolean),
+                declaration,
+            )
+        })?;
+        let a = dae.variables(|variables| {
+            variables.discrete_value(
+                VarName::new("a"),
+                boolean,
+                declaration,
+                VariableAttributes::default(),
+            )
+        })?;
+        let value = dae.expressions(|expressions| {
+            expressions
+                .at(value_at)
+                .coordinate(CoordinateInput::PreDiscreteValue(a))
+        })?;
+        dae.b1c([a], |topology| {
+            let rejected = topology.owner(owner_at, [a], |owner| {
+                owner.always(owner_at, [(value, value_at)])?;
+                owner.always(owner_at, [(value, value_at)])
+            });
+            assert!(matches!(
+                rejected,
+                Err(DaeConstructionError::InvalidDiscreteBranchSet { .. })
+            ));
+            topology.owner(owner_at, [a], |owner| {
+                owner.always(owner_at, [(value, value_at)])
+            })?;
+            Ok(())
+        })
+    })
+    .unwrap();
+
+    dae.inspect(|view| {
+        assert_eq!(view.discrete_value_owner_count(), 1);
+        let owner = view
+            .discrete_value_owner(view.discrete_value_owner_id(0).unwrap())
+            .unwrap();
+        assert_eq!(owner.branches().len(), 1);
+    });
+}
+
+#[test]
 fn empty_b1c_topology_seals_an_empty_discrete_role_view_and_round_trips() {
     let source = TestSource::new("model Empty end Empty;");
     let dae = Dae::construct(source.map, |dae| dae.b1c([], |_| Ok(()))).unwrap();

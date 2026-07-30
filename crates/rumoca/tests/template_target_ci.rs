@@ -47,12 +47,13 @@ equation
 end DiscreteSmoke;
 "#;
 
-fn template_ir(ir: TargetTemplateIr) -> TemplateIr {
+fn template_ir(ir: TargetTemplateIr) -> Option<TemplateIr> {
     match ir {
-        TargetTemplateIr::Dae => TemplateIr::Dae,
-        TargetTemplateIr::Solve => TemplateIr::Solve,
-        TargetTemplateIr::Flat => TemplateIr::Flat,
-        TargetTemplateIr::Ast => TemplateIr::Ast,
+        TargetTemplateIr::Dae => Some(TemplateIr::Dae),
+        TargetTemplateIr::Solve => Some(TemplateIr::Solve),
+        TargetTemplateIr::Flat => Some(TemplateIr::Flat),
+        TargetTemplateIr::Ast => Some(TemplateIr::Ast),
+        TargetTemplateIr::AlgorithmCode => None,
     }
 }
 
@@ -173,7 +174,7 @@ fn removed_targets_are_rejected_before_rendering() {
             .expect_err("removed target must not render");
         let message = format!("{error:#}");
         assert!(
-            message.contains("Unknown target") || message.contains("not found"),
+            message.to_ascii_lowercase().contains("unknown target"),
             "removed target `{target}` did not fail as an unknown target: {message}"
         );
     }
@@ -364,12 +365,21 @@ fn render_support_templates(
     manifest: &TargetManifest,
     support_templates: &mut Vec<String>,
 ) {
-    let ir = template_ir(manifest.ir);
     let manifest_templates = manifest
         .files
         .iter()
         .map(|file| file.template.as_str())
         .collect::<BTreeSet<_>>();
+    let Some(ir) = template_ir(manifest.ir) else {
+        assert!(
+            target
+                .templates
+                .iter()
+                .all(|template| manifest_templates.contains(template.path)),
+            "Algorithm Code support templates require the checked package and must be declared in target.toml"
+        );
+        return;
+    };
     for template in target.templates {
         if manifest_templates.contains(template.path) {
             continue;

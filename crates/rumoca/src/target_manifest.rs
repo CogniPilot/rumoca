@@ -20,6 +20,20 @@ use rumoca_compile::codegen::targets::{
 use rumoca_compile::compile::core::{Diagnostic as CommonDiagnostic, PrimaryLabel, SourceMap};
 use rumoca_phase_galec::{GalecInput, GalecOptions, GalecTargetError};
 
+struct TargetModelIdentity<'a> {
+    semantic_name: &'a str,
+    artifact_stem: String,
+}
+
+impl<'a> TargetModelIdentity<'a> {
+    fn new(semantic_name: &'a str) -> Self {
+        Self {
+            semantic_name,
+            artifact_stem: semantic_name.replace('.', "_"),
+        }
+    }
+}
+
 #[cfg(feature = "scheduled-sim")]
 pub(crate) fn compile_target(
     result: &CompilationResult,
@@ -29,10 +43,11 @@ pub(crate) fn compile_target(
     phase: Option<TemplateIr>,
 ) -> Result<()> {
     if raw_template_target(target) {
+        let identity = TargetModelIdentity::new(model);
         // A raw .jinja receives the IR chosen by --phase (default DAE).
         return compile_raw_template_target(
             result,
-            model,
+            &identity,
             target,
             output,
             phase.unwrap_or(TemplateIr::Dae),
@@ -100,15 +115,15 @@ pub fn render_target_files(
     target: &str,
     phase: Option<TemplateIr>,
 ) -> Result<Vec<RenderedTargetFile>> {
+    let identity = TargetModelIdentity::new(model);
     if raw_template_target(target) {
         let rendered =
-            render_raw_template(result, model, target, phase.unwrap_or(TemplateIr::Dae))?;
-        let model_identifier = model.replace('.', "_");
+            render_raw_template(result, &identity, target, phase.unwrap_or(TemplateIr::Dae))?;
         let file_name = Path::new(target)
             .file_stem()
             .and_then(|stem| stem.to_str())
             .map(str::to_string)
-            .unwrap_or(model_identifier);
+            .unwrap_or(identity.artifact_stem);
         return Ok(vec![RenderedTargetFile {
             path: file_name,
             content: rendered,
@@ -118,19 +133,25 @@ pub fn render_target_files(
     ensure_target_has_rendered_files(&manifest)?;
     validate_target_requirements(result, &manifest)?;
 
-    let model_identifier = model.replace('.', "_");
     // Algorithm Code package targets render their artifact graph through the
     // generic checksum-web build step. In memory that is
     // `packaging::render_web_files` — the same
     // topological render + hash-inject the CLI writes, minus the on-disk
     // packaging — so CI exercises the exact web the container writer will.
     if manifest.ir == TargetTemplateIr::AlgorithmCode {
-        let package = lower_algorithm_code(result, model, manifest.name.as_deref())?;
-        let render = algorithm_code_web_render(&package, &bundle, &model_identifier);
+        let package =
+            lower_algorithm_code(result, identity.semantic_name, manifest.name.as_deref())?;
+        let render = algorithm_code_web_render(&package, &bundle, &identity.artifact_stem);
         return crate::packaging::render_web_files(&manifest.files, render);
     }
-    let renderer = resolve_manifest_renderer(result, &manifest, &model_identifier)?;
-    render_manifest_files(result, &renderer, &bundle, &manifest, &model_identifier)
+    let renderer = resolve_manifest_renderer(result, &manifest, &identity)?;
+    render_manifest_files(
+        result,
+        &renderer,
+        &bundle,
+        &manifest,
+        &identity.artifact_stem,
+    )
 }
 
 /// Build the switch-dispatch eFMU packaging plan (contract §9 WI-5) for the
@@ -219,7 +240,7 @@ fn algorithm_code_web_render<'a>(
     move |template_or_path, artifact| {
         let source = bundle
             .template_source(template_or_path)
-            .unwrap_or_else(|_| std::borrow::Cow::Borrowed(template_or_path));
+            .unwrap_or(std::borrow::Cow::Borrowed(template_or_path));
         rumoca_phase_codegen::render_algorithm_code_template_with_artifact(
             package,
             artifact,
@@ -273,27 +294,26 @@ fn raw_template_target(target: &str) -> bool {
 /// file-writing and in-memory raw-template paths.
 fn render_raw_template(
     result: &CompilationResult,
-    model: &str,
+    identity: &TargetModelIdentity<'_>,
     target: &str,
     ir: TemplateIr,
 ) -> Result<String> {
     let template =
         std::fs::read_to_string(target).with_context(|| format!("Read template: {target}"))?;
-    let model_identifier = model.replace('.', "_");
     result
-        .render_template_str_with_name_and_ir(&template, &model_identifier, ir)
+        .render_template_str_with_name_and_ir(&template, &identity.artifact_stem, ir)
         .with_context(|| format!("Render raw template: {target}"))
 }
 
 #[cfg(feature = "scheduled-sim")]
 fn compile_raw_template_target(
     result: &CompilationResult,
-    model: &str,
+    identity: &TargetModelIdentity<'_>,
     target: &str,
     output: Option<PathBuf>,
     ir: TemplateIr,
 ) -> Result<()> {
-    let rendered = render_raw_template(result, model, target, ir)?;
+    let rendered = render_raw_template(result, identity, target, ir)?;
     let Some(output_path) = output else {
         print!("{rendered}");
         return Ok(());
@@ -332,17 +352,18 @@ fn compile_manifest_target(
     ensure_target_has_rendered_files(manifest)?;
     validate_target_requirements(result, manifest)?;
 
-    let model_identifier = model.replace('.', "_");
+    let identity = TargetModelIdentity::new(model);
 
     // Resolved before any filesystem effect: a renderer-level rejection
     // (e.g. the GALEC projection) must not leave an output directory behind.
-    let renderer = resolve_manifest_renderer(result, manifest, &model_identifier)?;
-    let out_dir = output.unwrap_or_else(|| default_target_output_dir(manifest, &model_identifier));
+    let renderer = resolve_manifest_renderer(result, manifest, &identity)?;
+    let out_dir =
+        output.unwrap_or_else(|| default_target_output_dir(manifest, &identity.artifact_stem));
 
     eprintln!(
         "Compiling target '{}' for {}",
         bundle.label(manifest),
-        model_identifier
+        identity.artifact_stem
     );
     if let Some(description) = &manifest.description {
         eprintln!("  {description}");
@@ -355,7 +376,7 @@ fn compile_manifest_target(
             bundle,
             manifest,
             &out_dir,
-            &model_identifier,
+            &identity.artifact_stem,
         )?;
     } else {
         write_manifest_files(
@@ -364,10 +385,10 @@ fn compile_manifest_target(
             bundle,
             manifest,
             &out_dir,
-            &model_identifier,
+            &identity.artifact_stem,
         )?;
     }
-    print_target_completion_message(manifest, &out_dir, &model_identifier)?;
+    print_target_completion_message(manifest, &out_dir, &identity.artifact_stem)?;
     Ok(())
 }
 
@@ -420,7 +441,7 @@ fn compile_packaged_target(
                   artifact: &crate::packaging::ArtifactRenderContext<'_>| {
         let source = bundle
             .template_source(template_or_path)
-            .unwrap_or_else(|_| std::borrow::Cow::Borrowed(template_or_path));
+            .unwrap_or(std::borrow::Cow::Borrowed(template_or_path));
         renderer.render_with_artifact(result, source.as_ref(), model_identifier, artifact)
     };
     crate::packaging::render_and_package(
@@ -519,7 +540,7 @@ enum ManifestRenderer {
     WgslSolve,
     /// A checked Algorithm Code package plus immutable artifact facts.
     AlgorithmCode {
-        package: rumoca_ir_galec::package::AlgorithmCodePackage,
+        package: Box<rumoca_ir_galec::package::AlgorithmCodePackage>,
         artifact: crate::packaging::ArtifactSession,
     },
 }
@@ -533,15 +554,19 @@ enum ManifestRenderer {
 fn resolve_manifest_renderer(
     result: &CompilationResult,
     manifest: &TargetManifest,
-    model_identifier: &str,
+    identity: &TargetModelIdentity<'_>,
 ) -> Result<ManifestRenderer> {
     if manifest.ir == TargetTemplateIr::Solve && manifest.name.as_deref() == Some("wgsl-solve") {
         return Ok(ManifestRenderer::WgslSolve);
     }
     if manifest.ir == TargetTemplateIr::AlgorithmCode {
-        let package = lower_algorithm_code(result, model_identifier, manifest.name.as_deref())?;
+        let package =
+            lower_algorithm_code(result, identity.semantic_name, manifest.name.as_deref())?;
         let artifact = crate::packaging::ArtifactSession::new(&manifest.files)?;
-        return Ok(ManifestRenderer::AlgorithmCode { package, artifact });
+        return Ok(ManifestRenderer::AlgorithmCode {
+            package: Box::new(package),
+            artifact,
+        });
     }
     Ok(ManifestRenderer::Ir(template_ir_to_cli(manifest.ir)))
 }
@@ -741,6 +766,14 @@ end ScalarCudaSmoke;
 
     fn command_available(command: &str) -> bool {
         Command::new(command).arg("--version").output().is_ok()
+    }
+
+    #[test]
+    fn target_model_identity_keeps_semantics_separate_from_artifact_paths() {
+        let identity = TargetModelIdentity::new("Package.Controller");
+
+        assert_eq!(identity.semantic_name, "Package.Controller");
+        assert_eq!(identity.artifact_stem, "Package_Controller");
     }
 
     #[test]

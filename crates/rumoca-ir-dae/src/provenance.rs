@@ -123,7 +123,7 @@ impl DaeProvenance {
         let checked_span = ProvenanceSpan::new(span, "DAE object").map_err(|_| {
             DaeConstructionError::MissingProvenance {
                 origin,
-                attempted_span: span,
+                attempted_span: Some(span),
             }
         })?;
         Ok(Self {

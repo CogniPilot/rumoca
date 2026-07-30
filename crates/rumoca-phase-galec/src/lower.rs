@@ -22,7 +22,7 @@ mod expression_helpers;
 mod start;
 use clocked_assignments::lower_clocked_assignments;
 use expression_helpers::*;
-use start::{boolean_start, integer_start, real_start};
+use start::{StartShape, StartValues};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum VariableClass {
@@ -363,17 +363,11 @@ fn build_projected_variable<'dae>(
     classified: &ClassifiedVariable<'dae>,
     evaluator: &mut NumericEvaluator<'dae>,
 ) -> Result<ProjectedVariable, Vec<GalecTargetError>> {
-    let dimensions = classified
-        .variable
-        .value_type()
-        .dimensions()
-        .iter()
-        .map(|extent| u64::from(*extent))
-        .collect::<Vec<_>>();
-    let values = initial_values(classified, evaluator).map_err(single)?;
+    let shape = StartShape::checked(classified.variable).map_err(single)?;
+    let values = initial_values(view, classified, evaluator).map_err(single)?;
     let (start, range, nominal) = match classified.scalar_type {
         gast::ScalarType::Real => (
-            real_start(&dimensions, values).map_err(single)?,
+            shape.real(values).map_err(single)?,
             gast::RangeAttributes {
                 min: optional_real(evaluator, classified.variable.minimum())
                     .map_err(single)?
@@ -385,12 +379,7 @@ fn build_projected_variable<'dae>(
             optional_real(evaluator, classified.variable.nominal()).map_err(single)?,
         ),
         gast::ScalarType::Integer => (
-            integer_start(
-                &dimensions,
-                values,
-                classified.variable.declaration().span(),
-            )
-            .map_err(single)?,
+            shape.integer(values).map_err(single)?,
             gast::RangeAttributes {
                 min: optional_integer(view, evaluator, classified.variable.minimum())
                     .map_err(single)?
@@ -415,12 +404,7 @@ fn build_projected_variable<'dae>(
                 }]);
             }
             (
-                boolean_start(
-                    &dimensions,
-                    values,
-                    classified.variable.declaration().span(),
-                )
-                .map_err(single)?,
+                shape.boolean(values).map_err(single)?,
                 gast::RangeAttributes::default(),
                 None,
             )
@@ -434,9 +418,10 @@ fn build_projected_variable<'dae>(
 }
 
 fn initial_values<'dae>(
+    view: dae::DaeView<'dae>,
     classified: &ClassifiedVariable<'dae>,
     evaluator: &mut NumericEvaluator<'dae>,
-) -> Result<Vec<f64>, GalecTargetError> {
+) -> Result<StartValues, GalecTargetError> {
     let expression = match classified.variable.role() {
         dae::VariableRole::Parameter | dae::VariableRole::Constant => classified
             .variable
@@ -448,19 +433,33 @@ fn initial_values<'dae>(
             .or(classified.variable.binding()),
     };
     let Some(expression) = expression else {
-        return Ok(vec![
-            default_scalar(classified.scalar_type);
-            classified.variable.scalar_count()
-        ]);
+        return Ok(StartValues::shaped(
+            vec![default_scalar(classified.scalar_type); classified.variable.scalar_count()],
+            classified.variable.declaration().span(),
+        ));
     };
-    evaluator
-        .expression(expression)
-        .map_err(|error| GalecTargetError::AttributeNotEvaluable {
+    let values = evaluator.expression(expression).map_err(|error| {
+        GalecTargetError::AttributeNotEvaluable {
             variable: classified.variable.name().to_string(),
             attribute: "start",
             reason: error.to_string(),
             span: Some(error.span()),
-        })
+        }
+    })?;
+    let expression =
+        view.expression(expression)
+            .ok_or_else(|| GalecTargetError::AttributeNotEvaluable {
+                variable: classified.variable.name().to_string(),
+                attribute: "start",
+                reason: "checked initial expression identity does not resolve".to_owned(),
+                span: Some(classified.variable.declaration().span()),
+            })?;
+    StartValues::evaluated(
+        values,
+        expression.value_type().is_scalar(),
+        classified.variable.name(),
+        expression.provenance().span(),
+    )
 }
 
 const fn default_scalar(scalar: gast::ScalarType) -> f64 {

@@ -139,38 +139,42 @@ fn dae_modelica_target_renders_checked_function_values_and_statements() {
                 at("function f", 0),
             )
         })?;
-        let (_function, reservation) = dae.functions(|functions| {
-            functions.reserve_recursive(VarName::new("f"), [real], [real], at("function f", 0))
+        let signature =
+            dae::FunctionSignature::new(VarName::new("f"), [real], [real], at("function f", 0));
+        dae.function(signature, |dae, reservation| {
+            let parameter = dae.functions(|functions| {
+                functions.parameter(&reservation, VarName::new("u"), 0, at("input Real u", 0))
+            })?;
+            let output = dae.functions(|functions| {
+                functions.output(&reservation, VarName::new("y"), 0, at("output Real y", 0))
+            })?;
+            let local = dae.functions(|functions| {
+                functions.local(&reservation, VarName::new("z"), real, at("Real z", 0))
+            })?;
+            let parameter = dae.expressions(|expressions| {
+                expressions.at(at("u", 1)).function_parameter(parameter)
+            })?;
+            let one = dae.expressions(|expressions| {
+                expressions
+                    .at(at("1.0", 0))
+                    .literal(dae::DaeLiteral::Real(1.0))
+            })?;
+            let local_definition = dae.expressions(|expressions| {
+                expressions
+                    .at(at("u + 1.0", 0))
+                    .binary(dae::BinaryOperator::Add, parameter, one)
+            })?;
+            let mut body =
+                dae.functions(|functions| functions.begin(reservation, at("function f", 0)))?;
+            dae.functions(|functions| {
+                functions.assign(&mut body, local, local_definition, at("z := u + 1.0", 0))
+            })?;
+            let local_use = dae.functions(|functions| functions.read(&body, local, at("z", 2)))?;
+            dae.functions(|functions| {
+                functions.assign(&mut body, output, local_use, at("y := z", 0))
+            })?;
+            dae.functions(|functions| functions.define(body, at("function f", 0)))
         })?;
-        let parameter = dae.functions(|functions| {
-            functions.parameter(&reservation, VarName::new("u"), 0, at("input Real u", 0))
-        })?;
-        let output = dae.functions(|functions| {
-            functions.output(&reservation, VarName::new("y"), 0, at("output Real y", 0))
-        })?;
-        let local = dae.functions(|functions| {
-            functions.local(&reservation, VarName::new("z"), real, at("Real z", 0))
-        })?;
-        let parameter = dae
-            .expressions(|expressions| expressions.at(at("u", 1)).function_parameter(parameter))?;
-        let one = dae.expressions(|expressions| {
-            expressions
-                .at(at("1.0", 0))
-                .literal(dae::DaeLiteral::Real(1.0))
-        })?;
-        let local_definition = dae.expressions(|expressions| {
-            expressions
-                .at(at("u + 1.0", 0))
-                .binary(dae::BinaryOperator::Add, parameter, one)
-        })?;
-        let mut body =
-            dae.functions(|functions| functions.begin(reservation, at("function f", 0)))?;
-        dae.functions(|functions| {
-            functions.assign(&mut body, local, local_definition, at("z := u + 1.0", 0))
-        })?;
-        let local_use = dae.functions(|functions| functions.read(&body, local, at("z", 2)))?;
-        dae.functions(|functions| functions.assign(&mut body, output, local_use, at("y := z", 0)))?;
-        dae.functions(|functions| functions.define(body, at("function f", 0)))?;
         Ok(())
     })
     .unwrap();
@@ -208,31 +212,33 @@ fn dae_template_preserves_distinct_definitions_with_one_rhs() {
                 at("function f", 0),
             )
         })?;
-        let (_function, reservation) = dae.functions(|functions| {
-            functions.reserve_recursive(VarName::new("f"), [], [real], at("function f", 0))
-        })?;
-        let output = dae.functions(|functions| {
-            functions.output(&reservation, VarName::new("y"), 0, at("output Real y", 0))
-        })?;
-        let local = dae.functions(|functions| {
-            functions.local(&reservation, VarName::new("z"), real, at("Real z", 0))
-        })?;
-        let rhs = dae.expressions(|expressions| {
-            expressions
-                .at(at("1", 0))
-                .literal(dae::DaeLiteral::Real(1.0))
-        })?;
-        let mut body =
-            dae.functions(|functions| functions.begin(reservation, at("function f", 0)))?;
-        dae.functions(|functions| {
-            functions.assign(&mut body, local, rhs, at("z := 1", 0))?;
-            functions.assign(&mut body, local, rhs, at("z := 1", 1))
-        })?;
-        let local_use = dae.functions(|functions| functions.read(&body, local, at("z", 3)))?;
-        dae.functions(|functions| {
-            functions.assign(&mut body, output, local_use, at("y := z", 0))?;
-            functions.define(body, at("function f", 0))
+        let signature =
+            dae::FunctionSignature::new(VarName::new("f"), [], [real], at("function f", 0));
+        dae.function(signature, |dae, reservation| {
+            let output = dae.functions(|functions| {
+                functions.output(&reservation, VarName::new("y"), 0, at("output Real y", 0))
+            })?;
+            let local = dae.functions(|functions| {
+                functions.local(&reservation, VarName::new("z"), real, at("Real z", 0))
+            })?;
+            let rhs = dae.expressions(|expressions| {
+                expressions
+                    .at(at("1", 0))
+                    .literal(dae::DaeLiteral::Real(1.0))
+            })?;
+            let mut body =
+                dae.functions(|functions| functions.begin(reservation, at("function f", 0)))?;
+            dae.functions(|functions| {
+                functions.assign(&mut body, local, rhs, at("z := 1", 0))?;
+                functions.assign(&mut body, local, rhs, at("z := 1", 1))
+            })?;
+            let local_use = dae.functions(|functions| functions.read(&body, local, at("z", 3)))?;
+            dae.functions(|functions| {
+                functions.assign(&mut body, output, local_use, at("y := z", 0))?;
+                functions.define(body, at("function f", 0))
+            })
         })
+        .map(|_| ())
     })
     .expect("same-RHS checked function constructs");
 
@@ -307,52 +313,55 @@ fn checked_fold_fixture() -> (dae::Dae, FoldSource) {
                 at("function f", 0),
             )
         })?;
-        let (_, reservation) = dae.functions(|functions| {
-            functions.reserve_recursive(VarName::new("f"), [], [real], at("function f", 0))
-        })?;
-        let output = dae.functions(|functions| {
-            functions.output(&reservation, VarName::new("x"), 0, at("output Real x", 0))
-        })?;
-        let mut body =
-            dae.functions(|functions| functions.begin(reservation, at("function f", 0)))?;
-        let zero = dae.expressions(|expressions| {
-            expressions
-                .at(at("0", 0))
-                .literal(dae::DaeLiteral::Real(0.0))
-        })?;
-        dae.functions(|functions| functions.assign(&mut body, output, zero, at("x := 0", 0)))?;
-        let domain = dae.domains(|domains| {
-            domains.structured(
-                rumoca_core::StructuredIndexDomain {
-                    binders: vec![rumoca_core::StructuredIndexBinder {
-                        id: 0,
-                        display_name: "k".to_owned(),
-                        lower: 1,
-                        upper: 2,
-                        step: 1,
-                    }],
-                },
-                at("for k in 1:2 loop", 0),
-            )
-        })?;
-        let binder = dae.domains(|domains| domains.binder(domain, 0, at("k", 1)))?;
-        let mut loop_body = dae.functions(|functions| {
-            functions.begin_loop(body, domain, [output], at("for k in 1:2 loop", 0))
-        })?;
-        let current =
-            dae.functions(|functions| functions.read(loop_body.body(), output, at("x", 3)))?;
-        let index = dae.expressions(|expressions| expressions.at(at("k", 1)).binder(binder))?;
-        let update = dae.expressions(|expressions| {
-            expressions
-                .at(at("x + k", 0))
-                .binary(dae::BinaryOperator::Add, current, index)
-        })?;
-        dae.functions(|functions| {
-            functions.assign_loop(&mut loop_body, output, update, at("x := x + k", 0))
-        })?;
-        let body = dae
-            .functions(|functions| functions.finish_loop(loop_body, at("for k in 1:2 loop", 0)))?;
-        dae.functions(|functions| functions.define(body, at("function f", 0)))
+        let signature =
+            dae::FunctionSignature::new(VarName::new("f"), [], [real], at("function f", 0));
+        dae.function(signature, |dae, reservation| {
+            let output = dae.functions(|functions| {
+                functions.output(&reservation, VarName::new("x"), 0, at("output Real x", 0))
+            })?;
+            let mut body =
+                dae.functions(|functions| functions.begin(reservation, at("function f", 0)))?;
+            let zero = dae.expressions(|expressions| {
+                expressions
+                    .at(at("0", 0))
+                    .literal(dae::DaeLiteral::Real(0.0))
+            })?;
+            dae.functions(|functions| functions.assign(&mut body, output, zero, at("x := 0", 0)))?;
+            let domain = dae.domains(|domains| {
+                domains.structured(
+                    rumoca_core::StructuredIndexDomain {
+                        binders: vec![rumoca_core::StructuredIndexBinder {
+                            id: 0,
+                            display_name: "k".to_owned(),
+                            lower: 1,
+                            upper: 2,
+                            step: 1,
+                        }],
+                    },
+                    at("for k in 1:2 loop", 0),
+                )
+            })?;
+            let binder = dae.domains(|domains| domains.binder(domain, 0, at("k", 1)))?;
+            let mut loop_body = dae.functions(|functions| {
+                functions.begin_loop(body, domain, [output], at("for k in 1:2 loop", 0))
+            })?;
+            let current =
+                dae.functions(|functions| functions.read(loop_body.body(), output, at("x", 3)))?;
+            let index = dae.expressions(|expressions| expressions.at(at("k", 1)).binder(binder))?;
+            let update = dae.expressions(|expressions| {
+                expressions
+                    .at(at("x + k", 0))
+                    .binary(dae::BinaryOperator::Add, current, index)
+            })?;
+            dae.functions(|functions| {
+                functions.assign_loop(&mut loop_body, output, update, at("x := x + k", 0))
+            })?;
+            let body = dae.functions(|functions| {
+                functions.finish_loop(loop_body, at("for k in 1:2 loop", 0))
+            })?;
+            dae.functions(|functions| functions.define(body, at("function f", 0)))
+        })
+        .map(|_| ())
     })
     .expect("checked fold fixture constructs");
     (dae, source)

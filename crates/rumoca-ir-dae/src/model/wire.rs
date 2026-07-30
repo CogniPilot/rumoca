@@ -1,5 +1,6 @@
 mod equation_systems;
 mod expression_wire;
+mod function_graph;
 mod function_replay;
 mod helpers;
 
@@ -571,13 +572,12 @@ fn reconstruct<'dae>(
 ) -> Result<(), DaeConstructionError> {
     let types = reconstruct_types(wire, dae)?;
     let (variables, variable_reservations) = reconstruct_variables(wire, dae, &types)?;
-    let (functions, function_reservations) = reconstruct_functions(wire, dae, &types)?;
     let domains = reconstruct_domains(wire, dae)?;
     let conditions = reconstruct_conditions(wire, dae)?;
     let mut ids = WireIds {
         types,
         variables,
-        functions,
+        functions: Vec::with_capacity(wire.functions.len()),
         domains,
         conditions,
         relations: Vec::with_capacity(wire.relations.len()),
@@ -592,7 +592,7 @@ fn reconstruct<'dae>(
     };
     reconstruct_clocks(wire, dae, &mut ids)?;
     reconstruct_temporal(wire, dae, &mut ids)?;
-    function_replay::reconstruct(wire, dae, &mut ids, function_reservations)?;
+    function_replay::reconstruct(wire, dae, &mut ids)?;
     reconstruct_relations(wire, dae, &mut ids)?;
     define_variables(wire, dae, &ids, variable_reservations)?;
     define_conditions(wire, dae, &ids)?;
@@ -748,31 +748,6 @@ fn reserve_wire_input<'dae>(
     Ok((VariableId::from_raw(id.index()), reservation))
 }
 
-fn reconstruct_functions<'dae>(
-    wire: &StorageWire,
-    dae: &mut DaeConstruction<'dae>,
-    types: &[ValueTypeId<'dae>],
-) -> Result<(Vec<FunctionId<'dae>>, Vec<FunctionReservation<'dae>>), DaeConstructionError> {
-    let mut ids = Vec::with_capacity(wire.functions.len());
-    let mut reservations = Vec::with_capacity(wire.functions.len());
-    for function in &wire.functions {
-        let parameters = map_function_value_types(types, &function.parameters)?;
-        let results = map_function_value_types(types, &function.outputs)?;
-        let (id, reservation) = dae.functions(|functions| {
-            functions.reserve_recursive(
-                function.name.clone(),
-                parameters,
-                results,
-                function.declaration,
-            )
-        })?;
-        reconstruct_function_values(function, dae, types, &reservation)?;
-        ids.push(id);
-        reservations.push(reservation);
-    }
-    Ok((ids, reservations))
-}
-
 fn map_function_value_types<'dae>(
     types: &[ValueTypeId<'dae>],
     values: &[FunctionNamedValueWire],
@@ -787,7 +762,7 @@ fn reconstruct_function_values<'dae>(
     function: &FunctionEntryWire,
     dae: &mut DaeConstruction<'dae>,
     types: &[ValueTypeId<'dae>],
-    reservation: &FunctionReservation<'dae>,
+    reservation: &FunctionReservation<'_, 'dae>,
 ) -> Result<(), DaeConstructionError> {
     for (ordinal, parameter) in function.parameters.iter().enumerate() {
         let rebuilt = dae.functions(|functions| {

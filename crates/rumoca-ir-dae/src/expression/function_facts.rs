@@ -9,6 +9,7 @@ pub(super) struct FunctionInsertionFacts {
     pub(super) scope: Option<u32>,
     pub(super) illegal_coordinate: Option<u32>,
     pub(super) read_set: FunctionReadSet,
+    pub(super) latest_call: Option<FunctionCallFact>,
 }
 
 impl FunctionInsertionFacts {
@@ -16,7 +17,14 @@ impl FunctionInsertionFacts {
         scope: None,
         illegal_coordinate: None,
         read_set: FunctionReadSet::EMPTY,
+        latest_call: None,
     };
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FunctionCallFact {
+    pub(crate) target: u32,
+    pub(crate) witness: u32,
 }
 
 /// Derives all function-local facts while visiting each direct child once.
@@ -60,8 +68,13 @@ pub(super) fn node_function_facts(
         ExprNode::Conditional { operands }
         | ExprNode::Array { operands }
         | ExprNode::Record { operands }
-        | ExprNode::Builtin { operands, .. }
-        | ExprNode::Call { operands, .. } => fold.merge_operands(storage, *operands, at)?,
+        | ExprNode::Builtin { operands, .. } => fold.merge_operands(storage, *operands, at)?,
+        ExprNode::Call {
+            function, operands, ..
+        } => {
+            fold.merge_operands(storage, *operands, at)?;
+            fold.record_call(storage, *function, at)?;
+        }
         ExprNode::Literal(_)
         | ExprNode::Coordinate(_)
         | ExprNode::Range { .. }
@@ -247,6 +260,13 @@ impl FunctionFactsFold {
             .copied()
             .ok_or_else(|| crate::model::unknown("expression", expression, at))?;
         self.facts.scope = merge_function_scope(self.facts.scope, scope, at)?;
+        let latest_call = storage
+            .expressions
+            .function_latest_calls
+            .get(index)
+            .copied()
+            .ok_or_else(|| crate::model::unknown("expression", expression, at))?;
+        self.merge_call(latest_call);
 
         if self.facts.illegal_coordinate.is_none() && self.illegal_error.is_none() {
             match storage
@@ -281,6 +301,27 @@ impl FunctionFactsFold {
             }
         }
         Ok(())
+    }
+
+    fn record_call(
+        &mut self,
+        storage: &Storage,
+        target: u32,
+        at: DaeProvenance,
+    ) -> Result<(), DaeConstructionError> {
+        let witness = checked_u32(storage.expressions.nodes.len(), "expression arena", at)?;
+        self.merge_call(Some(FunctionCallFact { target, witness }));
+        Ok(())
+    }
+
+    fn merge_call(&mut self, candidate: Option<FunctionCallFact>) {
+        if candidate.is_some_and(|candidate| {
+            self.facts
+                .latest_call
+                .is_none_or(|current| candidate.target > current.target)
+        }) {
+            self.facts.latest_call = candidate;
+        }
     }
 
     fn finish(

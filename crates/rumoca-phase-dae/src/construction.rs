@@ -58,7 +58,7 @@ use function_body::{
     lower_guarded_function_return, lower_integer_reduction, lower_total_function_array_definition,
 };
 use function_construction::{
-    FunctionRegistry, define_functions, function_value_type, reserve_functions,
+    FunctionRegistry, FunctionRegistryInput, construct_functions, function_value_type,
 };
 use function_record_assembly::lower_function_record_assembly;
 use function_shapes::{
@@ -167,27 +167,32 @@ fn build_checked<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
 ) -> Result<(), dae::DaeConstructionError> {
     let value_types = reserve_value_types(flat, analysis, construction)?;
-    let (function_ids, reserved_functions) =
-        reserve_functions(flat, &analysis.function_shapes, construction)?;
+    let (coordinates, reserved) = reserve_variables(flat, analysis, construction, &value_types)?;
+    let function_ids = construct_functions(
+        flat,
+        &analysis.function_shapes,
+        construction,
+        &coordinates,
+        FunctionRegistryInput {
+            flat,
+            comprehension_plans: &analysis.comprehension_plans,
+            record_array_fields: &analysis.record_array_fields,
+            constants: &analysis.constants,
+            delay_plans: &analysis.delay_plans,
+            reinit_state_pre: &analysis.reinit_state_pre,
+        },
+        &analysis.function_plans,
+    )?;
     let functions = FunctionRegistry {
         flat,
         shapes: &analysis.function_shapes,
-        ids: function_ids,
+        ids: &function_ids,
         comprehension_plans: &analysis.comprehension_plans,
         record_array_fields: &analysis.record_array_fields,
         constants: &analysis.constants,
         delay_plans: &analysis.delay_plans,
         reinit_state_pre: &analysis.reinit_state_pre,
     };
-    let (coordinates, reserved) = reserve_variables(flat, analysis, construction, &value_types)?;
-    define_functions(
-        construction,
-        flat,
-        &coordinates,
-        &functions,
-        reserved_functions,
-        &analysis.function_plans,
-    )?;
     define_variables(
         construction,
         &coordinates,
@@ -214,18 +219,38 @@ fn build_checked<'dae>(
         &analysis.discrete_value_topology,
         flat,
     )?;
+    lower_model_owners(
+        construction,
+        flat,
+        analysis,
+        &coordinates,
+        &functions,
+        &clocks,
+        discrete_values,
+    )
+}
+
+fn lower_model_owners<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    flat: &flat::Model,
+    analysis: &Analysis,
+    coordinates: &HashMap<VarName, Coordinate<'dae>>,
+    functions: &FunctionRegistry<'_, 'dae>,
+    clocks: &LoweredClocks<'dae>,
+    mut discrete_values: DiscreteValueStaging<'dae>,
+) -> Result<(), dae::DaeConstructionError> {
     lower_equation_systems(
         construction,
         &mut discrete_values,
         flat,
         analysis,
-        &coordinates,
-        &functions,
+        coordinates,
+        functions,
     )?;
     lower_assertions(
         construction,
-        &coordinates,
-        &functions,
+        coordinates,
+        functions,
         &analysis.sample_lattices,
         flat.assert_equations
             .iter()
@@ -237,8 +262,8 @@ fn build_checked<'dae>(
         ModelAlgorithmsRequest {
             flat,
             environment: AlgorithmEnvironment {
-                coordinates: &coordinates,
-                functions: &functions,
+                coordinates,
+                functions,
                 sample_lattices: &analysis.sample_lattices,
             },
             plans: &analysis.model_algorithm_plans,
@@ -249,10 +274,10 @@ fn build_checked<'dae>(
         construction,
         &mut discrete_values,
         WhenChainsRequest::new(
-            &coordinates,
-            &functions,
+            coordinates,
+            functions,
             &analysis.sample_lattices,
-            &clocks,
+            clocks,
             &flat.when_chains,
             &analysis.discrete_value_topology,
         ),
@@ -260,7 +285,7 @@ fn build_checked<'dae>(
     discrete_values.add_holds(
         construction,
         flat,
-        &coordinates,
+        coordinates,
         &analysis.discrete_value_topology,
     )?;
     discrete_values.finish(construction, &analysis.discrete_value_topology)
@@ -633,7 +658,14 @@ fn lower_bindings<'dae>(
         if matches!(coordinate, Coordinate::Parameter(_) | Coordinate::Input(_)) {
             continue;
         }
-        let owner_span = binding.span().unwrap_or(variable.source_span);
+        let Some(binding_span) = binding.span() else {
+            return Err(dae::DaeConstructionError::MissingProvenance {
+                origin: dae::DaeProvenanceOrigin::Source,
+                attempted_span: None,
+            });
+        };
+        let binding_source = dae::DaeProvenance::source(binding_span)?;
+        let owner_span = binding_source.span();
         let owner = dae::DaeProvenance::generated(dae::DaeGeneration::BindingEquation, owner_span)?;
         let rhs = lower_expression(construction, coordinates, functions, binding, None)?;
         match coordinate {
@@ -641,13 +673,7 @@ fn lower_bindings<'dae>(
                 let semantic_owner = discrete_values
                     .owner(owner, [name.clone()], coordinates, topology)?
                     .expect("a discrete-value binding has one planned B.1c owner");
-                discrete_values.always(
-                    semantic_owner,
-                    target,
-                    rhs,
-                    owner,
-                    dae::DaeProvenance::source(owner_span)?,
-                )?;
+                discrete_values.always(semantic_owner, target, rhs, owner, binding_source)?;
             }
             Coordinate::Parameter(_)
             | Coordinate::Input(_)

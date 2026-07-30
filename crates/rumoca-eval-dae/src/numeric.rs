@@ -1729,14 +1729,33 @@ mod tests {
             let integer = dae.types(|types| {
                 types.derived(ValueType::scalar(ScalarType::Integer), at("Integer", 0))
             })?;
-            let (function, reservation) = dae.functions(|functions| {
-                functions.reserve_recursive(
-                    VarName::new("sum3"),
-                    [],
-                    [integer],
-                    at("function sum3", 0),
-                )
-            })?;
+            let function = construct_sum3_function(dae, integer, at)?;
+            dae.expressions(|expressions| expressions.at(at("sum3()", 0)).call(function, 0, []))?;
+            Ok(())
+        })
+        .unwrap();
+
+        dae.inspect(|view| {
+            let call = view.expression_id(view.expression_count() - 1).unwrap();
+            assert_eq!(
+                NumericEvaluator::new(view).expression(call).unwrap(),
+                vec![6.0]
+            );
+        });
+    }
+
+    fn construct_sum3_function<'dae>(
+        dae: &mut rumoca_ir_dae::DaeConstruction<'dae>,
+        integer: rumoca_ir_dae::ValueTypeId<'dae>,
+        at: impl Copy + Fn(&str, usize) -> DaeProvenance,
+    ) -> Result<rumoca_ir_dae::FunctionId<'dae>, rumoca_ir_dae::DaeConstructionError> {
+        let signature = rumoca_ir_dae::FunctionSignature::new(
+            VarName::new("sum3"),
+            [],
+            [integer],
+            at("function sum3", 0),
+        );
+        dae.function(signature, |dae, reservation| {
             let output = dae.functions(|functions| {
                 functions.output(&reservation, VarName::new("y"), 0, at("Integer y", 0))
             })?;
@@ -1783,18 +1802,8 @@ mod tests {
             let body = dae.functions(|functions| {
                 functions.finish_loop(loop_body, at("for k in 1:3 loop y := y + k; end for", 0))
             })?;
-            dae.functions(|functions| functions.define(body, at("function sum3", 0)))?;
-            dae.expressions(|expressions| expressions.at(at("sum3()", 0)).call(function, 0, []))?;
-            Ok(())
+            dae.functions(|functions| functions.define(body, at("function sum3", 0)))
         })
-        .unwrap();
-
-        dae.inspect(|view| {
-            let call = view.expression_id(view.expression_count() - 1).unwrap();
-            assert_eq!(
-                NumericEvaluator::new(view).expression(call).unwrap(),
-                vec![6.0]
-            );
-        });
+        .map(|(function, ())| function)
     }
 }

@@ -490,40 +490,41 @@ fn content_name_carries_dotted_source_model_name() {
     let dir = tempdir().expect("tempdir");
     let file = dir.path().join("GalecCliPkg.mo");
     fs::write(&file, NESTED_FIXTURE).expect("write nested fixture");
-    let out_dir = dir.path().join("out");
+    for target in ["galec", "galec-production"] {
+        let out_dir = dir.path().join(target);
+        let output = Command::new(env!("CARGO_BIN_EXE_rumoca"))
+            .arg("compile")
+            .arg(&file)
+            .arg("--model")
+            .arg("GalecCliPkg.Inner")
+            .arg("--target")
+            .arg(target)
+            .arg("-o")
+            .arg(&out_dir)
+            .output()
+            .unwrap_or_else(|error| panic!("run nested-model {target} compile: {error}"));
+        assert!(
+            output.status.success(),
+            "nested-model {target} compile failed.\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
 
-    let output = Command::new(env!("CARGO_BIN_EXE_rumoca"))
-        .arg("compile")
-        .arg(&file)
-        .arg("--model")
-        .arg("GalecCliPkg.Inner")
-        .arg("--target")
-        .arg("galec")
-        .arg("-o")
-        .arg(&out_dir)
-        .output()
-        .expect("run rumoca compile --model GalecCliPkg.Inner --target galec");
-    assert!(
-        output.status.success(),
-        "nested-model compile failed.\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let root = out_dir.join("GalecCliPkg_Inner");
-    assert!(root.is_dir(), "container directory uses the identifier");
-    assert!(
-        out_dir.join("GalecCliPkg_Inner.efmu").is_file(),
-        ".efmu archive uses the identifier"
-    );
-    // Document order: the root Content element's name comes first, before
-    // the ModelRepresentation entries' names.
-    let names = attribute_values(&root.join("__content.xml"), "name");
-    assert_eq!(
-        names.first().map(String::as_str),
-        Some("GalecCliPkg.Inner"),
-        "Content/@name must be the source model name, got {names:?}"
-    );
+        let root = out_dir.join("GalecCliPkg_Inner");
+        assert!(root.is_dir(), "container directory uses the identifier");
+        assert!(
+            out_dir.join("GalecCliPkg_Inner.efmu").is_file(),
+            ".efmu archive uses the identifier"
+        );
+        // Document order: the root Content element's name comes first, before
+        // the ModelRepresentation entries' names.
+        let names = attribute_values(&root.join("__content.xml"), "name");
+        assert_eq!(
+            names.first().map(String::as_str),
+            Some("GalecCliPkg.Inner"),
+            "{target} Content/@name must be the source model name, got {names:?}"
+        );
+    }
 }
 
 #[test]

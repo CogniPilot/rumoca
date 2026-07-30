@@ -13,7 +13,7 @@ pub enum DaeConstructionError {
     #[error("missing source provenance for {origin}")]
     MissingProvenance {
         origin: DaeProvenanceOrigin,
-        attempted_span: Span,
+        attempted_span: Option<Span>,
     },
     #[error("DAE provenance references an unknown source: {span:?}")]
     UnknownSource { span: Span },
@@ -111,6 +111,14 @@ pub enum DaeConstructionError {
         coordinate: &'static str,
         span: Span,
     },
+    #[error("function {function} calls non-prior function {target} outside its recursive SCC")]
+    InvalidFunctionDependency {
+        function: u32,
+        target: u32,
+        span: Span,
+    },
+    #[error("reserved recursive functions do not form one strongly connected component")]
+    InvalidRecursiveFunctionGroup { span: Span },
     #[error("variable `{name}` has the wrong DAE coordinate role")]
     InvalidVariableRole { name: VarName, span: Span },
     #[error("duplicate {kind} definition for identity {index}")]
@@ -213,7 +221,7 @@ impl DaeConstructionError {
     /// there is no semantic owner from which an honest span could be obtained.
     pub const fn source_span(&self) -> Option<Span> {
         match self {
-            Self::MissingProvenance { attempted_span, .. } => Some(*attempted_span),
+            Self::MissingProvenance { attempted_span, .. } => *attempted_span,
             Self::UnknownSource { span }
             | Self::InvalidSourceRange { span, .. }
             | Self::InvalidEffectiveTypeId { span, .. }
@@ -240,6 +248,8 @@ impl DaeConstructionError {
             | Self::InvalidFunctionScope { span, .. }
             | Self::InvalidFunctionValueRead { span, .. }
             | Self::InvalidFunctionCoordinate { span, .. }
+            | Self::InvalidFunctionDependency { span, .. }
+            | Self::InvalidRecursiveFunctionGroup { span }
             | Self::InvalidVariableRole { span, .. }
             | Self::DuplicateDefinition { span, .. }
             | Self::DuplicateKey { span, .. }

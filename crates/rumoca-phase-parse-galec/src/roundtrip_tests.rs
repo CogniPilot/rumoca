@@ -11,8 +11,8 @@
 //! * **Secondary — AST-level equality (§5.2):** `parse(template(a)) == a` on a
 //!   *canonical generator* — ASTs with `start: None`, finite Reals, and only
 //!   observable parentheses. Redundant `Paren` nodes are stripped to a fixpoint
-//!   on both sides before comparison (the printer re-inserts grouping from
-//!   precedence, so `print` is not injective in operand position). Run over
+//!   on both sides before comparison (the target template re-inserts grouping
+//!   from precedence, so rendering is not injective in operand position). Run over
 //!   F1–F11 and over the `tests/validate.rs`-style canonical blocks
 //!   (`minimal`, `estimator`).
 //! * **Negative parse cases (§7.3):** each malformed / non-conformant input maps
@@ -20,8 +20,8 @@
 //!   EG050–EG055.
 //!
 //! Every fixture is a Rust-built `ast::Block` / `ast::Expression` value produced
-//! by our own in-tree builders (the same independently-authored style as
-//! `tests/block_print.rs`, `tests/expression_print.rs`, `tests/validate.rs`).
+//! by our own in-tree builders (the same independently-authored style as the
+//! checked construction and template golden fixtures).
 //! No CC-BY-SA standard prose or examples are reproduced (GAL-023 / D10).
 
 use rumoca_core::Span;
@@ -39,7 +39,7 @@ use crate::GalecSyntaxError;
 use crate::parse::{parse_block as parse, parse_expression};
 
 // ===========================================================================
-// Builders (our own, mirroring tests/block_print.rs + tests/validate.rs style)
+// Builders (our own, mirroring checked-construction fixture style)
 // ===========================================================================
 
 fn n(name: &str) -> Name {
@@ -187,19 +187,19 @@ fn render_block(block: &Block) -> Result<String, String> {
 
 /// Primary property (§5.1): template(parse(template(b))) == template(b).
 fn assert_block_text_stable(block: &Block) {
-    let text = render_block(block).expect("fixture must print");
+    let text = render_block(block).expect("fixture must render");
     let parsed = parse(&text, "roundtrip")
         .unwrap_or_else(|err| panic!("parse failed:\n{text}\nerror: {err}"));
-    let reprinted = render_block(&parsed).expect("reparsed block must print");
-    assert_eq!(reprinted, text, "print-stability failed");
+    let rendered_again = render_block(&parsed).expect("reparsed block must render");
+    assert_eq!(rendered_again, text, "render stability failed");
 }
 
 /// Secondary property (§5.2): `parse(template(b)) == b`, normalized —
 /// manifest-bound `start` values (absent from `.alg` syntax) to `None`, and
-/// redundant `Paren` nodes stripped (the printer re-inserts grouping from
-/// precedence, so `print` is not injective in operand position).
+/// redundant `Paren` nodes stripped (the target template re-inserts grouping
+/// from precedence, so rendering is not injective in operand position).
 fn assert_block_ast_stable(block: &Block) {
-    let text = render_block(block).expect("fixture must print");
+    let text = render_block(block).expect("fixture must render");
     let mut parsed = parse(&text, "roundtrip").expect("fixture must parse");
     normalize(&mut parsed);
     let mut expected = block.clone();
@@ -1222,7 +1222,7 @@ fn f11_expression_micro_table() {
 // `tests/validate.rs`-style valid blocks are canonical by construction:
 // `start: None`, finite Reals, and only observable parentheses. They must
 // round-trip cleanly at AST level (after `normalize`, which is a no-op on
-// `start` here and only strips parens the printer re-inserts).
+// `start` here and only strips parens the target template re-inserts).
 // ===========================================================================
 
 /// Smallest interesting valid block: one input, one output, empty methods.

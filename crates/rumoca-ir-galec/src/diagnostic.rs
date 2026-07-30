@@ -128,9 +128,8 @@ impl std::fmt::Display for TypeMismatchDetail {
 
 /// GALEC language errors with stable `EG0xx` codes.
 ///
-/// The printer emits the lexeme-level subset (EG001–EG009); the validator
-/// (`crate::validate`, six analyses per SPEC_0034) adds EG010–EG040,
-/// reusing [`Location`].
+/// Structural closure emits EG001–EG009 before the six semantic analyses add
+/// EG010–EG040. Every finding reuses [`Location`].
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum GalecError {
     /// GAL-019 / trap T7: only finite Real literals have a conformant

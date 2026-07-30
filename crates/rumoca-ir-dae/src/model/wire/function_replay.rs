@@ -109,10 +109,132 @@ pub(super) fn reconstruct<'dae>(
     wire: &StorageWire,
     dae: &mut DaeConstruction<'dae>,
     ids: &mut WireIds<'dae>,
-    reservations: Vec<FunctionReservation<'dae>>,
+) -> Result<(), DaeConstructionError> {
+    for component in function_graph::function_components(wire)? {
+        if component.recursive {
+            reconstruct_recursive_component(
+                wire,
+                dae,
+                ids,
+                &component.functions,
+                component.expression_end,
+            )?;
+        } else {
+            reconstruct_acyclic_function(
+                wire,
+                dae,
+                ids,
+                component.functions[0],
+                component.expression_end,
+            )?;
+        }
+    }
+    while ids.expressions.len() < wire.expressions.nodes.len() {
+        let expression = wire_expression(wire, ids.expressions.len())?;
+        match expression.node {
+            ExprNodeWire::FunctionValue { .. }
+            | ExprNodeWire::FunctionFoldParameter { .. }
+            | ExprNodeWire::FunctionFoldOutput { .. } => {
+                return Err(malformed("expressions.nodes.function_scope"));
+            }
+            _ => {
+                if !super::reconstruct_next_expression(wire, dae, ids)? {
+                    return Err(malformed("expressions.nodes"));
+                }
+            }
+        }
+    }
+    expect_expression_arena_consumed(wire, dae, ids)
+}
+
+fn reconstruct_acyclic_function<'dae>(
+    wire: &StorageWire,
+    dae: &mut DaeConstruction<'dae>,
+    ids: &mut WireIds<'dae>,
+    function_index: usize,
+    expression_end: usize,
+) -> Result<(), DaeConstructionError> {
+    let signature = function_signature(wire, ids, function_index)?;
+    let (function, ()) = dae.function(signature, |dae, reservation| {
+        expect_ordinal(
+            "function",
+            function_index,
+            reservation.function().index(),
+            wire.functions[function_index].declaration,
+        )?;
+        ids.functions.push(reservation.function());
+        reconstruct_function_values(
+            &wire.functions[function_index],
+            dae,
+            &ids.types,
+            &reservation,
+        )?;
+        replay_component(wire, dae, ids, vec![reservation], expression_end)
+    })?;
+    expect_ordinal(
+        "function",
+        function_index,
+        function.index(),
+        wire.functions[function_index].declaration,
+    )
+}
+
+fn reconstruct_recursive_component<'dae>(
+    wire: &StorageWire,
+    dae: &mut DaeConstruction<'dae>,
+    ids: &mut WireIds<'dae>,
+    function_indices: &[usize],
+    expression_end: usize,
+) -> Result<(), DaeConstructionError> {
+    let mut signatures = function_indices
+        .iter()
+        .map(|&index| function_signature(wire, ids, index))
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter();
+    let first = signatures
+        .next()
+        .expect("wire function components are nonempty");
+    dae.recursive_functions(first, signatures, |dae, reservations| {
+        for (&index, reservation) in function_indices.iter().zip(&reservations) {
+            expect_ordinal(
+                "function",
+                index,
+                reservation.function().index(),
+                wire.functions[index].declaration,
+            )?;
+            ids.functions.push(reservation.function());
+        }
+        for (&index, reservation) in function_indices.iter().zip(&reservations) {
+            reconstruct_function_values(&wire.functions[index], dae, &ids.types, reservation)?;
+        }
+        replay_component(wire, dae, ids, reservations, expression_end)
+    })?;
+    Ok(())
+}
+
+fn function_signature<'dae>(
+    wire: &StorageWire,
+    ids: &WireIds<'dae>,
+    index: usize,
+) -> Result<FunctionSignature<'dae>, DaeConstructionError> {
+    let function = &wire.functions[index];
+    Ok(FunctionSignature::new(
+        function.name.clone(),
+        map_function_value_types(&ids.types, &function.parameters)?,
+        map_function_value_types(&ids.types, &function.outputs)?,
+        function.declaration,
+    ))
+}
+
+fn replay_component<'group, 'dae>(
+    wire: &StorageWire,
+    dae: &mut DaeConstruction<'dae>,
+    ids: &mut WireIds<'dae>,
+    reservations: Vec<FunctionReservation<'group, 'dae>>,
+    expression_end: usize,
 ) -> Result<(), DaeConstructionError> {
     let mut functions = begin_functions(wire, dae, reservations)?;
-    while ids.expressions.len() < wire.expressions.nodes.len() {
+    while ids.expressions.len() < expression_end {
         let expression = wire_expression(wire, ids.expressions.len())?;
         match expression.node {
             ExprNodeWire::FunctionValue {
@@ -139,7 +261,6 @@ pub(super) fn reconstruct<'dae>(
             }
         }
     }
-    expect_expression_arena_consumed(wire, dae, ids)?;
     finish_functions(wire, dae, ids, functions)
 }
 
@@ -185,19 +306,20 @@ struct FoldEnd {
     provenance: DaeProvenance,
 }
 
-fn begin_functions<'wire, 'dae>(
+fn begin_functions<'wire, 'group, 'dae>(
     wire: &'wire StorageWire,
     dae: &mut DaeConstruction<'dae>,
-    reservations: Vec<FunctionReservation<'dae>>,
+    reservations: Vec<FunctionReservation<'group, 'dae>>,
 ) -> Result<Vec<FunctionReplay<'wire, 'dae>>, DaeConstructionError> {
-    if reservations.len() != wire.functions.len() {
-        return Err(malformed("functions"));
-    }
-    wire.functions
-        .iter()
-        .zip(reservations)
-        .enumerate()
-        .map(|(function_index, (function, reservation))| {
+    reservations
+        .into_iter()
+        .map(|reservation| {
+            let function_index = reservation.function().index() as usize;
+            let function = function_wire(
+                wire,
+                function_index,
+                function_declaration(wire, function_index),
+            )?;
             let body =
                 dae.functions(|functions| functions.begin(reservation, function.declaration))?;
             Ok(FunctionReplay {
@@ -293,18 +415,8 @@ fn replay_read<'dae>(
         definition_ordinal,
         provenance,
     )?;
-    let body = body_for_definition(state, value_raw, definition_ordinal, provenance)?;
+    let body = body_for_definition(dae, state, value_raw, definition_ordinal, provenance)?;
     let value = FunctionValueId::from_raw(function_raw, value_raw);
-    let current =
-        dae.functions(|functions| functions.current_definition_id(body, value, provenance))?;
-    if current.ordinal() != definition_ordinal {
-        return Err(DaeConstructionError::InvalidFunctionValueRead {
-            value: value_raw,
-            expected_definition: Some(current.ordinal()),
-            found_definition: definition_ordinal,
-            span: provenance.span(),
-        });
-    }
     let rebuilt = dae.functions(|functions| functions.read(body, value, provenance))?;
     record_expression(wire, dae, ids, rebuilt, provenance)
 }
@@ -318,12 +430,12 @@ fn advance_to_definition<'dae>(
     definition: u32,
     provenance: DaeProvenance,
 ) -> Result<(), DaeConstructionError> {
-    while body_for_definition(state, value, definition, provenance).is_err() {
+    while body_for_definition(dae, state, value, definition, provenance).is_err() {
         if !apply_next_ready_assignment(wire, dae, ids, state)? {
             break;
         }
     }
-    body_for_definition(state, value, definition, provenance).map(|_| ())
+    body_for_definition(dae, state, value, definition, provenance).map(|_| ())
 }
 
 fn apply_next_ready_assignment<'dae>(
@@ -379,6 +491,7 @@ fn apply_assignment<'dae>(
 }
 
 fn body_for_definition<'state, 'wire, 'dae>(
+    dae: &mut DaeConstruction<'dae>,
     state: &'state FunctionReplay<'wire, 'dae>,
     value: u32,
     definition: u32,
@@ -392,13 +505,15 @@ fn body_for_definition<'state, 'wire, 'dae>(
         ReplayCapability::Body(body) => body,
         ReplayCapability::Fold { body, .. } => body.body(),
     };
-    let current = body.current_values.get(value as usize).copied().flatten();
-    if current == Some(definition) {
+    let value_id = FunctionValueId::from_raw(state.function_index as u32, value);
+    let current =
+        dae.functions(|functions| functions.current_definition_id(body, value_id, provenance))?;
+    if current.ordinal() == definition {
         Ok(body)
     } else {
         Err(DaeConstructionError::InvalidFunctionValueRead {
             value,
-            expected_definition: current,
+            expected_definition: Some(current.ordinal()),
             found_definition: definition,
             span: provenance.span(),
         })
@@ -750,7 +865,8 @@ fn function_state_mut<'state, 'wire, 'dae>(
     provenance: DaeProvenance,
 ) -> Result<&'state mut FunctionReplay<'wire, 'dae>, DaeConstructionError> {
     functions
-        .get_mut(raw as usize)
+        .iter_mut()
+        .find(|state| state.function_index == raw as usize)
         .ok_or_else(|| unknown("function", raw, provenance))
 }
 

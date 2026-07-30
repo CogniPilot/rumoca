@@ -1,6 +1,6 @@
 //! Architecture checks for the checked Algorithm Code template surface.
 
-use super::create_environment;
+use super::{create_environment, xs_double_str};
 use crate::templates;
 use rumoca_ir_galec::ast as galec;
 use rumoca_ir_galec::package::CheckedAlgorithmBlock;
@@ -39,6 +39,73 @@ fn galec_templates_consume_checked_algorithm_code_and_artifact_facts() {
                 template.path
             );
         }
+    }
+}
+
+fn is_conformant_real_literal(text: &str) -> bool {
+    let text = text.strip_prefix('-').unwrap_or(text);
+    let Some((integer, fraction)) = text.split_once('.') else {
+        return false;
+    };
+    if integer.is_empty()
+        || !integer.bytes().all(|byte| byte.is_ascii_digit())
+        || integer.starts_with('0') && integer.len() != 1
+    {
+        return false;
+    }
+    let (fraction, exponent) = fraction.split_once('e').unwrap_or((fraction, ""));
+    if fraction.is_empty() || !fraction.bytes().all(|byte| byte.is_ascii_digit()) {
+        return false;
+    }
+    exponent.is_empty()
+        || exponent.strip_prefix(['+', '-']).is_some_and(|digits| {
+            !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit())
+        })
+}
+
+#[test]
+fn portable_real_filter_preserves_expected_galec_spellings() {
+    for (value, expected) in [
+        (0.0, "0.0"),
+        (-0.0, "-0.0"),
+        (0.5, "0.5"),
+        (-2.5, "-2.5"),
+        (100_000.0, "100000.0"),
+        (0.000_001, "0.000001"),
+        (1.0e300, "1.0e+300"),
+        (-1.5e300, "-1.5e+300"),
+        (1.0e-300, "1.0e-300"),
+        (1.0e21, "1.0e+21"),
+    ] {
+        assert_eq!(xs_double_str(value).unwrap(), expected);
+    }
+}
+
+#[test]
+fn portable_real_filter_is_conformant_and_round_trips() {
+    for value in [
+        0.0,
+        -0.0,
+        1.0,
+        -1.0,
+        0.1 + 0.2,
+        std::f64::consts::PI,
+        1.0e-42,
+        -3.25e17,
+        f64::MAX,
+        f64::MIN_POSITIVE,
+        5e-324,
+    ] {
+        let rendered = xs_double_str(value).unwrap();
+        assert!(is_conformant_real_literal(&rendered), "{rendered}");
+        assert_eq!(rendered.parse::<f64>().unwrap(), value);
+    }
+}
+
+#[test]
+fn portable_real_filter_rejects_non_finite_values() {
+    for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        assert!(xs_double_str(value).is_err());
     }
 }
 
@@ -144,4 +211,31 @@ fn galec_c_templates_do_not_use_lossy_sanitization() {
             );
         }
     }
+}
+
+#[test]
+fn galec_real_min_max_are_relational_target_helpers() {
+    let source = templates::builtin_template_source("embedded-c-galec", "model.c.jinja")
+        .expect("C source template");
+
+    assert!(!source.contains(r#"function == "min" -%}fmin"#), "{source}");
+    assert!(!source.contains(r#"function == "max" -%}fmax"#), "{source}");
+    assert!(
+        source.contains(r#"function == "min" -%}rumoca_galec_min"#),
+        "{source}"
+    );
+    assert!(
+        source.contains(r#"function == "max" -%}rumoca_galec_max"#),
+        "{source}"
+    );
+    assert!(source.contains("return u1 < u2 ? u1 : u2;"), "{source}");
+    assert!(source.contains("return u1 > u2 ? u1 : u2;"), "{source}");
+    assert!(
+        source.contains("#define rumoca_galec_imin"),
+        "Integer min must retain its distinct builtin mapping"
+    );
+    assert!(
+        source.contains("#define rumoca_galec_imax"),
+        "Integer max must retain its distinct builtin mapping"
+    );
 }

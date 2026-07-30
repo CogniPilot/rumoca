@@ -2,3 +2,4 @@
 
 pub mod algorithm_code;
 mod algorithm_code_symbols;
+mod algorithm_code_typed;

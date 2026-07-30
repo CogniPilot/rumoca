@@ -208,6 +208,15 @@ pub(crate) struct FunctionEntry {
     pub(crate) folds: Vec<u32>,
     declaration: DaeProvenance,
     definition: Option<FunctionDefinitionWire>,
+    build: Option<FunctionBuildState>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct FunctionBuildState {
+    current_values: Vec<Option<u32>>,
+    statements: Vec<FunctionStatementWire>,
+    carried_targets: rustc_hash::FxHashSet<u32>,
+    parent_statements: Vec<FunctionStatementWire>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -422,6 +431,30 @@ pub struct DaeConstruction<'dae> {
     marker: PhantomData<&'dae mut &'dae ()>,
 }
 
+/// Complete function header supplied to one scoped construction operation.
+pub struct FunctionSignature<'dae> {
+    name: VarName,
+    parameters: Vec<ValueTypeId<'dae>>,
+    results: Vec<ValueTypeId<'dae>>,
+    declaration: DaeProvenance,
+}
+
+impl<'dae> FunctionSignature<'dae> {
+    pub fn new(
+        name: VarName,
+        parameters: impl IntoIterator<Item = ValueTypeId<'dae>>,
+        results: impl IntoIterator<Item = ValueTypeId<'dae>>,
+        declaration: DaeProvenance,
+    ) -> Self {
+        Self {
+            name,
+            parameters: parameters.into_iter().collect(),
+            results: results.into_iter().collect(),
+            declaration,
+        }
+    }
+}
+
 macro_rules! construction_owner_scopes {
     ($($method:ident => $owner:ident),+ $(,)?) => {
         $(pub fn $method<R>(
@@ -451,6 +484,70 @@ impl<'dae> DaeConstruction<'dae> {
         events => Events,
         clocks => Clocks,
         temporal => Temporal,
+    }
+
+    /// Construct one acyclic function after all of its callees.
+    pub fn function<R>(
+        &mut self,
+        signature: FunctionSignature<'dae>,
+        build: impl for<'function> FnOnce(
+            &mut DaeConstruction<'dae>,
+            FunctionReservation<'function, 'dae>,
+        ) -> Result<R, DaeConstructionError>,
+    ) -> Result<(FunctionId<'dae>, R), DaeConstructionError> {
+        let declaration = signature.declaration;
+        let function = self.functions(|functions| functions.insert_header(signature))?;
+        let result = build(
+            self,
+            FunctionReservation::new(function, FunctionConstruction::Acyclic),
+        )?;
+        expect_complete_function(self.storage, function, declaration)?;
+        Ok((function, result))
+    }
+
+    /// Construct one proven recursive SCC through a single lexical capability.
+    pub fn recursive_functions<R>(
+        &mut self,
+        first: FunctionSignature<'dae>,
+        additional: impl IntoIterator<Item = FunctionSignature<'dae>>,
+        build: impl for<'group> FnOnce(
+            &mut DaeConstruction<'dae>,
+            Vec<FunctionReservation<'group, 'dae>>,
+        ) -> Result<R, DaeConstructionError>,
+    ) -> Result<(Vec<FunctionId<'dae>>, R), DaeConstructionError> {
+        let owner = first.declaration;
+        let signatures = std::iter::once(first).chain(additional).collect::<Vec<_>>();
+        let start = checked_u32(self.storage.functions.len(), "function arena", owner)?;
+        let end = start
+            .checked_add(u32::try_from(signatures.len()).map_err(|_| {
+                DaeConstructionError::CapacityExceeded {
+                    arena: "function arena",
+                    attempted_index: self.storage.functions.len() + signatures.len(),
+                    span: owner.span(),
+                }
+            })?)
+            .ok_or(DaeConstructionError::CapacityExceeded {
+                arena: "function arena",
+                attempted_index: self.storage.functions.len() + signatures.len(),
+                span: owner.span(),
+            })?;
+        let construction = FunctionConstruction::Recursive { start, end };
+        let mut functions = Vec::with_capacity(signatures.len());
+        for signature in signatures {
+            let function = self.functions(|owner| owner.insert_header(signature))?;
+            functions.push(function);
+        }
+        let reservations = functions
+            .iter()
+            .copied()
+            .map(|function| FunctionReservation::new(function, construction))
+            .collect();
+        let result = build(self, reservations)?;
+        for &function in &functions {
+            expect_complete_function(self.storage, function, owner)?;
+        }
+        validate_recursive_function_group(self.storage, &functions, owner)?;
+        Ok((functions, result))
     }
 
     pub fn b1c(
@@ -721,33 +818,43 @@ pub struct Functions<'storage, 'dae> {
     marker: PhantomData<&'dae mut &'dae ()>,
 }
 
-/// Linear authority to define one forward-reserved recursive function.
-pub struct FunctionReservation<'dae> {
-    function: FunctionId<'dae>,
+#[derive(Clone, Copy)]
+enum FunctionConstruction {
+    Acyclic,
+    Recursive { start: u32, end: u32 },
 }
 
-impl<'dae> FunctionReservation<'dae> {
+/// Linear lexical authority to define one function.
+pub struct FunctionReservation<'function, 'dae> {
+    function: FunctionId<'dae>,
+    construction: FunctionConstruction,
+    marker: PhantomData<&'function mut &'function ()>,
+}
+
+impl<'function, 'dae> FunctionReservation<'function, 'dae> {
+    const fn new(function: FunctionId<'dae>, construction: FunctionConstruction) -> Self {
+        Self {
+            function,
+            construction,
+            marker: PhantomData,
+        }
+    }
+
     pub const fn function(&self) -> FunctionId<'dae> {
         self.function
     }
 }
 
-/// In-progress body owned by exactly one forward-reserved function.
-///
-/// The body records source-order statements and the constructor-proven
-/// denotation of every currently assigned output or local.
+/// Non-owning linear capability for one aggregate-owned function body.
 pub struct FunctionBody<'dae> {
     function: FunctionId<'dae>,
+    construction: FunctionConstruction,
     domain: Option<DomainId<'dae>>,
-    current_values: Vec<Option<u32>>,
-    statements: Vec<FunctionStatementWire>,
 }
 
-/// Linear authority for one compact function-loop transition.
+/// Non-owning linear capability for one compact function-loop transition.
 pub struct FunctionLoop<'dae> {
     fold: FunctionFoldId<'dae>,
-    carried_targets: rustc_hash::FxHashSet<u32>,
-    parent_statements: Vec<FunctionStatementWire>,
     body: FunctionBody<'dae>,
 }
 
@@ -771,13 +878,16 @@ impl<'dae> Functions<'_, 'dae> {
         self.storage.function_value_facts(value, provenance)
     }
 
-    pub fn reserve_recursive(
+    fn insert_header(
         &mut self,
-        name: VarName,
-        parameters: impl IntoIterator<Item = ValueTypeId<'dae>>,
-        results: impl IntoIterator<Item = ValueTypeId<'dae>>,
-        declaration: DaeProvenance,
-    ) -> Result<(FunctionId<'dae>, FunctionReservation<'dae>), DaeConstructionError> {
+        signature: FunctionSignature<'dae>,
+    ) -> Result<FunctionId<'dae>, DaeConstructionError> {
+        let FunctionSignature {
+            name,
+            parameters,
+            results,
+            declaration,
+        } = signature;
         check_provenance(self.source_map, declaration)?;
         let parameters = parameters
             .into_iter()
@@ -802,15 +912,15 @@ impl<'dae> Functions<'_, 'dae> {
             folds: Vec::new(),
             declaration,
             definition: None,
+            build: None,
         });
         self.storage.unfilled_functions += 1;
-        let function = FunctionId::from_raw(raw);
-        Ok((function, FunctionReservation { function }))
+        Ok(FunctionId::from_raw(raw))
     }
 
     pub fn parameter(
         &mut self,
-        reservation: &FunctionReservation<'dae>,
+        reservation: &FunctionReservation<'_, 'dae>,
         name: VarName,
         ordinal: usize,
         provenance: DaeProvenance,
@@ -843,7 +953,7 @@ impl<'dae> Functions<'_, 'dae> {
 
     pub fn output(
         &mut self,
-        reservation: &FunctionReservation<'dae>,
+        reservation: &FunctionReservation<'_, 'dae>,
         name: VarName,
         ordinal: usize,
         provenance: DaeProvenance,
@@ -889,7 +999,7 @@ impl<'dae> Functions<'_, 'dae> {
 
     pub fn local(
         &mut self,
-        reservation: &FunctionReservation<'dae>,
+        reservation: &FunctionReservation<'_, 'dae>,
         name: VarName,
         value_type: ValueTypeId<'dae>,
         provenance: DaeProvenance,
@@ -927,15 +1037,15 @@ impl<'dae> Functions<'_, 'dae> {
     }
 
     pub fn begin(
-        &self,
-        reservation: FunctionReservation<'dae>,
+        &mut self,
+        reservation: FunctionReservation<'_, 'dae>,
         provenance: DaeProvenance,
     ) -> Result<FunctionBody<'dae>, DaeConstructionError> {
         check_provenance(self.source_map, provenance)?;
         let entry = self
             .storage
             .functions
-            .get(reservation.function.index() as usize)
+            .get_mut(reservation.function.index() as usize)
             .ok_or_else(|| unknown("function", reservation.function.index(), provenance))?;
         if entry.parameter_values.len() != entry.parameters.len() {
             return Err(DaeConstructionError::IncompleteDefinition {
@@ -959,11 +1069,16 @@ impl<'dae> Functions<'_, 'dae> {
                 span: provenance.span(),
             });
         }
-        Ok(FunctionBody {
-            function: reservation.function,
-            domain: None,
+        entry.build = Some(FunctionBuildState {
             current_values: vec![None; entry.values.len()],
             statements: Vec::new(),
+            carried_targets: rustc_hash::FxHashSet::default(),
+            parent_statements: Vec::new(),
+        });
+        Ok(FunctionBody {
+            function: reservation.function,
+            construction: reservation.construction,
+            domain: None,
         })
     }
 
@@ -1009,7 +1124,8 @@ impl<'dae> Functions<'_, 'dae> {
     ) -> Result<FunctionDefinitionId<'dae>, DaeConstructionError> {
         check_provenance(self.source_map, provenance)?;
         check_function_value_owner(body.function, value, provenance)?;
-        let definition = body
+        function_value_entry(self.storage, value, provenance)?;
+        let definition = function_build_state(self.storage, body)
             .current_values
             .get(value.ordinal() as usize)
             .copied()
@@ -1056,8 +1172,9 @@ impl<'dae> Functions<'_, 'dae> {
         self.storage
             .expect_value_type_compatible(entry.value_type, found, provenance)?;
         let definition = insert_function_definition(self.storage, target, value, provenance)?;
-        body.current_values[target.ordinal() as usize] = Some(definition.ordinal());
-        body.statements.push(FunctionStatementWire::Assignment {
+        let build = function_build_state_mut(self.storage, body);
+        build.current_values[target.ordinal() as usize] = Some(definition.ordinal());
+        build.statements.push(FunctionStatementWire::Assignment {
             definition: definition.ordinal(),
         });
         Ok(())
@@ -1089,7 +1206,6 @@ impl<'dae> Functions<'_, 'dae> {
         let mut seen = rustc_hash::FxHashSet::default();
         seen.reserve(targets.len());
         let mut raw_targets = Vec::with_capacity(targets.len());
-        let mut initial_values = Vec::with_capacity(targets.len());
         for target in &targets {
             check_function_value_owner(parent.function, *target, provenance)?;
             if !seen.insert(target.ordinal()) {
@@ -1100,14 +1216,20 @@ impl<'dae> Functions<'_, 'dae> {
                 });
             }
             raw_targets.push(target.ordinal());
-            initial_values.push(parent.current_values[target.ordinal() as usize].ok_or(
-                DaeConstructionError::IncompleteDefinition {
-                    kind: "function loop initial value",
-                    index: target.ordinal(),
-                    span: provenance.span(),
-                },
-            )?);
         }
+        let build = function_build_state(self.storage, &parent);
+        let initial_values = targets
+            .iter()
+            .map(|target| {
+                build.current_values[target.ordinal() as usize].ok_or(
+                    DaeConstructionError::IncompleteDefinition {
+                        kind: "function loop initial value",
+                        index: target.ordinal(),
+                        span: provenance.span(),
+                    },
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         let fold = reserve_function_fold(
             self.storage,
             parent.function,
@@ -1119,7 +1241,9 @@ impl<'dae> Functions<'_, 'dae> {
         let raw = function_fold_raw(self.storage, fold, provenance)?;
         let generated =
             DaeProvenance::generated(DaeGeneration::FunctionLoopLowering, provenance.span())?;
-        let parent_statements = std::mem::take(&mut parent.statements);
+        let build = function_build_state_mut(self.storage, &parent);
+        build.parent_statements = std::mem::take(&mut build.statements);
+        build.carried_targets = seen;
         parent.domain = Some(domain);
         for (carried, target) in targets.iter().enumerate() {
             let definition = next_function_definition_id(self.storage, parent.function, generated)?;
@@ -1140,14 +1264,10 @@ impl<'dae> Functions<'_, 'dae> {
             self.storage.function_folds[raw as usize]
                 .parameter_definitions
                 .push(definition.ordinal());
-            parent.current_values[target.ordinal() as usize] = Some(definition.ordinal());
+            function_build_state_mut(self.storage, &parent).current_values
+                [target.ordinal() as usize] = Some(definition.ordinal());
         }
-        Ok(FunctionLoop {
-            fold,
-            carried_targets: seen,
-            parent_statements,
-            body: parent,
-        })
+        Ok(FunctionLoop { fold, body: parent })
     }
 
     pub fn assign_loop(
@@ -1159,7 +1279,10 @@ impl<'dae> Functions<'_, 'dae> {
     ) -> Result<(), DaeConstructionError> {
         check_provenance(self.source_map, provenance)?;
         check_function_value_owner(loop_body.body.function, target, provenance)?;
-        if !loop_body.carried_targets.contains(&target.ordinal()) {
+        let carries_target = function_build_state(self.storage, &loop_body.body)
+            .carried_targets
+            .contains(&target.ordinal());
+        if !carries_target {
             return Err(DaeConstructionError::IncompleteDefinition {
                 kind: "function loop target",
                 index: target.ordinal(),
@@ -1197,10 +1320,11 @@ impl<'dae> Functions<'_, 'dae> {
                 span: provenance.span(),
             });
         }
+        let build = function_build_state(self.storage, &loop_body.body);
         let updates = targets
             .iter()
             .map(|target| {
-                loop_body.body.current_values[*target as usize].ok_or(
+                build.current_values[*target as usize].ok_or(
                     DaeConstructionError::IncompleteDefinition {
                         kind: "function loop update",
                         index: *target,
@@ -1257,16 +1381,18 @@ impl<'dae> Functions<'_, 'dae> {
             self.storage.function_folds[raw as usize]
                 .output_definitions
                 .push(definition.ordinal());
-            loop_body.body.current_values[*target as usize] = Some(definition.ordinal());
+            function_build_state_mut(self.storage, &loop_body.body).current_values
+                [*target as usize] = Some(definition.ordinal());
         }
-        loop_body
-            .parent_statements
-            .push(FunctionStatementWire::For {
-                fold: loop_body.fold.ordinal(),
-                statements: std::mem::take(&mut loop_body.body.statements),
-                provenance,
-            });
-        loop_body.body.statements = loop_body.parent_statements;
+        let build = function_build_state_mut(self.storage, &loop_body.body);
+        let loop_statements = std::mem::take(&mut build.statements);
+        build.statements = std::mem::take(&mut build.parent_statements);
+        build.carried_targets.clear();
+        build.statements.push(FunctionStatementWire::For {
+            fold: loop_body.fold.ordinal(),
+            statements: loop_statements,
+            provenance,
+        });
         loop_body.body.domain = None;
         self.storage.unfilled_function_folds -= 1;
         Ok(loop_body.body)
@@ -1278,16 +1404,18 @@ impl<'dae> Functions<'_, 'dae> {
         provenance: DaeProvenance,
     ) -> Result<(), DaeConstructionError> {
         check_provenance(self.source_map, provenance)?;
+        validate_function_dependencies(self.storage, &body, provenance)?;
         let function = body.function;
         let output_values = self.storage.functions[function.index() as usize]
             .output_values
             .clone();
+        let build = function_build_state(self.storage, &body);
         // Checked assignment and loop transitions are the only writers of
         // current values; finalization only has to prove every output is set.
         let results = output_values
             .iter()
             .map(|value| {
-                body.current_values[*value as usize].ok_or(
+                build.current_values[*value as usize].ok_or(
                     DaeConstructionError::IncompleteDefinition {
                         kind: "function output",
                         index: *value,
@@ -1302,8 +1430,12 @@ impl<'dae> Functions<'_, 'dae> {
         if entry.definition.is_some() {
             return Err(duplicate("function", function.index(), provenance));
         }
+        let build = entry
+            .build
+            .take()
+            .expect("checked function body remains aggregate-owned until definition");
         entry.definition = Some(FunctionDefinitionWire {
-            statements: body.statements,
+            statements: build.statements,
             results,
         });
         self.storage.unfilled_functions -= 1;
