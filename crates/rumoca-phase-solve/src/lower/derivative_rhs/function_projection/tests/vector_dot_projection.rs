@@ -105,6 +105,38 @@ fn array_output_bound_to_function_local_uses_complete_vector_dot_product() -> Re
 }
 
 #[test]
+fn function_local_scalar_dot_product_controls_branch() -> Result<(), LowerError> {
+    let mut function = rumoca_core::Function::new("My.localScalarNorm", test_span());
+    function.inputs.push(function_param_with_dims("v", &[3]));
+    function.locals.push(scalar_function_param("n"));
+    function.outputs.push(scalar_function_param("y"));
+    function
+        .body
+        .push(scalar_assignment("n", vector_norm_expr("v")));
+    function.body.push(rumoca_core::Statement::If {
+        cond_blocks: vec![rumoca_core::StatementBlock {
+            cond: binary(
+                rumoca_core::OpBinary::Gt,
+                local_var("n"),
+                real(4.5),
+                test_span(),
+            ),
+            stmts: vec![scalar_assignment("y", real(5.0))],
+        }],
+        else_block: Some(vec![scalar_assignment("y", real(0.0))]),
+        span: test_span(),
+    });
+
+    let value = projected_scalar(
+        vec![function],
+        "My.localScalarNorm",
+        vec![array(vec![real(3.0), real(4.0), real(0.0)], false)],
+    )?;
+    assert_eq!(evaluate_constant(&value), Some(5.0));
+    Ok(())
+}
+
+#[test]
 fn previous_quat_shape_uses_all_four_dot_product_terms() -> Result<(), LowerError> {
     let mut function = rumoca_core::Function::new("My.previousQuatNorm", test_span());
     function

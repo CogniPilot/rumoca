@@ -1493,10 +1493,14 @@ impl<'a> FunctionProjectionAnalysis<'a> {
             value_dims.as_deref(),
             scope,
         )?;
+        let declared = self.declared_param_dims_in_scope(function, &target, scope)?;
+        let scalar_assignment = vectorized_scalar_assignment.is_none()
+            && value_dims.as_ref().is_some_and(Vec::is_empty)
+            && declared.as_ref().is_some_and(Vec::is_empty)
+            && function.locals.iter().any(|local| local.name == target);
         let dims = if let Some(dims) = vectorized_scalar_assignment {
             Some(dims)
         } else {
-            let declared = self.declared_param_dims_in_scope(function, &target, scope)?;
             assignment_projection_dims(
                 function.name.as_str(),
                 &target,
@@ -1542,6 +1546,11 @@ impl<'a> FunctionProjectionAnalysis<'a> {
                 )?;
             }
         }
+        let value = if scalar_assignment {
+            self.normalize_projected_scalar_output_expr(&value, scope, depth + 1, value_span)?
+        } else {
+            value
+        };
         scope.full.insert(target, value);
         Ok(())
     }
