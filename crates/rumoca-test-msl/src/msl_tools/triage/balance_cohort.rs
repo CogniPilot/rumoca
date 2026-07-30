@@ -221,28 +221,32 @@ mod tests {
         format!("debug-model --model {model}")
     }
 
-    fn ed001_row(model: &str, f_x: u64, unknowns: u64) -> Value {
+    /// A worker row whose `balance_detail` is the real serialized `BalanceDetail`.
+    ///
+    /// The payload is produced by serializing an exhaustive `BalanceDetail`
+    /// literal rather than by hand-writing JSON keys. `balance_record` parses the
+    /// field with `serde_json::from_value(..).ok()?`, so a hand-written fixture
+    /// that drifts from the producer's field names deserializes to `None` and the
+    /// cohort silently reports zero records — the exact failure this fixture is
+    /// supposed to catch. With the struct literal, any rename or added field on
+    /// the producer is a compile error here instead.
+    fn ed001_row(model: &str, equations: u64, algebraic_unknowns: u64) -> Value {
+        let detail = rumoca_compile::analysis::BalanceDetail {
+            state_unknowns: 0,
+            algebraic_unknowns: algebraic_unknowns as usize,
+            output_unknowns: 0,
+            discrete_real_unknowns: 0,
+            discrete_value_unknowns: 0,
+            continuous_equations: equations as usize,
+            discrete_real_equations: 0,
+            discrete_value_definitions: 0,
+        };
         json!({
             "model_name": model,
             "phase_reached": "ToDae",
             "error_code": "rumoca::todae::ED001",
-            "balance_detail": {
-                "state_unknowns": 0,
-                "alg_unknowns": unknowns,
-                "output_unknowns": 0,
-                "discrete_real_unknowns": 0,
-                "discrete_valued_unknowns": 0,
-                "f_x_scalar": f_x,
-                "f_x_aggregate_candidate_scalar": 0,
-                "f_z_scalar": 0,
-                "f_m_scalar": 0,
-                "f_c_scalar": 0,
-                "algorithm_outputs": 0,
-                "when_eq_scalar": 0,
-                "interface_flow_count": 0,
-                "overconstrained_interface_count": 0,
-                "oc_break_edge_scalar_count": 0
-            }
+            "balance_detail": serde_json::to_value(&detail)
+                .expect("BalanceDetail serializes to the worker payload shape"),
         })
     }
 
@@ -299,7 +303,9 @@ mod tests {
         // Sorted by package then model.
         assert_eq!(cohort.records[0].package, "Modelica.Fluid");
         assert_eq!(cohort.records[0].balance, -3);
-        assert_eq!(cohort.records[0].dominant_term, "alg_unknowns");
+        // `dominant_balance_term` names the `BalanceDetail` field that dominates
+        // the gap, so the expected label is the producer's field name.
+        assert_eq!(cohort.records[0].dominant_term, "algebraic_unknowns");
         assert_eq!(cohort.records[1].package, "Modelica.Magnetic");
         assert!((cohort.balance_share().expect("nonzero") - 2.0 / 3.0).abs() < 1e-9);
     }
@@ -311,7 +317,7 @@ mod tests {
         push_balance_cohort(&mut out, &cohort);
         assert!(out.contains("Balance Cohort (ED001)"), "{out}");
         assert!(out.contains("Modelica.Fluid"), "{out}");
-        assert!(out.contains("alg_unknowns"), "{out}");
+        assert!(out.contains("algebraic_unknowns"), "{out}");
     }
 
     #[test]

@@ -20,10 +20,10 @@
 {%- macro c_type(kind) -%}
 {%- if kind == "real" -%}double{%- elif kind == "integer" -%}int32_t{%- elif kind == "boolean" -%}bool{%- else -%}{{ fail_closed_scalar_type }}{%- endif -%}
 {%- endmacro -%}
-/* {{ algorithm_code.block_name | replace("*/", "* /") | replace("/*", "/ *") }}
+{% block conformance %}/* {{ algorithm_code.block_name | replace("*/", "* /") | replace("/*", "/ *") }}
  * GALEC-derived embedded C export (SPEC_0034 GAL-024).
  * NOT an eFMI Production Code container.
- * Target syntax and layout are owned by this template. */
+ * Target syntax and layout are owned by this template. */{% endblock %}
 #ifndef {{ c_model | upper }}_GALEC_H
 #define {{ c_model | upper }}_GALEC_H
 

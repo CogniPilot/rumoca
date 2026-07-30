@@ -283,7 +283,16 @@ fn independent_trainable_parameter<'dae>(
     variable: dae::VariableView<'dae>,
     excluded: &IndexSet<u32>,
 ) -> bool {
-    variable.is_tunable()
+    // Only `Real` parameters are trainable. MLS §3.8.3 makes `Integer`,
+    // `Boolean`, `String`, and enumeration parameters discrete-valued, so a
+    // gradient with respect to them is not defined; the optimizer would perturb
+    // them by fractional steps and hand the runtime a value the source model
+    // cannot take. `parameter Integer n` used as an array dimension is the
+    // concrete case: it reaches the lowered parameter vector like any other
+    // declared parameter, and training it would also invalidate the shapes the
+    // model was lowered with.
+    variable.value_type().scalar_type() == dae::ScalarType::Real
+        && variable.is_tunable()
         && variable.origin() == dae::VariableOrigin::Source
         && variable.causality() == dae::VariableCausality::Parameter
         && !excluded.contains(&id.index())

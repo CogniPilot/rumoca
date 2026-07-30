@@ -27,6 +27,16 @@ end Sim;
     );
 }
 
+/// `pid.u2` names a member that neither `PID` nor its `SISO` base declares.
+///
+/// A block has a closed member set once its `extends` clauses are collected
+/// (MLS §4.5, §7.1), so Resolve — which already walks inherited members — is the
+/// first phase that can prove the tail is wrong. SPEC_0008 makes unresolved
+/// references hard errors owned by Resolve, so this is `ER002` at Resolve rather
+/// than `ET001` at Typecheck, and the reported range is the whole failing
+/// reference `pid.u2`. The point the test guards is unchanged: the member error
+/// stops the pipeline before ToDae, so no balance diagnostic is reported on top
+/// of it.
 #[test]
 fn unknown_inherited_block_member_is_reported_before_balance_diagnostics() {
     let lib = r#"
@@ -78,9 +88,9 @@ end Ball;
     let unknown_member = diagnostics
         .iter()
         .find(|d| {
-            d.code == Some(NumberOrString::String("ET001".to_string()))
-                && d.message.contains("unknown member `u2`")
-                && d.message.contains("pid.u2")
+            d.code == Some(NumberOrString::String("ER002".to_string()))
+                && d.message
+                    .contains("unresolved component reference: 'pid.u2'")
         })
         .unwrap_or_else(|| {
             panic!(
@@ -89,7 +99,7 @@ end Ball;
             )
         });
     assert_eq!(unknown_member.range.start.line, 8);
-    assert_eq!(unknown_member.range.start.character, 6);
+    assert_eq!(unknown_member.range.start.character, 2);
     assert_eq!(unknown_member.range.end.line, 8);
     assert_eq!(unknown_member.range.end.character, 8);
     assert_eq!(unknown_member.data, Some(json!({ "precise_range": true })));
