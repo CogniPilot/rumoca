@@ -12,7 +12,6 @@ use std::path::Path;
 
 #[cfg(test)]
 mod checked_dae_tests;
-mod checked_modelica;
 #[cfg(test)]
 mod codegen_test_support;
 mod dae_backend;

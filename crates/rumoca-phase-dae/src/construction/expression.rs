@@ -171,7 +171,6 @@ pub(super) fn lower_expression_scoped<'dae>(
         .span()
         .expect("analysis proves expression provenance");
     let provenance = expression_provenance(span, generated_root)?;
-    let range_input = RangeInput::new(expression, provenance, generated_root);
     match expression {
         Expression::Binary { op, lhs, rhs, .. } => {
             lower_binary_expression(construction, symbols, binders, op, lhs, rhs, provenance)
@@ -233,37 +232,58 @@ pub(super) fn lower_expression_scoped<'dae>(
             filter: _,
             ..
         } => lower_array_comprehension(construction, symbols, binders, expr, indices, provenance),
-        Expression::Range { .. } => lower_range(construction, symbols, binders, range_input),
+        Expression::Range { .. } => lower_range(
+            construction,
+            symbols,
+            binders,
+            RangeInput::new(expression, provenance, generated_root),
+        ),
         Expression::Index {
             base, subscripts, ..
         } => {
             let base = lower_expression_scoped(construction, symbols, binders, base, None)?;
             lower_index(construction, symbols, binders, base, subscripts, provenance)
         }
-        Expression::FunctionCall {
-            name,
-            args,
-            is_constructor,
-            ..
-        } => match name.as_str() {
-            "previous" => lower_previous(construction, symbols, binders, args, provenance),
-            "hold" => lower_hold(construction, symbols, binders, args, provenance),
-            _ => lower_function_call(
-                construction,
-                symbols,
-                binders,
-                name,
-                args,
-                *is_constructor,
-                provenance,
-            ),
-        },
+        Expression::FunctionCall { .. } => {
+            lower_call_expression(construction, symbols, binders, expression, provenance)
+        }
         Expression::FieldAccess { .. } => {
             lower_record_array_field_projection(construction, symbols, binders, provenance)
         }
         Expression::Tuple { .. } | Expression::Empty { .. } => {
             unreachable!("analysis rejects expressions outside the checked lowering grammar")
         }
+    }
+}
+
+fn lower_call_expression<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    symbols: LoweringSymbols<'_, 'dae>,
+    binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
+    expression: &Expression,
+    provenance: dae::DaeProvenance,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    let Expression::FunctionCall {
+        name,
+        args,
+        is_constructor,
+        ..
+    } = expression
+    else {
+        unreachable!("call lowering is selected from a function call")
+    };
+    match name.as_str() {
+        "previous" => lower_previous(construction, symbols, binders, args, provenance),
+        "hold" => lower_hold(construction, symbols, binders, args, provenance),
+        _ => lower_function_call(
+            construction,
+            symbols,
+            binders,
+            name,
+            args,
+            *is_constructor,
+            provenance,
+        ),
     }
 }
 
