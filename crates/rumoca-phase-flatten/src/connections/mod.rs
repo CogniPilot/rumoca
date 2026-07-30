@@ -70,8 +70,8 @@ struct ConnectionVarIndex {
 }
 
 struct ConnectionEndpointIndex {
-    declared: IndexMap<rumoca_core::ComponentPath, ast::InstanceId>,
-    expandable_owners: IndexMap<rumoca_core::ComponentPath, ast::InstanceId>,
+    declared: IndexMap<rumoca_core::ComponentPath, rumoca_core::InstanceId>,
+    expandable_owners: IndexMap<rumoca_core::ComponentPath, rumoca_core::InstanceId>,
 }
 
 impl ConnectionEndpointIndex {

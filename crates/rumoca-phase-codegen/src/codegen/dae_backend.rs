@@ -561,6 +561,7 @@ fn project_coordinate(coordinate: dae::CoordinateView<'_>) -> Value {
         dae::CoordinateView::Condition(id) => coordinate_id("condition", id.index()),
         dae::CoordinateView::Delay(id) => coordinate_id("delay", id.index()),
         dae::CoordinateView::Previous(id) => coordinate_id("previous", id.index()),
+        dae::CoordinateView::ClockInterval(id) => coordinate_id("clock_interval", id.index()),
         dae::CoordinateView::Terminal(id) => coordinate_id("terminal", id.index()),
         dae::CoordinateView::Binder(id) => json!({
             "kind": "binder",

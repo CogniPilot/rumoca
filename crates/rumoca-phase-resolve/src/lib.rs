@@ -263,6 +263,17 @@ pub struct Resolver {
     /// so enclosing-class walks traverse the scope tree instead of re-parsing
     /// qualified names.
     pub(crate) class_def_scopes: std::collections::HashMap<DefId, ScopeId>,
+    /// Resolved declared type of each component declaration.
+    ///
+    /// This lets full component-reference resolution cross component
+    /// declarations by exact identity (`pin` -> `Pin` -> `v`) without
+    /// recovering a type from rendered names.
+    pub(crate) component_type_def_ids: std::collections::HashMap<DefId, DefId>,
+    /// Declarations whose member set can change for a concrete instance.
+    ///
+    /// Resolve must not certify a qualified tail after crossing one of these
+    /// declarations. Instantiation owns that proof after applying redeclares.
+    pub(crate) dynamic_member_root_ids: std::collections::HashSet<DefId>,
     /// DefIds that can legitimately anchor partial type resolution (replaceable roots).
     pub(crate) partial_type_root_ids: std::collections::HashSet<DefId>,
     /// Exclusive upper bound for builtin DefIds. `DefId(0)` is root/global.
@@ -365,6 +376,8 @@ impl Resolver {
             class_to_bases: IndexMap::default(),
             scope_to_class_def: std::collections::HashMap::new(),
             class_def_scopes: std::collections::HashMap::new(),
+            component_type_def_ids: std::collections::HashMap::new(),
+            dynamic_member_root_ids: std::collections::HashSet::new(),
             partial_type_root_ids: std::collections::HashSet::new(),
             builtin_count: 0,
             stats: ResolutionStats::default(),
@@ -394,6 +407,15 @@ impl Resolver {
                 let def_id = self.alloc_def_id(None, name);
                 self.scope_tree
                     .add_predefined_member(ComponentPath::from_flat_path(name), def_id);
+            }
+        }
+        for &(enum_name, literals) in rumoca_core::PREDEFINED_ENUM_LITERALS {
+            for &literal in literals {
+                let literal_id = self.alloc_def_id(Some(enum_name), literal);
+                self.scope_tree.add_predefined_member(
+                    ComponentPath::from_parts([enum_name, literal]),
+                    literal_id,
+                );
             }
         }
 
@@ -493,7 +515,11 @@ impl Resolver {
         let cycle_check_ms = maybe_elapsed_ms(cycle_check_start);
 
         let contents_start = maybe_start_timer();
-        // Phase 2c: Resolve equations, statements, expressions
+        // Resolve every component's declared type before any expression. Full
+        // component-reference resolution is consequently independent of class
+        // declaration order.
+        self.resolve_component_types_all(&mut tree.definitions, "");
+        // Phase 2c: Resolve equations, statements, expressions.
         self.resolve_contents_all(&mut tree.definitions, global_scope, "");
         let contents_ms = maybe_elapsed_ms(contents_start);
 

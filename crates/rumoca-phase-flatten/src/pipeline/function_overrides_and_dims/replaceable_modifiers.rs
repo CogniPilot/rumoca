@@ -2,32 +2,14 @@ use super::*;
 
 pub(super) fn append_replaceable_function_modifier_args(
     current_ref: &rumoca_core::Reference,
-    resolved_name: &str,
+    selection: FunctionSelection,
     mut args: Vec<Expression>,
     ctx: &FunctionOverrideRewriteContext<'_>,
-) -> Vec<Expression> {
-    let receiver_alias = receiver_alias_for_member_function(current_ref, ctx);
-    let existing_names = named_function_arg_names(&args);
-    let declaration_receiver_scope = receiver_alias
-        .as_deref()
-        .map(ComponentPath::from_flat_path)
-        .unwrap_or_else(|| ctx.active_scope.clone());
-    if let Some(default_args) = replaceable_function_modifier_args(
-        current_ref.as_str(),
-        resolved_name,
-        &declaration_receiver_scope,
-        ctx,
-    ) {
-        args.extend(
-            default_args
-                .into_iter()
-                .filter(|(name, _, _)| !existing_names.contains(name))
-                .map(|(name, value, span)| named_function_arg(&name, value, span)),
-        );
-    }
+    span: rumoca_core::Span,
+) -> Result<Vec<Expression>, FlattenError> {
     let existing_names = named_function_arg_names(&args);
     if let Some((override_target, receiver_scope)) =
-        override_function_target_and_receiver_scope(current_ref, ctx)
+        exact_override_function_target_and_receiver_scope(current_ref, selection, ctx, span)?
     {
         args.extend(
             override_target
@@ -43,43 +25,102 @@ pub(super) fn append_replaceable_function_modifier_args(
                 }),
         );
     }
-    args
+    let existing_names = named_function_arg_names(&args);
+    let declaration_receiver_scope = exact_receiver_scope_for_function_modifier(current_ref, ctx);
+    args.extend(
+        replaceable_function_modifier_args(
+            selection,
+            current_ref,
+            &declaration_receiver_scope,
+            ctx,
+            span,
+        )?
+        .into_iter()
+        .filter(|(name, _, _)| !existing_names.contains(name))
+        .map(|(name, value, span)| named_function_arg(&name, value, span)),
+    );
+    Ok(args)
 }
 
-fn override_function_target_and_receiver_scope<'a>(
+fn replaceable_function_modifier_args(
+    selection: FunctionSelection,
     current_ref: &rumoca_core::Reference,
+    receiver_scope: &ComponentPath,
+    ctx: &FunctionOverrideRewriteContext<'_>,
+    span: rumoca_core::Span,
+) -> Result<Vec<(String, Expression, rumoca_core::Span)>, FlattenError> {
+    let class_def = ctx.class_index.get(selection.exposure).ok_or_else(|| {
+        FlattenError::missing_function_selection_identity(
+            current_ref.as_str(),
+            "exposed function DefId is absent from the resolved class index",
+            span,
+        )
+    })?;
+    let mut result = Vec::new();
+    for ext in &class_def.extends {
+        let Some(base_def_id) = ext.base_def_id else {
+            return Err(FlattenError::missing_function_selection_identity(
+                current_ref.as_str(),
+                "function base has no resolved DefId",
+                span,
+            ));
+        };
+        if base_def_id != selection.implementation {
+            continue;
+        }
+        for modifier in &ext.modifications {
+            if let Some(arg) =
+                replaceable_function_modifier_arg(&modifier.expr, receiver_scope, ctx)
+            {
+                result.push(arg);
+            }
+        }
+    }
+    Ok(result)
+}
+
+fn exact_override_function_target_and_receiver_scope<'a>(
+    current_ref: &rumoca_core::Reference,
+    selection: FunctionSelection,
     ctx: &'a FunctionOverrideRewriteContext<'a>,
-) -> Option<(&'a OverrideTarget, ComponentPath)> {
-    let alias = current_ref.last_segment();
-    if let Some(target) = ctx.override_functions.get(alias) {
-        return Some((
-            target,
-            receiver_scope_for_function_modifier(current_ref, ctx),
+    span: rumoca_core::Span,
+) -> Result<Option<(&'a OverrideTarget, ComponentPath)>, FlattenError> {
+    let mut matches = ctx.override_functions.values().filter(|target| {
+        target.class_type == rumoca_core::ClassType::Function
+            && target.def_id == selection.implementation
+            && !target.modifier_args.is_empty()
+    });
+    let target = matches.next();
+    if matches.next().is_some() {
+        return Err(FlattenError::missing_function_selection_identity(
+            current_ref.as_str(),
+            "selected function has multiple exact modifier owners",
+            span,
         ));
     }
-    None
+    Ok(target.map(|target| {
+        (
+            target,
+            exact_receiver_scope_for_function_modifier(current_ref, ctx),
+        )
+    }))
 }
 
-fn receiver_scope_for_function_modifier(
+fn exact_receiver_scope_for_function_modifier(
     current_ref: &rumoca_core::Reference,
     ctx: &FunctionOverrideRewriteContext<'_>,
 ) -> ComponentPath {
-    if let Some(scope) = current_ref.component_scope() {
-        let prefix_parts = scope.prefix_parts();
-        if !prefix_parts.is_empty() {
-            let receiver_scope =
-                ComponentPath::from_parts(prefix_parts.iter().map(|part| part.ident.as_str()));
-            if ctx
-                .class_index
-                .get_by_qualified_name(receiver_scope.as_str())
-                .is_some()
-            {
-                return ctx.active_scope.clone();
-            }
-            return receiver_scope;
-        }
+    let Some(scope) = current_ref.component_scope() else {
+        return ctx.active_scope.clone();
+    };
+    let prefix_parts = scope.prefix_parts();
+    let Some(prefix) = prefix_parts.last() else {
+        return ctx.active_scope.clone();
+    };
+    if ctx.class_index.get(prefix.def_id).is_some() {
+        return ctx.active_scope.clone();
     }
-    ctx.active_scope.clone()
+    ComponentPath::from_parts(prefix_parts.iter().map(|part| part.ident.as_str()))
 }
 
 fn qualify_redeclare_function_arg(
@@ -91,67 +132,11 @@ fn qualify_redeclare_function_arg(
         receiver_alias: receiver_scope,
     }
     .transform_expression(value.clone());
-    crate::ast_lower::expression_from_ast_with_def_map(&value, Some(&ctx.tree.def_map))
-        .expect("redeclare function modifier expression lowering failed")
-}
-
-fn receiver_alias_for_member_function(
-    current_ref: &rumoca_core::Reference,
-    ctx: &FunctionOverrideRewriteContext<'_>,
-) -> Option<String> {
-    if let Some(alias) = current_ref
-        .component_scope()
-        .and_then(rumoca_core::ComponentReferenceScope::parent_ident)
-        .filter(|alias| ctx.override_functions.contains_key(*alias))
-    {
-        return Some(alias.to_string());
-    }
-
-    let current_name = current_ref.as_str();
-    let leaf = current_ref.last_segment();
-    let mut matches = ctx
-        .override_functions
-        .iter()
-        .filter_map(|(alias, receiver_type)| {
-            let function_name =
-                resolve_function_in_package_chain(ctx.tree, ctx.class_index, receiver_type, leaf)?;
-            (function_name == current_name).then(|| alias.clone())
-        });
-    let first = matches.next()?;
-    matches.next().is_none().then_some(first)
-}
-
-fn replaceable_function_modifier_args(
-    current_name: &str,
-    resolved_name: &str,
-    receiver_scope: &ComponentPath,
-    ctx: &FunctionOverrideRewriteContext<'_>,
-) -> Option<Vec<(String, Expression, rumoca_core::Span)>> {
-    let class_def = ctx.class_index.get_by_qualified_name(current_name)?;
-    let mut result = Vec::new();
-    for ext in &class_def.extends {
-        let base_name = ext.base_name.to_string();
-        let resolved_base = ext
-            .base_def_id
-            .and_then(|def_id| ctx.tree.def_map.get(&def_id).cloned())
-            .or_else(|| resolve_class_in_scope_indexed(ctx.class_index, &base_name, current_name).1)
-            .or_else(|| {
-                ctx.class_index
-                    .get_by_qualified_name(&base_name)
-                    .map(|_| base_name.clone())
-            });
-        if resolved_base.as_deref() != Some(resolved_name) {
-            continue;
-        }
-        for modifier in &ext.modifications {
-            if let Some(arg) =
-                replaceable_function_modifier_arg(&modifier.expr, receiver_scope, ctx)
-            {
-                result.push(arg);
-            }
-        }
-    }
-    (!result.is_empty()).then_some(result)
+    crate::ast_lower::expression_from_ast_with_intrinsics(
+        &value,
+        crate::ast_lower::PredefinedIntrinsicIds::from_tree(ctx.tree),
+    )
+    .expect("redeclare function modifier expression lowering failed")
 }
 
 fn replaceable_function_modifier_arg(
@@ -174,8 +159,11 @@ fn replaceable_function_modifier_arg(
     .transform_expression(value);
     Some((
         name,
-        crate::ast_lower::expression_from_ast_with_def_map(&value, Some(&ctx.tree.def_map))
-            .expect("replaceable function modifier expression lowering failed"),
+        crate::ast_lower::expression_from_ast_with_intrinsics(
+            &value,
+            crate::ast_lower::PredefinedIntrinsicIds::from_tree(ctx.tree),
+        )
+        .expect("replaceable function modifier expression lowering failed"),
         expr.span(),
     ))
 }

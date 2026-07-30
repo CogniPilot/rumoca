@@ -78,6 +78,15 @@ pub(super) fn eval_builtin_function(
         | BuiltinFunction::Change
         | BuiltinFunction::Reinit
         | BuiltinFunction::Sample
+        | BuiltinFunction::Clock
+        | BuiltinFunction::Hold
+        | BuiltinFunction::Previous
+        | BuiltinFunction::Interval
+        | BuiltinFunction::SubSample
+        | BuiltinFunction::SuperSample
+        | BuiltinFunction::ShiftSample
+        | BuiltinFunction::BackSample
+        | BuiltinFunction::NoClock
         | BuiltinFunction::Initial
         | BuiltinFunction::Terminal => Err(EvalError::not_constant(
             format!("runtime function: {:?}", func),

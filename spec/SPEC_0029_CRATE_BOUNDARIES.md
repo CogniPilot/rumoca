@@ -98,8 +98,9 @@ Shared helpers **must** have one designated implementation.
 | `expressions_semantically_equal`, `Expression::semantically_eq_ignoring_spans` | `rumoca-core` | Shared Flat/DAE expression identity. This is structural identity only; evaluation stays in `rumoca-eval-*`. |
 | `modelica_sign`, `escape_modelica_string` | `rumoca-core` | MLS `sign` and source-string escaping. |
 | `dependency_first_sccs`, `DependencyScc` | `rumoca-core::dependency_graph` | Deterministic, iterative dependency-first SCC decomposition shared by checked recursive-owner construction. |
+| `InstanceId` | `rumoca-core` | Compact concrete-occurrence identity shared by Instanced and Flat reference vocabulary; source declarations continue to use `DefId`. |
 | UTF-8 byte offset ↔ UTF-16 text position/range helpers | `rumoca-core::text_position` | Protocol-neutral `TextPosition`/`TextRange`; LSP crates convert to/from `lsp_types` locally. No `rumoca-lsp-position` micro-crate. |
-| `INTERNAL_SAMPLE_FUNCTION_NAME`, `source_temporal_function_name`, `source_temporal_function_short_name`, `source_temporal_builtin_name` | `rumoca-core` | Single source for source temporal operator vocabulary shared by DAE and Solve boundary validation. |
+| `INTERNAL_SAMPLE_FUNCTION_NAME`, `source_temporal_function_name`, `source_temporal_function_short_name`, `source_dae_forbidden_builtin_name` | `rumoca-core` | Single source for typed source temporal/synchronous operator vocabulary shared by DAE and Solve boundary validation. |
 | `expr_contains_var` | `rumoca-ir-dae::expr_query` | Handles every `Expression` variant |
 | `expr_refers_to_var` | `rumoca-ir-dae::expr_query` | Same single-source rule. |
 | `expr_contains_der_of` | `rumoca-ir-dae::expr_query` | Same single-source rule. |

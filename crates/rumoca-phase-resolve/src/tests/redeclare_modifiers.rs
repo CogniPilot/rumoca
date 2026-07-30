@@ -77,7 +77,7 @@ end C;
         panic!("expected redeclare package value to be a class modification");
     };
     let def_id = target
-        .def_id
+        .root_def_id()
         .expect("redeclare package RHS should resolve to enclosing Medium");
     let resolved = tree
         .def_map
@@ -218,7 +218,7 @@ end Derived;
         panic!("expected Medium.saturationPressure call");
     };
     let def_id = comp
-        .def_id
+        .root_def_id()
         .expect("deferred medium call should be anchored to replaceable package root");
     let resolved = tree
         .def_map

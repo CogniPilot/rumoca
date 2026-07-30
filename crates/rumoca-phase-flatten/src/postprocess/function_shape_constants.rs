@@ -31,16 +31,28 @@ pub(super) fn materialize_function_shape_constants(
         .chain(function.outputs.iter_mut())
         .chain(function.locals.iter_mut())
     {
+        let mut dimensions = parameter.dimensions().to_vec();
         for (axis, subscript) in parameter.shape_expr.iter_mut().enumerate() {
             materializer.materialize_subscript(subscript)?;
             if let Subscript::Index { value, .. } = subscript {
-                let dimension = parameter
-                    .dims
+                let dimension = dimensions
                     .get_mut(axis)
                     .expect("function shape expressions and dimensions are constructed together");
                 *dimension = *value;
             }
         }
+        parameter.effective_type = rumoca_core::EffectiveType::new(
+            parameter.effective_type.nominal_type(),
+            parameter.effective_type.canonical_type(),
+            dimensions,
+        )
+        .map_err(|error| {
+            FlattenError::missing_resolved_class_metadata(
+                &parameter.name,
+                format!("materialized function shape: {error}"),
+                parameter.span,
+            )
+        })?;
     }
     Ok(())
 }
@@ -160,7 +172,9 @@ impl FallibleExpressionRewriter for FunctionShapeConstantMaterializer<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rumoca_core::{BytePos, ComponentReference, Function, FunctionParam, Literal, SourceId};
+    use rumoca_core::{
+        BytePos, ComponentRefPart, ComponentReference, Function, Literal, SourceId,
+    };
 
     const SOURCE_NAME: &str = "<exact_function_shape_constants>";
     const SOURCE: &str = "Left.nState Right.nState";
@@ -203,15 +217,24 @@ mod tests {
 
     fn function_with_shape(name: &str, target: DefId, span: Span) -> Function {
         let reference = Reference::from_component_reference(
-            ComponentReference::from_flat_segments("nState", span, Some(target)),
+            ComponentReference::construct(
+                false,
+                span,
+                vec![ComponentRefPart {
+                    ident: "nState".to_string(),
+                    span,
+                    subs: Vec::new(),
+                    def_id: target,
+                }],
+            )
+            .expect("shape constant reference carries exact declaration identity"),
         );
         let shape = Expression::VarRef {
             name: reference,
             subscripts: Vec::new(),
             span,
         };
-        let output = FunctionParam::new("state", "Integer", span)
-            .with_dims(vec![0])
+        let output = crate::test_support::integer_param("state", vec![0], span)
             .with_shape_expr(vec![Subscript::expr(Box::new(shape), span)]);
         let mut function = Function::new(name, span);
         function.add_output(output);
@@ -220,7 +243,7 @@ mod tests {
 
     fn assert_shape(function: &Function, extent: i64, span: Span) {
         let output = function.outputs.first().expect("function has output");
-        assert_eq!(output.dims, vec![extent]);
+        assert_eq!(output.dimensions(), [extent]);
         assert!(matches!(
             output.shape_expr.as_slice(),
             [Subscript::Index {

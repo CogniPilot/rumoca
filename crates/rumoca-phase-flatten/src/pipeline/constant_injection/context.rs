@@ -1,5 +1,20 @@
 use crate::Function;
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct ConstantOccurrenceId {
+    owner: rumoca_core::InstanceId,
+    declaration: rumoca_core::DefId,
+}
+
+impl ConstantOccurrenceId {
+    pub(crate) fn new(owner: rumoca_core::InstanceId, declaration: rumoca_core::DefId) -> Self {
+        Self {
+            owner,
+            declaration,
+        }
+    }
+}
+
 /// Context for flattening.
 pub(crate) struct Context {
     /// Parameter values for evaluating for-equation ranges (name -> integer value).
@@ -16,10 +31,22 @@ pub(crate) struct Context {
     /// Constant values keyed by their exact Resolve declaration identity.
     pub constant_values_by_def_id:
         rustc_hash::FxHashMap<rumoca_core::DefId, rumoca_core::Expression>,
+    /// Component-local overrides keyed by exact instantiated occurrence and
+    /// exact Resolve declaration identity.
+    pub(crate) constant_values_by_occurrence:
+        rustc_hash::FxHashMap<ConstantOccurrenceId, rumoca_core::Expression>,
+    /// Owning component occurrence for each instantiated class occurrence.
+    pub(crate) class_owner_components:
+        rustc_hash::FxHashMap<rumoca_core::InstanceId, rumoca_core::InstanceId>,
+    /// Root class occurrence, which is its own semantic owner because it has no
+    /// containing component occurrence.
+    pub(crate) root_class_instance: Option<rumoca_core::InstanceId>,
     /// Qualified declaration names keyed by semantic target DefId.
     pub target_def_names: rustc_hash::FxHashMap<rumoca_core::DefId, String>,
     /// Exact Resolve identity of the predefined `String` declaration.
     pub predefined_string_declaration: Option<rumoca_core::DefId>,
+    /// Exact Resolve identities of synchronous predefined intrinsics.
+    pub predefined_intrinsics: crate::ast_lower::PredefinedIntrinsicIds,
     /// Fully qualified constant names explicitly modified by extends clauses.
     /// These must not be overwritten by inherited declaration defaults.
     pub(crate) modified_constant_keys: rustc_hash::FxHashSet<String>,

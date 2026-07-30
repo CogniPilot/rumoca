@@ -1,4 +1,5 @@
 mod derived_wire;
+mod expression_children;
 mod function_owners;
 mod function_wire;
 mod provenance;
@@ -990,11 +991,11 @@ fn add_variable_role_coordinates<'dae>(
             ClockLattice::new(ClockRational::ONE, ClockRational::ZERO).unwrap(),
             spans.discrete_real,
         )?;
-        clocks.own_discrete_real(clock, variables.discrete_real, spans.discrete_real)?;
+        clocks.own_discrete_real(clock.into(), variables.discrete_real, spans.discrete_real)?;
         Ok(clock)
     })?;
     let previous = dae.temporal(|temporal| {
-        temporal.previous_discrete_real(clock, variables.discrete_real, spans.discrete_real)
+        temporal.previous_discrete_real(clock.into(), variables.discrete_real, spans.discrete_real)
     })?;
     dae.expressions(|expressions| {
         for (at, coordinate) in [

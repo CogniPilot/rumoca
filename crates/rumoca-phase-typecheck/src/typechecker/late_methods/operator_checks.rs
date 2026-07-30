@@ -200,7 +200,7 @@ impl TypeChecker {
         }
         let dotted_name = Self::component_ref_name(comp);
         let input_components: Vec<_> = if let Some(signature) = comp
-            .def_id
+            .root_def_id()
             .and_then(|def_id| self.function_signatures.get(&def_id))
         {
             signature

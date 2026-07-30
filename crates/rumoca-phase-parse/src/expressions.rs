@@ -430,14 +430,14 @@ fn ast_name_to_comp_ref_with_local(
         .map(|token| rumoca_ir_ast::ComponentRefPart {
             ident: token.clone(),
             subs: None,
+            def_id: None,
         })
         .collect();
     Ok(rumoca_ir_ast::ComponentReference {
         local,
         span: token_span(first_ident)?,
         parts,
-        def_id: None,
-        target_def_id: None,
+        qualified_display_name: None,
     })
 }
 
@@ -460,9 +460,9 @@ fn ident_to_comp_ref(
         parts: vec![rumoca_ir_ast::ComponentRefPart {
             ident: ident.clone(),
             subs: None,
+            def_id: None,
         }],
-        def_id: None,
-        target_def_id: None,
+        qualified_display_name: None,
     })
 }
 
@@ -1128,6 +1128,7 @@ fn convert_output_primary(
                     span: merge_spans(base.span(), token_span(&field.ident)?),
                     base: Arc::new(base),
                     field: field.ident.text.to_string(),
+                    field_def_id: None,
                 })
             }
         }
@@ -1152,13 +1153,13 @@ fn convert_global_function_call(
     let part = rumoca_ir_ast::ComponentRefPart {
         ident: tok.clone().into(),
         subs: None,
+        def_id: None,
     };
     let comp = rumoca_ir_ast::ComponentReference {
         local: false,
         span: token_span(&tok.clone().into())?,
         parts: vec![part],
-        def_id: None,
-        target_def_id: None,
+        qualified_display_name: None,
     };
     let args = gfc.function_call_args.args.clone();
     let func_call = rumoca_ir_ast::Expression::FunctionCall {

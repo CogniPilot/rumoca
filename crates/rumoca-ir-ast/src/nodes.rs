@@ -699,6 +699,12 @@ impl Import {
 pub struct ComponentRefPart {
     pub ident: Token,
     pub subs: Option<Vec<Subscript>>,
+    /// Exact declaration reached by this segment.
+    ///
+    /// Resolve fills static paths; Instantiate fills segments deferred across
+    /// replaceable-class boundaries before constructing instance IR.
+    #[serde(skip)]
+    pub def_id: Option<DefId>,
 }
 
 impl Debug for ComponentRefPart {
@@ -726,7 +732,7 @@ fn format_subscripts(subs: &[Subscript]) -> String {
         .join(",")
 }
 
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 
 pub struct ComponentReference {
     /// Whether this reference starts with a `.` (local lookup).
@@ -735,14 +741,46 @@ pub struct ComponentReference {
     pub parts: Vec<ComponentRefPart>,
     /// Source span for this component reference.
     pub span: Span,
-    /// Resolved definition ID for the first part (populated by resolve phase).
-    /// For `a.b.c`, this resolves `a` to its DefId.
+    /// Non-semantic qualified display spelling. Resolution and identity proofs
+    /// use only `parts`; this cache is ignored by equality and serialization.
     #[serde(skip)]
-    pub def_id: Option<DefId>,
-    /// Exact final declaration reached by the complete reference, when Resolve
-    /// can prove the full path without instance-specific lookup.
-    #[serde(skip)]
-    pub target_def_id: Option<DefId>,
+    pub qualified_display_name: Option<rumoca_core::VarName>,
+}
+
+impl ComponentReference {
+    pub fn root_def_id(&self) -> Option<DefId> {
+        self.parts.first().and_then(|part| part.def_id)
+    }
+
+    pub fn target_def_id(&self) -> Option<DefId> {
+        self.parts.last().and_then(|part| part.def_id)
+    }
+
+    pub fn set_root_def_id(&mut self, def_id: Option<DefId>) {
+        if let Some(root) = self.parts.first_mut() {
+            root.def_id = def_id;
+        }
+    }
+
+    pub fn set_target_def_id(&mut self, def_id: Option<DefId>) {
+        if let Some(target) = self.parts.last_mut() {
+            target.def_id = def_id;
+        }
+    }
+
+    pub fn qualified_display_name(&self) -> Option<&rumoca_core::VarName> {
+        self.qualified_display_name.as_ref()
+    }
+
+    pub fn set_qualified_display_name(&mut self, name: impl Into<String>) {
+        self.qualified_display_name = Some(rumoca_core::VarName::new(name));
+    }
+}
+
+impl PartialEq for ComponentReference {
+    fn eq(&self, other: &Self) -> bool {
+        self.local == other.local && self.parts == other.parts && self.span == other.span
+    }
 }
 
 impl Display for ComponentReference {
@@ -989,6 +1027,9 @@ pub enum Expression {
         base: Arc<Expression>,
         /// The field name to access.
         field: String,
+        /// Exact declaration identity of the projected field after resolution.
+        #[serde(skip)]
+        field_def_id: Option<DefId>,
         span: Span,
     },
 }
@@ -1568,6 +1609,49 @@ mod tests {
             },
             ..ClassDef::default()
         }
+    }
+
+    #[test]
+    fn component_reference_display_cache_is_nonsemantic() {
+        let root = DefId::new(31);
+        let target = DefId::new(32);
+        let reference = ComponentReference {
+            local: false,
+            parts: vec![
+                ComponentRefPart {
+                    ident: Token {
+                        text: Arc::from("alias"),
+                        ..Token::default()
+                    },
+                    subs: None,
+                    def_id: Some(root),
+                },
+                ComponentRefPart {
+                    ident: Token {
+                        text: Arc::from("member"),
+                        ..Token::default()
+                    },
+                    subs: None,
+                    def_id: Some(target),
+                },
+            ],
+            span: Span::from_offsets(
+                rumoca_core::SourceId::from_source_name("component_reference_identity.mo"),
+                3,
+                15,
+            ),
+            qualified_display_name: None,
+        };
+        let mut qualified = reference.clone();
+        qualified.set_qualified_display_name("Pkg.Concrete.member");
+
+        assert!(reference == qualified);
+        assert_eq!(qualified.root_def_id(), Some(root));
+        assert_eq!(qualified.target_def_id(), Some(target));
+        assert_eq!(
+            qualified.qualified_display_name().map(|name| name.as_str()),
+            Some("Pkg.Concrete.member")
+        );
     }
 
     #[test]

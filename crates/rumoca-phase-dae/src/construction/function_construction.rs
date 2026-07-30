@@ -9,6 +9,7 @@ pub(super) struct FunctionRegistry<'shape, 'dae> {
     pub(super) constants: &'shape EvalContext,
     pub(super) delay_plans: &'shape HashMap<Span, DelayPlan>,
     pub(super) reinit_state_pre: &'shape HashSet<Span>,
+    pub(super) coordinate_instances: &'shape HashMap<rumoca_core::InstanceId, Coordinate<'dae>>,
 }
 
 impl<'dae> FunctionRegistry<'_, 'dae> {
@@ -43,7 +44,7 @@ impl<'dae> FunctionRegistry<'_, 'dae> {
         ordinal: usize,
     ) -> dae::ScalarType {
         let parameter = &self.flat.functions[&key.function].inputs[ordinal];
-        primitive_scalar_type(&parameter.type_name)
+        effective_function_scalar_type(self.flat, parameter)
             .expect("record lowering leaves primitive function parameters")
     }
 }
@@ -53,7 +54,7 @@ pub(super) fn construct_functions<'dae>(
     shapes: &FunctionShapeAnalysis,
     construction: &mut dae::DaeConstruction<'dae>,
     coordinates: &HashMap<VarName, Coordinate<'dae>>,
-    registry: FunctionRegistryInput<'_>,
+    registry: FunctionRegistryInput<'_, 'dae>,
     plans: &HashMap<FunctionSpecializationKey, FunctionPlan>,
 ) -> Result<HashMap<FunctionSpecializationKey, dae::FunctionId<'dae>>, dae::DaeConstructionError> {
     let mut ids = HashMap::with_capacity(shapes.certificates().len());
@@ -89,18 +90,19 @@ pub(super) fn construct_functions<'dae>(
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct FunctionRegistryInput<'shape> {
+pub(super) struct FunctionRegistryInput<'shape, 'dae> {
     pub(super) flat: &'shape flat::Model,
     pub(super) comprehension_plans: &'shape HashMap<ComprehensionKey, ComprehensionPlan>,
     pub(super) record_array_fields: &'shape RecordArrayFieldPlans,
     pub(super) constants: &'shape EvalContext,
     pub(super) delay_plans: &'shape HashMap<Span, DelayPlan>,
     pub(super) reinit_state_pre: &'shape HashSet<Span>,
+    pub(super) coordinate_instances: &'shape HashMap<rumoca_core::InstanceId, Coordinate<'dae>>,
 }
 
 impl<'shape, 'dae> FunctionRegistry<'shape, 'dae> {
     fn new(
-        input: FunctionRegistryInput<'shape>,
+        input: FunctionRegistryInput<'shape, 'dae>,
         shapes: &'shape FunctionShapeAnalysis,
         ids: &'shape HashMap<FunctionSpecializationKey, dae::FunctionId<'dae>>,
     ) -> Self {
@@ -113,6 +115,7 @@ impl<'shape, 'dae> FunctionRegistry<'shape, 'dae> {
             constants: input.constants,
             delay_plans: input.delay_plans,
             reinit_state_pre: input.reinit_state_pre,
+            coordinate_instances: input.coordinate_instances,
         }
     }
 }
@@ -122,7 +125,7 @@ fn construct_recursive_component<'dae>(
     coordinates: &HashMap<VarName, Coordinate<'dae>>,
     shapes: &FunctionShapeAnalysis,
     ids: &mut HashMap<FunctionSpecializationKey, dae::FunctionId<'dae>>,
-    registry: FunctionRegistryInput<'_>,
+    registry: FunctionRegistryInput<'_, 'dae>,
     plans: &HashMap<FunctionSpecializationKey, FunctionPlan>,
     specializations: &[usize],
 ) -> Result<(), dae::DaeConstructionError> {
@@ -199,7 +202,7 @@ pub(super) fn function_value_type<'dae>(
     active_records: &mut HashSet<rumoca_core::DefId>,
 ) -> Result<dae::ValueTypeId<'dae>, dae::DaeConstructionError> {
     let provenance = dae::DaeProvenance::source(value.span)?;
-    if let Some(scalar) = primitive_scalar_type(&value.type_name) {
+    if let Some(scalar) = effective_function_scalar_type(flat, value) {
         return construction.types(|types| {
             types.derived(
                 dae::ValueType::array(scalar, dimensions.clone()),
@@ -223,7 +226,7 @@ pub(super) fn function_value_type<'dae>(
     let mut fields = Vec::with_capacity(constructor.inputs.len());
     for field in &constructor.inputs {
         let shape = field
-            .dims
+            .dimensions()
             .iter()
             .map(|extent| u32::try_from(*extent).expect("function shape analysis proves extents"))
             .collect::<Vec<_>>();

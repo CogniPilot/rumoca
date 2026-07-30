@@ -102,9 +102,7 @@ impl FunctionCatalog {
         reference: &rumoca_core::ComponentReference,
         span: rumoca_core::Span,
     ) -> Result<Option<FunctionSignature>, FlattenError> {
-        let Some(def_id) = reference.target_def_id else {
-            return Ok(None);
-        };
+        let def_id = reference.target_def_id();
         let Some(instance_id) = self.unique_instance_by_def.get(&def_id) else {
             return Ok(None);
         };
@@ -474,10 +472,10 @@ fn validate_vectorized_dimensions(
         let Some(dims) = variable_dims.get(name.var_name()) else {
             continue;
         };
-        if dims.len() <= input.dims.len() {
+        if dims.len() <= input.dimensions().len() {
             continue;
         }
-        let extra = dims[..dims.len() - input.dims.len()].to_vec();
+        let extra = dims[..dims.len() - input.dimensions().len()].to_vec();
         match &vectorized {
             None => vectorized = Some((extra, name.as_str().to_string())),
             Some((expected, first_name)) if *expected != extra => {
@@ -706,6 +704,9 @@ mod tests {
     const FUNCTION_DEF_ID: rumoca_core::DefId = rumoca_core::DefId(100);
     const FIRST_INPUT_DEF_ID: rumoca_core::DefId = rumoca_core::DefId(101);
     const SECOND_INPUT_DEF_ID: rumoca_core::DefId = rumoca_core::DefId(102);
+    const OUTPUT_DEF_ID: rumoca_core::DefId = rumoca_core::DefId(103);
+    const PACKAGE_DEF_ID: rumoca_core::DefId = rumoca_core::DefId(99);
+    const APPLY_OUTPUT_DEF_ID: rumoca_core::DefId = rumoca_core::DefId(201);
 
     fn span() -> rumoca_core::Span {
         rumoca_core::Span::from_offsets(
@@ -715,17 +716,33 @@ mod tests {
         )
     }
 
+    fn component_reference(
+        parts: &[(&str, rumoca_core::DefId)],
+    ) -> rumoca_core::ComponentReference {
+        rumoca_core::ComponentReference::construct(
+            false,
+            span(),
+            parts
+                .iter()
+                .map(|(ident, def_id)| rumoca_core::ComponentRefPart {
+                    ident: (*ident).to_string(),
+                    span: span(),
+                    subs: Vec::new(),
+                    def_id: *def_id,
+                })
+                .collect(),
+        )
+        .expect("test reference is nonempty and every part is resolved")
+    }
+
     fn resolved_call(
         instance_id: rumoca_core::FunctionInstanceId,
         args: Vec<rumoca_core::Expression>,
     ) -> rumoca_core::Expression {
-        let reference = rumoca_core::Reference::from_component_reference(
-            rumoca_core::ComponentReference::from_flat_segments(
-                "Pkg.f",
-                span(),
-                Some(FUNCTION_DEF_ID),
-            ),
-        )
+        let reference = rumoca_core::Reference::from_component_reference(component_reference(&[
+            ("Pkg", PACKAGE_DEF_ID),
+            ("f", FUNCTION_DEF_ID),
+        ]))
         .with_resolved_function(rumoca_core::ResolvedFunctionReference {
             instance_id,
             base_part_count: 2,
@@ -759,9 +776,9 @@ mod tests {
 
     fn parameter_ref(def_id: rumoca_core::DefId, name: &str) -> rumoca_core::Expression {
         rumoca_core::Expression::VarRef {
-            name: rumoca_core::Reference::from_component_reference(
-                rumoca_core::ComponentReference::from_flat_segments(name, span(), Some(def_id)),
-            ),
+            name: rumoca_core::Reference::from_component_reference(component_reference(&[(
+                name, def_id,
+            )])),
             subscripts: Vec::new(),
             span: span(),
         }
@@ -772,10 +789,10 @@ mod tests {
         let mut function = rumoca_core::Function::new("Pkg.f", span());
         function.def_id = Some(FUNCTION_DEF_ID);
         function.inputs.push(
-            rumoca_core::FunctionParam::new("a", "Real", span()).with_def_id(FIRST_INPUT_DEF_ID),
+            crate::test_support::real_param("a", Vec::new(), span()).with_def_id(FIRST_INPUT_DEF_ID),
         );
         function.inputs.push(
-            rumoca_core::FunctionParam::new("b", "Real", span())
+            crate::test_support::real_param("b", Vec::new(), span())
                 .with_def_id(SECOND_INPUT_DEF_ID)
                 .with_default(rumoca_core::Expression::Binary {
                     op: rumoca_core::OpBinary::Add,
@@ -786,9 +803,9 @@ mod tests {
         );
         function
             .outputs
-            .push(rumoca_core::FunctionParam::new("y", "Real", span()));
+            .push(crate::test_support::real_param("y", Vec::new(), span()).with_def_id(OUTPUT_DEF_ID));
         function.body.push(rumoca_core::Statement::Assignment {
-            comp: rumoca_core::ComponentReference::from_flat_segments("y", span(), None),
+            comp: component_reference(&[("y", OUTPUT_DEF_ID)]),
             value: parameter_ref(FIRST_INPUT_DEF_ID, "a"),
             span: span(),
         });
@@ -856,21 +873,21 @@ mod tests {
             .into_iter()
             .enumerate()
             .map(|(index, name)| {
-                rumoca_core::FunctionParam::new(name, "Real", span())
+                crate::test_support::real_param(name, Vec::new(), span())
                     .with_def_id(rumoca_core::DefId(300 + index as u32))
             })
             .collect();
         let mut apply = rumoca_core::Function::new("Pkg.apply", span());
         apply.def_id = Some(rumoca_core::DefId(200));
         apply.inputs.push(
-            rumoca_core::FunctionParam::new("fn", "Pkg.Partial", span())
+            crate::test_support::aggregate_param("fn", "Pkg.Partial", Vec::new(), span())
                 .with_type_class(rumoca_core::ClassType::Function),
         );
-        apply
-            .outputs
-            .push(rumoca_core::FunctionParam::new("y", "Real", span()));
+        apply.outputs.push(
+            crate::test_support::real_param("y", Vec::new(), span()).with_def_id(APPLY_OUTPUT_DEF_ID),
+        );
         apply.body.push(rumoca_core::Statement::Assignment {
-            comp: rumoca_core::ComponentReference::from_flat_segments("y", span(), None),
+            comp: component_reference(&[("y", APPLY_OUTPUT_DEF_ID)]),
             value: literal(0.0),
             span: span(),
         });

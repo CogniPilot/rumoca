@@ -31,15 +31,16 @@ pub(super) struct LoweringSymbols<'symbols, 'dae> {
     pub(super) shapes: &'symbols ShapeEnvironment,
     pub(super) function_body: Option<&'symbols dae::FunctionBody<'dae>>,
     pub(super) values: Option<&'symbols HashMap<VarName, dae::ExprId<'dae>>>,
-    pub(super) owner_clock: Option<dae::ClockId<'dae>>,
+    pub(super) owner_clock: Option<dae::PeriodicClockId<'dae>>,
 }
 
 pub(super) fn lower_clocked_expression<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     coordinates: &HashMap<VarName, Coordinate<'dae>>,
     functions: &FunctionRegistry<'_, 'dae>,
-    owner_clock: dae::ClockId<'dae>,
+    owner_clock: dae::PeriodicClockId<'dae>,
     expression: &Expression,
+    generated_root: Option<dae::DaeGeneration>,
 ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
     lower_expression_scoped(
         construction,
@@ -53,7 +54,7 @@ pub(super) fn lower_clocked_expression<'dae>(
         },
         &HashMap::new(),
         expression,
-        None,
+        generated_root,
     )
 }
 
@@ -181,33 +182,8 @@ pub(super) fn lower_expression_scoped<'dae>(
         Expression::VarRef {
             name, subscripts, ..
         } => lower_variable_reference(construction, symbols, binders, name, subscripts, provenance),
-        Expression::BuiltinCall {
-            function: BuiltinFunction::Der,
-            args,
-            ..
-        } => lower_derivative(construction, symbols, binders, args, provenance, span),
-        Expression::BuiltinCall {
-            function: BuiltinFunction::Pre,
-            args,
-            ..
-        } => lower_pre(construction, symbols, binders, args, provenance, span),
-        Expression::BuiltinCall {
-            function: BuiltinFunction::Sample,
-            args,
-            ..
-        } => {
-            let Some(value) = args.first() else {
-                unreachable!("clock analysis rejects value sampling without an operand")
-            };
-            lower_temporal_identity(construction, symbols, binders, value, provenance)
-        }
-        Expression::BuiltinCall {
-            function: BuiltinFunction::Delay,
-            args,
-            ..
-        } => lower_delay(construction, symbols, binders, args, provenance, span),
         Expression::BuiltinCall { function, args, .. } => {
-            lower_builtin_call(construction, symbols, binders, *function, args, provenance)
+            lower_builtin_expression(construction, symbols, binders, *function, args, provenance)
         }
         Expression::Literal { value, .. } => construction
             .expressions(|expressions| expressions.at(provenance).literal(lower_literal(value))),
@@ -259,11 +235,80 @@ pub(super) fn lower_expression_scoped<'dae>(
             provenance,
         ),
         Expression::FieldAccess { .. } => {
-            lower_record_array_field_projection(construction, symbols, binders, provenance)
+            lower_record_array_field_access(construction, symbols, binders, expression, provenance)
         }
         Expression::Tuple { .. } | Expression::Empty { .. } => {
-            unreachable!("analysis rejects expressions outside the checked lowering grammar")
+            Err(dae::DaeConstructionError::InvalidExpressionForm { span })
         }
+    }
+}
+
+fn lower_builtin_expression<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    symbols: LoweringSymbols<'_, 'dae>,
+    binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
+    function: BuiltinFunction,
+    arguments: &[Expression],
+    provenance: dae::DaeProvenance,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    let span = provenance.span();
+    match function {
+        BuiltinFunction::Der => {
+            lower_derivative(construction, symbols, binders, arguments, provenance, span)
+        }
+        BuiltinFunction::Pre => {
+            lower_pre(construction, symbols, binders, arguments, provenance, span)
+        }
+        BuiltinFunction::Sample => {
+            let [value] = arguments else {
+                return Err(dae::DaeConstructionError::InvalidArity {
+                    expected: 1,
+                    found: arguments.len(),
+                    span,
+                });
+            };
+            lower_temporal_identity(construction, symbols, binders, value, provenance)
+        }
+        BuiltinFunction::Hold => lower_hold(construction, symbols, binders, arguments, provenance),
+        BuiltinFunction::Previous => {
+            lower_previous(construction, symbols, binders, arguments, provenance)
+        }
+        BuiltinFunction::Interval => {
+            if arguments.len() > 1 {
+                return Err(dae::DaeConstructionError::InvalidArity {
+                    expected: 1,
+                    found: arguments.len(),
+                    span,
+                });
+            }
+            let owner_clock = symbols
+                .owner_clock
+                .ok_or(dae::DaeConstructionError::MissingClockDomainOwner { span })?;
+            construction.expressions(|expressions| {
+                expressions
+                    .at(provenance)
+                    .coordinate(dae::CoordinateInput::ClockInterval(owner_clock))
+            })
+        }
+        BuiltinFunction::Clock
+        | BuiltinFunction::SubSample
+        | BuiltinFunction::SuperSample
+        | BuiltinFunction::ShiftSample
+        | BuiltinFunction::BackSample
+        | BuiltinFunction::NoClock => {
+            Err(dae::DaeConstructionError::InvalidExpressionForm { span })
+        }
+        BuiltinFunction::Delay => {
+            lower_delay(construction, symbols, binders, arguments, provenance, span)
+        }
+        _ => lower_builtin_call(
+            construction,
+            symbols,
+            binders,
+            function,
+            arguments,
+            provenance,
+        ),
     }
 }
 
@@ -363,11 +408,7 @@ fn lower_call_expression<'dae>(
     else {
         unreachable!("call lowering is selected from a function call")
     };
-    match classify_function_call(name, *is_constructor) {
-        FunctionCallLowering::Previous => {
-            lower_previous(construction, symbols, binders, args, provenance)
-        }
-        FunctionCallLowering::Hold => lower_hold(construction, symbols, binders, args, provenance),
+    match classify_function_call(*is_constructor) {
         FunctionCallLowering::Constructor | FunctionCallLowering::Registry => lower_function_call(
             construction,
             symbols,
@@ -382,24 +423,15 @@ fn lower_call_expression<'dae>(
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum FunctionCallLowering {
-    Previous,
-    Hold,
     Constructor,
     Registry,
 }
 
-pub(super) fn classify_function_call(
-    name: &rumoca_core::Reference,
-    is_constructor: bool,
-) -> FunctionCallLowering {
+pub(super) fn classify_function_call(is_constructor: bool) -> FunctionCallLowering {
     if is_constructor {
         FunctionCallLowering::Constructor
     } else {
-        match name.as_str() {
-            "previous" => FunctionCallLowering::Previous,
-            "hold" => FunctionCallLowering::Hold,
-            _ => FunctionCallLowering::Registry,
-        }
+        FunctionCallLowering::Registry
     }
 }
 
@@ -504,7 +536,11 @@ fn lower_hold<'dae>(
     provenance: dae::DaeProvenance,
 ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
     let [value] = arguments else {
-        unreachable!("intrinsic analysis proves hold arity")
+        return Err(dae::DaeConstructionError::InvalidArity {
+            expected: 1,
+            found: arguments.len(),
+            span: provenance.span(),
+        });
     };
     lower_temporal_identity(construction, symbols, binders, value, provenance)
 }
@@ -517,26 +553,43 @@ fn lower_previous<'dae>(
     provenance: dae::DaeProvenance,
 ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
     let [value] = arguments else {
-        unreachable!("intrinsic analysis proves previous arity")
+        return Err(dae::DaeConstructionError::InvalidArity {
+            expected: 1,
+            found: arguments.len(),
+            span: provenance.span(),
+        });
     };
     let (name, subscripts) =
-        derivative_reference(value).expect("clock analysis proves a coordinate previous operand");
+        derivative_reference(value).ok_or(dae::DaeConstructionError::InvalidClockedOperand {
+            operator: "previous",
+            span: provenance.span(),
+        })?;
     let clock =
         symbols
             .owner_clock
             .ok_or(dae::DaeConstructionError::MissingPreviousClockOwner {
                 span: provenance.span(),
             })?;
-    let previous =
-        construction.temporal(|temporal| match symbols.coordinates[name.var_name()] {
-            Coordinate::DiscreteReal(variable) => {
-                temporal.previous_discrete_real(clock, variable, provenance)
-            }
-            Coordinate::DiscreteValue(variable) => {
-                temporal.previous_discrete_value(clock, variable, provenance)
-            }
-            _ => unreachable!("clock analysis classifies previous operands as clocked discrete"),
+    let coordinate = symbols
+        .coordinates
+        .get(name.var_name())
+        .copied()
+        .ok_or_else(|| dae::DaeConstructionError::InvalidVariableRole {
+            name: name.var_name().clone(),
+            span: provenance.span(),
         })?;
+    let previous = construction.temporal(|temporal| match coordinate {
+        Coordinate::DiscreteReal(variable) => {
+            temporal.previous_discrete_real(clock.into(), variable, provenance)
+        }
+        Coordinate::DiscreteValue(variable) => {
+            temporal.previous_discrete_value(clock.into(), variable, provenance)
+        }
+        _ => Err(dae::DaeConstructionError::InvalidVariableRole {
+            name: name.var_name().clone(),
+            span: provenance.span(),
+        }),
+    })?;
     lower_coordinate_reference(
         construction,
         symbols,
@@ -567,41 +620,63 @@ fn lower_temporal_identity<'dae>(
     lower_expression_scoped(construction, symbols, binders, value, None)
 }
 
-fn lower_record_array_field_projection<'dae>(
+fn lower_record_array_field_access<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     symbols: LoweringSymbols<'_, 'dae>,
     binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
+    expression: &Expression,
     provenance: dae::DaeProvenance,
 ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
     let plan = symbols
         .functions
         .record_array_fields
-        .get(&provenance.span())
+        .get(expression)
         .expect("analysis certifies every lowered record-array field projection");
+    let (coordinates, subscripts) = match plan {
+        RecordArrayFieldPlan::MaterializedCoordinate { coordinate, .. } => {
+            let coordinate = exact_model_coordinate(symbols, *coordinate, provenance.span())?;
+            return construction.expressions(|expressions| {
+                expressions.at(provenance).coordinate(coordinate.current())
+            });
+        }
+        RecordArrayFieldPlan::Projection {
+            coordinates,
+            subscripts,
+            ..
+        } => (coordinates, subscripts),
+    };
     let generated = dae::DaeProvenance::generated(
         dae::DaeGeneration::RecordEquationProjection,
         provenance.span(),
     )?;
-    let elements = plan
-        .coordinates
+    let elements = coordinates
         .iter()
         .map(|coordinate| {
+            let coordinate = exact_model_coordinate(symbols, *coordinate, generated.span())?;
             construction.expressions(|expressions| {
-                expressions
-                    .at(generated)
-                    .coordinate(symbols.coordinates[coordinate].current())
+                expressions.at(generated).coordinate(coordinate.current())
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
     let base = construction.expressions(|expressions| expressions.at(generated).array(elements))?;
-    lower_index(
-        construction,
-        symbols,
-        binders,
-        base,
-        &plan.subscripts,
-        provenance,
-    )
+    lower_index(construction, symbols, binders, base, subscripts, provenance)
+}
+
+fn exact_model_coordinate<'dae>(
+    symbols: LoweringSymbols<'_, 'dae>,
+    instance: rumoca_core::InstanceId,
+    span: Span,
+) -> Result<Coordinate<'dae>, dae::DaeConstructionError> {
+    symbols
+        .functions
+        .coordinate_instances
+        .get(&instance)
+        .copied()
+        .ok_or(dae::DaeConstructionError::UnknownId {
+            kind: "Flat runtime coordinate instance",
+            index: instance.index(),
+            span,
+        })
 }
 
 fn lower_variable_reference<'dae>(

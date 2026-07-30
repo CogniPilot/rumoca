@@ -699,11 +699,17 @@ fn expand_array_comprehensions_in_expression(
             subscripts: subscripts.clone(),
             span: *span,
         }),
-        ast::Expression::FieldAccess { base, field, span } => Ok(ast::Expression::FieldAccess {
+        ast::Expression::FieldAccess {
+            base,
+            field,
+            field_def_id,
+            span,
+        } => Ok(ast::Expression::FieldAccess {
             base: Arc::new(expand_array_comprehensions_in_expression(
                 ctx, base, prefix, *span,
             )?),
             field: field.clone(),
+            field_def_id: *field_def_id,
             span: *span,
         }),
         _ => Ok(expr.clone()),

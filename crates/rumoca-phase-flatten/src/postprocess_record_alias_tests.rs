@@ -9,65 +9,51 @@ fn test_span() -> Span {
     )
 }
 
+fn fixture_def_id(name: &str) -> rumoca_core::DefId {
+    let hash = name.bytes().fold(2_166_136_261_u32, |hash, byte| {
+        hash.wrapping_mul(16_777_619) ^ u32::from(byte)
+    });
+    rumoca_core::DefId::new(hash.max(1))
+}
+
 fn var_ref(name: &str) -> rumoca_core::Expression {
     rumoca_core::Expression::VarRef {
-        name: rumoca_core::Reference::new(name),
+        name: rumoca_core::Reference::from_component_reference(component_ref_path(name)),
         subscripts: vec![],
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     }
 }
 
 fn component_ref(name: &str) -> rumoca_core::ComponentReference {
-    rumoca_core::ComponentReference {
-        local: false,
-        span: rumoca_core::Span::DUMMY,
-        parts: vec![rumoca_core::ComponentRefPart {
-            ident: name.to_string(),
-            span: rumoca_core::Span::DUMMY,
+    component_ref_path(name)
+}
+
+fn reference_parts(path: &str) -> Vec<rumoca_core::ComponentRefPart> {
+    rumoca_core::ComponentPath::from_flat_path(path)
+        .parts()
+        .iter()
+        .map(|ident| rumoca_core::ComponentRefPart {
+            ident: ident.clone(),
+            span: test_span(),
             subs: vec![],
-        }],
-        def_id: None,
-        target_def_id: None,
-    }
+            def_id: fixture_def_id(ident),
+        })
+        .collect()
 }
 
 fn component_ref_path(path: &str) -> rumoca_core::ComponentReference {
-    rumoca_core::ComponentReference {
-        local: false,
-        span: rumoca_core::Span::DUMMY,
-        parts: rumoca_core::ComponentPath::from_flat_path(path)
-            .parts()
-            .iter()
-            .map(|ident| rumoca_core::ComponentRefPart {
-                ident: ident.clone(),
-                span: rumoca_core::Span::DUMMY,
-                subs: vec![],
-            })
-            .collect(),
-        def_id: None,
-        target_def_id: None,
-    }
+    rumoca_core::ComponentReference::construct(false, test_span(), reference_parts(path))
+        .expect("fixture reference has an exact identity for every part")
 }
 
 fn component_ref_with_def_id(
     path: &str,
     def_id: rumoca_core::DefId,
 ) -> rumoca_core::ComponentReference {
-    rumoca_core::ComponentReference {
-        local: false,
-        span: rumoca_core::Span::DUMMY,
-        parts: rumoca_core::ComponentPath::from_flat_path(path)
-            .parts()
-            .iter()
-            .map(|ident| rumoca_core::ComponentRefPart {
-                ident: ident.clone(),
-                span: rumoca_core::Span::DUMMY,
-                subs: vec![],
-            })
-            .collect(),
-        def_id: None,
-        target_def_id: Some(def_id),
-    }
+    let mut parts = reference_parts(path);
+    parts.last_mut().expect("nonempty fixture path").def_id = def_id;
+    rumoca_core::ComponentReference::construct(false, test_span(), parts)
+        .expect("fixture reference has an exact identity for every part")
 }
 
 fn context_with_alias() -> Context {
@@ -291,12 +277,13 @@ fn invalid_field_access_drop_handles_indexed_bases() {
                     base: Box::new(var_ref("someArray")),
                     subscripts: vec![rumoca_core::Subscript::Index {
                         value: 1,
-                        span: Span::DUMMY,
+                        span: test_span(),
                     }],
-                    span: Span::DUMMY,
+                    span: test_span(),
                 }),
                 field: "missing".to_string(),
-                span: Span::DUMMY,
+                field_def_id: fixture_def_id("missing"),
+                span: test_span(),
             }),
             ..flat::Variable::empty_with_span(test_span())
         },

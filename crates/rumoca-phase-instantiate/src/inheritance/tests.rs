@@ -42,10 +42,10 @@ fn make_component_ref(name: &str) -> ast::ComponentReference {
                 token_type: 0,
             },
             subs: None,
+            def_id: None,
         }],
-        def_id: None,
-        target_def_id: None,
         span: rumoca_core::Span::DUMMY,
+        qualified_display_name: None,
     }
 }
 
@@ -109,8 +109,8 @@ fn make_int_expr(value: &str) -> ast::Expression {
 
 fn make_resolved_ref_expr(name: &str, def_id: DefId) -> ast::Expression {
     let mut reference = make_component_ref(name);
-    reference.def_id = Some(def_id);
-    reference.target_def_id = Some(def_id);
+    reference.set_root_def_id(Some(def_id));
+    reference.set_target_def_id(Some(def_id));
     ast::Expression::ComponentReference(reference)
 }
 

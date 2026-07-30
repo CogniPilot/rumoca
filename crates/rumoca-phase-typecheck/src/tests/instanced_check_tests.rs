@@ -328,39 +328,9 @@ fn test_typecheck_instanced_reports_unknown_nested_builtin_modifier() {
     );
 }
 
-#[test]
-fn test_typecheck_instanced_rejects_unknown_operator_record_member_reference() {
-    let source = r#"
-        operator record SE2
-            Real x;
-            Real y;
-            Real theta;
-        end SE2;
-
-        model Test2
-            SE2 pose;
-        equation
-            der(pose.x) = 1;
-            der(pose.y) = 0;
-            der(pose.z) = 2;
-        end Test2;
-    "#;
-
-    let parsed = parse(source);
-    let resolved = resolve(parsed).expect("resolve should succeed");
-    let tree = resolved.into_inner();
-    let mut overlay = rumoca_ir_ast::InstanceOverlay::new();
-
-    let err = typecheck_instanced(&tree, &mut overlay, "Test2")
-        .expect_err("instanced typecheck should reject unknown operator-record members");
-    assert!(
-        err.iter().any(|d| d.code.as_deref() == Some("ET001")
-            && d.message.contains("unknown member `z`")
-            && d.message.contains("pose.z")),
-        "expected unknown-member diagnostic in instanced pipeline, got: {:?}",
-        err
-    );
-}
+// The instanced pipeline never observes an unknown dotted record member either:
+// resolve rejects it first with its own `ER002` diagnostic, covered by
+// `rumoca-phase-resolve`'s `tests::component_lookup`.
 
 #[test]
 fn test_typecheck_instanced_reports_builtin_modifier_type_mismatch() {

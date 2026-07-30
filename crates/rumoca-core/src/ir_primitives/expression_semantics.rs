@@ -112,12 +112,11 @@ fn hash_expression_semantics(expr: &Expression, hasher: &mut impl Hasher) {
         } => {
             // Exactly the identity `var_refs_semantically_equal` compares:
             // `VarName`, whose `Hash` is its `VarNameId`. Deliberately *not*
-            // `component_ref.def_id` — a `DefId` names the declaration, and one
-            // declaration backs many flat variables (`r1.v` and `r2.v` share
-            // the `Resistor.v` `DefId`; `DefIdVarRefIndex` in phase-flatten
-            // stores a `Vec` per `DefId` and disambiguates by scope for exactly
-            // that reason), so a def-id fingerprint would equate distinct
-            // variables and disagree with equality.
+            // the component-part declaration identities: one declaration backs
+            // many flat variables (`r1.v` and `r2.v` share the `Resistor.v`
+            // `DefId`; `DefIdVarRefIndex` in phase-flatten stores a `Vec` per
+            // `DefId` and disambiguates by scope), so a declaration fingerprint
+            // would equate distinct variables and disagree with equality.
             name.var_name().hash(hasher);
             hash_subscripts_semantics(subscripts, hasher);
         }

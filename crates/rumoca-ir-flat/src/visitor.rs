@@ -149,7 +149,7 @@ pub trait StatementVisitor: ExpressionVisitor {
     }
 
     fn visit_component_reference(&mut self, comp: &ComponentReference) {
-        for part in &comp.parts {
+        for part in comp.parts() {
             for subscript in &part.subs {
                 self.visit_subscript(subscript);
             }
@@ -303,7 +303,7 @@ pub trait FallibleStatementVisitor: FallibleExpressionVisitor {
     }
 
     fn visit_component_reference(&mut self, comp: &ComponentReference) -> Result<(), Self::Error> {
-        for part in &comp.parts {
+        for part in comp.parts() {
             for subscript in &part.subs {
                 self.visit_subscript(subscript)?;
             }
@@ -639,6 +639,32 @@ mod tests {
     use rumoca_core::Reference;
     use rumoca_core::{ComponentRefPart, Literal, OpBinary};
 
+    fn test_span() -> rumoca_core::Span {
+        rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("flat_visitor_test.mo"),
+            1,
+            2,
+        )
+    }
+
+    fn component_reference(
+        name: &str,
+        def_id: rumoca_core::DefId,
+        subs: Vec<Subscript>,
+    ) -> ComponentReference {
+        ComponentReference::construct(
+            false,
+            test_span(),
+            vec![ComponentRefPart {
+                ident: name.to_string(),
+                span: test_span(),
+                subs,
+                def_id,
+            }],
+        )
+        .expect("test reference is nonempty and resolved")
+    }
+
     fn make_var(name: &str) -> Expression {
         Expression::VarRef {
             name: Reference::from(name),
@@ -772,37 +798,21 @@ mod tests {
             }],
             equations: vec![
                 Statement::Assignment {
-                    comp: ComponentReference {
-                        local: false,
-                        span: rumoca_core::Span::DUMMY,
-                        parts: vec![ComponentRefPart {
-                            ident: "x".to_string(),
-                            span: rumoca_core::Span::DUMMY,
-                            subs: vec![Subscript::generated_index(1, rumoca_core::Span::DUMMY)],
-                        }],
-                        def_id: None,
-                        target_def_id: None,
-                    },
+                    comp: component_reference(
+                        "x",
+                        rumoca_core::DefId::new(1),
+                        vec![Subscript::generated_index(1, test_span())],
+                    ),
                     value: make_var("u"),
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 },
                 Statement::Reinit {
-                    variable: ComponentReference {
-                        local: false,
-                        span: rumoca_core::Span::DUMMY,
-                        parts: vec![ComponentRefPart {
-                            ident: "y".to_string(),
-                            span: rumoca_core::Span::DUMMY,
-                            subs: vec![],
-                        }],
-                        def_id: None,
-                        target_def_id: None,
-                    },
+                    variable: component_reference("y", rumoca_core::DefId::new(2), Vec::new()),
                     value: make_var("v"),
-                    span: rumoca_core::Span::DUMMY,
+                    span: test_span(),
                 },
             ],
-            span: rumoca_core::Span::DUMMY,
+            span: test_span(),
         }];
 
         let mut collector = AlgorithmOutputCollector::new();

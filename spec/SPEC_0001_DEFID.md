@@ -110,9 +110,14 @@ DAE/Solve/Sim code must key or compare such variables by the instance identity,
 not by the reused source declaration DefId.
 
 If downstream code needs to answer "does this instance originate from this
-source declaration?", it must use explicit ancestry metadata such as
-`symbol_ancestry`, not string prefix checks or equality on reused source
-declaration ids.
+source declaration?", it must use explicit ancestry metadata such as the
+declaration chain from `ClassDefIndex::def_ancestry` or the occurrence owner
+chain in `flat::Model::instance_relations`, not string prefix checks or equality
+on reused source declaration ids.
+
+`InstanceId(0)` is reserved as `InstanceId::UNSET`: instantiation allocates
+occurrence identities from one, so a defaulted occurrence field is provably
+unset and stage contracts reject it instead of accepting it as an instance.
 
 ## Rationale
 - Inspired by Rust compiler's `DefId` which provides stable cross-crate references

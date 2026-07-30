@@ -10,33 +10,50 @@ use super::*;
 /// One link of the chain of constant keys whose bindings are currently being
 /// expanded. Stored as a stack-allocated linked list so the `Copy` environment
 /// can be threaded through the recursive rewrite without allocating.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum SemanticConstantId {
+    Occurrence(ConstantOccurrenceId),
+    Declaration(rumoca_core::DefId),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ConstantExpansionId<'a> {
+    Semantic(SemanticConstantId),
+    Generated(&'a str),
+}
+
 pub(super) struct ConstantExpansion<'a> {
-    pub(super) key: &'a str,
+    pub(super) identity: ConstantExpansionId<'a>,
+    pub(super) display: &'a str,
     pub(super) parent: Option<&'a ConstantExpansion<'a>>,
 }
 
 impl ConstantExpansion<'_> {
-    fn contains(&self, key: &str) -> bool {
+    fn contains(&self, identity: ConstantExpansionId<'_>) -> bool {
+        self.display_for(identity).is_some()
+    }
+
+    fn display_for(&self, identity: ConstantExpansionId<'_>) -> Option<&str> {
         let mut frame = Some(self);
         while let Some(current) = frame {
-            if current.key == key {
-                return true;
+            if current.identity == identity {
+                return Some(current.display);
             }
             frame = current.parent;
         }
-        false
+        None
     }
 
     /// Render the expansion chain oldest-first, ending at `key`.
-    fn chain_to(&self, key: &str) -> String {
+    fn chain_to(&self, display: &str) -> String {
         let mut keys: Vec<&str> = Vec::new();
         let mut frame = Some(self);
         while let Some(current) = frame {
-            keys.push(current.key);
+            keys.push(current.display);
             frame = current.parent;
         }
         keys.reverse();
-        keys.push(key);
+        keys.push(display);
         keys.join(" -> ")
     }
 }
@@ -63,15 +80,20 @@ impl<'a> ConstantSubstitutionEnv<'a> {
         }
     }
 
-    /// True when `key`'s binding is already being folded further up the stack.
-    pub(super) fn is_expanding(&self, key: &str) -> bool {
-        self.expanding.is_some_and(|frame| frame.contains(key))
+    /// True when the exact constant identity is already being folded further up
+    /// the stack.
+    pub(super) fn is_expanding(&self, identity: ConstantExpansionId<'_>) -> bool {
+        self.expanding.is_some_and(|frame| frame.contains(identity))
     }
 
-    pub(super) fn expansion_chain(&self, key: &str) -> String {
+    pub(super) fn expansion_chain(&self, display: &str) -> String {
         match self.expanding {
-            Some(frame) => frame.chain_to(key),
-            None => key.to_string(),
+            Some(frame) => frame.chain_to(display),
+            None => display.to_string(),
         }
+    }
+
+    pub(super) fn expanding_display(&self, identity: ConstantExpansionId<'_>) -> Option<&str> {
+        self.expanding.and_then(|frame| frame.display_for(identity))
     }
 }

@@ -791,7 +791,7 @@ impl Visitor for ExplicitLifecycleCallVisitor<'_> {
         _context: ast::FunctionCallContext,
     ) -> ControlFlow<()> {
         let Some((_, role)) = target
-            .target_def_id
+            .target_def_id()
             .and_then(|def_id| self.lifecycle_roles.get_key_value(&def_id))
         else {
             return ControlFlow::Continue(());

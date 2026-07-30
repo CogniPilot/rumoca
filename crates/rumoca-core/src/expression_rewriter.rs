@@ -1,5 +1,5 @@
 use crate::{
-    BuiltinFunction, ComprehensionIndex, Expression, Literal, OpBinary, Reference, Span,
+    BuiltinFunction, ComprehensionIndex, DefId, Expression, Literal, OpBinary, Reference, Span,
     StringConversionFormat, Subscript,
 };
 
@@ -65,9 +65,12 @@ pub trait ExpressionRewriter {
                 subscripts,
                 span,
             } => self.walk_index_expression(base, subscripts, *span),
-            Expression::FieldAccess { base, field, span } => {
-                self.walk_field_access_expression(base, field, *span)
-            }
+            Expression::FieldAccess {
+                base,
+                field,
+                field_def_id,
+                span,
+            } => self.walk_field_access_expression(base, field, *field_def_id, *span),
             Expression::Empty { span } => Expression::Empty { span: *span },
         }
     }
@@ -286,11 +289,13 @@ pub trait ExpressionRewriter {
         &mut self,
         base: &Expression,
         field: &str,
+        field_def_id: DefId,
         span: Span,
     ) -> Expression {
         Expression::FieldAccess {
             base: Box::new(self.rewrite_expression(base)),
             field: field.to_owned(),
+            field_def_id,
             span,
         }
     }
@@ -401,9 +406,12 @@ pub trait FallibleExpressionRewriter {
                 subscripts,
                 span,
             } => self.walk_index_expression(base, subscripts, *span),
-            Expression::FieldAccess { base, field, span } => {
-                self.walk_field_access_expression(base, field, *span)
-            }
+            Expression::FieldAccess {
+                base,
+                field,
+                field_def_id,
+                span,
+            } => self.walk_field_access_expression(base, field, *field_def_id, *span),
             Expression::Empty { span } => Ok(Expression::Empty { span: *span }),
         }
     }
@@ -637,11 +645,13 @@ pub trait FallibleExpressionRewriter {
         &mut self,
         base: &Expression,
         field: &str,
+        field_def_id: DefId,
         span: Span,
     ) -> Result<Expression, Self::Error> {
         Ok(Expression::FieldAccess {
             base: Box::new(self.rewrite_expression(base)?),
             field: field.to_owned(),
+            field_def_id,
             span,
         })
     }

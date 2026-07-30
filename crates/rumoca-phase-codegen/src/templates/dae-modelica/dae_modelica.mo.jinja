@@ -46,6 +46,7 @@
 {%- elif c.kind == "condition" -%}$condition{{ c.id }}
 {%- elif c.kind == "delay" -%}$delay{{ c.id }}
 {%- elif c.kind == "previous" -%}$previous{{ c.id }}
+{%- elif c.kind == "clock_interval" -%}interval()
 {%- elif c.kind == "terminal" -%}$terminal{{ c.id }}
 {%- elif c.kind == "binder" -%}{{ dae.domains[c.domain].domain.binders[c.ordinal].display_name }}
 {%- elif c.kind == "function_parameter" -%}{{ dae.functions[c.function].parameters[c.ordinal].name }}
@@ -185,13 +186,14 @@ end {{ function.name }};
 {%- set a = variable.attributes -%}
 {%- if a.start is not none or a.minimum is not none or a.maximum is not none or a.nominal is not none or a.fixed is not none or a.unit is not none -%}
 (
-  {%- set comma = joiner(", ") -%}
-  {%- if a.start is not none -%}{{ comma() }}start = {{ expr(a.start) }}{%- endif -%}
-  {%- if a.minimum is not none -%}{{ comma() }}min = {{ expr(a.minimum) }}{%- endif -%}
-  {%- if a.maximum is not none -%}{{ comma() }}max = {{ expr(a.maximum) }}{%- endif -%}
-  {%- if a.nominal is not none -%}{{ comma() }}nominal = {{ expr(a.nominal) }}{%- endif -%}
-  {%- if a.fixed is not none -%}{{ comma() }}fixed = {{ a.fixed }}{%- endif -%}
-  {%- if a.unit is not none -%}{{ comma() }}unit = {{ a.unit | tojson }}{%- endif -%}
+  {%- set parts = [] -%}
+  {%- if a.start is not none -%}{%- set parts = parts + ["start = " ~ expr(a.start)] -%}{%- endif -%}
+  {%- if a.minimum is not none -%}{%- set parts = parts + ["min = " ~ expr(a.minimum)] -%}{%- endif -%}
+  {%- if a.maximum is not none -%}{%- set parts = parts + ["max = " ~ expr(a.maximum)] -%}{%- endif -%}
+  {%- if a.nominal is not none -%}{%- set parts = parts + ["nominal = " ~ expr(a.nominal)] -%}{%- endif -%}
+  {%- if a.fixed is not none -%}{%- set parts = parts + ["fixed = " ~ a.fixed] -%}{%- endif -%}
+  {%- if a.unit is not none -%}{%- set parts = parts + ["unit = " ~ (a.unit | tojson)] -%}{%- endif -%}
+  {{- parts | join(", ") -}}
 )
 {%- endif -%}
 {%- if a.binding is not none %} = {{ expr(a.binding) }}{% endif -%}

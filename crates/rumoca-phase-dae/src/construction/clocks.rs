@@ -1,26 +1,39 @@
 use std::collections::HashMap;
 
-use rumoca_core::VarName;
+use rumoca_core::{InstanceId, VarName};
 use rumoca_ir_dae as dae;
 use rumoca_ir_flat as flat;
 
 use super::Coordinate;
-use super::analysis::{ClockPlan, SampledValuePlan};
+use super::analysis::{ClockPlan, ClockedValuePlan};
 
 pub(super) struct LoweredClocks<'dae> {
-    pub(super) by_plan: HashMap<ClockPlan, dae::ClockId<'dae>>,
-    pub(super) by_variable: HashMap<VarName, dae::ClockId<'dae>>,
+    pub(super) by_plan: HashMap<ClockPlan, dae::PeriodicClockId<'dae>>,
+    pub(super) by_variable: HashMap<InstanceId, dae::PeriodicClockId<'dae>>,
+}
+
+impl<'dae> LoweredClocks<'dae> {
+    pub(super) fn id(
+        &self,
+        plan: &ClockPlan,
+        span: rumoca_core::Span,
+    ) -> Result<dae::PeriodicClockId<'dae>, dae::DaeConstructionError> {
+        self.by_plan
+            .get(plan)
+            .copied()
+            .ok_or(dae::DaeConstructionError::MissingClockDomainOwner { span })
+    }
 }
 
 pub(super) fn lower_clocks<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     flat: &flat::Model,
-    plans: &HashMap<VarName, ClockPlan>,
+    plans: &HashMap<InstanceId, ClockPlan>,
 ) -> Result<LoweredClocks<'dae>, dae::DaeConstructionError> {
     let mut plan_ids = HashMap::new();
     let mut variable_ids = HashMap::new();
-    for name in flat.variables.keys() {
-        let Some(plan) = plans.get(name).copied() else {
+    for variable in flat.variables.values() {
+        let Some(plan) = plans.get(&variable.instance_id).copied() else {
             continue;
         };
         let clock = if let Some(clock) = plan_ids.get(&plan).copied() {
@@ -31,7 +44,7 @@ pub(super) fn lower_clocks<'dae>(
             plan_ids.insert(plan, clock);
             clock
         };
-        variable_ids.insert(name.clone(), clock);
+        variable_ids.insert(variable.instance_id, clock);
     }
     Ok(LoweredClocks {
         by_plan: plan_ids,
@@ -39,29 +52,38 @@ pub(super) fn lower_clocks<'dae>(
     })
 }
 
-pub(super) fn lower_sampled_value_clocks<'dae>(
+pub(super) fn lower_clocked_value_owners<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     flat: &flat::Model,
     coordinates: &HashMap<VarName, Coordinate<'dae>>,
-    sampled_values: &HashMap<VarName, SampledValuePlan>,
+    clocked_values: &HashMap<InstanceId, ClockedValuePlan>,
     clocks: &LoweredClocks<'dae>,
 ) -> Result<(), dae::DaeConstructionError> {
-    for name in flat.variables.keys() {
-        let Some(plan) = sampled_values.get(name).copied() else {
+    for (name, variable) in &flat.variables {
+        let Some(plan) = clocked_values.get(&variable.instance_id).copied() else {
             continue;
         };
-        let clock = clocks.by_plan[&plan.clock];
-        let ownership = dae::DaeProvenance::source(plan.sample_span)?;
-        construction.clocks(|clocks| match coordinates[name] {
+        let clock = clocks.id(&plan.clock, plan.ownership_span)?;
+        let ownership = dae::DaeProvenance::source(plan.ownership_span)?;
+        let coordinate = coordinates.get(name).copied().ok_or_else(|| {
+            dae::DaeConstructionError::InvalidVariableRole {
+                name: name.clone(),
+                span: plan.ownership_span,
+            }
+        })?;
+        construction.clocks(|clocks| match coordinate {
             Coordinate::DiscreteReal(variable) => {
-                clocks.own_discrete_real(clock, variable, ownership)?;
+                clocks.own_discrete_real(clock.into(), variable, ownership)?;
                 Ok(())
             }
             Coordinate::DiscreteValue(variable) => {
-                clocks.own_discrete_value(clock, variable, ownership)?;
+                clocks.own_discrete_value(clock.into(), variable, ownership)?;
                 Ok(())
             }
-            _ => unreachable!("sample ownership analysis classifies a discrete coordinate"),
+            _ => Err(dae::DaeConstructionError::InvalidVariableRole {
+                name: name.clone(),
+                span: plan.ownership_span,
+            }),
         })?;
     }
     Ok(())

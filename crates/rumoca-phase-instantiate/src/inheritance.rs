@@ -309,14 +309,14 @@ fn extract_redeclare_type_qualified(
     let def_id_opt = match expr {
         ast::Expression::Modification { value, .. } => {
             if let ast::Expression::ComponentReference(comp_ref) = value.as_ref() {
-                comp_ref.def_id
+                redeclare_reference_target(comp_ref)
             } else if let ast::Expression::ClassModification { target, .. } = value.as_ref() {
-                target.def_id
+                redeclare_reference_target(target)
             } else {
                 None
             }
         }
-        ast::Expression::ClassModification { target, .. } => target.def_id,
+        ast::Expression::ClassModification { target, .. } => redeclare_reference_target(target),
         _ => None,
     };
 
@@ -774,6 +774,14 @@ pub fn find_class_in_tree<'a>(tree: &'a ast::ClassTree, name: &str) -> Option<&'
     }
 
     None
+}
+
+fn redeclare_reference_target(reference: &ast::ComponentReference) -> Option<DefId> {
+    if reference.parts.len() > 1 {
+        reference.target_def_id()
+    } else {
+        reference.root_def_id()
+    }
 }
 
 /// Check if a class is effectively primitive (a short class definition extending a primitive type).

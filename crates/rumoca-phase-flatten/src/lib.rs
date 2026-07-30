@@ -52,9 +52,12 @@ mod pipeline;
 mod postprocess;
 pub mod qualify;
 pub(crate) mod record_constant_arrays;
+#[cfg(test)]
+mod reference_contract_tests;
 mod source_spans;
 mod static_subscripts;
-mod structured_refs;
+#[cfg(test)]
+mod test_support;
 mod variables;
 mod vcg;
 mod when_equations;
@@ -343,6 +346,7 @@ pub fn flatten_ref_with_options(
     ctx.predefined_string_declaration = tree
         .scope_tree
         .predefined_member(&rumoca_core::ComponentPath::from_flat_path("String"));
+    ctx.predefined_intrinsics = ast_lower::PredefinedIntrinsicIds::from_tree(tree);
     ctx.materialize_structured_families = options.materialize_structured_families;
     if !model_name.is_empty() {
         ctx.simulated_root_name = Some(crate::path_utils::leaf_segment(model_name).to_string());
@@ -359,6 +363,13 @@ pub fn flatten_ref_with_options(
     flat.predefined_string_declaration = tree
         .scope_tree
         .predefined_member(&rumoca_core::ComponentPath::from_flat_path("String"));
+    flat.predefined_types = flat::PredefinedTypeIds {
+        real: tree.type_table.real(),
+        integer: tree.type_table.integer(),
+        boolean: tree.type_table.boolean(),
+        string: tree.type_table.string(),
+        clock: tree.type_table.clock(),
+    };
     let component_override_map =
         build_component_override_map(overlay, tree, &class_index, model_name)?;
 
@@ -852,18 +863,24 @@ mod nested_class_constant_scope_tests {
     }
 
     fn component_ref_expr(path: &[&str], def_id: rumoca_core::DefId) -> ast::Expression {
+        let final_index = path.len().saturating_sub(1);
         ast::Expression::ComponentReference(ast::ComponentReference {
             local: false,
             parts: path
                 .iter()
-                .map(|part| ast::ComponentRefPart {
+                .enumerate()
+                .map(|(index, part)| ast::ComponentRefPart {
                     ident: token(part),
                     subs: None,
+                    def_id: Some(if index == final_index {
+                        def_id
+                    } else {
+                        rumoca_core::DefId::new(20_001 + index as u32)
+                    }),
                 })
                 .collect(),
             span: test_span(),
-            def_id: None,
-            target_def_id: Some(def_id),
+            qualified_display_name: None,
         })
     }
 
@@ -877,7 +894,7 @@ mod nested_class_constant_scope_tests {
         );
         let mut overlay = ast::InstanceOverlay::default();
         overlay.components.insert(
-            ast::InstanceId::new(1),
+            rumoca_core::InstanceId::new(1),
             ast::InstanceData {
                 dims_expr: vec![ast::Subscript::Expression(component_ref_expr(
                     &["generator", "nState"],
@@ -887,8 +904,14 @@ mod nested_class_constant_scope_tests {
             },
         );
         let mut scopes = HashSet::new();
-        collect_dimension_referenced_class_scopes(&overlay, &HashSet::new(), &def_map, &mut scopes)
-            .expect("dimension references should lower for class-scope collection");
+        collect_dimension_referenced_class_scopes(
+            &overlay,
+            &HashSet::new(),
+            &def_map,
+            ast_lower::PredefinedIntrinsicIds::default(),
+            &mut scopes,
+        )
+        .expect("dimension references should lower for class-scope collection");
 
         assert!(scopes.contains("Modelica.Math.Random.Generators.Xorshift128plus"));
     }

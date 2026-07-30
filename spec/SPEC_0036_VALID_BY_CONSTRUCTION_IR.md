@@ -255,8 +255,8 @@ change/receipt registries, generation tokens, and post-rewrite validation are pr
 
 ### Serialization
 
-Only DAE wire v11 exists; v10/pre-versioned payloads, adapters, migration
-readers, and dual writes are prohibited.
+Only DAE wire v12 exists; v11-and-earlier/pre-versioned payloads, adapters,
+migration readers, and dual writes are prohibited.
 
 | Rule | Owner/Where | Brief Justification |
 |---|---|---|

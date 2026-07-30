@@ -112,7 +112,7 @@ impl Visitor for EnclosingReferenceVisitor<'_> {
     }
 
     fn visit_component_reference(&mut self, reference: &ComponentReference) -> ControlFlow<()> {
-        let Some(target) = reference.def_id else {
+        let Some(target) = reference.root_def_id() else {
             return walk_component_reference_default(self, reference);
         };
         if !self.non_constant_components.contains(&target) {

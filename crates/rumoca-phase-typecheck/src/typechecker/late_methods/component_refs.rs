@@ -98,7 +98,7 @@ impl TypeChecker {
             return None;
         };
         if let Some(output) = comp
-            .def_id
+            .root_def_id()
             .and_then(|def_id| self.function_signatures.get(&def_id))
             .and_then(|signature| {
                 signature
@@ -201,7 +201,7 @@ impl TypeChecker {
             }
         }
         if let Some(semantics) = comp
-            .def_id
+            .root_def_id()
             .and_then(|def_id| self.current_declaration_semantics.get(&def_id))
         {
             return Ok(Some((semantics.type_id, 1)));
@@ -232,7 +232,7 @@ impl TypeChecker {
             self.current_instance_scope.as_ref(),
         ) {
             SemanticLookup::Missing if prefix_len == 1 => reference
-                .def_id
+                .root_def_id()
                 .and_then(|def_id| self.current_declaration_semantics.get(&def_id))
                 .map_or(SemanticLookup::Missing, |semantics| {
                     SemanticLookup::Found(semantics.shape.clone())
@@ -248,7 +248,7 @@ impl TypeChecker {
         match self.lookup_instance_reference(reference, reference.parts.len()) {
             SemanticLookup::Found(semantics) => SemanticLookup::Found(semantics.variability),
             SemanticLookup::Missing => reference
-                .def_id
+                .root_def_id()
                 .and_then(|def_id| self.current_declaration_semantics.get(&def_id))
                 .map_or(SemanticLookup::Missing, |semantics| {
                     SemanticLookup::Found(semantics.variability)

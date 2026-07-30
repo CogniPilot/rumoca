@@ -48,6 +48,12 @@ pub enum DaeConstructionError {
     },
     #[error("`previous` expression has no exact owning clock")]
     MissingPreviousClockOwner { span: Span },
+    #[error("clocked builtin `{operator}` does not have its required checked operand")]
+    InvalidClockedOperand { operator: &'static str, span: Span },
+    #[error("expression form is outside the checked DAE lowering grammar")]
+    InvalidExpressionForm { span: Span },
+    #[error("clock-domain analysis did not construct the required exact clock owner")]
+    MissingClockDomainOwner { span: Span },
     #[error("{arena} exceeded its u32 identity capacity at {attempted_index}")]
     CapacityExceeded {
         arena: &'static str,
@@ -281,6 +287,9 @@ impl DaeConstructionError {
             | Self::InvalidDomain { span, .. }
             | Self::InvalidClockLattice { span, .. }
             | Self::MissingPreviousClockOwner { span }
+            | Self::InvalidClockedOperand { span, .. }
+            | Self::InvalidExpressionForm { span }
+            | Self::MissingClockDomainOwner { span }
             | Self::CapacityExceeded { span, .. }
             | Self::UnknownId { span, .. }
             | Self::TypeMismatch { span, .. }

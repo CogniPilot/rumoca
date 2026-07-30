@@ -31,8 +31,10 @@ fn flatten_source() -> rumoca_ir_flat::Model {
         rumoca_phase_resolve::resolve(ast::ParsedTree::new(tree)).expect("source resolves");
     let instanced =
         rumoca_phase_instantiate::instantiate(resolved, "UsesDefault").expect("model instantiates");
-    rumoca_phase_flatten::flatten_ref(instanced.inner(), instanced.overlay(), "UsesDefault")
-        .expect("model flattens")
+    let ast::InstancedTree { tree, mut overlay } = instanced;
+    rumoca_phase_typecheck::typecheck_instanced(&tree, &mut overlay, "UsesDefault")
+        .expect("model typechecks");
+    rumoca_phase_flatten::flatten_ref(&tree, &overlay, "UsesDefault").expect("model flattens")
 }
 
 #[test]

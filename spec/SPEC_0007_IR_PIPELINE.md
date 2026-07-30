@@ -137,7 +137,7 @@ solver cache. One canonical variable catalog owns stable variable identity;
 typed views classify `p`, `x`, `y`, `z`, and `m`, while input/output causality
 is orthogonal metadata. Dedicated continuous, initialization, discrete,
 condition, event, and clock systems own their respective behavior. Schema
-version 11 is the only supported wire version; every other version is rejected
+version 12 is the only supported wire version; every other version is rejected
 without superseded readers or adapters.
 
 Finalized DAE is valid by construction. Invariant-bearing fields are private,

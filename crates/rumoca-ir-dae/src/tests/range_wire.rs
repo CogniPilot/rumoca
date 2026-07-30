@@ -98,7 +98,7 @@ fn range_wire_round_trips_and_rejects_noncanonical_shapes() {
     });
     assert!(
         serde_json::from_value::<Dae>(removed_raw_shape).is_err(),
-        "wire-v11 rejects the removed raw-value range shape"
+        "wire-v12 rejects the removed raw-value range shape"
     );
 
     let mut future_bound = canonical;

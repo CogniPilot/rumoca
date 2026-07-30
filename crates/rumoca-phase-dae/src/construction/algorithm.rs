@@ -144,6 +144,7 @@ fn lower_algorithm_expression<'dae>(
             context.functions,
             clock,
             expression,
+            None,
         ),
         None => lower_expression(
             construction,

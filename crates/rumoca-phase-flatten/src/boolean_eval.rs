@@ -655,14 +655,15 @@ mod tests {
             local: false,
             parts: crate::path_utils::segments(path)
                 .into_iter()
-                .map(|part| ast::ComponentRefPart {
+                .enumerate()
+                .map(|(index, part)| ast::ComponentRefPart {
                     ident: token(part),
                     subs: None,
+                    def_id: Some(rumoca_core::DefId::new(11_001 + index as u32)),
                 })
                 .collect(),
-            def_id: None,
-            target_def_id: None,
             span: rumoca_core::Span::DUMMY,
+            qualified_display_name: None,
         }
     }
 

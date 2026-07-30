@@ -22,10 +22,10 @@ mod semantic_identity_tests;
 mod user_defined_type_tests;
 mod variability_tests;
 
-use rumoca_core::Token;
+use rumoca_core::{InstanceId, Token};
 use rumoca_ir_ast::{
-    ComponentRefPart, ComponentReference, Connection, Expression, InstanceData, InstanceId,
-    ParsedTree, QualifiedName, Subscript, TerminalType,
+    ComponentRefPart, ComponentReference, Connection, Expression, InstanceData, ParsedTree,
+    QualifiedName, Subscript, TerminalType,
 };
 use rumoca_phase_parse::parse_to_ast;
 use rumoca_phase_resolve::resolve;
@@ -83,16 +83,16 @@ fn add_test_instance(
 fn make_comp_ref(name: &str) -> ComponentReference {
     ComponentReference {
         local: false,
+        qualified_display_name: None,
         parts: vec![ComponentRefPart {
             ident: Token {
                 text: Arc::from(name),
                 ..Default::default()
             },
             subs: None,
+            def_id: None,
         }],
         span: rumoca_core::Span::DUMMY,
-        def_id: None,
-        target_def_id: None,
     }
 }
 
@@ -133,9 +133,34 @@ fn test_instance_component_reference(
     let provenance =
         rumoca_core::ProvenanceSpan::new(component.location.span(), "typecheck test instance")
             .ok()?;
-    Some(rumoca_ir_ast::instance::component_reference_for_instance(
-        qualified_name,
-        provenance,
-        Some(def_id),
-    ))
+    let last_index = qualified_name.parts.len().checked_sub(1)?;
+    rumoca_core::ComponentReference::construct(
+        false,
+        provenance.span(),
+        qualified_name
+            .parts
+            .iter()
+            .enumerate()
+            .map(
+                |(index, (ident, subscripts))| rumoca_core::ComponentRefPart {
+                    ident: ident.clone(),
+                    span: provenance.span(),
+                    subs: subscripts
+                        .iter()
+                        .map(|value| {
+                            rumoca_core::Subscript::generated_index_with_provenance(
+                                *value, provenance,
+                            )
+                        })
+                        .collect(),
+                    def_id: if index == last_index {
+                        def_id
+                    } else {
+                        rumoca_core::DefId::new(index as u32 + 10_000)
+                    },
+                },
+            )
+            .collect(),
+    )
+    .ok()
 }

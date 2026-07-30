@@ -23,26 +23,26 @@ fn comp_ref(name: &str, def_id: rumoca_core::DefId) -> ast::Expression {
         parts: vec![ast::ComponentRefPart {
             ident: token(name),
             subs: None,
+            def_id: Some(def_id),
         }],
-        def_id: Some(def_id),
-        target_def_id: Some(def_id),
         span: test_span(),
+        qualified_display_name: None,
     })
 }
 
-fn comp_ref_parts(parts: &[&str]) -> ast::ComponentReference {
+fn comp_ref_parts(parts: &[(&str, rumoca_core::DefId)]) -> ast::ComponentReference {
     ast::ComponentReference {
         local: false,
         parts: parts
             .iter()
-            .map(|part| ast::ComponentRefPart {
+            .map(|(part, def_id)| ast::ComponentRefPart {
                 ident: token(part),
                 subs: None,
+                def_id: Some(*def_id),
             })
             .collect(),
-        def_id: None,
-        target_def_id: None,
         span: test_span(),
+        qualified_display_name: None,
     }
 }
 
@@ -114,7 +114,7 @@ fn instance_component_member_shadows_import_alias_during_equation_qualification(
 
     let mut overlay = ast::InstanceOverlay::default();
     overlay.components.insert(
-        ast::InstanceId::new(1),
+        rumoca_core::InstanceId::new(1),
         ast::InstanceData {
             qualified_name: QualifiedName::from_dotted("tank.medium.state.p"),
             ..ast::InstanceData::default()
@@ -123,10 +123,18 @@ fn instance_component_member_shadows_import_alias_during_equation_qualification(
     let mut ctx = Context::new();
     ctx.seed_component_member_scopes(&overlay);
 
+    let imported_medium = rumoca_core::DefId::new(31);
+    let dynamic_viscosity = rumoca_core::DefId::new(32);
+    let instance_medium = rumoca_core::DefId::new(33);
+    let state = rumoca_core::DefId::new(34);
     let expr = ast::Expression::FunctionCall {
-        comp: comp_ref_parts(&["Medium", "dynamicViscosity"]),
+        comp: comp_ref_parts(&[
+            ("Medium", imported_medium),
+            ("dynamicViscosity", dynamic_viscosity),
+        ]),
         args: vec![ast::Expression::ComponentReference(comp_ref_parts(&[
-            "medium", "state",
+            ("medium", instance_medium),
+            ("state", state),
         ]))],
         is_partial_application: false,
         span: test_span(),
@@ -144,8 +152,10 @@ fn instance_component_member_shadows_import_alias_during_equation_qualification(
         name.as_str(),
         "Modelica.Media.Water.StandardWater.dynamicViscosity"
     );
+    assert_eq!(name.target_def_id(), Some(dynamic_viscosity));
     let [rumoca_core::Expression::VarRef { name, .. }] = args.as_slice() else {
         panic!("expected one VarRef argument");
     };
     assert_eq!(name.as_str(), "tank.medium.state");
+    assert_eq!(name.target_def_id(), Some(state));
 }

@@ -51,6 +51,15 @@ impl PredefinedComponentType {
 /// Predefined enumeration type names supplied by the language.
 pub const PREDEFINED_ENUM_TYPES: &[&str] = &["StateSelect", "AssertionLevel"];
 
+/// Literals declared by the MLS predefined enumeration types.
+pub const PREDEFINED_ENUM_LITERALS: &[(&str, &[&str])] = &[
+    (
+        "StateSelect",
+        &["never", "avoid", "default", "prefer", "always"],
+    ),
+    ("AssertionLevel", &["warning", "error"]),
+];
+
 const REAL_ATTRIBUTES: &[&str] = &[
     "quantity",
     "unit",

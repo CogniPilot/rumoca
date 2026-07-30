@@ -95,37 +95,10 @@ fn test_algorithm_typecheck() {
     assert!(result.is_ok());
 }
 
-#[test]
-fn test_typecheck_rejects_unknown_operator_record_member_reference() {
-    // MLS §5.3/§5.6: each dotted component-reference segment must resolve
-    // against the declared component type during flattening.
-    let source = r#"
-        operator record SE2
-            Real x;
-            Real y;
-            Real theta;
-        end SE2;
-
-        model Test2
-            SE2 pose;
-        equation
-            der(pose.x) = 1;
-            der(pose.y) = 0;
-            der(pose.z) = 2;
-        end Test2;
-    "#;
-
-    let parsed = parse(source);
-    let resolved = resolve(parsed).expect("resolve should succeed");
-    let err = typecheck(resolved).expect_err("unknown record member should fail typecheck");
-    assert!(
-        err.iter().any(|d| d.code.as_deref() == Some("ET001")
-            && d.message.contains("unknown member `z`")
-            && d.message.contains("pose.z")),
-        "expected unknown-member diagnostic, got: {:?}",
-        err
-    );
-}
+// Unknown dotted record/operator-record members never reach typecheck: resolve
+// rejects them as `ER002` unresolved component references. Those cases are
+// covered by `rumoca-phase-resolve`'s `tests::component_lookup`, which owns the
+// `ER0xx` mnemonics (SPEC_0008 "Error Code Ranges").
 
 #[test]
 fn test_user_defined_equation_compatibility() {

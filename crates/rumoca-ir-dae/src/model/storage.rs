@@ -1,8 +1,7 @@
 use super::*;
 
 impl Storage {
-    pub(super) fn freeze(mut self) -> FrozenStorage {
-        self.function_read_sets = FunctionReadSets::default();
+    pub(super) fn freeze(self) -> FrozenStorage {
         FrozenStorage {
             predefined_string_declaration: self.predefined_string_declaration,
             value_types: self.value_types.into_boxed_slice(),
@@ -337,6 +336,13 @@ impl Storage {
                 let ty = self.intern_type(ValueType::scalar(ScalarType::Real), at)?;
                 return Ok((ty, ExpressionVariability::Continuous));
             }
+            CoordinateInput::ClockInterval(id) => {
+                self.clocks
+                    .get(id.index() as usize)
+                    .ok_or_else(|| unknown("clock", id.index(), at))?;
+                let ty = self.intern_type(ValueType::scalar(ScalarType::Real), at)?;
+                return Ok((ty, ExpressionVariability::Discrete));
+            }
             CoordinateInput::Condition(id) => {
                 if self.conditions.get(id.index() as usize).is_none() {
                     return Err(unknown("condition", id.index(), at));
@@ -349,7 +355,10 @@ impl Storage {
                     .previous_values
                     .get(id.index() as usize)
                     .ok_or_else(|| unknown("previous value", id.index(), at))?;
-                (previous.value_type, ExpressionVariability::Discrete)
+                (
+                    self.variable(previous.variable, at)?.value_type,
+                    ExpressionVariability::Discrete,
+                )
             }
             CoordinateInput::Terminal(id) => {
                 self.terminals

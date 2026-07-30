@@ -106,7 +106,7 @@ fn assert_malformed_packed_counts_rejected(canonical: serde_json::Value) {
     first_array["operand_count"] = serde_json::json!({"start": 0, "len": 2});
     assert!(
         serde_json::from_value::<Dae>(old_range).is_err(),
-        "wire-v11 rejects the removed packed-range representation"
+        "wire-v12 rejects the removed packed-range representation"
     );
 
     let mut oversized = canonical.clone();

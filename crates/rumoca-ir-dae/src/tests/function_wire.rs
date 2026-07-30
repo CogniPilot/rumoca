@@ -101,7 +101,7 @@ fn function_operations_are_canonical_and_replay_in_owner_order() {
         .insert("definitions".to_owned(), serde_json::json!([]));
     assert!(
         serde_json::from_value::<Dae>(removed_definition_mirror).is_err(),
-        "wire-v11 rejects the removed definition mirror"
+        "wire-v12 rejects the removed definition mirror"
     );
 }
 
@@ -335,7 +335,7 @@ fn wire_replay_rejects_removed_function_read_shape() {
         .insert("definition".to_owned(), definition);
     assert!(
         serde_json::from_value::<Dae>(wire).is_err(),
-        "wire-v11 must not accept the removed function-read representation"
+        "wire-v12 must not accept the removed function-read representation"
     );
 }
 

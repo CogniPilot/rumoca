@@ -9,7 +9,7 @@ pub(crate) fn resolve_function_name(
 ) -> String {
     let textual_name = QualifiedName::from_component_reference(comp).to_flat_string();
 
-    if let Some(def_id) = comp.target_def_id
+    if let Some(def_id) = comp.target_def_id()
         && let Some(base_name) = tree.def_map.get(&def_id)
         && let Some(class_def) = class_index.get_by_qualified_name(base_name)
         && class_def.class_type == rumoca_core::ClassType::Function
@@ -18,10 +18,10 @@ pub(crate) fn resolve_function_name(
     }
 
     #[cfg(feature = "tracing")]
-    if comp.target_def_id.is_some() {
+    if comp.target_def_id().is_some() {
         tracing::warn!(
             "Function call has target_def_id {:?} but not found in def_map: {}",
-            comp.target_def_id,
+            comp.target_def_id(),
             comp
         );
     } else {

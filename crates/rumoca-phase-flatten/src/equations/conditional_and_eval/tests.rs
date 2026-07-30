@@ -14,17 +14,18 @@ fn make_comp_ref(path: &str) -> ComponentReference {
         local: false,
         parts: crate::path_utils::segments(path)
             .into_iter()
-            .map(|name| ComponentRefPart {
+            .enumerate()
+            .map(|(index, name)| ComponentRefPart {
                 ident: Token {
                     text: Arc::from(name.to_string()),
                     ..Token::default()
                 },
                 subs: None,
+                def_id: Some(rumoca_core::DefId::new(15_001 + index as u32)),
             })
             .collect(),
-        def_id: None,
-        target_def_id: None,
         span: test_span(),
+        qualified_display_name: None,
     }
 }
 

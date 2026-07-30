@@ -117,9 +117,15 @@ pub(super) fn simplify_zero_sized_reductions(
             subscripts: subscripts.clone(),
             span: *span,
         },
-        ast::Expression::FieldAccess { base, field, span } => ast::Expression::FieldAccess {
+        ast::Expression::FieldAccess {
+            base,
+            field,
+            field_def_id,
+            span,
+        } => ast::Expression::FieldAccess {
             base: Arc::new(simplify_zero_sized_reductions(ctx, base, prefix)),
             field: field.clone(),
+            field_def_id: *field_def_id,
             span: *span,
         },
         ast::Expression::NamedArgument { name, value, span } => ast::Expression::NamedArgument {
@@ -309,23 +315,27 @@ fn fold_reduction_terms(
 mod tests {
     use super::*;
 
-    fn part(name: &str) -> ast::ComponentRefPart {
+    fn part(name: &str, index: usize) -> ast::ComponentRefPart {
         ast::ComponentRefPart {
             ident: rumoca_core::Token {
                 text: std::sync::Arc::from(name),
                 ..Default::default()
             },
             subs: None,
+            def_id: Some(rumoca_core::DefId::new(17_001 + index as u32)),
         }
     }
 
     fn component_ref(path: &[&str]) -> ast::ComponentReference {
         ast::ComponentReference {
             local: false,
-            parts: path.iter().map(|name| part(name)).collect(),
+            parts: path
+                .iter()
+                .enumerate()
+                .map(|(index, name)| part(name, index))
+                .collect(),
             span: rumoca_core::Span::DUMMY,
-            def_id: None,
-            target_def_id: None,
+            qualified_display_name: None,
         }
     }
 

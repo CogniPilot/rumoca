@@ -933,7 +933,7 @@ fn clocked_discrete_definition_lowers_with_exact_row_owner() {
             )
         })?;
         let clock = model.clocks(|clocks| clocks.periodic(lattice, clock_at))?;
-        model.clocks(|clocks| clocks.own_discrete_real(clock, variable, owner))?;
+        model.clocks(|clocks| clocks.own_discrete_real(clock.into(), variable, owner))?;
         let residual = model.expressions(|expressions| {
             let target = expressions
                 .at(owner)
@@ -1035,6 +1035,59 @@ fn pre_discrete_value_loads_a_distinct_bound_history_lane() {
 }
 
 #[test]
+fn periodic_clock_interval_lowers_to_an_exact_constant() {
+    let source = TestSource::new("Real x; Clock c=Clock(0.1); x=interval();");
+    let declaration = source.at(0, 6);
+    let clock_at = source.at(16, 26);
+    let owner = source.at(28, 41);
+    let lattice = rumoca_core::ClockLattice::from_interval_counter(1, 10).unwrap();
+    let model = dae::Dae::construct(source.map, |model| {
+        let real = model.types(|types| {
+            types.intern(
+                TypeId::new(0),
+                dae::ValueType::scalar(dae::ScalarType::Real),
+                declaration,
+            )
+        })?;
+        let variable = model.variables(|variables| {
+            variables.algebraic(
+                VarName::new("x"),
+                real,
+                declaration,
+                dae::VariableAttributes::default(),
+            )
+        })?;
+        let clock = model.clocks(|clocks| clocks.periodic(lattice, clock_at))?;
+        let residual = model.expressions(|expressions| {
+            let target = expressions
+                .at(owner)
+                .coordinate(dae::CoordinateInput::Algebraic(variable))?;
+            let interval = expressions
+                .at(owner)
+                .coordinate(dae::CoordinateInput::ClockInterval(clock))?;
+            expressions
+                .at(owner)
+                .binary(dae::BinaryOperator::Subtract, target, interval)
+        })?;
+        model.continuous(|equations| {
+            equations.equation(owner, |equation| equation.residual(residual))
+        })?;
+        Ok(())
+    })
+    .unwrap();
+
+    let solve = lower_solve_problem(&model).unwrap();
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous.residual.nodes.as_slice() else {
+        panic!("one scalar residual block expected");
+    };
+    assert!(
+        rows.programs()[0]
+            .iter()
+            .any(|operation| matches!(operation, LinearOp::Const { value, .. } if *value == 0.1))
+    );
+}
+
+#[test]
 fn previous_loads_history_owned_by_its_exact_clock_schedule() {
     let source = TestSource::new(
         "discrete Real x; Clock c=Clock(0.1); when c then x=previous(x)+1; end when;",
@@ -1061,13 +1114,17 @@ fn previous_loads_history_owned_by_its_exact_clock_schedule() {
             )
         })?;
         let clock = model.clocks(|clocks| clocks.periodic(lattice, clock_at))?;
-        model.clocks(|clocks| clocks.own_discrete_real(clock, variable, owner))?;
+        model.clocks(|clocks| clocks.own_discrete_real(clock.into(), variable, owner))?;
         let condition = model.conditions(|conditions| conditions.reserve(condition_at))?;
         model.conditions(|conditions| {
-            conditions.define(condition, dae::ConditionInput::Clock(clock), condition_at)
+            conditions.define(
+                condition,
+                dae::ConditionInput::Clock(clock.into()),
+                condition_at,
+            )
         })?;
-        let previous =
-            model.temporal(|temporal| temporal.previous_discrete_real(clock, variable, owner))?;
+        let previous = model
+            .temporal(|temporal| temporal.previous_discrete_real(clock.into(), variable, owner))?;
         let residual = model.expressions(|expressions| {
             let previous = expressions
                 .at(owner)
@@ -1139,10 +1196,14 @@ fn nonlinear_conditional_discrete_residual_fails_before_runtime() {
             )
         })?;
         let clock = model.clocks(|clocks| clocks.periodic(lattice, clock_at))?;
-        model.clocks(|clocks| clocks.own_discrete_real(clock, variable, owner))?;
+        model.clocks(|clocks| clocks.own_discrete_real(clock.into(), variable, owner))?;
         let condition = model.conditions(|conditions| conditions.reserve(condition_at))?;
         model.conditions(|conditions| {
-            conditions.define(condition, dae::ConditionInput::Clock(clock), condition_at)
+            conditions.define(
+                condition,
+                dae::ConditionInput::Clock(clock.into()),
+                condition_at,
+            )
         })?;
         let residual = model.expressions(|expressions| {
             let target = expressions

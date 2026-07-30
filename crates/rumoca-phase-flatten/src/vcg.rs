@@ -1261,14 +1261,15 @@ mod tests {
             local: false,
             parts: parts
                 .iter()
-                .map(|part| ast::ComponentRefPart {
+                .enumerate()
+                .map(|(index, part)| ast::ComponentRefPart {
                     ident: token(part),
                     subs: None,
+                    def_id: Some(rumoca_core::DefId::new(18_001 + index as u32)),
                 })
                 .collect(),
             span,
-            def_id: None,
-            target_def_id: None,
+            qualified_display_name: None,
         }
     }
 
@@ -1682,7 +1683,7 @@ mod tests {
 
         let mut overlay = ast::InstanceOverlay::default();
         overlay.components.insert(
-            ast::InstanceId::new(1),
+            rumoca_core::InstanceId::new(1),
             ast::InstanceData {
                 qualified_name: ast::QualifiedName::from_ident("alias"),
                 oc_record_path: Some("alias.pin[1].reference".to_string()),
@@ -1733,7 +1734,7 @@ mod tests {
 
         let mut overlay = ast::InstanceOverlay::default();
         overlay.classes.insert(
-            ast::InstanceId::new(1),
+            rumoca_core::InstanceId::new(1),
             ast::ClassInstanceData {
                 class_def_id: None,
                 qualified_name: ast::QualifiedName::from_ident("root"),
@@ -1775,7 +1776,7 @@ mod tests {
             (13, "resistor[2].pin_p.reference"),
         ] {
             overlay.components.insert(
-                ast::InstanceId::new(id),
+                rumoca_core::InstanceId::new(id),
                 ast::InstanceData {
                     qualified_name: ast::QualifiedName::from_ident("root"),
                     oc_record_path: Some(path.to_string()),

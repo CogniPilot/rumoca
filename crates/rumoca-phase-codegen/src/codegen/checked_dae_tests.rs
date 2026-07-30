@@ -1,4 +1,4 @@
-use rumoca_core::{SourceMap, Span, TypeId, VarName};
+use rumoca_core::{ClockLattice, ClockRational, SourceMap, Span, TypeId, VarName};
 
 use super::*;
 
@@ -211,6 +211,82 @@ fn dae_modelica_target_walks_the_checked_expression_arena() {
         dae_template_json(&dae).unwrap()["schema"]["name"],
         "rumoca.checked-dae-template"
     );
+}
+
+#[test]
+fn dae_modelica_target_renders_typed_periodic_clock_interval() {
+    let source = "model M Real y; equation y = interval(u); end M;";
+    let mut source_map = SourceMap::new();
+    let source_id = source_map.add("clock_interval.mo", source);
+    let at = |snippet: &str| {
+        let start = source.find(snippet).expect("fixture snippet exists");
+        dae::DaeProvenance::source(Span::from_offsets(source_id, start, start + snippet.len()))
+            .expect("fixture provenance is exact")
+    };
+    let interval_at = at("interval(u)");
+    let dae = dae::Dae::construct(source_map, |dae| {
+        let real = dae.types(|types| {
+            types.intern(
+                TypeId::new(0),
+                dae::ValueType::scalar(dae::ScalarType::Real),
+                at("Real y"),
+            )
+        })?;
+        let y = dae.variables(|variables| {
+            variables.algebraic(
+                VarName::new("y"),
+                real,
+                at("Real y"),
+                dae::VariableAttributes::default(),
+            )
+        })?;
+        let clock = dae.clocks(|clocks| {
+            clocks.periodic(
+                ClockLattice::new(
+                    ClockRational::new(1, 8).expect("fixture period is exact"),
+                    ClockRational::ZERO,
+                )
+                .expect("fixture lattice is valid"),
+                at("u"),
+            )
+        })?;
+        let residual = dae.expressions(|expressions| {
+            let y = expressions
+                .at(at("y = interval(u)"))
+                .coordinate(dae::CoordinateInput::Algebraic(y))?;
+            let interval = expressions
+                .at(interval_at)
+                .coordinate(dae::CoordinateInput::ClockInterval(clock))?;
+            expressions
+                .at(at("y = interval(u)"))
+                .binary(dae::BinaryOperator::Subtract, y, interval)
+        })?;
+        dae.continuous(|continuous| continuous.value_equation(at("y = interval(u)"), residual))
+    })
+    .expect("checked periodic interval fixture constructs");
+
+    let projected = dae_template_json(&dae).expect("checked DAE projects");
+    let interval = projected["expressions"]
+        .as_array()
+        .expect("expressions are dense")
+        .iter()
+        .find(|expression| {
+            expression["operation"]["kind"] == "coordinate"
+                && expression["operation"]["coordinate"]["kind"] == "clock_interval"
+        })
+        .expect("periodic interval coordinate is projected");
+    assert_eq!(
+        interval["provenance"],
+        serde_json::to_value(interval_at).expect("provenance serializes")
+    );
+
+    let template =
+        crate::templates::builtin_template_source("dae-modelica", "dae_modelica.mo.jinja")
+            .expect("checked DAE Modelica template exists");
+    let rendered =
+        render_template_with_name(&dae, template, "M").expect("periodic interval renders");
+    assert!(rendered.contains("0.0 = (y - interval());"));
+    assert!(!rendered.contains("unsupported-feature:dae-modelica-coordinate:clock_interval"));
 }
 
 #[test]
@@ -466,7 +542,7 @@ fn checked_array_update_owner_fixture(
 }
 
 #[test]
-fn dae_modelica_target_rejects_undeclared_record_variable_type() {
+fn checked_dae_rejects_record_coordinate_before_codegen() {
     let source = "record Pair Real left; Real right; end Pair; parameter Pair p = Pair(1.0, 2.0);";
     let mut source_map = SourceMap::new();
     let source_id = source_map.add("record_variable.mo", source);
@@ -475,7 +551,7 @@ fn dae_modelica_target_rejects_undeclared_record_variable_type() {
         dae::DaeProvenance::source(Span::from_offsets(source_id, start, start + snippet.len()))
             .expect("fixture provenance is exact")
     };
-    let dae = dae::Dae::construct(source_map, |dae| {
+    let error = dae::Dae::construct(source_map, |dae| {
         let real = dae.types(|types| {
             types.derived(
                 dae::ValueType::scalar(dae::ScalarType::Real),
@@ -513,23 +589,17 @@ fn dae_modelica_target_rejects_undeclared_record_variable_type() {
         })?;
         Ok(())
     })
-    .expect("checked DAE preserves the record declaration identity");
-    let template =
-        crate::templates::builtin_template_source("dae-modelica", "dae_modelica.mo.jinja").unwrap();
+    .expect_err("record aggregates cannot masquerade as parameter coordinates");
 
-    let error = render_template_with_name(&dae, template, "M")
-        .expect_err("the Modelica target must not reference an undeclared record");
-    let expected_start = source.find("parameter Pair p").unwrap();
-    match error {
-        CodegenError::TemplateRenderError { message, src, span } => {
-            assert!(message.contains("unsupported-feature:dae-modelica-variable-record"));
-            assert_eq!(src.name(), "record_variable.mo");
-            assert_eq!(src.inner(), source);
-            assert_eq!(span.offset(), expected_start);
-            assert_eq!(span.len(), "parameter Pair p".len());
-        }
-        other => panic!("expected model-source diagnostic, got {other:?}"),
-    }
+    assert!(matches!(
+        error,
+        dae::DaeConstructionError::InvalidVariableType {
+            name,
+            role: dae::VariableRole::Parameter,
+            found: dae::ScalarType::Record,
+            span,
+        } if name.as_str() == "p" && span == at("parameter Pair p").span()
+    ));
 }
 
 #[test]

@@ -7,8 +7,8 @@ pub(super) fn inherit_operator_constructor_defaults<'tree>(
     record: &'tree ast::ClassDef,
     constructor: &mut rumoca_core::Function,
     source_map: &rumoca_core::SourceMap,
-    def_map: &crate::ResolveDefMap,
     member_cache: &mut qualify::MemberDefIdCache<'tree>,
+    type_catalog: FunctionTypeCatalog<'_>,
 ) -> Result<(), FlattenError> {
     let Some(candidate) = unique_identity_operator_constructor(class_index, record, constructor)
     else {
@@ -30,8 +30,8 @@ pub(super) fn inherit_operator_constructor_defaults<'tree>(
         candidate,
         candidate_name,
         source_map,
-        def_map,
         member_cache,
+        type_catalog,
     )?;
     if !constructor_inputs_match(&constructor.inputs, &converted.inputs) {
         return Ok(());
@@ -151,7 +151,7 @@ fn identity_input_reference(value: &ast::Expression, input: &ast::Component) -> 
     };
     part.ident.text.as_ref() == input.name
         && part.subs.as_ref().is_none_or(Vec::is_empty)
-        && reference.def_id == input.def_id
+        && reference.root_def_id() == input.def_id
 }
 
 fn constructor_inputs_match(
@@ -162,7 +162,9 @@ fn constructor_inputs_match(
         && fields
             .iter()
             .zip(inputs)
-            .all(|(field, input)| field.name == input.name && field.dims == input.dims)
+            .all(|(field, input)| {
+                field.name == input.name && field.dimensions() == input.dimensions()
+            })
 }
 
 fn collect_constructor_params(
@@ -172,7 +174,7 @@ fn collect_constructor_params(
     params: &mut Vec<rumoca_core::FunctionParam>,
     param_index: &mut HashMap<String, usize>,
     source_map: &rumoca_core::SourceMap,
-    def_map: &crate::ResolveDefMap,
+    expressions: FunctionExpressionContext<'_>,
 ) -> Result<(), FlattenError> {
     let class_ptr = class_def as *const ast::ClassDef as usize;
     if !visited_classes.insert(class_ptr) {
@@ -195,7 +197,7 @@ fn collect_constructor_params(
                 params,
                 param_index,
                 source_map,
-                def_map,
+                expressions,
             )?;
         }
     }
@@ -206,7 +208,7 @@ fn collect_constructor_params(
             comp_name,
             component,
             source_map,
-            def_map,
+            expressions,
             &qualify::ImportMap::default(),
             &HashSet::new(),
         )?;
@@ -220,75 +222,19 @@ fn collect_constructor_params(
     Ok(())
 }
 
-fn collect_constructor_local_def_ids(
-    class_index: &ast::ClassDefIndex<'_>,
-    class_def: &ast::ClassDef,
-    visited_classes: &mut HashSet<usize>,
-    local_def_ids: &mut crate::ResolveDefMap,
-) {
-    let class_ptr = class_def as *const ast::ClassDef as usize;
-    if !visited_classes.insert(class_ptr) {
-        return;
-    }
-
-    for ext in &class_def.extends {
-        let base_class = ext
-            .base_def_id
-            .and_then(|def_id| class_index.get(def_id))
-            .or_else(|| {
-                let name = ext.base_name.to_string();
-                class_index.get_by_qualified_name(&name)
-            });
-        if let Some(base_class) = base_class {
-            collect_constructor_local_def_ids(
-                class_index,
-                base_class,
-                visited_classes,
-                local_def_ids,
-            );
-        }
-    }
-
-    for (name, component) in &class_def.components {
-        if let Some(def_id) = component.def_id {
-            local_def_ids.insert(def_id, name.clone());
-        }
-    }
-}
-
-fn constructor_def_map(
-    class_index: &ast::ClassDefIndex<'_>,
-    class_def: &ast::ClassDef,
-    def_map: &crate::ResolveDefMap,
-) -> crate::ResolveDefMap {
-    let mut constructor_map = def_map.clone();
-    let mut local_def_ids = crate::ResolveDefMap::default();
-    let mut visited_classes = HashSet::new();
-    collect_constructor_local_def_ids(
-        class_index,
-        class_def,
-        &mut visited_classes,
-        &mut local_def_ids,
-    );
-    for (def_id, name) in local_def_ids {
-        constructor_map.insert(def_id, name);
-    }
-    constructor_map
-}
-
 /// Build a synthetic constructor signature for constructor-like class calls.
 pub(super) fn convert_constructor_signature(
     class_index: &ast::ClassDefIndex<'_>,
     class_def: &ast::ClassDef,
     qualified_name: &str,
     source_map: &rumoca_core::SourceMap,
-    def_map: &crate::ResolveDefMap,
+    predefined_intrinsics: ast_lower::PredefinedIntrinsicIds,
+    type_catalog: FunctionTypeCatalog<'_>,
 ) -> Result<rumoca_core::Function, FlattenError> {
     let span = required_location_span(source_map, &class_def.location, "constructor signature")?;
     let mut params = Vec::new();
     let mut param_index = HashMap::new();
     let mut visited_classes = HashSet::new();
-    let constructor_def_map = constructor_def_map(class_index, class_def, def_map);
     collect_constructor_params(
         class_index,
         class_def,
@@ -296,7 +242,10 @@ pub(super) fn convert_constructor_signature(
         &mut params,
         &mut param_index,
         source_map,
-        &constructor_def_map,
+        FunctionExpressionContext {
+            predefined_intrinsics,
+            type_catalog,
+        },
     )?;
 
     let mut func = rumoca_core::Function::new(qualified_name, span);
@@ -371,7 +320,7 @@ impl ExpressionRewriter for FunctionLocalReferenceNormalizer {
             } => {
                 if let Some(local_name) = self.local_reference(name.as_str()) {
                     return rumoca_core::Expression::VarRef {
-                        name: rumoca_core::Reference::new(local_name.to_string()),
+                        name: name.with_var_name(rumoca_core::VarName::new(local_name)),
                         subscripts: self.rewrite_subscripts(subscripts),
                         span: *span,
                     };

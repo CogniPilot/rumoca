@@ -87,7 +87,7 @@ fn family_connection(count: i64) -> ast::InstanceConnection {
 fn overlay_with(connections: Vec<ast::InstanceConnection>) -> ast::InstanceOverlay {
     let mut overlay = ast::InstanceOverlay::new();
     overlay.add_class(ast::ClassInstanceData {
-        instance_id: ast::InstanceId::new(0),
+        instance_id: rumoca_core::InstanceId::new(0),
         qualified_name: ast::QualifiedName::new(),
         connections,
         ..Default::default()

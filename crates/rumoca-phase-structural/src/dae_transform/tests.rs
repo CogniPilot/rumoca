@@ -440,6 +440,7 @@ fn insert_fixture_events<'dae>(
 
 fn insert_fixture_record_companion<'dae>(
     model: &mut dae::DaeConstruction<'dae>,
+    real: dae::ValueTypeId<'dae>,
     record: Option<dae::ValueTypeId<'dae>>,
     source: rumoca_core::SourceId,
     text: &str,
@@ -447,27 +448,29 @@ fn insert_fixture_record_companion<'dae>(
     let Some(record) = record else {
         return Ok(());
     };
-    let declaration = source_provenance(
-        source,
-        text,
-        "parameter Pair companion(start = Pair(4, 5)) = Pair(2, 3)",
-    );
     let binding_at = source_provenance(source, text, "Pair(2, 3)");
     let start_at = source_provenance(source, text, "Pair(4, 5)");
-    let projection_at = source_provenance(source, text, "companion.left");
+    let scalar_declaration_text = "parameter Real recordCompanion(start = 4, fixed = true) = 2";
+    let scalar_declaration = source_provenance(source, text, scalar_declaration_text);
+    let scalar_binding = nested_source_provenance(source, text, scalar_declaration_text, "2", 0);
+    let scalar_start = nested_source_provenance(source, text, scalar_declaration_text, "4", 0);
+    let projection_at = source_provenance(source, text, "Pair(2, 3).left");
     let use_start = text
-        .find("companion.left")
-        .expect("record companion use exists");
+        .find("Pair(2, 3).left")
+        .expect("record value projection exists");
     let use_at = dae::DaeProvenance::source(Span::from_offsets(
         source,
         use_start,
-        use_start + "companion".len(),
+        use_start + "Pair(2, 3)".len(),
     ))
-    .expect("record companion use span is source-backed");
-    let (companion, reservation) = model.variables(|variables| {
-        variables.reserve_parameter(VarName::new("companion"), record, declaration)
-    })?;
+    .expect("record value use span is source-backed");
     let (binding, start) = model.expressions(|expressions| {
+        let binding = expressions
+            .at(scalar_binding)
+            .literal(dae::DaeLiteral::Real(2.0))?;
+        let start = expressions
+            .at(scalar_start)
+            .literal(dae::DaeLiteral::Real(4.0))?;
         let binding_fields = [
             expressions
                 .at(binding_at)
@@ -484,34 +487,43 @@ fn insert_fixture_record_companion<'dae>(
                 .at(start_at)
                 .literal(dae::DaeLiteral::Integer(5))?,
         ];
-        Ok((
-            expressions.at(binding_at).record(record, binding_fields)?,
-            expressions.at(start_at).record(record, start_fields)?,
-        ))
+        expressions.at(binding_at).record(record, binding_fields)?;
+        expressions.at(start_at).record(record, start_fields)?;
+        Ok((binding, start))
     })?;
     model.variables(|variables| {
-        variables.define(
-            reservation,
-            dae::VariableAttributes {
-                binding: Some(binding),
-                start: Some(start),
-                fixed: Some(true),
-                description: Some("record companion".to_owned()),
-                ..dae::VariableAttributes::default()
-            },
-            declaration,
-        )
+        variables
+            .parameter(
+                VarName::new("recordCompanion"),
+                real,
+                scalar_declaration,
+                dae::VariableAttributes {
+                    binding: Some(binding),
+                    start: Some(start),
+                    fixed: Some(true),
+                    description: Some("record companion".to_owned()),
+                    ..dae::VariableAttributes::default()
+                },
+            )
+            .map(|_| ())
     })?;
     model.expressions(|expressions| {
-        let base = expressions
-            .at(use_at)
-            .coordinate(dae::CoordinateInput::Parameter(companion))?;
+        let binding_fields = [
+            expressions
+                .at(use_at)
+                .literal(dae::DaeLiteral::Integer(2))?,
+            expressions
+                .at(use_at)
+                .literal(dae::DaeLiteral::Integer(3))?,
+        ];
+        let base = expressions.at(use_at).record(record, binding_fields)?;
         expressions.at(projection_at).field(base, 0)?;
         let generated = dae::DaeProvenance::generated(
             dae::DaeGeneration::RecordEquationProjection,
             projection_at.span(),
         )?;
-        expressions.at(generated).field(base, 1).map(|_| ())
+        expressions.at(generated).field(base, 1)?;
+        Ok(())
     })
 }
 
@@ -527,6 +539,7 @@ fn insert_fixture_clock<'dae>(
     }
     let clock_at = source_provenance(source, text, "Clock(1, 10)");
     let previous_at = source_provenance(source, text, "previous(d)");
+    let interval_at = source_provenance(source, text, "interval()");
     let terminal_at = source_provenance(source, text, "terminal()");
     let condition = model.conditions(|conditions| conditions.reserve(clock_at))?;
     let clock = model.clocks(|clocks| {
@@ -537,12 +550,16 @@ fn insert_fixture_clock<'dae>(
     let d = variables
         .d
         .expect("clock fixture requires a discrete-real variable");
-    model.clocks(|clocks| clocks.own_discrete_real(clock, d, clock_at))?;
+    model.clocks(|clocks| clocks.own_discrete_real(clock.into(), d, clock_at))?;
     let previous =
-        model.temporal(|temporal| temporal.previous_discrete_real(clock, d, previous_at))?;
+        model.temporal(|temporal| temporal.previous_discrete_real(clock.into(), d, previous_at))?;
     let terminal = model.temporal(|temporal| temporal.terminal(terminal_at))?;
     model.conditions(|conditions| {
-        conditions.define(condition, dae::ConditionInput::Clock(clock), clock_at)
+        conditions.define(
+            condition,
+            dae::ConditionInput::Clock(clock.into()),
+            clock_at,
+        )
     })?;
     model.expressions(|expressions| {
         expressions
@@ -551,6 +568,9 @@ fn insert_fixture_clock<'dae>(
         expressions
             .at(terminal_at)
             .coordinate(dae::CoordinateInput::Terminal(terminal))?;
+        expressions
+            .at(interval_at)
+            .coordinate(dae::CoordinateInput::ClockInterval(clock))?;
         expressions
             .at(clock_at)
             .coordinate(dae::CoordinateInput::Condition(condition))?;
@@ -677,7 +697,7 @@ fn fixture_source_text(nonlinear_constraint: bool, features: FixtureFeatures) ->
         String::new()
     };
     let clock_equations = if features.clocks {
-        " Clock(1, 10); previous(d); terminal();"
+        " Clock(1, 10); previous(d); interval(); terminal();"
     } else {
         ""
     };
@@ -689,7 +709,7 @@ fn fixture_source_text(nonlinear_constraint: bool, features: FixtureFeatures) ->
         ""
     };
     let record_declarations = if features.record_companion {
-        "record Pair Real left; Real right; end Pair; parameter Pair companion(start = Pair(4, 5)) = Pair(2, 3); Real projection = companion.left;"
+        "record Pair Real left; Real right; end Pair; parameter Real recordCompanion(start = 4, fixed = true) = 2 \"record companion\"; Pair(2, 3); Pair(4, 5); Pair(2, 3).left;"
     } else {
         ""
     };
@@ -765,7 +785,7 @@ fn build_constrained_fixture(
         let variables =
             fixture_variables(model, real, vector, boolean, spans.declaration, features)?;
         insert_fixture_range_parameter(model, source, text, features.range)?;
-        insert_fixture_record_companion(model, record, source, text)?;
+        insert_fixture_record_companion(model, real, record, source, text)?;
         insert_fixture_functions(
             model,
             FixtureFunctionConfig {
@@ -1246,12 +1266,25 @@ fn state_demotion_preserves_clock_history_and_terminal_owners() {
                 matches!(
                     expression.operation(),
                     dae::ExpressionOperation::Coordinate(
-                        dae::CoordinateView::Previous(_) | dae::CoordinateView::Terminal(_)
+                        dae::CoordinateView::Previous(_)
+                            | dae::CoordinateView::ClockInterval(_)
+                            | dae::CoordinateView::Terminal(_)
                     )
                 )
             })
             .count();
-        assert_eq!(temporal_coordinates, 2);
+        assert_eq!(temporal_coordinates, 3);
+        let interval = (0..view.expression_count())
+            .filter_map(|index| view.expression_id(index))
+            .filter_map(|id| view.expression(id))
+            .find(|expression| {
+                matches!(
+                    expression.operation(),
+                    dae::ExpressionOperation::Coordinate(dae::CoordinateView::ClockInterval(_))
+                )
+            })
+            .expect("periodic interval survives reconstruction");
+        assert_eq!(view.source_text(interval.provenance()), Some("interval()"));
         assert!(
             sort(view).is_ok(),
             "replacement DAE remains structurally square"
@@ -1371,7 +1404,7 @@ fn state_demotion_preserves_bounded_delay_capability_and_provenance() {
 }
 
 #[test]
-fn state_demotion_preserves_record_layout_values_attributes_and_use_sites() {
+fn state_demotion_preserves_record_layout_values_and_use_sites() {
     let (model, _) = constrained_state_model(
         false,
         FixtureFeatures {
@@ -1409,48 +1442,65 @@ fn assert_rebuilt_record_companion(view: dae::DaeView<'_>) {
     );
     assert!(view.effective_flat_type(record_id).is_none());
 
+    assert_primitive_record_companion_attributes(view);
+    assert_record_values(view, record_id);
+    assert_record_projections(view);
+    assert!(sort(view).is_ok());
+}
+
+fn assert_primitive_record_companion_attributes(view: dae::DaeView<'_>) {
     let (_, companion) = view
         .variables()
-        .find(|(_, variable)| variable.name().as_str() == "companion")
-        .expect("record-valued parameter survives");
-    assert_eq!(companion.value_type_id(), record_id);
+        .find(|(_, variable)| variable.name().as_str() == "recordCompanion")
+        .expect("primitive record companion survives");
     assert_eq!(companion.role(), dae::VariableRole::Parameter);
     assert_eq!(companion.fixed(), Some(true));
     assert_eq!(companion.description(), Some("record companion"));
     assert_eq!(
         view.source_text(companion.declaration()),
-        Some("parameter Pair companion(start = Pair(4, 5)) = Pair(2, 3)")
+        Some("parameter Real recordCompanion(start = 4, fixed = true) = 2")
     );
-    assert_record_attributes(view, record_id, companion);
-    assert_record_projections(view);
-    assert!(sort(view).is_ok());
-}
-
-fn assert_record_attributes<'dae>(
-    view: dae::DaeView<'dae>,
-    record_id: dae::ValueTypeId<'dae>,
-    companion: dae::VariableView<'dae>,
-) {
-    for (expression, expected_text) in [
+    for (expression, expected_text, expected_value) in [
         (
-            companion.binding().expect("record binding survives"),
-            "Pair(2, 3)",
+            companion.binding().expect("primitive binding survives"),
+            "2",
+            2.0,
         ),
         (
-            companion.start().expect("record start survives"),
-            "Pair(4, 5)",
+            companion.start().expect("primitive start survives"),
+            "4",
+            4.0,
         ),
     ] {
-        let expression = view.expression(expression).expect("record value resolves");
-        assert_eq!(expression.value_type_id(), record_id);
-        assert!(matches!(
-            expression.operation(),
-            dae::ExpressionOperation::Record(_)
-        ));
+        let expression = view
+            .expression(expression)
+            .expect("attribute value resolves");
         assert_eq!(
             view.source_text(expression.provenance()),
             Some(expected_text)
         );
+        assert!(matches!(
+            expression.operation(),
+            dae::ExpressionOperation::Literal(dae::DaeLiteral::Real(value))
+                if *value == expected_value
+        ));
+    }
+}
+
+fn assert_record_values<'dae>(view: dae::DaeView<'dae>, record_id: dae::ValueTypeId<'dae>) {
+    for expected_text in ["Pair(2, 3)", "Pair(4, 5)"] {
+        let expression = (0..view.expression_count())
+            .filter_map(|index| view.expression_id(index))
+            .filter_map(|id| view.expression(id))
+            .find(|expression| {
+                expression.value_type_id() == record_id
+                    && view.source_text(expression.provenance()) == Some(expected_text)
+            })
+            .expect("record value survives");
+        assert!(matches!(
+            expression.operation(),
+            dae::ExpressionOperation::Record(_)
+        ));
     }
 }
 
@@ -1460,7 +1510,7 @@ fn assert_record_projections(view: dae::DaeView<'_>) {
         .filter_map(|id| view.expression(id))
         .find(|expression| {
             expression.provenance().origin() == dae::DaeProvenanceOrigin::Source
-                && view.source_text(expression.provenance()) == Some("companion.left")
+                && view.source_text(expression.provenance()) == Some("Pair(2, 3).left")
         })
         .expect("record field projection survives");
     let dae::ExpressionOperation::Field { base, field } = projection.operation() else {
@@ -1468,10 +1518,10 @@ fn assert_record_projections(view: dae::DaeView<'_>) {
     };
     assert_eq!(field, 0);
     let base = view.expression(base).expect("field base resolves");
-    assert_eq!(view.source_text(base.provenance()), Some("companion"));
+    assert_eq!(view.source_text(base.provenance()), Some("Pair(2, 3)"));
     assert!(matches!(
         base.operation(),
-        dae::ExpressionOperation::Coordinate(dae::CoordinateView::Parameter(_))
+        dae::ExpressionOperation::Record(_)
     ));
     let generated = (0..view.expression_count())
         .filter_map(|index| view.expression_id(index))
@@ -1483,7 +1533,7 @@ fn assert_record_projections(view: dae::DaeView<'_>) {
         .expect("generated record projection survives");
     assert_eq!(
         view.source_text(generated.provenance()),
-        Some("companion.left")
+        Some("Pair(2, 3).left")
     );
     assert!(matches!(
         generated.operation(),
@@ -1491,14 +1541,14 @@ fn assert_record_projections(view: dae::DaeView<'_>) {
     ));
 }
 #[test]
-fn continuous_record_unknown_fails_at_its_declaration_before_matching() {
+fn continuous_record_unknown_fails_during_checked_construction() {
     let text = "record Pair Real left; end Pair; Pair unresolved;";
     let mut sources = SourceMap::new();
     let source = sources.add("continuous_record.mo", text);
     let real_at = source_provenance(source, text, "Real left");
     let record_at = source_provenance(source, text, "record Pair Real left; end Pair");
     let variable_at = source_provenance(source, text, "Pair unresolved");
-    let model = dae::Dae::construct(sources, |model| {
+    let error = dae::Dae::construct(sources, |model| {
         let real = model
             .types(|types| types.derived(dae::ValueType::scalar(dae::ScalarType::Real), real_at))?;
         let record = model.types(|types| {
@@ -1519,17 +1569,16 @@ fn continuous_record_unknown_fails_at_its_declaration_before_matching() {
                 .map(|_| ())
         })
     })
-    .expect("checked DAE represents the record declaration");
-    let error = model.inspect(|view| sort(view).map(|_| ())).unwrap_err();
+    .expect_err("record coordinates must be projected before checked DAE construction");
     assert!(matches!(
         &error,
-        StructuralError::ContractViolation { span, .. } if *span == variable_at.span()
+        dae::DaeConstructionError::InvalidVariableType {
+            name,
+            role: dae::VariableRole::Algebraic,
+            found: dae::ScalarType::Record,
+            span,
+        } if name.as_str() == "unresolved" && *span == variable_at.span()
     ));
-    assert!(
-        error
-            .to_string()
-            .contains("must be projected to primitive coordinates")
-    );
 }
 
 #[test]

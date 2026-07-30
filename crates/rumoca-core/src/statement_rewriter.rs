@@ -124,17 +124,16 @@ pub trait StatementRewriter: ExpressionRewriter {
         &mut self,
         reference: &ComponentReference,
     ) -> ComponentReference {
-        ComponentReference {
-            local: reference.local,
-            span: reference.span,
-            parts: reference
-                .parts
+        ComponentReference::construct(
+            reference.local(),
+            reference.span(),
+            reference
+                .parts()
                 .iter()
                 .map(|part| self.rewrite_component_ref_part(part))
-            .collect(),
-            def_id: reference.def_id,
-            target_def_id: reference.target_def_id,
-        }
+                .collect(),
+        )
+        .expect("rewriting a checked reference preserves its nonempty shape")
     }
 
     fn rewrite_component_ref_part(&mut self, part: &ComponentRefPart) -> ComponentRefPart {
@@ -142,6 +141,7 @@ pub trait StatementRewriter: ExpressionRewriter {
             ident: part.ident.clone(),
             span: part.span,
             subs: self.rewrite_subscripts(&part.subs),
+            def_id: part.def_id,
         }
     }
 }
@@ -281,17 +281,16 @@ pub trait FallibleStatementRewriter: FallibleExpressionRewriter {
         &mut self,
         reference: &ComponentReference,
     ) -> Result<ComponentReference, Self::Error> {
-        Ok(ComponentReference {
-            local: reference.local,
-            span: reference.span,
-            parts: reference
-                .parts
+        Ok(ComponentReference::construct(
+            reference.local(),
+            reference.span(),
+            reference
+                .parts()
                 .iter()
                 .map(|part| self.rewrite_component_ref_part(part))
-            .collect::<Result<Vec<_>, Self::Error>>()?,
-            def_id: reference.def_id,
-            target_def_id: reference.target_def_id,
-        })
+                .collect::<Result<Vec<_>, Self::Error>>()?,
+        )
+        .expect("rewriting a checked reference preserves its nonempty shape"))
     }
 
     fn rewrite_component_ref_part(
@@ -302,6 +301,7 @@ pub trait FallibleStatementRewriter: FallibleExpressionRewriter {
             ident: part.ident.clone(),
             span: part.span,
             subs: self.rewrite_subscripts(&part.subs)?,
+            def_id: part.def_id,
         })
     }
 }

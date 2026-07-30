@@ -69,20 +69,6 @@ impl TypeChecker {
             return type_id;
         }
 
-        // Fall back to a unique dotted-suffix match.
-        // This supports imported names like `SI.Reluctance` or `StateSelect`
-        // when the type table stores canonical qualified names.
-        if let Some(type_id) = self.type_suffix_index.get(name).copied().flatten() {
-            return type_id;
-        }
-
-        // Last resort: unique short-name lookup.
-        // Keep this as a compatibility fallback for mixed qualification styles.
-        let short_name = crate::path_utils::class_name_leaf(name);
-        if let Some(type_id) = self.type_suffix_index.get(short_name).copied().flatten() {
-            return type_id;
-        }
-
         TypeId::UNKNOWN
     }
 
@@ -112,11 +98,6 @@ impl TypeChecker {
         let (_, tail) = crate::path_utils::class_root_split(dotted_name)?;
         let anchor_qname = self.def_qualified_names.get(&anchor_def_id)?;
         let candidate = format!("{anchor_qname}.{tail}");
-        type_table.lookup(&candidate).or_else(|| {
-            self.type_suffix_index
-                .get(candidate.as_str())
-                .copied()
-                .flatten()
-        })
+        type_table.lookup(&candidate)
     }
 }

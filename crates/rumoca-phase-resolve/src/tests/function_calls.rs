@@ -106,10 +106,10 @@ end Test;
         .expect("source has a binding");
     let target = extract_call_target(binding).expect("binding calls Known.present");
     let root_def_id = target
-        .def_id
+        .root_def_id()
         .expect("successful qualified call must retain its root identity");
     let target_def_id = target
-        .target_def_id
+        .target_def_id()
         .expect("successful call must carry its exact callable identity");
 
     assert_eq!(tree.def_map[&root_def_id], "Known");
@@ -161,10 +161,10 @@ end UsesMediumAlias;
         panic!("expected function call on rhs");
     };
     let root_def_id = comp
-        .def_id
+        .root_def_id()
         .expect("function call should retain root def_id");
     let def_id = comp
-        .target_def_id
+        .target_def_id()
         .expect("function call should have exact target_def_id");
     let resolved = tree
         .def_map
@@ -224,7 +224,7 @@ end Derived;
         panic!("expected function call on rhs");
     };
     let def_id = comp
-        .target_def_id
+        .target_def_id()
         .expect("inherited Medium call should have exact target_def_id");
     let resolved = tree
         .def_map
@@ -287,7 +287,7 @@ end UsesTableBasedState;
         .expect("state component should preserve explicit binding");
     let target = extract_call_target(binding).expect("binding should contain function call");
     let def_id = target
-        .target_def_id
+        .target_def_id()
         .expect("binding function call should have exact target_def_id");
     let resolved = tree
         .def_map
@@ -366,7 +366,7 @@ end UsesTableBasedState;
         .expect("state component should preserve explicit binding");
     let target = extract_call_target(binding).expect("binding should contain function call");
     let def_id = target
-        .target_def_id
+        .target_def_id()
         .expect("binding function call should have exact target_def_id");
     let resolved = tree
         .def_map

@@ -55,11 +55,11 @@ fn cref(path: &str) -> ast::ComponentReference {
             .map(|part| ast::ComponentRefPart {
                 ident: token(&part),
                 subs: None,
+                def_id: None,
             })
             .collect(),
-        def_id: None,
-        target_def_id: None,
         span: rumoca_core::Span::DUMMY,
+        qualified_display_name: None,
     }
 }
 

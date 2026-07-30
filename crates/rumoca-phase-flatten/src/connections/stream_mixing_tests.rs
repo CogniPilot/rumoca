@@ -9,6 +9,13 @@ fn stream_test_span() -> rumoca_core::Span {
     )
 }
 
+fn fixture_def_id(name: &str) -> rumoca_core::DefId {
+    let hash = name.bytes().fold(2_166_136_261_u32, |hash, byte| {
+        hash.wrapping_mul(16_777_619) ^ u32::from(byte)
+    });
+    rumoca_core::DefId::new(hash.max(1))
+}
+
 fn add_port(model: &mut flat::Model, port: &str, nominal: f64) {
     let span = stream_test_span();
     let stream_name = rumoca_core::VarName::new(format!("{port}.h_outflow"));
@@ -84,6 +91,7 @@ fn indexed_connector_field_stream_call(
                 span: stream_test_span(),
             }),
             field: field.to_string(),
+            field_def_id: fixture_def_id(field),
             span: stream_test_span(),
         }],
         is_constructor: false,
@@ -109,6 +117,7 @@ fn symbolic_indexed_connector_field_stream_call(
                 span: stream_test_span(),
             }),
             field: field.to_string(),
+            field_def_id: fixture_def_id(field),
             span: stream_test_span(),
         }],
         is_constructor: false,
@@ -156,7 +165,7 @@ fn stream_overlay(ports: &[&str]) -> ast::InstanceOverlay {
         })
         .collect();
     overlay.add_class(ast::ClassInstanceData {
-        instance_id: ast::InstanceId(0),
+        instance_id: rumoca_core::InstanceId(0),
         qualified_name: ast::QualifiedName::from_ident("Root"),
         connections,
         ..Default::default()
@@ -212,7 +221,7 @@ fn elementwise_array_stream_overlay() -> ast::InstanceOverlay {
         .collect();
     let mut overlay = ast::InstanceOverlay::new();
     overlay.add_class(ast::ClassInstanceData {
-        instance_id: ast::InstanceId(0),
+        instance_id: rumoca_core::InstanceId(0),
         qualified_name: ast::QualifiedName::from_ident("Root"),
         connections,
         ..Default::default()

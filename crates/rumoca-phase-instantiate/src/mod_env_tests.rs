@@ -41,11 +41,11 @@ fn make_comp_ref_expr(names: &[&str]) -> ast::Expression {
             .map(|name| ast::ComponentRefPart {
                 ident: make_token(name),
                 subs: None,
+                def_id: None,
             })
             .collect(),
-        def_id: None,
-        target_def_id: None,
         span: rumoca_core::Span::DUMMY,
+        qualified_display_name: None,
     })
 }
 
@@ -66,10 +66,10 @@ fn make_start_modification(value: ast::Expression) -> ast::Expression {
             parts: vec![ast::ComponentRefPart {
                 ident: make_token("start"),
                 subs: None,
+                def_id: None,
             }],
-            def_id: None,
-            target_def_id: None,
             span: rumoca_core::Span::DUMMY,
+            qualified_display_name: None,
         },
         value: std::sync::Arc::new(value),
         span: rumoca_core::Span::DUMMY,

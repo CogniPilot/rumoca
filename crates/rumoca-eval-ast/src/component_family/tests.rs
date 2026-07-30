@@ -18,6 +18,36 @@ fn qualified(parts: &[(&str, &[i64])]) -> ast::QualifiedName {
     }
 }
 
+fn component_reference(name: &ast::QualifiedName) -> rumoca_core::ComponentReference {
+    let provenance = span()
+        .require_provenance("component-family test reference")
+        .expect("span");
+    rumoca_core::ComponentReference::construct(
+        false,
+        span(),
+        name.parts
+            .iter()
+            .enumerate()
+            .map(
+                |(index, (ident, subscripts))| rumoca_core::ComponentRefPart {
+                    ident: ident.clone(),
+                    span: span(),
+                    subs: subscripts
+                        .iter()
+                        .map(|value| {
+                            rumoca_core::Subscript::generated_index_with_provenance(
+                                *value, provenance,
+                            )
+                        })
+                        .collect(),
+                    def_id: rumoca_core::DefId::new(index as u32 + 1),
+                },
+            )
+            .collect(),
+    )
+    .expect("test qualified names are nonempty and use nonzero identities")
+}
+
 const NO_ANCESTORS: &[String] = &[];
 
 fn reindex<'a>(segment: &'a str, depth: usize, tuple: &'a [i64]) -> FamilyReindex<'a> {
@@ -96,11 +126,7 @@ fn reindex_leaves_sibling_instances_untouched() {
         "left.pin[1].v"
     );
 
-    let sibling_reference = ast::instance::component_reference_for_instance(
-        &sibling,
-        span().require_provenance("test").expect("span"),
-        None,
-    );
+    let sibling_reference = component_reference(&sibling);
     assert_eq!(
         rumoca_core::ComponentPath::from_component_reference(
             &mapper.component_reference(&sibling_reference)
@@ -131,21 +157,38 @@ fn reindex_leaves_other_domain_points_untouched() {
 #[test]
 fn reindex_rewrites_component_reference_and_preserves_spans() {
     let name = qualified(&[("c", &[1]), ("v", &[])]);
-    let reference = ast::instance::component_reference_for_instance(
-        &name,
-        span().require_provenance("test").expect("span"),
-        None,
-    );
+    let reference = component_reference(&name);
     let rewritten = reindex("c", 0, &[4]).component_reference(&reference);
     let rumoca_core::Subscript::Index {
         value,
         span: sub_span,
-    } = &rewritten.parts[0].subs[0]
+    } = &rewritten.parts()[0].subs[0]
     else {
         panic!("expected an index subscript");
     };
     assert_eq!(*value, 4);
     assert_eq!(*sub_span, span());
+    assert_eq!(rewritten.span(), reference.span());
+    assert_eq!(rewritten.local(), reference.local());
+    assert_eq!(
+        rewritten
+            .parts()
+            .iter()
+            .map(|part| part.def_id)
+            .collect::<Vec<_>>(),
+        reference
+            .parts()
+            .iter()
+            .map(|part| part.def_id)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        reference.parts()[0].subs,
+        vec![rumoca_core::Subscript::Index {
+            value: 1,
+            span: span()
+        }]
+    );
 }
 
 #[test]
@@ -184,11 +227,7 @@ fn family_member_component_reindexes_instance_paths() {
         qualified_name: qualified(&[("c", &[1]), ("R", &[])]),
         ..Default::default()
     };
-    template.component_ref = Some(ast::instance::component_reference_for_instance(
-        &template.qualified_name,
-        span().require_provenance("test").expect("span"),
-        None,
-    ));
+    template.component_ref = Some(component_reference(&template.qualified_name));
     template.declaration_source_scope = Some(qualified(&[("Package", &[]), ("Cell", &[])]));
     template.binding_source_scope = Some(qualified(&[("c", &[1])]));
     template
@@ -196,8 +235,12 @@ fn family_member_component_reindexes_instance_paths() {
         .insert("start".to_string(), qualified(&[("c", &[1])]));
     template.oc_record_path = Some("c[1].frame".to_string());
 
-    let member = family_member_component(&template, ast::InstanceId(9), &reindex("c", 0, &[2]));
-    assert_eq!(member.instance_id, ast::InstanceId(9));
+    let member = family_member_component(
+        &template,
+        rumoca_core::InstanceId(9),
+        &reindex("c", 0, &[2]),
+    );
+    assert_eq!(member.instance_id, rumoca_core::InstanceId(9));
     assert_eq!(member.qualified_name.to_flat_string(), "c[2].R");
     assert_eq!(
         member
@@ -226,7 +269,7 @@ fn family_member_component_reindexes_instance_paths() {
 #[test]
 fn family_member_class_reindexes_origins_and_connections() {
     let template = ast::ClassInstanceData {
-        instance_id: ast::InstanceId(1),
+        instance_id: rumoca_core::InstanceId(1),
         qualified_name: qualified(&[("c", &[1])]),
         source_scope: Some(qualified(&[("Package", &[]), ("Cell", &[])])),
         equations: vec![ast::InstanceEquation {
@@ -247,7 +290,11 @@ fn family_member_class_reindexes_origins_and_connections() {
         ..Default::default()
     };
 
-    let member = family_member_class(&template, ast::InstanceId(11), &reindex("c", 0, &[3]));
+    let member = family_member_class(
+        &template,
+        rumoca_core::InstanceId(11),
+        &reindex("c", 0, &[3]),
+    );
     assert_eq!(member.qualified_name.to_flat_string(), "c[3]");
     assert!(member.connections[0].family.is_none());
     assert_eq!(member.equations[0].origin.to_flat_string(), "c[3]");
@@ -269,7 +316,7 @@ fn family_member_class_reindexes_compact_connection_family_endpoints() {
     // subscripts of the inner arrays symbolic. Only the scalar `a`/`b` fields
     // are visible in a flattened model, so a regression here is silent.
     let template = ast::ClassInstanceData {
-        instance_id: ast::InstanceId(1),
+        instance_id: rumoca_core::InstanceId(1),
         qualified_name: qualified(&[("bank", &[1])]),
         connections: vec![ast::InstanceConnection {
             a: qualified(&[("bank", &[1]), ("pins", &[1])]),
@@ -305,7 +352,11 @@ fn family_member_class_reindexes_compact_connection_family_endpoints() {
         ..Default::default()
     };
 
-    let member = family_member_class(&template, ast::InstanceId(12), &reindex("bank", 0, &[4]));
+    let member = family_member_class(
+        &template,
+        rumoca_core::InstanceId(12),
+        &reindex("bank", 0, &[4]),
+    );
     let family = member.connections[0]
         .family
         .as_ref()

@@ -1080,7 +1080,7 @@ fn eval_bool_function_call(
         .collect::<Vec<_>>()
         .join(".");
     let qualified_name = comp
-        .def_id
+        .root_def_id()
         .and_then(|did| env.tree.def_map.get(&did))
         .map(String::as_str);
 
@@ -1267,7 +1267,7 @@ fn resolve_class_from_cref<'a>(
     tree: &'a ast::ClassTree,
     cref: &ast::ComponentReference,
 ) -> Option<&'a ast::ClassDef> {
-    if let Some(def_id) = cref.def_id
+    if let Some(def_id) = cref.root_def_id()
         && let Some(class) = tree.get_class_by_def_id(def_id)
     {
         return Some(class);
@@ -1612,7 +1612,7 @@ fn eval_integer_function_call(
 
     // Also try the qualified name via def_id (resolve phase may have set this)
     let qualified_name = comp
-        .def_id
+        .root_def_id()
         .and_then(|did| env.tree.def_map.get(&did))
         .cloned();
 

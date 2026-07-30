@@ -14,6 +14,13 @@ impl TypeChecker {
         let Some(type_table) = self.initialize_instanced_context(tree) else {
             return;
         };
+        let mut type_ids = self
+            .type_ids_by_def_id
+            .iter()
+            .map(|(&def_id, &type_id)| (def_id, type_id))
+            .collect::<Vec<_>>();
+        type_ids.sort_unstable_by_key(|(def_id, _)| def_id.index());
+        overlay.type_ids_by_def_id = type_ids.into_iter().collect();
         self.populate_overlay_type_roots(tree, overlay, &type_table);
         self.resolve_overlay_component_types(tree, overlay, &type_table);
         if !self.initialize_instanced_modifier_member_types(tree, overlay, model_name, &type_table)
@@ -45,6 +52,7 @@ impl TypeChecker {
     /// only concrete effective identities.
     fn finalize_effective_types(&mut self, overlay: &mut InstanceOverlay, type_table: &TypeTable) {
         overlay.effective_types.clear();
+        overlay.enumeration_types.clear();
         let mut interned = HashMap::<EffectiveType, TypeId>::new();
         let mut catalog = rumoca_ir_ast::AstIndexMap::<TypeId, EffectiveType>::default();
         let mut assignments = Vec::with_capacity(overlay.components.len());
@@ -73,6 +81,9 @@ impl TypeChecker {
                 );
                 return;
             };
+            if matches!(type_table.get(canonical_type), Some(Type::Enumeration(_))) {
+                overlay.enumeration_types.insert(effective_id);
+            }
             assignments.push((*instance_id, effective_id));
         }
 
@@ -129,7 +140,6 @@ impl TypeChecker {
             }
         };
         self.type_ids_by_def_id = type_ids_by_def_id;
-        self.type_suffix_index = Self::build_type_suffix_index(&type_table);
         self.rebuild_type_roots(tree, &type_table);
         self.component_modifier_targets = modifier_targets::build_component_modifier_targets(tree);
         Some(type_table)
@@ -149,7 +159,6 @@ impl TypeChecker {
                 tree,
                 type_table,
                 &self.type_ids_by_def_id,
-                &self.type_suffix_index,
                 &self.source_map,
                 root_def_ids,
             ) {
@@ -407,6 +416,7 @@ impl TypeChecker {
             self.check_instanced_class_declarations_and_bases(
                 tree,
                 class,
+                class_data.instance_id,
                 &instance_scope,
                 type_table,
                 checked_declarations,
@@ -524,7 +534,7 @@ impl TypeChecker {
         let previous_call_type_overrides = std::mem::take(&mut self.current_call_type_overrides);
         self.current_call_type_overrides =
             function_signatures::build_call_type_overrides(tree, class_def_id, None);
-        self.check_instanced_class_declaration(class, type_table);
+        self.check_instanced_class_declaration(class, None, type_table);
         walk_equations(self, &class.equations, type_table);
         walk_equations(self, &class.initial_equations, type_table);
         for statements in &class.algorithms {
@@ -541,6 +551,7 @@ impl TypeChecker {
         &mut self,
         tree: &ClassTree,
         class: &ClassDef,
+        class_instance_id: InstanceId,
         instance_scope: &ComponentPath,
         type_table: &TypeTable,
         checked_instances: &mut HashSet<(DefId, ComponentPath)>,
@@ -560,6 +571,7 @@ impl TypeChecker {
                 self.check_instanced_class_declarations_and_bases(
                     tree,
                     base,
+                    class_instance_id,
                     instance_scope,
                     type_table,
                     checked_instances,
@@ -567,34 +579,88 @@ impl TypeChecker {
             }
         }
 
-        self.check_instanced_class_declaration(class, type_table);
+        self.check_instanced_class_declaration(class, Some(class_instance_id), type_table);
     }
 
-    fn check_instanced_class_declaration(&mut self, class: &ClassDef, type_table: &TypeTable) {
+    fn check_instanced_class_declaration(
+        &mut self,
+        class: &ClassDef,
+        class_instance_id: Option<InstanceId>,
+        type_table: &TypeTable,
+    ) {
         for component in class.components.values() {
             let Some(def_id) = component.def_id else {
                 continue;
             };
-            let type_id = self.resolve_type_name(
-                &component.type_name.to_string(),
-                component.type_def_id,
-                type_table,
-            );
+            let Some(type_id) =
+                self.instanced_declaration_type(component, class_instance_id, type_table)
+            else {
+                continue;
+            };
             self.current_declaration_semantics.insert(
                 def_id,
                 ComponentSemantics::from_declaration_with_type(component, type_id),
             );
         }
         for (name, component) in &class.components {
-            let type_id = self.resolve_type_name(
-                &component.type_name.to_string(),
-                component.type_def_id,
-                type_table,
-            );
+            let Some(type_id) =
+                self.instanced_declaration_type(component, class_instance_id, type_table)
+            else {
+                continue;
+            };
             self.validate_component_modifier_names(name, component, type_table, type_id);
         }
         self.check_component_modifier_types_in_class(class, type_table);
         self.validate_variability_constraints(class);
+    }
+
+    fn instanced_declaration_type(
+        &mut self,
+        component: &Component,
+        class_instance_id: Option<InstanceId>,
+        type_table: &TypeTable,
+    ) -> Option<TypeId> {
+        if let (Some(class_instance_id), Some(def_id)) = (class_instance_id, component.def_id) {
+            match self
+                .current_instance_semantics
+                .lookup_declaration(class_instance_id, def_id)
+            {
+                SemanticLookup::Found(semantics) => return Some(semantics.type_id),
+                SemanticLookup::Ambiguous => {
+                    self.emit_ambiguous_occurrence_type(component, def_id);
+                    return None;
+                }
+                SemanticLookup::Missing => {}
+            }
+            if component.type_def_id.is_none()
+                && component.type_name.name.len() > 1
+                && component.type_name.def_id.is_some()
+            {
+                return None;
+            }
+        }
+        Some(self.resolve_type_name(
+            &component.type_name.to_string(),
+            component.type_def_id,
+            type_table,
+        ))
+    }
+
+    fn emit_ambiguous_occurrence_type(&mut self, component: &Component, def_id: DefId) {
+        let Some(span) = self
+            .diagnostic_location_span(&component.location, "ambiguous occurrence type identity")
+        else {
+            return;
+        };
+        self.emit_typecheck_error(TypeCheckError::phase_diagnostic(
+            "ET000",
+            format!(
+                "component declaration {:?} has heterogeneous types in one instance",
+                def_id
+            ),
+            "component declaration has conflicting occurrence types",
+            span,
+        ));
     }
 
     fn check_instanced_bindings(
@@ -632,6 +698,8 @@ impl TypeChecker {
                 data.qualified_name.to_component_path().parent()
             };
             let previous_scope = std::mem::replace(&mut self.current_instance_scope, binding_scope);
+            let previous_class_instance_id =
+                std::mem::replace(&mut self.current_class_instance_id, data.owner_class_id);
             let previous_call_type_overrides =
                 std::mem::take(&mut self.current_call_type_overrides);
             self.current_call_type_overrides =
@@ -650,6 +718,7 @@ impl TypeChecker {
                 );
             }
             self.current_instance_scope = previous_scope;
+            self.current_class_instance_id = previous_class_instance_id;
             self.current_call_type_overrides = previous_call_type_overrides;
         }
     }

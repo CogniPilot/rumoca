@@ -24,14 +24,15 @@ fn comp_ref(path: &str) -> ast::ComponentReference {
         parts: rumoca_core::ComponentPath::from_flat_path(path)
             .into_parts()
             .into_iter()
-            .map(|part| ast::ComponentRefPart {
+            .enumerate()
+            .map(|(index, part)| ast::ComponentRefPart {
                 ident: token(&part),
                 subs: None,
+                def_id: Some(rumoca_core::DefId::new(19_001 + index as u32)),
             })
             .collect(),
-        def_id: None,
-        target_def_id: None,
         span: rumoca_core::Span::DUMMY,
+        qualified_display_name: None,
     }
 }
 
@@ -100,10 +101,10 @@ fn indexed_var_expr(name: &str, subscripts: &[&str]) -> ast::Expression {
                     .map(|name| ast::Subscript::Expression(var_expr(name)))
                     .collect(),
             ),
+            def_id: Some(rumoca_core::DefId::new(19_101)),
         }],
-        def_id: None,
-        target_def_id: None,
         span: rumoca_core::Span::DUMMY,
+        qualified_display_name: None,
     })
 }
 

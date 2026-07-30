@@ -14,6 +14,21 @@ fn token(text: &str) -> rumoca_core::Token {
     }
 }
 
+fn test_span() -> rumoca_core::Span {
+    rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("constant_folding_test.mo"),
+        1,
+        2,
+    )
+}
+
+fn fixture_def_id(name: &str) -> rumoca_core::DefId {
+    let hash = name.bytes().fold(2_166_136_261_u32, |hash, byte| {
+        hash.wrapping_mul(16_777_619) ^ u32::from(byte)
+    });
+    rumoca_core::DefId::new(hash.max(1))
+}
+
 fn bool_expr(value: bool) -> ast::Expression {
     ast::Expression::Terminal {
         terminal_type: ast::TerminalType::Bool,
@@ -52,27 +67,29 @@ fn unknown_bool_ref(name: &str) -> ast::Expression {
         parts: vec![ast::ComponentRefPart {
             ident: token(name),
             subs: None,
+            def_id: Some(fixture_def_id(name)),
         }],
-        span: rumoca_core::Span::DUMMY,
-        def_id: None,
-        target_def_id: None,
+        span: test_span(),
+        qualified_display_name: None,
     })
 }
 
-fn component_ref(path: &str, def_id: Option<rumoca_core::DefId>) -> ast::ComponentReference {
-    ast::ComponentReference {
+fn component_ref(path: &str, target_def_id: rumoca_core::DefId) -> ast::ComponentReference {
+    let mut reference = ast::ComponentReference {
         local: false,
         parts: crate::path_utils::segments(path)
             .into_iter()
             .map(|part| ast::ComponentRefPart {
                 ident: token(part),
                 subs: None,
+                def_id: Some(fixture_def_id(part)),
             })
             .collect(),
-        span: rumoca_core::Span::DUMMY,
-        def_id,
-        target_def_id: def_id,
-    }
+        span: test_span(),
+        qualified_display_name: None,
+    };
+    reference.set_target_def_id(Some(target_def_id));
+    reference
 }
 
 fn real_binary(
@@ -136,7 +153,7 @@ fn fill_with_array_seed_prefixes_dimensions_including_zero() {
         span: rumoca_core::Span::DUMMY,
     };
     let expr = ast::Expression::FunctionCall {
-        comp: component_ref("fill", None),
+        comp: component_ref("fill", fixture_def_id("fill")),
         args: vec![seed, int_expr("0"), int_expr("2")],
         is_partial_application: false,
         span: rumoca_core::Span::DUMMY,
@@ -225,12 +242,9 @@ fn relational_constant_folding_compares_real_values() {
 fn named_record_constructor_extraction_preserves_target_identity() {
     let record_def_id = rumoca_core::DefId::new(42);
     let expr = ast::Expression::ClassModification {
-        target: component_ref(
-            "Utilities.ParameterRecords.MachineData",
-            Some(record_def_id),
-        ),
+        target: component_ref("Utilities.ParameterRecords.MachineData", record_def_id),
         modifications: vec![ast::Expression::Modification {
-            target: component_ref("PRef", None),
+            target: component_ref("PRef", fixture_def_id("PRef")),
             value: Arc::new(real_expr("1000.0")),
             span: rumoca_core::Span::DUMMY,
         }],

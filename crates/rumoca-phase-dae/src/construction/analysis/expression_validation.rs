@@ -111,7 +111,7 @@ impl<'a> ExpressionValidator<'a> {
                 filter,
                 ..
             } => self.validate_array_comprehension(expr, indices, filter.as_deref(), span),
-            Expression::FieldAccess { .. } => self.validate_field_access(span),
+            Expression::FieldAccess { .. } => self.validate_field_access(expression, span),
             Expression::Tuple { .. } => Err(ToDaeError::unsupported_flat(
                 "aggregate expression",
                 "tuple lowering requires its typed semantic owner",
@@ -147,25 +147,19 @@ impl<'a> ExpressionValidator<'a> {
         self.validate_subscripts(subscripts)
     }
 
-    fn validate_field_access(self, span: Span) -> Result<(), ToDaeError> {
+    fn validate_field_access(self, expression: &Expression, span: Span) -> Result<(), ToDaeError> {
         let Some(fields) = self.record_array_fields else {
             return Err(unsupported_record_field(span));
         };
-        let Some(plan) = fields.get(&span) else {
+        let Some(plan) = fields.get(expression) else {
             return Err(unsupported_record_field(span));
         };
-        if let Some(coordinate) = plan
-            .coordinates
-            .iter()
-            .find(|coordinate| !self.roles.contains_key(*coordinate))
-        {
-            return Err(ToDaeError::unsupported_flat(
-                "record-array member slice",
-                format!("planned materialized coordinate `{coordinate}` has no DAE role"),
-                span,
-            ));
+        match plan {
+            RecordArrayFieldPlan::MaterializedCoordinate { .. } => Ok(()),
+            RecordArrayFieldPlan::Projection { subscripts, .. } => {
+                self.validate_subscripts(subscripts)
+            }
         }
-        self.validate_subscripts(&plan.subscripts)
     }
 }
 
@@ -286,6 +280,21 @@ impl ExpressionValidator<'_> {
         if function == BuiltinFunction::Pre {
             return self.validate_pre(arguments, span);
         }
+        if function == BuiltinFunction::Interval {
+            if arguments.len() > 1 {
+                return Err(ToDaeError::unsupported_runtime_operator(
+                    function.name(),
+                    "interval accepts at most one inference operand",
+                    span,
+                ));
+            }
+            return arguments
+                .first()
+                .map_or(Ok(()), |argument| self.validate(argument));
+        }
+        if matches!(function, BuiltinFunction::Hold | BuiltinFunction::Previous) {
+            return self.validate_clocked_unary(function, arguments, span);
+        }
         if !is_supported_builtin(function) {
             return Err(ToDaeError::unsupported_runtime_operator(
                 function.name(),
@@ -297,6 +306,38 @@ impl ExpressionValidator<'_> {
             self.validate(argument)?;
         }
         Ok(())
+    }
+
+    fn validate_clocked_unary(
+        self,
+        function: BuiltinFunction,
+        arguments: &[Expression],
+        span: Span,
+    ) -> Result<(), ToDaeError> {
+        let [argument] = arguments else {
+            return Err(ToDaeError::unsupported_runtime_operator(
+                function.name(),
+                "the checked clocked operator requires exactly one operand",
+                span,
+            ));
+        };
+        if function == BuiltinFunction::Previous {
+            let Some((name, subscripts)) = derivative_reference(argument) else {
+                return Err(invalid_reference_builtin("previous", function.name(), span));
+            };
+            if !matches!(
+                self.roles.get(name.var_name()),
+                Some(PlannedRole::DiscreteReal | PlannedRole::DiscreteValue)
+            ) {
+                return Err(ToDaeError::unsupported_flat(
+                    "previous expression",
+                    "previous(...) must name a discrete coordinate",
+                    span,
+                ));
+            }
+            return self.validate_subscripts(subscripts);
+        }
+        self.validate(argument)
     }
 
     fn validate_derivative(self, arguments: &[Expression], span: Span) -> Result<(), ToDaeError> {
@@ -384,6 +425,15 @@ fn is_supported_builtin(function: BuiltinFunction) -> bool {
             | BuiltinFunction::Linspace
             | BuiltinFunction::Cross
             | BuiltinFunction::Sample
+            | BuiltinFunction::Clock
+            | BuiltinFunction::Hold
+            | BuiltinFunction::Previous
+            | BuiltinFunction::Interval
+            | BuiltinFunction::SubSample
+            | BuiltinFunction::SuperSample
+            | BuiltinFunction::ShiftSample
+            | BuiltinFunction::BackSample
+            | BuiltinFunction::NoClock
             | BuiltinFunction::Delay
     )
 }

@@ -470,9 +470,9 @@ impl ShapeAnalyzer<'_> {
         component: &rumoca_core::ComponentReference,
         values: &ShapeEnvironment,
     ) -> Result<(), ToDaeError> {
-        for subscript in component.parts.iter().flat_map(|part| part.subs.iter()) {
+        for subscript in component.parts().iter().flat_map(|part| part.subs.iter()) {
             if let Subscript::Expr { expr, .. } = subscript {
-                self.discover_calls(expr, values)?;
+                self.discover_calls(expr.as_ref(), values)?;
             }
         }
         Ok(())
@@ -620,19 +620,19 @@ fn resolve_declared_shape(
     values: &ShapeEnvironment,
 ) -> Result<ValueShape, ToDaeError> {
     if let Some(actual) = actual
-        && actual.len() != value.dims.len()
+        && actual.len() != value.dimensions().len()
     {
         return Err(shape_error(
             value,
             format!(
                 "declared rank {} does not match call-site rank {}",
-                value.dims.len(),
+                value.dimensions().len(),
                 actual.len()
             ),
         ));
     }
-    let mut shape = Vec::with_capacity(value.dims.len());
-    for (axis, declared) in value.dims.iter().copied().enumerate() {
+    let mut shape = Vec::with_capacity(value.dimensions().len());
+    for (axis, declared) in value.dimensions().iter().copied().enumerate() {
         let source = value.shape_expr.get(axis);
         let resolved = if declared > 0 {
             u32::try_from(declared).map_err(|_| {
@@ -859,29 +859,6 @@ fn expression_shape(
             };
             expression_shape(value, values, function_result)
         }
-        Expression::FunctionCall { name, args, .. }
-            if matches!(
-                name.as_str(),
-                "Clock" | "subSample" | "superSample" | "shiftSample" | "backSample" | "noClock"
-            ) =>
-        {
-            for argument in args {
-                expression_shape(argument, values, function_result)?;
-            }
-            Ok(Vec::new())
-        }
-        Expression::FunctionCall { name, args, .. }
-            if matches!(name.as_str(), "previous" | "hold") =>
-        {
-            let [value] = args.as_slice() else {
-                return Err(ToDaeError::unsupported_flat(
-                    "temporal expression shape",
-                    format!("{} requires exactly one value", name.as_str()),
-                    span,
-                ));
-            };
-            expression_shape(value, values, function_result)
-        }
         Expression::FunctionCall { name, args, .. } => function_result(name, args, span),
         Expression::If {
             branches,
@@ -1032,6 +1009,14 @@ fn builtin_shape(
         BuiltinFunction::Der
         | BuiltinFunction::Pre
         | BuiltinFunction::Sample
+        | BuiltinFunction::Clock
+        | BuiltinFunction::Hold
+        | BuiltinFunction::Previous
+        | BuiltinFunction::SubSample
+        | BuiltinFunction::SuperSample
+        | BuiltinFunction::ShiftSample
+        | BuiltinFunction::BackSample
+        | BuiltinFunction::NoClock
         | BuiltinFunction::Abs
         | BuiltinFunction::Sign
         | BuiltinFunction::Sqrt
@@ -1059,6 +1044,7 @@ fn builtin_shape(
                 )
             })
             .and_then(|value| expression_shape(value, values, function_result)),
+        BuiltinFunction::Interval => scalar_interval_shape(arguments, span),
         BuiltinFunction::Atan2
         | BuiltinFunction::Mod
         | BuiltinFunction::Min
@@ -1083,6 +1069,17 @@ fn builtin_shape(
             span,
         )),
     }
+}
+
+fn scalar_interval_shape(arguments: &[Expression], span: Span) -> Result<ValueShape, ToDaeError> {
+    if arguments.len() > 1 {
+        return Err(ToDaeError::unsupported_flat(
+            "function shape proof",
+            "interval accepts at most one inference operand",
+            span,
+        ));
+    }
+    Ok(Vec::new())
 }
 
 fn scalar_integer_shape(
@@ -1253,7 +1250,7 @@ fn range_cardinality(start: i64, step: i64, end: i64, span: Span) -> Result<u32,
 
 #[cfg(test)]
 mod tests {
-    use rumoca_core::{Reference, SourceMap, Subscript};
+    use rumoca_core::{EffectiveType, Reference, SourceMap, Subscript, TypeId};
 
     use super::*;
 
@@ -1274,14 +1271,18 @@ mod tests {
         }
     }
 
+    fn real_param(name: &str, dimensions: Vec<i64>, span: Span) -> rumoca_core::FunctionParam {
+        let value_type = EffectiveType::new(TypeId::new(1), TypeId::new(1), dimensions)
+            .expect("fixture function type is resolved");
+        rumoca_core::FunctionParam::new(name, "Real", value_type, span)
+    }
+
     fn identity_function(span: Span, result_has_shape_equality: bool) -> rumoca_core::Function {
         let mut function = rumoca_core::Function::new("identity", span);
         function.add_input(
-            rumoca_core::FunctionParam::new("u", "Real", span)
-                .with_dims(vec![0])
-                .with_shape_expr(vec![Subscript::colon(span)]),
+            real_param("u", vec![0], span).with_shape_expr(vec![Subscript::colon(span)]),
         );
-        let mut output = rumoca_core::FunctionParam::new("y", "Real", span).with_dims(vec![0]);
+        let mut output = real_param("y", vec![0], span);
         if result_has_shape_equality {
             output = output.with_shape_expr(vec![Subscript::expr(
                 Box::new(Expression::BuiltinCall {
@@ -1328,8 +1329,8 @@ mod tests {
         let span = Span::from_offsets(source, 0, 9);
         let mut constructor = rumoca_core::Function::new("Pair", span);
         constructor.is_constructor = true;
-        constructor.add_input(rumoca_core::FunctionParam::new("left", "Real", span));
-        constructor.add_input(rumoca_core::FunctionParam::new("right", "Real", span));
+        constructor.add_input(real_param("left", Vec::new(), span));
+        constructor.add_input(real_param("right", Vec::new(), span));
 
         let mut model = flat::Model::new();
         model.add_function(constructor);

@@ -149,29 +149,30 @@ fn family_replication_matches_scalar_expansion() {
 
 #[test]
 fn family_replication_allocates_instance_ids_in_scalar_order() {
-    // SPEC_0001: `component_ref.def_id` and `symbol_ancestry` keys are derived
-    // from the raw `InstanceId`, so replication must interleave component and
-    // class allocation exactly as `instantiate_component` / `instantiate_class`
-    // do (component, then its own class, then that class's components) rather
-    // than emitting all components of a member before all of its classes.
+    // SPEC_0001: occurrence keys use the raw `InstanceId`, so replication must
+    // interleave component and class allocation exactly as
+    // `instantiate_component` / `instantiate_class` do (component, then its own
+    // class, then that class's components) rather than emitting all components
+    // of a member before all of its classes. Allocation is one-based because
+    // `InstanceId::UNSET` reserves zero.
     let compact = instantiate(CELL_ARRAY, "Stack", true);
     let expected: Vec<(u32, &'static str, String)> = [
-        (0, "class", ""),
-        (1, "component", "c[1]"),
-        (2, "class", "c[1]"),
-        (3, "component", "c[1].R"),
-        (4, "component", "c[1].v"),
-        (5, "component", "c[1].i"),
-        (6, "component", "c[2]"),
-        (7, "class", "c[2]"),
-        (8, "component", "c[2].R"),
-        (9, "component", "c[2].v"),
-        (10, "component", "c[2].i"),
-        (11, "component", "c[3]"),
-        (12, "class", "c[3]"),
-        (13, "component", "c[3].R"),
-        (14, "component", "c[3].v"),
-        (15, "component", "c[3].i"),
+        (1, "class", ""),
+        (2, "component", "c[1]"),
+        (3, "class", "c[1]"),
+        (4, "component", "c[1].R"),
+        (5, "component", "c[1].v"),
+        (6, "component", "c[1].i"),
+        (7, "component", "c[2]"),
+        (8, "class", "c[2]"),
+        (9, "component", "c[2].R"),
+        (10, "component", "c[2].v"),
+        (11, "component", "c[2].i"),
+        (12, "component", "c[3]"),
+        (13, "class", "c[3]"),
+        (14, "component", "c[3].R"),
+        (15, "component", "c[3].v"),
+        (16, "component", "c[3].i"),
     ]
     .into_iter()
     .map(|(id, kind, path)| (id, kind, path.to_string()))

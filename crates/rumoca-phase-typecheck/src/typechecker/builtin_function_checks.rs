@@ -18,7 +18,7 @@ impl TypeChecker {
         let Some(name) = (comp.parts.len() == 1).then(|| comp.parts[0].ident.text.as_ref()) else {
             return;
         };
-        if comp.def_id.is_some() && self.user_function_definition(comp, name).is_some() {
+        if comp.root_def_id().is_some() && self.user_function_definition(comp, name).is_some() {
             return;
         }
 

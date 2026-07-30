@@ -347,7 +347,7 @@ fn resolve_class_reference_from_root(
     tree: &ClassTree,
     reference: &rumoca_ir_ast::ComponentReference,
 ) -> Option<DefId> {
-    let mut current = reference.def_id?;
+    let mut current = reference.root_def_id()?;
     if reference.parts.len() == 1 {
         return tree
             .get_class_by_def_id(current)

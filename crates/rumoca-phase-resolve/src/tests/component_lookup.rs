@@ -57,6 +57,68 @@ end Test;
 }
 
 #[test]
+fn test_unknown_record_member_reference_is_error() {
+    // MLS §5.3/§5.6: each dotted component-reference segment must resolve
+    // against the declared component type, so an unknown record member is a
+    // name-resolution failure rather than a later type error.
+    let source = r#"
+        record Pose
+            Real x;
+            Real y;
+            Real theta;
+        end Pose;
+
+        model Test2
+            Pose pose;
+        equation
+            der(pose.x) = 1;
+            der(pose.y) = 0;
+            der(pose.z) = 2;
+        end Test2;
+    "#;
+    let diags = resolve_parsed_tree_source(source)
+        .expect_err("unknown record member should fail resolution");
+    assert!(
+        diags.iter().any(|d| d.code.as_deref() == Some("ER002")
+            && d.message
+                .contains("unresolved component reference: 'pose.z'")),
+        "expected unresolved-member diagnostic, got: {:?}",
+        diags
+    );
+}
+
+#[test]
+fn test_unknown_operator_record_member_reference_is_error() {
+    // MLS §14 operator records resolve their members like records, so the
+    // unknown-member failure must also be reported by resolve, before
+    // instantiation or typecheck ever sees the reference.
+    let source = r#"
+        operator record SE2
+            Real x;
+            Real y;
+            Real theta;
+        end SE2;
+
+        model Test2
+            SE2 pose;
+        equation
+            der(pose.x) = 1;
+            der(pose.y) = 0;
+            der(pose.z) = 2;
+        end Test2;
+    "#;
+    let diags = resolve_parsed_tree_source(source)
+        .expect_err("unknown operator-record member should fail resolution");
+    assert!(
+        diags.iter().any(|d| d.code.as_deref() == Some("ER002")
+            && d.message
+                .contains("unresolved component reference: 'pose.z'")),
+        "expected unresolved-member diagnostic, got: {:?}",
+        diags
+    );
+}
+
+#[test]
 fn test_def_id_zero_is_reserved_for_root_not_builtin() {
     let resolver = Resolver::new();
     let real_id = resolver

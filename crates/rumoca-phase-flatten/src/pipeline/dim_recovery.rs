@@ -208,7 +208,7 @@ pub(crate) fn collect_function_output_dims(flat: &Model) -> DimMap {
             function
                 .outputs
                 .first()
-                .map(|output| (name.as_str().to_string(), output.dims.clone()))
+                .map(|output| (name.as_str().to_string(), output.dimensions().to_vec()))
         })
         .collect()
 }

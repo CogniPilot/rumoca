@@ -37,7 +37,7 @@ pub(super) fn define_conditions<'target>(
     expressions: &[dae::ExprId<'target>],
     conditions: &[dae::ConditionId<'target>],
     relations: &[dae::RelationId<'target>],
-    clocks: &[dae::ClockId<'target>],
+    clocks: &[super::RebuiltClock<'target>],
 ) -> Result<(), dae::DaeConstructionError> {
     for (index, target_id) in conditions.iter().copied().enumerate() {
         let source_id = source
@@ -66,7 +66,7 @@ pub(super) fn define_conditions<'target>(
                 conditions[rhs.index() as usize],
             ),
             dae::ConditionOperation::Clock(id) => {
-                dae::ConditionInput::Clock(clocks[id.index() as usize])
+                dae::ConditionInput::Clock(clocks[id.index() as usize].clock_id())
             }
         };
         target

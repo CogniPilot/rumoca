@@ -145,7 +145,7 @@ impl TypeChecker {
         // MLS §7.3: redeclare values may be multi-part class references
         // (e.g. `Modelica.Media.Incompressible.Examples.Essotherm650`).
         // Parser metadata can attach def_id to the first segment only, so
-        // resolve the full path before falling back to cref.def_id.
+        // resolve the full path before falling back to cref.root_def_id().
         if let Some(def_id) = tree.name_map.get(&target_name).copied() {
             return Some(def_id);
         }
@@ -154,7 +154,7 @@ impl TypeChecker {
         {
             return Some(def_id);
         }
-        if let Some(def_id) = cref.def_id {
+        if let Some(def_id) = cref.root_def_id() {
             return Some(def_id);
         }
 

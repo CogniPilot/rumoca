@@ -101,22 +101,18 @@ fn test_redeclared_phase_system_dimension_resolves() {
 
     let parsed = parse(source);
     let resolved = resolve(parsed).expect("resolve should succeed");
-    let typed = typecheck(resolved).expect("typecheck should succeed");
-
-    let tree = typed.into_inner();
-    let test_class = tree
-        .definitions
-        .classes
-        .get("Test")
-        .expect("Test class should exist");
-
-    let term = test_class
+    let mut instanced = rumoca_phase_instantiate::instantiate(resolved, "Test")
+        .expect("instantiate should succeed");
+    typecheck_instanced(&instanced.tree, &mut instanced.overlay, "Test")
+        .expect("instanced typecheck should succeed");
+    let term = instanced
+        .overlay
         .components
-        .get("term")
-        .expect("term should exist");
-    assert_eq!(
-        term.shape,
-        vec![],
+        .values()
+        .find(|component| component.qualified_name.to_flat_string() == "term")
+        .expect("term occurrence");
+    assert!(
+        term.dims.is_empty(),
         "term connector itself should remain scalar"
     );
 }
@@ -164,7 +160,10 @@ fn test_redeclared_phase_system_dimension_resolves_in_nested_component() {
 
     let parsed = parse(source);
     let resolved = resolve(parsed).expect("resolve should succeed");
-    typecheck(resolved).expect("typecheck should succeed");
+    let mut instanced =
+        rumoca_phase_instantiate::instantiate(resolved, "Top").expect("instantiate should succeed");
+    typecheck_instanced(&instanced.tree, &mut instanced.overlay, "Top")
+        .expect("instanced typecheck should succeed");
 }
 
 #[test]

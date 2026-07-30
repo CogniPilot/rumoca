@@ -841,7 +841,7 @@ fn linspace_and_cross_are_checked_compact_vector_operations() {
 }
 
 #[test]
-fn enumeration_literals_are_canonical_checked_integers_and_round_trip() {
+fn enumeration_literals_are_canonical_checked_values_and_round_trip() {
     let source = TestSource::new("E.a");
     let literal_at = source.source("E.a", 0);
     let dae = Dae::construct(source.map, |dae| {
@@ -854,7 +854,10 @@ fn enumeration_literals_are_canonical_checked_integers_and_round_trip() {
     let decoded: Dae = serde_json::from_str(&encoded).unwrap();
     decoded.inspect(|view| {
         let expression = view.expression(view.expression_id(0).unwrap()).unwrap();
-        assert_eq!(expression.value_type().scalar_type(), ScalarType::Integer);
+        assert_eq!(
+            expression.value_type().scalar_type(),
+            ScalarType::Enumeration
+        );
         assert!(expression.value_type().dimensions().is_empty());
         assert_eq!(view.source_text(expression.provenance()), Some("E.a"));
         assert!(matches!(

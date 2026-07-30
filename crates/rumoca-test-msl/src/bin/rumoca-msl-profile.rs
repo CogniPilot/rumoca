@@ -405,6 +405,7 @@ fn coordinate_variable_index(operation: ExpressionOperation<'_>) -> Option<u32> 
         | ExpressionOperation::Coordinate(CoordinateView::PreDiscreteValue(id)) => Some(id.index()),
         ExpressionOperation::Coordinate(
             CoordinateView::Time
+            | CoordinateView::ClockInterval(_)
             | CoordinateView::Condition(_)
             | CoordinateView::Delay(_)
             | CoordinateView::Previous(_)

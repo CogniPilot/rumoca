@@ -122,3 +122,13 @@ fn record_equation_scalar_count(
             })
     })
 }
+
+fn checked_shape_size(name: &VarName, variable: &flat::Variable) -> Result<usize, ToDaeError> {
+    variable.shape_size().map_err(|_| {
+        ToDaeError::unsupported_flat(
+            "variable shape",
+            format!("`{name}` has a shape whose scalar cardinality cannot be represented"),
+            variable.source_span,
+        )
+    })
+}

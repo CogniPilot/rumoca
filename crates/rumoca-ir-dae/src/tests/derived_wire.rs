@@ -252,10 +252,10 @@ fn derived_wire_fixture() -> Dae {
                 ClockLattice::new(ClockRational::ONE, ClockRational::ZERO).unwrap(),
                 z_at,
             )?;
-            clocks.own_discrete_real(clock, z, z_at)?;
+            clocks.own_discrete_real(clock.into(), z, z_at)?;
             Ok(clock)
         })?;
-        dae.temporal(|temporal| temporal.previous_discrete_real(clock, z, z_at))?;
+        dae.temporal(|temporal| temporal.previous_discrete_real(clock.into(), z, z_at))?;
         let (zero, one) = dae.expressions(|expressions| {
             let zero = expressions.at(pair_at).literal(DaeLiteral::Real(0.0))?;
             let one = expressions.at(pair_at).literal(DaeLiteral::Real(1.0))?;

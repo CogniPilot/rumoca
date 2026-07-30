@@ -125,7 +125,7 @@ fn record_layout_matches(record: &flat::RecordType, constructor: &rumoca_core::F
             .all(|(field, input)| {
                 input.def_id == Some(field.def_id)
                     && field.name == input.name
-                    && field.dims == input.dims
+                    && field.dims == input.dimensions()
             })
 }
 

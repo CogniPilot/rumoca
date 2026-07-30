@@ -123,20 +123,19 @@ impl FamilyReindex<'_> {
 
     /// Reindex a resolved component reference, preserving subscript spans.
     pub fn component_reference(&self, reference: &ComponentReference) -> ComponentReference {
-        let mut result = reference.clone();
-        if !self.reference_ancestors_match(&result.parts) {
-            return result;
+        if !self.reference_ancestors_match(reference.parts()) {
+            return reference.clone();
         }
-        let Some(part) = result.parts.get_mut(self.depth) else {
-            return result;
+        let Some(part) = reference.parts().get(self.depth) else {
+            return reference.clone();
         };
         let template_values: Vec<i64> = part.subs.iter().filter_map(index_value).collect();
         if template_values.len() != part.subs.len()
             || !self.part_matches(&part.ident, &template_values)
         {
-            return result;
+            return reference.clone();
         }
-        part.subs = self
+        let rewritten_subscripts = self
             .tuple
             .iter()
             .enumerate()
@@ -145,7 +144,11 @@ impl FamilyReindex<'_> {
                 span: subscript_span(part, position),
             })
             .collect();
-        result
+        let mut parts = reference.parts().to_vec();
+        parts[self.depth].subs = rewritten_subscripts;
+        reference
+            .with_replaced_parts(parts)
+            .expect("reindexing subscripts preserves every exact part identity")
     }
 
     /// Reindex a rendered component path.
@@ -261,7 +264,7 @@ fn constant_subscripts(subscripts: &[AffineForm]) -> Option<Vec<i64>> {
 /// Derive one component instance of a family from its template instance.
 pub fn family_member_component(
     template: &ast::InstanceData,
-    instance_id: ast::InstanceId,
+    instance_id: rumoca_core::InstanceId,
     reindex: &FamilyReindex<'_>,
 ) -> ast::InstanceData {
     let mut member = template.clone();
@@ -290,7 +293,7 @@ pub fn family_member_component(
 /// Derive one class instance of a family from its template instance.
 pub fn family_member_class(
     template: &ast::ClassInstanceData,
-    instance_id: ast::InstanceId,
+    instance_id: rumoca_core::InstanceId,
     reindex: &FamilyReindex<'_>,
 ) -> ast::ClassInstanceData {
     let mut member = template.clone();

@@ -5,7 +5,7 @@ use rumoca_core::ClockLattice;
 use crate::model::{Storage, check_provenance, checked_u32, unknown};
 use crate::{
     ClockId, ClockOwnershipId, ConditionId, DaeConstructionError, DaeProvenance, DiscreteRealId,
-    DiscreteValueId, VariableId, VariableRole,
+    DiscreteValueId, PeriodicClockId, VariableId, VariableRole,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -22,19 +22,10 @@ pub(crate) struct ClockEntry {
     pub(crate) provenance: DaeProvenance,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum ClockedVariableRole {
-    DiscreteReal,
-    DiscreteValue,
-}
-
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ClockOwnershipEntry {
     pub(crate) variable: u32,
-    #[serde(skip_serializing)]
-    pub(crate) role: ClockedVariableRole,
     pub(crate) clock: u32,
     pub(crate) provenance: DaeProvenance,
 }
@@ -104,7 +95,7 @@ impl<'dae> Clocks<'_, 'dae> {
         &mut self,
         lattice: ClockLattice,
         provenance: DaeProvenance,
-    ) -> Result<ClockId<'dae>, DaeConstructionError> {
+    ) -> Result<PeriodicClockId<'dae>, DaeConstructionError> {
         let lattice = ClockLattice::new(lattice.period(), lattice.phase()).map_err(|source| {
             DaeConstructionError::InvalidClockLattice {
                 source,
@@ -112,6 +103,7 @@ impl<'dae> Clocks<'_, 'dae> {
             }
         })?;
         self.insert(ClockKind::Periodic(lattice), provenance)
+            .map(|clock| PeriodicClockId::from_raw(clock.index()))
     }
 
     pub fn triggered(
@@ -137,7 +129,6 @@ impl<'dae> Clocks<'_, 'dae> {
             clock,
             variable.index(),
             VariableRole::DiscreteReal,
-            ClockedVariableRole::DiscreteReal,
             provenance,
         )
     }
@@ -152,7 +143,6 @@ impl<'dae> Clocks<'_, 'dae> {
             clock,
             variable.index(),
             VariableRole::DiscreteValue,
-            ClockedVariableRole::DiscreteValue,
             provenance,
         )
     }
@@ -173,7 +163,6 @@ impl<'dae> Clocks<'_, 'dae> {
         clock: ClockId<'dae>,
         variable: u32,
         expected_role: VariableRole,
-        role: ClockedVariableRole,
         provenance: DaeProvenance,
     ) -> Result<ClockOwnershipId<'dae>, DaeConstructionError> {
         check_provenance(self.source_map, provenance)?;
@@ -194,7 +183,7 @@ impl<'dae> Clocks<'_, 'dae> {
                 .clock_ownerships
                 .get(index as usize)
                 .expect("clock ownership index points into its dense arena");
-            if entry.clock == clock.index() && entry.role == role {
+            if entry.clock == clock.index() {
                 return Ok(ClockOwnershipId::from_raw(index));
             }
             return Err(DaeConstructionError::ConflictingClockOwnership {
@@ -212,7 +201,6 @@ impl<'dae> Clocks<'_, 'dae> {
         )?;
         self.storage.clock_ownerships.push(ClockOwnershipEntry {
             variable,
-            role,
             clock: clock.index(),
             provenance,
         });

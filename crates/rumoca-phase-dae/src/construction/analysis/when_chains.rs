@@ -217,10 +217,11 @@ fn validate_clocked_temporal_expressions(
     roles: &HashMap<VarName, PlannedRole>,
     clocked: bool,
 ) -> Result<(), ToDaeError> {
-    if let Expression::FunctionCall {
-        name, args, span, ..
+    if let Expression::BuiltinCall {
+        function: BuiltinFunction::Previous,
+        args,
+        span,
     } = expression
-        && name.as_str() == "previous"
     {
         if !clocked {
             return Err(ToDaeError::unsupported_runtime_operator(

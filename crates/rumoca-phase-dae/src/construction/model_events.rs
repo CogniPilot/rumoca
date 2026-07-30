@@ -284,7 +284,7 @@ impl<'shape, 'dae> WhenLowering<'_, '_, 'shape, 'dae> {
                 own_clocked_targets(
                     self.construction,
                     self.request.coordinates,
-                    clock,
+                    clock.into(),
                     &branch.equations,
                 )?;
             }
@@ -342,8 +342,10 @@ impl<'shape, 'dae> WhenLowering<'_, '_, 'shape, 'dae> {
     fn lower_condition(
         &mut self,
         expression: &Expression,
-    ) -> Result<(dae::ConditionId<'dae>, Option<dae::ClockId<'dae>>), dae::DaeConstructionError>
-    {
+    ) -> Result<
+        (dae::ConditionId<'dae>, Option<dae::PeriodicClockId<'dae>>),
+        dae::DaeConstructionError,
+    > {
         let Expression::VarRef {
             name,
             subscripts,
@@ -362,7 +364,12 @@ impl<'shape, 'dae> WhenLowering<'_, '_, 'shape, 'dae> {
             .request
             .clocks
             .by_variable
-            .get(name.var_name())
+            .get(&name.instance_id().ok_or_else(|| {
+                dae::DaeConstructionError::InvalidVariableRole {
+                    name: name.var_name().clone(),
+                    span: *span,
+                }
+            })?)
             .copied()
         else {
             return lower_condition(
@@ -382,7 +389,11 @@ impl<'shape, 'dae> WhenLowering<'_, '_, 'shape, 'dae> {
             .construction
             .conditions(|conditions| conditions.reserve(provenance))?;
         self.construction.conditions(|conditions| {
-            conditions.define(condition, dae::ConditionInput::Clock(clock), provenance)
+            conditions.define(
+                condition,
+                dae::ConditionInput::Clock(clock.into()),
+                provenance,
+            )
         })?;
         Ok((condition, Some(clock)))
     }
@@ -461,6 +472,7 @@ impl<'shape, 'dae> WhenLowering<'_, '_, 'shape, 'dae> {
                 self.request.functions,
                 clock,
                 value,
+                None,
             )?,
             None => lower_expression(
                 self.construction,

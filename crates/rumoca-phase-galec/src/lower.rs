@@ -1524,6 +1524,14 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         indices: &[gast::Expression],
         span: Span,
     ) -> Result<TypedExpression, GalecTargetError> {
+        if let dae::CoordinateView::ClockInterval(clock) = coordinate {
+            return Ok(TypedExpression {
+                expression: gast::Expression::Real(
+                    self.view.periodic_clock(clock).period_seconds(),
+                ),
+                scalar_type: gast::ScalarType::Real,
+            });
+        }
         if let dae::CoordinateView::Algebraic(variable) = coordinate
             && let Some(definition) = self.definitions.definition(variable)
         {

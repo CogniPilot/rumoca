@@ -476,10 +476,6 @@ fn subscripts_are_validated_on_the_component_prefix_that_owns_the_array() {
         port.components.get("occupied").expect("occupied"),
         true,
     );
-    overlay
-        .array_parent_dims
-        .insert("Test.inPort".to_string(), vec![2]);
-
     typecheck_instanced(&tree, &mut overlay, "Test")
         .expect("member access after indexing an array component should typecheck");
 }
@@ -538,10 +534,6 @@ fn member_access_through_an_array_component_preserves_the_owner_shape() {
             true,
         );
     }
-    overlay
-        .array_parent_dims
-        .insert("Test.plug.pin".to_string(), vec![3]);
-
     typecheck_instanced(&tree, &mut overlay, "Test")
         .expect("an unsubscripted array component contributes its domain to member access");
 }
@@ -586,10 +578,6 @@ fn member_access_shape_repeats_an_extent_that_matches_the_owner_domain() {
             true,
         );
     }
-    overlay
-        .array_parent_dims
-        .insert("Test.ports".to_string(), vec![2]);
-
     typecheck_instanced(&tree, &mut overlay, "Test")
         .expect("every reference part contributes its own declared extents");
 }
@@ -610,35 +598,11 @@ fn subscript_arity_uses_the_composed_owner_and_member_extents() {
             value = ports.c[1, 2];
         end Test;
     "#;
-    let tree = parsed_tree(source);
-    let test = tree.get_class_by_qualified_name("Test").expect("Test");
-    let port = tree.get_class_by_qualified_name("Port").expect("Port");
-    let mut overlay = InstanceOverlay::new();
-    add_instanced_component(
-        &mut overlay,
-        "Test.value",
-        test.components.get("value").expect("value"),
-        true,
-    );
-    for index in 1..=2 {
-        add_instanced_component(
-            &mut overlay,
-            &format!("Test.ports[{index}]"),
-            test.components.get("ports").expect("ports"),
-            false,
-        );
-        add_instanced_component(
-            &mut overlay,
-            &format!("Test.ports[{index}].c"),
-            port.components.get("c").expect("c"),
-            true,
-        );
-    }
-    overlay
-        .array_parent_dims
-        .insert("Test.ports".to_string(), vec![2]);
+    let resolved = resolve(parse(source)).expect("resolve should succeed");
+    let mut instanced = rumoca_phase_instantiate::instantiate(resolved, "Test")
+        .expect("instantiate should succeed");
 
-    typecheck_instanced(&tree, &mut overlay, "Test")
+    typecheck_instanced(&instanced.tree, &mut instanced.overlay, "Test")
         .expect("two subscripts address the composed two-dimensional reference shape");
 }
 

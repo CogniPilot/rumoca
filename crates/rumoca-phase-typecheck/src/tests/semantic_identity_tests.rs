@@ -30,20 +30,29 @@ fn semantic_instance(
 ) {
     let instance_id = overlay.alloc_id();
     let mut qualified_name = QualifiedName::from_dotted(path);
-    qualified_name
+    let declared_part = qualified_name
         .parts
         .last_mut()
-        .expect("test instance path must not be empty")
-        .1 = instance_subscripts;
+        .expect("test instance path must not be empty");
+    // The declaration reference names the innermost segment of the instance
+    // path; take it from the structured qualified name, not from the text.
+    let declared_ident = declared_part.0.clone();
+    declared_part.1 = instance_subscripts;
     overlay.add_component(InstanceData {
         instance_id,
-        component_ref: Some(rumoca_core::ComponentReference {
-            local: false,
-            span: rumoca_core::Span::DUMMY,
-            parts: Vec::new(),
-            def_id: Some(source_def_id),
-            target_def_id: Some(source_def_id),
-        }),
+        component_ref: Some(
+            rumoca_core::ComponentReference::construct(
+                false,
+                rumoca_core::Span::DUMMY,
+                vec![rumoca_core::ComponentRefPart {
+                    ident: declared_ident,
+                    span: rumoca_core::Span::DUMMY,
+                    subs: Vec::new(),
+                    def_id: source_def_id,
+                }],
+            )
+            .expect("test declaration reference has exact identity"),
+        ),
         qualified_name,
         type_id,
         variability,
@@ -54,7 +63,7 @@ fn semantic_instance(
 
 fn resolved_reference(name: &str, def_id: DefId) -> ComponentReference {
     let mut reference = make_comp_ref(name);
-    reference.def_id = Some(def_id);
+    reference.set_root_def_id(Some(def_id));
     reference
 }
 

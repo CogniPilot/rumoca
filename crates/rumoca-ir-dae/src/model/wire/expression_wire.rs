@@ -207,6 +207,7 @@ pub(super) enum CoordinateWire {
     PreDiscreteReal(u32),
     PreDiscreteValue(u32),
     Time,
+    ClockInterval(u32),
     Condition(u32),
     Delay(u32),
     Previous(u32),

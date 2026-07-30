@@ -1402,6 +1402,7 @@ fn coordinate_variable(coordinate: dae::CoordinateView<'_>) -> Option<u32> {
         dae::CoordinateView::DiscreteReal(id) => Some(id.index()),
         dae::CoordinateView::DiscreteValue(id) => Some(id.index()),
         dae::CoordinateView::Time
+        | dae::CoordinateView::ClockInterval(_)
         | dae::CoordinateView::PreDiscreteReal(_)
         | dae::CoordinateView::PreDiscreteValue(_)
         | dae::CoordinateView::Condition(_)

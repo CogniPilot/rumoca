@@ -480,7 +480,10 @@ fn collect_current_discrete_dependencies(
             function: BuiltinFunction::Pre,
             ..
         } => {}
-        Expression::FunctionCall { name, .. } if name.as_str() == "previous" => {}
+        Expression::BuiltinCall {
+            function: BuiltinFunction::Previous,
+            ..
+        } => {}
         Expression::VarRef { name, .. } => {
             if matches!(roles.get(name.var_name()), Some(PlannedRole::DiscreteValue)) {
                 dependencies.insert(name.var_name().clone());

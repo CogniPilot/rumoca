@@ -551,6 +551,9 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             self.ops.push(solve::LinearOp::LoadTime { dst });
             return Ok(dst);
         }
+        if let dae::CoordinateView::ClockInterval(clock) = coordinate {
+            return self.constant(self.view.periodic_clock(clock).period_seconds(), span);
+        }
         if matches!(coordinate, dae::CoordinateView::Derivative(_)) {
             return Err(LowerError::non_computable(
                 "derivative coordinate escaped checked structural substitution",

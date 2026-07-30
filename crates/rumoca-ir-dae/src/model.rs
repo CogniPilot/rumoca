@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::clocks::{
     ClockEntry, ClockOperation, ClockOwnershipEntry, ClockOwnershipView, ClockView,
-    ClockedVariableKind, ClockedVariableRole, Clocks,
+    ClockedVariableKind, Clocks,
 };
 use crate::conditions::{
     ConditionEntry, ConditionOperation, ConditionView, Conditions, RelationEntry, RelationView,
@@ -52,7 +52,13 @@ use crate::{
     RootId, ScalarType, StateId, TerminalId, TimeEventId, ValueTypeId, VariableId,
 };
 
-pub const DAE_SCHEMA_VERSION: u16 = 11;
+/// The one supported DAE wire version.
+///
+/// Wire records name their own columns, but ordinal-tagged encodings identify
+/// enum variants positionally, so adding, removing, or reordering a wire
+/// variant changes the decodable shape. Every such change bumps this constant,
+/// and decode then rejects the superseded number instead of reading it.
+pub const DAE_SCHEMA_VERSION: u16 = 12;
 
 pub use domains::Domains;
 pub(crate) use domains::insert_domain;
@@ -379,7 +385,7 @@ struct FrozenStorage {
     delays: Box<[DelayEntry]>,
 }
 
-/// Immutable, valid-by-construction schema-v11 DAE.
+/// Immutable, valid-by-construction schema-v12 DAE.
 #[derive(Debug, Serialize)]
 pub struct Dae {
     schema_version: u16,

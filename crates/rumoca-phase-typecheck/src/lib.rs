@@ -40,7 +40,9 @@ mod semantic_scope;
 mod typechecker;
 pub mod unit_syntax;
 
-use rumoca_core::{ComponentPath, DefId, EffectiveType, ScopeId, SourceId, Span, TypeId};
+use rumoca_core::{
+    ComponentPath, DefId, EffectiveType, InstanceId, ScopeId, SourceId, Span, TypeId,
+};
 use rumoca_core::{
     Diagnostic as CommonDiagnostic, Diagnostics, PhaseError, PrimaryLabel, SourceMap,
 };
@@ -48,9 +50,8 @@ use rumoca_core::{
 /// Placeholder used when a `SourceId` has no registered name in the source map.
 pub(crate) const UNKNOWN_SOURCE_DISPLAY_NAME: &str = "<unknown source>";
 use rumoca_ir_ast::{
-    ClassDef, ClassKind, ClassTree, Component, EnumerationType, Expression, InstanceId,
-    InstanceOverlay, ScopeImport, StoredDefinition, Type, TypeAlias, TypeClassType, TypeTable,
-    TypedTree,
+    ClassDef, ClassKind, ClassTree, Component, EnumerationType, Expression, InstanceOverlay,
+    ScopeImport, StoredDefinition, Type, TypeAlias, TypeClassType, TypeTable, TypedTree,
 };
 use rumoca_phase_resolve::ResolvedTree;
 use semantic_scope::{ComponentSemantics, InstanceSemanticScope, SemanticLookup};
@@ -255,6 +256,8 @@ pub struct TypeChecker {
     eval_ctx: rumoca_eval_ast::eval::TypeCheckEvalContext,
     /// Source map for file name → SourceId resolution in diagnostics.
     source_map: SourceMap,
+    /// Exact Resolve identities of synchronous predefined intrinsics.
+    predefined_intrinsics: HashMap<DefId, rumoca_core::BuiltinFunction>,
     /// DefId → fully-qualified class name map for anchor-aware dotted type lookup.
     def_qualified_names: HashMap<DefId, String>,
     /// Resolved TypeId map for user-defined type DefIds.
@@ -263,15 +266,6 @@ pub struct TypeChecker {
     class_base_def_ids: HashMap<DefId, Vec<DefId>>,
     /// Operator-record identities and whether they declare their own `'0'` operator.
     operator_record_zero_capabilities: HashMap<DefId, bool>,
-    /// Unique dotted-suffix index for type-name fallback lookup.
-    ///
-    /// Key examples:
-    /// - `Modelica.Units.SI.Reluctance`
-    /// - `SI.Reluctance`
-    /// - `Reluctance`
-    ///
-    /// Value is `Some(TypeId)` when unique, `None` when ambiguous.
-    type_suffix_index: HashMap<String, Option<TypeId>>,
     /// Canonical type roots used for compatibility checks.
     ///
     /// This unwraps aliases and trivial class wrappers (e.g. operator-record
@@ -329,11 +323,11 @@ impl TypeChecker {
             diagnostics: Diagnostics::new(),
             eval_ctx: rumoca_eval_ast::eval::TypeCheckEvalContext::new(),
             source_map: SourceMap::default(),
+            predefined_intrinsics: HashMap::new(),
             def_qualified_names: HashMap::new(),
             type_ids_by_def_id: HashMap::new(),
             class_base_def_ids: HashMap::new(),
             operator_record_zero_capabilities: HashMap::new(),
-            type_suffix_index: HashMap::new(),
             type_roots: HashMap::new(),
             current_declaration_semantics: HashMap::new(),
             current_instance_semantics: InstanceSemanticScope::default(),
@@ -381,6 +375,16 @@ impl TypeChecker {
     /// Type check a ClassTree.
     pub fn check(&mut self, tree: &mut ClassTree) {
         self.source_map = tree.source_map.clone();
+        self.predefined_intrinsics = rumoca_core::BuiltinFunction::PREDEFINED_IDENTITY_REQUIRED
+            .iter()
+            .filter_map(|intrinsic| {
+                tree.scope_tree
+                    .predefined_member(&rumoca_core::ComponentPath::from_flat_path(
+                        intrinsic.name(),
+                    ))
+                    .map(|identity| (identity, *intrinsic))
+            })
+            .collect();
         self.def_qualified_names = tree
             .def_map
             .iter()
@@ -398,7 +402,6 @@ impl TypeChecker {
         };
         tree.type_table = type_table;
         self.type_ids_by_def_id = type_ids_by_def_id;
-        self.type_suffix_index = Self::build_type_suffix_index(&tree.type_table);
         self.rebuild_type_roots(tree, &tree.type_table);
         self.component_modifier_targets = modifier_targets::build_component_modifier_targets(tree);
         self.component_modifier_member_types =
@@ -406,7 +409,6 @@ impl TypeChecker {
                 tree,
                 &tree.type_table,
                 &self.type_ids_by_def_id,
-                &self.type_suffix_index,
                 &self.source_map,
             ) {
                 Ok(member_types) => member_types,
@@ -656,6 +658,20 @@ impl TypeChecker {
     ) -> TypeCheckResult<(TypeTable, HashMap<DefId, TypeId>)> {
         let mut type_table = tree.type_table.clone();
         let mut type_ids_by_def_id = HashMap::new();
+        for (name, type_id) in [
+            ("Real", type_table.real()),
+            ("Integer", type_table.integer()),
+            ("Boolean", type_table.boolean()),
+            ("String", type_table.string()),
+            ("Clock", type_table.clock()),
+        ] {
+            if let Some(def_id) = tree
+                .scope_tree
+                .predefined_member(&rumoca_core::ComponentPath::from_flat_path(name))
+            {
+                type_ids_by_def_id.insert(def_id, type_id);
+            }
+        }
 
         // Register classes and enumerations first.
         for (qualified_name, &def_id) in &tree.name_map {
@@ -759,53 +775,6 @@ impl TypeChecker {
                 }
                 _ => Err(error),
             },
-        }
-    }
-
-    fn build_type_suffix_index(type_table: &TypeTable) -> HashMap<String, Option<TypeId>> {
-        let mut index = HashMap::new();
-        for idx in 0..type_table.len() {
-            let type_id = TypeId::new(idx as u32);
-            let Some(type_name) = type_table.get(type_id).and_then(|ty| ty.name()) else {
-                continue;
-            };
-            Self::insert_type_suffixes(&mut index, type_name, type_id);
-        }
-        index
-    }
-
-    fn insert_type_suffixes(
-        index: &mut HashMap<String, Option<TypeId>>,
-        type_name: &str,
-        type_id: TypeId,
-    ) {
-        Self::insert_type_suffix(index, type_name, type_id);
-        let mut offset = 0usize;
-        while let Some(dot_rel) = type_name[offset..].find('.') {
-            offset += dot_rel + 1;
-            let suffix = &type_name[offset..];
-            if suffix.is_empty() {
-                break;
-            }
-            Self::insert_type_suffix(index, suffix, type_id);
-        }
-    }
-
-    fn insert_type_suffix(
-        index: &mut HashMap<String, Option<TypeId>>,
-        suffix: &str,
-        type_id: TypeId,
-    ) {
-        use std::collections::hash_map::Entry;
-        match index.entry(suffix.to_string()) {
-            Entry::Vacant(entry) => {
-                entry.insert(Some(type_id));
-            }
-            Entry::Occupied(mut entry) => {
-                if entry.get().is_some_and(|existing| existing != type_id) {
-                    entry.insert(None);
-                }
-            }
         }
     }
 
@@ -1006,11 +975,14 @@ impl TypeChecker {
         type_table: &TypeTable,
     ) {
         overlay.type_roots.clear();
+        overlay.enumeration_type_roots.clear();
         for idx in 0..type_table.len() {
             let ty = TypeId::new(idx as u32);
-            overlay
-                .type_roots
-                .insert(ty, self.resolve_overlay_type_root(tree, type_table, ty));
+            let root = self.resolve_overlay_type_root(tree, type_table, ty);
+            overlay.type_roots.insert(ty, root);
+            if matches!(type_table.get(root), Some(Type::Enumeration(_))) {
+                overlay.enumeration_type_roots.insert(root);
+            }
         }
     }
 

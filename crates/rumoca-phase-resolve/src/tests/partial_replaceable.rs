@@ -19,6 +19,34 @@ end UsesReplaceableMedium;
 "#;
     resolve_test_source(source).expect("resolve must defer replaceable package member partiality");
 }
+
+/// A qualified tail crossing a component whose declared class is only known
+/// after redeclare application is deferred, not a missing static tail.
+///
+/// `medium` is declared as `Medium.BaseProperties` where `Medium` is a
+/// replaceable package, so resolve cannot certify `medium.p`. Classifying it as
+/// `MissingStaticTail` would emit ER002 here and hide the real defect, which is
+/// the partial class reached at instantiation (EI012).
+#[test]
+fn test_member_of_replaceable_package_component_is_deferred_not_rejected() {
+    let source = r#"
+package PartialMedium
+  replaceable partial model BaseProperties
+Real p;
+  end BaseProperties;
+end PartialMedium;
+
+model UsesReplaceableMedium
+  replaceable package Medium = PartialMedium;
+  Medium.BaseProperties medium;
+equation
+  medium.p = 1;
+end UsesReplaceableMedium;
+"#;
+    resolve_test_source(source)
+        .expect("a member reached through a replaceable package is proven at instantiation");
+}
+
 #[test]
 fn test_non_replaceable_partial_type_path_is_unresolved() {
     let source = r#"

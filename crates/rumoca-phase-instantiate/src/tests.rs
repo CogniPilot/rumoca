@@ -100,11 +100,11 @@ fn make_comp_ref_expr(names: &[&str]) -> ast::Expression {
             .map(|name| ast::ComponentRefPart {
                 ident: make_token(name),
                 subs: None,
+                def_id: None,
             })
             .collect(),
-        def_id: None,
-        target_def_id: None,
         span: rumoca_core::Span::DUMMY,
+        qualified_display_name: None,
     })
 }
 
@@ -135,11 +135,30 @@ fn make_comp_ref_expr_at(names: &[&str], file_name: &str, start: u32, end: u32) 
                     end + u32::try_from(index).unwrap(),
                 ),
                 subs: None,
+                def_id: None,
             })
             .collect(),
-        def_id: None,
-        target_def_id: None,
         span: rumoca_core::Span::DUMMY,
+        qualified_display_name: None,
+    })
+}
+
+fn make_resolved_comp_ref_expr_at(
+    name: &str,
+    def_id: DefId,
+    file_name: &str,
+    start: u32,
+    end: u32,
+) -> ast::Expression {
+    ast::Expression::ComponentReference(ast::ComponentReference {
+        local: false,
+        parts: vec![ast::ComponentRefPart {
+            ident: make_token_at(name, file_name, start, end),
+            subs: None,
+            def_id: Some(def_id),
+        }],
+        span: rumoca_core::Span::DUMMY,
+        qualified_display_name: None,
     })
 }
 
@@ -192,19 +211,6 @@ fn context_with_source_scope_tree(classes: Vec<ast::ClassDef>) -> InstantiateCon
     let mut ctx = InstantiateContext::new();
     ctx.index_source_scopes(&tree);
     ctx
-}
-
-fn make_simple_equation_at(
-    lhs: &str,
-    rhs: i64,
-    file_name: &str,
-    start: u32,
-    end: u32,
-) -> ast::Equation {
-    ast::Equation::Simple {
-        lhs: make_comp_ref_expr_at(&[lhs], file_name, start, end),
-        rhs: make_int_expr(rhs),
-    }
 }
 
 #[test]
@@ -540,6 +546,7 @@ fn test_continuous_declaration_binding_preserves_runtime_expression() {
         &phi_diff,
         &mut ctx,
         &effective_components,
+        &TypeOverrideMap::new(),
         false,
         &[],
     )
@@ -567,9 +574,16 @@ fn test_parameter_declaration_binding_still_resolves_structural_expression() {
     let tree = ast::ClassTree::default();
     let mut ctx = InstantiateContext::new();
 
-    let info =
-        prepare_component_binding_info(&tree, &p, &mut ctx, &effective_components, true, &[])
-            .expect("parameter binding should prepare");
+    let info = prepare_component_binding_info(
+        &tree,
+        &p,
+        &mut ctx,
+        &effective_components,
+        &TypeOverrideMap::new(),
+        true,
+        &[],
+    )
+    .expect("parameter binding should prepare");
 
     assert_eq!(
         info.binding.as_ref().map(terminal_text),
@@ -588,20 +602,20 @@ fn test_equations_to_instance_without_connections_filters_connect_equations()
                 parts: vec![ast::ComponentRefPart {
                     ident: make_token("a"),
                     subs: None,
+                    def_id: None,
                 }],
-                def_id: None,
-                target_def_id: None,
                 span: rumoca_core::Span::DUMMY,
+                qualified_display_name: None,
             },
             rhs: ast::ComponentReference {
                 local: false,
                 parts: vec![ast::ComponentRefPart {
                     ident: make_token("b"),
                     subs: None,
+                    def_id: None,
                 }],
-                def_id: None,
-                target_def_id: None,
                 span: rumoca_core::Span::DUMMY,
+                qualified_display_name: None,
             },
         },
         ast::Equation::Simple {
@@ -758,6 +772,7 @@ fn test_register_known_integer_instance_uses_modifier_source_scope() {
         binding: Some(ast::Expression::FieldAccess {
             base: std::sync::Arc::new(make_comp_ref_expr(&["source"])),
             field: "n".to_string(),
+            field_def_id: None,
             span: rumoca_core::Span::DUMMY,
         }),
         binding_source_scope: Some(ast::QualifiedName::new()),
@@ -910,18 +925,27 @@ fn test_late_inner_declaration_resolves_pending_outer_without_synthesis() {
     let state_id = DefId::new(100);
     let uses_outer_id = DefId::new(101);
     let root_id = DefId::new(102);
+    let state_x_id = DefId::new(103);
+    let outer_shared_id = DefId::new(104);
+    let child_id = DefId::new(105);
+    let inner_shared_id = DefId::new(106);
 
     let mut state_x = make_component("x", "Real", None);
+    state_x.def_id = Some(state_x_id);
     state_x.location = make_location("late_inner.mo", 20, 21);
     let state = ast::ClassDef {
         def_id: Some(state_id),
         name: make_token("State"),
         components: [("x".to_string(), state_x)].into_iter().collect(),
-        equations: vec![make_simple_equation_at("x", 1, "late_inner.mo", 0, 1)],
+        equations: vec![ast::Equation::Simple {
+            lhs: make_resolved_comp_ref_expr_at("x", state_x_id, "late_inner.mo", 0, 1),
+            rhs: make_int_expr(1),
+        }],
         ..Default::default()
     };
 
     let mut outer_shared = make_component("shared", "State", Some(state_id));
+    outer_shared.def_id = Some(outer_shared_id);
     outer_shared.outer = true;
     outer_shared.location = make_location("late_inner.mo", 6, 12);
     let uses_outer = ast::ClassDef {
@@ -932,8 +956,10 @@ fn test_late_inner_declaration_resolves_pending_outer_without_synthesis() {
     };
 
     let mut child = make_component("child", "UsesOuter", Some(uses_outer_id));
+    child.def_id = Some(child_id);
     child.location = make_location("late_inner.mo", 0, 5);
     let mut inner_shared = make_component("shared", "State", Some(state_id));
+    inner_shared.def_id = Some(inner_shared_id);
     inner_shared.location = make_location("late_inner.mo", 13, 19);
     inner_shared.inner = true;
     let root = ast::ClassDef {
@@ -961,8 +987,11 @@ fn test_late_inner_declaration_resolves_pending_outer_without_synthesis() {
     tree.def_map.insert(root_id, "Root".to_string());
 
     let outcome = instantiate_model_with_outcome(&tree, "Root");
-    let InstantiationOutcome::Success(overlay) = outcome else {
-        panic!("late inner declaration should resolve pending outer reference");
+    let overlay = match outcome {
+        InstantiationOutcome::Success(overlay) => overlay,
+        other => {
+            panic!("late inner declaration should resolve pending outer reference: {other:?}")
+        }
     };
 
     assert!(

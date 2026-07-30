@@ -293,7 +293,9 @@ end Holder;
     else {
         panic!("modifier should be a simple value modification");
     };
-    let target_def_id = target.def_id.expect("modifier target should resolve");
+    let target_def_id = target
+        .root_def_id()
+        .expect("modifier target should resolve");
     let value_def_id = find_comp_ref_def_id(value).expect("modifier value should resolve");
 
     assert_ne!(

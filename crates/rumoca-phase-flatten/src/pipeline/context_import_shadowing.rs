@@ -3,11 +3,11 @@ use super::*;
 pub(super) struct EffectiveExpressionContext<'a> {
     pub prefix: &'a QualifiedName,
     pub imports: &'a qualify::ImportMap,
-    pub def_map: Option<&'a crate::ResolveDefMap>,
     pub options: qualify::QualifyOptions,
     pub instance_name: Option<&'a str>,
     pub locals: Option<&'a std::collections::HashSet<String>>,
     pub predefined_string_declaration: Option<rumoca_core::DefId>,
+    pub predefined_intrinsics: crate::ast_lower::PredefinedIntrinsicIds,
 }
 
 pub(super) fn qualify_expression_with_effective_imports(
@@ -36,9 +36,9 @@ pub(super) fn qualify_expression_with_effective_imports(
     crate::ast_lower::expression_from_ast_with_context(
         &qualified,
         crate::ast_lower::LoweringContext {
-            def_map: context.def_map,
             instance_name: context.instance_name,
             predefined_string_declaration: context.predefined_string_declaration,
+            predefined_intrinsics: context.predefined_intrinsics,
         },
     )
 }
@@ -176,7 +176,7 @@ fn collect_component_shadowed_import_alias(
     let Some(imported_path) = imports.get(alias) else {
         return;
     };
-    let Some(resolved_path) = cr.def_id.and_then(|def_id| def_map.get(&def_id)) else {
+    let Some(resolved_path) = cr.root_def_id().and_then(|def_id| def_map.get(&def_id)) else {
         return;
     };
     if !super::context_and_tests::resolved_path_has_import_alias(resolved_path, alias) {

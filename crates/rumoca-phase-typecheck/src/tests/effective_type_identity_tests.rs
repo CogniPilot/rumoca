@@ -59,3 +59,104 @@ fn concrete_shape_and_nominal_type_define_effective_identity() {
     assert_ne!(alias_type.nominal_type(), tree.type_table.integer());
     assert_eq!(alias_type.canonical_type(), tree.type_table.integer());
 }
+
+#[test]
+fn sibling_redeclare_occurrences_keep_distinct_exact_types() {
+    let source = r#"
+        package P
+            type ValueA = Real;
+            type ValueB = Real;
+            partial package MediumBase
+                replaceable type Value = ValueA constrainedby Real;
+            end MediumBase;
+            package MediumA
+                extends MediumBase(redeclare type Value = ValueA);
+            end MediumA;
+            package MediumB
+                extends MediumBase(redeclare type Value = ValueB);
+            end MediumB;
+            model Cell
+                replaceable package Medium = MediumBase constrainedby MediumBase;
+                Medium.Value value;
+            end Cell;
+            model Test
+                Cell a(redeclare package Medium = MediumA);
+                Cell b(redeclare package Medium = MediumB);
+            end Test;
+        end P;
+    "#;
+    let resolved = resolve(parse(source)).expect("source resolves");
+    let source_value_def_id = resolved.definitions.classes["P"].classes["Cell"].components["value"]
+        .def_id
+        .expect("source value declaration identity");
+    let mut instanced = rumoca_phase_instantiate::instantiate(resolved, "P.Test")
+        .expect("both specialized siblings instantiate");
+    typecheck_instanced(&instanced.tree, &mut instanced.overlay, "P.Test")
+        .expect("both specialized siblings typecheck");
+
+    let occurrence = |name: &str| {
+        instanced
+            .overlay
+            .components
+            .values()
+            .find(|data| data.qualified_name.to_flat_string() == name)
+            .expect("typed specialized occurrence")
+    };
+    let left = occurrence("a.value");
+    let right = occurrence("b.value");
+    assert_eq!(
+        left.component_ref
+            .as_ref()
+            .map(|reference| reference.target_def_id()),
+        Some(source_value_def_id)
+    );
+    assert_eq!(
+        right
+            .component_ref
+            .as_ref()
+            .map(|reference| reference.target_def_id()),
+        Some(source_value_def_id)
+    );
+    assert_ne!(
+        left.type_id, right.type_id,
+        "one source declaration must retain distinct per-owner specialized identities"
+    );
+}
+
+#[test]
+fn enumeration_effective_identity_is_classified_before_flattening() {
+    let source = r#"
+        package P
+            type L = enumeration(U, X, Z, ZERO, ONE);
+            model Test
+                L a(start = L.U);
+            end Test;
+        end P;
+    "#;
+    let resolved = resolve(parse(source)).expect("source resolves");
+    let mut instanced = rumoca_phase_instantiate::instantiate(resolved, "P.Test")
+        .expect("enumeration component instantiates");
+
+    typecheck_instanced(&instanced.tree, &mut instanced.overlay, "P.Test")
+        .expect("enumeration component typechecks");
+
+    let coordinate = instanced
+        .overlay
+        .components
+        .values()
+        .find(|data| data.qualified_name.to_flat_string() == "a")
+        .expect("typed enumeration coordinate");
+    let effective = &instanced.overlay.effective_types[&coordinate.type_id];
+    assert!(
+        instanced
+            .overlay
+            .enumeration_types
+            .contains(&coordinate.type_id),
+        "the exact effective identity must carry enumeration classification"
+    );
+    assert_ne!(
+        effective.canonical_type(),
+        coordinate.type_id,
+        "the regression requires distinct nominal and effective identity arenas"
+    );
+}

@@ -24,6 +24,31 @@
 use rumoca_ir_ast as ast;
 use rumoca_ir_flat as flat;
 
+fn seed_exact_predefined_type_identities(
+    tree: &ast::ClassTree,
+    overlay: &mut ast::InstanceOverlay,
+) {
+    for (name, type_id) in [
+        ("Real", tree.type_table.real()),
+        ("Integer", tree.type_table.integer()),
+        ("Boolean", tree.type_table.boolean()),
+        ("String", tree.type_table.string()),
+        (
+            "Clock",
+            tree.type_table
+                .lookup("Clock")
+                .expect("resolved tree owns predefined Clock"),
+        ),
+    ] {
+        let def_id = tree
+            .scope_tree
+            .predefined_member(&rumoca_core::ComponentPath::from_flat_path(name))
+            .expect("resolved tree owns exact predefined declaration identity");
+        overlay.type_ids_by_def_id.insert(def_id, type_id);
+        overlay.type_roots.insert(type_id, type_id);
+    }
+}
+
 /// Parse, resolve, instantiate and flatten `source`, returning the flat model.
 fn flatten_source(source: &str, model: &str) -> flat::Model {
     let file_name = "<parameter_subscript_folding>";
@@ -34,8 +59,9 @@ fn flatten_source(source: &str, model: &str) -> flat::Model {
         rumoca_phase_resolve::resolve(ast::ParsedTree::new(tree)).expect("source resolves");
     let instanced =
         rumoca_phase_instantiate::instantiate(resolved, model).expect("model instantiates");
-    rumoca_phase_flatten::flatten_ref(instanced.inner(), instanced.overlay(), model)
-        .expect("model flattens")
+    let ast::InstancedTree { tree, mut overlay } = instanced;
+    seed_exact_predefined_type_identities(&tree, &mut overlay);
+    rumoca_phase_flatten::flatten_ref(&tree, &overlay, model).expect("model flattens")
 }
 
 /// Collects every variable reference an expression tree mentions, rendering a

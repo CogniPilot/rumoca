@@ -114,9 +114,13 @@ impl Validator<'_> {
     }
 
     fn add_unresolved_component_reference(&mut self, cr: &ComponentReference) {
-        if cr.target_def_id.is_some() || cr.parts.is_empty() {
+        if cr.target_def_id().is_some() || cr.parts.is_empty() {
             return;
         }
+        // Resolve's typed full-path traversal already emits ER002 for a
+        // statically missing receiver tail. Receiver-qualified references
+        // reaching this validator are the paths it deliberately deferred
+        // across an instance-dependent type edge.
         if self.is_proven_component_receiver(cr) {
             return;
         }
@@ -129,7 +133,7 @@ impl Validator<'_> {
     }
 
     fn add_unresolved_function_call(&mut self, cr: &ComponentReference) {
-        if cr.target_def_id.is_none() && !cr.parts.is_empty() {
+        if cr.target_def_id().is_none() && !cr.parts.is_empty() {
             // Receiver-qualified calls such as `world.gravityAcceleration(...)`
             // may require inherited/outer component type context from instantiation.
             if self.is_proven_component_receiver(cr) {
@@ -158,7 +162,7 @@ impl Validator<'_> {
             return false;
         }
         let receiver = ComponentPath::from_parts([first.ident.text.as_ref()]);
-        let Some(root_def_id) = cr.def_id else {
+        let Some(root_def_id) = cr.root_def_id() else {
             return false;
         };
         if self.tree.scope_tree.lookup(scope, &receiver) != Some(root_def_id) {

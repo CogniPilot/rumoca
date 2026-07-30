@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 use super::*;
 use crate::expression::Subscript;
 use crate::{
-    ClockId, ConditionInput, DaeProvenanceOrigin, DelayId, ExpressionAt, PreviousId, PureBuiltin,
-    RelationId, TerminalId, UnaryOperator,
+    ClockId, ConditionInput, DaeProvenanceOrigin, DelayId, ExpressionAt, PeriodicClockId,
+    PreviousId, PureBuiltin, RelationId, TerminalId, UnaryOperator,
 };
 
 use equation_systems::reconstruct_equation_systems;
@@ -110,7 +110,7 @@ impl Serialize for FrozenStorage {
     }
 }
 
-/// Private schema-v11 input records.
+/// Private schema-v12 input records.
 ///
 /// These mirror the serialized column names, but they are deliberately
 /// distinct from every invariant-bearing arena entry. Deserialization can
@@ -563,6 +563,28 @@ impl<'de> Deserialize<'de> for Dae {
     }
 }
 
+#[derive(Clone, Copy)]
+enum WireClockId<'dae> {
+    Periodic(PeriodicClockId<'dae>),
+    Triggered(ClockId<'dae>),
+}
+
+impl<'dae> WireClockId<'dae> {
+    fn clock_id(self) -> ClockId<'dae> {
+        match self {
+            Self::Periodic(clock) => clock.into(),
+            Self::Triggered(clock) => clock,
+        }
+    }
+
+    fn periodic(self, at: DaeProvenance) -> Result<PeriodicClockId<'dae>, DaeConstructionError> {
+        match self {
+            Self::Periodic(clock) => Ok(clock),
+            Self::Triggered(clock) => Err(unknown("periodic clock", clock.index(), at)),
+        }
+    }
+}
+
 struct WireIds<'dae> {
     types: Vec<ValueTypeId<'dae>>,
     variables: Vec<VariableId<'dae>>,
@@ -570,7 +592,7 @@ struct WireIds<'dae> {
     domains: Vec<DomainId<'dae>>,
     conditions: Vec<ConditionId<'dae>>,
     relations: Vec<RelationId<'dae>>,
-    clocks: Vec<ClockId<'dae>>,
+    clocks: Vec<WireClockId<'dae>>,
     previous_values: Vec<PreviousId<'dae>>,
     terminals: Vec<TerminalId<'dae>>,
     delays: Vec<DelayId<'dae>>,
@@ -1278,6 +1300,9 @@ fn rebuild_coordinate<'dae>(
             DiscreteValueId::from_raw(mapped(&ids.variables, *variable, "variable", at)?.index()),
         ),
         CoordinateWire::Time => CoordinateInput::Time,
+        CoordinateWire::ClockInterval(clock) => {
+            CoordinateInput::ClockInterval(mapped(&ids.clocks, *clock, "clock", at)?.periodic(at)?)
+        }
         CoordinateWire::Condition(condition) => {
             CoordinateInput::Condition(mapped(&ids.conditions, *condition, "condition", at)?)
         }
@@ -1479,7 +1504,7 @@ fn rebuild_condition_input<'dae>(
             ConditionInput::Discrete(mapped(&ids.expressions, raw, "expression", at)?)
         }
         ConditionNodeWire::Clock(raw) => {
-            ConditionInput::Clock(mapped(&ids.clocks, raw, "clock", at)?)
+            ConditionInput::Clock(mapped(&ids.clocks, raw, "clock", at)?.clock_id())
         }
         ConditionNodeWire::Not(raw) => {
             ConditionInput::Not(mapped(&ids.conditions, raw, "condition", at)?)
@@ -1658,19 +1683,21 @@ fn reconstruct_clocks<'dae>(
 ) -> Result<(), DaeConstructionError> {
     for (index, clock) in wire.clocks.iter().enumerate() {
         let id = dae.clocks(|clocks| match clock.kind {
-            ClockKindWire::Periodic(lattice) => {
-                clocks.periodic(lattice.checked(clock.provenance)?, clock.provenance)
-            }
-            ClockKindWire::Triggered(condition) => clocks.triggered(
-                mapped(&ids.conditions, condition, "condition", clock.provenance)?,
-                clock.provenance,
-            ),
+            ClockKindWire::Periodic(lattice) => clocks
+                .periodic(lattice.checked(clock.provenance)?, clock.provenance)
+                .map(WireClockId::Periodic),
+            ClockKindWire::Triggered(condition) => clocks
+                .triggered(
+                    mapped(&ids.conditions, condition, "condition", clock.provenance)?,
+                    clock.provenance,
+                )
+                .map(WireClockId::Triggered),
         })?;
-        expect_ordinal("clock", index, id.index(), clock.provenance)?;
+        expect_ordinal("clock", index, id.clock_id().index(), clock.provenance)?;
         ids.clocks.push(id);
     }
     for (index, ownership) in wire.clock_ownerships.iter().enumerate() {
-        let clock = mapped(&ids.clocks, ownership.clock, "clock", ownership.provenance)?;
+        let clock = mapped(&ids.clocks, ownership.clock, "clock", ownership.provenance)?.clock_id();
         let variable = mapped(
             &ids.variables,
             ownership.variable,
@@ -1705,7 +1732,7 @@ fn reconstruct_temporal<'dae>(
     ids: &mut WireIds<'dae>,
 ) -> Result<(), DaeConstructionError> {
     for (index, previous) in wire.previous_values.iter().enumerate() {
-        let clock = mapped(&ids.clocks, previous.clock, "clock", previous.provenance)?;
+        let clock = mapped(&ids.clocks, previous.clock, "clock", previous.provenance)?.clock_id();
         let variable = mapped(
             &ids.variables,
             previous.variable,

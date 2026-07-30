@@ -523,8 +523,6 @@ fn collect_class_or_base_member_def_ids_recursive<'tree>(
 pub struct QualifyOptions {
     /// Whether to skip qualification of local references.
     pub skip_local: bool,
-    /// Whether to preserve the original def_id (false = reset to None).
-    pub preserve_def_id: bool,
 }
 
 // ── Public API ──────────────────────────────────────────────────────────────
@@ -702,20 +700,6 @@ fn is_builtin_enum_literal_ref(cr: &ComponentReference) -> bool {
     )
 }
 
-/// Build component-reference parts from a dotted fully-qualified name.
-fn fqn_component_ref_parts(fqn: &str) -> Vec<ComponentRefPart> {
-    crate::path_utils::segments(fqn)
-        .into_iter()
-        .map(|seg| ComponentRefPart {
-            ident: Token {
-                text: std::sync::Arc::from(seg),
-                ..Default::default()
-            },
-            subs: None,
-        })
-        .collect()
-}
-
 fn qualify_component_part_subs(
     part: &ComponentRefPart,
     prefix: &QualifiedName,
@@ -730,6 +714,7 @@ fn qualify_component_part_subs(
                 .map(|sub| qualify_sub_inner(sub, prefix, opts, locals, imports))
                 .collect()
         }),
+        def_id: part.def_id,
     }
 }
 
@@ -746,37 +731,30 @@ fn resolve_import_alias_ref(
         return None;
     }
     let fqn = imports.get(alias)?;
-
-    let mut imported_parts = fqn_component_ref_parts(fqn);
-    let non_empty_subs = first_part.subs.as_ref().filter(|subs| !subs.is_empty());
-    if let Some(subs) = non_empty_subs {
-        let last_part = imported_parts.last_mut()?;
-        last_part.subs = Some(
-            subs.iter()
-                .map(|sub| qualify_sub_inner(sub, prefix, opts, locals, imports))
-                .collect(),
-        );
-    }
-    if cr.parts.len() > 1 {
-        imported_parts.extend(
-            cr.parts
-                .iter()
-                .skip(1)
-                .map(|part| qualify_component_part_subs(part, prefix, opts, locals, imports)),
-        );
-    }
-
-    Some(ComponentReference {
-        local: false,
-        parts: imported_parts,
-        def_id: if opts.preserve_def_id {
-            cr.def_id
-        } else {
-            None
-        },
-        target_def_id: cr.target_def_id,
-        span: cr.span,
-    })
+    let mut imported = cr.clone();
+    imported.local = false;
+    imported.parts = cr
+        .parts
+        .iter()
+        .map(|part| qualify_component_part_subs(part, prefix, opts, locals, imports))
+        .collect();
+    let first_suffix = first_part
+        .to_string()
+        .strip_prefix(alias)
+        .unwrap_or_default()
+        .to_string();
+    let tail = cr.parts[1..]
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(".");
+    let display = if tail.is_empty() {
+        format!("{fqn}{first_suffix}")
+    } else {
+        format!("{fqn}{first_suffix}.{tail}")
+    };
+    imported.set_qualified_display_name(display);
+    Some(imported)
 }
 
 fn qualify_cr_inner(
@@ -792,9 +770,6 @@ fn qualify_cr_inner(
     if is_local_root_ref(cr, locals) {
         let mut local = cr.clone();
         local.parts = local.parts.iter().map(qualify_part_subs).collect();
-        if !opts.preserve_def_id {
-            local.def_id = None;
-        }
         return local;
     }
 
@@ -805,31 +780,15 @@ fn qualify_cr_inner(
 
     // Skip qualification if reference appears to be already fully-qualified
     if is_likely_fully_qualified(cr) {
-        return ComponentReference {
-            local: cr.local,
-            parts: cr.parts.iter().map(qualify_part_subs).collect(),
-            def_id: if opts.preserve_def_id {
-                cr.def_id
-            } else {
-                None
-            },
-            target_def_id: cr.target_def_id,
-            span: cr.span,
-        };
+        let mut qualified = cr.clone();
+        qualified.parts = cr.parts.iter().map(qualify_part_subs).collect();
+        return qualified;
     }
 
     if is_builtin_enum_literal_ref(cr) {
-        return ComponentReference {
-            local: cr.local,
-            parts: cr.parts.iter().map(qualify_part_subs).collect(),
-            def_id: if opts.preserve_def_id {
-                cr.def_id
-            } else {
-                None
-            },
-            target_def_id: cr.target_def_id,
-            span: cr.span,
-        };
+        let mut qualified = cr.clone();
+        qualified.parts = cr.parts.iter().map(qualify_part_subs).collect();
+        return qualified;
     }
 
     // MLS §3.7.3: `time` is a built-in variable, never a component member.
@@ -853,39 +812,11 @@ fn qualify_cr_inner(
         return cr.clone();
     }
 
-    let mut parts = Vec::with_capacity(prefix.parts.len() + cr.parts.len());
-
-    // Add prefix parts
-    for (name, subs) in &prefix.parts {
-        parts.push(ComponentRefPart {
-            ident: Token {
-                text: std::sync::Arc::from(name.as_str()),
-                ..Default::default()
-            },
-            subs: subscripts_from_indices(subs, cr.span),
-        });
-    }
-
-    // Add original parts, qualifying any subscript expressions within them.
-    for part in &cr.parts {
-        parts.push(qualify_part_subs(part));
-    }
-
-    ComponentReference {
-        local: if opts.skip_local { false } else { cr.local },
-        parts,
-        // Single-part references carry the resolved declaration for that
-        // reference. Keep it when adding an instance prefix so later semantic
-        // passes can still distinguish package-owned constants/functions from
-        // ordinary instance fields.
-        def_id: if opts.preserve_def_id || cr.parts.len() == 1 {
-            cr.def_id
-        } else {
-            None
-        },
-        target_def_id: cr.target_def_id,
-        span: cr.span,
-    }
+    let mut qualified = cr.clone();
+    qualified.local = if opts.skip_local { false } else { cr.local };
+    qualified.parts = cr.parts.iter().map(qualify_part_subs).collect();
+    qualified.set_qualified_display_name(format!("{}.{}", prefix.to_flat_string(), cr));
+    qualified
 }
 
 fn qualify_function_call_ref(
@@ -899,17 +830,9 @@ fn qualify_function_call_ref(
         |part: &ComponentRefPart| qualify_component_part_subs(part, prefix, opts, locals, imports);
 
     if cr.local && is_unqualified_builtin_function_ref(cr) {
-        return ComponentReference {
-            local: cr.local,
-            parts: cr.parts.iter().map(qualify_part_subs).collect(),
-            def_id: if opts.preserve_def_id {
-                cr.def_id
-            } else {
-                None
-            },
-            target_def_id: cr.target_def_id,
-            span: cr.span,
-        };
+        let mut qualified = cr.clone();
+        qualified.parts = cr.parts.iter().map(qualify_part_subs).collect();
+        return qualified;
     }
 
     if let Some(imported_ref) = resolve_import_alias_ref(cr, prefix, opts, locals, imports) {
@@ -917,30 +840,14 @@ fn qualify_function_call_ref(
     }
 
     if is_unqualified_builtin_function_ref(cr) {
-        return ComponentReference {
-            local: cr.local,
-            parts: cr.parts.iter().map(qualify_part_subs).collect(),
-            def_id: if opts.preserve_def_id {
-                cr.def_id
-            } else {
-                None
-            },
-            target_def_id: cr.target_def_id,
-            span: cr.span,
-        };
+        let mut qualified = cr.clone();
+        qualified.parts = cr.parts.iter().map(qualify_part_subs).collect();
+        return qualified;
     }
 
-    ComponentReference {
-        local: cr.local,
-        parts: cr.parts.iter().map(qualify_part_subs).collect(),
-        def_id: if opts.preserve_def_id {
-            cr.def_id
-        } else {
-            None
-        },
-        target_def_id: cr.target_def_id,
-        span: cr.span,
-    }
+    let mut qualified = cr.clone();
+    qualified.parts = cr.parts.iter().map(qualify_part_subs).collect();
+    qualified
 }
 
 fn is_unqualified_builtin_function_ref(cr: &ComponentReference) -> bool {
@@ -1191,9 +1098,15 @@ fn qualify_expr_inner_tail(
                 .collect(),
             span: *span,
         },
-        Expression::FieldAccess { base, field, span } => Expression::FieldAccess {
+        Expression::FieldAccess {
+            base,
+            field,
+            field_def_id,
+            span,
+        } => Expression::FieldAccess {
             base: Arc::new(qualify_expr_inner(base, prefix, opts, locals, imports)),
             field: field.clone(),
+            field_def_id: *field_def_id,
             span: *span,
         },
         _ => expr.clone(),

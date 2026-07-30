@@ -266,13 +266,16 @@ impl Visitor for ClassDependencyCollector<'_, '_, '_> {
         // while the target declaration identifies the exact final member.
         // Strict pruning must preserve both owners: inherited members can have
         // a target owner outside the root's lexical subtree.
-        if let Some(root_def_id) = cr.def_id {
+        if let Some(root_def_id) = cr.root_def_id() {
             self.add_class_dep_by_def_id(root_def_id);
         }
-        if let Some(target_def_id) = cr.target_def_id {
+        if let Some(target_def_id) = cr.target_def_id() {
             self.add_class_dep_by_def_id(target_def_id);
         }
         for part in &cr.parts {
+            if let Some(part_def_id) = part.def_id {
+                self.add_class_dep_by_def_id(part_def_id);
+            }
             let Some(subscripts) = &part.subs else {
                 continue;
             };

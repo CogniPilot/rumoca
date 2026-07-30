@@ -102,6 +102,16 @@
 //! drop(body);
 //! # }
 //! ```
+//!
+//! A general (possibly triggered) clock cannot construct an interval
+//! coordinate; only the capability returned by [`Clocks::periodic`] can:
+//!
+//! ```compile_fail
+//! # use rumoca_ir_dae::{ClockId, CoordinateInput};
+//! # fn invalid<'dae>(clock: ClockId<'dae>) {
+//! let _ = CoordinateInput::ClockInterval(clock);
+//! # }
+//! ```
 
 mod clocks;
 mod conditions;
@@ -144,8 +154,8 @@ pub use ids::{
     DelayId, DiscreteRealEquationId, DiscreteRealId, DiscreteValueId, DiscreteValueOwnerId,
     DomainBinderId, DomainId, EventActionId, ExprId, FunctionDefinitionId, FunctionFoldId,
     FunctionId, FunctionParameterId, FunctionValueId, InitializationEquationId,
-    InitializationFamilyId, InputId, ParameterId, PreviousId, RelationId, RootId, StateId,
-    TerminalId, TimeEventId, ValueTypeId, VariableId,
+    InitializationFamilyId, InputId, ParameterId, PeriodicClockId, PreviousId, RelationId, RootId,
+    StateId, TerminalId, TimeEventId, ValueTypeId, VariableId,
 };
 pub use model::{
     ContinuousOwnerView, CoordinateView, DAE_SCHEMA_VERSION, Dae, DaeConstruction, DaeView,

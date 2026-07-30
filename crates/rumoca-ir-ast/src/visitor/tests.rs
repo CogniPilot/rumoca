@@ -35,15 +35,15 @@ fn make_comp_ref(name: &str) -> ComponentReference {
     ComponentReference {
         local: false,
         span: rumoca_core::Span::DUMMY,
+        qualified_display_name: None,
         parts: vec![ComponentRefPart {
             ident: Token {
                 text: std::sync::Arc::from(name),
                 ..Default::default()
             },
             subs: None,
+            def_id: None,
         }],
-        def_id: None,
-        target_def_id: None,
     }
 }
 
@@ -51,15 +51,15 @@ fn make_comp_ref_with_subscript(name: &str, sub: Expression) -> ComponentReferen
     ComponentReference {
         local: false,
         span: rumoca_core::Span::DUMMY,
+        qualified_display_name: None,
         parts: vec![ComponentRefPart {
             ident: Token {
                 text: std::sync::Arc::from(name),
                 ..Default::default()
             },
             subs: Some(vec![Subscript::Expression(sub)]),
+            def_id: None,
         }],
-        def_id: None,
-        target_def_id: None,
     }
 }
 
@@ -84,6 +84,7 @@ fn expression_component_path_preserves_projected_fields_and_indices() {
             base: Arc::new(Expression::FieldAccess {
                 base: Arc::new(make_var("stackData")),
                 field: "cellData".to_string(),
+                field_def_id: None,
                 span: rumoca_core::Span::DUMMY,
             }),
             subscripts: vec![
@@ -93,6 +94,7 @@ fn expression_component_path_preserves_projected_fields_and_indices() {
             span: rumoca_core::Span::DUMMY,
         }),
         field: "nRC".to_string(),
+        field_def_id: None,
         span: rumoca_core::Span::DUMMY,
     };
 

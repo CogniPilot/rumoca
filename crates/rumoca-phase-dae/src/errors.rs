@@ -49,6 +49,13 @@ pub enum ToDaeError {
     )]
     MissingProvenance { owner: String },
 
+    #[error("Flat semantic identity is missing: {identity}")]
+    #[diagnostic(
+        code(rumoca::todae::ED021),
+        help("Flat IR must carry exact predefined identities across its phase boundary")
+    )]
+    MissingSemanticIdentity { identity: String },
+
     #[error("invalid Appendix B discrete solved form: {detail}")]
     #[diagnostic(
         code(rumoca::todae::ED010),
@@ -220,7 +227,10 @@ impl ToDaeError {
             | Self::UnsupportedRuntimeOperator { span, .. }
             | Self::UnsupportedFlatSemantics { span, .. }
             | Self::Construction { span, .. } => std::slice::from_ref(span),
-            Self::Unbalanced { .. } | Self::Internal { .. } | Self::MissingProvenance { .. } => &[],
+            Self::Unbalanced { .. }
+            | Self::Internal { .. }
+            | Self::MissingProvenance { .. }
+            | Self::MissingSemanticIdentity { .. } => &[],
         }
     }
 }

@@ -52,7 +52,13 @@ pub(super) fn inject_referenced_qualified_class_constants(
         let prev = context_constant_footprint(ctx);
         let mut scopes = HashSet::new();
         collect_referenced_class_scopes(flat, &live_vars, &tree.def_map, &mut scopes);
-        collect_dimension_referenced_class_scopes(overlay, &live_vars, &tree.def_map, &mut scopes)?;
+        collect_dimension_referenced_class_scopes(
+            overlay,
+            &live_vars,
+            &tree.def_map,
+            ast_lower::PredefinedIntrinsicIds::from_tree(tree),
+            &mut scopes,
+        )?;
         collect_context_constant_class_scopes(ctx, &live_vars, &tree.def_map, &mut scopes);
         for package in WELL_KNOWN_CONSTANT_PACKAGES {
             scopes.insert((*package).to_string());
@@ -113,6 +119,7 @@ pub(super) fn collect_dimension_referenced_class_scopes(
     overlay: &InstanceOverlay,
     live_vars: &HashSet<String>,
     def_map: &crate::ResolveDefMap,
+    predefined_intrinsics: ast_lower::PredefinedIntrinsicIds,
     scopes: &mut HashSet<String>,
 ) -> Result<(), FlattenError> {
     for instance_data in overlay.components.values() {
@@ -120,7 +127,8 @@ pub(super) fn collect_dimension_referenced_class_scopes(
             let ast::Subscript::Expression(expr) = subscript else {
                 continue;
             };
-            let lowered = ast_lower::expression_from_ast_with_def_map(expr, Some(def_map))?;
+            let lowered =
+                ast_lower::expression_from_ast_with_intrinsics(expr, predefined_intrinsics)?;
             collect_expression_class_scopes(&lowered, live_vars, def_map, scopes);
         }
     }
@@ -654,6 +662,18 @@ pub(super) fn inject_model_extends_redeclare_constants(
             break;
         }
     }
+    if let Some(owner) = ctx.root_class_instance {
+        for (alias_name, _, package_context) in &redeclare_packages {
+            extract_class_occurrence_modifiers(
+                tree,
+                class_index,
+                alias_name,
+                package_context,
+                owner,
+                ctx,
+            );
+        }
+    }
 }
 
 /// Collect direct model-level `extends(... redeclare package Alias = Pkg)` entries.
@@ -1038,7 +1058,7 @@ pub(super) fn extract_extends_modification_constants(
         if ext_mod.redeclare {
             continue;
         }
-        extract_extends_modification_expr(
+        let _ = extract_extends_modification_expr(
             tree,
             class_index,
             prefix,
@@ -1142,7 +1162,7 @@ pub(super) fn extract_extends_modification_expr(
     expr: &ast::Expression,
     resolve_context: &str,
     ctx: &mut Context,
-) {
+) -> Option<(rumoca_core::DefId, rumoca_core::Expression)> {
     if let ast::Expression::Modification { target, value, .. } = expr {
         let target_name = target.to_string();
         let full_name = make_prefixed_name(prefix, &target_name);
@@ -1185,6 +1205,51 @@ pub(super) fn extract_extends_modification_expr(
             &qualified_value,
             alias_ref,
         );
+        return target
+            .target_def_id()
+            .zip(try_eval_const_flat_expr_with_scope(
+                &qualified_value,
+                ctx,
+                prefix,
+            ));
+    }
+    None
+}
+
+pub(super) fn extract_class_occurrence_modifiers(
+    tree: &ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'_>,
+    prefix: &str,
+    class_name: &str,
+    owner: rumoca_core::InstanceId,
+    ctx: &mut Context,
+) {
+    let classes = collect_ancestor_classes_with_index(tree, class_index, class_name);
+    for class in classes.into_iter().rev() {
+        let resolve_context = class
+            .def_id
+            .and_then(|def_id| tree.def_map.get(&def_id))
+            .map_or(class_name, String::as_str);
+        for modification in class
+            .extends
+            .iter()
+            .flat_map(|extend| &extend.modifications)
+            .filter(|modification| !modification.redeclare)
+        {
+            if let Some((declaration, value)) = extract_extends_modification_expr(
+                tree,
+                class_index,
+                prefix,
+                &modification.expr,
+                resolve_context,
+                ctx,
+            ) {
+                ctx.constant_values_by_occurrence.insert(
+                    ConstantOccurrenceId::new(owner, declaration),
+                    value,
+                );
+            }
+        }
     }
 }
 
@@ -1262,8 +1327,10 @@ fn extract_extends_constant_modification(
             val,
         );
     } else if let ast::Expression::ComponentReference(_) = qualified_value
-        && let Ok(symbolic) =
-            crate::ast_lower::expression_from_ast_with_def_map(qualified_value, None)
+        && let Ok(symbolic) = crate::ast_lower::expression_from_ast_with_intrinsics(
+            qualified_value,
+            ctx.predefined_intrinsics,
+        )
     {
         insert_with_prefix(
             &mut ctx.constant_values,
@@ -1346,10 +1413,7 @@ pub(super) fn extract_constants_from_class_with_prefix_and_imports(
 ) {
     let imports = constant_extraction_imports(tree, class_index, resolve_context);
     let empty_prefix = ast::QualifiedName::new();
-    let qualify_opts = qualify::QualifyOptions {
-        preserve_def_id: true,
-        ..qualify::QualifyOptions::default()
-    };
+    let qualify_opts = qualify::QualifyOptions::default();
 
     for (name, comp) in &class_def.components {
         if !matches!(
@@ -1508,7 +1572,7 @@ pub(super) fn extract_single_constant_with_prefix_and_function_scope(
         let val = canonicalize_constant_function_calls(val, function_scope);
         insert_with_prefix(&mut ctx.constant_values, prefix, name, full_name, val);
     }
-    if let Some(val) = try_extract_constant_alias_expr(expr)
+    if let Some(val) = try_extract_constant_alias_expr(expr, ctx)
         && (!preserve_existing || !ctx.constant_values.contains_key(full_name))
     {
         insert_with_prefix(&mut ctx.constant_values, prefix, name, full_name, val);
@@ -1564,6 +1628,7 @@ fn record_exact_constant_value(
 
 pub(super) fn try_extract_constant_alias_expr(
     expr: &ast::Expression,
+    ctx: &Context,
 ) -> Option<rumoca_core::Expression> {
     let ast::Expression::ComponentReference(reference) = expr else {
         return None;
@@ -1571,11 +1636,7 @@ pub(super) fn try_extract_constant_alias_expr(
     if reference.parts.is_empty() || reference.parts.iter().any(|part| part.subs.is_some()) {
         return None;
     }
-    Some(rumoca_core::Expression::VarRef {
-        name: rumoca_core::Reference::new(reference.to_string()),
-        subscripts: vec![],
-        span: expr.span(),
-    })
+    crate::ast_lower::expression_from_ast_with_intrinsics(expr, ctx.predefined_intrinsics).ok()
 }
 
 pub(super) fn constant_reference_name(expr: &ast::Expression) -> Option<String> {

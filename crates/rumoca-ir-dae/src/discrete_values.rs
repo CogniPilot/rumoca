@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 use rustc_hash::FxHashSet;
 
 use crate::conditions::{ConditionNode, condition_owner_clock};
-use crate::expression::{Coordinate, ExprNode, PackedSubscriptKind};
+use crate::expression::{Coordinate, ExprNode};
 use crate::model::{Storage, check_provenance, checked_u32, unknown};
 use crate::{
     ConditionId, DaeConstructionError, DaeProvenance, DiscreteValueId, ExprId, VariableRole,
@@ -584,74 +584,9 @@ impl<'dae> DiscreteValueTopology<'_, 'dae> {
                         provenance,
                     )?;
                 }
-                ExprNode::Unary { operand, .. } => pending.push(*operand),
-                ExprNode::Binary { lhs, rhs, .. } => pending.extend([*lhs, *rhs]),
-                ExprNode::Field { base, .. } | ExprNode::Comprehension { body: base, .. } => {
-                    pending.push(*base);
-                }
-                ExprNode::Index { base, subscripts } => {
-                    pending.push(*base);
-                    push_subscript_expressions(
-                        self.storage,
-                        *subscripts,
-                        provenance,
-                        &mut pending,
-                    )?;
-                }
-                ExprNode::ArrayUpdate {
-                    base,
-                    value,
-                    subscripts,
-                } => {
-                    pending.extend([*base, *value]);
-                    push_subscript_expressions(
-                        self.storage,
-                        *subscripts,
-                        provenance,
-                        &mut pending,
-                    )?;
-                }
-                ExprNode::StringConversion {
-                    value,
-                    minimum_length,
-                    left_justified,
-                    significant_digits,
-                    format,
-                    ..
-                } => {
-                    pending.push(*value);
-                    pending.extend(minimum_length);
-                    pending.extend(left_justified);
-                    pending.extend(significant_digits);
-                    pending.extend(format);
-                }
-                ExprNode::Conditional { operands }
-                | ExprNode::Array { operands }
-                | ExprNode::Record { operands }
-                | ExprNode::Builtin { operands, .. }
-                | ExprNode::Call { operands, .. } => {
-                    pending.extend(
-                        self.storage
-                            .expressions
-                            .operands
-                            .get(operands.indices())
-                            .ok_or_else(|| unknown("operand range", operands.start, provenance))?,
-                    );
-                }
-                ExprNode::Range {
-                    start,
-                    explicit_step,
-                    stop,
-                } => {
-                    pending.extend([*start, *stop]);
-                    pending.extend(explicit_step);
-                }
-                ExprNode::Literal(_)
-                | ExprNode::Coordinate(_)
-                | ExprNode::FunctionValue { .. }
-                | ExprNode::FunctionFoldParameter { .. }
-                | ExprNode::FunctionFoldOutput { .. } => {}
+                _ => {}
             }
+            node.for_each_child(&self.storage.expressions, |child| pending.push(child));
         }
         Ok(())
     }
@@ -819,28 +754,6 @@ fn expect_complete_condition(
             index: condition,
             span: provenance.span(),
         });
-    }
-    Ok(())
-}
-
-fn push_subscript_expressions(
-    storage: &Storage,
-    range: crate::expression::OperandRange,
-    provenance: DaeProvenance,
-    pending: &mut Vec<u32>,
-) -> Result<(), DaeConstructionError> {
-    for subscript in storage
-        .expressions
-        .subscripts
-        .get(range.indices())
-        .ok_or_else(|| unknown("subscript range", range.start, provenance))?
-    {
-        match subscript.kind {
-            PackedSubscriptKind::Index(expression) | PackedSubscriptKind::Slice(expression) => {
-                pending.push(expression);
-            }
-            PackedSubscriptKind::Whole => {}
-        }
     }
     Ok(())
 }

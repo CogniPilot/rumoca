@@ -1,6 +1,7 @@
 use super::type_overrides::{
     TypeOverrideMap, class_redeclare_modifier_args, extract_component_class_overrides,
-    find_nested_class_in_hierarchy, validate_component_class_redeclare_target,
+    find_nested_class_in_hierarchy, resolve_class_override_modifier_targets,
+    validate_component_class_redeclare_target,
 };
 use super::{InstantiateContext, InstantiateError, InstantiateResult, location_to_span};
 use rumoca_ir_ast as ast;
@@ -199,12 +200,15 @@ pub(super) fn remap_redeclare_class_modifier(
     let Some(override_def_id) = type_overrides.target_for_reference(target) else {
         return mod_expr.clone();
     };
-    if target.def_id == Some(override_def_id) {
+    if target.root_def_id() == Some(override_def_id)
+        && target.target_def_id() == Some(override_def_id)
+    {
         return mod_expr.clone();
     }
 
     let mut remapped_target = target.clone();
-    remapped_target.def_id = Some(override_def_id);
+    remapped_target.set_root_def_id(Some(override_def_id));
+    remapped_target.set_target_def_id(Some(override_def_id));
     ast::Expression::ClassModification {
         target: remapped_target,
         modifications: modifications.clone(),
@@ -274,6 +278,11 @@ pub(super) fn resolve_component_nested_type_overrides(
                     mod_expr,
                     effective_def_id,
                 )?;
+                let modifier_args = resolve_class_override_modifier_targets(
+                    tree,
+                    effective_def_id,
+                    class_redeclare_modifier_args(mod_expr),
+                )?;
                 class_overrides.insert(
                     alias_def_id,
                     ast::ClassOverride::new(
@@ -282,7 +291,7 @@ pub(super) fn resolve_component_nested_type_overrides(
                         effective_def_id,
                         class_redeclare_target_ref(mod_expr),
                     )
-                    .with_modifier_args(class_redeclare_modifier_args(mod_expr)),
+                    .with_modifier_args(modifier_args),
                 );
                 has_forwarding_class_redeclare = true;
             }
@@ -338,11 +347,11 @@ mod tests {
                 .map(|part| ast::ComponentRefPart {
                     ident: make_token(part),
                     subs: None,
+                    def_id: None,
                 })
                 .collect(),
-            def_id: None,
-            target_def_id: None,
             span: rumoca_core::Span::DUMMY,
+            qualified_display_name: None,
         }
     }
 
@@ -428,6 +437,7 @@ mod tests {
                         "state",
                     ]))),
                     field: "x".to_string(),
+                    field_def_id: None,
                     span: rumoca_core::Span::DUMMY,
                 }),
                 subscripts: vec![ast::Subscript::Expression(
@@ -469,9 +479,13 @@ mod tests {
 
     #[test]
     fn remap_redeclare_class_modifier_preserves_source_reference_parts() {
+        let source_medium = DefId::new(7);
         let concrete_medium = DefId::new(42);
+        let mut target = make_comp_ref(&["Medium"]);
+        target.set_root_def_id(Some(source_medium));
+        target.set_target_def_id(Some(source_medium));
         let mod_expr = ast::Expression::ClassModification {
-            target: make_comp_ref(&["Medium"]),
+            target,
             modifications: Vec::new(),
             each_flags: Vec::new(),
             final_flags: Vec::new(),
@@ -490,7 +504,8 @@ mod tests {
         let ast::Expression::ClassModification { target, .. } = remapped else {
             panic!("expected class modification");
         };
-        assert_eq!(target.def_id, Some(concrete_medium));
+        assert_eq!(target.root_def_id(), Some(concrete_medium));
+        assert_eq!(target.target_def_id(), Some(concrete_medium));
         assert_eq!(target.to_string(), "Medium");
     }
 

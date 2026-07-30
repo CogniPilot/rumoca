@@ -216,6 +216,21 @@ pub enum FlattenError {
         span: Span,
     },
 
+    /// Function modifier materialization lacked exact exposure ownership.
+    #[error("missing exact function-selection identity for `{function}`: {reason}")]
+    #[diagnostic(
+        code(rumoca::flatten::EF025),
+        help(
+            "resolve and instantiate must preserve both the exposed function declaration and selected implementation before modifier materialization"
+        )
+    )]
+    MissingFunctionSelectionIdentity {
+        function: String,
+        reason: String,
+        #[label("function selection is incomplete here")]
+        span: Span,
+    },
+
     /// Connecting expandable connectors would require MLS §9.1.3 member-union
     /// augmentation, which must not be approximated by connecting only the
     /// members that already exist on both sides.
@@ -374,6 +389,18 @@ impl FlattenError {
         }
     }
 
+    pub fn missing_function_selection_identity(
+        function: impl Into<String>,
+        reason: impl Into<String>,
+        span: rumoca_core::Span,
+    ) -> Self {
+        Self::MissingFunctionSelectionIdentity {
+            function: function.into(),
+            reason: reason.into(),
+            span,
+        }
+    }
+
     /// Create an InvalidFunctionCallArgs error.
     pub fn invalid_function_call_args(
         function: impl Into<String>,
@@ -502,6 +529,7 @@ impl PhaseError for FlattenError {
             | Self::UnresolvedVariableType { span, .. }
             | Self::MissingResolvedClassMetadata { span, .. }
             | Self::InconsistentFunctionReference { span, .. }
+            | Self::MissingFunctionSelectionIdentity { span, .. }
             | Self::UnsupportedExpandableConnectorAugmentation { span, .. }
             | Self::CyclicConstantBinding { span, .. }
             | Self::InvalidConnectionGraph { span, .. }

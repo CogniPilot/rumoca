@@ -995,11 +995,11 @@ fn substitute_index_in_component_ref(
                         .map(|sub| substitute_index_in_subscript(sub, var_name, value))
                         .collect()
                 }),
+                def_id: part.def_id,
             })
             .collect(),
-        def_id: cr.def_id,
-        target_def_id: cr.target_def_id,
         span: cr.span,
+        qualified_display_name: cr.qualified_display_name.clone(),
     }
 }
 
@@ -1028,12 +1028,74 @@ fn substitute_index_in_operator_expression(
     }
 }
 
+fn substitute_index_in_structural_expression(
+    expr: &ast::Expression,
+    var_name: &str,
+    value: i64,
+) -> Option<ast::Expression> {
+    match expr {
+        ast::Expression::ArrayComprehension {
+            expr,
+            indices,
+            filter,
+            span,
+        } => Some(substitute_index_in_array_comprehension(
+            expr,
+            indices,
+            filter.as_deref(),
+            *span,
+            var_name,
+            value,
+        )),
+        ast::Expression::ArrayIndex {
+            base,
+            subscripts,
+            span,
+        } => Some(substitute_index_in_array_index_expression(
+            base, subscripts, *span, var_name, value,
+        )),
+        ast::Expression::FieldAccess {
+            base,
+            field,
+            field_def_id,
+            span,
+        } => Some(substitute_index_in_field_access_expression(
+            base,
+            field,
+            *field_def_id,
+            *span,
+            var_name,
+            value,
+        )),
+        ast::Expression::Range {
+            start,
+            step,
+            end,
+            span,
+        } => Some(substitute_index_in_range_expression(
+            start,
+            step.as_deref(),
+            end,
+            *span,
+            var_name,
+            value,
+        )),
+        ast::Expression::Tuple { elements, span } => Some(substitute_index_in_tuple_expression(
+            elements, *span, var_name, value,
+        )),
+        _ => None,
+    }
+}
+
 pub(crate) fn substitute_index_in_expression(
     expr: &ast::Expression,
     var_name: &str,
     value: i64,
 ) -> ast::Expression {
     if let Some(substituted) = substitute_index_in_operator_expression(expr, var_name, value) {
+        return substituted;
+    }
+    if let Some(substituted) = substitute_index_in_structural_expression(expr, var_name, value) {
         return substituted;
     }
     match expr {
@@ -1096,48 +1158,6 @@ pub(crate) fn substitute_index_in_expression(
 
         ast::Expression::Parenthesized { inner, span } => {
             substitute_index_in_parenthesized_expression(inner, *span, var_name, value)
-        }
-
-        ast::Expression::ArrayComprehension {
-            expr,
-            indices,
-            filter,
-            span,
-        } => substitute_index_in_array_comprehension(
-            expr,
-            indices,
-            filter.as_deref(),
-            *span,
-            var_name,
-            value,
-        ),
-
-        ast::Expression::ArrayIndex {
-            base,
-            subscripts,
-            span,
-        } => substitute_index_in_array_index_expression(base, subscripts, *span, var_name, value),
-
-        ast::Expression::FieldAccess { base, field, span } => {
-            substitute_index_in_field_access_expression(base, field, *span, var_name, value)
-        }
-
-        ast::Expression::Range {
-            start,
-            step,
-            end,
-            span,
-        } => substitute_index_in_range_expression(
-            start,
-            step.as_deref(),
-            end,
-            *span,
-            var_name,
-            value,
-        ),
-
-        ast::Expression::Tuple { elements, span } => {
-            substitute_index_in_tuple_expression(elements, *span, var_name, value)
         }
 
         // Terminal and empty expressions don't need substitution.
@@ -1268,6 +1288,7 @@ fn substitute_index_in_array_index_expression(
 fn substitute_index_in_field_access_expression(
     base: &ast::Expression,
     field: &str,
+    field_def_id: Option<rumoca_core::DefId>,
     span: rumoca_core::Span,
     var_name: &str,
     value: i64,
@@ -1275,6 +1296,7 @@ fn substitute_index_in_field_access_expression(
     ast::Expression::FieldAccess {
         base: Arc::new(substitute_index_in_expression(base, var_name, value)),
         field: field.to_string(),
+        field_def_id,
         span,
     }
 }

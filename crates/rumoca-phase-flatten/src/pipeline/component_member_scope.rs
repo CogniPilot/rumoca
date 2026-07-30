@@ -41,6 +41,8 @@ impl ComponentMemberScopes {
 impl Context {
     pub(crate) fn seed_component_member_scopes(&mut self, overlay: &InstanceOverlay) {
         self.component_members.clear();
+        self.class_owner_components.clear();
+        self.root_class_instance = None;
         for instance_data in overlay.components.values() {
             self.component_members
                 .insert_component_member_path(&instance_data.qualified_name.to_component_path());
@@ -48,7 +50,23 @@ impl Context {
         for class_data in overlay.classes.values() {
             self.component_members
                 .insert_component_member_path(&class_data.qualified_name.to_component_path());
+            if let Some(owner_component) = class_data.owner_component_id {
+                self.class_owner_components
+                    .insert(class_data.instance_id, owner_component);
+            } else {
+                self.root_class_instance = Some(class_data.instance_id);
+            }
         }
+    }
+
+    pub(crate) fn constant_owner_for_class(
+        &self,
+        class_instance: rumoca_core::InstanceId,
+    ) -> Option<rumoca_core::InstanceId> {
+        self.class_owner_components
+            .get(&class_instance)
+            .copied()
+            .or_else(|| (self.root_class_instance == Some(class_instance)).then_some(class_instance))
     }
 
     pub(crate) fn has_component_member(&self, scope: &QualifiedName, name: &str) -> bool {

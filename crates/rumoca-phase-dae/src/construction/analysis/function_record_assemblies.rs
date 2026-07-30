@@ -46,7 +46,7 @@ fn record_assignment_target<'scope>(
     let rumoca_core::Statement::Assignment { comp, .. } = statement else {
         return None;
     };
-    let [root, field] = comp.parts.as_slice() else {
+    let [root, field] = comp.parts() else {
         return None;
     };
     let output = function.outputs.iter().find(|output| {
@@ -93,7 +93,7 @@ fn validate_field_assembly(
     context: FunctionValidationContext<'_>,
 ) -> Result<FunctionRecordFieldAssembly, ToDaeError> {
     let dimensions = field
-        .dims
+        .dimensions()
         .iter()
         .map(|extent| {
             u32::try_from(*extent).ok().ok_or_else(|| {

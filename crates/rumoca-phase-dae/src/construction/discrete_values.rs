@@ -251,7 +251,8 @@ impl<'dae> DiscreteValueStaging<'dae> {
                 dae::DaeGeneration::DiscreteUpdate,
                 held.declaration_span,
             )?;
-            let Some(owner) = self.owner(provenance, [held.name.clone()], coordinates, plan)? else {
+            let Some(owner) = self.owner(provenance, [held.name.clone()], coordinates, plan)?
+            else {
                 return Err(dae::DaeConstructionError::InvalidDiscreteTopologyPlan {
                     target: target.index(),
                     span: held.declaration_span,

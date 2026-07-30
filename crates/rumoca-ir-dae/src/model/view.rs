@@ -535,13 +535,31 @@ impl<'dae> DaeView<'dae> {
         })
     }
 
+    pub fn periodic_clock(
+        self,
+        id: crate::PeriodicClockId<'dae>,
+    ) -> &'dae rumoca_core::ClockLattice {
+        let entry = &self.dae.storage.clocks[id.index() as usize];
+        let crate::clocks::ClockKind::Periodic(lattice) = &entry.kind else {
+            unreachable!("PeriodicClockId is minted only for periodic clocks");
+        };
+        lattice
+    }
+
     pub fn clock_ownership(self, id: ClockOwnershipId<'dae>) -> Option<ClockOwnershipView<'dae>> {
         let entry = self.dae.storage.clock_ownerships.get(id.index() as usize)?;
+        let role = self
+            .dae
+            .storage
+            .variables
+            .get(entry.variable as usize)?
+            .role;
         Some(ClockOwnershipView {
             variable: VariableId::from_raw(entry.variable),
-            kind: match entry.role {
-                ClockedVariableRole::DiscreteReal => ClockedVariableKind::DiscreteReal,
-                ClockedVariableRole::DiscreteValue => ClockedVariableKind::DiscreteValue,
+            kind: match role {
+                VariableRole::DiscreteReal => ClockedVariableKind::DiscreteReal,
+                VariableRole::DiscreteValue => ClockedVariableKind::DiscreteValue,
+                _ => unreachable!("clock ownership accepts only checked clocked variable roles"),
             },
             clock: ClockId::from_raw(entry.clock),
             provenance: entry.provenance,
@@ -566,6 +584,8 @@ impl<'dae> DaeView<'dae> {
 
     pub fn delay(self, id: DelayId<'dae>) -> Option<DelayView<'dae>> {
         let entry = self.dae.storage.delays.get(id.index() as usize)?;
+        let source = ExprId::from_raw(entry.source);
+        let source_view = self.expression(source)?;
         let operation = match &entry.kind {
             DelayKind::ParameterDelay { delay_time } => DelayOperation::ParameterDelay {
                 delay_time: positive_parameter_view(delay_time),
@@ -579,14 +599,10 @@ impl<'dae> DaeView<'dae> {
             },
         };
         Some(DelayView {
-            source: ExprId::from_raw(entry.source),
+            source,
             operation,
-            value_type: self
-                .dae
-                .storage
-                .value_types
-                .get(entry.value_type as usize)?,
-            variability: entry.variability,
+            value_type: source_view.value_type(),
+            variability: source_view.variability(),
             provenance: entry.provenance,
         })
     }
@@ -1377,6 +1393,7 @@ pub enum CoordinateView<'dae> {
     PreDiscreteReal(DiscreteRealId<'dae>),
     PreDiscreteValue(DiscreteValueId<'dae>),
     Time,
+    ClockInterval(crate::PeriodicClockId<'dae>),
     Condition(ConditionId<'dae>),
     Delay(crate::DelayId<'dae>),
     Previous(crate::PreviousId<'dae>),
@@ -1542,6 +1559,9 @@ fn coordinate_view<'dae>(coordinate: Coordinate) -> CoordinateView<'dae> {
             CoordinateView::PreDiscreteValue(DiscreteValueId::from_raw(raw))
         }
         Coordinate::Time => CoordinateView::Time,
+        Coordinate::ClockInterval(raw) => {
+            CoordinateView::ClockInterval(crate::PeriodicClockId::from_raw(raw))
+        }
         Coordinate::Condition(raw) => CoordinateView::Condition(ConditionId::from_raw(raw)),
         Coordinate::Delay(raw) => CoordinateView::Delay(crate::DelayId::from_raw(raw)),
         Coordinate::Previous(raw) => CoordinateView::Previous(crate::PreviousId::from_raw(raw)),

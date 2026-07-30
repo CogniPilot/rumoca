@@ -385,10 +385,10 @@ fn source_free_messages_are_exact_and_unspanned() {
         },
         Case {
             error: DaeConstructionError::InvalidSchemaVersion {
-                expected: 11,
-                found: 10,
+                expected: 12,
+                found: 11,
             },
-            message: "unsupported DAE schema version 10; expected 11",
+            message: "unsupported DAE schema version 11; expected 12",
             span: None,
         },
         Case {

@@ -70,9 +70,11 @@ fn flatten_source() -> Fixture {
     let constructor_span = constructor.location.span();
     let instanced =
         rumoca_phase_instantiate::instantiate(resolved, "UsesBoth").expect("model instantiates");
+    let ast::InstancedTree { tree, mut overlay } = instanced;
+    rumoca_phase_typecheck::typecheck_instanced(&tree, &mut overlay, "UsesBoth")
+        .expect("model typechecks");
     let model =
-        rumoca_phase_flatten::flatten_ref(instanced.inner(), instanced.overlay(), "UsesBoth")
-            .expect("model flattens");
+        rumoca_phase_flatten::flatten_ref(&tree, &overlay, "UsesBoth").expect("model flattens");
     Fixture {
         model,
         handle_class_def_id,

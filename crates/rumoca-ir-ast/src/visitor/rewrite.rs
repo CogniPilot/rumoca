@@ -166,9 +166,15 @@ pub trait ExpressionTransformer {
                     .collect(),
                 span,
             },
-            Expression::FieldAccess { base, field, span } => Expression::FieldAccess {
+            Expression::FieldAccess {
+                base,
+                field,
+                field_def_id,
+                span,
+            } => Expression::FieldAccess {
                 base: self.transform_arc(base),
                 field,
+                field_def_id,
                 span,
             },
         }

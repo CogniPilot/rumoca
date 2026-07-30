@@ -241,13 +241,18 @@ fn test_synthesized_inner_warning_is_emitted() {
     );
 }
 
+/// The `medium.p` equation is load-bearing coverage, not decoration.
+///
+/// `medium` is declared as `Medium.BaseProperties` through a replaceable
+/// package, so its member set is only known once instantiation applies the
+/// redeclare. Resolve must classify the `medium.p` tail as deferred; if it
+/// instead treats it as a missing static tail, the model fails in Resolve with
+/// ER002 and the real defect — instantiating the partial `BaseProperties` —
+/// never reaches its own phase. The failure must stay Instantiate/EI012 with
+/// exact provenance on the declaration.
 #[test]
 fn test_instantiate_error_code_preserves_ei012_for_partial_component_instantiation() {
-    let mut session = Session::default();
-    session
-        .add_document(
-            "test.mo",
-            r#"
+    let source = r#"
                 package PartialMedium
                   replaceable partial model BaseProperties
                     Real p;
@@ -260,20 +265,48 @@ fn test_instantiate_error_code_preserves_ei012_for_partial_component_instantiati
                 equation
                   medium.p = 1;
                 end M;
-                "#,
-        )
-        .unwrap();
+                "#;
+    let mut session = Session::default();
+    session.add_document("test.mo", source).unwrap();
 
     let phase_result = session.compile_model_phases("M").unwrap();
     match phase_result {
         PhaseResult::Failed {
-            phase, error_code, ..
+            phase,
+            error_code,
+            diagnostics,
+            ..
         } => {
             assert_eq!(phase, FailedPhase::Instantiate);
             assert!(
                 error_code
                     .as_deref()
                     .is_some_and(|code| code.ends_with("EI012"))
+            );
+            assert!(
+                diagnostics
+                    .iter()
+                    .all(|diagnostic| diagnostic.code.as_deref() != Some("ER002")),
+                "the deferred member must not decay into a resolve error: {diagnostics:?}"
+            );
+            let partial = diagnostics
+                .iter()
+                .find(|diagnostic| {
+                    diagnostic
+                        .code
+                        .as_deref()
+                        .is_some_and(|code| code.ends_with("EI012"))
+                })
+                .unwrap_or_else(|| panic!("expected EI012 diagnostic, got: {diagnostics:?}"));
+            let primary = partial
+                .labels
+                .iter()
+                .find(|label| label.primary)
+                .unwrap_or_else(|| panic!("EI012 must retain a primary label: {partial:?}"));
+            assert_eq!(
+                &source[primary.span.start.0..primary.span.end.0],
+                "Medium.BaseProperties medium",
+                "EI012 provenance must point at the deferred declaration"
             );
         }
         other => panic!("expected instantiate failure, got {:?}", other),

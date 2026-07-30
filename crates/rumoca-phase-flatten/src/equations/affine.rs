@@ -260,10 +260,10 @@ mod tests {
                     ..Default::default()
                 },
                 subs: None,
+                def_id: Some(rumoca_core::DefId::new(13_001)),
             }],
             span: rumoca_core::Span::DUMMY,
-            def_id: None,
-            target_def_id: None,
+            qualified_display_name: None,
         })
     }
 
@@ -401,10 +401,10 @@ mod tests {
                     ..Default::default()
                 },
                 subs,
+                def_id: Some(rumoca_core::DefId::new(13_002)),
             }],
             span: rumoca_core::Span::DUMMY,
-            def_id: None,
-            target_def_id: None,
+            qualified_display_name: None,
         }
     }
 

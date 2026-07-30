@@ -5,7 +5,7 @@ use super::*;
 pub(super) use plan::{VariableConstructionPlan, plan_variable_construction};
 
 pub(super) struct VariableIdentityPass<'flat, 'dae> {
-    pub(super) coordinates: HashMap<VarName, Coordinate<'dae>>,
+    pub(super) coordinates: ModelCoordinates<'dae>,
     pub(super) reserved: Vec<Option<ReservedVariable<'flat, 'dae>>>,
 }
 
@@ -17,7 +17,7 @@ pub(super) fn insert_variable_identities<'flat, 'dae>(
     functions: &FunctionRegistry<'_, 'dae>,
     plan: &VariableConstructionPlan,
 ) -> Result<VariableIdentityPass<'flat, 'dae>, dae::DaeConstructionError> {
-    let mut coordinates = HashMap::new();
+    let mut coordinates = ModelCoordinates::new();
     let mut reserved = (0..flat.variables.len()).map(|_| None).collect::<Vec<_>>();
     for (source_ordinal, (name, variable)) in flat.variables.iter().enumerate() {
         let role = analysis.roles[name];
@@ -32,7 +32,7 @@ pub(super) fn insert_variable_identities<'flat, 'dae>(
         }
         let provenance = dae::DaeProvenance::source(variable.source_span)?;
         let value_type = value_types[name];
-        let scalar_type = effective_variable_scalar_type(&flat.variable_type_names[name], variable)
+        let scalar_type = effective_variable_scalar_type(flat, variable)
             .expect("analysis accepts only primitive value types");
         if !plan
             .variable(source_ordinal)
@@ -53,12 +53,12 @@ pub(super) fn insert_variable_identities<'flat, 'dae>(
                     value_type,
                 },
             )?;
-            coordinates.insert(name.clone(), coordinate);
+            coordinates.insert(variable, coordinate);
             continue;
         }
         let (coordinate, definition) =
             reserve_variable_identity(construction, variable, role, value_type, provenance)?;
-        coordinates.insert(name.clone(), coordinate);
+        coordinates.insert(variable, coordinate);
         reserved[source_ordinal] = Some(ReservedVariable {
             flat: variable,
             role,
@@ -414,7 +414,7 @@ fn variable_causality(variable: &flat::Variable, role: PlannedRole) -> dae::Vari
     let top_level_port = variable
         .component_ref
         .as_ref()
-        .is_some_and(|reference| reference.parts.len() == 1);
+        .is_some_and(|reference| reference.parts().len() == 1);
     match (&variable.causality, role, top_level_port) {
         (Causality::Input(_), PlannedRole::Input, true) => dae::VariableCausality::Input,
         (Causality::Output(_), _, true) => dae::VariableCausality::Output,
