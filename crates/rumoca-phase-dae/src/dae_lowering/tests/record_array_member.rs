@@ -63,9 +63,11 @@ fn test_scalarize_record_array_member_index_projects_record_field() {
                 project_scalarized_rhs_expr_at(
                     &expr,
                     k,
+                    &HashSet::new(),
                     &array_dims,
                     &record_array_fields,
                     &IndexMap::new(),
+                    ExpressionForm::Other,
                 )
                 .unwrap()
             })
