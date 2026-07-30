@@ -37,7 +37,7 @@ use analysis::{
     DiscreteValueTopologyPlan, EquationPartition, FunctionArrayAssemblyPlan,
     FunctionAssignmentPlan, FunctionIntegerReduction, FunctionLoopLowering, FunctionPlan,
     FunctionRecordAssemblyPlan, FunctionStatementPlan, ModelAlgorithmPlan, PlannedRole,
-    RecordArrayFieldPlan, RecordEquationPlan, analyze, effective_variable_scalar_type,
+    RecordArrayFieldPlans, RecordEquationPlan, analyze, effective_variable_scalar_type,
     equation_partition, model_algorithm_targets, primitive_scalar_type,
     structured_assignment_names,
 };

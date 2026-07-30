@@ -1,21 +1,35 @@
+#[cfg(test)]
+mod tests;
+
 use super::*;
-use rumoca_core::ExpressionRewriter;
 
 #[derive(Clone)]
 pub(in crate::construction) struct RecordArrayFieldPlan {
-    pub(in crate::construction) coordinates: Vec<VarName>,
-    pub(in crate::construction) subscripts: Vec<Subscript>,
+    pub(in crate::construction) coordinates: Box<[VarName]>,
+    pub(in crate::construction) subscripts: Box<[Subscript]>,
+}
+
+pub(in crate::construction) struct RecordArrayFieldPlans {
+    by_occurrence: HashMap<Span, RecordArrayFieldPlan>,
+}
+
+impl RecordArrayFieldPlans {
+    pub(in crate::construction) fn get(&self, occurrence: &Span) -> Option<&RecordArrayFieldPlan> {
+        self.by_occurrence.get(occurrence)
+    }
 }
 
 pub(super) fn analyze_record_array_fields<'expression>(
     flat: &flat::Model,
     expressions: impl IntoIterator<Item = &'expression Expression>,
-) -> Result<HashMap<Span, RecordArrayFieldPlan>, ToDaeError> {
+) -> Result<RecordArrayFieldPlans, ToDaeError> {
     let mut plans = HashMap::new();
     for expression in expressions {
         collect_plans(flat, expression, &mut plans)?;
     }
-    Ok(plans)
+    Ok(RecordArrayFieldPlans {
+        by_occurrence: plans,
+    })
 }
 
 fn collect_plans(
@@ -50,6 +64,7 @@ fn plan_field_projection(
     let Expression::FieldAccess { base, field, span } = expression else {
         return Ok(None);
     };
+    require_span(*span, "record-array member slice")?;
     let Expression::Index {
         base, subscripts, ..
     } = base.as_ref()
@@ -95,8 +110,9 @@ fn plan_field_projection(
         coordinates: elements
             .into_iter()
             .map(|(_, coordinate, _, _)| coordinate)
-            .collect(),
-        subscripts: subscripts.clone(),
+            .collect::<Vec<_>>()
+            .into_boxed_slice(),
+        subscripts: subscripts.clone().into_boxed_slice(),
     }))
 }
 
@@ -190,39 +206,4 @@ fn validate_rectangular_elements(
         ));
     }
     Ok(())
-}
-
-pub(super) fn expression_for_validation(
-    expression: &Expression,
-    plans: &HashMap<Span, RecordArrayFieldPlan>,
-) -> Expression {
-    struct ProjectionEraser<'plans> {
-        plans: &'plans HashMap<Span, RecordArrayFieldPlan>,
-    }
-
-    impl ExpressionRewriter for ProjectionEraser<'_> {
-        fn rewrite_expression(&mut self, expression: &Expression) -> Expression {
-            if matches!(expression, Expression::FieldAccess { .. })
-                && expression
-                    .span()
-                    .is_some_and(|span| self.plans.contains_key(&span))
-            {
-                let span = expression
-                    .span()
-                    .expect("planned field access has provenance");
-                let base = Expression::Literal {
-                    value: Literal::Real(0.0),
-                    span,
-                };
-                return Expression::Index {
-                    base: Box::new(base),
-                    subscripts: self.plans[&span].subscripts.clone(),
-                    span,
-                };
-            }
-            self.walk_expression(expression)
-        }
-    }
-
-    ProjectionEraser { plans }.rewrite_expression(expression)
 }

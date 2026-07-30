@@ -32,7 +32,8 @@ use derived_parameters::analyze_derived_parameters;
 pub(super) use discrete_values::DiscreteValueTopologyPlan;
 use discrete_values::analyze_discrete_value_topology;
 use expression_validation::{
-    validate_expression, validate_expression_scoped, validate_subscripts_scoped,
+    validate_expression, validate_expression_scoped_with_record_array_fields,
+    validate_expression_with_record_array_fields, validate_subscripts_scoped,
 };
 use function_array_assemblies::coalesce_function_array_assemblies;
 use function_conditionals::validate_function_conditional;
@@ -49,8 +50,8 @@ pub(super) use model_algorithms::{
     algorithm_targets, event_targets, model_algorithm_targets, when_chain_targets,
 };
 use model_roles::{ModelRoles, analyze_model_roles};
-pub(super) use record_array_fields::RecordArrayFieldPlan;
-use record_array_fields::{analyze_record_array_fields, expression_for_validation};
+pub(super) use record_array_fields::RecordArrayFieldPlans;
+use record_array_fields::analyze_record_array_fields;
 use record_equations::analyze_record_equations;
 use source_balance::source_balance;
 use structured_families::validate_structured_families;
@@ -72,7 +73,7 @@ pub(super) struct Analysis {
     pub(super) function_plans: HashMap<FunctionSpecializationKey, FunctionPlan>,
     pub(super) function_shapes: FunctionShapeAnalysis,
     pub(super) comprehension_plans: HashMap<ComprehensionKey, ComprehensionPlan>,
-    pub(super) record_array_fields: HashMap<Span, RecordArrayFieldPlan>,
+    pub(super) record_array_fields: RecordArrayFieldPlans,
     pub(super) derived_parameters: HashMap<VarName, DerivedParameterPlan>,
     pub(super) derived_parameter_families: HashSet<usize>,
     pub(super) derived_parameter_rows: HashSet<usize>,
@@ -215,9 +216,7 @@ pub(super) struct DiscreteValueAssignmentPlan<'flat> {
 }
 
 pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
-    flat.validate().map_err(|error| {
-        ToDaeError::unsupported_flat("Flat shape contract", format!("{error:?}"), error.span())
-    })?;
+    validate_flat_shape(flat)?;
     let function_shapes = FunctionShapeAnalysis::analyze(flat)?;
     let function_plans = validate_functions(flat, &function_shapes)?;
     let record_equations = analyze_record_equations(flat, &flat.equations)?;
@@ -238,8 +237,12 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
         expression_roles.insert(name.clone(), PlannedRole::Parameter);
     }
     for expression in all_model_expressions(flat) {
-        let validation_expression = expression_for_validation(expression, &record_array_fields);
-        validate_expression(&validation_expression, &expression_roles, &states)?;
+        validate_expression_with_record_array_fields(
+            expression,
+            &expression_roles,
+            &states,
+            &record_array_fields,
+        )?;
         validate_known_function_calls(expression, flat)?;
     }
     let continuous_family_rows = validate_structured_families(
@@ -315,6 +318,12 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
     })
 }
 
+fn validate_flat_shape(flat: &flat::Model) -> Result<(), ToDaeError> {
+    flat.validate().map_err(|error| {
+        ToDaeError::unsupported_flat("Flat shape contract", format!("{error:?}"), error.span())
+    })
+}
+
 fn analyze_source_balance(
     flat: &flat::Model,
     roles: &HashMap<VarName, PlannedRole>,
@@ -378,7 +387,7 @@ fn reject_initial_algorithm(flat: &flat::Model) -> Result<(), ToDaeError> {
 
 fn analyze_record_array_field_plans(
     flat: &flat::Model,
-) -> Result<HashMap<Span, RecordArrayFieldPlan>, ToDaeError> {
+) -> Result<RecordArrayFieldPlans, ToDaeError> {
     analyze_record_array_fields(
         flat,
         all_model_expressions(flat)
