@@ -137,11 +137,12 @@ pub mod workspace {
     };
 }
 
-/// Code generation helpers operating on compiled DAE.
+/// Curated code-generation helpers for proven-valid compiler artifacts.
 pub mod codegen {
     pub use crate::codegen_api::templates;
     pub use crate::codegen_api::{
-        CodegenError, SolveTemplateRenderer, dae_to_template_json, render_ast_template_with_name,
+        CodegenError, SolveTemplateRenderer, dae_to_template_json,
+        render_algorithm_code_template_with_artifact, render_ast_template_with_name,
         render_dae_template, render_dae_template_with_name, render_flat_template_with_name,
         render_solve_template_with_name,
     };
