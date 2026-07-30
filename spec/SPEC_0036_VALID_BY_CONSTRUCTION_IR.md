@@ -28,12 +28,17 @@ hide invariant fields/root validators. Solve sparsity follows
 | Constructor checks replace validators | DAE cutover | One owner |
 | Delete superseded DAE and wire atomically | DAE cutover | No compatibility |
 | Report before/after repository LOC; DAE production is net-negative | PR metrics | Demonstrate savings |
-| Semantic/constructor/proof/view core excluding `model/wire*` ≤11,000 LOC | `rumoca-ir-dae` | Bounds core ceremony |
-| Private current-version wire family ≤3,250 LOC | `rumoca-ir-dae::model::wire` | Bounds replay ceremony |
-| Total checked-DAE production ≤14,250 LOC | `rumoca-ir-dae` | Bounds aggregate ceremony |
+| Core above 11,000 LOC requires a module review | `rumoca-ir-dae`, excluding `model/wire*` | Bounds core ceremony |
+| Wire above 3,250 LOC requires a module review | `rumoca-ir-dae::model::wire` | Bounds replay ceremony |
+| Total above 14,250 LOC requires a module review | `rumoca-ir-dae` | Bounds aggregate ceremony |
 
-Cap increases require a fresh module-level evidence report; audit-hostile
-metaprogramming and capability deletion are not valid LOC reductions.
+These thresholds are review triggers, not acceptance ceilings. A fresh
+module-level report must inventory code above a threshold, remove demonstrated
+duplication and obsolete ceremony, and explain the semantics, construction
+evidence, or readability carried by the remainder. Necessary explicit code may
+remain above a threshold when that report finds no bloat. Audit-hostile
+metaprogramming, code golfing, test deletion, and capability deletion are not
+valid LOC reductions.
 
 ### One Aggregate Owns Construction
 
@@ -317,7 +322,7 @@ differential, and refinement tests exercise each relation.
 | Shared/compound relations are tested | DAE/Solve tests | B.1 cardinality |
 | Transform tests preserve families | DAE/structural tests | Consistent views |
 | Consumers have no malformed-DAE branches | Repository review | Guarantees replace checks |
-| LOC limits are CI/review metrics | DAE cutover | Bounded complexity |
+| LOC thresholds trigger documented review | DAE cutover | Bounded complexity |
 
 Tests may privately audit the complete aggregate. Production audits, public
 validation, superseded fallbacks, and compatibility are prohibited.
