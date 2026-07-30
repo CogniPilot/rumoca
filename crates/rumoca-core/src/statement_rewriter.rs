@@ -131,8 +131,9 @@ pub trait StatementRewriter: ExpressionRewriter {
                 .parts
                 .iter()
                 .map(|part| self.rewrite_component_ref_part(part))
-                .collect(),
+            .collect(),
             def_id: reference.def_id,
+            target_def_id: reference.target_def_id,
         }
     }
 
@@ -287,8 +288,9 @@ pub trait FallibleStatementRewriter: FallibleExpressionRewriter {
                 .parts
                 .iter()
                 .map(|part| self.rewrite_component_ref_part(part))
-                .collect::<Result<Vec<_>, Self::Error>>()?,
+            .collect::<Result<Vec<_>, Self::Error>>()?,
             def_id: reference.def_id,
+            target_def_id: reference.target_def_id,
         })
     }
 

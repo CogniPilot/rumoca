@@ -23,6 +23,7 @@ pub struct ComponentReference {
     pub parts: Vec<ComponentRefPart>,
     #[serde(default)]
     pub def_id: Option<DefId>,
+    pub target_def_id: Option<DefId>,
 }
 
 impl ComponentReference {
@@ -42,7 +43,7 @@ impl ComponentReference {
     ///
     /// Each top-level segment becomes one part; subscript text (if any) stays
     /// embedded in the ident, matching how declaration paths are rendered.
-    pub fn from_flat_segments(path: &str, span: Span, def_id: Option<DefId>) -> Self {
+    pub fn from_flat_segments(path: &str, span: Span, target_def_id: Option<DefId>) -> Self {
         Self {
             local: false,
             span,
@@ -54,7 +55,8 @@ impl ComponentReference {
                     subs: Vec::new(),
                 })
                 .collect(),
-            def_id,
+            def_id: None,
+            target_def_id,
         }
     }
 }
@@ -73,6 +75,7 @@ pub fn component_reference_from_flat_name(
         span,
         parts,
         def_id: None,
+        target_def_id: None,
     })
 }
 
@@ -575,6 +578,7 @@ pub fn component_ref_to_base_reference(comp: &ComponentReference) -> Reference {
             })
             .collect(),
         def_id: comp.def_id,
+        target_def_id: comp.target_def_id,
     };
     Reference::from_component_reference(component_ref)
 }
@@ -1144,6 +1148,7 @@ mod tests {
                 },
             ],
             def_id: Some(DefId::new(7)),
+            target_def_id: None,
         };
         let reference =
             Reference::with_component_reference("flat_display_is_not_authoritative", component_ref);

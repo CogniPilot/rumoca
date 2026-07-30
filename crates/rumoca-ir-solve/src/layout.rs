@@ -108,7 +108,7 @@ impl ComponentReferenceKey {
     pub fn from_component_reference(
         reference: &ComponentReference,
     ) -> Result<Self, ComponentReferenceKeyError> {
-        let def_id = reference.def_id.ok_or(ComponentReferenceKeyError {
+        let def_id = reference.target_def_id.ok_or(ComponentReferenceKeyError {
             span: reference.span,
             kind: ComponentReferenceKeyErrorKind::MissingDefId,
         })?;
@@ -900,6 +900,7 @@ mod tests {
                 subs: Vec::new(),
             }],
             def_id: None,
+            target_def_id: None,
         };
 
         let err = ComponentReferenceKey::from_component_reference(&reference)
@@ -934,6 +935,7 @@ mod tests {
             span,
             parts: vec![part("gear"), part("ratio")],
             def_id: Some(rumoca_core::DefId::new(9)),
+            target_def_id: Some(rumoca_core::DefId::new(9)),
         };
 
         let key = ComponentReferenceKey::from_component_reference(&reference)
@@ -973,6 +975,7 @@ mod tests {
                 )],
             }],
             def_id: Some(rumoca_core::DefId(7)),
+            target_def_id: Some(rumoca_core::DefId(7)),
         };
 
         let err = ComponentReferenceKey::from_component_reference(&reference)

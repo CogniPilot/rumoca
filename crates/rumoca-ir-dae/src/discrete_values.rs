@@ -611,6 +611,20 @@ impl<'dae> DiscreteValueTopology<'_, 'dae> {
                         &mut pending,
                     )?;
                 }
+                ExprNode::StringConversion {
+                    value,
+                    minimum_length,
+                    left_justified,
+                    significant_digits,
+                    format,
+                    ..
+                } => {
+                    pending.push(*value);
+                    pending.extend(minimum_length);
+                    pending.extend(left_justified);
+                    pending.extend(significant_digits);
+                    pending.extend(format);
+                }
                 ExprNode::Conditional { operands }
                 | ExprNode::Array { operands }
                 | ExprNode::Record { operands }

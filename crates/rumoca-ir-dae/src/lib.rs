@@ -137,7 +137,7 @@ pub use expr_query::{
 };
 pub use expression::{
     BinaryOperator, CoordinateInput, DaeLiteral, ExpressionAt, ExpressionVariability, Expressions,
-    PureBuiltin, ScalarType, Subscript, UnaryOperator, ValueType,
+    PureBuiltin, ScalarType, StringConversionFormatInput, Subscript, UnaryOperator, ValueType,
 };
 pub use ids::{
     AlgebraicId, ClockId, ClockOwnershipId, ConditionId, ContinuousEquationId, ContinuousFamilyId,
@@ -154,9 +154,9 @@ pub use model::{
     FunctionParameterView, FunctionReservation, FunctionSignature, FunctionStatementView,
     FunctionStatements, FunctionValueRole, FunctionValueView, FunctionView, Functions,
     InitializationOwnerView, InputVariability, RangeBoundView, RangeView, ResidualEquationView,
-    StructuredFamilyView, SubscriptView, SubscriptsView, ValueTypeOperands, ValueTypes,
-    VariableAttributes, VariableCausality, VariableIdentity, VariableOrigin, VariableReservation,
-    VariableRole, VariableView, Variables,
+    StringConversionFormatView, StructuredFamilyView, SubscriptView, SubscriptsView,
+    ValueTypeOperands, ValueTypes, VariableAttributes, VariableCausality, VariableIdentity,
+    VariableOrigin, VariableReservation, VariableRole, VariableView, Variables,
 };
 pub use provenance::{DaeGeneration, DaeProvenance, DaeProvenanceOrigin};
 pub use temporal::{

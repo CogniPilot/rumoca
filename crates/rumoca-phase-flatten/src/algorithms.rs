@@ -233,6 +233,7 @@ pub(crate) struct AlgorithmSectionContext<'a> {
     pub(crate) initial_locals: &'a HashSet<String>,
     pub(crate) source_map: Option<&'a SourceMap>,
     pub(crate) instance_name: Option<&'a str>,
+    pub(crate) predefined_string_declaration: Option<rumoca_core::DefId>,
 }
 
 pub(crate) struct AlgorithmSectionMetadata {
@@ -270,6 +271,7 @@ pub(crate) fn flatten_algorithm_section(
                 ast_lower::LoweringContext {
                     def_map: context.def_map,
                     instance_name: context.instance_name,
+                    predefined_string_declaration: context.predefined_string_declaration,
                 },
                 context.source_map,
             )
@@ -321,6 +323,7 @@ mod tests {
                 })
                 .collect(),
             def_id: None,
+            target_def_id: None,
             span: test_span(),
         }
     }
@@ -454,6 +457,7 @@ mod tests {
                         subs: Some(vec![Subscript::Expression(make_var_expr("i"))]),
                     }],
                     def_id: None,
+                    target_def_id: None,
                     span: rumoca_core::Span::DUMMY,
                 }),
             }],
@@ -571,6 +575,7 @@ mod tests {
                     subs: Some(vec![Subscript::Expression(int_expr(1))]),
                 }],
                 def_id: None,
+                target_def_id: None,
                 span: rumoca_core::Span::DUMMY,
             }),
         };

@@ -82,6 +82,20 @@ impl Resolver {
             }
         }
 
+        // Enumeration literals are declared by the enumeration type rather
+        // than receiving independent DefIds. Register each literal as a
+        // structured member whose exact declaration identity is the owning
+        // enum class, so `L.U` proves its full path without textual fallback.
+        if let Some(class_def_id) = class.def_id {
+            for literal in &class.enum_literals {
+                self.scope_tree.add_member(
+                    class_scope,
+                    ComponentPath::from_flat_path(&literal.ident.text),
+                    class_def_id,
+                );
+            }
+        }
+
         // Recursively register nested classes
         for (name, nested) in class.classes.iter_mut() {
             let nested_qualified = format!("{}.{}", qualified_name, name);

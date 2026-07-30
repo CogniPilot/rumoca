@@ -105,9 +105,16 @@ end Test;
         .as_ref()
         .expect("source has a binding");
     let target = extract_call_target(binding).expect("binding calls Known.present");
-    let target_def_id = target.def_id.expect("successful call must carry identity");
+    let root_def_id = target
+        .def_id
+        .expect("successful qualified call must retain its root identity");
+    let target_def_id = target
+        .target_def_id
+        .expect("successful call must carry its exact callable identity");
 
+    assert_eq!(tree.def_map[&root_def_id], "Known");
     assert_eq!(tree.def_map[&target_def_id], "Known.present");
+    assert_ne!(root_def_id, target_def_id);
 }
 
 #[test]
@@ -153,7 +160,12 @@ end UsesMediumAlias;
     let rumoca_ir_ast::Expression::FunctionCall { comp, .. } = rhs else {
         panic!("expected function call on rhs");
     };
-    let def_id = comp.def_id.expect("function call should have def_id");
+    let root_def_id = comp
+        .def_id
+        .expect("function call should retain root def_id");
+    let def_id = comp
+        .target_def_id
+        .expect("function call should have exact target_def_id");
     let resolved = tree
         .def_map
         .get(&def_id)
@@ -162,6 +174,7 @@ end UsesMediumAlias;
         resolved, "TableBased.f",
         "function call should resolve to canonical qualified function"
     );
+    assert_eq!(tree.def_map[&root_def_id], "UsesMediumAlias.Medium");
     assert_eq!(
         comp.to_string(),
         "Medium.f",
@@ -211,8 +224,8 @@ end Derived;
         panic!("expected function call on rhs");
     };
     let def_id = comp
-        .def_id
-        .expect("inherited Medium call should have def_id");
+        .target_def_id
+        .expect("inherited Medium call should have exact target_def_id");
     let resolved = tree
         .def_map
         .get(&def_id)
@@ -274,8 +287,8 @@ end UsesTableBasedState;
         .expect("state component should preserve explicit binding");
     let target = extract_call_target(binding).expect("binding should contain function call");
     let def_id = target
-        .def_id
-        .expect("binding function call should have def_id");
+        .target_def_id
+        .expect("binding function call should have exact target_def_id");
     let resolved = tree
         .def_map
         .get(&def_id)
@@ -353,8 +366,8 @@ end UsesTableBasedState;
         .expect("state component should preserve explicit binding");
     let target = extract_call_target(binding).expect("binding should contain function call");
     let def_id = target
-        .def_id
-        .expect("binding function call should have def_id");
+        .target_def_id
+        .expect("binding function call should have exact target_def_id");
     let resolved = tree
         .def_map
         .get(&def_id)

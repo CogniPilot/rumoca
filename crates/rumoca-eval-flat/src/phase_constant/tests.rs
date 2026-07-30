@@ -42,6 +42,7 @@ fn comp_ref(name: &str) -> rumoca_core::ComponentReference {
             subs: Vec::new(),
         }],
         def_id: None,
+        target_def_id: None,
     }
 }
 

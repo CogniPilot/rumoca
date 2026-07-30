@@ -429,9 +429,14 @@ fn default_start_expression<'dae>(
     owner_span: Span,
 ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
     let provenance = dae::DaeProvenance::generated(dae::DaeGeneration::DefaultStart, owner_span)?;
+    if scalar_type == dae::ScalarType::Enumeration {
+        return construction
+            .expressions(|expressions| expressions.at(provenance).enumeration_literal(1));
+    }
     let literal = match scalar_type {
         dae::ScalarType::Real => dae::DaeLiteral::Real(0.0),
         dae::ScalarType::Integer => dae::DaeLiteral::Integer(0),
+        dae::ScalarType::Enumeration => unreachable!("enumeration default handled above"),
         dae::ScalarType::Boolean => dae::DaeLiteral::Boolean(false),
         dae::ScalarType::String => dae::DaeLiteral::String(String::new()),
         dae::ScalarType::Record => {

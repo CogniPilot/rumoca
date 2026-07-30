@@ -151,6 +151,21 @@ fn push_children<'dae>(
             arguments: operands,
             ..
         } => pending.extend(operands.iter()),
+        ExpressionOperation::StringConversion { value, format, .. } => {
+            pending.push(value);
+            match format {
+                crate::StringConversionFormatView::Options {
+                    minimum_length,
+                    left_justified,
+                    significant_digits,
+                } => {
+                    pending.extend(minimum_length);
+                    pending.extend(left_justified);
+                    pending.extend(significant_digits);
+                }
+                crate::StringConversionFormatView::Format { value } => pending.push(value),
+            }
+        }
         ExpressionOperation::Comprehension { body, .. } => pending.push(body),
         ExpressionOperation::Field { base, .. } => pending.push(base),
         ExpressionOperation::FunctionValue { definition, .. } => pending.push(definition.rhs()),

@@ -340,6 +340,9 @@ pub fn flatten_ref_with_options(
     options: FlattenOptions,
 ) -> Result<flat::Model, FlattenError> {
     let mut ctx = Context::new();
+    ctx.predefined_string_declaration = tree
+        .scope_tree
+        .predefined_member(&rumoca_core::ComponentPath::from_flat_path("String"));
     ctx.materialize_structured_families = options.materialize_structured_families;
     if !model_name.is_empty() {
         ctx.simulated_root_name = Some(crate::path_utils::leaf_segment(model_name).to_string());
@@ -353,6 +356,9 @@ pub fn flatten_ref_with_options(
         .collect();
     ctx.seed_component_member_scopes(overlay);
     let mut flat = flat::Model::new();
+    flat.predefined_string_declaration = tree
+        .scope_tree
+        .predefined_member(&rumoca_core::ComponentPath::from_flat_path("String"));
     let component_override_map =
         build_component_override_map(overlay, tree, &class_index, model_name)?;
 
@@ -856,7 +862,8 @@ mod nested_class_constant_scope_tests {
                 })
                 .collect(),
             span: test_span(),
-            def_id: Some(def_id),
+            def_id: None,
+            target_def_id: Some(def_id),
         })
     }
 

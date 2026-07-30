@@ -437,6 +437,7 @@ fn ast_name_to_comp_ref_with_local(
         span: token_span(first_ident)?,
         parts,
         def_id: None,
+        target_def_id: None,
     })
 }
 
@@ -461,6 +462,7 @@ fn ident_to_comp_ref(
             subs: None,
         }],
         def_id: None,
+        target_def_id: None,
     })
 }
 
@@ -1156,6 +1158,7 @@ fn convert_global_function_call(
         span: token_span(&tok.clone().into())?,
         parts: vec![part],
         def_id: None,
+        target_def_id: None,
     };
     let args = gfc.function_call_args.args.clone();
     let func_call = rumoca_ir_ast::Expression::FunctionCall {

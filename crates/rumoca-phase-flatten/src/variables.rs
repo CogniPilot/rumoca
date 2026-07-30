@@ -148,6 +148,18 @@ fn resolve_flat_output_type_name(tree: &ast::ClassTree, mut type_id: TypeId) -> 
     None
 }
 
+fn is_enumeration_type(tree: &ast::ClassTree, mut type_id: TypeId) -> bool {
+    for _ in 0..MAX_TYPE_RESOLVE_DEPTH {
+        match tree.type_table.get(type_id) {
+            Some(ast::Type::Enumeration(_)) => return true,
+            Some(ast::Type::Alias(alias)) => type_id = alias.aliased,
+            Some(ast::Type::Array(array)) => type_id = array.element,
+            _ => return false,
+        }
+    }
+    false
+}
+
 pub(crate) fn flat_output_type_name(
     instance: &ast::InstanceData,
     canonical_type_id: TypeId,
@@ -236,7 +248,7 @@ pub(crate) fn create_flat_variable(
         instance
             .component_ref
             .as_ref()
-            .and_then(|reference| reference.def_id),
+            .and_then(|reference| reference.target_def_id),
     ));
 
     Ok(flat::Variable {
@@ -265,6 +277,7 @@ pub(crate) fn create_flat_variable(
         binding_from_modification: instance.binding_from_modification,
         evaluate: instance.evaluate,
         is_discrete_type: instance.is_discrete_type,
+        is_enumeration: is_enumeration_type(tree, instance.type_id),
         is_primitive: instance.is_primitive,
         from_expandable_connector: instance.from_expandable_connector,
         is_overconstrained: instance.is_overconstrained,
@@ -391,7 +404,17 @@ fn qualify_variable_attribute(
         .map(String::as_str)
         .or(ctx.imports.declaration_function_scope.as_deref());
     Ok(Some(canonicalize_function_calls(
-        ast_lower::expression_from_ast_with_def_map(&qualified, Some(ctx.def_map))?,
+        ast_lower::expression_from_ast_with_context(
+            &qualified,
+            ast_lower::LoweringContext {
+                def_map: Some(ctx.def_map),
+                instance_name: None,
+                predefined_string_declaration: ctx
+                    .tree
+                    .scope_tree
+                    .predefined_member(&rumoca_core::ComponentPath::from_flat_path("String")),
+            },
+        )?,
         source_scope,
         ctx.tree,
         ctx.class_index,
@@ -423,7 +446,17 @@ fn qualify_modification_binding(
     let qualified =
         qualify_expression_with_imports(expr, &mod_prefix, ctx.opts, ctx.imports.binding_imports());
     Ok(canonicalize_function_calls(
-        ast_lower::expression_from_ast_with_def_map(&qualified, Some(ctx.def_map))?,
+        ast_lower::expression_from_ast_with_context(
+            &qualified,
+            ast_lower::LoweringContext {
+                def_map: Some(ctx.def_map),
+                instance_name: None,
+                predefined_string_declaration: ctx
+                    .tree
+                    .scope_tree
+                    .predefined_member(&rumoca_core::ComponentPath::from_flat_path("String")),
+            },
+        )?,
         ctx.imports.binding_function_scope.as_deref(),
         ctx.tree,
         ctx.class_index,
@@ -442,7 +475,17 @@ fn qualify_declaration_binding(
         .as_deref()
         .or(ctx.imports.declaration_function_scope.as_deref());
     Ok(canonicalize_function_calls(
-        ast_lower::expression_from_ast_with_def_map(&qualified, Some(ctx.def_map))?,
+        ast_lower::expression_from_ast_with_context(
+            &qualified,
+            ast_lower::LoweringContext {
+                def_map: Some(ctx.def_map),
+                instance_name: None,
+                predefined_string_declaration: ctx
+                    .tree
+                    .scope_tree
+                    .predefined_member(&rumoca_core::ComponentPath::from_flat_path("String")),
+            },
+        )?,
         source_scope,
         ctx.tree,
         ctx.class_index,
@@ -498,6 +541,7 @@ mod tests {
                 })
                 .collect(),
             def_id: None,
+            target_def_id: None,
             span: test_span(),
         })
     }
@@ -529,7 +573,7 @@ mod tests {
         assert_eq!(
             flat.component_ref
                 .as_ref()
-                .and_then(|reference| reference.def_id),
+                .and_then(|reference| reference.target_def_id),
             Some(component_def_id)
         );
         let Some(binding) = flat.binding else {

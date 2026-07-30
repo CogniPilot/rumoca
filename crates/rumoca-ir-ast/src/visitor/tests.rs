@@ -43,6 +43,7 @@ fn make_comp_ref(name: &str) -> ComponentReference {
             subs: None,
         }],
         def_id: None,
+        target_def_id: None,
     }
 }
 
@@ -58,6 +59,7 @@ fn make_comp_ref_with_subscript(name: &str, sub: Expression) -> ComponentReferen
             subs: Some(vec![Subscript::Expression(sub)]),
         }],
         def_id: None,
+        target_def_id: None,
     }
 }
 

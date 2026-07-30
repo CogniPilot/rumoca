@@ -222,6 +222,10 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             dae::ExpressionOperation::FunctionFoldOutput { fold, carried, .. } => {
                 self.function_fold_output(fold, carried, scalar, node.provenance().span())
             }
+            dae::ExpressionOperation::StringConversion { .. } => Err(LowerError::contract(
+                "String conversion escaped its checked event-message owner",
+                node.provenance().span(),
+            )),
         }
     }
 

@@ -103,6 +103,7 @@ fn make_comp_ref_expr(names: &[&str]) -> ast::Expression {
             })
             .collect(),
         def_id: None,
+        target_def_id: None,
         span: rumoca_core::Span::DUMMY,
     })
 }
@@ -137,6 +138,7 @@ fn make_comp_ref_expr_at(names: &[&str], file_name: &str, start: u32, end: u32) 
             })
             .collect(),
         def_id: None,
+        target_def_id: None,
         span: rumoca_core::Span::DUMMY,
     })
 }
@@ -588,6 +590,7 @@ fn test_equations_to_instance_without_connections_filters_connect_equations()
                     subs: None,
                 }],
                 def_id: None,
+                target_def_id: None,
                 span: rumoca_core::Span::DUMMY,
             },
             rhs: ast::ComponentReference {
@@ -597,6 +600,7 @@ fn test_equations_to_instance_without_connections_filters_connect_equations()
                     subs: None,
                 }],
                 def_id: None,
+                target_def_id: None,
                 span: rumoca_core::Span::DUMMY,
             },
         },

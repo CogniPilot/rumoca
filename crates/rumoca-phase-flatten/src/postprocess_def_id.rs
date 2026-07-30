@@ -125,7 +125,11 @@ impl DefIdVarRefIndex {
                 .entry(indexed_var_leaf(name, var).to_string())
                 .or_default()
                 .push(indexed.clone());
-            if let Some(def_id) = var.component_ref.as_ref().and_then(|comp| comp.def_id) {
+            if let Some(def_id) = var
+                .component_ref
+                .as_ref()
+                .and_then(|comp| comp.target_def_id)
+            {
                 by_def_id.entry(def_id).or_default().push(indexed);
             }
         }
@@ -383,3 +387,102 @@ impl ExpressionRewriter for DefIdVarRefCanonicalizer<'_> {
 }
 
 impl StatementRewriter for DefIdVarRefCanonicalizer<'_> {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn span() -> rumoca_core::Span {
+        rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("postprocess_def_id_test.mo"),
+            1,
+            2,
+        )
+    }
+
+    fn component_reference(
+        path: &str,
+        target_def_id: rumoca_core::DefId,
+    ) -> rumoca_core::ComponentReference {
+        let span = span();
+        rumoca_core::ComponentReference {
+            local: false,
+            span,
+            parts: rumoca_core::ComponentPath::from_flat_path(path)
+                .parts()
+                .iter()
+                .map(|ident| rumoca_core::ComponentRefPart {
+                    ident: ident.clone(),
+                    span,
+                    subs: Vec::new(),
+                })
+                .collect(),
+            def_id: None,
+            target_def_id: Some(target_def_id),
+        }
+    }
+
+    fn variable(
+        name: &str,
+        target_def_id: rumoca_core::DefId,
+        binding: Option<rumoca_core::Expression>,
+    ) -> flat::Variable {
+        flat::Variable {
+            name: rumoca_core::VarName::new(name),
+            component_ref: Some(component_reference(name, target_def_id)),
+            binding,
+            ..flat::Variable::empty_with_span(span())
+        }
+    }
+
+    fn unresolved_source_reference(target_def_id: rumoca_core::DefId) -> rumoca_core::Expression {
+        let name = rumoca_core::Reference::from_component_reference(component_reference(
+            "Template.x",
+            target_def_id,
+        ));
+        rumoca_core::Expression::VarRef {
+            name,
+            subscripts: Vec::new(),
+            span: span(),
+        }
+    }
+
+    #[test]
+    fn sibling_instances_sharing_one_source_declaration_resolve_in_owner_scope() {
+        let source_x = rumoca_core::DefId::new(42);
+        let owner_a = rumoca_core::DefId::new(100);
+        let owner_b = rumoca_core::DefId::new(101);
+        let mut model = flat::Model::new();
+        model.add_variable(
+            rumoca_core::VarName::new("a.x"),
+            variable("a.x", source_x, None),
+        );
+        model.add_variable(
+            rumoca_core::VarName::new("b.x"),
+            variable("b.x", source_x, None),
+        );
+        model.add_variable(
+            rumoca_core::VarName::new("a.y"),
+            variable("a.y", owner_a, Some(unresolved_source_reference(source_x))),
+        );
+        model.add_variable(
+            rumoca_core::VarName::new("b.y"),
+            variable("b.y", owner_b, Some(unresolved_source_reference(source_x))),
+        );
+
+        canonicalize_varrefs_via_instantiated_def_ids(&mut model);
+
+        for (owner, expected) in [("a.y", "a.x"), ("b.y", "b.x")] {
+            let owner_name = rumoca_core::VarName::new(owner);
+            let binding = model.variables[&owner_name]
+                .binding
+                .as_ref()
+                .expect("owner has a binding");
+            let rumoca_core::Expression::VarRef { name, .. } = binding else {
+                panic!("binding remains a variable reference");
+            };
+            assert_eq!(name.as_str(), expected);
+            assert_eq!(name.target_def_id(), Some(source_x));
+        }
+    }
+}

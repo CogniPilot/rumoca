@@ -665,7 +665,7 @@ pub(super) fn resolve_compile_time_integer_expr_inner(
             }
         }
         ast::Expression::ComponentReference(reference) => reference
-            .def_id
+            .target_def_id
             .and_then(|def_id| resolve_component_constant_integer(def_id, class_index, visiting)),
         _ => None,
     }

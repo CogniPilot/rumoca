@@ -392,7 +392,7 @@ impl MemberFunctionCallMarker<'_> {
         mut comp: rumoca_ir_ast::ComponentReference,
     ) -> rumoca_ir_ast::ComponentReference {
         if let Some(def_id) = self.resolve_member_function_def_id(&comp) {
-            comp.def_id = Some(def_id);
+            comp.target_def_id = Some(def_id);
         }
         comp
     }

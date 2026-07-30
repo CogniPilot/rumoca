@@ -998,6 +998,7 @@ fn substitute_index_in_component_ref(
             })
             .collect(),
         def_id: cr.def_id,
+        target_def_id: cr.target_def_id,
         span: cr.span,
     }
 }

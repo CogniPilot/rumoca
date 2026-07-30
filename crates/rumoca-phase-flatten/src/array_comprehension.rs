@@ -271,6 +271,7 @@ mod tests {
             local: false,
             parts,
             def_id: None,
+            target_def_id: None,
             span: test_span(),
         })
     }

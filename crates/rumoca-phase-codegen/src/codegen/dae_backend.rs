@@ -394,6 +394,11 @@ fn project_expression_operation(operation: dae::ExpressionOperation<'_>) -> Valu
             output,
             arguments,
         } => project_call_operation(function, output, arguments),
+        dae::ExpressionOperation::StringConversion {
+            declaration,
+            value,
+            format,
+        } => project_string_conversion(declaration, value, format),
         dae::ExpressionOperation::FunctionValue { value, definition } => {
             project_function_value_operation(value, definition)
         }
@@ -408,6 +413,35 @@ fn project_expression_operation(operation: dae::ExpressionOperation<'_>) -> Valu
             definition,
         } => project_function_fold_operation("function_fold_output", fold, carried, definition),
     }
+}
+
+fn project_string_conversion(
+    declaration: rumoca_core::DefId,
+    value: dae::ExprId<'_>,
+    format: dae::StringConversionFormatView<'_>,
+) -> Value {
+    let format = match format {
+        dae::StringConversionFormatView::Options {
+            minimum_length,
+            left_justified,
+            significant_digits,
+        } => json!({
+            "kind": "options",
+            "minimum_length": minimum_length.map(dae::ExprId::index),
+            "left_justified": left_justified.map(dae::ExprId::index),
+            "significant_digits": significant_digits.map(dae::ExprId::index),
+        }),
+        dae::StringConversionFormatView::Format { value } => json!({
+            "kind": "format",
+            "value": value.index(),
+        }),
+    };
+    json!({
+        "kind": "string_conversion",
+        "declaration": declaration,
+        "value": value.index(),
+        "format": format,
+    })
 }
 
 fn project_range_operation(range: dae::RangeView<'_>) -> Value {

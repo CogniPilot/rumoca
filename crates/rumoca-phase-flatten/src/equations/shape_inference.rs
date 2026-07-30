@@ -486,6 +486,7 @@ mod tests {
                 subs: None,
             }],
             def_id: None,
+            target_def_id: None,
             span: rumoca_core::Span::DUMMY,
         }
     }
@@ -514,6 +515,7 @@ mod tests {
                 subs: Some(vec![ast::Subscript::Expression(range)]),
             }],
             def_id: None,
+            target_def_id: None,
             span: rumoca_core::Span::DUMMY,
         }
     }

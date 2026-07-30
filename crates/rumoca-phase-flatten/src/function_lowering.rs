@@ -16,7 +16,7 @@ fn record_fields_from_constructor_metadata(
     type_name: &str,
     type_def_id: Option<rumoca_core::DefId>,
     span: rumoca_core::Span,
-) -> Result<(String, Vec<rumoca_core::FunctionParam>), FlattenError> {
+) -> Result<(String, rumoca_core::DefId, Vec<rumoca_core::FunctionParam>), FlattenError> {
     let type_def_id = type_def_id.ok_or_else(|| {
         FlattenError::missing_resolved_class_metadata(
             type_name,
@@ -33,8 +33,16 @@ fn record_fields_from_constructor_metadata(
                     span,
                 )
             })?;
+    let constructor_def_id = constructor.def_id.ok_or_else(|| {
+        FlattenError::missing_resolved_class_metadata(
+            type_name,
+            "record constructor identity",
+            constructor.span,
+        )
+    })?;
     Ok((
         constructor.name.as_str().to_string(),
+        constructor_def_id,
         constructor.inputs.to_vec(),
     ))
 }
@@ -76,7 +84,13 @@ impl ExpressionRewriter for WholeRecordParamRewriter<'_> {
                 .find(|param| param.param_name == name.as_str())
         {
             return rumoca_core::Expression::FunctionCall {
-                name: rumoca_core::Reference::new(param.constructor_name.clone()),
+                name: rumoca_core::Reference::from_component_reference(
+                    rumoca_core::ComponentReference::from_flat_segments(
+                        &param.constructor_name,
+                        *span,
+                        Some(param.constructor_def_id),
+                    ),
+                ),
                 args: param
                     .fields
                     .iter()
@@ -225,6 +239,7 @@ fn fuse_record_param_path(
             span,
             parts,
             def_id: None,
+            target_def_id: None,
         };
         return Some(rumoca_core::Expression::VarRef {
             name: rumoca_core::Reference::from_component_reference(component_ref),
@@ -473,13 +488,14 @@ fn lower_record_function_params_once(flat: &mut flat::Model) -> Result<bool, Fla
     for (func_name, func) in flat.functions.iter_mut() {
         let mut decomposed: Vec<DecomposedParam> = Vec::new();
         for (idx, input) in func.inputs.iter().enumerate() {
-            if let Some((constructor_name, fields)) =
+            if let Some((constructor_name, constructor_def_id, fields)) =
                 record_fields_by_function_input.get(&(func_name.clone(), idx))
             {
                 decomposed.push(DecomposedParam {
                     original_index: idx,
                     param_name: input.name.clone(),
                     constructor_name: constructor_name.clone(),
+                    constructor_def_id: *constructor_def_id,
                     fields: fields.clone(),
                 });
             }
@@ -585,6 +601,7 @@ struct DecomposedParam {
     original_index: usize,
     param_name: String,
     constructor_name: String,
+    constructor_def_id: rumoca_core::DefId,
     fields: Vec<rumoca_core::FunctionParam>,
 }
 
@@ -832,7 +849,7 @@ fn named_function_arg_marker(
     span: rumoca_core::Span,
 ) -> rumoca_core::Expression {
     rumoca_core::Expression::FunctionCall {
-        name: rumoca_core::Reference::new(format!(
+        name: rumoca_core::Reference::generated(format!(
             "{}{name}",
             rumoca_core::NAMED_FUNCTION_ARG_PREFIX
         )),
@@ -1074,6 +1091,7 @@ mod tests {
                     subs: vec![],
                 }],
                 def_id: None,
+                target_def_id: None,
             },
             value,
             span: Span::DUMMY,
@@ -1096,6 +1114,7 @@ mod tests {
                         })
                         .collect(),
                     def_id: None,
+                    target_def_id: None,
                 },
             ),
             subscripts: vec![],
@@ -1563,6 +1582,7 @@ mod tests {
         };
         assert!(*is_constructor);
         assert_eq!(name.as_str(), "Pkg.Record");
+        assert_eq!(name.target_def_id(), Some(RECORD_DEF_ID));
         assert!(matches!(
             args.as_slice(),
             [

@@ -4,6 +4,7 @@ impl Storage {
     pub(super) fn freeze(mut self) -> FrozenStorage {
         self.function_read_sets = FunctionReadSets::default();
         FrozenStorage {
+            predefined_string_declaration: self.predefined_string_declaration,
             value_types: self.value_types.into_boxed_slice(),
             flat_type_ids: self.flat_type_ids.into_boxed_slice(),
             value_type_provenance: self.value_type_provenance.into_boxed_slice(),

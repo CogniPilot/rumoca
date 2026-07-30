@@ -119,6 +119,14 @@ pub(super) fn binary_result(
             Ok(lhs.clone())
         }
         BinaryOperator::Add
+            if lhs_scalar == ScalarType::String && rhs_scalar == ScalarType::String =>
+        {
+            if !lhs.is_scalar() || !rhs.is_scalar() {
+                return Err(DaeConstructionError::ExpectedScalar { span: at.span() });
+            }
+            Ok(ValueType::scalar(ScalarType::String))
+        }
+        BinaryOperator::Add
         | BinaryOperator::Subtract
         | BinaryOperator::ElementwiseAdd
         | BinaryOperator::ElementwiseSubtract => {

@@ -191,6 +191,92 @@ fn zero_affine_derivative_coefficient_fails_before_runtime() {
 }
 
 #[test]
+fn explicit_string_format_fails_at_its_exact_solve_lowering_span() {
+    const STRING_DECLARATION: rumoca_core::DefId = rumoca_core::DefId(41);
+    let source = TestSource::new(
+        "Real x; equation x = 0; when true then \
+         assert(true, String(1, format = \"04d\")); end when;",
+    );
+    let declaration_at = source.at(0, 6);
+    let equation_at = source.at(17, 22);
+    let condition_at = source.at(29, 33);
+    let action_at = source.at(39, 78);
+    let conversion_at = source.at(52, 77);
+    let format_at = source.at(71, 76);
+    let model = dae::Dae::construct(source.map, |model| {
+        model.register_predefined_string(STRING_DECLARATION)?;
+        let real = model.types(|types| {
+            types.intern(
+                TypeId::new(0),
+                dae::ValueType::scalar(dae::ScalarType::Real),
+                declaration_at,
+            )
+        })?;
+        let algebraic = model.variables(|variables| {
+            variables.algebraic(
+                VarName::new("x"),
+                real,
+                declaration_at,
+                dae::VariableAttributes::default(),
+            )
+        })?;
+        let residual = model.expressions(|expressions| {
+            let variable = expressions
+                .at(equation_at)
+                .coordinate(dae::CoordinateInput::Algebraic(algebraic))?;
+            let zero = expressions
+                .at(equation_at)
+                .literal(dae::DaeLiteral::Real(0.0))?;
+            expressions
+                .at(equation_at)
+                .binary(dae::BinaryOperator::Subtract, variable, zero)
+        })?;
+        model.continuous(|continuous| continuous.value_equation(equation_at, residual))?;
+        let condition = model.conditions(|conditions| conditions.reserve(condition_at))?;
+        let condition_value = model.expressions(|expressions| {
+            expressions
+                .at(condition_at)
+                .literal(dae::DaeLiteral::Boolean(true))
+        })?;
+        model.conditions(|conditions| {
+            conditions.define(
+                condition,
+                dae::ConditionInput::Discrete(condition_value),
+                condition_at,
+            )
+        })?;
+        let message = model.expressions(|expressions| {
+            let value = expressions
+                .at(conversion_at)
+                .literal(dae::DaeLiteral::Integer(1))?;
+            let format = expressions
+                .at(format_at)
+                .literal(dae::DaeLiteral::String("04d".to_owned()))?;
+            expressions.at(conversion_at).string_conversion(
+                STRING_DECLARATION,
+                value,
+                dae::StringConversionFormatInput::Format { value: format },
+            )
+        })?;
+        model.events(|events| events.assert(condition, condition, message, action_at))?;
+        Ok(())
+    })
+    .expect("explicit formatting is valid checked DAE semantics");
+
+    let error =
+        lower_solve_problem(&model).expect_err("Solve IR cannot claim an uncomputable formatter");
+
+    assert!(
+        matches!(
+            error,
+            LowerError::Unsupported { ref reason, span }
+                if span == format_at.span() && reason.contains("explicit String format")
+        ),
+        "unexpected lowering error: {error:?}"
+    );
+}
+
+#[test]
 fn nested_comprehension_binders_lower_through_lexical_domain_scopes() {
     let source = TestSource::new("Real x[2,3]; equation x = {{i + j for j in 1:3} for i in 1:2};");
     let declaration = source.at(0, 11);

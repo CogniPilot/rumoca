@@ -172,6 +172,9 @@ fn build_checked<'dae>(
     variable_plan: &VariableConstructionPlan,
     construction: &mut dae::DaeConstruction<'dae>,
 ) -> Result<(), dae::DaeConstructionError> {
+    if let Some(declaration) = flat.predefined_string_declaration {
+        construction.register_predefined_string(declaration)?;
+    }
     let value_types = reserve_value_types(flat, analysis, construction)?;
     let no_function_ids = HashMap::new();
     let analysis_functions = FunctionRegistry {

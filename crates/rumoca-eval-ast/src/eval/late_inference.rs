@@ -262,6 +262,7 @@ mod tests {
                 subs: None,
             }],
             def_id: None,
+            target_def_id: None,
 
             span: rumoca_core::Span::DUMMY,
         })
@@ -279,6 +280,7 @@ mod tests {
                 })
                 .collect(),
             def_id: None,
+            target_def_id: None,
 
             span: rumoca_core::Span::DUMMY,
         })
@@ -292,6 +294,7 @@ mod tests {
                 subs: Some(vec![Subscript::Expression(make_int_literal(idx))]),
             }],
             def_id: None,
+            target_def_id: None,
 
             span: rumoca_core::Span::DUMMY,
         })
@@ -306,6 +309,7 @@ mod tests {
                     subs: None,
                 }],
                 def_id: None,
+                target_def_id: None,
 
                 span: rumoca_core::Span::DUMMY,
             },
@@ -549,6 +553,7 @@ mod tests {
                     subs: None,
                 }],
                 def_id: None,
+                target_def_id: None,
 
                 span: rumoca_core::Span::DUMMY,
             },
@@ -720,6 +725,7 @@ mod tests {
                 },
             ],
             def_id: None,
+            target_def_id: None,
 
             span: rumoca_core::Span::DUMMY,
         });
@@ -755,6 +761,7 @@ mod tests {
                 },
             ],
             def_id: None,
+            target_def_id: None,
 
             span: rumoca_core::Span::DUMMY,
         });
@@ -767,6 +774,7 @@ mod tests {
                     subs: None,
                 }],
                 def_id: None,
+                target_def_id: None,
 
                 span: rumoca_core::Span::DUMMY,
             },

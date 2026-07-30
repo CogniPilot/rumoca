@@ -13,8 +13,13 @@ pub(crate) struct Context {
     /// General constant expression values (scalars/arrays) extracted from
     /// class/package constants and redeclare/extends modifications.
     pub constant_values: rustc_hash::FxHashMap<String, rumoca_core::Expression>,
+    /// Constant values keyed by their exact Resolve declaration identity.
+    pub constant_values_by_def_id:
+        rustc_hash::FxHashMap<rumoca_core::DefId, rumoca_core::Expression>,
     /// Qualified declaration names keyed by semantic target DefId.
     pub target_def_names: rustc_hash::FxHashMap<rumoca_core::DefId, String>,
+    /// Exact Resolve identity of the predefined `String` declaration.
+    pub predefined_string_declaration: Option<rumoca_core::DefId>,
     /// Fully qualified constant names explicitly modified by extends clauses.
     /// These must not be overwritten by inherited declaration defaults.
     pub(crate) modified_constant_keys: rustc_hash::FxHashSet<String>,

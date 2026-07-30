@@ -55,6 +55,7 @@ fn make_comp_ref_expr(names: &[&str]) -> ast::Expression {
             })
             .collect(),
         def_id: None,
+        target_def_id: None,
         span: rumoca_core::Span::DUMMY,
     })
 }
@@ -147,6 +148,7 @@ fn test_resolve_sibling_modification_keeps_class_modification_reference() {
                     },
                 ],
                 def_id: None,
+                target_def_id: None,
                 span: rumoca_core::Span::DUMMY,
             },
             modifications: vec![
@@ -273,6 +275,7 @@ fn test_resolve_sibling_modification_keeps_function_call_record_like_binding() {
                     },
                 ],
                 def_id: None,
+                target_def_id: None,
                 span: rumoca_core::Span::DUMMY,
             },
             args: vec![make_int_expr(410), make_int_expr(388)],
@@ -1081,6 +1084,7 @@ fn test_propagate_record_binding_preserves_matching_default_record_constructor()
                 subs: None,
             }],
             def_id: None,
+            target_def_id: None,
             span: rumoca_core::Span::DUMMY,
         },
         args: Vec::new(),
@@ -1130,6 +1134,7 @@ fn test_propagate_record_binding_projects_subtype_default_record_constructor_fie
                 subs: None,
             }],
             def_id: None,
+            target_def_id: None,
             span: rumoca_core::Span::DUMMY,
         },
         args: Vec::new(),
@@ -1209,6 +1214,7 @@ fn test_propagate_record_binding_projects_through_unique_constructor_record_fiel
                 subs: None,
             }],
             def_id: None,
+            target_def_id: None,
             span: rumoca_core::Span::DUMMY,
         },
         args: Vec::new(),

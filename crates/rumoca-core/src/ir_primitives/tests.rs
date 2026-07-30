@@ -135,11 +135,13 @@ fn reference_carries_component_ref_and_target_def_id_without_owning_def_id() {
                 subs: Vec::new(),
             },
         ],
-        def_id: Some(DefId::new(42)),
+        def_id: Some(DefId::new(7)),
+        target_def_id: Some(DefId::new(42)),
     };
     let reference = Reference::with_component_reference("body[2].r", component_ref.clone());
 
     assert_eq!(reference.as_str(), "body[2].r");
+    assert_eq!(reference.root_def_id(), Some(DefId::new(7)));
     assert_eq!(reference.target_def_id(), Some(DefId::new(42)));
     assert_eq!(reference.component_ref(), Some(&component_ref));
     assert_eq!(reference.parts(), component_ref.parts.as_slice());
@@ -157,6 +159,7 @@ fn reference_appended_index_uses_required_owner_provenance() {
             subs: Vec::new(),
         }],
         def_id: Some(DefId::new(42)),
+        target_def_id: Some(DefId::new(42)),
     };
     let reference = Reference::with_component_reference("body", component_ref);
 
@@ -181,6 +184,32 @@ fn reference_appended_index_uses_required_owner_provenance() {
                 .expect("test span is real"),
         )]
     );
+    assert_eq!(indexed.target_def_id(), Some(DefId::new(42)));
+}
+
+#[test]
+fn appended_field_cannot_inherit_the_base_exact_target() {
+    let span = test_span();
+    let reference = Reference::from_component_reference(ComponentReference {
+        local: false,
+        span,
+        parts: vec![ComponentRefPart {
+            ident: "record".to_string(),
+            span,
+            subs: Vec::new(),
+        }],
+        def_id: Some(DefId::new(7)),
+        target_def_id: Some(DefId::new(42)),
+    });
+
+    let field = reference.with_appended_field("value");
+
+    assert_eq!(field.root_def_id(), Some(DefId::new(7)));
+    assert_eq!(
+        field.target_def_id(),
+        None,
+        "the base declaration cannot prove the appended member"
+    );
 }
 
 #[test]
@@ -195,6 +224,7 @@ fn expression_span_recovers_reference_component_span() {
             subs: Vec::new(),
         }],
         def_id: Some(DefId::new(7)),
+        target_def_id: Some(DefId::new(7)),
     };
     let expr = Expression::VarRef {
         name: Reference::from_component_reference(component_ref),
@@ -364,6 +394,7 @@ fn component_path_preserves_component_reference_subscripts() {
             },
         ],
         def_id: Some(DefId::new(42)),
+        target_def_id: Some(DefId::new(42)),
     };
 
     assert_eq!(
@@ -538,7 +569,8 @@ fn declaration_reference(def_id: Option<DefId>, span: Span) -> Reference {
             local: false,
             span,
             parts: vec![part("resistor"), part("v")],
-            def_id,
+            def_id: None,
+            target_def_id: def_id,
         },
     )
 }

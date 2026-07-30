@@ -94,7 +94,8 @@ fn synthesize_scalar_component_modification_binding(
             .cloned()
             .map(|ident| ast::ComponentRefPart { ident, subs: None })
             .collect(),
-        def_id: comp.type_name.def_id,
+        def_id: None,
+        target_def_id: comp.type_name.def_id,
         span,
     };
     let modifications: Vec<ast::Expression> = comp

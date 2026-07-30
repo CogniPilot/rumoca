@@ -13,6 +13,7 @@ type LowerResult<T> = Result<T, FlattenError>;
 pub(crate) struct LoweringContext<'a> {
     pub(crate) def_map: Option<&'a IndexMap<DefId, String>>,
     pub(crate) instance_name: Option<&'a str>,
+    pub(crate) predefined_string_declaration: Option<DefId>,
 }
 
 pub(crate) fn expression_from_ast(expr: &ast::Expression) -> LowerResult<rumoca_core::Expression> {
@@ -28,6 +29,7 @@ pub(crate) fn expression_from_ast_with_def_map(
         LoweringContext {
             def_map,
             instance_name: None,
+            predefined_string_declaration: None,
         },
     )
 }
@@ -179,6 +181,7 @@ pub(crate) fn statement_from_ast_with_def_map_and_source_map(
         LoweringContext {
             def_map,
             instance_name: None,
+            predefined_string_declaration: None,
         },
         source_map,
     )
@@ -425,7 +428,7 @@ fn component_reference_from_ast_with_def_map(
 ) -> LowerResult<rumoca_core::ComponentReference> {
     let comp_span = required_ast_span(comp.span, "AST component reference")?;
     if comp.parts.is_empty()
-        && let Some(def_id) = comp.def_id
+        && let Some(def_id) = comp.target_def_id
         && let Some(path) = def_map.and_then(|map| map.get(&def_id))
     {
         return Ok(component_reference_from_path(path, comp_span, Some(def_id)));
@@ -446,6 +449,7 @@ fn component_reference_from_ast_with_def_map(
             })
             .collect::<LowerResult<Vec<_>>>()?,
         def_id: comp.def_id,
+        target_def_id: comp.target_def_id,
     })
 }
 
@@ -454,10 +458,12 @@ fn function_component_ref_from_ast(
     def_map: Option<&IndexMap<DefId, String>>,
 ) -> LowerResult<rumoca_core::ComponentReference> {
     let comp_span = required_ast_span(comp.span, "function component reference")?;
-    if let Some(def_id) = comp.def_id
+    if let Some(def_id) = comp.target_def_id
         && let Some(path) = def_map.and_then(|map| map.get(&def_id))
     {
-        return Ok(component_reference_from_path(path, comp_span, Some(def_id)));
+        let mut reference = component_reference_from_path(path, comp_span, Some(def_id));
+        reference.def_id = comp.def_id;
+        return Ok(reference);
     }
 
     component_reference_from_ast_with_def_map(comp, None)
@@ -511,7 +517,7 @@ fn expression_from_component_ref_with_def_map(
 ) -> LowerResult<rumoca_core::Expression> {
     let cr_span = required_ast_span(cr.span, "AST component reference expression")?;
     if cr.parts.is_empty()
-        && let Some(def_id) = cr.def_id
+        && let Some(def_id) = cr.target_def_id
         && let Some(path) = def_map.and_then(|map| map.get(&def_id))
     {
         let component_ref = component_reference_from_path(path, cr_span, Some(def_id));
@@ -523,7 +529,7 @@ fn expression_from_component_ref_with_def_map(
     }
 
     if cr.parts.iter().all(|part| part.subs.is_none())
-        && let Some(def_id) = cr.def_id
+        && let Some(def_id) = cr.target_def_id
         && let Some(path) = def_map.and_then(|map| map.get(&def_id))
         && is_enum_literal_ref(cr, path)
     {
@@ -618,7 +624,7 @@ fn component_ref_with_structured_subscripts(
 
 fn component_reference_from_name_parts(
     parts: &[String],
-    target_def_id: Option<DefId>,
+    root_def_id: Option<DefId>,
     span: rumoca_core::Span,
 ) -> ComponentReference {
     ComponentReference {
@@ -632,7 +638,8 @@ fn component_reference_from_name_parts(
                 subs: Vec::new(),
             })
             .collect(),
-        def_id: target_def_id,
+        def_id: root_def_id,
+        target_def_id: None,
     }
 }
 
@@ -643,7 +650,7 @@ fn reference_from_ast_component_ref(cr: &ast::ComponentReference) -> LowerResult
 }
 
 fn component_reference_from_ast(cr: &ast::ComponentReference) -> LowerResult<ComponentReference> {
-    component_reference_from_ast_with_target_def_id(cr, cr.def_id)
+    component_reference_from_ast_with_target_def_id(cr, cr.target_def_id)
 }
 
 fn component_reference_from_ast_with_target_def_id(
@@ -665,7 +672,8 @@ fn component_reference_from_ast_with_target_def_id(
                 })
             })
             .collect::<LowerResult<Vec<_>>>()?,
-        def_id: target_def_id,
+        def_id: cr.def_id,
+        target_def_id,
     })
 }
 
@@ -879,6 +887,7 @@ fn convert_function_call_with_def_map(
         LoweringContext {
             def_map,
             instance_name: None,
+            predefined_string_declaration: None,
         },
     )
 }
@@ -895,10 +904,10 @@ fn convert_function_call_with_context(
 
     if comp.parts.len() == 1 {
         let func_name = &comp.parts[0].ident.text;
-        if rumoca_core::predefined_component_type(func_name.as_ref())
-            == Some(rumoca_core::PredefinedComponentType::String)
+        if comp.target_def_id == context.predefined_string_declaration
+            && context.predefined_string_declaration.is_some()
         {
-            return predefined_type_constructor_call(comp, args, call_span, context);
+            return lower_string_conversion(comp, args, call_span, context);
         }
         if let Some(builtin) = rumoca_core::BuiltinFunction::from_name(func_name) {
             return Ok(rumoca_core::Expression::BuiltinCall {
@@ -928,22 +937,90 @@ fn convert_function_call_with_context(
     })
 }
 
-fn predefined_type_constructor_call(
+fn lower_string_conversion(
     comp: &ast::ComponentReference,
     args: &[ast::Expression],
     call_span: Span,
     context: LoweringContext<'_>,
 ) -> LowerResult<rumoca_core::Expression> {
-    Ok(rumoca_core::Expression::FunctionCall {
-        name: Reference::from_component_reference(component_reference_from_ast_with_def_map(
-            comp,
-            context.def_map,
-        )?),
-        args: args
-            .iter()
-            .map(|a| convert_call_arg_with_context(a, context))
-            .collect::<LowerResult<Vec<_>>>()?,
-        is_constructor: true,
+    let declaration = comp.target_def_id.ok_or_else(|| {
+        FlattenError::unsupported_equation(
+            "predefined String conversion is missing its resolved declaration identity",
+            call_span,
+        )
+    })?;
+    let Some((value, named)) = args.split_first() else {
+        return Err(FlattenError::unsupported_equation(
+            "String() requires one scalar value argument",
+            call_span,
+        ));
+    };
+    if matches!(value, ast::Expression::NamedArgument { .. }) {
+        return Err(FlattenError::unsupported_equation(
+            "String() first argument must be positional",
+            value.span(),
+        ));
+    }
+
+    let mut minimum_length = None;
+    let mut left_justified = None;
+    let mut significant_digits = None;
+    let mut explicit_format = None;
+    for argument in named {
+        let ast::Expression::NamedArgument { name, value, .. } = argument else {
+            return Err(FlattenError::unsupported_equation(
+                "String() formatting arguments must be named",
+                argument.span(),
+            ));
+        };
+        let lowered = Box::new(expression_from_ast_with_context(value, context)?);
+        let slot = match name.text.as_ref() {
+            "minimumLength" => &mut minimum_length,
+            "leftJustified" => &mut left_justified,
+            "significantDigits" => &mut significant_digits,
+            "format" => &mut explicit_format,
+            unknown => {
+                return Err(FlattenError::unsupported_equation(
+                    format!("String() has no named argument `{unknown}`"),
+                    argument.span(),
+                ));
+            }
+        };
+        if slot.replace(lowered).is_some() {
+            return Err(FlattenError::unsupported_equation(
+                format!(
+                    "String() named argument `{}` is specified more than once",
+                    name.text
+                ),
+                argument.span(),
+            ));
+        }
+    }
+
+    let format = match explicit_format {
+        Some(value)
+            if minimum_length.is_none()
+                && left_justified.is_none()
+                && significant_digits.is_none() =>
+        {
+            rumoca_core::StringConversionFormat::Format { value }
+        }
+        Some(_) => {
+            return Err(FlattenError::unsupported_equation(
+                "String() `format` is mutually exclusive with minimumLength, leftJustified, and significantDigits",
+                call_span,
+            ));
+        }
+        None => rumoca_core::StringConversionFormat::Options {
+            minimum_length,
+            left_justified,
+            significant_digits,
+        },
+    };
+    Ok(rumoca_core::Expression::StringConversion {
+        declaration,
+        value: Box::new(expression_from_ast_with_context(value, context)?),
+        format,
         span: call_span,
     })
 }
@@ -979,7 +1056,7 @@ fn resolved_function_call_reference(
     comp: &ast::ComponentReference,
     def_map: Option<&IndexMap<DefId, String>>,
 ) -> Option<Reference> {
-    let def_id = comp.def_id?;
+    let def_id = comp.target_def_id?;
     let resolved = resolved_function_call_name(comp, def_map)?;
     Some(Reference::from_component_reference(
         component_reference_from_path(&resolved, comp.span, Some(def_id)),
@@ -991,7 +1068,7 @@ fn resolved_function_call_name(
     def_map: Option<&IndexMap<DefId, String>>,
 ) -> Option<String> {
     let resolved = comp
-        .def_id
+        .target_def_id
         .and_then(|def_id| def_map.and_then(|map| map.get(&def_id)))?;
     let call_leaf = comp.parts.last()?.ident.text.as_ref();
     let resolved_leaf = crate::path_utils::leaf_segment(resolved.as_str());
@@ -1001,9 +1078,8 @@ fn resolved_function_call_name(
         return None;
     }
 
-    // `ComponentReference::def_id` usually names the first segment. Function
-    // resolution rewrites successful multi-segment calls so the DefId names the
-    // final callable. If lookup stopped at a receiver component such as
+    // A resolved function target names the final callable. If lookup stopped
+    // at a receiver component such as
     // `world` in `world.gravityAcceleration(...)`, keep the textual member
     // call so flatten's component-override rewrite can resolve it from the
     // receiver type.
@@ -1136,7 +1212,7 @@ fn convert_array_comprehension_with_context(
     })
 }
 
-const NAMED_CONSTRUCTOR_ARG_PREFIX: &str = "__rumoca_named_arg__.";
+pub(crate) const NAMED_CONSTRUCTOR_ARG_PREFIX: &str = "__rumoca_named_arg__.";
 
 fn wrap_named_constructor_arg(
     name: &str,
@@ -1145,7 +1221,7 @@ fn wrap_named_constructor_arg(
 ) -> LowerResult<rumoca_core::Expression> {
     let span = required_ast_span(span, "named constructor argument")?;
     Ok(rumoca_core::Expression::FunctionCall {
-        name: Reference::new(format!("{NAMED_CONSTRUCTOR_ARG_PREFIX}{name}")),
+        name: Reference::generated(format!("{NAMED_CONSTRUCTOR_ARG_PREFIX}{name}")),
         args: vec![value],
         is_constructor: true,
         span,
@@ -1186,7 +1262,7 @@ fn convert_class_modification_with_context(
 ) -> LowerResult<rumoca_core::Expression> {
     let target_span = required_ast_span(target.span, "class modification target")?;
     let constructor_name = target
-        .def_id
+        .target_def_id
         .and_then(|def_id| context.def_map.and_then(|map| map.get(&def_id).cloned()))
         .map_or_else(
             || {
@@ -1196,7 +1272,7 @@ fn convert_class_modification_with_context(
             Ok,
         );
     let constructor_name = constructor_name?;
-    let constructor_def_id = target.def_id;
+    let constructor_def_id = target.target_def_id;
     let constructor_ref =
         component_reference_from_path(&constructor_name, target_span, constructor_def_id);
     Ok(rumoca_core::Expression::FunctionCall {
@@ -1247,6 +1323,7 @@ mod tests {
             parts: vec![part(name)],
             span: test_span(),
             def_id: None,
+            target_def_id: None,
         })
     }
 
@@ -1256,6 +1333,7 @@ mod tests {
             parts: vec![part(name)],
             span,
             def_id: None,
+            target_def_id: None,
         })
     }
 
@@ -1265,6 +1343,7 @@ mod tests {
             parts: vec![part(name)],
             span: test_span(),
             def_id: None,
+            target_def_id: None,
         }
     }
 
@@ -1277,6 +1356,7 @@ mod tests {
             LoweringContext {
                 def_map: None,
                 instance_name: Some("Vehicle.engine.controller"),
+                predefined_string_declaration: None,
             },
         )
         .unwrap();
@@ -1332,6 +1412,7 @@ mod tests {
             LoweringContext {
                 def_map: None,
                 instance_name: Some("Vehicle.engine.controller"),
+                predefined_string_declaration: None,
             },
         )
         .unwrap_err();
@@ -1349,6 +1430,7 @@ mod tests {
             parts: vec![part("receiver"), part("member")],
             span: test_span(),
             def_id: Some(receiver_def),
+            target_def_id: None,
         };
 
         assert_eq!(resolved_function_call_name(&comp, Some(&def_map)), None);
@@ -1369,7 +1451,8 @@ mod tests {
             local: false,
             parts: vec![part("Receiver"), part("member")],
             span: test_span(),
-            def_id: Some(function_def),
+            def_id: None,
+            target_def_id: Some(function_def),
         };
 
         assert_eq!(
@@ -1390,7 +1473,8 @@ mod tests {
             local: false,
             parts: vec![part("world"), part("gravityAcceleration")],
             span: test_span(),
-            def_id: Some(function_def),
+            def_id: None,
+            target_def_id: Some(function_def),
         };
 
         let expr = convert_function_call_with_def_map(&comp, &[], Some(&def_map)).unwrap();
@@ -1416,6 +1500,7 @@ mod tests {
                 parts: vec![part("x")],
                 span,
                 def_id: None,
+                target_def_id: None,
             },
             value: ast_var("y"),
         };
@@ -1437,6 +1522,7 @@ mod tests {
                 parts: vec![part("Model"), part("x")],
                 span,
                 def_id: None,
+                target_def_id: None,
             },
             value: ast_var_with_span("y", span),
         };
@@ -1483,7 +1569,8 @@ mod tests {
                 part("specificEnthalpy"),
             ],
             span: test_span(),
-            def_id: Some(partial_function_def),
+            def_id: None,
+            target_def_id: Some(partial_function_def),
         };
 
         assert_eq!(resolved_function_call_name(&comp, Some(&def_map)), None);
@@ -1516,6 +1603,7 @@ mod tests {
             }],
             span: test_span(),
             def_id: Some(variable_def),
+            target_def_id: Some(variable_def),
         };
 
         let expr = expression_from_component_ref_with_def_map(&comp, Some(&def_map)).unwrap();
@@ -1551,6 +1639,7 @@ mod tests {
             parts: vec![indexed],
             span: test_span(),
             def_id: None,
+            target_def_id: None,
         };
 
         let lowered = expression_from_component_ref_with_def_map(&comp, None)
@@ -1602,8 +1691,7 @@ mod tests {
     }
 
     #[test]
-    fn structured_subscript_base_preserves_target_def_id() {
-        let fluid_constants_def = DefId::new(4);
+    fn structured_subscript_base_does_not_inherit_final_target_def_id() {
         let mut fluid_constants = part("fluidConstants");
         fluid_constants.subs = Some(vec![ast::Subscript::Expression(
             ast::Expression::Terminal {
@@ -1624,7 +1712,8 @@ mod tests {
                 part("criticalTemperature"),
             ],
             span: test_span(),
-            def_id: Some(fluid_constants_def),
+            def_id: None,
+            target_def_id: None,
         };
 
         let expr = expression_from_component_ref_with_def_map(&comp, None).unwrap();
@@ -1639,6 +1728,6 @@ mod tests {
         };
 
         assert_eq!(name.as_str(), "source.medium.fluidConstants");
-        assert_eq!(name.target_def_id(), Some(fluid_constants_def));
+        assert_eq!(name.target_def_id(), None);
     }
 }

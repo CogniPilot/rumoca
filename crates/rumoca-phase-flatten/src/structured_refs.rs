@@ -276,7 +276,8 @@ mod tests {
                     subs: Vec::new(),
                 })
                 .collect(),
-            def_id,
+            def_id: None,
+            target_def_id: def_id,
         }
     }
 

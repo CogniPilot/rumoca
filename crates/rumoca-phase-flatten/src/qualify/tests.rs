@@ -37,6 +37,7 @@ fn make_comp_ref(names: &[&str]) -> ComponentReference {
             })
             .collect(),
         def_id: None,
+        target_def_id: None,
         span: rumoca_core::Span::DUMMY,
     }
 }
@@ -980,6 +981,7 @@ fn test_import_alias_resolves_prefixed_component_reference() {
             },
         ],
         def_id: Some(rumoca_core::DefId::new(99)),
+        target_def_id: None,
         span: rumoca_core::Span::DUMMY,
     });
 
@@ -1067,6 +1069,7 @@ fn test_fully_qualified_ref_qualifies_subscript_expressions() {
                             subs: Some(vec![Subscript::Expression(make_int(1))]),
                         }],
                         def_id: None,
+                        target_def_id: None,
                         span: rumoca_core::Span::DUMMY,
                     })),
                     Subscript::Expression(Expression::ComponentReference(ComponentReference {
@@ -1079,12 +1082,14 @@ fn test_fully_qualified_ref_qualifies_subscript_expressions() {
                             subs: Some(vec![Subscript::Expression(make_int(2))]),
                         }],
                         def_id: None,
+                        target_def_id: None,
                         span: rumoca_core::Span::DUMMY,
                     })),
                 ]),
             },
         ],
         def_id: None,
+        target_def_id: None,
         span: rumoca_core::Span::DUMMY,
     };
 

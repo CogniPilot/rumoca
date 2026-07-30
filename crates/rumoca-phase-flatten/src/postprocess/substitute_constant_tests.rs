@@ -20,6 +20,7 @@ fn simple_assignment(value: rumoca_core::Expression) -> rumoca_core::Statement {
                 subs: vec![],
             }],
             def_id: None,
+            target_def_id: None,
         },
         value,
         span: rumoca_core::Span::DUMMY,
@@ -1053,6 +1054,12 @@ fn expr_contains_var_ref(expr: &rumoca_core::Expression, needle: &str) -> bool {
         | rumoca_core::Expression::Array { elements: args, .. }
         | rumoca_core::Expression::Tuple { elements: args, .. } => {
             args.iter().any(|arg| expr_contains_var_ref(arg, needle))
+        }
+        rumoca_core::Expression::StringConversion { value, format, .. } => {
+            expr_contains_var_ref(value, needle)
+                || format
+                    .operands()
+                    .any(|operand| expr_contains_var_ref(operand, needle))
         }
         rumoca_core::Expression::If {
             branches,

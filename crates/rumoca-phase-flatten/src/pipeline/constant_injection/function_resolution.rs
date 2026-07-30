@@ -1,7 +1,7 @@
 use super::*;
 
 /// Resolve a function call's component reference to its fully qualified name.
-/// Uses def_id from import resolution (contract from resolve phase).
+/// Uses the exact callable identity from the resolve-phase contract.
 pub(crate) fn resolve_function_name(
     comp: &rumoca_ir_ast::ComponentReference,
     tree: &ClassTree,
@@ -9,35 +9,19 @@ pub(crate) fn resolve_function_name(
 ) -> String {
     let textual_name = QualifiedName::from_component_reference(comp).to_flat_string();
 
-    if let Some(def_id) = comp.def_id
+    if let Some(def_id) = comp.target_def_id
         && let Some(base_name) = tree.def_map.get(&def_id)
+        && let Some(class_def) = class_index.get_by_qualified_name(base_name)
+        && class_def.class_type == rumoca_core::ClassType::Function
     {
-        if comp.parts.len() > 1 {
-            let suffix = comp.parts[1..]
-                .iter()
-                .map(|part| part.ident.text.to_string())
-                .collect::<Vec<_>>()
-                .join(".");
-            let candidate = format!("{base_name}.{suffix}");
-            if let Some(class_def) = class_index.get_by_qualified_name(&candidate)
-                && class_def.class_type == rumoca_core::ClassType::Function
-            {
-                return candidate;
-            }
-        }
-
-        if let Some(class_def) = class_index.get_by_qualified_name(base_name)
-            && class_def.class_type == rumoca_core::ClassType::Function
-        {
-            return base_name.clone();
-        }
+        return base_name.clone();
     }
 
     #[cfg(feature = "tracing")]
-    if comp.def_id.is_some() {
+    if comp.target_def_id.is_some() {
         tracing::warn!(
-            "Function call has def_id {:?} but not found in def_map: {}",
-            comp.def_id,
+            "Function call has target_def_id {:?} but not found in def_map: {}",
+            comp.target_def_id,
             comp
         );
     } else {

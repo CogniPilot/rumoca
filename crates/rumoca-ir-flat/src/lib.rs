@@ -73,6 +73,12 @@ pub use when_equations::{WhenBranch, WhenChain, WhenEquation};
 /// with globally unique names and all equations ready for analysis.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Model {
+    /// Exact Resolve identity of the predefined `String` declaration.
+    ///
+    /// Production flattening always supplies this from `ScopeTree`; downstream
+    /// phases use it to distinguish the predefined conversion operator from a
+    /// shadowing user declaration without rendered-name lookup.
+    pub predefined_string_declaration: Option<DefId>,
     /// Resolved effective type descriptors keyed by the exact `TypeId` stored
     /// on each concrete variable or aggregate instance.
     pub effective_types: IndexMap<TypeId, EffectiveType, rustc_hash::FxBuildHasher>,
@@ -472,6 +478,8 @@ pub struct Variable {
     /// variables for the DAE balance calculation.
     #[serde(default)]
     pub is_discrete_type: bool,
+    /// True when the exact resolved type root is an enumeration declaration.
+    pub is_enumeration: bool,
 
     /// True if this variable is a primitive type (Real, Integer, Boolean, String).
     /// Record-typed variables (like Complex with .re and .im fields) are not primitive.
@@ -585,6 +593,7 @@ impl Variable {
             binding_from_modification: false,
             evaluate: false,
             is_discrete_type: false,
+            is_enumeration: false,
             is_primitive: false,
             from_expandable_connector: false,
             is_overconstrained: false,

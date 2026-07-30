@@ -30,6 +30,7 @@ fn comp_ref(path: &str) -> ast::ComponentReference {
             })
             .collect(),
         def_id: None,
+        target_def_id: None,
         span: rumoca_core::Span::DUMMY,
     }
 }
@@ -101,6 +102,7 @@ fn indexed_var_expr(name: &str, subscripts: &[&str]) -> ast::Expression {
             ),
         }],
         def_id: None,
+        target_def_id: None,
         span: rumoca_core::Span::DUMMY,
     })
 }

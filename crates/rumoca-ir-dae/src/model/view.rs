@@ -66,6 +66,10 @@ macro_rules! raw_id_slice_view {
 }
 
 impl<'dae> DaeView<'dae> {
+    pub fn predefined_string_declaration(self) -> Option<rumoca_core::DefId> {
+        self.dae.storage.predefined_string_declaration
+    }
+
     /// Returns one exact source span that can own a whole-model diagnostic.
     ///
     /// This is intentionally optional: an empty, source-free DAE has no
@@ -1085,6 +1089,7 @@ impl<'dae> ExpressionView<'dae> {
             ExprNode::ArrayUpdate { .. } => ExpressionKind::ArrayUpdate,
             ExprNode::Builtin { .. } => ExpressionKind::Builtin,
             ExprNode::Call { .. } => ExpressionKind::Call,
+            ExprNode::StringConversion { .. } => ExpressionKind::StringConversion,
             ExprNode::FunctionValue { .. } => ExpressionKind::FunctionValue,
             ExprNode::FunctionFoldParameter { .. } => ExpressionKind::FunctionFoldParameter,
             ExprNode::FunctionFoldOutput { .. } => ExpressionKind::FunctionFoldOutput,
@@ -1106,7 +1111,8 @@ impl<'dae> ExpressionView<'dae> {
             ExprNode::Index { .. }
             | ExprNode::ArrayUpdate { .. }
             | ExprNode::Builtin { .. }
-            | ExprNode::Call { .. } => self.application_operation(),
+            | ExprNode::Call { .. }
+            | ExprNode::StringConversion { .. } => self.application_operation(),
             ExprNode::FunctionValue { .. }
             | ExprNode::FunctionFoldParameter { .. }
             | ExprNode::FunctionFoldOutput { .. } => self.function_operation(),
@@ -1192,6 +1198,27 @@ impl<'dae> ExpressionView<'dae> {
                 function: FunctionId::from_raw(*function),
                 output: *output,
                 arguments: self.expression_operands(*operands),
+            },
+            ExprNode::StringConversion {
+                declaration,
+                value,
+                minimum_length,
+                left_justified,
+                significant_digits,
+                format,
+            } => ExpressionOperation::StringConversion {
+                declaration: *declaration,
+                value: ExprId::from_raw(*value),
+                format: match format {
+                    Some(format) => StringConversionFormatView::Format {
+                        value: ExprId::from_raw(*format),
+                    },
+                    None => StringConversionFormatView::Options {
+                        minimum_length: minimum_length.map(ExprId::from_raw),
+                        left_justified: left_justified.map(ExprId::from_raw),
+                        significant_digits: significant_digits.map(ExprId::from_raw),
+                    },
+                },
             },
             _ => unreachable!("expression operation family is selected from its checked node"),
         }
@@ -1462,6 +1489,11 @@ pub enum ExpressionOperation<'dae> {
         output: u32,
         arguments: ExpressionOperands<'dae>,
     },
+    StringConversion {
+        declaration: rumoca_core::DefId,
+        value: ExprId<'dae>,
+        format: StringConversionFormatView<'dae>,
+    },
     FunctionValue {
         value: FunctionValueId<'dae>,
         definition: FunctionDefinitionView<'dae>,
@@ -1475,6 +1507,18 @@ pub enum ExpressionOperation<'dae> {
         fold: FunctionFoldId<'dae>,
         carried: u32,
         definition: FunctionDefinitionView<'dae>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StringConversionFormatView<'dae> {
+    Options {
+        minimum_length: Option<ExprId<'dae>>,
+        left_justified: Option<ExprId<'dae>>,
+        significant_digits: Option<ExprId<'dae>>,
+    },
+    Format {
+        value: ExprId<'dae>,
     },
 }
 
@@ -1527,6 +1571,7 @@ pub enum ExpressionKind {
     ArrayUpdate,
     Builtin,
     Call,
+    StringConversion,
     FunctionValue,
     FunctionFoldParameter,
     FunctionFoldOutput,

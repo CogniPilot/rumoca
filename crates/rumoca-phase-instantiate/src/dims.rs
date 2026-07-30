@@ -384,6 +384,7 @@ fn qualify_component_ref_imports(
         local: cref.local,
         parts,
         def_id: cref.def_id,
+        target_def_id: cref.target_def_id,
         span: cref.span,
     }
 }
@@ -440,6 +441,7 @@ mod tests {
                     })
                     .collect(),
                 def_id: None,
+                target_def_id: None,
                 span: rumoca_core::Span::DUMMY,
             },
         ))

@@ -114,7 +114,10 @@ impl Validator<'_> {
     }
 
     fn add_unresolved_component_reference(&mut self, cr: &ComponentReference) {
-        if cr.def_id.is_some() || cr.parts.is_empty() {
+        if cr.target_def_id.is_some() || cr.parts.is_empty() {
+            return;
+        }
+        if self.is_proven_component_receiver(cr) {
             return;
         }
         let source_location = cr.parts[0].ident.location.clone();
@@ -126,10 +129,10 @@ impl Validator<'_> {
     }
 
     fn add_unresolved_function_call(&mut self, cr: &ComponentReference) {
-        if cr.def_id.is_none() && !cr.parts.is_empty() {
+        if cr.target_def_id.is_none() && !cr.parts.is_empty() {
             // Receiver-qualified calls such as `world.gravityAcceleration(...)`
             // may require inherited/outer component type context from instantiation.
-            if self.is_likely_component_receiver_call(cr) {
+            if self.is_proven_component_receiver(cr) {
                 return;
             }
             let source_location = cr.parts[0]
@@ -144,7 +147,7 @@ impl Validator<'_> {
         }
     }
 
-    fn is_likely_component_receiver_call(&self, cr: &ComponentReference) -> bool {
+    fn is_proven_component_receiver(&self, cr: &ComponentReference) -> bool {
         let Some(scope) = self.current_scope else {
             return false;
         };
@@ -155,10 +158,17 @@ impl Validator<'_> {
             return false;
         }
         let receiver = ComponentPath::from_parts([first.ident.text.as_ref()]);
-        self.tree
-            .scope_tree
-            .lookup(scope, &receiver)
-            .is_some_and(|def_id| self.component_def_ids.contains(&def_id))
+        let Some(root_def_id) = cr.def_id else {
+            return false;
+        };
+        if self.tree.scope_tree.lookup(scope, &receiver) != Some(root_def_id) {
+            return false;
+        }
+        self.component_def_ids.contains(&root_def_id)
+            || self
+                .tree
+                .get_class_by_def_id(root_def_id)
+                .is_some_and(|class| class.is_replaceable)
     }
 }
 

@@ -4,6 +4,7 @@ mod function_wire;
 mod provenance;
 mod range_wire;
 mod runtime_owners;
+mod string_conversion;
 mod temporal_wire;
 mod type_arena;
 mod wire_buffers;

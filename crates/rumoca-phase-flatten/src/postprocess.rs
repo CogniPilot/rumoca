@@ -6,6 +6,9 @@ use rumoca_core::{
 mod constructor_calls;
 pub(crate) use constructor_calls::mark_record_constructor_calls;
 
+mod function_shape_constants;
+use function_shape_constants::materialize_function_shape_constants;
+
 #[path = "postprocess_record_alias.rs"]
 mod record_alias;
 use record_alias::*;
@@ -447,6 +450,7 @@ impl KnownFlatVars {
                 span: leaf_ref.span,
                 parts: leaf_ref.parts[..depth].to_vec(),
                 def_id: None,
+                target_def_id: None,
             };
             if truncated.to_var_name().as_str() == path {
                 return Some(truncated);
@@ -894,6 +898,7 @@ fn substitute_function_bodies(
     live_vars: &rustc_hash::FxHashSet<String>,
 ) -> Result<(), FlattenError> {
     for function in functions.values_mut() {
+        materialize_function_shape_constants(function, ctx)?;
         let function_locals: HashSet<String> = function
             .inputs
             .iter()

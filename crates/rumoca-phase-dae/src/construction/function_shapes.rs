@@ -841,6 +841,9 @@ fn expression_shape(
         Expression::BuiltinCall { function, args, .. } => {
             builtin_shape(*function, args, values, function_result, span)
         }
+        Expression::StringConversion { value, format, .. } => {
+            string_conversion_shape(value, format, values, function_result, span)
+        }
         Expression::FunctionCall {
             name,
             args,
@@ -907,6 +910,24 @@ fn expression_shape(
             span,
         )),
     }
+}
+
+fn string_conversion_shape(
+    value: &Expression,
+    format: &rumoca_core::StringConversionFormat,
+    values: &ShapeEnvironment,
+    function_result: &mut FunctionResultShape<'_>,
+    span: Span,
+) -> Result<ValueShape, ToDaeError> {
+    if !expression_shape(value, values, function_result)?.is_empty() {
+        return shape_mismatch(span);
+    }
+    for operand in format.operands() {
+        if !expression_shape(operand, values, function_result)?.is_empty() {
+            return shape_mismatch(span);
+        }
+    }
+    Ok(Vec::new())
 }
 
 fn array_expression_shape(
@@ -1298,6 +1319,46 @@ mod tests {
                 component: String::new(),
             },
         )
+    }
+
+    #[test]
+    fn record_constructor_arity_remains_strict() {
+        let mut sources = SourceMap::new();
+        let source = sources.add("record_arity.mo", "Pair(1.0);");
+        let span = Span::from_offsets(source, 0, 9);
+        let mut constructor = rumoca_core::Function::new("Pair", span);
+        constructor.is_constructor = true;
+        constructor.add_input(rumoca_core::FunctionParam::new("left", "Real", span));
+        constructor.add_input(rumoca_core::FunctionParam::new("right", "Real", span));
+
+        let mut model = flat::Model::new();
+        model.add_function(constructor);
+        model.add_equation(flat::Equation::new(
+            Expression::FunctionCall {
+                name: Reference::new("Pair"),
+                args: vec![literal(1.0, span)],
+                is_constructor: true,
+                span,
+            },
+            span,
+            flat::EquationOrigin::ComponentEquation {
+                component: String::new(),
+            },
+        ));
+
+        let Err(error) = FunctionShapeAnalysis::analyze(&model) else {
+            panic!("record constructor with one missing field must be rejected");
+        };
+        assert!(matches!(
+            error,
+            ToDaeError::UnsupportedFlatSemantics {
+                feature,
+                detail,
+                span: error_span,
+            } if feature == "record constructor"
+                && detail == "`Pair` expects 2 fields but receives 1"
+                && error_span == span
+        ));
     }
 
     #[test]

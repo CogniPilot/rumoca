@@ -23,6 +23,7 @@ fn make_comp_ref(path: &str) -> ComponentReference {
             })
             .collect(),
         def_id: None,
+        target_def_id: None,
         span: test_span(),
     }
 }

@@ -157,6 +157,13 @@ where
             dae::ExpressionOperation::FunctionFoldOutput { fold, carried, .. } => {
                 self.function_fold(fold, carried, span)?
             }
+            dae::ExpressionOperation::StringConversion { .. } => {
+                return Err(failure(
+                    NumericEvaluationErrorKind::UnsupportedOperation,
+                    "String conversion is outside the numeric DAE evaluator",
+                    span,
+                ));
+            }
         };
         require_finite(&value, span)?;
         Ok(value)

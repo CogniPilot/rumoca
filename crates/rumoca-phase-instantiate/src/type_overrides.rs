@@ -1460,6 +1460,7 @@ end ComponentClassModification;
                 .collect(),
             // Simulate parser metadata that points to the first segment only.
             def_id: Some(modelica_id),
+            target_def_id: Some(standard_water_id),
             span: rumoca_core::Span::DUMMY,
         };
 
@@ -1542,6 +1543,7 @@ end ComponentClassModification;
                         subs: None,
                     }],
                     def_id: Some(medium_alias_id),
+                    target_def_id: Some(medium_alias_id),
                     span: rumoca_core::Span::DUMMY,
                 },
             )),

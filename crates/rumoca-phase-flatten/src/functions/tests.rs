@@ -63,6 +63,7 @@ fn core_comp_ref(parts: &[&str]) -> rumoca_core::ComponentReference {
             })
             .collect(),
         def_id: None,
+        target_def_id: None,
     }
 }
 
@@ -71,7 +72,7 @@ fn core_comp_ref_with_def_id(
     def_id: rumoca_core::DefId,
 ) -> rumoca_core::ComponentReference {
     let mut reference = core_comp_ref(parts);
-    reference.def_id = Some(def_id);
+    reference.target_def_id = Some(def_id);
     reference
 }
 
@@ -87,6 +88,7 @@ fn ast_comp_ref(parts: &[&str]) -> ast::ComponentReference {
             .collect(),
         span: test_span(),
         def_id: None,
+        target_def_id: None,
     }
 }
 
@@ -1104,7 +1106,7 @@ fn test_convert_component_to_param_resolves_constant_shape_expr() {
         .insert("Xorshift64star".to_string(), package);
     let class_index = ast::ClassDefIndex::from_tree(&tree);
     let mut n_state_ref = ast_comp_ref(&["nState"]);
-    n_state_ref.def_id = Some(n_state_def);
+    n_state_ref.target_def_id = Some(n_state_def);
     let component = ast::Component {
         type_name: ast::Name::from_string("Integer"),
         location: test_location(9, 15),
@@ -1257,6 +1259,7 @@ fn test_constructor_signature_preserves_local_default_references() {
                             local: false,
                             parts: vec![],
                             def_id: Some(orientation_def),
+                            target_def_id: Some(orientation_def),
                             span: test_span(),
                         },
                     )),
@@ -1507,6 +1510,7 @@ fn pi_component() -> ast::Component {
                     subs: None,
                 }],
                 def_id: None,
+                target_def_id: None,
                 span: rumoca_core::Span::DUMMY,
             },
         )),
@@ -1664,6 +1668,7 @@ fn test_extract_derivative_annotation_simple() {
         value: Arc::new(ast::Expression::ComponentReference(ComponentReference {
             local: false,
             def_id: None,
+            target_def_id: None,
             parts: vec![ComponentRefPart {
                 ident: Token {
                     text: Arc::from("myFunc_der"),
@@ -1696,6 +1701,7 @@ fn test_extract_derivative_annotation_with_modification() {
         target: ComponentReference {
             local: false,
             def_id: None,
+            target_def_id: None,
             parts: vec![ComponentRefPart {
                 ident: Token {
                     text: Arc::from("derivative"),
@@ -1724,6 +1730,7 @@ fn test_extract_derivative_annotation_with_modification() {
         value: Arc::new(ast::Expression::ComponentReference(ComponentReference {
             local: false,
             def_id: None,
+            target_def_id: None,
             parts: vec![ComponentRefPart {
                 ident: Token {
                     text: Arc::from("myFunc_der2"),
@@ -1753,6 +1760,7 @@ fn test_extract_derivative_annotation_with_zero_derivative() {
         target: ComponentReference {
             local: false,
             def_id: None,
+            target_def_id: None,
             parts: vec![ComponentRefPart {
                 ident: Token {
                     text: Arc::from("derivative"),
@@ -1767,6 +1775,7 @@ fn test_extract_derivative_annotation_with_zero_derivative() {
                         value: Arc::new(ast::Expression::ComponentReference(ComponentReference {
                             local: false,
                             def_id: None,
+                            target_def_id: None,
                             parts: vec![ComponentRefPart {
                                 ident: Token {
                                     text: Arc::from("k"),
@@ -1785,6 +1794,7 @@ fn test_extract_derivative_annotation_with_zero_derivative() {
         value: Arc::new(ast::Expression::ComponentReference(ComponentReference {
             local: false,
             def_id: None,
+            target_def_id: None,
             parts: vec![ComponentRefPart {
                 ident: Token {
                     text: Arc::from("myFunc_der"),

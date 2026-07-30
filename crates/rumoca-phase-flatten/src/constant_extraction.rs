@@ -1532,6 +1532,34 @@ pub(super) fn extract_single_constant_with_prefix_and_function_scope(
     {
         insert_with_prefix(&mut ctx.array_dimensions, prefix, name, full_name, dims);
     }
+
+    record_exact_constant_value(comp, full_name, expr.span(), ctx);
+}
+
+fn record_exact_constant_value(
+    component: &rumoca_ir_ast::Component,
+    qualified_name: &str,
+    declaration_span: rumoca_core::Span,
+    ctx: &mut Context,
+) {
+    let Some(def_id) = component.def_id else {
+        return;
+    };
+    let value = ctx
+        .constant_values
+        .get(qualified_name)
+        .cloned()
+        .or_else(|| {
+            ctx.parameter_values
+                .get(qualified_name)
+                .map(|value| rumoca_core::Expression::Literal {
+                    value: rumoca_core::Literal::Integer(*value),
+                    span: declaration_span,
+                })
+        });
+    if let Some(value) = value {
+        ctx.constant_values_by_def_id.insert(def_id, value);
+    }
 }
 
 pub(super) fn try_extract_constant_alias_expr(

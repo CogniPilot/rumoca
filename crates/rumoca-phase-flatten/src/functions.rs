@@ -30,7 +30,7 @@ use rumoca_ir_flat as flat;
 use rustc_hash::FxHashSet;
 use std::collections::{HashMap, HashSet};
 
-pub(crate) use call_args::validate_flat_function_call_args;
+pub(crate) use call_args::materialize_flat_function_call_args;
 use constant_overrides::active_constant_def_overrides;
 use constructor_signature::{
     convert_constructor_signature, inherit_operator_constructor_defaults,
@@ -54,7 +54,7 @@ use crate::pipeline::{collect_package_chain, rewrite_function_extends_aliases_in
 use crate::qualify;
 use crate::source_spans::required_location_span;
 
-fn is_callable_class_type(class_type: &rumoca_core::ClassType) -> bool {
+fn is_callable_class_candidate(class_type: &rumoca_core::ClassType) -> bool {
     !matches!(
         class_type,
         rumoca_core::ClassType::Package
@@ -846,7 +846,7 @@ fn resolved_function_reference(
     let Some(mut component_ref) = original.component_ref().cloned() else {
         return rumoca_core::Reference::new(resolved_name);
     };
-    component_ref.def_id = tree.name_map.get(&resolved_name).copied().or_else(|| {
+    component_ref.target_def_id = tree.name_map.get(&resolved_name).copied().or_else(|| {
         class_index
             .get_by_qualified_name(&resolved_name)
             .and_then(|class_def| class_def.def_id)
@@ -899,7 +899,7 @@ fn lookup_function_request_with_scope<'tree>(
     }
     if let Some(def_id) = request.target_def_id
         && let Some(class_def) = class_index.get(def_id)
-        && is_callable_class_type(&class_def.class_type)
+        && is_callable_class_candidate(&class_def.class_type)
         && !class_def.partial
     {
         let exposed_name = class_index
@@ -945,7 +945,7 @@ fn lookup_exposed_function_request_by_name<'tree>(
         return Ok(None);
     };
     if resolved.class_def.def_id != Some(def_id)
-        || !is_callable_class_type(&resolved.class_def.class_type)
+        || !is_callable_class_candidate(&resolved.class_def.class_type)
         || resolved.class_def.partial
     {
         return Ok(None);
@@ -1050,7 +1050,7 @@ fn resolve_function_class_with_scope<'a>(
     caller_scope: Option<&str>,
 ) -> Option<FunctionClassResolution<'a>> {
     if let Some(class_def) = class_index.get_by_qualified_name(func_name)
-        && is_callable_class_type(&class_def.class_type)
+        && is_callable_class_candidate(&class_def.class_type)
     {
         if class_def.partial
             && let Some(caller_scope) = caller_scope
@@ -1198,7 +1198,7 @@ fn resolve_function_in_package_chain_class<'a>(
 
         let direct = format!("{package_name}.{function_leaf}");
         if let Some(class_def) = class_index.get_by_qualified_name(&direct)
-            && is_callable_class_type(&class_def.class_type)
+            && is_callable_class_candidate(&class_def.class_type)
         {
             return Some((class_def, direct));
         }
@@ -1227,7 +1227,7 @@ fn resolve_function_in_package_chain_class<'a>(
             package_class,
             package_name,
             function_leaf,
-        ) && is_callable_class_type(&target.class_type)
+        ) && is_callable_class_candidate(&target.class_type)
         {
             return Some((target, direct));
         }
@@ -1490,7 +1490,7 @@ fn convert_callable<'tree>(
             member_cache,
         )
         .map(Some),
-        class_type if is_callable_class_type(class_type) => {
+        rumoca_core::ClassType::Record => {
             let mut constructor = convert_constructor_signature(
                 class_index,
                 class_def,
@@ -1515,8 +1515,98 @@ fn convert_callable<'tree>(
             )?;
             Ok(Some(constructor))
         }
-        _ => Ok(None),
+        _ => convert_external_object_callable(
+            tree,
+            class_index,
+            class_def,
+            qualified_name,
+            source_map,
+            def_map,
+            member_cache,
+        ),
     }
+}
+
+fn convert_external_object_callable<'tree>(
+    tree: &ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'tree>,
+    class_def: &'tree ast::ClassDef,
+    exposed_name: &str,
+    source_map: &rumoca_core::SourceMap,
+    def_map: &crate::ResolveDefMap,
+    member_cache: &mut qualify::MemberDefIdCache<'tree>,
+) -> Result<Option<rumoca_core::Function>, FlattenError> {
+    let owner_span = required_location_span(
+        source_map,
+        &class_def.location,
+        "callable class declaration",
+    )?;
+    let owner_def_id = class_def.def_id.ok_or_else(|| {
+        FlattenError::missing_resolved_class_metadata(
+            exposed_name,
+            "callable class identity",
+            owner_span,
+        )
+    })?;
+    let lifecycle = match class_index.external_object_lifecycle(owner_def_id) {
+        Ok(lifecycle) => lifecycle,
+        Err(error) => {
+            let (context, span) =
+                external_object_lifecycle_failure_context(source_map, owner_span, error)?;
+            return Err(FlattenError::missing_resolved_class_metadata(
+                exposed_name,
+                context,
+                span,
+            ));
+        }
+    };
+    lifecycle
+        .map(|lifecycle| {
+            convert_external_object_constructor(
+                tree,
+                class_index,
+                lifecycle.constructor(),
+                exposed_name,
+                source_map,
+                def_map,
+                member_cache,
+            )
+        })
+        .transpose()
+}
+
+fn convert_external_object_constructor<'tree>(
+    tree: &ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'tree>,
+    constructor: &'tree ast::ClassDef,
+    exposed_name: &str,
+    source_map: &rumoca_core::SourceMap,
+    def_map: &crate::ResolveDefMap,
+    member_cache: &mut qualify::MemberDefIdCache<'tree>,
+) -> Result<rumoca_core::Function, FlattenError> {
+    convert_function(
+        tree,
+        class_index,
+        constructor,
+        exposed_name,
+        source_map,
+        def_map,
+        member_cache,
+    )
+}
+
+fn external_object_lifecycle_failure_context(
+    source_map: &rumoca_core::SourceMap,
+    fallback_span: rumoca_core::Span,
+    error: ast::ExternalObjectLifecycleError<'_>,
+) -> Result<(&'static str, rumoca_core::Span), FlattenError> {
+    let context = error.required_fact();
+    let span = error
+        .declaration_location()
+        .map_or(Ok(fallback_span), |location| {
+            required_location_span(source_map, location, context)
+        })?;
+    Ok((context, span))
 }
 
 /// Convert a ast::ClassDef (function) to a rumoca_core::Function.
@@ -1606,6 +1696,9 @@ fn convert_function<'tree>(
                 initial_locals: &function_locals,
                 source_map: Some(source_map),
                 instance_name: None,
+                predefined_string_declaration: tree
+                    .scope_tree
+                    .predefined_member(&rumoca_core::ComponentPath::from_flat_path("String")),
             },
             algorithms::AlgorithmSectionMetadata::new(span, qualified_name.to_string()),
         )?;

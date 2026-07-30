@@ -240,13 +240,24 @@ pub(super) fn lower_expression_scoped<'dae>(
         ),
         Expression::Index {
             base, subscripts, ..
-        } => {
-            let base = lower_expression_scoped(construction, symbols, binders, base, None)?;
-            lower_index(construction, symbols, binders, base, subscripts, provenance)
-        }
+        } => lower_index_expression(construction, symbols, binders, base, subscripts, provenance),
         Expression::FunctionCall { .. } => {
             lower_call_expression(construction, symbols, binders, expression, provenance)
         }
+        Expression::StringConversion {
+            declaration,
+            value,
+            format,
+            ..
+        } => lower_string_conversion(
+            construction,
+            symbols,
+            binders,
+            *declaration,
+            value,
+            format,
+            provenance,
+        ),
         Expression::FieldAccess { .. } => {
             lower_record_array_field_projection(construction, symbols, binders, provenance)
         }
@@ -254,6 +265,86 @@ pub(super) fn lower_expression_scoped<'dae>(
             unreachable!("analysis rejects expressions outside the checked lowering grammar")
         }
     }
+}
+
+fn lower_index_expression<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    symbols: LoweringSymbols<'_, 'dae>,
+    binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
+    base: &Expression,
+    subscripts: &[rumoca_core::Subscript],
+    provenance: dae::DaeProvenance,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    let base = lower_expression_scoped(construction, symbols, binders, base, None)?;
+    lower_index(construction, symbols, binders, base, subscripts, provenance)
+}
+
+fn lower_string_conversion<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    symbols: LoweringSymbols<'_, 'dae>,
+    binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
+    declaration: rumoca_core::DefId,
+    value: &Expression,
+    format: &rumoca_core::StringConversionFormat,
+    provenance: dae::DaeProvenance,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    let value = lower_expression_scoped(construction, symbols, binders, value, None)?;
+    let format = lower_string_conversion_format(construction, symbols, binders, format)?;
+    construction.expressions(|expressions| {
+        expressions
+            .at(provenance)
+            .string_conversion(declaration, value, format)
+    })
+}
+
+fn lower_string_conversion_format<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    symbols: LoweringSymbols<'_, 'dae>,
+    binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
+    format: &rumoca_core::StringConversionFormat,
+) -> Result<dae::StringConversionFormatInput<'dae>, dae::DaeConstructionError> {
+    Ok(match format {
+        rumoca_core::StringConversionFormat::Options {
+            minimum_length,
+            left_justified,
+            significant_digits,
+        } => dae::StringConversionFormatInput::Options {
+            minimum_length: lower_optional_expression(
+                construction,
+                symbols,
+                binders,
+                minimum_length.as_deref(),
+            )?,
+            left_justified: lower_optional_expression(
+                construction,
+                symbols,
+                binders,
+                left_justified.as_deref(),
+            )?,
+            significant_digits: lower_optional_expression(
+                construction,
+                symbols,
+                binders,
+                significant_digits.as_deref(),
+            )?,
+        },
+        rumoca_core::StringConversionFormat::Format { value } => {
+            dae::StringConversionFormatInput::Format {
+                value: lower_expression_scoped(construction, symbols, binders, value, None)?,
+            }
+        }
+    })
+}
+
+fn lower_optional_expression<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    symbols: LoweringSymbols<'_, 'dae>,
+    binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
+    expression: Option<&Expression>,
+) -> Result<Option<dae::ExprId<'dae>>, dae::DaeConstructionError> {
+    expression
+        .map(|expression| lower_expression_scoped(construction, symbols, binders, expression, None))
+        .transpose()
 }
 
 fn lower_call_expression<'dae>(
@@ -1032,6 +1123,9 @@ pub(super) fn expression_children(expression: &Expression) -> Vec<&Expression> {
         Expression::BuiltinCall { args, .. } | Expression::FunctionCall { args, .. } => {
             args.iter().collect()
         }
+        Expression::StringConversion { value, format, .. } => std::iter::once(value.as_ref())
+            .chain(format.operands())
+            .collect(),
         Expression::If {
             branches,
             else_branch,

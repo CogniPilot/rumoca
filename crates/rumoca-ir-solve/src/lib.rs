@@ -1384,7 +1384,27 @@ pub struct SolveEventMessage {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum SolveEventMessagePart {
     Text(String),
-    Number(Vec<LinearOp>),
+    Conversion {
+        value: Vec<LinearOp>,
+        source: SolveStringConversionSource,
+        format: SolveStringConversionFormat,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum SolveStringConversionSource {
+    Real,
+    Integer,
+    Boolean,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub enum SolveStringConversionFormat {
+    Options {
+        minimum_length: Option<Vec<LinearOp>>,
+        left_justified: Option<Vec<LinearOp>>,
+        significant_digits: Option<Vec<LinearOp>>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]

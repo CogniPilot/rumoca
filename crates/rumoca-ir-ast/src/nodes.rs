@@ -739,6 +739,10 @@ pub struct ComponentReference {
     /// For `a.b.c`, this resolves `a` to its DefId.
     #[serde(skip)]
     pub def_id: Option<DefId>,
+    /// Exact final declaration reached by the complete reference, when Resolve
+    /// can prove the full path without instance-specific lookup.
+    #[serde(skip)]
+    pub target_def_id: Option<DefId>,
 }
 
 impl Display for ComponentReference {

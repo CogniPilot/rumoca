@@ -1,5 +1,6 @@
 use crate::{
-    BuiltinFunction, ComprehensionIndex, Expression, Literal, OpBinary, Reference, Span, Subscript,
+    BuiltinFunction, ComprehensionIndex, Expression, Literal, OpBinary, Reference, Span,
+    StringConversionFormat, Subscript,
 };
 
 pub trait ExpressionRewriter {
@@ -29,6 +30,12 @@ pub trait ExpressionRewriter {
                 is_constructor,
                 span,
             } => self.walk_function_call_expression(name, args, *is_constructor, *span),
+            Expression::StringConversion {
+                declaration,
+                value,
+                format,
+                span,
+            } => self.walk_string_conversion_expression(*declaration, value, format, *span),
             Expression::Literal { value, span } => self.walk_literal_expression(value, *span),
             Expression::If {
                 branches,
@@ -140,6 +147,47 @@ pub trait ExpressionRewriter {
             args: self.rewrite_expressions(args),
             is_constructor,
             span,
+        }
+    }
+
+    fn walk_string_conversion_expression(
+        &mut self,
+        declaration: crate::DefId,
+        value: &Expression,
+        format: &StringConversionFormat,
+        span: Span,
+    ) -> Expression {
+        Expression::StringConversion {
+            declaration,
+            value: Box::new(self.rewrite_expression(value)),
+            format: self.rewrite_string_conversion_format(format),
+            span,
+        }
+    }
+
+    fn rewrite_string_conversion_format(
+        &mut self,
+        format: &StringConversionFormat,
+    ) -> StringConversionFormat {
+        match format {
+            StringConversionFormat::Options {
+                minimum_length,
+                left_justified,
+                significant_digits,
+            } => StringConversionFormat::Options {
+                minimum_length: minimum_length
+                    .as_deref()
+                    .map(|value| Box::new(self.rewrite_expression(value))),
+                left_justified: left_justified
+                    .as_deref()
+                    .map(|value| Box::new(self.rewrite_expression(value))),
+                significant_digits: significant_digits
+                    .as_deref()
+                    .map(|value| Box::new(self.rewrite_expression(value))),
+            },
+            StringConversionFormat::Format { value } => StringConversionFormat::Format {
+                value: Box::new(self.rewrite_expression(value)),
+            },
         }
     }
 
@@ -318,6 +366,12 @@ pub trait FallibleExpressionRewriter {
                 is_constructor,
                 span,
             } => self.walk_function_call_expression(name, args, *is_constructor, *span),
+            Expression::StringConversion {
+                declaration,
+                value,
+                format,
+                span,
+            } => self.walk_string_conversion_expression(*declaration, value, format, *span),
             Expression::Literal { value, span } => self.walk_literal_expression(value, *span),
             Expression::If {
                 branches,
@@ -429,6 +483,50 @@ pub trait FallibleExpressionRewriter {
             args: self.rewrite_expressions(args)?,
             is_constructor,
             span,
+        })
+    }
+
+    fn walk_string_conversion_expression(
+        &mut self,
+        declaration: crate::DefId,
+        value: &Expression,
+        format: &StringConversionFormat,
+        span: Span,
+    ) -> Result<Expression, Self::Error> {
+        Ok(Expression::StringConversion {
+            declaration,
+            value: Box::new(self.rewrite_expression(value)?),
+            format: self.rewrite_string_conversion_format(format)?,
+            span,
+        })
+    }
+
+    fn rewrite_string_conversion_format(
+        &mut self,
+        format: &StringConversionFormat,
+    ) -> Result<StringConversionFormat, Self::Error> {
+        Ok(match format {
+            StringConversionFormat::Options {
+                minimum_length,
+                left_justified,
+                significant_digits,
+            } => StringConversionFormat::Options {
+                minimum_length: minimum_length
+                    .as_deref()
+                    .map(|value| self.rewrite_expression(value).map(Box::new))
+                    .transpose()?,
+                left_justified: left_justified
+                    .as_deref()
+                    .map(|value| self.rewrite_expression(value).map(Box::new))
+                    .transpose()?,
+                significant_digits: significant_digits
+                    .as_deref()
+                    .map(|value| self.rewrite_expression(value).map(Box::new))
+                    .transpose()?,
+            },
+            StringConversionFormat::Format { value } => StringConversionFormat::Format {
+                value: Box::new(self.rewrite_expression(value)?),
+            },
         })
     }
 

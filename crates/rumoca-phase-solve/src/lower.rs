@@ -883,6 +883,21 @@ fn expression_contains_derivative<'dae>(
             | dae::ExpressionOperation::Call { arguments, .. } => {
                 pending.extend(arguments.iter());
             }
+            dae::ExpressionOperation::StringConversion { value, format, .. } => {
+                pending.push(value);
+                match format {
+                    dae::StringConversionFormatView::Options {
+                        minimum_length,
+                        left_justified,
+                        significant_digits,
+                    } => {
+                        pending.extend(minimum_length);
+                        pending.extend(left_justified);
+                        pending.extend(significant_digits);
+                    }
+                    dae::StringConversionFormatView::Format { value } => pending.push(value),
+                }
+            }
         }
     }
     false

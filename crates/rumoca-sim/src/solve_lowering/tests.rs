@@ -3,7 +3,7 @@ use rumoca_compile::compile::{Session, SessionConfig};
 use super::entry::lower_dae_for_simulation;
 use crate::{SimOptions, simulate_dae};
 
-fn compile(source: &str, model: &str) -> rumoca_ir_dae::Dae {
+fn compile(source: &str, model: &str) -> std::sync::Arc<rumoca_ir_dae::Dae> {
     let mut session = Session::new(SessionConfig::default());
     session
         .add_document("simulation_checked_dae.mo", source)

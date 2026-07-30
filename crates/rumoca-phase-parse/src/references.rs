@@ -37,6 +37,7 @@ impl TryFrom<&modelica_grammar_trait::ComponentReference> for rumoca_ir_ast::Com
             parts,
             span,
             def_id: None,
+            target_def_id: None,
         })
     }
 }

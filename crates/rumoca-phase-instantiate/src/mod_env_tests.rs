@@ -44,6 +44,7 @@ fn make_comp_ref_expr(names: &[&str]) -> ast::Expression {
             })
             .collect(),
         def_id: None,
+        target_def_id: None,
         span: rumoca_core::Span::DUMMY,
     })
 }
@@ -67,6 +68,7 @@ fn make_start_modification(value: ast::Expression) -> ast::Expression {
                 subs: None,
             }],
             def_id: None,
+            target_def_id: None,
             span: rumoca_core::Span::DUMMY,
         },
         value: std::sync::Arc::new(value),

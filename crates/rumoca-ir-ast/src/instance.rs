@@ -774,7 +774,7 @@ impl Default for InstanceData {
 pub fn component_reference_for_instance(
     qualified_name: &QualifiedName,
     span: ProvenanceSpan,
-    def_id: Option<DefId>,
+    declaration_def_id: Option<DefId>,
 ) -> CoreComponentReference {
     let provenance = span;
     let span = provenance.span();
@@ -793,7 +793,8 @@ pub fn component_reference_for_instance(
                     .collect(),
             })
             .collect(),
-        def_id,
+        def_id: None,
+        target_def_id: declaration_def_id,
     }
 }
 
@@ -1279,7 +1280,7 @@ mod tests {
     }
 
     #[test]
-    fn component_reference_for_instance_preserves_parts_subscripts_and_def_id()
+    fn component_reference_for_instance_preserves_parts_subscripts_and_target_def_id()
     -> Result<(), rumoca_core::MissingProvenanceSpan> {
         let def_id = DefId::new(9);
         let span = Span::from_offsets(
@@ -1295,7 +1296,8 @@ mod tests {
 
         let reference = component_reference_for_instance(&qn, provenance, Some(def_id));
 
-        assert_eq!(reference.def_id, Some(def_id));
+        assert_eq!(reference.def_id, None);
+        assert_eq!(reference.target_def_id, Some(def_id));
         assert_eq!(reference.parts.len(), 3);
         assert_eq!(reference.parts[0].ident, "body");
         assert_eq!(reference.parts[1].ident, "frame");
@@ -1373,6 +1375,7 @@ mod tests {
         Expression::ComponentReference(ComponentReference {
             local: false,
             def_id: None,
+            target_def_id: None,
             span: rumoca_core::Span::DUMMY,
             parts: vec![ComponentRefPart {
                 ident: Token {

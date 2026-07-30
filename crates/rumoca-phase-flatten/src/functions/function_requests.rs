@@ -32,7 +32,7 @@ impl FunctionRequest {
     pub(super) fn from_component_reference(reference: &rumoca_core::ComponentReference) -> Self {
         Self {
             name: component_ref_name(reference),
-            target_def_id: reference.def_id,
+            target_def_id: reference.target_def_id,
             target_instance_id: None,
             component_ref: Some(reference.clone()),
         }
@@ -44,7 +44,7 @@ impl FunctionRequest {
     ) -> Self {
         Self {
             name,
-            target_def_id: reference.def_id,
+            target_def_id: reference.target_def_id,
             target_instance_id: None,
             component_ref: Some(ast_component_ref_to_core(reference)),
         }
@@ -85,6 +85,7 @@ fn ast_component_ref_to_core(
             })
             .collect(),
         def_id: reference.def_id,
+        target_def_id: reference.target_def_id,
     }
 }
 

@@ -81,6 +81,13 @@ impl<'a> ExpressionValidator<'a> {
                 ..
             } => self.validate_conditional(branches, else_branch, span),
             Expression::FunctionCall { args, .. } => self.validate_call_arguments(args),
+            Expression::StringConversion { value, format, .. } => {
+                self.validate(value)?;
+                for operand in format.operands() {
+                    self.validate(operand)?;
+                }
+                Ok(())
+            }
             Expression::Array { elements, .. } => self.validate_array(elements, span),
             Expression::Range {
                 start, step, end, ..

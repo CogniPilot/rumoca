@@ -621,6 +621,7 @@ mod tests {
                 .collect(),
             span: test_span(),
             def_id: None,
+            target_def_id: None,
         }
     }
 
@@ -693,6 +694,9 @@ mod tests {
             }
             rumoca_core::Expression::BuiltinCall { args, .. } => {
                 args.iter().any(contains_cardinality_call)
+            }
+            rumoca_core::Expression::StringConversion { value, format, .. } => {
+                contains_cardinality_call(value) || format.operands().any(contains_cardinality_call)
             }
             rumoca_core::Expression::ArrayComprehension {
                 expr,

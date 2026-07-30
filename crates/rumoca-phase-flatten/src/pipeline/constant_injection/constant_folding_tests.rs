@@ -55,6 +55,7 @@ fn unknown_bool_ref(name: &str) -> ast::Expression {
         }],
         span: rumoca_core::Span::DUMMY,
         def_id: None,
+        target_def_id: None,
     })
 }
 
@@ -70,6 +71,7 @@ fn component_ref(path: &str, def_id: Option<rumoca_core::DefId>) -> ast::Compone
             .collect(),
         span: rumoca_core::Span::DUMMY,
         def_id,
+        target_def_id: def_id,
     }
 }
 

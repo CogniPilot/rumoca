@@ -92,6 +92,7 @@ fn make_comp_ref(name: &str) -> ComponentReference {
         }],
         span: rumoca_core::Span::DUMMY,
         def_id: None,
+        target_def_id: None,
     }
 }
 

@@ -27,7 +27,7 @@ pub(super) fn named_function_arg(
 ) -> Expression {
     let span = value.span().unwrap_or(fallback_span);
     Expression::FunctionCall {
-        name: rumoca_core::Reference::new(format!("__rumoca_named_arg__.{name}")),
+        name: rumoca_core::Reference::generated(format!("__rumoca_named_arg__.{name}")),
         args: vec![value],
         is_constructor: true,
         span,

@@ -559,6 +559,10 @@ fn remap_expression_with_locals(
                 remap_expression_with_locals(arg, ctx, locals)?;
             }
         }
+        rumoca_core::Expression::StringConversion { value, format, .. } => {
+            remap_expression_with_locals(value, ctx, locals)?;
+            remap_string_conversion_format(format, ctx, locals)?;
+        }
         rumoca_core::Expression::Literal { value: _, .. }
         | rumoca_core::Expression::Empty { .. } => {}
         rumoca_core::Expression::If {
@@ -611,6 +615,31 @@ fn remap_expression_with_locals(
         }
         rumoca_core::Expression::FieldAccess { base, .. } => {
             remap_expression_with_locals(base, ctx, locals)?;
+        }
+    }
+    Ok(())
+}
+
+fn remap_string_conversion_format(
+    format: &mut rumoca_core::StringConversionFormat,
+    ctx: &RenameContext<'_>,
+    locals: &HashSet<String>,
+) -> Result<(), crate::errors::FlattenError> {
+    match format {
+        rumoca_core::StringConversionFormat::Options {
+            minimum_length,
+            left_justified,
+            significant_digits,
+        } => {
+            for operand in [minimum_length, left_justified, significant_digits]
+                .into_iter()
+                .flatten()
+            {
+                remap_expression_with_locals(operand, ctx, locals)?;
+            }
+        }
+        rumoca_core::StringConversionFormat::Format { value } => {
+            remap_expression_with_locals(value, ctx, locals)?;
         }
     }
     Ok(())
@@ -871,6 +900,7 @@ mod tests {
                 })
                 .collect(),
             def_id: Some(rumoca_core::DefId::new(17)),
+            target_def_id: Some(rumoca_core::DefId::new(17)),
         })
     }
 

@@ -70,6 +70,7 @@ fn comp_ref(parts: &[&str]) -> ComponentReference {
             .collect(),
         span: test_span(),
         def_id: None,
+        target_def_id: None,
     }
 }
 
@@ -116,7 +117,7 @@ fn function_override_rewrite_keeps_function_local_record_fields() {
     let local_ref = rumoca_core::Reference::with_component_reference(
         "sat.kappa",
         rumoca_core::ComponentReference {
-            def_id: Some(local_def),
+            target_def_id: Some(local_def),
             ..core_comp_ref(&["sat", "kappa"])
         },
     );
@@ -167,6 +168,7 @@ fn core_comp_ref(parts: &[&str]) -> rumoca_core::ComponentReference {
             })
             .collect(),
         def_id: None,
+        target_def_id: None,
     }
 }
 
@@ -360,7 +362,7 @@ fn canonicalizes_single_part_function_call_from_target_def_id() {
     );
 
     let mut component_ref = core_comp_ref(&["specificEnthalpy_pTX"]);
-    component_ref.def_id = Some(function_def);
+    component_ref.target_def_id = Some(function_def);
     let mut expr = Expression::FunctionCall {
         name: rumoca_core::Reference::with_component_reference(
             "specificEnthalpy_pTX",
@@ -429,7 +431,8 @@ fn concrete_package_component_ref_is_not_canonicalized_to_inherited_partial_name
     );
 
     let mut component_ref = core_comp_ref(&["Air_pT", "temperature_psX"]);
-    component_ref.def_id = Some(partial_function_def);
+    component_ref.def_id = Some(concrete_package_def);
+    component_ref.target_def_id = Some(partial_function_def);
     let mut expr = Expression::FunctionCall {
         name: rumoca_core::Reference::with_component_reference(
             "Air_pT.temperature_psX",
@@ -512,7 +515,7 @@ fn unqualified_partial_package_call_uses_active_component_override_scope() {
     );
 
     let mut component_ref = core_comp_ref(&["specificEnthalpy"]);
-    component_ref.def_id = Some(partial_function_def);
+    component_ref.target_def_id = Some(partial_function_def);
     let mut expr = Expression::FunctionCall {
         name: rumoca_core::Reference::with_component_reference("specificEnthalpy", component_ref),
         args: Vec::new(),
@@ -585,7 +588,7 @@ fn package_constant_member_uses_active_component_override_scope() {
     );
 
     let mut component_ref = core_comp_ref(&["source", "medium", "fluidConstants"]);
-    component_ref.def_id = Some(fluid_constants_def);
+    component_ref.target_def_id = Some(fluid_constants_def);
     let mut expr = Expression::VarRef {
         name: rumoca_core::Reference::with_component_reference(
             "source.medium.fluidConstants",
@@ -1515,7 +1518,7 @@ fn root_class_scope_inherits_member_function_receiver_types() {
     assert_eq!(
         marker
             .mark_component_function_call(comp_ref(&["world", "gravityAcceleration"]))
-            .def_id,
+            .target_def_id,
         Some(gravity_def)
     );
 }
@@ -1631,7 +1634,7 @@ fn replaceable_package_function_prefers_concrete_override_chain() {
     assert_eq!(
         marker
             .mark_component_function_call(comp_ref(&["Medium", "setState_phX"]))
-            .def_id,
+            .target_def_id,
         Some(ids.concrete_fn)
     );
 
@@ -1882,7 +1885,7 @@ fn marks_member_function_calls_through_component_type_aliases() {
     assert_eq!(
         marker
             .mark_component_function_call(comp_ref(&["world", "gravityAcceleration"]))
-            .def_id,
+            .target_def_id,
         Some(gravity_def)
     );
 }
@@ -1906,7 +1909,7 @@ fn root_package_alias_marks_member_function_calls() {
     assert_eq!(
         marker
             .mark_component_function_call(comp_ref(&["Medium", "density"]))
-            .def_id,
+            .target_def_id,
         Some(ids.concrete_density)
     );
 }

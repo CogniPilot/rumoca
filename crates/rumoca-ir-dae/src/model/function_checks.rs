@@ -186,6 +186,20 @@ fn push_expression_children(storage: &Storage, node: &ExprNode, pending: &mut Ve
             pending.extend([*base, *value]);
             push_subscripts(storage, *subscripts, pending);
         }
+        ExprNode::StringConversion {
+            value,
+            minimum_length,
+            left_justified,
+            significant_digits,
+            format,
+            ..
+        } => {
+            pending.push(*value);
+            pending.extend(minimum_length);
+            pending.extend(left_justified);
+            pending.extend(significant_digits);
+            pending.extend(format);
+        }
         ExprNode::Conditional { operands }
         | ExprNode::Array { operands }
         | ExprNode::Record { operands }
@@ -481,7 +495,8 @@ fn reject_model_coordinate(
         | ExprNode::Array { .. }
         | ExprNode::Record { .. }
         | ExprNode::Builtin { .. }
-        | ExprNode::Call { .. } => return Ok(()),
+        | ExprNode::Call { .. }
+        | ExprNode::StringConversion { .. } => return Ok(()),
         ExprNode::Coordinate(Coordinate::Parameter(_)) => "parameter",
         ExprNode::Coordinate(Coordinate::Input(_)) => "input",
         ExprNode::Coordinate(Coordinate::State(_)) => "state",

@@ -42,7 +42,7 @@ fn collect_record_array_ranks(flat: &flat::Model) -> HashMap<rumoca_core::DefId,
         if rank == 0 {
             continue;
         }
-        let Some(def_id) = record.component_ref.def_id else {
+        let Some(def_id) = record.component_ref.target_def_id else {
             continue;
         };
         ranks
@@ -438,7 +438,8 @@ mod tests {
                     })
                     .collect(),
             }],
-            def_id: Some(def_id),
+            def_id: None,
+            target_def_id: Some(def_id),
         }
     }
 

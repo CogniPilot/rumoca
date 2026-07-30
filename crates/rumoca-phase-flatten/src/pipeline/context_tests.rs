@@ -109,6 +109,7 @@ mod tests {
             local: false,
             parts,
             def_id: None,
+            target_def_id: None,
             span: test_span(),
         })
     }
@@ -1047,6 +1048,7 @@ mod tests {
                                 subs: None,
                             }],
                             def_id: Some(logic_def_id),
+                            target_def_id: Some(logic_def_id),
                             span: test_span(),
                         },
                     )),
@@ -1058,6 +1060,7 @@ mod tests {
                                 subs: None,
                             }],
                             def_id: Some(logic_def_id),
+                            target_def_id: Some(logic_def_id),
                             span: test_span(),
                         },
                     )),
@@ -1124,6 +1127,7 @@ mod tests {
                     },
                 ],
                 def_id: Some(logic_def_id),
+                target_def_id: None,
             };
             Expression::VarRef {
                 name: rumoca_core::Reference::from_component_reference(component_ref),

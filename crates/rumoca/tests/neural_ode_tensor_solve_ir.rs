@@ -99,7 +99,7 @@ fn check_event_blocks(solve: &SolveModel, p_len: usize, failures: &mut Vec<Strin
     );
     for (action_idx, action) in solve.problem.events.actions.iter().enumerate() {
         for (part_idx, part) in action.message.parts.iter().enumerate() {
-            if let rumoca_ir_solve::SolveEventMessagePart::Number(ops) = part {
+            if let rumoca_ir_solve::SolveEventMessagePart::Conversion { value: ops, .. } = part {
                 check_ops(
                     &format!("events.actions[{action_idx}].message[{part_idx}]"),
                     ops,

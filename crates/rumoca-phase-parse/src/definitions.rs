@@ -139,6 +139,7 @@ fn collect_named_args(
         local: false,
         span: token_span(&arg.ident)?,
         def_id: None,
+        target_def_id: None,
     });
     let rhs = arg.function_argument.clone();
     mods.push(rumoca_ir_ast::Expression::Binary {

@@ -3,6 +3,10 @@ use super::*;
 pub(super) fn expression_contains_function_call(expr: &Expression) -> bool {
     match expr {
         Expression::FunctionCall { .. } => true,
+        Expression::StringConversion { value, format, .. } => {
+            expression_contains_function_call(value)
+                || format.operands().any(expression_contains_function_call)
+        }
         Expression::Binary { lhs, rhs, .. } => {
             expression_contains_function_call(lhs) || expression_contains_function_call(rhs)
         }
@@ -240,7 +244,7 @@ pub(super) fn rewritten_function_reference(
     let Some(mut component_ref) = original.component_ref().cloned() else {
         return rumoca_core::Reference::new(resolved_name);
     };
-    component_ref.def_id = tree.name_map.get(&resolved_name).copied().or_else(|| {
+    component_ref.target_def_id = tree.name_map.get(&resolved_name).copied().or_else(|| {
         class_index
             .get_by_qualified_name(&resolved_name)
             .and_then(|class_def| class_def.def_id)

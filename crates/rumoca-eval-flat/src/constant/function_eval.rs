@@ -705,6 +705,10 @@ fn eval_expr_in_function(
         Expression::Binary { op, lhs, rhs, .. } => eval_binary(op, lhs, rhs, env, eval),
         Expression::Unary { op, rhs, .. } => eval_unary(op, rhs, env, eval),
         Expression::FunctionCall { name, args, .. } => eval_fn_call_expr(name, args, env, eval),
+        Expression::StringConversion { .. } => Err(EvalError::UnsupportedExpression {
+            kind: "predefined String conversion".to_string(),
+            span: eval.span,
+        }),
         Expression::BuiltinCall { function, args, .. } => {
             let arg_values: Vec<Value> = args
                 .iter()
@@ -1412,6 +1416,7 @@ mod tests {
                     subs: Vec::new(),
                 }],
                 def_id: None,
+                target_def_id: None,
             },
             value: rumoca_core::Expression::Binary {
                 op: rumoca_core::OpBinary::Mul,
@@ -1473,6 +1478,7 @@ mod tests {
                     subs: Vec::new(),
                 }],
                 def_id: None,
+                target_def_id: None,
             },
             value: rumoca_core::Expression::VarRef {
                 name: rumoca_core::Reference::new("z"),
@@ -1557,6 +1563,7 @@ mod tests {
                     subs: Vec::new(),
                 }],
                 def_id: None,
+                target_def_id: None,
             },
             value: rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::Integer(0),
@@ -1616,6 +1623,7 @@ mod tests {
                     subs: Vec::new(),
                 }],
                 def_id: None,
+                target_def_id: None,
             },
             value: rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::Integer(0),
@@ -1650,6 +1658,7 @@ mod tests {
                             subs: Vec::new(),
                         }],
                         def_id: None,
+                        target_def_id: None,
                     },
                     value: rumoca_core::Expression::Binary {
                         op: rumoca_core::OpBinary::Add,

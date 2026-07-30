@@ -43,6 +43,10 @@ pub fn eval_expr_with_span(
             eval_builtin_call(function, args, ctx, span)
         }
         Expression::FunctionCall { name, args, .. } => eval_fn_call(name.as_str(), args, ctx, span),
+        Expression::StringConversion { .. } => Err(EvalError::UnsupportedExpression {
+            kind: "predefined String conversion".to_string(),
+            span,
+        }),
         Expression::If {
             branches,
             else_branch,

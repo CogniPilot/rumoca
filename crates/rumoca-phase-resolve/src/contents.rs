@@ -291,6 +291,7 @@ impl Resolver {
         } else {
             self.stats.comp_refs_unresolved += 1;
         }
+        comp.target_def_id = self.resolve_component_reference_full_path(comp, scope);
         // Note: We don't report undefined references here because:
         // 1. The name might be from an import that hasn't been resolved yet
         // 2. The name might be from a base class (extends)
@@ -314,39 +315,15 @@ impl Resolver {
     fn resolve_function_reference(&mut self, comp: &mut ComponentReference, scope: ScopeId) {
         self.resolve_component_reference(comp, scope);
 
-        let Some((resolved_def_id, _qualified_name)) =
-            self.resolve_component_reference_full_path(comp, scope)
-        else {
+        let Some(resolved_def_id) = comp.target_def_id else {
             // A leading declaration is not proof that the called member exists.
-            // Clear the partial lookup before considering the only supported
-            // deferred case: a replaceable package whose concrete member set is
-            // established during instantiation.
-            comp.def_id = None;
-            self.resolve_partial_replaceable_package_function_reference(comp, scope);
+            // Replaceable-package tails remain unresolved until instantiation
+            // proves the concrete member.
+            comp.target_def_id = None;
             return;
         };
 
-        comp.def_id = Some(resolved_def_id);
-    }
-
-    fn resolve_partial_replaceable_package_function_reference(
-        &mut self,
-        comp: &mut ComponentReference,
-        scope: ScopeId,
-    ) {
-        let Some(first_part) = comp.parts.first().map(|part| part.ident.text.as_ref()) else {
-            return;
-        };
-        let Some(first_def_id) = comp
-            .def_id
-            .or_else(|| self.resolve_function_first_part(first_part, scope))
-        else {
-            return;
-        };
-
-        if comp.parts.len() > 1 && self.partial_type_root_ids.contains(&first_def_id) {
-            comp.def_id = Some(first_def_id);
-        }
+        comp.target_def_id = Some(resolved_def_id);
     }
 
     fn resolve_function_first_part(&self, first_part: &str, scope: ScopeId) -> Option<DefId> {
@@ -365,28 +342,21 @@ impl Resolver {
         &self,
         comp: &ComponentReference,
         scope: ScopeId,
-    ) -> Option<(rumoca_core::DefId, String)> {
+    ) -> Option<rumoca_core::DefId> {
         let first_part = comp.parts.first()?.ident.text.as_ref();
         let mut current_def_id = comp
             .def_id
             .or_else(|| self.resolve_function_first_part(first_part, scope))?;
-        let mut current_qualified = self.def_names.get(&current_def_id)?.clone();
 
         for part in comp.parts.iter().skip(1) {
-            let member = part.ident.text.as_ref();
-            let direct_name = format!("{current_qualified}.{member}");
-            if let Some(&next_def_id) = self.name_to_def.get(&direct_name) {
-                current_def_id = next_def_id;
-                current_qualified = self.def_names.get(&next_def_id)?.clone();
-                continue;
-            }
-
-            let inherited_def_id = self.lookup_inherited_member_of(current_def_id, member)?;
-            current_def_id = inherited_def_id;
-            current_qualified = self.def_names.get(&inherited_def_id)?.clone();
+            let container_scope = *self.class_def_scopes.get(&current_def_id)?;
+            current_def_id = self.scope_tree.lookup_member(
+                container_scope,
+                &ComponentPath::from_flat_path(&part.ident.text),
+            )?;
         }
 
-        Some((current_def_id, current_qualified))
+        Some(current_def_id)
     }
 
     fn resolve_type_name_with_inheritance(

@@ -42,6 +42,7 @@ fn semantic_instance(
             span: rumoca_core::Span::DUMMY,
             parts: Vec::new(),
             def_id: Some(source_def_id),
+            target_def_id: Some(source_def_id),
         }),
         qualified_name,
         type_id,

@@ -774,6 +774,7 @@ fn resolve_import_alias_ref(
         } else {
             None
         },
+        target_def_id: cr.target_def_id,
         span: cr.span,
     })
 }
@@ -812,6 +813,7 @@ fn qualify_cr_inner(
             } else {
                 None
             },
+            target_def_id: cr.target_def_id,
             span: cr.span,
         };
     }
@@ -825,6 +827,7 @@ fn qualify_cr_inner(
             } else {
                 None
             },
+            target_def_id: cr.target_def_id,
             span: cr.span,
         };
     }
@@ -880,6 +883,7 @@ fn qualify_cr_inner(
         } else {
             None
         },
+        target_def_id: cr.target_def_id,
         span: cr.span,
     }
 }
@@ -903,6 +907,7 @@ fn qualify_function_call_ref(
             } else {
                 None
             },
+            target_def_id: cr.target_def_id,
             span: cr.span,
         };
     }
@@ -920,6 +925,7 @@ fn qualify_function_call_ref(
             } else {
                 None
             },
+            target_def_id: cr.target_def_id,
             span: cr.span,
         };
     }
@@ -932,6 +938,7 @@ fn qualify_function_call_ref(
         } else {
             None
         },
+        target_def_id: cr.target_def_id,
         span: cr.span,
     }
 }

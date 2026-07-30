@@ -168,6 +168,22 @@ impl ScopeTree {
         self.get(scope).and_then(|s| s.members.get(name).copied())
     }
 
+    /// Look up one member within exactly one class scope.
+    ///
+    /// Qualified-name traversal uses this operation after the container has
+    /// already been resolved to a `DefId`. It must not walk to a parent scope:
+    /// an absent `A.b` cannot resolve to an unrelated `b` enclosing `A`.
+    pub fn lookup_member(&self, scope: ScopeId, name: &ComponentPath) -> Option<DefId> {
+        let scope = self.get(scope)?;
+        if let Some(def_id) = scope.members.get(name) {
+            return Some(*def_id);
+        }
+        match scope.inherited_members.get(name) {
+            Some(InheritedMember::Unique(def_id)) => Some(*def_id),
+            Some(InheritedMember::Ambiguous) | None => None,
+        }
+    }
+
     /// Whether `target` is declared directly in `scope`.
     ///
     /// This identity query lets post-resolution checks use `DefId` directly

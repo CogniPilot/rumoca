@@ -455,6 +455,19 @@ pub(crate) fn extract_constants_from_class(class_def: &ClassDef, ctx: &mut Conte
         {
             ctx.array_dimensions.insert(name.clone(), dims);
         }
+        if let Some(def_id) = comp.def_id {
+            let value = ctx.constant_values.get(name).cloned().or_else(|| {
+                ctx.parameter_values
+                    .get(name)
+                    .map(|value| rumoca_core::Expression::Literal {
+                        value: rumoca_core::Literal::Integer(*value),
+                        span: expr.span(),
+                    })
+            });
+            if let Some(value) = value {
+                ctx.constant_values_by_def_id.insert(def_id, value);
+            }
+        }
     }
 }
 
@@ -864,7 +877,9 @@ fn named_record_constructor_arg(
         .span()
         .or_else(|| (!owner_span.is_dummy()).then_some(owner_span))?;
     Some(rumoca_core::Expression::FunctionCall {
-        name: rumoca_core::Reference::new(format!("{NAMED_CONSTRUCTOR_ARG_PREFIX}{field_name}")),
+        name: rumoca_core::Reference::generated(format!(
+            "{NAMED_CONSTRUCTOR_ARG_PREFIX}{field_name}"
+        )),
         args: vec![value],
         is_constructor: true,
         span,
@@ -1269,6 +1284,7 @@ fn core_component_reference_from_ast(
             })
             .collect(),
         def_id: comp.def_id,
+        target_def_id: comp.target_def_id,
     }
 }
 

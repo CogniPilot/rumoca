@@ -1268,6 +1268,7 @@ mod tests {
                 .collect(),
             span,
             def_id: None,
+            target_def_id: None,
         }
     }
 

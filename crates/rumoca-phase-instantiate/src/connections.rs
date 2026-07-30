@@ -858,6 +858,7 @@ fn substitute_index_in_comp_ref(
             })
             .collect(),
         def_id: comp_ref.def_id,
+        target_def_id: comp_ref.target_def_id,
         span: comp_ref.span,
     }
 }
@@ -1460,6 +1461,7 @@ mod tests {
                 })
                 .collect(),
             def_id: None,
+            target_def_id: None,
             span: rumoca_core::Span::DUMMY,
         }
     }
@@ -1509,6 +1511,7 @@ mod tests {
             local: false,
             parts,
             def_id: None,
+            target_def_id: None,
             span: rumoca_core::Span::DUMMY,
         }
     }
@@ -1885,6 +1888,7 @@ mod tests {
                 },
             ],
             def_id: None,
+            target_def_id: None,
             span: rumoca_core::Span::DUMMY,
         });
         let cr = make_comp_ref_with_sub(sub_expr, &["resistor", "n"]);
@@ -1913,6 +1917,7 @@ mod tests {
                 },
             ],
             def_id: None,
+            target_def_id: None,
             span: rumoca_core::Span::DUMMY,
         });
         let cr = make_comp_ref_with_sub(sub_expr, &["resistor", "n"]);
@@ -1933,6 +1938,7 @@ mod tests {
                 subs: None,
             }],
             def_id: None,
+            target_def_id: None,
             span: rumoca_core::Span::DUMMY,
         };
         let mut int_params = rustc_hash::FxHashMap::default();

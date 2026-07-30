@@ -424,6 +424,7 @@ fn coordinate_variable_index(operation: ExpressionOperation<'_>) -> Option<u32> 
         | ExpressionOperation::Index { .. }
         | ExpressionOperation::Builtin { .. }
         | ExpressionOperation::Call { .. }
+        | ExpressionOperation::StringConversion { .. }
         | ExpressionOperation::FunctionValue { .. }
         | ExpressionOperation::FunctionFoldParameter { .. }
         | ExpressionOperation::FunctionFoldOutput { .. }

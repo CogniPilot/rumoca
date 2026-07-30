@@ -293,6 +293,9 @@ fn rebuild_holonomic_constraint(
     let mut manifold = Vec::with_capacity(2);
     let rebuilt = model.inspect(|source| {
         dae::Dae::construct(model.source_map().clone(), |target| {
+            if let Some(declaration) = source.predefined_string_declaration() {
+                target.register_predefined_string(declaration)?;
+            }
             let types = rebuild_types(source, target)?;
             let domains = rebuild_domains(source, target)?;
             let mut variables = reserve_variables(source, target, &types, None)?;
@@ -379,6 +382,9 @@ fn rebuild_with_state_demotion(
 ) -> Result<dae::Dae, StructuralError> {
     let rebuilt = model.inspect(|source| {
         dae::Dae::construct(model.source_map().clone(), |target| {
+            if let Some(declaration) = source.predefined_string_declaration() {
+                target.register_predefined_string(declaration)?;
+            }
             let types = rebuild_types(source, target)?;
             let domains = rebuild_domains(source, target)?;
             let mut variables = reserve_variables(source, target, &types, Some(candidate.state))?;
@@ -1336,6 +1342,11 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                 let rhs = self.rebuild(rhs)?;
                 self.target.at(provenance).binary(operator, lhs, rhs)?
             }
+            dae::ExpressionOperation::StringConversion {
+                declaration,
+                value,
+                format,
+            } => self.rebuild_string_conversion(declaration, value, format, provenance)?,
             dae::ExpressionOperation::Conditional(operands) => {
                 self.rebuild_conditional(operands, provenance)?
             }
@@ -1403,6 +1414,41 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         };
         self.rebuilt[index] = Some(rebuilt);
         Ok(rebuilt)
+    }
+
+    fn rebuild_string_conversion(
+        &mut self,
+        declaration: rumoca_core::DefId,
+        value: dae::ExprId<'source>,
+        format: dae::StringConversionFormatView<'source>,
+        provenance: dae::DaeProvenance,
+    ) -> Result<dae::ExprId<'target>, dae::DaeConstructionError> {
+        let value = self.rebuild(value)?;
+        let format = match format {
+            dae::StringConversionFormatView::Options {
+                minimum_length,
+                left_justified,
+                significant_digits,
+            } => dae::StringConversionFormatInput::Options {
+                minimum_length: minimum_length
+                    .map(|value| self.rebuild(value))
+                    .transpose()?,
+                left_justified: left_justified
+                    .map(|value| self.rebuild(value))
+                    .transpose()?,
+                significant_digits: significant_digits
+                    .map(|value| self.rebuild(value))
+                    .transpose()?,
+            },
+            dae::StringConversionFormatView::Format { value } => {
+                dae::StringConversionFormatInput::Format {
+                    value: self.rebuild(value)?,
+                }
+            }
+        };
+        self.target
+            .at(provenance)
+            .string_conversion(declaration, value, format)
     }
 
     fn rebuild_operands(

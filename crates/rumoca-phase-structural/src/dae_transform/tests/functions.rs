@@ -272,6 +272,10 @@ fn function_expression_edges<'dae>(
             push(lhs);
             push(rhs);
         }
+        dae::ExpressionOperation::StringConversion { value, format, .. } => {
+            push(value);
+            push_string_format_edges(format, &mut push);
+        }
         dae::ExpressionOperation::Conditional(operands)
         | dae::ExpressionOperation::Array(operands)
         | dae::ExpressionOperation::Record(operands)
@@ -301,6 +305,23 @@ fn function_expression_edges<'dae>(
         dae::ExpressionOperation::FunctionValue { definition, .. } => push(definition.rhs()),
     }
     edges
+}
+
+fn push_string_format_edges<'dae>(
+    format: dae::StringConversionFormatView<'dae>,
+    push: &mut impl FnMut(dae::ExprId<'dae>),
+) {
+    match format {
+        dae::StringConversionFormatView::Options {
+            minimum_length,
+            left_justified,
+            significant_digits,
+        } => [minimum_length, left_justified, significant_digits]
+            .into_iter()
+            .flatten()
+            .for_each(push),
+        dae::StringConversionFormatView::Format { value } => push(value),
+    }
 }
 
 fn push_subscript_edges<'dae>(
@@ -351,6 +372,11 @@ fn function_operation_fingerprint(operation: dae::ExpressionOperation<'_>) -> St
             output,
             arguments,
         } => format!("call:{}:{output}:{}", function.index(), arguments.len()),
+        dae::ExpressionOperation::StringConversion {
+            declaration,
+            format,
+            ..
+        } => format!("string_conversion:{}:{format:?}", declaration.index()),
         dae::ExpressionOperation::FunctionValue { value, definition } => format!(
             "function_value:{}:{}:{}",
             value.function().index(),

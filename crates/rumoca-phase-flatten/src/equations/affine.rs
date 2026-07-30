@@ -263,6 +263,7 @@ mod tests {
             }],
             span: rumoca_core::Span::DUMMY,
             def_id: None,
+            target_def_id: None,
         })
     }
 
@@ -403,6 +404,7 @@ mod tests {
             }],
             span: rumoca_core::Span::DUMMY,
             def_id: None,
+            target_def_id: None,
         }
     }
 

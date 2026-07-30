@@ -23,6 +23,9 @@ pub fn expressions_semantically_equal(lhs: &Expression, rhs: &Expression) -> boo
         (Expression::FunctionCall { .. }, Expression::FunctionCall { .. }) => {
             function_calls_semantically_equal(lhs, rhs)
         }
+        (Expression::StringConversion { .. }, Expression::StringConversion { .. }) => {
+            string_conversions_semantically_equal(lhs, rhs)
+        }
         (Expression::Literal { value: lhs, .. }, Expression::Literal { value: rhs, .. }) => {
             lhs == rhs
         }
@@ -139,6 +142,12 @@ fn hash_expression_semantics(expr: &Expression, hasher: &mut impl Hasher) {
             is_constructor.hash(hasher);
             hash_expression_slice_semantics(args, hasher);
         }
+        Expression::StringConversion {
+            declaration,
+            value,
+            format,
+            ..
+        } => hash_string_conversion_semantics(*declaration, value, format, hasher),
         Expression::Literal { value, .. } => hash_literal_semantics(value, hasher),
         Expression::If {
             branches,
@@ -342,6 +351,91 @@ fn function_calls_semantically_equal(lhs: &Expression, rhs: &Expression) -> bool
     lhs_name == rhs_name
         && lhs_constructor == rhs_constructor
         && expression_slices_semantically_equal(lhs_args, rhs_args)
+}
+
+fn string_conversions_semantically_equal(lhs: &Expression, rhs: &Expression) -> bool {
+    let (
+        Expression::StringConversion {
+            declaration: lhs_declaration,
+            value: lhs_value,
+            format: lhs_format,
+            ..
+        },
+        Expression::StringConversion {
+            declaration: rhs_declaration,
+            value: rhs_value,
+            format: rhs_format,
+            ..
+        },
+    ) = (lhs, rhs)
+    else {
+        return false;
+    };
+    lhs_declaration == rhs_declaration
+        && expressions_semantically_equal(lhs_value, rhs_value)
+        && string_conversion_formats_semantically_equal(lhs_format, rhs_format)
+}
+
+fn string_conversion_formats_semantically_equal(
+    lhs: &StringConversionFormat,
+    rhs: &StringConversionFormat,
+) -> bool {
+    match (lhs, rhs) {
+        (
+            StringConversionFormat::Options {
+                minimum_length: lhs_minimum,
+                left_justified: lhs_left,
+                significant_digits: lhs_digits,
+            },
+            StringConversionFormat::Options {
+                minimum_length: rhs_minimum,
+                left_justified: rhs_left,
+                significant_digits: rhs_digits,
+            },
+        ) => {
+            optional_expressions_semantically_equal(lhs_minimum.as_deref(), rhs_minimum.as_deref())
+                && optional_expressions_semantically_equal(lhs_left.as_deref(), rhs_left.as_deref())
+                && optional_expressions_semantically_equal(
+                    lhs_digits.as_deref(),
+                    rhs_digits.as_deref(),
+                )
+        }
+        (
+            StringConversionFormat::Format { value: lhs },
+            StringConversionFormat::Format { value: rhs },
+        ) => expressions_semantically_equal(lhs, rhs),
+        _ => false,
+    }
+}
+
+fn hash_string_conversion_format(format: &StringConversionFormat, hasher: &mut impl Hasher) {
+    hash_discriminant(format, hasher);
+    match format {
+        StringConversionFormat::Options {
+            minimum_length,
+            left_justified,
+            significant_digits,
+        } => {
+            for operand in [minimum_length, left_justified, significant_digits] {
+                operand.is_some().hash(hasher);
+                if let Some(operand) = operand {
+                    hash_expression_semantics(operand, hasher);
+                }
+            }
+        }
+        StringConversionFormat::Format { value } => hash_expression_semantics(value, hasher),
+    }
+}
+
+fn hash_string_conversion_semantics(
+    declaration: DefId,
+    value: &Expression,
+    format: &StringConversionFormat,
+    hasher: &mut impl Hasher,
+) {
+    declaration.hash(hasher);
+    hash_expression_semantics(value, hasher);
+    hash_string_conversion_format(format, hasher);
 }
 
 fn if_expressions_semantically_equal(lhs: &Expression, rhs: &Expression) -> bool {

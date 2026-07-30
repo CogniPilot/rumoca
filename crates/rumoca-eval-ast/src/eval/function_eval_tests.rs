@@ -31,6 +31,7 @@ fn cref(name: &str) -> ComponentReference {
             })
             .collect(),
         def_id: None,
+        target_def_id: None,
         span: rumoca_core::Span::DUMMY,
     }
 }

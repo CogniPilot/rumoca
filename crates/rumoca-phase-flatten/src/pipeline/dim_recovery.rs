@@ -129,6 +129,7 @@ pub(crate) fn infer_expr_dims(
             name, subscripts, ..
         } if subscripts.is_empty() => var_dims.get(name.as_str()).cloned(),
         Expression::VarRef { .. } | Expression::BuiltinCall { .. } => None,
+        Expression::StringConversion { .. } => Some(Vec::new()),
         Expression::FunctionCall { name, .. } => {
             infer_function_call_dims(name.as_str(), function_output_dims)
         }

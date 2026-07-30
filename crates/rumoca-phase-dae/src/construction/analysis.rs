@@ -1888,6 +1888,7 @@ fn collect_assignment_target_names<'flat>(
         | Expression::Binary { .. }
         | Expression::BuiltinCall { .. }
         | Expression::FunctionCall { .. }
+        | Expression::StringConversion { .. }
         | Expression::ArrayComprehension { .. }
         | Expression::Range { .. }
         | Expression::FieldAccess { .. }
@@ -2012,9 +2013,13 @@ pub(super) fn effective_variable_scalar_type(
     variable: &flat::Variable,
 ) -> Option<dae::ScalarType> {
     primitive_scalar_type(type_name).or_else(|| {
-        variable
-            .is_discrete_type
-            .then_some(dae::ScalarType::Integer)
+        if variable.is_enumeration {
+            Some(dae::ScalarType::Enumeration)
+        } else {
+            variable
+                .is_discrete_type
+                .then_some(dae::ScalarType::Integer)
+        }
     })
 }
 

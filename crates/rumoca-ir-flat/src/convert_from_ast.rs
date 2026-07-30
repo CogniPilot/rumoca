@@ -7,7 +7,7 @@ pub(super) fn component_reference_from_ast_with_def_map(
     def_map: Option<&IndexMap<DefId, String>>,
 ) -> ComponentReference {
     if comp.parts.is_empty()
-        && let Some(def_id) = comp.def_id
+        && let Some(def_id) = comp.target_def_id
         && let Some(path) = def_map.and_then(|map| map.get(&def_id))
     {
         let mut reference = ComponentReference::from_flat_segments(path, comp.span, Some(def_id));
@@ -36,6 +36,7 @@ pub(super) fn component_reference_from_ast_with_def_map(
             })
             .collect(),
         def_id: comp.def_id,
+        target_def_id: comp.target_def_id,
     }
 }
 
@@ -185,7 +186,7 @@ pub(super) fn convert_function_call_with_def_map(
         .join(".");
 
     let func_name = comp
-        .def_id
+        .target_def_id
         .and_then(|def_id| def_map.and_then(|map| map.get(&def_id).cloned()))
         .unwrap_or(textual_name);
 
@@ -348,7 +349,7 @@ pub(super) fn convert_class_modification_with_def_map(
         .collect::<Vec<_>>()
         .join(".");
     let constructor_name = target
-        .def_id
+        .target_def_id
         .and_then(|def_id| def_map.and_then(|map| map.get(&def_id).cloned()))
         .unwrap_or(textual_name);
     Expression::FunctionCall {

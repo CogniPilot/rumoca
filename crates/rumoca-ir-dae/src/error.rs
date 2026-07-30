@@ -3,7 +3,9 @@ mod tests;
 
 use std::fmt;
 
-use rumoca_core::{ClockLatticeErrorKind, Span, StructuredIndexDomainError, TypeId, VarName};
+use rumoca_core::{
+    ClockLatticeErrorKind, DefId, Span, StructuredIndexDomainError, TypeId, VarName,
+};
 
 use crate::{DaeProvenanceOrigin, ScalarType, ValueType, VariableRole};
 
@@ -64,6 +66,24 @@ pub enum DaeConstructionError {
         found: ScalarType,
         span: Span,
     },
+    #[error("predefined String declaration identity mismatch: expected {expected}, found {found}")]
+    ConflictingPredefinedString {
+        expected: DefId,
+        found: DefId,
+        span: Span,
+    },
+    #[error("predefined String registration mismatch: expected {expected}, found {found}")]
+    ConflictingPredefinedStringRegistration { expected: DefId, found: DefId },
+    #[error("predefined String declaration was not registered by semantic analysis")]
+    MissingPredefinedString { span: Span },
+    #[error(
+        "String conversion currently requires a scalar Real, Integer, or Boolean value, found {found:?}"
+    )]
+    InvalidStringConversionSource { found: ScalarType, span: Span },
+    #[error("String significantDigits requires a Real value, found {found:?}")]
+    InvalidSignificantDigitsSource { found: ScalarType, span: Span },
+    #[error("String explicit format requires a Real or Integer value, found {found:?}")]
+    InvalidStringFormatSource { found: ScalarType, span: Span },
     #[error("expression shape mismatch")]
     ShapeMismatch { span: Span },
     #[error("expected a scalar expression")]
@@ -264,6 +284,11 @@ impl DaeConstructionError {
             | Self::CapacityExceeded { span, .. }
             | Self::UnknownId { span, .. }
             | Self::TypeMismatch { span, .. }
+            | Self::ConflictingPredefinedString { span, .. }
+            | Self::MissingPredefinedString { span }
+            | Self::InvalidStringConversionSource { span, .. }
+            | Self::InvalidSignificantDigitsSource { span, .. }
+            | Self::InvalidStringFormatSource { span, .. }
             | Self::ShapeMismatch { span }
             | Self::ExpectedScalar { span }
             | Self::ExpectedNumeric { span, .. }
@@ -299,7 +324,9 @@ impl DaeConstructionError {
             Self::ConflictingClockOwnership { attempted, .. } => Some(attempted.span()),
             Self::ConflictingEffectiveType { attempted, .. } => Some(attempted.span()),
             Self::DuplicateTopology { span, .. } => *span,
-            Self::InvalidSchemaVersion { .. } | Self::MalformedWire { .. } => None,
+            Self::ConflictingPredefinedStringRegistration { .. }
+            | Self::InvalidSchemaVersion { .. }
+            | Self::MalformedWire { .. } => None,
         }
     }
 }

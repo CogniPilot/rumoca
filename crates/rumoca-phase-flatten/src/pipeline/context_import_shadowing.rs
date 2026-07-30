@@ -1,25 +1,44 @@
 use super::*;
 
+pub(super) struct EffectiveExpressionContext<'a> {
+    pub prefix: &'a QualifiedName,
+    pub imports: &'a qualify::ImportMap,
+    pub def_map: Option<&'a crate::ResolveDefMap>,
+    pub options: qualify::QualifyOptions,
+    pub instance_name: Option<&'a str>,
+    pub locals: Option<&'a std::collections::HashSet<String>>,
+    pub predefined_string_declaration: Option<rumoca_core::DefId>,
+}
+
 pub(super) fn qualify_expression_with_effective_imports(
     expr: &ast::Expression,
-    prefix: &QualifiedName,
-    imports: &qualify::ImportMap,
-    def_map: Option<&crate::ResolveDefMap>,
-    opts: qualify::QualifyOptions,
-    instance_name: Option<&str>,
-    locals: Option<&std::collections::HashSet<String>>,
+    context: EffectiveExpressionContext<'_>,
 ) -> Result<rumoca_core::Expression, FlattenError> {
-    let qualified = locals.map_or_else(
-        || qualify::qualify_expression_with_imports(expr, prefix, opts, imports),
+    let qualified = context.locals.map_or_else(
+        || {
+            qualify::qualify_expression_with_imports(
+                expr,
+                context.prefix,
+                context.options,
+                context.imports,
+            )
+        },
         |locals| {
-            qualify::qualify_expression_with_imports_and_locals(expr, prefix, opts, locals, imports)
+            qualify::qualify_expression_with_imports_and_locals(
+                expr,
+                context.prefix,
+                context.options,
+                locals,
+                context.imports,
+            )
         },
     );
     crate::ast_lower::expression_from_ast_with_context(
         &qualified,
         crate::ast_lower::LoweringContext {
-            def_map,
-            instance_name,
+            def_map: context.def_map,
+            instance_name: context.instance_name,
+            predefined_string_declaration: context.predefined_string_declaration,
         },
     )
 }

@@ -198,6 +198,10 @@ fn canonicalize_expr(
                 canonicalize_expr(arg, enum_literals, variable_names);
             }
         }
+        rumoca_core::Expression::StringConversion { value, format, .. } => {
+            canonicalize_expr(value, enum_literals, variable_names);
+            canonicalize_string_conversion_format(format, enum_literals, variable_names);
+        }
         rumoca_core::Expression::If {
             branches,
             else_branch,
@@ -253,6 +257,30 @@ fn canonicalize_expr(
         }
         rumoca_core::Expression::Literal { value: _, .. }
         | rumoca_core::Expression::Empty { .. } => {}
+    }
+}
+
+fn canonicalize_string_conversion_format(
+    format: &mut rumoca_core::StringConversionFormat,
+    enum_literals: &EnumLiteralIndex,
+    variable_names: &FxHashSet<VarName>,
+) {
+    match format {
+        rumoca_core::StringConversionFormat::Options {
+            minimum_length,
+            left_justified,
+            significant_digits,
+        } => {
+            for operand in [minimum_length, left_justified, significant_digits]
+                .into_iter()
+                .flatten()
+            {
+                canonicalize_expr(operand, enum_literals, variable_names);
+            }
+        }
+        rumoca_core::StringConversionFormat::Format { value } => {
+            canonicalize_expr(value, enum_literals, variable_names);
+        }
     }
 }
 
@@ -406,6 +434,7 @@ mod tests {
                 subs: vec![],
             }],
             def_id: None,
+            target_def_id: None,
         }
     }
 
@@ -481,6 +510,7 @@ mod tests {
                 },
             ],
             def_id: Some(enum_type),
+            target_def_id: Some(enum_type),
         };
         let mut flat = flat::Model::new();
         flat.variables.insert(

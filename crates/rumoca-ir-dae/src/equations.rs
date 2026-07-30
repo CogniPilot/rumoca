@@ -620,6 +620,20 @@ fn push_expression_children(storage: &Storage, node: &ExprNode, pending: &mut Ve
             pending.extend([base, value]);
             push_subscript_expressions(storage, *subscripts, pending);
         }
+        ExprNode::StringConversion {
+            value,
+            minimum_length,
+            left_justified,
+            significant_digits,
+            format,
+            ..
+        } => {
+            pending.push(*value);
+            pending.extend(minimum_length);
+            pending.extend(left_justified);
+            pending.extend(significant_digits);
+            pending.extend(format);
+        }
     }
 }
 

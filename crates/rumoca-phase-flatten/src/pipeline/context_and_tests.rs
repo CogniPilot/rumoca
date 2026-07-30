@@ -1,5 +1,6 @@
 use super::context_import_shadowing::{
-    imports_without_shadowed_aliases, qualify_expression_with_effective_imports,
+    EffectiveExpressionContext, imports_without_shadowed_aliases,
+    qualify_expression_with_effective_imports,
 };
 use super::enum_dimensions::{enum_type_dimension, infer_enum_range_dimensions};
 use super::*;
@@ -46,7 +47,9 @@ impl Context {
             boolean_parameter_values: rustc_hash::FxHashMap::default(),
             enum_parameter_values: rustc_hash::FxHashMap::default(),
             constant_values: rustc_hash::FxHashMap::default(),
+            constant_values_by_def_id: rustc_hash::FxHashMap::default(),
             target_def_names: rustc_hash::FxHashMap::default(),
+            predefined_string_declaration: None,
             modified_constant_keys: rustc_hash::FxHashSet::default(),
             flat_parameter_constant_keys: rustc_hash::FxHashSet::default(),
             expanded_component_keys: rustc_hash::FxHashSet::default(),
@@ -1683,6 +1686,7 @@ pub(crate) fn flatten_algorithm_section(
             initial_locals: &no_locals,
             source_map: Some(source_map),
             instance_name,
+            predefined_string_declaration: None,
         },
         algorithms::AlgorithmSectionMetadata::new(span, origin),
     )
@@ -1881,7 +1885,18 @@ pub(crate) fn qualify_expression_imports_with_def_map(
     } else {
         imports
     };
-    qualify_expression_with_effective_imports(expr, prefix, imports, def_map, opts, None, None)
+    qualify_expression_with_effective_imports(
+        expr,
+        EffectiveExpressionContext {
+            prefix,
+            imports,
+            def_map,
+            options: opts,
+            instance_name: None,
+            locals: None,
+            predefined_string_declaration: None,
+        },
+    )
 }
 
 /// Qualify with flatten-context semantic metadata for class-reference canonicalization.
@@ -1910,12 +1925,15 @@ pub(crate) fn qualify_expression_imports_with_def_map_ctx(
     let instance_name = ctx.instance_name_for_prefix(prefix);
     qualify_expression_with_effective_imports(
         expr,
-        prefix,
-        &scoped_imports,
-        def_map,
-        opts,
-        instance_name.as_deref(),
-        locals,
+        EffectiveExpressionContext {
+            prefix,
+            imports: &scoped_imports,
+            def_map,
+            options: opts,
+            instance_name: instance_name.as_deref(),
+            locals,
+            predefined_string_declaration: ctx.predefined_string_declaration,
+        },
     )
 }
 

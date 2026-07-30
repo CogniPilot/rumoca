@@ -48,6 +48,71 @@ fn assert_ed007_without_borrowed_span(error: &ToDaeError, expected_context: &str
     ));
 }
 
+#[test]
+fn executable_external_object_constructor_reaches_lifecycle_boundary() {
+    let source = TestSource::new(
+        "function constructor\n  input Real seed;\n  output Handle handle;\n  external \"C\" handle = make_handle(seed);\nend constructor;\nHandle(1.0);",
+    );
+    let function_span = source.span(
+        "constructor\n  input Real seed;\n  output Handle handle;\n  external \"C\" handle = make_handle(seed);\nend constructor",
+        0,
+    );
+    let input_span = source.span("input Real seed", 0);
+    let output_span = source.span("output Handle handle", 0);
+    let external_arg_span = source.span("seed", 1);
+    let call_span = source.span("Handle(1.0)", 0);
+    let literal_span = source.span("1.0", 0);
+
+    let mut constructor = rumoca_core::Function::new("Handle", function_span);
+    constructor.add_input(rumoca_core::FunctionParam::new("seed", "Real", input_span));
+    constructor.add_output(rumoca_core::FunctionParam::new(
+        "handle",
+        "Handle",
+        output_span,
+    ));
+    constructor.external = Some(rumoca_core::ExternalFunction {
+        language: "C".to_string(),
+        function_name: Some("make_handle".to_string()),
+        output_name: Some("handle".to_string()),
+        args: vec![Expression::VarRef {
+            name: Reference::new("seed"),
+            subscripts: Vec::new(),
+            span: external_arg_span,
+        }],
+        annotations: Vec::new(),
+    });
+
+    let mut model = flat::Model::new();
+    model.add_function(constructor);
+    model.add_equation(flat::Equation::new(
+        Expression::FunctionCall {
+            name: Reference::new("Handle"),
+            args: vec![Expression::Literal {
+                value: Literal::Real(1.0),
+                span: literal_span,
+            }],
+            is_constructor: false,
+            span: call_span,
+        },
+        call_span,
+        flat::EquationOrigin::ComponentEquation {
+            component: String::new(),
+        },
+    ));
+
+    let error = construct(&model, source.map).unwrap_err();
+    assert!(matches!(
+        error,
+        ToDaeError::UnsupportedFlatSemantics {
+            feature,
+            detail,
+            span,
+        } if feature == "function lifecycle"
+            && detail == "`Handle` is not a pure Modelica function body"
+            && span == function_span
+    ));
+}
+
 fn scalar_real_model(source: &TestSource) -> flat::Model {
     let declaration = source.span("Real x", 0);
     let use_span = source.span("x", 1);

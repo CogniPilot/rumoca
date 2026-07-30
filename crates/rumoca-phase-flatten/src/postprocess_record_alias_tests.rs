@@ -27,6 +27,7 @@ fn component_ref(name: &str) -> rumoca_core::ComponentReference {
             subs: vec![],
         }],
         def_id: None,
+        target_def_id: None,
     }
 }
 
@@ -44,6 +45,7 @@ fn component_ref_path(path: &str) -> rumoca_core::ComponentReference {
             })
             .collect(),
         def_id: None,
+        target_def_id: None,
     }
 }
 
@@ -63,7 +65,8 @@ fn component_ref_with_def_id(
                 subs: vec![],
             })
             .collect(),
-        def_id: Some(def_id),
+        def_id: None,
+        target_def_id: Some(def_id),
     }
 }
 

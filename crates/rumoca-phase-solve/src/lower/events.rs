@@ -566,7 +566,7 @@ fn push_message_action<'dae>(
     conditions: &mut ScalarRows,
 ) -> Result<(), LowerError> {
     let span = action.provenance().span();
-    let message = literal_message(view, message, span)?;
+    let message = lower_message(view, layout, message)?;
     let trigger_memory = condition_memory(layout, action.trigger(), span)?;
     let program = ScalarCompiler::new(view, layout, None).edge_condition_program(
         action.trigger(),
@@ -577,30 +577,112 @@ fn push_message_action<'dae>(
     conditions.push(program, span, actions.len());
     actions.push(solve::SolveEventAction {
         kind,
-        message: solve::SolveEventMessage {
-            parts: vec![solve::SolveEventMessagePart::Text(message)],
-        },
+        message,
         span,
         origin: action.provenance().origin().to_string(),
     });
     Ok(())
 }
 
-fn literal_message<'dae>(
+fn lower_message<'dae>(
     view: dae::DaeView<'dae>,
+    layout: &LoweredLayout<'dae>,
     message: dae::ExprId<'dae>,
-    span: Span,
-) -> Result<String, LowerError> {
+) -> Result<solve::SolveEventMessage, LowerError> {
+    let mut parts = Vec::new();
+    lower_message_parts(view, layout, message, &mut parts)?;
+    Ok(solve::SolveEventMessage { parts })
+}
+
+fn lower_message_parts<'dae>(
+    view: dae::DaeView<'dae>,
+    layout: &LoweredLayout<'dae>,
+    message: dae::ExprId<'dae>,
+    parts: &mut Vec<solve::SolveEventMessagePart>,
+) -> Result<(), LowerError> {
     let expression = view
         .expression(message)
         .expect("checked event message expression resolves");
     match expression.operation() {
-        dae::ExpressionOperation::Literal(dae::DaeLiteral::String(message)) => Ok(message.clone()),
+        dae::ExpressionOperation::Literal(dae::DaeLiteral::String(message)) => {
+            parts.push(solve::SolveEventMessagePart::Text(message.clone()));
+            Ok(())
+        }
+        dae::ExpressionOperation::Binary {
+            operator: dae::BinaryOperator::Add,
+            lhs,
+            rhs,
+        } if expression.value_type().scalar_type() == dae::ScalarType::String => {
+            lower_message_parts(view, layout, lhs, parts)?;
+            lower_message_parts(view, layout, rhs, parts)
+        }
+        dae::ExpressionOperation::StringConversion { value, format, .. } => {
+            let source = match view
+                .expression(value)
+                .expect("checked String conversion value resolves")
+                .value_type()
+                .scalar_type()
+            {
+                dae::ScalarType::Real => solve::SolveStringConversionSource::Real,
+                dae::ScalarType::Integer => solve::SolveStringConversionSource::Integer,
+                dae::ScalarType::Boolean => solve::SolveStringConversionSource::Boolean,
+                dae::ScalarType::Enumeration
+                | dae::ScalarType::String
+                | dae::ScalarType::Record => {
+                    unreachable!("checked String conversion has a supported scalar source")
+                }
+            };
+            let value = ScalarCompiler::new(view, layout, None).program(value, 0)?;
+            let format = lower_message_format(view, layout, format)?;
+            parts.push(solve::SolveEventMessagePart::Conversion {
+                value,
+                source,
+                format,
+            });
+            Ok(())
+        }
         _ => Err(LowerError::unsupported(
-            "non-literal event messages do not yet have checked Solve lowering",
-            span,
+            "Solve event messages require String literals, concatenation, or checked String conversions",
+            expression.provenance().span(),
         )),
     }
+}
+
+fn lower_message_format<'dae>(
+    view: dae::DaeView<'dae>,
+    layout: &LoweredLayout<'dae>,
+    format: dae::StringConversionFormatView<'dae>,
+) -> Result<solve::SolveStringConversionFormat, LowerError> {
+    Ok(match format {
+        dae::StringConversionFormatView::Options {
+            minimum_length,
+            left_justified,
+            significant_digits,
+        } => solve::SolveStringConversionFormat::Options {
+            minimum_length: lower_message_option(view, layout, minimum_length)?,
+            left_justified: lower_message_option(view, layout, left_justified)?,
+            significant_digits: lower_message_option(view, layout, significant_digits)?,
+        },
+        dae::StringConversionFormatView::Format { value } => {
+            let expression = view
+                .expression(value)
+                .expect("checked String format expression resolves");
+            return Err(LowerError::unsupported(
+                "explicit String format is not representable in checked Solve event messages",
+                expression.provenance().span(),
+            ));
+        }
+    })
+}
+
+fn lower_message_option<'dae>(
+    view: dae::DaeView<'dae>,
+    layout: &LoweredLayout<'dae>,
+    value: Option<dae::ExprId<'dae>>,
+) -> Result<Option<Vec<solve::LinearOp>>, LowerError> {
+    value
+        .map(|value| ScalarCompiler::new(view, layout, None).program(value, 0))
+        .transpose()
 }
 
 #[derive(Clone, Copy)]

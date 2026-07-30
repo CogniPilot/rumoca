@@ -52,6 +52,7 @@ fn make_component_ref(names: &[&str]) -> ast::ComponentReference {
             })
             .collect(),
         def_id: None,
+        target_def_id: None,
         span: rumoca_core::Span::DUMMY,
     }
 }
@@ -70,6 +71,7 @@ fn make_indexed_comp_ref_expr(name: &str, index_name: &str) -> ast::Expression {
             ]))]),
         }],
         def_id: None,
+        target_def_id: None,
         span: rumoca_core::Span::DUMMY,
     })
 }
@@ -83,6 +85,7 @@ fn make_function_call(name: &str, args: Vec<ast::Expression>) -> ast::Expression
                 subs: None,
             }],
             def_id: None,
+            target_def_id: None,
             span: rumoca_core::Span::DUMMY,
         },
         args,
@@ -103,6 +106,7 @@ fn make_qualified_function_call(names: &[&str], args: Vec<ast::Expression>) -> a
                 })
                 .collect(),
             def_id: None,
+            target_def_id: None,
             span: rumoca_core::Span::DUMMY,
         },
         args,
@@ -738,7 +742,8 @@ fn test_component_ref_modifier_composes_shifted_and_strided_range_selection() {
                 },
             ]),
         }],
-        def_id: None,
+            def_id: None,
+            target_def_id: None,
         span: test_span(),
     });
 

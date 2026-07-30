@@ -1005,15 +1005,17 @@ pub(crate) fn finalize_flat_model(
         collapse_index_refs_to_known_varrefs(flat);
     }
     canonicalize_varrefs_via_instantiated_def_ids(flat);
-    // Re-run constant substitution after late function collection and DefId
-    // canonicalization: both can expose inherited constant aliases in model
-    // equations (for example `nX = nS` in a redeclared Medium package).
-    substitute_known_constants_in_flat(flat, ctx)?;
     functions::canonicalize_collected_function_calls(flat)?;
+    functions::materialize_flat_function_call_args(flat)?;
+    // Late collection, DefId canonicalization, and default-argument
+    // materialization can each make a qualified constant newly reachable.
+    // Inject and substitute only after all three producers have run so final
+    // executable call slots cannot reintroduce an unresolved constant.
+    inject_referenced_qualified_class_constants(tree, class_index, model_name, flat, overlay, ctx)?;
+    substitute_known_constants_in_flat(flat, ctx)?;
     resolve_nested_constructor_field_access_bindings(flat);
     functions::prune_unreachable_functions(flat);
     functions::validate_flat_function_bindings(flat)?;
-    functions::validate_flat_function_call_args(flat)?;
     ctx.refresh_enum_parameter_lookup(flat);
     enum_literals::canonicalize_flat_enum_literals(flat, tree, &ctx.enum_parameter_values);
     flat.enum_literal_ordinals = collect_enum_literal_ordinals(tree);

@@ -510,9 +510,9 @@ pub use var_name::{VarName, VarNameId};
 /// Structured semantic reference used by Flat/DAE expressions.
 ///
 /// `name` is a cached display/serialization spelling. `component_ref` preserves
-/// the source/resolved reference structure carried forward from lowering. Its
-/// `def_id` records the declaration being referenced; it does not assign a
-/// `DefId` to this expression.
+/// the source/resolved reference structure carried forward from lowering.
+/// `component_ref.def_id` identifies the resolved root occurrence, while
+/// `component_ref.target_def_id` identifies the exact final declaration.
 #[derive(Debug, Clone)]
 pub struct Reference {
     name: VarName,
@@ -563,6 +563,7 @@ impl Reference {
                 subs: subscripts,
             }],
             def_id: None,
+            target_def_id: None,
         })
     }
 
@@ -684,8 +685,8 @@ impl Reference {
                     span: reference.span,
                     subs: Vec::new(),
                 });
+                reference.target_def_id = None;
                 Self::with_component_reference(rendered, reference)
-                    .with_optional_resolved_function(self.resolved_function)
             }
             _ if self.generated => {
                 Self::generated(rendered).with_optional_resolved_function(self.resolved_function)
@@ -694,8 +695,11 @@ impl Reference {
         }
     }
 
-    /// Append compiler-owned structured component parts while retaining the
-    /// resolved declaration identity.
+    /// Append compiler-owned structured component parts.
+    ///
+    /// The old exact target cannot describe the new final member, so it is
+    /// cleared. Callers that prove the appended member must attach that exact
+    /// identity at construction rather than inheriting the base target.
     pub fn with_appended_parts(&self, parts: &[ComponentRefPart], span: Span) -> Option<Self> {
         let mut reference = self.component_ref.clone()?;
         if parts.is_empty() {
@@ -703,12 +707,11 @@ impl Reference {
         }
         reference.parts.extend_from_slice(parts);
         reference.span = span;
+        reference.target_def_id = None;
         Some(if self.generated {
             Self::generated_component_reference(reference)
-                .with_optional_resolved_function(self.resolved_function)
         } else {
             Self::from_component_reference(reference)
-                .with_optional_resolved_function(self.resolved_function)
         })
     }
 
@@ -738,6 +741,12 @@ impl Reference {
     }
 
     pub fn target_def_id(&self) -> Option<DefId> {
+        self.component_ref
+            .as_ref()
+            .and_then(|component_ref| component_ref.target_def_id)
+    }
+
+    pub fn root_def_id(&self) -> Option<DefId> {
         self.component_ref
             .as_ref()
             .and_then(|component_ref| component_ref.def_id)
@@ -1374,6 +1383,22 @@ pub enum Expression {
         )]
         span: Span,
     },
+    /// One semantically resolved invocation of the predefined `String`
+    /// conversion operator (MLS §3.7.1).
+    ///
+    /// Keeping this distinct from a user function or type constructor makes
+    /// the accepted overload explicit and retains the resolved predefined
+    /// declaration identity without marker calls or argument-name strings.
+    StringConversion {
+        declaration: DefId,
+        value: Box<Expression>,
+        format: StringConversionFormat,
+        #[serde(
+            default = "Span::source_free_serde_default",
+            skip_serializing_if = "Span::is_dummy"
+        )]
+        span: Span,
+    },
     Literal {
         value: Literal,
         #[serde(
@@ -1524,6 +1549,7 @@ impl Expression {
             | Expression::Unary { span, .. }
             | Expression::BuiltinCall { span, .. }
             | Expression::FunctionCall { span, .. }
+            | Expression::StringConversion { span, .. }
             | Expression::Literal { span, .. }
             | Expression::If { span, .. }
             | Expression::Array { span, .. }
@@ -1557,6 +1583,7 @@ impl Expression {
             | Expression::VarRef { span, .. }
             | Expression::BuiltinCall { span, .. }
             | Expression::FunctionCall { span, .. }
+            | Expression::StringConversion { span, .. }
             | Expression::Literal { span, .. }
             | Expression::If { span, .. }
             | Expression::Array { span, .. }
@@ -1655,6 +1682,38 @@ impl Expression {
     /// expression came from, not the expression's mathematical identity.
     pub fn semantically_eq_ignoring_spans(&self, rhs: &Expression) -> bool {
         expressions_semantically_equal(self, rhs)
+    }
+}
+
+/// The two mutually exclusive formatting overload families of predefined
+/// `String(...)`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum StringConversionFormat {
+    Options {
+        minimum_length: Option<Box<Expression>>,
+        left_justified: Option<Box<Expression>>,
+        significant_digits: Option<Box<Expression>>,
+    },
+    Format {
+        value: Box<Expression>,
+    },
+}
+
+impl StringConversionFormat {
+    pub fn operands(&self) -> impl Iterator<Item = &Expression> {
+        let operands = match self {
+            Self::Options {
+                minimum_length,
+                left_justified,
+                significant_digits,
+            } => [
+                minimum_length.as_deref(),
+                left_justified.as_deref(),
+                significant_digits.as_deref(),
+            ],
+            Self::Format { value } => [Some(value.as_ref()), None, None],
+        };
+        operands.into_iter().flatten()
     }
 }
 

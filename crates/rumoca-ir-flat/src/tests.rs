@@ -92,6 +92,7 @@ fn make_var(name: &str) -> ast::Expression {
             subs: None,
         }],
         def_id: None,
+        target_def_id: None,
         span: DUMMY,
     })
 }
@@ -174,6 +175,7 @@ fn make_der(var_name: &str) -> ast::Expression {
                 subs: None,
             }],
             def_id: None,
+            target_def_id: None,
             span: DUMMY,
         },
         args: vec![make_var(var_name)],
@@ -218,6 +220,7 @@ fn make_subscripted_ref_expr(name: &str, subscript_value: i64) -> ast::Expressio
             subs: Some(vec![ast::Subscript::Expression(make_int(subscript_value))]),
         }],
         def_id: None,
+        target_def_id: None,
         span: DUMMY,
     })
 }
@@ -288,6 +291,7 @@ fn test_class_modification_uses_def_map_for_constructor_name() {
             local: false,
             parts: vec![make_component_ref_part("noise")],
             def_id: Some(constructor_def_id),
+            target_def_id: Some(constructor_def_id),
             span: DUMMY,
         },
         modifications: vec![make_int(1)],
@@ -323,6 +327,7 @@ fn test_class_modification_falls_back_to_textual_constructor_name_without_def_id
             local: false,
             parts: vec![make_component_ref_part("noise")],
             def_id: None,
+            target_def_id: None,
             span: DUMMY,
         },
         modifications: vec![make_int(1)],
@@ -359,6 +364,7 @@ fn test_function_call_named_arguments_preserved_as_internal_named_args() {
                 make_component_ref_part("CoreParameters"),
             ],
             def_id: None,
+            target_def_id: None,
             span: DUMMY,
         },
         args: vec![
@@ -613,6 +619,7 @@ fn test_extract_algorithm_outputs_drops_assignment_subscripts() {
                 subs: vec![Subscript::generated_index(1, rumoca_core::Span::DUMMY)],
             }],
             def_id: None,
+            target_def_id: None,
         },
         value: Expression::Literal {
             value: Literal::Real(1.0),
@@ -639,6 +646,7 @@ fn test_extract_algorithm_outputs_keeps_function_call_targets() {
                 subs: Vec::new(),
             }],
             def_id: None,
+            target_def_id: None,
         },
         args: Vec::new(),
         outputs: vec![Some(ComponentReference {
@@ -650,6 +658,7 @@ fn test_extract_algorithm_outputs_keeps_function_call_targets() {
                 subs: vec![Subscript::generated_index(2, rumoca_core::Span::DUMMY)],
             }],
             def_id: None,
+            target_def_id: None,
         })],
         span: rumoca_core::Span::DUMMY,
     }];
@@ -666,7 +675,8 @@ fn test_component_ref_from_ast_uses_def_map_when_parts_empty() {
     let ast_ref = ast::ComponentReference {
         local: false,
         parts: Vec::new(),
-        def_id: Some(def_id),
+        def_id: None,
+        target_def_id: Some(def_id),
         span: DUMMY,
     };
 
@@ -686,7 +696,8 @@ fn test_component_ref_from_ast_preserves_non_empty_parts_over_def_map() {
             make_component_ref_part("inst"),
             make_component_ref_part("y"),
         ],
-        def_id: Some(def_id),
+        def_id: None,
+        target_def_id: Some(def_id),
         span: DUMMY,
     };
 
@@ -703,7 +714,8 @@ fn test_flat_expression_component_ref_canonicalizes_enum_literal_with_def_map() 
     let expr = ast::Expression::ComponentReference(ast::ComponentReference {
         local: false,
         parts: vec![make_component_ref_part("L"), make_component_ref_part("'1'")],
-        def_id: Some(def_id),
+        def_id: None,
+        target_def_id: Some(def_id),
         span: DUMMY,
     });
 
@@ -734,7 +746,8 @@ fn test_flat_expression_component_ref_preserves_non_enum_textual_path() {
             make_component_ref_part("inst"),
             make_component_ref_part("y"),
         ],
-        def_id: Some(def_id),
+        def_id: None,
+        target_def_id: Some(def_id),
         span: DUMMY,
     });
 
@@ -762,6 +775,7 @@ fn test_flat_expression_component_ref_encodes_final_segment_subscripts_in_name()
             subs: Some(vec![ast::Subscript::Expression(make_int(2))]),
         }],
         def_id: None,
+        target_def_id: None,
         span: DUMMY,
     });
 
@@ -802,6 +816,7 @@ fn test_flat_expression_component_ref_folds_static_subscript_arithmetic_in_name(
             },
         ],
         def_id: None,
+        target_def_id: None,
         span: DUMMY,
     });
 
@@ -832,6 +847,7 @@ fn test_flat_expression_component_ref_preserves_nested_subscripts_in_subscript_e
             ]),
         }],
         def_id: None,
+        target_def_id: None,
         span: DUMMY,
     });
 

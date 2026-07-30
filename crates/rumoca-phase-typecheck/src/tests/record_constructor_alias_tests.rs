@@ -162,6 +162,7 @@ fn test_extract_simple_path_preserves_subscripted_component_refs() {
             },
         ],
         def_id: None,
+        target_def_id: None,
         span: rumoca_core::Span::DUMMY,
     });
 
@@ -312,6 +313,7 @@ fn make_dotted_comp_ref(parts: &[&str]) -> ComponentReference {
             .collect(),
         span: rumoca_core::Span::DUMMY,
         def_id: None,
+        target_def_id: None,
     }
 }
 
@@ -355,6 +357,7 @@ fn test_type_scope_hint_fallback_keeps_subscript_dot_single_segment() {
             subs: None,
         }],
         def_id: None,
+        target_def_id: None,
         span: rumoca_core::Span::DUMMY,
     }));
     let mut ctx = rumoca_eval_ast::eval::TypeCheckEvalContext::new();

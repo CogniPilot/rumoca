@@ -735,6 +735,171 @@ fn strict_target_resolution_keeps_dependencies_declared_by_lexical_ancestors() {
 }
 
 #[test]
+fn strict_target_resolution_keeps_external_object_lifecycle_identity() {
+    const SOURCE: &str = r#"
+class Handle
+  extends ExternalObject;
+
+  function constructor
+    input Real seed;
+    output Handle handle;
+    external "C" handle = make_handle(seed);
+  end constructor;
+
+  function destructor
+    input Handle handle;
+    external "C" free_handle(handle);
+  end destructor;
+end Handle;
+
+model UsesHandle
+  parameter Handle handle = Handle(1.0);
+end UsesHandle;
+"#;
+
+    let mut session = Session::default();
+    session
+        .add_document("external_object.mo", SOURCE)
+        .expect("source should parse");
+
+    let strict_target = session
+        .resolve_strict_target("UsesHandle")
+        .unwrap_or_else(|failure| {
+            panic!(
+                "strict resolution must retain the complete ExternalObject lifecycle: {:?}",
+                failure.failures
+            )
+        });
+    let resolved = strict_target.resolved.inner();
+    let handle_class = resolved
+        .get_class_by_qualified_name("Handle")
+        .expect("ExternalObject owner must remain in the strict closure");
+    let handle_class_def_id = handle_class
+        .def_id
+        .expect("ExternalObject owner must keep its declaration identity");
+    let constructor = handle_class
+        .classes
+        .get("constructor")
+        .expect("constructor must remain owned by Handle");
+    let destructor = handle_class
+        .classes
+        .get("destructor")
+        .expect("destructor must remain owned by Handle");
+    let constructor_def_id = constructor
+        .def_id
+        .expect("constructor must keep its declaration identity");
+    let destructor_def_id = destructor
+        .def_id
+        .expect("destructor must keep its declaration identity");
+    assert_ne!(constructor_def_id, handle_class_def_id);
+    assert_ne!(destructor_def_id, handle_class_def_id);
+    assert_ne!(constructor_def_id, destructor_def_id);
+    assert_eq!(
+        SOURCE[constructor.location.start as usize..constructor.location.end as usize].trim_start(),
+        "constructor\n    input Real seed;\n    output Handle handle;\n    external \"C\" handle = make_handle(seed);\n  end constructor"
+    );
+    assert_eq!(
+        SOURCE[destructor.location.start as usize..destructor.location.end as usize].trim_start(),
+        "destructor\n    input Handle handle;\n    external \"C\" free_handle(handle);\n  end destructor"
+    );
+
+    let flat = session
+        .compile_model_flat_strict_reachable_uncached_with_recovery("UsesHandle")
+        .unwrap_or_else(|error| {
+            panic!("strict compilation must project the retained constructor: {error}")
+        });
+    let constructor_function = flat
+        .functions
+        .get(&rumoca_core::VarName::new("Handle"))
+        .expect("ExternalObject constructor must be exposed under its callable type");
+    assert_eq!(constructor_function.def_id, Some(constructor_def_id));
+    assert_ne!(constructor_function.def_id, Some(handle_class_def_id));
+    assert!(!constructor_function.is_constructor);
+    assert!(constructor_function.external.is_some());
+    assert_eq!(constructor_function.span, constructor.location.span());
+
+    let binding = flat
+        .variables
+        .get(&rumoca_core::VarName::new("handle"))
+        .and_then(|variable| variable.binding.as_ref())
+        .expect("ExternalObject binding must survive Flat construction");
+    let rumoca_core::Expression::FunctionCall {
+        name,
+        is_constructor,
+        span,
+        ..
+    } = binding
+    else {
+        panic!("ExternalObject binding must remain an executable function call");
+    };
+    assert!(!is_constructor);
+    assert_eq!(name.target_def_id(), Some(handle_class_def_id));
+    assert_eq!(
+        name.resolved_function()
+            .map(|function| function.instance_id),
+        constructor_function.instance_id
+    );
+    assert_eq!(&SOURCE[span.start.0..span.end.0], "Handle(1.0)");
+}
+
+#[test]
+fn strict_target_resolution_preserves_malformed_external_object_child_diagnostic() {
+    const SOURCE: &str = r#"
+class WrongConstructorRestriction
+  extends ExternalObject;
+
+  model constructor
+  end constructor;
+
+  function destructor
+    input WrongConstructorRestriction handle;
+    external "C" free_handle(handle);
+  end destructor;
+end WrongConstructorRestriction;
+
+model UsesWrongConstructor
+  parameter WrongConstructorRestriction handle = WrongConstructorRestriction();
+end UsesWrongConstructor;
+"#;
+
+    let mut session = Session::default();
+    session
+        .add_document("malformed_external_object.mo", SOURCE)
+        .expect("source should parse");
+
+    let failure = session
+        .resolve_strict_target("UsesWrongConstructor")
+        .expect_err("reachable malformed lifecycle must not mint a ResolvedTree proof");
+    let diagnostic = failure
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code.as_deref() == Some("ER132"))
+        .unwrap_or_else(|| {
+            panic!(
+                "strict re-resolution must preserve the lifecycle-shape diagnostic: {:?}",
+                failure.diagnostics
+            )
+        });
+    assert!(
+        diagnostic
+            .message
+            .contains("constructor must be a function"),
+        "unexpected ER132 message: {}",
+        diagnostic.message
+    );
+    let primary = diagnostic
+        .labels
+        .iter()
+        .find(|label| label.primary)
+        .expect("ER132 must retain a primary source span");
+    assert_eq!(
+        &SOURCE[primary.span.start.0..primary.span.end.0],
+        "constructor",
+        "strict planning must retain the malformed child declaration itself"
+    );
+}
+
+#[test]
 fn test_strict_reachable_ignores_broken_sibling_in_the_same_document() {
     let source = r#"
         package Types
