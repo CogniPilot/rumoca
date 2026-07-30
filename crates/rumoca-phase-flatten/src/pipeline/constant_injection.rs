@@ -7,7 +7,7 @@ mod context;
 mod function_resolution;
 
 pub(crate) use component_binding_values::collect_component_binding_values;
-pub(crate) use context::Context;
+pub(crate) use context::{ConstantOccurrenceId, Context};
 pub(crate) use function_resolution::resolve_function_name;
 
 const NAMED_CONSTRUCTOR_ARG_PREFIX: &str = "__rumoca_named_arg__.";
@@ -455,6 +455,19 @@ pub(crate) fn extract_constants_from_class(class_def: &ClassDef, ctx: &mut Conte
         {
             ctx.array_dimensions.insert(name.clone(), dims);
         }
+        if let Some(def_id) = comp.def_id {
+            let value = ctx.constant_values.get(name).cloned().or_else(|| {
+                ctx.parameter_values
+                    .get(name)
+                    .map(|value| rumoca_core::Expression::Literal {
+                        value: rumoca_core::Literal::Integer(*value),
+                        span: expr.span(),
+                    })
+            });
+            if let Some(value) = value {
+                ctx.constant_values_by_def_id.insert(def_id, value);
+            }
+        }
     }
 }
 
@@ -725,7 +738,12 @@ pub(crate) fn try_eval_const_flat_expr_with_scope(
         ast::Expression::FunctionCall { comp, args, .. } => {
             try_eval_const_function_call_expr(comp, args, expr.span(), ctx, scope)
         }
-        ast::Expression::FieldAccess { base, field, .. } => {
+        ast::Expression::FieldAccess {
+            base,
+            field,
+            field_def_id,
+            ..
+        } => {
             if let Some(value) =
                 try_eval_const_field_access_expr(base, field, expr.span(), ctx, scope)
             {
@@ -734,6 +752,7 @@ pub(crate) fn try_eval_const_flat_expr_with_scope(
             Some(rumoca_core::Expression::FieldAccess {
                 base: Box::new(try_eval_const_flat_expr_with_scope(base, ctx, scope)?),
                 field: field.clone(),
+                field_def_id: (*field_def_id)?,
                 span: expr.span(),
             })
         }
@@ -788,7 +807,7 @@ fn try_eval_const_field_access_expr(
     if let Some(value) = lookup_with_qualified_scope(&name, &scope_path, &ctx.enum_parameter_values)
     {
         return Some(rumoca_core::Expression::VarRef {
-            name: rumoca_core::Reference::new(value),
+            name: rumoca_core::Reference::generated(value),
             subscripts: vec![],
             span,
         });
@@ -864,7 +883,9 @@ fn named_record_constructor_arg(
         .span()
         .or_else(|| (!owner_span.is_dummy()).then_some(owner_span))?;
     Some(rumoca_core::Expression::FunctionCall {
-        name: rumoca_core::Reference::new(format!("{NAMED_CONSTRUCTOR_ARG_PREFIX}{field_name}")),
+        name: rumoca_core::Reference::generated(format!(
+            "{NAMED_CONSTRUCTOR_ARG_PREFIX}{field_name}"
+        )),
         args: vec![value],
         is_constructor: true,
         span,
@@ -1009,9 +1030,13 @@ pub(crate) fn try_eval_const_component_ref_expr(
             .as_ref()
             .is_some_and(|subscripts| !subscripts.is_empty())
     }) {
-        let Ok(lowered) =
-            crate::ast_lower::expression_from_ast(&ast::Expression::ComponentReference(cr.clone()))
-        else {
+        let Ok(lowered) = crate::ast_lower::expression_from_ast_with_context(
+            &ast::Expression::ComponentReference(cr.clone()),
+            crate::ast_lower::LoweringContext {
+                predefined_intrinsics: ctx.predefined_intrinsics,
+                ..crate::ast_lower::LoweringContext::default()
+            },
+        ) else {
             return None;
         };
         let Ok(substituted) = crate::postprocess::substitute_known_constants_expr(
@@ -1065,17 +1090,22 @@ pub(crate) fn try_eval_const_component_ref_expr(
         lookup_with_qualified_scope(&name, &scope_path, &ctx.enum_parameter_values)
     {
         return Some(rumoca_core::Expression::VarRef {
-            name: rumoca_core::Reference::new(enum_name),
+            name: rumoca_core::Reference::generated(enum_name),
             subscripts: vec![],
             span: owner_span,
         });
     }
-    let resolved =
-        resolve_component_ref_through_constant_aliases(&name, ctx, scope).unwrap_or(name);
-    let resolved_text = resolved.to_flat_string();
+    let resolved = resolve_component_ref_through_constant_aliases(&name, ctx, scope);
+    let resolved_text = resolved.as_ref().unwrap_or(&name).to_flat_string();
     try_eval_resolved_const_ref(&resolved_text, ctx, owner_span).or_else(|| {
         looks_like_enum_literal_path(&resolved_text).then(|| rumoca_core::Expression::VarRef {
-            name: rumoca_core::Reference::new(resolved_text),
+            name: match resolved {
+                Some(_) => rumoca_core::Reference::generated(resolved_text),
+                None => rumoca_core::Reference::with_component_reference(
+                    &resolved_text,
+                    core_component_reference_from_ast(cr),
+                ),
+            },
             subscripts: vec![],
             span: owner_span,
         })
@@ -1118,7 +1148,7 @@ fn try_eval_resolved_const_ref(
     }
     lookup_with_scope(name, "", &ctx.enum_parameter_values).map(|enum_name| {
         rumoca_core::Expression::VarRef {
-            name: rumoca_core::Reference::new(enum_name),
+            name: rumoca_core::Reference::generated(enum_name),
             subscripts: vec![],
             span: owner_span,
         }
@@ -1256,20 +1286,20 @@ fn try_eval_const_function_call_expr(
 fn core_component_reference_from_ast(
     comp: &rumoca_ir_ast::ComponentReference,
 ) -> rumoca_core::ComponentReference {
-    rumoca_core::ComponentReference {
-        local: comp.local,
-        span: comp.span,
-        parts: comp
-            .parts
-            .iter()
-            .map(|part| rumoca_core::ComponentRefPart {
-                ident: part.ident.text.to_string(),
-                span: comp.span,
-                subs: Vec::new(),
-            })
-            .collect(),
-        def_id: comp.def_id,
-    }
+    let parts = comp
+        .parts
+        .iter()
+        .map(|part| rumoca_core::ComponentRefPart {
+            ident: part.ident.text.to_string(),
+            span: comp.span,
+            subs: Vec::new(),
+            def_id: part
+                .def_id
+                .expect("constant folding receives only resolved component references"),
+        })
+        .collect();
+    rumoca_core::ComponentReference::construct(comp.local, comp.span, parts)
+        .expect("resolved AST references satisfy the checked component-reference contract")
 }
 
 pub(crate) fn try_eval_const_array_expr(

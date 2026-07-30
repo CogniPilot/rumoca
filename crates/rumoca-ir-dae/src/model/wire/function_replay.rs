@@ -430,12 +430,52 @@ fn advance_to_definition<'dae>(
     definition: u32,
     provenance: DaeProvenance,
 ) -> Result<(), DaeConstructionError> {
-    while body_for_definition(dae, state, value, definition, provenance).is_err() {
+    loop {
+        let current = current_definition_ordinal(dae, state, value, provenance)?;
+        if current == Some(definition) {
+            return Ok(());
+        }
+        if let Some(current) = current
+            && current > definition
+        {
+            return Err(DaeConstructionError::InvalidFunctionValueRead {
+                value,
+                expected_definition: Some(current),
+                found_definition: definition,
+                span: provenance.span(),
+            });
+        }
         if !apply_next_ready_assignment(wire, dae, ids, state)? {
             break;
         }
     }
     body_for_definition(dae, state, value, definition, provenance).map(|_| ())
+}
+
+fn current_definition_ordinal<'dae>(
+    dae: &mut DaeConstruction<'dae>,
+    state: &FunctionReplay<'_, 'dae>,
+    value: u32,
+    provenance: DaeProvenance,
+) -> Result<Option<u32>, DaeConstructionError> {
+    let body = match state
+        .capability
+        .as_ref()
+        .ok_or_else(|| incomplete("function capability", state.function_index, provenance))?
+    {
+        ReplayCapability::Body(body) => body,
+        ReplayCapability::Fold { body, .. } => body.body(),
+    };
+    let value = FunctionValueId::from_raw(state.function_index as u32, value);
+    match dae.functions(|functions| functions.current_definition_id(body, value, provenance)) {
+        Ok(definition) => Ok(Some(FunctionDefinitionId::ordinal(definition))),
+        Err(DaeConstructionError::IncompleteDefinition {
+            kind: "function value",
+            index,
+            ..
+        }) if index == value.ordinal() => Ok(None),
+        Err(error) => Err(error),
+    }
 }
 
 fn apply_next_ready_assignment<'dae>(

@@ -13,6 +13,33 @@ pub(crate) struct FunctionRequest {
 }
 
 impl FunctionRequest {
+    pub(crate) fn from_resolved_ast_reference(
+        name: String,
+        reference: &rumoca_ir_ast::ComponentReference,
+    ) -> Self {
+        let parts = reference
+            .parts
+            .iter()
+            .map(|part| rumoca_core::ComponentRefPart {
+                ident: part.ident.text.to_string(),
+                span: reference.span,
+                subs: Vec::new(),
+                def_id: part
+                    .def_id
+                    .expect("function collection receives only resolved references"),
+            })
+            .collect();
+        let component_ref =
+            rumoca_core::ComponentReference::construct(reference.local, reference.span, parts)
+                .expect("resolved AST references satisfy the checked component-reference contract");
+        Self {
+            name,
+            target_def_id: Some(component_ref.target_def_id()),
+            target_instance_id: None,
+            component_ref: Some(component_ref),
+        }
+    }
+
     pub(super) fn from_reference(reference: &rumoca_core::Reference) -> Self {
         let component_ref = reference.component_ref().cloned();
         let name = component_ref
@@ -32,21 +59,9 @@ impl FunctionRequest {
     pub(super) fn from_component_reference(reference: &rumoca_core::ComponentReference) -> Self {
         Self {
             name: component_ref_name(reference),
-            target_def_id: reference.def_id,
+            target_def_id: Some(reference.target_def_id()),
             target_instance_id: None,
             component_ref: Some(reference.clone()),
-        }
-    }
-
-    pub(crate) fn from_resolved_ast_reference(
-        name: String,
-        reference: &rumoca_ir_ast::ComponentReference,
-    ) -> Self {
-        Self {
-            name,
-            target_def_id: reference.def_id,
-            target_instance_id: None,
-            component_ref: Some(ast_component_ref_to_core(reference)),
         }
     }
 
@@ -66,25 +81,6 @@ impl FunctionRequest {
             target_instance_id: None,
             component_ref: None,
         }
-    }
-}
-
-fn ast_component_ref_to_core(
-    reference: &rumoca_ir_ast::ComponentReference,
-) -> rumoca_core::ComponentReference {
-    rumoca_core::ComponentReference {
-        local: reference.local,
-        span: reference.span,
-        parts: reference
-            .parts
-            .iter()
-            .map(|part| rumoca_core::ComponentRefPart {
-                ident: part.ident.text.to_string(),
-                span: reference.span,
-                subs: Vec::new(),
-            })
-            .collect(),
-        def_id: reference.def_id,
     }
 }
 
@@ -203,7 +199,7 @@ pub(super) fn same_function_request(left: &FunctionRequest, right: &FunctionRequ
 }
 
 fn component_ref_name(comp: &rumoca_core::ComponentReference) -> String {
-    comp.parts
+    comp.parts()
         .iter()
         .map(|part| part.ident.as_str())
         .collect::<Vec<_>>()

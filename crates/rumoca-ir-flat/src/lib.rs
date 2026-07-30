@@ -6,45 +6,58 @@
 //! The Flat Model is produced by the flatten phase from the Instance Tree.
 
 pub mod clocks;
-#[cfg(test)]
-mod component_ref_helpers;
 pub mod connections;
-#[cfg(test)]
-mod convert_from_ast;
 pub mod name_utils;
-#[cfg(test)]
-mod subscripts;
 pub mod visitor;
 mod when_equations;
 
 #[cfg(test)]
 mod tests;
 
-#[cfg(test)]
-use convert_from_ast::{
-    component_reference_from_ast_with_def_map, expression_from_ast,
-    expression_from_ast_with_def_map, expression_from_component_ref,
-};
 use indexmap::{IndexMap, IndexSet};
+#[cfg(test)]
+use rumoca_core::Literal;
 use rumoca_core::{
     BuiltinFunction, Causality, ClassType, ComponentReference, ComprehensionTemplate, DefId,
     EffectiveType, Expression, ForIndex, Function, FunctionInstanceId, FunctionShapeContractError,
-    Reference, RegularForFamily, Span, StateSelect, Statement, StatementBlock,
-    StructuredIndexDomain, Subscript, SymbolAncestry, TypeId, VarName, Variability,
+    InstanceId, Reference, RegularForFamily, Span, StateSelect, Statement, StatementBlock,
+    StructuredIndexDomain, Subscript, TypeId, VarName, Variability,
 };
-#[cfg(test)]
-use rumoca_core::{ComprehensionIndex, Literal};
-#[cfg(test)]
-use rumoca_ir_ast as ast;
 use serde::{Deserialize, Serialize};
 
 pub type VarNameIndexMap<V> = IndexMap<VarName, V, rustc_hash::FxBuildHasher>;
-pub type SymbolAncestryMap = IndexMap<DefId, SymbolAncestry, rustc_hash::FxBuildHasher>;
+pub type InstanceRelationMap = IndexMap<InstanceId, InstanceRelation, rustc_hash::FxBuildHasher>;
+pub type TypeIdentityMap = IndexMap<DefId, TypeId, rustc_hash::FxBuildHasher>;
 
-#[cfg(test)]
-use component_ref_helpers::from_component_ref_with_def_map_impl;
-#[cfg(test)]
-use subscripts::subscript_from_ast;
+/// Exact canonical identities of the predefined scalar types.
+///
+/// These IDs are copied from the resolved `TypeTable` once. Downstream
+/// semantics compare identities; rendered type names remain presentation data.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PredefinedTypeIds {
+    pub real: TypeId,
+    pub integer: TypeId,
+    pub boolean: TypeId,
+    pub string: TypeId,
+    pub clock: TypeId,
+}
+
+impl PredefinedTypeIds {
+    pub fn is_complete(self) -> bool {
+        let identities = [
+            self.real,
+            self.integer,
+            self.boolean,
+            self.string,
+            self.clock,
+        ];
+        identities.iter().all(|identity| !identity.is_unknown())
+            && identities
+                .iter()
+                .enumerate()
+                .all(|(index, identity)| !identities[..index].contains(identity))
+    }
+}
 
 // Re-export connection types
 pub use connections::{
@@ -73,9 +86,23 @@ pub use when_equations::{WhenBranch, WhenChain, WhenEquation};
 /// with globally unique names and all equations ready for analysis.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Model {
+    /// Exact Resolve identity of the predefined `String` declaration.
+    ///
+    /// Production flattening always supplies this from `ScopeTree`; downstream
+    /// phases use it to distinguish the predefined conversion operator from a
+    /// shadowing user declaration without rendered-name lookup.
+    pub predefined_string_declaration: Option<DefId>,
+    /// Exact canonical identities for predefined scalar types.
+    pub predefined_types: PredefinedTypeIds,
     /// Resolved effective type descriptors keyed by the exact `TypeId` stored
     /// on each concrete variable or aggregate instance.
     pub effective_types: IndexMap<TypeId, EffectiveType, rustc_hash::FxBuildHasher>,
+    /// Effective type identities whose exact canonical root is an enumeration.
+    pub enumeration_types: IndexSet<TypeId>,
+    /// Exact nominal type identity keyed by resolved declaration provenance.
+    pub type_ids_by_def_id: TypeIdentityMap,
+    /// Canonical type identities proven to denote enumerations.
+    pub enumeration_type_roots: IndexSet<TypeId>,
     /// All variables with globally unique names.
     pub variables: VarNameIndexMap<Variable>,
     /// Resolved record containers retained for record-equation lowering.
@@ -177,16 +204,32 @@ pub struct Model {
     /// integer ordinals used by runtime numeric evaluation.
     #[serde(default)]
     pub enum_literal_ordinals: IndexMap<String, i64>,
-    /// DefId ancestry for resolved source symbols, ordered from outermost owner
-    /// to the symbol itself. Used by downstream phases for child/descendant
-    /// checks without rendered-name prefix matching.
-    #[serde(default)]
-    pub symbol_ancestry: SymbolAncestryMap,
+    /// Exact occurrence graph transferred from the instantiated tree.
+    ///
+    /// Source `DefId`s remain declaration provenance. Concrete containment and
+    /// aggregate-to-materialization proofs use `InstanceId` exclusively.
+    pub instance_relations: InstanceRelationMap,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum InstanceKind {
+    Class,
+    Aggregate,
+    Materialized,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstanceRelation {
+    pub owner: Option<InstanceId>,
+    pub declaration: Option<DefId>,
+    pub indices: Box<[i64]>,
+    pub kind: InstanceKind,
 }
 
 /// Compact resolved identity for a record container expanded into Flat fields.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RecordInstance {
+    pub instance_id: InstanceId,
     pub component_ref: ComponentReference,
     pub source_span: Span,
     pub effective_type_id: TypeId,
@@ -257,6 +300,20 @@ impl Model {
         self.functions.get(name)
     }
 
+    /// Register one occurrence that flattening materializes itself and return
+    /// its exact identity.
+    ///
+    /// Instantiation elides occurrences whose component contributes no
+    /// materialized member, such as a zero-sized array that expressions still
+    /// reference (MLS §10.3.4). The resulting Flat variable is still a distinct
+    /// occurrence, so the aggregate allocates an identity beyond every
+    /// transferred one instead of leaving the field unset.
+    pub fn materialize_instance(&mut self, relation: InstanceRelation) -> InstanceId {
+        let instance_id = next_instance_id(&self.instance_relations);
+        self.instance_relations.insert(instance_id, relation);
+        instance_id
+    }
+
     /// Get the number of variables.
     pub fn num_variables(&self) -> usize {
         self.variables.len()
@@ -304,6 +361,7 @@ impl Model {
     }
 
     pub fn validate_shape_contract(&self) -> Result<(), ModelShapeContractError> {
+        let mut variable_instances = IndexMap::new();
         for (key, variable) in &self.variables {
             if key != &variable.name {
                 return Err(ModelShapeContractError::VariableKeyNameMismatch {
@@ -315,6 +373,39 @@ impl Model {
             variable
                 .validate_shape_contract()
                 .map_err(ModelShapeContractError::Variable)?;
+            if variable.instance_id.is_unset() {
+                return Err(ModelShapeContractError::MissingVariableInstanceId {
+                    variable: variable.name.clone(),
+                    span: variable.source_span,
+                });
+            }
+            if let Some(first) =
+                variable_instances.insert(variable.instance_id, variable.name.clone())
+            {
+                return Err(ModelShapeContractError::DuplicateVariableInstanceId {
+                    instance_id: variable.instance_id,
+                    first,
+                    second: variable.name.clone(),
+                    span: variable.source_span,
+                });
+            }
+        }
+        let mut record_instances = IndexMap::new();
+        for (key, record) in &self.record_instances {
+            if record.instance_id.is_unset() {
+                return Err(ModelShapeContractError::MissingRecordInstanceId {
+                    record: key.clone(),
+                    span: record.source_span,
+                });
+            }
+            if let Some(first) = record_instances.insert(record.instance_id, key.clone()) {
+                return Err(ModelShapeContractError::DuplicateRecordInstanceId {
+                    instance_id: record.instance_id,
+                    first,
+                    second: key.clone(),
+                    span: record.source_span,
+                });
+            }
         }
         let mut function_instances = IndexMap::new();
         for (key, function) in &self.functions {
@@ -350,6 +441,23 @@ impl Model {
     pub fn validate(&self) -> Result<(), ModelShapeContractError> {
         self.validate_shape_contract()
     }
+}
+
+/// First occurrence identity above every identity in the occurrence graph.
+///
+/// Occurrence identities are one-based, so an empty graph yields the first
+/// allocatable identity rather than the reserved unset value.
+fn next_instance_id(relations: &InstanceRelationMap) -> InstanceId {
+    let highest = relations
+        .keys()
+        .map(|instance_id| instance_id.index())
+        .max()
+        .unwrap_or(InstanceId::UNSET.index());
+    InstanceId::new(
+        highest
+            .checked_add(1)
+            .expect("Flat occurrence identity space exhausted"),
+    )
 }
 
 fn next_function_instance_id(functions: &VarNameIndexMap<Function>) -> FunctionInstanceId {
@@ -391,6 +499,26 @@ pub enum ModelShapeContractError {
         second: VarName,
         span: Span,
     },
+    MissingVariableInstanceId {
+        variable: VarName,
+        span: Span,
+    },
+    DuplicateVariableInstanceId {
+        instance_id: InstanceId,
+        first: VarName,
+        second: VarName,
+        span: Span,
+    },
+    MissingRecordInstanceId {
+        record: VarName,
+        span: Span,
+    },
+    DuplicateRecordInstanceId {
+        instance_id: InstanceId,
+        first: VarName,
+        second: VarName,
+        span: Span,
+    },
 }
 
 impl ModelShapeContractError {
@@ -401,7 +529,11 @@ impl ModelShapeContractError {
             Self::VariableKeyNameMismatch { span, .. }
             | Self::FunctionKeyNameMismatch { span, .. }
             | Self::MissingFunctionInstanceId { span, .. }
-            | Self::DuplicateFunctionInstanceId { span, .. } => *span,
+            | Self::DuplicateFunctionInstanceId { span, .. }
+            | Self::MissingVariableInstanceId { span, .. }
+            | Self::DuplicateVariableInstanceId { span, .. }
+            | Self::MissingRecordInstanceId { span, .. }
+            | Self::DuplicateRecordInstanceId { span, .. } => *span,
         }
     }
 }
@@ -409,6 +541,8 @@ impl ModelShapeContractError {
 /// Flat variable with globally unique name.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Variable {
+    /// Exact runtime occurrence identity allocated by instantiation.
+    pub instance_id: InstanceId,
     /// Globally unique flat name.
     pub name: VarName,
     /// Structured component reference that produced this flattened variable.
@@ -472,7 +606,6 @@ pub struct Variable {
     /// variables for the DAE balance calculation.
     #[serde(default)]
     pub is_discrete_type: bool,
-
     /// True if this variable is a primitive type (Real, Integer, Boolean, String).
     /// Record-typed variables (like Complex with .re and .im fields) are not primitive.
     /// Non-primitive variables should not be counted as unknowns since their fields
@@ -559,8 +692,13 @@ fn shape_size(
 }
 
 impl Variable {
+    /// Base value for struct-update construction.
+    ///
+    /// The occurrence identity starts unset, so every producer must supply the
+    /// allocated `InstanceId` of the instance it materializes.
     pub fn empty_with_span(source_span: Span) -> Self {
         Self {
+            instance_id: InstanceId::UNSET,
             name: VarName::default(),
             component_ref: None,
             source_span,
@@ -605,6 +743,29 @@ mod variable_shape_contract_tests {
             1,
             2,
         )
+    }
+
+    fn record_instance(name: &str, instance_id: InstanceId) -> RecordInstance {
+        let component_ref = ComponentReference::construct(
+            false,
+            test_span(),
+            vec![rumoca_core::ComponentRefPart {
+                ident: name.to_string(),
+                span: test_span(),
+                subs: Vec::new(),
+                def_id: DefId::new(3),
+            }],
+        )
+        .expect("record fixture carries its declaration identity");
+        RecordInstance {
+            instance_id,
+            component_ref,
+            source_span: test_span(),
+            effective_type_id: TypeId::new(9),
+            type_name: "R".to_string(),
+            type_def_id: DefId::new(4),
+            dims: Vec::new(),
+        }
     }
 
     #[test]
@@ -719,11 +880,161 @@ mod variable_shape_contract_tests {
     }
 
     #[test]
-    fn flat_model_shape_contract_rejects_function_param_negative_dims() {
+    fn flat_model_shape_contract_rejects_duplicate_variable_instance_identity() {
+        let span = Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("flat_instance_identity_test.mo"),
+            1,
+            2,
+        );
+        let mut model = Model::new();
+        for name in ["first", "second"] {
+            let mut variable = Variable::empty_with_span(span);
+            variable.name = VarName::new(name);
+            variable.instance_id = InstanceId::new(7);
+            model.add_variable(variable.name.clone(), variable);
+        }
+        assert!(matches!(
+            model.validate_shape_contract(),
+            Err(ModelShapeContractError::DuplicateVariableInstanceId {
+                instance_id,
+                first,
+                second,
+                ..
+            }) if instance_id == InstanceId::new(7)
+                && first == VarName::new("first")
+                && second == VarName::new("second")
+        ));
+    }
+
+    #[test]
+    fn flat_model_shape_contract_rejects_unset_variable_instance_identity() {
+        let mut model = Model::new();
+        let mut variable = Variable::empty_with_span(test_span());
+        variable.name = VarName::new("x");
+        model.add_variable(variable.name.clone(), variable);
+
+        assert_eq!(
+            model.validate_shape_contract(),
+            Err(ModelShapeContractError::MissingVariableInstanceId {
+                variable: VarName::new("x"),
+                span: test_span(),
+            })
+        );
+    }
+
+    #[test]
+    fn flat_model_shape_contract_rejects_unset_record_instance_identity() {
+        let mut model = Model::new();
+        model.record_instances.insert(
+            VarName::new("r"),
+            record_instance("r", InstanceId::default()),
+        );
+
+        assert_eq!(
+            model.validate_shape_contract(),
+            Err(ModelShapeContractError::MissingRecordInstanceId {
+                record: VarName::new("r"),
+                span: test_span(),
+            })
+        );
+    }
+
+    #[test]
+    fn flat_model_shape_contract_rejects_duplicate_record_instance_identity() {
+        let mut model = Model::new();
+        for name in ["first", "second"] {
+            model.record_instances.insert(
+                VarName::new(name),
+                record_instance(name, InstanceId::new(5)),
+            );
+        }
+
+        assert_eq!(
+            model.validate_shape_contract(),
+            Err(ModelShapeContractError::DuplicateRecordInstanceId {
+                instance_id: InstanceId::new(5),
+                first: VarName::new("first"),
+                second: VarName::new("second"),
+                span: test_span(),
+            })
+        );
+    }
+
+    #[test]
+    fn flat_model_shape_contract_accepts_allocated_variable_and_record_identities() {
+        let mut model = Model::new();
+        let mut variable = Variable::empty_with_span(test_span());
+        variable.name = VarName::new("r.field");
+        variable.instance_id = InstanceId::new(2);
+        model.add_variable(variable.name.clone(), variable);
+        model
+            .record_instances
+            .insert(VarName::new("r"), record_instance("r", InstanceId::new(1)));
+
+        assert_eq!(model.validate_shape_contract(), Ok(()));
+    }
+
+    #[test]
+    fn materialized_occurrences_extend_the_transferred_identity_space() {
+        let mut model = Model::new();
+        model.instance_relations.insert(
+            InstanceId::new(4),
+            InstanceRelation {
+                owner: None,
+                declaration: Some(DefId::new(1)),
+                indices: Box::default(),
+                kind: InstanceKind::Class,
+            },
+        );
+
+        let first = model.materialize_instance(InstanceRelation {
+            owner: Some(InstanceId::new(4)),
+            declaration: Some(DefId::new(2)),
+            indices: Box::default(),
+            kind: InstanceKind::Materialized,
+        });
+        let second = model.materialize_instance(InstanceRelation {
+            owner: Some(InstanceId::new(4)),
+            declaration: Some(DefId::new(3)),
+            indices: Box::default(),
+            kind: InstanceKind::Materialized,
+        });
+
+        assert_eq!(first, InstanceId::new(5));
+        assert_eq!(second, InstanceId::new(6));
+        assert!(!first.is_unset() && !second.is_unset());
+        assert_eq!(model.instance_relations.len(), 3);
+        assert_eq!(
+            model.instance_relations[&first].declaration,
+            Some(DefId::new(2))
+        );
+    }
+
+    #[test]
+    fn materialized_occurrences_are_allocated_from_one_in_an_empty_graph() {
+        let mut model = Model::new();
+
+        let instance_id = model.materialize_instance(InstanceRelation {
+            owner: None,
+            declaration: Some(DefId::new(7)),
+            indices: Box::default(),
+            kind: InstanceKind::Materialized,
+        });
+
+        assert_eq!(instance_id, InstanceId::new(1));
+        assert!(!instance_id.is_unset());
+    }
+
+    #[test]
+    fn flat_model_shape_contract_propagates_function_param_shape_errors() {
         let mut model = Model::new();
         let mut function = Function::new("Pkg.f", Span::DUMMY);
+        let effective_type =
+            rumoca_core::EffectiveType::new(TypeId::new(11), TypeId::new(1), vec![2])
+                .expect("fixture type is valid");
         function.add_output(
-            rumoca_core::FunctionParam::new("y", "Real", test_span()).with_dims(vec![-1]),
+            rumoca_core::FunctionParam::new("y", "Real", effective_type, test_span())
+                .with_shape_expr(vec![Subscript::generated_index(-1, test_span())]),
         );
         model.add_function(function);
 

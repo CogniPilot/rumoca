@@ -6,13 +6,13 @@ pub(super) fn validate_function_value_type(
     flat: &flat::Model,
     active_records: &mut HashSet<rumoca_core::DefId>,
 ) -> Result<(), ToDaeError> {
-    if primitive_scalar_type(&value.type_name).is_some() {
+    if effective_function_scalar_type(flat, value).is_some() {
         return Ok(());
     }
     if value.type_class != Some(rumoca_core::ClassType::Record) {
         return Err(unsupported_type(value, function));
     }
-    if !value.dims.is_empty() {
+    if !value.dimensions().is_empty() {
         return Err(ToDaeError::unsupported_flat(
             "function value type",
             format!(

@@ -76,7 +76,9 @@ pub(crate) fn pre_collect_functions(
         if !visited.insert_if_new(func_request.clone()) {
             continue;
         }
-        let Some(func) = add_function_to_context(&func_request, ctx, tree, class_index)? else {
+        let Some(func) =
+            add_function_to_context(&func_request, ctx, overlay, tree, class_index)?
+        else {
             continue;
         };
         for dep in functions::collect_function_dep_requests(&func) {
@@ -91,11 +93,17 @@ pub(crate) fn pre_collect_functions(
 fn add_function_to_context(
     request: &functions::FunctionRequest,
     ctx: &mut Context,
+    overlay: &ast::InstanceOverlay,
     tree: &ast::ClassTree,
     class_index: &ast::ClassDefIndex<'_>,
 ) -> Result<Option<rumoca_core::Function>, FlattenError> {
     let Some((resolved_name, func)) =
-        functions::lookup_function_request(tree, class_index, request)?
+        functions::lookup_function_request(
+            tree,
+            class_index,
+            request,
+            functions::FunctionTypeCatalog::new(overlay),
+        )?
     else {
         return Ok(None);
     };

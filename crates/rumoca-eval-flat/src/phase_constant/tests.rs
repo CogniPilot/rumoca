@@ -8,6 +8,26 @@ fn test_span() -> rumoca_core::Span {
     )
 }
 
+#[derive(Clone, Copy)]
+enum TestScalar {
+    Real,
+    Integer,
+}
+
+fn function_param(
+    name: &str,
+    scalar: TestScalar,
+    dimensions: Vec<i64>,
+) -> rumoca_core::FunctionParam {
+    let (type_name, type_id) = match scalar {
+        TestScalar::Real => ("Real", rumoca_core::TypeId::new(1)),
+        TestScalar::Integer => ("Integer", rumoca_core::TypeId::new(2)),
+    };
+    let effective_type = rumoca_core::EffectiveType::new(type_id, type_id, dimensions)
+        .expect("fixture function type is valid");
+    rumoca_core::FunctionParam::new(name, type_name, effective_type, test_span())
+}
+
 fn var(name: &str) -> rumoca_core::Expression {
     rumoca_core::Expression::VarRef {
         name: rumoca_core::Reference::new(name),
@@ -33,22 +53,27 @@ fn index_expr(base: rumoca_core::Expression, index: i64) -> rumoca_core::Express
 }
 
 fn comp_ref(name: &str) -> rumoca_core::ComponentReference {
-    rumoca_core::ComponentReference {
-        local: false,
-        span: test_span(),
-        parts: vec![rumoca_core::ComponentRefPart {
+    let def_id = name.bytes().fold(1_u32, |hash, byte| {
+        hash.wrapping_mul(16_777_619) ^ u32::from(byte)
+    });
+    rumoca_core::ComponentReference::construct(
+        false,
+        test_span(),
+        vec![rumoca_core::ComponentRefPart {
             ident: name.to_string(),
             span: test_span(),
             subs: Vec::new(),
+            def_id: rumoca_core::DefId::new(def_id.max(1)),
         }],
-        def_id: None,
-    }
+    )
+    .expect("fixture assignment target is exact")
 }
 
 fn field(base: rumoca_core::Expression, name: &str) -> rumoca_core::Expression {
     rumoca_core::Expression::FieldAccess {
         base: Box::new(base),
         field: name.to_string(),
+        field_def_id: rumoca_core::DefId::new(1),
         span: test_span(),
     }
 }
@@ -119,22 +144,10 @@ fn function_call(name: &str, args: Vec<rumoca_core::Expression>) -> rumoca_core:
     }
 }
 
-fn scalar_indexing_function(
-    name: &str,
-    input_type: &str,
-    output_type: &str,
-) -> rumoca_core::Function {
+fn scalar_indexing_function(name: &str, scalar: TestScalar) -> rumoca_core::Function {
     let mut function = rumoca_core::Function::new(name, test_span());
-    function.add_input(rumoca_core::FunctionParam::new(
-        "x",
-        input_type,
-        test_span(),
-    ));
-    function.add_output(rumoca_core::FunctionParam::new(
-        "y",
-        output_type,
-        test_span(),
-    ));
+    function.add_input(function_param("x", scalar, Vec::new()));
+    function.add_output(function_param("y", scalar, Vec::new()));
     function.body = vec![rumoca_core::Statement::Assignment {
         comp: comp_ref("y"),
         value: indexed_var("x", 1),
@@ -199,14 +212,14 @@ fn eval_integer_exponentiation_for_structural_dimensions() {
 fn infer_user_function_output_dims_from_shape_expr() {
     let mut functions = FxHashMap::default();
     let mut function = rumoca_core::Function::new("Pkg.indices", test_span());
-    function.add_input(rumoca_core::FunctionParam::new("m", "Integer", test_span()));
+    function.add_input(function_param("m", TestScalar::Integer, Vec::new()));
     function.add_output(
-        rumoca_core::FunctionParam::new("ind", "Integer", test_span())
-            .with_dims(vec![0])
-            .with_shape_expr(vec![rumoca_core::Subscript::expr(
+        function_param("ind", TestScalar::Integer, vec![0]).with_shape_expr(vec![
+            rumoca_core::Subscript::expr(
                 Box::new(binary(rumoca_core::OpBinary::Add, var("m"), int(1))),
                 rumoca_core::Span::DUMMY,
-            )]),
+            ),
+        ]),
     );
     functions.insert("Pkg.indices".to_string(), function);
 
@@ -238,16 +251,8 @@ fn infer_user_function_output_dims_from_shape_expr() {
 fn infer_scalar_user_function_broadcasts_array_argument_dims() {
     let mut functions = FxHashMap::default();
     let mut function = rumoca_core::Function::new("Cv.from_deg", test_span());
-    function.add_input(rumoca_core::FunctionParam::new(
-        "degree",
-        "Real",
-        test_span(),
-    ));
-    function.add_output(rumoca_core::FunctionParam::new(
-        "radian",
-        "Real",
-        test_span(),
-    ));
+    function.add_input(function_param("degree", TestScalar::Real, Vec::new()));
+    function.add_output(function_param("radian", TestScalar::Real, Vec::new()));
     functions.insert("Cv.from_deg".to_string(), function);
 
     let known_ints = FxHashMap::default();
@@ -280,7 +285,7 @@ fn user_function_integer_eval_error_means_not_constant_evaluable() {
     let mut functions = FxHashMap::default();
     functions.insert(
         "Pkg.badInteger".to_string(),
-        scalar_indexing_function("Pkg.badInteger", "Integer", "Integer"),
+        scalar_indexing_function("Pkg.badInteger", TestScalar::Integer),
     );
     let known_ints = FxHashMap::default();
     let known_reals = FxHashMap::default();
@@ -305,7 +310,7 @@ fn user_function_real_eval_error_means_not_constant_evaluable() {
     let mut functions = FxHashMap::default();
     functions.insert(
         "Pkg.badReal".to_string(),
-        scalar_indexing_function("Pkg.badReal", "Real", "Real"),
+        scalar_indexing_function("Pkg.badReal", TestScalar::Real),
     );
     let known_ints = FxHashMap::default();
     let known_reals = FxHashMap::default();

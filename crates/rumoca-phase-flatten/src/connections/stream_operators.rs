@@ -75,7 +75,7 @@ struct StreamAccess {
     subscripts: Vec<Subscript>,
     indexed: bool,
     original: Expression,
-    field_base: Option<Box<Expression>>,
+    field_base: Option<(Box<Expression>, rumoca_core::DefId)>,
     span: Span,
 }
 
@@ -575,7 +575,7 @@ fn indexed_stream_error(operator: &str, access: &StreamAccess, description: &str
 
 fn connector_access_indices(access: &StreamAccess) -> Vec<Subscript> {
     let mut result = Vec::new();
-    if let Some(base) = &access.field_base {
+    if let Some((base, _)) = &access.field_base {
         collect_reference_subscripts(base, &mut result);
     }
     result
@@ -705,7 +705,10 @@ fn stream_access(expression: &Expression) -> Option<StreamAccess> {
             Some(access)
         }
         Expression::FieldAccess {
-            base, field, span, ..
+            base,
+            field,
+            field_def_id,
+            span,
         } => {
             let base_name = reference_name_without_subscripts(base)?;
             let path = ComponentPath::from_flat_path(base_name.as_str())
@@ -715,7 +718,7 @@ fn stream_access(expression: &Expression) -> Option<StreamAccess> {
                 subscripts: Vec::new(),
                 indexed: false,
                 original: expression.clone(),
-                field_base: Some(base.clone()),
+                field_base: Some((base.clone(), *field_def_id)),
                 span: *span,
             })
         }
@@ -916,7 +919,7 @@ fn stream_reference(name: &VarName, access: &StreamAccess, span: Span) -> Expres
 }
 
 fn stream_member_reference(name: &VarName, access: &StreamAccess, span: Span) -> Expression {
-    if let Some(base) = &access.field_base {
+    if let Some((base, field_def_id)) = &access.field_base {
         let parent = ComponentPath::from_flat_path(name.as_str()).parent();
         let field = ComponentPath::from_flat_path(name.as_str())
             .parts()
@@ -933,6 +936,7 @@ fn stream_member_reference(name: &VarName, access: &StreamAccess, span: Span) ->
                 span,
             )),
             field,
+            field_def_id: *field_def_id,
             span,
         };
         if access.subscripts.is_empty() {

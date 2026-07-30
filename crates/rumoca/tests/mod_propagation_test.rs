@@ -251,6 +251,12 @@ fn flat_expr_mentions_name(expr: &rumoca_core::Expression, needle: &str) -> bool
             flat_expr_mentions_name(lhs, needle) || flat_expr_mentions_name(rhs, needle)
         }
         rumoca_core::Expression::Unary { rhs, .. } => flat_expr_mentions_name(rhs, needle),
+        rumoca_core::Expression::StringConversion { value, format, .. } => {
+            flat_expr_mentions_name(value, needle)
+                || format
+                    .operands()
+                    .any(|operand| flat_expr_mentions_name(operand, needle))
+        }
         rumoca_core::Expression::If {
             branches,
             else_branch,

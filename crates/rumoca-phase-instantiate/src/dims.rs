@@ -373,18 +373,20 @@ fn qualify_component_ref_imports(
                 ..rumoca_core::Token::default()
             },
             subs: None,
+            def_id: None,
         })
         .collect::<Vec<_>>();
     if let Some(last) = parts.last_mut() {
         last.subs = first.subs.clone();
+        last.def_id = first.def_id;
     }
     parts.extend(cref.parts.iter().skip(1).cloned());
 
     ast::ComponentReference {
         local: cref.local,
         parts,
-        def_id: cref.def_id,
         span: cref.span,
+        qualified_display_name: cref.qualified_display_name.clone(),
     }
 }
 
@@ -437,10 +439,11 @@ mod tests {
                     .map(|part| ast::ComponentRefPart {
                         ident: make_token(&part),
                         subs: None,
+                        def_id: None,
                     })
                     .collect(),
-                def_id: None,
                 span: rumoca_core::Span::DUMMY,
+                qualified_display_name: None,
             },
         ))
     }

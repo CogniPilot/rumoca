@@ -3,6 +3,52 @@
 
 use super::*;
 
+fn assert_predefined_enum_binding_identity(
+    resolved: &rumoca_phase_resolve::ResolvedTree,
+    component_name: &str,
+    enum_name: &str,
+) {
+    let component = &resolved.definitions.classes["Test"].components[component_name];
+    let Some(rumoca_ir_ast::Expression::ComponentReference(reference)) = component.binding.as_ref()
+    else {
+        panic!("predefined enum fixture must have a component-reference binding");
+    };
+    let predefined = resolved
+        .scope_tree
+        .predefined_member(&rumoca_core::ComponentPath::from_flat_path(enum_name))
+        .expect("predefined enum has an exact identity");
+    assert_eq!(reference.root_def_id(), Some(predefined));
+    let literal = reference
+        .target_def_id()
+        .expect("predefined enum literal has an exact identity");
+    assert_ne!(literal, predefined);
+    assert!(
+        resolved.def_map[&literal].starts_with(&format!("{enum_name}.")),
+        "literal identity must name a declaration owned by its enum"
+    );
+    let declared_literals = rumoca_core::PREDEFINED_ENUM_LITERALS
+        .iter()
+        .find_map(|(name, literals)| (*name == enum_name).then_some(*literals))
+        .expect("fixture names a predefined enum");
+    let literal_ids = declared_literals
+        .iter()
+        .map(|literal_name| {
+            resolved
+                .scope_tree
+                .predefined_member(&rumoca_core::ComponentPath::from_parts([
+                    enum_name,
+                    *literal_name,
+                ]))
+                .expect("every predefined literal has an identity")
+        })
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(
+        literal_ids.len(),
+        declared_literals.len(),
+        "sibling literals must have distinct declaration identities"
+    );
+}
+
 #[test]
 fn test_empty_typecheck() {
     let tree = ClassTree::new();
@@ -185,6 +231,7 @@ fn test_predefined_stateselect_type_resolution() {
 
     let parsed = parse(source);
     let resolved = resolve(parsed).expect("resolve should succeed");
+    assert_predefined_enum_binding_identity(&resolved, "sel", "StateSelect");
     let typed = typecheck(resolved).expect("typecheck should succeed");
 
     let tree = typed.into_inner();
@@ -208,6 +255,7 @@ fn test_predefined_assertion_level_type_resolution() {
 
     let parsed = parse(source);
     let resolved = resolve(parsed).expect("resolve should succeed");
+    assert_predefined_enum_binding_identity(&resolved, "level", "AssertionLevel");
     let typed = typecheck(resolved).expect("typecheck should succeed");
 
     let tree = typed.into_inner();

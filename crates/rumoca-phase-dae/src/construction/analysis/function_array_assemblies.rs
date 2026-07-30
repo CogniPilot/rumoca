@@ -118,7 +118,7 @@ fn total_suffix_loop(
         .iter()
         .chain(&function.locals)
         .find(|value| value.name == target.as_str())
-        .and_then(|value| match value.dims.as_slice() {
+        .and_then(|value| match value.dimensions() {
             [extent] => usize::try_from(*extent).ok(),
             _ => None,
         })

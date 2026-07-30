@@ -115,12 +115,7 @@ fn lower_view<'dae>(
     block.recalibrate.statements = parts.recalibrate;
     block.do_step.statements = do_step;
 
-    AlgorithmCodePackage::construct(
-        block,
-        parts.nominals,
-        &period_ref,
-    )
-    .map_err(|error| {
+    AlgorithmCodePackage::construct(block, parts.nominals, &period_ref).map_err(|error| {
         vec![GalecTargetError::LoweringInternal {
             detail: format!("lowering produced an invalid Algorithm Code package: {error}"),
         }]
@@ -339,6 +334,11 @@ fn scalar_type(
         dae::ScalarType::Real => Ok(gast::ScalarType::Real),
         dae::ScalarType::Integer => Ok(gast::ScalarType::Integer),
         dae::ScalarType::Boolean => Ok(gast::ScalarType::Boolean),
+        dae::ScalarType::Enumeration => Err(unsupported(
+            "enumeration-variable",
+            format!("enumeration variable `{name}` has no owner-aware GALEC scalar type"),
+            span,
+        )),
         dae::ScalarType::String => Err(unsupported(
             "string-variable",
             format!("String variable `{name}` has no GALEC scalar type"),
@@ -1103,6 +1103,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             | dae::ExpressionOperation::Comprehension { .. }
             | dae::ExpressionOperation::Record(_)
             | dae::ExpressionOperation::Field { .. }
+            | dae::ExpressionOperation::StringConversion { .. }
             | dae::ExpressionOperation::FunctionFoldParameter { .. }
             | dae::ExpressionOperation::FunctionFoldOutput { .. } => {
                 return Err(unsupported(
@@ -1523,6 +1524,14 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         indices: &[gast::Expression],
         span: Span,
     ) -> Result<TypedExpression, GalecTargetError> {
+        if let dae::CoordinateView::ClockInterval(clock) = coordinate {
+            return Ok(TypedExpression {
+                expression: gast::Expression::Real(
+                    self.view.periodic_clock(clock).period_seconds(),
+                ),
+                scalar_type: gast::ScalarType::Real,
+            });
+        }
         if let dae::CoordinateView::Algebraic(variable) = coordinate
             && let Some(definition) = self.definitions.definition(variable)
         {

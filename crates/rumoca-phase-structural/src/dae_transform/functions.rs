@@ -738,6 +738,9 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
                 push(rhs);
                 push(lhs);
             }
+            dae::ExpressionOperation::StringConversion { value, format, .. } => {
+                Self::push_string_conversion_dependencies(pending, value, format);
+            }
             dae::ExpressionOperation::Conditional(operands)
             | dae::ExpressionOperation::Array(operands)
             | dae::ExpressionOperation::Record(operands)
@@ -768,6 +771,29 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
                 pending.push((value, false));
                 pending.push((base, false));
             }
+        }
+    }
+
+    fn push_string_conversion_dependencies(
+        pending: &mut Vec<(dae::ExprId<'source>, bool)>,
+        value: dae::ExprId<'source>,
+        format: dae::StringConversionFormatView<'source>,
+    ) {
+        pending.push((value, false));
+        match format {
+            dae::StringConversionFormatView::Options {
+                minimum_length,
+                left_justified,
+                significant_digits,
+            } => {
+                for option in [minimum_length, left_justified, significant_digits]
+                    .into_iter()
+                    .flatten()
+                {
+                    pending.push((option, false));
+                }
+            }
+            dae::StringConversionFormatView::Format { value } => pending.push((value, false)),
         }
     }
 

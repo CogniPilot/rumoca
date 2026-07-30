@@ -4785,6 +4785,7 @@ dependencies = [
  "rumoca-core",
  "rumoca-eval-ast",
  "rumoca-ir-ast",
+ "rumoca-phase-instantiate",
  "rumoca-phase-parse",
  "rumoca-phase-resolve",
  "rustc-hash",

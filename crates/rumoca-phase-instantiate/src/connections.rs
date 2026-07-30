@@ -855,10 +855,11 @@ fn substitute_index_in_comp_ref(
                         .map(|sub| substitute_index_in_subscript(sub, var_name, value))
                         .collect()
                 }),
+                def_id: part.def_id,
             })
             .collect(),
-        def_id: comp_ref.def_id,
         span: comp_ref.span,
+        qualified_display_name: comp_ref.qualified_display_name.clone(),
     }
 }
 
@@ -1457,10 +1458,11 @@ mod tests {
                 .map(|name| ast::ComponentRefPart {
                     ident: make_token(name),
                     subs: None,
+                    def_id: None,
                 })
                 .collect(),
-            def_id: None,
             span: rumoca_core::Span::DUMMY,
+            qualified_display_name: None,
         }
     }
 
@@ -1503,13 +1505,14 @@ mod tests {
                 } else {
                     None
                 },
+                def_id: None,
             });
         }
         ast::ComponentReference {
             local: false,
             parts,
-            def_id: None,
             span: rumoca_core::Span::DUMMY,
+            qualified_display_name: None,
         }
     }
 
@@ -1878,14 +1881,16 @@ mod tests {
                 ast::ComponentRefPart {
                     ident: make_token("cellData"),
                     subs: None,
+                    def_id: None,
                 },
                 ast::ComponentRefPart {
                     ident: make_token("nRC"),
                     subs: None,
+                    def_id: None,
                 },
             ],
-            def_id: None,
             span: rumoca_core::Span::DUMMY,
+            qualified_display_name: None,
         });
         let cr = make_comp_ref_with_sub(sub_expr, &["resistor", "n"]);
         let prefix = ast::QualifiedName::new();
@@ -1906,14 +1911,16 @@ mod tests {
                 ast::ComponentRefPart {
                     ident: make_token("cellData"),
                     subs: None,
+                    def_id: None,
                 },
                 ast::ComponentRefPart {
                     ident: make_token("nRC"),
                     subs: None,
+                    def_id: None,
                 },
             ],
-            def_id: None,
             span: rumoca_core::Span::DUMMY,
+            qualified_display_name: None,
         });
         let cr = make_comp_ref_with_sub(sub_expr, &["resistor", "n"]);
         let prefix = ast::QualifiedName::from_dotted("cell");
@@ -1931,9 +1938,10 @@ mod tests {
             parts: vec![ast::ComponentRefPart {
                 ident: make_token("nRC"),
                 subs: None,
+                def_id: None,
             }],
-            def_id: None,
             span: rumoca_core::Span::DUMMY,
+            qualified_display_name: None,
         };
         let mut int_params = rustc_hash::FxHashMap::default();
         int_params.insert("cellData.fake_nRC".to_string(), 4);

@@ -8,7 +8,7 @@ use crate::traversal_adapter::{
     ResolveTraversalCallbacks, walk_equations, walk_expression, walk_expressions, walk_statements,
     walk_subscripts,
 };
-use rumoca_core::{ComponentPath, DefId, ScopeId};
+use rumoca_core::{ComponentPath, DefId, Diagnostic, PrimaryLabel, ScopeId};
 use rumoca_ir_ast as ast;
 
 type ClassDef = ast::ClassDef;
@@ -16,6 +16,14 @@ type ComponentReference = ast::ComponentReference;
 type Expression = ast::Expression;
 type ScopeKind = ast::ScopeKind;
 type StoredDefinition = ast::StoredDefinition;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FullPathResolution {
+    Exact(DefId),
+    DeferredDynamic,
+    MissingStaticTail,
+    UnresolvedRoot,
+}
 
 impl ResolveTraversalCallbacks for Resolver {
     fn create_loop_scope(&mut self, enclosing: ScopeId) -> ScopeId {
@@ -41,6 +49,35 @@ impl ResolveTraversalCallbacks for Resolver {
 }
 
 impl Resolver {
+    /// Resolve component declaration types for the entire tree before walking
+    /// any expressions.
+    ///
+    /// A qualified reference can cross components declared in a class that
+    /// appears later in source order. This prepass makes those exact type
+    /// identities available deterministically.
+    pub(crate) fn resolve_component_types_all(&mut self, def: &mut StoredDefinition, prefix: &str) {
+        for (name, class) in def.classes.iter_mut() {
+            let qualified_name = if prefix.is_empty() {
+                name.clone()
+            } else {
+                format!("{prefix}.{name}")
+            };
+            self.resolve_component_types_class(class, &qualified_name);
+        }
+    }
+
+    fn resolve_component_types_class(&mut self, class: &mut ClassDef, qualified_name: &str) {
+        let class_scope = class
+            .scope_id
+            .expect("class scope must be assigned before component type resolution");
+        for component in class.components.values_mut() {
+            self.resolve_component_type_identity(component, class_scope, qualified_name);
+        }
+        for (name, nested) in class.classes.iter_mut() {
+            self.resolve_component_types_class(nested, &format!("{qualified_name}.{name}"));
+        }
+    }
+
     /// Resolve equations, statements, expressions in a StoredDefinition (Phase 2b).
     pub(crate) fn resolve_contents_all(
         &mut self,
@@ -127,26 +164,6 @@ impl Resolver {
             {
                 constrainedby.def_id = Some(def_id);
             }
-
-            // Resolve the component's type name to its DefId (MLS §5.3).
-            // This enables O(1) type lookup during instantiation instead of string-based search.
-            // Builtins are registered in global scope, so normal lookup finds them.
-            if let Some(type_def_id) = self.resolve_qualified_name(&comp.type_name, class_scope) {
-                // Full resolution succeeded
-                comp.type_name.def_id = Some(type_def_id);
-                comp.type_def_id = Some(type_def_id);
-                self.stats.types_fully_resolved += 1;
-            } else if let Some(type_def_id) =
-                self.resolve_type_name_with_inheritance(&comp.type_name, class_scope)
-            {
-                // Full resolution via inherited members succeeded.
-                comp.type_name.def_id = Some(type_def_id);
-                comp.type_def_id = Some(type_def_id);
-                self.stats.types_fully_resolved += 1;
-            } else if !comp.type_name.name.is_empty() {
-                // Full resolution failed. Try partial resolution (MLS §7.3).
-                self.try_partial_type_resolution(comp, class_scope, qualified_name);
-            }
         }
 
         // Recursively resolve nested classes' contents
@@ -154,6 +171,58 @@ impl Resolver {
             let nested_qualified = format!("{}.{}", qualified_name, name);
             self.resolve_contents_class(nested, class_scope, &nested_qualified);
         }
+    }
+
+    fn resolve_component_type_identity(
+        &mut self,
+        comp: &mut ast::Component,
+        class_scope: ScopeId,
+        qualified_name: &str,
+    ) {
+        if comp.type_name.name.len() > 1
+            && let Some(root_def_id) = self.dynamic_type_root(&comp.type_name, class_scope)
+        {
+            comp.type_name.def_id = Some(root_def_id);
+            comp.type_def_id = None;
+            // The declared class is only known once instantiation applies the
+            // redeclare, so this declaration's own member set is
+            // instance-dependent too. Recording it keeps a qualified tail such
+            // as `medium.p` classified as deferred instead of decaying into a
+            // missing static tail at Resolve.
+            if let Some(component) = comp.def_id {
+                self.dynamic_member_root_ids.insert(component);
+            }
+            self.stats.types_partial_direct += 1;
+            return;
+        }
+        let resolved = self
+            .resolve_qualified_name(&comp.type_name, class_scope)
+            .or_else(|| self.resolve_type_name_with_inheritance(&comp.type_name, class_scope));
+        if let Some(type_def_id) = resolved {
+            comp.type_name.def_id = Some(type_def_id);
+            comp.type_def_id = Some(type_def_id);
+            self.stats.types_fully_resolved += 1;
+        } else if !comp.type_name.name.is_empty() {
+            self.try_partial_type_resolution(comp, class_scope, qualified_name);
+        }
+        if let (Some(component), Some(component_type)) = (comp.def_id, comp.type_def_id) {
+            if self.dynamic_member_root_ids.contains(&component_type) {
+                // Even a non-replaceable component has an instance-dependent
+                // member set when its declared class is replaceable.
+                self.dynamic_member_root_ids.insert(component);
+            } else if !self.dynamic_member_root_ids.contains(&component) {
+                self.component_type_def_ids
+                    .insert(component, component_type);
+            }
+        }
+    }
+
+    fn dynamic_type_root(&self, name: &ast::Name, scope: ScopeId) -> Option<DefId> {
+        let first = name.name.first()?.text.as_ref();
+        self.scope_tree
+            .lookup(scope, &ComponentPath::from_flat_path(first))
+            .or_else(|| self.find_inherited_type(scope, first))
+            .filter(|def_id| self.dynamic_member_root_ids.contains(def_id))
     }
 
     /// Resolve one modification of an `extends` clause.
@@ -266,9 +335,10 @@ impl Resolver {
     /// Resolve a component reference.
     ///
     /// MLS §5.3.1: Simple name lookup starts in the current scope and
-    /// proceeds to enclosing scopes. For composite names (a.b.c), we
-    /// only resolve the first part here; full resolution happens during
-    /// instantiation when the instance tree is available.
+    /// proceeds to enclosing scopes. Composite names receive an exact final
+    /// identity when all traversed types are declaration-stable. A missing
+    /// static tail is an immediate error; only instance-dependent type edges
+    /// are deferred to instantiation.
     pub(crate) fn resolve_component_reference(
         &mut self,
         comp: &mut ComponentReference,
@@ -276,6 +346,9 @@ impl Resolver {
     ) {
         if comp.parts.is_empty() {
             return;
+        }
+        for part in &mut comp.parts {
+            part.def_id = None;
         }
 
         // Get the first part of the reference
@@ -286,17 +359,19 @@ impl Resolver {
             .scope_tree
             .lookup(scope, &ComponentPath::from_flat_path(first_name))
         {
-            comp.def_id = Some(def_id);
+            comp.parts[0].def_id = Some(def_id);
             self.stats.comp_refs_resolved += 1;
         } else {
             self.stats.comp_refs_unresolved += 1;
         }
-        // Note: We don't report undefined references here because:
-        // 1. The name might be from an import that hasn't been resolved yet
-        // 2. The name might be from a base class (extends)
-        // 3. Full MLS name lookup happens during instantiation/flattening
-        // Errors will be reported during type checking or instantiation.
-
+        match self.resolve_component_reference_full_path(comp, scope) {
+            FullPathResolution::Exact(_)
+            | FullPathResolution::DeferredDynamic
+            | FullPathResolution::UnresolvedRoot => {}
+            FullPathResolution::MissingStaticTail => {
+                self.emit_missing_static_tail(comp);
+            }
+        }
         // Also resolve subscript expressions
         for part in comp.parts.iter_mut() {
             if let Some(subs) = &mut part.subs {
@@ -314,39 +389,9 @@ impl Resolver {
     fn resolve_function_reference(&mut self, comp: &mut ComponentReference, scope: ScopeId) {
         self.resolve_component_reference(comp, scope);
 
-        let Some((resolved_def_id, _qualified_name)) =
-            self.resolve_component_reference_full_path(comp, scope)
-        else {
-            // A leading declaration is not proof that the called member exists.
-            // Clear the partial lookup before considering the only supported
-            // deferred case: a replaceable package whose concrete member set is
-            // established during instantiation.
-            comp.def_id = None;
-            self.resolve_partial_replaceable_package_function_reference(comp, scope);
-            return;
-        };
-
-        comp.def_id = Some(resolved_def_id);
-    }
-
-    fn resolve_partial_replaceable_package_function_reference(
-        &mut self,
-        comp: &mut ComponentReference,
-        scope: ScopeId,
-    ) {
-        let Some(first_part) = comp.parts.first().map(|part| part.ident.text.as_ref()) else {
-            return;
-        };
-        let Some(first_def_id) = comp
-            .def_id
-            .or_else(|| self.resolve_function_first_part(first_part, scope))
-        else {
-            return;
-        };
-
-        if comp.parts.len() > 1 && self.partial_type_root_ids.contains(&first_def_id) {
-            comp.def_id = Some(first_def_id);
-        }
+        // A root identity is not proof that the called member exists. Static
+        // calls carry an identity on every part; dynamic tails remain absent
+        // until instantiation proves them.
     }
 
     fn resolve_function_first_part(&self, first_part: &str, scope: ScopeId) -> Option<DefId> {
@@ -363,30 +408,81 @@ impl Resolver {
 
     fn resolve_component_reference_full_path(
         &self,
-        comp: &ComponentReference,
+        comp: &mut ComponentReference,
         scope: ScopeId,
-    ) -> Option<(rumoca_core::DefId, String)> {
-        let first_part = comp.parts.first()?.ident.text.as_ref();
-        let mut current_def_id = comp
-            .def_id
-            .or_else(|| self.resolve_function_first_part(first_part, scope))?;
-        let mut current_qualified = self.def_names.get(&current_def_id)?.clone();
-
-        for part in comp.parts.iter().skip(1) {
-            let member = part.ident.text.as_ref();
-            let direct_name = format!("{current_qualified}.{member}");
-            if let Some(&next_def_id) = self.name_to_def.get(&direct_name) {
-                current_def_id = next_def_id;
-                current_qualified = self.def_names.get(&next_def_id)?.clone();
-                continue;
-            }
-
-            let inherited_def_id = self.lookup_inherited_member_of(current_def_id, member)?;
-            current_def_id = inherited_def_id;
-            current_qualified = self.def_names.get(&inherited_def_id)?.clone();
+    ) -> FullPathResolution {
+        let Some(first_part) = comp.parts.first() else {
+            return FullPathResolution::UnresolvedRoot;
+        };
+        let Some(mut current_def_id) = comp
+            .root_def_id()
+            .or_else(|| self.resolve_function_first_part(&first_part.ident.text, scope))
+        else {
+            return FullPathResolution::UnresolvedRoot;
+        };
+        let root_path = ComponentPath::from_parts([first_part.ident.text.as_ref()]);
+        if self.scope_tree.predefined_member(&root_path) == Some(current_def_id) {
+            return self.resolve_predefined_reference_tail(comp, current_def_id);
         }
 
-        Some((current_def_id, current_qualified))
+        for index in 1..comp.parts.len() {
+            if self.dynamic_member_root_ids.contains(&current_def_id) {
+                return FullPathResolution::DeferredDynamic;
+            }
+            let container = self
+                .component_type_def_ids
+                .get(&current_def_id)
+                .copied()
+                .unwrap_or(current_def_id);
+            if self.dynamic_member_root_ids.contains(&container) {
+                return FullPathResolution::DeferredDynamic;
+            }
+            let Some(container_scope) = self.class_def_scopes.get(&container).copied() else {
+                return FullPathResolution::MissingStaticTail;
+            };
+            let part = &comp.parts[index];
+            let Some(member) = self.scope_tree.lookup_member(
+                container_scope,
+                &ComponentPath::from_flat_path(&part.ident.text),
+            ) else {
+                return FullPathResolution::MissingStaticTail;
+            };
+            comp.parts[index].def_id = Some(member);
+            current_def_id = member;
+        }
+
+        FullPathResolution::Exact(current_def_id)
+    }
+
+    fn resolve_predefined_reference_tail(
+        &self,
+        comp: &mut ComponentReference,
+        mut current_def_id: DefId,
+    ) -> FullPathResolution {
+        for index in 1..comp.parts.len() {
+            let path = ComponentPath::from_parts(
+                comp.parts
+                    .iter()
+                    .take(index + 1)
+                    .map(|part| part.ident.text.as_ref()),
+            );
+            let Some(member) = self.scope_tree.predefined_member(&path) else {
+                return FullPathResolution::MissingStaticTail;
+            };
+            comp.parts[index].def_id = Some(member);
+            current_def_id = member;
+        }
+        FullPathResolution::Exact(current_def_id)
+    }
+
+    fn emit_missing_static_tail(&mut self, comp: &ComponentReference) {
+        let primary_label =
+            PrimaryLabel::new(comp.span).with_message("unresolved component reference");
+        self.diagnostics.emit(Diagnostic::error(
+            "ER002",
+            format!("unresolved component reference: '{comp}'"),
+            primary_label,
+        ));
     }
 
     fn resolve_type_name_with_inheritance(

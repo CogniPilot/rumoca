@@ -10,9 +10,8 @@
 use crate::AstIndexMap as IndexMap;
 use indexmap::IndexSet;
 use rumoca_core::{
-    ComponentPath, ComponentRefPart as CoreComponentRefPart,
-    ComponentReference as CoreComponentReference, DefId, EffectiveType, ProvenanceSpan, ScopeId,
-    Span, Subscript as CoreSubscript, TypeId,
+    ComponentPath, ComponentReference as CoreComponentReference, DefId, EffectiveType, InstanceId,
+    ScopeId, Span, TypeId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -26,28 +25,6 @@ type FastIndexMap<K, V> = IndexMap<K, V>;
 // =============================================================================
 // Core Instance Types
 // =============================================================================
-
-/// Unique identifier for an instance in the instance tree.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
-pub struct InstanceId(pub u32);
-
-impl InstanceId {
-    /// Create a new InstanceId from an index.
-    pub fn new(index: u32) -> Self {
-        Self(index)
-    }
-
-    /// Get the underlying index.
-    pub fn index(&self) -> u32 {
-        self.0
-    }
-}
-
-impl std::fmt::Display for InstanceId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "InstanceId({})", self.0)
-    }
-}
 
 /// A fully qualified path with resolved subscripts.
 ///
@@ -579,6 +556,8 @@ impl ClassOverride {
 pub struct InstanceData {
     /// Unique identifier for this instance.
     pub instance_id: InstanceId,
+    /// Exact class occurrence that owns this component.
+    pub owner_class_id: Option<InstanceId>,
     /// Structured resolved component reference for this concrete instance.
     ///
     /// This is the semantic carrier for downstream Flat/DAE phases. The
@@ -725,6 +704,7 @@ impl Default for InstanceData {
     fn default() -> Self {
         Self {
             instance_id: InstanceId::default(),
+            owner_class_id: None,
             component_ref: None,
             qualified_name: QualifiedName::default(),
             source_location: rumoca_core::Location::default(),
@@ -771,37 +751,14 @@ impl Default for InstanceData {
     }
 }
 
-pub fn component_reference_for_instance(
-    qualified_name: &QualifiedName,
-    span: ProvenanceSpan,
-    def_id: Option<DefId>,
-) -> CoreComponentReference {
-    let provenance = span;
-    let span = provenance.span();
-    CoreComponentReference {
-        local: false,
-        span,
-        parts: qualified_name
-            .parts
-            .iter()
-            .map(|(ident, subs)| CoreComponentRefPart {
-                ident: ident.clone(),
-                span,
-                subs: subs
-                    .iter()
-                    .map(|sub| CoreSubscript::generated_index_with_provenance(*sub, provenance))
-                    .collect(),
-            })
-            .collect(),
-        def_id,
-    }
-}
-
 /// Instance data for a class/model.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ClassInstanceData {
     /// Unique identifier for this class instance.
     pub instance_id: InstanceId,
+    /// Exact structured component occurrence whose type instantiated this
+    /// class. The root model has no component owner.
+    pub owner_component_id: Option<InstanceId>,
     /// DefId of the class definition this instance was instantiated from.
     pub class_def_id: Option<DefId>,
     /// Fully qualified name in the instance tree.
@@ -1005,12 +962,32 @@ pub struct InstanceOverlay {
     /// Keys are resolved type identities and values are canonical root type identities.
     /// Populated by typecheck_instanced for flatten-time type compatibility.
     pub type_roots: IndexMap<TypeId, TypeId>,
+    /// Exact nominal type identity keyed by resolved source declaration identity.
+    ///
+    /// This is producer-owned transition evidence from post-instantiation
+    /// typechecking. Flattening uses it to type function values without
+    /// interpreting their display names.
+    pub type_ids_by_def_id: FastIndexMap<DefId, TypeId>,
+    /// Canonical `TypeId`s proven by typechecking to denote enumerations.
+    ///
+    /// Effective component identities remain in `enumeration_types`; this
+    /// root catalog also covers function values that do not have component
+    /// occurrences in the instance overlay.
+    pub enumeration_type_roots: IndexSet<TypeId>,
     /// Concrete effective types produced after instance dimensions are resolved.
     ///
     /// Each component `type_id` names exactly one descriptor in this catalog
     /// after successful post-instantiation type checking.
     pub effective_types: FastIndexMap<TypeId, EffectiveType>,
-    /// Next available instance ID.
+    /// Effective type identities whose exact canonical root is an enumeration.
+    ///
+    /// Typecheck constructs this set from its resolved `TypeTable`; later
+    /// phases never infer enumeration semantics from a rendered type name.
+    pub enumeration_types: IndexSet<TypeId>,
+    /// Number of occurrence identities allocated so far.
+    ///
+    /// Allocation is one-based because `InstanceId::UNSET` reserves zero, so
+    /// this is also the last identity handed out.
     next_id: u32,
 }
 
@@ -1021,10 +998,15 @@ impl InstanceOverlay {
     }
 
     /// Allocate a new unique InstanceId.
+    ///
+    /// Identities are one-based: `InstanceId::UNSET` is reserved so a defaulted
+    /// occurrence field can never be mistaken for an allocated instance.
     pub fn alloc_id(&mut self) -> InstanceId {
-        let id = InstanceId(self.next_id);
-        self.next_id += 1;
-        id
+        self.next_id = self
+            .next_id
+            .checked_add(1)
+            .expect("instantiated occurrence identity space exhausted");
+        InstanceId(self.next_id)
     }
 
     /// Number of `InstanceId`s allocated so far.
@@ -1279,37 +1261,6 @@ mod tests {
     }
 
     #[test]
-    fn component_reference_for_instance_preserves_parts_subscripts_and_def_id()
-    -> Result<(), rumoca_core::MissingProvenanceSpan> {
-        let def_id = DefId::new(9);
-        let span = Span::from_offsets(
-            rumoca_core::SourceId::from_source_name("instance_test.mo"),
-            1,
-            5,
-        );
-        let provenance = span.require_provenance("instance test component reference")?;
-        let mut qn = QualifiedName::new();
-        qn.push("body".to_string(), vec![]);
-        qn.push("frame".to_string(), vec![2]);
-        qn.push("r_0".to_string(), vec![]);
-
-        let reference = component_reference_for_instance(&qn, provenance, Some(def_id));
-
-        assert_eq!(reference.def_id, Some(def_id));
-        assert_eq!(reference.parts.len(), 3);
-        assert_eq!(reference.parts[0].ident, "body");
-        assert_eq!(reference.parts[1].ident, "frame");
-        assert_eq!(
-            reference.parts[1].subs,
-            vec![CoreSubscript::generated_index_with_provenance(
-                2, provenance
-            )]
-        );
-        assert_eq!(reference.parts[2].ident, "r_0");
-        Ok(())
-    }
-
-    #[test]
     fn test_starts_with_component_path_rejects_subscript_mismatch() {
         let mut qn = QualifiedName::new();
         qn.push("sys".to_string(), vec![]);
@@ -1372,8 +1323,8 @@ mod tests {
     fn test_expr(marker: &str) -> Expression {
         Expression::ComponentReference(ComponentReference {
             local: false,
-            def_id: None,
             span: rumoca_core::Span::DUMMY,
+            qualified_display_name: None,
             parts: vec![ComponentRefPart {
                 ident: Token {
                     text: std::sync::Arc::from(marker),
@@ -1382,6 +1333,7 @@ mod tests {
                     token_type: 0,
                 },
                 subs: None,
+                def_id: None,
             }],
         })
     }
@@ -1521,5 +1473,22 @@ mod tests {
 
         assert_eq!(component_a.qualified_name.to_flat_string(), "a");
         assert_eq!(component_b.qualified_name.to_flat_string(), "b");
+    }
+
+    #[test]
+    fn allocated_occurrence_identities_are_one_based_and_never_unset() {
+        let mut overlay = InstanceOverlay::new();
+
+        let first = overlay.alloc_id();
+        let second = overlay.alloc_id();
+
+        assert!(
+            !first.is_unset(),
+            "the reserved identity is not allocatable"
+        );
+        assert!(!second.is_unset());
+        assert_eq!(first, InstanceId::new(1));
+        assert_eq!(second, InstanceId::new(2));
+        assert_eq!(overlay.allocated_instance_count(), 2);
     }
 }

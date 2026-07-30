@@ -169,6 +169,7 @@ fn failed_phase_failures(
 ) -> Vec<ModelFailureDiagnostic> {
     let spanned: Vec<ModelFailureDiagnostic> = diagnostics
         .iter()
+        .filter(|diag| diag.is_error())
         .filter_map(|diag| {
             let label = diag
                 .labels

@@ -52,11 +52,18 @@ fn make_comp_ref_expr(names: &[&str]) -> ast::Expression {
             .map(|name| ast::ComponentRefPart {
                 ident: make_token(name),
                 subs: None,
+                def_id: None,
             })
             .collect(),
-        def_id: None,
         span: rumoca_core::Span::DUMMY,
+        qualified_display_name: None,
     })
+}
+
+fn resolved_component(def_id: u32) -> ast::Component {
+    let mut component = ast::Component::empty_with_span(test_span());
+    component.def_id = Some(rumoca_core::DefId::new(def_id));
+    component
 }
 
 fn make_named_arg(name: &str, value: ast::Expression) -> ast::Expression {
@@ -128,26 +135,31 @@ fn test_resolve_sibling_modification_keeps_class_modification_reference() {
                     ast::ComponentRefPart {
                         ident: make_token("Modelica"),
                         subs: None,
+                        def_id: None,
                     },
                     ast::ComponentRefPart {
                         ident: make_token("Electrical"),
                         subs: None,
+                        def_id: None,
                     },
                     ast::ComponentRefPart {
                         ident: make_token("Machines"),
                         subs: None,
+                        def_id: None,
                     },
                     ast::ComponentRefPart {
                         ident: make_token("Losses"),
                         subs: None,
+                        def_id: None,
                     },
                     ast::ComponentRefPart {
                         ident: make_token("CoreParameters"),
                         subs: None,
+                        def_id: None,
                     },
                 ],
-                def_id: None,
                 span: rumoca_core::Span::DUMMY,
+                qualified_display_name: None,
             },
             modifications: vec![
                 make_named_arg("PRef", make_int_expr(410)),
@@ -254,26 +266,31 @@ fn test_resolve_sibling_modification_keeps_function_call_record_like_binding() {
                     ast::ComponentRefPart {
                         ident: make_token("Modelica"),
                         subs: None,
+                        def_id: None,
                     },
                     ast::ComponentRefPart {
                         ident: make_token("Electrical"),
                         subs: None,
+                        def_id: None,
                     },
                     ast::ComponentRefPart {
                         ident: make_token("Machines"),
                         subs: None,
+                        def_id: None,
                     },
                     ast::ComponentRefPart {
                         ident: make_token("Losses"),
                         subs: None,
+                        def_id: None,
                     },
                     ast::ComponentRefPart {
                         ident: make_token("CoreParameters"),
                         subs: None,
+                        def_id: None,
                     },
                 ],
-                def_id: None,
                 span: rumoca_core::Span::DUMMY,
+                qualified_display_name: None,
             },
             args: vec![make_int_expr(410), make_int_expr(388)],
             is_partial_application: false,
@@ -775,16 +792,15 @@ fn test_propagate_record_binding_overrides_non_targeted_field_values() {
     let mut nested_record = ast::ClassDef {
         name: make_token("State"),
         class_type: rumoca_core::ClassType::Record,
+        def_id: Some(rumoca_core::DefId::new(800)),
         ..Default::default()
     };
-    nested_record.components.insert(
-        "phase".to_string(),
-        ast::Component::empty_with_span(test_span()),
-    );
-    nested_record.components.insert(
-        "p".to_string(),
-        ast::Component::empty_with_span(test_span()),
-    );
+    nested_record
+        .components
+        .insert("phase".to_string(), resolved_component(801));
+    nested_record
+        .components
+        .insert("p".to_string(), resolved_component(802));
 
     let mut ctx = InstantiateContext::new();
     ctx.mod_env_mut().add(
@@ -811,8 +827,14 @@ fn test_propagate_record_binding_overrides_non_targeted_field_values() {
         .get(&ast::QualifiedName::from_ident("phase"))
         .expect("phase field binding should be present");
     match &phase_mod.value {
-        ast::Expression::FieldAccess { base, field, .. } => {
+        ast::Expression::FieldAccess {
+            base,
+            field,
+            field_def_id,
+            ..
+        } => {
             assert_eq!(field, "phase");
+            assert_eq!(*field_def_id, Some(rumoca_core::DefId::new(801)));
             match base.as_ref() {
                 ast::Expression::ComponentReference(cref) => {
                     assert_eq!(cref.parts.len(), 1);
@@ -830,12 +852,12 @@ fn test_propagate_record_binding_preserves_each_prefix_for_fields() {
     let mut nested_record = ast::ClassDef {
         name: make_token("Orientation"),
         class_type: rumoca_core::ClassType::Record,
+        def_id: Some(rumoca_core::DefId::new(810)),
         ..Default::default()
     };
-    nested_record.components.insert(
-        "T".to_string(),
-        ast::Component::empty_with_span(test_span()),
-    );
+    nested_record
+        .components
+        .insert("T".to_string(), resolved_component(811));
 
     let mut ctx = InstantiateContext::new();
     propagate_record_binding_to_fields(
@@ -862,11 +884,13 @@ fn test_propagate_record_binding_does_not_treat_start_as_field_default() {
     let mut nested_record = ast::ClassDef {
         name: make_token("Orientation"),
         class_type: rumoca_core::ClassType::Record,
+        def_id: Some(rumoca_core::DefId::new(820)),
         ..Default::default()
     };
     nested_record.components.insert(
         "T".to_string(),
         ast::Component {
+            def_id: Some(rumoca_core::DefId::new(821)),
             start: make_int_expr(0),
             ..ast::Component::empty_with_span(test_span())
         },
@@ -890,10 +914,17 @@ fn test_propagate_record_binding_does_not_treat_start_as_field_default() {
         .active
         .get(&ast::QualifiedName::from_ident("T"))
         .expect("start-only fields must inherit the record binding");
-    let ast::Expression::FieldAccess { base, field, .. } = &field_mod.value else {
+    let ast::Expression::FieldAccess {
+        base,
+        field,
+        field_def_id,
+        ..
+    } = &field_mod.value
+    else {
         panic!("field binding should project from the record binding");
     };
     assert_eq!(field, "T");
+    assert_eq!(*field_def_id, Some(rumoca_core::DefId::new(821)));
     assert_eq!(base.as_ref(), &binding_expr);
 }
 
@@ -902,12 +933,12 @@ fn test_propagate_record_binding_preserves_targeted_field_modifiers() {
     let mut nested_record = ast::ClassDef {
         name: make_token("State"),
         class_type: rumoca_core::ClassType::Record,
+        def_id: Some(rumoca_core::DefId::new(830)),
         ..Default::default()
     };
-    nested_record.components.insert(
-        "phase".to_string(),
-        ast::Component::empty_with_span(test_span()),
-    );
+    nested_record
+        .components
+        .insert("phase".to_string(), resolved_component(831));
 
     let mut ctx = InstantiateContext::new();
     let phase_qn = ast::QualifiedName::from_ident("phase");
@@ -950,12 +981,12 @@ fn test_propagate_record_binding_projects_if_expression_branches_per_field() {
     let mut nested_record = ast::ClassDef {
         name: make_token("CellData"),
         class_type: rumoca_core::ClassType::Record,
+        def_id: Some(rumoca_core::DefId::new(840)),
         ..Default::default()
     };
-    nested_record.components.insert(
-        "OCV_SOC".to_string(),
-        ast::Component::empty_with_span(test_span()),
-    );
+    nested_record
+        .components
+        .insert("OCV_SOC".to_string(), resolved_component(841));
 
     let mut ctx = InstantiateContext::new();
     let binding_expr = ast::Expression::If {
@@ -993,10 +1024,17 @@ fn test_propagate_record_binding_projects_if_expression_branches_per_field() {
     };
     assert_eq!(branches.len(), 1);
     let (_cond, then_expr) = &branches[0];
-    let ast::Expression::FieldAccess { base, field, .. } = then_expr else {
+    let ast::Expression::FieldAccess {
+        base,
+        field,
+        field_def_id,
+        ..
+    } = then_expr
+    else {
         panic!("then-branch should project field access");
     };
     assert_eq!(field, "OCV_SOC");
+    assert_eq!(*field_def_id, Some(rumoca_core::DefId::new(841)));
     assert_eq!(*base.as_ref(), make_comp_ref_expr(&["cellDataDegraded"]));
 
     let ast::Expression::FieldAccess {
@@ -1025,6 +1063,7 @@ fn test_record_alias_from_outer_scope_projects_declared_default_field() {
     nested_record.components.insert(
         "nRC".to_string(),
         ast::Component {
+            def_id: Some(rumoca_core::DefId::new(1201)),
             binding: Some(make_int_expr(1)),
             start: make_int_expr(1),
             ..ast::Component::empty_with_span(test_span())
@@ -1049,10 +1088,17 @@ fn test_record_alias_from_outer_scope_projects_declared_default_field() {
         .active
         .get(&ast::QualifiedName::from_ident("nRC"))
         .expect("the outer record's nRC must replace the target default");
-    let ast::Expression::FieldAccess { base, field, .. } = &field_mod.value else {
+    let ast::Expression::FieldAccess {
+        base,
+        field,
+        field_def_id,
+        ..
+    } = &field_mod.value
+    else {
         panic!("outer record field should be projected");
     };
     assert_eq!(field, "nRC");
+    assert_eq!(*field_def_id, Some(rumoca_core::DefId::new(1201)));
     assert_eq!(base.as_ref(), &binding_expr);
 }
 
@@ -1061,11 +1107,13 @@ fn test_propagate_record_binding_preserves_matching_default_record_constructor()
     let mut nested_record = ast::ClassDef {
         name: make_token("BaseData"),
         class_type: rumoca_core::ClassType::Record,
+        def_id: Some(rumoca_core::DefId::new(850)),
         ..Default::default()
     };
     nested_record.components.insert(
         "mu_i".to_string(),
         ast::Component {
+            def_id: Some(rumoca_core::DefId::new(851)),
             binding: Some(make_int_expr(1)),
             start: make_int_expr(1),
             ..ast::Component::empty_with_span(test_span())
@@ -1079,9 +1127,10 @@ fn test_propagate_record_binding_preserves_matching_default_record_constructor()
             parts: vec![ast::ComponentRefPart {
                 ident: make_token("BaseData"),
                 subs: None,
+                def_id: Some(rumoca_core::DefId::new(850)),
             }],
-            def_id: None,
             span: rumoca_core::Span::DUMMY,
+            qualified_display_name: None,
         },
         args: Vec::new(),
         is_partial_application: false,
@@ -1110,11 +1159,13 @@ fn test_propagate_record_binding_projects_subtype_default_record_constructor_fie
     let mut nested_record = ast::ClassDef {
         name: make_token("BaseData"),
         class_type: rumoca_core::ClassType::Record,
+        def_id: Some(rumoca_core::DefId::new(860)),
         ..Default::default()
     };
     nested_record.components.insert(
         "mu_i".to_string(),
         ast::Component {
+            def_id: Some(rumoca_core::DefId::new(861)),
             binding: Some(make_int_expr(1)),
             start: make_int_expr(1),
             ..ast::Component::empty_with_span(test_span())
@@ -1128,9 +1179,10 @@ fn test_propagate_record_binding_projects_subtype_default_record_constructor_fie
             parts: vec![ast::ComponentRefPart {
                 ident: make_token("M350_50A"),
                 subs: None,
+                def_id: Some(rumoca_core::DefId::new(862)),
             }],
-            def_id: None,
             span: rumoca_core::Span::DUMMY,
+            qualified_display_name: None,
         },
         args: Vec::new(),
         is_partial_application: false,
@@ -1164,16 +1216,17 @@ fn test_propagate_record_binding_projects_subtype_default_record_constructor_fie
 fn test_propagate_record_binding_projects_through_unique_constructor_record_field() {
     let inner_def_id = rumoca_core::DefId::new(1001);
     let outer_def_id = rumoca_core::DefId::new(1002);
+    let inner_x_def_id = rumoca_core::DefId::new(1003);
+    let outer_inner_params_def_id = rumoca_core::DefId::new(1004);
     let mut inner_record = ast::ClassDef {
         name: make_token("Inner"),
         class_type: rumoca_core::ClassType::Record,
         def_id: Some(inner_def_id),
         ..Default::default()
     };
-    inner_record.components.insert(
-        "x".to_string(),
-        ast::Component::empty_with_span(test_span()),
-    );
+    inner_record
+        .components
+        .insert("x".to_string(), resolved_component(inner_x_def_id.index()));
 
     let mut outer_record = ast::ClassDef {
         name: make_token("Outer"),
@@ -1184,6 +1237,7 @@ fn test_propagate_record_binding_projects_through_unique_constructor_record_fiel
     outer_record.components.insert(
         "innerParams".to_string(),
         ast::Component {
+            def_id: Some(outer_inner_params_def_id),
             type_name: ast::Name {
                 name: vec![make_token("Pkg"), make_token("Inner")],
                 def_id: Some(inner_def_id),
@@ -1207,9 +1261,10 @@ fn test_propagate_record_binding_projects_through_unique_constructor_record_fiel
             parts: vec![ast::ComponentRefPart {
                 ident: make_token("Outer"),
                 subs: None,
+                def_id: Some(outer_def_id),
             }],
-            def_id: None,
             span: rumoca_core::Span::DUMMY,
+            qualified_display_name: None,
         },
         args: Vec::new(),
         is_partial_application: false,

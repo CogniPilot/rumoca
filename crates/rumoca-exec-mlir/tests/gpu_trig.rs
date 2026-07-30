@@ -129,10 +129,17 @@ fn nonlinear_drone_solve() -> SolveProblem {
     // Row 5: der(omega) = 0
     let row5 = vec![Const { dst: 0, value: 0.0 }, StoreOutput { src: 0 }];
 
-    SolveProblem::with_derivative_rhs(ComputeBlock::from_scalar_program_block(spb(
-        vec![row0, row1, row2, row3, row4, row5],
-        "gpu_trig_nonlinear_drone.mo",
-    )))
+    SolveProblem::with_derivative_rhs(
+        ComputeBlock::from_scalar_program_block(spb(
+            vec![row0, row1, row2, row3, row4, row5],
+            "gpu_trig_nonlinear_drone.mo",
+        )),
+        // Six states (x, y, theta, vx, vy, omega) and four parameters
+        // (m, J, F, g): the derivative seed space is state columns followed by
+        // parameter columns, so both extents belong to the fixture.
+        rumoca_ir_solve::VarLayout::from_parts(Default::default(), 6, 4),
+    )
+    .expect("fixture derivative problem is valid by construction")
 }
 
 fn nonlinear_drone_prepared(m: f64, j: f64, f: f64, g: f64) -> rumoca_ir_solve::SolveModel {
@@ -348,20 +355,25 @@ fn linear_drone_ptx_no_libdevice_needed() {
         StoreOutput { src: 4 },
     ];
 
-    let solve = SolveProblem::with_derivative_rhs(ComputeBlock::from_scalar_program_block(spb(
-        vec![
-            vec![LoadY { dst: 0, index: 3 }, StoreOutput { src: 0 }],
-            vec![LoadY { dst: 0, index: 4 }, StoreOutput { src: 0 }],
-            vec![LoadY { dst: 0, index: 5 }, StoreOutput { src: 0 }],
-            row_vx,
-            row_vy,
+    let solve = SolveProblem::with_derivative_rhs(
+        ComputeBlock::from_scalar_program_block(spb(
             vec![
-                LinearOp::Const { dst: 0, value: 0.0 },
-                StoreOutput { src: 0 },
+                vec![LoadY { dst: 0, index: 3 }, StoreOutput { src: 0 }],
+                vec![LoadY { dst: 0, index: 4 }, StoreOutput { src: 0 }],
+                vec![LoadY { dst: 0, index: 5 }, StoreOutput { src: 0 }],
+                row_vx,
+                row_vy,
+                vec![
+                    LinearOp::Const { dst: 0, value: 0.0 },
+                    StoreOutput { src: 0 },
+                ],
             ],
-        ],
-        "gpu_trig_linear_reference.mo",
-    )));
+            "gpu_trig_linear_reference.mo",
+        )),
+        // Same six states and four parameters as the nonlinear fixture.
+        rumoca_ir_solve::VarLayout::from_parts(Default::default(), 6, 4),
+    )
+    .expect("fixture derivative problem is valid by construction");
 
     let opts = MlirBackendOptions {
         target: MlirTarget::GpuCuda,

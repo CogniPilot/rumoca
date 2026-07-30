@@ -1,3 +1,9 @@
-/* eFMI Production Code representation.
- * Conformance surface: ProductionCode/manifest.xml */
-{% include "galec-model.c.jinja" %}
+{% extends "galec-model.c.jinja" %}
+{#- See model.h.jinja: the shared GALEC-derived C body is target-agnostic and
+    each C target owns its conformance banner. This source file is part of the
+    ProductionCode/ representation of a schema-valid eFMU. -#}
+{% block conformance %}/* {{ algorithm_code.block_name | replace("*/", "* /") | replace("/*", "/ *") }}
+ * eFMI Production Code representation; rung: eFMI Production Code export
+ * (SPEC_0034 GAL-021/GAL-024).
+ * Conformance surface: ProductionCode/manifest.xml (LogicalData), not these
+ * C names. */{% endblock %}

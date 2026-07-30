@@ -342,7 +342,7 @@ fn event_actions_are_guarded_typed_and_keep_coincident_time_ids() {
 }
 
 #[test]
-fn initial_condition_is_typed_and_round_trips_through_wire_v11() {
+fn initial_condition_is_typed_and_round_trips_through_wire_v12() {
     let source = TestSource::new("when initial() then end when;");
     let initial_at = source.source("initial()", 0);
     let dae = Dae::construct(source.map, |dae| {

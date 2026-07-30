@@ -32,7 +32,7 @@ pub(super) fn source_balance(
         if clock_equation_rows.contains(&row) {
             continue;
         }
-        match equation_partition(equation, roles)? {
+        match equation_partition(flat, equation, roles)? {
             EquationPartition::Continuous => {
                 detail.continuous_equations += if let Some(plan) = record_equations.get(&row) {
                     record_equation_scalar_count(flat, equation, plan)?
@@ -120,5 +120,15 @@ fn record_equation_scalar_count(
                     equation.span,
                 )
             })
+    })
+}
+
+fn checked_shape_size(name: &VarName, variable: &flat::Variable) -> Result<usize, ToDaeError> {
+    variable.shape_size().map_err(|_| {
+        ToDaeError::unsupported_flat(
+            "variable shape",
+            format!("`{name}` has a shape whose scalar cardinality cannot be represented"),
+            variable.source_span,
+        )
     })
 }

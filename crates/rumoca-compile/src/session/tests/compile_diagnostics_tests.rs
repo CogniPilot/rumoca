@@ -241,13 +241,18 @@ fn test_synthesized_inner_warning_is_emitted() {
     );
 }
 
+/// The `medium.p` equation is load-bearing coverage, not decoration.
+///
+/// `medium` is declared as `Medium.BaseProperties` through a replaceable
+/// package, so its member set is only known once instantiation applies the
+/// redeclare. Resolve must classify the `medium.p` tail as deferred; if it
+/// instead treats it as a missing static tail, the model fails in Resolve with
+/// ER002 and the real defect — instantiating the partial `BaseProperties` —
+/// never reaches its own phase. The failure must stay Instantiate/EI012 with
+/// exact provenance on the declaration.
 #[test]
 fn test_instantiate_error_code_preserves_ei012_for_partial_component_instantiation() {
-    let mut session = Session::default();
-    session
-        .add_document(
-            "test.mo",
-            r#"
+    let source = r#"
                 package PartialMedium
                   replaceable partial model BaseProperties
                     Real p;
@@ -260,20 +265,48 @@ fn test_instantiate_error_code_preserves_ei012_for_partial_component_instantiati
                 equation
                   medium.p = 1;
                 end M;
-                "#,
-        )
-        .unwrap();
+                "#;
+    let mut session = Session::default();
+    session.add_document("test.mo", source).unwrap();
 
     let phase_result = session.compile_model_phases("M").unwrap();
     match phase_result {
         PhaseResult::Failed {
-            phase, error_code, ..
+            phase,
+            error_code,
+            diagnostics,
+            ..
         } => {
             assert_eq!(phase, FailedPhase::Instantiate);
             assert!(
                 error_code
                     .as_deref()
                     .is_some_and(|code| code.ends_with("EI012"))
+            );
+            assert!(
+                diagnostics
+                    .iter()
+                    .all(|diagnostic| diagnostic.code.as_deref() != Some("ER002")),
+                "the deferred member must not decay into a resolve error: {diagnostics:?}"
+            );
+            let partial = diagnostics
+                .iter()
+                .find(|diagnostic| {
+                    diagnostic
+                        .code
+                        .as_deref()
+                        .is_some_and(|code| code.ends_with("EI012"))
+                })
+                .unwrap_or_else(|| panic!("expected EI012 diagnostic, got: {diagnostics:?}"));
+            let primary = partial
+                .labels
+                .iter()
+                .find(|label| label.primary)
+                .unwrap_or_else(|| panic!("EI012 must retain a primary label: {partial:?}"));
+            assert_eq!(
+                &source[primary.span.start.0..primary.span.end.0],
+                "Medium.BaseProperties medium",
+                "EI012 provenance must point at the deferred declaration"
             );
         }
         other => panic!("expected instantiate failure, got {:?}", other),
@@ -732,6 +765,171 @@ fn strict_target_resolution_keeps_dependencies_declared_by_lexical_ancestors() {
             "unreachable invalid siblings must remain outside the strict target proof"
         );
     }
+}
+
+#[test]
+fn strict_target_resolution_keeps_external_object_lifecycle_identity() {
+    const SOURCE: &str = r#"
+class Handle
+  extends ExternalObject;
+
+  function constructor
+    input Real seed;
+    output Handle handle;
+    external "C" handle = make_handle(seed);
+  end constructor;
+
+  function destructor
+    input Handle handle;
+    external "C" free_handle(handle);
+  end destructor;
+end Handle;
+
+model UsesHandle
+  parameter Handle handle = Handle(1.0);
+end UsesHandle;
+"#;
+
+    let mut session = Session::default();
+    session
+        .add_document("external_object.mo", SOURCE)
+        .expect("source should parse");
+
+    let strict_target = session
+        .resolve_strict_target("UsesHandle")
+        .unwrap_or_else(|failure| {
+            panic!(
+                "strict resolution must retain the complete ExternalObject lifecycle: {:?}",
+                failure.failures
+            )
+        });
+    let resolved = strict_target.resolved.inner();
+    let handle_class = resolved
+        .get_class_by_qualified_name("Handle")
+        .expect("ExternalObject owner must remain in the strict closure");
+    let handle_class_def_id = handle_class
+        .def_id
+        .expect("ExternalObject owner must keep its declaration identity");
+    let constructor = handle_class
+        .classes
+        .get("constructor")
+        .expect("constructor must remain owned by Handle");
+    let destructor = handle_class
+        .classes
+        .get("destructor")
+        .expect("destructor must remain owned by Handle");
+    let constructor_def_id = constructor
+        .def_id
+        .expect("constructor must keep its declaration identity");
+    let destructor_def_id = destructor
+        .def_id
+        .expect("destructor must keep its declaration identity");
+    assert_ne!(constructor_def_id, handle_class_def_id);
+    assert_ne!(destructor_def_id, handle_class_def_id);
+    assert_ne!(constructor_def_id, destructor_def_id);
+    assert_eq!(
+        SOURCE[constructor.location.start as usize..constructor.location.end as usize].trim_start(),
+        "constructor\n    input Real seed;\n    output Handle handle;\n    external \"C\" handle = make_handle(seed);\n  end constructor"
+    );
+    assert_eq!(
+        SOURCE[destructor.location.start as usize..destructor.location.end as usize].trim_start(),
+        "destructor\n    input Handle handle;\n    external \"C\" free_handle(handle);\n  end destructor"
+    );
+
+    let flat = session
+        .compile_model_flat_strict_reachable_uncached_with_recovery("UsesHandle")
+        .unwrap_or_else(|error| {
+            panic!("strict compilation must project the retained constructor: {error}")
+        });
+    let constructor_function = flat
+        .functions
+        .get(&rumoca_core::VarName::new("Handle"))
+        .expect("ExternalObject constructor must be exposed under its callable type");
+    assert_eq!(constructor_function.def_id, Some(constructor_def_id));
+    assert_ne!(constructor_function.def_id, Some(handle_class_def_id));
+    assert!(!constructor_function.is_constructor);
+    assert!(constructor_function.external.is_some());
+    assert_eq!(constructor_function.span, constructor.location.span());
+
+    let binding = flat
+        .variables
+        .get(&rumoca_core::VarName::new("handle"))
+        .and_then(|variable| variable.binding.as_ref())
+        .expect("ExternalObject binding must survive Flat construction");
+    let rumoca_core::Expression::FunctionCall {
+        name,
+        is_constructor,
+        span,
+        ..
+    } = binding
+    else {
+        panic!("ExternalObject binding must remain an executable function call");
+    };
+    assert!(!is_constructor);
+    assert_eq!(name.target_def_id(), Some(handle_class_def_id));
+    assert_eq!(
+        name.resolved_function()
+            .map(|function| function.instance_id),
+        constructor_function.instance_id
+    );
+    assert_eq!(&SOURCE[span.start.0..span.end.0], "Handle(1.0)");
+}
+
+#[test]
+fn strict_target_resolution_preserves_malformed_external_object_child_diagnostic() {
+    const SOURCE: &str = r#"
+class WrongConstructorRestriction
+  extends ExternalObject;
+
+  model constructor
+  end constructor;
+
+  function destructor
+    input WrongConstructorRestriction handle;
+    external "C" free_handle(handle);
+  end destructor;
+end WrongConstructorRestriction;
+
+model UsesWrongConstructor
+  parameter WrongConstructorRestriction handle = WrongConstructorRestriction();
+end UsesWrongConstructor;
+"#;
+
+    let mut session = Session::default();
+    session
+        .add_document("malformed_external_object.mo", SOURCE)
+        .expect("source should parse");
+
+    let failure = session
+        .resolve_strict_target("UsesWrongConstructor")
+        .expect_err("reachable malformed lifecycle must not mint a ResolvedTree proof");
+    let diagnostic = failure
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code.as_deref() == Some("ER132"))
+        .unwrap_or_else(|| {
+            panic!(
+                "strict re-resolution must preserve the lifecycle-shape diagnostic: {:?}",
+                failure.diagnostics
+            )
+        });
+    assert!(
+        diagnostic
+            .message
+            .contains("constructor must be a function"),
+        "unexpected ER132 message: {}",
+        diagnostic.message
+    );
+    let primary = diagnostic
+        .labels
+        .iter()
+        .find(|label| label.primary)
+        .expect("ER132 must retain a primary source span");
+    assert_eq!(
+        &SOURCE[primary.span.start.0..primary.span.end.0],
+        "constructor",
+        "strict planning must retain the malformed child declaration itself"
+    );
 }
 
 #[test]
@@ -1561,6 +1759,98 @@ fn strict_dae_recovery_detailed_reports_none_phase_for_resolve_failure() {
         !failure.summary.contains("failed in ToDae"),
         "summary must not claim ToDae: {}",
         failure.summary
+    );
+}
+
+#[test]
+fn warning_only_resolve_diagnostics_do_not_fail_model_compilation() {
+    let mut session = Session::default();
+    session
+        .add_document(
+            "WarningOnly.mo",
+            r#"
+                model WarningOnly
+                  parameter Real q(start=1) annotation(Evaluate=true);
+                  Real x;
+                equation
+                  x = 1;
+                end WarningOnly;
+                "#,
+        )
+        .unwrap();
+
+    session
+        .compile_model("WarningOnly")
+        .expect("warning-only Resolve diagnostics must not fail compilation");
+    let diagnostics = session.compile_model_diagnostics("WarningOnly");
+    assert!(
+        diagnostics
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code.as_deref() == Some("WR005")
+                && !diagnostic.is_error()),
+        "the warning must remain observable: {diagnostics:?}"
+    );
+    assert!(
+        diagnostics
+            .diagnostics
+            .iter()
+            .all(|diagnostic| !diagnostic.is_error()),
+        "warning-only source must not acquire an error: {diagnostics:?}"
+    );
+}
+
+#[test]
+fn strict_resolve_failure_is_constructed_only_from_error_diagnostics() {
+    let mut session = Session::default();
+    session
+        .add_document(
+            "MixedSeverity.mo",
+            r#"
+                model MixedSeverity
+                  parameter Real q(start=1) annotation(Evaluate=true);
+                  Real x;
+                equation
+                  x = missing;
+                end MixedSeverity;
+                "#,
+        )
+        .unwrap();
+
+    let failure = session
+        .compile_model_dae_strict_reachable_uncached_with_recovery_detailed("MixedSeverity")
+        .expect_err("the unresolved reference must fail Resolve");
+    assert_eq!(failure.phase, None);
+    assert_eq!(failure.error_code.as_deref(), Some("ER002"));
+    assert!(
+        failure
+            .failures
+            .iter()
+            .all(|failure| failure.error_code.as_deref() != Some("WR005")),
+        "advisories cannot construct ModelFailureDiagnostic: {failure:?}"
+    );
+    assert!(
+        failure.summary.contains("unresolved component reference")
+            && !failure.summary.contains("Evaluate=true"),
+        "the fatal summary must be derived from the error: {}",
+        failure.summary
+    );
+
+    let diagnostics = session.compile_model_diagnostics("MixedSeverity");
+    assert!(
+        diagnostics
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code.as_deref() == Some("WR005")
+                && !diagnostic.is_error()),
+        "the advisory remains independently observable: {diagnostics:?}"
+    );
+    assert!(
+        diagnostics
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code.as_deref() == Some("ER002") && diagnostic.is_error()),
+        "the fatal diagnostic remains independently observable: {diagnostics:?}"
     );
 }
 

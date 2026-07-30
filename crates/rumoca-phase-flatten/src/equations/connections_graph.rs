@@ -155,7 +155,8 @@ mod tests {
             local: false,
             parts: crate::path_utils::segments(path)
                 .into_iter()
-                .map(|part| ast::ComponentRefPart {
+                .enumerate()
+                .map(|(index, part)| ast::ComponentRefPart {
                     ident: rumoca_core::Token {
                         text: Arc::from(part),
                         location: rumoca_core::Location::default(),
@@ -163,10 +164,11 @@ mod tests {
                         token_type: 0,
                     },
                     subs: None,
+                    def_id: Some(rumoca_core::DefId::new(16_001 + index as u32)),
                 })
                 .collect(),
-            def_id: None,
             span: rumoca_core::Span::DUMMY,
+            qualified_display_name: None,
         }
     }
 

@@ -291,9 +291,47 @@ fn compatible_discrete_definition<'dae>(
 ) -> Option<(dae::DiscreteRealId<'dae>, dae::ExprId<'dae>)> {
     let variable = view.variable(dae::VariableId::from(target))?;
     let expression = view.expression(value)?;
-    (variable.value_type() == expression.value_type()
-        && !dae::expr_contains_var(view, value, dae::VariableId::from(target)))
+    (defines_discrete_real(variable.value_type(), expression.value_type())
+        && !reads_current_discrete_real(view, value, target))
     .then_some((target, value))
+}
+
+/// True when a value of type `value` can define a discrete `Real` target of type `target`.
+///
+/// The checked DAE preserves each expression's own source type, so the Integer literal in
+/// `x = 1` keeps `ScalarType::Integer` even when `x` is `Real`. MLS §6.7 admits that
+/// implicit Integer-to-Real conversion, so requiring identical value types would reject
+/// a legal explicit definition. Shape must still agree exactly.
+fn defines_discrete_real(target: &dae::ValueType, value: &dae::ValueType) -> bool {
+    target.dimensions() == value.dimensions()
+        && target.scalar_type() == dae::ScalarType::Real
+        && matches!(
+            value.scalar_type(),
+            dae::ScalarType::Real | dae::ScalarType::Integer
+        )
+}
+
+/// True when `value` reads the *current* coordinate of `target`.
+///
+/// Only a current-value occurrence couples a discrete Real definition to itself. MLS
+/// §3.7.5 defines `pre(x)` as the left limit of `x`, which is already settled when the
+/// event fires, so `x = a * pre(x) + b * u` is an explicit computable definition of `x`.
+/// The generic [`dae::expr_contains_var`] query deliberately treats `pre` and current
+/// coordinates as the same declaration, so it cannot be used to decide computability.
+fn reads_current_discrete_real<'dae>(
+    view: dae::DaeView<'dae>,
+    value: dae::ExprId<'dae>,
+    target: dae::DiscreteRealId<'dae>,
+) -> bool {
+    let mut found = false;
+    dae::for_each_expression(view, value, |_, expression| {
+        found |= matches!(
+            expression.operation(),
+            dae::ExpressionOperation::Coordinate(dae::CoordinateView::DiscreteReal(candidate))
+                if candidate == target
+        );
+    });
+    found
 }
 
 fn whole_discrete_real<'dae>(
@@ -566,7 +604,7 @@ fn push_message_action<'dae>(
     conditions: &mut ScalarRows,
 ) -> Result<(), LowerError> {
     let span = action.provenance().span();
-    let message = literal_message(view, message, span)?;
+    let message = lower_message(view, layout, message)?;
     let trigger_memory = condition_memory(layout, action.trigger(), span)?;
     let program = ScalarCompiler::new(view, layout, None).edge_condition_program(
         action.trigger(),
@@ -577,30 +615,112 @@ fn push_message_action<'dae>(
     conditions.push(program, span, actions.len());
     actions.push(solve::SolveEventAction {
         kind,
-        message: solve::SolveEventMessage {
-            parts: vec![solve::SolveEventMessagePart::Text(message)],
-        },
+        message,
         span,
         origin: action.provenance().origin().to_string(),
     });
     Ok(())
 }
 
-fn literal_message<'dae>(
+fn lower_message<'dae>(
     view: dae::DaeView<'dae>,
+    layout: &LoweredLayout<'dae>,
     message: dae::ExprId<'dae>,
-    span: Span,
-) -> Result<String, LowerError> {
+) -> Result<solve::SolveEventMessage, LowerError> {
+    let mut parts = Vec::new();
+    lower_message_parts(view, layout, message, &mut parts)?;
+    Ok(solve::SolveEventMessage { parts })
+}
+
+fn lower_message_parts<'dae>(
+    view: dae::DaeView<'dae>,
+    layout: &LoweredLayout<'dae>,
+    message: dae::ExprId<'dae>,
+    parts: &mut Vec<solve::SolveEventMessagePart>,
+) -> Result<(), LowerError> {
     let expression = view
         .expression(message)
         .expect("checked event message expression resolves");
     match expression.operation() {
-        dae::ExpressionOperation::Literal(dae::DaeLiteral::String(message)) => Ok(message.clone()),
+        dae::ExpressionOperation::Literal(dae::DaeLiteral::String(message)) => {
+            parts.push(solve::SolveEventMessagePart::Text(message.clone()));
+            Ok(())
+        }
+        dae::ExpressionOperation::Binary {
+            operator: dae::BinaryOperator::Add,
+            lhs,
+            rhs,
+        } if expression.value_type().scalar_type() == dae::ScalarType::String => {
+            lower_message_parts(view, layout, lhs, parts)?;
+            lower_message_parts(view, layout, rhs, parts)
+        }
+        dae::ExpressionOperation::StringConversion { value, format, .. } => {
+            let source = match view
+                .expression(value)
+                .expect("checked String conversion value resolves")
+                .value_type()
+                .scalar_type()
+            {
+                dae::ScalarType::Real => solve::SolveStringConversionSource::Real,
+                dae::ScalarType::Integer => solve::SolveStringConversionSource::Integer,
+                dae::ScalarType::Boolean => solve::SolveStringConversionSource::Boolean,
+                dae::ScalarType::Enumeration
+                | dae::ScalarType::String
+                | dae::ScalarType::Record => {
+                    unreachable!("checked String conversion has a supported scalar source")
+                }
+            };
+            let value = ScalarCompiler::new(view, layout, None).program(value, 0)?;
+            let format = lower_message_format(view, layout, format)?;
+            parts.push(solve::SolveEventMessagePart::Conversion {
+                value,
+                source,
+                format,
+            });
+            Ok(())
+        }
         _ => Err(LowerError::unsupported(
-            "non-literal event messages do not yet have checked Solve lowering",
-            span,
+            "Solve event messages require String literals, concatenation, or checked String conversions",
+            expression.provenance().span(),
         )),
     }
+}
+
+fn lower_message_format<'dae>(
+    view: dae::DaeView<'dae>,
+    layout: &LoweredLayout<'dae>,
+    format: dae::StringConversionFormatView<'dae>,
+) -> Result<solve::SolveStringConversionFormat, LowerError> {
+    Ok(match format {
+        dae::StringConversionFormatView::Options {
+            minimum_length,
+            left_justified,
+            significant_digits,
+        } => solve::SolveStringConversionFormat::Options {
+            minimum_length: lower_message_option(view, layout, minimum_length)?,
+            left_justified: lower_message_option(view, layout, left_justified)?,
+            significant_digits: lower_message_option(view, layout, significant_digits)?,
+        },
+        dae::StringConversionFormatView::Format { value } => {
+            let expression = view
+                .expression(value)
+                .expect("checked String format expression resolves");
+            return Err(LowerError::unsupported(
+                "explicit String format is not representable in checked Solve event messages",
+                expression.provenance().span(),
+            ));
+        }
+    })
+}
+
+fn lower_message_option<'dae>(
+    view: dae::DaeView<'dae>,
+    layout: &LoweredLayout<'dae>,
+    value: Option<dae::ExprId<'dae>>,
+) -> Result<Option<Vec<solve::LinearOp>>, LowerError> {
+    value
+        .map(|value| ScalarCompiler::new(view, layout, None).program(value, 0))
+        .transpose()
 }
 
 #[derive(Clone, Copy)]

@@ -229,24 +229,35 @@ impl<'dae> DiscreteValueStaging<'dae> {
     pub(super) fn add_holds(
         &mut self,
         construction: &mut dae::DaeConstruction<'dae>,
-        flat: &flat::Model,
         coordinates: &HashMap<VarName, Coordinate<'dae>>,
         plan: &DiscreteValueTopologyPlan,
     ) -> Result<(), dae::DaeConstructionError> {
-        for (name, variable) in &flat.variables {
-            let Coordinate::DiscreteValue(target) = coordinates[name] else {
-                continue;
+        for held in plan.held_targets() {
+            let Some(Coordinate::DiscreteValue(target)) = coordinates.get(&held.name).copied()
+            else {
+                return Err(dae::DaeConstructionError::InvalidVariableRole {
+                    name: held.name.clone(),
+                    span: held.declaration_span,
+                });
             };
             if self.owner_by_target.contains_key(&target) {
-                continue;
+                return Err(dae::DaeConstructionError::DuplicateDefinition {
+                    kind: "B.1c held semantic owner",
+                    index: target.index(),
+                    span: held.declaration_span,
+                });
             }
             let provenance = dae::DaeProvenance::generated(
                 dae::DaeGeneration::DiscreteUpdate,
-                variable.source_span,
+                held.declaration_span,
             )?;
-            let owner = self
-                .owner(provenance, [name.clone()], coordinates, plan)?
-                .expect("a planned discrete-value coordinate creates an owner");
+            let Some(owner) = self.owner(provenance, [held.name.clone()], coordinates, plan)?
+            else {
+                return Err(dae::DaeConstructionError::InvalidDiscreteTopologyPlan {
+                    target: target.index(),
+                    span: held.declaration_span,
+                });
+            };
             let value = construction.expressions(|expressions| {
                 expressions
                     .at(provenance)

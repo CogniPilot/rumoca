@@ -134,6 +134,18 @@ pub(super) enum ExprNodeWire {
         output: u32,
         operand_count: u32,
     },
+    StringConversion {
+        declaration: rumoca_core::DefId,
+        value: u32,
+        #[serde(deserialize_with = "deserialize_required_option")]
+        minimum_length: Option<u32>,
+        #[serde(deserialize_with = "deserialize_required_option")]
+        left_justified: Option<u32>,
+        #[serde(deserialize_with = "deserialize_required_option")]
+        significant_digits: Option<u32>,
+        #[serde(deserialize_with = "deserialize_required_option")]
+        format: Option<u32>,
+    },
     FunctionValue {
         function: u32,
         value: u32,
@@ -195,6 +207,7 @@ pub(super) enum CoordinateWire {
     PreDiscreteReal(u32),
     PreDiscreteValue(u32),
     Time,
+    ClockInterval(u32),
     Condition(u32),
     Delay(u32),
     Previous(u32),

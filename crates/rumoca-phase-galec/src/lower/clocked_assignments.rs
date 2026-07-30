@@ -551,6 +551,7 @@ mod tests {
                 provenance,
             )
         })
+        .map(Into::into)
     }
 
     fn define_real_equation<'dae>(
@@ -1055,6 +1056,72 @@ mod tests {
                 value: gast::Expression::Real(value),
                 ..
             } if value == 1.0
+        ));
+    }
+
+    #[test]
+    fn periodic_interval_coordinate_lowers_to_owning_lattice_period() {
+        let text = "discrete Real z; z = interval(u); Clock(1, 8);";
+        let mut sources = SourceMap::new();
+        let source = sources.add("clock-interval.mo", text);
+        let declaration = at(source, text, "discrete Real z");
+        let equation_at = at(source, text, "z = interval(u)");
+        let interval_at = at(source, text, "interval(u)");
+        let clock_at = at(source, text, "Clock(1, 8)");
+        let model = dae::Dae::construct(sources, |dae| {
+            let real = dae.types(|types| {
+                types.intern(
+                    TypeId::new(0),
+                    dae::ValueType::scalar(dae::ScalarType::Real),
+                    declaration,
+                )
+            })?;
+            let z = dae.variables(|variables| {
+                variables.discrete_real(
+                    VarName::new("z"),
+                    real,
+                    declaration,
+                    dae::VariableAttributes::default(),
+                )
+            })?;
+            let clock = dae.clocks(|clocks| {
+                clocks.periodic(
+                    ClockLattice::new(
+                        ClockRational::new(1, 8).expect("fixture period is exact"),
+                        ClockRational::ZERO,
+                    )
+                    .expect("fixture lattice is valid"),
+                    clock_at,
+                )
+            })?;
+            let (lhs, rhs) = dae.expressions(|expressions| {
+                Ok((
+                    expressions
+                        .at(equation_at)
+                        .coordinate(dae::CoordinateInput::DiscreteReal(z))?,
+                    expressions
+                        .at(interval_at)
+                        .coordinate(dae::CoordinateInput::ClockInterval(clock))?,
+                ))
+            })?;
+            dae.clocks(|clocks| {
+                clocks.own_discrete_real(clock.into(), z, declaration)?;
+                Ok(())
+            })?;
+            define_real_equation(dae, equation_at, lhs, rhs)
+        })
+        .expect("checked interval fixture constructs");
+
+        let statements = project(&model).expect("periodic interval projects");
+        assert_eq!(statements.len(), 1);
+        assert_eq!(statements[0].span, equation_at.span());
+        assert_eq!(assignment_target(&statements[0]), "z");
+        assert!(matches!(
+            statements[0].node,
+            gast::Statement::Assignment {
+                value: gast::Expression::Real(value),
+                ..
+            } if value == 0.125
         ));
     }
 

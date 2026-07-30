@@ -11,7 +11,6 @@ impl SolveRowsValue {
             rows: Arc::new(rows),
         }
     }
-
 }
 
 impl Object for SolveRowsValue {
@@ -229,16 +228,40 @@ pub(in crate::codegen) struct RenderNativeDenseNode {
     pub(in crate::codegen) output_offset: usize,
 }
 
+/// One native dense node already projected into the shared template view.
+///
+/// The dense MLIR emitters read derived projections of the checked structural
+/// pattern (`lhs_pattern_kind`, `lhs_pattern_nonzeros`). Those exist only in
+/// the `solve_lazy` compute-node view: the canonical serialization carries the
+/// pattern itself, never its derived kind. Projecting here keeps the dense
+/// emitters and `solve.…nodes` on one view instead of two shapes that drift.
+#[derive(Debug)]
+struct NativeDenseNodeView {
+    node: Value,
+    node_id: usize,
+    output_offset: usize,
+}
+
 #[derive(Debug)]
 pub(in crate::codegen) struct SolveNativeDenseNodesValue {
-    nodes: Arc<Vec<RenderNativeDenseNode>>,
+    nodes: Arc<Vec<NativeDenseNodeView>>,
 }
 
 impl SolveNativeDenseNodesValue {
-    pub(in crate::codegen) fn new(nodes: Vec<RenderNativeDenseNode>) -> Self {
-        Self {
-            nodes: Arc::new(nodes),
+    pub(in crate::codegen) fn new(
+        nodes: Vec<RenderNativeDenseNode>,
+    ) -> Result<Self, crate::errors::CodegenError> {
+        let mut views = Vec::with_capacity(nodes.len());
+        for node in nodes {
+            views.push(NativeDenseNodeView {
+                node: crate::codegen::solve_lazy::compute_node_value(Arc::new(node.node))?,
+                node_id: node.node_id,
+                output_offset: node.output_offset,
+            });
         }
+        Ok(Self {
+            nodes: Arc::new(views),
+        })
     }
 }
 
@@ -264,12 +287,12 @@ impl Object for SolveNativeDenseNodesValue {
 
 #[derive(Debug)]
 struct SolveNativeDenseNodeValue {
-    nodes: Arc<Vec<RenderNativeDenseNode>>,
+    nodes: Arc<Vec<NativeDenseNodeView>>,
     index: usize,
 }
 
 impl SolveNativeDenseNodeValue {
-    fn node(&self) -> &RenderNativeDenseNode {
+    fn node(&self) -> &NativeDenseNodeView {
         &self.nodes[self.index]
     }
 }
@@ -281,7 +304,7 @@ impl Object for SolveNativeDenseNodeValue {
 
     fn get_value(self: &Arc<Self>, key: &Value) -> Option<Value> {
         match key.as_str()? {
-            "node" => Some(Value::from_serialize(&self.node().node)),
+            "node" => Some(self.node().node.clone()),
             "node_id" => Some(Value::from(self.node().node_id)),
             "output_offset" => Some(Value::from(self.node().output_offset)),
             _ => None,

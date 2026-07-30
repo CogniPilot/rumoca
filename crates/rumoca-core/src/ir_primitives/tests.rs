@@ -1,12 +1,14 @@
 use super::{
-    BuiltinFunction, ComponentPath, ComponentRefPart, ComponentReference, DefId, Expression,
-    Function, FunctionParam, FunctionParamShapeContractError, FunctionShapeContractError, Literal,
-    OpBinary, PRE_SLOT_NAMESPACE, Reference, SourceId, Span, Subscript, VarName,
-    component_path_base_name, component_path_trailing_index, expression_semantic_fingerprint,
-    expressions_semantically_equal, flat_expression_component_path, is_pre_slot, parse_scalar_name,
-    pre_slot_base, pre_slot_name, scoped_component_path_candidates,
+    BuiltinFunction, ComponentPath, ComponentRefPart, ComponentReference, ComponentReferenceError,
+    DefId, Expression, Function, FunctionInstanceId, FunctionParam,
+    FunctionParamShapeContractError, FunctionShapeContractError, InstanceId, Literal, OpBinary,
+    PRE_SLOT_NAMESPACE, Reference, ResolvedFunctionReference, SourceId, Span, Subscript, TypeId,
+    VarName, component_path_base_name, component_path_trailing_index,
+    expression_semantic_fingerprint, expressions_semantically_equal, flat_expression_component_path,
+    is_pre_slot, parse_scalar_name, pre_slot_base, pre_slot_name, scoped_component_path_candidates,
     split_trailing_subscript_suffix, strip_trailing_subscript_suffix,
 };
+use crate::{EffectiveType, EffectiveTypeError};
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -16,6 +18,19 @@ static INTERNER_STRESS_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
 
 fn test_span() -> Span {
     Span::from_offsets(SourceId::from_source_name("ir_primitives_test.mo"), 1, 2)
+}
+
+fn real_value_type(dimensions: Vec<i64>) -> EffectiveType {
+    EffectiveType::new(TypeId::new(11), TypeId::new(1), dimensions)
+        .expect("fixture function type is resolved")
+}
+
+#[test]
+fn default_instance_identity_is_the_reserved_unset_value() {
+    assert_eq!(InstanceId::default(), InstanceId::UNSET);
+    assert!(InstanceId::default().is_unset());
+    assert!(!InstanceId::new(1).is_unset());
+    assert_eq!(InstanceId::UNSET.index(), 0);
 }
 
 #[test]
@@ -63,12 +78,14 @@ fn flat_expression_component_path_preserves_projected_indices() {
                     span,
                 }),
                 field: "cellData".to_string(),
+                field_def_id: DefId::new(2),
                 span,
             }),
             subscripts: vec![Subscript::index(1, span), Subscript::index(2, span)],
             span,
         }),
         field: "nRC".to_string(),
+        field_def_id: DefId::new(3),
         span,
     };
 
@@ -83,6 +100,10 @@ fn flat_expression_component_path_preserves_projected_indices() {
 #[test]
 fn builtin_function_all_entries_round_trip_by_name() {
     for builtin in BuiltinFunction::ALL {
+        if builtin.requires_predefined_identity() {
+            assert_eq!(BuiltinFunction::from_name(builtin.name()), None);
+            continue;
+        }
         assert_eq!(
             BuiltinFunction::from_name(builtin.name()),
             Some(*builtin),
@@ -120,45 +141,55 @@ fn var_name_hashes_by_interned_identity() {
 
 #[test]
 fn reference_carries_component_ref_and_target_def_id_without_owning_def_id() {
-    let component_ref = ComponentReference {
-        local: false,
-        span: Span::DUMMY,
-        parts: vec![
+    let component_ref = ComponentReference::construct(
+        false,
+        Span::DUMMY,
+        vec![
             ComponentRefPart {
                 ident: "body".to_string(),
                 span: Span::DUMMY,
                 subs: vec![Subscript::generated_index(2, Span::DUMMY)],
+                def_id: DefId::new(7),
             },
             ComponentRefPart {
                 ident: "r".to_string(),
                 span: Span::DUMMY,
                 subs: Vec::new(),
+                def_id: DefId::new(42),
             },
         ],
-        def_id: Some(DefId::new(42)),
-    };
+    )
+    .expect("test reference is nonempty");
     let reference = Reference::with_component_reference("body[2].r", component_ref.clone());
 
     assert_eq!(reference.as_str(), "body[2].r");
+    assert_eq!(reference.root_def_id(), Some(DefId::new(7)));
     assert_eq!(reference.target_def_id(), Some(DefId::new(42)));
     assert_eq!(reference.component_ref(), Some(&component_ref));
-    assert_eq!(reference.parts(), component_ref.parts.as_slice());
+    assert_eq!(reference.parts(), component_ref.parts());
 }
 
 #[test]
 fn reference_appended_index_uses_required_owner_provenance() {
     let owner_span = Span::from_offsets(SourceId::from_source_name("append_ref.mo"), 20, 28);
-    let component_ref = ComponentReference {
-        local: false,
-        span: Span::DUMMY,
-        parts: vec![ComponentRefPart {
+    let component_ref = ComponentReference::construct(
+        false,
+        Span::DUMMY,
+        vec![ComponentRefPart {
             ident: "body".to_string(),
             span: Span::DUMMY,
             subs: Vec::new(),
+            def_id: DefId::new(42),
         }],
-        def_id: Some(DefId::new(42)),
+    )
+    .expect("test reference is nonempty");
+    let function = ResolvedFunctionReference {
+        instance_id: FunctionInstanceId::new(8),
+        base_part_count: 1,
     };
-    let reference = Reference::with_component_reference("body", component_ref);
+    let reference = Reference::with_component_reference("body", component_ref)
+        .with_instance_id(InstanceId::new(9))
+        .with_resolved_function(function);
 
     let indexed = reference.with_appended_index(
         2,
@@ -170,10 +201,10 @@ fn reference_appended_index_uses_required_owner_provenance() {
     let component_ref = indexed
         .component_ref()
         .expect("appended structured reference keeps component metadata");
-    assert_eq!(component_ref.span, Span::DUMMY);
-    assert_eq!(component_ref.parts[0].span, Span::DUMMY);
+    assert_eq!(component_ref.span(), Span::DUMMY);
+    assert_eq!(component_ref.parts()[0].span, Span::DUMMY);
     assert_eq!(
-        component_ref.parts[0].subs,
+        component_ref.parts()[0].subs,
         vec![Subscript::generated_index_with_provenance(
             2,
             owner_span
@@ -181,21 +212,110 @@ fn reference_appended_index_uses_required_owner_provenance() {
                 .expect("test span is real"),
         )]
     );
+    assert_eq!(indexed.target_def_id(), Some(DefId::new(42)));
+    assert_eq!(indexed.instance_id(), Some(InstanceId::new(9)));
+    assert_eq!(indexed.resolved_function(), Some(function));
+}
+
+#[test]
+fn appended_field_cannot_inherit_the_base_exact_target() {
+    let root_span = Span::from_offsets(SourceId::from_source_name("field.mo"), 1, 5);
+    let base_span = Span::from_offsets(SourceId::from_source_name("field.mo"), 6, 12);
+    let field_span = Span::from_offsets(SourceId::from_source_name("field.mo"), 13, 18);
+    let function = ResolvedFunctionReference {
+        instance_id: FunctionInstanceId::new(8),
+        base_part_count: 2,
+    };
+    let reference = Reference::from_component_reference(
+        ComponentReference::construct(
+            false,
+            root_span,
+            vec![
+                ComponentRefPart {
+                    ident: "owner".to_string(),
+                    span: root_span,
+                    subs: Vec::new(),
+                    def_id: DefId::new(7),
+                },
+                ComponentRefPart {
+                    ident: "record".to_string(),
+                    span: base_span,
+                    subs: Vec::new(),
+                    def_id: DefId::new(8),
+                },
+            ],
+        )
+        .expect("test reference is nonempty"),
+    )
+    .with_instance_id(InstanceId::new(9))
+    .with_resolved_function(function);
+
+    let field = reference
+        .with_appended_field(
+            "value",
+            DefId::new(42),
+            field_span
+                .require_provenance("test record field")
+                .expect("test span is real"),
+        )
+        .expect("structured field projection is valid");
+
+    assert_eq!(field.root_def_id(), Some(DefId::new(7)));
+    assert_eq!(
+        field.target_def_id(),
+        Some(DefId::new(42)),
+        "the appended member carries its own exact declaration identity"
+    );
+    let parts = field
+        .component_ref()
+        .expect("projection remains structured")
+        .parts();
+    assert_eq!(parts[0].span, root_span);
+    assert_eq!(parts[1].span, base_span);
+    assert_eq!(parts[2].span, field_span);
+    assert_eq!(field.instance_id(), Some(InstanceId::new(9)));
+    assert_eq!(field.resolved_function(), None);
+
+    assert_eq!(
+        Reference::new("record")
+            .with_appended_field(
+                "value",
+                DefId::new(42),
+                field_span
+                    .require_provenance("test record field")
+                    .expect("test span is real"),
+            )
+            .expect_err("an exact projection cannot degrade to a rendered reference"),
+        ComponentReferenceError::MissingStructuredBase,
+    );
+    assert_eq!(
+        reference
+            .with_appended_field(
+                "value",
+                DefId::new(0),
+                field_span
+                    .require_provenance("test record field")
+                    .expect("test span is real"),
+            )
+            .expect_err("an unresolved field identity must fail"),
+        ComponentReferenceError::MissingPartIdentity { part_index: 2 },
+    );
 }
 
 #[test]
 fn expression_span_recovers_reference_component_span() {
     let span = Span::from_offsets(SourceId::from_source_name("ref_span.mo"), 12, 18);
-    let component_ref = ComponentReference {
-        local: false,
+    let component_ref = ComponentReference::construct(
+        false,
         span,
-        parts: vec![ComponentRefPart {
+        vec![ComponentRefPart {
             ident: "z".to_string(),
             span,
             subs: Vec::new(),
+            def_id: DefId::new(7),
         }],
-        def_id: Some(DefId::new(7)),
-    };
+    )
+    .expect("test reference is nonempty");
     let expr = Expression::VarRef {
         name: Reference::from_component_reference(component_ref),
         subscripts: Vec::new(),
@@ -207,30 +327,23 @@ fn expression_span_recovers_reference_component_span() {
 
 #[test]
 fn function_param_shape_contract_accepts_zero_dynamic_sentinel() {
-    let param = FunctionParam::new("x", "Real", test_span()).with_dims(vec![0, 3]);
+    let param = FunctionParam::new("x", "Real", real_value_type(vec![0, 3]), test_span());
 
     assert_eq!(param.validate_shape_contract(), Ok(()));
 }
 
 #[test]
-fn function_param_shape_contract_rejects_negative_dims() {
-    let span = test_span();
-    let param = FunctionParam::new("x", "Real", span).with_dims(vec![2, -1]);
-
+fn effective_function_type_rejects_negative_dims_at_construction() {
     assert_eq!(
-        param.validate_shape_contract(),
-        Err(FunctionParamShapeContractError::NegativeDimension {
-            param: "x".to_string(),
-            dimension: -1,
-            span,
-        })
+        EffectiveType::new(TypeId::new(11), TypeId::new(1), vec![2, -1]),
+        Err(EffectiveTypeError::NegativeExtent)
     );
 }
 
 #[test]
 fn function_param_shape_contract_rejects_missing_type() {
     let span = test_span();
-    let param = FunctionParam::new("x", "", span);
+    let param = FunctionParam::new("x", "", real_value_type(Vec::new()), span);
 
     assert_eq!(
         param.validate_shape_contract(),
@@ -244,8 +357,7 @@ fn function_param_shape_contract_rejects_missing_type() {
 #[test]
 fn function_param_shape_contract_rejects_mismatched_shape_expr() {
     let span = test_span();
-    let param = FunctionParam::new("x", "Real", span)
-        .with_dims(vec![0, 3])
+    let param = FunctionParam::new("x", "Real", real_value_type(vec![0, 3]), span)
         .with_shape_expr(vec![Subscript::colon(Span::DUMMY)]);
 
     assert_eq!(
@@ -262,8 +374,7 @@ fn function_param_shape_contract_rejects_mismatched_shape_expr() {
 #[test]
 fn function_param_shape_contract_rejects_negative_shape_index() {
     let span = test_span();
-    let param = FunctionParam::new("x", "Real", span)
-        .with_dims(vec![0])
+    let param = FunctionParam::new("x", "Real", real_value_type(vec![0]), span)
         .with_shape_expr(vec![Subscript::generated_index(-1, Span::DUMMY)]);
 
     assert_eq!(
@@ -280,15 +391,18 @@ fn function_param_shape_contract_rejects_negative_shape_index() {
 fn function_shape_contract_reports_bad_local_param() {
     let span = test_span();
     let mut function = Function::new("Pkg.f", Span::DUMMY);
-    function.add_local(FunctionParam::new("tmp", "Real", span).with_dims(vec![-1]));
+    function.add_local(
+        FunctionParam::new("tmp", "Real", real_value_type(vec![0]), span)
+            .with_shape_expr(vec![Subscript::generated_index(-1, Span::DUMMY)]),
+    );
 
     assert_eq!(
         function.validate_shape_contract(),
         Err(FunctionShapeContractError::Param {
             function: VarName::new("Pkg.f"),
-            source: FunctionParamShapeContractError::NegativeDimension {
+            source: FunctionParamShapeContractError::NegativeShapeIndex {
                 param: "tmp".to_string(),
-                dimension: -1,
+                index: -1,
                 span,
             },
         })
@@ -297,15 +411,15 @@ fn function_shape_contract_reports_bad_local_param() {
 
 #[test]
 fn function_param_shape_contract_error_displays_reason() {
-    let error = FunctionParamShapeContractError::NegativeDimension {
+    let error = FunctionParamShapeContractError::NegativeShapeIndex {
         param: "tmp".to_string(),
-        dimension: -1,
+        index: -1,
         span: Span::DUMMY,
     };
 
     assert_eq!(
         error.to_string(),
-        "function parameter `tmp` has negative dimension -1"
+        "function parameter `tmp` has negative shape index -1"
     );
 }
 
@@ -348,23 +462,25 @@ fn component_path_candidates_walk_parent_scopes_without_subscript_dot_split() {
 
 #[test]
 fn component_path_preserves_component_reference_subscripts() {
-    let component_ref = ComponentReference {
-        local: false,
-        span: Span::DUMMY,
-        parts: vec![
+    let component_ref = ComponentReference::construct(
+        false,
+        Span::DUMMY,
+        vec![
             ComponentRefPart {
                 ident: "body".to_string(),
                 span: Span::DUMMY,
                 subs: vec![Subscript::generated_index(2, Span::DUMMY)],
+                def_id: DefId::new(42),
             },
             ComponentRefPart {
                 ident: "r".to_string(),
                 span: Span::DUMMY,
                 subs: Vec::new(),
+                def_id: DefId::new(43),
             },
         ],
-        def_id: Some(DefId::new(42)),
-    };
+    )
+    .expect("test reference is nonempty");
 
     assert_eq!(
         ComponentPath::from_component_reference(&component_ref).to_flat_string(),
@@ -526,20 +642,21 @@ fn expression_semantic_equality_ignores_spans() {
 }
 
 /// A structured reference to `resistor.v` carrying the given declaration id.
-fn declaration_reference(def_id: Option<DefId>, span: Span) -> Reference {
-    let part = |ident: &str| ComponentRefPart {
+fn declaration_reference(def_id: DefId, span: Span) -> Reference {
+    let part = |ident: &str, part_def_id: DefId| ComponentRefPart {
         ident: ident.to_string(),
         span,
         subs: Vec::new(),
+        def_id: part_def_id,
     };
     Reference::with_component_reference(
         "resistor.v",
-        ComponentReference {
-            local: false,
+        ComponentReference::construct(
+            false,
             span,
-            parts: vec![part("resistor"), part("v")],
-            def_id,
-        },
+            vec![part("resistor", DefId::new(10)), part("v", def_id)],
+        )
+        .expect("test reference is nonempty"),
     )
 }
 
@@ -552,12 +669,8 @@ fn var_ref(name: Reference) -> Expression {
 }
 
 /// Two references that denote the same flat variable fingerprint equal however
-/// much resolution metadata they carry — including when one has no `def_id` at
-/// all.
-///
-/// This is the SPEC_0008 answer to "what if `def_id` is `None`": the fingerprint
-/// never reads `def_id`, so there is no absent identity to substitute for. It
-/// cannot read it, either. A `DefId` names a *declaration*, and one declaration
+/// much declaration provenance they carry. A `DefId` names a *declaration*,
+/// and one declaration
 /// backs many flat variables (`phase-flatten`'s `DefIdVarRefIndex` keeps a
 /// `Vec` per `DefId` precisely because the mapping is one-to-many), so a
 /// def-id-keyed fingerprint would equate `resistor1.v` with `resistor2.v` and
@@ -565,14 +678,13 @@ fn var_ref(name: Reference) -> Expression {
 /// one-to-one with a flat variable is the interned `VarName`, and that is what
 /// both equality and this fingerprint use.
 #[test]
-fn fingerprint_is_stable_across_resolution_metadata_including_absent_def_id() {
+fn fingerprint_is_stable_across_declaration_identity() {
     let span = test_span();
-    let resolved = var_ref(declaration_reference(Some(DefId::new(11)), span));
-    let other_declaration = var_ref(declaration_reference(Some(DefId::new(12)), span));
-    let unresolved = var_ref(declaration_reference(None, span));
+    let resolved = var_ref(declaration_reference(DefId::new(11), span));
+    let other_declaration = var_ref(declaration_reference(DefId::new(12), span));
     let bare = var_ref(Reference::new("resistor.v"));
 
-    for candidate in [&other_declaration, &unresolved, &bare] {
+    for candidate in [&other_declaration, &bare] {
         assert!(
             expressions_semantically_equal(&resolved, candidate),
             "same flat variable must stay semantically equal: {candidate:?}"

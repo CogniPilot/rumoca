@@ -63,7 +63,7 @@ fn canonicalize_varrefs_rewrites_alias_paths_to_existing_flat_vars() {
 fn substitutes_known_constants_inside_function_defaults_and_body() {
     let mut model = flat::Model::new();
     let mut function = flat::Function::new("Pkg.f", Span::DUMMY);
-    function.add_input(flat::FunctionParam::new("u", "Real", test_span()).with_default(
+    function.add_input(crate::test_support::real_param("u", Vec::new(), test_span()).with_default(
         flat::Expression::VarRef {
             name: flat::VarName::new("Pkg.Constants.k"),
             subscripts: vec![],
@@ -106,7 +106,7 @@ fn substitutes_known_constants_inside_function_defaults_and_body() {
 fn does_not_substitute_function_local_names() {
     let mut model = flat::Model::new();
     let mut function = flat::Function::new("Pkg.g", Span::DUMMY);
-    function.add_input(flat::FunctionParam::new("k", "Real", test_span()));
+    function.add_input(crate::test_support::real_param("k", Vec::new(), test_span()));
     function
         .body
         .push(simple_assignment(flat::Expression::VarRef {
@@ -140,7 +140,7 @@ fn does_not_substitute_function_local_names() {
 fn does_not_substitute_indexed_function_local_names() {
     let mut model = flat::Model::new();
     let mut function = flat::Function::new("Pkg.g_indexed", Span::DUMMY);
-    function.add_input(flat::FunctionParam::new("table", "Real", test_span()).with_dims(vec![7, 2]));
+    function.add_input(crate::test_support::real_param("table", vec![7, 2], test_span()));
     function
         .body
         .push(simple_assignment(flat::Expression::VarRef {
@@ -246,7 +246,7 @@ fn substitutes_inline_multi_indexed_constant_varref_names() {
 fn does_not_substitute_inline_indexed_varref_when_base_is_local() {
     let mut model = flat::Model::new();
     let mut function = flat::Function::new("Pkg.inline_local", Span::DUMMY);
-    function.add_input(flat::FunctionParam::new("table", "Real", test_span()).with_dims(vec![7, 2]));
+    function.add_input(crate::test_support::real_param("table", vec![7, 2], test_span()));
     function
         .body
         .push(simple_assignment(flat::Expression::VarRef {

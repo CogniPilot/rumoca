@@ -64,7 +64,7 @@ pub use runtime::solve_ops::{
 pub use runtime::solve_runtime::{
     AlgebraicLinearization, AlgebraicSettle, EventUpdateRowFilter, InitialEventObservation,
     ProjectedEventUpdateInput, ProjectedInitialEventInput, ProjectedInitialEventOutcome,
-    SolveRuntime,
+    ProjectedPostInitialEventInput, SolveRuntime,
 };
 pub use runtime::time::{
     event_solver_step_cap, stop_time_reached_with_tol, time_advanced_with_tol, time_match_with_tol,

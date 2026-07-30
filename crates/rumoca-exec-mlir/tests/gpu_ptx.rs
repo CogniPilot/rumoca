@@ -9,7 +9,9 @@ use rumoca_exec_mlir::{
     GpuCompiledBlob, MlirBackendOptions, MlirError, MlirTarget,
     compile_to_gpu_blob as backend_compile_to_gpu_blob,
 };
-use rumoca_ir_solve::{ComputeBlock, LinearOp, ScalarProgramBlock, SolveProblem, UnaryOp};
+use rumoca_ir_solve::{
+    ComputeBlock, LinearOp, ScalarProgramBlock, SolveProblem, UnaryOp, VarLayout,
+};
 
 fn compile_to_gpu_blob(
     solve: &SolveProblem,
@@ -32,15 +34,21 @@ fn decay_solve() -> SolveProblem {
         },
         LinearOp::StoreOutput { src: 1 },
     ];
-    SolveProblem::with_derivative_rhs(ComputeBlock::from_scalar_program_block(
-        ScalarProgramBlock::with_source_span(
-            vec![row],
-            Span::from_offsets(SourceId::from_source_name(label), 0, label.len())
-                .require_provenance("MLIR GPU-code fixture")
-                .expect("fixture span is source-backed"),
-        )
-        .expect("fixture program is computable"),
-    ))
+    SolveProblem::with_derivative_rhs(
+        ComputeBlock::from_scalar_program_block(
+            ScalarProgramBlock::with_source_span(
+                vec![row],
+                Span::from_offsets(SourceId::from_source_name(label), 0, label.len())
+                    .require_provenance("MLIR GPU-code fixture")
+                    .expect("fixture span is source-backed"),
+            )
+            .expect("fixture program is computable"),
+        ),
+        // xdot = -y[0]: one state, no parameters. The derivative seed space is
+        // `y_scalars + p_scalars` wide, so the fixture states its own extents.
+        VarLayout::from_parts(indexmap::IndexMap::new(), 1, 0),
+    )
+    .expect("fixture derivative problem is valid by construction")
 }
 
 // ─── CUDA / PTX ──────────────────────────────────────────────────────────────

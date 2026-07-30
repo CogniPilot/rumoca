@@ -132,12 +132,22 @@ fn render_galec_c_from_alg_impl(
 ) -> Result<Value, String> {
     let checked = parse_galec(alg_source, file_name)
         .map_err(|error| format!("GALEC parse error: {error}"))?;
+    // Attribute the two distinct refusals separately (SPEC_0008): a target
+    // that is not a GALEC target at all, versus the Algorithm-Code-only
+    // `galec` target, which is a GALEC target but emits no C.
+    if !is_galec_target(target) {
+        return Err(unknown_target_error(target));
+    }
     if !matches!(target, EMBEDDED_C_GALEC_TARGET | GALEC_PRODUCTION_TARGET) {
-        return Err(format!("target `{target}` does not emit C"));
+        return Err(format!("target `{target}` does not emit C files"));
     }
     let model_id = model_name.replace('.', "_");
-    let bundle = TargetBundle::builtin(EMBEDDED_C_GALEC_TARGET)
-        .ok_or_else(|| "missing built-in embedded-c-galec target".to_owned())?;
+    // Render the REQUESTED target's C templates: each GALEC C target owns its
+    // conformance banner, so rendering `galec-production` through the
+    // `embedded-c-galec` bundle would stamp the "NOT an eFMI Production Code
+    // container" claim onto Production Code files.
+    let bundle = TargetBundle::builtin(target)
+        .ok_or_else(|| format!("missing built-in target `{target}`"))?;
     let artifact = SourceArtifactFacts {
         generated_at: "1970-01-01T00:00:00Z",
         generation_tool: "rumoca wasm edited Algorithm Code",
@@ -150,22 +160,20 @@ fn render_galec_c_from_alg_impl(
     let source = bundle
         .template_source("model.c.jinja")
         .map_err(|error| error.to_string())?;
-    let c_header =
-        rumoca_phase_codegen::render_checked_algorithm_block_template_with_artifact(
-            &checked,
-            &artifact,
-            header.as_ref(),
-            &model_id,
-        )
-        .map_err(|error| error.to_string())?;
-    let c_source =
-        rumoca_phase_codegen::render_checked_algorithm_block_template_with_artifact(
-            &checked,
-            &artifact,
-            source.as_ref(),
-            &model_id,
-        )
-        .map_err(|error| error.to_string())?;
+    let c_header = rumoca_phase_codegen::render_checked_algorithm_block_template_with_artifact(
+        &checked,
+        &artifact,
+        header.as_ref(),
+        &model_id,
+    )
+    .map_err(|error| error.to_string())?;
+    let c_source = rumoca_phase_codegen::render_checked_algorithm_block_template_with_artifact(
+        &checked,
+        &artifact,
+        source.as_ref(),
+        &model_id,
+    )
+    .map_err(|error| error.to_string())?;
     Ok(json!({
         "ok": true,
         "target": target,
@@ -234,31 +242,52 @@ struct RenderedSources {
     c_source: String,
 }
 
+/// Whether `target` is one of the GALEC codegen targets.
+fn is_galec_target(target: &str) -> bool {
+    matches!(
+        target,
+        GALEC_TARGET | GALEC_PRODUCTION_TARGET | EMBEDDED_C_GALEC_TARGET
+    )
+}
+
+/// The SPEC_0008-shaped refusal for a target this addon does not project:
+/// name the rejected value AND the admissible set, so a caller can fix the
+/// request without reading the source.
+fn unknown_target_error(target: &str) -> String {
+    format!(
+        "'{target}' is not a GALEC codegen target \
+         (expected {GALEC_TARGET}, {GALEC_PRODUCTION_TARGET}, or {EMBEDDED_C_GALEC_TARGET})"
+    )
+}
+
+/// Render every projection diagnostic under one attributed heading, one per
+/// line, so the JSON `error` string states WHAT was refused (the projection)
+/// before listing the collected `EGT0xx` reasons.
+fn projection_rejected_error(diagnostics: &[rumoca_phase_galec::GalecTargetError]) -> String {
+    let detail = diagnostics
+        .iter()
+        .map(|diagnostic| format!("  - {diagnostic}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("GALEC projection rejected the model:\n{detail}")
+}
+
 fn render_checked_sources(
     dae: &rumoca_compile::compile::Dae,
     model_id: &str,
     target: &str,
 ) -> Result<RenderedSources, String> {
-    if !matches!(
-        target,
-        GALEC_TARGET | GALEC_PRODUCTION_TARGET | EMBEDDED_C_GALEC_TARGET
-    ) {
-        return Err(format!("unknown GALEC target `{target}`"));
+    if !is_galec_target(target) {
+        return Err(unknown_target_error(target));
     }
-    let bundle =
-        TargetBundle::builtin(target).ok_or_else(|| format!("missing built-in target `{target}`"))?;
+    let bundle = TargetBundle::builtin(target)
+        .ok_or_else(|| format!("missing built-in target `{target}`"))?;
     let manifest = bundle.parse_manifest().map_err(|error| error.to_string())?;
     let package = rumoca_phase_galec::lower_to_algorithm_code(
         &rumoca_phase_galec::GalecInput::new(dae, model_id),
         &rumoca_phase_galec::GalecOptions::default(),
     )
-    .map_err(|diagnostics| {
-        diagnostics
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-            .join("; ")
-    })?;
+    .map_err(|diagnostics| projection_rejected_error(&diagnostics))?;
     let artifact = SourceArtifactFacts {
         generated_at: "1970-01-01T00:00:00Z",
         generation_tool: "rumoca wasm source preview",
@@ -300,8 +329,7 @@ fn render_checked_sources(
 #[cfg(test)]
 mod tests {
     use super::*;
-    const EMBEDDED_C_GALEC_CONFORMANCE_LINES: &[&str] =
-        &["GALEC-derived embedded C export"];
+    const EMBEDDED_C_GALEC_CONFORMANCE_LINES: &[&str] = &["GALEC-derived embedded C export"];
     const PRODUCTION_CONFORMANCE_LINES: &[&str] = &["eFMI Production Code export"];
     const PRODUCTION_CONFORMANCE_SUMMARY: &str = "eFMI Production Code export";
 

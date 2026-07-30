@@ -52,7 +52,12 @@ fn dae_template_context_exposes_checked_semantic_schema() {
         .render_template_str("{{ dae.schema.name }}:{{ dae.schema.version }}")
         .expect("checked DAE template renders");
 
-    assert_eq!(rendered, "rumoca.checked-dae-template:2");
+    // Pinned to `dae_backend::TEMPLATE_SCHEMA_VERSION`: every change to the
+    // projected template shape bumps that constant, and this literal must be
+    // bumped with it so template consumers see the break loudly. Version 5 is
+    // the shape carrying checked function owners, checked discrete ownership,
+    // and the proved-projection gate.
+    assert_eq!(rendered, "rumoca.checked-dae-template:5");
 }
 
 #[test]

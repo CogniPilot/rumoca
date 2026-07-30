@@ -1,19 +1,23 @@
 use super::*;
-use std::borrow::Cow;
 
 mod clocks;
 mod comprehensions;
 mod delays;
 mod derived_parameters;
 mod discrete_values;
+mod equation_partitions;
+mod event_conditions;
 mod expression_validation;
 mod function_array_assemblies;
+mod function_bodies;
 mod function_conditionals;
+mod function_loops;
 mod function_ranges;
 mod function_record_assemblies;
 mod function_reductions;
 mod function_returns;
 mod function_value_types;
+mod model_algorithm_statements;
 mod model_algorithms;
 mod model_roles;
 mod record_array_fields;
@@ -22,7 +26,7 @@ mod source_balance;
 mod structured_families;
 mod when_chains;
 use clocks::analyze_clocks;
-pub(super) use clocks::{ClockPlan, SampledValuePlan};
+pub(super) use clocks::{ClockPlan, ClockedValuePlan};
 use comprehensions::analyze_comprehensions;
 pub(super) use comprehensions::{ComprehensionKey, ComprehensionPlan};
 pub(super) use delays::DelayPlan;
@@ -31,12 +35,22 @@ pub(super) use derived_parameters::DerivedParameterPlan;
 use derived_parameters::analyze_derived_parameters;
 pub(super) use discrete_values::DiscreteValueTopologyPlan;
 use discrete_values::analyze_discrete_value_topology;
+use equation_partitions::defined_discrete_targets;
+pub(super) use equation_partitions::{EquationPartition, equation_partition};
+use event_conditions::{
+    evaluate_clock_seconds, validate_algorithm_condition, validate_condition_expression,
+};
 use expression_validation::{
     validate_expression, validate_expression_scoped_with_record_array_fields,
     validate_expression_with_record_array_fields, validate_subscripts_scoped,
 };
 use function_array_assemblies::coalesce_function_array_assemblies;
+use function_bodies::{
+    validate_function_expression_with_roles, validate_function_statements,
+    validate_function_subscripts, validate_functions,
+};
 use function_conditionals::validate_function_conditional;
+use function_loops::{subscript_is_binder, validate_function_loop};
 use function_ranges::{
     immutable_integer_defaults, static_function_range, validate_function_range_expression,
 };
@@ -44,14 +58,15 @@ use function_record_assemblies::validate_record_output_assembly;
 use function_reductions::validate_integer_reduction;
 use function_returns::validate_guarded_function_return;
 use function_value_types::validate_function_value_type;
+use model_algorithm_statements::validate_model_algorithm;
 pub(super) use model_algorithms::ModelAlgorithmPlan;
 use model_algorithms::analyze_model_algorithm;
 pub(super) use model_algorithms::{
     algorithm_targets, event_targets, model_algorithm_targets, when_chain_targets,
 };
-use model_roles::{ModelRoles, analyze_model_roles};
-pub(super) use record_array_fields::RecordArrayFieldPlans;
+use model_roles::{ModelRoles, analyze_model_roles, is_predefined_clock_variable};
 use record_array_fields::analyze_record_array_fields;
+pub(super) use record_array_fields::{RecordArrayFieldPlan, RecordArrayFieldPlans};
 use record_equations::analyze_record_equations;
 use source_balance::source_balance;
 use structured_families::validate_structured_families;
@@ -66,9 +81,10 @@ pub(super) struct Analysis {
     pub(super) initialization_family_rows: HashSet<usize>,
     pub(super) sample_lattices: Vec<(Span, ClockLattice)>,
     pub(super) reinit_state_pre: HashSet<Span>,
-    pub(super) clock_plans: HashMap<VarName, ClockPlan>,
+    pub(super) clock_plans: HashMap<InstanceId, ClockPlan>,
     pub(super) clock_equation_rows: HashSet<usize>,
-    pub(super) sampled_values: HashMap<VarName, SampledValuePlan>,
+    pub(super) clocked_equation_owners: HashMap<usize, ClockPlan>,
+    pub(super) clocked_value_owners: HashMap<InstanceId, ClockedValuePlan>,
     pub(super) model_algorithm_plans: Vec<ModelAlgorithmPlan>,
     pub(super) function_plans: HashMap<FunctionSpecializationKey, FunctionPlan>,
     pub(super) function_shapes: FunctionShapeAnalysis,
@@ -177,6 +193,16 @@ pub(super) enum FunctionLoopLowering {
     TotalArrayDefinition,
 }
 
+#[derive(Clone, Copy)]
+struct FunctionValidationContext<'scope> {
+    function: &'scope rumoca_core::Function,
+    flat: &'scope flat::Model,
+    roles: &'scope HashMap<VarName, PlannedRole>,
+    static_integers: &'scope HashMap<VarName, i64>,
+    shapes: &'scope ShapeEnvironment,
+    shape_analysis: &'scope FunctionShapeAnalysis,
+}
+
 pub(super) fn required_statement_span(
     statement: &rumoca_core::Statement,
     owner: impl Into<String>,
@@ -225,20 +251,6 @@ pub(super) struct RecordEquationFieldPlan {
     pub(super) ordinal: usize,
 }
 
-#[derive(Clone)]
-pub(super) enum EquationPartition<'flat> {
-    Continuous,
-    DiscreteReal { target: &'flat VarName },
-    DiscreteValue(DiscreteValueAssignmentPlan<'flat>),
-}
-
-#[derive(Clone)]
-pub(super) struct DiscreteValueAssignmentPlan<'flat> {
-    pub(super) target: &'flat VarName,
-    pub(super) value: Cow<'flat, Expression>,
-    pub(super) generated: bool,
-}
-
 pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
     validate_flat_shape(flat)?;
     let function_shapes = FunctionShapeAnalysis::analyze(flat)?;
@@ -248,27 +260,24 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
     let constants = constant_context(flat);
     let comprehension_plans = analyze_comprehensions(all_model_expressions(flat), &constants)?;
     let delay_plans = analyze_delays(flat, &constants)?;
-    let record_array_fields = analyze_record_array_field_plans(flat)?;
     let clocks = analyze_clocks(flat, &constants)?;
     let ModelRoles {
         states,
         variables: mut roles,
         expressions: mut expression_roles,
-    } = analyze_model_roles(flat, &clocks.sampled_values)?;
+    } = analyze_model_roles(flat, &clocks.sampled_targets)?;
+    validate_runtime_coordinate_instances(flat, &roles)?;
+    let record_array_fields = analyze_record_array_field_plans(flat, &roles)?;
     let derived_parameters = analyze_derived_parameters(flat, &roles)?;
-    for name in derived_parameters.plans.keys() {
-        roles.insert(name.clone(), PlannedRole::Parameter);
-        expression_roles.insert(name.clone(), PlannedRole::Parameter);
-    }
-    for expression in all_model_expressions(flat) {
-        validate_expression_with_record_array_fields(
-            expression,
-            &expression_roles,
-            &states,
-            &record_array_fields,
-        )?;
-        validate_known_function_calls(expression, flat)?;
-    }
+    apply_derived_parameter_roles(&derived_parameters.plans, &mut roles, &mut expression_roles);
+    let clock_domains = clocks::analyze_clock_domains(
+        flat,
+        &roles,
+        &clocks.plans,
+        &clocks.equation_rows,
+        &clocks.sampled_targets,
+    )?;
+    validate_model_expressions(flat, &expression_roles, &states, &record_array_fields)?;
     let continuous_family_rows = validate_structured_families(
         &flat.structured_equations,
         flat.equations.len(),
@@ -326,7 +335,8 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
         reinit_state_pre,
         clock_plans: clocks.plans,
         clock_equation_rows: clocks.equation_rows,
-        sampled_values: clocks.sampled_values,
+        clocked_equation_owners: clock_domains.equation_owners,
+        clocked_value_owners: clock_domains.value_owners,
         model_algorithm_plans,
         function_plans,
         function_shapes,
@@ -342,7 +352,76 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
     })
 }
 
+fn validate_runtime_coordinate_instances(
+    flat: &flat::Model,
+    roles: &HashMap<VarName, PlannedRole>,
+) -> Result<(), ToDaeError> {
+    let mut instances = HashMap::new();
+    for variable in flat.variables.values() {
+        if !matches!(
+            roles.get(&variable.name),
+            Some(
+                PlannedRole::Parameter
+                    | PlannedRole::Constant
+                    | PlannedRole::Input
+                    | PlannedRole::State
+                    | PlannedRole::Algebraic
+                    | PlannedRole::Output
+                    | PlannedRole::DiscreteReal
+                    | PlannedRole::DiscreteValue
+            )
+        ) {
+            continue;
+        }
+        if let Some(previous) = instances.insert(variable.instance_id, &variable.name) {
+            return Err(ToDaeError::unsupported_flat(
+                "runtime coordinate identity",
+                format!(
+                    "Flat variables `{previous}` and `{}` share exact instance {}",
+                    variable.name, variable.instance_id
+                ),
+                variable.source_span,
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn apply_derived_parameter_roles(
+    plans: &HashMap<VarName, DerivedParameterPlan>,
+    roles: &mut HashMap<VarName, PlannedRole>,
+    expression_roles: &mut HashMap<VarName, PlannedRole>,
+) {
+    for name in plans.keys() {
+        roles.insert(name.clone(), PlannedRole::Parameter);
+        expression_roles.insert(name.clone(), PlannedRole::Parameter);
+    }
+}
+
+fn validate_model_expressions(
+    flat: &flat::Model,
+    roles: &HashMap<VarName, PlannedRole>,
+    states: &HashSet<VarName>,
+    record_array_fields: &RecordArrayFieldPlans,
+) -> Result<(), ToDaeError> {
+    for expression in all_model_expressions(flat) {
+        validate_expression_with_record_array_fields(
+            expression,
+            roles,
+            states,
+            record_array_fields,
+        )?;
+        validate_known_function_calls(expression, flat)?;
+    }
+    Ok(())
+}
+
 fn validate_flat_shape(flat: &flat::Model) -> Result<(), ToDaeError> {
+    if !flat.predefined_types.is_complete() {
+        return Err(ToDaeError::MissingSemanticIdentity {
+            identity: "predefined scalar canonical TypeIds".to_string(),
+        });
+    }
     flat.validate().map_err(|error| {
         ToDaeError::unsupported_flat("Flat shape contract", format!("{error:?}"), error.span())
     })
@@ -411,6 +490,7 @@ fn reject_initial_algorithm(flat: &flat::Model) -> Result<(), ToDaeError> {
 
 fn analyze_record_array_field_plans(
     flat: &flat::Model,
+    roles: &HashMap<VarName, PlannedRole>,
 ) -> Result<RecordArrayFieldPlans, ToDaeError> {
     analyze_record_array_fields(
         flat,
@@ -419,6 +499,7 @@ fn analyze_record_array_field_plans(
             .chain(structured_template_expressions(
                 &flat.initial_structured_equations,
             )),
+        roles,
     )
 }
 
@@ -429,111 +510,6 @@ fn structured_template_expressions(
         .iter()
         .filter_map(|family| family.template.as_ref())
         .flat_map(|template| &template.body)
-}
-
-fn validate_condition_expression(
-    expression: &Expression,
-    roles: &HashMap<VarName, PlannedRole>,
-    states: &HashSet<VarName>,
-    constants: &EvalContext,
-    sample_lattices: &mut Vec<(Span, ClockLattice)>,
-) -> Result<(), ToDaeError> {
-    match expression {
-        Expression::BuiltinCall {
-            function: BuiltinFunction::Initial,
-            args,
-            span,
-        } => {
-            if args.is_empty() {
-                Ok(())
-            } else {
-                Err(ToDaeError::unsupported_runtime_operator(
-                    "initial",
-                    "initial() takes no arguments",
-                    *span,
-                ))
-            }
-        }
-        Expression::BuiltinCall {
-            function: BuiltinFunction::Sample,
-            args,
-            span,
-        } => {
-            let lattice = evaluate_sample_lattice(args, constants, *span)?;
-            if !sample_lattices
-                .iter()
-                .any(|(existing, _)| *existing == *span)
-            {
-                sample_lattices.push((*span, lattice));
-            }
-            Ok(())
-        }
-        Expression::Unary {
-            op: OpUnary::Not,
-            rhs,
-            ..
-        } => validate_condition_expression(rhs, roles, states, constants, sample_lattices),
-        Expression::Binary {
-            op: OpBinary::And | OpBinary::Or,
-            lhs,
-            rhs,
-            ..
-        } => {
-            validate_condition_expression(lhs, roles, states, constants, sample_lattices)?;
-            validate_condition_expression(rhs, roles, states, constants, sample_lattices)
-        }
-        _ => validate_expression(expression, roles, states),
-    }
-}
-
-fn evaluate_sample_lattice(
-    arguments: &[Expression],
-    constants: &EvalContext,
-    span: Span,
-) -> Result<ClockLattice, ToDaeError> {
-    let [start, interval] = arguments else {
-        return Err(ToDaeError::unsupported_runtime_operator(
-            "sample",
-            "sample(start, interval) requires exactly two scalar parameter arguments",
-            span,
-        ));
-    };
-    let start = evaluate_clock_seconds(start, constants, "sample start", span)?;
-    let interval = evaluate_clock_seconds(interval, constants, "sample interval", span)?;
-    let phase = ClockRational::from_seconds(start).map_err(|error| {
-        ToDaeError::unsupported_runtime_operator("sample", error.to_string(), span)
-    })?;
-    let period = ClockRational::from_seconds(interval).map_err(|error| {
-        ToDaeError::unsupported_runtime_operator("sample", error.to_string(), span)
-    })?;
-    ClockLattice::new(period, phase).map_err(|error| {
-        ToDaeError::unsupported_runtime_operator("sample", error.to_string(), span)
-    })
-}
-
-fn evaluate_clock_seconds(
-    expression: &Expression,
-    constants: &EvalContext,
-    owner: &'static str,
-    span: Span,
-) -> Result<f64, ToDaeError> {
-    let value = eval_expr(expression, constants).map_err(|error| {
-        ToDaeError::unsupported_runtime_operator(
-            "sample",
-            format!("{owner} is not parameter-evaluable: {error}"),
-            span,
-        )
-    })?;
-    value
-        .to_real()
-        .filter(|value| value.is_finite())
-        .ok_or_else(|| {
-            ToDaeError::unsupported_runtime_operator(
-                "sample",
-                format!("{owner} must evaluate to a finite scalar Real"),
-                span,
-            )
-        })
 }
 
 fn constant_context(flat: &flat::Model) -> EvalContext {
@@ -572,823 +548,6 @@ fn constant_context(flat: &flat::Model) -> EvalContext {
     context
 }
 
-fn validate_model_algorithm(
-    algorithm: &flat::Algorithm,
-    roles: &HashMap<VarName, PlannedRole>,
-    states: &HashSet<VarName>,
-    constants: &EvalContext,
-    sample_lattices: &mut Vec<(Span, ClockLattice)>,
-) -> Result<(), ToDaeError> {
-    require_span(algorithm.span, "model algorithm")?;
-    validate_algorithm_statements(
-        &algorithm.statements,
-        roles,
-        states,
-        constants,
-        sample_lattices,
-    )
-}
-
-// SPEC_0021 exception: exhaustive statement-grammar validation keeps each
-// accepted form and its provenance checks visible at one boundary.
-#[allow(clippy::too_many_lines)]
-fn validate_algorithm_statements(
-    statements: &[rumoca_core::Statement],
-    roles: &HashMap<VarName, PlannedRole>,
-    states: &HashSet<VarName>,
-    constants: &EvalContext,
-    sample_lattices: &mut Vec<(Span, ClockLattice)>,
-) -> Result<(), ToDaeError> {
-    for statement in statements {
-        match statement {
-            rumoca_core::Statement::Assignment { comp, value, span } => {
-                require_span(*span, "algorithm assignment")?;
-                if comp.parts.is_empty() {
-                    return Err(ToDaeError::unsupported_algorithm(
-                        "model",
-                        "empty assignment target",
-                        *span,
-                    ));
-                }
-                let target = rumoca_core::component_ref_to_base_reference(comp)
-                    .var_name()
-                    .clone();
-                let target_role = roles.get(&target);
-                for part in &comp.parts {
-                    validate_subscripts_scoped(&part.subs, roles, states, &HashSet::new())?;
-                }
-                if matches!(
-                    target_role,
-                    Some(
-                        PlannedRole::Algebraic
-                            | PlannedRole::Output
-                            | PlannedRole::DiscreteReal
-                            | PlannedRole::DiscreteValue
-                    )
-                ) {
-                    validate_expression(value, roles, states)?;
-                } else if structured_assignment_pairs(&target, value, roles).is_none() {
-                    return Err(ToDaeError::unsupported_algorithm(
-                        "model",
-                        format!(
-                            "algorithm assignment target `{target}` is not a whole writable \
-                             coordinate (resolved role: {target_role:?})"
-                        ),
-                        *span,
-                    ));
-                }
-            }
-            rumoca_core::Statement::If {
-                cond_blocks,
-                else_block,
-                span,
-            } => {
-                require_span(*span, "algorithm if statement")?;
-                for block in cond_blocks {
-                    validate_algorithm_condition(
-                        &block.cond,
-                        roles,
-                        states,
-                        constants,
-                        sample_lattices,
-                    )?;
-                    validate_algorithm_statements(
-                        &block.stmts,
-                        roles,
-                        states,
-                        constants,
-                        sample_lattices,
-                    )?;
-                }
-                if let Some(statements) = else_block {
-                    validate_algorithm_statements(
-                        statements,
-                        roles,
-                        states,
-                        constants,
-                        sample_lattices,
-                    )?;
-                }
-            }
-            rumoca_core::Statement::For {
-                indices,
-                equations,
-                span,
-            } => {
-                require_span(*span, "algorithm for statement")?;
-                if indices.is_empty() {
-                    return Err(ToDaeError::unsupported_algorithm(
-                        "model",
-                        "for statement must declare at least one index",
-                        *span,
-                    ));
-                }
-                let mut loop_roles = roles.clone();
-                for index in indices {
-                    validate_expression(&index.range, &loop_roles, states)?;
-                    loop_roles.insert(VarName::new(&index.ident), PlannedRole::Parameter);
-                }
-                validate_algorithm_statements(
-                    equations,
-                    &loop_roles,
-                    states,
-                    constants,
-                    sample_lattices,
-                )?;
-            }
-            rumoca_core::Statement::When { blocks, span } => {
-                require_span(*span, "algorithm when statement")?;
-                if blocks.is_empty() {
-                    return Err(ToDaeError::unsupported_algorithm(
-                        "model",
-                        "when statement must contain at least one guarded block",
-                        *span,
-                    ));
-                }
-                for block in blocks {
-                    validate_algorithm_condition(
-                        &block.cond,
-                        roles,
-                        states,
-                        constants,
-                        sample_lattices,
-                    )?;
-                    validate_algorithm_statements(
-                        &block.stmts,
-                        roles,
-                        states,
-                        constants,
-                        sample_lattices,
-                    )?;
-                }
-            }
-            rumoca_core::Statement::FunctionCall {
-                comp,
-                args,
-                outputs,
-                span,
-            } => {
-                require_span(*span, "algorithm function-call assignment")?;
-                if comp.parts.is_empty() || comp.parts.iter().any(|part| !part.subs.is_empty()) {
-                    return Err(ToDaeError::unsupported_algorithm(
-                        "model",
-                        "function-call assignment requires one resolved, unsubscripted function",
-                        *span,
-                    ));
-                }
-                if outputs.is_empty() || outputs.iter().all(Option::is_none) {
-                    return Err(ToDaeError::unsupported_algorithm(
-                        "model",
-                        "function-call assignment must retain at least one output",
-                        *span,
-                    ));
-                }
-                for argument in args {
-                    validate_expression(argument, roles, states)?;
-                }
-                for output in outputs.iter().flatten() {
-                    validate_function_call_output(output, roles)?;
-                }
-            }
-            _ => {
-                let span =
-                    required_statement_span(statement, "unsupported model algorithm statement")?;
-                return Err(ToDaeError::unsupported_algorithm(
-                    "model",
-                    "statement must be an assignment, function-call assignment, or conditional \
-                     discrete update",
-                    span,
-                ));
-            }
-        }
-    }
-    Ok(())
-}
-
-fn validate_function_call_output(
-    output: &rumoca_core::ComponentReference,
-    roles: &HashMap<VarName, PlannedRole>,
-) -> Result<(), ToDaeError> {
-    let target = output.to_var_name();
-    let is_whole_coordinate =
-        !output.parts.is_empty() && output.parts.iter().all(|part| part.subs.is_empty());
-    let is_discrete = matches!(
-        roles.get(&target),
-        Some(PlannedRole::DiscreteReal | PlannedRole::DiscreteValue)
-    );
-    if is_whole_coordinate && is_discrete {
-        return Ok(());
-    }
-    Err(ToDaeError::unsupported_algorithm(
-        "model",
-        format!("function-call output `{target}` is not a whole discrete coordinate"),
-        output.span,
-    ))
-}
-
-fn validate_algorithm_condition(
-    expression: &Expression,
-    roles: &HashMap<VarName, PlannedRole>,
-    states: &HashSet<VarName>,
-    constants: &EvalContext,
-    sample_lattices: &mut Vec<(Span, ClockLattice)>,
-) -> Result<(), ToDaeError> {
-    match expression {
-        Expression::BuiltinCall {
-            function: BuiltinFunction::Change,
-            args,
-            span,
-        } => {
-            let [argument] = args.as_slice() else {
-                return Err(ToDaeError::unsupported_algorithm(
-                    "model",
-                    "change(...) requires exactly one discrete coordinate",
-                    *span,
-                ));
-            };
-            let Some((name, _)) = derivative_reference(argument) else {
-                return Err(ToDaeError::unsupported_algorithm(
-                    "model",
-                    "change(...) requires a discrete coordinate reference",
-                    *span,
-                ));
-            };
-            if !matches!(
-                roles.get(name.var_name()),
-                Some(PlannedRole::DiscreteReal | PlannedRole::DiscreteValue)
-            ) {
-                return Err(ToDaeError::unsupported_algorithm(
-                    "model",
-                    "change(...) requires a discrete coordinate",
-                    *span,
-                ));
-            }
-            Ok(())
-        }
-        Expression::BuiltinCall {
-            function: BuiltinFunction::Sample,
-            args,
-            span,
-        } => {
-            let lattice = evaluate_sample_lattice(args, constants, *span)?;
-            if !sample_lattices
-                .iter()
-                .any(|(existing, _)| *existing == *span)
-            {
-                sample_lattices.push((*span, lattice));
-            }
-            Ok(())
-        }
-        Expression::Unary {
-            op: OpUnary::Not,
-            rhs,
-            ..
-        } => validate_algorithm_condition(rhs, roles, states, constants, sample_lattices),
-        Expression::Binary {
-            op: OpBinary::And | OpBinary::Or,
-            lhs,
-            rhs,
-            ..
-        } => {
-            validate_algorithm_condition(lhs, roles, states, constants, sample_lattices)?;
-            validate_algorithm_condition(rhs, roles, states, constants, sample_lattices)
-        }
-        _ => validate_expression(expression, roles, states),
-    }
-}
-
-fn validate_functions(
-    flat: &flat::Model,
-    shapes: &FunctionShapeAnalysis,
-) -> Result<HashMap<FunctionSpecializationKey, FunctionPlan>, ToDaeError> {
-    let mut plans = HashMap::with_capacity(shapes.certificates().len());
-    for certificate in shapes.certificates() {
-        let function = &flat.functions[&certificate.key.function];
-        require_span(function.span, "function declaration")?;
-        if function.external.is_some() || !function.pure || function.is_constructor {
-            return Err(ToDaeError::unsupported_flat(
-                "function lifecycle",
-                format!("`{}` is not a pure Modelica function body", function.name),
-                function.span,
-            ));
-        }
-        for parameter in function
-            .inputs
-            .iter()
-            .chain(&function.outputs)
-            .chain(&function.locals)
-        {
-            require_span(parameter.span, "function parameter declaration")?;
-            validate_function_value_type(parameter, function, flat, &mut HashSet::new())?;
-            if let Some(default) = &parameter.default {
-                validate_function_expression(default, function, flat)?;
-            }
-        }
-        let static_integers = immutable_integer_defaults(function, &certificate.values)?;
-        let roles = function_expression_roles(function, flat);
-        let context = FunctionValidationContext {
-            function,
-            flat,
-            roles: &roles,
-            static_integers: &static_integers,
-            shapes: &certificate.values,
-            shape_analysis: shapes,
-        };
-        let plan = if let Some(plan) = validate_guarded_function_return(function, context)? {
-            plan
-        } else if let Some(plan) = validate_integer_reduction(function, context)? {
-            plan
-        } else {
-            FunctionPlan::Statements {
-                statements: validate_function_statements(&function.body, context)?,
-            }
-        };
-        plans.insert(certificate.key.clone(), plan);
-    }
-    Ok(plans)
-}
-
-fn validate_function_expression(
-    expression: &Expression,
-    function: &rumoca_core::Function,
-    flat: &flat::Model,
-) -> Result<(), ToDaeError> {
-    let roles = function_expression_roles(function, flat);
-    validate_function_expression_with_roles(expression, &roles, flat)
-}
-
-fn function_expression_roles(
-    function: &rumoca_core::Function,
-    flat: &flat::Model,
-) -> HashMap<VarName, PlannedRole> {
-    let mut roles = function
-        .inputs
-        .iter()
-        .map(|parameter| (VarName::new(&parameter.name), PlannedRole::Parameter))
-        .collect::<HashMap<_, _>>();
-    roles.extend(
-        function
-            .outputs
-            .iter()
-            .chain(&function.locals)
-            .map(|value| (VarName::new(&value.name), PlannedRole::Parameter)),
-    );
-    for literal in flat.enum_literal_ordinals.keys() {
-        roles.insert(VarName::new(literal), PlannedRole::EnumerationLiteral);
-    }
-    roles
-}
-
-fn validate_function_expression_with_roles(
-    expression: &Expression,
-    roles: &HashMap<VarName, PlannedRole>,
-    flat: &flat::Model,
-) -> Result<(), ToDaeError> {
-    validate_expression(expression, roles, &HashSet::new())?;
-    validate_known_function_calls(expression, flat)
-}
-
-#[derive(Clone, Copy)]
-struct FunctionValidationContext<'scope> {
-    function: &'scope rumoca_core::Function,
-    flat: &'scope flat::Model,
-    roles: &'scope HashMap<VarName, PlannedRole>,
-    static_integers: &'scope HashMap<VarName, i64>,
-    shapes: &'scope ShapeEnvironment,
-    shape_analysis: &'scope FunctionShapeAnalysis,
-}
-
-fn validate_function_statements(
-    statements: &[rumoca_core::Statement],
-    context: FunctionValidationContext<'_>,
-) -> Result<Vec<FunctionStatementPlan>, ToDaeError> {
-    let mut plans = Vec::with_capacity(statements.len());
-    let mut index = 0usize;
-    while index < statements.len() {
-        if let Some((assembly, count)) =
-            validate_record_output_assembly(statements, index, context)?
-        {
-            plans.push(FunctionStatementPlan::RecordAssembly(assembly));
-            plans.extend(
-                std::iter::repeat_with(|| FunctionStatementPlan::RecordAssemblyMember)
-                    .take(count - 1),
-            );
-            index += count;
-            continue;
-        }
-        let statement = &statements[index];
-        match statement {
-            rumoca_core::Statement::Assignment { comp, value, span } => {
-                require_span(*span, "function assignment")?;
-                let assignment = validate_function_assignment_target(context, comp, *span)?;
-                validate_function_expression_with_roles(value, context.roles, context.flat)?;
-                plans.push(FunctionStatementPlan::Assignment(assignment));
-            }
-            rumoca_core::Statement::For { .. } => {
-                plans.push(validate_function_loop(statement, context)?)
-            }
-            rumoca_core::Statement::If {
-                cond_blocks,
-                else_block,
-                span,
-            } => plans.push(validate_function_conditional(
-                cond_blocks,
-                else_block.as_deref(),
-                *span,
-                context,
-            )?),
-            _ => {
-                let span =
-                    required_statement_span(statement, "unsupported function body statement")?;
-                return Err(ToDaeError::unsupported_flat(
-                    "function statement",
-                    format!(
-                        "`{}` contains a statement without a checked DAE owner",
-                        context.function.name
-                    ),
-                    span,
-                ));
-            }
-        }
-        index += 1;
-    }
-    coalesce_function_array_assemblies(statements, &mut plans, context)?;
-    Ok(plans)
-}
-
-fn validate_function_loop(
-    statement: &rumoca_core::Statement,
-    context: FunctionValidationContext<'_>,
-) -> Result<FunctionStatementPlan, ToDaeError> {
-    let rumoca_core::Statement::For {
-        indices,
-        equations,
-        span,
-    } = statement
-    else {
-        unreachable!("function-loop validation receives a for statement")
-    };
-    require_span(*span, "function for statement")?;
-    if indices.is_empty() {
-        return Err(ToDaeError::unsupported_flat(
-            "function loop domain",
-            "a function for statement must declare at least one index",
-            *span,
-        ));
-    }
-    let validated = validate_function_loop_domain(indices, *span, context)?;
-    if let Some(plan) =
-        validate_nested_function_loop(indices, equations, *span, context, validated.clone())?
-    {
-        return Ok(plan);
-    }
-    validate_function_loop_body(indices, equations, *span, context, validated)
-}
-
-#[derive(Clone)]
-struct ValidatedFunctionLoop {
-    domain: StructuredIndexDomain,
-    binder_spans: Vec<Span>,
-    roles: HashMap<VarName, PlannedRole>,
-}
-
-fn validate_function_loop_domain(
-    indices: &[rumoca_core::ForIndex],
-    span: Span,
-    context: FunctionValidationContext<'_>,
-) -> Result<ValidatedFunctionLoop, ToDaeError> {
-    let mut loop_roles = context.roles.clone();
-    let mut binders = Vec::with_capacity(indices.len());
-    let mut binder_spans = Vec::with_capacity(indices.len());
-    for (ordinal, index) in indices.iter().enumerate() {
-        let range_span = expression_span(&index.range)?;
-        validate_function_range_expression(&index.range, context.roles, context.flat)?;
-        let Some((lower, step, upper)) =
-            static_function_range(&index.range, context.static_integers, context.shapes)?
-        else {
-            return Err(ToDaeError::unsupported_flat(
-                "function loop domain",
-                format!(
-                    "`{}.{}` does not have a finite statically proven Integer range",
-                    context.function.name, index.ident
-                ),
-                range_span,
-            ));
-        };
-        binders.push(StructuredIndexBinder {
-            id: ordinal,
-            display_name: index.ident.clone(),
-            lower,
-            upper,
-            step,
-        });
-        binder_spans.push(range_span);
-        loop_roles.insert(VarName::new(&index.ident), PlannedRole::Parameter);
-    }
-    let domain = StructuredIndexDomain { binders };
-    domain.scalar_count().map_err(|error| {
-        ToDaeError::unsupported_flat(
-            "function loop domain",
-            format!(
-                "`{}` has an invalid compact domain: {error}",
-                context.function.name
-            ),
-            span,
-        )
-    })?;
-    Ok(ValidatedFunctionLoop {
-        domain,
-        binder_spans,
-        roles: loop_roles,
-    })
-}
-
-fn validate_nested_function_loop(
-    indices: &[rumoca_core::ForIndex],
-    equations: &[rumoca_core::Statement],
-    span: Span,
-    context: FunctionValidationContext<'_>,
-    mut validated: ValidatedFunctionLoop,
-) -> Result<Option<FunctionStatementPlan>, ToDaeError> {
-    if !equations
-        .iter()
-        .any(|statement| matches!(statement, rumoca_core::Statement::For { .. }))
-    {
-        return Ok(None);
-    }
-    let [nested @ rumoca_core::Statement::For { .. }] = equations else {
-        return Err(ToDaeError::unsupported_flat(
-            "nested function loop",
-            format!(
-                "`{}` needs a perfect loop nest before product-domain lowering",
-                context.function.name
-            ),
-            span,
-        ));
-    };
-    let nested_context = FunctionValidationContext {
-        roles: &validated.roles,
-        ..context
-    };
-    let FunctionStatementPlan::For {
-        domain: nested_domain,
-        binder_spans: nested_spans,
-        statements,
-        source_depth,
-        ..
-    } = validate_function_loop(nested, nested_context)?
-    else {
-        unreachable!("recursive function-loop validation returns a loop")
-    };
-    let offset = validated.domain.binders.len();
-    validated
-        .domain
-        .binders
-        .extend(nested_domain.binders.into_iter().map(|mut binder| {
-            binder.id += offset;
-            binder
-        }));
-    validated.binder_spans.extend(nested_spans);
-    validated.domain.scalar_count().map_err(|error| {
-        ToDaeError::unsupported_flat(
-            "function loop domain",
-            format!(
-                "`{}` has an invalid product domain: {error}",
-                context.function.name
-            ),
-            span,
-        )
-    })?;
-    let source_depth = source_depth + 1;
-    let (loop_indices, loop_statements) =
-        flattened_function_loop_source(indices, equations, source_depth);
-    let lowering = classify_function_loop(
-        &validated.domain,
-        &loop_indices,
-        loop_statements,
-        &statements,
-        context.function,
-        context.shapes,
-    );
-    Ok(Some(FunctionStatementPlan::For {
-        domain: validated.domain,
-        binder_spans: validated.binder_spans,
-        lowering,
-        statements,
-        source_depth,
-    }))
-}
-
-fn validate_function_loop_body(
-    indices: &[rumoca_core::ForIndex],
-    equations: &[rumoca_core::Statement],
-    span: Span,
-    context: FunctionValidationContext<'_>,
-    validated: ValidatedFunctionLoop,
-) -> Result<FunctionStatementPlan, ToDaeError> {
-    let body_context = FunctionValidationContext {
-        roles: &validated.roles,
-        ..context
-    };
-    let statements = validate_function_statements(equations, body_context)?;
-    let targets = function_loop_targets(&statements);
-    if targets.is_empty() {
-        return Err(ToDaeError::unsupported_flat(
-            "function loop transition",
-            format!(
-                "`{}` has no loop-carried function value",
-                context.function.name
-            ),
-            span,
-        ));
-    }
-    let loop_indices = indices.iter().collect::<Vec<_>>();
-    let lowering = classify_function_loop(
-        &validated.domain,
-        &loop_indices,
-        equations,
-        &statements,
-        context.function,
-        context.shapes,
-    );
-    Ok(FunctionStatementPlan::For {
-        domain: validated.domain,
-        binder_spans: validated.binder_spans,
-        lowering,
-        statements,
-        source_depth: 1,
-    })
-}
-
-fn classify_function_loop(
-    domain: &StructuredIndexDomain,
-    indices: &[&rumoca_core::ForIndex],
-    statements: &[rumoca_core::Statement],
-    plans: &[FunctionStatementPlan],
-    function: &rumoca_core::Function,
-    shapes: &ShapeEnvironment,
-) -> FunctionLoopLowering {
-    let targets = function_loop_targets(plans);
-    let (
-        [rumoca_core::Statement::Assignment { value, .. }],
-        [FunctionStatementPlan::Assignment(assignment)],
-    ) = (statements, plans)
-    else {
-        return FunctionLoopLowering::Fold { targets };
-    };
-    let target = assignment.target();
-    if !function
-        .outputs
-        .iter()
-        .chain(&function.locals)
-        .any(|declaration| declaration.name == target.as_str())
-    {
-        return FunctionLoopLowering::Fold { targets };
-    }
-    let Ok(extents) = domain.extents() else {
-        return FunctionLoopLowering::Fold { targets };
-    };
-    let Some(shape) = shapes.get(target) else {
-        return FunctionLoopLowering::Fold { targets };
-    };
-    let dimensions = shape
-        .iter()
-        .map(|dimension| usize::try_from(*dimension))
-        .collect::<Result<Vec<_>, _>>();
-    let subscripts = assignment.subscripts();
-    let exact_unit_domain = dimensions.as_ref().is_ok_and(|dimensions| {
-        dimensions == &extents
-            && domain
-                .binders
-                .iter()
-                .zip(dimensions)
-                .all(|(binder, dimension)| {
-                    binder.lower == 1
-                        && binder.step == 1
-                        && usize::try_from(binder.upper).ok() == Some(*dimension)
-                })
-    });
-    let exact_subscripts = subscripts.len() == indices.len()
-        && subscripts
-            .iter()
-            .zip(indices)
-            .all(|(subscript, index)| subscript_is_binder(subscript, &index.ident));
-    let mut references = Vec::new();
-    value.collect_var_refs(&mut references);
-    if exact_unit_domain
-        && exact_subscripts
-        && !references.iter().any(|reference| reference == target)
-    {
-        FunctionLoopLowering::TotalArrayDefinition
-    } else {
-        FunctionLoopLowering::Fold { targets }
-    }
-}
-
-fn subscript_is_binder(subscript: &rumoca_core::Subscript, binder: &str) -> bool {
-    matches!(
-        subscript,
-        rumoca_core::Subscript::Expr {
-            expr,
-            ..
-        } if matches!(
-            expr.as_ref(),
-            Expression::VarRef {
-                name,
-                subscripts,
-                ..
-            } if name.as_str() == binder && subscripts.is_empty()
-        )
-    )
-}
-
-fn flattened_function_loop_source<'statement>(
-    indices: &'statement [rumoca_core::ForIndex],
-    equations: &'statement [rumoca_core::Statement],
-    source_depth: usize,
-) -> (
-    Vec<&'statement rumoca_core::ForIndex>,
-    &'statement [rumoca_core::Statement],
-) {
-    let mut flattened = indices.iter().collect::<Vec<_>>();
-    let mut statements = equations;
-    for _ in 1..source_depth {
-        let [
-            rumoca_core::Statement::For {
-                indices, equations, ..
-            },
-        ] = statements
-        else {
-            unreachable!("function analysis accepts only perfect nested loops")
-        };
-        flattened.extend(indices);
-        statements = equations;
-    }
-    (flattened, statements)
-}
-
-fn validate_function_assignment_target(
-    context: FunctionValidationContext<'_>,
-    component: &rumoca_core::ComponentReference,
-    span: Span,
-) -> Result<FunctionAssignmentPlan, ToDaeError> {
-    let [target] = component.parts.as_slice() else {
-        return Err(ToDaeError::unsupported_flat(
-            "function assignment target",
-            "a mutable function value must have one resolved target part",
-            span,
-        ));
-    };
-    if !context
-        .function
-        .outputs
-        .iter()
-        .chain(&context.function.locals)
-        .any(|value| value.name == target.ident)
-    {
-        return Err(ToDaeError::unsupported_flat(
-            "function assignment target",
-            format!(
-                "`{}.{}` is not a whole mutable function value",
-                context.function.name, target.ident
-            ),
-            span,
-        ));
-    }
-    validate_function_subscripts(&target.subs, context)?;
-    Ok(FunctionAssignmentPlan {
-        target: VarName::new(&target.ident),
-        subscripts: target.subs.clone().into_boxed_slice(),
-    })
-}
-
-fn validate_function_subscripts(
-    subscripts: &[Subscript],
-    context: FunctionValidationContext<'_>,
-) -> Result<(), ToDaeError> {
-    validate_subscripts_scoped(subscripts, context.roles, &HashSet::new(), &HashSet::new())?;
-    for subscript in subscripts {
-        if let rumoca_core::Subscript::Expr { expr, .. } = subscript {
-            validate_known_function_calls(expr, context.flat)?;
-        }
-    }
-    Ok(())
-}
-
-fn function_loop_targets(plans: &[FunctionStatementPlan]) -> Vec<VarName> {
-    let mut targets = Vec::new();
-    for plan in plans {
-        let FunctionStatementPlan::Assignment(assignment) = plan else {
-            continue;
-        };
-        let target = assignment.target();
-        if !targets.contains(target) {
-            targets.push(target.clone());
-        }
-    }
-    targets
-}
-
 fn validate_known_function_calls(
     expression: &Expression,
     flat: &flat::Model,
@@ -1408,10 +567,6 @@ fn validate_known_function_calls(
                     *span,
                 ));
             }
-        } else if let Some(result) =
-            validate_intrinsic_function_call(name.as_str(), args.len(), *span)
-        {
-            result?;
         } else {
             let function = flat
                 .functions
@@ -1435,451 +590,6 @@ fn validate_known_function_calls(
         validate_known_function_calls(child, flat)?;
     }
     Ok(())
-}
-
-fn validate_intrinsic_function_call(
-    name: &str,
-    arity: usize,
-    span: Span,
-) -> Option<Result<(), ToDaeError>> {
-    let valid = match name {
-        "Clock" | "previous" | "hold" | "noClock" => arity == 1,
-        "subSample" | "superSample" => arity == 2,
-        "shiftSample" | "backSample" => matches!(arity, 2 | 3),
-        _ => return None,
-    };
-    Some(if valid {
-        Ok(())
-    } else {
-        Err(ToDaeError::unsupported_runtime_operator(
-            name,
-            format!("invalid intrinsic arity {arity}"),
-            span,
-        ))
-    })
-}
-
-fn validate_variable(
-    flat: &flat::Model,
-    name: &VarName,
-    variable: &flat::Variable,
-    states: &HashSet<VarName>,
-    assigned_discrete: &HashSet<VarName>,
-) -> Result<PlannedRole, ToDaeError> {
-    let external_input = is_external_input(flat, name, variable)?;
-    if flat
-        .variable_type_names
-        .get(name)
-        .is_some_and(|ty| ty == "Clock")
-    {
-        require_span(variable.source_span, format!("clock declaration `{name}`"))?;
-        if !variable.dims.is_empty() {
-            return Err(ToDaeError::unsupported_flat(
-                "clock ownership proof",
-                format!("clock coordinate `{name}` must be scalar"),
-                variable.source_span,
-            ));
-        }
-        return Ok(PlannedRole::Clock);
-    }
-    let scalar_type = validate_variable_header(flat, name, variable)?;
-    let role = classify_variable_role(
-        name,
-        variable,
-        states,
-        assigned_discrete,
-        scalar_type,
-        external_input,
-    );
-    validate_variable_role(name, variable, role, scalar_type)?;
-    Ok(role)
-}
-
-fn validate_variable_header(
-    flat: &flat::Model,
-    name: &VarName,
-    variable: &flat::Variable,
-) -> Result<dae::ScalarType, ToDaeError> {
-    require_span(
-        variable.source_span,
-        format!("variable declaration `{name}`"),
-    )?;
-    let Some(type_name) = flat.variable_type_names.get(name) else {
-        return Err(ToDaeError::unsupported_flat(
-            "effective variable type",
-            format!("`{name}` has no resolved Flat type name"),
-            variable.source_span,
-        ));
-    };
-    let scalar_type = effective_variable_scalar_type(type_name, variable).ok_or_else(|| {
-        ToDaeError::unsupported_flat(
-            "non-primitive coordinate",
-            format!("`{name}` has unsupported effective type `{type_name}`"),
-            variable.source_span,
-        )
-    })?;
-    if !variable.is_primitive {
-        return Err(ToDaeError::unsupported_flat(
-            "non-primitive coordinate",
-            format!("`{name}` must be expanded or enter a typed aggregate arena"),
-            variable.source_span,
-        ));
-    }
-    if variable.type_id.is_unknown() {
-        return Err(ToDaeError::unsupported_flat(
-            "effective variable type",
-            format!("`{name}` retains TypeId::UNKNOWN"),
-            variable.source_span,
-        ));
-    }
-    for &extent in &variable.dims {
-        if u32::try_from(extent).is_err() {
-            return Err(ToDaeError::unsupported_flat(
-                "array extent",
-                format!("`{name}` has an extent outside the DAE u32 domain"),
-                variable.source_span,
-            ));
-        }
-    }
-    Ok(scalar_type)
-}
-
-fn classify_variable_role(
-    name: &VarName,
-    variable: &flat::Variable,
-    states: &HashSet<VarName>,
-    assigned_discrete: &HashSet<VarName>,
-    scalar_type: dae::ScalarType,
-    external_input: bool,
-) -> PlannedRole {
-    if external_input {
-        PlannedRole::Input
-    } else if matches!(variable.variability, Variability::Constant(_)) {
-        PlannedRole::Constant
-    } else if matches!(variable.variability, Variability::Parameter(_)) {
-        PlannedRole::Parameter
-    } else if states.contains(name) {
-        PlannedRole::State
-    } else if assigned_discrete.contains(name)
-        || matches!(variable.variability, Variability::Discrete(_))
-        || variable.is_discrete_type
-    {
-        if scalar_type == dae::ScalarType::Real {
-            PlannedRole::DiscreteReal
-        } else {
-            PlannedRole::DiscreteValue
-        }
-    } else if matches!(variable.causality, Causality::Output(_)) {
-        PlannedRole::Output
-    } else {
-        PlannedRole::Algebraic
-    }
-}
-
-fn is_external_input(
-    flat: &flat::Model,
-    name: &VarName,
-    variable: &flat::Variable,
-) -> Result<bool, ToDaeError> {
-    if !matches!(variable.causality, Causality::Input(_)) {
-        return Ok(false);
-    }
-    let root = variable
-        .component_ref
-        .as_ref()
-        .and_then(|reference| reference.parts.first())
-        .map(|part| part.ident.as_str())
-        .ok_or_else(|| {
-            ToDaeError::unsupported_flat(
-                "input ownership",
-                format!("input `{name}` has no resolved component-reference root"),
-                variable.source_span,
-            )
-        })?;
-    Ok(flat.top_level_input_components.contains(root) || flat.top_level_connectors.contains(root))
-}
-
-fn validate_variable_role(
-    name: &VarName,
-    variable: &flat::Variable,
-    role: PlannedRole,
-    scalar_type: dae::ScalarType,
-) -> Result<(), ToDaeError> {
-    if matches!(
-        role,
-        PlannedRole::State | PlannedRole::Algebraic | PlannedRole::Output
-    ) && scalar_type != dae::ScalarType::Real
-    {
-        return Err(ToDaeError::unsupported_flat(
-            "continuous non-Real coordinate",
-            format!("`{name}` must be classified as a discrete value"),
-            variable.source_span,
-        ));
-    }
-    if matches!(role, PlannedRole::State)
-        && !matches!(
-            variable.variability,
-            Variability::Empty | Variability::Continuous(_)
-        )
-    {
-        return Err(ToDaeError::unsupported_flat(
-            "derivative target",
-            format!("`{name}` is not a continuous Real coordinate"),
-            variable.source_span,
-        ));
-    }
-    if matches!(role, PlannedRole::DiscreteReal)
-        && !variable.dims.is_empty()
-        && variable.binding.is_some()
-    {
-        return Err(ToDaeError::unsupported_flat(
-            "array discrete-Real definition",
-            "B.1b structured families are not yet part of the canonical DAE grammar",
-            variable.source_span,
-        ));
-    }
-    Ok(())
-}
-
-pub(super) fn equation_partition<'flat>(
-    equation: &'flat flat::Equation,
-    roles: &HashMap<VarName, PlannedRole>,
-) -> Result<EquationPartition<'flat>, ToDaeError> {
-    if let Some(plan) = discrete_value_assignment(&equation.residual, roles, equation.span)? {
-        return Ok(EquationPartition::DiscreteValue(plan));
-    }
-    let Expression::Binary {
-        op: OpBinary::Sub,
-        lhs,
-        rhs: _,
-        ..
-    } = &equation.residual
-    else {
-        return Ok(EquationPartition::Continuous);
-    };
-    let targets = assignment_target_names(lhs);
-    let discrete_targets = targets
-        .iter()
-        .filter(|target| {
-            matches!(
-                roles.get(*target),
-                Some(PlannedRole::DiscreteReal | PlannedRole::DiscreteValue)
-            )
-        })
-        .collect::<Vec<_>>();
-    if discrete_targets.is_empty() {
-        return Ok(EquationPartition::Continuous);
-    }
-    if discrete_targets.len() != targets.len() || targets.len() != 1 {
-        return Err(ToDaeError::unsupported_flat(
-            "mixed discrete equation",
-            "one equation owner cannot mix continuous and discrete targets or define multiple discrete coordinates",
-            equation.span,
-        ));
-    }
-    let target = discrete_targets[0];
-    match roles[target] {
-        PlannedRole::DiscreteReal => Ok(EquationPartition::DiscreteReal { target }),
-        PlannedRole::DiscreteValue => {
-            unreachable!("discrete-value equations are classified before residual equations")
-        }
-        PlannedRole::Parameter
-        | PlannedRole::Constant
-        | PlannedRole::Input
-        | PlannedRole::State
-        | PlannedRole::Algebraic
-        | PlannedRole::Output
-        | PlannedRole::Clock
-        | PlannedRole::EnumerationLiteral
-        | PlannedRole::Aggregate => {
-            unreachable!("the target was selected as a discrete coordinate")
-        }
-    }
-}
-
-fn discrete_value_assignment<'flat>(
-    expression: &'flat Expression,
-    roles: &HashMap<VarName, PlannedRole>,
-    owner: Span,
-) -> Result<Option<DiscreteValueAssignmentPlan<'flat>>, ToDaeError> {
-    match expression {
-        Expression::Binary {
-            op: OpBinary::Sub,
-            lhs,
-            rhs,
-            ..
-        } => {
-            let mut references = Vec::new();
-            lhs.collect_var_refs(&mut references);
-            if !references
-                .iter()
-                .any(|name| matches!(roles.get(name), Some(PlannedRole::DiscreteValue)))
-            {
-                return Ok(None);
-            }
-            let Expression::VarRef {
-                name, subscripts, ..
-            } = lhs.as_ref()
-            else {
-                return Err(invalid_discrete_lhs(owner));
-            };
-            if !subscripts.is_empty()
-                || !matches!(roles.get(name.var_name()), Some(PlannedRole::DiscreteValue))
-            {
-                return Err(invalid_discrete_lhs(owner));
-            }
-            Ok(Some(DiscreteValueAssignmentPlan {
-                target: name.var_name(),
-                value: Cow::Borrowed(rhs),
-                generated: false,
-            }))
-        }
-        Expression::If {
-            branches,
-            else_branch,
-            span,
-        } => {
-            let Some(fallback) = discrete_value_assignment(else_branch, roles, owner)? else {
-                return if expression_mentions_discrete_value(expression, roles) {
-                    Err(invalid_discrete_lhs(owner))
-                } else {
-                    Ok(None)
-                };
-            };
-            let mut values = Vec::with_capacity(branches.len());
-            for (condition, branch) in branches {
-                let Some(branch) = discrete_value_assignment(branch, roles, owner)? else {
-                    return Err(invalid_discrete_lhs(owner));
-                };
-                if branch.target != fallback.target {
-                    return Err(ToDaeError::discrete_solved_form_violation(
-                        "all branches of a discrete-valued equation must assign the same coordinate",
-                        owner,
-                    ));
-                }
-                values.push((condition.clone(), branch.value.into_owned()));
-            }
-            Ok(Some(DiscreteValueAssignmentPlan {
-                target: fallback.target,
-                value: Cow::Owned(Expression::If {
-                    branches: values,
-                    else_branch: Box::new(fallback.value.into_owned()),
-                    span: *span,
-                }),
-                generated: true,
-            }))
-        }
-        _ if expression_mentions_discrete_value(expression, roles) => {
-            Err(invalid_discrete_lhs(owner))
-        }
-        _ => Ok(None),
-    }
-}
-
-fn expression_mentions_discrete_value(
-    expression: &Expression,
-    roles: &HashMap<VarName, PlannedRole>,
-) -> bool {
-    let mut references = Vec::new();
-    expression.collect_var_refs(&mut references);
-    references
-        .iter()
-        .any(|name| matches!(roles.get(name), Some(PlannedRole::DiscreteValue)))
-}
-
-fn invalid_discrete_lhs(span: Span) -> ToDaeError {
-    ToDaeError::discrete_solved_form_violation(
-        "a discrete-valued equation must have one unsubscripted resolved coordinate as its left-hand side",
-        span,
-    )
-}
-
-fn assignment_target_names(expression: &Expression) -> Vec<&VarName> {
-    let mut targets = Vec::new();
-    collect_assignment_target_names(expression, &mut targets);
-    targets
-}
-
-fn collect_assignment_target_names<'flat>(
-    expression: &'flat Expression,
-    targets: &mut Vec<&'flat VarName>,
-) {
-    match expression {
-        Expression::VarRef { name, .. } => targets.push(name.var_name()),
-        Expression::BuiltinCall {
-            function: BuiltinFunction::Der,
-            args,
-            ..
-        } if args.len() == 1 => collect_assignment_target_names(&args[0], targets),
-        Expression::Unary { rhs, .. } | Expression::Index { base: rhs, .. } => {
-            collect_assignment_target_names(rhs, targets);
-        }
-        Expression::Tuple { elements, .. } | Expression::Array { elements, .. } => {
-            for element in elements {
-                collect_assignment_target_names(element, targets);
-            }
-        }
-        Expression::If {
-            branches,
-            else_branch,
-            ..
-        } => {
-            for (_, value) in branches {
-                collect_assignment_target_names(value, targets);
-            }
-            collect_assignment_target_names(else_branch, targets);
-        }
-        Expression::Literal { .. }
-        | Expression::Binary { .. }
-        | Expression::BuiltinCall { .. }
-        | Expression::FunctionCall { .. }
-        | Expression::ArrayComprehension { .. }
-        | Expression::Range { .. }
-        | Expression::FieldAccess { .. }
-        | Expression::Empty { .. } => {}
-    }
-}
-
-fn defined_discrete_targets(
-    flat: &flat::Model,
-    roles: &HashMap<VarName, PlannedRole>,
-) -> Result<HashSet<VarName>, ToDaeError> {
-    let mut targets = event_targets(flat);
-    targets.extend(algorithm_targets(flat).into_iter().filter(|target| {
-        matches!(
-            roles.get(target),
-            Some(PlannedRole::DiscreteReal | PlannedRole::DiscreteValue)
-        )
-    }));
-    for equation in &flat.equations {
-        match equation_partition(equation, roles)? {
-            EquationPartition::Continuous => {}
-            EquationPartition::DiscreteReal { target } => {
-                targets.insert(target.clone());
-            }
-            EquationPartition::DiscreteValue(plan) => {
-                targets.insert(plan.target.clone());
-            }
-        }
-    }
-    Ok(targets)
-}
-
-fn structured_assignment_pairs(
-    target: &VarName,
-    value: &Expression,
-    roles: &HashMap<VarName, PlannedRole>,
-) -> Option<Vec<(VarName, VarName)>> {
-    let pairs = structured_assignment_names(target, value, roles.keys())?;
-    pairs
-        .iter()
-        .all(|(target_leaf, _)| {
-            matches!(
-                roles.get(target_leaf),
-                Some(PlannedRole::DiscreteReal | PlannedRole::DiscreteValue)
-            )
-        })
-        .then_some(pairs)
 }
 
 pub(super) fn structured_assignment_names<'a>(
@@ -1932,66 +642,45 @@ pub(super) fn structured_assignment_names<'a>(
     Some(pairs)
 }
 
-fn checked_shape_size(name: &VarName, variable: &flat::Variable) -> Result<usize, ToDaeError> {
-    variable.shape_size().map_err(|_| {
-        ToDaeError::unsupported_flat(
-            "variable shape",
-            format!("`{name}` has a shape whose scalar cardinality cannot be represented"),
-            variable.source_span,
-        )
-    })
-}
-
-pub(super) fn primitive_scalar_type(type_name: &str) -> Option<dae::ScalarType> {
-    match type_name {
-        "Real" => Some(dae::ScalarType::Real),
-        "Integer" => Some(dae::ScalarType::Integer),
-        "Boolean" => Some(dae::ScalarType::Boolean),
-        "String" => Some(dae::ScalarType::String),
-        _ => None,
+pub(super) fn effective_function_scalar_type(
+    flat: &flat::Model,
+    value: &rumoca_core::FunctionParam,
+) -> Option<dae::ScalarType> {
+    let canonical = value.effective_type.canonical_type();
+    if canonical == flat.predefined_types.real {
+        Some(dae::ScalarType::Real)
+    } else if canonical == flat.predefined_types.integer {
+        Some(dae::ScalarType::Integer)
+    } else if canonical == flat.predefined_types.boolean {
+        Some(dae::ScalarType::Boolean)
+    } else if canonical == flat.predefined_types.string {
+        Some(dae::ScalarType::String)
+    } else if flat.enumeration_type_roots.contains(&canonical) {
+        Some(dae::ScalarType::Enumeration)
+    } else {
+        None
     }
 }
 
 pub(super) fn effective_variable_scalar_type(
-    type_name: &str,
+    flat: &flat::Model,
     variable: &flat::Variable,
 ) -> Option<dae::ScalarType> {
-    primitive_scalar_type(type_name).or_else(|| {
-        variable
-            .is_discrete_type
-            .then_some(dae::ScalarType::Integer)
-    })
-}
-
-fn collect_derivative_targets(
-    expression: &Expression,
-    states: &mut HashSet<VarName>,
-) -> Result<(), ToDaeError> {
-    if let Expression::BuiltinCall {
-        function: BuiltinFunction::Der,
-        args,
-        span,
-    } = expression
-    {
-        require_span(*span, "derivative expression")?;
-        let [argument] = args.as_slice() else {
-            return Err(ToDaeError::unsupported_flat(
-                "derivative expression",
-                "der(...) must have exactly one resolved variable-reference operand",
-                *span,
-            ));
-        };
-        let Some((name, _)) = derivative_reference(argument) else {
-            return Err(ToDaeError::unsupported_flat(
-                "derivative expression",
-                "der(...) must have exactly one resolved variable-reference operand",
-                *span,
-            ));
-        };
-        states.insert(name.var_name().clone());
+    let canonical = flat
+        .effective_types
+        .get(&variable.type_id)?
+        .canonical_type();
+    if canonical == flat.predefined_types.real {
+        Some(dae::ScalarType::Real)
+    } else if canonical == flat.predefined_types.integer {
+        Some(dae::ScalarType::Integer)
+    } else if canonical == flat.predefined_types.boolean {
+        Some(dae::ScalarType::Boolean)
+    } else if canonical == flat.predefined_types.string {
+        Some(dae::ScalarType::String)
+    } else if flat.enumeration_types.contains(&variable.type_id) {
+        Some(dae::ScalarType::Enumeration)
+    } else {
+        None
     }
-    for child in expression_children(expression) {
-        collect_derivative_targets(child, states)?;
-    }
-    Ok(())
 }

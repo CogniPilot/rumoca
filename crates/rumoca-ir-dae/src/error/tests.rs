@@ -88,6 +88,11 @@ fn provenance_and_foundation_messages_are_exact() {
             span: Some(at),
         },
         Case {
+            error: DaeConstructionError::MissingPreviousClockOwner { span: at },
+            message: "`previous` expression has no exact owning clock",
+            span: Some(at),
+        },
+        Case {
             error: DaeConstructionError::CapacityExceeded {
                 arena: "expression arena",
                 attempted_index: 4_294_967_296,
@@ -380,10 +385,10 @@ fn source_free_messages_are_exact_and_unspanned() {
         },
         Case {
             error: DaeConstructionError::InvalidSchemaVersion {
-                expected: 11,
-                found: 10,
+                expected: 12,
+                found: 11,
             },
-            message: "unsupported DAE schema version 10; expected 11",
+            message: "unsupported DAE schema version 11; expected 12",
             span: None,
         },
         Case {

@@ -1,5 +1,4 @@
 use super::*;
-use crate::expression::{OperandRange, PackedSubscriptKind};
 
 pub(super) fn expect_complete_function(
     storage: &Storage,
@@ -131,15 +130,11 @@ fn collect_group_dependencies(
         if std::mem::replace(&mut seen[index], true) {
             continue;
         }
-        match &storage.expressions.nodes[index] {
-            ExprNode::Call {
-                function, operands, ..
-            } => {
-                record_group_dependency(*function, group_start, group_end, dependencies);
-                push_operands(storage, *operands, &mut pending);
-            }
-            node => push_expression_children(storage, node, &mut pending),
+        if let ExprNode::Call { function, .. } = &storage.expressions.nodes[index] {
+            record_group_dependency(*function, group_start, group_end, dependencies);
         }
+        storage.expressions.nodes[index]
+            .for_each_child(&storage.expressions, |child| pending.push(child));
     }
     dependencies.sort_unstable();
     Ok(())
@@ -157,64 +152,6 @@ fn record_group_dependency(
     let ordinal = (function - group_start) as usize;
     if !dependencies.contains(&ordinal) {
         dependencies.push(ordinal);
-    }
-}
-
-fn push_expression_children(storage: &Storage, node: &ExprNode, pending: &mut Vec<u32>) {
-    match node {
-        ExprNode::Unary { operand, .. }
-        | ExprNode::Field { base: operand, .. }
-        | ExprNode::Comprehension { body: operand, .. } => pending.push(*operand),
-        ExprNode::Binary { lhs, rhs, .. } => pending.extend([*lhs, *rhs]),
-        ExprNode::Range {
-            start,
-            explicit_step,
-            stop,
-        } => {
-            pending.extend([*start, *stop]);
-            pending.extend(explicit_step);
-        }
-        ExprNode::Index { base, subscripts } => {
-            pending.push(*base);
-            push_subscripts(storage, *subscripts, pending);
-        }
-        ExprNode::ArrayUpdate {
-            base,
-            value,
-            subscripts,
-        } => {
-            pending.extend([*base, *value]);
-            push_subscripts(storage, *subscripts, pending);
-        }
-        ExprNode::Conditional { operands }
-        | ExprNode::Array { operands }
-        | ExprNode::Record { operands }
-        | ExprNode::Builtin { operands, .. }
-        | ExprNode::Call { operands, .. } => push_operands(storage, *operands, pending),
-        ExprNode::Literal(_)
-        | ExprNode::Coordinate(_)
-        | ExprNode::FunctionValue { .. }
-        | ExprNode::FunctionFoldParameter { .. }
-        | ExprNode::FunctionFoldOutput { .. } => {}
-    }
-}
-
-fn push_operands(storage: &Storage, operands: OperandRange, pending: &mut Vec<u32>) {
-    pending.extend(
-        storage.expressions.operands[operands.indices()]
-            .iter()
-            .copied(),
-    );
-}
-
-fn push_subscripts(storage: &Storage, subscripts: OperandRange, pending: &mut Vec<u32>) {
-    for subscript in &storage.expressions.subscripts[subscripts.indices()] {
-        match subscript.kind {
-            PackedSubscriptKind::Index(expression) | PackedSubscriptKind::Slice(expression) => {
-                pending.push(expression);
-            }
-            PackedSubscriptKind::Whole => {}
-        }
     }
 }
 
@@ -481,7 +418,8 @@ fn reject_model_coordinate(
         | ExprNode::Array { .. }
         | ExprNode::Record { .. }
         | ExprNode::Builtin { .. }
-        | ExprNode::Call { .. } => return Ok(()),
+        | ExprNode::Call { .. }
+        | ExprNode::StringConversion { .. } => return Ok(()),
         ExprNode::Coordinate(Coordinate::Parameter(_)) => "parameter",
         ExprNode::Coordinate(Coordinate::Input(_)) => "input",
         ExprNode::Coordinate(Coordinate::State(_)) => "state",
@@ -492,6 +430,7 @@ fn reject_model_coordinate(
         ExprNode::Coordinate(Coordinate::PreDiscreteReal(_)) => "pre(discrete real)",
         ExprNode::Coordinate(Coordinate::PreDiscreteValue(_)) => "pre(discrete value)",
         ExprNode::Coordinate(Coordinate::Time) => "time",
+        ExprNode::Coordinate(Coordinate::ClockInterval(_)) => "clock interval",
         ExprNode::Coordinate(Coordinate::Condition(_)) => "condition",
         ExprNode::Coordinate(Coordinate::Delay(_)) => "delay",
         ExprNode::Coordinate(Coordinate::Previous(_)) => "previous",

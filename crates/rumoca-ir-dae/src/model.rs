@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::clocks::{
     ClockEntry, ClockOperation, ClockOwnershipEntry, ClockOwnershipView, ClockView,
-    ClockedVariableKind, ClockedVariableRole, Clocks,
+    ClockedVariableKind, Clocks,
 };
 use crate::conditions::{
     ConditionEntry, ConditionOperation, ConditionView, Conditions, RelationEntry, RelationView,
@@ -52,7 +52,13 @@ use crate::{
     RootId, ScalarType, StateId, TerminalId, TimeEventId, ValueTypeId, VariableId,
 };
 
-pub const DAE_SCHEMA_VERSION: u16 = 11;
+/// The one supported DAE wire version.
+///
+/// Wire records name their own columns, but ordinal-tagged encodings identify
+/// enum variants positionally, so adding, removing, or reordering a wire
+/// variant changes the decodable shape. Every such change bumps this constant,
+/// and decode then rejects the superseded number instead of reading it.
+pub const DAE_SCHEMA_VERSION: u16 = 12;
 
 pub use domains::Domains;
 pub(crate) use domains::insert_domain;
@@ -68,8 +74,8 @@ pub use view::{
     ExpressionOperation, ExpressionView, FunctionDefinitionValues, FunctionDefinitionView,
     FunctionFoldView, FunctionParameterView, FunctionStatementView, FunctionStatements,
     FunctionValueView, FunctionView, InitializationOwnerView, RangeBoundView, RangeView,
-    ResidualEquationView, StructuredFamilyView, SubscriptView, SubscriptsView, ValueTypeOperands,
-    VariableIdentity, VariableView,
+    ResidualEquationView, StringConversionFormatView, StructuredFamilyView, SubscriptView,
+    SubscriptsView, ValueTypeOperands, VariableIdentity, VariableView,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -296,6 +302,7 @@ struct DomainEntry {
 
 #[derive(Debug, Default)]
 pub(crate) struct Storage {
+    pub(crate) predefined_string_declaration: Option<rumoca_core::DefId>,
     pub(crate) value_types: Vec<ValueType>,
     flat_type_ids: Vec<Option<TypeId>>,
     value_type_provenance: Vec<DaeProvenance>,
@@ -344,6 +351,7 @@ pub(crate) struct Storage {
 
 #[derive(Debug, PartialEq)]
 struct FrozenStorage {
+    predefined_string_declaration: Option<rumoca_core::DefId>,
     value_types: Box<[ValueType]>,
     flat_type_ids: Box<[Option<TypeId>]>,
     value_type_provenance: Box<[DaeProvenance]>,
@@ -377,7 +385,7 @@ struct FrozenStorage {
     delays: Box<[DelayEntry]>,
 }
 
-/// Immutable, valid-by-construction schema-v11 DAE.
+/// Immutable, valid-by-construction schema-v12 DAE.
 #[derive(Debug, Serialize)]
 pub struct Dae {
     schema_version: u16,
@@ -492,6 +500,27 @@ impl<'dae> DaeConstruction<'dae> {
         events => Events,
         clocks => Clocks,
         temporal => Temporal,
+    }
+
+    /// Register the Resolve-proven predefined `String` declaration before any
+    /// conversion expression is constructed.
+    pub fn register_predefined_string(
+        &mut self,
+        declaration: rumoca_core::DefId,
+    ) -> Result<(), DaeConstructionError> {
+        match self.storage.predefined_string_declaration {
+            Some(expected) if expected != declaration => Err(
+                DaeConstructionError::ConflictingPredefinedStringRegistration {
+                    expected,
+                    found: declaration,
+                },
+            ),
+            Some(_) => Ok(()),
+            None => {
+                self.storage.predefined_string_declaration = Some(declaration);
+                Ok(())
+            }
+        }
     }
 
     /// Construct one acyclic function after all of its callees.

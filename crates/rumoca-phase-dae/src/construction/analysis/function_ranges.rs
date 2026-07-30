@@ -2,6 +2,7 @@ use super::*;
 
 pub(super) fn immutable_integer_defaults(
     function: &rumoca_core::Function,
+    flat: &flat::Model,
     shapes: &ShapeEnvironment,
 ) -> Result<HashMap<VarName, i64>, ToDaeError> {
     let mut assigned = HashSet::new();
@@ -9,7 +10,10 @@ pub(super) fn immutable_integer_defaults(
     let candidates = function
         .locals
         .iter()
-        .filter(|local| local.type_name == "Integer" && !assigned.contains(&local.name))
+        .filter(|local| {
+            effective_function_scalar_type(flat, local) == Some(dae::ScalarType::Integer)
+                && !assigned.contains(&local.name)
+        })
         .collect::<Vec<_>>();
     let mut values = HashMap::with_capacity(candidates.len());
     loop {
@@ -42,7 +46,7 @@ fn collect_function_assignment_targets(
     for statement in statements {
         match statement {
             rumoca_core::Statement::Assignment { comp, .. } => {
-                if let [target] = comp.parts.as_slice() {
+                if let [target] = comp.parts() {
                     assigned.insert(target.ident.clone());
                 }
             }

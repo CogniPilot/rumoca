@@ -260,10 +260,10 @@ mod tests {
             parts: vec![ComponentRefPart {
                 ident: make_token(name),
                 subs: None,
+                def_id: None,
             }],
-            def_id: None,
-
             span: rumoca_core::Span::DUMMY,
+            qualified_display_name: None,
         })
     }
 
@@ -276,11 +276,11 @@ mod tests {
                 .map(|part| ComponentRefPart {
                     ident: make_token(&part),
                     subs: None,
+                    def_id: None,
                 })
                 .collect(),
-            def_id: None,
-
             span: rumoca_core::Span::DUMMY,
+            qualified_display_name: None,
         })
     }
 
@@ -290,10 +290,10 @@ mod tests {
             parts: vec![ComponentRefPart {
                 ident: make_token(name),
                 subs: Some(vec![Subscript::Expression(make_int_literal(idx))]),
+                def_id: None,
             }],
-            def_id: None,
-
             span: rumoca_core::Span::DUMMY,
+            qualified_display_name: None,
         })
     }
 
@@ -304,10 +304,10 @@ mod tests {
                 parts: vec![ComponentRefPart {
                     ident: make_token(name),
                     subs: None,
+                    def_id: None,
                 }],
-                def_id: None,
-
                 span: rumoca_core::Span::DUMMY,
+                qualified_display_name: None,
             },
             args,
             is_partial_application: false,
@@ -424,6 +424,7 @@ mod tests {
         let expr = Expression::FieldAccess {
             base: Arc::new(make_comp_ref("cellData1")),
             field: "OCV_SOC".to_string(),
+            field_def_id: None,
             span: rumoca_core::Span::DUMMY,
         };
         assert_eq!(
@@ -440,6 +441,7 @@ mod tests {
         let expr = Expression::FieldAccess {
             base: Arc::new(make_comp_ref("cellData1")),
             field: "OCV_SOC_internal".to_string(),
+            field_def_id: None,
             span: rumoca_core::Span::DUMMY,
         };
         assert_eq!(
@@ -456,6 +458,7 @@ mod tests {
         let expr = Expression::FieldAccess {
             base: Arc::new(make_dotted_comp_ref("cellData1")),
             field: "OCV_SOC_internal".to_string(),
+            field_def_id: None,
             span: rumoca_core::Span::DUMMY,
         };
         assert_eq!(
@@ -474,7 +477,7 @@ mod tests {
                 base: Arc::new(Expression::FieldAccess {
                     base: Arc::new(make_comp_ref("stackData")),
                     field: "cellData".to_string(),
-
+                    field_def_id: None,
                     span: rumoca_core::Span::DUMMY,
                 }),
                 subscripts: vec![
@@ -485,6 +488,7 @@ mod tests {
                 span: rumoca_core::Span::DUMMY,
             }),
             field: "OCV_SOC".to_string(),
+            field_def_id: None,
             span: rumoca_core::Span::DUMMY,
         };
 
@@ -504,7 +508,7 @@ mod tests {
                 base: Arc::new(Expression::FieldAccess {
                     base: Arc::new(make_comp_ref("stackData")),
                     field: "cellData".to_string(),
-
+                    field_def_id: None,
                     span: rumoca_core::Span::DUMMY,
                 }),
                 subscripts: vec![
@@ -515,6 +519,7 @@ mod tests {
                 span: rumoca_core::Span::DUMMY,
             }),
             field: "OCV_SOC".to_string(),
+            field_def_id: None,
             span: rumoca_core::Span::DUMMY,
         };
 
@@ -547,10 +552,10 @@ mod tests {
                 parts: vec![ComponentRefPart {
                     ident: make_token("size"),
                     subs: None,
+                    def_id: None,
                 }],
-                def_id: None,
-
                 span: rumoca_core::Span::DUMMY,
+                qualified_display_name: None,
             },
             args: vec![make_comp_ref("arr"), make_int_literal(1)],
             is_partial_application: false,
@@ -706,6 +711,7 @@ mod tests {
                 ComponentRefPart {
                     ident: make_token("stackData"),
                     subs: None,
+                    def_id: None,
                 },
                 ComponentRefPart {
                     ident: make_token("cellData"),
@@ -713,15 +719,16 @@ mod tests {
                         Subscript::Expression(make_int_literal(1)),
                         Subscript::Expression(make_int_literal(1)),
                     ]),
+                    def_id: None,
                 },
                 ComponentRefPart {
                     ident: make_token("OCV_SOC"),
                     subs: None,
+                    def_id: None,
                 },
             ],
-            def_id: None,
-
             span: rumoca_core::Span::DUMMY,
+            qualified_display_name: None,
         });
 
         assert_eq!(
@@ -741,6 +748,7 @@ mod tests {
                 ComponentRefPart {
                     ident: make_token("stackData"),
                     subs: None,
+                    def_id: None,
                 },
                 ComponentRefPart {
                     ident: make_token("cellData"),
@@ -748,15 +756,16 @@ mod tests {
                         Subscript::Expression(make_int_literal(1)),
                         Subscript::Expression(make_int_literal(1)),
                     ]),
+                    def_id: None,
                 },
                 ComponentRefPart {
                     ident: make_token("OCV_SOC"),
                     subs: None,
+                    def_id: None,
                 },
             ],
-            def_id: None,
-
             span: rumoca_core::Span::DUMMY,
+            qualified_display_name: None,
         });
 
         let size_expr = Expression::FunctionCall {
@@ -765,10 +774,10 @@ mod tests {
                 parts: vec![ComponentRefPart {
                     ident: make_token("size"),
                     subs: None,
+                    def_id: None,
                 }],
-                def_id: None,
-
                 span: rumoca_core::Span::DUMMY,
+                qualified_display_name: None,
             },
             args: vec![indexed_ref, make_int_literal(1)],
             is_partial_application: false,

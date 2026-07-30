@@ -119,6 +119,14 @@ pub(super) fn binary_result(
             Ok(lhs.clone())
         }
         BinaryOperator::Add
+            if lhs_scalar == ScalarType::String && rhs_scalar == ScalarType::String =>
+        {
+            if !lhs.is_scalar() || !rhs.is_scalar() {
+                return Err(DaeConstructionError::ExpectedScalar { span: at.span() });
+            }
+            Ok(ValueType::scalar(ScalarType::String))
+        }
+        BinaryOperator::Add
         | BinaryOperator::Subtract
         | BinaryOperator::ElementwiseAdd
         | BinaryOperator::ElementwiseSubtract => {
@@ -506,18 +514,6 @@ pub(super) fn range_extent(
         .map_err(|_| DaeConstructionError::RangeExtentOverflow { span: at.span() })
 }
 
-pub(super) fn checked_u32(
-    value: usize,
-    arena: &'static str,
-    at: DaeProvenance,
-) -> Result<u32, DaeConstructionError> {
-    u32::try_from(value).map_err(|_| DaeConstructionError::CapacityExceeded {
-        arena,
-        attempted_index: value,
-        span: at.span(),
-    })
-}
-
 pub(super) fn type_mismatch(
     expected: ScalarType,
     found: ScalarType,
@@ -538,7 +534,11 @@ pub(super) fn validate_subscript<'dae>(
 ) -> Result<(), DaeConstructionError> {
     let ty = storage.expr_type(expression, at)?;
     let scalar_matches = ty.is_scalar() == expect_scalar;
-    if ty.scalar_type() == ScalarType::Integer && scalar_matches {
+    if matches!(
+        ty.scalar_type(),
+        ScalarType::Integer | ScalarType::Enumeration
+    ) && scalar_matches
+    {
         return Ok(());
     }
     Err(DaeConstructionError::InvalidSubscript { span: at.span() })

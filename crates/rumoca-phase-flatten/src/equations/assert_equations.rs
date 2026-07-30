@@ -380,9 +380,15 @@ fn rewrite_structural_assert_condition(
                 .collect(),
             span: *span,
         },
-        ast::Expression::FieldAccess { base, field, span } => ast::Expression::FieldAccess {
+        ast::Expression::FieldAccess {
+            base,
+            field,
+            field_def_id,
+            span,
+        } => ast::Expression::FieldAccess {
             base: Arc::new(rewrite_structural_assert_condition(ctx, base, prefix)),
             field: field.clone(),
+            field_def_id: *field_def_id,
             span: *span,
         },
         ast::Expression::ClassModification { .. } => {
@@ -614,13 +620,15 @@ mod tests {
             local: false,
             parts: parts
                 .iter()
-                .map(|part| ast::ComponentRefPart {
+                .enumerate()
+                .map(|(index, part)| ast::ComponentRefPart {
                     ident: token(part),
                     subs: None,
+                    def_id: Some(rumoca_core::DefId::new(14_001 + index as u32)),
                 })
                 .collect(),
             span: test_span(),
-            def_id: None,
+            qualified_display_name: None,
         }
     }
 
@@ -693,6 +701,9 @@ mod tests {
             }
             rumoca_core::Expression::BuiltinCall { args, .. } => {
                 args.iter().any(contains_cardinality_call)
+            }
+            rumoca_core::Expression::StringConversion { value, format, .. } => {
+                contains_cardinality_call(value) || format.operands().any(contains_cardinality_call)
             }
             rumoca_core::Expression::ArrayComprehension {
                 expr,

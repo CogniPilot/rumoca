@@ -116,7 +116,11 @@ use type_lookup::is_type_compatible;
 use type_lookup::{
     TypeInfo, is_type_compatible_with_def_id, lookup_type_info, resolve_primitive_type_id,
 };
-use type_overrides::{TypeOverrideMap, apply_type_override, build_type_override_map};
+use type_overrides::{
+    TypeOverrideMap, apply_type_override, build_type_override_map,
+    resolve_dynamic_equation_targets, resolve_dynamic_expression_targets,
+    resolve_dynamic_statement_targets,
+};
 
 pub use connections::{ConnectionParams, extract_connections, filter_out_connections};
 pub use errors::{InstantiateError, InstantiateResult, InstantiationOutcome};
@@ -280,6 +284,12 @@ pub struct InstantiateContext {
     pub diags: Diagnostics,
     /// Current context path during instantiation.
     context_path: Vec<(String, Vec<i64>)>,
+    /// Resolve identity for each corresponding component-path segment.
+    ///
+    /// Non-component path probes may temporarily leave an entry unresolved,
+    /// but `instantiate_component` must prove the current segment before it can
+    /// construct instance data.
+    context_path_def_ids: Vec<Option<rumoca_core::DefId>>,
     /// Next available instance ID.
     next_instance_id: u32,
     /// Modification environment for the current scope.
@@ -364,6 +374,7 @@ impl InstantiateContext {
         Self {
             diags: Diagnostics::new(),
             context_path: Vec::new(),
+            context_path_def_ids: Vec::new(),
             next_instance_id: 0,
             mod_env: ast::ModificationEnvironment::new(),
             // Start with one empty scope for the root
@@ -651,11 +662,52 @@ impl InstantiateContext {
     /// Push a structured path part onto the context path.
     pub fn push_path_part(&mut self, name: &str, subscripts: Vec<i64>) {
         self.context_path.push((name.to_string(), subscripts));
+        self.context_path_def_ids.push(None);
     }
 
     /// Pop a name from the context path.
     pub fn pop_path(&mut self) {
         self.context_path.pop();
+        self.context_path_def_ids.pop();
+    }
+
+    fn prove_current_path_identity(&mut self, def_id: rumoca_core::DefId) {
+        *self
+            .context_path_def_ids
+            .last_mut()
+            .expect("component instantiation always has a current path segment") = Some(def_id);
+    }
+
+    fn current_component_reference(
+        &self,
+        provenance: rumoca_core::ProvenanceSpan,
+    ) -> Result<rumoca_core::ComponentReference, rumoca_core::ComponentReferenceError> {
+        let span = provenance.span();
+        let parts =
+            self.context_path
+                .iter()
+                .zip(&self.context_path_def_ids)
+                .enumerate()
+                .map(|(part_index, ((ident, subscripts), def_id))| {
+                    let def_id = def_id.ok_or(
+                        rumoca_core::ComponentReferenceError::MissingPartIdentity { part_index },
+                    )?;
+                    Ok(rumoca_core::ComponentRefPart {
+                        ident: ident.clone(),
+                        span,
+                        subs: subscripts
+                            .iter()
+                            .map(|subscript| {
+                                rumoca_core::Subscript::generated_index_with_provenance(
+                                    *subscript, provenance,
+                                )
+                            })
+                            .collect(),
+                        def_id,
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+        rumoca_core::ComponentReference::construct(false, span, parts)
     }
 
     /// Allocate a new unique instance ID.
@@ -872,7 +924,7 @@ pub fn instantiate_model_with_outcome_options(
     overlay.root_description = description_tokens_to_string(&model.description);
 
     // Instantiate the root model
-    if let Err(e) = instantiate_class(tree, model, &mut ctx, &mut overlay) {
+    if let Err(e) = instantiate_class(tree, model, None, None, &mut ctx, &mut overlay) {
         return InstantiationOutcome::Error(e);
     }
 
@@ -953,6 +1005,8 @@ pub fn instantiate_model_with_options(
 fn instantiate_class(
     tree: &ast::ClassTree,
     class: &ast::ClassDef,
+    owner_component_id: Option<rumoca_core::InstanceId>,
+    reserved_instance_id: Option<rumoca_core::InstanceId>,
     ctx: &mut InstantiateContext,
     overlay: &mut ast::InstanceOverlay,
 ) -> InstantiateResult<()> {
@@ -960,7 +1014,7 @@ fn instantiate_class(
     ctx.enter_instantiation_class(class, &tree.source_map)?;
     ctx.push_inner_scope(); // Push a new inner scope for this class (MLS §5.4)
     let result = (|| {
-        let instance_id = overlay.alloc_id();
+        let instance_id = reserved_instance_id.unwrap_or_else(|| overlay.alloc_id());
         let qualified_name = ctx.current_path();
         // Get or compute the class template (cached to avoid recomputing inheritance)
         // For example, if we have `Resistor r[100]`, we compute the template once and
@@ -1020,6 +1074,7 @@ fn instantiate_class(
             tree,
             effective_components,
             &type_overrides,
+            instance_id,
             ctx,
             overlay,
             ComponentImports {
@@ -1052,10 +1107,12 @@ fn instantiate_class(
             source_map,
         )?;
 
-        let sections = class_instance_sections(tree, ctx, &template, &qualified_name)?;
+        let sections =
+            class_instance_sections(tree, ctx, &template, &qualified_name, &type_overrides)?;
 
         let class_data = ast::ClassInstanceData {
             instance_id,
+            owner_component_id,
             class_def_id: class.def_id,
             qualified_name: qualified_name.clone(),
             source_scope: class_declaration_source_scope(ctx, class),
@@ -1093,6 +1150,7 @@ fn class_instance_sections(
     ctx: &InstantiateContext,
     template: &templates::ClassTemplate,
     qualified_name: &ast::QualifiedName,
+    type_overrides: &TypeOverrideMap,
 ) -> InstantiateResult<ClassSections> {
     let source_map = &tree.source_map;
     let eval_ctx = InstantiateEvalCtx {
@@ -1102,7 +1160,7 @@ fn class_instance_sections(
         resolve_class_components: resolve_effective_components_for_eval,
     };
     // Convert regular equations in one pass without intermediate equation vectors.
-    Ok(ClassSections {
+    let mut sections = ClassSections {
         equations: equations_to_instance_without_connections(
             ctx,
             &template.effective_equations,
@@ -1124,11 +1182,45 @@ fn class_instance_sections(
             qualified_name,
             source_map,
         )?,
-    })
+    };
+    resolve_dynamic_section_targets(tree, type_overrides, &mut sections)?;
+    Ok(sections)
+}
+
+fn resolve_dynamic_section_targets(
+    tree: &ast::ClassTree,
+    type_overrides: &TypeOverrideMap,
+    sections: &mut ClassSections,
+) -> InstantiateResult<()> {
+    for equation in sections
+        .equations
+        .iter_mut()
+        .chain(&mut sections.initial_equations)
+    {
+        equation.equation = resolve_dynamic_equation_targets(
+            tree,
+            type_overrides,
+            std::mem::take(&mut equation.equation),
+        )?;
+    }
+    for statement in sections
+        .algorithms
+        .iter_mut()
+        .chain(&mut sections.initial_algorithms)
+        .flatten()
+    {
+        statement.statement = resolve_dynamic_statement_targets(
+            tree,
+            type_overrides,
+            std::mem::take(&mut statement.statement),
+        )?;
+    }
+    Ok(())
 }
 
 struct InstanceDataBuild<'a> {
-    instance_id: ast::InstanceId,
+    instance_id: rumoca_core::InstanceId,
+    owner_class_id: Option<rumoca_core::InstanceId>,
     qualified_name: ast::QualifiedName,
     dims: Vec<i64>,
     dims_expr: Vec<rumoca_ir_ast::Subscript>,
@@ -1166,13 +1258,21 @@ fn build_instance_data(
         args.source_map,
         "instance component reference",
     )?;
-    let component_ref = ast::instance::component_reference_for_instance(
-        &args.qualified_name,
-        require_component_ref_provenance(component_span, "instance component reference")?,
-        args.comp.def_id,
-    );
+    let component_ref = args
+        .ctx
+        .current_component_reference(require_component_ref_provenance(
+            component_span,
+            "instance component reference",
+        )?)
+        .map_err(|_| {
+            Box::new(InstantiateError::missing_resolved_identity(
+                args.qualified_name.to_flat_string(),
+                component_span,
+            ))
+        })?;
     let instance_data = ast::InstanceData {
         instance_id: args.instance_id,
+        owner_class_id: args.owner_class_id,
         component_ref: Some(component_ref),
         qualified_name: args.qualified_name,
         source_location: args.comp.location.clone(),
@@ -1303,6 +1403,14 @@ fn validate_partial_component_instantiation(
     )))
 }
 
+#[derive(Clone, Copy)]
+struct ComponentInstantiationScope<'a> {
+    owner_class_id: Option<rumoca_core::InstanceId>,
+    effective_components: &'a IndexMap<String, ast::Component>,
+    type_overrides: &'a TypeOverrideMap,
+    imports: ComponentImports<'a>,
+}
+
 // SPEC_0021: Exception - component instantiation is the phase entry point that
 // coordinates the independently extracted type, binding, shape, and nesting helpers.
 #[allow(clippy::too_many_lines)]
@@ -1311,11 +1419,21 @@ fn instantiate_component(
     comp: &ast::Component,
     ctx: &mut InstantiateContext,
     overlay: &mut ast::InstanceOverlay,
-    effective_components: &IndexMap<String, ast::Component>,
-    type_overrides: &TypeOverrideMap,
-    imports: ComponentImports<'_>,
+    scope: ComponentInstantiationScope<'_>,
 ) -> InstantiateResult<()> {
     let type_name = comp.type_name.to_string();
+    let component_span = location_to_span(
+        &comp.location,
+        &tree.source_map,
+        "resolved component identity",
+    )?;
+    let component_def_id = comp.def_id.ok_or_else(|| {
+        Box::new(InstantiateError::missing_resolved_identity(
+            comp.name.as_str(),
+            component_span,
+        ))
+    })?;
+    ctx.prove_current_path_identity(component_def_id);
     let instance_id = overlay.alloc_id();
     let qualified_name = ctx.current_path();
     handle_inner_outer(tree, comp, ctx, overlay, &qualified_name, &type_name)?;
@@ -1335,9 +1453,10 @@ fn instantiate_component(
         tree,
         comp,
         ctx,
-        effective_components,
+        scope.effective_components,
+        scope.type_overrides,
         is_discrete_type,
-        imports.attributes,
+        scope.imports.attributes,
     )?;
     let (flow, stream) = component_flow_stream(comp, ctx);
     validate_final_type_attribute_overrides(tree, class_def, comp, ctx.mod_env())?;
@@ -1347,8 +1466,8 @@ fn instantiate_component(
         comp,
         ctx,
         class_def,
-        effective_components,
-        imports.qualification,
+        scope.effective_components,
+        scope.imports.qualification,
     )?;
     let type_id = component_type_id(tree, &type_name, class_def, is_primitive);
     let declaration_source_scope = component_declaration_source_scope(ctx, comp);
@@ -1366,11 +1485,12 @@ fn instantiate_component(
             comp,
             class_def,
             ctx.mod_env(),
-            type_overrides,
+            scope.type_overrides,
         )?;
 
     let (instance_data, binding_for_record_expansion) = build_instance_data(InstanceDataBuild {
         instance_id,
+        owner_class_id: scope.owner_class_id,
         qualified_name,
         dims,
         dims_expr,
@@ -1415,6 +1535,7 @@ fn instantiate_component(
         ctx,
         overlay,
         NestedComponentRequest {
+            instance_id,
             comp,
             class_def,
             is_primitive,
@@ -1425,9 +1546,9 @@ fn instantiate_component(
             binding_for_record_expansion: binding_for_record_expansion.as_ref(),
             binding_scope_for_record_expansion: binding_scope_for_record_expansion.as_ref(),
             binding_is_each,
-            effective_components,
+            effective_components: scope.effective_components,
             type_overrides: &nested_type_overrides,
-            modifier_imports: imports.attributes,
+            modifier_imports: scope.imports.attributes,
         },
     )?;
 
@@ -1487,6 +1608,7 @@ fn prepare_component_binding_info(
     comp: &ast::Component,
     ctx: &mut InstantiateContext,
     effective_components: &IndexMap<String, ast::Component>,
+    type_overrides: &TypeOverrideMap,
     is_discrete_type: bool,
     imports: &[(String, String)],
 ) -> InstantiateResult<ComponentBindingInfo> {
@@ -1499,11 +1621,27 @@ fn prepare_component_binding_info(
     let ComponentAttrsAndBinding {
         mut attrs,
         mut binding,
-        binding_source,
+        mut binding_source,
         binding_source_scope,
         binding_from_modification,
         binding_is_each,
     } = extract_component_attrs_and_binding(comp, ctx.mod_env(), &eval_ctx, imports)?;
+    for expression in [
+        &mut binding,
+        &mut binding_source,
+        &mut attrs.start,
+        &mut attrs.min,
+        &mut attrs.max,
+        &mut attrs.nominal,
+    ] {
+        if let Some(value) = expression.take() {
+            *expression = Some(resolve_dynamic_expression_targets(
+                tree,
+                type_overrides,
+                value,
+            )?);
+        }
+    }
     infer_local_attribute_source_scopes(ctx, comp, &mut attrs);
     let start_from_declaration_binding =
         !binding_from_modification && binding.is_some() && attrs.start == binding;
@@ -1544,6 +1682,7 @@ fn declaration_binding_allows_structural_resolution(
 }
 
 struct NestedComponentRequest<'a> {
+    instance_id: rumoca_core::InstanceId,
     comp: &'a ast::Component,
     class_def: Option<&'a ast::ClassDef>,
     is_primitive: bool,
@@ -1578,6 +1717,7 @@ fn instantiate_nested_component_if_needed(
         ctx,
         overlay,
         NestedInstantiationInput {
+            instance_id: request.instance_id,
             nested_class,
             comp: request.comp,
             effective_variability: request.effective_variability,
@@ -1619,6 +1759,7 @@ fn parent_instance_scope(qualified_name: &ast::QualifiedName) -> ast::QualifiedN
 /// Handle nested class instantiation: set up modification environment,
 /// push inheritance flags, instantiate the class, and clean up.
 struct NestedInstantiationInput<'a> {
+    instance_id: rumoca_core::InstanceId,
     nested_class: &'a ast::ClassDef,
     comp: &'a ast::Component,
     effective_variability: &'a rumoca_core::Variability,
@@ -1641,6 +1782,7 @@ fn instantiate_nested_class(
     input: NestedInstantiationInput<'_>,
 ) -> InstantiateResult<()> {
     let NestedInstantiationInput {
+        instance_id,
         nested_class,
         comp,
         effective_variability,
@@ -1739,7 +1881,7 @@ fn instantiate_nested_class(
         ctx.active_package_constant_aliases.push(alias.clone());
     }
     ctx.active_type_overrides.push(type_overrides.clone());
-    let result = instantiate_class(tree, nested_class, ctx, overlay);
+    let result = instantiate_class(tree, nested_class, Some(instance_id), None, ctx, overlay);
     ctx.active_type_overrides.pop();
     if active_package_alias.is_some() {
         ctx.active_package_constant_aliases.pop();

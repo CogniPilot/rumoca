@@ -1,9 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
 use rumoca_core::{
-    BuiltinFunction, Causality, ClockLattice, ClockRational, Expression, Literal, OpBinary,
-    OpUnary, SourceMap, Span, StructuredIndexBinder, StructuredIndexDomain, Subscript, VarName,
-    Variability,
+    BuiltinFunction, Causality, ClockLattice, ClockRational, Expression, InstanceId, Literal,
+    OpBinary, OpUnary, SourceMap, Span, StructuredIndexBinder, StructuredIndexDomain, Subscript,
+    VarName, Variability,
 };
 use rumoca_eval_flat::constant::{EvalContext, eval_expr};
 use rumoca_ir_dae as dae;
@@ -33,17 +33,17 @@ use algorithm::{
     lower_algorithm_function_call, own_clocked_algorithm_targets,
 };
 use analysis::{
-    Analysis, ComprehensionKey, ComprehensionPlan, DelayPlan, DerivedParameterPlan,
+    Analysis, ClockPlan, ComprehensionKey, ComprehensionPlan, DelayPlan, DerivedParameterPlan,
     DiscreteValueTopologyPlan, EquationPartition, FunctionArrayAssemblyPlan,
     FunctionAssignmentPlan, FunctionIntegerReduction, FunctionLoopLowering, FunctionPlan,
     FunctionRecordAssemblyPlan, FunctionStatementPlan, ModelAlgorithmPlan, PlannedRole,
-    RecordArrayFieldPlans, RecordEquationPlan, analyze, effective_variable_scalar_type,
-    equation_partition, model_algorithm_targets, primitive_scalar_type,
-    structured_assignment_names,
+    RecordArrayFieldPlan, RecordArrayFieldPlans, RecordEquationPlan, analyze,
+    effective_function_scalar_type, effective_variable_scalar_type, equation_partition,
+    model_algorithm_targets, structured_assignment_names,
 };
-use clocks::{LoweredClocks, lower_clocks, lower_sampled_value_clocks};
+use clocks::{LoweredClocks, lower_clocked_value_owners, lower_clocks};
 use discrete_values::{DiscreteValueOwnerHandle, DiscreteValueStaging};
-use equation_systems::lower_equation_systems;
+use equation_systems::{lower_equation_expression, lower_equation_systems};
 use expression::{
     FunctionArrayUpdate, FunctionCallLowering, LoweringSymbols, all_model_expressions,
     classify_function_call, derivative_reference, expression_children, expression_span,
@@ -141,6 +141,41 @@ impl<'dae> Coordinate<'dae> {
     }
 }
 
+struct ModelCoordinates<'dae> {
+    by_name: HashMap<VarName, Coordinate<'dae>>,
+    by_instance: HashMap<rumoca_core::InstanceId, Coordinate<'dae>>,
+}
+
+impl<'dae> ModelCoordinates<'dae> {
+    fn new() -> Self {
+        Self {
+            by_name: HashMap::new(),
+            by_instance: HashMap::new(),
+        }
+    }
+
+    fn insert(&mut self, variable: &flat::Variable, coordinate: Coordinate<'dae>) {
+        self.by_name.insert(variable.name.clone(), coordinate);
+        let previous = self.by_instance.insert(variable.instance_id, coordinate);
+        debug_assert!(
+            previous.is_none(),
+            "analysis rejects duplicate runtime variable instance identities"
+        );
+    }
+
+    fn by_instance(&self) -> &HashMap<rumoca_core::InstanceId, Coordinate<'dae>> {
+        &self.by_instance
+    }
+}
+
+impl<'dae> std::ops::Deref for ModelCoordinates<'dae> {
+    type Target = HashMap<VarName, Coordinate<'dae>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.by_name
+    }
+}
+
 struct ReservedVariable<'flat, 'dae> {
     flat: &'flat flat::Variable,
     role: PlannedRole,
@@ -172,8 +207,12 @@ fn build_checked<'dae>(
     variable_plan: &VariableConstructionPlan,
     construction: &mut dae::DaeConstruction<'dae>,
 ) -> Result<(), dae::DaeConstructionError> {
+    if let Some(declaration) = flat.predefined_string_declaration {
+        construction.register_predefined_string(declaration)?;
+    }
     let value_types = reserve_value_types(flat, analysis, construction)?;
     let no_function_ids = HashMap::new();
+    let no_coordinate_instances = HashMap::new();
     let analysis_functions = FunctionRegistry {
         flat,
         shapes: &analysis.function_shapes,
@@ -183,6 +222,7 @@ fn build_checked<'dae>(
         constants: &analysis.constants,
         delay_plans: &analysis.delay_plans,
         reinit_state_pre: &analysis.reinit_state_pre,
+        coordinate_instances: &no_coordinate_instances,
     };
     let variable_identities = insert_variable_identities(
         flat,
@@ -205,6 +245,7 @@ fn build_checked<'dae>(
             constants: &analysis.constants,
             delay_plans: &analysis.delay_plans,
             reinit_state_pre: &analysis.reinit_state_pre,
+            coordinate_instances: coordinates.by_instance(),
         },
         &analysis.function_plans,
     )?;
@@ -217,6 +258,7 @@ fn build_checked<'dae>(
         constants: &analysis.constants,
         delay_plans: &analysis.delay_plans,
         reinit_state_pre: &analysis.reinit_state_pre,
+        coordinate_instances: coordinates.by_instance(),
     };
     define_reserved_variables(
         construction,
@@ -228,11 +270,11 @@ fn build_checked<'dae>(
         variable_identities.reserved,
     )?;
     let clocks = lower_clocks(construction, flat, &analysis.clock_plans)?;
-    lower_sampled_value_clocks(
+    lower_clocked_value_owners(
         construction,
         flat,
         &coordinates,
-        &analysis.sampled_values,
+        &analysis.clocked_value_owners,
         &clocks,
     )?;
     let mut discrete_values = DiscreteValueStaging::new();
@@ -272,6 +314,7 @@ fn lower_model_owners<'dae>(
         analysis,
         coordinates,
         functions,
+        clocks,
     )?;
     lower_assertions(
         construction,
@@ -308,12 +351,7 @@ fn lower_model_owners<'dae>(
             &analysis.discrete_value_topology,
         ),
     )?;
-    discrete_values.add_holds(
-        construction,
-        flat,
-        coordinates,
-        &analysis.discrete_value_topology,
-    )?;
+    discrete_values.add_holds(construction, coordinates, &analysis.discrete_value_topology)?;
     discrete_values.finish(construction, &analysis.discrete_value_topology)
 }
 
@@ -328,7 +366,7 @@ fn reserve_value_types<'dae>(
             continue;
         }
         let provenance = dae::DaeProvenance::source(variable.source_span)?;
-        let scalar = effective_variable_scalar_type(&flat.variable_type_names[name], variable)
+        let scalar = effective_variable_scalar_type(flat, variable)
             .expect("analysis accepts only primitive value types");
         let dimensions = variable
             .dims
@@ -800,7 +838,7 @@ fn lower_assertions<'dae, 'flat>(
 struct EventGuard<'dae> {
     trigger: dae::ConditionId<'dae>,
     condition: dae::ConditionId<'dae>,
-    owner_clock: Option<dae::ClockId<'dae>>,
+    owner_clock: Option<dae::PeriodicClockId<'dae>>,
     branch_provenance: dae::DaeProvenance,
     always: bool,
     parent_activation: Option<(dae::ConditionId<'dae>, dae::ConditionId<'dae>)>,
@@ -1018,7 +1056,7 @@ fn lower_algorithm_if<'dae>(
             own_clocked_algorithm_targets(
                 construction,
                 environment.coordinates,
-                clock,
+                clock.into(),
                 &block.stmts,
             )?;
         }
@@ -1056,7 +1094,7 @@ fn algorithm_if_guard<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     parent: Option<EventGuard<'dae>>,
     available: dae::ConditionId<'dae>,
-    owner_clock: Option<dae::ClockId<'dae>>,
+    owner_clock: Option<dae::PeriodicClockId<'dae>>,
     provenance_span: Span,
     span: Span,
 ) -> Result<EventGuard<'dae>, dae::DaeConstructionError> {
@@ -1178,7 +1216,7 @@ fn lower_algorithm_when<'dae>(
             own_clocked_algorithm_targets(
                 construction,
                 environment.coordinates,
-                clock,
+                clock.into(),
                 &block.stmts,
             )?;
         }
@@ -1205,7 +1243,8 @@ fn lower_condition<'dae>(
     functions: &FunctionRegistry<'_, 'dae>,
     sample_lattices: &[(Span, ClockLattice)],
     expression: &Expression,
-) -> Result<(dae::ConditionId<'dae>, Option<dae::ClockId<'dae>>), dae::DaeConstructionError> {
+) -> Result<(dae::ConditionId<'dae>, Option<dae::PeriodicClockId<'dae>>), dae::DaeConstructionError>
+{
     let (condition, relations, owner_clock) = lower_condition_tree(
         construction,
         coordinates,
@@ -1228,12 +1267,12 @@ fn lower_condition<'dae>(
 type LoweredCondition<'dae> = (
     dae::ConditionId<'dae>,
     Vec<dae::RelationId<'dae>>,
-    Option<dae::ClockId<'dae>>,
+    Option<dae::PeriodicClockId<'dae>>,
 );
 type LoweredConditionNode<'dae> = (
     dae::ConditionInput<'dae>,
     Vec<dae::RelationId<'dae>>,
-    Option<dae::ClockId<'dae>>,
+    Option<dae::PeriodicClockId<'dae>>,
 );
 
 fn lower_condition_tree<'dae>(
@@ -1352,7 +1391,11 @@ fn lower_sample_condition<'dae>(
         .find_map(|(span, lattice)| (*span == provenance.span()).then_some(lattice))
         .expect("analysis proves every sample condition has an exact clock lattice");
     let clock = construction.clocks(|clocks| clocks.periodic(lattice, provenance))?;
-    Ok((dae::ConditionInput::Clock(clock), Vec::new(), Some(clock)))
+    Ok((
+        dae::ConditionInput::Clock(clock.into()),
+        Vec::new(),
+        Some(clock),
+    ))
 }
 
 fn lower_binary_condition<'dae>(
@@ -1390,7 +1433,7 @@ fn lower_vector_condition<'dae>(
     (
         dae::ConditionId<'dae>,
         Vec<dae::RelationId<'dae>>,
-        Option<dae::ClockId<'dae>>,
+        Option<dae::PeriodicClockId<'dae>>,
     ),
     dae::DaeConstructionError,
 > {
@@ -1478,11 +1521,11 @@ fn lower_change_expression<'dae>(
 }
 
 fn merge_condition_clock<'dae>(
-    lhs: Option<dae::ClockId<'dae>>,
-    rhs: Option<dae::ClockId<'dae>>,
+    lhs: Option<dae::PeriodicClockId<'dae>>,
+    rhs: Option<dae::PeriodicClockId<'dae>>,
     disjunction: bool,
     provenance: dae::DaeProvenance,
-) -> Result<Option<dae::ClockId<'dae>>, dae::DaeConstructionError> {
+) -> Result<Option<dae::PeriodicClockId<'dae>>, dae::DaeConstructionError> {
     match (lhs, rhs) {
         (Some(lhs), Some(rhs)) if lhs != rhs => Err(dae::DaeConstructionError::DuplicateKey {
             kind: "condition clock owner",
@@ -1714,12 +1757,15 @@ pub(super) fn pack_row_major_body<'dae>(
     construction.expressions(|expressions| expressions.at(provenance).array(elements))
 }
 
-struct EquationRows<'scope> {
+struct EquationRows<'scope, 'dae> {
+    flat: &'scope flat::Model,
     equations: &'scope [flat::Equation],
     excluded: &'scope HashSet<usize>,
     records: &'scope HashMap<usize, RecordEquationPlan>,
     roles: &'scope HashMap<VarName, PlannedRole>,
     topology: &'scope DiscreteValueTopologyPlan,
+    clocked_owners: &'scope HashMap<usize, ClockPlan>,
+    clocks: &'scope LoweredClocks<'dae>,
     initialization: bool,
 }
 
@@ -1728,7 +1774,7 @@ fn lower_equations<'dae>(
     discrete_values: &mut DiscreteValueStaging<'dae>,
     coordinates: &HashMap<VarName, Coordinate<'dae>>,
     functions: &FunctionRegistry<'_, 'dae>,
-    input: EquationRows<'_>,
+    input: EquationRows<'_, 'dae>,
 ) -> Result<(), dae::DaeConstructionError> {
     for (index, equation) in input.equations.iter().enumerate() {
         if input.excluded.contains(&index) {
@@ -1736,6 +1782,11 @@ fn lower_equations<'dae>(
         }
         let owner = equation_owner_provenance(&equation.origin, equation.span)?;
         let generation = equation_generation(&equation.origin);
+        let owner_clock = input
+            .clocked_owners
+            .get(&index)
+            .map(|plan| input.clocks.id(plan, equation.span))
+            .transpose()?;
         if let Some(plan) = input.records.get(&index) {
             lower_record_equation(
                 construction,
@@ -1759,24 +1810,26 @@ fn lower_equations<'dae>(
             construction.initialization(|system| system.value_equation(owner, residual))?;
             continue;
         }
-        match equation_partition(equation, input.roles)
+        match equation_partition(input.flat, equation, input.roles)
             .expect("analysis already validates equation ownership")
         {
             EquationPartition::Continuous => {
-                let residual = lower_expression(
+                let residual = lower_equation_expression(
                     construction,
                     coordinates,
                     functions,
+                    owner_clock,
                     &equation.residual,
                     generation,
                 )?;
                 construction.continuous(|system| system.value_equation(owner, residual))?;
             }
             EquationPartition::DiscreteReal { .. } => {
-                let residual = lower_expression(
+                let residual = lower_equation_expression(
                     construction,
                     coordinates,
                     functions,
+                    owner_clock,
                     &equation.residual,
                     generation,
                 )?;
@@ -1785,16 +1838,18 @@ fn lower_equations<'dae>(
                 })?;
             }
             EquationPartition::DiscreteValue(plan) => {
-                let value = lower_expression(
+                let generation = if plan.generated {
+                    Some(dae::DaeGeneration::DiscreteUpdate)
+                } else {
+                    generation
+                };
+                let value = lower_equation_expression(
                     construction,
                     coordinates,
                     functions,
+                    owner_clock,
                     plan.value.as_ref(),
-                    if plan.generated {
-                        Some(dae::DaeGeneration::DiscreteUpdate)
-                    } else {
-                        generation
-                    },
+                    generation,
                 )?;
                 let Coordinate::DiscreteValue(target) = coordinates[plan.target] else {
                     unreachable!("analysis classifies the equation target as discrete-valued")

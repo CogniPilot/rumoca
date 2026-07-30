@@ -49,10 +49,11 @@ fn make_component_ref(names: &[&str]) -> ast::ComponentReference {
             .map(|name| ast::ComponentRefPart {
                 ident: make_token(name),
                 subs: None,
+                def_id: None,
             })
             .collect(),
-        def_id: None,
         span: rumoca_core::Span::DUMMY,
+        qualified_display_name: None,
     }
 }
 
@@ -68,9 +69,10 @@ fn make_indexed_comp_ref_expr(name: &str, index_name: &str) -> ast::Expression {
             subs: Some(vec![ast::Subscript::Expression(make_comp_ref_expr(&[
                 index_name,
             ]))]),
+            def_id: None,
         }],
-        def_id: None,
         span: rumoca_core::Span::DUMMY,
+        qualified_display_name: None,
     })
 }
 
@@ -81,9 +83,10 @@ fn make_function_call(name: &str, args: Vec<ast::Expression>) -> ast::Expression
             parts: vec![ast::ComponentRefPart {
                 ident: make_token(name),
                 subs: None,
+                def_id: None,
             }],
-            def_id: None,
             span: rumoca_core::Span::DUMMY,
+            qualified_display_name: None,
         },
         args,
         is_partial_application: false,
@@ -100,10 +103,11 @@ fn make_qualified_function_call(names: &[&str], args: Vec<ast::Expression>) -> a
                 .map(|name| ast::ComponentRefPart {
                     ident: make_token(name),
                     subs: None,
+                    def_id: None,
                 })
                 .collect(),
-            def_id: None,
             span: rumoca_core::Span::DUMMY,
+            qualified_display_name: None,
         },
         args,
         is_partial_application: false,
@@ -121,6 +125,7 @@ fn test_array_element_binding_preserves_modifier_source_scope() {
         tree: &tree,
         effective_components: &effective_components,
         type_overrides: &type_overrides,
+        owner_class_id: rumoca_core::InstanceId::new(1),
         imports: crate::ComponentImports {
             qualification: &imports,
             attributes: &[],
@@ -167,6 +172,7 @@ fn test_array_element_binding_preserves_declaration_source_scope() {
         tree: &tree,
         effective_components: &effective_components,
         type_overrides: &type_overrides,
+        owner_class_id: rumoca_core::InstanceId::new(1),
         imports: crate::ComponentImports {
             qualification: &imports,
             attributes: &[],
@@ -737,9 +743,10 @@ fn test_component_ref_modifier_composes_shifted_and_strided_range_selection() {
                     token: make_token(":"),
                 },
             ]),
+            def_id: None,
         }],
-        def_id: None,
         span: test_span(),
+        qualified_display_name: None,
     });
 
     let projected = index_binding_for_element(

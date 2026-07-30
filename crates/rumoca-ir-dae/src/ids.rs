@@ -134,6 +134,8 @@ branded_ids! {
     EventActionId;
     /// Identity of one synchronous clock.
     ClockId;
+    /// Identity proving that one synchronous clock has an exact periodic lattice.
+    PeriodicClockId;
     /// Identity of one checked clock-to-variable ownership fact.
     ClockOwnershipId;
     /// Identity of one clock-owned previous-value coordinate.
@@ -146,6 +148,12 @@ branded_ids! {
     ContinuousFamilyId;
     /// Identity of one compact initialization equation family.
     InitializationFamilyId;
+}
+
+impl<'dae> From<PeriodicClockId<'dae>> for ClockId<'dae> {
+    fn from(value: PeriodicClockId<'dae>) -> Self {
+        Self::from_raw(value.index())
+    }
 }
 
 macro_rules! variable_identity_conversion {

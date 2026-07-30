@@ -11,7 +11,7 @@ fn exact_clock_fixture() -> Dae {
     let source = TestSource::new(
         "discrete Real z; discrete Boolean m; when trigger then z = 1; m = true; end when; \
          when trigger then z = 1; end when; when other then z = 2; end when; \
-         previous(z); previous(z); terminal();",
+         previous(z); previous(z); interval(z); terminal();",
     );
     let z_at = source.source("discrete Real z", 0);
     let m_at = source.source("discrete Boolean m", 0);
@@ -21,6 +21,7 @@ fn exact_clock_fixture() -> Dae {
     let conflicting_owner = source.source("when other then z = 2; end when", 0);
     let first_previous = source.source("previous(z)", 0);
     let repeated_previous = source.source("previous(z)", 1);
+    let interval_at = source.source("interval(z)", 0);
     let terminal_at = source.source("terminal()", 0);
 
     let dae = Dae::construct(source.map, |dae| {
@@ -63,8 +64,8 @@ fn exact_clock_fixture() -> Dae {
             .unwrap();
             let periodic = clocks.periodic(lattice, owner)?;
             let triggered = clocks.triggered(condition, trigger_at)?;
-            let first_owner = clocks.own_discrete_real(periodic, z, owner)?;
-            let repeated_owner_id = clocks.own_discrete_real(periodic, z, repeated_owner)?;
+            let first_owner = clocks.own_discrete_real(periodic.into(), z, owner)?;
+            let repeated_owner_id = clocks.own_discrete_real(periodic.into(), z, repeated_owner)?;
             assert_eq!(first_owner, repeated_owner_id);
             clocks.own_discrete_value(triggered, m, owner)?;
             let conflict = clocks
@@ -84,8 +85,9 @@ fn exact_clock_fixture() -> Dae {
             Ok(())
         })?;
         let (previous, terminal) = dae.temporal(|temporal| {
-            let first = temporal.previous_discrete_real(periodic, z, first_previous)?;
-            let repeated = temporal.previous_discrete_real(periodic, z, repeated_previous)?;
+            let first = temporal.previous_discrete_real(periodic.into(), z, first_previous)?;
+            let repeated =
+                temporal.previous_discrete_real(periodic.into(), z, repeated_previous)?;
             assert_eq!(first, repeated);
             Ok((first, temporal.terminal(terminal_at)?))
         })?;
@@ -93,6 +95,9 @@ fn exact_clock_fixture() -> Dae {
             expressions
                 .at(first_previous)
                 .coordinate(CoordinateInput::Previous(previous))?;
+            expressions
+                .at(interval_at)
+                .coordinate(CoordinateInput::ClockInterval(periodic))?;
             expressions
                 .at(terminal_at)
                 .coordinate(CoordinateInput::Terminal(terminal))?;
@@ -131,6 +136,20 @@ fn assert_first_clock_provenance(dae: &Dae, owner: DaeProvenance, first_previous
         assert_eq!(ownership.provenance(), owner);
         let previous = view.previous(view.previous_id(0).unwrap()).unwrap();
         assert_eq!(previous.provenance(), first_previous);
+        let interval = (0..view.expression_count())
+            .filter_map(|index| view.expression_id(index))
+            .filter_map(|id| view.expression(id))
+            .find(|expression| {
+                matches!(
+                    expression.operation(),
+                    ExpressionOperation::Coordinate(CoordinateView::ClockInterval(clock))
+                        if clock.index() == 0
+                )
+            })
+            .expect("clock interval coordinate remains typed");
+        assert_eq!(view.source_text(interval.provenance()), Some("interval(z)"));
+        assert_eq!(interval.variability(), ExpressionVariability::Discrete);
+        assert_eq!(interval.value_type().scalar_type(), ScalarType::Real);
     });
 }
 
@@ -142,6 +161,18 @@ fn assert_clock_wire_round_trip(dae: &Dae) {
         assert_eq!(view.clock_ownership_count(), 2);
         assert_eq!(view.previous_value_count(), 1);
         assert_eq!(view.terminal_count(), 1);
+        let interval = (0..view.expression_count())
+            .filter_map(|index| view.expression_id(index))
+            .filter_map(|id| view.expression(id))
+            .find(|expression| {
+                matches!(
+                    expression.operation(),
+                    ExpressionOperation::Coordinate(CoordinateView::ClockInterval(clock))
+                        if clock.index() == 0
+                )
+            })
+            .expect("wire-v12 reconstructs interval through the checked coordinate operation");
+        assert_eq!(view.source_text(interval.provenance()), Some("interval(z)"));
     });
 
     let mut forged: serde_json::Value = serde_json::from_str(&encoded).unwrap();
@@ -149,6 +180,32 @@ fn assert_clock_wire_round_trip(dae: &Dae) {
     assert!(matches!(
         serde_json::from_value::<Dae>(forged),
         Err(error) if error.to_string().contains("invalid exact DAE clock value")
+    ));
+
+    let mut forged: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+    let interval = forged["storage"]["expressions"]["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|node| node["coordinate"].get("clock_interval").is_some())
+        .expect("fixture serializes one clock interval coordinate");
+    interval["coordinate"]["clock_interval"] = 1.into();
+    assert!(matches!(
+        serde_json::from_value::<Dae>(forged),
+        Err(error) if error.to_string().contains("unknown periodic clock identity 1")
+    ));
+
+    let mut forged: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+    let interval = forged["storage"]["expressions"]["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|node| node["coordinate"].get("clock_interval").is_some())
+        .expect("fixture serializes one clock interval coordinate");
+    interval["coordinate"]["clock_interval"] = 999.into();
+    assert!(matches!(
+        serde_json::from_value::<Dae>(forged),
+        Err(error) if error.to_string().contains("unknown clock identity 999")
     ));
 }
 
@@ -192,13 +249,13 @@ fn clock_guarded_b1b_fixture(with_ownership: bool) -> Result<Dae, DaeConstructio
         if with_ownership {
             dae.clocks(|clocks| {
                 clocks
-                    .own_discrete_real(clock, z, assignment_at)
+                    .own_discrete_real(clock.into(), z, assignment_at)
                     .map(|_| ())
             })?;
         }
         let guard = dae.conditions(|conditions| conditions.reserve(sample_at))?;
         dae.conditions(|conditions| {
-            conditions.define(guard, ConditionInput::Clock(clock), sample_at)
+            conditions.define(guard, ConditionInput::Clock(clock.into()), sample_at)
         })?;
         let residual = dae.expressions(|expressions| {
             expressions
@@ -237,7 +294,7 @@ fn condition_owner_clock_cache_preserves_selection_policy() {
         })?;
         dae.conditions(|conditions| {
             let clock_guard = conditions.reserve(clock_at)?;
-            conditions.define(clock_guard, ConditionInput::Clock(clock), clock_at)?;
+            conditions.define(clock_guard, ConditionInput::Clock(clock.into()), clock_at)?;
             let discrete_guard = conditions.reserve(discrete_at)?;
             conditions.define(
                 discrete_guard,
@@ -461,7 +518,7 @@ fn tagged_delay_fixture() -> Dae {
 }
 
 #[test]
-fn wire_v11_round_trip_preserves_checked_quotients_and_their_provenance() {
+fn wire_v12_round_trip_preserves_checked_quotients_and_their_provenance() {
     let source = TestSource::new("div(-7, 3); mod(-7, 3); rem(-7, 3)");
     let div_owner = source.source("div(-7, 3)", 0);
     let mod_owner = source.source("mod(-7, 3)", 0);
@@ -508,7 +565,7 @@ fn wire_v11_round_trip_preserves_checked_quotients_and_their_provenance() {
 }
 
 #[test]
-fn wire_v11_round_trip_preserves_provenance_without_inline_source_copies() {
+fn wire_v12_round_trip_preserves_provenance_without_inline_source_copies() {
     let source = TestSource::new("42");
     let literal = source.source("42", 0);
     let dae = Dae::construct(source.map, |dae| {
@@ -557,6 +614,52 @@ fn wire_v11_round_trip_preserves_provenance_without_inline_source_copies() {
     assert!(matches!(
         serde_json::from_value::<Dae>(malformed),
         Err(error) if error.to_string().contains("malformed DAE wire column")
+    ));
+}
+
+#[test]
+fn wire_decode_rejects_the_superseded_coordinate_tagged_schema_version() {
+    /// The last wire version without the clock-interval coordinate variant.
+    const SUPERSEDED_COORDINATE_VERSION: u16 = 11;
+
+    let dae = exact_clock_fixture();
+    let json = serde_json::to_string(&dae).expect("clock fixture serializes");
+    assert!(
+        json.contains("\"clock_interval\""),
+        "the current wire carries the clock-interval coordinate"
+    );
+
+    for superseded in [10, SUPERSEDED_COORDINATE_VERSION] {
+        let payload = json.replacen(
+            &format!("\"schema_version\":{DAE_SCHEMA_VERSION}"),
+            &format!("\"schema_version\":{superseded}"),
+            1,
+        );
+        assert!(
+            matches!(
+                serde_json::from_str::<Dae>(&payload),
+                Err(error) if error.to_string().contains(&format!(
+                    "unsupported DAE schema version {superseded}; expected {DAE_SCHEMA_VERSION}"
+                ))
+            ),
+            "superseded wire version {superseded} must be rejected, never read"
+        );
+    }
+
+    // Ordinal-tagged encodings identify coordinate variants positionally, so the
+    // superseded wire's `condition` coordinate now occupies the ordinal of the
+    // inserted `clock_interval` variant. The leading version field is the only
+    // thing separating those two readings, so decode rejects the superseded
+    // number before any variant is decoded.
+    let mut binary = bincode::serialize(&dae).expect("clock fixture serializes to a binary wire");
+    let superseded = SUPERSEDED_COORDINATE_VERSION.to_le_bytes();
+    binary[..superseded.len()].copy_from_slice(&superseded);
+    assert!(matches!(
+        bincode::deserialize::<Dae>(&binary),
+        Err(error) if error.to_string().contains(&format!(
+            "unsupported DAE schema version {SUPERSEDED_COORDINATE_VERSION}; \
+             expected {DAE_SCHEMA_VERSION}"
+        ))
     ));
 }
 

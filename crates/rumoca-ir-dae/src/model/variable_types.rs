@@ -84,7 +84,10 @@ fn coordinate_type_matches(ty: &ValueType, expected: CoordinateTypeClass) -> boo
         CoordinateTypeClass::DiscreteValue => {
             matches!(
                 ty.scalar_type(),
-                ScalarType::Integer | ScalarType::Boolean | ScalarType::String
+                ScalarType::Integer
+                    | ScalarType::Enumeration
+                    | ScalarType::Boolean
+                    | ScalarType::String
             )
         }
     }

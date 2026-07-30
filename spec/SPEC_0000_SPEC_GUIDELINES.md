@@ -138,8 +138,21 @@ skimmed; skimmed specs get misapplied.
 
 **Hard cap:** an ACCEPTED design spec MUST NOT exceed 2500 words / 350 lines
 without an explicit `REFERENCE` status. Going over requires moving the spec
-to REFERENCE (lookup catalogs only, like SPEC_0022) or splitting it into
-multiple ACCEPTED specs.
+to REFERENCE (lookup catalogs only, like SPEC_0022), splitting it into
+multiple ACCEPTED specs, or splitting off a REFERENCE annex.
+
+**REFERENCE annexes** (e.g. SPEC_0040–SPEC_0043) carry a spec's lookup catalogs
+so the parent stays inside budget without losing rules:
+
+| Rule | Where | Why |
+|---|---|---|
+| The parent keeps its ACCEPTED/DRAFT status and every governing requirement | parent spec | Splitting must not downgrade a rule |
+| An annex holds only lookup catalogs, evidence, and duplicated rationale | annex | An annex is not a place to hide requirements |
+| The parent section states the rule and links the annex rows it binds | parent spec | Every row stays reachable and cited |
+| Annex rows are normative by reference from that link | annex header | Catalog rows still bind |
+| Annexes are `REFERENCE` and need no vote | SPEC_0000 §5 | They add no new rule |
+
+Enforced by `spec_budget_test.rs::test_specs_respect_size_budgets`.
 
 **What to cut:**
 - Implementation code that duplicates what's in the source (link to the file instead)

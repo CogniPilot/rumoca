@@ -69,8 +69,8 @@ fn conditional_discrete_real_equations_require_and_preserve_activation() {
     .expect("defined trigger and guard construct a conditional B.1b equation");
 
     assert_conditional_activation(&dae, equation_at);
-    let encoded = serde_json::to_string(&dae).expect("schema-v11 DAE serializes");
-    let decoded: Dae = serde_json::from_str(&encoded).expect("schema-v11 DAE reconstructs");
+    let encoded = serde_json::to_string(&dae).expect("schema-v12 DAE serializes");
+    let decoded: Dae = serde_json::from_str(&encoded).expect("schema-v12 DAE reconstructs");
     assert_conditional_activation(&decoded, equation_at);
 
     let missing = encoded.replacen("\"activation\":{\"when\"", "\"ignored\":{\"when\"", 1);
@@ -80,7 +80,7 @@ fn conditional_discrete_real_equations_require_and_preserve_activation() {
     );
     assert!(
         serde_json::from_str::<Dae>(&missing).is_err(),
-        "wire-v11 cannot omit or rename B.1b activation"
+        "wire-v12 cannot omit or rename B.1b activation"
     );
 }
 

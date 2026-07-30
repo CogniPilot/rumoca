@@ -15,7 +15,7 @@
 //! whenever inner/outer registration, diagnostics, any context stack, or the
 //! template's own id accounting moved while the template was instantiated.
 
-use rumoca_core::{ComponentPath, Span, StructuredIndexDomain};
+use rumoca_core::{ComponentPath, InstanceId, Span, StructuredIndexDomain};
 use rumoca_eval_ast::component_family::{
     FamilyReindex, family_member_class, family_member_component,
 };
@@ -256,12 +256,12 @@ pub(super) fn replicate_template(
     let ancestors: Vec<String> = request.root.parts()[..depth].to_vec();
     let template_prefix = rendered_prefix(request.root, &segment, request.template_tuple);
     let template = snapshot_template(ctx, overlay, before, &template_prefix);
-    let template_components: Vec<ast::InstanceId> = template
+    let template_components: Vec<InstanceId> = template
         .components
         .iter()
         .map(|data| data.instance_id)
         .collect();
-    let template_classes: Vec<ast::InstanceId> = template
+    let template_classes: Vec<InstanceId> = template
         .classes
         .iter()
         .map(|data| data.instance_id)
@@ -314,7 +314,7 @@ fn replicate_member(
     // in overlay order. Allocating while inserting would put every component of
     // the member ahead of every one of its classes, which is not what a
     // per-element scalar expansion produces.
-    let ids: Vec<ast::InstanceId> = std::iter::repeat_with(|| overlay.alloc_id())
+    let ids: Vec<InstanceId> = std::iter::repeat_with(|| overlay.alloc_id())
         .take(template.plan.len())
         .collect();
     let missing = |kind: &str| domain_error(&reindex.member_segment(), kind, span);
@@ -323,7 +323,10 @@ fn replicate_member(
             .plan
             .component_id(position, &ids)
             .ok_or_else(|| missing("member component id was not allocated"))?;
-        let member = family_member_component(data, instance_id, reindex);
+        let mut member = family_member_component(data, instance_id, reindex);
+        member.owner_class_id = data
+            .owner_class_id
+            .map(|owner| template.plan.map_instance_or_same(owner, &ids));
         ctx.register_known_integer_instance(&member);
         overlay.add_component(member);
     }
@@ -332,7 +335,11 @@ fn replicate_member(
             .plan
             .class_id(position, &ids)
             .ok_or_else(|| missing("member class id was not allocated"))?;
-        overlay.add_class(family_member_class(data, instance_id, reindex));
+        let mut member = family_member_class(data, instance_id, reindex);
+        member.owner_component_id = data
+            .owner_component_id
+            .map(|owner| template.plan.map_instance_or_same(owner, &ids));
+        overlay.add_class(member);
     }
     for path in &template.disabled_components {
         overlay
@@ -376,14 +383,14 @@ struct AllocationPlan {
     /// Allocation rank of each template class, by snapshot position.
     class_ranks: Vec<usize>,
     /// Allocation rank of each template component, by template id.
-    component_rank_by_id: rustc_hash::FxHashMap<ast::InstanceId, usize>,
+    component_rank_by_id: rustc_hash::FxHashMap<InstanceId, usize>,
     /// Allocation rank of each template class, by template id.
-    class_rank_by_id: rustc_hash::FxHashMap<ast::InstanceId, usize>,
+    class_rank_by_id: rustc_hash::FxHashMap<InstanceId, usize>,
 }
 
 impl AllocationPlan {
     fn from_template(components: &[ast::InstanceData], classes: &[ast::ClassInstanceData]) -> Self {
-        let mut slots: Vec<(ast::InstanceId, TemplateSlot)> = components
+        let mut slots: Vec<(InstanceId, TemplateSlot)> = components
             .iter()
             .enumerate()
             .map(|(position, data)| (data.instance_id, TemplateSlot::Component(position)))
@@ -421,36 +428,37 @@ impl AllocationPlan {
         self.component_ranks.len() + self.class_ranks.len()
     }
 
-    fn component_id(&self, position: usize, ids: &[ast::InstanceId]) -> Option<ast::InstanceId> {
+    fn component_id(&self, position: usize, ids: &[InstanceId]) -> Option<InstanceId> {
         ids.get(*self.component_ranks.get(position)?).copied()
     }
 
-    fn class_id(&self, position: usize, ids: &[ast::InstanceId]) -> Option<ast::InstanceId> {
+    fn class_id(&self, position: usize, ids: &[InstanceId]) -> Option<InstanceId> {
         ids.get(*self.class_ranks.get(position)?).copied()
     }
 
-    fn map_components(
-        &self,
-        template_ids: &[ast::InstanceId],
-        ids: &[ast::InstanceId],
-    ) -> Vec<ast::InstanceId> {
+    fn map_components(&self, template_ids: &[InstanceId], ids: &[InstanceId]) -> Vec<InstanceId> {
         map_ranks(&self.component_rank_by_id, template_ids, ids)
     }
 
-    fn map_classes(
-        &self,
-        template_ids: &[ast::InstanceId],
-        ids: &[ast::InstanceId],
-    ) -> Vec<ast::InstanceId> {
+    fn map_classes(&self, template_ids: &[InstanceId], ids: &[InstanceId]) -> Vec<InstanceId> {
         map_ranks(&self.class_rank_by_id, template_ids, ids)
+    }
+
+    fn map_instance_or_same(&self, template_id: InstanceId, ids: &[InstanceId]) -> InstanceId {
+        self.component_rank_by_id
+            .get(&template_id)
+            .or_else(|| self.class_rank_by_id.get(&template_id))
+            .and_then(|rank| ids.get(*rank))
+            .copied()
+            .unwrap_or(template_id)
     }
 }
 
 fn map_ranks(
-    ranks: &rustc_hash::FxHashMap<ast::InstanceId, usize>,
-    template_ids: &[ast::InstanceId],
-    ids: &[ast::InstanceId],
-) -> Vec<ast::InstanceId> {
+    ranks: &rustc_hash::FxHashMap<InstanceId, usize>,
+    template_ids: &[InstanceId],
+    ids: &[InstanceId],
+) -> Vec<InstanceId> {
     template_ids
         .iter()
         .filter_map(|id| ids.get(*ranks.get(id)?).copied())
@@ -467,7 +475,7 @@ fn replicate_path_keyed_metadata(
     target: PathKeyedMetadataTarget<'_>,
     template: &TemplateSnapshot,
     reindex: &FamilyReindex<'_>,
-    ids: &[ast::InstanceId],
+    ids: &[InstanceId],
     span: Span,
 ) -> InstantiateResult<()> {
     let PathKeyedMetadataTarget { ctx, overlay } = target;

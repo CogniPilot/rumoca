@@ -222,6 +222,10 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             dae::ExpressionOperation::FunctionFoldOutput { fold, carried, .. } => {
                 self.function_fold_output(fold, carried, scalar, node.provenance().span())
             }
+            dae::ExpressionOperation::StringConversion { .. } => Err(LowerError::contract(
+                "String conversion escaped its checked event-message owner",
+                node.provenance().span(),
+            )),
         }
     }
 
@@ -546,6 +550,9 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
             let dst = self.register(span)?;
             self.ops.push(solve::LinearOp::LoadTime { dst });
             return Ok(dst);
+        }
+        if let dae::CoordinateView::ClockInterval(clock) = coordinate {
+            return self.constant(self.view.periodic_clock(clock).period_seconds(), span);
         }
         if matches!(coordinate, dae::CoordinateView::Derivative(_)) {
             return Err(LowerError::non_computable(

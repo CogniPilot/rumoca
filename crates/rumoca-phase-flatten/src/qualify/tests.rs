@@ -24,6 +24,13 @@ fn make_class_def(
 }
 
 fn make_comp_ref(names: &[&str]) -> ComponentReference {
+    fn fixture_def_id(name: &str) -> rumoca_core::DefId {
+        let hash = name.bytes().fold(2_166_136_261_u32, |hash, byte| {
+            hash.wrapping_mul(16_777_619) ^ u32::from(byte)
+        });
+        rumoca_core::DefId::new(hash.max(1))
+    }
+
     ComponentReference {
         local: false,
         parts: names
@@ -34,10 +41,11 @@ fn make_comp_ref(names: &[&str]) -> ComponentReference {
                     ..Default::default()
                 },
                 subs: None,
+                def_id: Some(fixture_def_id(n)),
             })
             .collect(),
-        def_id: None,
         span: rumoca_core::Span::DUMMY,
+        qualified_display_name: None,
     }
 }
 
@@ -552,34 +560,43 @@ fn test_qualify_component_ref_empty_prefix() {
 #[test]
 fn test_qualify_component_ref_with_prefix() {
     let cr = make_comp_ref(&["x"]);
+    let identity = cr.target_def_id();
     let mut prefix = QualifiedName::new();
     prefix.push("comp".to_string(), vec![]);
 
     let result = qualify_component_ref(&cr, &prefix, QualifyOptions::default());
-    assert_eq!(result.parts.len(), 2);
-    assert_eq!(&*result.parts[0].ident.text, "comp");
-    assert_eq!(&*result.parts[1].ident.text, "x");
+    assert_eq!(result.parts.len(), 1);
+    assert_eq!(&*result.parts[0].ident.text, "x");
+    assert_eq!(result.target_def_id(), identity);
+    assert_eq!(
+        result.qualified_display_name().map(|name| name.as_str()),
+        Some("comp.x")
+    );
 }
 
 #[test]
 fn qualifying_single_part_ref_preserves_target_def_id() {
     let def_id = rumoca_core::DefId::new(42);
     let mut cr = make_comp_ref(&["fluidConstants"]);
-    cr.def_id = Some(def_id);
+    cr.set_root_def_id(Some(def_id));
     let mut prefix = QualifiedName::new();
     prefix.push("source".to_string(), vec![]);
     prefix.push("medium".to_string(), vec![]);
 
     let result = qualify_component_ref(&cr, &prefix, QualifyOptions::default());
 
-    assert_eq!(result.def_id, Some(def_id));
+    assert_eq!(result.root_def_id(), Some(def_id));
     assert_eq!(
         result
             .parts
             .iter()
             .map(|part| part.ident.text.as_ref())
             .collect::<Vec<_>>(),
-        vec!["source", "medium", "fluidConstants"]
+        vec!["fluidConstants"]
+    );
+    assert_eq!(
+        result.qualified_display_name().map(|name| name.as_str()),
+        Some("source.medium.fluidConstants")
     );
 }
 
@@ -591,10 +608,7 @@ fn test_qualify_local_ref_skipped() {
     let mut prefix = QualifiedName::new();
     prefix.push("comp".to_string(), vec![]);
 
-    let opts = QualifyOptions {
-        skip_local: true,
-        preserve_def_id: false,
-    };
+    let opts = QualifyOptions { skip_local: true };
     let result = qualify_component_ref(&cr, &prefix, opts);
 
     // Local ref should not be qualified
@@ -662,9 +676,12 @@ fn test_qualify_array_comprehension_keeps_iterator_local() {
     let Expression::ComponentReference(end_ref) = end.as_ref() else {
         panic!("Expected qualified range end component reference");
     };
-    assert_eq!(end_ref.parts.len(), 2);
-    assert_eq!(end_ref.parts[0].ident.text.as_ref(), "comp");
-    assert_eq!(end_ref.parts[1].ident.text.as_ref(), "n");
+    assert_eq!(end_ref.parts.len(), 1);
+    assert_eq!(end_ref.parts[0].ident.text.as_ref(), "n");
+    assert_eq!(
+        end_ref.qualified_display_name().map(|name| name.as_str()),
+        Some("comp.n")
+    );
 }
 
 #[test]
@@ -732,10 +749,12 @@ fn test_import_resolves_short_name_to_fqn() {
     let Expression::ComponentReference(cr) = qualified else {
         panic!("Expected ComponentReference");
     };
-    assert_eq!(cr.parts.len(), 3);
-    assert_eq!(cr.parts[0].ident.text.as_ref(), "Modelica");
-    assert_eq!(cr.parts[1].ident.text.as_ref(), "Constants");
-    assert_eq!(cr.parts[2].ident.text.as_ref(), "pi");
+    assert_eq!(cr.parts.len(), 1);
+    assert_eq!(cr.parts[0].ident.text.as_ref(), "pi");
+    assert_eq!(
+        cr.qualified_display_name().map(|name| name.as_str()),
+        Some("Modelica.Constants.pi")
+    );
 }
 
 #[test]
@@ -767,16 +786,10 @@ fn test_import_resolves_function_call_receiver_to_fqn() {
         .iter()
         .map(|part| part.ident.text.as_ref())
         .collect::<Vec<_>>();
+    assert_eq!(parts, vec!["Medium", "temperature_phX"]);
     assert_eq!(
-        parts,
-        vec![
-            "Modelica",
-            "Media",
-            "Air",
-            "ReferenceAir",
-            "Air_pT",
-            "temperature_phX"
-        ]
+        comp.qualified_display_name().map(|name| name.as_str()),
+        Some("Modelica.Media.Air.ReferenceAir.Air_pT.temperature_phX")
     );
 }
 
@@ -806,7 +819,11 @@ fn test_imported_function_call_shadows_builtin_name() {
         .iter()
         .map(|part| part.ident.text.as_ref())
         .collect::<Vec<_>>();
-    assert_eq!(parts, vec!["Modelica", "ComplexMath", "abs"]);
+    assert_eq!(parts, vec!["abs"]);
+    assert_eq!(
+        comp.qualified_display_name().map(|name| name.as_str()),
+        Some("Modelica.ComplexMath.abs")
+    );
 }
 
 #[test]
@@ -863,10 +880,12 @@ fn test_builtin_function_call_receiver_not_instance_qualified() {
     let Expression::ComponentReference(arg) = &args[0] else {
         panic!("Expected qualified component reference argument");
     };
-    assert_eq!(arg.parts.len(), 3);
+    assert_eq!(arg.parts.len(), 1);
     assert_eq!(arg.parts[0].ident.text.as_ref(), "table");
-    assert_eq!(arg.parts[1].ident.text.as_ref(), "combiTimeTable");
-    assert_eq!(arg.parts[2].ident.text.as_ref(), "table");
+    assert_eq!(
+        arg.qualified_display_name().map(|name| name.as_str()),
+        Some("table.combiTimeTable.table")
+    );
 }
 
 #[test]
@@ -945,9 +964,12 @@ fn test_non_imported_name_still_qualified() {
     let Expression::ComponentReference(cr) = qualified else {
         panic!("Expected ComponentReference");
     };
-    assert_eq!(cr.parts.len(), 2);
-    assert_eq!(cr.parts[0].ident.text.as_ref(), "comp");
-    assert_eq!(cr.parts[1].ident.text.as_ref(), "f");
+    assert_eq!(cr.parts.len(), 1);
+    assert_eq!(cr.parts[0].ident.text.as_ref(), "f");
+    assert_eq!(
+        cr.qualified_display_name().map(|name| name.as_str()),
+        Some("comp.f")
+    );
 }
 
 #[test]
@@ -961,37 +983,12 @@ fn test_import_alias_resolves_prefixed_component_reference() {
         "Modelica.Electrical.Digital.Interfaces.Logic".to_string(),
     );
 
-    let expr = Expression::ComponentReference(ComponentReference {
-        local: false,
-        parts: vec![
-            ComponentRefPart {
-                ident: Token {
-                    text: Arc::from("L"),
-                    ..Default::default()
-                },
-                subs: None,
-            },
-            ComponentRefPart {
-                ident: Token {
-                    text: Arc::from("'1'"),
-                    ..Default::default()
-                },
-                subs: None,
-            },
-        ],
-        def_id: Some(rumoca_core::DefId::new(99)),
-        span: rumoca_core::Span::DUMMY,
-    });
+    let mut reference = make_comp_ref(&["L", "'1'"]);
+    reference.set_root_def_id(Some(rumoca_core::DefId::new(99)));
+    let expr = Expression::ComponentReference(reference);
 
-    let qualified = qualify_expression_with_imports(
-        &expr,
-        &prefix,
-        QualifyOptions {
-            preserve_def_id: true,
-            ..QualifyOptions::default()
-        },
-        &imports,
-    );
+    let qualified =
+        qualify_expression_with_imports(&expr, &prefix, QualifyOptions::default(), &imports);
     let Expression::ComponentReference(cr) = qualified else {
         panic!("Expected ComponentReference");
     };
@@ -1000,18 +997,12 @@ fn test_import_alias_resolves_prefixed_component_reference() {
         .iter()
         .map(|part| part.ident.text.as_ref())
         .collect();
+    assert_eq!(parts, vec!["L", "'1'"]);
+    assert_eq!(cr.root_def_id(), Some(rumoca_core::DefId::new(99)));
     assert_eq!(
-        parts,
-        vec![
-            "Modelica",
-            "Electrical",
-            "Digital",
-            "Interfaces",
-            "Logic",
-            "'1'"
-        ]
+        cr.qualified_display_name().map(|name| name.as_str()),
+        Some("Modelica.Electrical.Digital.Interfaces.Logic.'1'")
     );
-    assert_eq!(cr.def_id, Some(rumoca_core::DefId::new(99)));
 }
 
 #[test]
@@ -1020,73 +1011,16 @@ fn test_fully_qualified_ref_qualifies_subscript_expressions() {
     prefix.push("MUX".to_string(), vec![]);
     prefix.push("And1".to_string(), vec![]);
 
-    let ref_with_subscripts = ComponentReference {
-        local: false,
-        parts: vec![
-            ComponentRefPart {
-                ident: Token {
-                    text: Arc::from("Modelica"),
-                    ..Default::default()
-                },
-                subs: None,
-            },
-            ComponentRefPart {
-                ident: Token {
-                    text: Arc::from("Electrical"),
-                    ..Default::default()
-                },
-                subs: None,
-            },
-            ComponentRefPart {
-                ident: Token {
-                    text: Arc::from("Digital"),
-                    ..Default::default()
-                },
-                subs: None,
-            },
-            ComponentRefPart {
-                ident: Token {
-                    text: Arc::from("Tables"),
-                    ..Default::default()
-                },
-                subs: None,
-            },
-            ComponentRefPart {
-                ident: Token {
-                    text: Arc::from("AndTable"),
-                    ..Default::default()
-                },
-                subs: Some(vec![
-                    Subscript::Expression(Expression::ComponentReference(ComponentReference {
-                        local: false,
-                        parts: vec![ComponentRefPart {
-                            ident: Token {
-                                text: Arc::from("auxiliary"),
-                                ..Default::default()
-                            },
-                            subs: Some(vec![Subscript::Expression(make_int(1))]),
-                        }],
-                        def_id: None,
-                        span: rumoca_core::Span::DUMMY,
-                    })),
-                    Subscript::Expression(Expression::ComponentReference(ComponentReference {
-                        local: false,
-                        parts: vec![ComponentRefPart {
-                            ident: Token {
-                                text: Arc::from("x"),
-                                ..Default::default()
-                            },
-                            subs: Some(vec![Subscript::Expression(make_int(2))]),
-                        }],
-                        def_id: None,
-                        span: rumoca_core::Span::DUMMY,
-                    })),
-                ]),
-            },
-        ],
-        def_id: None,
-        span: rumoca_core::Span::DUMMY,
-    };
+    let mut auxiliary = make_comp_ref(&["auxiliary"]);
+    auxiliary.parts[0].subs = Some(vec![Subscript::Expression(make_int(1))]);
+    let mut x = make_comp_ref(&["x"]);
+    x.parts[0].subs = Some(vec![Subscript::Expression(make_int(2))]);
+    let mut ref_with_subscripts =
+        make_comp_ref(&["Modelica", "Electrical", "Digital", "Tables", "AndTable"]);
+    ref_with_subscripts.parts[4].subs = Some(vec![
+        Subscript::Expression(Expression::ComponentReference(auxiliary)),
+        Subscript::Expression(Expression::ComponentReference(x)),
+    ]);
 
     let expr = Expression::ComponentReference(ref_with_subscripts);
     let qualified = qualify_expression(&expr, &prefix, QualifyOptions::default());
@@ -1103,16 +1037,20 @@ fn test_fully_qualified_ref_qualifies_subscript_expressions() {
     let Subscript::Expression(Expression::ComponentReference(aux_ref)) = &subscripts[0] else {
         panic!("expected auxiliary ref in first subscript");
     };
-    assert_eq!(aux_ref.parts.len(), 3);
-    assert_eq!(aux_ref.parts[0].ident.text.as_ref(), "MUX");
-    assert_eq!(aux_ref.parts[1].ident.text.as_ref(), "And1");
-    assert_eq!(aux_ref.parts[2].ident.text.as_ref(), "auxiliary");
+    assert_eq!(aux_ref.parts.len(), 1);
+    assert_eq!(aux_ref.parts[0].ident.text.as_ref(), "auxiliary");
+    assert_eq!(
+        aux_ref.qualified_display_name().map(|name| name.as_str()),
+        Some("MUX.And1.auxiliary[1]")
+    );
 
     let Subscript::Expression(Expression::ComponentReference(x_ref)) = &subscripts[1] else {
         panic!("expected x ref in second subscript");
     };
-    assert_eq!(x_ref.parts.len(), 3);
-    assert_eq!(x_ref.parts[0].ident.text.as_ref(), "MUX");
-    assert_eq!(x_ref.parts[1].ident.text.as_ref(), "And1");
-    assert_eq!(x_ref.parts[2].ident.text.as_ref(), "x");
+    assert_eq!(x_ref.parts.len(), 1);
+    assert_eq!(x_ref.parts[0].ident.text.as_ref(), "x");
+    assert_eq!(
+        x_ref.qualified_display_name().map(|name| name.as_str()),
+        Some("MUX.And1.x[2]")
+    );
 }

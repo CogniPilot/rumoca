@@ -35,16 +35,14 @@ fn collect_record_array_ranks(flat: &flat::Model) -> HashMap<rumoca_core::DefId,
     for record in flat.record_instances.values() {
         let rank = record
             .component_ref
-            .parts
+            .parts()
             .last()
             .map(|part| part.subs.len())
             .unwrap_or(0);
         if rank == 0 {
             continue;
         }
-        let Some(def_id) = record.component_ref.def_id else {
-            continue;
-        };
+        let def_id = record.component_ref.target_def_id();
         ranks
             .entry(def_id)
             .and_modify(|known| *known = (*known).max(rank))
@@ -136,10 +134,11 @@ pub(crate) fn resolve_nested_constructor_field_access_bindings(flat: &mut flat::
             let access = direct_constructor_field_access(binding, flat)?;
             let prefix = variable_field_prefix(name)?;
             let group = groups.get(&(access.constructor_name.clone(), prefix))?;
-            let outer_field = unique_nested_record_field(flat, access.constructor, group)?;
+            let (outer_field, outer_field_def_id) =
+                unique_nested_record_field(flat, access.constructor, group)?;
             Some((
                 name.clone(),
-                nested_constructor_field_access(binding, outer_field),
+                nested_constructor_field_access(binding, outer_field, outer_field_def_id),
             ))
         })
         .collect::<Vec<_>>();
@@ -221,15 +220,17 @@ fn unique_nested_record_field(
     flat: &flat::Model,
     constructor: &rumoca_core::Function,
     selected_fields: &IndexSet<String>,
-) -> Option<String> {
+) -> Option<(String, rumoca_core::DefId)> {
     let mut matches = constructor
         .inputs
         .iter()
         .filter(|param| param.type_class == Some(rumoca_core::ClassType::Record))
-        .filter(|param| record_type_contains_fields(flat, &param.type_name, selected_fields))
-        .map(|param| param.name.clone());
+        .filter(|param| record_type_contains_fields(flat, &param.type_name, selected_fields));
     let first = matches.next()?;
-    matches.next().is_none().then_some(first)
+    if matches.next().is_some() {
+        return None;
+    }
+    Some((first.name.clone(), first.def_id?))
 }
 
 fn record_type_contains_fields(
@@ -264,17 +265,26 @@ fn record_constructor_field_names(flat: &flat::Model, type_name: &str) -> Option
 fn nested_constructor_field_access(
     expr: &rumoca_core::Expression,
     outer_field: String,
+    outer_field_def_id: rumoca_core::DefId,
 ) -> rumoca_core::Expression {
-    let rumoca_core::Expression::FieldAccess { base, field, span } = expr else {
+    let rumoca_core::Expression::FieldAccess {
+        base,
+        field,
+        field_def_id,
+        span,
+    } = expr
+    else {
         return expr.clone();
     };
     rumoca_core::Expression::FieldAccess {
         base: Box::new(rumoca_core::Expression::FieldAccess {
             base: base.clone(),
             field: outer_field,
+            field_def_id: outer_field_def_id,
             span: *span,
         }),
         field: field.clone(),
+        field_def_id: *field_def_id,
         span: *span,
     }
 }
@@ -384,8 +394,32 @@ mod tests {
         )
     }
 
+    fn fixture_def_id(name: &str) -> rumoca_core::DefId {
+        let hash = name.bytes().fold(2_166_136_261_u32, |hash, byte| {
+            hash.wrapping_mul(16_777_619) ^ u32::from(byte)
+        });
+        rumoca_core::DefId::new(hash.max(1))
+    }
+
+    fn reference(path: &str) -> rumoca_core::Reference {
+        let parts = rumoca_core::ComponentPath::from_flat_path(path)
+            .parts()
+            .iter()
+            .map(|ident| rumoca_core::ComponentRefPart {
+                ident: ident.clone(),
+                span: test_span(),
+                subs: Vec::new(),
+                def_id: fixture_def_id(ident),
+            })
+            .collect();
+        let component_ref = rumoca_core::ComponentReference::construct(false, test_span(), parts)
+            .expect("fixture reference has an exact identity for every part");
+        rumoca_core::Reference::from_component_reference(component_ref)
+    }
+
     fn constructor(name: &str, inputs: Vec<rumoca_core::FunctionParam>) -> rumoca_core::Function {
-        let mut function = rumoca_core::Function::new(name, rumoca_core::Span::DUMMY);
+        let mut function = rumoca_core::Function::new(name, test_span());
+        function.def_id = Some(fixture_def_id(name));
         function.is_constructor = true;
         for input in inputs {
             function.add_input(input);
@@ -394,20 +428,22 @@ mod tests {
     }
 
     fn record_param(name: &str, type_name: &str) -> rumoca_core::FunctionParam {
-        rumoca_core::FunctionParam::new(name, type_name, test_span())
+        crate::test_support::aggregate_param(name, type_name, Vec::new(), test_span())
             .with_type_class(rumoca_core::ClassType::Record)
+            .with_def_id(fixture_def_id(name))
     }
 
     fn direct_constructor_field(constructor: &str, field: &str) -> rumoca_core::Expression {
         rumoca_core::Expression::FieldAccess {
             base: Box::new(rumoca_core::Expression::FunctionCall {
-                name: rumoca_core::Reference::new(constructor),
+                name: reference(constructor),
                 args: Vec::new(),
                 is_constructor: true,
-                span: rumoca_core::Span::DUMMY,
+                span: test_span(),
             }),
             field: field.to_string(),
-            span: rumoca_core::Span::DUMMY,
+            field_def_id: fixture_def_id(field),
+            span: test_span(),
         }
     }
 
@@ -424,10 +460,10 @@ mod tests {
         def_id: rumoca_core::DefId,
         indices: &[i64],
     ) -> rumoca_core::ComponentReference {
-        rumoca_core::ComponentReference {
-            local: false,
-            span: test_span(),
-            parts: vec![rumoca_core::ComponentRefPart {
+        rumoca_core::ComponentReference::construct(
+            false,
+            test_span(),
+            vec![rumoca_core::ComponentRefPart {
                 ident: name.to_string(),
                 span: test_span(),
                 subs: indices
@@ -437,9 +473,10 @@ mod tests {
                         span: test_span(),
                     })
                     .collect(),
+                def_id,
             }],
-            def_id: Some(def_id),
-        }
+        )
+        .expect("record fixture carries its declaration identity")
     }
 
     #[test]
@@ -452,6 +489,7 @@ mod tests {
             flat.record_instances.insert(
                 component_ref.to_var_name(),
                 flat::RecordInstance {
+                    instance_id: rumoca_core::InstanceId::default(),
                     component_ref,
                     source_span: test_span(),
                     effective_type_id: rumoca_core::TypeId::new(9),
@@ -473,6 +511,7 @@ mod tests {
                         span: test_span(),
                     }),
                     field: "field".to_string(),
+                    field_def_id: fixture_def_id("field"),
                     span: test_span(),
                 },
             ),
@@ -508,8 +547,8 @@ mod tests {
         flat.add_function(constructor(
             "Pkg.Inner",
             vec![
-                rumoca_core::FunctionParam::new("x", "Real", test_span()),
-                rumoca_core::FunctionParam::new("y", "Real", test_span()),
+                crate::test_support::real_param("x", Vec::new(), test_span()),
+                crate::test_support::real_param("y", Vec::new(), test_span()),
             ],
         ));
         flat.add_variable(
@@ -571,9 +610,11 @@ mod tests {
             base: Box::new(rumoca_core::Expression::FieldAccess {
                 base: Box::new(index),
                 field: "limIntegrator".to_string(),
+                field_def_id: fixture_def_id("limIntegrator"),
                 span: test_span(),
             }),
             field: "y".to_string(),
+            field_def_id: fixture_def_id("y"),
             span: test_span(),
         };
         flat.add_variable(

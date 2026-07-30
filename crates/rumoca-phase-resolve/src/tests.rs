@@ -7,8 +7,10 @@ use super::*;
 use rumoca_phase_parse::parse_to_ast;
 
 mod component_lookup;
+mod component_reference_identity;
 mod encapsulation;
 mod extends_resolution;
+mod external_objects;
 mod function_calls;
 mod imports;
 mod inherited_lookup;
@@ -43,7 +45,7 @@ fn resolve_tree_source(source: &str) -> ResolvedTree {
 
 fn find_comp_ref_def_id(expr: &rumoca_ir_ast::Expression) -> Option<DefId> {
     match expr {
-        ast::Expression::ComponentReference(cr) => cr.def_id,
+        ast::Expression::ComponentReference(cr) => cr.root_def_id(),
         ast::Expression::Binary { lhs, rhs, .. } => {
             find_comp_ref_def_id(lhs).or_else(|| find_comp_ref_def_id(rhs))
         }
@@ -54,18 +56,18 @@ fn find_comp_ref_def_id(expr: &rumoca_ir_ast::Expression) -> Option<DefId> {
             .or_else(|| step.as_ref().and_then(|s| find_comp_ref_def_id(s)))
             .or_else(|| find_comp_ref_def_id(end)),
         ast::Expression::FunctionCall { comp, args, .. } => comp
-            .def_id
+            .root_def_id()
             .or_else(|| args.iter().find_map(find_comp_ref_def_id)),
         ast::Expression::ClassModification {
             target,
             modifications,
             ..
         } => target
-            .def_id
+            .root_def_id()
             .or_else(|| modifications.iter().find_map(find_comp_ref_def_id)),
         ast::Expression::NamedArgument { value, .. } => find_comp_ref_def_id(value),
         ast::Expression::Modification { target, value, .. } => {
-            target.def_id.or_else(|| find_comp_ref_def_id(value))
+            target.root_def_id().or_else(|| find_comp_ref_def_id(value))
         }
         ast::Expression::Array { elements, .. } | ast::Expression::Tuple { elements, .. } => {
             elements.iter().find_map(find_comp_ref_def_id)

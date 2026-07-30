@@ -1,6 +1,6 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use super::{ComponentReference, Reference, ResolvedFunctionReference, VarName};
+use super::{ComponentReference, InstanceId, Reference, ResolvedFunctionReference, VarName};
 
 #[derive(Serialize, Deserialize)]
 struct ReferenceWire {
@@ -9,6 +9,8 @@ struct ReferenceWire {
     component_ref: Option<ComponentReference>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     resolved_function: Option<ResolvedFunctionReference>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    instance_id: Option<InstanceId>,
     #[serde(default, skip_serializing_if = "is_false")]
     generated: bool,
 }
@@ -25,6 +27,7 @@ impl Serialize for Reference {
         if serializer.is_human_readable()
             && self.component_ref.is_none()
             && self.resolved_function.is_none()
+            && self.instance_id.is_none()
             && !self.generated
         {
             return self.name.serialize(serializer);
@@ -35,6 +38,7 @@ impl Serialize for Reference {
                 &self.name,
                 &self.component_ref,
                 &self.resolved_function,
+                &self.instance_id,
                 &self.generated,
             )
                 .serialize(serializer);
@@ -44,6 +48,7 @@ impl Serialize for Reference {
             name: self.name.clone(),
             component_ref: self.component_ref.clone(),
             resolved_function: self.resolved_function,
+            instance_id: self.instance_id,
             generated: self.generated,
         }
         .serialize(serializer)
@@ -56,17 +61,19 @@ impl<'de> Deserialize<'de> for Reference {
         D: Deserializer<'de>,
     {
         if !deserializer.is_human_readable() {
-            let (name, component_ref, resolved_function, generated) =
+            let (name, component_ref, resolved_function, instance_id, generated) =
                 <(
                     VarName,
                     Option<ComponentReference>,
                     Option<ResolvedFunctionReference>,
+                    Option<InstanceId>,
                     bool,
                 )>::deserialize(deserializer)?;
             return Ok(Self {
                 name,
                 component_ref,
                 resolved_function,
+                instance_id,
                 generated,
             });
         }
@@ -83,12 +90,14 @@ impl<'de> Deserialize<'de> for Reference {
                 name,
                 component_ref: None,
                 resolved_function: None,
+                instance_id: None,
                 generated: false,
             }),
             HumanReference::Wire(wire) => Ok(Self {
                 name: wire.name,
                 component_ref: wire.component_ref,
                 resolved_function: wire.resolved_function,
+                instance_id: wire.instance_id,
                 generated: wire.generated,
             }),
         }

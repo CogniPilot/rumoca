@@ -97,7 +97,7 @@ impl Visitor for ExpressionIdentity {
 
     fn visit_component_reference(&mut self, reference: &ComponentReference) -> ControlFlow<()> {
         self.references
-            .push((reference.to_string(), reference.def_id));
+            .push((reference.to_string(), reference.root_def_id()));
         crate::walk_component_reference_default(self, reference)
     }
 
@@ -107,7 +107,7 @@ impl Visitor for ExpressionIdentity {
         args: &[Expression],
     ) -> ControlFlow<()> {
         self.references
-            .push((function.to_string(), function.def_id));
+            .push((function.to_string(), function.root_def_id()));
         crate::walk_component_reference_default(self, function)?;
         for argument in args {
             self.visit_expression(argument)?;

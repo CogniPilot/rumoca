@@ -1,11 +1,10 @@
-//! Type-name resolution and binding scopes in the instanced pipeline: suffix
-//! and dotted-anchor lookup, projected field types, and modifier source
-//! scopes.
+//! Type-name resolution and binding scopes in the instanced pipeline: exact
+//! dotted-anchor lookup, projected field types, and modifier source scopes.
 
 use super::*;
 
 #[test]
-fn test_typecheck_instanced_resolves_unique_suffix_type_name() {
+fn test_typecheck_instanced_rejects_missing_type_identity_even_for_unique_suffix() {
     let source = r#"
         package A
             package Units
@@ -39,17 +38,15 @@ fn test_typecheck_instanced_resolves_unique_suffix_type_name() {
         ..Default::default()
     });
 
-    typecheck_instanced(&tree, &mut overlay, "Test")
-        .expect("instanced typecheck should resolve unique suffix type names");
-
-    let r_inst = overlay
-        .components
-        .values()
-        .find(|d| d.qualified_name.to_flat_string() == "Test.r")
-        .expect("r instance");
+    let err = typecheck_instanced(&tree, &mut overlay, "Test")
+        .expect_err("a rendered suffix cannot replace exact producer identity");
     assert!(
-        !r_inst.type_id.is_unknown(),
-        "unique suffix type should resolve"
+        err.iter()
+            .any(|diagnostic| diagnostic.code.as_deref() == Some("ET001")
+                && diagnostic
+                    .message
+                    .contains("undefined type 'Units.Reluctance'")),
+        "missing exact type identity must be diagnosed: {err:?}"
     );
 }
 

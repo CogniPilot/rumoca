@@ -66,6 +66,10 @@ macro_rules! raw_id_slice_view {
 }
 
 impl<'dae> DaeView<'dae> {
+    pub fn predefined_string_declaration(self) -> Option<rumoca_core::DefId> {
+        self.dae.storage.predefined_string_declaration
+    }
+
     /// Returns one exact source span that can own a whole-model diagnostic.
     ///
     /// This is intentionally optional: an empty, source-free DAE has no
@@ -531,13 +535,31 @@ impl<'dae> DaeView<'dae> {
         })
     }
 
+    pub fn periodic_clock(
+        self,
+        id: crate::PeriodicClockId<'dae>,
+    ) -> &'dae rumoca_core::ClockLattice {
+        let entry = &self.dae.storage.clocks[id.index() as usize];
+        let crate::clocks::ClockKind::Periodic(lattice) = &entry.kind else {
+            unreachable!("PeriodicClockId is minted only for periodic clocks");
+        };
+        lattice
+    }
+
     pub fn clock_ownership(self, id: ClockOwnershipId<'dae>) -> Option<ClockOwnershipView<'dae>> {
         let entry = self.dae.storage.clock_ownerships.get(id.index() as usize)?;
+        let role = self
+            .dae
+            .storage
+            .variables
+            .get(entry.variable as usize)?
+            .role;
         Some(ClockOwnershipView {
             variable: VariableId::from_raw(entry.variable),
-            kind: match entry.role {
-                ClockedVariableRole::DiscreteReal => ClockedVariableKind::DiscreteReal,
-                ClockedVariableRole::DiscreteValue => ClockedVariableKind::DiscreteValue,
+            kind: match role {
+                VariableRole::DiscreteReal => ClockedVariableKind::DiscreteReal,
+                VariableRole::DiscreteValue => ClockedVariableKind::DiscreteValue,
+                _ => unreachable!("clock ownership accepts only checked clocked variable roles"),
             },
             clock: ClockId::from_raw(entry.clock),
             provenance: entry.provenance,
@@ -562,6 +584,8 @@ impl<'dae> DaeView<'dae> {
 
     pub fn delay(self, id: DelayId<'dae>) -> Option<DelayView<'dae>> {
         let entry = self.dae.storage.delays.get(id.index() as usize)?;
+        let source = ExprId::from_raw(entry.source);
+        let source_view = self.expression(source)?;
         let operation = match &entry.kind {
             DelayKind::ParameterDelay { delay_time } => DelayOperation::ParameterDelay {
                 delay_time: positive_parameter_view(delay_time),
@@ -575,14 +599,10 @@ impl<'dae> DaeView<'dae> {
             },
         };
         Some(DelayView {
-            source: ExprId::from_raw(entry.source),
+            source,
             operation,
-            value_type: self
-                .dae
-                .storage
-                .value_types
-                .get(entry.value_type as usize)?,
-            variability: entry.variability,
+            value_type: source_view.value_type(),
+            variability: source_view.variability(),
             provenance: entry.provenance,
         })
     }
@@ -1085,6 +1105,7 @@ impl<'dae> ExpressionView<'dae> {
             ExprNode::ArrayUpdate { .. } => ExpressionKind::ArrayUpdate,
             ExprNode::Builtin { .. } => ExpressionKind::Builtin,
             ExprNode::Call { .. } => ExpressionKind::Call,
+            ExprNode::StringConversion { .. } => ExpressionKind::StringConversion,
             ExprNode::FunctionValue { .. } => ExpressionKind::FunctionValue,
             ExprNode::FunctionFoldParameter { .. } => ExpressionKind::FunctionFoldParameter,
             ExprNode::FunctionFoldOutput { .. } => ExpressionKind::FunctionFoldOutput,
@@ -1106,7 +1127,8 @@ impl<'dae> ExpressionView<'dae> {
             ExprNode::Index { .. }
             | ExprNode::ArrayUpdate { .. }
             | ExprNode::Builtin { .. }
-            | ExprNode::Call { .. } => self.application_operation(),
+            | ExprNode::Call { .. }
+            | ExprNode::StringConversion { .. } => self.application_operation(),
             ExprNode::FunctionValue { .. }
             | ExprNode::FunctionFoldParameter { .. }
             | ExprNode::FunctionFoldOutput { .. } => self.function_operation(),
@@ -1192,6 +1214,27 @@ impl<'dae> ExpressionView<'dae> {
                 function: FunctionId::from_raw(*function),
                 output: *output,
                 arguments: self.expression_operands(*operands),
+            },
+            ExprNode::StringConversion {
+                declaration,
+                value,
+                minimum_length,
+                left_justified,
+                significant_digits,
+                format,
+            } => ExpressionOperation::StringConversion {
+                declaration: *declaration,
+                value: ExprId::from_raw(*value),
+                format: match format {
+                    Some(format) => StringConversionFormatView::Format {
+                        value: ExprId::from_raw(*format),
+                    },
+                    None => StringConversionFormatView::Options {
+                        minimum_length: minimum_length.map(ExprId::from_raw),
+                        left_justified: left_justified.map(ExprId::from_raw),
+                        significant_digits: significant_digits.map(ExprId::from_raw),
+                    },
+                },
             },
             _ => unreachable!("expression operation family is selected from its checked node"),
         }
@@ -1350,6 +1393,7 @@ pub enum CoordinateView<'dae> {
     PreDiscreteReal(DiscreteRealId<'dae>),
     PreDiscreteValue(DiscreteValueId<'dae>),
     Time,
+    ClockInterval(crate::PeriodicClockId<'dae>),
     Condition(ConditionId<'dae>),
     Delay(crate::DelayId<'dae>),
     Previous(crate::PreviousId<'dae>),
@@ -1462,6 +1506,11 @@ pub enum ExpressionOperation<'dae> {
         output: u32,
         arguments: ExpressionOperands<'dae>,
     },
+    StringConversion {
+        declaration: rumoca_core::DefId,
+        value: ExprId<'dae>,
+        format: StringConversionFormatView<'dae>,
+    },
     FunctionValue {
         value: FunctionValueId<'dae>,
         definition: FunctionDefinitionView<'dae>,
@@ -1475,6 +1524,18 @@ pub enum ExpressionOperation<'dae> {
         fold: FunctionFoldId<'dae>,
         carried: u32,
         definition: FunctionDefinitionView<'dae>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StringConversionFormatView<'dae> {
+    Options {
+        minimum_length: Option<ExprId<'dae>>,
+        left_justified: Option<ExprId<'dae>>,
+        significant_digits: Option<ExprId<'dae>>,
+    },
+    Format {
+        value: ExprId<'dae>,
     },
 }
 
@@ -1498,6 +1559,9 @@ fn coordinate_view<'dae>(coordinate: Coordinate) -> CoordinateView<'dae> {
             CoordinateView::PreDiscreteValue(DiscreteValueId::from_raw(raw))
         }
         Coordinate::Time => CoordinateView::Time,
+        Coordinate::ClockInterval(raw) => {
+            CoordinateView::ClockInterval(crate::PeriodicClockId::from_raw(raw))
+        }
         Coordinate::Condition(raw) => CoordinateView::Condition(ConditionId::from_raw(raw)),
         Coordinate::Delay(raw) => CoordinateView::Delay(crate::DelayId::from_raw(raw)),
         Coordinate::Previous(raw) => CoordinateView::Previous(crate::PreviousId::from_raw(raw)),
@@ -1527,6 +1591,7 @@ pub enum ExpressionKind {
     ArrayUpdate,
     Builtin,
     Call,
+    StringConversion,
     FunctionValue,
     FunctionFoldParameter,
     FunctionFoldOutput,

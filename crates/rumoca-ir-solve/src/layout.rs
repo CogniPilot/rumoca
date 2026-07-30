@@ -76,19 +76,12 @@ pub struct ComponentReferenceKeyError {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ComponentReferenceKeyErrorKind {
-    MissingDefId,
     DynamicSubscript,
 }
 
 impl std::fmt::Display for ComponentReferenceKeyError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.kind {
-            ComponentReferenceKeyErrorKind::MissingDefId => {
-                write!(
-                    f,
-                    "component reference is missing resolved definition identity"
-                )
-            }
             ComponentReferenceKeyErrorKind::DynamicSubscript => {
                 write!(f, "component reference contains a dynamic subscript")
             }
@@ -108,12 +101,9 @@ impl ComponentReferenceKey {
     pub fn from_component_reference(
         reference: &ComponentReference,
     ) -> Result<Self, ComponentReferenceKeyError> {
-        let def_id = reference.def_id.ok_or(ComponentReferenceKeyError {
-            span: reference.span,
-            kind: ComponentReferenceKeyErrorKind::MissingDefId,
-        })?;
+        let def_id = reference.target_def_id();
         let parts = reference
-            .parts
+            .parts()
             .iter()
             .map(|part| {
                 let subscripts = part
@@ -879,62 +869,21 @@ mod tests {
         assert_eq!(layout.binding("u[0,1]"), None);
     }
 
-    /// A source reference whose `def_id` is absent is a spanned error, never a
-    /// key rebuilt from the rendered spelling.
-    ///
-    /// SPEC_0008 forbids substituting a value for an absent identity, and doing
-    /// so here would be worse than a silent default: the fallback would be the
-    /// rendered name, which is exactly the identity this key exists to stop
-    /// using. The error is the only outcome, so `ComponentReferenceKey::Source`
-    /// cannot exist without a `DefId` and `Generated` is reachable only for
-    /// references that are genuinely compiler-generated.
-    #[test]
-    fn missing_def_id_is_a_spanned_error_not_a_rendered_name_fallback() {
-        let span = layout_source_span(21, 4, 9);
-        let reference = ComponentReference {
-            local: false,
-            span,
-            parts: vec![rumoca_core::ComponentRefPart {
-                ident: "x".to_string(),
-                span,
-                subs: Vec::new(),
-            }],
-            def_id: None,
-        };
-
-        let err = ComponentReferenceKey::from_component_reference(&reference)
-            .expect_err("source component reference without DefId should fail");
-
-        assert_eq!(err.kind, ComponentReferenceKeyErrorKind::MissingDefId);
-        assert_eq!(err.span, span);
-        assert_eq!(
-            err.to_string(),
-            "component reference is missing resolved definition identity"
-        );
-        assert_ne!(
-            ComponentReferenceKey::from_component_reference(&reference).ok(),
-            Some(ComponentReferenceKey::generated("x")),
-            "the spelling must not be accepted as a substitute identity"
-        );
-    }
-
-    /// The key's member path hashes interned ids, and its serialized form is
-    /// still the spelling — so the Solve IR on disk is unchanged while
-    /// in-process identity is id-based.
+    /// Source-reference identities are mandatory before Solve key construction.
+    /// The member path hashes interned ids while serialization retains the
+    /// readable spelling.
     #[test]
     fn component_reference_key_parts_are_interned_and_serialize_as_text() {
         let span = layout_source_span(23, 0, 5);
-        let part = |ident: &str| rumoca_core::ComponentRefPart {
+        let part = |ident: &str, def_id: u32| rumoca_core::ComponentRefPart {
             ident: ident.to_string(),
             span,
             subs: Vec::new(),
+            def_id: rumoca_core::DefId::new(def_id),
         };
-        let reference = ComponentReference {
-            local: false,
-            span,
-            parts: vec![part("gear"), part("ratio")],
-            def_id: Some(rumoca_core::DefId::new(9)),
-        };
+        let reference =
+            ComponentReference::construct(false, span, vec![part("gear", 9), part("ratio", 10)])
+                .expect("test reference carries an identity on every segment");
 
         let key = ComponentReferenceKey::from_component_reference(&reference)
             .expect("resolved source reference builds a key");
@@ -958,10 +907,10 @@ mod tests {
     #[test]
     fn component_reference_key_error_displays_dynamic_subscript() {
         let span = layout_source_span(22, 12, 20);
-        let reference = ComponentReference {
-            local: false,
+        let reference = ComponentReference::construct(
+            false,
             span,
-            parts: vec![rumoca_core::ComponentRefPart {
+            vec![rumoca_core::ComponentRefPart {
                 ident: "x".to_string(),
                 span,
                 subs: vec![Subscript::expr(
@@ -971,9 +920,10 @@ mod tests {
                     }),
                     span,
                 )],
+                def_id: rumoca_core::DefId::new(7),
             }],
-            def_id: Some(rumoca_core::DefId(7)),
-        };
+        )
+        .expect("test reference carries an exact declaration identity");
 
         let err = ComponentReferenceKey::from_component_reference(&reference)
             .expect_err("dynamic component reference subscript should fail");

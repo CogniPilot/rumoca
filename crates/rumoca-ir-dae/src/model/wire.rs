@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 use super::*;
 use crate::expression::Subscript;
 use crate::{
-    ClockId, ConditionInput, DaeProvenanceOrigin, DelayId, ExpressionAt, PreviousId, PureBuiltin,
-    RelationId, TerminalId, UnaryOperator,
+    ClockId, ConditionInput, DaeProvenanceOrigin, DelayId, ExpressionAt, PeriodicClockId,
+    PreviousId, PureBuiltin, RelationId, TerminalId, UnaryOperator,
 };
 
 use equation_systems::reconstruct_equation_systems;
@@ -61,7 +61,11 @@ impl Serialize for FrozenStorage {
     where
         S: serde::Serializer,
     {
-        let mut state = serializer.serialize_struct("DaeStorage", 21)?;
+        let mut state = serializer.serialize_struct("DaeStorage", 22)?;
+        state.serialize_field(
+            "predefined_string_declaration",
+            &self.predefined_string_declaration,
+        )?;
         state.serialize_field("value_types", &self.value_types)?;
         state.serialize_field("flat_type_ids", &self.flat_type_ids)?;
         state.serialize_field("value_type_provenance", &self.value_type_provenance)?;
@@ -106,7 +110,7 @@ impl Serialize for FrozenStorage {
     }
 }
 
-/// Private schema-v11 input records.
+/// Private schema-v12 input records.
 ///
 /// These mirror the serialized column names, but they are deliberately
 /// distinct from every invariant-bearing arena entry. Deserialization can
@@ -115,6 +119,8 @@ impl Serialize for FrozenStorage {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StorageWire {
+    #[serde(deserialize_with = "deserialize_required_def_id_option")]
+    predefined_string_declaration: Option<rumoca_core::DefId>,
     value_types: Vec<ValueTypeWire>,
     flat_type_ids: Vec<Option<rumoca_core::TypeId>>,
     #[serde(deserialize_with = "deserialize_provenance_vec")]
@@ -137,6 +143,15 @@ struct StorageWire {
     previous_values: Vec<PreviousEntryWire>,
     terminals: Vec<TerminalEntryWire>,
     delays: Vec<DelayEntryWire>,
+}
+
+fn deserialize_required_def_id_option<'de, D>(
+    deserializer: D,
+) -> Result<Option<rumoca_core::DefId>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<rumoca_core::DefId>::deserialize(deserializer)
 }
 
 #[derive(Deserialize)]
@@ -548,6 +563,28 @@ impl<'de> Deserialize<'de> for Dae {
     }
 }
 
+#[derive(Clone, Copy)]
+enum WireClockId<'dae> {
+    Periodic(PeriodicClockId<'dae>),
+    Triggered(ClockId<'dae>),
+}
+
+impl<'dae> WireClockId<'dae> {
+    fn clock_id(self) -> ClockId<'dae> {
+        match self {
+            Self::Periodic(clock) => clock.into(),
+            Self::Triggered(clock) => clock,
+        }
+    }
+
+    fn periodic(self, at: DaeProvenance) -> Result<PeriodicClockId<'dae>, DaeConstructionError> {
+        match self {
+            Self::Periodic(clock) => Ok(clock),
+            Self::Triggered(clock) => Err(unknown("periodic clock", clock.index(), at)),
+        }
+    }
+}
+
 struct WireIds<'dae> {
     types: Vec<ValueTypeId<'dae>>,
     variables: Vec<VariableId<'dae>>,
@@ -555,7 +592,7 @@ struct WireIds<'dae> {
     domains: Vec<DomainId<'dae>>,
     conditions: Vec<ConditionId<'dae>>,
     relations: Vec<RelationId<'dae>>,
-    clocks: Vec<ClockId<'dae>>,
+    clocks: Vec<WireClockId<'dae>>,
     previous_values: Vec<PreviousId<'dae>>,
     terminals: Vec<TerminalId<'dae>>,
     delays: Vec<DelayId<'dae>>,
@@ -577,6 +614,9 @@ fn reconstruct<'dae>(
     wire: &StorageWire,
     dae: &mut DaeConstruction<'dae>,
 ) -> Result<(), DaeConstructionError> {
+    if let Some(declaration) = wire.predefined_string_declaration {
+        dae.register_predefined_string(declaration)?;
+    }
     let types = reconstruct_types(wire, dae)?;
     let (variables, variable_reservations) = reconstruct_variables(wire, dae, &types)?;
     let domains = reconstruct_domains(wire, dae)?;
@@ -1065,12 +1105,7 @@ fn rebuild_node<'dae>(
             rebuild_conditional(wire, ids, at, *operand_count, provenance)
         }
         ExprNodeWire::Array { operand_count } => {
-            let operands = map_expression_operands(wire, ids, *operand_count, provenance)?;
-            if operands.is_empty() {
-                at.empty_array(type_anchor.ok_or_else(|| malformed("expressions.type_anchors"))?)
-            } else {
-                at.array(operands)
-            }
+            rebuild_array(wire, ids, at, *operand_count, type_anchor, provenance)
         }
         ExprNodeWire::Record { operand_count } => at.record(
             type_anchor.ok_or_else(|| malformed("expressions.type_anchors"))?,
@@ -1084,17 +1119,13 @@ fn rebuild_node<'dae>(
             start_expression,
             explicit_step_expression,
             stop_expression,
-        } => at.range(
-            mapped(
-                &ids.expressions,
-                *start_expression,
-                "expression",
-                provenance,
-            )?,
-            explicit_step_expression
-                .map(|step| mapped(&ids.expressions, step, "expression", provenance))
-                .transpose()?,
-            mapped(&ids.expressions, *stop_expression, "expression", provenance)?,
+        } => rebuild_range(
+            ids,
+            at,
+            *start_expression,
+            *explicit_step_expression,
+            *stop_expression,
+            provenance,
         ),
         ExprNodeWire::Comprehension { domain, body } => at.comprehension(
             mapped(&ids.domains, *domain, "domain", provenance)?,
@@ -1129,11 +1160,110 @@ fn rebuild_node<'dae>(
             *output as usize,
             map_expression_operands(wire, ids, *operand_count, provenance)?,
         ),
+        node @ ExprNodeWire::StringConversion { .. } => {
+            rebuild_string_conversion(ids, at, WireStringConversion::from_node(node), provenance)
+        }
         ExprNodeWire::FunctionValue { .. } => Err(malformed("expressions.nodes.function_value")),
         ExprNodeWire::FunctionFoldParameter { .. } | ExprNodeWire::FunctionFoldOutput { .. } => {
             Err(malformed("expressions.nodes.function_fold"))
         }
     }
+}
+
+fn rebuild_range<'dae>(
+    ids: &WireIds<'dae>,
+    at: ExpressionAt<'_, 'dae>,
+    start: u32,
+    step: Option<u32>,
+    stop: u32,
+    provenance: DaeProvenance,
+) -> Result<ExprId<'dae>, DaeConstructionError> {
+    at.range(
+        mapped(&ids.expressions, start, "expression", provenance)?,
+        step.map(|step| mapped(&ids.expressions, step, "expression", provenance))
+            .transpose()?,
+        mapped(&ids.expressions, stop, "expression", provenance)?,
+    )
+}
+
+fn rebuild_array<'dae>(
+    wire: &StorageWire,
+    ids: &mut WireIds<'dae>,
+    at: ExpressionAt<'_, 'dae>,
+    operands: u32,
+    type_anchor: Option<ValueTypeId<'dae>>,
+    provenance: DaeProvenance,
+) -> Result<ExprId<'dae>, DaeConstructionError> {
+    let operands = map_expression_operands(wire, ids, operands, provenance)?;
+    if operands.is_empty() {
+        at.empty_array(type_anchor.ok_or_else(|| malformed("expressions.type_anchors"))?)
+    } else {
+        at.array(operands)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct WireStringConversion {
+    declaration: rumoca_core::DefId,
+    value: u32,
+    minimum_length: Option<u32>,
+    left_justified: Option<u32>,
+    significant_digits: Option<u32>,
+    format: Option<u32>,
+}
+
+impl WireStringConversion {
+    fn from_node(node: &ExprNodeWire) -> Self {
+        let ExprNodeWire::StringConversion {
+            declaration,
+            value,
+            minimum_length,
+            left_justified,
+            significant_digits,
+            format,
+        } = node
+        else {
+            unreachable!("caller selected a String conversion wire node")
+        };
+        Self {
+            declaration: *declaration,
+            value: *value,
+            minimum_length: *minimum_length,
+            left_justified: *left_justified,
+            significant_digits: *significant_digits,
+            format: *format,
+        }
+    }
+}
+
+fn rebuild_string_conversion<'dae>(
+    ids: &WireIds<'dae>,
+    at: ExpressionAt<'_, 'dae>,
+    wire: WireStringConversion,
+    provenance: DaeProvenance,
+) -> Result<ExprId<'dae>, DaeConstructionError> {
+    let value = mapped(&ids.expressions, wire.value, "expression", provenance)?;
+    let format = match wire.format {
+        Some(format) => crate::StringConversionFormatInput::Format {
+            value: mapped(&ids.expressions, format, "expression", provenance)?,
+        },
+        None => crate::StringConversionFormatInput::Options {
+            minimum_length: map_optional_expression(ids, wire.minimum_length, provenance)?,
+            left_justified: map_optional_expression(ids, wire.left_justified, provenance)?,
+            significant_digits: map_optional_expression(ids, wire.significant_digits, provenance)?,
+        },
+    };
+    at.string_conversion(wire.declaration, value, format)
+}
+
+fn map_optional_expression<'dae>(
+    ids: &WireIds<'dae>,
+    expression: Option<u32>,
+    provenance: DaeProvenance,
+) -> Result<Option<ExprId<'dae>>, DaeConstructionError> {
+    expression
+        .map(|value| mapped(&ids.expressions, value, "expression", provenance))
+        .transpose()
 }
 
 fn rebuild_coordinate<'dae>(
@@ -1170,6 +1300,9 @@ fn rebuild_coordinate<'dae>(
             DiscreteValueId::from_raw(mapped(&ids.variables, *variable, "variable", at)?.index()),
         ),
         CoordinateWire::Time => CoordinateInput::Time,
+        CoordinateWire::ClockInterval(clock) => {
+            CoordinateInput::ClockInterval(mapped(&ids.clocks, *clock, "clock", at)?.periodic(at)?)
+        }
         CoordinateWire::Condition(condition) => {
             CoordinateInput::Condition(mapped(&ids.conditions, *condition, "condition", at)?)
         }
@@ -1371,7 +1504,7 @@ fn rebuild_condition_input<'dae>(
             ConditionInput::Discrete(mapped(&ids.expressions, raw, "expression", at)?)
         }
         ConditionNodeWire::Clock(raw) => {
-            ConditionInput::Clock(mapped(&ids.clocks, raw, "clock", at)?)
+            ConditionInput::Clock(mapped(&ids.clocks, raw, "clock", at)?.clock_id())
         }
         ConditionNodeWire::Not(raw) => {
             ConditionInput::Not(mapped(&ids.conditions, raw, "condition", at)?)
@@ -1550,19 +1683,21 @@ fn reconstruct_clocks<'dae>(
 ) -> Result<(), DaeConstructionError> {
     for (index, clock) in wire.clocks.iter().enumerate() {
         let id = dae.clocks(|clocks| match clock.kind {
-            ClockKindWire::Periodic(lattice) => {
-                clocks.periodic(lattice.checked(clock.provenance)?, clock.provenance)
-            }
-            ClockKindWire::Triggered(condition) => clocks.triggered(
-                mapped(&ids.conditions, condition, "condition", clock.provenance)?,
-                clock.provenance,
-            ),
+            ClockKindWire::Periodic(lattice) => clocks
+                .periodic(lattice.checked(clock.provenance)?, clock.provenance)
+                .map(WireClockId::Periodic),
+            ClockKindWire::Triggered(condition) => clocks
+                .triggered(
+                    mapped(&ids.conditions, condition, "condition", clock.provenance)?,
+                    clock.provenance,
+                )
+                .map(WireClockId::Triggered),
         })?;
-        expect_ordinal("clock", index, id.index(), clock.provenance)?;
+        expect_ordinal("clock", index, id.clock_id().index(), clock.provenance)?;
         ids.clocks.push(id);
     }
     for (index, ownership) in wire.clock_ownerships.iter().enumerate() {
-        let clock = mapped(&ids.clocks, ownership.clock, "clock", ownership.provenance)?;
+        let clock = mapped(&ids.clocks, ownership.clock, "clock", ownership.provenance)?.clock_id();
         let variable = mapped(
             &ids.variables,
             ownership.variable,
@@ -1597,7 +1732,7 @@ fn reconstruct_temporal<'dae>(
     ids: &mut WireIds<'dae>,
 ) -> Result<(), DaeConstructionError> {
     for (index, previous) in wire.previous_values.iter().enumerate() {
-        let clock = mapped(&ids.clocks, previous.clock, "clock", previous.provenance)?;
+        let clock = mapped(&ids.clocks, previous.clock, "clock", previous.provenance)?.clock_id();
         let variable = mapped(
             &ids.variables,
             previous.variable,

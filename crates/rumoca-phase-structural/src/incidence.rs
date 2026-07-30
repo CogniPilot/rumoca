@@ -317,6 +317,7 @@ impl<'dae> IncidenceBuilder<'_, 'dae> {
             | dae::CoordinateView::PreDiscreteReal(_)
             | dae::CoordinateView::PreDiscreteValue(_)
             | dae::CoordinateView::Time
+            | dae::CoordinateView::ClockInterval(_)
             | dae::CoordinateView::Condition(_)
             | dae::CoordinateView::Delay(_)
             | dae::CoordinateView::Previous(_)

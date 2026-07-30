@@ -2,16 +2,15 @@
 //!
 //! Component metadata is keyed only by source `DefId` or concrete `InstanceId`.
 //! The path indexes in this module are a boundary for AST references that carry
-//! only the first segment's `DefId` and for
-//! `InstanceOverlay::array_parent_dims`, which is still serialized by name.
+//! only the first segment's `DefId`.
 //! Those indexes retain candidate sets and report ambiguity; they never select
 //! one component because its rendered name happened to be inserted first.
 
-use rumoca_core::{ComponentPath, DefId, TypeId};
+use rumoca_core::{ComponentPath, DefId, InstanceId, TypeId};
 use rumoca_eval_ast::eval::VariabilityLevel;
 use rumoca_ir_ast::{
-    Component, ComponentRefPart, ComponentReference, Expression, InstanceId, InstanceOverlay,
-    Subscript, TerminalType,
+    Component, ComponentRefPart, ComponentReference, Expression, InstanceOverlay, Subscript,
+    TerminalType,
 };
 use std::borrow::Borrow;
 use std::collections::HashMap;
@@ -110,13 +109,16 @@ pub(crate) struct InstanceSemanticScope {
     by_id: HashMap<InstanceId, ComponentSemantics>,
     path_by_id: HashMap<InstanceId, ComponentPath>,
     terminal_subscripts_by_id: HashMap<InstanceId, Vec<i64>>,
+    source_def_by_id: HashMap<InstanceId, DefId>,
+    owner_class_by_id: HashMap<InstanceId, InstanceId>,
     exact_paths: HashMap<ComponentPath, CandidateSet>,
     family_paths: HashMap<ComponentPath, Vec<InstanceId>>,
     by_source_def: HashMap<DefId, Vec<InstanceId>>,
     class_children: HashMap<(InstanceId, DefId), Vec<InstanceId>>,
+    children_by_def: HashMap<InstanceId, HashMap<DefId, Vec<InstanceId>>>,
     children_by_name: HashMap<InstanceId, HashMap<UnresolvedMemberSegment, Vec<InstanceId>>>,
+    family_shape_by_owner_def: HashMap<(InstanceId, DefId), Vec<usize>>,
     class_path_ids: HashMap<ComponentPath, CandidateSet>,
-    array_shapes: HashMap<ComponentPath, SemanticLookup<Option<Vec<usize>>>>,
 }
 
 impl InstanceSemanticScope {
@@ -125,7 +127,7 @@ impl InstanceSemanticScope {
         scope.index_classes(overlay);
         scope.index_components(overlay);
         scope.index_relationships(overlay);
-        scope.index_array_shapes(overlay);
+        scope.index_component_family_shapes(overlay);
         scope
     }
 
@@ -139,6 +141,19 @@ impl InstanceSemanticScope {
         let candidates =
             self.resolve_reference(reference, prefix_len, class_instance_id, current_scope);
         self.consensus(candidates)
+    }
+
+    pub(crate) fn lookup_declaration(
+        &self,
+        class_instance_id: InstanceId,
+        declaration: DefId,
+    ) -> SemanticLookup<ComponentSemantics> {
+        self.consensus(
+            self.class_children
+                .get(&(class_instance_id, declaration))
+                .cloned()
+                .map_or(SemanticLookup::Missing, SemanticLookup::Found),
+        )
     }
 
     pub(crate) fn lookup_expression(
@@ -158,15 +173,31 @@ impl InstanceSemanticScope {
         class_instance_id: Option<InstanceId>,
         current_scope: Option<&ComponentPath>,
     ) -> SemanticLookup<Option<Vec<usize>>> {
-        let path = component_reference_prefix_path(reference, prefix_len, false);
-        // Search one lexical candidate at a time. Array-family metadata and
-        // exact declaration identity are alternatives at the same scope; an
-        // exact local scalar must stop the search before a same-named array in
-        // an enclosing instance can contribute its domain.
-        for candidate in scoped_path_candidates(&path, current_scope) {
-            if let Some(shape) = self.array_shapes.get(&candidate) {
-                return shape.clone();
+        match self.resolve_reference_by_identity(reference, prefix_len, class_instance_id) {
+            SemanticLookup::Found(ids) => {
+                let shape = self.identity_shape(&ids);
+                if !matches!(shape, SemanticLookup::Missing) {
+                    return shape;
+                }
             }
+            SemanticLookup::Ambiguous => return SemanticLookup::Ambiguous,
+            SemanticLookup::Missing
+                if class_instance_id.is_some()
+                    && reference
+                        .parts
+                        .iter()
+                        .take(prefix_len)
+                        .all(|part| part.def_id.is_some()) =>
+            {
+                return SemanticLookup::Missing;
+            }
+            SemanticLookup::Missing => {}
+        }
+        let path = component_reference_prefix_path(reference, prefix_len, false);
+        // Search one lexical candidate at a time. An exact local scalar must
+        // stop the search before a same-named array in an enclosing instance
+        // can contribute its domain.
+        for candidate in scoped_path_candidates(&path, current_scope) {
             match self.exact_paths.get(&candidate).map(CandidateSet::ids) {
                 Some(SemanticLookup::Found(ids)) => {
                     return self
@@ -204,6 +235,9 @@ impl InstanceSemanticScope {
             self.path_by_id.insert(map_id, path.clone());
             self.terminal_subscripts_by_id
                 .insert(map_id, terminal_subscripts);
+            if let Some(owner_class_id) = data.owner_class_id {
+                self.owner_class_by_id.insert(map_id, owner_class_id);
+            }
             insert_candidate(&mut self.exact_paths, path.clone(), map_id);
             let family_path = ComponentPath::from_parts(
                 data.qualified_name
@@ -218,14 +252,24 @@ impl InstanceSemanticScope {
             if let Some(def_id) = data
                 .component_ref
                 .as_ref()
-                .and_then(|reference| reference.def_id)
+                .map(|reference| reference.target_def_id())
             {
+                self.source_def_by_id.insert(map_id, def_id);
                 self.by_source_def.entry(def_id).or_default().push(map_id);
             }
         }
     }
 
     fn index_relationships(&mut self, overlay: &InstanceOverlay) {
+        let class_owner_components = overlay
+            .classes
+            .iter()
+            .filter_map(|(&class_id, class)| {
+                class
+                    .owner_component_id
+                    .map(|component_id| (class_id, component_id))
+            })
+            .collect::<HashMap<_, _>>();
         for (&instance_id, data) in &overlay.components {
             let path = data.qualified_name.to_component_path();
             let Some(parent_path) = path.parent() else {
@@ -234,8 +278,27 @@ impl InstanceSemanticScope {
             let source_def_id = data
                 .component_ref
                 .as_ref()
-                .and_then(|reference| reference.def_id);
-            if let Some(class_id) = unique_candidate_id(self.class_path_ids.get(&parent_path))
+                .map(|reference| reference.target_def_id());
+            if let (Some(class_id), Some(def_id)) = (data.owner_class_id, source_def_id) {
+                self.class_children
+                    .entry((class_id, def_id))
+                    .or_default()
+                    .push(instance_id);
+            }
+            if let (Some(def_id), Some(parent_component_id)) = (
+                source_def_id,
+                data.owner_class_id
+                    .and_then(|class_id| class_owner_components.get(&class_id)),
+            ) {
+                self.children_by_def
+                    .entry(*parent_component_id)
+                    .or_default()
+                    .entry(def_id)
+                    .or_default()
+                    .push(instance_id);
+            }
+            if data.owner_class_id.is_none()
+                && let Some(class_id) = unique_candidate_id(self.class_path_ids.get(&parent_path))
                 && let Some(def_id) = source_def_id
             {
                 self.class_children
@@ -256,18 +319,21 @@ impl InstanceSemanticScope {
         }
     }
 
-    fn index_array_shapes(&mut self, overlay: &InstanceOverlay) {
-        for (rendered_path, dims) in &overlay.array_parent_dims {
-            let shape = Some(dims.iter().map(|&dimension| dimension as usize).collect());
-            let exact = ComponentPath::from_flat_path(rendered_path);
-            insert_consensus_shape(&mut self.array_shapes, exact, shape.clone());
-
-            // Obsolete `array_parent_dims` has no structured instance-family key.
-            // Keep one de-indexed compatibility alias only when every
-            // contributing family reports the same shape.
-            let deindexed =
-                ComponentPath::from_flat_path(&rumoca_core::strip_all_subscripts(rendered_path));
-            insert_consensus_shape(&mut self.array_shapes, deindexed, shape);
+    fn index_component_family_shapes(&mut self, overlay: &InstanceOverlay) {
+        for family in &overlay.component_families {
+            let Some(root_id) = family.template_components.first().copied() else {
+                continue;
+            };
+            let (Some(owner_class_id), Some(def_id)) = (
+                self.owner_class_by_id.get(&root_id).copied(),
+                self.source_def_by_id.get(&root_id).copied(),
+            ) else {
+                continue;
+            };
+            if let Ok(shape) = family.domain.extents() {
+                self.family_shape_by_owner_def
+                    .insert((owner_class_id, def_id), shape);
+            }
         }
     }
 
@@ -312,12 +378,31 @@ impl InstanceSemanticScope {
         class_instance_id: Option<InstanceId>,
         current_scope: Option<&ComponentPath>,
     ) -> SemanticLookup<Vec<InstanceId>> {
+        let exact = self.resolve_reference_by_identity(reference, prefix_len, class_instance_id);
+        match exact {
+            SemanticLookup::Found(_) | SemanticLookup::Ambiguous => return exact,
+            SemanticLookup::Missing
+                if class_instance_id.is_some()
+                    && reference
+                        .parts
+                        .iter()
+                        .take(prefix_len)
+                        .all(|part| part.def_id.is_some()) =>
+            {
+                return SemanticLookup::Missing;
+            }
+            SemanticLookup::Missing => {}
+        }
         if prefix_len == 0 || prefix_len > reference.parts.len() {
             return SemanticLookup::Missing;
         }
         let first = &reference.parts[0];
-        let mut candidates =
-            self.resolve_first_part(reference.def_id, first, class_instance_id, current_scope);
+        let mut candidates = self.resolve_first_part(
+            reference.root_def_id(),
+            first,
+            class_instance_id,
+            current_scope,
+        );
         for part in reference.parts.iter().take(prefix_len).skip(1) {
             candidates =
                 self.resolve_named_children(candidates, part.ident.text.as_ref(), Some(part));
@@ -327,6 +412,98 @@ impl InstanceSemanticScope {
             return self.lookup_scoped_path(&path, current_scope);
         }
         candidates
+    }
+
+    fn resolve_reference_by_identity(
+        &self,
+        reference: &ComponentReference,
+        prefix_len: usize,
+        class_instance_id: Option<InstanceId>,
+    ) -> SemanticLookup<Vec<InstanceId>> {
+        if prefix_len == 0 || prefix_len > reference.parts.len() {
+            return SemanticLookup::Missing;
+        }
+        let Some(root_def_id) = reference.parts.first().and_then(|part| part.def_id) else {
+            return SemanticLookup::Missing;
+        };
+        let Some(class_instance_id) = class_instance_id else {
+            return SemanticLookup::Missing;
+        };
+        let Some(root) = self.class_children.get(&(class_instance_id, root_def_id)) else {
+            return SemanticLookup::Missing;
+        };
+        let roots = filter_candidates_by_part(
+            root.clone(),
+            &reference.parts[0],
+            &self.terminal_subscripts_by_id,
+        );
+        let SemanticLookup::Found(roots) = roots else {
+            return roots;
+        };
+        if prefix_len == 1 {
+            return SemanticLookup::Found(roots);
+        }
+        let mut candidates = SemanticLookup::Found(roots);
+        for part in reference.parts.iter().take(prefix_len).skip(1) {
+            let Some(member_def_id) = part.def_id else {
+                return SemanticLookup::Missing;
+            };
+            candidates = self.resolve_children_by_def(candidates, member_def_id);
+            let SemanticLookup::Found(ids) = candidates else {
+                return candidates;
+            };
+            candidates = filter_candidates_by_part(ids, part, &self.terminal_subscripts_by_id);
+        }
+        candidates
+    }
+
+    fn resolve_children_by_def(
+        &self,
+        parents: SemanticLookup<Vec<InstanceId>>,
+        member_def_id: DefId,
+    ) -> SemanticLookup<Vec<InstanceId>> {
+        let SemanticLookup::Found(parents) = parents else {
+            return parents;
+        };
+        let children = parents
+            .iter()
+            .filter_map(|parent| self.children_by_def.get(parent))
+            .filter_map(|children| children.get(&member_def_id))
+            .flatten()
+            .copied()
+            .collect::<Vec<_>>();
+        if children.is_empty() {
+            SemanticLookup::Missing
+        } else {
+            SemanticLookup::Found(children)
+        }
+    }
+
+    fn identity_shape(&self, ids: &[InstanceId]) -> SemanticLookup<Option<Vec<usize>>> {
+        let family_shapes = ids
+            .iter()
+            .filter_map(|id| {
+                let key = (
+                    *self.owner_class_by_id.get(id)?,
+                    *self.source_def_by_id.get(id)?,
+                );
+                self.family_shape_by_owner_def.get(&key)
+            })
+            .collect::<std::collections::HashSet<_>>();
+        if family_shapes.len() == 1 {
+            return SemanticLookup::Found(Some(
+                family_shapes
+                    .into_iter()
+                    .next()
+                    .expect("one family shape")
+                    .clone(),
+            ));
+        }
+        if family_shapes.len() > 1 {
+            return SemanticLookup::Ambiguous;
+        }
+        self.consensus(SemanticLookup::Found(ids.to_vec()))
+            .map(|semantics| semantics.shape)
     }
 
     fn resolve_first_part(
@@ -475,15 +652,10 @@ where
 }
 
 fn terminal_instance_subscripts(qualified_name: &rumoca_ir_ast::QualifiedName) -> Vec<i64> {
-    let Some((name, subscripts)) = qualified_name.parts.last() else {
+    let Some((_, subscripts)) = qualified_name.parts.last() else {
         return Vec::new();
     };
-    if !subscripts.is_empty() {
-        return subscripts.clone();
-    }
-    // Compatibility for old overlays that embedded subscripts in identifier
-    // text instead of using `QualifiedName`'s structured subscript vector.
-    rendered_part_subscripts(name).unwrap_or_default()
+    subscripts.clone()
 }
 
 fn insert_candidate(
@@ -509,23 +681,6 @@ fn unique_candidate_id(candidates: Option<&CandidateSet>) -> Option<InstanceId> 
         return None;
     };
     (ids.len() == 1).then_some(ids[0])
-}
-
-fn insert_consensus_shape(
-    index: &mut HashMap<ComponentPath, SemanticLookup<Option<Vec<usize>>>>,
-    path: ComponentPath,
-    shape: Option<Vec<usize>>,
-) {
-    match index.entry(path) {
-        std::collections::hash_map::Entry::Vacant(entry) => {
-            entry.insert(SemanticLookup::Found(shape));
-        }
-        std::collections::hash_map::Entry::Occupied(mut entry) => {
-            if entry.get() != &SemanticLookup::Found(shape) {
-                entry.insert(SemanticLookup::Ambiguous);
-            }
-        }
-    }
 }
 
 fn scoped_path_candidates(
@@ -641,10 +796,4 @@ fn literal_integer(expression: &Expression) -> Option<i64> {
         return None;
     };
     token.text.parse().ok()
-}
-
-fn rendered_part_subscripts(rendered: &str) -> Option<Vec<i64>> {
-    let (_, suffix) = rendered.split_once('[')?;
-    let values = suffix.strip_suffix(']')?;
-    values.split(',').map(|value| value.parse().ok()).collect()
 }

@@ -165,8 +165,8 @@
     {{ c_type(declaration.ty.value.kind) }} {{ symbol(c_symbols, name_text(declaration.name)) }}{% for dimension in declaration.dimensions %}{% if dimension.kind == "expr" and dimension.value.kind == "integer" %}[{{ dimension.value.value }}]{% else %}{{ fail("unsupported-feature:embedded-c-local-array-dimension") }}{% endif %}{% endfor %};
 {%- endfor -%}
 {%- endmacro -%}
-/* {{ algorithm_code.block_name | replace("*/", "* /") | replace("/*", "/ *") }}
- * GALEC-derived embedded C export (SPEC_0034 GAL-024). */
+{% block conformance %}/* {{ algorithm_code.block_name | replace("*/", "* /") | replace("/*", "/ *") }}
+ * GALEC-derived embedded C export (SPEC_0034 GAL-024). */{% endblock %}
 #include "{{ model_name }}.h"
 
 #include <math.h>

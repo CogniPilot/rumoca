@@ -37,11 +37,7 @@ impl Session {
         Some(result)
     }
 
-    fn insert_save_resolution_proof(
-        &mut self,
-        model_name: &str,
-        proof: StrictTargetResolution,
-    ) {
+    fn insert_save_resolution_proof(&mut self, model_name: &str, proof: StrictTargetResolution) {
         let key = SemanticDiagnosticsCacheKey::new(model_name, SemanticDiagnosticsMode::Save);
         self.query_state
             .flat
@@ -263,10 +259,7 @@ impl Session {
 
         if mode == SemanticDiagnosticsMode::Save {
             if let Some(target) = self.cached_save_resolution_proof(model_name) {
-                return Ok((
-                    target.resolved,
-                    diagnostics_from_vec(target.diagnostics),
-                ));
+                return Ok((target.resolved, diagnostics_from_vec(target.diagnostics)));
             }
             let target = self
                 .resolve_strict_target_from_fresh_plan(model_name)

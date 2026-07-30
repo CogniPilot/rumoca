@@ -86,6 +86,22 @@ pub(super) fn node_function_facts(
             fold.merge_operands(storage, *operands, at)?;
             fold.record_call(storage, *function, at)?;
         }
+        ExprNode::StringConversion {
+            value,
+            minimum_length,
+            left_justified,
+            significant_digits,
+            format,
+            ..
+        } => {
+            fold.merge_expression(storage, *value, at)?;
+            for operand in [minimum_length, left_justified, significant_digits, format]
+                .into_iter()
+                .flatten()
+            {
+                fold.merge_expression(storage, *operand, at)?;
+            }
+        }
         ExprNode::Literal(_)
         | ExprNode::Coordinate(_)
         | ExprNode::FunctionValue { .. }
@@ -184,7 +200,8 @@ fn leaf_function_facts(
         | ExprNode::Index { .. }
         | ExprNode::ArrayUpdate { .. }
         | ExprNode::Builtin { .. }
-        | ExprNode::Call { .. } => Ok(None),
+        | ExprNode::Call { .. }
+        | ExprNode::StringConversion { .. } => Ok(None),
     }
 }
 

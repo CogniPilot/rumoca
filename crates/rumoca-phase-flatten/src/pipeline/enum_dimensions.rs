@@ -41,7 +41,7 @@ fn enum_literal_ordinal(expr: &Expression, tree: &ClassTree) -> Option<(rumoca_c
         return None;
     }
     let reference = name.component_ref()?;
-    let literal = reference.parts.last()?.ident.as_str();
+    let literal = reference.parts().last()?.ident.as_str();
     let enum_class = enum_class_for_literal_reference(reference, tree)?;
     let enum_def_id = enum_class.def_id?;
     let ordinal = enum_class
@@ -56,15 +56,15 @@ fn enum_class_for_literal_reference<'a>(
     reference: &rumoca_core::ComponentReference,
     tree: &'a ClassTree,
 ) -> Option<&'a ast::ClassDef> {
-    if reference.parts.len() < 2 {
+    if reference.parts().len() < 2 {
         return None;
     }
-    let first_def_id = reference.def_id?;
+    let first_def_id = reference.root_def_id();
     let mut class = tree.get_class_by_def_id(first_def_id)?;
     if !class.enum_literals.is_empty() {
         return Some(class);
     }
-    for part in &reference.parts[1..reference.parts.len() - 1] {
+    for part in &reference.parts()[1..reference.parts().len() - 1] {
         class = class.classes.get(part.ident.as_str())?;
     }
     (!class.enum_literals.is_empty()).then_some(class)
@@ -74,7 +74,7 @@ fn enum_literal_count_for_reference(
     reference: &ast::ComponentReference,
     tree: &ClassTree,
 ) -> Option<usize> {
-    let def_id = reference.def_id?;
+    let def_id = reference.root_def_id()?;
     tree.get_class_by_def_id(def_id)
         .map(|class| class.enum_literals.len())
         .filter(|count| *count > 0)

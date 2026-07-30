@@ -6,7 +6,7 @@
 //! Per SPEC_0022 §3.19-3.20, type prefixes (variability, causality, flow, stream)
 //! are preserved from the component declaration through to the flat model.
 
-use rumoca_core::{ProvenanceSpan, TypeId};
+use rumoca_core::TypeId;
 use rumoca_ir_ast as ast;
 use rumoca_ir_flat as flat;
 
@@ -90,14 +90,6 @@ fn instance_source_span(
     context: &str,
 ) -> Result<rumoca_core::Span, FlattenError> {
     required_location_span(&tree.source_map, &instance.source_location, context)
-}
-
-fn require_component_ref_provenance(
-    span: rumoca_core::Span,
-    context: &'static str,
-) -> Result<ProvenanceSpan, FlattenError> {
-    span.require_provenance(context)
-        .map_err(|err| FlattenError::missing_source_context(err.to_string()))
 }
 
 fn attribute_prefix(
@@ -196,13 +188,7 @@ pub(crate) fn create_flat_variable(
     // For "filter.m", the prefix is "filter" so that references like "n"
     // become "filter.n".
     let prefix = parent_prefix(&instance.qualified_name);
-    let opts = QualifyOptions {
-        preserve_def_id: true,
-        ..QualifyOptions::default()
-    };
-
-    // Get def_map for resolving function call def_ids to qualified names
-    let def_map = &tree.def_map;
+    let opts = QualifyOptions::default();
 
     let attrs = qualify_variable_attributes(VariableQualifyContext {
         instance,
@@ -211,7 +197,6 @@ pub(crate) fn create_flat_variable(
         imports,
         prefix: &prefix,
         opts,
-        def_map,
     })?;
 
     // Binding expressions need careful handling:
@@ -227,19 +212,15 @@ pub(crate) fn create_flat_variable(
         imports,
         prefix: &prefix,
         opts,
-        def_map,
     })?;
 
-    let component_ref = Some(ast::instance::component_reference_for_instance(
-        &instance.qualified_name,
-        require_component_ref_provenance(source_span, "flat instance component reference")?,
-        instance
-            .component_ref
-            .as_ref()
-            .and_then(|reference| reference.def_id),
-    ));
+    let component_ref =
+        Some(instance.component_ref.clone().ok_or_else(|| {
+            FlattenError::missing_flat_variable_identity(name.as_str(), source_span)
+        })?);
 
     Ok(flat::Variable {
+        instance_id: instance.instance_id,
         name,
         component_ref,
         source_span,
@@ -297,6 +278,7 @@ pub(crate) fn create_record_instance(
         ))
     })?;
     Ok(Some(flat::RecordInstance {
+        instance_id: instance.instance_id,
         component_ref,
         source_span,
         effective_type_id,
@@ -310,6 +292,7 @@ pub(crate) fn create_record_type(
     type_def_id: rumoca_core::DefId,
     tree: &ast::ClassTree,
     class_index: &ast::ClassDefIndex<'_>,
+    type_catalog: crate::functions::FunctionTypeCatalog<'_>,
 ) -> Result<flat::RecordType, FlattenError> {
     let class_def = class_index.get(type_def_id).ok_or_else(|| {
         FlattenError::missing_source_context(format!(
@@ -321,7 +304,13 @@ pub(crate) fn create_record_type(
         .unwrap_or(class_def.name.text.as_ref());
     Ok(flat::RecordType {
         name: qualified_name.to_string(),
-        fields: functions::record_type_fields(class_index, class_def, qualified_name, tree)?,
+        fields: functions::record_type_fields(
+            class_index,
+            class_def,
+            qualified_name,
+            tree,
+            type_catalog,
+        )?,
     })
 }
 
@@ -348,7 +337,6 @@ struct VariableQualifyContext<'a, 'tree> {
     imports: &'a VariableImportContext,
     prefix: &'a ast::QualifiedName,
     opts: QualifyOptions,
-    def_map: &'a crate::ResolveDefMap,
 }
 
 struct QualifiedVariableAttributes {
@@ -391,7 +379,17 @@ fn qualify_variable_attribute(
         .map(String::as_str)
         .or(ctx.imports.declaration_function_scope.as_deref());
     Ok(Some(canonicalize_function_calls(
-        ast_lower::expression_from_ast_with_def_map(&qualified, Some(ctx.def_map))?,
+        ast_lower::expression_from_ast_with_context(
+            &qualified,
+            ast_lower::LoweringContext {
+                instance_name: None,
+                predefined_string_declaration: ctx
+                    .tree
+                    .scope_tree
+                    .predefined_member(&rumoca_core::ComponentPath::from_flat_path("String")),
+                predefined_intrinsics: ast_lower::PredefinedIntrinsicIds::from_tree(ctx.tree),
+            },
+        )?,
         source_scope,
         ctx.tree,
         ctx.class_index,
@@ -423,7 +421,17 @@ fn qualify_modification_binding(
     let qualified =
         qualify_expression_with_imports(expr, &mod_prefix, ctx.opts, ctx.imports.binding_imports());
     Ok(canonicalize_function_calls(
-        ast_lower::expression_from_ast_with_def_map(&qualified, Some(ctx.def_map))?,
+        ast_lower::expression_from_ast_with_context(
+            &qualified,
+            ast_lower::LoweringContext {
+                instance_name: None,
+                predefined_string_declaration: ctx
+                    .tree
+                    .scope_tree
+                    .predefined_member(&rumoca_core::ComponentPath::from_flat_path("String")),
+                predefined_intrinsics: ast_lower::PredefinedIntrinsicIds::from_tree(ctx.tree),
+            },
+        )?,
         ctx.imports.binding_function_scope.as_deref(),
         ctx.tree,
         ctx.class_index,
@@ -442,7 +450,17 @@ fn qualify_declaration_binding(
         .as_deref()
         .or(ctx.imports.declaration_function_scope.as_deref());
     Ok(canonicalize_function_calls(
-        ast_lower::expression_from_ast_with_def_map(&qualified, Some(ctx.def_map))?,
+        ast_lower::expression_from_ast_with_context(
+            &qualified,
+            ast_lower::LoweringContext {
+                instance_name: None,
+                predefined_string_declaration: ctx
+                    .tree
+                    .scope_tree
+                    .predefined_member(&rumoca_core::ComponentPath::from_flat_path("String")),
+                predefined_intrinsics: ast_lower::PredefinedIntrinsicIds::from_tree(ctx.tree),
+            },
+        )?,
         source_scope,
         ctx.tree,
         ctx.class_index,
@@ -484,6 +502,13 @@ mod tests {
         )
     }
 
+    fn fixture_def_id(name: &str) -> rumoca_core::DefId {
+        let hash = name.bytes().fold(2_166_136_261_u32, |hash, byte| {
+            hash.wrapping_mul(16_777_619) ^ u32::from(byte)
+        });
+        rumoca_core::DefId::new(hash.max(1))
+    }
+
     fn comp_ref(path: &[&str]) -> ast::Expression {
         ast::Expression::ComponentReference(ast::ComponentReference {
             local: false,
@@ -495,11 +520,26 @@ mod tests {
                         ..rumoca_core::Token::default()
                     },
                     subs: None,
+                    def_id: Some(fixture_def_id(segment)),
                 })
                 .collect(),
-            def_id: None,
             span: test_span(),
+            qualified_display_name: None,
         })
+    }
+
+    fn core_component_ref(path: &[&str]) -> rumoca_core::ComponentReference {
+        let parts = path
+            .iter()
+            .map(|segment| rumoca_core::ComponentRefPart {
+                ident: (*segment).to_string(),
+                span: test_span(),
+                subs: Vec::new(),
+                def_id: fixture_def_id(segment),
+            })
+            .collect();
+        rumoca_core::ComponentReference::construct(false, test_span(), parts)
+            .expect("fixture component path is nonempty and resolved")
     }
 
     #[test]
@@ -508,11 +548,39 @@ mod tests {
         let component_def_id = rumoca_core::DefId::new(42);
         let qualified_name = ast::QualifiedName::from_dotted("aimc.airGap.L0.d");
         let instance = ast::InstanceData {
-            component_ref: Some(ast::instance::component_reference_for_instance(
-                &qualified_name,
-                require_component_ref_provenance(test_span(), "flat test component reference")?,
-                Some(component_def_id),
-            )),
+            component_ref: Some(
+                rumoca_core::ComponentReference::construct(
+                    false,
+                    test_span(),
+                    vec![
+                        rumoca_core::ComponentRefPart {
+                            ident: "aimc".to_string(),
+                            span: test_span(),
+                            subs: Vec::new(),
+                            def_id: rumoca_core::DefId::new(1),
+                        },
+                        rumoca_core::ComponentRefPart {
+                            ident: "airGap".to_string(),
+                            span: test_span(),
+                            subs: Vec::new(),
+                            def_id: rumoca_core::DefId::new(2),
+                        },
+                        rumoca_core::ComponentRefPart {
+                            ident: "L0".to_string(),
+                            span: test_span(),
+                            subs: Vec::new(),
+                            def_id: rumoca_core::DefId::new(3),
+                        },
+                        rumoca_core::ComponentRefPart {
+                            ident: "d".to_string(),
+                            span: test_span(),
+                            subs: Vec::new(),
+                            def_id: component_def_id,
+                        },
+                    ],
+                )
+                .expect("test component reference is nonempty and resolved"),
+            ),
             qualified_name,
             source_location: test_location(10, 16),
             binding_source: Some(comp_ref(&["L0", "d"])),
@@ -529,7 +597,7 @@ mod tests {
         assert_eq!(
             flat.component_ref
                 .as_ref()
-                .and_then(|reference| reference.def_id),
+                .map(|reference| reference.target_def_id()),
             Some(component_def_id)
         );
         let Some(binding) = flat.binding else {
@@ -561,6 +629,7 @@ mod tests {
             ast::QualifiedName::from_dotted("leftBoundary1"),
         );
         let instance = ast::InstanceData {
+            component_ref: Some(core_component_ref(&["leftBoundary1", "ports", "m_flow"])),
             qualified_name: ast::QualifiedName::from_dotted("leftBoundary1.ports.m_flow"),
             source_location: test_location(20, 31),
             max: Some(comp_ref(&["flowDirection"])),

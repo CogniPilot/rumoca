@@ -1,4 +1,5 @@
 use indexmap::{IndexMap, IndexSet};
+use rumoca_core::DefId;
 use rumoca_ir_ast as ast;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -37,6 +38,45 @@ pub(crate) struct DependencyFingerprintCache {
     model_fingerprints: IndexMap<String, Fingerprint>,
 }
 
+enum LifecycleDependency<'tree> {
+    Ordinary,
+    Complete {
+        constructor_def_id: DefId,
+        destructor_def_id: DefId,
+    },
+    Malformed {
+        owner: &'tree ast::ClassDef,
+    },
+}
+
+fn lifecycle_dependency<'tree>(
+    class_index: &ast::ClassDefIndex<'tree>,
+    owner_def_id: DefId,
+    owner: &'tree ast::ClassDef,
+) -> LifecycleDependency<'tree> {
+    match class_index.external_object_lifecycle(owner_def_id) {
+        Ok(None) => LifecycleDependency::Ordinary,
+        Ok(Some(lifecycle)) => LifecycleDependency::Complete {
+            constructor_def_id: lifecycle.constructor_def_id(),
+            destructor_def_id: lifecycle.destructor_def_id(),
+        },
+        Err(_error) => LifecycleDependency::Malformed { owner },
+    }
+}
+
+fn extend_class_dependencies(
+    dependencies: &mut IndexSet<String>,
+    class_index: &ast::ClassDefIndex<'_>,
+    def_ids: impl IntoIterator<Item = DefId>,
+) {
+    dependencies.extend(
+        def_ids
+            .into_iter()
+            .filter_map(|def_id| class_index.qualified_name(def_id))
+            .map(str::to_string),
+    );
+}
+
 impl DependencyFingerprintCache {
     pub(crate) fn from_tree(tree: &ast::ClassTree) -> Self {
         let mut cache = Self::default();
@@ -53,9 +93,36 @@ impl DependencyFingerprintCache {
                 qualified_name.clone(),
                 class_source_fingerprint(tree, class, qualified_name, &mut file_bytes_cache),
             );
-            direct_dependencies
-                .entry(def_id)
-                .or_insert_with(|| collect_class_dependencies(tree, class, qualified_name));
+            let dependencies = direct_dependencies.entry(def_id).or_insert_with(|| {
+                collect_class_dependencies(tree, &class_index, class, qualified_name)
+            });
+            match lifecycle_dependency(&class_index, def_id, class) {
+                LifecycleDependency::Complete {
+                    constructor_def_id,
+                    destructor_def_id,
+                } => {
+                    // MLS §12.9.7: constructor and destructor are one
+                    // lifecycle owned by the ExternalObject class. Add both
+                    // exact child identities atomically.
+                    extend_class_dependencies(
+                        dependencies,
+                        &class_index,
+                        [constructor_def_id, destructor_def_id],
+                    );
+                }
+                LifecycleDependency::Ordinary => {}
+                LifecycleDependency::Malformed { owner } => {
+                    // Planning trees may be incomplete. Conservatively retain
+                    // every exact direct-owned child so strict re-resolution
+                    // diagnoses the original malformed declaration span. This
+                    // is not a lifecycle proof and cannot mint a ResolvedTree.
+                    extend_class_dependencies(
+                        dependencies,
+                        &class_index,
+                        owner.classes.values().filter_map(|child| child.def_id),
+                    );
+                }
+            }
         }
 
         for (qualified_name, &def_id) in &tree.name_map {
@@ -357,6 +424,158 @@ mod tests {
         assert!(
             deps.iter().any(|dep| dep == "P.Dep"),
             "import dependency should be included in class dependency graph"
+        );
+    }
+
+    #[test]
+    fn from_tree_retains_the_exact_owner_of_an_imported_component() {
+        let source = r#"
+            package P
+              package Constants
+                constant Real pi = 3.141592653589793;
+              end Constants;
+
+              model Root
+                import P.Constants.pi;
+                Real x;
+              equation
+                x = pi;
+              end Root;
+            end P;
+        "#;
+
+        let mut session = Session::default();
+        session
+            .add_document("component_import.mo", source)
+            .expect("document should parse");
+        session
+            .build_resolved()
+            .expect("resolved tree should be available");
+        let tree = session
+            .ensure_resolved()
+            .expect("resolved tree should be cached")
+            .inner();
+        let cache = DependencyFingerprintCache::from_tree(tree);
+
+        assert_eq!(
+            cache.class_dependencies().get("P.Root"),
+            Some(&IndexSet::from(["P.Constants".to_string()])),
+            "a component DefId dependency must retain its exact owning class"
+        );
+
+        let report = session.compile_model_strict_reachable_uncached_with_recovery("P.Root");
+        assert!(
+            report.requested_succeeded(),
+            "strict closure must preserve the imported component owner: {:?}",
+            report.requested_result
+        );
+    }
+
+    #[test]
+    fn strict_closure_keeps_distinct_same_leaf_package_targets() {
+        let source = r#"
+            package A
+              package Constants
+                constant Real eps = 0.125;
+              end Constants;
+            end A;
+
+            package B
+              package Constants
+                constant Real eps = 0.5;
+              end Constants;
+            end B;
+
+            model Root
+              Real x = A.Constants.eps;
+              Real y = B.Constants.eps;
+            end Root;
+        "#;
+
+        let mut session = Session::default();
+        session
+            .add_document("same_leaf_packages.mo", source)
+            .expect("document should parse");
+        session
+            .build_resolved()
+            .expect("resolved tree should be available");
+        let dependencies = {
+            let tree = session
+                .ensure_resolved()
+                .expect("resolved tree should be cached")
+                .inner();
+            DependencyFingerprintCache::from_tree(tree)
+                .class_dependencies()
+                .get("Root")
+                .cloned()
+                .unwrap_or_default()
+        };
+
+        assert!(
+            dependencies.contains("A.Constants"),
+            "the exact A.Constants owner must survive strict pruning"
+        );
+        assert!(
+            dependencies.contains("B.Constants"),
+            "the exact B.Constants owner must survive strict pruning"
+        );
+        assert!(
+            session.resolve_strict_target("Root").is_ok(),
+            "strict Resolve should retain both same-leaf package targets"
+        );
+    }
+
+    #[test]
+    fn strict_closure_keeps_root_anchor_and_inherited_function_target() {
+        let source = r#"
+            package BaseOperations
+              function evaluate
+                input Real u;
+                output Real y;
+              algorithm
+                y := u;
+              end evaluate;
+            end BaseOperations;
+
+            package DerivedOperations
+              extends BaseOperations;
+            end DerivedOperations;
+
+            model Root
+              Real y = DerivedOperations.evaluate(1.0);
+            end Root;
+        "#;
+
+        let mut session = Session::default();
+        session
+            .add_document("inherited_package_function.mo", source)
+            .expect("document should parse");
+        session
+            .build_resolved()
+            .expect("resolved tree should be available");
+        let dependencies = {
+            let tree = session
+                .ensure_resolved()
+                .expect("resolved tree should be cached")
+                .inner();
+            DependencyFingerprintCache::from_tree(tree)
+                .class_dependencies()
+                .get("Root")
+                .cloned()
+                .unwrap_or_default()
+        };
+
+        assert!(
+            dependencies.contains("DerivedOperations"),
+            "the written path anchor must survive strict pruning"
+        );
+        assert!(
+            dependencies.contains("BaseOperations.evaluate"),
+            "the exact inherited function target must survive strict pruning"
+        );
+        assert!(
+            session.resolve_strict_target("Root").is_ok(),
+            "strict Resolve should retain the inherited function target"
         );
     }
 

@@ -10,13 +10,18 @@ use std::sync::atomic::Ordering;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tower_lsp::LspService;
 
+mod code_lens_tests;
+mod compile_unit_source_tests;
+mod completion_surface_tests;
 mod diagnostics_timing_tests;
 mod editor_surface_session_tests;
 mod editor_surface_tests;
+mod hover_definition_timing_tests;
 mod hover_preview_tests;
 mod multi_source_root_completion_tests;
 mod simulation_override_diagnostic_tests;
 mod simulation_surface_tests;
+mod source_root_load_diagnostic_tests;
 mod source_root_read_prewarm_tests;
 mod source_root_refresh_tests;
 mod startup_timing_tests;

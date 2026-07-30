@@ -302,14 +302,9 @@ impl ExpressionVisitor for AttributeDependencyCollector<'_> {
                 span: *span,
             });
         }
-        if let Expression::FunctionCall {
-            name,
-            is_constructor,
-            ..
-        } = expression
-        {
+        if let Expression::FunctionCall { is_constructor, .. } = expression {
             self.requires_function_ids |= matches!(
-                classify_function_call(name, *is_constructor),
+                classify_function_call(*is_constructor),
                 FunctionCallLowering::Registry
             );
         }

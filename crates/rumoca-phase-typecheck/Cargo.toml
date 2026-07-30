@@ -16,6 +16,7 @@ thiserror = { workspace = true }
 miette = { workspace = true }
 
 [dev-dependencies]
+rumoca-phase-instantiate = { workspace = true }
 rumoca-phase-parse = { workspace = true }
 
 [lints]

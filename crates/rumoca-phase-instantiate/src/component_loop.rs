@@ -33,6 +33,7 @@ pub(super) fn instantiate_effective_components(
     tree: &ast::ClassTree,
     effective_components: &IndexMap<String, ast::Component>,
     type_overrides: &TypeOverrideMap,
+    owner_class_id: rumoca_core::InstanceId,
     ctx: &mut InstantiateContext,
     overlay: &mut ast::InstanceOverlay,
     imports: ComponentImports<'_>,
@@ -41,6 +42,7 @@ pub(super) fn instantiate_effective_components(
         tree,
         effective_components,
         type_overrides,
+        owner_class_id,
         imports,
     };
 
@@ -71,7 +73,7 @@ pub(super) fn instantiate_effective_components(
         }
 
         // MLS §7.3: Apply type override for replaceable type redeclarations.
-        let comp_ref = apply_type_override(tree, comp, type_overrides, Some(ctx.mod_env()))?;
+        let comp_ref = apply_type_override(tree, comp, type_overrides)?;
         let comp = comp_ref.as_ref();
         let type_name = comp.type_name.to_string();
 
@@ -114,9 +116,12 @@ pub(super) fn instantiate_effective_components(
             comp,
             ctx,
             overlay,
-            effective_components,
-            type_overrides,
-            imports,
+            ComponentInstantiationScope {
+                owner_class_id: Some(owner_class_id),
+                effective_components,
+                type_overrides,
+                imports,
+            },
         )?;
         ctx.pop_path();
     }

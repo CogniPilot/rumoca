@@ -157,6 +157,13 @@ where
             dae::ExpressionOperation::FunctionFoldOutput { fold, carried, .. } => {
                 self.function_fold(fold, carried, span)?
             }
+            dae::ExpressionOperation::StringConversion { .. } => {
+                return Err(failure(
+                    NumericEvaluationErrorKind::UnsupportedOperation,
+                    "String conversion is outside the numeric DAE evaluator",
+                    span,
+                ));
+            }
         };
         require_finite(&value, span)?;
         Ok(value)
@@ -235,6 +242,9 @@ where
                         span,
                     )
                 });
+        }
+        if let dae::CoordinateView::ClockInterval(clock) = coordinate {
+            return Ok(vec![self.view.periodic_clock(clock).period_seconds()]);
         }
         let variable = coordinate_variable(coordinate).ok_or_else(|| {
             failure(
@@ -1335,13 +1345,48 @@ fn failure(
 
 #[cfg(test)]
 mod tests {
-    use rumoca_core::{SourceMap, Span, StructuredIndexBinder, StructuredIndexDomain, VarName};
+    use rumoca_core::{
+        ClockLattice, ClockRational, SourceMap, Span, StructuredIndexBinder, StructuredIndexDomain,
+        VarName,
+    };
     use rumoca_ir_dae::{
-        BinaryOperator, Dae, DaeLiteral, DaeProvenance, ExpressionOperation, PureBuiltin,
-        ScalarType, ValueType,
+        BinaryOperator, CoordinateInput, Dae, DaeLiteral, DaeProvenance, ExpressionOperation,
+        PureBuiltin, ScalarType, ValueType,
     };
 
     use super::NumericEvaluator;
+
+    #[test]
+    fn periodic_clock_interval_evaluates_to_its_exact_period() {
+        let mut source_map = SourceMap::new();
+        let source = source_map.add("interval.mo", "Clock(0.1); interval()");
+        let clock_at = DaeProvenance::source(Span::from_offsets(source, 0, 10)).unwrap();
+        let interval_at = DaeProvenance::source(Span::from_offsets(source, 12, 22)).unwrap();
+        let dae = Dae::construct(source_map, |dae| {
+            let clock = dae.clocks(|clocks| {
+                clocks.periodic(
+                    ClockLattice::new(ClockRational::new(1, 10).unwrap(), ClockRational::ZERO)
+                        .unwrap(),
+                    clock_at,
+                )
+            })?;
+            dae.expressions(|expressions| {
+                expressions
+                    .at(interval_at)
+                    .coordinate(CoordinateInput::ClockInterval(clock))
+                    .map(|_| ())
+            })
+        })
+        .unwrap();
+        dae.inspect(|view| {
+            assert_eq!(
+                NumericEvaluator::new(view)
+                    .expression(view.expression_id(0).unwrap())
+                    .unwrap(),
+                vec![0.1]
+            );
+        });
+    }
 
     #[test]
     fn checked_quotients_preserve_modelica_sign_semantics() {

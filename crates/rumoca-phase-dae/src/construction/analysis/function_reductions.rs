@@ -60,8 +60,8 @@ fn validate_while_sum(
         return Err(unsupported_reduction(function));
     };
     let updates = validate_function_statements(&block.stmts, context)?;
-    if !is_output_integer(function, &result)
-        || !is_local_integer(function, &index)
+    if !is_output_integer(function, context.flat, &result)
+        || !is_local_integer(function, context.flat, &index)
         || !is_integer_zero(result_zero)
         || !is_integer_zero(index_zero)
         || !matches!(
@@ -80,7 +80,7 @@ fn validate_while_sum(
         return Err(unsupported_reduction(function));
     }
     validate_function_expression_with_roles(&block.cond, context.roles, context.flat)?;
-    if !is_exclusive_bound(&block.cond, &index, function) {
+    if !is_exclusive_bound(&block.cond, &index, function, context.flat) {
         return Err(unsupported_reduction(function));
     }
     require_span(*span, "function while reduction")?;
@@ -148,14 +148,14 @@ fn validate_capped_for_sum(
         validate_function_statements(std::slice::from_ref(update_statement), loop_context)?;
     validate_function_range_expression(&index.range, context.roles, context.flat)?;
     validate_function_expression_with_roles(&block.cond, &loop_roles, context.flat)?;
-    if !is_output_integer(function, &result)
+    if !is_output_integer(function, context.flat, &result)
         || !is_integer_zero(initial_value)
         || !matches!(
             update_plan.as_slice(),
             [FunctionStatementPlan::Assignment(target)]
                 if target.is_whole() && target.target() == &result
         )
-        || !is_unit_runtime_range(&index.range, function)
+        || !is_unit_runtime_range(&index.range, function, context.flat)
         || !is_break_after_cap(&block.cond, &binder)
         || !is_sum_update(update, &result, &binder)
     {
@@ -174,6 +174,7 @@ fn is_exclusive_bound(
     expression: &Expression,
     index: &VarName,
     function: &rumoca_core::Function,
+    flat: &flat::Model,
 ) -> bool {
     matches!(
         expression,
@@ -182,11 +183,16 @@ fn is_exclusive_bound(
             lhs,
             rhs,
             ..
-        } if is_reference(lhs, index) && is_integer_input_reference(rhs, function)
+        } if is_reference(lhs, index)
+            && is_integer_input_reference(rhs, function, flat)
     )
 }
 
-fn is_unit_runtime_range(expression: &Expression, function: &rumoca_core::Function) -> bool {
+fn is_unit_runtime_range(
+    expression: &Expression,
+    function: &rumoca_core::Function,
+    flat: &flat::Model,
+) -> bool {
     matches!(
         expression,
         Expression::Range {
@@ -196,7 +202,7 @@ fn is_unit_runtime_range(expression: &Expression, function: &rumoca_core::Functi
             ..
         } if is_integer_one(start)
             && step.as_deref().is_none_or(is_integer_one)
-            && is_integer_input_reference(end, function)
+            && is_integer_input_reference(end, function, flat)
     )
 }
 
@@ -252,7 +258,11 @@ fn is_reference(expression: &Expression, target: &VarName) -> bool {
     )
 }
 
-fn is_integer_input_reference(expression: &Expression, function: &rumoca_core::Function) -> bool {
+fn is_integer_input_reference(
+    expression: &Expression,
+    function: &rumoca_core::Function,
+    flat: &flat::Model,
+) -> bool {
     let Expression::VarRef {
         name, subscripts, ..
     } = expression
@@ -261,19 +271,33 @@ fn is_integer_input_reference(expression: &Expression, function: &rumoca_core::F
     };
     subscripts.is_empty()
         && function.inputs.iter().any(|input| {
-            input.name == name.as_str() && input.type_name == "Integer" && input.dims.is_empty()
+            input.name == name.as_str()
+                && effective_function_scalar_type(flat, input) == Some(dae::ScalarType::Integer)
+                && input.dimensions().is_empty()
         })
 }
 
-fn is_output_integer(function: &rumoca_core::Function, name: &VarName) -> bool {
+fn is_output_integer(
+    function: &rumoca_core::Function,
+    flat: &flat::Model,
+    name: &VarName,
+) -> bool {
     function.outputs.iter().any(|output| {
-        output.name == name.as_str() && output.type_name == "Integer" && output.dims.is_empty()
+        output.name == name.as_str()
+            && effective_function_scalar_type(flat, output) == Some(dae::ScalarType::Integer)
+            && output.dimensions().is_empty()
     })
 }
 
-fn is_local_integer(function: &rumoca_core::Function, name: &VarName) -> bool {
+fn is_local_integer(
+    function: &rumoca_core::Function,
+    flat: &flat::Model,
+    name: &VarName,
+) -> bool {
     function.locals.iter().any(|local| {
-        local.name == name.as_str() && local.type_name == "Integer" && local.dims.is_empty()
+        local.name == name.as_str()
+            && effective_function_scalar_type(flat, local) == Some(dae::ScalarType::Integer)
+            && local.dimensions().is_empty()
     })
 }
 

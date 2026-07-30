@@ -26,6 +26,9 @@ impl Resolver {
             if class.is_replaceable {
                 self.partial_type_root_ids.insert(def_id);
             }
+            if class.is_replaceable || class.is_redeclare {
+                self.dynamic_member_root_ids.insert(def_id);
+            }
         }
 
         // Recursively register nested classes
@@ -68,6 +71,9 @@ impl Resolver {
             if comp.is_replaceable {
                 self.partial_type_root_ids.insert(def_id);
             }
+            if comp.is_replaceable || comp.is_redeclare {
+                self.dynamic_member_root_ids.insert(def_id);
+            }
         }
 
         // Register nested class names
@@ -79,6 +85,23 @@ impl Resolver {
                 .add_member(class_scope, ComponentPath::from_flat_path(name), def_id);
             if nested.is_replaceable {
                 self.partial_type_root_ids.insert(def_id);
+            }
+            if nested.is_replaceable || nested.is_redeclare {
+                self.dynamic_member_root_ids.insert(def_id);
+            }
+        }
+
+        // Enumeration literals are declared by the enumeration type rather
+        // than receiving independent DefIds. Register each literal as a
+        // structured member whose exact declaration identity is the owning
+        // enum class, so `L.U` proves its full path without textual fallback.
+        if let Some(class_def_id) = class.def_id {
+            for literal in &class.enum_literals {
+                self.scope_tree.add_member(
+                    class_scope,
+                    ComponentPath::from_flat_path(&literal.ident.text),
+                    class_def_id,
+                );
             }
         }
 

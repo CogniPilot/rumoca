@@ -422,8 +422,7 @@ fn compile_packaged_target(
         .archive
         .as_ref()
         .map(|archive| {
-            if archive.format != TargetArchiveFormat::Zip
-                || archive.root != TargetArchiveRoot::Flat
+            if archive.format != TargetArchiveFormat::Zip || archive.root != TargetArchiveRoot::Flat
             {
                 bail!("Only flat zip archives are currently supported");
             }
@@ -613,6 +612,13 @@ impl ManifestRenderer {
         }
     }
 
+    /// Render one template string against a packaging artifact session.
+    ///
+    /// Only the declarative packaging path (`compile_packaged_target`) renders
+    /// with an artifact context, and that path exists only under
+    /// `scheduled-sim`; the gate here matches its sole caller so a
+    /// `--no-default-features` build has no unreachable renderer surface.
+    #[cfg(feature = "scheduled-sim")]
     fn render_with_artifact(
         &self,
         result: &CompilationResult,

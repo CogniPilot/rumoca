@@ -229,7 +229,7 @@ end Derived;
     };
 
     assert_eq!(
-        reference.def_id,
+        reference.root_def_id(),
         tree.name_map.get("BaseA.m").copied(),
         "equivalent inherited declarations should use the first deterministic identity"
     );

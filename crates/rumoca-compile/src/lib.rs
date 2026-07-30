@@ -148,16 +148,16 @@ pub mod codegen {
     };
     pub mod targets {
         pub use crate::codegen_target::{
-            AssetBundle, BuiltinTargetDescriptor, ChecksumAlgorithm, ChecksumNeed, RenderedTargetFile,
-            TargetArchive, TargetArchiveFormat, TargetArchiveRoot, TargetAssetFile, TargetBundle,
-            TargetCapabilities, TargetCompatibilityEntry, TargetFeatureSupport, TargetFile,
-            TargetIntegerDomain, TargetManifest, TargetPackage, TargetTemplateIr,
-            TargetTemplateSource, TensorCapabilities, TensorCapability, TensorLayoutCapability,
-            builtin_target_compatibility_matrix, builtin_target_descriptors_for_ir,
-            ensure_target_has_rendered_files, parse_target_manifest, render_dae_target_files,
-            safe_target_join, target_ir_is_dae_renderable, target_manifest_ir,
-            validate_dae_target_capabilities, validate_solve_target_capabilities,
-            validate_solve_tensor_inventory,
+            AssetBundle, BuiltinTargetDescriptor, ChecksumAlgorithm, ChecksumNeed,
+            RenderedTargetFile, TargetArchive, TargetArchiveFormat, TargetArchiveRoot,
+            TargetAssetFile, TargetBundle, TargetCapabilities, TargetCompatibilityEntry,
+            TargetFeatureSupport, TargetFile, TargetIntegerDomain, TargetManifest, TargetPackage,
+            TargetTemplateIr, TargetTemplateSource, TensorCapabilities, TensorCapability,
+            TensorLayoutCapability, builtin_target_compatibility_matrix,
+            builtin_target_descriptors_for_ir, ensure_target_has_rendered_files,
+            parse_target_manifest, render_dae_target_files, safe_target_join,
+            target_ir_is_dae_renderable, target_manifest_ir, validate_dae_target_capabilities,
+            validate_solve_target_capabilities, validate_solve_tensor_inventory,
         };
     }
 }

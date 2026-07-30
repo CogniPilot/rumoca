@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 use rumoca_core::{ComprehensionScalarView, StructuredIndexBinder, StructuredIndexDomain};
 
 use crate::conditions::condition_owner_clock;
-use crate::expression::{Coordinate, ExprNode, PackedSubscriptKind};
+use crate::expression::{Coordinate, ExprNode};
 use crate::model::{
     Storage, check_provenance, checked_u32, duplicate, insert_domain, invalid_arity,
 };
@@ -577,65 +577,9 @@ fn expect_clock_owned_discrete_reals(
                 span: owner.span(),
             });
         }
-        push_expression_children(storage, node, &mut pending);
+        node.for_each_child(&storage.expressions, |child| pending.push(child));
     }
     Ok(())
-}
-
-fn push_expression_children(storage: &Storage, node: &ExprNode, pending: &mut Vec<u32>) {
-    match node {
-        ExprNode::Literal(_)
-        | ExprNode::Coordinate(_)
-        | ExprNode::FunctionValue { .. }
-        | ExprNode::FunctionFoldParameter { .. }
-        | ExprNode::FunctionFoldOutput { .. } => {}
-        ExprNode::Unary { operand, .. } => pending.push(*operand),
-        ExprNode::Binary { lhs, rhs, .. } => pending.extend([lhs, rhs]),
-        ExprNode::Range {
-            start,
-            explicit_step,
-            stop,
-        } => {
-            pending.extend([start, stop]);
-            pending.extend(explicit_step);
-        }
-        ExprNode::Conditional { operands }
-        | ExprNode::Array { operands }
-        | ExprNode::Record { operands }
-        | ExprNode::Builtin { operands, .. }
-        | ExprNode::Call { operands, .. } => {
-            pending.extend(&storage.expressions.operands[operands.indices()]);
-        }
-        ExprNode::Field { base, .. } => pending.push(*base),
-        ExprNode::Comprehension { body, .. } => pending.push(*body),
-        ExprNode::Index { base, subscripts } => {
-            pending.push(*base);
-            push_subscript_expressions(storage, *subscripts, pending);
-        }
-        ExprNode::ArrayUpdate {
-            base,
-            value,
-            subscripts,
-        } => {
-            pending.extend([base, value]);
-            push_subscript_expressions(storage, *subscripts, pending);
-        }
-    }
-}
-
-fn push_subscript_expressions(
-    storage: &Storage,
-    range: crate::expression::OperandRange,
-    pending: &mut Vec<u32>,
-) {
-    for subscript in &storage.expressions.subscripts[range.indices()] {
-        match subscript.kind {
-            PackedSubscriptKind::Index(expression) | PackedSubscriptKind::Slice(expression) => {
-                pending.push(expression)
-            }
-            PackedSubscriptKind::Whole => {}
-        }
-    }
 }
 
 fn push_dense<T>(

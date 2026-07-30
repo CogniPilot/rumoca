@@ -85,17 +85,29 @@ fn synthesize_scalar_component_modification_binding(
     comp: &ast::Component,
 ) -> Option<ast::Expression> {
     let span = first_modification_span(comp)?;
+    let type_def_id = comp
+        .type_def_id
+        .expect("record modification synthesis requires an exactly resolved type declaration");
+    let type_name = comp.type_name.to_string();
+    let location = comp
+        .type_name
+        .name
+        .first()
+        .map(|token| token.location.clone())
+        .unwrap_or_default();
     let target = ast::ComponentReference {
         local: false,
-        parts: comp
-            .type_name
-            .name
-            .iter()
-            .cloned()
-            .map(|ident| ast::ComponentRefPart { ident, subs: None })
-            .collect(),
-        def_id: comp.type_name.def_id,
+        parts: vec![ast::ComponentRefPart {
+            ident: rumoca_core::Token {
+                text: Arc::from(type_name.as_str()),
+                location,
+                ..Default::default()
+            },
+            subs: None,
+            def_id: Some(type_def_id),
+        }],
         span,
+        qualified_display_name: Some(rumoca_core::VarName::new(type_name)),
     };
     let modifications: Vec<ast::Expression> = comp
         .modifications

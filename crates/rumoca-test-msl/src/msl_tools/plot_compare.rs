@@ -910,48 +910,70 @@ end SimulationResult;
         );
     }
 
-    /// `SimVariableMeta::nominal` is `format!("{expr:?}")` of the DAE
-    /// `Expression` — a Rust `Debug` dump, never a numeric literal. A trace
-    /// producer that tried to `parse::<f64>()` it silently yielded `None` for
-    /// every real model, so the trace schema deliberately carries no nominal
-    /// scale at all rather than a field that only works on hand-written
-    /// fixtures.
+    /// `SimVariableMeta::nominal` is the exact source text of the declared
+    /// `nominal` modification, recovered from the checked DAE's provenance span.
+    /// It is source syntax, not an evaluated scale: a literal modification round
+    /// trips as a parseable number, but any expression-valued `nominal` — the
+    /// common MSL form — comes back as the expression's own source text and
+    /// cannot be `parse::<f64>()`d.
     ///
-    /// This test compiles a real model with `nominal = 1000` and pins that
-    /// fact, so re-introducing a string-parsed nominal fails here instead of
-    /// shipping as a silently dead feature.
+    /// That is why the trace schema carries no nominal field: populating it
+    /// would require *evaluating* the modification, not stringifying it, and a
+    /// string-parsed nominal would silently work on literal fixtures while
+    /// yielding `None` for every parameter-scaled MSL variable. This test
+    /// compiles both shapes and pins each one, so re-introducing a
+    /// string-parsed nominal fails here instead of shipping as a
+    /// half-dead feature.
     #[test]
-    fn compiled_model_nominal_metadata_is_not_a_numeric_literal() {
+    fn compiled_model_nominal_metadata_is_declaration_source_text() {
         const SOURCE: &str = "\
 model NominalScaled
+  parameter Real scale = 500.0;
   Real T(start = 300.0, nominal = 1000.0);
+  Real p(start = 1.0, nominal = 2.0 * scale);
 equation
   der(T) = -T;
+  der(p) = -p;
 end NominalScaled;
 ";
-        let ast = rumoca_compile::parsing::parse_source_to_ast(SOURCE, "NominalScaled.mo")
-            .expect("fixture model parses");
+        // `add_document` retains the source text, which the checked DAE requires
+        // to validate and resolve provenance spans. `add_parsed_batch` stores an
+        // empty document body and only recovers the text by reading the URI from
+        // disk, so an in-memory fixture name registers a zero-length source and
+        // ToDae rejects every span in it.
         let mut session = Session::new(SessionConfig::default());
-        session.add_parsed_batch(vec![("NominalScaled.mo".to_string(), ast)]);
+        session
+            .add_document("NominalScaled.mo", SOURCE)
+            .expect("fixture model parses");
         let compiled = session
             .compile_model_dae_strict_reachable_uncached_with_recovery("NominalScaled")
             .expect("fixture model compiles to DAE");
 
-        let meta = rumoca_sim::build_variable_meta(&compiled.dae, &["T".to_string()])
-            .expect("checked DAE identity backs every requested output");
-        let entry = meta.first().expect("one variable");
-        let nominal = entry
+        let meta =
+            rumoca_sim::build_variable_meta(&compiled.dae, &["T".to_string(), "p".to_string()])
+                .expect("checked DAE identity backs every requested output");
+        let entry = meta.first().expect("T metadata");
+        let literal_nominal = entry
             .nominal
             .as_deref()
-            .expect("the model declares nominal = 1000");
+            .expect("T declares nominal = 1000.0");
+        assert_eq!(
+            literal_nominal, "1000.0",
+            "nominal metadata is the declaration's own source text"
+        );
 
-        assert!(
-            nominal.parse::<f64>().is_err(),
-            "producer-side nominal is a rendered Expression, not a literal: {nominal:?}"
+        let scaled = meta.get(1).expect("p metadata");
+        let expression_nominal = scaled
+            .nominal
+            .as_deref()
+            .expect("p declares nominal = 2.0 * scale");
+        assert_eq!(
+            expression_nominal, "2.0 * scale",
+            "an expression-valued nominal round trips as its source text"
         );
         assert!(
-            nominal.contains("Literal") || nominal.contains("Real"),
-            "expected a Debug-rendered Expression, got {nominal:?}"
+            expression_nominal.parse::<f64>().is_err(),
+            "an expression-valued nominal is not a number: {expression_nominal:?}"
         );
 
         // The trace schema therefore exposes no nominal scale; the comparison

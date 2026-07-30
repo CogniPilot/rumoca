@@ -407,10 +407,10 @@ fn infer_user_function_call_dimensions(
 }
 
 fn concrete_param_dims(param: &rumoca_core::FunctionParam) -> Option<Vec<i64>> {
-    if param.dims.is_empty() || param.dims.iter().any(|dim| *dim < 0) {
+    if param.dimensions().is_empty() {
         return None;
     }
-    Some(param.dims.clone())
+    Some(param.dimensions().to_vec())
 }
 
 fn broadcast_function_arg_dims(
@@ -733,7 +733,7 @@ fn eval_param_shape_subscript(
         rumoca_core::Subscript::Index { value, .. } => Some(*value),
         rumoca_core::Subscript::Expr { expr, .. } => try_eval_integer_with_context(expr, ctx),
         rumoca_core::Subscript::Colon { .. } => {
-            param.dims.get(index).copied().filter(|dim| *dim >= 0)
+            param.dimensions().get(index).copied()
         }
     }
 }

@@ -16,16 +16,6 @@
 
 use super::{ast, component_ref_to_dotted_no_subscripts, find_class_in_tree};
 
-/// MLS §4.4.4.2 / §8.3.7 predefined enumeration types. These have no `ClassDef`
-/// in the tree, so their literals are listed here.
-const PREDEFINED_ENUMERATIONS: &[(&str, &[&str])] = &[
-    (
-        "StateSelect",
-        &["never", "avoid", "default", "prefer", "always"],
-    ),
-    ("AssertionLevel", &["warning", "error"]),
-];
-
 /// The rendered path of `comp_ref`, but only when it denotes an enumeration
 /// literal (MLS §4.8.5.1). Returns `None` for every other reference, including
 /// ones this phase simply failed to resolve.
@@ -53,7 +43,7 @@ fn predefined_enumeration_declares(type_parts: &[&str], literal: &str) -> bool {
     let Some(type_name) = type_parts.last() else {
         return false;
     };
-    PREDEFINED_ENUMERATIONS
+    rumoca_core::PREDEFINED_ENUM_LITERALS
         .iter()
         .any(|(name, literals)| name == type_name && literals.contains(&literal))
 }
@@ -122,10 +112,11 @@ mod tests {
                         ..Default::default()
                     },
                     subs: None,
+                    def_id: None,
                 })
                 .collect(),
-            def_id: None,
             span: rumoca_core::Span::DUMMY,
+            qualified_display_name: None,
         }
     }
 

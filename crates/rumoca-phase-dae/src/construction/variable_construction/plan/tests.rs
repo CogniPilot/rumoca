@@ -115,14 +115,16 @@ fn only_self_later_and_runtime_function_attributes_reserve() {
         !plan_variable(&record_constructor, PlannedRole::Parameter, None, &ordinals)
             .requires_reservation(4)
     );
-    for intrinsic in ["previous", "hold"] {
+    for function in [BuiltinFunction::Previous, BuiltinFunction::Hold] {
         let intrinsic_attribute = parameter(
             "e",
             source.span("parameter Real e=R(1)", 0),
-            Expression::FunctionCall {
-                name: Reference::new(intrinsic),
-                args: Vec::new(),
-                is_constructor: false,
+            Expression::BuiltinCall {
+                function,
+                args: vec![Expression::Literal {
+                    value: Literal::Real(1.0),
+                    span: source.span("1", 1),
+                }],
                 span: source.span("R(1)", 0),
             },
         );

@@ -28,10 +28,11 @@ fn cref(name: &str) -> ComponentReference {
             .map(|part| ComponentRefPart {
                 ident: token(part),
                 subs: None,
+                def_id: None,
             })
             .collect(),
-        def_id: None,
         span: rumoca_core::Span::DUMMY,
+        qualified_display_name: None,
     }
 }
 
@@ -70,6 +71,7 @@ fn field_expr(base: &str, field: &str) -> Expression {
     Expression::FieldAccess {
         base: Arc::new(cref_expr(base)),
         field: field.to_string(),
+        field_def_id: None,
         span: rumoca_core::Span::DUMMY,
     }
 }

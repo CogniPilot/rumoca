@@ -135,10 +135,11 @@ fn collect_named_args(
         parts: vec![rumoca_ir_ast::ComponentRefPart {
             ident: arg.ident.clone(),
             subs: None,
+            def_id: None,
         }],
         local: false,
         span: token_span(&arg.ident)?,
-        def_id: None,
+        qualified_display_name: None,
     });
     let rhs = arg.function_argument.clone();
     mods.push(rumoca_ir_ast::Expression::Binary {

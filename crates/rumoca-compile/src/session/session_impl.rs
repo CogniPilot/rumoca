@@ -20,7 +20,11 @@ fn strict_pre_phase_failure(
     StrictCompileFailure::pre_phase(summary, failures)
 }
 
-fn resolve_diagnostic_failure(diagnostic: &CommonDiagnostic) -> ModelFailureDiagnostic {
+fn resolve_error_diagnostic_failure(diagnostic: &CommonDiagnostic) -> ModelFailureDiagnostic {
+    debug_assert!(
+        diagnostic.is_error(),
+        "only error-severity diagnostics may construct a compile failure"
+    );
     ModelFailureDiagnostic {
         model_name: "<resolve>".to_string(),
         phase: None,
@@ -32,6 +36,14 @@ fn resolve_diagnostic_failure(diagnostic: &CommonDiagnostic) -> ModelFailureDiag
             .find(|label| label.primary)
             .cloned(),
     }
+}
+
+fn resolve_error_failures(diagnostics: &CommonDiagnostics) -> Vec<ModelFailureDiagnostic> {
+    diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.is_error())
+        .map(resolve_error_diagnostic_failure)
+        .collect()
 }
 
 fn reachable_definition_names(
@@ -541,7 +553,7 @@ impl Session {
         let (plan, _) = self
             .build_resolution_plan_for_strict_compile()
             .map_err(|diagnostics| StrictTargetResolutionFailure {
-                failures: diagnostics.iter().map(resolve_diagnostic_failure).collect(),
+                failures: resolve_error_failures(&diagnostics),
                 diagnostics: diagnostics.iter().cloned().collect(),
                 source_map: Box::new(self.session_source_map()),
             })?;
@@ -557,7 +569,7 @@ impl Session {
         let (plan, _, _) = self
             .resolve_documents_for_mode(ResolveBuildMode::StrictCompileRecovery)
             .map_err(|diagnostics| StrictTargetResolutionFailure {
-                failures: diagnostics.iter().map(resolve_diagnostic_failure).collect(),
+                failures: resolve_error_failures(&diagnostics),
                 diagnostics: diagnostics.iter().cloned().collect(),
                 source_map: Box::new(self.session_source_map()),
             })?;
@@ -602,7 +614,7 @@ impl Session {
         let (resolved, closure_diagnostics) = self
             .resolve_source_definition_closure(&target_source_files, &retained_names)
             .map_err(|diagnostics| StrictTargetResolutionFailure {
-                failures: diagnostics.iter().map(resolve_diagnostic_failure).collect(),
+                failures: resolve_error_failures(&diagnostics),
                 diagnostics: diagnostics.iter().cloned().collect(),
                 source_map: Box::new(source_map.clone()),
             })?;

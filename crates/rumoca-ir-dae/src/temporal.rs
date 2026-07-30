@@ -1,6 +1,5 @@
 use std::marker::PhantomData;
 
-use crate::clocks::ClockedVariableRole;
 use crate::model::{Storage, check_provenance, checked_u32, unknown};
 use crate::{
     ClockId, DaeConstructionError, DaeProvenance, DelayId, DiscreteRealId, DiscreteValueId, ExprId,
@@ -11,11 +10,7 @@ use crate::{
 #[serde(deny_unknown_fields)]
 pub(crate) struct PreviousEntry {
     pub(crate) variable: u32,
-    #[serde(skip_serializing)]
-    pub(crate) role: ClockedVariableRole,
     pub(crate) clock: u32,
-    #[serde(skip_serializing)]
-    pub(crate) value_type: u32,
     pub(crate) provenance: DaeProvenance,
 }
 
@@ -38,10 +33,6 @@ pub(crate) struct PositiveParameterEntry {
 pub(crate) struct DelayEntry {
     pub(crate) source: u32,
     pub(crate) kind: DelayKind,
-    #[serde(skip_serializing)]
-    pub(crate) value_type: u32,
-    #[serde(skip_serializing)]
-    pub(crate) variability: ExpressionVariability,
     pub(crate) provenance: DaeProvenance,
 }
 
@@ -221,12 +212,7 @@ impl<'dae> Temporal<'_, 'dae> {
         variable: DiscreteRealId<'dae>,
         provenance: DaeProvenance,
     ) -> Result<PreviousId<'dae>, DaeConstructionError> {
-        self.previous(
-            clock,
-            variable.index(),
-            ClockedVariableRole::DiscreteReal,
-            provenance,
-        )
+        self.previous(clock, variable.index(), provenance)
     }
 
     pub fn previous_discrete_value(
@@ -235,12 +221,7 @@ impl<'dae> Temporal<'_, 'dae> {
         variable: DiscreteValueId<'dae>,
         provenance: DaeProvenance,
     ) -> Result<PreviousId<'dae>, DaeConstructionError> {
-        self.previous(
-            clock,
-            variable.index(),
-            ClockedVariableRole::DiscreteValue,
-            provenance,
-        )
+        self.previous(clock, variable.index(), provenance)
     }
 
     pub fn terminal(
@@ -259,7 +240,6 @@ impl<'dae> Temporal<'_, 'dae> {
         &mut self,
         clock: ClockId<'dae>,
         variable: u32,
-        role: ClockedVariableRole,
         provenance: DaeProvenance,
     ) -> Result<PreviousId<'dae>, DaeConstructionError> {
         check_provenance(self.source_map, provenance)?;
@@ -272,9 +252,7 @@ impl<'dae> Temporal<'_, 'dae> {
             .clock_ownership_by_variable
             .get(&variable)
             .and_then(|&index| self.storage.clock_ownerships.get(index as usize));
-        if !ownership
-            .is_some_and(|ownership| ownership.clock == clock.index() && ownership.role == role)
-        {
+        if ownership.is_none_or(|ownership| ownership.clock != clock.index()) {
             return Err(DaeConstructionError::MissingClockOwnership {
                 variable,
                 clock: clock.index(),
@@ -288,10 +266,9 @@ impl<'dae> Temporal<'_, 'dae> {
                 .get(index as usize)
                 .expect("previous-value index points into its dense arena");
             debug_assert_eq!(entry.clock, clock.index());
-            debug_assert_eq!(entry.role, role);
             return Ok(PreviousId::from_raw(index));
         }
-        let value_type = self.storage.variable(variable, provenance)?.value_type;
+        self.storage.variable(variable, provenance)?;
         let raw = checked_u32(
             self.storage.previous_values.len(),
             "previous-value arena",
@@ -299,9 +276,7 @@ impl<'dae> Temporal<'_, 'dae> {
         )?;
         self.storage.previous_values.push(PreviousEntry {
             variable,
-            role,
             clock: clock.index(),
-            value_type,
             provenance,
         });
         let prior = self.storage.previous_by_variable.insert(variable, raw);

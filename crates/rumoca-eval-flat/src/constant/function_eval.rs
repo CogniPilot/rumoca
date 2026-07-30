@@ -218,7 +218,12 @@ impl FunctionEnv {
     fn init_params(params: &[rumoca_core::FunctionParam]) -> IndexMap<String, Value> {
         params
             .iter()
-            .map(|p| (p.name.clone(), type_default_value(&p.type_name, &p.dims)))
+            .map(|p| {
+                (
+                    p.name.clone(),
+                    type_default_value(&p.type_name, p.dimensions()),
+                )
+            })
             .collect()
     }
 
@@ -705,6 +710,10 @@ fn eval_expr_in_function(
         Expression::Binary { op, lhs, rhs, .. } => eval_binary(op, lhs, rhs, env, eval),
         Expression::Unary { op, rhs, .. } => eval_unary(op, rhs, env, eval),
         Expression::FunctionCall { name, args, .. } => eval_fn_call_expr(name, args, env, eval),
+        Expression::StringConversion { .. } => Err(EvalError::UnsupportedExpression {
+            kind: "predefined String conversion".to_string(),
+            span: eval.span,
+        }),
         Expression::BuiltinCall { function, args, .. } => {
             let arg_values: Vec<Value> = args
                 .iter()
@@ -1083,7 +1092,7 @@ fn eval_range_values(
 
 /// Convert a ComponentReference to a simple name string.
 fn component_ref_to_name(cr: &ComponentReference) -> String {
-    cr.parts
+    cr.parts()
         .iter()
         .map(|p| p.ident.to_string())
         .collect::<Vec<_>>()
@@ -1092,10 +1101,10 @@ fn component_ref_to_name(cr: &ComponentReference) -> String {
 
 /// Parse subscripted assignment: x[i], x[i,j], x[1:n] -> (base_name, subscripts)
 fn parse_subscripted_assignment(comp: &ComponentReference) -> Option<(String, Vec<Subscript>)> {
-    if comp.parts.len() != 1 {
+    if comp.parts().len() != 1 {
         return None;
     }
-    let part = &comp.parts[0];
+    let part = &comp.parts()[0];
     if part.subs.is_empty() {
         return None;
     }
@@ -1394,25 +1403,51 @@ mod tests {
         )
     }
 
+    fn function_param(
+        name: &str,
+        type_name: &str,
+        type_id: rumoca_core::TypeId,
+    ) -> rumoca_core::FunctionParam {
+        let effective_type = rumoca_core::EffectiveType::new(type_id, type_id, Vec::new())
+            .expect("fixture function type is valid");
+        rumoca_core::FunctionParam::new(name, type_name, effective_type, test_span())
+    }
+
+    fn real_param(name: &str) -> rumoca_core::FunctionParam {
+        function_param(name, "Real", rumoca_core::TypeId::new(1))
+    }
+
+    fn integer_param(name: &str) -> rumoca_core::FunctionParam {
+        function_param(name, "Integer", rumoca_core::TypeId::new(2))
+    }
+
+    fn component_reference(name: &str) -> rumoca_core::ComponentReference {
+        let def_id = name.bytes().fold(1_u32, |hash, byte| {
+            hash.wrapping_mul(16_777_619) ^ u32::from(byte)
+        });
+        rumoca_core::ComponentReference::construct(
+            false,
+            test_span(),
+            vec![rumoca_core::ComponentRefPart {
+                ident: name.to_string(),
+                span: test_span(),
+                subs: Vec::new(),
+                def_id: rumoca_core::DefId::new(def_id.max(1)),
+            }],
+        )
+        .expect("fixture assignment target is exact")
+    }
+
     fn make_simple_function() -> Function {
         // function f(input Real x) output Real y; algorithm y := x * 2; end f;
         let mut func = Function::new("test.f", Span::DUMMY);
-        func.add_input(rumoca_core::FunctionParam::new("x", "Real", test_span()));
-        func.add_output(rumoca_core::FunctionParam::new("y", "Real", test_span()));
+        func.add_input(real_param("x"));
+        func.add_output(real_param("y"));
         func.pure = true;
 
         // y := x * 2
         func.body = vec![rumoca_core::Statement::Assignment {
-            comp: rumoca_core::ComponentReference {
-                local: false,
-                span: rumoca_core::Span::DUMMY,
-                parts: vec![rumoca_core::ComponentRefPart {
-                    ident: "y".to_string(),
-                    span: rumoca_core::Span::DUMMY,
-                    subs: Vec::new(),
-                }],
-                def_id: None,
-            },
+            comp: component_reference("y"),
             value: rumoca_core::Expression::Binary {
                 op: rumoca_core::OpBinary::Mul,
                 lhs: Box::new(rumoca_core::Expression::VarRef {
@@ -1454,26 +1489,13 @@ mod tests {
     #[test]
     fn test_named_argument_binding() {
         let mut func = Function::new("test.third", Span::DUMMY);
-        func.add_input(rumoca_core::FunctionParam::new("x", "Integer", test_span()));
-        func.add_input(rumoca_core::FunctionParam::new("y", "Integer", test_span()));
-        func.add_input(rumoca_core::FunctionParam::new("z", "Integer", test_span()));
-        func.add_output(rumoca_core::FunctionParam::new(
-            "result",
-            "Integer",
-            test_span(),
-        ));
+        func.add_input(integer_param("x"));
+        func.add_input(integer_param("y"));
+        func.add_input(integer_param("z"));
+        func.add_output(integer_param("result"));
         func.pure = true;
         func.body = vec![rumoca_core::Statement::Assignment {
-            comp: rumoca_core::ComponentReference {
-                local: false,
-                span: Span::DUMMY,
-                parts: vec![rumoca_core::ComponentRefPart {
-                    ident: "result".to_string(),
-                    span: Span::DUMMY,
-                    subs: Vec::new(),
-                }],
-                def_id: None,
-            },
+            comp: component_reference("result"),
             value: rumoca_core::Expression::VarRef {
                 name: rumoca_core::Reference::new("z"),
                 subscripts: Vec::new(),
@@ -1542,22 +1564,13 @@ mod tests {
     fn test_recursion_limit() {
         // Create a recursive function that will exceed the limit
         let mut func = Function::new("test.recurse", Span::DUMMY);
-        func.add_input(rumoca_core::FunctionParam::new("n", "Integer", test_span()));
-        func.add_output(rumoca_core::FunctionParam::new("y", "Integer", test_span()));
+        func.add_input(integer_param("n"));
+        func.add_output(integer_param("y"));
         func.pure = true;
 
         // Simple function that always returns 0 (to test limit checking)
         func.body = vec![rumoca_core::Statement::Assignment {
-            comp: rumoca_core::ComponentReference {
-                local: false,
-                span: rumoca_core::Span::DUMMY,
-                parts: vec![rumoca_core::ComponentRefPart {
-                    ident: "y".to_string(),
-                    span: rumoca_core::Span::DUMMY,
-                    subs: Vec::new(),
-                }],
-                def_id: None,
-            },
+            comp: component_reference("y"),
             value: rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::Integer(0),
                 span: rumoca_core::Span::DUMMY,
@@ -1598,25 +1611,12 @@ mod tests {
     fn test_while_loop() {
         // Test: function countTo4() output Integer count; algorithm count := 0; while count < 4 loop count := count + 1; end while; end countTo4;
         let mut func = Function::new("test.countTo4", Span::DUMMY);
-        func.add_output(rumoca_core::FunctionParam::new(
-            "count",
-            "Integer",
-            test_span(),
-        ));
+        func.add_output(integer_param("count"));
         func.pure = true;
 
         // count := 0
         let init_stmt = rumoca_core::Statement::Assignment {
-            comp: rumoca_core::ComponentReference {
-                local: false,
-                span: rumoca_core::Span::DUMMY,
-                parts: vec![rumoca_core::ComponentRefPart {
-                    ident: "count".to_string(),
-                    span: rumoca_core::Span::DUMMY,
-                    subs: Vec::new(),
-                }],
-                def_id: None,
-            },
+            comp: component_reference("count"),
             value: rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::Integer(0),
                 span: rumoca_core::Span::DUMMY,
@@ -1641,16 +1641,7 @@ mod tests {
                     span: rumoca_core::Span::DUMMY,
                 },
                 stmts: vec![rumoca_core::Statement::Assignment {
-                    comp: rumoca_core::ComponentReference {
-                        local: false,
-                        span: rumoca_core::Span::DUMMY,
-                        parts: vec![rumoca_core::ComponentRefPart {
-                            ident: "count".to_string(),
-                            span: rumoca_core::Span::DUMMY,
-                            subs: Vec::new(),
-                        }],
-                        def_id: None,
-                    },
+                    comp: component_reference("count"),
                     value: rumoca_core::Expression::Binary {
                         op: rumoca_core::OpBinary::Add,
                         lhs: Box::new(rumoca_core::Expression::VarRef {

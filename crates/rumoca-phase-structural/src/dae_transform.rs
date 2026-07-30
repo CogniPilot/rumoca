@@ -293,6 +293,9 @@ fn rebuild_holonomic_constraint(
     let mut manifold = Vec::with_capacity(2);
     let rebuilt = model.inspect(|source| {
         dae::Dae::construct(model.source_map().clone(), |target| {
+            if let Some(declaration) = source.predefined_string_declaration() {
+                target.register_predefined_string(declaration)?;
+            }
             let types = rebuild_types(source, target)?;
             let domains = rebuild_domains(source, target)?;
             let mut variables = reserve_variables(source, target, &types, None)?;
@@ -305,6 +308,7 @@ fn rebuild_holonomic_constraint(
                 variables: &variables,
                 domains: &domains,
                 conditions: &conditions,
+                clocks: &clocks,
                 previous: &temporal.previous,
                 terminals: &temporal.terminals,
             };
@@ -379,6 +383,9 @@ fn rebuild_with_state_demotion(
 ) -> Result<dae::Dae, StructuralError> {
     let rebuilt = model.inspect(|source| {
         dae::Dae::construct(model.source_map().clone(), |target| {
+            if let Some(declaration) = source.predefined_string_declaration() {
+                target.register_predefined_string(declaration)?;
+            }
             let types = rebuild_types(source, target)?;
             let domains = rebuild_domains(source, target)?;
             let mut variables = reserve_variables(source, target, &types, Some(candidate.state))?;
@@ -391,6 +398,7 @@ fn rebuild_with_state_demotion(
                 variables: &variables,
                 domains: &domains,
                 conditions: &conditions,
+                clocks: &clocks,
                 previous: &temporal.previous,
                 terminals: &temporal.terminals,
             };
@@ -607,12 +615,38 @@ fn reserve_conditions<'target>(
         .collect()
 }
 
+#[derive(Clone, Copy)]
+enum RebuiltClock<'dae> {
+    Periodic(dae::PeriodicClockId<'dae>),
+    Triggered(dae::ClockId<'dae>),
+}
+
+impl<'dae> RebuiltClock<'dae> {
+    fn clock_id(self) -> dae::ClockId<'dae> {
+        match self {
+            Self::Periodic(clock) => clock.into(),
+            Self::Triggered(clock) => clock,
+        }
+    }
+
+    fn periodic(self) -> dae::PeriodicClockId<'dae> {
+        match self {
+            Self::Periodic(clock) => clock,
+            Self::Triggered(_) => {
+                unreachable!("source PeriodicClockId preserves periodic capability")
+            }
+        }
+    }
+}
+
+type RebuiltClocks<'dae> = Vec<RebuiltClock<'dae>>;
+
 fn rebuild_clocks<'target>(
     source: dae::DaeView<'_>,
     target: &mut dae::DaeConstruction<'target>,
     variables: &[ReservedVariable<'target>],
     conditions: &[dae::ConditionId<'target>],
-) -> Result<Vec<dae::ClockId<'target>>, dae::DaeConstructionError> {
+) -> Result<RebuiltClocks<'target>, dae::DaeConstructionError> {
     let mut clocks = Vec::with_capacity(source.clock_count());
     for index in 0..source.clock_count() {
         let id = source
@@ -620,10 +654,12 @@ fn rebuild_clocks<'target>(
             .expect("finalized clock ordinal resolves");
         let clock = source.clock(id).expect("finalized clock identity resolves");
         let rebuilt = target.clocks(|target| match clock.operation() {
-            dae::ClockOperation::Periodic(lattice) => target.periodic(*lattice, clock.provenance()),
-            dae::ClockOperation::Triggered(condition) => {
-                target.triggered(conditions[condition.index() as usize], clock.provenance())
-            }
+            dae::ClockOperation::Periodic(lattice) => target
+                .periodic(*lattice, clock.provenance())
+                .map(RebuiltClock::Periodic),
+            dae::ClockOperation::Triggered(condition) => target
+                .triggered(conditions[condition.index() as usize], clock.provenance())
+                .map(RebuiltClock::Triggered),
         })?;
         clocks.push(rebuilt);
     }
@@ -637,7 +673,7 @@ fn rebuild_clock_ownership<'target>(
     source: dae::DaeView<'_>,
     target: &mut dae::DaeConstruction<'target>,
     variables: &[ReservedVariable<'target>],
-    clocks: &[dae::ClockId<'target>],
+    clocks: &RebuiltClocks<'target>,
     index: usize,
 ) -> Result<(), dae::DaeConstructionError> {
     let id = source
@@ -646,7 +682,7 @@ fn rebuild_clock_ownership<'target>(
     let ownership = source
         .clock_ownership(id)
         .expect("finalized clock ownership identity resolves");
-    let clock = clocks[ownership.clock().index() as usize];
+    let clock = clocks[ownership.clock().index() as usize].clock_id();
     target.clocks(|target| match ownership.kind() {
         dae::ClockedVariableKind::DiscreteReal => {
             let TargetVariable::DiscreteReal(variable) =
@@ -691,7 +727,7 @@ fn rebuild_temporal_coordinates<'target>(
     source: dae::DaeView<'_>,
     target: &mut dae::DaeConstruction<'target>,
     variables: &[ReservedVariable<'target>],
-    clocks: &[dae::ClockId<'target>],
+    clocks: &RebuiltClocks<'target>,
 ) -> Result<RebuiltTemporal<'target>, dae::DaeConstructionError> {
     let mut previous = Vec::with_capacity(source.previous_value_count());
     for index in 0..source.previous_value_count() {
@@ -701,7 +737,7 @@ fn rebuild_temporal_coordinates<'target>(
         let entry = source
             .previous(id)
             .expect("finalized previous-value identity resolves");
-        let clock = clocks[entry.clock().index() as usize];
+        let clock = clocks[entry.clock().index() as usize].clock_id();
         let rebuilt = target.temporal(|target| {
             match variables[entry.variable().index() as usize].identity {
                 TargetVariable::DiscreteReal(variable) => {
@@ -1001,7 +1037,7 @@ struct RebuiltOwnerIdentities<'borrow, 'target> {
     variables: &'borrow [ReservedVariable<'target>],
     domains: &'borrow [RebuiltDomain<'target>],
     conditions: &'borrow [dae::ConditionId<'target>],
-    clocks: &'borrow [dae::ClockId<'target>],
+    clocks: &'borrow [RebuiltClock<'target>],
 }
 
 fn rebuild_semantic_owners<'target>(
@@ -1243,6 +1279,7 @@ struct ExpressionRebuilder<'source, 'borrow, 'storage, 'target> {
     variables: &'borrow [ReservedVariable<'target>],
     domains: &'borrow [RebuiltDomain<'target>],
     conditions: &'borrow [dae::ConditionId<'target>],
+    clocks: &'borrow [RebuiltClock<'target>],
     previous: &'borrow [dae::PreviousId<'target>],
     terminals: &'borrow [dae::TerminalId<'target>],
     derivative_definitions: &'borrow [Option<u32>],
@@ -1256,6 +1293,7 @@ struct RebuiltBaseIdentities<'borrow, 'target> {
     variables: &'borrow [ReservedVariable<'target>],
     domains: &'borrow [RebuiltDomain<'target>],
     conditions: &'borrow [dae::ConditionId<'target>],
+    clocks: &'borrow [RebuiltClock<'target>],
     previous: &'borrow [dae::PreviousId<'target>],
     terminals: &'borrow [dae::TerminalId<'target>],
 }
@@ -1283,6 +1321,7 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             variables: identities.base.variables,
             domains: identities.base.domains,
             conditions: identities.base.conditions,
+            clocks: identities.base.clocks,
             previous: identities.base.previous,
             terminals: identities.base.terminals,
             derivative_definitions,
@@ -1336,6 +1375,11 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                 let rhs = self.rebuild(rhs)?;
                 self.target.at(provenance).binary(operator, lhs, rhs)?
             }
+            dae::ExpressionOperation::StringConversion {
+                declaration,
+                value,
+                format,
+            } => self.rebuild_string_conversion(declaration, value, format, provenance)?,
             dae::ExpressionOperation::Conditional(operands) => {
                 self.rebuild_conditional(operands, provenance)?
             }
@@ -1403,6 +1447,41 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         };
         self.rebuilt[index] = Some(rebuilt);
         Ok(rebuilt)
+    }
+
+    fn rebuild_string_conversion(
+        &mut self,
+        declaration: rumoca_core::DefId,
+        value: dae::ExprId<'source>,
+        format: dae::StringConversionFormatView<'source>,
+        provenance: dae::DaeProvenance,
+    ) -> Result<dae::ExprId<'target>, dae::DaeConstructionError> {
+        let value = self.rebuild(value)?;
+        let format = match format {
+            dae::StringConversionFormatView::Options {
+                minimum_length,
+                left_justified,
+                significant_digits,
+            } => dae::StringConversionFormatInput::Options {
+                minimum_length: minimum_length
+                    .map(|value| self.rebuild(value))
+                    .transpose()?,
+                left_justified: left_justified
+                    .map(|value| self.rebuild(value))
+                    .transpose()?,
+                significant_digits: significant_digits
+                    .map(|value| self.rebuild(value))
+                    .transpose()?,
+            },
+            dae::StringConversionFormatView::Format { value } => {
+                dae::StringConversionFormatInput::Format {
+                    value: self.rebuild(value)?,
+                }
+            }
+        };
+        self.target
+            .at(provenance)
+            .string_conversion(declaration, value, format)
     }
 
     fn rebuild_operands(
@@ -1542,6 +1621,9 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                 }
             }
             dae::CoordinateView::Time => dae::CoordinateInput::Time,
+            dae::CoordinateView::ClockInterval(source) => {
+                dae::CoordinateInput::ClockInterval(self.clocks[source.index() as usize].periodic())
+            }
             discrete @ (dae::CoordinateView::DiscreteReal(_)
             | dae::CoordinateView::DiscreteValue(_)
             | dae::CoordinateView::PreDiscreteReal(_)

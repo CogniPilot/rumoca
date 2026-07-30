@@ -3,7 +3,7 @@
 //! MLS §16.5.1: `sample(u)` samples the value of `u` on an inferred clock. It is
 //! not a structural Boolean event indicator and must not be folded to `true`.
 
-use rumoca_core::{BuiltinFunction, Expression, OpBinary};
+use rumoca_core::{BuiltinFunction, Expression, ExpressionVisitor, OpBinary};
 use rumoca_phase_flatten::flatten_ref;
 use rumoca_phase_instantiate::instantiate_model;
 use rumoca_phase_resolve::resolve;
@@ -131,6 +131,163 @@ end SampleTime;
             }
         ),
         "simTime must be assigned from runtime sample(time), got {sample_rhs:?}"
+    );
+}
+
+#[test]
+fn synchronous_identity_is_exact_from_resolve_through_checked_dae() {
+    let source = r#"
+model ExactClockIdentity
+  type ClockAlias = Clock;
+  ClockAlias base = Clock(0.1);
+  Clock slow = subSample(base, 2);
+  Clock fast = superSample(slow, 2);
+  Clock shifted = shiftSample(fast, 1, 2);
+  Clock back = backSample(shifted, 1, 2);
+  Real x(start = 0);
+  Real sampled;
+  Real held;
+equation
+  when back then
+    x = previous(x) + interval();
+    sampled = sample(time);
+  end when;
+  held = hold(x);
+end ExactClockIdentity;
+"#;
+    let (tree, flat) = flatten_source(source, "exact_clock_identity.mo", "ExactClockIdentity");
+    let canonical_clock = tree
+        .type_table
+        .lookup("Clock")
+        .expect("resolved tree owns the predefined Clock identity");
+    assert_eq!(flat.predefined_types.clock, canonical_clock);
+
+    for name in ["base", "slow", "fast", "shifted", "back"] {
+        let key = rumoca_core::VarName::new(name);
+        let variable = flat
+            .variables
+            .get(&key)
+            .unwrap_or_else(|| panic!("missing exact Clock coordinate `{name}`"));
+        assert_eq!(
+            flat.effective_types[&variable.type_id].canonical_type(),
+            canonical_clock,
+            "`{name}` must retain the canonical predefined Clock identity"
+        );
+    }
+    assert_ne!(
+        flat.variables[&rumoca_core::VarName::new("base")].type_id,
+        canonical_clock,
+        "the regression must exercise nominal Clock alias canonicalization"
+    );
+
+    let expected_bindings = [
+        ("base", BuiltinFunction::Clock),
+        ("slow", BuiltinFunction::SubSample),
+        ("fast", BuiltinFunction::SuperSample),
+        ("shifted", BuiltinFunction::ShiftSample),
+        ("back", BuiltinFunction::BackSample),
+    ];
+    for (name, expected) in expected_bindings {
+        let binding = flat.variables[&rumoca_core::VarName::new(name)]
+            .binding
+            .as_ref()
+            .unwrap_or_else(|| panic!("`{name}` has no typed binding"));
+        assert!(
+            matches!(
+                binding,
+                Expression::BuiltinCall { function, .. } if *function == expected
+            ),
+            "`{name}` must use exact typed builtin identity, got {binding:?}"
+        );
+    }
+
+    let mut synchronous = SynchronousBuiltinCollector::default();
+    for equation in &flat.equations {
+        synchronous.visit_expression(&equation.residual);
+    }
+    for chain in &flat.when_chains {
+        for branch in chain.branches() {
+            synchronous.visit_expression(&branch.condition);
+            for equation in &branch.equations {
+                if let rumoca_ir_flat::WhenEquation::Assign { value, .. } = equation {
+                    synchronous.visit_expression(value);
+                }
+            }
+        }
+    }
+    for expected in [
+        BuiltinFunction::Hold,
+        BuiltinFunction::Previous,
+        BuiltinFunction::Interval,
+        BuiltinFunction::Sample,
+    ] {
+        assert!(
+            synchronous.functions.contains(&expected),
+            "missing exact typed `{}` call",
+            expected.name()
+        );
+    }
+
+    let dae = rumoca_phase_dae::to_dae(&flat, tree.source_map.clone())
+        .expect("exact clock identities must construct a checked DAE");
+    dae.inspect(|view| {
+        assert_eq!(view.previous_value_count(), 1);
+        let previous = view
+            .previous(view.previous_id(0).expect("one previous identity"))
+            .expect("previous identity resolves");
+        assert_eq!(view.source_text(previous.provenance()), Some("previous(x)"));
+    });
+}
+
+#[test]
+fn shadowed_synchronous_spelling_remains_a_user_function() {
+    let source = r#"
+model ShadowedSubSample
+  function subSample
+    input Real u;
+    input Integer factor;
+    output Real y;
+  algorithm
+    y := u + factor;
+  end subSample;
+  Real x = subSample(1.0, 2);
+end ShadowedSubSample;
+"#;
+    let (tree, flat) = flatten_source(source, "shadowed_sub_sample.mo", "ShadowedSubSample");
+    let binding = flat.variables[&rumoca_core::VarName::new("x")]
+        .binding
+        .as_ref()
+        .expect("x retains its user-function binding");
+    assert!(
+        matches!(binding, Expression::FunctionCall { name, .. } if name.as_str().ends_with("subSample")),
+        "shadowing user declaration must not become a synchronous builtin: {binding:?}"
+    );
+    rumoca_phase_dae::to_dae(&flat, tree.source_map.clone())
+        .expect("shadowed user function must remain an ordinary checked function call");
+}
+
+#[test]
+fn no_clock_is_typed_only_from_its_predefined_identity() {
+    let source = r#"
+model ExactNoClock
+  Clock sourceClock = Clock(0.1);
+  Clock detached = noClock(sourceClock);
+end ExactNoClock;
+"#;
+    let (_, flat) = flatten_source(source, "exact_no_clock.mo", "ExactNoClock");
+    let binding = flat.variables[&rumoca_core::VarName::new("detached")]
+        .binding
+        .as_ref()
+        .expect("detached clock retains its conversion binding");
+    assert!(
+        matches!(
+            binding,
+            Expression::BuiltinCall {
+                function: BuiltinFunction::NoClock,
+                ..
+            }
+        ),
+        "predefined noClock must lower to its typed identity: {binding:?}"
     );
 }
 
@@ -337,6 +494,34 @@ fn assert_canonical_clock_ownership(model: &rumoca_ir_dae::Dae) {
             "both clocked coordinates must reference the same branded clock identity"
         );
     });
+}
+
+fn flatten_source(
+    source: &str,
+    file_name: &str,
+    model_name: &str,
+) -> (rumoca_ir_ast::ClassTree, rumoca_ir_flat::Model) {
+    let def = rumoca_phase_parse::parse_to_ast(source, file_name).expect("source parses");
+    let mut tree = rumoca_ir_ast::ClassTree::from_parsed(def);
+    tree.source_map.add(file_name, source);
+    let parsed = rumoca_ir_ast::ParsedTree::new(tree);
+    let resolved = resolve(parsed).expect("source resolves");
+    let mut overlay = instantiate_model(resolved.inner(), model_name).expect("source instantiates");
+    typecheck_instanced(resolved.inner(), &mut overlay, model_name).expect("source typechecks");
+    let flat = flatten_ref(resolved.inner(), &overlay, model_name).expect("source flattens");
+    (resolved.into_inner(), flat)
+}
+
+#[derive(Default)]
+struct SynchronousBuiltinCollector {
+    functions: Vec<BuiltinFunction>,
+}
+
+impl ExpressionVisitor for SynchronousBuiltinCollector {
+    fn visit_builtin_call(&mut self, function: &BuiltinFunction, args: &[Expression]) {
+        self.functions.push(*function);
+        self.walk_builtin_call(function, args);
+    }
 }
 
 fn assert_first_clock_assignment_reads_same_tick_input(sim: &rumoca_sim::SimResult, backend: &str) {

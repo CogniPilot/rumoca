@@ -200,7 +200,7 @@ fn test_stream_connection_does_not_generate_potential_equality() {
 
     let mut overlay = ast::InstanceOverlay::new();
     overlay.add_class(ast::ClassInstanceData {
-        instance_id: ast::InstanceId(0),
+        instance_id: rumoca_core::InstanceId(0),
         qualified_name: ast::QualifiedName::from_ident("Root"),
         connections: vec![
             ast::InstanceConnection {
@@ -290,7 +290,7 @@ fn test_connector_path_with_structural_member_expands_nonstructural_members() {
 
     let mut overlay = ast::InstanceOverlay::new();
     overlay.add_class(ast::ClassInstanceData {
-        instance_id: ast::InstanceId(0),
+        instance_id: rumoca_core::InstanceId(0),
         qualified_name: ast::QualifiedName::from_ident("Root"),
         connections: vec![ast::InstanceConnection {
             a: ast::QualifiedName::from_ident("a"),
@@ -352,7 +352,7 @@ fn collapsed_connector_array_connects_to_expanded_connector_elements() {
 
     let mut overlay = ast::InstanceOverlay::new();
     overlay.add_class(ast::ClassInstanceData {
-        instance_id: ast::InstanceId(0),
+        instance_id: rumoca_core::InstanceId(0),
         qualified_name: ast::QualifiedName::from_ident("Root"),
         connections: vec![ast::InstanceConnection {
             a: ast::QualifiedName::from_dotted("source.port"),
@@ -396,7 +396,7 @@ fn collapsed_connector_array_connects_to_expanded_connector_elements() {
 fn expandable_connector_test_overlay() -> ast::InstanceOverlay {
     let mut overlay = ast::InstanceOverlay::new();
     overlay.add_class(ast::ClassInstanceData {
-        instance_id: ast::InstanceId(0),
+        instance_id: rumoca_core::InstanceId(0),
         qualified_name: ast::QualifiedName::from_ident("Root"),
         connections: vec![ast::InstanceConnection {
             a: ast::QualifiedName::from_ident("a"),
@@ -1040,14 +1040,14 @@ fn test_process_connections_negates_nested_connector_under_outside_root() {
 
     let mut overlay = ast::InstanceOverlay::new();
     overlay.add_component(ast::InstanceData {
-        instance_id: ast::InstanceId(1),
+        instance_id: rumoca_core::InstanceId(1),
         qualified_name: ast::QualifiedName::from_dotted("cell.plug"),
         is_connector_type: true,
         is_protected: false,
         ..Default::default()
     });
     overlay.add_class(ast::ClassInstanceData {
-        instance_id: ast::InstanceId(0),
+        instance_id: rumoca_core::InstanceId(0),
         qualified_name: ast::QualifiedName::from_dotted("cell"),
         connections: vec![ast::InstanceConnection {
             a: ast::QualifiedName::from_dotted("cell.plug.pin"),

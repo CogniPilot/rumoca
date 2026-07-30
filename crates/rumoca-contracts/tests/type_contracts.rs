@@ -1193,9 +1193,25 @@ fn type_007_external_object_mismatch_rejected() {
         model M
             class EoBase
                 extends ExternalObject;
+                function constructor
+                    output EoBase handle;
+                    external "C";
+                end constructor;
+                function destructor
+                    input EoBase handle;
+                    external "C";
+                end destructor;
             end EoBase;
             class EoOther
                 extends ExternalObject;
+                function constructor
+                    output EoOther handle;
+                    external "C";
+                end constructor;
+                function destructor
+                    input EoOther handle;
+                    external "C";
+                end destructor;
             end EoOther;
             model Holder
                 replaceable EoBase handle;

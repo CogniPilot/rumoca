@@ -1123,11 +1123,7 @@ mod tests {
     #[test]
     fn test_render_expr_can_inline_condition_aliases_at_backend_boundary() {
         let condition_ref = rumoca_core::Expression::VarRef {
-            name: rumoca_core::Reference::generated_component(
-                "c",
-                Vec::new(),
-                rumoca_core::Span::DUMMY,
-            ),
+            name: rumoca_core::Reference::generated("c"),
             subscripts: vec![rumoca_core::Subscript::generated_index(
                 1,
                 rumoca_core::Span::DUMMY,
@@ -1137,11 +1133,7 @@ mod tests {
         let relation = rumoca_core::Expression::Binary {
             op: rumoca_core::OpBinary::Lt,
             lhs: Box::new(rumoca_core::Expression::VarRef {
-                name: rumoca_core::Reference::generated_component(
-                    "time",
-                    Vec::new(),
-                    rumoca_core::Span::DUMMY,
-                ),
+                name: rumoca_core::Reference::generated("time"),
                 subscripts: Vec::new(),
                 span: rumoca_core::Span::DUMMY,
             }),

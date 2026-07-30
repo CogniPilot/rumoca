@@ -13,24 +13,7 @@ pub(crate) fn mark_record_constructor_calls(flat: &mut flat::Model, tree: &ast::
                 .is_some_and(|class_def| class_def.class_type == rumoca_core::ClassType::Record)
         })
         .collect::<HashSet<_>>();
-    let mut constructor_names: HashSet<String> = tree
-        .def_map
-        .iter()
-        .filter(|&(def_id, _qualified_name)| constructor_def_ids.contains(def_id))
-        .map(|(_def_id, qualified_name)| qualified_name.clone())
-        .collect();
-    constructor_names.extend(
-        flat.functions
-            .values()
-            .filter(|function| function.is_constructor)
-            .map(|function| function.name.as_str().to_string()),
-    );
-    if constructor_names.is_empty() && constructor_def_ids.is_empty() {
-        return;
-    }
-
     let marker = ConstructorMarker {
-        constructor_names: &constructor_names,
         constructor_def_ids: &constructor_def_ids,
     };
     for var in flat.variables.values_mut() {
@@ -84,7 +67,6 @@ pub(crate) fn mark_record_constructor_calls(flat: &mut flat::Model, tree: &ast::
 
 #[derive(Clone, Copy)]
 struct ConstructorMarker<'a> {
-    constructor_names: &'a HashSet<String>,
     constructor_def_ids: &'a HashSet<rumoca_core::DefId>,
 }
 
@@ -156,10 +138,15 @@ impl ConstructorMarker<'_> {
         }
     }
 
-    fn is_constructor_call(self, name: &rumoca_core::Reference) -> bool {
-        name.target_def_id()
-            .is_some_and(|def_id| self.constructor_def_ids.contains(&def_id))
-            || self.constructor_names.contains(name.as_str())
+    fn is_constructor_call(
+        self,
+        name: &rumoca_core::Reference,
+        intermediate_class_call: bool,
+    ) -> bool {
+        match name.target_def_id() {
+            Some(def_id) => self.constructor_def_ids.contains(&def_id),
+            None => intermediate_class_call && name.is_generated(),
+        }
     }
 }
 
@@ -175,7 +162,7 @@ impl ExpressionRewriter for ConstructorMarker<'_> {
             return rumoca_core::Expression::FunctionCall {
                 name: name.clone(),
                 args: self.rewrite_expressions(args),
-                is_constructor: *is_constructor || self.is_constructor_call(name),
+                is_constructor: self.is_constructor_call(name, *is_constructor),
                 span: *span,
             };
         }

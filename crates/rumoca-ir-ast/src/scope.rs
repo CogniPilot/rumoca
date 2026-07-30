@@ -91,6 +91,14 @@ impl ScopeTree {
         self.add_member(ScopeId::GLOBAL, name, def_id);
     }
 
+    /// Return the exact declaration identity registered for a predefined name.
+    ///
+    /// Unlike ordinary global lookup, this query cannot be changed by a
+    /// source declaration that shadows the same spelling.
+    pub fn predefined_member(&self, name: &ComponentPath) -> Option<DefId> {
+        self.predefined_members.get(name).copied()
+    }
+
     /// Add an import to a scope.
     pub fn add_import(&mut self, scope: ScopeId, import: Import) {
         if let Some(s) = self.get_mut(scope) {
@@ -158,6 +166,22 @@ impl ScopeTree {
     /// Look up a name only in the given scope (no parent search).
     pub fn lookup_local(&self, scope: ScopeId, name: &ComponentPath) -> Option<DefId> {
         self.get(scope).and_then(|s| s.members.get(name).copied())
+    }
+
+    /// Look up one member within exactly one class scope.
+    ///
+    /// Qualified-name traversal uses this operation after the container has
+    /// already been resolved to a `DefId`. It must not walk to a parent scope:
+    /// an absent `A.b` cannot resolve to an unrelated `b` enclosing `A`.
+    pub fn lookup_member(&self, scope: ScopeId, name: &ComponentPath) -> Option<DefId> {
+        let scope = self.get(scope)?;
+        if let Some(def_id) = scope.members.get(name) {
+            return Some(*def_id);
+        }
+        match scope.inherited_members.get(name) {
+            Some(InheritedMember::Unique(def_id)) => Some(*def_id),
+            Some(InheritedMember::Ambiguous) | None => None,
+        }
     }
 
     /// Whether `target` is declared directly in `scope`.
@@ -364,5 +388,23 @@ impl Import {
             }
             Import::Unqualified { names, .. } => names.get(name).copied(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn predefined_member_identity_is_not_replaced_by_global_shadowing() {
+        let mut tree = ScopeTree::new();
+        let name = ComponentPath::from_flat_path("ExternalObject");
+        let predefined = DefId(1);
+        let shadow = DefId(99);
+        tree.add_predefined_member(name.clone(), predefined);
+        tree.add_member(ScopeId::GLOBAL, name.clone(), shadow);
+
+        assert_eq!(tree.lookup(ScopeId::GLOBAL, &name), Some(shadow));
+        assert_eq!(tree.predefined_member(&name), Some(predefined));
     }
 }

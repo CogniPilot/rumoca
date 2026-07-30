@@ -9,40 +9,99 @@ fn test_span() -> Span {
     )
 }
 
+fn fixture_def_id(name: &str) -> rumoca_core::DefId {
+    let hash = name.bytes().fold(2_166_136_261_u32, |hash, byte| {
+        hash.wrapping_mul(16_777_619) ^ u32::from(byte)
+    });
+    rumoca_core::DefId::new(hash.max(1))
+}
+
+fn component_ref(path: &str) -> rumoca_core::ComponentReference {
+    let parts = rumoca_core::ComponentPath::from_flat_path(path)
+        .parts()
+        .iter()
+        .map(|ident| rumoca_core::ComponentRefPart {
+            ident: ident.clone(),
+            span: test_span(),
+            subs: Vec::new(),
+            def_id: fixture_def_id(ident),
+        })
+        .collect();
+    rumoca_core::ComponentReference::construct(false, test_span(), parts)
+        .expect("fixture reference has an exact identity for every part")
+}
+
+fn component_ref_with_target(
+    path: &str,
+    target: rumoca_core::DefId,
+) -> rumoca_core::ComponentReference {
+    let path = rumoca_core::ComponentPath::from_flat_path(path);
+    let last = path.len().checked_sub(1).expect("fixture path is nonempty");
+    let parts = path
+        .parts()
+        .iter()
+        .enumerate()
+        .map(|(index, ident)| rumoca_core::ComponentRefPart {
+            ident: ident.clone(),
+            span: test_span(),
+            subs: Vec::new(),
+            def_id: if index == last {
+                target
+            } else {
+                fixture_def_id(ident)
+            },
+        })
+        .collect();
+    rumoca_core::ComponentReference::construct(false, test_span(), parts)
+        .expect("fixture reference has an exact identity for every part")
+}
+
 fn simple_assignment(value: rumoca_core::Expression) -> rumoca_core::Statement {
     rumoca_core::Statement::Assignment {
-        comp: rumoca_core::ComponentReference {
-            local: false,
-            span: rumoca_core::Span::DUMMY,
-            parts: vec![rumoca_core::ComponentRefPart {
-                ident: "y".to_string(),
-                span: rumoca_core::Span::DUMMY,
-                subs: vec![],
-            }],
-            def_id: None,
-        },
+        comp: component_ref("y"),
         value,
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     }
 }
 
-fn var_ref(name: &str) -> rumoca_core::Expression {
+fn generated_var_ref(name: &str) -> rumoca_core::Expression {
     rumoca_core::Expression::VarRef {
-        name: rumoca_core::Reference::new(name),
+        name: rumoca_core::Reference::generated(name),
         subscripts: vec![],
-        span: rumoca_core::Span::DUMMY,
+        span: test_span(),
     }
 }
 
 fn spanned_var_ref(name: &str) -> rumoca_core::Expression {
-    let var_name = rumoca_core::VarName::new(name);
-    let component_ref = rumoca_core::component_reference_from_flat_name(&var_name, test_span())
-        .expect("test reference should parse as a component reference");
     rumoca_core::Expression::VarRef {
-        name: rumoca_core::Reference::from_component_reference(component_ref),
+        name: rumoca_core::Reference::from_component_reference(component_ref(name)),
         subscripts: vec![],
         span: test_span(),
     }
+}
+
+fn source_var_ref(name: &str) -> rumoca_core::Expression {
+    rumoca_core::Expression::VarRef {
+        name: rumoca_core::Reference::from_component_reference(component_ref(name)),
+        subscripts: vec![],
+        span: test_span(),
+    }
+}
+
+fn source_var_ref_with_target(name: &str, target: rumoca_core::DefId) -> rumoca_core::Expression {
+    rumoca_core::Expression::VarRef {
+        name: rumoca_core::Reference::with_component_reference(
+            name,
+            component_ref_with_target(name, target),
+        ),
+        subscripts: vec![],
+        span: test_span(),
+    }
+}
+
+fn insert_source_constant(ctx: &mut Context, reference: &str, value: rumoca_core::Expression) {
+    ctx.constant_values_by_def_id
+        .insert(component_ref(reference).target_def_id(), value);
 }
 
 fn int_literal(value: i64) -> rumoca_core::Expression {
@@ -59,10 +118,26 @@ fn reference_x_fill_expr() -> rumoca_core::Expression {
             rumoca_core::Expression::Binary {
                 op: rumoca_core::OpBinary::Div,
                 lhs: Box::new(int_literal(1)),
-                rhs: Box::new(var_ref("nS")),
+                rhs: Box::new(generated_var_ref("nS")),
                 span: rumoca_core::Span::DUMMY,
             },
-            var_ref("nS"),
+            generated_var_ref("nS"),
+        ],
+        span: rumoca_core::Span::DUMMY,
+    }
+}
+
+fn source_reference_x_fill_expr() -> rumoca_core::Expression {
+    rumoca_core::Expression::BuiltinCall {
+        function: rumoca_core::BuiltinFunction::Fill,
+        args: vec![
+            rumoca_core::Expression::Binary {
+                op: rumoca_core::OpBinary::Div,
+                lhs: Box::new(int_literal(1)),
+                rhs: Box::new(source_var_ref("nS")),
+                span: rumoca_core::Span::DUMMY,
+            },
+            source_var_ref("nS"),
         ],
         span: rumoca_core::Span::DUMMY,
     }
@@ -72,7 +147,9 @@ fn add_primitive_variable(model: &mut flat::Model, name: &str) {
     model.add_variable(
         rumoca_core::VarName::new(name),
         flat::Variable {
+            instance_id: rumoca_core::InstanceId::new(fixture_def_id(name).index()),
             name: rumoca_core::VarName::new(name),
+            component_ref: Some(component_ref(name)),
             is_primitive: true,
             ..flat::Variable::empty_with_span(test_span())
         },
@@ -85,7 +162,9 @@ fn collapse_index_refs_collapses_indexed_field_access_to_known_var() {
     model.add_variable(
         rumoca_core::VarName::new("port_a[1].Q_flow"),
         flat::Variable {
+            instance_id: rumoca_core::InstanceId::new(fixture_def_id("port_a[1].Q_flow").index()),
             name: rumoca_core::VarName::new("port_a[1].Q_flow"),
+            component_ref: Some(component_ref("port_a[1].Q_flow")),
             is_primitive: true,
             ..flat::Variable::empty_with_span(test_span())
         },
@@ -94,7 +173,7 @@ fn collapse_index_refs_collapses_indexed_field_access_to_known_var() {
         rumoca_core::Expression::FieldAccess {
             base: Box::new(rumoca_core::Expression::Index {
                 base: Box::new(rumoca_core::Expression::VarRef {
-                    name: rumoca_core::Reference::new("port_a"),
+                    name: rumoca_core::Reference::generated("port_a"),
                     subscripts: vec![],
                     span: rumoca_core::Span::DUMMY,
                 }),
@@ -105,7 +184,8 @@ fn collapse_index_refs_collapses_indexed_field_access_to_known_var() {
                 span: rumoca_core::Span::DUMMY,
             }),
             field: "Q_flow".to_string(),
-            span: rumoca_core::Span::DUMMY,
+            field_def_id: fixture_def_id("Q_flow"),
+            span: test_span(),
         },
         rumoca_core::Span::DUMMY,
         flat::EquationOrigin::ComponentEquation {
@@ -129,7 +209,7 @@ fn collapse_index_refs_collapses_indexed_var_ref_to_known_scalar_var() {
     model.add_equation(flat::Equation::new(
         rumoca_core::Expression::Index {
             base: Box::new(rumoca_core::Expression::VarRef {
-                name: rumoca_core::Reference::new("arr"),
+                name: rumoca_core::Reference::generated("arr"),
                 subscripts: vec![],
                 span: rumoca_core::Span::DUMMY,
             }),
@@ -161,7 +241,7 @@ fn substitutes_late_scoped_constant_inside_array_subscript() {
         rumoca_core::Expression::VarRef {
             name: rumoca_core::Reference::new("medium.X"),
             subscripts: vec![rumoca_core::Subscript::Expr {
-                expr: Box::new(spanned_var_ref("nS")),
+                expr: Box::new(generated_var_ref("nS")),
                 span: test_span(),
             }],
             span: test_span(),
@@ -197,26 +277,18 @@ fn substitutes_known_constants_inside_function_defaults_and_body() {
     let mut model = flat::Model::new();
     let mut function = rumoca_core::Function::new("Pkg.f", Span::DUMMY);
     function.add_input(
-        rumoca_core::FunctionParam::new("u", "Real", test_span()).with_default(
-            rumoca_core::Expression::VarRef {
-                name: rumoca_core::Reference::new("Pkg.Constants.k"),
-                subscripts: vec![],
-                span: rumoca_core::Span::DUMMY,
-            },
-        ),
+        crate::test_support::real_param("u", Vec::new(), test_span())
+            .with_default(source_var_ref("Pkg.Constants.k")),
     );
     function
         .body
-        .push(simple_assignment(rumoca_core::Expression::VarRef {
-            name: rumoca_core::Reference::new("Pkg.Constants.k"),
-            subscripts: vec![],
-            span: rumoca_core::Span::DUMMY,
-        }));
+        .push(simple_assignment(source_var_ref("Pkg.Constants.k")));
     model.add_function(function);
 
     let mut ctx = Context::new();
-    ctx.constant_values.insert(
-        "Pkg.Constants.k".to_string(),
+    insert_source_constant(
+        &mut ctx,
+        "Pkg.Constants.k",
         rumoca_core::Expression::Literal {
             value: rumoca_core::Literal::Real(42.0),
             span: rumoca_core::Span::DUMMY,
@@ -231,7 +303,7 @@ fn substitutes_known_constants_inside_function_defaults_and_body() {
         .expect("function should exist");
     assert!(matches!(
         function.inputs[0].default,
-        Some(rumoca_core::Expression::Literal { value: rumoca_core::Literal::Real(v), span: rumoca_core::Span::DUMMY }) if (v - 42.0).abs() < f64::EPSILON
+        Some(rumoca_core::Expression::Literal { value: rumoca_core::Literal::Real(v), span }) if (v - 42.0).abs() < f64::EPSILON && span == test_span()
     ));
     match &function.body[0] {
         rumoca_core::Statement::Assignment { value, .. } => assert!(matches!(
@@ -243,11 +315,82 @@ fn substitutes_known_constants_inside_function_defaults_and_body() {
 }
 
 #[test]
+fn exact_source_constants_ignore_same_spelling_generated_lookup() {
+    let first = rumoca_core::DefId::new(91_001);
+    let second = rumoca_core::DefId::new(91_002);
+    let mut ctx = Context::new();
+    ctx.constant_values_by_def_id.insert(first, int_literal(11));
+    ctx.constant_values_by_def_id
+        .insert(second, int_literal(22));
+    ctx.constant_values
+        .insert("Pkg.k".to_string(), int_literal(99));
+
+    let substitute = |expression| {
+        substitute_known_constants_expr(
+            expression,
+            &ctx,
+            &rustc_hash::FxHashSet::default(),
+            &HashSet::new(),
+            "",
+        )
+        .expect("fixture constant should substitute")
+    };
+
+    assert!(matches!(
+        substitute(source_var_ref_with_target("Pkg.k", first)),
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Integer(11),
+            ..
+        }
+    ));
+    assert!(matches!(
+        substitute(source_var_ref_with_target("Pkg.k", second)),
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Integer(22),
+            ..
+        }
+    ));
+    assert!(matches!(
+        substitute(generated_var_ref("Pkg.k")),
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::Integer(99),
+            ..
+        }
+    ));
+}
+
+#[test]
+fn unstructured_non_generated_constant_reference_is_rejected() {
+    let mut ctx = Context::new();
+    ctx.constant_values
+        .insert("Pkg.k".to_string(), int_literal(99));
+    let expression = rumoca_core::Expression::VarRef {
+        name: rumoca_core::Reference::new("Pkg.k"),
+        subscripts: Vec::new(),
+        span: test_span(),
+    };
+
+    let error = substitute_known_constants_expr(
+        expression,
+        &ctx,
+        &rustc_hash::FxHashSet::default(),
+        &HashSet::new(),
+        "",
+    )
+    .expect_err("source-like reference without exact identity must fail early");
+    assert!(matches!(
+        error,
+        FlattenError::MissingSourceContext { reason }
+            if reason.contains("no resolved declaration identity")
+    ));
+}
+
+#[test]
 fn substitutes_scoped_relative_constant_alias_field() {
     let mut ctx = Context::new();
     ctx.constant_values.insert(
         "medium.steam".to_string(),
-        var_ref("Utilities.Water95_Utilities.Constants"),
+        generated_var_ref("Utilities.Water95_Utilities.Constants"),
     );
     ctx.real_parameter_values.insert(
         "medium.Utilities.Water95_Utilities.Constants.R_s".to_string(),
@@ -255,7 +398,7 @@ fn substitutes_scoped_relative_constant_alias_field() {
     );
 
     let substituted = substitute_known_constants_expr(
-        var_ref("steam.R_s"),
+        generated_var_ref("steam.R_s"),
         &ctx,
         &rustc_hash::FxHashSet::default(),
         &HashSet::new(),
@@ -278,7 +421,7 @@ fn substitutes_assert_condition_with_component_origin_scope() {
     model.assert_equations.push(flat::AssertEquation::new(
         rumoca_core::Expression::Binary {
             op: rumoca_core::OpBinary::Gt,
-            lhs: Box::new(var_ref("TD")),
+            lhs: Box::new(generated_var_ref("TD")),
             rhs: Box::new(int_literal(0)),
             span: test_span(),
         },
@@ -328,13 +471,13 @@ fn substituted_assert_condition_prefers_evaluated_scalar_over_stale_default() {
         op: rumoca_core::OpBinary::Or,
         lhs: Box::new(rumoca_core::Expression::Binary {
             op: rumoca_core::OpBinary::Gt,
-            lhs: Box::new(var_ref("F")),
+            lhs: Box::new(generated_var_ref("F")),
             rhs: Box::new(int_literal(0)),
             span: test_span(),
         }),
         rhs: Box::new(rumoca_core::Expression::Binary {
             op: rumoca_core::OpBinary::Gt,
-            lhs: Box::new(var_ref("TD")),
+            lhs: Box::new(generated_var_ref("TD")),
             rhs: Box::new(int_literal(0)),
             span: test_span(),
         }),
@@ -387,9 +530,9 @@ fn substitutes_function_scope_constants_inside_defaults_and_body() {
     let mut model = flat::Model::new();
     let mut function = rumoca_core::Function::new("Pkg.f", Span::DUMMY);
     function.add_input(
-        rumoca_core::FunctionParam::new("u", "Real", test_span()).with_default(
+        crate::test_support::real_param("u", Vec::new(), test_span()).with_default(
             rumoca_core::Expression::VarRef {
-                name: rumoca_core::Reference::new("reference_X"),
+                name: rumoca_core::Reference::generated("reference_X"),
                 subscripts: vec![],
                 span: rumoca_core::Span::DUMMY,
             },
@@ -398,7 +541,7 @@ fn substitutes_function_scope_constants_inside_defaults_and_body() {
     function
         .body
         .push(simple_assignment(rumoca_core::Expression::VarRef {
-            name: rumoca_core::Reference::new("reference_X"),
+            name: rumoca_core::Reference::generated("reference_X"),
             subscripts: vec![],
             span: rumoca_core::Span::DUMMY,
         }));
@@ -436,8 +579,8 @@ fn substitutes_record_array_field_projection_from_flat_var_ref() {
     let mut model = flat::Model::new();
     let mut function = rumoca_core::Function::new("Pkg.f", Span::DUMMY);
     function.add_input(
-        rumoca_core::FunctionParam::new("u", "Real", test_span())
-            .with_default(var_ref("ConcreteMedium.data.MM")),
+        crate::test_support::real_param("u", Vec::new(), test_span())
+            .with_default(generated_var_ref("ConcreteMedium.data.MM")),
     );
     model.add_function(function);
 
@@ -466,7 +609,7 @@ fn substitutes_record_array_field_projection_from_flat_var_ref() {
     );
     ctx.constant_values.insert(
         "ConcreteMedium.data_alias".to_string(),
-        var_ref("PartialMedium.data"),
+        generated_var_ref("PartialMedium.data"),
     );
 
     substitute_known_constants_in_flat(&mut model, &ctx).unwrap();
@@ -491,7 +634,7 @@ fn substitutes_record_array_field_projection_from_flat_var_ref() {
 fn does_not_substitute_function_local_names() {
     let mut model = flat::Model::new();
     let mut function = rumoca_core::Function::new("Pkg.g", Span::DUMMY);
-    function.add_input(rumoca_core::FunctionParam::new("k", "Real", test_span()));
+    function.add_input(crate::test_support::real_param("k", Vec::new(), test_span()));
     function
         .body
         .push(simple_assignment(rumoca_core::Expression::VarRef {
@@ -530,7 +673,7 @@ fn does_not_substitute_indexed_function_local_names() {
     let mut model = flat::Model::new();
     let mut function = rumoca_core::Function::new("Pkg.g_indexed", Span::DUMMY);
     function.add_input(
-        rumoca_core::FunctionParam::new("table", "Real", test_span()).with_dims(vec![7, 2]),
+        crate::test_support::real_param("table", vec![7, 2], test_span()),
     );
     function
         .body
@@ -601,7 +744,9 @@ fn substitutes_inline_multi_indexed_constant_varref_names() {
     function
         .body
         .push(simple_assignment(rumoca_core::Expression::VarRef {
-            name: rumoca_core::Reference::new("Modelica.Blocks.Sources.IntegerTable.table[1,1]"),
+            name: rumoca_core::Reference::generated(
+                "Modelica.Blocks.Sources.IntegerTable.table[1,1]",
+            ),
             subscripts: vec![],
             span: test_span(),
         }));
@@ -667,7 +812,7 @@ fn rejects_unspanned_inline_indexed_constant_varref_names() {
     function
         .body
         .push(simple_assignment(rumoca_core::Expression::VarRef {
-            name: rumoca_core::Reference::new("Pkg.table[1]"),
+            name: rumoca_core::Reference::generated("Pkg.table[1]"),
             subscripts: vec![],
             span: rumoca_core::Span::DUMMY,
         }));
@@ -713,7 +858,7 @@ fn does_not_substitute_inline_indexed_varref_when_base_is_local() {
     let mut model = flat::Model::new();
     let mut function = rumoca_core::Function::new("Pkg.inline_local", Span::DUMMY);
     function.add_input(
-        rumoca_core::FunctionParam::new("table", "Real", test_span()).with_dims(vec![7, 2]),
+        crate::test_support::real_param("table", vec![7, 2], test_span()),
     );
     function
         .body
@@ -771,7 +916,7 @@ fn substitutes_variable_attribute_constants_in_variable_scope() {
         .variables
         .get_mut(&rumoca_core::VarName::new("tank.medium.X"))
         .expect("variable should exist")
-        .start = Some(var_ref("reference_X"));
+        .start = Some(generated_var_ref("reference_X"));
 
     let mut ctx = Context::new();
     ctx.constant_values.insert(
@@ -800,8 +945,8 @@ fn substitutes_component_equation_constants_in_origin_scope() {
     model.add_equation(flat::Equation::new(
         rumoca_core::Expression::Binary {
             op: rumoca_core::OpBinary::Sub,
-            lhs: Box::new(var_ref("tank.medium.X")),
-            rhs: Box::new(var_ref("reference_X")),
+            lhs: Box::new(generated_var_ref("tank.medium.X")),
+            rhs: Box::new(generated_var_ref("reference_X")),
             span: rumoca_core::Span::DUMMY,
         },
         rumoca_core::Span::DUMMY,
@@ -832,16 +977,16 @@ fn substitutes_fully_qualified_constant_alias_in_declaration_scope() {
         .variables
         .get_mut(&rumoca_core::VarName::new("tank.X_start"))
         .expect("variable should exist")
-        .start = Some(var_ref("Pkg.Medium.X_default"));
+        .start = Some(source_var_ref("Pkg.Medium.X_default"));
 
     let mut ctx = Context::new();
-    ctx.constant_values
-        .insert("Pkg.Medium.X_default".to_string(), var_ref("reference_X"));
-    ctx.constant_values.insert(
-        "Pkg.Medium.reference_X".to_string(),
-        reference_x_fill_expr(),
+    insert_source_constant(
+        &mut ctx,
+        "Pkg.Medium.X_default",
+        source_var_ref("reference_X"),
     );
-    ctx.parameter_values.insert("Pkg.Medium.nS".to_string(), 1);
+    insert_source_constant(&mut ctx, "reference_X", source_reference_x_fill_expr());
+    insert_source_constant(&mut ctx, "nS", int_literal(1));
 
     substitute_known_constants_in_flat(&mut model, &ctx).unwrap();
 
@@ -887,7 +1032,7 @@ fn does_not_substitute_array_shaped_scalar_parameter_ref() {
 fn does_not_substitute_scoped_zero_length_array_parameter_ref() {
     let mut model = flat::Model::new();
     model.equations.push(flat::Equation::new(
-        var_ref("c0"),
+        generated_var_ref("c0"),
         Span::DUMMY,
         flat::EquationOrigin::ComponentEquation {
             component: "CriticalDamping".to_string(),
@@ -913,7 +1058,7 @@ fn does_not_substitute_scoped_zero_length_array_parameter_ref() {
 fn does_not_substitute_array_shaped_scalar_constant_expr() {
     let mut model = flat::Model::new();
     model.equations.push(flat::Equation::new(
-        var_ref("c0"),
+        generated_var_ref("c0"),
         Span::DUMMY,
         flat::EquationOrigin::ComponentEquation {
             component: "CriticalDamping".to_string(),
@@ -981,7 +1126,8 @@ fn substitutes_field_access_on_zero_arg_constructor_constants() {
                 span: rumoca_core::Span::DUMMY,
             }),
             field: "useLinearSOCDependency".to_string(),
-            span: rumoca_core::Span::DUMMY,
+            field_def_id: fixture_def_id("useLinearSOCDependency"),
+            span: test_span(),
         }));
     model.add_function(function);
 
@@ -1003,8 +1149,9 @@ fn substitutes_field_access_on_zero_arg_constructor_constants() {
             value,
             rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::Boolean(false),
-                span: rumoca_core::Span::DUMMY
+                span
             }
+            if *span == test_span()
         )),
         other => panic!("expected assignment statement, got {other:?}"),
     }
@@ -1014,17 +1161,20 @@ fn substitutes_field_access_on_zero_arg_constructor_constants() {
 fn does_not_resolve_function_local_record_root_through_constant_alias() {
     let mut model = flat::Model::new();
     let mut function = rumoca_core::Function::new("Pkg.f", Span::DUMMY);
-    function.add_output(rumoca_core::FunctionParam::new(
+    function.add_output(crate::test_support::aggregate_param(
         "g",
         "Common.GibbsDerivs",
+        Vec::new(),
         test_span(),
     ));
-    function.body.push(simple_assignment(var_ref("g.tau")));
+    function
+        .body
+        .push(simple_assignment(generated_var_ref("g.tau")));
     model.add_function(function);
 
     let mut ctx = Context::new();
     ctx.constant_values
-        .insert("g".to_string(), var_ref("Modelica.Constants.g_n"));
+        .insert("g".to_string(), generated_var_ref("Modelica.Constants.g_n"));
 
     substitute_known_constants_in_flat(&mut model, &ctx).unwrap();
 
@@ -1053,6 +1203,12 @@ fn expr_contains_var_ref(expr: &rumoca_core::Expression, needle: &str) -> bool {
         | rumoca_core::Expression::Array { elements: args, .. }
         | rumoca_core::Expression::Tuple { elements: args, .. } => {
             args.iter().any(|arg| expr_contains_var_ref(arg, needle))
+        }
+        rumoca_core::Expression::StringConversion { value, format, .. } => {
+            expr_contains_var_ref(value, needle)
+                || format
+                    .operands()
+                    .any(|operand| expr_contains_var_ref(operand, needle))
         }
         rumoca_core::Expression::If {
             branches,
@@ -1111,10 +1267,10 @@ fn reports_self_referential_constant_binding_instead_of_recursing() {
     // Folding that binding must produce a spanned diagnostic; before cycle
     // detection it recursed until the stack overflowed.
     let mut ctx = Context::new();
-    ctx.constant_values.insert("a.k".to_string(), var_ref("k"));
+    insert_source_constant(&mut ctx, "a.k", source_var_ref("k"));
 
     let error = substitute_known_constants_expr(
-        var_ref("a.k"),
+        source_var_ref("a.k"),
         &ctx,
         &rustc_hash::FxHashSet::default(),
         &HashSet::new(),
@@ -1149,7 +1305,7 @@ fn keeps_expanded_record_component_reference_symbolic() {
     add_primitive_variable(&mut model, "src.port_p.Phi.re");
     add_primitive_variable(&mut model, "src.port_p.Phi.im");
     model.add_equation(flat::Equation::new(
-        var_ref("src.Phi"),
+        generated_var_ref("src.Phi"),
         test_span(),
         flat::EquationOrigin::ComponentEquation {
             component: "src".to_string(),
@@ -1170,7 +1326,7 @@ fn keeps_expanded_record_component_reference_symbolic() {
 
     substitute_known_constants_in_flat(&mut model, &ctx).unwrap();
 
-    assert_eq!(model.equations[0].residual, var_ref("src.Phi"));
+    assert_eq!(model.equations[0].residual, generated_var_ref("src.Phi"));
 }
 
 /// A record path with no flat members is still a foldable constant.
@@ -1188,7 +1344,7 @@ fn still_folds_record_constant_without_flat_members() {
         span: rumoca_core::Span::DUMMY,
     };
     model.add_equation(flat::Equation::new(
-        var_ref("Pkg.phasor"),
+        source_var_ref("Pkg.phasor"),
         test_span(),
         flat::EquationOrigin::ComponentEquation {
             component: "src".to_string(),
@@ -1196,13 +1352,17 @@ fn still_folds_record_constant_without_flat_members() {
     ));
 
     let mut ctx = Context::new();
-    ctx.constant_values
-        .insert("Pkg.phasor".to_string(), constructor.clone());
+    insert_source_constant(&mut ctx, "Pkg.phasor", constructor.clone());
     ctx.seed_expanded_component_keys(&model);
 
     substitute_known_constants_in_flat(&mut model, &ctx).unwrap();
 
-    assert_eq!(model.equations[0].residual, constructor);
+    assert!(
+        model.equations[0]
+            .residual
+            .semantically_eq_ignoring_spans(&constructor)
+    );
+    assert_eq!(model.equations[0].residual.span(), Some(test_span()));
 }
 
 /// Field access resolves through the class constant only when the flat model has
@@ -1215,8 +1375,9 @@ fn folds_class_constant_field_but_not_instantiated_member() {
     let mut model = flat::Model::new();
     add_primitive_variable(&mut model, "medium.state.X");
     let field = |base: &str, name: &str| rumoca_core::Expression::FieldAccess {
-        base: Box::new(var_ref(base)),
+        base: Box::new(generated_var_ref(base)),
         field: name.to_string(),
+        field_def_id: fixture_def_id(name),
         span: test_span(),
     };
     model.add_equation(flat::Equation::new(

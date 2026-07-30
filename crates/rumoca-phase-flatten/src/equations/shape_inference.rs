@@ -328,7 +328,9 @@ pub(crate) fn infer_expression_shape(
 }
 
 fn is_size_operator(comp: &ast::ComponentReference) -> bool {
-    comp.def_id.is_none() && comp.parts.len() == 1 && comp.parts[0].ident.text.as_ref() == "size"
+    comp.root_def_id().is_none()
+        && comp.parts.len() == 1
+        && comp.parts[0].ident.text.as_ref() == "size"
 }
 
 fn infer_expression_ndims(
@@ -484,9 +486,10 @@ mod tests {
                     ..rumoca_core::Token::default()
                 },
                 subs: None,
+                def_id: None,
             }],
-            def_id: None,
             span: rumoca_core::Span::DUMMY,
+            qualified_display_name: None,
         }
     }
 
@@ -512,9 +515,10 @@ mod tests {
                     ..rumoca_core::Token::default()
                 },
                 subs: Some(vec![ast::Subscript::Expression(range)]),
+                def_id: None,
             }],
-            def_id: None,
             span: rumoca_core::Span::DUMMY,
+            qualified_display_name: None,
         }
     }
 

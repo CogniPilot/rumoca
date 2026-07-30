@@ -102,6 +102,16 @@
 //! drop(body);
 //! # }
 //! ```
+//!
+//! A general (possibly triggered) clock cannot construct an interval
+//! coordinate; only the capability returned by [`Clocks::periodic`] can:
+//!
+//! ```compile_fail
+//! # use rumoca_ir_dae::{ClockId, CoordinateInput};
+//! # fn invalid<'dae>(clock: ClockId<'dae>) {
+//! let _ = CoordinateInput::ClockInterval(clock);
+//! # }
+//! ```
 
 mod clocks;
 mod conditions;
@@ -137,15 +147,15 @@ pub use expr_query::{
 };
 pub use expression::{
     BinaryOperator, CoordinateInput, DaeLiteral, ExpressionAt, ExpressionVariability, Expressions,
-    PureBuiltin, ScalarType, Subscript, UnaryOperator, ValueType,
+    PureBuiltin, ScalarType, StringConversionFormatInput, Subscript, UnaryOperator, ValueType,
 };
 pub use ids::{
     AlgebraicId, ClockId, ClockOwnershipId, ConditionId, ContinuousEquationId, ContinuousFamilyId,
     DelayId, DiscreteRealEquationId, DiscreteRealId, DiscreteValueId, DiscreteValueOwnerId,
     DomainBinderId, DomainId, EventActionId, ExprId, FunctionDefinitionId, FunctionFoldId,
     FunctionId, FunctionParameterId, FunctionValueId, InitializationEquationId,
-    InitializationFamilyId, InputId, ParameterId, PreviousId, RelationId, RootId, StateId,
-    TerminalId, TimeEventId, ValueTypeId, VariableId,
+    InitializationFamilyId, InputId, ParameterId, PeriodicClockId, PreviousId, RelationId, RootId,
+    StateId, TerminalId, TimeEventId, ValueTypeId, VariableId,
 };
 pub use model::{
     ContinuousOwnerView, CoordinateView, DAE_SCHEMA_VERSION, Dae, DaeConstruction, DaeView,
@@ -154,9 +164,9 @@ pub use model::{
     FunctionParameterView, FunctionReservation, FunctionSignature, FunctionStatementView,
     FunctionStatements, FunctionValueRole, FunctionValueView, FunctionView, Functions,
     InitializationOwnerView, InputVariability, RangeBoundView, RangeView, ResidualEquationView,
-    StructuredFamilyView, SubscriptView, SubscriptsView, ValueTypeOperands, ValueTypes,
-    VariableAttributes, VariableCausality, VariableIdentity, VariableOrigin, VariableReservation,
-    VariableRole, VariableView, Variables,
+    StringConversionFormatView, StructuredFamilyView, SubscriptView, SubscriptsView,
+    ValueTypeOperands, ValueTypes, VariableAttributes, VariableCausality, VariableIdentity,
+    VariableOrigin, VariableReservation, VariableRole, VariableView, Variables,
 };
 pub use provenance::{DaeGeneration, DaeProvenance, DaeProvenanceOrigin};
 pub use temporal::{

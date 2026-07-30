@@ -11,7 +11,6 @@
 //! - An algorithm section (the function body)
 //!
 mod call_args;
-mod constant_overrides;
 mod constructor_signature;
 mod function_metadata;
 mod function_output_validation;
@@ -30,13 +29,13 @@ use rumoca_ir_flat as flat;
 use rustc_hash::FxHashSet;
 use std::collections::{HashMap, HashSet};
 
-pub(crate) use call_args::validate_flat_function_call_args;
-use constant_overrides::active_constant_def_overrides;
+pub(crate) use call_args::materialize_flat_function_call_args;
 use constructor_signature::{
     convert_constructor_signature, inherit_operator_constructor_defaults,
     normalize_function_local_references,
 };
 use function_metadata::*;
+pub(crate) use function_metadata::FunctionTypeCatalog;
 pub(crate) use function_metadata::{
     lower_record_function_params, specialize_static_function_params,
 };
@@ -54,7 +53,7 @@ use crate::pipeline::{collect_package_chain, rewrite_function_extends_aliases_in
 use crate::qualify;
 use crate::source_spans::required_location_span;
 
-fn is_callable_class_type(class_type: &rumoca_core::ClassType) -> bool {
+fn is_callable_class_candidate(class_type: &rumoca_core::ClassType) -> bool {
     !matches!(
         class_type,
         rumoca_core::ClassType::Package
@@ -68,13 +67,15 @@ pub(crate) fn record_type_fields(
     class_def: &ast::ClassDef,
     qualified_name: &str,
     tree: &ast::ClassTree,
+    type_catalog: FunctionTypeCatalog<'_>,
 ) -> Result<Vec<flat::RecordField>, FlattenError> {
     let constructor = convert_constructor_signature(
         class_index,
         class_def,
         qualified_name,
         &tree.source_map,
-        &tree.def_map,
+        ast_lower::PredefinedIntrinsicIds::from_tree(tree),
+        type_catalog,
     )?;
     constructor
         .inputs
@@ -88,9 +89,9 @@ pub(crate) fn record_type_fields(
                 )
             })?;
             Ok(flat::RecordField {
-                name: field.name,
+                name: field.name.clone(),
                 def_id,
-                dims: field.dims,
+                dims: field.dimensions().to_vec(),
             })
         })
         .collect()
@@ -286,10 +287,12 @@ fn collect_from_expression(expr: &rumoca_core::Expression, calls: &mut FunctionR
 /// in the ast::ClassTree, and converts them to rumoca_core::Function objects.
 pub(crate) fn collect_functions(
     flat: &mut flat::Model,
+    overlay: &ast::InstanceOverlay,
     tree: &ast::ClassTree,
     class_index: &ast::ClassDefIndex<'_>,
     caller_scope: Option<&str>,
 ) -> Result<(), FlattenError> {
+    let type_catalog = FunctionTypeCatalog::new(overlay);
     let mut member_cache = qualify::MemberDefIdCache::default();
     let initial_calls = collect_function_call_requests(flat);
     let mut pending: Vec<(FunctionRequest, Option<String>)> = initial_calls
@@ -335,6 +338,7 @@ pub(crate) fn collect_functions(
             &request,
             caller_scope.as_deref(),
             &mut member_cache,
+            type_catalog,
         )? {
             if is_executable_flat_function(&resolved.1) {
                 Some(resolved)
@@ -345,6 +349,7 @@ pub(crate) fn collect_functions(
                     &request.name,
                     &inserted,
                     &mut member_cache,
+                    type_catalog,
                 )?
             }
         } else {
@@ -361,6 +366,7 @@ pub(crate) fn collect_functions(
                 &request.name,
                 &inserted,
                 &mut member_cache,
+                type_catalog,
             )?,
         };
         let Some((qualified_name, flat_func)) = resolved else {
@@ -532,6 +538,19 @@ pub(crate) fn canonicalize_collected_function_calls(
     for eq in &mut flat.initial_equations {
         eq.residual = rewriter.rewrite_expression(&eq.residual);
     }
+    // A structured family's comprehension template is a peer copy of its scalar
+    // residual, so its calls must be given the same exact instance identity here.
+    // Argument-slot materialization reads templates too, and an uncanonicalized
+    // template would reach it carrying only declaration identity.
+    for family in flat
+        .structured_equations
+        .iter_mut()
+        .chain(flat.initial_structured_equations.iter_mut())
+    {
+        if let Some(template) = &mut family.template {
+            template.body = rewriter.rewrite_expressions(&template.body);
+        }
+    }
     for chain in &mut flat.when_chains {
         for branch in chain.branches_mut() {
             branch.condition = rewriter.rewrite_expression(&branch.condition);
@@ -563,14 +582,13 @@ pub(crate) fn canonicalize_collected_function_calls(
         }
     }
     for function in flat.functions.values_mut() {
-        for input in &mut function.inputs {
-            canonicalize_function_param_default(input, &mut rewriter);
-        }
-        for output in &mut function.outputs {
-            canonicalize_function_param_default(output, &mut rewriter);
-        }
-        for local in &mut function.locals {
-            canonicalize_function_param_default(local, &mut rewriter);
+        for param in function
+            .inputs
+            .iter_mut()
+            .chain(function.outputs.iter_mut())
+            .chain(function.locals.iter_mut())
+        {
+            canonicalize_function_param_expressions(param, &mut rewriter);
         }
         for statement in &mut function.body {
             *statement = rewriter.rewrite_statement(statement);
@@ -626,12 +644,17 @@ fn canonicalize_when_equations(
     }
 }
 
-fn canonicalize_function_param_default(
+/// Canonicalize every parameter expression argument-slot materialization also
+/// visits, so no attribute expression reaches it without exact call identity.
+fn canonicalize_function_param_expressions(
     param: &mut rumoca_core::FunctionParam,
     rewriter: &mut CollectedFunctionCallCanonicalizer,
 ) {
-    if let Some(default) = &mut param.default {
-        *default = rewriter.rewrite_expression(default);
+    for expression in [&mut param.default, &mut param.min, &mut param.max]
+        .into_iter()
+        .flatten()
+    {
+        *expression = rewriter.rewrite_expression(expression);
     }
     for subscript in &mut param.shape_expr {
         if let rumoca_core::Subscript::Expr { expr, .. } = subscript {
@@ -710,7 +733,7 @@ impl ExpressionRewriter for CollectedFunctionCallCanonicalizer {
         if let Some(canonical) = self.canonical_function_for_reference(name) {
             let base_part_count = name
                 .component_ref()
-                .map(|reference| reference.parts.len())
+                .map(|reference| reference.parts().len())
                 .unwrap_or(0);
             return rumoca_core::Expression::FunctionCall {
                 name: name
@@ -843,15 +866,28 @@ fn resolved_function_reference(
     tree: &ast::ClassTree,
     class_index: &ast::ClassDefIndex<'_>,
 ) -> rumoca_core::Reference {
-    let Some(mut component_ref) = original.component_ref().cloned() else {
-        return rumoca_core::Reference::new(resolved_name);
+    let Some(component_ref) = original.component_ref() else {
+        return original.with_var_name(rumoca_core::VarName::new(resolved_name));
     };
-    component_ref.def_id = tree.name_map.get(&resolved_name).copied().or_else(|| {
+    let Some(target) = tree.name_map.get(&resolved_name).copied().or_else(|| {
         class_index
             .get_by_qualified_name(&resolved_name)
             .and_then(|class_def| class_def.def_id)
-    });
-    rumoca_core::Reference::with_component_reference(resolved_name, component_ref)
+    }) else {
+        return original.clone();
+    };
+    let mut parts = component_ref.parts().to_vec();
+    parts
+        .last_mut()
+        .expect("checked component reference is nonempty")
+        .def_id = target;
+    let component_ref = rumoca_core::ComponentReference::construct(
+        component_ref.local(),
+        component_ref.span(),
+        parts,
+    )
+    .expect("rewriting one identity preserves a checked component reference");
+    original.with_rewritten_component_reference(original.as_str(), component_ref)
 }
 
 fn lookup_function_with_scope<'tree>(
@@ -860,6 +896,7 @@ fn lookup_function_with_scope<'tree>(
     func_name: &str,
     caller_scope: Option<&str>,
     member_cache: &mut qualify::MemberDefIdCache<'tree>,
+    type_catalog: FunctionTypeCatalog<'_>,
 ) -> Result<Option<(String, rumoca_core::Function)>, FlattenError> {
     let Some(resolved) =
         resolve_function_class_with_scope(tree, class_index, func_name, caller_scope)
@@ -872,8 +909,8 @@ fn lookup_function_with_scope<'tree>(
         resolved.class_def,
         &resolved.exposed_name,
         &tree.source_map,
-        &tree.def_map,
         member_cache,
+        type_catalog,
     )?;
     let Some(flat_func) = flat_func else {
         return Ok(None);
@@ -887,6 +924,7 @@ fn lookup_function_request_with_scope<'tree>(
     request: &FunctionRequest,
     caller_scope: Option<&str>,
     member_cache: &mut qualify::MemberDefIdCache<'tree>,
+    type_catalog: FunctionTypeCatalog<'_>,
 ) -> Result<Option<(String, rumoca_core::Function)>, FlattenError> {
     if let Some(resolved) = lookup_exposed_function_request_by_name(
         tree,
@@ -894,12 +932,13 @@ fn lookup_function_request_with_scope<'tree>(
         request,
         caller_scope,
         member_cache,
+        type_catalog,
     )? {
         return Ok(Some(resolved));
     }
     if let Some(def_id) = request.target_def_id
         && let Some(class_def) = class_index.get(def_id)
-        && is_callable_class_type(&class_def.class_type)
+        && is_callable_class_candidate(&class_def.class_type)
         && !class_def.partial
     {
         let exposed_name = class_index
@@ -912,15 +951,22 @@ fn lookup_function_request_with_scope<'tree>(
             class_def,
             &exposed_name,
             &tree.source_map,
-            &tree.def_map,
             member_cache,
+            type_catalog,
         )? && is_executable_flat_function(&flat_func)
         {
             return Ok(Some((exposed_name, flat_func)));
         }
     }
 
-    lookup_function_with_scope(tree, class_index, &request.name, caller_scope, member_cache)
+    lookup_function_with_scope(
+        tree,
+        class_index,
+        &request.name,
+        caller_scope,
+        member_cache,
+        type_catalog,
+    )
 }
 
 fn lookup_exposed_function_request_by_name<'tree>(
@@ -929,6 +975,7 @@ fn lookup_exposed_function_request_by_name<'tree>(
     request: &FunctionRequest,
     caller_scope: Option<&str>,
     member_cache: &mut qualify::MemberDefIdCache<'tree>,
+    type_catalog: FunctionTypeCatalog<'_>,
 ) -> Result<Option<(String, rumoca_core::Function)>, FlattenError> {
     let Some(def_id) = request.target_def_id else {
         return Ok(None);
@@ -945,7 +992,7 @@ fn lookup_exposed_function_request_by_name<'tree>(
         return Ok(None);
     };
     if resolved.class_def.def_id != Some(def_id)
-        || !is_callable_class_type(&resolved.class_def.class_type)
+        || !is_callable_class_candidate(&resolved.class_def.class_type)
         || resolved.class_def.partial
     {
         return Ok(None);
@@ -956,8 +1003,8 @@ fn lookup_exposed_function_request_by_name<'tree>(
         resolved.class_def,
         &resolved.exposed_name,
         &tree.source_map,
-        &tree.def_map,
         member_cache,
+        type_catalog,
     )?
     else {
         return Ok(None);
@@ -969,9 +1016,17 @@ pub(crate) fn lookup_function_request(
     tree: &ast::ClassTree,
     class_index: &ast::ClassDefIndex<'_>,
     request: &FunctionRequest,
+    type_catalog: FunctionTypeCatalog<'_>,
 ) -> Result<Option<(String, rumoca_core::Function)>, FlattenError> {
     let mut member_cache = qualify::MemberDefIdCache::default();
-    lookup_function_request_with_scope(tree, class_index, request, None, &mut member_cache)
+    lookup_function_request_with_scope(
+        tree,
+        class_index,
+        request,
+        None,
+        &mut member_cache,
+        type_catalog,
+    )
 }
 
 struct FunctionClassResolution<'a> {
@@ -987,6 +1042,7 @@ fn lookup_function_in_known_packages<'tree>(
     func_name: &str,
     known_functions: &[String],
     member_cache: &mut qualify::MemberDefIdCache<'tree>,
+    type_catalog: FunctionTypeCatalog<'_>,
 ) -> Result<Option<(String, rumoca_core::Function)>, FlattenError> {
     let Some((_first, remainder)) = path_utils::root_split(func_name) else {
         return Ok(None);
@@ -1031,8 +1087,8 @@ fn lookup_function_in_known_packages<'tree>(
         class_def,
         &qualified_name,
         &tree.source_map,
-        &tree.def_map,
         member_cache,
+        type_catalog,
     )?;
     let Some(flat_func) = flat_func else {
         return Ok(None);
@@ -1050,7 +1106,7 @@ fn resolve_function_class_with_scope<'a>(
     caller_scope: Option<&str>,
 ) -> Option<FunctionClassResolution<'a>> {
     if let Some(class_def) = class_index.get_by_qualified_name(func_name)
-        && is_callable_class_type(&class_def.class_type)
+        && is_callable_class_candidate(&class_def.class_type)
     {
         if class_def.partial
             && let Some(caller_scope) = caller_scope
@@ -1198,7 +1254,7 @@ fn resolve_function_in_package_chain_class<'a>(
 
         let direct = format!("{package_name}.{function_leaf}");
         if let Some(class_def) = class_index.get_by_qualified_name(&direct)
-            && is_callable_class_type(&class_def.class_type)
+            && is_callable_class_candidate(&class_def.class_type)
         {
             return Some((class_def, direct));
         }
@@ -1227,7 +1283,7 @@ fn resolve_function_in_package_chain_class<'a>(
             package_class,
             package_name,
             function_leaf,
-        ) && is_callable_class_type(&target.class_type)
+        ) && is_callable_class_candidate(&target.class_type)
         {
             return Some((target, direct));
         }
@@ -1476,8 +1532,8 @@ fn convert_callable<'tree>(
     class_def: &'tree ast::ClassDef,
     qualified_name: &str,
     source_map: &rumoca_core::SourceMap,
-    def_map: &crate::ResolveDefMap,
     member_cache: &mut qualify::MemberDefIdCache<'tree>,
+    type_catalog: FunctionTypeCatalog<'_>,
 ) -> Result<Option<rumoca_core::Function>, FlattenError> {
     match &class_def.class_type {
         rumoca_core::ClassType::Function => convert_function(
@@ -1486,17 +1542,18 @@ fn convert_callable<'tree>(
             class_def,
             qualified_name,
             source_map,
-            def_map,
             member_cache,
+            type_catalog,
         )
         .map(Some),
-        class_type if is_callable_class_type(class_type) => {
+        rumoca_core::ClassType::Record => {
             let mut constructor = convert_constructor_signature(
                 class_index,
                 class_def,
                 qualified_name,
                 source_map,
-                def_map,
+                ast_lower::PredefinedIntrinsicIds::from_tree(tree),
+                type_catalog,
             )?;
             contextualize_record_param_type_names(
                 tree,
@@ -1510,13 +1567,103 @@ fn convert_callable<'tree>(
                 class_def,
                 &mut constructor,
                 source_map,
-                def_map,
                 member_cache,
+                type_catalog,
             )?;
             Ok(Some(constructor))
         }
-        _ => Ok(None),
+        _ => convert_external_object_callable(
+            tree,
+            class_index,
+            class_def,
+            qualified_name,
+            source_map,
+            member_cache,
+            type_catalog,
+        ),
     }
+}
+
+fn convert_external_object_callable<'tree>(
+    tree: &ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'tree>,
+    class_def: &'tree ast::ClassDef,
+    exposed_name: &str,
+    source_map: &rumoca_core::SourceMap,
+    member_cache: &mut qualify::MemberDefIdCache<'tree>,
+    type_catalog: FunctionTypeCatalog<'_>,
+) -> Result<Option<rumoca_core::Function>, FlattenError> {
+    let owner_span = required_location_span(
+        source_map,
+        &class_def.location,
+        "callable class declaration",
+    )?;
+    let owner_def_id = class_def.def_id.ok_or_else(|| {
+        FlattenError::missing_resolved_class_metadata(
+            exposed_name,
+            "callable class identity",
+            owner_span,
+        )
+    })?;
+    let lifecycle = match class_index.external_object_lifecycle(owner_def_id) {
+        Ok(lifecycle) => lifecycle,
+        Err(error) => {
+            let (context, span) =
+                external_object_lifecycle_failure_context(source_map, owner_span, error)?;
+            return Err(FlattenError::missing_resolved_class_metadata(
+                exposed_name,
+                context,
+                span,
+            ));
+        }
+    };
+    lifecycle
+        .map(|lifecycle| {
+            convert_external_object_constructor(
+                tree,
+                class_index,
+                lifecycle.constructor(),
+                exposed_name,
+                source_map,
+                member_cache,
+                type_catalog,
+            )
+        })
+        .transpose()
+}
+
+fn convert_external_object_constructor<'tree>(
+    tree: &ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'tree>,
+    constructor: &'tree ast::ClassDef,
+    exposed_name: &str,
+    source_map: &rumoca_core::SourceMap,
+    member_cache: &mut qualify::MemberDefIdCache<'tree>,
+    type_catalog: FunctionTypeCatalog<'_>,
+) -> Result<rumoca_core::Function, FlattenError> {
+    convert_function(
+        tree,
+        class_index,
+        constructor,
+        exposed_name,
+        source_map,
+        member_cache,
+        type_catalog,
+    )
+}
+
+fn external_object_lifecycle_failure_context(
+    source_map: &rumoca_core::SourceMap,
+    fallback_span: rumoca_core::Span,
+    error: ast::ExternalObjectLifecycleError<'_>,
+) -> Result<(&'static str, rumoca_core::Span), FlattenError> {
+    let context = error.required_fact();
+    let span = error
+        .declaration_location()
+        .map_or(Ok(fallback_span), |location| {
+            required_location_span(source_map, location, context)
+        })?;
+    Ok((context, span))
 }
 
 /// Convert a ast::ClassDef (function) to a rumoca_core::Function.
@@ -1526,8 +1673,8 @@ fn convert_function<'tree>(
     class_def: &'tree ast::ClassDef,
     qualified_name: &str,
     source_map: &rumoca_core::SourceMap,
-    def_map: &crate::ResolveDefMap,
     member_cache: &mut qualify::MemberDefIdCache<'tree>,
+    type_catalog: FunctionTypeCatalog<'_>,
 ) -> Result<rumoca_core::Function, FlattenError> {
     let span = required_location_span(source_map, &class_def.location, "function definition")?;
     let mut func = rumoca_core::Function::new(qualified_name, span);
@@ -1551,7 +1698,10 @@ fn convert_function<'tree>(
             comp_name,
             component,
             source_map,
-            def_map,
+            FunctionExpressionContext {
+                predefined_intrinsics: ast_lower::PredefinedIntrinsicIds::from_tree(tree),
+                type_catalog,
+            },
             &import_map,
             &function_locals,
         )?;
@@ -1563,49 +1713,19 @@ fn convert_function<'tree>(
         }
     }
 
-    // MLS §12.4.1: Function parameters are local to the function body.
-    // Filter the def_map to exclude entries that resolve to the function's own
-    // local parameters, so that function-typed parameters (e.g., `f` in
-    // `quadratureLobatto(f, a, b, tolerance)`) are not over-qualified to their
-    // fully-qualified path (e.g., `Modelica.Math.Nonlinear.quadratureLobatto.f`)
-    // during AST lowering. The qualified path would produce a non-existent
-    // global name after dot-to-underscore sanitization.
-    let func_prefix_dot = format!("{qualified_name}.");
-    let active_constant_def_overrides =
-        active_constant_def_overrides(tree, class_index, class_def, def_map);
-    let filtered_def_map: crate::ResolveDefMap = def_map
-        .iter()
-        .filter(|(_, path)| {
-            if let Some(suffix) = path.strip_prefix(&func_prefix_dot) {
-                // Keep only entries that are NOT simple local parameter names.
-                // Multi-segment suffixes (e.g., "sub.field") are kept since they
-                // reference nested paths, not direct local parameters.
-                !(suffix.find('.').is_none() && function_locals.contains(suffix))
-            } else {
-                true
-            }
-        })
-        .map(|(k, v)| {
-            (
-                *k,
-                active_constant_def_overrides
-                    .get(k)
-                    .cloned()
-                    .unwrap_or_else(|| v.clone()),
-            )
-        })
-        .collect();
-
     for alg in &context.algorithms {
         let flat_alg = algorithms::flatten_algorithm_section(
             alg,
             algorithms::AlgorithmSectionContext {
                 prefix: &prefix,
                 imports: &import_map,
-                def_map: Some(&filtered_def_map),
                 initial_locals: &function_locals,
                 source_map: Some(source_map),
                 instance_name: None,
+                predefined_string_declaration: tree
+                    .scope_tree
+                    .predefined_member(&rumoca_core::ComponentPath::from_flat_path("String")),
+                predefined_intrinsics: ast_lower::PredefinedIntrinsicIds::from_tree(tree),
             },
             algorithms::AlgorithmSectionMetadata::new(span, qualified_name.to_string()),
         )?;
@@ -1627,7 +1747,10 @@ fn convert_function<'tree>(
 
     // Convert external function declaration (MLS §12.9)
     if let Some(ref ext) = class_def.external {
-        func.external = Some(convert_external_function(ext, def_map)?);
+        func.external = Some(convert_external_function(
+            ext,
+            ast_lower::PredefinedIntrinsicIds::from_tree(tree),
+        )?);
     }
 
     // Extract derivative annotations (MLS §12.7.1)

@@ -129,10 +129,18 @@ fn eval_event_action_message_concatenates_text_and_numeric_parts() {
             message: rumoca_ir_solve::SolveEventMessage {
                 parts: vec![
                     rumoca_ir_solve::SolveEventMessagePart::Text("value = ".to_string()),
-                    rumoca_ir_solve::SolveEventMessagePart::Number(vec![
-                        LinearOp::LoadY { dst: 0, index: 0 },
-                        LinearOp::StoreOutput { src: 0 },
-                    ]),
+                    rumoca_ir_solve::SolveEventMessagePart::Conversion {
+                        value: vec![
+                            LinearOp::LoadY { dst: 0, index: 0 },
+                            LinearOp::StoreOutput { src: 0 },
+                        ],
+                        source: rumoca_ir_solve::SolveStringConversionSource::Real,
+                        format: rumoca_ir_solve::SolveStringConversionFormat::Options {
+                            minimum_length: None,
+                            left_justified: None,
+                            significant_digits: None,
+                        },
+                    },
                 ],
             },
             span: fixture_span(),
@@ -150,6 +158,93 @@ fn eval_event_action_message_concatenates_text_and_numeric_parts() {
             message: "value = 3.5".to_string()
         }
     );
+}
+
+#[test]
+fn eval_event_action_message_applies_dynamic_string_options() {
+    let events = event_message_fixture(
+        rumoca_ir_solve::SolveStringConversionSource::Real,
+        rumoca_ir_solve::SolveStringConversionFormat::Options {
+            minimum_length: Some(constant_row(8.0)),
+            left_justified: Some(constant_row(0.0)),
+            significant_digits: Some(constant_row(3.0)),
+        },
+    );
+
+    let request = eval_event_action_request(&events, &[3.5], &[], 0.0, RowEvalContext::default())
+        .expect("well-typed dynamic String options should evaluate");
+
+    assert_eq!(
+        request,
+        EventActionRequest::AssertionFailed {
+            message: "value =      3.5".to_string()
+        }
+    );
+}
+
+#[test]
+fn eval_event_action_message_rejects_oversized_width_with_source_span() {
+    let events = event_message_fixture(
+        rumoca_ir_solve::SolveStringConversionSource::Real,
+        rumoca_ir_solve::SolveStringConversionFormat::Options {
+            minimum_length: Some(constant_row((MAX_EVENT_MESSAGE_BYTES + 1) as f64)),
+            left_justified: None,
+            significant_digits: None,
+        },
+    );
+
+    let error = eval_event_action_request(&events, &[3.5], &[], 0.0, RowEvalContext::default())
+        .expect_err("unbounded runtime formatting must fail before allocating");
+
+    assert!(matches!(
+        error,
+        EvalSolveError::InvalidRow {
+            span: Some(span),
+            ..
+        } if span == fixture_span()
+    ));
+    assert!(error.to_string().contains("minimumLength exceeds"));
+}
+
+fn event_message_fixture(
+    source: rumoca_ir_solve::SolveStringConversionSource,
+    format: rumoca_ir_solve::SolveStringConversionFormat,
+) -> rumoca_ir_solve::SolveEventPartition {
+    rumoca_ir_solve::SolveEventPartition {
+        action_conditions: ScalarProgramBlock::with_source_span(
+            vec![constant_row(1.0)],
+            fixture_span()
+                .require_provenance("evaluator fixture")
+                .expect("fixture span is source-backed"),
+        )
+        .expect("event action condition fixture is computable"),
+        actions: vec![rumoca_ir_solve::SolveEventAction {
+            kind: SolveEventActionKind::Assert,
+            message: rumoca_ir_solve::SolveEventMessage {
+                parts: vec![
+                    rumoca_ir_solve::SolveEventMessagePart::Text("value = ".to_string()),
+                    rumoca_ir_solve::SolveEventMessagePart::Conversion {
+                        value: vec![
+                            LinearOp::LoadY { dst: 0, index: 0 },
+                            LinearOp::StoreOutput { src: 0 },
+                        ],
+                        source,
+                        format,
+                    },
+                ],
+            },
+            span: fixture_span(),
+            origin: "assert".to_string(),
+        }],
+        ..Default::default()
+    }
+}
+
+fn constant_row(value: f64) -> Vec<LinearOp> {
+    vec![
+        LinearOp::Const { dst: 0, value },
+        LinearOp::StoreOutput { src: 0 },
+    ]
 }
 
 #[test]

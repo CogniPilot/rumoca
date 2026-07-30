@@ -4,12 +4,13 @@
 //! the SPEC_0021 file-size budget.
 
 use super::{
-    ComponentImports, IndexMap, InnerDeclaration, InstantiateContext, InstantiateError,
-    InstantiateEvalCtx, InstantiateOptions, InstantiateResult, MissingInnerInfo, OuterValues,
-    TypeOverrideMap, ast, component_declaration_source_scope, description_tokens_to_string,
-    evaluate_component_condition_with_outer_values, extract_bool_params_with_mods,
-    extract_real_params_with_mods, find_class_in_tree, get_or_compute_template, instantiate_class,
-    instantiate_component, is_type_compatible_with_def_id, location_to_span, path_utils,
+    ComponentImports, ComponentInstantiationScope, IndexMap, InnerDeclaration, InstantiateContext,
+    InstantiateError, InstantiateEvalCtx, InstantiateOptions, InstantiateResult, MissingInnerInfo,
+    OuterValues, TypeOverrideMap, ast, component_declaration_source_scope,
+    description_tokens_to_string, evaluate_component_condition_with_outer_values,
+    extract_bool_params_with_mods, extract_real_params_with_mods, find_class_in_tree,
+    get_or_compute_template, instantiate_class, instantiate_component,
+    is_type_compatible_with_def_id, location_to_span, path_utils,
     resolve_effective_components_for_eval, try_eval_real_expr,
 };
 use rustc_hash::FxHashMap;
@@ -74,6 +75,7 @@ pub(crate) fn retry_with_synthetic_inners(
     overlay.is_partial = model.partial;
     overlay.class_type = model.class_type.clone();
     overlay.root_description = description_tokens_to_string(&model.description);
+    let root_instance_id = overlay.alloc_id();
 
     // For each missing inner, look up the class, register it in root scope,
     // and instantiate its sub-components at root level.
@@ -101,9 +103,12 @@ pub(crate) fn retry_with_synthetic_inners(
             &synthetic,
             &mut ctx,
             &mut overlay,
-            &empty_siblings,
-            &empty_type_overrides,
-            ComponentImports::EMPTY,
+            ComponentInstantiationScope {
+                owner_class_id: Some(root_instance_id),
+                effective_components: &empty_siblings,
+                type_overrides: &empty_type_overrides,
+                imports: ComponentImports::EMPTY,
+            },
         )
         .is_err()
         {
@@ -113,7 +118,16 @@ pub(crate) fn retry_with_synthetic_inners(
     }
 
     // Re-run the main model instantiation with inners now available
-    if instantiate_class(tree, model, &mut ctx, &mut overlay).is_err() {
+    if instantiate_class(
+        tree,
+        model,
+        None,
+        Some(root_instance_id),
+        &mut ctx,
+        &mut overlay,
+    )
+    .is_err()
+    {
         return Err(SyntheticInnerError::InstantiationFailed);
     }
 

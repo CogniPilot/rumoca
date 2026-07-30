@@ -987,7 +987,12 @@ fn simulate_discrete_updates_can_read_initial_event_flag() {
 
     // MLS §8.6: initial() is true while the initial event is settled and false
     // afterwards; the startup assignment must keep its settled value.
-    assert_eq!(result.data, vec![vec![1.0, 1.0, 1.0]]);
+    assert_eq!(
+        result.data,
+        vec![vec![1.0, 1.0, 1.0]],
+        "times={:?}",
+        result.times
+    );
 }
 
 #[test]

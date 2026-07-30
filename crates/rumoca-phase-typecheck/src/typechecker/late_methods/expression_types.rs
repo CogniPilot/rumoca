@@ -34,7 +34,7 @@ impl TypeChecker {
                 ..
             } => {
                 let dotted_name = Self::component_ref_name(comp);
-                let type_id = self.resolve_type_name(&dotted_name, comp.def_id, type_table);
+                let type_id = self.resolve_type_name(&dotted_name, comp.root_def_id(), type_table);
                 matches!(
                     type_table.get(type_id),
                     Some(Type::Class(class_type)) if class_type.kind == ClassKind::Function
@@ -121,11 +121,19 @@ impl TypeChecker {
         if leaf == "String" {
             return Some(type_table.string());
         }
-        if comp.def_id.is_some() && self.user_function_definition(comp, &dotted_name).is_some() {
+        if comp.root_def_id().is_some()
+            && self.user_function_definition(comp, &dotted_name).is_some()
+        {
             return self.infer_user_function_output_type(comp, &dotted_name, type_table);
         }
+        if let Some(function) = comp
+            .target_def_id()
+            .and_then(|identity| self.predefined_intrinsics.get(&identity))
+        {
+            return self.infer_builtin_result_type(*function, args, type_table);
+        }
         let resolves_to_predefined = comp
-            .def_id
+            .root_def_id()
             .is_none_or(|def_id| !self.type_ids_by_def_id.contains_key(&def_id));
         if resolves_to_predefined
             && let Some(function) = rumoca_core::BuiltinFunction::from_name(leaf)
@@ -139,7 +147,7 @@ impl TypeChecker {
         // Record constructors use call syntax (`Payload(...)`) but semantically
         // evaluate to the record type. Resolve through the type table so
         // equation compatibility checks can reject mismatched record identities.
-        let type_id = self.resolve_type_name(&dotted_name, comp.def_id, type_table);
+        let type_id = self.resolve_type_name(&dotted_name, comp.root_def_id(), type_table);
         if type_id.is_unknown() {
             return self.infer_user_function_output_type(comp, &dotted_name, type_table);
         }
@@ -269,7 +277,9 @@ impl TypeChecker {
             | BuiltinFunction::Zeros
             | BuiltinFunction::Ones
             | BuiltinFunction::Identity
-            | BuiltinFunction::Linspace => Some(type_table.real()),
+            | BuiltinFunction::Linspace
+            | BuiltinFunction::Interval => Some(type_table.real()),
+            BuiltinFunction::Clock => type_table.lookup("Clock"),
             BuiltinFunction::Smooth => args
                 .get(1)
                 .and_then(|arg| self.infer_expression_type(arg, type_table)),
@@ -300,7 +310,14 @@ impl TypeChecker {
             | BuiltinFunction::Symmetric
             | BuiltinFunction::Cross
             | BuiltinFunction::Skew
-            | BuiltinFunction::Cat => args
+            | BuiltinFunction::Cat
+            | BuiltinFunction::Hold
+            | BuiltinFunction::Previous
+            | BuiltinFunction::SubSample
+            | BuiltinFunction::SuperSample
+            | BuiltinFunction::ShiftSample
+            | BuiltinFunction::BackSample
+            | BuiltinFunction::NoClock => args
                 .first()
                 .and_then(|arg| self.infer_expression_type(arg, type_table)),
             BuiltinFunction::Sample => {
@@ -331,7 +348,7 @@ impl TypeChecker {
         type_table: &TypeTable,
     ) -> Option<TypeId> {
         if let Some(output) = comp
-            .def_id
+            .root_def_id()
             .and_then(|def_id| self.function_signatures.get(&def_id))
             .and_then(|signature| signature.outputs.first())
             .map(|(_, output)| output)
@@ -377,7 +394,7 @@ impl TypeChecker {
         comp: &rumoca_ir_ast::ComponentReference,
         dotted_name: &str,
     ) -> Option<&'a ClassDef> {
-        if let Some(def_id) = comp.def_id {
+        if let Some(def_id) = comp.root_def_id() {
             // A resolved DefId is authoritative. The evaluator's function map
             // also contains scope-local import aliases, so a name-only fallback
             // here can bind a predefined call such as `sum(...)` to an

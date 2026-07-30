@@ -228,7 +228,7 @@ impl TypeChecker {
         class: &ClassDef,
     ) -> Option<rumoca_eval_ast::eval::VariabilityLevel> {
         reference
-            .def_id
+            .root_def_id()
             .and_then(|def_id| {
                 class
                     .components

@@ -171,12 +171,44 @@ fn simulation_timeout_preserves_successful_compile_result() {
     assert_eq!(result.phase_reached, "Success");
     assert_eq!(result.error, None);
     assert_eq!(result.error_code, None);
+    assert_eq!(
+        result.sim_error_code.as_deref(),
+        Some(MODEL_ATTEMPT_TIMEOUT_ERROR_CODE)
+    );
     assert_eq!(result.timeout_phase, Some(WorkerProgressPhase::IC));
     assert_eq!(result.timeout_seconds, Some(10.0));
     assert_eq!(result.sim_status.as_deref(), Some("sim_timeout"));
     assert_eq!(result.ic_status.as_deref(), Some("ic_timeout"));
     assert_eq!(result.flatten_seconds, Some(0.75));
     assert_eq!(result.dae_seconds, Some(0.20));
+}
+
+#[test]
+fn model_attempt_default_is_ten_seconds() {
+    assert_eq!(MODEL_ATTEMPT_TIMEOUT_SECS, 10.0);
+}
+
+#[test]
+fn model_result_rejects_removed_timeout_recheck_schema() {
+    let result = convert_phase_result(
+        "Modelica.Blocks.Examples.PID_Controller".to_string(),
+        PhaseResult::Failed {
+            phase: FailedPhase::ToDae,
+            error: "timed out".to_string(),
+            error_code: Some(MODEL_ATTEMPT_TIMEOUT_ERROR_CODE.to_string()),
+            diagnostics: Vec::new(),
+        },
+    );
+    let mut value = serde_json::to_value(result).expect("model result should serialize");
+    value
+        .as_object_mut()
+        .expect("model result must serialize as an object")
+        .insert("timeout_recheck".to_string(), serde_json::json!({}));
+
+    assert!(
+        serde_json::from_value::<MslModelResult>(value).is_err(),
+        "removed retry schema must not be accepted as a compatibility field"
+    );
 }
 
 #[test]

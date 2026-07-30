@@ -97,7 +97,7 @@ impl ExpressionTransformer for MergedReferenceNormalizer<'_> {
             }
         }
         if self.names_merged_element(&reference) {
-            reference.def_id = None;
+            reference.set_root_def_id(None);
         }
         reference
     }
@@ -201,7 +201,7 @@ mod tests {
                 _ => None,
             })
             .expect("probe binding should be a component reference");
-        reference.def_id = Some(def_id);
+        reference.set_root_def_id(Some(def_id));
     }
 
     fn resolved_tree(source: &str) -> ast::ClassTree {

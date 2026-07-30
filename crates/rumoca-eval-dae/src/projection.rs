@@ -163,7 +163,34 @@ where
                 scalar_index,
                 node.provenance().span(),
             ),
+            dae::ExpressionOperation::StringConversion { value, format, .. } => {
+                self.string_conversion_dependencies(value, format)
+            }
         }
+    }
+
+    fn string_conversion_dependencies(
+        &mut self,
+        value: dae::ExprId<'dae>,
+        format: dae::StringConversionFormatView<'dae>,
+    ) -> Result<(), ProjectionError> {
+        self.all_scalars(value)?;
+        match format {
+            dae::StringConversionFormatView::Options {
+                minimum_length,
+                left_justified,
+                significant_digits,
+            } => {
+                for option in [minimum_length, left_justified, significant_digits]
+                    .into_iter()
+                    .flatten()
+                {
+                    self.all_scalars(option)?;
+                }
+            }
+            dae::StringConversionFormatView::Format { value } => self.all_scalars(value)?,
+        }
+        Ok(())
     }
 
     fn range_dependencies(&mut self, range: dae::RangeView<'dae>) -> Result<(), ProjectionError> {

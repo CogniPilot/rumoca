@@ -6,10 +6,11 @@ use std::ops::ControlFlow::{self, Continue};
 
 pub(crate) fn collect_class_dependencies(
     tree: &ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'_>,
     class: &ast::ClassDef,
     class_name: &str,
 ) -> IndexSet<String> {
-    let mut collector = ClassDependencyCollector::new(tree, class_name);
+    let mut collector = ClassDependencyCollector::new(tree, class_index, class_name);
     assert!(
         !collector.collect_class(class).is_break(),
         "class dependency traversal stopped while collecting `{class_name}`"
@@ -17,16 +18,22 @@ pub(crate) fn collect_class_dependencies(
     collector.finish()
 }
 
-struct ClassDependencyCollector<'a> {
-    tree: &'a ast::ClassTree,
-    class_name: &'a str,
+struct ClassDependencyCollector<'tree, 'index, 'name> {
+    tree: &'tree ast::ClassTree,
+    class_index: &'index ast::ClassDefIndex<'tree>,
+    class_name: &'name str,
     deps: IndexSet<String>,
 }
 
-impl<'a> ClassDependencyCollector<'a> {
-    fn new(tree: &'a ast::ClassTree, class_name: &'a str) -> Self {
+impl<'tree, 'index, 'name> ClassDependencyCollector<'tree, 'index, 'name> {
+    fn new(
+        tree: &'tree ast::ClassTree,
+        class_index: &'index ast::ClassDefIndex<'tree>,
+        class_name: &'name str,
+    ) -> Self {
         Self {
             tree,
+            class_index,
             class_name,
             deps: IndexSet::new(),
         }
@@ -220,11 +227,11 @@ impl<'a> ClassDependencyCollector<'a> {
     }
 
     fn add_class_dep_by_def_id(&mut self, def_id: DefId) {
-        let Some(qualified_name) = self.tree.def_map.get(&def_id) else {
-            return;
-        };
-        if self.tree.get_class_by_def_id(def_id).is_some() {
-            self.deps.insert(qualified_name.clone());
+        for owner_def_id in self.class_index.def_ancestry(def_id).into_iter().rev() {
+            if let Some(qualified_name) = self.class_index.qualified_name(owner_def_id) {
+                self.deps.insert(qualified_name.to_string());
+                return;
+            }
         }
     }
 }
@@ -238,7 +245,7 @@ fn import_path_matches(path: &ast::Name, import_path: &[String]) -> bool {
             .all(|(token, import_part)| token.text.as_ref() == import_part)
 }
 
-impl Visitor for ClassDependencyCollector<'_> {
+impl Visitor for ClassDependencyCollector<'_, '_, '_> {
     fn visit_expr_function_call_ctx(
         &mut self,
         comp: &ast::ComponentReference,
@@ -254,10 +261,21 @@ impl Visitor for ClassDependencyCollector<'_> {
     }
 
     fn visit_component_reference(&mut self, cr: &ast::ComponentReference) -> ControlFlow<()> {
-        if let Some(def_id) = cr.def_id {
-            self.add_class_dep_by_def_id(def_id);
+        // A resolved component reference carries two complementary semantic
+        // identities. The root declaration anchors the written lookup path,
+        // while the target declaration identifies the exact final member.
+        // Strict pruning must preserve both owners: inherited members can have
+        // a target owner outside the root's lexical subtree.
+        if let Some(root_def_id) = cr.root_def_id() {
+            self.add_class_dep_by_def_id(root_def_id);
+        }
+        if let Some(target_def_id) = cr.target_def_id() {
+            self.add_class_dep_by_def_id(target_def_id);
         }
         for part in &cr.parts {
+            if let Some(part_def_id) = part.def_id {
+                self.add_class_dep_by_def_id(part_def_id);
+            }
             let Some(subscripts) = &part.subs else {
                 continue;
             };

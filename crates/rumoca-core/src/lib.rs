@@ -139,15 +139,24 @@ pub fn runtime_flow_action_function_short_name(name: &str) -> Option<&'static st
     runtime_flow_action_function_name(top_level_last_segment(name))
 }
 
-/// Return the canonical name for source temporal builtin operators that must
-/// be lowered before DAE/Solve exits.
-pub fn source_temporal_builtin_name(function: BuiltinFunction) -> Option<&'static str> {
+/// Return the canonical name for typed source temporal or synchronous
+/// intrinsics that must be lowered before DAE/Solve exits.
+pub fn source_dae_forbidden_builtin_name(function: BuiltinFunction) -> Option<&'static str> {
     match function {
         BuiltinFunction::Pre => Some("pre"),
         BuiltinFunction::Edge => Some("edge"),
         BuiltinFunction::Change => Some("change"),
         BuiltinFunction::Sample => Some("sample"),
         BuiltinFunction::Reinit => Some("reinit"),
+        BuiltinFunction::Clock => Some("Clock"),
+        BuiltinFunction::Hold => Some("hold"),
+        BuiltinFunction::Previous => Some("previous"),
+        BuiltinFunction::Interval => Some("interval"),
+        BuiltinFunction::SubSample => Some("subSample"),
+        BuiltinFunction::SuperSample => Some("superSample"),
+        BuiltinFunction::ShiftSample => Some("shiftSample"),
+        BuiltinFunction::BackSample => Some("backSample"),
+        BuiltinFunction::NoClock => Some("noClock"),
         _ => None,
     }
 }

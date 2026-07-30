@@ -166,11 +166,7 @@ fn qualify_statement_block(
 ///
 /// Algorithms use different options than equations:
 /// - `skip_local: true` - don't qualify local references (like loop variables)
-/// - `preserve_def_id: true` - keep the original def_id for analysis
-const ALGORITHM_QUALIFY_OPTS: QualifyOptions = QualifyOptions {
-    skip_local: true,
-    preserve_def_id: true,
-};
+const ALGORITHM_QUALIFY_OPTS: QualifyOptions = QualifyOptions { skip_local: true };
 
 /// Qualify a component reference by prepending the prefix.
 ///
@@ -229,10 +225,11 @@ pub(crate) fn extract_outputs(
 pub(crate) struct AlgorithmSectionContext<'a> {
     pub(crate) prefix: &'a ast::QualifiedName,
     pub(crate) imports: &'a ImportMap,
-    pub(crate) def_map: Option<&'a crate::ResolveDefMap>,
     pub(crate) initial_locals: &'a HashSet<String>,
     pub(crate) source_map: Option<&'a SourceMap>,
     pub(crate) instance_name: Option<&'a str>,
+    pub(crate) predefined_string_declaration: Option<rumoca_core::DefId>,
+    pub(crate) predefined_intrinsics: ast_lower::PredefinedIntrinsicIds,
 }
 
 pub(crate) struct AlgorithmSectionMetadata {
@@ -268,8 +265,9 @@ pub(crate) fn flatten_algorithm_section(
             ast_lower::statement_from_ast_with_context_and_source_map(
                 stmt,
                 ast_lower::LoweringContext {
-                    def_map: context.def_map,
                     instance_name: context.instance_name,
+                    predefined_string_declaration: context.predefined_string_declaration,
+                    predefined_intrinsics: context.predefined_intrinsics,
                 },
                 context.source_map,
             )
@@ -307,6 +305,13 @@ mod tests {
         )
     }
 
+    fn fixture_def_id(name: &str) -> rumoca_core::DefId {
+        let hash = name.bytes().fold(2_166_136_261_u32, |hash, byte| {
+            hash.wrapping_mul(16_777_619) ^ u32::from(byte)
+        });
+        rumoca_core::DefId::new(hash.max(1))
+    }
+
     fn make_comp_ref(names: &[&str]) -> ast::ComponentReference {
         ast::ComponentReference {
             local: false,
@@ -318,10 +323,11 @@ mod tests {
                         ..Default::default()
                     },
                     subs: None,
+                    def_id: Some(fixture_def_id(n)),
                 })
                 .collect(),
-            def_id: None,
             span: test_span(),
+            qualified_display_name: None,
         }
     }
 
@@ -332,7 +338,7 @@ mod tests {
     fn ast_to_flat(stmts: &[ast::Statement]) -> Vec<rumoca_core::Statement> {
         stmts
             .iter()
-            .map(|stmt| ast_lower::statement_from_ast_with_def_map(stmt, None).unwrap())
+            .map(|stmt| ast_lower::statement_from_ast(stmt).unwrap())
             .collect()
     }
 
@@ -349,16 +355,20 @@ mod tests {
         let qualified = qualify_statement(&stmt, &prefix, &ImportMap::default(), &HashSet::new());
 
         if let ast::Statement::Assignment { comp, value } = qualified {
-            // x becomes comp.x
-            assert_eq!(comp.parts.len(), 2);
-            assert_eq!(&*comp.parts[0].ident.text, "comp");
-            assert_eq!(&*comp.parts[1].ident.text, "x");
+            assert_eq!(comp.parts.len(), 1);
+            assert_eq!(&*comp.parts[0].ident.text, "x");
+            assert_eq!(
+                comp.qualified_display_name().map(|name| name.as_str()),
+                Some("comp.x")
+            );
 
-            // y becomes comp.y
             if let ast::Expression::ComponentReference(cr) = value {
-                assert_eq!(cr.parts.len(), 2);
-                assert_eq!(&*cr.parts[0].ident.text, "comp");
-                assert_eq!(&*cr.parts[1].ident.text, "y");
+                assert_eq!(cr.parts.len(), 1);
+                assert_eq!(&*cr.parts[0].ident.text, "y");
+                assert_eq!(
+                    cr.qualified_display_name().map(|name| name.as_str()),
+                    Some("comp.y")
+                );
             } else {
                 panic!("Expected ast::ComponentReference");
             }
@@ -413,17 +423,23 @@ mod tests {
         let ast::Expression::ComponentReference(cr) = end.as_ref() else {
             panic!("Expected ast::ComponentReference");
         };
-        assert_eq!(cr.parts.len(), 2);
-        assert_eq!(&*cr.parts[0].ident.text, "comp");
-        assert_eq!(&*cr.parts[1].ident.text, "n");
+        assert_eq!(cr.parts.len(), 1);
+        assert_eq!(&*cr.parts[0].ident.text, "n");
+        assert_eq!(
+            cr.qualified_display_name().map(|name| name.as_str()),
+            Some("comp.n")
+        );
 
         // Body assignment 'x := x + i' - x is qualified, i is not (loop var)
         let ast::Statement::Assignment { comp, .. } = &equations[0] else {
             panic!("Expected Assignment");
         };
-        assert_eq!(comp.parts.len(), 2);
-        assert_eq!(&*comp.parts[0].ident.text, "comp");
-        assert_eq!(&*comp.parts[1].ident.text, "x");
+        assert_eq!(comp.parts.len(), 1);
+        assert_eq!(&*comp.parts[0].ident.text, "x");
+        assert_eq!(
+            comp.qualified_display_name().map(|name| name.as_str()),
+            Some("comp.x")
+        );
     }
 
     #[test]
@@ -452,9 +468,10 @@ mod tests {
                             ..Default::default()
                         },
                         subs: Some(vec![Subscript::Expression(make_var_expr("i"))]),
+                        def_id: Some(rumoca_core::DefId::new(1)),
                     }],
-                    def_id: None,
                     span: rumoca_core::Span::DUMMY,
+                    qualified_display_name: None,
                 }),
             }],
         };
@@ -472,10 +489,13 @@ mod tests {
         let ast::Expression::ComponentReference(cr) = value else {
             panic!("Expected ast::ComponentReference");
         };
-        assert_eq!(cr.parts.len(), 2);
-        assert_eq!(&*cr.parts[0].ident.text, "a");
-        assert_eq!(&*cr.parts[1].ident.text, "t");
-        let subs = cr.parts[1].subs.as_ref().expect("expected subscript on t");
+        assert_eq!(cr.parts.len(), 1);
+        assert_eq!(&*cr.parts[0].ident.text, "t");
+        assert_eq!(
+            cr.qualified_display_name().map(|name| name.as_str()),
+            Some("a.t[i]")
+        );
+        let subs = cr.parts[0].subs.as_ref().expect("expected subscript on t");
         let Subscript::Expression(sub_expr) = &subs[0] else {
             panic!("expected expression subscript");
         };
@@ -569,9 +589,10 @@ mod tests {
                         ..Default::default()
                     },
                     subs: Some(vec![Subscript::Expression(int_expr(1))]),
+                    def_id: Some(rumoca_core::DefId::new(1)),
                 }],
-                def_id: None,
                 span: rumoca_core::Span::DUMMY,
+                qualified_display_name: None,
             }),
         };
 
@@ -631,6 +652,6 @@ mod tests {
         assert_eq!(cr.parts.len(), 2);
         assert_eq!(&*cr.parts[0].ident.text, "g");
         assert_eq!(&*cr.parts[1].ident.text, "tau");
-        assert_eq!(cr.def_id, None);
+        assert_eq!(cr.root_def_id(), Some(fixture_def_id("g")));
     }
 }

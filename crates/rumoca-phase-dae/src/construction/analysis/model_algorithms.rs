@@ -126,7 +126,7 @@ fn analyze_separated_array_sum(
         return Ok(None);
     }
     let Some(subscripts) = array_component
-        .parts
+        .parts()
         .last()
         .map(|part| part.subs.as_slice())
     else {
@@ -298,7 +298,7 @@ fn analyze_total_array_definition(
             *span,
         ));
     };
-    let Some(component) = comp.parts.last() else {
+    let Some(component) = comp.parts().last() else {
         return Err(ToDaeError::unsupported_algorithm(
             "model",
             "array loop assignment has no checked target",
@@ -416,7 +416,7 @@ fn validate_declarative_sequence(
         match statement {
             rumoca_core::Statement::Assignment { comp, value, span } => {
                 let written = assignment_target(comp);
-                if &written != target || comp.parts.iter().any(|part| !part.subs.is_empty()) {
+                if &written != target || comp.parts().iter().any(|part| !part.subs.is_empty()) {
                     return Err(ToDaeError::unsupported_algorithm(
                         "model",
                         "declarative scalar algorithm assignment escaped its checked target",
@@ -528,7 +528,7 @@ fn collect_statement_targets(
 ) {
     for statement in statements {
         match statement {
-            rumoca_core::Statement::Assignment { comp, .. } if !comp.parts.is_empty() => {
+            rumoca_core::Statement::Assignment { comp, .. } if !comp.parts().is_empty() => {
                 targets.insert(assignment_target(comp));
             }
             rumoca_core::Statement::FunctionCall { outputs, .. } => {

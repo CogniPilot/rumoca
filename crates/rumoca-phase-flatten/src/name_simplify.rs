@@ -48,8 +48,7 @@ struct RenameContext<'a> {
 }
 
 struct ProjectionElement {
-    name: String,
-    span: rumoca_core::Span,
+    reference: rumoca_core::Reference,
 }
 
 fn protected_semantic_prefixes(flat: &flat::Model) -> HashSet<String> {
@@ -97,7 +96,8 @@ fn build_projection_map(
     flat: &flat::Model,
     rename_map: &HashMap<String, String>,
 ) -> Result<HashMap<String, Vec<ProjectionElement>>, crate::errors::FlattenError> {
-    let mut groups: HashMap<String, Vec<(Vec<i64>, String, rumoca_core::Span)>> = HashMap::new();
+    let mut groups: HashMap<String, Vec<(Vec<i64>, rumoca_core::Reference, rumoca_core::Span)>> =
+        HashMap::new();
 
     for (name, variable) in &flat.variables {
         let Some((projection, indices)) = projection_key(name.as_str()) else {
@@ -106,11 +106,20 @@ fn build_projection_map(
         if indices.len() != 1 || projection == name.as_str() {
             continue;
         }
-        groups.entry(projection).or_default().push((
-            indices,
-            remap_name_string(name.as_str(), rename_map),
-            variable.source_span,
-        ));
+        let component_ref = variable.component_ref.clone().ok_or_else(|| {
+            crate::errors::FlattenError::missing_flat_variable_identity(
+                name.as_str(),
+                variable.source_span,
+            )
+        })?;
+        let remapped_name = remap_name_string(name.as_str(), rename_map);
+        let reference =
+            rumoca_core::Reference::with_component_reference(remapped_name, component_ref)
+                .with_instance_id(variable.instance_id);
+        groups
+            .entry(projection)
+            .or_default()
+            .push((indices, reference, variable.source_span));
     }
 
     let mut projection_map = HashMap::new();
@@ -120,22 +129,25 @@ fn build_projection_map(
         }
         entries.sort_by(|(lhs, _, _), (rhs, _, _)| lhs.cmp(rhs));
         let mut elements = Vec::with_capacity(entries.len());
-        for (_, name, span) in entries {
+        for (_, reference, span) in entries {
             if span.is_dummy() {
                 return Err(crate::errors::FlattenError::missing_source_context(
                     format!(
-                        "cannot build projection `{projection}` from `{name}` without a variable source span"
+                        "cannot build projection `{projection}` from `{}` without a variable source span",
+                        reference.as_str()
                     ),
                 ));
             }
-            elements.push(ProjectionElement { name, span });
+            elements.push(ProjectionElement { reference });
         }
         projection_map.insert(projection, elements);
     }
     Ok(projection_map)
 }
 
-fn has_duplicate_projection_index(entries: &[(Vec<i64>, String, rumoca_core::Span)]) -> bool {
+fn has_duplicate_projection_index(
+    entries: &[(Vec<i64>, rumoca_core::Reference, rumoca_core::Span)],
+) -> bool {
     let mut seen = HashSet::new();
     entries.iter().any(|(indices, _, _)| !seen.insert(indices))
 }
@@ -156,9 +168,9 @@ fn projection_expression(
         elements: entries
             .iter()
             .map(|element| rumoca_core::Expression::VarRef {
-                name: rumoca_core::Reference::new(element.name.clone()),
+                name: element.reference.clone(),
                 subscripts: Vec::new(),
-                span: element.span,
+                span: owner_span,
             })
             .collect(),
         is_matrix: false,
@@ -559,6 +571,10 @@ fn remap_expression_with_locals(
                 remap_expression_with_locals(arg, ctx, locals)?;
             }
         }
+        rumoca_core::Expression::StringConversion { value, format, .. } => {
+            remap_expression_with_locals(value, ctx, locals)?;
+            remap_string_conversion_format(format, ctx, locals)?;
+        }
         rumoca_core::Expression::Literal { value: _, .. }
         | rumoca_core::Expression::Empty { .. } => {}
         rumoca_core::Expression::If {
@@ -611,6 +627,31 @@ fn remap_expression_with_locals(
         }
         rumoca_core::Expression::FieldAccess { base, .. } => {
             remap_expression_with_locals(base, ctx, locals)?;
+        }
+    }
+    Ok(())
+}
+
+fn remap_string_conversion_format(
+    format: &mut rumoca_core::StringConversionFormat,
+    ctx: &RenameContext<'_>,
+    locals: &HashSet<String>,
+) -> Result<(), crate::errors::FlattenError> {
+    match format {
+        rumoca_core::StringConversionFormat::Options {
+            minimum_length,
+            left_justified,
+            significant_digits,
+        } => {
+            for operand in [minimum_length, left_justified, significant_digits]
+                .into_iter()
+                .flatten()
+            {
+                remap_expression_with_locals(operand, ctx, locals)?;
+            }
+        }
+        rumoca_core::StringConversionFormat::Format { value } => {
+            remap_expression_with_locals(value, ctx, locals)?;
         }
     }
     Ok(())
@@ -725,9 +766,13 @@ fn remap_component_reference(
     ctx: &RenameContext<'_>,
     locals: &HashSet<String>,
 ) -> Result<(), crate::errors::FlattenError> {
-    for part in &mut comp.parts {
+    let mut parts = comp.parts().to_vec();
+    for part in &mut parts {
         remap_subscripts(&mut part.subs, ctx, locals)?;
     }
+    *comp = comp
+        .with_replaced_parts(parts)
+        .expect("subscript rewrites preserve every exact part identity");
 
     let old_name = comp.to_var_name();
     if locals.contains(old_name.as_str()) {
@@ -741,15 +786,19 @@ fn remap_component_reference(
     }
 
     let trailing_subs = comp
-        .parts
+        .parts()
         .last()
         .map(|part| part.subs.clone())
         .unwrap_or_default();
-    comp.parts = vec![rumoca_core::ComponentRefPart {
-        ident: new_name.clone(),
-        span: comp.span,
-        subs: trailing_subs,
-    }];
+    let target_def_id = comp.target_def_id();
+    *comp = comp
+        .with_replaced_parts(vec![rumoca_core::ComponentRefPart {
+            ident: new_name.clone(),
+            span: comp.span(),
+            subs: trailing_subs,
+            def_id: target_def_id,
+        }])
+        .expect("renaming a resolved component preserves its exact target identity");
     Ok(())
 }
 
@@ -833,6 +882,9 @@ fn split_trailing_subscript(name: &str) -> Option<(&str, &str)> {
 mod tests {
     use super::*;
     use rumoca_core::Span;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    static NEXT_FIXTURE_ID: AtomicU32 = AtomicU32::new(40_000);
 
     fn test_span() -> Span {
         Span::from_offsets(
@@ -843,10 +895,32 @@ mod tests {
     }
 
     fn var(name: &str) -> flat::Variable {
+        let span = test_span();
+        let component_ref = rumoca_core::ComponentReference::construct(
+            false,
+            span,
+            rumoca_core::VarName::new(name)
+                .segments()
+                .into_iter()
+                .map(|ident| rumoca_core::ComponentRefPart {
+                    ident: ident.to_string(),
+                    span,
+                    subs: Vec::new(),
+                    def_id: rumoca_core::DefId::new(
+                        NEXT_FIXTURE_ID.fetch_add(1, Ordering::Relaxed),
+                    ),
+                })
+                .collect(),
+        )
+        .expect("fixture variable has a nonempty exact component reference");
         flat::Variable {
+            instance_id: rumoca_core::InstanceId::new(
+                NEXT_FIXTURE_ID.fetch_add(1, Ordering::Relaxed),
+            ),
             name: rumoca_core::VarName::new(name),
-            source_span: test_span(),
-            ..flat::Variable::empty_with_span(test_span())
+            component_ref: Some(component_ref),
+            source_span: span,
+            ..flat::Variable::empty_with_span(span)
         }
     }
 
@@ -859,19 +933,28 @@ mod tests {
     }
 
     fn structured_ref(path: &[&str]) -> rumoca_core::Reference {
-        rumoca_core::Reference::from_component_reference(rumoca_core::ComponentReference {
-            local: false,
-            span: Span::DUMMY,
-            parts: path
-                .iter()
-                .map(|ident| rumoca_core::ComponentRefPart {
-                    ident: (*ident).to_string(),
-                    span: Span::DUMMY,
-                    subs: Vec::new(),
-                })
-                .collect(),
-            def_id: Some(rumoca_core::DefId::new(17)),
-        })
+        let span = test_span();
+        let final_index = path.len().saturating_sub(1);
+        rumoca_core::Reference::from_component_reference(
+            rumoca_core::ComponentReference::construct(
+                false,
+                span,
+                path.iter()
+                    .enumerate()
+                    .map(|(index, ident)| rumoca_core::ComponentRefPart {
+                        ident: (*ident).to_string(),
+                        span,
+                        subs: Vec::new(),
+                        def_id: if index == final_index {
+                            rumoca_core::DefId::new(17)
+                        } else {
+                            rumoca_core::DefId::new(15 + index as u32)
+                        },
+                    })
+                    .collect(),
+            )
+            .expect("fixture reference carries exact per-segment identities"),
+        )
     }
 
     #[test]

@@ -8,21 +8,6 @@ const MSL_PARITY_TIMING_VERSION: u32 = 1;
 const MSL_PARITY_TIMING_JSON_REL: &str = "msl_parity_timing.json";
 const MSL_PARITY_TIMING_MARKDOWN_REL: &str = "msl_parity_timing.md";
 
-/// Report what the larger-budget re-runs of phase-monitor kills established.
-///
-/// Printed under `sim_timeout` because that is the number it qualifies: the
-/// `diagnostic` models are the ones that would otherwise be sitting in it while
-/// really being compiler failures.
-fn print_timeout_recheck_stats(stats: &MslTimeoutRecheckStats) {
-    if stats.rechecked == 0 {
-        return;
-    }
-    println!(
-        "    (phase-kill re-checks: {} re-run, {} reached a real diagnostic, {} still out of time, {} finished above budget, {} undecided)",
-        stats.rechecked, stats.diagnostic, stats.timeout, stats.completed, stats.unavailable
-    );
-}
-
 pub(super) fn print_simulation_results(summary: &MslSummary) {
     println!("Simulation Results:");
     println!("  - Attempted: {}", summary.sim_attempted);
@@ -30,7 +15,6 @@ pub(super) fn print_simulation_results(summary: &MslSummary) {
     println!("  - sim_nan: {}", summary.sim_nan);
     println!("  - sim_solver_fail: {}", summary.sim_solver_fail);
     println!("  - sim_timeout: {}", summary.sim_timeout);
-    print_timeout_recheck_stats(&summary.timeout_recheck);
     println!("  - sim_balance_fail: {}", summary.sim_balance_fail);
     println!("  - ic_attempted: {}", summary.ic_attempted);
     println!("  - ic_ok: {}", summary.ic_ok);

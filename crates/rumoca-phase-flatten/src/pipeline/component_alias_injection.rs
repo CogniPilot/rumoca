@@ -635,6 +635,7 @@ pub(crate) fn inject_component_declared_class_overrides(
         tree,
         class_index,
         comp_scope,
+        component_instance_id: comp.instance_id,
         active_alias,
         modifier_context: &modifier_context,
     };
@@ -648,6 +649,7 @@ struct ComponentClassOverrideInject<'a, 'tree> {
     tree: &'a ClassTree,
     class_index: &'a rumoca_ir_ast::ClassDefIndex<'tree>,
     comp_scope: &'a str,
+    component_instance_id: rumoca_core::InstanceId,
     active_alias: Option<&'a str>,
     modifier_context: &'a str,
 }
@@ -713,10 +715,19 @@ fn inject_component_declared_class_override(
             ctx,
         );
     }
+    extract_class_occurrence_modifiers(
+        request.tree,
+        request.class_index,
+        request.comp_scope,
+        alias_resolve_context,
+        request.component_instance_id,
+        ctx,
+    );
     apply_class_override_constant_modifiers(
         request.tree,
         request.class_index,
         &alias_scope,
+        request.component_instance_id,
         class_override,
         request.modifier_context,
         ctx,
@@ -727,6 +738,7 @@ fn inject_component_declared_class_override(
             request.tree,
             request.class_index,
             &lowered_alias_scope,
+            request.component_instance_id,
             class_override,
             request.modifier_context,
             ctx,
@@ -779,6 +791,7 @@ fn inject_active_component_class_override(
         request.tree,
         request.class_index,
         request.comp_scope,
+        request.component_instance_id,
         class_override,
         request.modifier_context,
         ctx,
@@ -807,19 +820,28 @@ fn apply_class_override_constant_modifiers(
     tree: &ClassTree,
     class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
     scope: &str,
+    component_instance_id: rumoca_core::InstanceId,
     class_override: &rumoca_ir_ast::ClassOverride,
     modifier_context: &str,
     ctx: &mut Context,
 ) {
     for modifier in &class_override.modifier_args {
-        extract_extends_modification_expr(
+        if let Some((declaration, value)) = extract_extends_modification_expr(
             tree,
             class_index,
             scope,
             modifier,
             modifier_context,
             ctx,
-        );
+        ) {
+            ctx.constant_values_by_occurrence.insert(
+                super::constant_injection::ConstantOccurrenceId::new(
+                    component_instance_id,
+                    declaration,
+                ),
+                value,
+            );
+        }
     }
 }
 
@@ -1181,6 +1203,12 @@ end ComponentModifierUse;
 ";
 
     fn flatten_source(model: &str) -> flat::Model {
+        let instanced = instantiate_source(model);
+        crate::flatten_ref(instanced.inner(), instanced.overlay(), model)
+            .expect("fixture should flatten")
+    }
+
+    fn instantiate_source(model: &str) -> ast::InstancedTree {
         let file_name = "<component_redeclare_flatten_test>";
         let stored =
             rumoca_phase_parse::parse_to_ast(SOURCE, file_name).expect("fixture should parse");
@@ -1188,10 +1216,7 @@ end ComponentModifierUse;
         tree.source_map.add(file_name, SOURCE);
         let resolved = rumoca_phase_resolve::resolve(ast::ParsedTree::new(tree))
             .expect("fixture should resolve");
-        let instanced = rumoca_phase_instantiate::instantiate(resolved, model)
-            .expect("fixture should instantiate");
-        crate::flatten_ref(instanced.inner(), instanced.overlay(), model)
-            .expect("fixture should flatten")
+        rumoca_phase_instantiate::instantiate(resolved, model).expect("fixture should instantiate")
     }
 
     fn real_binding(model: &flat::Model, name: &str) -> f64 {
@@ -1219,7 +1244,61 @@ end ComponentModifierUse;
 
     #[test]
     fn component_redeclare_modifiers_are_isolated_to_each_package_instance() {
-        let model = flatten_source("ComponentModifierUse");
+        let instanced = instantiate_source("ComponentModifierUse");
+        let instance = |name: &str| {
+            instanced
+                .overlay()
+                .components
+                .values()
+                .find(|component| component.qualified_name.to_flat_string() == name)
+                .unwrap_or_else(|| panic!("missing instance component {name}"))
+        };
+        let class_override = |name: &str| {
+            instance(name)
+                .class_overrides
+                .values()
+                .find(|class_override| class_override.alias == "Medium")
+                .unwrap_or_else(|| panic!("missing Medium override for {name}"))
+        };
+        let a_override = class_override("a");
+        let b_override = class_override("b");
+        assert_eq!(a_override.target_def_id, b_override.target_def_id);
+        let modifier_target = |class_override: &ast::ClassOverride| {
+            let ast::Expression::Modification { target, .. } = &class_override.modifier_args[0]
+            else {
+                panic!("expected exact class override modification");
+            };
+            target
+                .target_def_id()
+                .expect("class override modifier must have an exact declaration target")
+        };
+        assert_eq!(modifier_target(a_override), modifier_target(b_override));
+
+        let a_y = instance("a.y");
+        let b_y = instance("b.y");
+        assert_ne!(a_y.owner_class_id, b_y.owner_class_id);
+        let binding_target = |component: &ast::InstanceData| {
+            let ast::Expression::ComponentReference(reference) = component
+                .binding_source
+                .as_ref()
+                .or(component.binding.as_ref())
+                .expect("declaration binding source")
+            else {
+                panic!("expected component-reference declaration binding");
+            };
+            reference
+                .target_def_id()
+                .expect("dynamic binding must have an exact concrete declaration target")
+        };
+        assert_eq!(binding_target(a_y), modifier_target(a_override));
+        assert_eq!(binding_target(b_y), modifier_target(b_override));
+
+        let model = crate::flatten_ref(
+            instanced.inner(),
+            instanced.overlay(),
+            "ComponentModifierUse",
+        )
+        .expect("fixture should flatten");
 
         assert_eq!(real_binding(&model, "a.y"), 25.0);
         assert_eq!(real_binding(&model, "b.y"), 30.0);

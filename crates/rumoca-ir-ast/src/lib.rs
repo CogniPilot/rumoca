@@ -40,6 +40,7 @@
 //! This module is designed to be extensible and serves as the foundation for parsing,
 //! analyzing, and generating code for the custom language or model representation.
 
+mod external_object;
 pub mod instance;
 mod modelica;
 mod nodes;
@@ -51,10 +52,10 @@ pub mod visitor;
 
 use indexmap::{IndexMap, IndexSet};
 use rumoca_core::{
-    Causality, ClassType, DefId, Location, OpBinary, OpUnary, ScopeId, Span, StateSelect, Token,
-    TypeId, Variability, visit_top_level_path_segments,
+    BUILTIN_TYPES, Causality, ClassType, ComponentPath, DefId, Location, OpBinary, OpUnary,
+    ScopeId, Span, StateSelect, Token, TypeId, Variability, visit_top_level_path_segments,
 };
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::{fmt::Debug, fmt::Display};
@@ -69,6 +70,9 @@ pub use visitor::{
 
 pub type AstIndexMap<K, V> = IndexMap<K, V, rustc_hash::FxBuildHasher>;
 
+pub use external_object::{
+    ExternalObjectLifecycle, ExternalObjectLifecycleError, ExternalObjectLifecycleRole,
+};
 pub use nodes::*;
 pub use semantic_identity::{
     classes_are_semantically_compatible, components_are_semantically_compatible,
@@ -78,8 +82,8 @@ pub use semantic_identity::{
 pub use instance::{
     ClassInstanceData, ClassOverride, ClassOverrideMap, InstanceComponentFamily,
     InstanceConnection, InstanceConnectionEndpoint, InstanceConnectionFamily, InstanceData,
-    InstanceEquation, InstanceId, InstanceOverlay, InstanceStatement, InstancedTree,
-    ModificationEnvironment, ModificationValue, QualifiedName,
+    InstanceEquation, InstanceOverlay, InstanceStatement, InstancedTree, ModificationEnvironment,
+    ModificationValue, QualifiedName,
 };
 pub use scope::{Import as ScopeImport, InheritedMember, Scope, ScopeKind, ScopeTree};
 pub use state_machines::{State, StateMachine, StateMachineState, StateMachines, Transition};
@@ -223,6 +227,9 @@ pub struct ClassDefIndex<'tree> {
     qualified_names: FxHashMap<DefId, String>,
     parent_classes: FxHashMap<DefId, DefId>,
     local_names: FxHashMap<DefId, &'tree str>,
+    builtin_def_ids: FxHashSet<DefId>,
+    external_object_def_id: Option<DefId>,
+    external_object_owner_def_ids: FxHashSet<DefId>,
 }
 
 impl<'tree> ClassDefIndex<'tree> {
@@ -233,6 +240,17 @@ impl<'tree> ClassDefIndex<'tree> {
             qualified_names: FxHashMap::default(),
             parent_classes: FxHashMap::default(),
             local_names: FxHashMap::default(),
+            builtin_def_ids: BUILTIN_TYPES
+                .iter()
+                .filter_map(|name| {
+                    tree.scope_tree
+                        .predefined_member(&ComponentPath::from_flat_path(name))
+                })
+                .collect(),
+            external_object_def_id: tree
+                .scope_tree
+                .predefined_member(&ComponentPath::from_flat_path("ExternalObject")),
+            external_object_owner_def_ids: FxHashSet::default(),
         };
         for class_def in tree.definitions.classes.values() {
             index.insert_class_tree(class_def, None, None);
@@ -254,6 +272,10 @@ impl<'tree> ClassDefIndex<'tree> {
                     .entry(*def_id)
                     .or_insert_with(|| qualified_name.clone());
             }
+        }
+        if let Some(external_object_def_id) = index.external_object_def_id {
+            index.external_object_owner_def_ids =
+                external_object_descendants(&index.classes, external_object_def_id);
         }
         index
     }
@@ -352,6 +374,35 @@ impl<'tree> ClassDefIndex<'tree> {
             self.insert_class_tree(nested, child_parent_def_id, child_parent_qualified_name);
         }
     }
+}
+
+fn external_object_descendants(
+    classes: &FxHashMap<DefId, &ClassDef>,
+    external_object_def_id: DefId,
+) -> FxHashSet<DefId> {
+    let mut derived_by_base: FxHashMap<DefId, Vec<DefId>> = FxHashMap::default();
+    for (derived_def_id, class) in classes {
+        for base_def_id in class.extends.iter().filter_map(|extend| extend.base_def_id) {
+            derived_by_base
+                .entry(base_def_id)
+                .or_default()
+                .push(*derived_def_id);
+        }
+    }
+
+    let mut descendants = FxHashSet::default();
+    let mut pending = vec![external_object_def_id];
+    while let Some(base_def_id) = pending.pop() {
+        let Some(derived_def_ids) = derived_by_base.get(&base_def_id) else {
+            continue;
+        };
+        for derived_def_id in derived_def_ids {
+            if descendants.insert(*derived_def_id) {
+                pending.push(*derived_def_id);
+            }
+        }
+    }
+    descendants
 }
 
 // =============================================================================

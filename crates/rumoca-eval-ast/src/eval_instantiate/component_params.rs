@@ -593,9 +593,10 @@ mod tests {
                     ..Default::default()
                 },
                 subs: None,
+                def_id: None,
             }],
-            def_id: None,
             span: rumoca_core::Span::DUMMY,
+            qualified_display_name: None,
         })
     }
 

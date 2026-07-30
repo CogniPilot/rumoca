@@ -1,5 +1,6 @@
 use super::context_import_shadowing::{
-    imports_without_shadowed_aliases, qualify_expression_with_effective_imports,
+    EffectiveExpressionContext, imports_without_shadowed_aliases,
+    qualify_expression_with_effective_imports,
 };
 use super::enum_dimensions::{enum_type_dimension, infer_enum_range_dimensions};
 use super::*;
@@ -46,7 +47,13 @@ impl Context {
             boolean_parameter_values: rustc_hash::FxHashMap::default(),
             enum_parameter_values: rustc_hash::FxHashMap::default(),
             constant_values: rustc_hash::FxHashMap::default(),
+            constant_values_by_def_id: rustc_hash::FxHashMap::default(),
+            constant_values_by_occurrence: rustc_hash::FxHashMap::default(),
+            class_owner_components: rustc_hash::FxHashMap::default(),
+            root_class_instance: None,
             target_def_names: rustc_hash::FxHashMap::default(),
+            predefined_string_declaration: None,
+            predefined_intrinsics: ast_lower::PredefinedIntrinsicIds::default(),
             modified_constant_keys: rustc_hash::FxHashSet::default(),
             flat_parameter_constant_keys: rustc_hash::FxHashSet::default(),
             expanded_component_keys: rustc_hash::FxHashSet::default(),
@@ -255,8 +262,10 @@ impl Context {
         if let Some(dim) = enum_type_dimension(expr, tree) {
             return Ok(dim);
         }
-        let lowered =
-            crate::ast_lower::expression_from_ast_with_def_map(expr, Some(&tree.def_map))?;
+        let lowered = crate::ast_lower::expression_from_ast_with_intrinsics(
+            expr,
+            crate::ast_lower::PredefinedIntrinsicIds::from_tree(tree),
+        )?;
         let eval_ctx = ParamEvalContext {
             known_ints: &self.parameter_values,
             known_reals: &self.real_parameter_values,
@@ -1477,26 +1486,28 @@ fn process_class_instance_body(
         // Handle when-equations separately (pass context for parameter evaluation).
         let chain = when_equations::flatten_when_equation(ctx, &inst_eq, prefix, def_map)?;
         if let Some(mut chain) = chain {
+            attach_when_chain_reference_scopes(&mut chain, class_data.instance_id)?;
             rewrite_function_overrides_in_when_chain(
                 &mut chain,
                 tree,
                 class_index,
                 &override_packages,
                 &override_functions,
-            );
+            )?;
             flat.when_chains.push(chain);
         }
 
         // Handle other equations (including for-loops that may contain when-equations).
         let mut flattened =
             equations::flatten_equation_with_def_map(ctx, &inst_eq, prefix, def_map)?;
+        attach_equation_reference_scopes(&mut flattened, class_data.instance_id)?;
         rewrite_function_overrides_in_flattened(
             &mut flattened,
             tree,
             class_index,
             &override_packages,
             &override_functions,
-        );
+        )?;
         let equation_base = flat.equations.len();
         for eq in flattened.equations {
             flat.add_equation(eq);
@@ -1542,13 +1553,14 @@ fn process_class_instance_body(
 
         let mut flattened =
             equations::flatten_equation_with_def_map(ctx, &inst_eq, prefix, def_map)?;
+        attach_equation_reference_scopes(&mut flattened, class_data.instance_id)?;
         rewrite_function_overrides_in_flattened(
             &mut flattened,
             tree,
             class_index,
             &override_packages,
             &override_functions,
-        );
+        )?;
         let equation_base = flat.initial_equations.len();
         for eq in flattened.equations {
             flat.add_initial_equation(eq);
@@ -1590,17 +1602,18 @@ fn process_class_instance_body(
             &inst_algs,
             prefix,
             imports,
-            def_map,
             &tree.source_map,
             instance_name.as_deref(),
+            ast_lower::PredefinedIntrinsicIds::from_tree(tree),
         )?;
+        attach_statement_reference_scopes(&mut flat_alg.statements, class_data.instance_id)?;
         rewrite_function_overrides_in_algorithm(
             &mut flat_alg,
             tree,
             class_index,
             &override_packages,
             &override_functions,
-        );
+        )?;
         flat.algorithms.push(flat_alg);
     }
 
@@ -1627,20 +1640,48 @@ fn process_class_instance_body(
             &inst_algs,
             prefix,
             imports,
-            def_map,
             &tree.source_map,
             instance_name.as_deref(),
+            ast_lower::PredefinedIntrinsicIds::from_tree(tree),
         )?;
+        attach_statement_reference_scopes(&mut flat_alg.statements, class_data.instance_id)?;
         rewrite_function_overrides_in_algorithm(
             &mut flat_alg,
             tree,
             class_index,
             &override_packages,
             &override_functions,
-        );
+        )?;
         flat.initial_algorithms.push(flat_alg);
     }
 
+    Ok(())
+}
+
+fn attach_equation_reference_scopes(
+    flattened: &mut equations::FlattenedEquations,
+    instance_scope: rumoca_core::InstanceId,
+) -> Result<(), FlattenError> {
+    for equation in &mut flattened.equations {
+        attach_reference_scope(&mut equation.residual, instance_scope)?;
+    }
+    for family in &mut flattened.structured_equations {
+        if let Some(template) = family.template.as_mut() {
+            for expression in &mut template.body {
+                attach_reference_scope(expression, instance_scope)?;
+            }
+        }
+    }
+    for assertion in &mut flattened.assert_equations {
+        attach_reference_scope(&mut assertion.condition, instance_scope)?;
+        attach_reference_scope(&mut assertion.message, instance_scope)?;
+        if let Some(level) = assertion.level.as_mut() {
+            attach_reference_scope(level, instance_scope)?;
+        }
+    }
+    for chain in &mut flattened.when_chains {
+        attach_when_chain_reference_scopes(chain, instance_scope)?;
+    }
     Ok(())
 }
 
@@ -1652,9 +1693,9 @@ pub(crate) fn flatten_algorithm_section(
     statements: &[InstanceStatement],
     prefix: &QualifiedName,
     imports: &qualify::ImportMap,
-    def_map: Option<&crate::ResolveDefMap>,
     source_map: &rumoca_core::SourceMap,
     instance_name: Option<&str>,
+    predefined_intrinsics: ast_lower::PredefinedIntrinsicIds,
 ) -> Result<Algorithm, FlattenError> {
     let span = statements
         .iter()
@@ -1679,10 +1720,11 @@ pub(crate) fn flatten_algorithm_section(
         algorithms::AlgorithmSectionContext {
             prefix,
             imports,
-            def_map,
             initial_locals: &no_locals,
             source_map: Some(source_map),
             instance_name,
+            predefined_string_declaration: None,
+            predefined_intrinsics,
         },
         algorithms::AlgorithmSectionMetadata::new(span, origin),
     )
@@ -1705,7 +1747,7 @@ pub(crate) struct ComponentInstanceProcess<'a, 'tree> {
     pub(crate) import_cache: &'a mut ImportCaches<'tree>,
     pub(crate) scope_index: &'a OverlayScopeIndex<'a>,
     pub(crate) component_members: &'a component_member_scope::ComponentMemberScopes,
-    pub(crate) identity_space: InstanceIdentitySpace,
+    pub(crate) function_types: functions::FunctionTypeCatalog<'a>,
 }
 
 pub(crate) fn process_component_instance(
@@ -1731,6 +1773,7 @@ pub(crate) fn process_component_instance(
                     record.type_def_id,
                     request.tree,
                     request.class_index,
+                    request.function_types,
                 )?;
                 request
                     .flat
@@ -1757,13 +1800,23 @@ pub(crate) fn process_component_instance(
         request.class_index,
         &import_context,
     )?;
-    assign_instance_identity_to_flat_variable(
-        request.flat,
-        &mut flat_var,
-        request.identity_space,
-        request.class_index,
-        request.instance_data,
-    );
+    for expression in [
+        &mut flat_var.binding,
+        &mut flat_var.start,
+        &mut flat_var.min,
+        &mut flat_var.max,
+        &mut flat_var.nominal,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        attach_reference_scope(
+            expression,
+            request.instance_data.owner_class_id.ok_or_else(|| {
+                FlattenError::internal("Flat variable has no instantiated class owner")
+            })?,
+        )?;
+    }
     let instance_scope = request.instance_data.qualified_name.to_component_path();
     let (override_packages, override_functions) =
         override_context_for_component_path(&instance_scope, request.component_override_map);
@@ -1778,7 +1831,7 @@ pub(crate) fn process_component_instance(
         &override_functions,
         &receiver_scope,
         request.component_members,
-    );
+    )?;
     request.flat.variable_type_names.insert(
         var_name.clone(),
         variables::flat_output_type_name(
@@ -1870,10 +1923,7 @@ pub(crate) fn qualify_expression_imports_with_def_map(
     def_map: Option<&crate::ResolveDefMap>,
 ) -> Result<rumoca_core::Expression, FlattenError> {
     // Use default options for equation qualification
-    let opts = qualify::QualifyOptions {
-        preserve_def_id: true,
-        ..qualify::QualifyOptions::default()
-    };
+    let opts = qualify::QualifyOptions::default();
     let filtered_imports;
     let imports = if let Some(def_map) = def_map {
         filtered_imports = imports_without_shadowed_aliases(expr, imports, def_map);
@@ -1881,7 +1931,18 @@ pub(crate) fn qualify_expression_imports_with_def_map(
     } else {
         imports
     };
-    qualify_expression_with_effective_imports(expr, prefix, imports, def_map, opts, None, None)
+    qualify_expression_with_effective_imports(
+        expr,
+        EffectiveExpressionContext {
+            prefix,
+            imports,
+            options: opts,
+            instance_name: None,
+            locals: None,
+            predefined_string_declaration: None,
+            predefined_intrinsics: ast_lower::PredefinedIntrinsicIds::default(),
+        },
+    )
 }
 
 /// Qualify with flatten-context semantic metadata for class-reference canonicalization.
@@ -1893,10 +1954,7 @@ pub(crate) fn qualify_expression_imports_with_def_map_ctx(
     ctx: &Context,
     locals: Option<&std::collections::HashSet<String>>,
 ) -> Result<rumoca_core::Expression, FlattenError> {
-    let opts = qualify::QualifyOptions {
-        preserve_def_id: true,
-        ..qualify::QualifyOptions::default()
-    };
+    let opts = qualify::QualifyOptions::default();
     let def_filtered_imports;
     let imports = if let Some(def_map) = def_map {
         def_filtered_imports = imports_without_shadowed_aliases(expr, imports, def_map);
@@ -1910,12 +1968,15 @@ pub(crate) fn qualify_expression_imports_with_def_map_ctx(
     let instance_name = ctx.instance_name_for_prefix(prefix);
     qualify_expression_with_effective_imports(
         expr,
-        prefix,
-        &scoped_imports,
-        def_map,
-        opts,
-        instance_name.as_deref(),
-        locals,
+        EffectiveExpressionContext {
+            prefix,
+            imports: &scoped_imports,
+            options: opts,
+            instance_name: instance_name.as_deref(),
+            locals,
+            predefined_string_declaration: ctx.predefined_string_declaration,
+            predefined_intrinsics: ctx.predefined_intrinsics,
+        },
     )
 }
 

@@ -25,6 +25,7 @@
 //! | EI030 | InstantiationDepthLimit | implementation limit |
 //! | EI031 | InstantiationCycle | recursive class/type graph |
 //! | EI032 | InvalidTypeAttribute | §4.4.4 |
+//! | EI033 | MissingResolvedIdentity | compiler phase-order invariant |
 //! | EI098 | MissingSourceContext | compiler provenance invariant |
 //!
 //! Uses miette for rich diagnostic output with error codes and help text.
@@ -299,6 +300,15 @@ pub enum InstantiateError {
         span: Span,
     },
 
+    /// Resolve did not attach an exact declaration identity required by Instantiation.
+    #[error("component `{name}` is missing its resolved declaration identity")]
+    #[diagnostic(code(rumoca::instantiate::EI033))]
+    MissingResolvedIdentity {
+        name: String,
+        #[label("unresolved component reached instantiation")]
+        span: Span,
+    },
+
     /// Required source provenance was missing from instantiation metadata.
     #[error("missing source context: {reason}")]
     #[diagnostic(code(rumoca::instantiate::EI098))]
@@ -399,6 +409,10 @@ impl InstantiateError {
         }
     );
     error_constructor!(instantiation_cycle, InstantiationCycle { cycle: String });
+    error_constructor!(
+        missing_resolved_identity,
+        MissingResolvedIdentity { name: String }
+    );
 
     pub fn instantiation_depth_limit(
         path: impl Into<String>,
@@ -443,7 +457,8 @@ impl PhaseError for InstantiateError {
             | Self::PartialClassInstantiation { span, .. }
             | Self::InstantiationDepthLimit { span, .. }
             | Self::InstantiationCycle { span, .. }
-            | Self::InvalidTypeAttribute { span, .. } => std::slice::from_ref(span),
+            | Self::InvalidTypeAttribute { span, .. }
+            | Self::MissingResolvedIdentity { span, .. } => std::slice::from_ref(span),
             Self::ModelNotFound(_) | Self::MissingSourceContext { .. } => &[],
         };
         miette_phase_error_to_diagnostic(self, source_spans)

@@ -1,7 +1,7 @@
 use super::inheritance::resolve_effective_components_for_eval;
-use super::instantiate_component;
 use super::source_scope::component_declaration_source_scope;
 use super::type_overrides::TypeOverrideMap;
+use super::{ComponentInstantiationScope, instantiate_component};
 use super::{
     InstantiateContext, InstantiateResult, find_class_in_tree, get_effective_components,
     location_to_span,
@@ -29,6 +29,7 @@ pub(super) struct ArrayExpansionScope<'a> {
     pub(super) tree: &'a ast::ClassTree,
     pub(super) effective_components: &'a IndexMap<String, ast::Component>,
     pub(super) type_overrides: &'a TypeOverrideMap,
+    pub(super) owner_class_id: rumoca_core::InstanceId,
     pub(super) imports: super::ComponentImports<'a>,
 }
 
@@ -239,9 +240,12 @@ fn instantiate_array_element(
         &plan.scalar_comp,
         ctx,
         overlay,
-        scope.effective_components,
-        scope.type_overrides,
-        scope.imports,
+        ComponentInstantiationScope {
+            owner_class_id: Some(scope.owner_class_id),
+            effective_components: scope.effective_components,
+            type_overrides: scope.type_overrides,
+            imports: scope.imports,
+        },
     );
     ctx.pop_path();
 
@@ -1085,6 +1089,7 @@ pub(super) fn index_binding_for_element(
         new_ref.parts[pos] = ast::ComponentRefPart {
             ident: new_ref.parts[pos].ident.clone(),
             subs: Some(subscripts),
+            def_id: new_ref.parts[pos].def_id,
         };
         return Ok(ast::Expression::ComponentReference(new_ref));
     }
@@ -1194,6 +1199,7 @@ fn index_component_reference_array_part(
     indexed.parts[pos] = ast::ComponentRefPart {
         ident: indexed.parts[pos].ident.clone(),
         subs: Some(subscripts),
+        def_id: indexed.parts[pos].def_id,
     };
     Ok(Some(ast::Expression::ComponentReference(indexed)))
 }

@@ -42,6 +42,9 @@ impl<'a> OverlayScopeIndex<'a> {
 pub(crate) fn initialize_flat_metadata(flat: &mut flat::Model, overlay: &ast::InstanceOverlay) {
     // MLS §4.7: Propagate partial status and class type from overlay
     flat.effective_types = overlay.effective_types.clone();
+    flat.enumeration_types = overlay.enumeration_types.clone();
+    flat.type_ids_by_def_id = overlay.type_ids_by_def_id.clone();
+    flat.enumeration_type_roots = overlay.enumeration_type_roots.clone();
     flat.is_partial = overlay.is_partial;
     flat.class_type = overlay.class_type.clone();
     flat.model_description = overlay.root_description.clone();
@@ -73,11 +76,9 @@ pub(crate) fn variable_import_context_for_instance<'tree>(
         import_cache,
         scope_index,
     );
-    add_package_override_aliases(
-        class_index,
-        &declaration_override_imports.aliases,
-        &mut declaration,
-    );
+    // A replaceable package alias is an instance occurrence, not an import.
+    // Keep the alias spelling so the already-resolved declaration target and
+    // the owning InstanceId remain paired through Flat construction.
     collect_lexical_constant_aliases_for_scope(
         tree,
         class_index,
@@ -188,11 +189,6 @@ fn binding_import_context_for_instance(
     );
     let binding_override_imports =
         override_import_data_for_qualified_scope(binding_scope, request.component_override_map);
-    add_package_override_aliases(
-        request.class_index,
-        &binding_override_imports.aliases,
-        &mut imports,
-    );
     collect_lexical_constant_aliases_for_scope(
         request.tree,
         request.class_index,
@@ -221,11 +217,6 @@ fn attribute_import_contexts_for_instance(
             );
             let override_imports =
                 override_import_data_for_qualified_scope(scope, request.component_override_map);
-            add_package_override_aliases(
-                request.class_index,
-                &override_imports.aliases,
-                &mut imports,
-            );
             collect_lexical_constant_aliases_for_scope(
                 request.tree,
                 request.class_index,
@@ -277,7 +268,6 @@ fn semantic_function_scope_for_instance_scope(
 
 struct OverrideImportData {
     package_names: Vec<String>,
-    aliases: Vec<(String, String)>,
 }
 
 fn override_import_data_for_instance(
@@ -320,7 +310,6 @@ fn override_import_data_for_component_path_with_preferred_aliases(
     let (packages, _) = override_context_for_component_path(scope, component_override_map);
     OverrideImportData {
         package_names: override_package_names_with_preferred_aliases(&packages, preferred_aliases),
-        aliases: override_aliases_for_component_path(scope, component_override_map),
     }
 }
 
@@ -767,7 +756,7 @@ pub(crate) fn process_component_instances_for_flatten(
 ) -> Result<(), FlattenError> {
     let mut import_cache = ImportCaches::default();
     let scope_index = OverlayScopeIndex::new(overlay);
-    let identity_space = InstanceIdentitySpace::from_tree(tree);
+    transfer_instance_relations(flat, overlay)?;
     for instance_data in overlay.components.values() {
         if is_in_disabled_component(&instance_data.qualified_name, &overlay.disabled_components) {
             continue;
@@ -787,7 +776,7 @@ pub(crate) fn process_component_instances_for_flatten(
             import_cache: &mut import_cache,
             scope_index: &scope_index,
             component_members,
-            identity_space,
+            function_types: functions::FunctionTypeCatalog::new(overlay),
         })?;
         track_top_level_component_markers(flat, instance_data);
     }
@@ -952,9 +941,9 @@ pub(crate) fn finalize_flat_model(
     connections_result?;
 
     seed_flat_functions_from_context(ctx, flat);
-    functions::collect_functions(flat, tree, class_index, Some(model_name))?;
+    functions::collect_functions(flat, overlay, tree, class_index, Some(model_name))?;
     rewrite_function_extends_aliases_in_flat_functions(flat, tree, class_index)?;
-    functions::collect_functions(flat, tree, class_index, Some(model_name))?;
+    functions::collect_functions(flat, overlay, tree, class_index, Some(model_name))?;
     mark_record_constructor_calls(flat, tree);
     functions::lower_record_function_params(flat)?;
     functions::specialize_static_function_params(flat);
@@ -984,6 +973,7 @@ pub(crate) fn finalize_flat_model(
     mark_record_constructor_calls(flat, tree);
     let collected_new_functions = collect_rewritten_functions_to_fixed_point(
         flat,
+        overlay,
         tree,
         class_index,
         model_name,
@@ -1005,31 +995,30 @@ pub(crate) fn finalize_flat_model(
         collapse_index_refs_to_known_varrefs(flat);
     }
     canonicalize_varrefs_via_instantiated_def_ids(flat);
-    // Re-run constant substitution after late function collection and DefId
-    // canonicalization: both can expose inherited constant aliases in model
-    // equations (for example `nX = nS` in a redeclared Medium package).
-    substitute_known_constants_in_flat(flat, ctx)?;
     functions::canonicalize_collected_function_calls(flat)?;
+    functions::materialize_flat_function_call_args(flat)?;
+    // Late collection, DefId canonicalization, and default-argument
+    // materialization can each make a qualified constant newly reachable.
+    // Inject and substitute only after all three producers have run so final
+    // executable call slots cannot reintroduce an unresolved constant.
+    inject_referenced_qualified_class_constants(tree, class_index, model_name, flat, overlay, ctx)?;
+    substitute_known_constants_in_flat(flat, ctx)?;
     resolve_nested_constructor_field_access_bindings(flat);
     functions::prune_unreachable_functions(flat);
     functions::validate_flat_function_bindings(flat)?;
-    functions::validate_flat_function_call_args(flat)?;
     ctx.refresh_enum_parameter_lookup(flat);
     enum_literals::canonicalize_flat_enum_literals(flat, tree, &ctx.enum_parameter_values);
     flat.enum_literal_ordinals = collect_enum_literal_ordinals(tree);
     if options.simplify_variable_names {
         name_simplify::simplify_flat_names(flat)?;
     }
-    // Final boundary pass: every rendered variable reference leaves flatten
-    // with its structured component reference attached, so downstream phases
-    // never re-derive structure from names.
-    crate::structured_refs::attach_structured_references(flat)?;
 
     Ok(())
 }
 
 fn collect_rewritten_functions_to_fixed_point(
     flat: &mut flat::Model,
+    overlay: &ast::InstanceOverlay,
     tree: &ast::ClassTree,
     class_index: &ast::ClassDefIndex<'_>,
     model_name: &str,
@@ -1048,7 +1037,7 @@ fn collect_rewritten_functions_to_fixed_point(
             component_override_map,
             component_members,
         )?;
-        functions::collect_functions(flat, tree, class_index, Some(model_name))?;
+        functions::collect_functions(flat, overlay, tree, class_index, Some(model_name))?;
         if flat.functions.len() == function_count_before {
             return Ok(flat.functions.len() != initial_function_count);
         }
