@@ -113,8 +113,10 @@ mod periodic_source_counter_regression;
 mod pipeline_test;
 #[path = "prepared_vectors_refresh.rs"]
 mod prepared_vectors_refresh;
-#[path = "quadrotor_se23_regression_test.rs"]
-mod quadrotor_se23_regression_test;
+// quadrotor_se23_regression_test.rs lives in `suite_heavy_solve`
+// (required-features = ["heavy-solve-tests"]): until the compact Solve
+// function-fold owner lands, its guards grind through ~139 MB of
+// scalarized IR for minutes instead of failing fast.
 #[path = "record_array_member_slice_test.rs"]
 mod record_array_member_slice_test;
 #[path = "reverse_vjp_test.rs"]

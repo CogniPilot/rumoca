@@ -57,6 +57,10 @@ fmu-packaging = ["dep:zip"]
 examples-smoke-tests = []
 msl-sim-tests = []
 template-runtime-tests = []
+# Heavy Solve-lowering regressions that grind for minutes until the compact
+# Solve function-fold owner lands (SPEC 0036 checklist); see
+# `tests/suite_heavy_solve.rs`.
+heavy-solve-tests = []
 tracing = ["dep:tracing", "dep:tracing-subscriber", "rumoca-compile/tracing"]
 
 [dependencies]
@@ -150,6 +154,14 @@ required-features = ["template-runtime-tests"]
 name = "suite_msl_sim"
 path = "tests/suite_msl_sim.rs"
 required-features = ["msl-sim-tests"]
+
+# `tests/quadrotor_se23_regression_test.rs`: heavy Solve-lowering guards that
+# run for minutes until compact function folds land; see
+# `tests/suite_heavy_solve.rs`.
+[[test]]
+name = "suite_heavy_solve"
+path = "tests/suite_heavy_solve.rs"
+required-features = ["heavy-solve-tests"]
 
 # `tests/cli_target_galec.rs` and `tests/cli_target_galec_production.rs`:
 # they exercise generic target-declared packaging end-to-end and inspect the
