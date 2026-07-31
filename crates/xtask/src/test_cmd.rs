@@ -76,11 +76,18 @@ const WORKSPACE_TEST_EXCLUDES: &[&str] = &[
 /// do not discover. CI stages the pinned MSL cache before this command.
 const WORKSPACE_TEST_FEATURES: &[&str] = &["--features", "rumoca/msl-sim-tests"];
 
+/// Unit + integration tests under nextest, then doctests. nextest schedules
+/// individual tests across every core in isolated processes; plain
+/// `cargo test` runs one binary at a time, so suites that serialize on an
+/// in-process lock (LSP server tests, singleton sessions) collapse the whole
+/// lane to one busy core. Measured on the 2026-07-30 tree: 4,831 tests in
+/// 32.7s under nextest versus a many-minute serialized tail under libtest.
 pub(crate) fn run_workspace_tests(root: &Path) -> Result<()> {
-    let mut args = vec!["test", "--workspace", "--verbose"];
+    let mut args = vec!["nextest", "run", "--workspace"];
     args.extend_from_slice(WORKSPACE_TEST_EXCLUDES);
     args.extend_from_slice(WORKSPACE_TEST_FEATURES);
-    run_cargo(root, &args)
+    run_cargo(root, &args)?;
+    run_workspace_doctests(root)
 }
 
 /// Doctests only. `cargo nextest` cannot run doctests, so the sharded CI lane
@@ -108,11 +115,11 @@ pub(crate) fn run_workspace_nextest_partition(root: &Path, partition: &str) -> R
 }
 
 /// CLI options for `verify workspace`, co-located with the workspace-test
-/// runners they dispatch to. With no flags this runs the full workspace
-/// `cargo test` (unit + integration + doctests), exactly as before, so the
-/// verify-suite step (`cargo xtask verify workspace`) is unchanged. The flags
-/// let CI split that lane across parallel shards without duplicating the
-/// load-bearing crate-exclude list in YAML.
+/// runners they dispatch to. With no flags this runs the full workspace suite
+/// (unit + integration under nextest, then doctests), preserving exactly the
+/// coverage plain `cargo test --workspace` provided. The flags let CI split
+/// that lane across parallel shards without duplicating the load-bearing
+/// crate-exclude list in YAML.
 #[derive(Debug, clap::Args, Clone, PartialEq, Eq)]
 pub(crate) struct WorkspaceArgs {
     /// Run only the unit + integration tests in this `count:M/N` nextest shard
