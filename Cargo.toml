@@ -218,6 +218,20 @@ missing_enforced_import_renames = "deny"
 # For faster builds
 [profile.dev]
 opt-level = 1
+# Full DWARF (`debug = 2`, Cargo's default for dev) is what makes the ~60
+# integration-test binaries ~800 MB each and drives rust-lld to multi-GB peak
+# RSS while linking them in parallel. Line tables alone keep panic backtraces,
+# `perf`/flamegraph symbolication and `file:line` attribution intact; only
+# variable/type inspection in a debugger is lost. The `test` profile inherits
+# this, so it applies to every unit- and integration-test binary.
+debug = "line-tables-only"
+# Leave the remaining line tables in the per-CU `.dwo` files instead of copying
+# them into every linked artifact. Each test binary then shares one pool of
+# debuginfo rather than carrying its own, which is what halves link-time peak
+# RSS again. The tradeoff is that a dev/test binary is no longer self-contained:
+# it resolves `file:line` only while its `target/debug/deps/*.dwo` files are
+# still in place, so never ship or archive a dev binary on its own.
+split-debuginfo = "unpacked"
 
 # `build-override` applies to build scripts and proc-macro crates only.
 # It speeds up codegen-heavy macro/build tooling without forcing all dev crates
