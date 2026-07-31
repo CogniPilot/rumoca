@@ -6,11 +6,25 @@
 //! section lowers to the calculated-parameter and assertion owners that already
 //! exist, so the replayed value reaches the trajectory as an exact number.
 //!
+//! Also accepted: a zero-output call statement whose callee is proven to have
+//! no effect other than raising assertions — the MSL case is the checking call
+//! `Modelica.Blocks.Sources.BooleanTable.isValidTable`. It is replaced by
+//! exactly the assertions its body raises, one per unrolled loop iteration,
+//! under the same guard, so it reaches the assertion owner above.
+//!
+//! Also accepted: a scalar discrete-time target whose replayed value reads only
+//! `time`, parameters, and constants — the
+//! `Modelica.Blocks.Sources.Pulse`/`SawTooth`/`Trapezoid` period counter. It
+//! becomes an initialization-partition definition of the value the coordinate
+//! holds when initialization finishes, and of its `pre` value at that instant.
+//! The equation section keeps its own owner for every later instant.
+//!
 //! Rejected, each naming the owner that is absent rather than a consequence of
-//! it: a call statement other than `assert` (the MSL case is the checking call
-//! `Modelica.Blocks.Sources.BooleanTable.isValidTable`), a target the
-//! initialization system cannot determine, a loop or `when` carrying implicit
-//! memory, and a value that reads a runtime coordinate.
+//! it: a call statement that binds an output or whose body has any other
+//! effect, a state/algebraic/output/input target the initialization system
+//! solves from residual rows instead, a loop or `when` carrying implicit
+//! memory, and a value that reads a coordinate with no proven value where it is
+//! evaluated.
 
 use rumoca::Compiler;
 use rumoca_sim::{SimOptions, eval_dae_at, simulate_dae};
@@ -181,22 +195,30 @@ end ReachedInitialAssertion;
     );
 }
 
-/// `Modelica.Blocks.Sources.BooleanTable.isValidTable` is a checking call with
-/// no outputs, so the Flat function table never registers it. The rejection
-/// names the missing call owner instead of reporting the callee as an
-/// unresolved reference.
-#[test]
-fn a_checking_call_statement_names_the_missing_call_owner() {
-    const SOURCE: &str = r#"
-within;
-function isValidTable
-  input Real t[:];
-algorithm
-  assert(size(t, 1) > 0, "empty table");
-end isValidTable;
-
+/// The `Modelica.Blocks.Sources.BooleanTable.isValidTable` shape: a protected
+/// function declared inside the model that owns the section, called with no
+/// outputs purely to check a parameter array.
+///
+/// The declaration path is what the Flat function table is keyed by, while the
+/// call spells one segment, so this also proves the callee reaches the DAE at
+/// all. Every iteration of the body's loop must reach the trajectory as its own
+/// assertion owner: the table below is monotonic, so the model runs.
+const CHECKING_CALL: &str = r#"
 model InitialAlgorithmCheckingCall
-  parameter Real t[2] = {1.0, 2.0};
+  parameter Real t[:] = {1.0, 2.0, 3.0};
+protected
+  function isValidTable
+    input Real table[:];
+  protected
+    Integer n = size(table, 1);
+  algorithm
+    if n > 0 then
+      for i in 2:n loop
+        assert(table[i] > table[i - 1], "table not strict monotonically increasing");
+      end for;
+    end if;
+  end isValidTable;
+public
   Real x(start = 0, fixed = true);
 initial algorithm
   isValidTable(t);
@@ -204,15 +226,113 @@ equation
   der(x) = 1.0;
 end InitialAlgorithmCheckingCall;
 "#;
-    let rendered = rejection(SOURCE, "InitialAlgorithmCheckingCall");
+
+#[test]
+fn a_checking_call_replays_as_the_assertions_its_body_raises() {
+    let compiled = Compiler::new()
+        .model("InitialAlgorithmCheckingCall")
+        .compile_str(CHECKING_CALL, "initial_algorithm_checking_call.mo")
+        .expect("a zero-output checking call has a checked initialization owner");
+    simulate_dae(&compiled.dae, &SimOptions::default())
+        .expect("a monotonic table satisfies every assertion the call raises");
+}
+
+/// The same call over a table that breaks monotonicity between its second and
+/// third entries. Only the unrolled iteration for `i = 3` can catch that, so a
+/// replay that dropped an iteration — or that folded the loop into one check —
+/// would let this model run.
+#[test]
+fn every_unrolled_iteration_of_a_checking_call_owns_its_own_assertion() {
+    let source = CHECKING_CALL.replace("{1.0, 2.0, 3.0}", "{1.0, 2.0, 1.5}");
+    let compiled = Compiler::new()
+        .model("InitialAlgorithmCheckingCall")
+        .compile_str(&source, "initial_algorithm_checking_call.mo")
+        .expect("a zero-output checking call has a checked initialization owner");
+    let error = simulate_dae(&compiled.dae, &SimOptions::default())
+        .err()
+        .expect("a table that is not monotonic fails the assertion the call raises");
+    let rendered = format!("{error:?}");
     assert!(
-        rendered.contains("ED013") && rendered.contains("isValidTable"),
+        rendered.contains("table not strict monotonically increasing"),
+        "the replayed assertion must carry its source message, got: {rendered}"
+    );
+}
+
+/// A checking call is admitted by proving its body has no effect other than
+/// raising assertions. A callee that writes an output has one, so it keeps a
+/// typed rejection naming the call statement rather than being replayed.
+#[test]
+fn a_call_statement_that_binds_an_output_names_the_missing_owner() {
+    const SOURCE: &str = r#"
+model InitialAlgorithmOutputCall
+  parameter Real t[2] = {1.0, 2.0};
+  parameter Real lo(fixed=false);
+  parameter Real hi(fixed=false);
+protected
+  function bounds
+    input Real table[:];
+    output Real low;
+    output Real high;
+  algorithm
+    low := table[1];
+    high := table[size(table, 1)];
+  end bounds;
+public
+  Real x(start = 0, fixed = true);
+initial algorithm
+  (lo, hi) := bounds(t);
+equation
+  der(x) = lo + hi;
+end InitialAlgorithmOutputCall;
+"#;
+    let rendered = rejection(SOURCE, "InitialAlgorithmOutputCall");
+    assert!(
+        rendered.contains("ED013") && rendered.contains("bounds"),
         "the rejection must name the unowned call statement, got: {rendered}"
     );
     assert!(
         !rendered.contains("unresolved Flat reference"),
         "a call statement inside the rejected section must not be reported as an \
          unresolved callee, got: {rendered}"
+    );
+}
+
+/// A checking call replays only the statement forms whose assertions it can
+/// state exactly. A `while` carries implicit memory and has no bound the
+/// replay can unroll, so the call keeps a typed rejection naming it rather than
+/// being replayed as some finite number of checks.
+#[test]
+fn a_checking_call_with_an_unbounded_loop_names_the_missing_owner() {
+    const SOURCE: &str = r#"
+model InitialAlgorithmUnboundedCall
+  parameter Real t[2] = {1.0, 2.0};
+protected
+  function scan
+    input Real table[:];
+  protected
+    Integer i = 1;
+  algorithm
+    while i < size(table, 1) loop
+      assert(table[i] < table[i + 1], "table not increasing");
+      i := i + 1;
+    end while;
+  end scan;
+public
+  Real x(start = 0, fixed = true);
+initial algorithm
+  scan(t);
+equation
+  der(x) = 1.0;
+end InitialAlgorithmUnboundedCall;
+"#;
+    let rendered = rejection(SOURCE, "InitialAlgorithmUnboundedCall");
+    assert!(
+        rendered.contains("ED013") && rendered.contains("scan"),
+        "the rejection must name the call whose body has no replay owner, got: {rendered}"
+    );
+    assert!(
+        rendered.contains("while"),
+        "the rejection must name the statement form that is missing an owner, got: {rendered}"
     );
 }
 
@@ -246,28 +366,199 @@ end InitialAlgorithmAssertThenLoop;
     );
 }
 
-/// A discrete coordinate has no checked initialization owner, so the rejection
-/// names the role instead of lowering a residual the runtime can only check.
-#[test]
-fn a_discrete_target_names_the_missing_initialization_owner() {
-    const SOURCE: &str = r#"
+/// The `Modelica.Blocks.Sources.Pulse`/`SawTooth`/`Trapezoid` period counter:
+/// an initial algorithm determines a discrete Real and a discrete Integer from
+/// `time` and parameters, and the equation section keeps its own `when` owner
+/// for every later instant.
+///
+/// The replay is sequential, so `T_start` reads the `count` the first statement
+/// assigned rather than that coordinate's declared start. Both the coordinate
+/// and its `pre` value must carry the determined number at `t = 0`: MLS §8.6
+/// holds `pre(v) = v` at the initialization instant, and here the `when`
+/// trigger reads `pre(count)`, so a `pre` left at the declared start would
+/// schedule the first period boundary at the wrong time.
+const DISCRETE_INITIAL_VALUES: &str = r#"
 model InitialAlgorithmDiscreteTarget
-  parameter Real period = 1.0;
+  parameter Real period = 0.1;
+  parameter Real startTime = -0.35;
+  Real y;
+protected
+  discrete Real T_start;
+  discrete Integer count;
+initial algorithm
+  count := integer((time - startTime)/period);
+  T_start := startTime + count*period;
+equation
+  when time >= (pre(count) + 1)*period + startTime then
+    count = pre(count) + 1;
+    T_start = time;
+  end when;
+  y = time - T_start;
+end InitialAlgorithmDiscreteTarget;
+"#;
+
+fn discrete_trace<'a>(result: &'a rumoca_sim::SimResult, name: &str) -> &'a [f64] {
+    let index = result
+        .names
+        .iter()
+        .position(|candidate| candidate == name)
+        .unwrap_or_else(|| panic!("missing `{name}` in {:?}", result.names));
+    &result.data[index]
+}
+
+fn discrete_initial_value_trace(t_end: f64) -> rumoca_sim::SimResult {
+    let compiled = Compiler::new()
+        .model("InitialAlgorithmDiscreteTarget")
+        .compile_str(DISCRETE_INITIAL_VALUES, "initial_algorithm.mo")
+        .expect("an initial algorithm over discrete coordinates has a checked owner");
+    let options = SimOptions {
+        t_end,
+        ..SimOptions::default()
+    };
+    simulate_dae(&compiled.dae, &options).expect("the determined discrete values simulate")
+}
+
+/// The DAE wire is how the MSL simulation worker receives a compiled model, so
+/// the discrete initial-value definitions must survive replay through the same
+/// checked owner rather than being dropped or defaulted on decode.
+#[test]
+fn discrete_initial_values_survive_the_dae_wire() {
+    let compiled = Compiler::new()
+        .model("InitialAlgorithmDiscreteTarget")
+        .compile_str(DISCRETE_INITIAL_VALUES, "initial_algorithm.mo")
+        .expect("an initial algorithm over discrete coordinates has a checked owner");
+    let encoded = serde_json::to_value(&compiled.dae).expect("compiled DAE serializes");
+    let decoded: rumoca_ir_dae::Dae =
+        serde_json::from_value(encoded.clone()).expect("compiled DAE reconstructs");
+    assert_eq!(
+        serde_json::to_value(&decoded).expect("round-tripped DAE serializes"),
+        encoded,
+        "the discrete initial-value definitions must replay unchanged"
+    );
+    decoded.inspect(|view| {
+        assert_eq!(
+            view.initial_discrete_value_count(),
+            2,
+            "T_start and count each keep their initialization-instant definition"
+        );
+    });
+}
+
+#[test]
+fn a_discrete_target_is_determined_by_its_initial_algorithm() {
+    let result = discrete_initial_value_trace(0.01);
+    // integer((0 - (-0.35))/0.1) = 3, so T_start = -0.35 + 3*0.1 and y = -T_start.
+    let expected_t_start = -0.35 + 3.0 * 0.1;
+    assert_eq!(discrete_trace(&result, "count").first().copied(), Some(3.0));
+    let t_start = discrete_trace(&result, "T_start")[0];
+    assert!(
+        (t_start - expected_t_start).abs() <= 1.0e-12,
+        "T_start = {t_start}, expected the replayed value {expected_t_start}"
+    );
+    let y = discrete_trace(&result, "y")[0];
+    assert!(
+        (y + expected_t_start).abs() <= 1.0e-12,
+        "y = {y}, expected {}",
+        -expected_t_start
+    );
+}
+
+/// The first period boundary is `(pre(count) + 1)*period + startTime`. With the
+/// determined `count = 3` that instant is `0.05`; with a `pre` left at the
+/// declared start it would be `-0.25`, already true at `t = 0`, and the `when`
+/// would never see a rising edge again.
+#[test]
+fn a_determined_discrete_value_is_the_pre_value_the_first_event_is_scheduled_from() {
+    let result = discrete_initial_value_trace(0.16);
+    let counts = discrete_trace(&result, "count");
+    assert_eq!(
+        counts.first().copied(),
+        Some(3.0),
+        "the initial algorithm determines the first period count"
+    );
+    assert_eq!(
+        counts.last().copied(),
+        Some(5.0),
+        "the boundaries at 0.05 and 0.15 advance the counter twice by t = 0.16: {counts:?}"
+    );
+}
+
+/// The runtime applies an algorithm-determined discrete value until it stops
+/// changing, so a value that answers differently each time it runs has no fixed
+/// point. MLS §12.3 permits the impure call in an initial section; what is
+/// missing is an owner for a discrete initial value built from one.
+#[test]
+fn an_impure_call_in_a_discrete_initial_value_is_rejected() {
+    const SOURCE: &str = r#"
+model InitialAlgorithmImpureDiscreteValue
   discrete Real T_start;
   Real x(start = 0, fixed = true);
 initial algorithm
-  T_start := period;
+  T_start := ticks();
 equation
   when time > 0.5 then
     T_start = time;
   end when;
   der(x) = T_start;
-end InitialAlgorithmDiscreteTarget;
+protected
+  impure function ticks
+    output Real y;
+    external "C" y = rumoca_test_ticks() annotation(Library="rumoca_test");
+  end ticks;
+end InitialAlgorithmImpureDiscreteValue;
 "#;
-    let rendered = rejection(SOURCE, "InitialAlgorithmDiscreteTarget");
+    let rendered = rejection(SOURCE, "InitialAlgorithmImpureDiscreteValue");
     assert!(
-        rendered.contains("ED013") && rendered.contains("DiscreteReal"),
-        "a discrete target must name its missing initialization owner, got: {rendered}"
+        rendered.contains("ED013") && rendered.contains("impure function"),
+        "an impure determining call must name the missing owner, got: {rendered}"
+    );
+}
+
+/// A state, algebraic, or output coordinate is solved from residual rows, so an
+/// algorithm assignment to one still names the owner that is absent.
+#[test]
+fn a_continuous_target_names_the_missing_initialization_owner() {
+    const SOURCE: &str = r#"
+model InitialAlgorithmContinuousTarget
+  parameter Real period = 1.0;
+  Real w;
+  Real x(start = 0, fixed = true);
+initial algorithm
+  w := period;
+equation
+  w = 2*x + 1;
+  der(x) = w;
+end InitialAlgorithmContinuousTarget;
+"#;
+    let rendered = rejection(SOURCE, "InitialAlgorithmContinuousTarget");
+    assert!(
+        rendered.contains("ED013") && rendered.contains("solved from residual rows"),
+        "a continuous target must name its missing initialization owner, got: {rendered}"
+    );
+}
+
+/// The initialization instant settles `time`, parameters, and constants and
+/// nothing else, so a discrete initial value that reads a state is rejected
+/// rather than evaluated against that state's seed.
+#[test]
+fn an_unsettled_read_in_a_discrete_initial_value_is_rejected() {
+    const SOURCE: &str = r#"
+model InitialAlgorithmDiscreteRuntimeRead
+  discrete Real T_start;
+  Real x(start = 1.0, fixed = true);
+initial algorithm
+  T_start := x + 1.0;
+equation
+  when time > 0.5 then
+    T_start = time;
+  end when;
+  der(x) = T_start;
+end InitialAlgorithmDiscreteRuntimeRead;
+"#;
+    let rendered = rejection(SOURCE, "InitialAlgorithmDiscreteRuntimeRead");
+    assert!(
+        rendered.contains("ED013") && rendered.contains("no proven value"),
+        "an unsettled read must name the coordinate that has no value, got: {rendered}"
     );
 }
 

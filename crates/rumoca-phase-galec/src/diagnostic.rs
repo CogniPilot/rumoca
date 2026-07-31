@@ -224,6 +224,16 @@ pub enum GalecTargetError {
         equations: usize,
         structured_families: usize,
     },
+
+    /// MLS §8.6: an `initial algorithm` that determines a discrete-time
+    /// variable is an initialization-partition definition of that variable's
+    /// initial value. GALEC Startup initializes from `start` attributes only,
+    /// so admitting one would silently start the block from the declared
+    /// `start` instead of the determined value.
+    #[error(
+        "model determines {definitions} discrete initial value(s) in an          initial section; algorithm-determined initial values are not yet          supported by the Rumoca GALEC projection (Startup initializes from          `start` values only) [EGT022]"
+    )]
+    InitialDiscreteValues { definitions: usize },
 }
 
 impl GalecTargetError {
@@ -251,6 +261,7 @@ impl GalecTargetError {
             Self::UnknownVariableReference { .. } => "EGT019",
             Self::LoweringTypeMismatch { .. } => "EGT020",
             Self::InitialEquations { .. } => "EGT021",
+            Self::InitialDiscreteValues { .. } => "EGT022",
         }
     }
 
@@ -277,7 +288,8 @@ impl GalecTargetError {
             | Self::UnrepresentableName { .. }
             | Self::StartDependencyCycle { .. }
             | Self::LoweringInternal { .. }
-            | Self::InitialEquations { .. } => None,
+            | Self::InitialEquations { .. }
+            | Self::InitialDiscreteValues { .. } => None,
         }
     }
 }

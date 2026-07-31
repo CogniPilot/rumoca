@@ -22,6 +22,7 @@ mod fuzz;
 mod msl_cargo_setup_timing;
 mod msl_quality_baseline;
 mod parity_budgets;
+mod parity_comparator;
 
 use fuzz::VerifyFuzzArgs;
 use msl_cargo_setup_timing::{
@@ -29,6 +30,7 @@ use msl_cargo_setup_timing::{
     write_msl_cargo_setup_timing_report,
 };
 use msl_quality_baseline::resolve_msl_quality_baseline;
+use parity_comparator::check_comparator_evidence;
 
 const MSL_VERSION: &str = "4.1.0";
 const MSL_RELEASE_ZIP_URL: &str = "https://github.com/modelica/ModelicaStandardLibrary/releases/download/v4.1.0/ModelicaStandardLibrary_v4.1.0.zip";
@@ -166,6 +168,12 @@ pub(crate) struct VerifyMslParityArgs {
     /// fan-in merge, which runs no simulations.
     #[arg(long, value_name = "PATH", requires = "prebuilt_test_binary")]
     prebuilt_sim_worker: Option<PathBuf>,
+    /// Accept a cohort-shaped run whose OMC comparator produced no agreement
+    /// bands. The run still prints "parity unmeasured: comparator did not run"
+    /// and still reports no parity number; this only stops that from failing
+    /// the command. Without it, an unmeasured cohort run is an error.
+    #[arg(long)]
+    allow_unmeasured_parity: bool,
 }
 
 impl VerifyMslParityArgs {
@@ -270,6 +278,11 @@ impl VerifyMslParityArgs {
             "--shard m/n requires 1 <= m <= n (n >= 1), got {index}/{count}"
         );
         Ok(Some((index, count)))
+    }
+
+    /// Whether this run accepts a cohort-shaped result with no OMC comparison.
+    pub(crate) fn allows_unmeasured_parity(&self) -> bool {
+        self.allow_unmeasured_parity
     }
 
     fn requires_selected_targets_success(&self) -> bool {
@@ -1140,7 +1153,15 @@ fn run_msl_quality_gate(root: &Path, args: &VerifyMslParityArgs) -> Result<()> {
     } else if let Err(error) = write_result {
         eprintln!("failed to write MSL Cargo setup timing report: {error:#}");
     }
-    result
+    result?;
+    // Second, independent boundary: the harness gate can be skipped (shards,
+    // focused runs), but "did anything get compared against OMC?" is answered
+    // from what landed on disk, for every cohort-shaped run.
+    check_comparator_evidence(
+        &ci_env.results_dir,
+        args.requires_selected_targets_success(),
+        args.allows_unmeasured_parity(),
+    )
 }
 
 /// Run a specific libtest from a prebuilt `msl_tests` binary (built once by

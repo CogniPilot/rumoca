@@ -81,6 +81,9 @@ exists. Every other object inserts complete values in proven order.
 |---|---|---|
 | Continuous equations own checked residual IDs | Continuous system | B.1a has one form |
 | Initialization uses initialization-specific IDs | Initialization system | Runtime rules differ |
+| Discrete initial values own a typed scalar target and one settled value | Initialization system | MLS §8.6 assigns, never solves |
+| One discrete coordinate has at most one initial value | Initialization system | Duplicate is impossible |
+| A discrete initial value reads only `time`, parameters, and constants | Initialization system | Nothing else is settled there |
 | Discrete Real equations own activated Real residual IDs | Discrete system | B.1b may be coupled; trigger/guard ownership is explicit |
 | B.1c updates own typed `m` targets and values | Discrete system | Assignment shape is explicit |
 | Every non-input B.1c target has one definition | Discrete system | Missing or duplicate is impossible |

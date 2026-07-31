@@ -1126,17 +1126,23 @@ fn test_msl_merge_and_gate() {
 
     // Reuse the un-sharded write + validate + snapshot + gate sequence.
     write_msl_results(&merged).expect("write merged msl_results.json + reports");
+    // The comparator ran per shard; this job's comparator stage is the merge of
+    // those bands. `MergedShardArtifacts` says so, so the gate reads the merged
+    // reference instead of reporting "the stage never executed" — and a merge
+    // that produced no readable reference still lands as "parity unmeasured".
+    let parity_stage = MslParityStageOutcome::MergedShardArtifacts;
     merge_shard_parity_artifacts(&dir, &msl_results_dir())
         .expect("write merged OMC parity artifacts");
     write_msl_package_trace_accuracy_report(&merged)
         .expect("write merged package trace accuracy report");
-    assert_valid_msl_summary(&merged);
+    assert_msl_run_is_measurable(&merged);
     if merged.sim_attempted > 0 {
-        write_current_msl_quality_snapshot(&merged).expect("write merged quality snapshot");
+        write_current_msl_quality_snapshot(&merged, &parity_stage)
+            .expect("write merged quality snapshot");
     }
-    enforce_msl_quality_gate(&merged).expect("merged MSL quality gate");
+    enforce_msl_quality_gate(&merged, &parity_stage).expect("merged MSL quality gate");
     println!(
-        "Merged MSL quality gate passed ({} sim_ok / {} attempted)",
+        "Merged MSL quality gate passed ({} sim_ok / {} attempted; sim_ok is completion, never parity)",
         merged.sim_ok, merged.sim_attempted
     );
 }

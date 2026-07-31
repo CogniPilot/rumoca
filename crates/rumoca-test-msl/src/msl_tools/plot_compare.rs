@@ -36,6 +36,17 @@ pub struct Args {
     /// Optional output HTML path
     #[arg(long)]
     output: Option<PathBuf>,
+    /// Compare the existing trace files instead of re-simulating both sides.
+    #[arg(long)]
+    reuse_traces: bool,
+    /// Restrict the comparison to `time <= T` on both traces.
+    ///
+    /// A trajectory whose long-horizon divergence is dynamical rather than a
+    /// compiler defect still has to agree before the trajectories separate, so
+    /// adjudicating that claim means scoring a shorter horizon with the same
+    /// comparator instead of a different one.
+    #[arg(long, value_name = "T")]
+    compare_until: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -71,16 +82,27 @@ pub fn run(args: Args) -> Result<()> {
     let paths = MslPaths::current();
     let rumoca_trace_path = resolve_trace_path(&paths, &args, TraceSource::Rumoca);
     let omc_trace_path = resolve_trace_path(&paths, &args, TraceSource::Omc);
-    regenerate_traces_for_model(&paths, &args.model, &rumoca_trace_path, &omc_trace_path)?;
+    if args.reuse_traces {
+        require_existing_traces(&rumoca_trace_path, &omc_trace_path)?;
+    } else {
+        regenerate_traces_for_model(&paths, &args.model, &rumoca_trace_path, &omc_trace_path)?;
+    }
 
-    let rumoca_trace = load_trace_json(&rumoca_trace_path).with_context(|| {
+    let mut rumoca_trace = load_trace_json(&rumoca_trace_path).with_context(|| {
         format!(
             "failed to load rumoca trace '{}'",
             rumoca_trace_path.display()
         )
     })?;
-    let omc_trace = load_trace_json(&omc_trace_path)
+    let mut omc_trace = load_trace_json(&omc_trace_path)
         .with_context(|| format!("failed to load OMC trace '{}'", omc_trace_path.display()))?;
+    if let Some(until) = args.compare_until {
+        truncate_trace(&mut rumoca_trace, until)?;
+        truncate_trace(&mut omc_trace, until)?;
+        println!("Comparison horizon restricted to time <= {until}");
+    }
+    let rumoca_trace = rumoca_trace;
+    let omc_trace = omc_trace;
     let aligned = align_traces(&args.model, &rumoca_trace, &omc_trace)?;
     let metric = match compare_model_traces(&args.model, &rumoca_trace, &omc_trace) {
         Ok(metric) => Some(metric),
@@ -120,6 +142,36 @@ pub fn run(args: Args) -> Result<()> {
         }
     }
     println!("Wrote plot: {}", output_path.display());
+    Ok(())
+}
+
+fn require_existing_traces(rumoca_trace_path: &Path, omc_trace_path: &Path) -> Result<()> {
+    for path in [rumoca_trace_path, omc_trace_path] {
+        if !path.is_file() {
+            bail!(
+                "--reuse-traces requires an existing trace at '{}'",
+                path.display()
+            );
+        }
+    }
+    println!("Reusing existing traces (no re-simulation).");
+    Ok(())
+}
+
+/// Drop every sample after `until` from a loaded trace.
+///
+/// This only restricts the window the comparator scores; the comparison itself
+/// stays the repo comparator so a short-horizon verdict is directly comparable
+/// with the full-horizon one.
+fn truncate_trace(trace: &mut SimTrace, until: f64) -> Result<()> {
+    let kept = trace.times.iter().take_while(|&&t| t <= until).count();
+    if kept < 2 {
+        bail!("--compare-until {until} keeps fewer than two samples of the trace");
+    }
+    trace.times.truncate(kept);
+    for series in &mut trace.data {
+        series.truncate(kept);
+    }
     Ok(())
 }
 

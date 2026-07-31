@@ -1,4 +1,6 @@
 use super::*;
+
+mod gate_hole;
 use serde_json::Value;
 use serde_json::json;
 use std::any::Any;
@@ -224,14 +226,16 @@ fn selected_target_gate_returns_error_instead_of_asserting() {
 
 #[test]
 fn full_quality_gate_rejects_zero_simulation_attempts() {
-    let mut summary = valid_summary_template();
-    summary.sim_target_models = vec!["A".to_string(), "B".to_string()];
-
-    let error = enforce_msl_quality_gate(&summary)
-        .expect_err("full quality gate must reject a zero-attempt simulation run");
-    let message = error.to_string();
+    let message = zero_simulation_attempt_rejection(2, false)
+        .expect("a cohort run that simulated nothing must be rejected");
     assert!(message.contains("invalid full run"));
     assert!(message.contains("0 simulations attempted for 2 selected simulation target(s)"));
+
+    assert_eq!(
+        zero_simulation_attempt_rejection(2, true),
+        None,
+        "a focused/partial run may legitimately attempt no simulations"
+    );
 }
 
 #[test]
@@ -513,7 +517,7 @@ fn current_quality_snapshot_includes_mls_contract_category_coverage() {
 }
 
 #[test]
-fn sim_stage_gate_allows_equal_cumulative_count() {
+fn sim_completion_report_is_quiet_on_equal_cumulative_count() {
     let baseline = MslQualityBaseline {
         sim_ok: 800,
         sim_attempted: 1000,
@@ -524,8 +528,7 @@ fn sim_stage_gate_allows_equal_cumulative_count() {
     let mut gate_input = gate_input_with_sim_rate(800, 1000);
     gate_input.sim_target_models = 1000;
 
-    let mut reasons = Vec::new();
-    push_sim_rate_regression_reason(&mut reasons, gate_input, &baseline);
+    let reasons = sim_completion_report_notes(gate_input, &baseline);
     assert!(
         reasons.is_empty(),
         "equal cumulative simulation count should pass, got: {reasons:?}"
@@ -533,7 +536,7 @@ fn sim_stage_gate_allows_equal_cumulative_count() {
 }
 
 #[test]
-fn sim_stage_gate_allows_one_model_full_run_jitter() {
+fn sim_completion_report_is_quiet_on_one_model_full_run_jitter() {
     let baseline = MslQualityBaseline {
         sim_ok: 800,
         sim_attempted: 1000,
@@ -544,8 +547,7 @@ fn sim_stage_gate_allows_one_model_full_run_jitter() {
     let mut gate_input = gate_input_with_sim_rate(799, 1000);
     gate_input.sim_target_models = 1000;
 
-    let mut reasons = Vec::new();
-    push_sim_rate_regression_reason(&mut reasons, gate_input, &baseline);
+    let reasons = sim_completion_report_notes(gate_input, &baseline);
     assert!(
         reasons.is_empty(),
         "one-model full-run simulation jitter should pass, got: {reasons:?}"
@@ -553,7 +555,7 @@ fn sim_stage_gate_allows_one_model_full_run_jitter() {
 }
 
 #[test]
-fn sim_stage_gate_rejects_two_model_full_run_drop() {
+fn sim_completion_report_notes_a_two_model_full_run_drop() {
     let baseline = MslQualityBaseline {
         sim_ok: 800,
         sim_attempted: 1000,
@@ -564,8 +566,7 @@ fn sim_stage_gate_rejects_two_model_full_run_drop() {
     let mut gate_input = gate_input_with_sim_rate(798, 1000);
     gate_input.sim_target_models = 1000;
 
-    let mut reasons = Vec::new();
-    push_sim_rate_regression_reason(&mut reasons, gate_input, &baseline);
+    let reasons = sim_completion_report_notes(gate_input, &baseline);
     assert!(
         reasons
             .iter()
@@ -575,7 +576,7 @@ fn sim_stage_gate_rejects_two_model_full_run_drop() {
 }
 
 #[test]
-fn ic_stage_gate_allows_one_model_full_run_jitter() {
+fn ic_completion_report_is_quiet_on_one_model_full_run_jitter() {
     let baseline = MslQualityBaseline {
         sim_target_models: 1000,
         ic_ok: 800,
@@ -587,8 +588,7 @@ fn ic_stage_gate_allows_one_model_full_run_jitter() {
     gate_input.sim_target_models = 1000;
     gate_input.ic_ok = 799;
 
-    let mut reasons = Vec::new();
-    push_sim_rate_regression_reason(&mut reasons, gate_input, &baseline);
+    let reasons = sim_completion_report_notes(gate_input, &baseline);
     assert!(
         reasons.is_empty(),
         "one-model full-run IC jitter should pass, got: {reasons:?}"
@@ -596,7 +596,7 @@ fn ic_stage_gate_allows_one_model_full_run_jitter() {
 }
 
 #[test]
-fn ic_stage_gate_is_advisory_when_sim_count_is_stable() {
+fn ic_completion_report_is_quiet_when_sim_count_is_stable() {
     let baseline = MslQualityBaseline {
         sim_target_models: 1000,
         ic_ok: 800,
@@ -608,8 +608,7 @@ fn ic_stage_gate_is_advisory_when_sim_count_is_stable() {
     gate_input.sim_target_models = 1000;
     gate_input.ic_ok = 798;
 
-    let mut reasons = Vec::new();
-    push_sim_rate_regression_reason(&mut reasons, gate_input, &baseline);
+    let reasons = sim_completion_report_notes(gate_input, &baseline);
     assert!(
         reasons.is_empty(),
         "IC-only progress drop should not fail a stable simulation gate, got: {reasons:?}"
@@ -617,7 +616,7 @@ fn ic_stage_gate_is_advisory_when_sim_count_is_stable() {
 }
 
 #[test]
-fn ic_stage_regression_is_reported_when_sim_count_also_regresses() {
+fn ic_completion_note_appears_when_sim_count_also_drops() {
     let baseline = MslQualityBaseline {
         sim_target_models: 1000,
         ic_ok: 800,
@@ -629,8 +628,7 @@ fn ic_stage_regression_is_reported_when_sim_count_also_regresses() {
     gate_input.sim_target_models = 1000;
     gate_input.ic_ok = 798;
 
-    let mut reasons = Vec::new();
-    push_sim_rate_regression_reason(&mut reasons, gate_input, &baseline);
+    let reasons = sim_completion_report_notes(gate_input, &baseline);
     assert!(
         reasons
             .iter()
@@ -646,7 +644,7 @@ fn ic_stage_regression_is_reported_when_sim_count_also_regresses() {
 }
 
 #[test]
-fn current_sharded_ic_accounting_shape_keeps_sim_gate_green() {
+fn current_sharded_ic_accounting_shape_keeps_the_completion_report_quiet() {
     let baseline = MslQualityBaseline {
         sim_target_models: 566,
         ic_ok: 239,
@@ -661,8 +659,7 @@ fn current_sharded_ic_accounting_shape_keeps_sim_gate_green() {
         ..gate_input_with_sim_rate(170, 413)
     };
 
-    let mut reasons = Vec::new();
-    push_sim_rate_regression_reason(&mut reasons, gate_input, &baseline);
+    let reasons = sim_completion_report_notes(gate_input, &baseline);
     assert!(
         reasons.is_empty(),
         "current CI run preserves simulation successes and should pass, got: {reasons:?}"
@@ -886,9 +883,9 @@ fn full_run_stage_gate_rejects_two_lost_compiles() {
 }
 
 #[test]
-fn valid_msl_summary_rejects_zero_total_models() {
+fn measurability_check_rejects_zero_total_models() {
     let summary = super::super::empty_summary(1, 0);
-    let panic = std::panic::catch_unwind(|| assert_valid_msl_summary(&summary))
+    let panic = std::panic::catch_unwind(|| assert_msl_run_is_measurable(&summary))
         .expect_err("zero-model summary must panic");
     let message = panic_message(&panic);
     assert!(
@@ -898,10 +895,10 @@ fn valid_msl_summary_rejects_zero_total_models() {
 }
 
 #[test]
-fn valid_msl_summary_rejects_resolve_errors() {
+fn measurability_check_rejects_resolve_errors() {
     let mut summary = valid_summary_template();
     summary.resolve_errors = 1;
-    let panic = std::panic::catch_unwind(|| assert_valid_msl_summary(&summary))
+    let panic = std::panic::catch_unwind(|| assert_msl_run_is_measurable(&summary))
         .expect_err("resolve-error summary must panic");
     let message = panic_message(&panic);
     assert!(
@@ -910,8 +907,13 @@ fn valid_msl_summary_rejects_resolve_errors() {
     );
 }
 
+/// The structural floor moved to the strict-high band and is now evaluated
+/// AFTER the comparator (see `strict_high_hard_floor_reason_for` and
+/// `tests::gate_hole`). The pre-comparator check must therefore NOT abort on a
+/// simulation collapse: aborting here is what destroyed the `results-wave3`
+/// parity measurement before it could be taken.
 #[test]
-fn valid_msl_summary_rejects_baseline_sim_run_below_hard_floor() {
+fn the_pre_comparator_check_never_aborts_on_a_simulation_collapse() {
     let mut summary = valid_summary_template();
     summary.total_models = SIM_SET_LIMIT_DEFAULT;
     summary.sim_attempted = SIM_SET_LIMIT_DEFAULT;
@@ -920,17 +922,20 @@ fn valid_msl_summary_rejects_baseline_sim_run_below_hard_floor() {
         .map(|idx| format!("Model{idx}"))
         .collect();
 
-    let panic = std::panic::catch_unwind(|| assert_valid_msl_summary(&summary))
-        .expect_err("baseline simulation collapse must panic");
-    let message = panic_message(&panic);
+    assert_msl_run_is_measurable(&summary);
+
+    // The collapse is still rejected — by the post-comparator floor, which
+    // reads the band the comparator produced rather than `sim_ok`.
+    let reason = strict_high_hard_floor_reason_for(SIM_SET_LIMIT_DEFAULT, 0)
+        .expect("a simulation collapse must still be rejected, just later");
     assert!(
-        message.contains("sim_ok below hard floor"),
-        "unexpected panic message: {message}"
+        reason.contains("strict-high agreement below hard floor"),
+        "unexpected floor reason: {reason}"
     );
 }
 
 #[test]
-fn valid_msl_summary_accepts_transitional_architecture_reset_floor() {
+fn the_strict_high_floor_accepts_the_transitional_architecture_reset_level() {
     let mut summary = valid_summary_template();
     summary.total_models = SIM_SET_LIMIT_DEFAULT;
     summary.sim_attempted = 166;
@@ -939,7 +944,12 @@ fn valid_msl_summary_accepts_transitional_architecture_reset_floor() {
         .map(|idx| format!("Model{idx}"))
         .collect();
 
-    assert_valid_msl_summary(&summary);
+    assert_msl_run_is_measurable(&summary);
+    assert_eq!(
+        strict_high_hard_floor_reason_for(SIM_SET_LIMIT_DEFAULT, 109),
+        None,
+        "109 models in the strict-high band clears the transitional floor"
+    );
 }
 
 fn trace_accuracy_baseline() -> MslTraceAccuracyStatsBaseline {

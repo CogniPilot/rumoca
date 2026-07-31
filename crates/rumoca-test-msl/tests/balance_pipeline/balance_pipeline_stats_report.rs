@@ -484,15 +484,35 @@ fn last_stage_seconds(report: &MslParityTimingReport) -> f64 {
         .map_or(0.0, |stage| stage.elapsed_seconds)
 }
 
-fn run_simulation_parity_stages(summary: &MslSummary, report: &mut MslParityTimingReport) {
+/// Run the comparator stage and report what it did.
+///
+/// The stage NEVER panics on a comparator that could not run: it returns the
+/// typed reason, which the gate turns into a loud "parity unmeasured" verdict.
+/// Panicking here would abort before the summary is printed, which is how a
+/// skipped comparator used to look identical to a comparator that ran.
+fn run_simulation_parity_stages(
+    summary: &MslSummary,
+    report: &mut MslParityTimingReport,
+) -> MslParityStageOutcome {
     let parity_start = Instant::now();
     let _parity_watchdog = StageAbortWatchdog::new("parity_stage", 7200);
     println!("MSL parity stage: ensuring OMC references + trace comparison...");
-    run_timed_parity_stage_or_panic(
-        report,
+    let stage_start = Instant::now();
+    let outcome = ensure_required_msl_parity_references(summary);
+    let status = match &outcome {
+        MslParityStageOutcome::Ran | MslParityStageOutcome::MergedShardArtifacts => "pass",
+        MslParityStageOutcome::DidNotRun(reason) => {
+            println!(
+                "MSL {PARITY_UNMEASURED_HEADLINE} ({}); the comparator stage produced no bands",
+                reason.detail()
+            );
+            "fail"
+        }
+    };
+    report.record_stage(
         "omc_reference_and_trace_compare",
-        "Failed to ensure required OMC parity references",
-        || ensure_required_msl_parity_references(summary),
+        status,
+        stage_start.elapsed(),
     );
     run_timed_parity_stage_or_panic(
         report,
@@ -504,16 +524,21 @@ fn run_simulation_parity_stages(summary: &MslSummary, report: &mut MslParityTimi
         "MSL parity stage: completed in {:.2}s",
         parity_start.elapsed().as_secs_f64()
     );
+    outcome
 }
 
-fn run_quality_snapshot_stage(summary: &MslSummary, report: &mut MslParityTimingReport) {
+fn run_quality_snapshot_stage(
+    summary: &MslSummary,
+    stage: &MslParityStageOutcome,
+    report: &mut MslParityTimingReport,
+) {
     let _snapshot_watchdog = StageAbortWatchdog::new("quality_snapshot_write", 300);
     println!("MSL parity stage: writing current quality snapshot...");
     run_timed_parity_stage_or_panic(
         report,
         "quality_snapshot_write",
         "Failed to write current MSL quality snapshot",
-        || write_current_msl_quality_snapshot(summary),
+        || write_current_msl_quality_snapshot(summary, stage),
     );
     println!(
         "MSL parity stage: quality snapshot written in {:.2}s",
@@ -521,7 +546,11 @@ fn run_quality_snapshot_stage(summary: &MslSummary, report: &mut MslParityTiming
     );
 }
 
-fn run_quality_gate_stage(summary: &MslSummary, report: &mut MslParityTimingReport) {
+fn run_quality_gate_stage(
+    summary: &MslSummary,
+    stage: &MslParityStageOutcome,
+    report: &mut MslParityTimingReport,
+) {
     if should_skip_msl_quality_gate() {
         println!(
             "MSL quality gate: baseline delta checks skipped for focused/non-baseline run (committed target scope, explicit target file, subset, or non-default sim set)."
@@ -530,7 +559,7 @@ fn run_quality_gate_stage(summary: &MslSummary, report: &mut MslParityTimingRepo
             report,
             "quality_gate_eval_partial",
             "Failed to run MSL quality gate",
-            || enforce_msl_quality_gate(summary),
+            || enforce_msl_quality_gate(summary, stage),
         );
         return;
     }
@@ -540,7 +569,7 @@ fn run_quality_gate_stage(summary: &MslSummary, report: &mut MslParityTimingRepo
         report,
         "quality_gate_eval",
         "Failed to run MSL quality gate",
-        || enforce_msl_quality_gate(summary),
+        || enforce_msl_quality_gate(summary, stage),
     );
     println!(
         "MSL quality gate: completed in {:.2}s",
@@ -591,17 +620,33 @@ pub(super) fn print_final_stats(summary: &MslSummary) {
         "  - Core + JSON write subtotal: {:.2}s",
         summary.timings.core_pipeline_seconds + json_write_seconds
     );
-    assert_valid_msl_summary(summary);
+    // Only the measurability check runs before the comparator. Every verdict
+    // that depends on simulation outcomes is downstream of the parity stage, so
+    // no gate can abort the run before its parity is measured. (`results-wave3`
+    // aborted here on the old `sim_ok` hard floor and published `sim_ok 49/566`
+    // with no comparator behind it.)
+    assert_msl_run_is_measurable(summary);
+    // A focused run that already lost a named target has nothing a cohort
+    // comparison could add, and paying for OMC references to report a failure
+    // we already have is waste. The skip is still typed and still printed, so
+    // the run says "parity unmeasured" rather than falling silent.
     if require_selected_targets_success() && !selected_target_failures(summary).is_empty() {
-        run_quality_gate_stage(summary, &mut timing_report);
+        let stage = MslParityStageOutcome::DidNotRun(MslParityUnmeasuredReason::StageNotExecuted {
+            detail: "focused run: a selected simulation target failed before the comparator stage"
+                .to_string(),
+        });
+        run_quality_gate_stage(summary, &stage, &mut timing_report);
         finalize_msl_parity_timing_report(&mut timing_report);
         return;
     }
-    if summary.sim_attempted > 0 {
-        run_simulation_parity_stages(summary, &mut timing_report);
-        run_quality_snapshot_stage(summary, &mut timing_report);
-    }
-    run_quality_gate_stage(summary, &mut timing_report);
+    let parity_stage = if summary.sim_attempted > 0 {
+        let stage = run_simulation_parity_stages(summary, &mut timing_report);
+        run_quality_snapshot_stage(summary, &stage, &mut timing_report);
+        stage
+    } else {
+        MslParityStageOutcome::DidNotRun(MslParityUnmeasuredReason::NoSimulationsAttempted)
+    };
+    run_quality_gate_stage(summary, &parity_stage, &mut timing_report);
     finalize_msl_parity_timing_report(&mut timing_report);
     print_simulatable_compilation_rate(summary);
 }
