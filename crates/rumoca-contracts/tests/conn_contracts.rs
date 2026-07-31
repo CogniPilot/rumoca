@@ -514,6 +514,79 @@ fn conn_011_empty_expandable_buses_can_connect_without_member_synthesis() {
 // CONN-019: Subscripts shall be evaluable expressions or special operator :
 // =============================================================================
 
+// The accepted case first (SPEC_0008): a literal subscript on an array of a
+// *simple* connector is evaluable, so `connect(a, gate.x[1])` is a connection
+// to one element of `gate.x`. A simple connector has no members to expand, so
+// the flat model declares the array once, with its dimension intact, and owns
+// nothing named `gate.x[1]`. The generated connection equation therefore has to
+// reach the DAE as the declared coordinate carrying a subscript; a reference
+// whose *name* embedded the index would name no declaration and be rejected as
+// an unresolved Flat reference.
+#[test]
+fn conn_019_connect_to_array_connector_element_accepted() {
+    expect_success(
+        r#"
+        connector RealInput = input Real;
+        connector RealOutput = output Real;
+        model Gate
+            RealInput x[2];
+            RealOutput y;
+        equation
+            y = x[1] + x[2];
+        end Gate;
+        model M
+            Gate gate;
+            RealOutput a;
+            RealOutput b;
+            Real probe;
+        equation
+            connect(a, gate.x[1]);
+            connect(b, gate.x[2]);
+            probe = gate.y;
+            a = 1.0;
+            b = 2.0;
+        end M;
+    "#,
+        "M",
+    );
+}
+
+// The same element connection one level deeper: the composite that owns the
+// element connection is itself a component, which is the shape that reaches
+// flattening as a nested rendered path.
+#[test]
+fn conn_019_nested_connect_to_array_connector_element_accepted() {
+    expect_success(
+        r#"
+        connector RealInput = input Real;
+        connector RealOutput = output Real;
+        model Gate
+            RealInput x[2];
+            RealOutput y;
+        equation
+            y = x[1] + x[2];
+        end Gate;
+        model Adder
+            Gate gate;
+            RealInput u;
+            RealOutput c;
+        equation
+            connect(u, gate.x[2]);
+            gate.x[1] = 1.0;
+            c = gate.y;
+        end Adder;
+        model M
+            Adder adder;
+            Real probe;
+        equation
+            adder.u = 2.0;
+            probe = adder.c;
+        end M;
+    "#,
+        "M",
+    );
+}
+
 #[test]
 fn conn_019_connect_subscript_not_evaluable_rejected() {
     expect_resolve_failure_with_code(
