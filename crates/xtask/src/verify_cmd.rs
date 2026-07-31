@@ -139,8 +139,9 @@ pub(crate) struct VerifyMslParityArgs {
     no_remote_quality_baseline: bool,
     /// Run only shard `m` of `n` (`--shard m/n`, 1-based). The slowest-first
     /// model set is striped round-robin across shards so the slow/timeout tail
-    /// spreads evenly. A shard skips the aggregate baseline ratchet (the fan-in
-    /// `repo msl merge-results` job runs the gate once on the merged results).
+    /// spreads evenly. A shard skips the aggregate baseline ratchet; the fan-in
+    /// `verify msl-parity --merge-shards <dir>` job runs the gate once on the
+    /// merged results.
     #[arg(long, value_name = "M/N")]
     shard: Option<String>,
     /// Fan-in mode: merge the shard partials under DIR (`shard-*/msl_results.json`)
