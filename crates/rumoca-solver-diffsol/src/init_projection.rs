@@ -5,9 +5,34 @@
 //! parameter vector before time integration starts.
 
 use super::*;
+use crate::SimFailureStage;
 use rumoca_solver::EventActionOutcome;
 
 pub(crate) fn initialize_state_runtime_values(
+    model: &solve::SolveModel,
+    opts: &SimOptions,
+    runtime: &SolveRuntime,
+    equilibrium_model: &OdeModel,
+    current_y: &mut [f64],
+    params: &mut [f64],
+    current_t: &mut f64,
+) -> Result<Vec<rumoca_solver::InitialEventObservation>, SimError> {
+    initialize_state_runtime_values_inner(
+        model,
+        opts,
+        runtime,
+        equilibrium_model,
+        current_y,
+        params,
+        current_t,
+    )
+    .map_err(|error| error.at_stage(SimFailureStage::Initialization))
+}
+
+/// Everything settled before time integration starts. Failures are annotated as
+/// [`SimFailureStage::Initialization`] by the wrapper above so downstream
+/// classification never has to recognise an initialization message by its text.
+fn initialize_state_runtime_values_inner(
     model: &solve::SolveModel,
     opts: &SimOptions,
     runtime: &SolveRuntime,

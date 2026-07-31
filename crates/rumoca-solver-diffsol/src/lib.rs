@@ -16,7 +16,11 @@ mod prepared;
 mod runtime;
 pub mod session;
 
-use std::{cell::RefCell, rc::Rc, sync::Arc};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+    sync::Arc,
+};
 
 use bdf::can_use_state_only_bdf;
 pub(crate) use bdf::{
@@ -56,6 +60,30 @@ type Scalar = <Matrix as MatrixCommon>::T;
 pub(crate) type LinearSolver = FaerSparseLU<f64>;
 pub(crate) type RuntimeParameters = Rc<RefCell<Vec<f64>>>;
 
+/// Records which [`SimFailureStage`] the backend was running when it produced a
+/// failure.
+///
+/// The backend-neutral driver in `rumoca-solver` funnels every backend failure
+/// through `SimDriverError`, which carries no stage. Rather than re-derive the
+/// stage downstream from the rendered message, the backend notes it here at the
+/// moment it hands the error out, and the run entry point re-attaches it to the
+/// `SimError` the caller sees.
+pub(crate) type StageRecorder = Rc<Cell<Option<SimFailureStage>>>;
+
+/// Note `stage` as the origin of `error` and hand the error straight back, so a
+/// fallible call is annotated by appending `.map_err(|e| note(&r, stage, e))`.
+fn note_stage<E>(recorder: &StageRecorder, stage: SimFailureStage, error: E) -> E {
+    recorder.set(Some(stage));
+    error
+}
+
+/// Attach the backend-recorded stage to a driver failure, defaulting to
+/// [`SimFailureStage::Integration`] — the driver only ever runs the backend to
+/// integrate, so an unnoted failure did surface during integration.
+fn stage_driver_failure(recorder: &StageRecorder, error: SimDriverError) -> SimError {
+    SimError::from(error).at_stage(recorder.get().unwrap_or(SimFailureStage::Integration))
+}
+
 #[derive(Clone)]
 pub(crate) struct AlgebraicWarmStart(Rc<RefCell<Vec<f64>>>);
 
@@ -72,7 +100,7 @@ impl AlgebraicWarmStart {
         *self.0.borrow_mut() = solver_y;
     }
 }
-pub use error::SimError;
+pub use error::{SimError, SimFailureStage};
 pub(crate) use ode::{
     OdeModel, build_ode_problem_with_runtime_params_and_initial,
     build_state_ode_problem_with_runtime_params_and_initial, state_ode_problem_input,
@@ -85,6 +113,17 @@ use rumoca_solver::{RuntimeSolveError, project_algebraics, project_algebraics_an
 const EVENT_UPDATE_MAX_ITERS: usize = 256;
 
 pub fn build_simulation(
+    model: &solve::SolveModel,
+    opts: &SimOptions,
+) -> Result<PreparedSimulation, SimError> {
+    build_simulation_inner(model, opts)
+        .map_err(|error| error.at_stage(SimFailureStage::BackendBuild))
+}
+
+/// Backend problem construction. Failures are annotated as
+/// [`SimFailureStage::BackendBuild`] by the wrapper above: nothing has been
+/// integrated yet, so these are never numeric-solver failures.
+fn build_simulation_inner(
     model: &solve::SolveModel,
     opts: &SimOptions,
 ) -> Result<PreparedSimulation, SimError> {
@@ -143,6 +182,17 @@ pub fn check_prepared_initialization(prepared: &PreparedSimulation) -> Result<()
 }
 
 pub fn check_initialization(model: &solve::SolveModel, opts: &SimOptions) -> Result<(), SimError> {
+    check_initialization_inner(model, opts)
+        .map_err(|error| error.at_stage(SimFailureStage::Initialization))
+}
+
+/// Settle initial conditions without integrating. Failures are annotated as
+/// [`SimFailureStage::Initialization`] by the wrapper above; paths that already
+/// recorded a more precise stage keep it.
+fn check_initialization_inner(
+    model: &solve::SolveModel,
+    opts: &SimOptions,
+) -> Result<(), SimError> {
     let runtime_context = solve_eval::SimulationContext::new();
     runtime_context.hydrate_solve_model(model);
     validate_model(model)?;
@@ -266,6 +316,7 @@ fn simulate_with_states(
         equilibrium_model.clone(),
         runtime.clone(),
     )?;
+    let stage_recorder = StageRecorder::default();
     let mut backend = build_general_advance_backend(GeneralAdvanceBackendInput {
         model,
         opts,
@@ -275,6 +326,7 @@ fn simulate_with_states(
         problem: &problem,
         current_y: &current_y,
         params: &params,
+        stage_recorder: stage_recorder.clone(),
     })?;
     let result = simulate_state_targets(
         model,
@@ -292,7 +344,7 @@ fn simulate_with_states(
             runtime_state: &equilibrium_model.runtime_state,
         },
     )
-    .map_err(SimError::from);
+    .map_err(|error| stage_driver_failure(&stage_recorder, error));
 
     finalize_state_simulation(
         result,
@@ -321,6 +373,7 @@ where
     problem: &'a OdeSolverProblem<Eqn>,
     current_y: &'b [f64],
     params: &'b [f64],
+    stage_recorder: StageRecorder,
 }
 
 fn build_general_advance_backend<'a, Eqn>(
@@ -340,6 +393,7 @@ where
         problem,
         current_y,
         params,
+        stage_recorder,
     } = input;
     match opts.diffsol_method {
         DiffsolMethod::Bdf => {
@@ -367,6 +421,7 @@ where
                     algebraic_warm_start: None,
                     opts,
                     mode: DiffsolMode::General,
+                    stage_recorder: stage_recorder.clone(),
                 },
             )))
         }
@@ -386,6 +441,7 @@ where
                     algebraic_warm_start: None,
                     opts,
                     mode: DiffsolMode::General,
+                    stage_recorder: stage_recorder.clone(),
                 },
             )))
         }
@@ -516,6 +572,7 @@ fn simulate_state_only_bdf(
     let solver = solver_call("BDF new", || {
         diffsol::Bdf::<_, _, _, diffsol::NoAug<_>>::new(&problem, state, nl_solver)
     })?;
+    let stage_recorder = StageRecorder::default();
     let mut backend = DiffsolAdvanceBackend::new(DiffsolAdvanceBackendInputs {
         solver,
         model,
@@ -525,6 +582,7 @@ fn simulate_state_only_bdf(
         algebraic_warm_start: Some(algebraic_warm_start),
         opts,
         mode: DiffsolMode::StateOnly,
+        stage_recorder: stage_recorder.clone(),
     });
 
     // Drive the reduced state-only solver through the *same* backend-neutral
@@ -546,7 +604,7 @@ fn simulate_state_only_bdf(
             runtime_state: &equilibrium_model.runtime_state,
         },
     )
-    .map_err(SimError::from);
+    .map_err(|error| stage_driver_failure(&stage_recorder, error));
 
     trace_bdf_eval_counter_snapshot("state-only-bdf", &eval_counters);
 
@@ -606,7 +664,11 @@ where
 /// Map an internal diffsol [`SimError`] into the backend-neutral driver error,
 /// preserving `Terminated` so finalization can replay `terminate()` semantics.
 fn sim_to_driver(error: SimError) -> SimDriverError {
+    // Stage annotations are recorded separately (see [`StageRecorder`]) because
+    // the driver error cannot carry them; peel them off so an annotated failure
+    // maps exactly like the unannotated one.
     match error {
+        SimError::Staged { inner, .. } => sim_to_driver(*inner),
         SimError::Terminated { time, message } => SimDriverError::Terminated { time, message },
         SimError::SolveIr(message) => SimDriverError::SolveIr(message),
         SimError::Timeout { seconds } => SimDriverError::Timeout(TimeoutExceeded { seconds }),
@@ -651,6 +713,7 @@ struct DiffsolAdvanceBackend<'a, Eqn, S> {
     opts: &'a SimOptions,
     mode: DiffsolMode,
     active_stop_time: Option<f64>,
+    stage_recorder: StageRecorder,
     _eqn: std::marker::PhantomData<fn() -> Eqn>,
 }
 
@@ -663,6 +726,7 @@ struct DiffsolAdvanceBackendInputs<'a, S> {
     algebraic_warm_start: Option<AlgebraicWarmStart>,
     opts: &'a SimOptions,
     mode: DiffsolMode,
+    stage_recorder: StageRecorder,
 }
 
 impl<'a, Eqn, S> DiffsolAdvanceBackend<'a, Eqn, S>
@@ -682,12 +746,19 @@ where
             opts: inputs.opts,
             mode: inputs.mode,
             active_stop_time: None,
+            stage_recorder: inputs.stage_recorder,
             _eqn: std::marker::PhantomData,
         }
     }
 
     fn tol(&self) -> f64 {
         self.opts.atol.max(1.0e-10)
+    }
+
+    /// Record `stage` as the origin of `error` on the way out. See
+    /// [`StageRecorder`].
+    fn note<E>(&self, stage: SimFailureStage, error: E) -> E {
+        note_stage(&self.stage_recorder, stage, error)
     }
 
     fn commit_state_only_warm_start(&self) -> Result<(), SimDriverError> {
@@ -723,7 +794,8 @@ where
             .refresh_delay_values(t, &solver_y, &mut params)?;
         if !self
             .runtime
-            .project_state_manifold(&mut solver_y, &params, t, self.tol())?
+            .project_state_manifold(&mut solver_y, &params, t, self.tol())
+            .map_err(|error| self.note(SimFailureStage::ManifoldProjection, error))?
         {
             return self.commit_state_only_warm_start();
         }
@@ -736,7 +808,8 @@ where
                     t,
                     self.equilibrium_model.state_count_for_projection(),
                     self.tol(),
-                )?;
+                )
+                .map_err(|error| self.note(SimFailureStage::ManifoldProjection, error))?;
             }
             DiffsolMode::StateOnly => {
                 self.runtime.refresh_algebraic_and_output_slots(
@@ -768,7 +841,13 @@ where
     }
 
     fn step(&mut self) -> Result<StepOutcome, SimDriverError> {
-        let outcome = match solver_call("BDF step", || self.solver.step()).map_err(sim_to_driver)? {
+        // A recovered failure from an earlier step (a `terminate()` carried as an
+        // error, for example) must not be mistaken for the origin of a later
+        // one, so each step starts from a clean slate.
+        self.stage_recorder.set(None);
+        let outcome = match solver_call("BDF step", || self.solver.step())
+            .map_err(|error| self.note(SimFailureStage::Integration, sim_to_driver(error)))?
+        {
             OdeSolverStopReason::TstopReached => StepOutcome::Stop,
             OdeSolverStopReason::InternalTimestep => StepOutcome::Internal,
             OdeSolverStopReason::RootFound(t_root, _) => StepOutcome::Root { t_root },
@@ -781,7 +860,8 @@ where
 
     fn set_stop_time(&mut self, stop_time: f64) -> Result<(), SimDriverError> {
         self.active_stop_time = Some(stop_time);
-        set_solver_stop_time(&mut self.solver, stop_time).map_err(sim_to_driver)
+        set_solver_stop_time(&mut self.solver, stop_time)
+            .map_err(|error| self.note(SimFailureStage::TargetIsolation, sim_to_driver(error)))
     }
 
     fn requires_exact_output_stop(&self) -> bool {
@@ -797,13 +877,21 @@ where
         self.solver
             .interpolate(t)
             .map(|v| v.as_slice().to_vec())
-            .map_err(|e| SimDriverError::Backend(format!("interpolate: {e}")))
+            .map_err(|e| {
+                self.note(
+                    SimFailureStage::TargetIsolation,
+                    SimDriverError::Backend(format!("interpolate: {e}")),
+                )
+            })
     }
 
     fn state_mut_back(&mut self, t: f64) -> Result<(), SimDriverError> {
-        self.solver
-            .state_mut_back(t)
-            .map_err(|e| SimDriverError::Backend(format!("state_mut_back: {e}")))
+        self.solver.state_mut_back(t).map_err(|e| {
+            self.note(
+                SimFailureStage::TargetIsolation,
+                SimDriverError::Backend(format!("state_mut_back: {e}")),
+            )
+        })
     }
 
     fn native_to_full_y(
@@ -894,8 +982,16 @@ where
         t: f64,
         tol: f64,
     ) -> Result<bool, RuntimeSolveError> {
-        self.runtime.refresh_delay_values(t, y, p)?;
-        let manifold_changed = self.runtime.project_state_manifold(y, p, t, tol)?;
+        // The driver calls this to re-establish consistency after an event, so
+        // an unattributed failure here belongs to the event iteration; only the
+        // manifold solve is separated out as its own stage.
+        self.runtime
+            .refresh_delay_values(t, y, p)
+            .map_err(|error| self.note(SimFailureStage::EventIteration, error))?;
+        let manifold_changed = self
+            .runtime
+            .project_state_manifold(y, p, t, tol)
+            .map_err(|error| self.note(SimFailureStage::ManifoldProjection, error))?;
         match self.mode {
             DiffsolMode::General => {
                 let algebraic_changed = project_algebraics_and_detect_changes(
@@ -905,18 +1001,15 @@ where
                     t,
                     self.equilibrium_model.state_count_for_projection(),
                     tol,
-                )?;
+                )
+                .map_err(|error| self.note(SimFailureStage::EventIteration, error))?;
                 Ok(manifold_changed || algebraic_changed)
             }
             DiffsolMode::StateOnly => {
                 let before = y.to_vec();
-                self.runtime.refresh_algebraic_and_output_slots(
-                    t,
-                    y,
-                    p,
-                    tol,
-                    EVENT_UPDATE_MAX_ITERS,
-                )?;
+                self.runtime
+                    .refresh_algebraic_and_output_slots(t, y, p, tol, EVENT_UPDATE_MAX_ITERS)
+                    .map_err(|error| self.note(SimFailureStage::EventIteration, error))?;
                 Ok(manifold_changed || runtime_values_changed(&before, y, tol))
             }
         }

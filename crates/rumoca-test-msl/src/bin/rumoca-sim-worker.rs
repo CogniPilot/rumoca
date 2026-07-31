@@ -381,7 +381,9 @@ fn classify_solver_error(
     sim_build_seconds: f64,
     sim_run_seconds: f64,
 ) -> SimWorkerResult {
-    match err {
+    // `kind()` peels the stage annotation the solver backend attaches, so an
+    // annotated timeout is still classified as a timeout.
+    match err.kind() {
         SimError::Timeout { seconds } => sim_worker_result(
             "sim_timeout",
             Some(format!("timeout after {:.3}s", seconds)),
@@ -389,9 +391,9 @@ fn classify_solver_error(
             sim_build_seconds,
             sim_run_seconds,
         ),
-        other => sim_worker_result(
+        _ => sim_worker_result(
             "sim_solver_fail",
-            Some(other.to_string()),
+            Some(err.to_string()),
             elapsed,
             sim_build_seconds,
             sim_run_seconds,

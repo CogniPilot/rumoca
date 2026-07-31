@@ -8,9 +8,14 @@ use rumoca_compile::compile::FailedPhase;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 mod diagnostic_codes;
+mod failure_classification;
 mod failure_row;
 mod memory_limit;
 pub use diagnostic_codes::{embedded_diagnostic_code, sim_error_diagnostic_code};
+pub use failure_classification::{
+    ModelFailureBucket, ModelFailureClassification, ModelFailureOwner,
+    compile_failure_progress_phase,
+};
 pub use failure_row::strict_compile_failure_row;
 pub use memory_limit::{
     WorkerMemoryLimitEnforcement, WorkerMemoryLimitStartError, start_worker_memory_limit,
@@ -774,6 +779,25 @@ pub struct WorkerModelResult {
     /// harness can triage a balance cohort without recompiling.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub balance_detail: Option<Box<rumoca_compile::analysis::BalanceDetail>>,
+    /// Pipeline phase the failing attempt stopped in, as a typed enum rather
+    /// than the free-form `phase_reached` string. `None` for a successful
+    /// attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_phase: Option<WorkerProgressPhase>,
+    /// Typed failure family, minted from producer knowledge (the compile phase,
+    /// the `SimError` variant, or the `SimFailureStage` the failing path
+    /// recorded) — never from the rendered message. `None` for a successful
+    /// attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_bucket: Option<ModelFailureBucket>,
+    /// Owner of [`Self::failure_bucket`], carried so report tooling can group by
+    /// owner without linking this crate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_category: Option<ModelFailureOwner>,
+    /// The SPEC_0008 code that identifies the classified failure, selected from
+    /// the stage-specific code fields so consumers have one field to read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_error_code: Option<String>,
 }
 
 impl WorkerModelResult {
@@ -842,7 +866,24 @@ impl WorkerModelResult {
             timeout_phase: None,
             timeout_seconds: None,
             balance_detail: None,
+            failure_phase: None,
+            failure_bucket: None,
+            owner_category: None,
+            failure_error_code: None,
         }
+    }
+
+    /// Record the typed classification for this attempt, deriving the owner from
+    /// the bucket so the two fields can never disagree.
+    pub fn set_failure_classification(
+        &mut self,
+        classification: ModelFailureClassification,
+        error_code: Option<String>,
+    ) {
+        self.failure_phase = Some(classification.phase);
+        self.failure_bucket = Some(classification.bucket);
+        self.owner_category = Some(classification.owner_category);
+        self.failure_error_code = error_code;
     }
 }
 

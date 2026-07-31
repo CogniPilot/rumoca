@@ -836,6 +836,10 @@ pub(crate) fn phase_error_result(
         timeout_phase: None,
         timeout_seconds: None,
         balance_detail: None,
+        failure_phase: None,
+        failure_bucket: None,
+        owner_category: None,
+        failure_error_code: None,
     }
 }
 
@@ -872,7 +876,20 @@ pub(super) fn convert_phase_result(name: String, phase_result: PhaseResult) -> M
             if is_non_sim_failure(phase, error_code.as_deref()) {
                 phase_str = "NonSim";
             }
-            phase_error_result(name, phase_str, Some(error), error_code)
+            let mut result = phase_error_result(name, phase_str, Some(error), error_code);
+            // The typed `FailedPhase` is right here, so classify from it rather
+            // than leaving the sub-bucket to a text heuristic downstream. The
+            // in-process path has no balance breakdown, so a ToDae failure is
+            // classified from the phase alone.
+            let bucket = rumoca_worker::ModelFailureBucket::from_compile_phase(
+                Some(phase),
+                result.is_balanced == Some(false),
+            );
+            result.failure_phase = Some(rumoca_worker::compile_failure_progress_phase(Some(phase)));
+            result.failure_bucket = Some(bucket);
+            result.owner_category = Some(bucket.owner_category());
+            result.failure_error_code = result.error_code.clone();
+            result
         }
     }
 }
@@ -990,6 +1007,10 @@ fn summarize_dae_success_fields(
         timeout_phase: None,
         timeout_seconds: None,
         balance_detail: None,
+        failure_phase: None,
+        failure_bucket: None,
+        owner_category: None,
+        failure_error_code: None,
     }
 }
 

@@ -17,18 +17,18 @@ use rumoca_compile::compile::{
     VariableRole, install_compile_phase_observer,
 };
 use rumoca_sim::{
-    BuildSimulationTimings, PreparedSimulation, SimError, SimOptions, SimResult, SimSolverMode,
-    build_simulation_with_stage_timing_and_solve_model, check_prepared_initialization,
-    run_prepared_simulation,
+    BuildSimulationTimings, PreparedSimulation, SimError, SimFailureStage, SimOptions, SimResult,
+    SimSolverMode, build_simulation_with_stage_timing_and_solve_model,
+    check_prepared_initialization, run_prepared_simulation,
 };
 use rumoca_worker::{
     MODEL_WORKER_MEMORY_LIMIT_MB_DEFAULT, MODEL_WORKER_PARENT_DISCONNECTED_EXIT_CODE,
     MODEL_WORKER_PARTIAL_RESULT_FILE, MODEL_WORKER_PROTOCOL_VERSION, MODEL_WORKER_RESULT_FILE,
-    ModelWorkerCommand, ModelWorkerControlMessage, ModelWorkerRequest, ModelWorkerResponse,
-    WorkerMemorySnapshot, WorkerModelResult, WorkerProgressEvent, WorkerProgressEventKind,
-    WorkerProgressPhase, embedded_diagnostic_code, pin_current_thread_to_cpu_core,
-    read_model_worker_request_file, sim_error_diagnostic_code, start_worker_memory_limit,
-    strict_compile_failure_row, write_model_worker_response_file,
+    ModelFailureBucket, ModelFailureClassification, ModelWorkerCommand, ModelWorkerControlMessage,
+    ModelWorkerRequest, ModelWorkerResponse, WorkerMemorySnapshot, WorkerModelResult,
+    WorkerProgressEvent, WorkerProgressEventKind, WorkerProgressPhase, embedded_diagnostic_code,
+    pin_current_thread_to_cpu_core, read_model_worker_request_file, sim_error_diagnostic_code,
+    start_worker_memory_limit, strict_compile_failure_row, write_model_worker_response_file,
 };
 
 const DEFAULT_SIM_END_TIME_SECS: f64 = 1.0;
@@ -326,6 +326,30 @@ enum WorkerErrorPhase {
     SimBuild,
     Initialization { ic_seconds: f64 },
     Simulation { sim_run_seconds: f64 },
+}
+
+impl WorkerErrorPhase {
+    /// The progress phase this worker was in when the failure surfaced.
+    fn progress_phase(self) -> WorkerProgressPhase {
+        match self {
+            Self::Build => WorkerProgressPhase::Solve,
+            Self::SimBuild => WorkerProgressPhase::SimBuild,
+            Self::Initialization { .. } => WorkerProgressPhase::IC,
+            Self::Simulation { .. } => WorkerProgressPhase::Sim,
+        }
+    }
+
+    /// The stage to assume when the failing path recorded none. This is the
+    /// worker's own position, so it is honest about the surface that failed
+    /// without claiming a sub-stage nobody reported.
+    fn fallback_stage(self) -> SimFailureStage {
+        match self {
+            Self::Build => SimFailureStage::SolveLowering,
+            Self::SimBuild => SimFailureStage::BackendBuild,
+            Self::Initialization { .. } => SimFailureStage::Initialization,
+            Self::Simulation { .. } => SimFailureStage::Integration,
+        }
+    }
 }
 
 fn load_source_root(path: &Path) -> Result<Session, String> {
@@ -848,6 +872,15 @@ fn classify_success(
         row.sim_error = Some(format!(
             "NaN/Inf in output at {var_name} (index {col_idx}) t={t} value={value}"
         ));
+        // The run completed; the defect is in the produced trajectory, which the
+        // scan above found structurally rather than by reading a message.
+        row.set_failure_classification(
+            ModelFailureClassification::new(
+                WorkerProgressPhase::Sim,
+                ModelFailureBucket::NonFiniteResult,
+            ),
+            None,
+        );
     } else {
         row.sim_status = Some("sim_ok".to_string());
     }
@@ -872,7 +905,7 @@ fn classify_sim_error(
     phase: WorkerErrorPhase,
 ) {
     row.sim_status = Some(
-        match err {
+        match err.kind() {
             SimError::Timeout { .. } => "sim_timeout",
             _ => "sim_solver_fail",
         }
@@ -882,6 +915,16 @@ fn classify_sim_error(
     row.sim_error_code = sim_error_diagnostic_code(&err);
     row.sim_error = Some(err.to_string());
     row.sim_error_span = source_span;
+    // Classify from the typed failure: the `SimError` variant plus the stage the
+    // failing path in the solver backend attached, falling back to the worker's
+    // own position in the pipeline when the path recorded nothing.
+    row.set_failure_classification(
+        ModelFailureClassification::new(
+            phase.progress_phase(),
+            ModelFailureBucket::from_sim_error(&err, phase.fallback_stage()),
+        ),
+        row.sim_error_code.clone(),
+    );
     row.sim_seconds = Some(elapsed);
     row.sim_build_seconds = Some(sim_build_seconds);
     row.ir_solve_seconds = Some(build_timings.ir_solve_seconds);
@@ -1284,7 +1327,16 @@ fn run_and_classify_simulation(
             if row.sim_status.as_deref() == Some("sim_ok") {
                 match write_sim_trace_artifact(request, &run.sim_result) {
                     Ok(path) => row.sim_trace_file = Some(path),
-                    Err(error) => row.sim_trace_error = Some(error),
+                    Err(error) => {
+                        row.sim_trace_error = Some(error);
+                        row.set_failure_classification(
+                            ModelFailureClassification::new(
+                                WorkerProgressPhase::ArtifactWrite,
+                                ModelFailureBucket::TraceOutput,
+                            ),
+                            None,
+                        );
+                    }
                 }
             }
         }
@@ -1309,6 +1361,15 @@ fn run_and_classify_simulation(
             ));
             row.sim_seconds = Some(elapsed);
             row.sim_wall_seconds = Some(elapsed);
+            // A panic escaped every typed error path, so nothing reported a
+            // stage. Say so rather than guessing a runtime sub-bucket.
+            row.set_failure_classification(
+                ModelFailureClassification::new(
+                    WorkerProgressPhase::Sim,
+                    ModelFailureBucket::Unclassified,
+                ),
+                None,
+            );
         }
     }
     progress.memory("after_simulation");

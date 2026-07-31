@@ -13,8 +13,8 @@ use crate::solve_lowering::{
     tunable_param_overrides,
 };
 
-pub use rumoca_solver_diffsol::SimError;
 pub(crate) use rumoca_solver_diffsol::session::SessionState;
+pub use rumoca_solver_diffsol::{SimError, SimFailureStage};
 
 pub struct PreparedSimulation {
     inner: rumoca_solver_diffsol::PreparedSimulation,
@@ -221,7 +221,25 @@ impl SimulationSession {
 /// because a re-derivation from the stringified `SimError` can only ever
 /// produce the `EX001`/`EX002` fallbacks).
 fn diagnostic_sim_error(err: SimulationDiagnosticError) -> SimError {
-    SimError::SolveIr(format!("[{}] {err}", err.diagnostic_code()))
+    // Carry the stage as typed data too. The `[CODE] ` tag is what the CLI
+    // renders and what code-recovery reads back; the stage is what failure
+    // classification consumes, so it must not have to re-parse that tag.
+    let stage = diagnostic_failure_stage(&err);
+    SimError::SolveIr(format!("[{}] {err}", err.diagnostic_code())).at_stage(stage)
+}
+
+/// The simulation stage a lowering/preparation diagnostic belongs to, read off
+/// the error variant rather than its rendered text.
+fn diagnostic_failure_stage(err: &SimulationDiagnosticError) -> SimFailureStage {
+    match err {
+        SimulationDiagnosticError::SolveLowering(_) if err.is_structural() => {
+            SimFailureStage::StructuralAnalysis
+        }
+        SimulationDiagnosticError::SolveLowering(_)
+        | SimulationDiagnosticError::InvalidOverride { .. } => SimFailureStage::SolveLowering,
+        SimulationDiagnosticError::RuntimePreparation { .. } => SimFailureStage::BackendBuild,
+        SimulationDiagnosticError::Solver(_) => SimFailureStage::Integration,
+    }
 }
 
 #[cfg(feature = "scheduled-sim")]

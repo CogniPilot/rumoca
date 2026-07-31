@@ -56,6 +56,20 @@ impl SimulationDiagnosticError {
         }
     }
 
+    /// True when the diagnostic came from structural analysis of the lowered
+    /// system (index reduction, matching, tearing) rather than from expression
+    /// lowering.
+    ///
+    /// Read off the `LowerError` *variant*, so a consumer never has to
+    /// recognise a structural rejection by the wording of its message.
+    #[must_use]
+    pub fn is_structural(&self) -> bool {
+        matches!(
+            self,
+            Self::SolveLowering(rumoca_phase_solve::LowerError::Structural { .. })
+        )
+    }
+
     pub fn source_span(&self) -> Option<rumoca_core::Span> {
         match self {
             Self::SolveLowering(error) => error.source_span(),
