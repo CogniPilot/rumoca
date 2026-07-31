@@ -13,7 +13,7 @@ fn required_msl_sim_regressions_are_selected_by_workspace_verification() {
     let manifest = repository_file("crates/rumoca/Cargo.toml");
     for required in [
         "msl-sim-tests = []",
-        "name = \"msl_sim_regression\"",
+        "name = \"suite_msl_sim\"",
         "required-features = [\"msl-sim-tests\"]",
     ] {
         assert!(
@@ -21,6 +21,15 @@ fn required_msl_sim_regressions_are_selected_by_workspace_verification() {
             "MSL simulation regression manifest wiring is missing `{required}`"
         );
     }
+
+    // The gated target is an umbrella binary, so also pin that it still pulls
+    // in the regression file itself — otherwise the feature could stay wired
+    // while the tests it selects silently vanish.
+    let suite = repository_file("crates/rumoca/tests/suite_msl_sim.rs");
+    assert!(
+        suite.contains(r#"#[path = "msl_sim_regression.rs"]"#),
+        "`suite_msl_sim` must include `msl_sim_regression.rs`"
+    );
 
     let workspace_runner = repository_file("crates/xtask/src/test_cmd.rs");
     assert!(

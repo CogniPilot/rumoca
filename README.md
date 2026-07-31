@@ -363,7 +363,7 @@ the local coverage/editor prerequisites are installed (`cargo-llvm-cov`,
 Node 20/npm for package/web tasks, and wasm Rust tooling).
 `cargo xtask verify template-runtimes` wraps the
 equivalent Cargo command for opt-in example-template runtime checks:
-`cargo test -p rumoca --features template-runtime-tests --test backend_template_runtime_regression -- --nocapture`.
+`cargo test -p rumoca --features template-runtime-tests --test suite_template_runtime backend_template_runtime_regression:: -- --nocapture`.
 
 ## Compiler Pipeline
 

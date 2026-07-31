@@ -1,8 +1,9 @@
 //! Shared C-compiler helper for the suites that compile-check generated C
 //! (`cli_target_embedded_c_galec.rs`, `cli_target_galec_production.rs`).
 //!
-//! Included per suite via `#[path = "galec_cli_support/cc.rs"]` — see
-//! `galec_cli_support/cli.rs` for the include-pattern rationale.
+//! Declared once per umbrella test binary via
+//! `#[path = "galec_cli_support/cc.rs"]` and reached as `super::cc_support` —
+//! see `galec_cli_support/cli.rs` for the include-pattern rationale.
 
 use std::process::Command;
 
