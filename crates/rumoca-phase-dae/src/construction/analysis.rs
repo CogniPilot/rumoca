@@ -30,7 +30,7 @@ mod source_balance;
 mod structured_families;
 mod when_chains;
 use clocks::SampledTarget;
-use clocks::analyze_clocks;
+use clocks::{ClockAnalysis, ClockDomainAnalysis, analyze_clocks};
 pub(super) use clocks::{
     ClockPlan, ClockedValuePlan, is_inferred_clock_condition, is_whole_clock_coordinate,
 };
@@ -81,7 +81,9 @@ use model_algorithms::analyze_model_algorithm;
 pub(super) use model_algorithms::{
     algorithm_targets, event_targets, model_algorithm_targets, when_chain_targets,
 };
-use model_roles::{ModelRoles, analyze_model_roles, is_predefined_clock_variable};
+use model_roles::{
+    ModelRoles, analyze_model_roles, apply_clocked_partition_roles, is_predefined_clock_variable,
+};
 use record_array_fields::analyze_record_array_fields;
 pub(super) use record_array_fields::{RecordArrayFieldPlan, RecordArrayFieldPlans};
 use record_equations::analyze_record_equations;
@@ -307,13 +309,8 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
     let record_array_fields = analyze_record_array_field_plans(flat, &roles)?;
     let derived_parameters = analyze_derived_parameters(flat, &roles)?;
     apply_derived_parameter_roles(&derived_parameters.plans, &mut roles, &mut expression_roles);
-    let clock_domains = clocks::analyze_clock_domains(
-        flat,
-        &roles,
-        &clocks.plans,
-        &clocks.equation_rows,
-        &clocks.sampled_targets,
-    )?;
+    let clock_domains =
+        analyze_clocked_partitions(flat, &clocks, &mut roles, &mut expression_roles)?;
     validate_model_expressions(flat, &expression_roles, &states, &record_array_fields)?;
     let continuous_family_rows = validate_structured_families(
         &flat.structured_equations,
@@ -384,6 +381,40 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
         discrete_value_topology,
         assigned_discrete_targets: balance.assigned_discrete_targets,
     })
+}
+
+/// Proves the clocked partitions and corrects the role plan they contradict.
+///
+/// The proven partition owners are what turn a continuous role plan into the
+/// clocked discrete-time role MLS §16.5.1 requires, and the corrected roles are
+/// in turn what let `assign_value_owners` prove clock ownership for those
+/// coordinates. The replay is exact rather than iterative: partition membership
+/// reads roles only through `is_clock_runtime_role`, which both the old and the
+/// new role satisfy, so the second pass proves the same partitions and only
+/// widens the ownership relation over them.
+fn analyze_clocked_partitions(
+    flat: &flat::Model,
+    clocks: &ClockAnalysis,
+    roles: &mut HashMap<VarName, PlannedRole>,
+    expression_roles: &mut HashMap<VarName, PlannedRole>,
+) -> Result<ClockDomainAnalysis, ToDaeError> {
+    let domains = clocks::analyze_clock_domains(
+        flat,
+        roles,
+        &clocks.plans,
+        &clocks.equation_rows,
+        &clocks.sampled_targets,
+    )?;
+    if !apply_clocked_partition_roles(flat, &domains.coordinate_owners, roles, expression_roles)? {
+        return Ok(domains);
+    }
+    clocks::analyze_clock_domains(
+        flat,
+        roles,
+        &clocks.plans,
+        &clocks.equation_rows,
+        &clocks.sampled_targets,
+    )
 }
 
 fn analyze_model_algorithms(

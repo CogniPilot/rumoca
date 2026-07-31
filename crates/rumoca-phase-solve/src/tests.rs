@@ -972,6 +972,110 @@ fn clocked_discrete_definition_lowers_with_exact_row_owner() {
     );
 }
 
+/// Builds `a = <time>` plus `rows` further discrete `Real` residuals over the
+/// pair `(a, b)`, so a test can state exactly which rows the partition owns.
+fn discrete_real_pair_model(
+    source: TestSource,
+    couple_rows: usize,
+    seed_first_row: bool,
+) -> dae::Dae {
+    let declaration = source.at(0, 6);
+    let owner = source.at(8, 20);
+    dae::Dae::construct(source.map, |model| {
+        let real = model.types(|types| {
+            types.intern(
+                TypeId::new(0),
+                dae::ValueType::scalar(dae::ScalarType::Real),
+                declaration,
+            )
+        })?;
+        let first = model.variables(|variables| {
+            variables.discrete_real(
+                VarName::new("a"),
+                real,
+                declaration,
+                dae::VariableAttributes::default(),
+            )
+        })?;
+        let second = model.variables(|variables| {
+            variables.discrete_real(
+                VarName::new("b"),
+                real,
+                declaration,
+                dae::VariableAttributes::default(),
+            )
+        })?;
+        if seed_first_row {
+            let seeded = model.expressions(|expressions| {
+                let target = expressions
+                    .at(owner)
+                    .coordinate(dae::CoordinateInput::DiscreteReal(first))?;
+                let time = expressions
+                    .at(owner)
+                    .coordinate(dae::CoordinateInput::Time)?;
+                expressions
+                    .at(owner)
+                    .binary(dae::BinaryOperator::Subtract, target, time)
+            })?;
+            model.discrete(|discrete| {
+                discrete.real_equation(owner, |equation| equation.residual(seeded))
+            })?;
+        }
+        for _ in 0..couple_rows {
+            let coupled = model.expressions(|expressions| {
+                let lhs = expressions
+                    .at(owner)
+                    .coordinate(dae::CoordinateInput::DiscreteReal(first))?;
+                let rhs = expressions
+                    .at(owner)
+                    .coordinate(dae::CoordinateInput::DiscreteReal(second))?;
+                expressions
+                    .at(owner)
+                    .binary(dae::BinaryOperator::Subtract, lhs, rhs)
+            })?;
+            model.discrete(|discrete| {
+                discrete.real_equation(owner, |equation| equation.residual(coupled))
+            })?;
+        }
+        Ok(())
+    })
+    .unwrap()
+}
+
+/// A connection row between two clocked coordinates states only that they are
+/// equal, so its causality comes from the rest of the partition: `a` is already
+/// defined by `a = time`, which leaves `b` as the row's only target.
+#[test]
+fn coupled_discrete_real_row_is_oriented_by_the_coordinate_left_undefined() {
+    let source = TestSource::new("Real a; a=time; a=b;");
+    let model = discrete_real_pair_model(source, 1, true);
+
+    let solve = lower_solve_problem(&model).unwrap();
+    let first = solve.layout.binding("a").expect("`a` owns a runtime slot");
+    let second = solve.layout.binding("b").expect("`b` owns a runtime slot");
+    assert_ne!(first, second);
+    assert_eq!(solve.discrete.update_targets, [first, second]);
+}
+
+/// Two identical connection rows leave both coordinates undefined, so neither
+/// row is ever forced. The partition admits more than one causality and is
+/// reported instead of guessed.
+#[test]
+fn ambiguous_coupled_discrete_real_rows_are_reported_before_runtime() {
+    let source = TestSource::new("Real a; Real b; a=b; a=b;");
+    let model = discrete_real_pair_model(source, 2, false);
+
+    let error = lower_solve_problem(&model).unwrap_err();
+    assert!(
+        matches!(
+            &error,
+            LowerError::NonComputable { reason, .. }
+                if reason.contains("coupled discrete Real residual")
+        ),
+        "unforced discrete Real rows must be reported: {error}"
+    );
+}
+
 #[test]
 fn pre_discrete_value_loads_a_distinct_bound_history_lane() {
     let source = TestSource::new("discrete Integer count; count = pre(count);");

@@ -170,6 +170,49 @@ fn collect_derivative_targets(
     Ok(())
 }
 
+/// MLS §16.5.1: every variable of a clocked partition is a clocked
+/// discrete-time variable, whatever variability its declaration carries.
+///
+/// Partition membership is a property of the clock-inference fixed point, so it
+/// is not known when [`analyze_model_roles`] plans the first role: a coordinate
+/// that joins a clocked partition only through a connection — the
+/// `connect(sample.y, assignClock.u)` shape of the `Modelica.Clocked` examples
+/// — has no `sample`, `previous`, or `when` occurrence of its own and is
+/// planned continuous. Correcting the plan from the proven partition owners is
+/// what keeps the coordinate out of the continuous unknown set, whose equations
+/// all belong to the clocked partition instead.
+///
+/// Only the two continuous non-state roles are corrected. A `der(...)` target
+/// keeps [`PlannedRole::State`] so an illegal continuous state inside a clocked
+/// partition is still reported by the expression validator rather than being
+/// silently reclassified, and the non-runtime roles are never partition members
+/// to begin with.
+pub(super) fn apply_clocked_partition_roles(
+    flat: &flat::Model,
+    coordinate_owners: &HashMap<InstanceId, ClockPlan>,
+    roles: &mut HashMap<VarName, PlannedRole>,
+    expression_roles: &mut HashMap<VarName, PlannedRole>,
+) -> Result<bool, ToDaeError> {
+    let mut corrected = false;
+    for (name, variable) in &flat.variables {
+        if !coordinate_owners.contains_key(&variable.instance_id)
+            || !matches!(
+                roles.get(name),
+                Some(PlannedRole::Algebraic | PlannedRole::Output)
+            )
+        {
+            continue;
+        }
+        let scalar_type = validate_variable_header(flat, name, variable)?;
+        let role = discrete_role(scalar_type);
+        validate_variable_role(name, variable, role, scalar_type)?;
+        roles.insert(name.clone(), role);
+        expression_roles.insert(name.clone(), role);
+        corrected = true;
+    }
+    Ok(corrected)
+}
+
 fn validate_variable(
     flat: &flat::Model,
     name: &VarName,
@@ -284,15 +327,25 @@ fn classify_variable_role(
         || matches!(variable.variability, Variability::Discrete(_))
         || variable.is_discrete_type
     {
-        if scalar_type == dae::ScalarType::Real {
-            PlannedRole::DiscreteReal
-        } else {
-            PlannedRole::DiscreteValue
-        }
+        discrete_role(scalar_type)
     } else if matches!(variable.causality, Causality::Output(_)) {
         PlannedRole::Output
     } else {
         PlannedRole::Algebraic
+    }
+}
+
+/// The role a discrete-time coordinate of `scalar_type` is planned with: MLS
+/// Appendix B keeps discrete `Real` coordinates (B.1b) in a different arena from
+/// the discrete values (B.1c) every other scalar type lands in.
+const fn discrete_role(scalar_type: dae::ScalarType) -> PlannedRole {
+    match scalar_type {
+        dae::ScalarType::Real => PlannedRole::DiscreteReal,
+        dae::ScalarType::Integer
+        | dae::ScalarType::Boolean
+        | dae::ScalarType::String
+        | dae::ScalarType::Enumeration
+        | dae::ScalarType::Record => PlannedRole::DiscreteValue,
     }
 }
 
