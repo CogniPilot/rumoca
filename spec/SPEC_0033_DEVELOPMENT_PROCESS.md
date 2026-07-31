@@ -125,6 +125,8 @@ Failure classifications:
 | A canary timeout, panic, unsupported operation, or non-finite result MUST be recorded as a failure | canary runs | Retries and fallbacks manufacture passes |
 | Tier 2 MUST cover the full 566-model set, either in one run or as CI shards merged by the fan-in job | CI / milestone | Cohort evidence without a serial CI long pole |
 | Tier 2 is the sole source of cohort parity claims | reports, PRs, specs | One cohort number, one origin |
+| A parity claim MUST come from the OMC trace comparator's agreement bands; `sim_ok` alone is completion, never parity | reports, PRs, specs | A trace nobody compared can be plausibly wrong |
+| A Tier 2 run whose comparator stage did not execute over every `sim_ok` trace reports "parity unmeasured", not a number | reports, dev/ ledger | Missing comparison must be visible, not defaulted |
 | Every quoted parity number MUST name the Tier 2 run and commit it came from | reports, PRs, specs | An unsourced number cannot be rechecked |
 | Parity numbers MUST NOT be quoted from a partial, single-shard, focused, or stale run | any claim | Partial snapshots are not cohort evidence |
 | A Tier 1 canary delta MUST NOT be reported as a cohort parity number | dev/ ledger, PR text | Tier 1 is a tripwire, not a metric |
