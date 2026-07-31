@@ -1,12 +1,13 @@
 //! Shared CLI-driving helpers for the GALEC-family end-to-end suites
 //! (`cli_target_galec.rs`, `cli_target_embedded_c_galec.rs`,
-//! `cli_target_galec_production.rs`).
+//! `cli_target_galec_production.rs`, `galec_equivalence.rs`).
 //!
-//! Each suite includes the helper files it needs via
-//! `#[path = "galec_cli_support/<file>.rs"]` (the `examples_smoke.rs`
-//! include pattern), so every test binary compiles only helpers whose
-//! every item it uses — keeping the workspace's zero-`allow` dead-code
-//! discipline. This file is the set used by all three suites.
+//! The umbrella test binary that owns those suites (`suite_core.rs` or
+//! `suite_galec_fmu.rs`) declares this file once via
+//! `#[path = "galec_cli_support/<file>.rs"]`, and the suites reach it as
+//! `super::cli_support`. One copy per binary is what `clippy::duplicate_mod`
+//! requires, and each umbrella only declares helper files whose every item its
+//! members use — keeping the workspace's zero-`allow` dead-code discipline.
 
 use std::fs;
 use std::path::{Path, PathBuf};

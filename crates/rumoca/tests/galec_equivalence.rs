@@ -35,10 +35,10 @@ use std::process::Command;
 
 use rumoca_sim::{SimOptions, SimResult, simulate_dae};
 
-#[path = "galec_cli_support/cc.rs"]
-mod cc_support;
-#[path = "galec_cli_support/cli.rs"]
-mod cli_support;
+// The `galec_cli_support/` helpers are declared once by the umbrella binary
+// that owns this file (see `suite_core.rs`), so the sibling suites share one
+// copy instead of compiling the same file several times per binary.
+use super::{cc_support, cli_support};
 
 /// How a compared block field is checked against the reference.
 #[derive(Clone, Copy)]

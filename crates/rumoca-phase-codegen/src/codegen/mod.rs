@@ -1036,10 +1036,9 @@ fn is_self_call_function(func_name: Value, func: Value) -> Result<bool, minijinj
     if let Ok(func_call) = get_field(&value, "FunctionCall")
         && let Ok(name) = get_field(&func_call, "name")
     {
-        let call_name = get_field(&name, "0")
-            .map(|v| v.to_string().replace('"', ""))
-            .unwrap_or_else(|_| name.to_string().replace('"', ""));
-        return Ok(call_name == name_str);
+        // A serialized reference is one record whose `name` is its spelling;
+        // reading it any other way recovers the record's debug text instead.
+        return Ok(render_expr::render_serialized_name(&name) == name_str);
     }
     Ok(false)
 }

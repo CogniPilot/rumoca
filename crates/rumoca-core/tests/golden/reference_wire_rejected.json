@@ -1,0 +1,133 @@
+[
+  {
+    "case": "deleted bare-name shape",
+    "error_fragment": "invalid type: string",
+    "payload": "x"
+  },
+  {
+    "case": "deleted bare-name shape for a structured spelling",
+    "error_fragment": "invalid type: string",
+    "payload": "body[2].r"
+  },
+  {
+    "case": "pre-cutover record without the exact occurrence identity",
+    "error_fragment": "missing field `instance_id`",
+    "payload": {
+      "name": "x",
+      "component_ref": null,
+      "resolved_function": null,
+      "generated": false
+    }
+  },
+  {
+    "case": "record missing name",
+    "error_fragment": "missing field `name`",
+    "payload": {
+      "component_ref": null,
+      "resolved_function": null,
+      "instance_id": null,
+      "generated": false
+    }
+  },
+  {
+    "case": "record missing component_ref",
+    "error_fragment": "missing field `component_ref`",
+    "payload": {
+      "name": "x",
+      "resolved_function": null,
+      "instance_id": null,
+      "generated": false
+    }
+  },
+  {
+    "case": "record missing resolved_function",
+    "error_fragment": "missing field `resolved_function`",
+    "payload": {
+      "name": "x",
+      "component_ref": null,
+      "instance_id": null,
+      "generated": false
+    }
+  },
+  {
+    "case": "record missing generated",
+    "error_fragment": "missing field `generated`",
+    "payload": {
+      "name": "x",
+      "component_ref": null,
+      "resolved_function": null,
+      "instance_id": null
+    }
+  },
+  {
+    "case": "record carrying an unknown field",
+    "error_fragment": "unknown field `def_id`",
+    "payload": {
+      "name": "x",
+      "component_ref": null,
+      "resolved_function": null,
+      "instance_id": null,
+      "generated": false,
+      "def_id": 7
+    }
+  },
+  {
+    "case": "record with an empty name",
+    "error_fragment": "reference requires a nonempty name",
+    "payload": {
+      "name": "",
+      "component_ref": null,
+      "resolved_function": null,
+      "instance_id": null,
+      "generated": false
+    }
+  },
+  {
+    "case": "record carrying the reserved unset occurrence identity",
+    "error_fragment": "reserved unset occurrence identity",
+    "payload": {
+      "name": "x",
+      "component_ref": null,
+      "resolved_function": null,
+      "instance_id": 0,
+      "generated": false
+    }
+  },
+  {
+    "case": "structured record with an unresolved part identity",
+    "error_fragment": "reserved unresolved DefId(0)",
+    "payload": {
+      "name": "body",
+      "component_ref": {
+        "local": false,
+        "span": { "source": 0, "start": 0, "end": 0 },
+        "parts": [
+          {
+            "ident": "body",
+            "span": { "source": 0, "start": 0, "end": 0 },
+            "subs": [],
+            "def_id": 0
+          }
+        ]
+      },
+      "resolved_function": null,
+      "instance_id": null,
+      "generated": false
+    }
+  },
+  {
+    "case": "structured record with no identity-bearing part",
+    "error_fragment": "at least one identity-bearing part",
+    "payload": {
+      "name": "body",
+      "component_ref": {
+        "local": false,
+        "span": { "source": 0, "start": 0, "end": 0 },
+        "parts": []
+      },
+      "resolved_function": null,
+      "instance_id": null,
+      "generated": false
+    }
+  }
+]

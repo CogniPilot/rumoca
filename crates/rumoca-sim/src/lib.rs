@@ -44,9 +44,10 @@ mod solve_lowering;
 pub use build_timing::BuildSimulationTimings;
 #[cfg(feature = "solver-diffsol")]
 pub use diffsol::{
-    PreparedSimulation, SimError, build_simulation, build_simulation_with_stage_timing,
-    build_simulation_with_stage_timing_and_solve_model, check_initialization,
-    check_prepared_initialization, run_prepared_simulation, simulate, simulate_dae,
+    PreparedSimulation, SimError, SimFailureStage, build_simulation,
+    build_simulation_with_stage_timing, build_simulation_with_stage_timing_and_solve_model,
+    check_initialization, check_prepared_initialization, run_prepared_simulation, simulate,
+    simulate_dae,
 };
 #[cfg(any(feature = "solver-diffsol", feature = "solver-rk45"))]
 pub use prepared_vectors::{PreparedVectorError, refresh_prepared_vectors};

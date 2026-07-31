@@ -11,8 +11,17 @@ const MSL_RESERVED_CORES_ON_LARGE_HOSTS: usize = 2;
 /// Default resident-memory estimate per persistent MSL model-worker slot.
 pub(super) const MSL_COMPILE_MODEL_MEMORY_MB_DEFAULT: usize = 1536;
 const MSL_COMPILE_MODEL_MEMORY_MB_MIN: usize = 128;
-/// Default memory left to the OS, desktop, and filesystem cache during MSL gates.
+/// Floor on the memory left to the OS, desktop, and filesystem cache during MSL
+/// gates. See [`reserved_memory_mb_for_total`] for the host-scaled reserve that
+/// supersedes it on larger machines.
 pub(super) const MSL_MEMORY_RESERVED_MB_DEFAULT: usize = 8192;
+/// Available-memory percentage at which `earlyoom -m10` kills the largest
+/// process on the development hosts.
+const MSL_EARLYOOM_KILL_PERCENT_OF_TOTAL: usize = 10;
+/// Share of total RAM held back from MSL memory budgets: the earlyoom kill line
+/// plus five points of slack, so a worker that overshoots its per-model estimate
+/// still has room before the killer fires.
+const MSL_HOST_MEMORY_RESERVE_PERCENT: usize = MSL_EARLYOOM_KILL_PERCENT_OF_TOTAL + 5;
 /// Optional total memory budget for retained compile results (MB).
 /// Optional total memory budget for all concurrent sim workers (MB).
 /// Default number of models in explicit short/long simulation sets.
@@ -86,18 +95,25 @@ struct PriorResultRecord {
     timeout_phase: Option<String>,
 }
 
-fn parse_mem_available_mb(meminfo: &str) -> Option<usize> {
+fn parse_meminfo_field_mb(meminfo: &str, key: &str) -> Option<usize> {
     meminfo.lines().find_map(|line| {
-        let rest = line.strip_prefix("MemAvailable:")?;
+        let rest = line.strip_prefix(key)?;
+        let rest = rest.strip_prefix(':')?;
         let kb = rest.split_whitespace().next()?.parse::<usize>().ok()?;
         Some(kb / 1024)
     })
 }
 
-fn host_available_memory_mb() -> Option<usize> {
-    std::fs::read_to_string("/proc/meminfo")
-        .ok()
-        .and_then(|contents| parse_mem_available_mb(&contents))
+fn parse_mem_available_mb(meminfo: &str) -> Option<usize> {
+    parse_meminfo_field_mb(meminfo, "MemAvailable")
+}
+
+fn parse_mem_total_mb(meminfo: &str) -> Option<usize> {
+    parse_meminfo_field_mb(meminfo, "MemTotal")
+}
+
+fn host_meminfo() -> Option<String> {
+    std::fs::read_to_string("/proc/meminfo").ok()
 }
 
 pub(super) fn compile_model_memory_mb() -> usize {
@@ -188,8 +204,23 @@ pub(super) fn compile_model_memory_costs_for_names(names: &[String]) -> HashMap<
         .collect()
 }
 
-fn reserved_memory_mb() -> usize {
-    MSL_MEMORY_RESERVED_MB_DEFAULT
+/// Memory held back from every MSL budget.
+///
+/// The flat [`MSL_MEMORY_RESERVED_MB_DEFAULT`] floor is only a floor: on hosts
+/// running `earlyoom -m10` the killer fires once available memory drops under
+/// [`MSL_EARLYOOM_KILL_PERCENT_OF_TOTAL`]% of total RAM, and a flat 8 GB reserve
+/// leaves the gate aiming at a line barely above it (8 GB versus a 6.3 GB kill
+/// threshold on a 62 GB host) while leaving over 90% of RAM spendable on hosts
+/// larger than ~55 GB. Scaling the reserve with total RAM keeps a fixed slice of
+/// the machine - and therefore a fixed multiple of the kill threshold - out of
+/// the budget on every host size. This matches the rule `xtask`'s Rust build
+/// budget applies to `CARGO_BUILD_JOBS`.
+fn reserved_memory_mb_for_total(total_mb: Option<usize>) -> usize {
+    let proportional = total_mb
+        .unwrap_or(0)
+        .saturating_mul(MSL_HOST_MEMORY_RESERVE_PERCENT)
+        .div_ceil(100);
+    proportional.max(MSL_MEMORY_RESERVED_MB_DEFAULT)
 }
 
 fn compile_memory_budget_mb_from_available(available_mb: usize, reserved_mb: usize) -> usize {
@@ -201,13 +232,20 @@ fn compile_memory_budget_mb_from_available(available_mb: usize, reserved_mb: usi
     .max(1)
 }
 
+/// Memory the MSL gates may spend concurrently, derived from the host in one
+/// read of `/proc/meminfo` so the total and the available figure agree.
+fn host_memory_budget_mb() -> Option<usize> {
+    let meminfo = host_meminfo()?;
+    let available_mb = parse_mem_available_mb(&meminfo)?;
+    let reserved_mb = reserved_memory_mb_for_total(parse_mem_total_mb(&meminfo));
+    Some(compile_memory_budget_mb_from_available(
+        available_mb,
+        reserved_mb,
+    ))
+}
+
 fn compile_memory_budget_mb() -> Option<(usize, CompileMemoryBudgetSource)> {
-    host_available_memory_mb().map(|available_mb| {
-        (
-            compile_memory_budget_mb_from_available(available_mb, reserved_memory_mb()),
-            CompileMemoryBudgetSource::HostAvailable,
-        )
-    })
+    host_memory_budget_mb().map(|budget_mb| (budget_mb, CompileMemoryBudgetSource::HostAvailable))
 }
 
 fn compile_model_cap_from_budget(budget_mb: usize, per_model_mb: usize) -> usize {
@@ -696,27 +734,36 @@ pub(super) fn simulation_parallelism() -> usize {
         .map(|threads| threads.max(1))
         .unwrap_or_else(msl_stage_parallelism);
 
-    let per_worker_memory_mb = sim_worker_memory_limit_mb();
-    // Sim total-memory budget caps the worker count when both it and a
-    // per-worker estimate are configured; unset by default (no memory cap).
-    let total_budget_mb: Option<usize> = parity_config().sim_total_memory_mb;
-    let capped_by_memory = match (per_worker_memory_mb, total_budget_mb) {
-        (Some(per_worker_mb), Some(total_mb)) => (total_mb / per_worker_mb.max(1)).max(1),
-        _ => requested_threads,
-    };
+    // Per-worker estimate: an explicit address-space cap when configured,
+    // otherwise the same resident estimate the compile stage charges per model.
+    let per_worker_memory_mb = sim_worker_memory_limit_mb().unwrap_or_else(compile_model_memory_mb);
+    // Total budget: an explicit configuration wins, otherwise the host-derived
+    // budget. Without the host default a CPU-derived worker count could start
+    // 30 simulation workers on this host, which is roughly 45 GB of estimated
+    // resident memory and straight through the earlyoom kill threshold.
+    let total_budget_mb: Option<usize> = parity_config()
+        .sim_total_memory_mb
+        .or_else(host_memory_budget_mb);
+    let capped_by_memory = total_budget_mb.map_or(requested_threads, |total_mb| {
+        sim_worker_cap_from_budget(total_mb, per_worker_memory_mb)
+    });
 
     let effective_threads = requested_threads.min(capped_by_memory).max(1);
     if effective_threads < requested_threads {
         println!(
-            "Simulation parallelism capped by memory budget: {} workers (requested {}, per-worker cap {} MB, total budget {} MB)",
+            "Simulation parallelism capped by memory budget: {} workers (requested {}, per-worker estimate {} MB, total budget {} MB)",
             effective_threads,
             requested_threads,
-            per_worker_memory_mb.unwrap_or(0),
+            per_worker_memory_mb,
             total_budget_mb.unwrap_or(0)
         );
     }
 
     effective_threads
+}
+
+fn sim_worker_cap_from_budget(total_budget_mb: usize, per_worker_mb: usize) -> usize {
+    (total_budget_mb / per_worker_mb.max(1)).max(1)
 }
 
 pub(super) fn model_name_matches_any_pattern(
@@ -925,6 +972,68 @@ mod tests {
     fn mem_available_parser_reads_linux_meminfo() {
         let meminfo = "MemTotal:       64200000 kB\nMemAvailable:   32768000 kB\n";
         assert_eq!(parse_mem_available_mb(meminfo), Some(32000));
+        assert_eq!(parse_mem_total_mb(meminfo), Some(62695));
+    }
+
+    #[test]
+    fn meminfo_parser_requires_an_exact_field_name() {
+        let meminfo = "MemTotalHuge:   1 kB\nMemAvailableFoo: 2 kB\n";
+        assert_eq!(parse_mem_total_mb(meminfo), None);
+        assert_eq!(parse_mem_available_mb(meminfo), None);
+    }
+
+    #[test]
+    fn reserved_memory_scales_with_total_ram_above_the_flat_floor() {
+        // 62 GB host: 15% (9523 MB) beats the flat 8 GB floor.
+        assert_eq!(reserved_memory_mb_for_total(Some(62_695)), 9_405);
+        // 32 GB host: 15% is under the floor, so the floor holds.
+        assert_eq!(
+            reserved_memory_mb_for_total(Some(32 * 1024)),
+            MSL_MEMORY_RESERVED_MB_DEFAULT
+        );
+        // No `/proc/meminfo`: the flat floor still applies.
+        assert_eq!(
+            reserved_memory_mb_for_total(None),
+            MSL_MEMORY_RESERVED_MB_DEFAULT
+        );
+    }
+
+    #[test]
+    fn reserved_memory_stays_clear_of_the_earlyoom_kill_threshold() {
+        for total_gb in [8usize, 16, 32, 62, 128, 512] {
+            let total_mb = total_gb * 1024;
+            let kill_threshold_mb = total_mb * MSL_EARLYOOM_KILL_PERCENT_OF_TOTAL / 100;
+            let reserved_mb = reserved_memory_mb_for_total(Some(total_mb));
+            assert!(
+                reserved_mb > kill_threshold_mb,
+                "reserve {reserved_mb} MB must exceed the earlyoom floor {kill_threshold_mb} MB on a {total_gb} GB host"
+            );
+        }
+    }
+
+    #[test]
+    fn budget_never_assumes_more_than_ninety_percent_of_ram_is_usable() {
+        for total_gb in [8usize, 16, 32, 62, 128, 512] {
+            let total_mb = total_gb * 1024;
+            // Worst case for the budget: nothing else is resident yet.
+            let budget_mb = compile_memory_budget_mb_from_available(
+                total_mb,
+                reserved_memory_mb_for_total(Some(total_mb)),
+            );
+            assert!(
+                budget_mb * 100 <= total_mb * 90,
+                "budget {budget_mb} MB is more than 90% of a {total_gb} GB host"
+            );
+        }
+    }
+
+    #[test]
+    fn sim_worker_cap_divides_the_budget_by_the_per_worker_estimate() {
+        assert_eq!(sim_worker_cap_from_budget(46_000, 1_536), 29);
+        assert_eq!(sim_worker_cap_from_budget(4_000, 1_536), 2);
+        // Never zero workers, and never a divide by zero.
+        assert_eq!(sim_worker_cap_from_budget(100, 1_536), 1);
+        assert_eq!(sim_worker_cap_from_budget(100, 0), 100);
     }
 
     #[test]

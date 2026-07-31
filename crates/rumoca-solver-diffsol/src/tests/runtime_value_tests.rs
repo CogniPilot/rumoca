@@ -1237,7 +1237,10 @@ fn simulate_rejects_nonempty_solver_layout_without_residual_rows() {
     model.initial_y = vec![0.0];
 
     let err = simulate(&model, &SimOptions::default()).unwrap_err();
-    assert!(matches!(err, SimError::EmptySystem));
+    // The rejection happens while building the backend problem, so the failure
+    // is stage-annotated; `kind()` is how a consumer sees the variant.
+    assert!(matches!(err.kind(), SimError::EmptySystem));
+    assert_eq!(err.stage(), Some(crate::SimFailureStage::BackendBuild));
 }
 
 #[test]

@@ -1,7 +1,9 @@
+mod equalities;
 mod functions;
 
 use rumoca_core::{SourceMap, Span, TypeId, VarName};
 
+use super::reconstruction::construction_failure;
 use super::*;
 use functions::{FixtureFunctionConfig, fixture_function_declarations, insert_fixture_functions};
 

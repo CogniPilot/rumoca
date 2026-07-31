@@ -139,8 +139,9 @@ pub(crate) struct VerifyMslParityArgs {
     no_remote_quality_baseline: bool,
     /// Run only shard `m` of `n` (`--shard m/n`, 1-based). The slowest-first
     /// model set is striped round-robin across shards so the slow/timeout tail
-    /// spreads evenly. A shard skips the aggregate baseline ratchet (the fan-in
-    /// `repo msl merge-results` job runs the gate once on the merged results).
+    /// spreads evenly. A shard skips the aggregate baseline ratchet; the fan-in
+    /// `verify msl-parity --merge-shards <dir>` job runs the gate once on the
+    /// merged results.
     #[arg(long, value_name = "M/N")]
     shard: Option<String>,
     /// Fan-in mode: merge the shard partials under DIR (`shard-*/msl_results.json`)
@@ -519,7 +520,7 @@ fn run_examples_smoke(root: &Path) -> Result<()> {
         .arg("--features")
         .arg("examples-smoke-tests")
         .arg("--test")
-        .arg("examples_smoke")
+        .arg("suite_examples_smoke")
         .arg("--")
         .arg("--nocapture")
         .current_dir(root);
@@ -632,37 +633,44 @@ struct TemplateRuntimeTestGroup {
     filters: &'static [&'static str],
 }
 
+/// The `template-runtime-tests` sources all live in one Cargo test target now
+/// (`crates/rumoca/tests/suite_template_runtime.rs` includes them as `#[path]`
+/// modules, so ~60 whole-compiler links collapse into a handful). libtest names
+/// then carry the source file's module prefix, which is exactly what lets the
+/// groups below keep selecting one member file at a time.
+const TEMPLATE_RUNTIME_TEST: &str = "suite_template_runtime";
+
 const TEMPLATE_RUNTIME_GROUPS: &[TemplateRuntimeTestGroup] = &[
     TemplateRuntimeTestGroup {
         backend: TemplateRuntimeBackend::Render,
-        test: "template_target_ci",
-        filters: &[],
+        test: TEMPLATE_RUNTIME_TEST,
+        filters: &["template_target_ci::"],
     },
     TemplateRuntimeTestGroup {
         backend: TemplateRuntimeBackend::Render,
-        test: "codegen_example_regression",
-        filters: &[],
+        test: TEMPLATE_RUNTIME_TEST,
+        filters: &["codegen_example_regression::"],
     },
     // The projected template schema pin lives in the backend runtime test but
     // needs no external toolchain, so the render group runs it directly.
     TemplateRuntimeTestGroup {
         backend: TemplateRuntimeBackend::Render,
-        test: "backend_template_runtime_regression",
+        test: TEMPLATE_RUNTIME_TEST,
         filters: &["dae_template_context_"],
     },
     TemplateRuntimeTestGroup {
         backend: TemplateRuntimeBackend::C,
-        test: "backend_template_runtime_regression",
+        test: TEMPLATE_RUNTIME_TEST,
         filters: &["c_solve_"],
     },
     TemplateRuntimeTestGroup {
         backend: TemplateRuntimeBackend::Casadi,
-        test: "backend_template_runtime_regression",
+        test: TEMPLATE_RUNTIME_TEST,
         filters: &["casadi_"],
     },
     TemplateRuntimeTestGroup {
         backend: TemplateRuntimeBackend::Jax,
-        test: "backend_template_runtime_regression",
+        test: TEMPLATE_RUNTIME_TEST,
         filters: &["jax_"],
     },
 ];

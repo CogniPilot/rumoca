@@ -22,13 +22,11 @@ use std::process::{Command, Output};
 
 use tempfile::tempdir;
 
-#[path = "galec_cli_support/cc.rs"]
-mod cc_support;
-#[path = "galec_cli_support/cli.rs"]
-mod cli_support;
-
-use cc_support::cc;
-use cli_support::{run_compile_target, strip_ansi, write_fixture};
+// The `galec_cli_support/` helpers are declared once by the umbrella binary
+// that owns this file (see `suite_core.rs`), so the sibling suites share one
+// copy instead of compiling the same file several times per binary.
+use super::cc_support::cc;
+use super::cli_support::{run_compile_target, strip_ansi, write_fixture};
 
 /// Fixed-sample discrete fixture: a parameter, a `pre()` state, an output,
 /// and one `when sample(...)` clock — the shape the GALEC projection

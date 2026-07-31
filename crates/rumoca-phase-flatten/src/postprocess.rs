@@ -17,8 +17,6 @@ mod index_collapse;
 mod indexed_dimension_recovery;
 mod occurrence_graph;
 
-#[path = "postprocess_def_id.rs"]
-mod def_id;
 #[path = "postprocess_field_access.rs"]
 mod field_access;
 #[path = "postprocess_record_alias.rs"]
@@ -26,7 +24,6 @@ mod record_alias;
 
 pub(crate) use constant_substituter::substitute_known_constants_expr;
 pub(crate) use constructor_calls::mark_record_constructor_calls;
-pub(crate) use def_id::canonicalize_varrefs_via_instantiated_def_ids;
 pub(super) use field_access::{
     drop_invalid_field_access_bindings, normalize_record_array_field_access_bindings,
     resolve_nested_constructor_field_access_bindings,

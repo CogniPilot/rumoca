@@ -504,7 +504,13 @@ fn default_bdf_honors_wall_clock_budget() {
     )
     .expect_err("the default BDF path must enforce max_wall_seconds");
 
-    assert!(matches!(error, SimError::Timeout { .. }));
+    // The budget is enforced inside the integration loop, so the failure is
+    // annotated with the stage that raised it; the variant is unchanged.
+    assert!(matches!(error.kind(), SimError::Timeout { .. }));
+    assert!(
+        error.stage().is_some(),
+        "an in-loop failure must record the stage that raised it"
+    );
 }
 
 fn state_residual_row() -> Vec<solve::LinearOp> {

@@ -1977,3 +1977,6 @@ mod phase_diagnostics;
 
 #[path = "architecture_hardening/parser_ownership.rs"]
 mod parser_ownership;
+
+#[path = "architecture_hardening/build_resource_budget.rs"]
+mod build_resource_budget;

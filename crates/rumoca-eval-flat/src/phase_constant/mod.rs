@@ -83,7 +83,6 @@ fn build_param_value_context(
             .map(ComponentPath::from_flat_path)
             .and_then(|path| path.parent()),
     );
-    eval_ctx.enable_unique_suffix_lookup();
     eval_ctx
 }
 

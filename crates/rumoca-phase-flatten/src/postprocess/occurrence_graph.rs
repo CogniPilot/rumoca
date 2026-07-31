@@ -129,6 +129,59 @@ impl OccurrenceGraph {
         self.select_in_scope(scope, declaration, indices, 0)
     }
 
+    /// Every element occurrence of a pending array selection, in element order.
+    ///
+    /// Each element of a component array is its own occurrence, so an array
+    /// declaration selected without subscripts denotes exactly this ordered
+    /// list. That is what makes `arr.member` (MLS §10.5: an array of components
+    /// projected on one of their members) expandable without inventing a name:
+    /// the elements are already in the model.
+    ///
+    /// Accepted here: a one-dimensional component array whose element indices
+    /// are exactly `1..=n`. Rejected (as `None`, leaving the caller's reference
+    /// untouched rather than guessing): a cursor that is not parked on a
+    /// pending selection, a multidimensional component array — whose projection
+    /// denotes a matrix that this flat element list would not shape — and any
+    /// element set with a repeated, missing or out-of-range index, which would
+    /// silently drop or duplicate an element.
+    pub(crate) fn pending_elements(&self, cursor: PathCursor) -> Option<Vec<PathCursor>> {
+        let PathCursor::PendingIndices { scope, declaration } = cursor else {
+            return None;
+        };
+        let mut elements: Vec<(i64, InstanceId)> = self
+            .members
+            .get(&scope)?
+            .iter()
+            .copied()
+            .filter_map(|member| {
+                let occurrence = self.occurrences.get(&member)?;
+                if occurrence.declaration != Some(declaration) {
+                    return None;
+                }
+                match *occurrence.indices {
+                    [index] => Some((index, member)),
+                    // Signals "not a one-dimensional element" to the caller
+                    // below, which rejects the whole projection.
+                    _ => Some((0, member)),
+                }
+            })
+            .collect();
+        if elements.is_empty() {
+            return None;
+        }
+        elements.sort_unstable_by_key(|(index, _)| *index);
+        let expected = 1..=i64::try_from(elements.len()).ok()?;
+        if !elements.iter().map(|(index, _)| *index).eq(expected) {
+            return None;
+        }
+        Some(
+            elements
+                .into_iter()
+                .map(|(_, member)| PathCursor::At(member))
+                .collect(),
+        )
+    }
+
     /// Supply element indices to a pending array selection.
     ///
     /// An empty `indices` leaves the cursor untouched so a path part without

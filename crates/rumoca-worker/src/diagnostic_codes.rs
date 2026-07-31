@@ -71,7 +71,9 @@ pub fn embedded_diagnostic_code(message: &str) -> Option<String> {
 /// `rumoca-msl-tools triage`.
 #[must_use]
 pub fn sim_error_diagnostic_code(err: &SimError) -> Option<String> {
-    match err {
+    // `kind()` peels the `SimFailureStage` annotations the solver backend
+    // attaches, so an annotated failure yields exactly the same code as before.
+    match err.kind() {
         SimError::Timeout { .. }
         | SimError::AssertionFailed { .. }
         | SimError::Terminated { .. } => None,
@@ -84,6 +86,8 @@ pub fn sim_error_diagnostic_code(err: &SimError) -> Option<String> {
         SimError::SolverError(message) => Some(
             embedded_diagnostic_code(message).unwrap_or_else(|| solver_failure_code().to_string()),
         ),
+        // Unreachable: `kind()` returns an unannotated failure.
+        SimError::Staged { .. } => None,
     }
 }
 
@@ -161,6 +165,24 @@ mod tests {
 
     /// `EX003` exists only on the structured diagnostic, so it can reach the
     /// result schema *only* through the tagged message the backends emit.
+    /// Annotating a failure with the stage that raised it must not perturb the
+    /// code the result schema reports: the stage is additional data, not a
+    /// replacement for the SPEC_0008 code.
+    #[test]
+    fn stage_annotations_do_not_change_the_reported_code() {
+        use rumoca_sim::SimFailureStage;
+        for error in [
+            SimError::SolveIr("[EL006] scalarization".to_string()),
+            SimError::SolverError("step size too small".to_string()),
+            SimError::EmptySystem,
+            SimError::Timeout { seconds: 10.0 },
+        ] {
+            let bare = sim_error_diagnostic_code(&error);
+            let staged = error.at_stage(SimFailureStage::ManifoldProjection);
+            assert_eq!(sim_error_diagnostic_code(&staged), bare);
+        }
+    }
+
     /// A re-derivation from the `SimError` variant would make it unreachable.
     #[test]
     fn rejected_override_code_survives_into_the_result_schema() {

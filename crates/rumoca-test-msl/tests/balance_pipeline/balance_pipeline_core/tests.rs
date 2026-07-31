@@ -183,6 +183,105 @@ fn simulation_timeout_preserves_successful_compile_result() {
     assert_eq!(result.dae_seconds, Some(0.20));
 }
 
+/// The worker's typed classification has to survive the crossing into the
+/// harness record: it is the only reason `msl_results.json` can be triaged
+/// without regexing `sim_error`.
+#[test]
+fn worker_classification_crosses_into_the_harness_record() {
+    let mut worker_row =
+        WorkerModelResult::phase_failure("Modelica.A".to_string(), "Success", "", None);
+    worker_row.error = None;
+    worker_row.set_failure_classification(
+        rumoca_worker::ModelFailureClassification::new(
+            WorkerProgressPhase::Sim,
+            rumoca_worker::ModelFailureBucket::RuntimeEventIteration,
+        ),
+        Some("EX002".to_string()),
+    );
+    let result = worker_model_result_to_msl(worker_row);
+    assert_eq!(
+        result.failure_bucket,
+        Some(rumoca_worker::ModelFailureBucket::RuntimeEventIteration)
+    );
+    assert_eq!(
+        result.owner_category,
+        Some(rumoca_worker::ModelFailureOwner::Runtime)
+    );
+    assert_eq!(result.failure_phase, Some(WorkerProgressPhase::Sim));
+    assert_eq!(result.failure_error_code.as_deref(), Some("EX002"));
+}
+
+/// A harness-side failure never carries the worker's classification, because
+/// the worker was killed or never ran. The harness must mint one from the typed
+/// outcome instead of leaving the record unclassifiable.
+#[test]
+fn harness_side_failures_are_classified_from_the_typed_outcome() {
+    let result = model_worker_failure_result(
+        "Modelica.A",
+        MODEL_WORKER_ERROR_CODE,
+        "model worker failed to start",
+    );
+    assert_eq!(
+        result.failure_bucket,
+        Some(rumoca_worker::ModelFailureBucket::HarnessFailure)
+    );
+    assert_eq!(
+        result.owner_category,
+        Some(rumoca_worker::ModelFailureOwner::Harness)
+    );
+    assert_eq!(
+        result.failure_error_code.as_deref(),
+        Some(MODEL_WORKER_ERROR_CODE)
+    );
+}
+
+/// A timeout is a performance failure, not a compiler defect, and the phase it
+/// stopped in is the observed one rather than a guess.
+#[test]
+fn timeout_classification_records_the_observed_phase_and_performance_owner() {
+    let mut result = model_worker_failure_result("Modelica.A", MODEL_WORKER_ERROR_CODE, "timeout");
+    set_harness_failure_classification(
+        &mut result,
+        Some(WorkerProgressPhase::Flatten),
+        rumoca_worker::ModelFailureBucket::Timeout,
+        MODEL_ATTEMPT_TIMEOUT_ERROR_CODE,
+    );
+    assert_eq!(
+        result.failure_bucket,
+        Some(rumoca_worker::ModelFailureBucket::Timeout)
+    );
+    assert_eq!(
+        result.owner_category,
+        Some(rumoca_worker::ModelFailureOwner::Performance)
+    );
+    assert_eq!(result.failure_phase, Some(WorkerProgressPhase::Flatten));
+}
+
+/// The in-process compile path classifies from the typed `FailedPhase`, so a
+/// reworded compiler message cannot move a model between cohorts.
+#[test]
+fn in_process_compile_failures_are_classified_from_the_typed_phase() {
+    let result = convert_phase_result(
+        "Modelica.A".to_string(),
+        PhaseResult::Failed {
+            phase: FailedPhase::Flatten,
+            error: "connect() of incompatible connectors".to_string(),
+            error_code: Some("EF020".to_string()),
+            diagnostics: Vec::new(),
+        },
+    );
+    assert_eq!(
+        result.failure_bucket,
+        Some(rumoca_worker::ModelFailureBucket::Flatten)
+    );
+    assert_eq!(
+        result.owner_category,
+        Some(rumoca_worker::ModelFailureOwner::Flatten)
+    );
+    assert_eq!(result.failure_phase, Some(WorkerProgressPhase::Flatten));
+    assert_eq!(result.failure_error_code.as_deref(), Some("EF020"));
+}
+
 #[test]
 fn model_attempt_default_is_ten_seconds() {
     assert_eq!(MODEL_ATTEMPT_TIMEOUT_SECS, 10.0);

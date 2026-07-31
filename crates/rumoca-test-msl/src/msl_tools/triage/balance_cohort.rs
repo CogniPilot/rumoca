@@ -9,6 +9,7 @@
 //! dominates the gap and which balance clamps were exercised.
 
 use rumoca_compile::compile::core::split_first_top_level;
+use rumoca_worker::ModelFailureBucket;
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -81,6 +82,38 @@ fn bare_error_code(entry: &Value) -> Option<&str> {
     str_field(entry, "error_code").map(short_error_code)
 }
 
+/// The typed failure bucket a result row carries, if any. Unknown names are
+/// rejected rather than coerced, so a producer/consumer skew shows up as
+/// "untyped" instead of being filed under a familiar bucket.
+fn typed_failure_bucket(entry: &Value) -> Option<ModelFailureBucket> {
+    serde_json::from_value(entry.get("failure_bucket")?.clone()).ok()
+}
+
+/// True when the row is a DAE-construction failure (balanced or not).
+///
+/// Prefers the producer's typed bucket; falls back to the `phase_reached`
+/// string for results recorded before the typed classification existed.
+fn is_dae_construction_failure(entry: &Value) -> bool {
+    match typed_failure_bucket(entry) {
+        Some(bucket) => matches!(
+            bucket,
+            ModelFailureBucket::DaeConstruction | ModelFailureBucket::DaeBalance
+        ),
+        None => str_field(entry, "phase_reached") == Some("ToDae"),
+    }
+}
+
+/// True when the row is an unbalanced-model failure.
+///
+/// Prefers the producer's typed bucket, which is minted from the structured
+/// balance breakdown; falls back to the ED001 code for older results.
+pub(super) fn is_balance_failure(entry: &Value) -> bool {
+    match typed_failure_bucket(entry) {
+        Some(bucket) => bucket == ModelFailureBucket::DaeBalance,
+        None => bare_error_code(entry) == Some(BALANCE_ERROR_CODE),
+    }
+}
+
 fn balance_record(entry: &Value, reproduction: String) -> Option<BalanceCohortRecord> {
     let model_name = str_field(entry, "model_name")?.to_string();
     let detail = entry.get("balance_detail")?;
@@ -105,12 +138,12 @@ pub(super) fn collect_balance_cohort(
 ) -> BalanceCohort {
     let mut cohort = BalanceCohort::default();
     for entry in results {
-        if str_field(entry, "phase_reached") == Some("ToDae") {
+        if is_dae_construction_failure(entry) {
             cohort.todae_failures += 1;
             let code = bare_error_code(entry).unwrap_or("<unknown>").to_string();
             *cohort.todae_error_code_counts.entry(code).or_insert(0) += 1;
         }
-        if bare_error_code(entry) != Some(BALANCE_ERROR_CODE) {
+        if !is_balance_failure(entry) {
             continue;
         }
         cohort.balance_failures += 1;

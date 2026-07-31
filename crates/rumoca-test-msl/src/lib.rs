@@ -6,6 +6,7 @@
 pub mod msl_flamegraph;
 pub mod msl_tools;
 pub mod proc;
+pub mod resource_budget;
 pub mod web_assets;
 
 use std::path::PathBuf;

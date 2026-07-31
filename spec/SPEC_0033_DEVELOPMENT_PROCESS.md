@@ -98,6 +98,7 @@ Failure classifications:
 | Rule | Owner/Where | Brief Justification |
 |---|---|---|
 | Run the smallest focused check that proves changed behavior first | local workflow | Fast evidence before broad gates |
+| Capability changes follow the §6a two-tier cadence | local workflow | Focused proof and cohort proof are different claims |
 | Required PR gates are selected by SPEC_0025 | PR workflow | One review source |
 | Commands not run MUST be reported with reason | final updates/PRs | Exposes residual risk |
 | Work is not done while temporary probes or symptom patches remain | all changes | Prevents cleanup debt |
@@ -105,6 +106,45 @@ Failure classifications:
 | Cargo subprocesses launched by repository tooling MUST derive a host-topology job budget unless `CARGO_BUILD_JOBS` is explicitly set | developer tooling | Keeps verification responsive without overriding an operator choice |
 | The automatic Cargo budget MUST reserve zero physical cores below 4 logical CPUs, one below 8, and at most two at 8 or more | developer tooling | Small runners retain throughput while developer machines retain foreground capacity |
 | Long-running isolated workers MUST exit when their parent control channel closes and MUST enforce a bounded resident-memory policy | worker orchestration | Interrupted gates must not leave orphaned or unbounded processes |
+
+### 6a. Two-Tier Verification Cadence
+
+| Tier | Cadence | Required evidence |
+|---|---|---|
+| 1 — focused + canary | Every capability change | Focused suites green, plus a canary delta in the working ledger |
+| 2 — cohort sweep | Every milestone, or nightly CI shards | One complete 566-model MSL/OMC sweep at a named commit |
+
+| Rule | Owner/Where | Brief Justification |
+|---|---|---|
+| Verification commands MUST run under `CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4` | local and agent workflows | Fixed budget keeps concurrent workers from oversubscribing the host |
+| A capability change is complete only with Tier 1 focused suites green | all capability work | Focused proof precedes every broader claim |
+| A capability change is complete only with its Tier 1 canary delta recorded in the working `dev/` ledger | dev/ ledger | Deltas must outlive the session that produced them |
+| The canary target set is the fixed 20-model list in `dev/msl-canary-20.json` | canary runs | A moving target set makes deltas meaningless |
+| Replacing a canary member MUST record the rationale and replacement in the same ledger entry | dev/ ledger | Keeps the fixed list auditable |
+| Each canary model and phase gets exactly one attempt at the harness default 10-second budget | canary runs | One honest attempt, no retry or default path |
+| A canary timeout, panic, unsupported operation, or non-finite result MUST be recorded as a failure | canary runs | Retries and fallbacks manufacture passes |
+| Tier 2 MUST cover the full 566-model set, either in one run or as CI shards merged by the fan-in job | CI / milestone | Cohort evidence without a serial CI long pole |
+| Tier 2 is the sole source of cohort parity claims | reports, PRs, specs | One cohort number, one origin |
+| Every quoted parity number MUST name the Tier 2 run and commit it came from | reports, PRs, specs | An unsourced number cannot be rechecked |
+| Parity numbers MUST NOT be quoted from a partial, single-shard, focused, or stale run | any claim | Partial snapshots are not cohort evidence |
+| A Tier 1 canary delta MUST NOT be reported as a cohort parity number | dev/ ledger, PR text | Tier 1 is a tripwire, not a metric |
+
+```bash
+# Tier 1 — fixed 20-model canary; the harness marks this snapshot partial.
+CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 cargo xtask verify msl-parity \
+  --sim-targets-file dev/msl-canary-20.json
+
+# Tier 2 — full cohort; CI shards it as `--shard m/n` plus `--merge-shards DIR`.
+CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 cargo xtask verify msl-parity
+```
+
+**Why:** a Tier 1 run writes `run_scope: "partial"` into its quality snapshot
+(`balance_pipeline_quality_gate.rs`), and only a `"full"` scope satisfies the
+baseline ratchet. The cadence makes that mechanical distinction a reporting
+rule: Tier 1 detects regressions early, Tier 2 states where the cohort stands.
+`dev/` is an untracked working ledger, so Tier 1 evidence is developer-local
+and is rechecked by rerunning the command above; Tier 2 evidence is a tracked
+CI artifact. That asymmetry is the reason only Tier 2 backs a published number.
 
 ## References
 

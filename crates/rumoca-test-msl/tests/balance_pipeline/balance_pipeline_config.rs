@@ -123,6 +123,18 @@ pub(crate) struct MslParityConfig {
     pub sim_timeout_secs: Option<f64>,
     /// Per-model Solve-IR lowering wall budget in seconds. Raise-only, as above.
     pub ir_solve_timeout_secs: Option<f64>,
+    /// Per-model Solve-IR serialized-size ceiling in MB. Defaults to
+    /// [`rumoca_test_msl::resource_budget::SOLVE_IR_SIZE_LIMIT_MB_DEFAULT`] and
+    /// is raise-only: a smaller value is clamped back to the default so a
+    /// mis-written config can never tighten the gate below its baseline. See
+    /// that module for the full acceptance contract.
+    pub solve_ir_size_limit_mb: Option<u64>,
+    /// Per-model *total* compile wall ceiling in seconds (summed across compile
+    /// phases, unlike `model_attempt_timeout_secs`, which is per phase).
+    /// Defaults to
+    /// [`rumoca_test_msl::resource_budget::MODEL_COMPILE_WALL_LIMIT_SECS_DEFAULT`]
+    /// and is raise-only.
+    pub model_compile_wall_limit_secs: Option<f64>,
     /// Per-model, per-phase wall budget in seconds. Defaults to 10 seconds and
     /// is raise-only. Each model receives exactly one attempt.
     pub model_attempt_timeout_secs: Option<f64>,

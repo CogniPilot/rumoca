@@ -605,9 +605,12 @@ mod tests {
         };
         assert_eq!(cr.parts.len(), 1);
         assert_eq!(&*cr.parts[0].ident.text, "t");
+        // The recorded spelling names the base that lowering keeps — `a.t` —
+        // while the subscript becomes an `Index` node of its own, so the loop
+        // index below must stay out of the name.
         assert_eq!(
             cr.qualified_display_name().map(|name| name.as_str()),
-            Some("a.t[i]")
+            Some("a.t")
         );
         let subs = cr.parts[0].subs.as_ref().expect("expected subscript on t");
         let Subscript::Expression(sub_expr) = &subs[0] else {

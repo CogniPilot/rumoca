@@ -27,20 +27,16 @@ use std::process::{Command, Output};
 
 use tempfile::tempdir;
 
-#[path = "galec_cli_support/cli.rs"]
-mod cli_support;
-#[path = "galec_cli_support/container_xml.rs"]
-mod container_xml_support;
-#[path = "galec_cli_support/metadata.rs"]
-mod metadata_support;
-
-use cli_support::{run_compile_target, strip_ansi, write_fixture};
-use container_xml_support::{
+// The `galec_cli_support/` helpers are declared once by the umbrella binary
+// that owns this file (see `suite_galec_fmu.rs`), so the sibling suites share
+// one copy instead of compiling the same file several times per binary.
+use super::cli_support::{run_compile_target, strip_ansi, write_fixture};
+use super::container_xml_support::{
     assert_xsd_rejects, attribute_values, mask_attribute, mask_uuids, move_line_after,
     relative_file_paths, sole_attribute_value, surgically, validate_against_xsd,
     vendored_schemas_dir, without_block, without_line,
 };
-use metadata_support::{assert_manifest_id, assert_strict_utc_timestamp};
+use super::metadata_support::{assert_manifest_id, assert_strict_utc_timestamp};
 
 /// Fixed-sample discrete fixture: a parameter, a `pre()` state, an output,
 /// and one `when sample(...)` clock — the shape the galec target exists for.

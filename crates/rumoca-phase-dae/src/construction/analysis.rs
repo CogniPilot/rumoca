@@ -294,7 +294,7 @@ pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
     let function_plans = validate_functions(flat, &function_shapes)?;
     let record_equations = analyze_record_equations(flat, &flat.equations)?;
     let initial_record_equations = analyze_record_equations(flat, &flat.initial_equations)?;
-    let constants = constant_context(flat);
+    let constants = constant_context(flat)?;
     let comprehension_plans = analyze_comprehensions(all_model_expressions(flat), &constants)?;
     let delay_plans = analyze_delays(flat, &constants)?;
     let clocks = analyze_clocks(flat, &constants)?;
@@ -605,9 +605,22 @@ fn structured_template_expressions(
         .flat_map(|template| &template.body)
 }
 
-fn constant_context(flat: &flat::Model) -> EvalContext {
+/// Fold every `constant`/`parameter` binding the Flat model settles at
+/// translation time.
+///
+/// The fixed point is keyed on the exact occurrence identity of each
+/// declaration — `validate_flat_shape` has already proven every Flat variable
+/// carries a distinct allocated [`InstanceId`], so "has this declaration been
+/// settled" is a question about the identity and never about a rendered name
+/// two occurrences could share.
+///
+/// A binding that does not fold is only skipped when the evaluator says *why*
+/// in typed terms: MLS §4.4 permits a parameter value to be established during
+/// initialization instead, and those failures carry a
+/// `RuntimeDependentReason`. Any other failure proves the model or the
+/// evaluator wrong and is reported at the binding.
+fn constant_context(flat: &flat::Model) -> Result<EvalContext, ToDaeError> {
     let mut context = EvalContext::with_capacity(flat.variables.len(), 0, flat.functions.len() * 2);
-    context.enable_unique_suffix_lookup();
     for function in flat.functions.values() {
         context.add_function(function.clone());
     }
@@ -625,7 +638,7 @@ fn constant_context(flat: &flat::Model) -> EvalContext {
     for _ in 0..flat.variables.len() {
         let mut progress = false;
         for (name, variable) in &flat.variables {
-            if context.get(name.as_str()).is_some()
+            if context.instance_value(variable.instance_id).is_some()
                 || !matches!(
                     variable.variability,
                     Variability::Constant(_) | Variability::Parameter(_)
@@ -636,17 +649,26 @@ fn constant_context(flat: &flat::Model) -> EvalContext {
             let Some(binding) = &variable.binding else {
                 continue;
             };
-            let Ok(value) = eval_expr(binding, &context) else {
-                continue;
-            };
-            context.add_parameter(name.to_string(), value);
-            progress = true;
+            match eval_expr(binding, &context) {
+                Ok(value) => {
+                    context.add_instance_parameter(variable.instance_id, name.to_string(), value);
+                    progress = true;
+                }
+                Err(error) if error.runtime_dependent_reason().is_some() => {}
+                Err(error) => {
+                    return Err(ToDaeError::unsupported_flat(
+                        "parameter binding",
+                        format!("`{name}` cannot be evaluated: {error}"),
+                        error.span().unwrap_or(variable.source_span),
+                    ));
+                }
+            }
         }
         if !progress {
             break;
         }
     }
-    context
+    Ok(context)
 }
 
 fn validate_known_function_calls(

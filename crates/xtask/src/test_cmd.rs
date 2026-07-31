@@ -15,12 +15,14 @@ pub(crate) fn run_workspace_fmt_check(root: &Path) -> Result<()> {
 /// - `architecture_hardening_test` — crate layering, file-size, and the
 ///   RUMOCA_* env-var registry (a regression here means a new unregistered env
 ///   var: remove it or route debug output through `--trace`).
-/// - `spec_budget_test` — SPEC set size / per-spec budgets.
-/// - `code_size_budget_test` — SPEC_0021 source size guard.
-/// - `history_policy_test` — git-history policy.
+/// - `suite_gates` — the umbrella binary holding `spec_budget_test` (SPEC set
+///   size / per-spec budgets), `code_size_budget_test` (SPEC_0021 source size
+///   guard), and `history_policy_test` (git-history policy).
 ///
-/// Add new architecture/policy test targets here so they're grouped in one fast
-/// gate rather than only discovered by the full workspace test run.
+/// Both targets link no `rumoca` library, which is what keeps this gate fast.
+/// Add new architecture/policy checks as members of `tests/suite_gates.rs` so
+/// they're grouped in one fast gate rather than only discovered by the full
+/// workspace test run.
 pub(crate) fn run_architecture_gates(root: &Path) -> Result<()> {
     run_cargo(
         root,
@@ -31,11 +33,7 @@ pub(crate) fn run_architecture_gates(root: &Path) -> Result<()> {
             "--test",
             "architecture_hardening_test",
             "--test",
-            "spec_budget_test",
-            "--test",
-            "code_size_budget_test",
-            "--test",
-            "history_policy_test",
+            "suite_gates",
         ],
     )
 }
@@ -78,11 +76,18 @@ const WORKSPACE_TEST_EXCLUDES: &[&str] = &[
 /// do not discover. CI stages the pinned MSL cache before this command.
 const WORKSPACE_TEST_FEATURES: &[&str] = &["--features", "rumoca/msl-sim-tests"];
 
+/// Unit + integration tests under nextest, then doctests. nextest schedules
+/// individual tests across every core in isolated processes; plain
+/// `cargo test` runs one binary at a time, so suites that serialize on an
+/// in-process lock (LSP server tests, singleton sessions) collapse the whole
+/// lane to one busy core. Measured on the 2026-07-30 tree: 4,831 tests in
+/// 32.7s under nextest versus a many-minute serialized tail under libtest.
 pub(crate) fn run_workspace_tests(root: &Path) -> Result<()> {
-    let mut args = vec!["test", "--workspace", "--verbose"];
+    let mut args = vec!["nextest", "run", "--workspace"];
     args.extend_from_slice(WORKSPACE_TEST_EXCLUDES);
     args.extend_from_slice(WORKSPACE_TEST_FEATURES);
-    run_cargo(root, &args)
+    run_cargo(root, &args)?;
+    run_workspace_doctests(root)
 }
 
 /// Doctests only. `cargo nextest` cannot run doctests, so the sharded CI lane
@@ -110,11 +115,11 @@ pub(crate) fn run_workspace_nextest_partition(root: &Path, partition: &str) -> R
 }
 
 /// CLI options for `verify workspace`, co-located with the workspace-test
-/// runners they dispatch to. With no flags this runs the full workspace
-/// `cargo test` (unit + integration + doctests), exactly as before, so the
-/// verify-suite step (`cargo xtask verify workspace`) is unchanged. The flags
-/// let CI split that lane across parallel shards without duplicating the
-/// load-bearing crate-exclude list in YAML.
+/// runners they dispatch to. With no flags this runs the full workspace suite
+/// (unit + integration under nextest, then doctests), preserving exactly the
+/// coverage plain `cargo test --workspace` provided. The flags let CI split
+/// that lane across parallel shards without duplicating the load-bearing
+/// crate-exclude list in YAML.
 #[derive(Debug, clap::Args, Clone, PartialEq, Eq)]
 pub(crate) struct WorkspaceArgs {
     /// Run only the unit + integration tests in this `count:M/N` nextest shard

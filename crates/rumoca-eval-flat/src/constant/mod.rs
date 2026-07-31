@@ -25,7 +25,7 @@ mod tests;
 
 pub use builtins::{eval_builtin, is_builtin};
 pub use context::EvalContext;
-pub use errors::EvalError;
+pub use errors::{EvalError, RuntimeDependentReason};
 pub use expr_eval::{
     eval_expr, eval_expr_with_span, try_eval_bool, try_eval_integer, try_eval_real,
 };

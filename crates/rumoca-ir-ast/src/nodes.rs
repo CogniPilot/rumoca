@@ -743,6 +743,13 @@ pub struct ComponentReference {
     pub span: Span,
     /// Non-semantic qualified display spelling. Resolution and identity proofs
     /// use only `parts`; this cache is ignored by equality and serialization.
+    ///
+    /// It spells the leading parts that stay on one reference when the
+    /// reference is lowered — every part of an unsubscripted reference, and
+    /// the parts up to and including the first subscripted one otherwise,
+    /// always without subscripts. Lowering splits at that first subscripted
+    /// part, so a spelling that covered more parts could not be attached to
+    /// anything.
     #[serde(skip)]
     pub qualified_display_name: Option<rumoca_core::VarName>,
 }

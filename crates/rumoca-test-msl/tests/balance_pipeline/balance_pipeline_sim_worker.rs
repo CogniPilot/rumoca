@@ -223,6 +223,11 @@ pub(super) struct SimWorkerResult {
     solve_ir_file: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     solve_ir_error: Option<String>,
+    /// Serialized Solve-IR size the worker measured against the per-model
+    /// ceiling. Exact when accepted, a lower bound past the ceiling when the
+    /// worker stopped measuring; see `rumoca_test_msl::resource_budget`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    solve_ir_bytes: Option<u64>,
 }
 
 pub(super) fn sim_result(
@@ -740,7 +745,9 @@ pub(super) fn spawn_sim_worker_process(
         .arg("--trace-json")
         .arg(&artifacts.trace_path)
         .arg("--solve-ir-json")
-        .arg(&artifacts.solve_ir_path);
+        .arg(&artifacts.solve_ir_path)
+        .arg("--solve-ir-size-limit-mb")
+        .arg(solve_ir_size_budget().limit_mb().to_string());
     if let Some(dt) = settings.dt {
         cmd.arg("--dt").arg(dt.to_string());
     }
@@ -1055,6 +1062,14 @@ fn finalize_sim_worker_result(
             ));
         }
     };
+    // Re-apply the ceiling harness-side over the number the worker reported, so
+    // the verdict comes from a measured size compared against a constant rather
+    // than from trusting the worker to have failed itself.
+    if let Some(bytes) = worker_result.solve_ir_bytes
+        && let Err(exceeded) = solve_ir_size_budget().check_bytes(bytes)
+    {
+        return ctx.solver_fail(format!("{} ({})", exceeded, ctx.model_name));
+    }
     let sim_trace_file = if matches!(status, SimStatus::Ok) && artifacts.trace_path.is_file() {
         Some(artifacts.trace_relative_path.clone())
     } else {

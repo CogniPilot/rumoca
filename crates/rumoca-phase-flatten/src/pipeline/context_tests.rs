@@ -480,6 +480,8 @@ mod tests {
         let tree = ClassTree::default();
         let mut flat = flat::Model::default();
 
+        // A modification written in the enclosing scope keeps that scope's
+        // qualification, so both siblings reach the one `td` declaration.
         for (name, binding, from_modification) in [
             ("td", real_lit(0.002), false),
             (
@@ -487,6 +489,46 @@ mod tests {
                 div_expr(var_ref(&[("td", DefId::new(1))]), int_lit(2)),
                 true,
             ),
+            (
+                "line2.TD",
+                div_expr(var_ref(&[("td", DefId::new(1))]), int_lit(2)),
+                true,
+            ),
+        ] {
+            let var_name = rumoca_core::VarName::new(name);
+            flat.add_variable(
+                var_name.clone(),
+                flat::Variable {
+                    name: var_name,
+                    variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
+                    binding: Some(binding),
+                    binding_from_modification: from_modification,
+                    is_primitive: true,
+                    ..flat::Variable::empty_with_span(test_span())
+                },
+            );
+        }
+
+        ctx.build_parameter_lookup(&flat, &tree);
+
+        assert_eq!(ctx.real_parameter_values.get("line1.TD"), Some(&0.001));
+        assert_eq!(ctx.real_parameter_values.get("line2.TD"), Some(&0.001));
+    }
+
+    #[test]
+    fn a_modifier_binding_qualified_with_its_own_instance_is_not_recovered() {
+        // `line2.td` names a member of `line2`, and no declaration provides
+        // one — the value lives on the enclosing `td`. Reading this binding
+        // used to work only by stripping path segments until something matched,
+        // which is a guess about which declaration was meant. A rendering this
+        // wrong has to be corrected where it is produced, so the binding now
+        // stays unevaluated instead of silently resolving to a neighbour.
+        let mut ctx = Context::new();
+        let tree = ClassTree::default();
+        let mut flat = flat::Model::default();
+
+        for (name, binding, from_modification) in [
+            ("td", real_lit(0.002), false),
             (
                 "line2.TD",
                 div_expr(
@@ -512,8 +554,8 @@ mod tests {
 
         ctx.build_parameter_lookup(&flat, &tree);
 
-        assert_eq!(ctx.real_parameter_values.get("line1.TD"), Some(&0.001));
-        assert_eq!(ctx.real_parameter_values.get("line2.TD"), Some(&0.001));
+        assert_eq!(ctx.real_parameter_values.get("td"), Some(&0.002));
+        assert_eq!(ctx.real_parameter_values.get("line2.TD"), None);
     }
 
     #[test]

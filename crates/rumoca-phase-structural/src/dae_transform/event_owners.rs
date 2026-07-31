@@ -6,7 +6,7 @@
 
 use rumoca_ir_dae as dae;
 
-use super::{ReservedVariable, TargetVariable};
+use super::variables::{ReservedVariable, TargetVariable};
 
 pub(super) fn rebuild_relations<'target>(
     source: dae::DaeView<'_>,
@@ -37,7 +37,7 @@ pub(super) fn define_conditions<'target>(
     expressions: &[dae::ExprId<'target>],
     conditions: &[dae::ConditionId<'target>],
     relations: &[dae::RelationId<'target>],
-    clocks: &[super::RebuiltClock<'target>],
+    clocks: &[super::temporal::RebuiltClock<'target>],
 ) -> Result<(), dae::DaeConstructionError> {
     for (index, target_id) in conditions.iter().copied().enumerate() {
         let source_id = source

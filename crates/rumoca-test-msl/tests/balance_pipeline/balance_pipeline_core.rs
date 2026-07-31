@@ -713,6 +713,24 @@ fn compile_model_with_budget_timeout<T: FocusedClosureCompiler + Sync + Send + '
     }
 }
 
+/// Record the machine-readable classification for a harness-side failure.
+///
+/// These never carry the worker's own typed classification: the worker either
+/// never ran, or was killed before it could report one. The harness therefore
+/// mints the bucket from the typed [`ModelWorkerRunOutcome`] it observed, never
+/// from the message it renders for humans.
+pub(super) fn set_harness_failure_classification(
+    result: &mut MslModelResult,
+    active_phase: Option<WorkerProgressPhase>,
+    bucket: rumoca_worker::ModelFailureBucket,
+    error_code: &str,
+) {
+    result.failure_phase = Some(active_phase.unwrap_or(WorkerProgressPhase::Compile));
+    result.failure_bucket = Some(bucket);
+    result.owner_category = Some(bucket.owner_category());
+    result.failure_error_code = Some(error_code.to_string());
+}
+
 fn model_worker_failure_entry(
     model_name: &str,
     budget_secs: f64,
@@ -793,6 +811,10 @@ fn worker_model_result_to_msl(result: WorkerModelResult) -> MslModelResult {
         timeout_phase: result.timeout_phase,
         timeout_seconds: result.timeout_seconds,
         balance_detail: result.balance_detail,
+        failure_phase: result.failure_phase,
+        failure_bucket: result.failure_bucket,
+        owner_category: result.owner_category,
+        failure_error_code: result.failure_error_code,
     }
 }
 
@@ -801,12 +823,19 @@ fn model_worker_failure_result(
     error_code: &str,
     error: impl Into<String>,
 ) -> MslModelResult {
-    worker_model_result_to_msl(WorkerModelResult::phase_failure(
+    let mut result = worker_model_result_to_msl(WorkerModelResult::phase_failure(
         model_name.to_string(),
         "ToDae",
         error.into(),
         Some(error_code.to_string()),
-    ))
+    ));
+    set_harness_failure_classification(
+        &mut result,
+        None,
+        rumoca_worker::ModelFailureBucket::HarnessFailure,
+        error_code,
+    );
+    result
 }
 
 fn model_worker_artifact_dir_name(model_name: &str) -> String {
@@ -1052,6 +1081,11 @@ fn finish_in_process_worker_outcome(
                 response.elapsed_secs,
                 force_keep,
             );
+            // Declared per-model ceilings (Solve-IR serialized size, total
+            // compile wall) are applied to every completed attempt, so an
+            // overrun is a loud, typed `ResourceBudget` failure rather than a
+            // model that merely looks slow in the timings table.
+            enforce_model_resource_budgets(&mut result);
             (result, true)
         }
         ModelWorkerRunOutcome::TimedOut {
@@ -1077,6 +1111,12 @@ fn finish_in_process_worker_outcome(
                     active_phase,
                 )
             });
+            set_harness_failure_classification(
+                &mut result,
+                active_phase,
+                rumoca_worker::ModelFailureBucket::Timeout,
+                MODEL_ATTEMPT_TIMEOUT_ERROR_CODE,
+            );
             result.compile_perf_profile_file = compile_perf_profile_file;
             (result, false)
         }
@@ -1104,6 +1144,12 @@ fn finish_in_process_worker_outcome(
                     message,
                 )
             });
+            set_harness_failure_classification(
+                &mut result,
+                active_phase,
+                rumoca_worker::ModelFailureBucket::MemoryLimit,
+                MODEL_WORKER_MEMORY_LIMIT_ERROR_CODE,
+            );
             result.compile_perf_profile_file = compile_perf_profile_file;
             (result, false)
         }

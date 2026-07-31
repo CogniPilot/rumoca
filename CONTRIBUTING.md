@@ -89,7 +89,7 @@ expect the same local prerequisites that CI installs: `cargo-llvm-cov`, Node
 20/npm for package/web tasks, and the wasm Rust target/tooling.
 `cargo xtask verify template-runtimes` wraps
 Cargo-native opt-in example-template execution checks such as
-`cargo test -p rumoca --features template-runtime-tests --test backend_template_runtime_regression -- --nocapture`.
+`cargo test -p rumoca --features template-runtime-tests --test suite_template_runtime backend_template_runtime_regression:: -- --nocapture`.
 
 Editor validation:
 

@@ -23,10 +23,12 @@ This directory contains helper includes for `tests/msl_tests.rs`.
 | Solver wall budget | `--sim-timeout-secs SECS` | `sim_timeout_secs` |
 | Solve-IR lowering budget | `--ir-solve-timeout-secs SECS` | `ir_solve_timeout_secs` |
 | Per-phase attempt budget (10s default) | `--model-attempt-timeout-secs SECS` | `model_attempt_timeout_secs` |
+| Total compile wall ceiling (40s default) | — (config only) | `model_compile_wall_limit_secs` |
+| Solve-IR serialized-size ceiling (32 MB default) | — (config only) | `solve_ir_size_limit_mb` |
 | OMC baseline for every target | `--all-omc-targets` | `all_omc_targets` |
 
-The three timeout knobs are **raise-only**: the harness clamps each to at least
-its built-in default, because the committed quality baseline was measured with
+Every budget knob is **raise-only**: the harness clamps each to at least its
+built-in default, because the committed quality baseline was measured with
 those defaults and shortening a budget would silently turn real failures into
 timeouts. The OMC reference budget scales with `--sim-timeout-secs` so the two
 tools keep a comparable amount of time (`omc_sim_reference_timeout_secs`).
@@ -34,6 +36,29 @@ tools keep a comparable amount of time (`omc_sim_reference_timeout_secs`).
 Each model has one attempt. If any phase exceeds the attempt budget, the
 harness kills that model's worker and records `EMSL_TIMEOUT_MODEL_ATTEMPT`.
 There is no diagnostic retry or alternate-budget result.
+
+## Per-model resource ceilings
+
+Five ceilings bound one model attempt; a model that fits all five is accepted
+and nothing else about its shape is judged. Overruns are typed, never
+message-matched:
+
+| Ceiling | Default | Overrun bucket | Error code |
+|---|---|---|---|
+| per-phase compile/sim wall | 10 s | `Timeout` | `EMSL_TIMEOUT_MODEL_ATTEMPT` |
+| solver wall | 10 s | `Timeout` | `EMSL_TIMEOUT_MODEL_ATTEMPT` |
+| worker resident+swap | 6 GiB | `MemoryLimit` | `EMSL_MODEL_WORKER_MEMORY_LIMIT` |
+| total compile wall | 40 s | `ResourceBudget` | `EMSL_BUDGET_COMPILE_WALL` |
+| Solve-IR serialized size | 32 MB | `ResourceBudget` | `EMSL_BUDGET_SOLVE_IR_SIZE` |
+
+`ResourceBudget` is owned by `Performance`, like `Timeout`/`MemoryLimit`, but is
+kept distinct from them: it means "the artifact lowering produced is bigger (or
+slower) than the pipeline agreed to carry", which is a lowering defect, not a
+scheduling accident. `rumoca_test_msl::resource_budget` holds the full
+acceptance contract, including why the size measurement stops at the ceiling
+instead of discovering how far past it a model went — a single
+`LieGroups.SE23.Quat.log_map` call from the cached CMM snapshot scalarizes to a
+~34 MB Solve IR, and four of them to ~142 MB.
 
 `--all-omc-targets` exists for the long-budget diagnostic lanes: the canonical
 gate restricts the OMC baseline to models rumoca already simulates, which is
