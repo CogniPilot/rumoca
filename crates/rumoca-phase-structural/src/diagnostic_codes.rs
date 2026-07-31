@@ -15,6 +15,10 @@ pub const ES002_ALGEBRAIC_LOOP: &str = "ES002";
 pub const ES010_SINGULAR_SYSTEM: &str = "ES010";
 /// [`crate::StructuralError::EmptySystem`]: no equations and no unknowns.
 pub const ES011_EMPTY_SYSTEM: &str = "ES011";
+/// [`crate::StructuralError::DroppedStatedInitialValue`]: the only available
+/// index reduction would discard an MLS 3.6 §8.6 `fixed = true` initial
+/// equation.
+pub const ES012_DROPPED_STATED_INITIAL_VALUE: &str = "ES012";
 /// [`crate::StructuralError::ContractViolation`] and
 /// [`crate::StructuralError::UnspannedContractViolation`]: DAE IR metadata
 /// required by structural analysis is missing or inconsistent.
@@ -34,6 +38,7 @@ pub const STRUCTURAL_DIAGNOSTIC_CODES: &[&str] = &[
     ES002_ALGEBRAIC_LOOP,
     ES010_SINGULAR_SYSTEM,
     ES011_EMPTY_SYSTEM,
+    ES012_DROPPED_STATED_INITIAL_VALUE,
     ES014_CONTRACT_VIOLATION,
 ];
 
@@ -68,6 +73,10 @@ mod tests {
                 over_determined_block: Box::default(),
             },
             StructuralError::EmptySystem,
+            StructuralError::DroppedStatedInitialValue {
+                variable: "x".to_string(),
+                span: structural_code_test_span(),
+            },
             StructuralError::Projection {
                 reason: "dynamic index".to_string(),
                 span: structural_code_test_span(),
@@ -135,9 +144,9 @@ mod tests {
             .collect();
         let unique: BTreeSet<&&str> = codes.iter().collect();
 
-        // Five variants, three codes: all checked-contract failures share ES014.
-        assert_eq!(codes.len(), 5);
-        assert_eq!(unique.len(), 3, "unexpected code aliasing: {codes:?}");
+        // Six variants, four codes: all checked-contract failures share ES014.
+        assert_eq!(codes.len(), 6);
+        assert_eq!(unique.len(), 4, "unexpected code aliasing: {codes:?}");
     }
 
     #[test]
@@ -146,6 +155,7 @@ mod tests {
         assert_eq!(ES002_ALGEBRAIC_LOOP, "ES002");
         assert_eq!(ES010_SINGULAR_SYSTEM, "ES010");
         assert_eq!(ES011_EMPTY_SYSTEM, "ES011");
+        assert_eq!(ES012_DROPPED_STATED_INITIAL_VALUE, "ES012");
         assert_eq!(ES014_CONTRACT_VIOLATION, "ES014");
     }
 

@@ -21,7 +21,7 @@ mod variables;
 
 use rumoca_ir_dae as dae;
 
-use self::constraints::{direct_state_constraints, holonomic_constraints};
+use self::constraints::{RefusedDemotion, direct_state_constraints, holonomic_constraints};
 use self::reconstruction::{rebuild_holonomic_constraint, rebuild_with_state_demotion};
 use crate::{StructuralError, sort};
 
@@ -106,10 +106,10 @@ pub fn prepare_for_solve(model: &dae::Dae) -> Result<PreparedDae<'_>, Structural
     let mut residue =
         unmatched_residue(&singular).expect("singular system reports its unmatched residue");
     let mut demoted: Option<dae::Dae> = None;
-    loop {
-        let step = demote_direct_state(demoted.as_ref().unwrap_or(model), residue)?;
-        match step {
-            None => break,
+    let blocked = loop {
+        let round = demote_direct_state(demoted.as_ref().unwrap_or(model), residue)?;
+        match round.step {
+            None => break round.blocked,
             Some(DemotionStep::Sorted(dae)) => {
                 return Ok(PreparedDae::Transformed {
                     dae: Box::new(dae),
@@ -121,17 +121,24 @@ pub fn prepare_for_solve(model: &dae::Dae) -> Result<PreparedDae<'_>, Structural
                 demoted = Some(dae);
             }
         }
-    }
+    };
     let mut holonomic = reduce_holonomic_constraint(demoted.as_ref().unwrap_or(model))?;
     if holonomic.is_none() && demoted.is_some() {
         holonomic = reduce_holonomic_constraint(model)?;
     }
-    match holonomic {
-        Some((dae, manifold)) => Ok(PreparedDae::Transformed {
+    match (holonomic, blocked) {
+        (Some((dae, manifold)), _) => Ok(PreparedDae::Transformed {
             dae: Box::new(dae),
             manifold: manifold.into_boxed_slice(),
         }),
-        None => Err(singular),
+        // The only reduction left was one that would have discarded a stated
+        // initial condition. Report that, not the singularity it hides behind:
+        // a bare `ES010` would send a modeller looking for a missing equation.
+        (None, Some(blocked)) => Err(StructuralError::DroppedStatedInitialValue {
+            variable: blocked.variable,
+            span: blocked.span,
+        }),
+        (None, None) => Err(singular),
     }
 }
 
@@ -140,6 +147,17 @@ pub fn prepare_for_solve(model: &dae::Dae) -> Result<PreparedDae<'_>, Structural
 enum DemotionStep {
     Sorted(dae::Dae),
     Reduced { dae: dae::Dae, residue: usize },
+}
+
+/// What one demotion round found.
+struct DemotionRound {
+    /// The demotion this round took, if any.
+    step: Option<DemotionStep>,
+    /// Only ever set when `step` is `None`: a demotion refused for dropping a
+    /// stated initial value that would otherwise have made progress. That
+    /// refusal is the reason the system stops reducing here, so it is what the
+    /// phase reports rather than the singularity it hides behind.
+    blocked: Option<RefusedDemotion>,
 }
 
 /// Demote one directly defined state of `model`.
@@ -152,16 +170,19 @@ enum DemotionStep {
 /// through such a step before the next demotion can pay for it. A candidate
 /// that raises the residue is never accepted, so each accepted round strictly
 /// decreases the pair (residue, remaining states) and the accumulation stops.
-fn demote_direct_state(
-    model: &dae::Dae,
-    residue: usize,
-) -> Result<Option<DemotionStep>, StructuralError> {
+fn demote_direct_state(model: &dae::Dae, residue: usize) -> Result<DemotionRound, StructuralError> {
+    let candidates = model.inspect(direct_state_constraints);
     let mut reduced = None;
     let mut held: Option<DemotionStep> = None;
-    for candidate in model.inspect(direct_state_constraints) {
+    for candidate in candidates.admissible {
         let rebuilt = rebuild_with_state_demotion(model, candidate)?;
         match rebuilt.inspect(|view| sort(view).map(|_| ())) {
-            Ok(()) => return Ok(Some(DemotionStep::Sorted(rebuilt))),
+            Ok(()) => {
+                return Ok(DemotionRound {
+                    step: Some(DemotionStep::Sorted(rebuilt)),
+                    blocked: None,
+                });
+            }
             Err(error) => {
                 let Some(next) = unmatched_residue(&error) else {
                     continue;
@@ -180,7 +201,42 @@ fn demote_direct_state(
             }
         }
     }
-    Ok(reduced.or(held))
+    if let Some(step) = reduced.or(held) {
+        return Ok(DemotionRound {
+            step: Some(step),
+            blocked: None,
+        });
+    }
+    Ok(DemotionRound {
+        step: None,
+        blocked: blocking_refusal(model, residue, &candidates.refused)?,
+    })
+}
+
+/// The first refused demotion that would actually have moved this system
+/// forward, if any.
+///
+/// A refusal is only worth reporting when taking it would have reduced the
+/// system: a model that is singular for an unrelated reason must keep saying so
+/// rather than blame an initial condition it never depended on. Proving that
+/// costs one reconstruction per refusal, which is why it runs only once the
+/// admissible candidates have all failed.
+fn blocking_refusal(
+    model: &dae::Dae,
+    residue: usize,
+    refused: &[RefusedDemotion],
+) -> Result<Option<RefusedDemotion>, StructuralError> {
+    for candidate in refused {
+        let rebuilt = rebuild_with_state_demotion(model, candidate.constraint)?;
+        let progresses = match rebuilt.inspect(|view| sort(view).map(|_| ())) {
+            Ok(()) => true,
+            Err(error) => unmatched_residue(&error).is_some_and(|next| next < residue),
+        };
+        if progresses {
+            return Ok(Some(candidate.clone()));
+        }
+    }
+    Ok(None)
 }
 
 /// Reduce one holonomic constraint of `model`, reporting the replacement DAE

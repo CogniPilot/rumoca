@@ -30,6 +30,7 @@ pub(super) fn rebuild_semantic_owners<'target>(
     replacement: Option<(u32, dae::ExprId<'target>)>,
 ) -> Result<(), dae::DaeConstructionError> {
     rebuild_equations(source, target, expressions, identities.domains, replacement)?;
+    rebuild_initial_discrete_values(source, target, expressions, identities.variables)?;
     let relations = rebuild_relations(source, target, expressions)?;
     define_conditions(
         source,
@@ -95,6 +96,47 @@ fn rebuild_equations<'target>(
                 dae::InitializationOwnerView::Structured { family, .. } => {
                     rebuild_initialization_family(target, family, expressions, domains)?;
                 }
+            }
+        }
+        Ok(())
+    })
+}
+
+/// Replay every MLS §8.6 discrete initial-value definition.
+///
+/// A structural transform is an exact copy of its source apart from the one
+/// residual a reduction replaces, so a definition that survived construction
+/// must survive the rebuild. Dropping one here would leave the coordinate at
+/// its declared `start` instead of the value the initial algorithm determined —
+/// a silently different trajectory rather than a typed failure.
+fn rebuild_initial_discrete_values<'target>(
+    source: dae::DaeView<'_>,
+    target: &mut dae::DaeConstruction<'target>,
+    expressions: &[dae::ExprId<'target>],
+    variables: &[ReservedVariable<'target>],
+) -> Result<(), dae::DaeConstructionError> {
+    target.initialization(|target| {
+        for definition in source.initial_discrete_values() {
+            let value = expressions[definition.value().index() as usize];
+            let identity = variables[definition.target().index() as usize].identity;
+            match identity {
+                TargetVariable::DiscreteReal(coordinate) => {
+                    target.discrete_real_initial_value(
+                        coordinate,
+                        value,
+                        definition.provenance(),
+                    )?;
+                }
+                TargetVariable::DiscreteValue(coordinate) => {
+                    target.discrete_value_initial_value(
+                        coordinate,
+                        value,
+                        definition.provenance(),
+                    )?;
+                }
+                _ => unreachable!(
+                    "a checked discrete initial-value target retains its discrete role"
+                ),
             }
         }
         Ok(())

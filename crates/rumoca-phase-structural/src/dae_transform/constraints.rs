@@ -14,10 +14,10 @@
 //! definitions are read in either orientation, so the `w - der(phi)` form MSL
 //! components use supplies `d/dt phi` exactly as `der(phi) - w` would.
 
-use rumoca_core::StateSelect;
+use rumoca_core::{Span, StateSelect};
 use rumoca_ir_dae as dae;
 
-use super::equalities::{EqualityAnchor, SystemEqualities};
+use super::equalities::{EqualityAnchor, EqualitySign, SystemEqualities};
 use super::{DirectStateConstraint, HolonomicConstraint};
 
 /// The exact indirections reconstruction is allowed to follow while
@@ -44,7 +44,31 @@ enum Visit {
     Differentiable,
 }
 
-pub(super) fn direct_state_constraints(view: dae::DaeView<'_>) -> Vec<DirectStateConstraint> {
+/// Every state demotion one system offers, split by whether taking it would
+/// keep the initial values the model states.
+pub(super) struct StateDemotionCandidates {
+    /// Demotions the reduction may take, in the order it should try them.
+    pub(super) admissible: Vec<DirectStateConstraint>,
+    /// Demotions refused because the state they demote carries an MLS 3.6 §8.6
+    /// `fixed = true` start that no surviving equation reproduces. Kept so a
+    /// reduction that finds no other way forward can name the initial condition
+    /// it would have had to discard instead of reporting a bare singularity.
+    pub(super) refused: Vec<RefusedDemotion>,
+}
+
+/// One demotion refused for dropping a stated initial value.
+#[derive(Clone)]
+pub(super) struct RefusedDemotion {
+    /// The demotion as it would have been applied, so a caller can prove the
+    /// refusal is load-bearing by rebuilding with it.
+    pub(super) constraint: DirectStateConstraint,
+    /// The pinned variable, named as the model declares it.
+    pub(super) variable: String,
+    /// That variable's declaration.
+    pub(super) span: Span,
+}
+
+pub(super) fn direct_state_constraints(view: dae::DaeView<'_>) -> StateDemotionCandidates {
     let facts = DifferentiationFacts::collect(view);
     let mut constraints = view
         .continuous_owners()
@@ -56,6 +80,28 @@ pub(super) fn direct_state_constraints(view: dae::DaeView<'_>) -> Vec<DirectStat
         })
         .collect::<Vec<_>>();
     constraints.extend(redundant_state_constraints(view, &facts.equalities));
+    // MLS 3.6 §8.6 turns every `fixed = true` start into an initialization
+    // equation, and a demoted state has no initialization equation of its own
+    // left. The filter therefore runs over the merged candidate list, so it
+    // covers the residual path and the equality-closure path alike, and it runs
+    // before the per-state deduplication below, so a refused residual candidate
+    // can never shadow an admissible closure candidate for the same state.
+    let mut refused = Vec::new();
+    constraints.retain(|candidate| {
+        if keeps_stated_initial_value(view, &facts.equalities, candidate.state) {
+            return true;
+        }
+        let variable = view
+            .variable_id(candidate.state as usize)
+            .and_then(|id| view.variable(id))
+            .expect("candidate state declaration resolves");
+        refused.push(RefusedDemotion {
+            constraint: *candidate,
+            variable: variable.name().as_str().to_string(),
+            span: variable.declaration().span(),
+        });
+        false
+    });
     let mut claimed = vec![false; view.variable_count()];
     constraints
         .retain(|candidate| !std::mem::replace(&mut claimed[candidate.state as usize], true));
@@ -69,7 +115,57 @@ pub(super) fn direct_state_constraints(view: dae::DaeView<'_>) -> Vec<DirectStat
             .state_select();
         (state_demotion_priority(selection), candidate.state)
     });
-    constraints
+    debug_assert!(
+        constraints
+            .iter()
+            .all(|candidate| carries_a_differentiable_definition(view, *candidate)),
+        "a demotion candidate must satisfy the contract its RHS is consumed under"
+    );
+    StateDemotionCandidates {
+        admissible: constraints,
+        refused,
+    }
+}
+
+/// Whether `candidate` satisfies the one contract its RHS is consumed under.
+///
+/// [`DirectStateConstraint::rhs`] is read at exactly one place —
+/// `ExpressionRebuilder::rebuild_coordinate`, where a `der(state)` coordinate is
+/// replaced by `differentiate(rhs)`. It is never substituted for the state's
+/// *value*: the demoted state stays an unknown of the rebuilt system and the
+/// residual that proves the equality stays in it to define that unknown. Two
+/// consequences are load-bearing:
+///
+///   * a time-invariant displacement between the state and `rhs` vanishes under
+///     `d/dt`, so only the *value* readers of [`SystemEqualities`] need the
+///     offset-free layer;
+///   * a sign does **not** vanish under `d/dt`, so an opposite-signed class
+///     member would need a negated `rhs` and is not a candidate at all — see
+///     [`SystemEqualities::redundant_states`].
+///
+/// What must hold at runtime is that differentiation can reach `rhs` and that
+/// the substitution does not re-enter itself: `rhs` is a whole-model expression
+/// that does not name the state being demoted.
+fn carries_a_differentiable_definition(
+    view: dae::DaeView<'_>,
+    candidate: DirectStateConstraint,
+) -> bool {
+    let Some(rhs) = view.expression_id(candidate.rhs as usize) else {
+        return false;
+    };
+    let Some(node) = view.expression(rhs) else {
+        return false;
+    };
+    if node.function_scope().is_some() || node.binder_domain().is_some() {
+        return false;
+    }
+    let Some(state) = view
+        .variable_id(candidate.state as usize)
+        .and_then(|id| view.variable(id))
+    else {
+        return false;
+    };
+    !dae::expr_contains_var(view, rhs, state.id())
 }
 
 fn state_demotion_priority(selection: StateSelect) -> u8 {
@@ -95,9 +191,7 @@ fn redundant_state_constraints(
         .redundant_states()
         .filter_map(|(state, anchor)| {
             let variable = view.variable(view.variable_id(state as usize)?)?;
-            if variable.state_select() == StateSelect::Always
-                || !keeps_stated_initial_value(view, variable, anchor)
-            {
+            if variable.state_select() == StateSelect::Always {
                 return None;
             }
             Some(DirectStateConstraint {
@@ -109,27 +203,149 @@ fn redundant_state_constraints(
         .collect()
 }
 
-/// Whether demoting `state` onto `anchor` keeps every initial value the model
-/// states about the shared quantity.
+/// Whether demoting `state` keeps every initial value the model states about
+/// the quantity it names.
 ///
-/// A demoted state is no longer initialized in its own right, so a `fixed`
-/// start on it would simply vanish unless the surviving anchor carries the same
-/// obligation. A time-invariant anchor determines the class outright and needs
-/// no initial value at all; a state anchor must be pinned itself.
+/// MLS 3.6 §8.6: "For every Real variable vc with fixed = true, the equation
+/// vc = startExpression is added to the initialization equations." A demoted
+/// state is no longer a state, so it has no initialization equation of its own
+/// left; that stated equation survives only when an equation the reduction
+/// keeps reproduces it. Exactly two such proofs exist here, both read off the
+/// offset-free equality layer because it is the only one that proves anything
+/// about a *value*:
+///
+///   * a class pinned to a time-invariant value asserts `vc = c` at every
+///     instant, initial time included, and the residual asserting it stays in
+///     the system;
+///   * a class anchored on another state keeps that state, so the obligation
+///     survives exactly when the anchor carries the same one — `fixed = true`
+///     with the same stated start, same-signed.
+///
+/// Everything else would replace a stated initial condition with whatever guess
+/// the rest of the system happens to produce, so the demotion is refused: a
+/// state that anchors its own class (no equality proves anything about it), an
+/// opposite-signed member (its initial value is the anchor's negated), an
+/// anchor that is not pinned, and two pinned members that disagree on the start
+/// — which is MLS 3.6 §8.6 inconsistent initialization, not a choice to make
+/// silently.
 fn keeps_stated_initial_value(
     view: dae::DaeView<'_>,
-    state: dae::VariableView<'_>,
-    anchor: EqualityAnchor,
+    equalities: &SystemEqualities,
+    state: u32,
 ) -> bool {
-    if state.fixed() != Some(true) {
+    let Some(variable) = view
+        .variable_id(state as usize)
+        .and_then(|id| view.variable(id))
+    else {
+        return false;
+    };
+    if variable.fixed() != Some(true) {
         return true;
     }
-    match anchor {
-        EqualityAnchor::Invariant(_) => true,
-        EqualityAnchor::State(anchor) => view
+    match equalities.value_anchor_of(state) {
+        Some((EqualityAnchor::Invariant { .. }, _)) => true,
+        Some((EqualityAnchor::State(anchor), EqualitySign::Same)) if anchor != state => view
             .variable_id(anchor as usize)
             .and_then(|id| view.variable(id))
-            .is_some_and(|anchor| anchor.fixed() == Some(true)),
+            .is_some_and(|anchor| {
+                anchor.fixed() == Some(true) && states_the_same_start(view, variable, anchor)
+            }),
+        _ => false,
+    }
+}
+
+/// Whether two declarations state the same initial value.
+///
+/// An absent `start` is the MLS 3.6 §4.8 attribute default of zero for a Real,
+/// so an omitted start and an explicit `start = 0` state the same thing. Two
+/// present starts are compared as written: they are time-invariant expressions,
+/// and structural equality is the only equality this phase can prove about them
+/// without evaluating them. Comparing conservatively can only refuse a demotion
+/// that would have been safe; it can never accept one that drops a start.
+fn states_the_same_start<'dae>(
+    view: dae::DaeView<'dae>,
+    left: dae::VariableView<'dae>,
+    right: dae::VariableView<'dae>,
+) -> bool {
+    match (left.start(), right.start()) {
+        (None, None) => true,
+        (Some(start), None) | (None, Some(start)) => numeric_literal(view, start) == Some(0.0),
+        (Some(left), Some(right)) => states_the_same_expression(view, left, right),
+    }
+}
+
+/// Whether two time-invariant expressions are the same expression as written.
+fn states_the_same_expression<'dae>(
+    view: dae::DaeView<'dae>,
+    left: dae::ExprId<'dae>,
+    right: dae::ExprId<'dae>,
+) -> bool {
+    if left == right {
+        return true;
+    }
+    let (Some(left), Some(right)) = (view.expression(left), view.expression(right)) else {
+        return false;
+    };
+    match (left.operation(), right.operation()) {
+        // `start = 0` on a Real may be written as either literal kind, so the
+        // two numeric literals are compared by value rather than by spelling.
+        (dae::ExpressionOperation::Literal(left), dae::ExpressionOperation::Literal(right)) => {
+            match (literal_value(left), literal_value(right)) {
+                (Some(left), Some(right)) => left == right,
+                _ => left == right,
+            }
+        }
+        (
+            dae::ExpressionOperation::Coordinate(dae::CoordinateView::Parameter(left)),
+            dae::ExpressionOperation::Coordinate(dae::CoordinateView::Parameter(right)),
+        ) => left == right,
+        (
+            dae::ExpressionOperation::Unary {
+                operator: left_operator,
+                operand: left,
+            },
+            dae::ExpressionOperation::Unary {
+                operator: right_operator,
+                operand: right,
+            },
+        ) => left_operator == right_operator && states_the_same_expression(view, left, right),
+        (
+            dae::ExpressionOperation::Binary {
+                operator: left_operator,
+                lhs: left_lhs,
+                rhs: left_rhs,
+            },
+            dae::ExpressionOperation::Binary {
+                operator: right_operator,
+                lhs: right_lhs,
+                rhs: right_rhs,
+            },
+        ) => {
+            left_operator == right_operator
+                && states_the_same_expression(view, left_lhs, right_lhs)
+                && states_the_same_expression(view, left_rhs, right_rhs)
+        }
+        _ => false,
+    }
+}
+
+fn numeric_literal<'dae>(view: dae::DaeView<'dae>, expression: dae::ExprId<'dae>) -> Option<f64> {
+    match view.expression(expression)?.operation() {
+        dae::ExpressionOperation::Literal(literal) => literal_value(literal),
+        _ => None,
+    }
+}
+
+/// The numeric value of a literal, for the two kinds a Real `start` can carry.
+///
+/// An `Integer` too wide to convert exactly reports nothing rather than a
+/// rounded value, which leaves the comparison above to fall back on spelling
+/// equality — the conservative answer.
+fn literal_value(literal: &dae::DaeLiteral) -> Option<f64> {
+    match literal {
+        dae::DaeLiteral::Real(value) => Some(*value),
+        dae::DaeLiteral::Integer(value) => i32::try_from(*value).ok().map(f64::from),
+        _ => None,
     }
 }
 
@@ -364,7 +580,7 @@ fn is_differentiable_coordinate<'dae>(
         dae::CoordinateView::State(state) => state != demoted,
         dae::CoordinateView::Algebraic(algebraic) => {
             match facts.equalities.anchor_of(algebraic.index()) {
-                Some((EqualityAnchor::Invariant(_), _)) => true,
+                Some((EqualityAnchor::Invariant { .. }, _)) => true,
                 Some((EqualityAnchor::State(anchor), _)) => anchor != demoted.index(),
                 None => false,
             }
