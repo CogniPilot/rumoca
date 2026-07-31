@@ -128,6 +128,119 @@ fn channel_shape_labels_discrete_event_time_mismatch() {
     assert_eq!(metric.shape, TraceDeviationShape::EventTimeMismatch);
 }
 
+/// Clocked sampler fixture: a 20 ms clock over `[0, 0.2]` whose sampled step
+/// rises one tick earlier in the candidate than in the reference. Only the
+/// switch instant moves, so this is the shape `EventTimeMismatch` names.
+fn one_tick_shifted_step(lead_ticks: usize) -> (Vec<f64>, Vec<Option<f64>>) {
+    let times = (0..=10).map(|k| k as f64 * 0.02).collect::<Vec<_>>();
+    let rise = 5 - lead_ticks;
+    let values = (0..=10)
+        .map(|k| Some(if k >= rise { 1.0 } else { 0.0 }))
+        .collect::<Vec<_>>();
+    (times, values)
+}
+
+#[test]
+fn one_tick_clock_lead_is_labelled_event_time_mismatch() {
+    let (rumoca_times, rumoca_values) = one_tick_shifted_step(1);
+    let (omc_times, omc_values) = one_tick_shifted_step(0);
+
+    let metric = compare_channel(
+        "sample1.y",
+        ChannelSeries::new(&rumoca_times, &rumoca_values),
+        ChannelSeries::new(&omc_times, &omc_values),
+        true,
+        None,
+    )
+    .expect("channel should compare");
+
+    assert!(
+        metric.bounded_normalized_l1_error > HIGH_AGREEMENT_CHANNEL_THRESHOLD,
+        "the fixture must clear the high-agreement threshold to reach shape classification"
+    );
+    assert_eq!(metric.shape, TraceDeviationShape::EventTimeMismatch);
+}
+
+/// The hole this ordering closes: a clocked channel that settles on a level the
+/// reference never reaches — the signature of a clocked partition solved as an
+/// algebraic loop instead of a per-tick recurrence — is a real value
+/// disagreement, not a sampling convention, and must not be labelled
+/// `EventTimeMismatch`.
+#[test]
+fn discrete_value_disagreement_is_not_labelled_event_time_mismatch() {
+    let times = (0..=10).map(|k| k as f64 * 0.02).collect::<Vec<_>>();
+    // Reference: the clocked recurrence 0, 0, 1.2, -0.24, 1.488, ...
+    let reference = [
+        0.0,
+        0.0,
+        1.2,
+        -0.24,
+        1.488,
+        -0.5856,
+        1.90272,
+        -1.083264,
+        2.4999168,
+        -1.79990016,
+        3.359880192,
+    ];
+    let omc_values = reference.iter().copied().map(Some).collect::<Vec<_>>();
+    // Candidate: the algebraic-loop steady state held for the whole run.
+    let rumoca_values = times
+        .iter()
+        .map(|&t| {
+            Some(if t < 0.04 {
+                0.0
+            } else {
+                0.545_454_545_454_545_5
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let metric = compare_channel(
+        "feedback.u2",
+        ChannelSeries::new(&times, &rumoca_values),
+        ChannelSeries::new(&times, &omc_values),
+        true,
+        None,
+    )
+    .expect("channel should compare");
+
+    assert!(
+        metric.bounded_normalized_l1_error > HIGH_AGREEMENT_CHANNEL_THRESHOLD,
+        "the fixture must clear the high-agreement threshold to reach shape classification"
+    );
+    assert_ne!(
+        metric.shape,
+        TraceDeviationShape::EventTimeMismatch,
+        "a discrete channel holding a level the reference never reaches is a value disagreement"
+    );
+}
+
+/// A step-hold channel whose levels are simply inverted visits the same level
+/// set as the reference, so only the *confinement* condition separates it from
+/// a timing shift.
+#[test]
+fn discrete_inversion_over_the_whole_horizon_is_not_labelled_event_time_mismatch() {
+    let times = (0..=10).map(|k| k as f64 * 0.02).collect::<Vec<_>>();
+    let rumoca_values = (0..=10)
+        .map(|k| Some(if k % 2 == 0 { 1.0 } else { 0.0 }))
+        .collect::<Vec<_>>();
+    let omc_values = (0..=10)
+        .map(|k| Some(if k % 2 == 0 { 0.0 } else { 1.0 }))
+        .collect::<Vec<_>>();
+
+    let metric = compare_channel(
+        "q",
+        ChannelSeries::new(&times, &rumoca_values),
+        ChannelSeries::new(&times, &omc_values),
+        true,
+        None,
+    )
+    .expect("channel should compare");
+
+    assert_ne!(metric.shape, TraceDeviationShape::EventTimeMismatch);
+}
+
 #[test]
 fn model_score_uses_median_bounded_l1() {
     let rumoca = trace(

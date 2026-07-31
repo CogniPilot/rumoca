@@ -430,6 +430,23 @@ fn render_builtin(builtin: &Value, cfg: &ExprConfig) -> RenderResult {
             // Smooth: arg[1] is the expression (arg[0] is smoothness order)
             // Homotopy: arg[0] is the actual expression (arg[1] is simplified)
             // NoEvent: arg[0] is the expression
+            //
+            // Homotopy renders as `actual`: MLS 3.6 §3.7.4.3 defines the
+            // operator through `lambda*actual + (1 - lambda)*simplified` and
+            // explicitly permits the trivial implementation
+            // `homotopy(actual, simplified) = actual`. A rendered backend has no
+            // initialization continuation to sweep lambda with, so `actual` is
+            // the whole of its semantics.
+            //
+            // This is the same reading the Solve runtime gives at simulation
+            // time: it allocates a hidden `P` slot for lambda and seeds it to
+            // 1.0, and `lambda*actual + (1 - lambda)*simplified` at lambda = 1
+            // is exactly `actual`. The one place the two differ is
+            // *initialization* of a multi-rooted system, where the Solve runtime
+            // additionally walks lambda from 0 to 1 and so may select a
+            // different root than a cold solve from `actual` alone would. Both
+            // are conforming; the continuation is rumoca policy for the Solve
+            // runtime, not an MLS requirement on every backend.
             let idx = if func_name == "Smooth" { 1 } else { 0 };
             let inner = required_arg(&args_val, idx, &format!("BuiltinCall {func_name}"))?;
             return render_expression(&inner, cfg);
@@ -556,6 +573,9 @@ fn render_builtin_modelica(func_name: &str, args: &str, _cfg: &ExprConfig) -> St
         "Div" => format!("div({})", args),
         "Mod" => format!("mod({})", args),
         "Rem" => format!("rem({})", args),
+        // MLS §3.7.4.5 spells the operator in camel case; the lowercase fallback
+        // below would emit Modelica that no longer names the builtin.
+        "SemiLinear" => format!("semiLinear({})", args),
         _ => format!("{}({})", func_name.to_lowercase(), args),
     }
 }

@@ -25,6 +25,15 @@ pub const HIGH_AGREEMENT_MAX_CHANNEL_THRESHOLD: f64 = 0.05;
 pub const HIGH_AGREEMENT_MEAN_CHANNEL_THRESHOLD: f64 = 0.01;
 pub const MINOR_AGREEMENT_MAX_CHANNEL_THRESHOLD: f64 = 0.20;
 pub const MINOR_AGREEMENT_MEAN_CHANNEL_THRESHOLD: f64 = 0.05;
+/// Level agreement tolerance for the event-timing predicate, as a fraction of
+/// the channel's own normalization scale.
+const EVENT_MISMATCH_LEVEL_TOLERANCE_FRACTION: f64 = 0.02;
+/// Largest share of the compared horizon a timing-shifted step-hold channel may
+/// spend disagreeing before the deviation is treated as a value disagreement.
+const EVENT_MISMATCH_MAX_DISAGREEMENT_SHARE: f64 = 0.50;
+/// Share of the disagreeing samples whose value must be a level the other trace
+/// also reaches for the deviation to be a shift rather than a wrong value.
+const EVENT_MISMATCH_MIN_LEVEL_MATCH_SHARE: f64 = 0.90;
 pub const BAD_CHANNEL_MAX_THRESHOLD: f64 = 0.20;
 pub const SEVERE_CHANNEL_MAX_THRESHOLD: f64 = 0.80;
 
@@ -922,11 +931,16 @@ fn classify_channel_deviation_shape(
     if samples.len() < 3 || error.max_abs_error <= NORMALIZATION_SCALE_EPS {
         return TraceDeviationShape::Unknown;
     }
-    if scale.use_step_hold {
-        return TraceDeviationShape::EventTimeMismatch;
-    }
     if initial_error_dominates(samples) {
         return TraceDeviationShape::WrongInitialValueOnly;
+    }
+    // A step-hold channel is only an *event-timing* disagreement once the
+    // timing predicate says so. Labelling every over-threshold discrete channel
+    // `EventTimeMismatch` before testing anything would make a real discrete
+    // value disagreement read as a sampling convention, so this branch is
+    // gated, not unconditional.
+    if scale.use_step_hold && event_time_mismatch_dominates(samples, scale) {
+        return TraceDeviationShape::EventTimeMismatch;
     }
     if sign_inversion_dominates(samples) {
         return TraceDeviationShape::SignInversion;
@@ -954,6 +968,82 @@ fn classify_channel_deviation_shape(
         return TraceDeviationShape::StepSizeIntegrationError;
     }
     TraceDeviationShape::Unknown
+}
+
+/// Does a step-hold channel disagree about *when* it switches rather than about
+/// *what* it holds?
+///
+/// Two independent conditions have to hold, and both are about the shape of the
+/// disagreement rather than its size:
+///
+/// 1. **The disagreement is confined.** Held between transitions, a
+///    timing-shifted signal only differs across the interval between the two
+///    switch instants, so the *time* it spends disagreeing is a minority of the
+///    horizon. A channel that holds a different value for most of the run is
+///    disagreeing about the value.
+/// 2. **Both traces only ever hold levels the other one also reaches.** A
+///    shifted signal replays the same levels early or late; a channel that
+///    settles on a level the reference never visits — the signature of a
+///    clocked partition solved as an algebraic loop instead of a recurrence —
+///    fails this and drops through to the numeric shape ladder.
+///
+/// Level comparison uses a fraction of the channel's own normalization scale so
+/// the predicate is unit-free, and sample weighting is left-endpoint because
+/// that is exactly the step-hold reconstruction the samples were built with.
+fn event_time_mismatch_dominates(samples: &[(f64, f64, f64)], scale: ReferenceScale) -> bool {
+    let tolerance = EVENT_MISMATCH_LEVEL_TOLERANCE_FRACTION * scale.normalization_scale;
+    let (Some(first), Some(last)) = (samples.first(), samples.last()) else {
+        return false;
+    };
+    let horizon = last.0 - first.0;
+    // A NaN horizon (incomparable) must bail out exactly like a non-positive one.
+    if horizon.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater) {
+        return false;
+    }
+    let mut disagreeing_duration = 0.0;
+    let mut disagreeing = 0usize;
+    let mut level_matched = 0usize;
+    let rumoca_levels = sorted_channel_values(samples.iter().map(|(_, rumoca, _)| *rumoca));
+    let omc_levels = sorted_channel_values(samples.iter().map(|(_, _, omc)| *omc));
+    for (index, (time, rumoca, omc)) in samples.iter().copied().enumerate() {
+        if (rumoca - omc).abs() <= tolerance {
+            continue;
+        }
+        disagreeing += 1;
+        if let Some((next_time, _, _)) = samples.get(index + 1) {
+            disagreeing_duration += next_time - time;
+        }
+        if channel_holds_level(&omc_levels, rumoca, tolerance)
+            && channel_holds_level(&rumoca_levels, omc, tolerance)
+        {
+            level_matched += 1;
+        }
+    }
+    if disagreeing == 0 {
+        return false;
+    }
+    if disagreeing_duration > EVENT_MISMATCH_MAX_DISAGREEMENT_SHARE * horizon {
+        return false;
+    }
+    level_matched as f64 >= EVENT_MISMATCH_MIN_LEVEL_MATCH_SHARE * disagreeing as f64
+}
+
+fn sorted_channel_values(values: impl Iterator<Item = f64>) -> Vec<f64> {
+    let mut sorted = values.collect::<Vec<_>>();
+    sorted.sort_by(f64::total_cmp);
+    sorted
+}
+
+/// True when `value` is a level the sorted channel actually reaches.
+fn channel_holds_level(sorted: &[f64], value: f64, tolerance: f64) -> bool {
+    match sorted.binary_search_by(|level| level.total_cmp(&value)) {
+        Ok(_) => true,
+        Err(index) => [index.checked_sub(1), Some(index)]
+            .into_iter()
+            .flatten()
+            .filter_map(|index| sorted.get(index))
+            .any(|level| (level - value).abs() <= tolerance),
+    }
 }
 
 fn initial_error_dominates(samples: &[(f64, f64, f64)]) -> bool {

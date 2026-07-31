@@ -662,6 +662,18 @@ fn project_continuous_owner(owner: dae::ContinuousOwnerView<'_>) -> Value {
 
 fn project_initialization(view: dae::DaeView<'_>) -> Value {
     json!({
+        // MLS §8.6 initialization-instant values of discrete coordinates. A
+        // template that renders only `owners` would start those coordinates
+        // from their declared `start` instead, so the definitions are their own
+        // visible column rather than an omission.
+        "discrete_values": view
+            .initial_discrete_values()
+            .map(|definition| json!({
+                "target": definition.target().index(),
+                "value": definition.value().index(),
+                "provenance": definition.provenance(),
+            }))
+            .collect::<Vec<_>>(),
         "owners": (0..view.initialization_owner_count())
             .map(|index| {
                 let owner = view

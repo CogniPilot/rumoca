@@ -183,6 +183,17 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         self.binary(dae::BinaryOperator::Subtract, lhs, multiple, span)
     }
 
+    /// Lower `homotopy(actual, simplified)` as the blend MLS 3.6 §3.7.4.3
+    /// writes: `lambda*actual + (1 - lambda)*simplified`.
+    ///
+    /// The spelling matters. The algebraically equal
+    /// `simplified + lambda*(actual - simplified)` loses `actual` to
+    /// cancellation at λ = 1 whenever `|simplified| >> |actual|`: in IEEE
+    /// double, `1e17 + 1.0*(1.0 - 1e17)` is `0.0`, not `1.0`. λ is a plain `P`
+    /// slot pinned to `1.0` outside the initialization continuation, so that
+    /// error would persist for the whole run, not just initialization. The form
+    /// below is exact at both endpoints — `1*actual + 0*simplified` is `actual`
+    /// and `0*actual + 1*simplified` is `simplified` — for the same op count.
     fn homotopy(
         &mut self,
         arguments: dae::ExpressionOperands<'dae>,
@@ -207,9 +218,12 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 LowerError::non_computable("homotopy expression has no checked Solve storage", span)
             })?;
         let lambda = self.load_slot(solve::scalar_slot_p(index), span)?;
-        let delta = self.binary(dae::BinaryOperator::Subtract, actual, simplified, span)?;
-        let scaled = self.binary(dae::BinaryOperator::Multiply, lambda, delta, span)?;
-        self.binary(dae::BinaryOperator::Add, simplified, scaled, span)
+        let one = self.constant(1.0, span)?;
+        let complement = self.binary(dae::BinaryOperator::Subtract, one, lambda, span)?;
+        let actual_term = self.binary(dae::BinaryOperator::Multiply, lambda, actual, span)?;
+        let simplified_term =
+            self.binary(dae::BinaryOperator::Multiply, complement, simplified, span)?;
+        self.binary(dae::BinaryOperator::Add, actual_term, simplified_term, span)
     }
 
     fn linspace(

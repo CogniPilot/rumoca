@@ -32,10 +32,11 @@ pub use runtime::pre_params::{
 };
 pub use runtime::projection::{
     AlgebraicProjectionArgs, AlgebraicProjectionModel, ImplicitProjectionModel,
-    ManifoldProjectionModel, implicit_residual_is_zero, implicit_residual_is_zero_through_interval,
-    project_algebraic_seed_with_plan, project_algebraics, project_algebraics_and_detect_changes,
-    project_algebraics_with_plan, project_initial_variables_with_homotopy,
-    project_initial_variables_with_plan, project_state_manifold,
+    InitialHomotopySystem, ManifoldProjectionModel, implicit_residual_is_zero,
+    implicit_residual_is_zero_through_interval, project_algebraic_seed_with_plan,
+    project_algebraics, project_algebraics_and_detect_changes, project_algebraics_with_plan,
+    project_initial_variables_with_homotopy, project_initial_variables_with_plan,
+    project_state_manifold,
 };
 pub use runtime::report::{
     DRIVER_TRACE_TARGET, RuntimeProgressSnapshot, RuntimeTraceContext, runtime_progress_snapshot,

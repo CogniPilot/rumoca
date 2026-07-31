@@ -10,6 +10,7 @@ use crate::layout::{LoweredLayout, StorageClass, lower_layout};
 
 mod clocks;
 mod events;
+mod initial_discrete;
 mod scalar;
 use scalar::{ScalarCompiler, ScalarSelector, ScaledDerivativeProgram};
 
@@ -29,6 +30,7 @@ pub(crate) fn lower_solve_problem<'dae>(
     reject_unimplemented_systems(view)?;
     let lowered = lower_layout(view)?;
     let clocks = clocks::lower_clocks(view)?;
+    clocks::reject_clocked_continuous_feedback(view, &clocks)?;
     let structural = structural_matching(view)?;
     let derivatives = index_derivative_rows(view, &structural.rows)?;
     let continuous = lower_continuous(view, &lowered, &structural, &derivatives, manifold)?;
@@ -1251,12 +1253,14 @@ fn lower_initialization<'dae>(
     }
     let row_count = rows.programs.len();
     let plan = plan_initial_parameter_projection(view, layout, &row_residuals)?;
+    let updates = initial_discrete::lower_initial_discrete_values(view, layout)?;
     Ok(solve::InitializationSolveSystem {
         residual: rows.into_compute_block()?,
         row_targets: vec![None; row_count],
         projection_unknowns: plan.unknowns,
         projection_plan: plan.plan,
-        ..solve::InitializationSolveSystem::default()
+        update_rhs: updates.rows.into_scalar_block()?,
+        update_targets: updates.targets,
     })
 }
 
@@ -1515,6 +1519,10 @@ pub(super) struct ScalarRows {
 }
 
 impl ScalarRows {
+    pub(super) fn len(&self) -> usize {
+        self.programs.len()
+    }
+
     pub(super) fn push(&mut self, program: Vec<solve::LinearOp>, span: Span, output: usize) {
         self.programs.push(program);
         self.spans.push(span);

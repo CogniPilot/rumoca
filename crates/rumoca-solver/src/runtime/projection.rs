@@ -1077,24 +1077,36 @@ fn combined_parameter_seed_index(
     })
 }
 
-pub fn project_initial_variables_with_homotopy<M: AlgebraicProjectionModel>(
-    model: &M,
+/// The initialization system a homotopy continuation sweeps.
+///
+/// `homotopy_parameter_index` is the hidden λ slot; `None` means the model
+/// carries no `homotopy(...)` and the plan is projected once, as-is.
+pub struct InitialHomotopySystem<'a, M> {
+    pub model: &'a M,
+    pub t: f64,
+    pub plan: &'a solve::InitializationProjectionPlan,
+    pub homotopy_parameter_index: Option<usize>,
+    pub tol: f64,
+}
+
+/// Drive the initialization homotopy continuation.
+///
+/// `continuation_dependents` re-solves every system outside `system.plan` that
+/// the sweep must carry (see `homotopy::project_initial_variables_with_homotopy`
+/// for the acceptance contract). Callers with no such system pass a step that
+/// does nothing, and must have proven that the plan alone owns every unknown the
+/// continuation parameter reaches.
+pub fn project_initial_variables_with_homotopy<M, F>(
+    system: InitialHomotopySystem<'_, M>,
     y: &mut [f64],
     p: &mut [f64],
-    t: f64,
-    plan: &solve::InitializationProjectionPlan,
-    homotopy_parameter_index: Option<usize>,
-    tol: f64,
-) -> Result<(), RuntimeSolveError> {
-    homotopy::project_initial_variables_with_homotopy(
-        model,
-        y,
-        p,
-        t,
-        plan,
-        homotopy_parameter_index,
-        tol,
-    )
+    continuation_dependents: F,
+) -> Result<(), RuntimeSolveError>
+where
+    M: AlgebraicProjectionModel,
+    F: FnMut(&mut [f64], &[f64]) -> Result<(), RuntimeSolveError>,
+{
+    homotopy::project_initial_variables_with_homotopy(system, y, p, continuation_dependents)
 }
 
 fn projection_rows(plan: &solve::AlgebraicProjectionPlan) -> Vec<usize> {
