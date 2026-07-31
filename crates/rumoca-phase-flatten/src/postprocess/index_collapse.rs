@@ -5,6 +5,12 @@
 //! variable per leaf (plus a record instance for each scalarized record base).
 //! This pass rewrites every such tree to the single `VarRef` that names the
 //! flat variable, folding compile-time subscripts on the way (MLS §4.5).
+//!
+//! One reference resolves to more than one variable: `arr.member` where `arr`
+//! is an array of components (MLS §10.5) denotes the array of the elements'
+//! members. The occurrence graph already holds one occurrence per element, so
+//! that reference expands here into an array expression over the element
+//! variables — before, and independently of, any name shortening.
 
 use super::*;
 use rumoca_core::{ExpressionRewriter, StatementRewriter};
@@ -17,6 +23,23 @@ pub(crate) fn collapse_index_refs_to_known_varrefs(flat: &mut flat::Model) {
     }
     for eq in &mut flat.initial_equations {
         collapse_index_expr(&mut eq.residual, &known_flat_vars);
+    }
+    // A structured family's comprehension template is a peer copy of its scalar
+    // residual, and downstream phases read the template rather than
+    // reconstructing it from the materialized cells. Collapsing only the scalar
+    // copy would leave the template naming references the flat model does not
+    // own.
+    for family in flat
+        .structured_equations
+        .iter_mut()
+        .chain(flat.initial_structured_equations.iter_mut())
+    {
+        let Some(template) = family.template.as_mut() else {
+            continue;
+        };
+        for body in &mut template.body {
+            collapse_index_expr(body, &known_flat_vars);
+        }
     }
     for assert_eq in &mut flat.assert_equations {
         collapse_index_expr(&mut assert_eq.condition, &known_flat_vars);
@@ -333,8 +356,92 @@ impl KnownFlatVars {
         span: rumoca_core::Span,
     ) -> Option<rumoca_core::Expression> {
         let cursor = self.path_cursor(base)?;
+        if matches!(cursor, occurrence_graph::PathCursor::PendingIndices { .. }) {
+            return self.expand_projection_elements(cursor, &[(field_def_id, Vec::new())], span);
+        }
         let cursor = self.occurrences.select_member(cursor, field_def_id, &[])?;
         self.cursor_expression(cursor, span)
+    }
+
+    /// Expand a projection through an unindexed component array.
+    ///
+    /// `cursor` is parked on the array declaration and `members` are the parts
+    /// still to be selected inside each element. `arr.member` denotes the array
+    /// of the elements' members (MLS §10.5), which the model already owns one
+    /// occurrence per element of, so the expansion is a walk rather than a
+    /// rewrite of a rendered path.
+    ///
+    /// Accepted: a projection whose every element resolves to a flat variable
+    /// or scalarized record container this model owns. Rejected as `None`: an
+    /// element the walk cannot resolve, or a projection with nothing selected
+    /// past the array — `arr` alone names the component array itself, not a
+    /// member of it. A rejected projection is left exactly as written so the
+    /// DAE phase reports it against its source span instead of this pass
+    /// substituting a guess.
+    fn expand_projection_elements(
+        &self,
+        cursor: occurrence_graph::PathCursor,
+        members: &[(rumoca_core::DefId, Vec<i64>)],
+        span: rumoca_core::Span,
+    ) -> Option<rumoca_core::Expression> {
+        if members.is_empty() {
+            return None;
+        }
+        let element_cursors = self.occurrences.pending_elements(cursor)?;
+        let mut elements = Vec::with_capacity(element_cursors.len());
+        for mut element in element_cursors {
+            for (declaration, indices) in members {
+                element = self
+                    .occurrences
+                    .select_member(element, *declaration, indices)?;
+            }
+            elements.push(self.cursor_expression(element, span)?);
+        }
+        Some(rumoca_core::Expression::Array {
+            elements,
+            is_matrix: false,
+            span,
+        })
+    }
+
+    /// Expand `arr.member` spelled as one dotted reference.
+    ///
+    /// Flatten keeps a source-written path as a single `VarRef` whose parts are
+    /// the written segments, so the projection that `field_occurrence_expression`
+    /// handles for a `FieldAccess` tree arrives here as an unindexed array part
+    /// followed by the projected members.
+    fn component_array_projection_expression(
+        &self,
+        name: &rumoca_core::Reference,
+        subscripts: &[rumoca_core::Subscript],
+        span: rumoca_core::Span,
+    ) -> Option<rumoca_core::Expression> {
+        // Subscripts on the reference itself select into the projected result,
+        // which is a value rather than an occurrence; leave those to the
+        // `Index` collapse above.
+        if !subscripts.is_empty() {
+            return None;
+        }
+        let scope = name.instance_id()?;
+        if self.occurrences.kind(scope)? != flat::InstanceKind::Class {
+            return None;
+        }
+        let parts = name.component_ref()?.parts();
+        let mut cursor = occurrence_graph::PathCursor::At(scope);
+        for (position, part) in parts.iter().enumerate() {
+            let indices = fold_indices(&part.subs, self)?;
+            cursor = self
+                .occurrences
+                .select_member(cursor, part.def_id, &indices)?;
+            if matches!(cursor, occurrence_graph::PathCursor::PendingIndices { .. }) {
+                let members = parts[position + 1..]
+                    .iter()
+                    .map(|part| Some((part.def_id, fold_indices(&part.subs, self)?)))
+                    .collect::<Option<Vec<_>>>()?;
+                return self.expand_projection_elements(cursor, &members, span);
+            }
+        }
+        None
     }
 
     /// Collapse `<base>[i...]` through the occurrence graph.
@@ -385,6 +492,17 @@ struct CollapseIndexRewriter<'a> {
 
 impl ExpressionRewriter for CollapseIndexRewriter<'_> {
     fn rewrite_expression(&mut self, expr: &rumoca_core::Expression) -> rumoca_core::Expression {
+        if let rumoca_core::Expression::VarRef {
+            name,
+            subscripts,
+            span,
+        } = expr
+            && let Some(expanded) = self
+                .known_flat_vars
+                .component_array_projection_expression(name, subscripts, *span)
+        {
+            return expanded;
+        }
         if let rumoca_core::Expression::FieldAccess {
             base,
             field,
