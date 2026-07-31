@@ -17,6 +17,7 @@ mod generated_names;
 pub use generated_names::*;
 
 mod reference_serde;
+pub use reference_serde::ReferenceContractError;
 
 /// A unique identifier for a definition (class, component, etc.).
 ///

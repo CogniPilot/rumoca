@@ -1,0 +1,59 @@
+[
+  {
+    "name": "x",
+    "component_ref": null,
+    "resolved_function": null,
+    "instance_id": null,
+    "generated": false
+  },
+  {
+    "name": "body[2].r",
+    "component_ref": {
+      "local": false,
+      "span": {
+        "source": 8836489436925420060,
+        "start": 12,
+        "end": 21
+      },
+      "parts": [
+        {
+          "ident": "body",
+          "span": {
+            "source": 8836489436925420060,
+            "start": 12,
+            "end": 21
+          },
+          "subs": [
+            {
+              "Index": {
+                "value": 2,
+                "span": {
+                  "source": 8836489436925420060,
+                  "start": 12,
+                  "end": 21
+                }
+              }
+            }
+          ],
+          "def_id": 7
+        },
+        {
+          "ident": "r",
+          "span": {
+            "source": 8836489436925420060,
+            "start": 12,
+            "end": 21
+          },
+          "subs": [],
+          "def_id": 42
+        }
+      ]
+    },
+    "resolved_function": {
+      "instance_id": 3,
+      "base_part_count": 2
+    },
+    "instance_id": 9,
+    "generated": true
+  }
+]

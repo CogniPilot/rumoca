@@ -503,3 +503,101 @@ fn array_equation(
         scalar_count,
     )
 }
+
+fn add_scalar_integer_parameter(
+    model: &mut flat::Model,
+    source: &TestSource,
+    name: &str,
+    declaration: &str,
+    type_id: u32,
+    binding: Expression,
+) {
+    let mut variable = flat::Variable::empty_with_span(source.span(declaration, 0));
+    variable.name = VarName::new(name);
+    variable.instance_id = test_instance_id(name);
+    variable.type_id = TypeId::new(type_id);
+    variable.variability = Variability::Parameter(Default::default());
+    variable.is_primitive = true;
+    variable.binding = Some(binding);
+    register_test_integer_type(model, variable.type_id, &variable.dims);
+    model.add_variable(variable.name.clone(), variable);
+    model
+        .variable_type_names
+        .insert(VarName::new(name), "Integer".to_string());
+}
+
+#[test]
+fn a_parameter_binding_that_proves_itself_wrong_is_reported_not_skipped() {
+    let source = TestSource::new(
+        "model M Real x; parameter Integer n = 1 + true; equation x - 1.0 = 0; end M;",
+    );
+    let mismatch_at = source.span("1 + true", 0);
+    let mut model = scalar_real_model(&source);
+    add_scalar_integer_parameter(
+        &mut model,
+        &source,
+        "n",
+        "parameter Integer n",
+        40,
+        Expression::Binary {
+            op: OpBinary::Add,
+            lhs: Box::new(Expression::Literal {
+                value: Literal::Integer(1),
+                span: source.span("1", 0),
+            }),
+            rhs: Box::new(Expression::Literal {
+                value: Literal::Boolean(true),
+                span: source.span("true", 0),
+            }),
+            span: mismatch_at,
+        },
+    );
+
+    let error = construct(&model, source.map).expect_err("a mistyped binding must be reported");
+    let ToDaeError::UnsupportedFlatSemantics {
+        feature,
+        detail,
+        span,
+    } = &error
+    else {
+        panic!("expected the binding to be reported at its owner, got {error:?}");
+    };
+    assert_eq!(feature, "parameter binding");
+    assert!(detail.contains('n'), "{detail}");
+    assert!(detail.contains("type mismatch"), "{detail}");
+    assert_eq!(*span, mismatch_at);
+}
+
+#[test]
+fn a_parameter_binding_left_to_initialization_keeps_the_model_constructible() {
+    let source = TestSource::new(
+        "model M Real x; parameter Integer m; parameter Integer n = m; equation x - 1.0 = 0; end M;",
+    );
+    let mut model = scalar_real_model(&source);
+    let mut unbound = flat::Variable::empty_with_span(source.span("parameter Integer m", 0));
+    unbound.name = VarName::new("m");
+    unbound.instance_id = test_instance_id("m");
+    unbound.type_id = TypeId::new(41);
+    unbound.variability = Variability::Parameter(Default::default());
+    unbound.is_primitive = true;
+    register_test_integer_type(&mut model, unbound.type_id, &unbound.dims);
+    model.add_variable(unbound.name.clone(), unbound);
+    model
+        .variable_type_names
+        .insert(VarName::new("m"), "Integer".to_string());
+    add_scalar_integer_parameter(
+        &mut model,
+        &source,
+        "n",
+        "parameter Integer n",
+        42,
+        Expression::VarRef {
+            name: Reference::new("m").with_instance_id(test_instance_id("m")),
+            subscripts: Vec::new(),
+            span: source.span("m", 2),
+        },
+    );
+
+    construct(&model, source.map)
+        .expect("an unsettled parameter value is established during initialization");
+}

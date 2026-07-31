@@ -949,7 +949,6 @@ pub(crate) fn finalize_flat_model(
     functions::specialize_static_function_params(flat);
     mark_record_constructor_calls(flat, tree);
     canonicalize_varrefs_via_record_aliases(flat, ctx);
-    canonicalize_varrefs_via_instantiated_def_ids(flat);
     normalize_record_array_field_access_bindings(flat);
     drop_invalid_field_access_bindings(flat);
     propagate_unexpanded_record_array_dims(flat, overlay);
@@ -994,12 +993,11 @@ pub(crate) fn finalize_flat_model(
         mark_record_constructor_calls(flat, tree);
         collapse_index_refs_to_known_varrefs(flat);
     }
-    canonicalize_varrefs_via_instantiated_def_ids(flat);
     functions::canonicalize_collected_function_calls(flat, class_index)?;
     functions::materialize_flat_function_call_args(flat)?;
-    // Late collection, DefId canonicalization, and default-argument
-    // materialization can each make a qualified constant newly reachable.
-    // Inject and substitute only after all three producers have run so final
+    // Late collection and default-argument materialization can each make a
+    // qualified constant newly reachable.
+    // Inject and substitute only after both producers have run so final
     // executable call slots cannot reintroduce an unresolved constant.
     inject_referenced_qualified_class_constants(tree, class_index, model_name, flat, overlay, ctx)?;
     substitute_known_constants_in_flat(flat, ctx)?;

@@ -1039,9 +1039,11 @@ fn test_fully_qualified_ref_qualifies_subscript_expressions() {
     };
     assert_eq!(aux_ref.parts.len(), 1);
     assert_eq!(aux_ref.parts[0].ident.text.as_ref(), "auxiliary");
+    // The recorded spelling names the base that lowering keeps; the
+    // subscript becomes an `Index` node and is not part of the name.
     assert_eq!(
         aux_ref.qualified_display_name().map(|name| name.as_str()),
-        Some("MUX.And1.auxiliary[1]")
+        Some("MUX.And1.auxiliary")
     );
 
     let Subscript::Expression(Expression::ComponentReference(x_ref)) = &subscripts[1] else {
@@ -1051,6 +1053,6 @@ fn test_fully_qualified_ref_qualifies_subscript_expressions() {
     assert_eq!(x_ref.parts[0].ident.text.as_ref(), "x");
     assert_eq!(
         x_ref.qualified_display_name().map(|name| name.as_str()),
-        Some("MUX.And1.x[2]")
+        Some("MUX.And1.x")
     );
 }

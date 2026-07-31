@@ -201,6 +201,63 @@ fn algorithm_outputs_drop_assignment_subscripts() {
     assert!(outputs[0].has_structure());
 }
 
+/// The Flat wire carries references, so it inherits their one current shape:
+/// no bare-name spelling, and no field the producer may leave for the decoder
+/// to invent.
+#[test]
+fn flat_wire_accepts_only_the_current_reference_shape() {
+    let reference = Reference::with_component_reference(
+        "x",
+        component_reference("x", DefId::new(4), Vec::new()),
+    )
+    .with_instance_id(InstanceId::new(1));
+    let mut flat = Model::new();
+    flat.equations.push(Equation {
+        residual: Expression::VarRef {
+            name: reference.clone(),
+            subscripts: Vec::new(),
+            span: test_span(),
+        },
+        span: test_span(),
+        origin: EquationOrigin::ComponentEquation {
+            component: String::new(),
+        },
+        scalar_count: 1,
+    });
+    let encoded = serde_json::to_value(&flat).expect("serialize flat model");
+
+    let decoded: Model =
+        serde_json::from_value(encoded.clone()).expect("the current Flat wire decodes");
+    match &decoded.equations[0].residual {
+        Expression::VarRef { name, .. } => assert_eq!(name, &reference),
+        other => panic!("expected the equation residual to stay a variable reference: {other:?}"),
+    }
+
+    let mut bare_name = encoded.clone();
+    bare_name["equations"][0]["residual"]["VarRef"]["name"] = serde_json::json!("x");
+    let error = serde_json::from_value::<Model>(bare_name)
+        .expect_err("the deleted bare-name reference shape must not decode inside a Flat payload");
+    assert!(
+        error.to_string().contains("invalid type: string"),
+        "unexpected rejection: {error}"
+    );
+
+    let mut without_instance_id = encoded;
+    assert!(
+        without_instance_id["equations"][0]["residual"]["VarRef"]["name"]
+            .as_object_mut()
+            .expect("a reference serializes as one record")
+            .remove("instance_id")
+            .is_some()
+    );
+    let error = serde_json::from_value::<Model>(without_instance_id)
+        .expect_err("an omitted occurrence identity is a decode error, not a default");
+    assert!(
+        error.to_string().contains("missing field `instance_id`"),
+        "unexpected rejection: {error}"
+    );
+}
+
 #[test]
 fn algorithm_outputs_keep_function_call_targets() {
     let statements = vec![Statement::FunctionCall {

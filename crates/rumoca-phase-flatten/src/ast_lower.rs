@@ -601,8 +601,11 @@ fn component_ref_with_structured_subscripts(
                     .map_err(|error| {
                     FlattenError::missing_flat_variable_identity(error.to_string(), span)
                 })?;
+            // Qualification records the spelling of exactly this base (the
+            // parts up to and including the first subscripted one), so the
+            // enclosing instance scope survives the split into `Index` nodes.
             rumoca_core::Expression::VarRef {
-                name: Reference::from_component_reference(base_ref),
+                name: named_reference(cr, base_ref),
                 subscripts: vec![],
                 span,
             }
@@ -630,10 +633,19 @@ fn reference_from_ast_component_ref(
     context: LoweringContext<'_>,
 ) -> LowerResult<Reference> {
     let reference = component_reference_from_ast(cr, context)?;
-    Ok(match cr.qualified_display_name() {
+    Ok(named_reference(cr, reference))
+}
+
+/// Spell a lowered reference with the qualified name recorded by qualification.
+///
+/// The recorded spelling describes the parts that lowering keeps on one
+/// reference, so it applies both to a whole unsubscripted reference and to the
+/// base a subscripted reference splits into.
+fn named_reference(cr: &ast::ComponentReference, reference: ComponentReference) -> Reference {
+    match cr.qualified_display_name() {
         Some(display) => Reference::with_component_reference(display.as_str(), reference),
         None => Reference::from_component_reference(reference),
-    })
+    }
 }
 
 fn component_reference_from_ast(

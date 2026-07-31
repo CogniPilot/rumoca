@@ -11,8 +11,7 @@
 //!   hash the very string the interner was built to avoid.
 //! * The identity to hash is the interned `VarName`, NOT `ComponentReference::
 //!   def_id`. A `DefId` names a *declaration*, and one declaration backs many
-//!   flattened instances — `phase-flatten/src/postprocess_def_id.rs` keys
-//!   `by_def_id: HashMap<DefId, Vec<IndexedVarRef>>`, a vector per id, and
+//!   flattened instances, so a `DefId` alone cannot select one of them.
 //!   `Reference`'s own doc says it "records the declaration being referenced;
 //!   it does not assign a `DefId` to this expression". So `resistor1.v` and
 //!   `resistor2.v` share a `DefId`. Worse, `var_refs_semantically_equal`

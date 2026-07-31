@@ -1,7 +1,7 @@
 //! Evaluation context: parameter/enum/function tables and scoped name lookup.
 
 use indexmap::IndexMap;
-use rumoca_core::{ComponentPath, EvalLookup, scoped_component_path_candidates};
+use rumoca_core::{ComponentPath, EvalLookup, InstanceId, scoped_component_path_candidates};
 use rustc_hash::FxBuildHasher;
 use std::borrow::Cow;
 use std::hash::BuildHasher;
@@ -26,12 +26,17 @@ pub struct EvalContext {
     /// placeholder arrays or dropping multidimensional shape metadata.
     array_dimensions: EvalIndexMap<Vec<i64>>,
 
+    /// Values of declarations whose exact occurrence identity is known.
+    ///
+    /// This is the identity-keyed inventory: a caller that holds the
+    /// [`InstanceId`] of the declaration it evaluated registers the value here,
+    /// and every decision about that declaration is then a lookup on the
+    /// identity itself rather than on a rendered name that two occurrences of
+    /// the same declaration would share.
+    values_by_instance: IndexMap<InstanceId, Value, FxBuildHasher>,
+
     /// Lexical instance scope used for modification-binding lookup.
     lookup_scope: Option<ComponentPath>,
-
-    /// Compatibility lookup for phase contexts whose resolved
-    /// references can still arrive relative to an enclosing instance.
-    allow_unique_suffix_lookup: bool,
 }
 
 impl Default for EvalContext {
@@ -53,8 +58,8 @@ impl EvalContext {
             enum_literals: IndexMap::with_capacity_and_hasher(enum_literals, FxBuildHasher),
             functions: IndexMap::with_capacity_and_hasher(functions, FxBuildHasher),
             array_dimensions: IndexMap::with_capacity_and_hasher(parameters, FxBuildHasher),
+            values_by_instance: IndexMap::with_capacity_and_hasher(parameters, FxBuildHasher),
             lookup_scope: None,
-            allow_unique_suffix_lookup: false,
         }
     }
 
@@ -83,14 +88,29 @@ impl EvalContext {
         self.array_dimensions.insert(name.into(), dims);
     }
 
+    /// Record the value of the declaration occurrence `instance_id`.
+    ///
+    /// `name` is the rendered key the expression evaluator resolves references
+    /// through; `instance_id` is the exact identity every *decision* about the
+    /// declaration is keyed on.
+    pub fn add_instance_parameter(
+        &mut self,
+        instance_id: InstanceId,
+        name: impl Into<String>,
+        value: Value,
+    ) {
+        self.values_by_instance.insert(instance_id, value.clone());
+        self.parameters.insert(name.into(), value);
+    }
+
+    /// Value of one declaration occurrence, keyed on its exact identity.
+    pub fn instance_value(&self, instance_id: InstanceId) -> Option<&Value> {
+        self.values_by_instance.get(&instance_id)
+    }
+
     /// Set the lexical scope used for unqualified parameter references.
     pub fn set_lookup_scope(&mut self, scope: Option<ComponentPath>) {
         self.lookup_scope = scope;
-    }
-
-    /// Enable the unique-suffix fallback used by Flat phase evaluation.
-    pub fn enable_unique_suffix_lookup(&mut self) {
-        self.allow_unique_suffix_lookup = true;
     }
 
     /// Look up a variable/parameter by name.
@@ -124,20 +144,7 @@ impl EvalContext {
         {
             return Some(value);
         }
-        if !self.allow_unique_suffix_lookup {
-            return None;
-        }
-        let mut found = None;
-        for suffix in ComponentPath::from_flat_path(name).suffixes_excluding_self() {
-            let Some(value) = values.get(&suffix.to_flat_string()) else {
-                continue;
-            };
-            if found.is_some() {
-                return None;
-            }
-            found = Some(value);
-        }
-        found
+        None
     }
 }
 

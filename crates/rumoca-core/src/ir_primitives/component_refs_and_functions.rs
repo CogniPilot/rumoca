@@ -309,10 +309,6 @@ impl ComponentPath {
         Self::from_parts(parts)
     }
 
-    pub fn suffixes_excluding_self(&self) -> impl Iterator<Item = Self> + '_ {
-        (1..self.parts.len()).map(|start| Self::from_parts(self.parts[start..].iter().cloned()))
-    }
-
     pub fn to_flat_string(&self) -> String {
         self.name.as_str().to_string()
     }

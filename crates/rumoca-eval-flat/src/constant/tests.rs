@@ -545,3 +545,92 @@ fn test_eval_lookup_trait_resolves_scoped_values() {
         Some("Modes.Fast")
     );
 }
+
+#[test]
+fn instance_keyed_values_are_reachable_by_identity_not_only_by_rendering() {
+    let first = rumoca_core::InstanceId::new(11);
+    let second = rumoca_core::InstanceId::new(12);
+    let mut ctx = EvalContext::new();
+    ctx.add_instance_parameter(first, "a.n", Value::Integer(5));
+    ctx.add_instance_parameter(second, "b.n", Value::Integer(6));
+
+    assert_eq!(ctx.instance_value(first), Some(&Value::Integer(5)));
+    assert_eq!(ctx.instance_value(second), Some(&Value::Integer(6)));
+    assert_eq!(ctx.instance_value(rumoca_core::InstanceId::new(13)), None);
+    // The rendered key stays the evaluator's reference-resolution surface, but
+    // it is never what decides which occurrence was settled.
+    assert_eq!(ctx.get("a.n"), Some(&Value::Integer(5)));
+    assert_eq!(ctx.get("n"), None);
+}
+
+#[test]
+fn only_undetermined_failures_carry_a_runtime_dependent_reason() {
+    let span = test_span();
+    let undetermined = [
+        (
+            EvalError::unknown_variable("n", span),
+            RuntimeDependentReason::UnknownValue,
+        ),
+        (
+            EvalError::unknown_function("f", span),
+            RuntimeDependentReason::UnknownValue,
+        ),
+        (
+            EvalError::not_constant("reads a state", span),
+            RuntimeDependentReason::NotConstant,
+        ),
+        (
+            EvalError::UnsupportedExpression {
+                kind: "ArrayComprehension".to_string(),
+                span,
+            },
+            RuntimeDependentReason::UnimplementedForm,
+        ),
+        (
+            EvalError::function_error("statement form is not folded", span),
+            RuntimeDependentReason::UnimplementedForm,
+        ),
+    ];
+    for (error, reason) in undetermined {
+        assert_eq!(
+            error.runtime_dependent_reason(),
+            Some(reason),
+            "{error} must leave the value for the runtime"
+        );
+    }
+
+    let proven_wrong = [
+        EvalError::type_mismatch("Integer", "Boolean", span),
+        EvalError::DivisionByZero { span },
+        EvalError::CircularDependency {
+            path: "a -> b -> a".to_string(),
+            span,
+        },
+        EvalError::IndexOutOfBounds {
+            index: 4,
+            size: 2,
+            span,
+        },
+        EvalError::WrongArgCount {
+            expected: 2,
+            actual: 3,
+            span,
+        },
+        EvalError::FieldNotFound {
+            field: "re".to_string(),
+            span,
+        },
+        EvalError::range_error("step cannot be zero", span),
+        EvalError::missing_source_context("binding without provenance"),
+        EvalError::Internal {
+            message: "unreachable".to_string(),
+        },
+    ];
+    for error in proven_wrong {
+        assert_eq!(
+            error.runtime_dependent_reason(),
+            None,
+            "{error} proves the expression wrong and must surface"
+        );
+    }
+}

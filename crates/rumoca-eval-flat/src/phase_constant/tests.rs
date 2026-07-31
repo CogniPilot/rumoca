@@ -337,52 +337,37 @@ fn user_function_real_eval_error_means_not_constant_evaluable() {
 }
 
 #[test]
-fn suffix_integer_lookup_rejects_ambiguous_matches() {
-    let mut known_ints = FxHashMap::default();
-    known_ints.insert("outer.n".to_string(), 2);
-    known_ints.insert("n".to_string(), 3);
-    let known_reals = FxHashMap::default();
-    let known_bools = FxHashMap::default();
-    let known_enums = FxHashMap::default();
-    let array_dims = FxHashMap::default();
-    let functions = FxHashMap::default();
-    let ctx = empty_param_context(
-        &known_ints,
-        &known_reals,
-        &known_bools,
-        &known_enums,
-        &array_dims,
-        &functions,
-    );
+fn an_overqualified_rendered_name_is_never_recovered_by_stripping_segments() {
+    // A reference whose rendered path does not name a known value is not a
+    // value: the evaluator has no licence to search shorter renderings of it
+    // for something that happens to look similar. The unique case is rejected
+    // for exactly the same reason as the ambiguous one — neither carries the
+    // identity of the declaration being read.
+    let mut unique = FxHashMap::default();
+    unique.insert("outer.n".to_string(), 2);
+    let mut ambiguous = unique.clone();
+    ambiguous.insert("n".to_string(), 3);
 
-    assert_eq!(
-        try_eval_integer_with_context(&var("model.outer.n"), &ctx),
-        None
-    );
-}
+    for known_ints in [&unique, &ambiguous] {
+        let known_reals = FxHashMap::default();
+        let known_bools = FxHashMap::default();
+        let known_enums = FxHashMap::default();
+        let array_dims = FxHashMap::default();
+        let functions = FxHashMap::default();
+        let ctx = empty_param_context(
+            known_ints,
+            &known_reals,
+            &known_bools,
+            &known_enums,
+            &array_dims,
+            &functions,
+        );
 
-#[test]
-fn suffix_integer_lookup_allows_unique_overqualified_match() {
-    let mut known_ints = FxHashMap::default();
-    known_ints.insert("outer.n".to_string(), 2);
-    let known_reals = FxHashMap::default();
-    let known_bools = FxHashMap::default();
-    let known_enums = FxHashMap::default();
-    let array_dims = FxHashMap::default();
-    let functions = FxHashMap::default();
-    let ctx = empty_param_context(
-        &known_ints,
-        &known_reals,
-        &known_bools,
-        &known_enums,
-        &array_dims,
-        &functions,
-    );
-
-    assert_eq!(
-        try_eval_integer_with_context(&var("model.outer.n"), &ctx),
-        Some(2)
-    );
+        assert_eq!(
+            try_eval_integer_with_context(&var("model.outer.n"), &ctx),
+            None
+        );
+    }
 }
 
 #[test]
@@ -914,7 +899,11 @@ fn eval_boolean_enum_eq_does_not_guess_dotted_parameter_ref_literal() {
 }
 
 #[test]
-fn eval_integer_field_access_resolves_overqualified_suffix() {
+fn eval_integer_field_access_does_not_recover_an_overqualified_record_path() {
+    // The record path reaching the evaluator is over-qualified relative to the
+    // key that holds the value. Recovering it would mean guessing which record
+    // occurrence the reference meant from the shape of its rendering, so the
+    // field access stays unevaluated and the caller keeps the binding.
     let mut known_ints = FxHashMap::default();
     known_ints.insert("stackData.cellData[1,1].nRC".to_string(), 2);
 
@@ -929,7 +918,7 @@ fn eval_integer_field_access_resolves_overqualified_suffix() {
         var_context: Some("stack.cell[1,1].cell.cellData.nRC"),
     };
 
-    assert_eq!(try_eval_integer_with_context(&expr, &ctx), Some(2));
+    assert_eq!(try_eval_integer_with_context(&expr, &ctx), None);
 }
 
 #[test]
@@ -981,10 +970,12 @@ fn component_path_parent_ignores_dot_inside_subscript_expression() {
 }
 
 #[test]
-fn resolve_by_suffix_stripping_ignores_dot_inside_subscript_expression() {
+fn scoped_lookup_keeps_a_dot_inside_a_subscript_within_one_path_segment() {
     let mut known_ints = FxHashMap::default();
+    known_ints.insert("pkg.arr[data.medium].x".to_string(), 1);
+    // A decoy that only a lookup splitting the path at the dot *inside* the
+    // subscript could ever reach.
     known_ints.insert("medium].x".to_string(), 99);
-    known_ints.insert("x".to_string(), 1);
     let ctx = ParamEvalContext {
         known_ints: &known_ints,
         known_reals: &FxHashMap::default(),
@@ -992,13 +983,13 @@ fn resolve_by_suffix_stripping_ignores_dot_inside_subscript_expression() {
         known_enums: &FxHashMap::default(),
         array_dims: &FxHashMap::default(),
         functions: &FxHashMap::default(),
-        var_context: None,
+        var_context: Some("pkg.arr[data.medium].y"),
     };
 
     assert_eq!(
-        try_eval_integer_with_context(&var("pkg.arr[data.medium].x"), &ctx),
+        try_eval_integer_with_context(&var("x"), &ctx),
         Some(1),
-        "only top-level dotted segments should be stripped"
+        "the enclosing scope of `pkg.arr[data.medium].y` is `pkg.arr[data.medium]`"
     );
 }
 

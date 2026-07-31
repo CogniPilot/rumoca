@@ -718,6 +718,33 @@ fn qualify_component_part_subs(
     }
 }
 
+/// The parts whose spelling lowering can still attach to a reference.
+///
+/// `ast_lower` lowers a subscripted reference into a `VarRef` base plus
+/// `Index`/`FieldAccess` nodes, splitting at the *first* subscripted part. Only
+/// that base carries a name, so the qualified spelling recorded here must
+/// describe exactly the leading parts up to and including the first subscripted
+/// one — and without their subscripts, which lowering turns into `Index`
+/// subscripts of their own. A reference with no subscripts lowers whole, so its
+/// spelling covers every part.
+fn lowered_named_parts(cr: &ComponentReference) -> &[ComponentRefPart] {
+    let end = cr
+        .parts
+        .iter()
+        .position(|part| part.subs.as_ref().is_some_and(|subs| !subs.is_empty()))
+        .map_or(cr.parts.len(), |index| index + 1);
+    &cr.parts[..end]
+}
+
+/// Join the identifiers of `parts`, dropping subscripts.
+fn joined_part_idents(parts: &[ComponentRefPart]) -> String {
+    parts
+        .iter()
+        .map(|part| part.ident.text.as_ref())
+        .collect::<Vec<_>>()
+        .join(".")
+}
+
 fn resolve_import_alias_ref(
     cr: &ComponentReference,
     prefix: &QualifiedName,
@@ -738,20 +765,12 @@ fn resolve_import_alias_ref(
         .iter()
         .map(|part| qualify_component_part_subs(part, prefix, opts, locals, imports))
         .collect();
-    let first_suffix = first_part
-        .to_string()
-        .strip_prefix(alias)
-        .unwrap_or_default()
-        .to_string();
-    let tail = cr.parts[1..]
-        .iter()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>()
-        .join(".");
+    let named = lowered_named_parts(cr);
+    let tail = joined_part_idents(named.get(1..).unwrap_or_default());
     let display = if tail.is_empty() {
-        format!("{fqn}{first_suffix}")
+        fqn.clone()
     } else {
-        format!("{fqn}{first_suffix}.{tail}")
+        format!("{fqn}.{tail}")
     };
     imported.set_qualified_display_name(display);
     Some(imported)
@@ -815,7 +834,11 @@ fn qualify_cr_inner(
     let mut qualified = cr.clone();
     qualified.local = if opts.skip_local { false } else { cr.local };
     qualified.parts = cr.parts.iter().map(qualify_part_subs).collect();
-    qualified.set_qualified_display_name(format!("{}.{}", prefix.to_flat_string(), cr));
+    qualified.set_qualified_display_name(format!(
+        "{}.{}",
+        prefix.to_flat_string(),
+        joined_part_idents(lowered_named_parts(cr))
+    ));
     qualified
 }
 
