@@ -679,6 +679,10 @@ fn reason_from_failure_bucket(bucket: ModelFailureBucket) -> Option<&'static str
         ModelFailureBucket::ModelTermination => "sim.terminate",
         ModelFailureBucket::Timeout => "sim.timeout",
         ModelFailureBucket::MemoryLimit => "sim.memory_limit",
+        // A declared per-model ceiling (Solve-IR bytes, compile wall) was
+        // exceeded. Its own reason, not `sim.memory_limit`: the fix is in
+        // lowering, not in how much RAM the runner was given.
+        ModelFailureBucket::ResourceBudget => "sim.resource_budget",
         ModelFailureBucket::TraceOutput => "sim.trace_output",
         ModelFailureBucket::HarnessFailure => "sim.harness",
         // Compile-stage buckets are classified by the compile taxonomy, and

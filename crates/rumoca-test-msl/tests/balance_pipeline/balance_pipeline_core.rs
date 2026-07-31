@@ -719,7 +719,7 @@ fn compile_model_with_budget_timeout<T: FocusedClosureCompiler + Sync + Send + '
 /// never ran, or was killed before it could report one. The harness therefore
 /// mints the bucket from the typed [`ModelWorkerRunOutcome`] it observed, never
 /// from the message it renders for humans.
-fn set_harness_failure_classification(
+pub(super) fn set_harness_failure_classification(
     result: &mut MslModelResult,
     active_phase: Option<WorkerProgressPhase>,
     bucket: rumoca_worker::ModelFailureBucket,
@@ -1081,6 +1081,11 @@ fn finish_in_process_worker_outcome(
                 response.elapsed_secs,
                 force_keep,
             );
+            // Declared per-model ceilings (Solve-IR serialized size, total
+            // compile wall) are applied to every completed attempt, so an
+            // overrun is a loud, typed `ResourceBudget` failure rather than a
+            // model that merely looks slow in the timings table.
+            enforce_model_resource_budgets(&mut result);
             (result, true)
         }
         ModelWorkerRunOutcome::TimedOut {

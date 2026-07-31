@@ -11,7 +11,10 @@
 //!   breakdown, never from the summary string;
 //! * a simulation failure from the [`SimError`] variant plus the
 //!   [`SimFailureStage`] the failing path in `rumoca-solver-diffsol` attached;
-//! * a harness failure from the typed run outcome the harness observed.
+//! * a harness failure from the typed run outcome the harness observed;
+//! * a resource-budget overrun from the harness's own measurement of a
+//!   declared per-model ceiling (Solve-IR serialized bytes, compile wall
+//!   seconds) — a number compared against a constant, never a message.
 //!
 //! Both enums serialize by variant name, so `msl_results.json` carries stable
 //! identifiers that triage tooling can group on without re-deriving anything.
@@ -72,6 +75,16 @@ pub enum ModelFailureBucket {
     Timeout,
     /// The attempt exceeded its memory budget.
     MemoryLimit,
+    /// The attempt exceeded a declared resource budget that is neither wall
+    /// time nor process memory — today the MSL harness's per-model Solve-IR
+    /// serialized-size ceiling and its per-model compile wall ceiling.
+    ///
+    /// Distinct from [`Self::Timeout`]/[`Self::MemoryLimit`] on purpose: those
+    /// say "the process ran out of a machine resource", this says "the artifact
+    /// the compiler produced is larger (or slower) than the pipeline agreed to
+    /// carry", which is an owner-actionable lowering defect rather than a
+    /// scheduling accident. Same [`ModelFailureOwner::Performance`] owner.
+    ResourceBudget,
     /// The harness could not run or record the attempt (worker transport,
     /// artifact IO, protocol mismatch).
     HarnessFailure,
@@ -138,6 +151,7 @@ impl ModelFailureBucket {
         Self::ModelTermination,
         Self::Timeout,
         Self::MemoryLimit,
+        Self::ResourceBudget,
         Self::HarnessFailure,
         Self::TraceOutput,
         Self::Unclassified,
@@ -161,7 +175,9 @@ impl ModelFailureBucket {
             | Self::NonFiniteResult => ModelFailureOwner::Runtime,
             Self::SolverIntegration => ModelFailureOwner::Solver,
             Self::ModelAssertion | Self::ModelTermination => ModelFailureOwner::ModelBehaviour,
-            Self::Timeout | Self::MemoryLimit => ModelFailureOwner::Performance,
+            Self::Timeout | Self::MemoryLimit | Self::ResourceBudget => {
+                ModelFailureOwner::Performance
+            }
             Self::HarnessFailure | Self::TraceOutput => ModelFailureOwner::Harness,
             Self::Unclassified => ModelFailureOwner::Unknown,
         }
@@ -193,6 +209,7 @@ impl ModelFailureBucket {
             Self::ModelTermination => "ModelTermination",
             Self::Timeout => "Timeout",
             Self::MemoryLimit => "MemoryLimit",
+            Self::ResourceBudget => "ResourceBudget",
             Self::HarnessFailure => "HarnessFailure",
             Self::TraceOutput => "TraceOutput",
             Self::Unclassified => "Unclassified",
@@ -364,7 +381,26 @@ mod tests {
         // Adding a variant without adding it to `ALL` leaves this count stale;
         // it is asserted so the omission is caught here rather than as a silent
         // hole in the owner-mapping test above.
-        assert_eq!(ModelFailureBucket::ALL.len(), 24);
+        assert_eq!(ModelFailureBucket::ALL.len(), 25);
+    }
+
+    /// A declared-budget overrun is a performance defect with a named owner,
+    /// not an unclassified failure and not a machine-scheduling accident.
+    #[test]
+    fn resource_budget_overruns_are_owned_by_performance() {
+        assert_eq!(
+            ModelFailureBucket::ResourceBudget.owner_category(),
+            ModelFailureOwner::Performance
+        );
+        assert_eq!(
+            ModelFailureBucket::ResourceBudget.as_str(),
+            "ResourceBudget"
+        );
+        assert_ne!(
+            ModelFailureBucket::ResourceBudget,
+            ModelFailureBucket::MemoryLimit,
+            "a Solve-IR size overrun must stay distinguishable from an RSS overrun"
+        );
     }
 
     #[test]
