@@ -8,6 +8,7 @@
 mod constraints;
 mod declarations;
 mod differentiation;
+mod equalities;
 mod event_owners;
 mod expressions;
 mod functions;
@@ -87,6 +88,14 @@ struct HolonomicConstraint {
 /// re-tested against that updated system. A singularity that only several
 /// simultaneous demotions resolve therefore reduces, while a model that no
 /// demotion improves still reports its original singularity.
+///
+/// A differentiation chain of index three or more passes through steps that
+/// leave the residue unchanged: demoting a rigidly held angle turns
+/// `w = der(phi)` into `w = 0`, which only becomes solvable once `w` is demoted
+/// in turn. Such a step is accepted as a fallback, after every strictly
+/// shrinking candidate has been tried. The accumulation still terminates
+/// because each round demotes one more state and never raises the residue, so
+/// the pair (residue, remaining states) strictly decreases.
 pub fn prepare_for_solve(model: &dae::Dae) -> Result<PreparedDae<'_>, StructuralError> {
     let singular = match model.inspect(|view| sort(view).map(|_| ())) {
         Ok(_) => return Ok(PreparedDae::Borrowed(model)),
@@ -126,8 +135,8 @@ pub fn prepare_for_solve(model: &dae::Dae) -> Result<PreparedDae<'_>, Structural
     }
 }
 
-/// One accepted state demotion: either a fully matched replacement or a strict
-/// reduction of the unmatched residue that the next round keeps working on.
+/// One accepted state demotion: either a fully matched replacement or a
+/// non-increasing residue that the next round keeps working on.
 enum DemotionStep {
     Sorted(dae::Dae),
     Reduced { dae: dae::Dae, residue: usize },
@@ -137,32 +146,41 @@ enum DemotionStep {
 ///
 /// Every candidate is tested against `model` itself, so an accumulated
 /// demotion is re-tested against the system it produced rather than against a
-/// stale pristine one. `residue` is the unmatched residue of `model`; only a
-/// strict reduction of it is accepted as progress, which bounds the number of
-/// accumulation rounds by the residue of the original singular system.
+/// stale pristine one. `residue` is the unmatched residue of `model`. A
+/// strictly shrinking candidate is preferred; a candidate that merely holds the
+/// residue is kept only as a fallback, because a higher-index chain has to pass
+/// through such a step before the next demotion can pay for it. A candidate
+/// that raises the residue is never accepted, so each accepted round strictly
+/// decreases the pair (residue, remaining states) and the accumulation stops.
 fn demote_direct_state(
     model: &dae::Dae,
     residue: usize,
 ) -> Result<Option<DemotionStep>, StructuralError> {
     let mut reduced = None;
+    let mut held: Option<DemotionStep> = None;
     for candidate in model.inspect(direct_state_constraints) {
         let rebuilt = rebuild_with_state_demotion(model, candidate)?;
         match rebuilt.inspect(|view| sort(view).map(|_| ())) {
             Ok(()) => return Ok(Some(DemotionStep::Sorted(rebuilt))),
             Err(error) => {
-                if reduced.is_none()
-                    && let Some(next) = unmatched_residue(&error)
-                    && next < residue
-                {
-                    reduced = Some(DemotionStep::Reduced {
-                        dae: rebuilt,
-                        residue: next,
-                    });
-                }
+                let Some(next) = unmatched_residue(&error) else {
+                    continue;
+                };
+                let slot = if next < residue {
+                    &mut reduced
+                } else if next == residue {
+                    &mut held
+                } else {
+                    continue;
+                };
+                slot.get_or_insert(DemotionStep::Reduced {
+                    dae: rebuilt,
+                    residue: next,
+                });
             }
         }
     }
-    Ok(reduced)
+    Ok(reduced.or(held))
 }
 
 /// Reduce one holonomic constraint of `model`, reporting the replacement DAE

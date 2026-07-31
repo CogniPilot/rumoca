@@ -10,6 +10,7 @@
 use rumoca_ir_dae as dae;
 
 use super::DirectStateConstraint;
+use super::constraints::DifferentiationFacts;
 use super::declarations::RebuiltDomain;
 use super::differentiation::Derivative;
 use super::functions::RebuiltFunction;
@@ -27,7 +28,7 @@ pub(super) struct ExpressionRebuilder<'source, 'borrow, 'storage, 'target> {
     clocks: &'borrow [RebuiltClock<'target>],
     previous: &'borrow [dae::PreviousId<'target>],
     terminals: &'borrow [dae::TerminalId<'target>],
-    pub(super) derivative_definitions: &'borrow [Option<u32>],
+    pub(super) facts: &'borrow DifferentiationFacts,
     candidate: Option<DirectStateConstraint>,
     rebuilt: &'borrow mut [Option<dae::ExprId<'target>>],
 }
@@ -54,7 +55,7 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         source: dae::DaeView<'source>,
         target: &'borrow mut dae::Expressions<'storage, 'target>,
         identities: RebuiltIdentities<'borrow, 'target>,
-        derivative_definitions: &'borrow [Option<u32>],
+        facts: &'borrow DifferentiationFacts,
         candidate: Option<DirectStateConstraint>,
         rebuilt: &'borrow mut [Option<dae::ExprId<'target>>],
     ) -> Self {
@@ -69,7 +70,7 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
             clocks: identities.base.clocks,
             previous: identities.base.previous,
             terminals: identities.base.terminals,
-            derivative_definitions,
+            facts,
             candidate,
             rebuilt,
         }
@@ -108,7 +109,7 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         let value_type = self.types[source.value_type_id().index() as usize];
         let rebuilt = match source.operation() {
             dae::ExpressionOperation::Literal(literal) => {
-                self.target.at(provenance).literal(literal.clone())?
+                self.rebuild_literal(literal, provenance)?
             }
             dae::ExpressionOperation::Coordinate(coordinate) => {
                 self.rebuild_coordinate(coordinate, provenance)?
@@ -194,6 +195,24 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         };
         self.rebuilt[index] = Some(rebuilt);
         Ok(rebuilt)
+    }
+
+    /// Replay one source literal through the constructor that checks it.
+    ///
+    /// The generic literal entry point rejects enumeration values outright so
+    /// that an ordinal always passes its one-based check, which makes the
+    /// dedicated enumeration constructor the only way to replay one.
+    fn rebuild_literal(
+        &mut self,
+        literal: &dae::DaeLiteral,
+        provenance: dae::DaeProvenance,
+    ) -> Result<dae::ExprId<'target>, dae::DaeConstructionError> {
+        match literal {
+            dae::DaeLiteral::Enumeration(ordinal) => {
+                self.target.at(provenance).enumeration_literal(*ordinal)
+            }
+            literal => self.target.at(provenance).literal(literal.clone()),
+        }
     }
 
     fn rebuild_string_conversion(

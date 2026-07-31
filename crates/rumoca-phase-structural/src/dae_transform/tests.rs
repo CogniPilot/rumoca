@@ -1,3 +1,4 @@
+mod equalities;
 mod functions;
 
 use rumoca_core::{SourceMap, Span, TypeId, VarName};

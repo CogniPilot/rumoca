@@ -11,7 +11,7 @@
 
 use rumoca_ir_dae as dae;
 
-use super::constraints::explicit_derivative_definitions;
+use super::constraints::DifferentiationFacts;
 use super::declarations::{rebuild_domains, rebuild_types, reserve_conditions};
 use super::expressions::{ExpressionRebuilder, RebuiltBaseIdentities, RebuiltIdentities};
 use super::functions::rebuild_functions;
@@ -37,7 +37,7 @@ pub(super) fn rebuild_holonomic_constraint(
             let conditions = reserve_conditions(source, target)?;
             let clocks = rebuild_clocks(source, target, &variables, &conditions)?;
             let temporal = rebuild_temporal_coordinates(source, target, &variables, &clocks)?;
-            let derivative_definitions = explicit_derivative_definitions(source);
+            let facts = DifferentiationFacts::collect(source);
             let base_identities = RebuiltBaseIdentities {
                 types: &types,
                 variables: &variables,
@@ -52,7 +52,7 @@ pub(super) fn rebuild_holonomic_constraint(
                 source,
                 target,
                 base_identities,
-                &derivative_definitions,
+                &facts,
                 None,
                 &mut rebuilt_state,
             )?;
@@ -64,7 +64,7 @@ pub(super) fn rebuild_holonomic_constraint(
                 source,
                 target,
                 identities,
-                &derivative_definitions,
+                &facts,
                 None,
                 &mut rebuilt_state,
             )?;
@@ -73,7 +73,7 @@ pub(super) fn rebuild_holonomic_constraint(
                     source,
                     expressions,
                     identities,
-                    &derivative_definitions,
+                    &facts,
                     None,
                     &mut rebuilt_state,
                 );
@@ -127,7 +127,7 @@ pub(super) fn rebuild_with_state_demotion(
             let conditions = reserve_conditions(source, target)?;
             let clocks = rebuild_clocks(source, target, &variables, &conditions)?;
             let temporal = rebuild_temporal_coordinates(source, target, &variables, &clocks)?;
-            let derivative_definitions = explicit_derivative_definitions(source);
+            let facts = DifferentiationFacts::collect(source);
             let base_identities = RebuiltBaseIdentities {
                 types: &types,
                 variables: &variables,
@@ -142,7 +142,7 @@ pub(super) fn rebuild_with_state_demotion(
                 source,
                 target,
                 base_identities,
-                &derivative_definitions,
+                &facts,
                 Some(candidate),
                 &mut rebuilt_state,
             )?;
@@ -154,7 +154,7 @@ pub(super) fn rebuild_with_state_demotion(
                 source,
                 target,
                 identities,
-                &derivative_definitions,
+                &facts,
                 Some(candidate),
                 &mut rebuilt_state,
             )?;
@@ -163,7 +163,7 @@ pub(super) fn rebuild_with_state_demotion(
                     source,
                     expressions,
                     identities,
-                    &derivative_definitions,
+                    &facts,
                     Some(candidate),
                     &mut rebuilt_state,
                 );

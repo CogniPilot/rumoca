@@ -10,6 +10,7 @@
 use rumoca_ir_dae as dae;
 
 use super::DirectStateConstraint;
+use super::constraints::DifferentiationFacts;
 use super::expressions::{ExpressionRebuilder, RebuiltIdentities};
 use super::variables::{ReservedVariable, TargetVariable};
 
@@ -170,7 +171,7 @@ pub(super) fn rebuild_delay_coordinates<'target>(
     source: dae::DaeView<'_>,
     target: &mut dae::DaeConstruction<'target>,
     identities: RebuiltIdentities<'_, 'target>,
-    derivative_definitions: &[Option<u32>],
+    facts: &DifferentiationFacts,
     candidate: Option<DirectStateConstraint>,
     rebuilt: &mut [Option<dae::ExprId<'target>>],
 ) -> Result<(), dae::DaeConstructionError> {
@@ -209,7 +210,7 @@ pub(super) fn rebuild_delay_coordinates<'target>(
                 source,
                 expressions,
                 identities,
-                derivative_definitions,
+                facts,
                 candidate,
                 rebuilt,
             );

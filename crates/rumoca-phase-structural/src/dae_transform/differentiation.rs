@@ -13,6 +13,7 @@
 
 use rumoca_ir_dae as dae;
 
+use super::equalities::{EqualityAnchor, EqualitySign};
 use super::expressions::ExpressionRebuilder;
 use super::variables::TargetVariable;
 
@@ -48,6 +49,23 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
                 dae::CoordinateView::State(state) => {
                     self.differentiate_state(state, order, provenance)
                 }
+                // An algebraic the system proves equal to a class anchor
+                // differentiates as that anchor: the equality holds for all
+                // time, so its derivative holds too.
+                dae::CoordinateView::Algebraic(algebraic) => {
+                    self.differentiate_equality_class(algebraic, order, provenance)
+                }
+                // A derivative coordinate the system defines outright carries
+                // its own definition forward one order at a time.
+                dae::CoordinateView::Derivative(state) => {
+                    let definition = self.facts.derivative_definitions[state.index() as usize]
+                        .expect("differentiability preflight proved this derivative defined");
+                    let definition = self
+                        .source
+                        .expression_id(definition as usize)
+                        .expect("explicit derivative definition resolves");
+                    self.differentiate_order(definition, order, provenance)
+                }
                 _ => unreachable!("differentiability preflight rejects this coordinate"),
             },
             dae::ExpressionOperation::Unary { operator, operand } => {
@@ -72,13 +90,48 @@ impl<'source, 'borrow, 'storage, 'target> ExpressionRebuilder<'source, 'borrow, 
         }
     }
 
+    /// Differentiate an algebraic through the anchor its equality class proves
+    /// it equal to, negating when the class proves the opposite sign.
+    fn differentiate_equality_class(
+        &mut self,
+        algebraic: dae::AlgebraicId<'source>,
+        order: u8,
+        provenance: dae::DaeProvenance,
+    ) -> Result<Derivative<'target>, dae::DaeConstructionError> {
+        let Some((anchor, sign)) = self.facts.equalities.anchor_of(algebraic.index()) else {
+            unreachable!("differentiability preflight rejects an unanchored algebraic")
+        };
+        let EqualityAnchor::State(anchor) = anchor else {
+            // A class pinned to a time-invariant value has derivative zero.
+            return Ok(Derivative::Zero);
+        };
+        let dae::VariableIdentity::State(anchor) = self
+            .source
+            .variable_id(anchor as usize)
+            .and_then(|id| self.source.variable(id))
+            .expect("equality anchor declaration resolves")
+            .identity()
+        else {
+            unreachable!("an equality anchor state keeps its state role")
+        };
+        match (sign, self.differentiate_state(anchor, order, provenance)?) {
+            (EqualitySign::Same, derivative)
+            | (EqualitySign::Opposite, derivative @ Derivative::Zero) => Ok(derivative),
+            (EqualitySign::Opposite, Derivative::Expression(anchor)) => self
+                .target
+                .at(provenance)
+                .unary(dae::UnaryOperator::Negate, anchor)
+                .map(Derivative::Expression),
+        }
+    }
+
     fn differentiate_state(
         &mut self,
         source_state: dae::StateId<'source>,
         order: u8,
         provenance: dae::DaeProvenance,
     ) -> Result<Derivative<'target>, dae::DaeConstructionError> {
-        if let Some(definition) = self.derivative_definitions[source_state.index() as usize] {
+        if let Some(definition) = self.facts.derivative_definitions[source_state.index() as usize] {
             let definition = self
                 .source
                 .expression_id(definition as usize)

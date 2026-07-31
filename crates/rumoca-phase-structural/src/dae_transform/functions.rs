@@ -1,6 +1,7 @@
 use rumoca_ir_dae as dae;
 
 use super::DirectStateConstraint;
+use super::constraints::DifferentiationFacts;
 use super::expressions::{ExpressionRebuilder, RebuiltBaseIdentities, RebuiltIdentities};
 
 #[derive(Clone)]
@@ -100,7 +101,7 @@ pub(super) fn rebuild_functions<'source, 'target>(
     source: dae::DaeView<'source>,
     target: &mut dae::DaeConstruction<'target>,
     identities: RebuiltBaseIdentities<'_, 'target>,
-    derivative_definitions: &[Option<u32>],
+    facts: &DifferentiationFacts,
     candidate: Option<DirectStateConstraint>,
     rebuilt: &mut [Option<dae::ExprId<'target>>],
 ) -> Result<Vec<RebuiltFunction<'target>>, dae::DaeConstructionError> {
@@ -120,7 +121,7 @@ pub(super) fn rebuild_functions<'source, 'target>(
         source,
         identities,
         functions: Vec::with_capacity(source.function_count()),
-        derivative_definitions,
+        facts,
         candidate,
         rebuilt,
         pending: Vec::new(),
@@ -237,7 +238,7 @@ struct FunctionRebuilder<'source, 'borrow, 'target> {
     source: dae::DaeView<'source>,
     identities: RebuiltBaseIdentities<'borrow, 'target>,
     functions: Vec<RebuiltFunction<'target>>,
-    derivative_definitions: &'borrow [Option<u32>],
+    facts: &'borrow DifferentiationFacts,
     candidate: Option<DirectStateConstraint>,
     rebuilt: &'borrow mut [Option<dae::ExprId<'target>>],
     pending: Vec<(dae::ExprId<'source>, bool)>,
@@ -767,7 +768,7 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
             functions: &self.functions,
         };
         let source = self.source;
-        let derivative_definitions = self.derivative_definitions;
+        let facts = self.facts;
         let candidate = self.candidate;
         let rebuilt_state = &mut *self.rebuilt;
         let rebuilt = target.expressions(|expressions| {
@@ -775,7 +776,7 @@ impl<'source, 'target> FunctionRebuilder<'source, '_, 'target> {
                 source,
                 expressions,
                 identities,
-                derivative_definitions,
+                facts,
                 candidate,
                 rebuilt_state,
             )
