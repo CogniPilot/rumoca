@@ -66,6 +66,7 @@ pub(in crate::construction) fn plan_variable_construction(
             variable,
             role,
             analysis.derived_parameters.get(name),
+            analysis.initial_parameters.get(name),
             &source_ordinals,
         ));
     }
@@ -96,6 +97,7 @@ pub(in crate::construction) fn plan_variable_construction(
     let calculated_parameters = analysis
         .derived_parameters
         .keys()
+        .chain(analysis.initial_parameters.keys())
         .cloned()
         .collect::<HashSet<_>>();
     reject_recursive_calculated_parameters(
@@ -114,6 +116,7 @@ fn plan_variable(
     variable: &flat::Variable,
     role: PlannedRole,
     derived: Option<&DerivedParameterPlan>,
+    initial_binding: Option<&Expression>,
     source_ordinals: &HashMap<VarName, usize>,
 ) -> VariablePlan {
     if !constructed_role(role) {
@@ -145,6 +148,8 @@ fn plan_variable(
                 .map(|binder| VarName::new(&binder.display_name)),
             |collector| collector.visit_expression(&derived.body),
         );
+    } else if let Some(binding) = initial_binding {
+        binding_collector.visit_expression(binding);
     } else if matches!(
         role,
         PlannedRole::Parameter | PlannedRole::Constant | PlannedRole::Input

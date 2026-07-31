@@ -429,13 +429,25 @@ impl ShapeAnalyzer<'_> {
                     .iter()
                     .map(|argument| self.discover_expression(argument, values))
                     .collect::<Result<Vec<_>, _>>()?;
-                self.ensure_specialization(
-                    FunctionSpecializationKey {
-                        function: comp.to_var_name(),
-                        inputs,
-                    },
-                    *span,
-                )?;
+                // MLS §8.3.7 `assert` reaches Flat as a statement call to the
+                // predefined operator, which the Flat function table never
+                // registers. Its arguments are ordinary expressions and were
+                // discovered above; selecting a specialization for it would
+                // report the operator as an unresolved callee.
+                if self.flat.functions.contains_key(&comp.to_var_name())
+                    || rumoca_core::runtime_flow_action_function_short_name(
+                        comp.to_var_name().as_str(),
+                    )
+                    .is_none()
+                {
+                    self.ensure_specialization(
+                        FunctionSpecializationKey {
+                            function: comp.to_var_name(),
+                            inputs,
+                        },
+                        *span,
+                    )?;
+                }
                 Ok(())
             }
             rumoca_core::Statement::Reinit {

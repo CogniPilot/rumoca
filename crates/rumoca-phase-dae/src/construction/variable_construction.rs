@@ -45,6 +45,7 @@ pub(super) fn insert_variable_identities<'flat, 'dae>(
                     functions,
                     assigned_discrete_targets: &analysis.assigned_discrete_targets,
                     derived_parameters: &analysis.derived_parameters,
+                    initial_parameters: &analysis.initial_parameters,
                 },
                 VariableSpec {
                     flat: variable,
@@ -134,19 +135,10 @@ fn reserve_variable_identity<'dae>(
 
 pub(super) fn define_reserved_variables<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
-    coordinates: &HashMap<VarName, Coordinate<'dae>>,
-    functions: &FunctionRegistry<'_, 'dae>,
-    assigned_discrete_targets: &HashSet<VarName>,
-    derived_parameters: &HashMap<VarName, DerivedParameterPlan>,
+    context: VariableDefinitionContext<'_, 'dae>,
     plan: &VariableConstructionPlan,
     mut reserved: Vec<Option<ReservedVariable<'_, 'dae>>>,
 ) -> Result<(), dae::DaeConstructionError> {
-    let context = VariableDefinitionContext {
-        coordinates,
-        functions,
-        assigned_discrete_targets,
-        derived_parameters,
-    };
     for component in plan.definition_components() {
         for &source_ordinal in &component.members {
             let Some(reserved) = reserved[source_ordinal].take() else {
@@ -159,12 +151,15 @@ pub(super) fn define_reserved_variables<'dae>(
     Ok(())
 }
 
+/// Everything a variable definition reads besides the variable itself.
 #[derive(Clone, Copy)]
-struct VariableDefinitionContext<'scope, 'dae> {
-    coordinates: &'scope HashMap<VarName, Coordinate<'dae>>,
-    functions: &'scope FunctionRegistry<'scope, 'dae>,
-    assigned_discrete_targets: &'scope HashSet<VarName>,
-    derived_parameters: &'scope HashMap<VarName, DerivedParameterPlan>,
+pub(super) struct VariableDefinitionContext<'scope, 'dae> {
+    pub(super) coordinates: &'scope HashMap<VarName, Coordinate<'dae>>,
+    pub(super) functions: &'scope FunctionRegistry<'scope, 'dae>,
+    pub(super) assigned_discrete_targets: &'scope HashSet<VarName>,
+    pub(super) derived_parameters: &'scope HashMap<VarName, DerivedParameterPlan>,
+    /// `fixed = false` parameters an initial algorithm determines (MLS §8.6).
+    pub(super) initial_parameters: &'scope HashMap<VarName, Expression>,
 }
 
 #[derive(Clone, Copy)]
@@ -322,7 +317,8 @@ fn lower_variable_attributes<'dae>(
         variable,
         variable.flat.nominal.as_ref(),
     )?;
-    let derived_parameter = context.derived_parameters.contains_key(&variable.flat.name);
+    let derived_parameter = context.derived_parameters.contains_key(&variable.flat.name)
+        || context.initial_parameters.contains_key(&variable.flat.name);
     let causality = if derived_parameter {
         dae::VariableCausality::CalculatedParameter
     } else {
@@ -367,6 +363,10 @@ fn lower_variable_binding<'dae>(
             plan,
         )
         .map(Some);
+    }
+    if let Some(value) = context.initial_parameters.get(&variable.flat.name) {
+        return lower_variable_attribute_expression(construction, context, variable, value)
+            .map(Some);
     }
     if !matches!(
         variable.role,

@@ -81,8 +81,8 @@ mod galec_equivalence;
 mod gear_loop_regression;
 #[path = "index_reduction_manifold.rs"]
 mod index_reduction_manifold;
-#[path = "initial_algorithm_rejection_test.rs"]
-mod initial_algorithm_rejection_test;
+#[path = "initial_algorithm_test.rs"]
+mod initial_algorithm_test;
 #[path = "integer_builtin_checked.rs"]
 mod integer_builtin_checked;
 #[path = "interface_flow_balance.rs"]

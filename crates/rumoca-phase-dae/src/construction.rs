@@ -85,8 +85,8 @@ use model_events::{WhenChainsRequest, always_condition, lower_when_assignment, l
 use record_equation::lower_record_equation;
 use structured_body::lower_structured_body;
 use variable_construction::{
-    VariableConstructionPlan, define_reserved_variables, insert_variable_identities,
-    plan_variable_construction,
+    VariableConstructionPlan, VariableDefinitionContext, define_reserved_variables,
+    insert_variable_identities, plan_variable_construction,
 };
 
 #[derive(Clone, Copy)]
@@ -276,10 +276,13 @@ fn build_checked<'dae>(
     };
     define_reserved_variables(
         construction,
-        &coordinates,
-        &functions,
-        &analysis.assigned_discrete_targets,
-        &analysis.derived_parameters,
+        VariableDefinitionContext {
+            coordinates: &coordinates,
+            functions: &functions,
+            assigned_discrete_targets: &analysis.assigned_discrete_targets,
+            derived_parameters: &analysis.derived_parameters,
+            initial_parameters: &analysis.initial_parameters,
+        },
         variable_plan,
         variable_identities.reserved,
     )?;
@@ -360,7 +363,8 @@ fn lower_model_owners<'dae>(
         &analysis.sample_lattices,
         flat.assert_equations
             .iter()
-            .chain(&flat.initial_assert_equations),
+            .chain(&flat.initial_assert_equations)
+            .chain(&analysis.initial_algorithm_assertions),
     )?;
     lower_algorithms(
         construction,
