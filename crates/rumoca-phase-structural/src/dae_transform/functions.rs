@@ -1,6 +1,7 @@
 use rumoca_ir_dae as dae;
 
-use super::{DirectStateConstraint, ExpressionRebuilder, RebuiltBaseIdentities, RebuiltIdentities};
+use super::DirectStateConstraint;
+use super::expressions::{ExpressionRebuilder, RebuiltBaseIdentities, RebuiltIdentities};
 
 #[derive(Clone)]
 pub(super) struct RebuiltFunction<'dae> {
