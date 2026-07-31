@@ -88,31 +88,67 @@ fn manifest_test_targets() -> BTreeMap<String, ManifestTestTarget> {
     targets
 }
 
-/// Names of every `#[test]` function declared in a test source file.
+/// `#[path = "…"]` on a module declaration, resolved against `dir`.
+///
+/// Umbrella test binaries pull their member files in this way, so the gate has
+/// to follow the include to see the tests it selects.
+fn path_attribute_target(item: &syn::ItemMod, dir: &Path) -> Option<PathBuf> {
+    item.attrs
+        .iter()
+        .find(|attr| attr.path().is_ident("path"))
+        .and_then(|attr| attr.meta.require_name_value().ok())
+        .and_then(|meta| match &meta.value {
+            syn::Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Str(literal),
+                ..
+            }) => Some(dir.join(literal.value())),
+            _ => None,
+        })
+}
+
+/// Libtest paths of every `#[test]` function reachable from a test source file,
+/// following `#[path]` module includes and prefixing each name with its module
+/// path exactly the way libtest reports it.
 fn declared_test_functions(path: &Path) -> BTreeSet<String> {
-    let source =
-        fs::read_to_string(path).unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
-    let file =
-        syn::parse_file(&source).unwrap_or_else(|err| panic!("parse {}: {err}", path.display()));
     let mut names = BTreeSet::new();
-    for item in &file.items {
-        let syn::Item::Fn(function) = item else {
-            continue;
-        };
-        let is_test = function
-            .attrs
-            .iter()
-            .any(|attr| attr.path().is_ident("test"));
-        if is_test {
-            names.insert(function.sig.ident.to_string());
-        }
-    }
+    collect_test_functions(path, "", &mut names);
     assert!(
         !names.is_empty(),
         "{} declares no #[test] functions",
         path.display()
     );
     names
+}
+
+fn collect_test_functions(path: &Path, prefix: &str, names: &mut BTreeSet<String>) {
+    let source =
+        fs::read_to_string(path).unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
+    let file =
+        syn::parse_file(&source).unwrap_or_else(|err| panic!("parse {}: {err}", path.display()));
+    let dir = path
+        .parent()
+        .unwrap_or_else(|| panic!("{} has a parent directory", path.display()));
+    for item in &file.items {
+        match item {
+            syn::Item::Fn(function) => {
+                let is_test = function
+                    .attrs
+                    .iter()
+                    .any(|attr| attr.path().is_ident("test"));
+                if is_test {
+                    names.insert(format!("{prefix}{}", function.sig.ident));
+                }
+            }
+            syn::Item::Mod(module) if module.content.is_none() => {
+                let Some(target) = path_attribute_target(module, dir) else {
+                    continue;
+                };
+                let nested = format!("{prefix}{}::", module.ident);
+                collect_test_functions(&target, &nested, names);
+            }
+            _ => {}
+        }
+    }
 }
 
 #[test]
@@ -211,8 +247,21 @@ fn artifact_trimmer_covers_exactly_the_pinned_targets() {
         stems, expected,
         "the artifact trimmer must trim exactly the gate's test targets"
     );
+
+    let targets = manifest_test_targets();
+    let reachable: BTreeSet<String> = expected
+        .iter()
+        .flat_map(|test| {
+            let target = targets
+                .get(*test)
+                .unwrap_or_else(|| panic!("test target `{test}` is declared"));
+            declared_test_functions(&target.path)
+        })
+        .collect();
     assert!(
-        stems.contains(&"backend_template_runtime_regression"),
-        "the backend runtime target stays part of the gate"
+        reachable
+            .iter()
+            .any(|name| name.starts_with("backend_template_runtime_regression::")),
+        "the backend runtime suite stays part of the gate; reachable tests: {reachable:?}"
     );
 }

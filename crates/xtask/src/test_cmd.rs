@@ -15,12 +15,14 @@ pub(crate) fn run_workspace_fmt_check(root: &Path) -> Result<()> {
 /// - `architecture_hardening_test` — crate layering, file-size, and the
 ///   RUMOCA_* env-var registry (a regression here means a new unregistered env
 ///   var: remove it or route debug output through `--trace`).
-/// - `spec_budget_test` — SPEC set size / per-spec budgets.
-/// - `code_size_budget_test` — SPEC_0021 source size guard.
-/// - `history_policy_test` — git-history policy.
+/// - `suite_gates` — the umbrella binary holding `spec_budget_test` (SPEC set
+///   size / per-spec budgets), `code_size_budget_test` (SPEC_0021 source size
+///   guard), and `history_policy_test` (git-history policy).
 ///
-/// Add new architecture/policy test targets here so they're grouped in one fast
-/// gate rather than only discovered by the full workspace test run.
+/// Both targets link no `rumoca` library, which is what keeps this gate fast.
+/// Add new architecture/policy checks as members of `tests/suite_gates.rs` so
+/// they're grouped in one fast gate rather than only discovered by the full
+/// workspace test run.
 pub(crate) fn run_architecture_gates(root: &Path) -> Result<()> {
     run_cargo(
         root,
@@ -31,11 +33,7 @@ pub(crate) fn run_architecture_gates(root: &Path) -> Result<()> {
             "--test",
             "architecture_hardening_test",
             "--test",
-            "spec_budget_test",
-            "--test",
-            "code_size_budget_test",
-            "--test",
-            "history_policy_test",
+            "suite_gates",
         ],
     )
 }
